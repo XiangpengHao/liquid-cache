@@ -42,7 +42,6 @@ pub struct FlightSqlDriver {}
 impl FlightSqlDriver {
     /// Returns a [FlightMetadata] from the specified channel,
     /// according to the provided table options.
-    /// The driver must provide at least a [FlightInfo] in order to construct a flight metadata.
     pub async fn metadata(
         &self,
         channel: Channel,

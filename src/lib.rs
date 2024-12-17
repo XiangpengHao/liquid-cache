@@ -20,6 +20,6 @@ mod metrics;
 pub mod sql;
 mod table;
 pub use exec::FlightExec;
-pub use table::FlightTableFactory;
+pub use table::{FlightMetadata, FlightTable, FlightTableFactory};
 mod utils;
 pub use utils::GcStream;

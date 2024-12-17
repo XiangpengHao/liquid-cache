@@ -45,7 +45,7 @@ fn transform_flight_schema_to_original_type(schema: &SchemaRef) -> Schema {
     Schema::new_with_metadata(transformed_fields, schema.metadata.clone())
 }
 
-/// Generic Arrow Flight data source. Requires a [FlightDriver] that allows implementors
+/// Generic Arrow Flight data source. Requires a [FlightSqlDriver] that allows implementors
 /// to integrate any custom Flight RPC service by producing a [FlightMetadata] for some DDL.
 #[derive(Clone, Debug)]
 pub struct FlightTableFactory {
@@ -109,7 +109,7 @@ impl TableProviderFactory for FlightTableFactory {
     }
 }
 
-/// The information that a [FlightDriver] must produce
+/// The information that a [FlightSqlDriver] must produce
 /// in order to register flights as DataFusion tables.
 #[derive(Clone, Debug)]
 pub struct FlightMetadata {
