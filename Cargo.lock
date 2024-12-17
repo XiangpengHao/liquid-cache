@@ -829,6 +829,7 @@ dependencies = [
  "arrow-flight",
  "arrow-schema",
  "async-trait",
+ "dashmap",
  "datafusion",
  "datafusion-catalog",
  "datafusion-common",
@@ -840,9 +841,13 @@ dependencies = [
  "futures",
  "log",
  "parquet",
+ "prost",
+ "prost-derive",
  "serde",
  "serde_json",
+ "tokio",
  "tonic",
+ "uuid",
 ]
 
 [[package]]

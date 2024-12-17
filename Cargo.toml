@@ -26,3 +26,18 @@ tonic = { version = "0.12", features = [
 	"tls-native-roots",
 	"tls-webpki-roots",
 ] }
+
+[dev-dependencies]
+tokio = "1.42.0"
+uuid = "1.7.0"
+prost = "0.13.3"
+prost-derive = "0.13.3"
+dashmap = "6.1.0"
+
+[[example]]
+name = "server"
+path = "examples/server.rs"
+
+[[example]]
+name = "client"
+path = "examples/client.rs"
