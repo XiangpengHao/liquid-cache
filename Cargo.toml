@@ -1,0 +1,28 @@
+[package]
+name = "datafusion-cache"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+arrow = "53.3.0"
+arrow-array = "53.3.0"
+arrow-flight = { version = "53.3.0", features = ["flight-sql-experimental"] }
+arrow-schema = { version = "53.3.0", features = ["serde"] }
+async-trait = "0.1.83"
+datafusion = "43.0.0"
+datafusion-catalog = "43.0.0"
+datafusion-common = "43.0.0"
+datafusion-execution = "43.0.0"
+datafusion-expr = "43.0.0"
+datafusion-physical-expr = "43.0.0"
+datafusion-physical-plan = "43.0.0"
+datafusion-sql = "43.0.0"
+futures = "0.3.31"
+log = "0.4.22"
+parquet = "53.3.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tonic = { version = "0.12", features = [
+	"tls-native-roots",
+	"tls-webpki-roots",
+] }
