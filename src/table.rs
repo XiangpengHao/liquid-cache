@@ -48,18 +48,30 @@ fn transform_flight_schema_to_original_type(schema: &SchemaRef) -> Schema {
 /// Generic Arrow Flight data source. Requires a [FlightSqlDriver] that allows implementors
 /// to integrate any custom Flight RPC service by producing a [FlightMetadata] for some DDL.
 #[derive(Clone, Debug)]
-pub struct FlightTableFactory {
+pub struct SplitSqlTableFactory {
     driver: Arc<FlightSqlDriver>,
 }
 
-impl FlightTableFactory {
+impl SplitSqlTableFactory {
     /// Create a data source using the provided driver
-    pub fn new(driver: Arc<FlightSqlDriver>) -> Self {
+    fn new(driver: Arc<FlightSqlDriver>) -> Self {
         Self { driver }
     }
 
-    /// Convenient way to create a [FlightTable] programatically, as an alternative to DDL.
     pub async fn open_table(
+        entry_point: impl Into<String>,
+        options: HashMap<String, String>,
+        table_name: impl Into<TableReference>,
+    ) -> Result<FlightTable> {
+        let driver = Arc::new(FlightSqlDriver::default());
+        let factory = SplitSqlTableFactory::new(driver);
+        factory
+            .open_table_inner(entry_point, options, table_name)
+            .await
+    }
+
+    /// Convenient way to create a [FlightTable] programatically, as an alternative to DDL.
+    async fn open_table_inner(
         &self,
         entry_point: impl Into<String>,
         options: HashMap<String, String>,
@@ -96,14 +108,14 @@ impl FlightTableFactory {
 }
 
 #[async_trait]
-impl TableProviderFactory for FlightTableFactory {
+impl TableProviderFactory for SplitSqlTableFactory {
     async fn create(
         &self,
         _state: &dyn Session,
         cmd: &CreateExternalTable,
     ) -> Result<Arc<dyn TableProvider>> {
         let table = self
-            .open_table(&cmd.location, cmd.options.clone(), cmd.name.clone())
+            .open_table_inner(&cmd.location, cmd.options.clone(), cmd.name.clone())
             .await?;
         Ok(Arc::new(table))
     }

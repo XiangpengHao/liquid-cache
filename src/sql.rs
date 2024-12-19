@@ -37,7 +37,7 @@ pub const HEADER_PREFIX: &str = "flight.sql.header.";
 /// stored as a gRPC authorization header within the returned [FlightMetadata],
 /// to be sent with the subsequent `DoGet` requests.
 #[derive(Clone, Debug, Default)]
-pub struct FlightSqlDriver {}
+pub(crate) struct FlightSqlDriver {}
 
 impl FlightSqlDriver {
     /// Returns a [FlightMetadata] from the specified channel,
