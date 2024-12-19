@@ -60,7 +60,7 @@ pub struct FlightExec {
 impl FlightExec {
     /// Creates a FlightExec with the provided [FlightMetadata]
     /// and origin URL (used as fallback location as per the protocol spec).
-    pub fn try_new(
+    pub(crate) fn try_new(
         flight_schema: SchemaRef,
         output_schema: SchemaRef,
         metadata: FlightMetadata,

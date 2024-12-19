@@ -45,8 +45,6 @@ fn transform_flight_schema_to_original_type(schema: &SchemaRef) -> Schema {
     Schema::new_with_metadata(transformed_fields, schema.metadata.clone())
 }
 
-/// Generic Arrow Flight data source. Requires a [FlightSqlDriver] that allows implementors
-/// to integrate any custom Flight RPC service by producing a [FlightMetadata] for some DDL.
 #[derive(Clone, Debug)]
 pub struct SplitSqlTableFactory {
     driver: Arc<FlightSqlDriver>,
@@ -124,7 +122,7 @@ impl TableProviderFactory for SplitSqlTableFactory {
 /// The information that a [FlightSqlDriver] must produce
 /// in order to register flights as DataFusion tables.
 #[derive(Clone, Debug)]
-pub struct FlightMetadata {
+pub(crate) struct FlightMetadata {
     /// FlightInfo object produced by the driver
     pub(crate) info: FlightInfo,
     /// Various knobs that control execution
@@ -167,11 +165,6 @@ pub struct FlightProperties {
 }
 
 impl FlightProperties {
-    pub fn unbounded_stream(mut self, unbounded_stream: bool) -> Self {
-        self.unbounded_stream = unbounded_stream;
-        self
-    }
-
     pub fn grpc_headers(mut self, grpc_headers: HashMap<String, String>) -> Self {
         self.grpc_headers = grpc_headers;
         self
