@@ -27,7 +27,7 @@ pub const USERNAME: &str = "flight.sql.username";
 pub const PASSWORD: &str = "flight.sql.password";
 pub const HEADER_PREFIX: &str = "flight.sql.header.";
 
-/// Default Flight SQL driver. Requires a [QUERY] to be passed as a table option.
+/// Default Flight SQL driver.
 /// If [USERNAME] (and optionally [PASSWORD]) are passed,
 /// will perform the `Handshake` using basic authentication.
 /// Any additional headers for the `GetFlightInfo` call can be passed as table options
