@@ -4,8 +4,9 @@ use std::error::Error;
 use std::fmt::Debug;
 use std::sync::Arc;
 
-use crate::exec::FlightExec;
-use crate::sql::FlightSqlDriver;
+mod exec;
+mod metrics;
+mod sql;
 use arrow_flight::error::FlightError;
 use arrow_flight::FlightInfo;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
@@ -23,8 +24,10 @@ use datafusion_physical_plan::ExecutionPlan;
 use datafusion_sql::unparser::dialect::PostgreSqlDialect;
 use datafusion_sql::unparser::Unparser;
 use datafusion_sql::TableReference;
+use exec::FlightExec;
 use log::info;
 use serde::{Deserialize, Serialize};
+use sql::{FlightSqlDriver, USERNAME};
 use tonic::transport::Channel;
 
 fn transform_flight_schema_to_original_type(schema: &SchemaRef) -> Schema {
@@ -58,9 +61,9 @@ impl SplitSqlTableFactory {
 
     pub async fn open_table(
         entry_point: impl Into<String>,
-        options: HashMap<String, String>,
         table_name: impl Into<TableReference>,
     ) -> Result<FlightTable> {
+        let options = HashMap::from([(USERNAME.into(), "whatever".into())]);
         let driver = Arc::new(FlightSqlDriver::default());
         let factory = SplitSqlTableFactory::new(driver);
         factory
@@ -222,9 +225,10 @@ impl TableProvider for FlightTable {
             let unparsed_sql = unparser
                 .plan_to_sql(&LogicalPlan::TableScan(logical_plan))
                 .unwrap();
-            info!("unparsed sql: {}", unparsed_sql);
             unparsed_sql.to_string()
         };
+
+        info!("SQL send to cache: {}", unparsed_sql);
 
         let metadata = self
             .driver

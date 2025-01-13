@@ -17,14 +17,17 @@
 
 use arrow_flight::flight_service_server::FlightServiceServer;
 use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
-use datafusion_cache::SplitSqlService;
+use datafusion_cache::server::SplitSqlService;
 use log::info;
 use std::sync::Arc;
 use tonic::transport::Server;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    env_logger::builder().format_timestamp(None).init();
+    env_logger::builder()
+        .format_timestamp(None)
+        .filter_level(log::LevelFilter::Info)
+        .init();
 
     let addr = "0.0.0.0:50051".parse()?;
 

@@ -15,13 +15,5 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod exec;
-mod metrics;
-pub mod sql;
-mod table;
-pub use exec::FlightExec;
-pub use table::{FlightTable, SplitSqlTableFactory};
-mod utils;
-pub use utils::GcStream;
-mod server;
-pub use server::SplitSqlService;
+pub mod client;
+pub mod server;

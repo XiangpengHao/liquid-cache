@@ -15,17 +15,21 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use datafusion::{
     error::Result,
     prelude::{SessionConfig, SessionContext},
 };
-use datafusion_cache::{sql::USERNAME, SplitSqlTableFactory};
+use datafusion_cache::client::SplitSqlTableFactory;
+use log::info;
 
 #[tokio::main]
 pub async fn main() -> Result<()> {
-    env_logger::builder().format_timestamp(None).init();
+    env_logger::builder()
+        .format_timestamp(None)
+        .filter_level(log::LevelFilter::Info)
+        .init();
 
     let mut session_config = SessionConfig::from_env()?;
     session_config
@@ -37,15 +41,12 @@ pub async fn main() -> Result<()> {
 
     let entry_point = "http://localhost:50051";
     let sql = r#"
-    SELECT DISTINCT "URL" FROM small_hits WHERE "URL" <> '';
+    SELECT COUNT(*) FROM small_hits WHERE "URL" <> '';
     "#;
 
-    let table = SplitSqlTableFactory::open_table(
-        entry_point,
-        HashMap::from([(USERNAME.into(), "whatever".into())]),
-        "small_hits",
-    )
-    .await?;
+    info!("SQL to be executed: {}", sql);
+
+    let table = SplitSqlTableFactory::open_table(entry_point, "small_hits").await?;
     ctx.register_table("small_hits", Arc::new(table))?;
 
     let df = ctx.sql(sql).await?;

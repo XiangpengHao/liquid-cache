@@ -21,9 +21,8 @@ use arrow_flight::sql::client::FlightSqlServiceClient;
 use arrow_flight::{error::Result, sql::CommandGetDbSchemas};
 use tonic::transport::Channel;
 
-use crate::table::{FlightMetadata, FlightProperties};
+use crate::client::{FlightMetadata, FlightProperties};
 
-pub const QUERY: &str = "flight.sql.query";
 pub const USERNAME: &str = "flight.sql.username";
 pub const PASSWORD: &str = "flight.sql.password";
 pub const HEADER_PREFIX: &str = "flight.sql.header.";

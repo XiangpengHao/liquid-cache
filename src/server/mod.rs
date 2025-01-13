@@ -40,7 +40,8 @@ use tonic::metadata::MetadataValue;
 use tonic::{Request, Response, Status, Streaming};
 use uuid::Uuid;
 
-use crate::GcStream;
+mod utils;
+use utils::GcStream;
 
 pub struct SplitSqlService {
     execution_plans: Arc<DashMap<String, Arc<dyn ExecutionPlan>>>,
