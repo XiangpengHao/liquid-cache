@@ -15,6 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
+pub mod cache;
 pub mod compute;
 mod liquid_parquet;
-pub mod cache;
