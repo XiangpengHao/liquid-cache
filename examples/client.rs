@@ -58,8 +58,7 @@ pub async fn main() -> Result<()> {
     let table = SplitSqlTableFactory::open_table(entry_point, table_name, table_url).await?;
     ctx.register_table(table_name, Arc::new(table))?;
 
-    let df = ctx.sql(sql).await?;
-    df.show().await?;
+    ctx.sql(sql).await?.show().await?;
 
     Ok(())
 }

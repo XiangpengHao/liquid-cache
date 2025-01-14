@@ -9,3 +9,13 @@ It can result in much larger network traffic if the filter is not selective enou
 
 Why we can't compress the output or re-encode the data in Parquet? 
 That's a lot of CPU cost. (is that true?)
+
+
+### TableProvider vs LiquidParquetExec 
+We currently pack our system as a `TableProvider`. 
+This does not work for people who already have their own `TableProvider`.
+In that case, they might want to re-implement many parts of our system. 
+
+### In-process mode
+While SplitSQL is a one-stop comprehensive solution for disaggregated cache, many people might want to use part of our components.
+For example, some people might want disaggregated cache, others might want to use only `LiquidParquetExec`.
