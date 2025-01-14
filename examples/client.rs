@@ -21,7 +21,7 @@ use datafusion::{
     error::Result,
     prelude::{SessionConfig, SessionContext},
 };
-use datafusion_cache::client::SplitSqlTableFactory;
+use datafusion_cache::compute::SplitSqlTableFactory;
 use log::info;
 
 #[tokio::main]

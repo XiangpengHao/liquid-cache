@@ -24,8 +24,8 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::task::{ready, Context, Poll};
 
-use crate::client::metrics::{FlightStreamMetrics, FlightTableMetrics};
-use crate::client::{flight_channel, to_df_err, FlightMetadata, FlightProperties};
+use crate::compute::metrics::{FlightStreamMetrics, FlightTableMetrics};
+use crate::compute::{flight_channel, to_df_err, FlightMetadata, FlightProperties};
 use arrow_array::RecordBatch;
 use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_flight::{FlightClient, FlightEndpoint, Ticket};

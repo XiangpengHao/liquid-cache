@@ -17,7 +17,7 @@
 
 use arrow_flight::flight_service_server::FlightServiceServer;
 use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
-use datafusion_cache::server::SplitSqlService;
+use datafusion_cache::cache::SplitSqlService;
 use log::info;
 use std::sync::Arc;
 use tonic::transport::Server;
