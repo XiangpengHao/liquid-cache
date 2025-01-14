@@ -16,10 +16,8 @@
 // under the License.
 
 use arrow_flight::flight_service_server::FlightServiceServer;
-use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
 use datafusion_cache::cache::SplitSqlService;
 use log::info;
-use std::sync::Arc;
 use tonic::transport::Server;
 
 #[tokio::main]
@@ -31,25 +29,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let addr = "0.0.0.0:50051".parse()?;
 
-    let mut session_config = SessionConfig::from_env()?;
-    let options_mut = session_config.options_mut();
-    options_mut.execution.parquet.pushdown_filters = true;
-    options_mut.execution.parquet.binary_as_string = true;
-    let ctx = Arc::new(SessionContext::new_with_config(session_config));
+    let split_sql = SplitSqlService::try_new()?;
+    let flight = FlightServiceServer::new(split_sql);
 
-    ctx.register_parquet(
-        "small_hits",
-        "examples/small_hits.parquet",
-        ParquetReadOptions::default(),
-    )
-    .await?;
-
-    let service = SplitSqlService::new("small_hits".to_string(), ctx);
     info!("SplitSQL server listening on {addr:?}");
 
-    let svc = FlightServiceServer::new(service);
-
-    Server::builder().add_service(svc).serve(addr).await?;
+    Server::builder().add_service(flight).serve(addr).await?;
 
     Ok(())
 }

@@ -23,6 +23,7 @@ use datafusion::{
 };
 use datafusion_cache::compute::SplitSqlTableFactory;
 use log::info;
+use url::Url;
 
 #[tokio::main]
 pub async fn main() -> Result<()> {
@@ -40,14 +41,22 @@ pub async fn main() -> Result<()> {
     let ctx = Arc::new(SessionContext::new_with_config(session_config));
 
     let entry_point = "http://localhost:50051";
-    let sql = r#"
-    SELECT COUNT(*) FROM small_hits WHERE "URL" <> '';
-    "#;
+
+    let sql = "SELECT COUNT(*) FROM small_hits WHERE \"URL\" <> '';";
 
     info!("SQL to be executed: {}", sql);
 
-    let table = SplitSqlTableFactory::open_table(entry_point, "small_hits").await?;
-    ctx.register_table("small_hits", Arc::new(table))?;
+    let table_name = "small_hits";
+
+    let current_dir = std::env::current_dir()?.to_string_lossy().to_string();
+    let table_url = Url::parse(&format!(
+        "file://{}/examples/small_hits.parquet",
+        current_dir
+    ))
+    .unwrap();
+
+    let table = SplitSqlTableFactory::open_table(entry_point, table_name, table_url).await?;
+    ctx.register_table(table_name, Arc::new(table))?;
 
     let df = ctx.sql(sql).await?;
     df.show().await?;

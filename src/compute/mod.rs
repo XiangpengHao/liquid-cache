@@ -13,13 +13,11 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
 use datafusion::datasource::empty::EmptyTable;
 use datafusion::datasource::DefaultTableSource;
-use datafusion_catalog::{Session, TableProvider, TableProviderFactory};
+use datafusion_catalog::{Session, TableProvider};
 use datafusion_common::error::Result;
 use datafusion_common::stats::Precision;
 use datafusion_common::{DataFusionError, Statistics, ToDFSchema};
-use datafusion_expr::{
-    CreateExternalTable, Expr, LogicalPlan, TableProviderFilterPushDown, TableScan, TableType,
-};
+use datafusion_expr::{Expr, LogicalPlan, TableProviderFilterPushDown, TableScan, TableType};
 use datafusion_physical_plan::ExecutionPlan;
 use datafusion_sql::unparser::dialect::PostgreSqlDialect;
 use datafusion_sql::unparser::Unparser;
@@ -27,7 +25,7 @@ use datafusion_sql::TableReference;
 use exec::FlightExec;
 use log::info;
 use serde::{Deserialize, Serialize};
-use sql::{FlightSqlDriver, USERNAME};
+use sql::FlightSqlDriver;
 use tonic::transport::Channel;
 
 fn transform_flight_schema_to_original_type(schema: &SchemaRef) -> Schema {
@@ -60,30 +58,30 @@ impl SplitSqlTableFactory {
     }
 
     pub async fn open_table(
-        entry_point: impl Into<String>,
-        table_name: impl Into<TableReference>,
+        cache_server: impl AsRef<str>,
+        table_name: impl AsRef<str>,
+        url: impl AsRef<str>,
     ) -> Result<FlightTable> {
-        let options = HashMap::from([(USERNAME.into(), "whatever".into())]);
         let driver = Arc::new(FlightSqlDriver::default());
         let factory = SplitSqlTableFactory::new(driver);
         factory
-            .open_table_inner(entry_point, options, table_name)
+            .open_table_inner(cache_server.as_ref(), table_name.as_ref(), url.as_ref())
             .await
     }
 
     /// Convenient way to create a [FlightTable] programatically, as an alternative to DDL.
     async fn open_table_inner(
         &self,
-        entry_point: impl Into<String>,
-        options: HashMap<String, String>,
-        table_name: impl Into<TableReference>,
+        cache_server: &str,
+        table_name: &str,
+        object_url: &str,
     ) -> Result<FlightTable> {
-        let origin = entry_point.into();
+        let origin = cache_server.into();
         let channel = flight_channel(&origin).await?;
 
         let metadata = self
             .driver
-            .metadata(channel.clone(), &options)
+            .metadata(channel.clone(), table_name, object_url)
             .await
             .map_err(to_df_err)?;
         let num_rows = precision(metadata.info.total_records);
@@ -98,27 +96,12 @@ impl SplitSqlTableFactory {
         Ok(FlightTable {
             driver: self.driver.clone(),
             channel,
-            options,
             origin,
             table_name: table_name.into(),
             flight_schema,
             output_schema,
             stats,
         })
-    }
-}
-
-#[async_trait]
-impl TableProviderFactory for SplitSqlTableFactory {
-    async fn create(
-        &self,
-        _state: &dyn Session,
-        cmd: &CreateExternalTable,
-    ) -> Result<Arc<dyn TableProvider>> {
-        let table = self
-            .open_table_inner(&cmd.location, cmd.options.clone(), cmd.name.clone())
-            .await?;
-        Ok(Arc::new(table))
     }
 }
 
@@ -179,7 +162,6 @@ impl FlightProperties {
 pub struct FlightTable {
     driver: Arc<FlightSqlDriver>,
     channel: Channel,
-    options: HashMap<String, String>,
     origin: String,
     table_name: TableReference,
     flight_schema: SchemaRef,
@@ -232,7 +214,7 @@ impl TableProvider for FlightTable {
 
         let metadata = self
             .driver
-            .run_sql(self.channel.clone(), &self.options, &unparsed_sql)
+            .run_sql(self.channel.clone(), &unparsed_sql)
             .await
             .map_err(to_df_err)?;
 

@@ -30,42 +30,79 @@ use arrow_flight::{
 };
 use dashmap::DashMap;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
-use datafusion::prelude::SessionContext;
+use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
+use datafusion_common::DataFusionError;
+use datafusion_execution::object_store::ObjectStoreUrl;
 use futures::{Stream, TryStreamExt};
 use log::{debug, info};
+use prost::bytes::Bytes;
 use prost::Message;
+use std::collections::HashSet;
 use std::pin::Pin;
 use std::sync::Arc;
-use tonic::metadata::MetadataValue;
+use tokio::sync::Mutex;
 use tonic::{Request, Response, Status, Streaming};
+use url::Url;
 use uuid::Uuid;
 
 mod utils;
 use utils::GcStream;
 
+pub(crate) static ACTION_REGISTER_TABLE: &str = "RegisterTable";
+
 pub struct SplitSqlService {
     execution_plans: Arc<DashMap<String, Arc<dyn ExecutionPlan>>>,
+    registered_tables: Mutex<HashSet<String>>,
     default_ctx: Arc<SessionContext>,
-    table_name: String,
 }
 
 impl SplitSqlService {
-    pub fn new(table_name: String, default_ctx: Arc<SessionContext>) -> Self {
+    pub fn try_new() -> Result<Self, DataFusionError> {
+        let ctx = Self::context()?;
+        Ok(Self::new_with_context(ctx))
+    }
+
+    pub fn new_with_context(default_ctx: SessionContext) -> Self {
         Self {
             execution_plans: Default::default(),
-            table_name,
-            default_ctx,
+            registered_tables: Default::default(),
+            default_ctx: Arc::new(default_ctx),
         }
+    }
+
+    pub fn context() -> Result<SessionContext, DataFusionError> {
+        let mut session_config = SessionConfig::from_env()?;
+        let options_mut = session_config.options_mut();
+        options_mut.execution.parquet.pushdown_filters = true;
+        options_mut.execution.parquet.binary_as_string = true;
+        let ctx = SessionContext::new_with_config(session_config);
+        let object_store_url = ObjectStoreUrl::parse("file://").unwrap();
+        let object_store = object_store::local::LocalFileSystem::new();
+        ctx.register_object_store(object_store_url.as_ref(), Arc::new(object_store));
+        Ok(ctx)
+    }
+
+    async fn register_table(&self, url: String, table_name: String) -> Result<(), Status> {
+        let url = Url::parse(&url).map_err(|e| Status::invalid_argument(format!("{e:?}")))?;
+
+        let mut registered_tables = self.registered_tables.lock().await;
+        if registered_tables.contains(&table_name) {
+            // already registered
+            info!("table {table_name} already registered");
+            return Ok(());
+        }
+
+        self.default_ctx
+            .register_parquet(&table_name, &url, ParquetReadOptions::default())
+            .await
+            .map_err(df_error_to_status)?;
+        info!("registered table {table_name} from {url}");
+        registered_tables.insert(table_name);
+        Ok(())
     }
 }
 
 impl SplitSqlService {
-    fn create_ctx(&self) -> Result<Uuid, Status> {
-        let uuid = Uuid::new_v4();
-        debug!("Created context with uuid: {uuid}");
-        Ok(uuid)
-    }
-
     fn get_ctx<T>(&self, _req: &Request<T>) -> Result<Arc<SessionContext>, Status> {
         Ok(self.default_ctx.clone())
     }
@@ -97,36 +134,22 @@ impl FlightSqlService for SplitSqlService {
         Response<Pin<Box<dyn Stream<Item = Result<HandshakeResponse, Status>> + Send>>>,
         Status,
     > {
-        info!("do_handshake");
-        // no authentication actually takes place here
-        // see Ballista implementation for example of basic auth
-        // in this case, we simply accept the connection and create a new SessionContext
-        // the SessionContext will be re-used within this same connection/session
-        let token = self.create_ctx()?;
-
-        let result = HandshakeResponse {
-            protocol_version: 0,
-            payload: token.as_bytes().to_vec().into(),
-        };
-        let result = Ok(result);
-        let output = futures::stream::iter(vec![result]);
-        let str = format!("Bearer {token}");
-        let mut resp: Response<Pin<Box<dyn Stream<Item = Result<_, _>> + Send>>> =
-            Response::new(Box::pin(output));
-        let md = MetadataValue::try_from(str)
-            .map_err(|_| Status::invalid_argument("authorization not parsable"))?;
-        resp.metadata_mut().insert("authorization", md);
-        Ok(resp)
+        unimplemented!("We don't do handshake")
     }
 
     async fn get_flight_info_schemas(
         &self,
-        _query: CommandGetDbSchemas,
+        query: CommandGetDbSchemas,
         _request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
+        let table_name = query
+            .db_schema_filter_pattern
+            .ok_or(Status::invalid_argument(
+                "db_schema_filter_pattern is required",
+            ))?;
         let schema = self
             .default_ctx
-            .table_provider(&self.table_name)
+            .table_provider(&table_name)
             .await
             .unwrap()
             .schema();
@@ -259,6 +282,31 @@ impl FlightSqlService for SplitSqlService {
         Ok(())
     }
 
+    async fn do_action_fallback(
+        &self,
+        request: Request<Action>,
+    ) -> Result<Response<<Self as FlightService>::DoActionStream>, Status> {
+        if request.get_ref().r#type == ACTION_REGISTER_TABLE {
+            let any = Any::decode(&*request.get_ref().body).map_err(decode_error_to_status)?;
+            let cmd: ActionRegisterTableRequest = any
+                .unpack()
+                .map_err(arrow_error_to_status)?
+                .ok_or_else(|| {
+                    Status::invalid_argument("Unable to unpack ActionRegisterTableRequest.")
+                })?;
+            self.register_table(cmd.url, cmd.table_name).await?;
+            let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
+                body: Bytes::default(),
+            })]);
+            return Ok(Response::new(Box::pin(output)));
+        }
+
+        Err(Status::invalid_argument(format!(
+            "do_action: The defined request is invalid: {:?}",
+            request.get_ref().r#type
+        )))
+    }
+
     async fn register_sql_info(&self, _id: i32, _result: &SqlInfo) {}
 }
 
@@ -282,4 +330,38 @@ impl ProstMessageExt for FetchResults {
             value: ::prost::Message::encode_to_vec(self).into(),
         }
     }
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ActionRegisterTableRequest {
+    #[prost(string, tag = "1")]
+    pub url: ::prost::alloc::string::String,
+
+    #[prost(string, tag = "2")]
+    pub table_name: ::prost::alloc::string::String,
+}
+
+impl ProstMessageExt for ActionRegisterTableRequest {
+    fn type_url() -> &'static str {
+        "type.googleapis.com/datafusion.example.com.sql.ActionRegisterTableRequest"
+    }
+
+    fn as_any(&self) -> Any {
+        Any {
+            type_url: ActionRegisterTableRequest::type_url().to_string(),
+            value: ::prost::Message::encode_to_vec(self).into(),
+        }
+    }
+}
+
+fn decode_error_to_status(err: prost::DecodeError) -> Status {
+    Status::invalid_argument(format!("{err:?}"))
+}
+
+fn arrow_error_to_status(err: arrow_schema::ArrowError) -> Status {
+    Status::internal(format!("{err:?}"))
+}
+
+fn df_error_to_status(err: datafusion::error::DataFusionError) -> Status {
+    Status::internal(format!("{err:?}"))
 }
