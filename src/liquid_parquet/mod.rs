@@ -3,6 +3,7 @@ use std::{any::Any, collections::HashMap, sync::Arc};
 use arrow_schema::{Schema, SchemaRef};
 use async_trait::async_trait;
 use datafusion::{
+    common::{internal_err, parsers::CompressionTypeVariant, GetExt, Statistics},
     datasource::{
         file_format::{
             file_compression_type::FileCompressionType, parquet::ParquetFormatFactory, FileFormat,
@@ -12,11 +13,9 @@ use datafusion::{
     },
     error::Result,
     execution::SessionState,
+    physical_plan::{ExecutionPlan, PhysicalExpr},
+    prelude::*,
 };
-use datafusion_common::{internal_err, parsers::CompressionTypeVariant, GetExt, Statistics};
-use datafusion_expr::Expr;
-use datafusion_physical_expr::PhysicalExpr;
-use datafusion_physical_plan::ExecutionPlan;
 use object_store::{ObjectMeta, ObjectStore};
 
 #[derive(Debug, Default)]

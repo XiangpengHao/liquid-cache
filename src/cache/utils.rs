@@ -4,7 +4,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use arrow_array::{
+use arrow::array::{
     builder::StringDictionaryBuilder, cast::AsArray, types::UInt16Type, Array, RecordBatch,
     StringArray,
 };

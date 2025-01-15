@@ -11,17 +11,19 @@ use arrow_flight::error::FlightError;
 use arrow_flight::FlightInfo;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
-use datafusion::datasource::empty::EmptyTable;
-use datafusion::datasource::DefaultTableSource;
-use datafusion_catalog::{Session, TableProvider};
-use datafusion_common::error::Result;
-use datafusion_common::stats::Precision;
-use datafusion_common::{DataFusionError, Statistics, ToDFSchema};
-use datafusion_expr::{Expr, LogicalPlan, TableProviderFilterPushDown, TableScan, TableType};
-use datafusion_physical_plan::ExecutionPlan;
-use datafusion_sql::unparser::dialect::PostgreSqlDialect;
-use datafusion_sql::unparser::Unparser;
-use datafusion_sql::TableReference;
+use datafusion::{
+    catalog::{Session, TableProvider},
+    common::{stats::Precision, Statistics, ToDFSchema},
+    datasource::{empty::EmptyTable, DefaultTableSource, TableType},
+    error::{DataFusionError, Result},
+    logical_expr::{LogicalPlan, TableProviderFilterPushDown, TableScan},
+    physical_plan::ExecutionPlan,
+    prelude::*,
+    sql::{
+        unparser::{dialect::PostgreSqlDialect, Unparser},
+        TableReference,
+    },
+};
 use exec::FlightExec;
 use log::info;
 use serde::{Deserialize, Serialize};

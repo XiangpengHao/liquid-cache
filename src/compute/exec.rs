@@ -26,21 +26,25 @@ use std::task::{ready, Context, Poll};
 
 use crate::compute::metrics::{FlightStreamMetrics, FlightTableMetrics};
 use crate::compute::{flight_channel, to_df_err, FlightMetadata, FlightProperties};
-use arrow_array::RecordBatch;
+use arrow::array::RecordBatch;
+use arrow::datatypes::ToByteSlice;
 use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_flight::{FlightClient, FlightEndpoint, Ticket};
 use arrow_schema::SchemaRef;
-use datafusion::config::ConfigOptions;
-use datafusion::datasource::schema_adapter::{DefaultSchemaAdapterFactory, SchemaMapper};
-use datafusion_common::arrow::datatypes::ToByteSlice;
-use datafusion_common::project_schema;
-use datafusion_common::Result;
-use datafusion_execution::{RecordBatchStream, SendableRecordBatchStream, TaskContext};
-use datafusion_physical_expr::{EquivalenceProperties, Partitioning};
-use datafusion_physical_plan::execution_plan::{Boundedness, EmissionType};
-use datafusion_physical_plan::metrics::{ExecutionPlanMetricsSet, MetricsSet};
-use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
-use datafusion_physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
+use datafusion::{
+    common::project_schema,
+    config::ConfigOptions,
+    datasource::schema_adapter::{DefaultSchemaAdapterFactory, SchemaMapper},
+    error::Result,
+    execution::{RecordBatchStream, SendableRecordBatchStream, TaskContext},
+    physical_expr::EquivalenceProperties,
+    physical_plan::{
+        execution_plan::{Boundedness, EmissionType},
+        metrics::{ExecutionPlanMetricsSet, MetricsSet},
+        stream::RecordBatchStreamAdapter,
+        DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
+    },
+};
 use futures::future::BoxFuture;
 use futures::{Stream, TryStreamExt};
 use serde::{Deserialize, Serialize};
@@ -91,7 +95,7 @@ impl FlightExec {
 
         let plan_properties = PlanProperties::new(
             EquivalenceProperties::new(config.schema.clone()),
-            Partitioning::UnknownPartitioning(config.partitions.len()),
+            datafusion::physical_plan::Partitioning::UnknownPartitioning(config.partitions.len()),
             EmissionType::Incremental,
             boundedness,
         );
@@ -287,7 +291,9 @@ impl ExecutionPlan for FlightExec {
     ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
         let mut new_plan = self.clone();
         new_plan.plan_properties.partitioning =
-            Partitioning::UnknownPartitioning(self.config.partitions.len());
+            datafusion::physical_plan::Partitioning::UnknownPartitioning(
+                self.config.partitions.len(),
+            );
         Ok(Some(Arc::new(new_plan)))
     }
 

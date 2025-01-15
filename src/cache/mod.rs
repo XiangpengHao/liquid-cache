@@ -16,23 +16,25 @@
 // under the License.
 
 use arrow::ipc::writer::IpcWriteOptions;
-use arrow_flight::encode::FlightDataEncoderBuilder;
-use arrow_flight::flight_descriptor::DescriptorType;
-use arrow_flight::flight_service_server::FlightService;
-use arrow_flight::sql::server::{FlightSqlService, PeekableFlightDataStream};
-use arrow_flight::sql::{
-    ActionClosePreparedStatementRequest, Any, CommandGetDbSchemas, CommandPreparedStatementUpdate,
-    CommandStatementQuery, ProstMessageExt, SqlInfo,
-};
 use arrow_flight::{
+    encode::FlightDataEncoderBuilder,
+    flight_descriptor::DescriptorType,
+    flight_service_server::FlightService,
+    sql::{
+        server::{FlightSqlService, PeekableFlightDataStream},
+        ActionClosePreparedStatementRequest, Any, CommandGetDbSchemas,
+        CommandPreparedStatementUpdate, CommandStatementQuery, ProstMessageExt, SqlInfo,
+    },
     Action, FlightDescriptor, FlightEndpoint, FlightInfo, HandshakeRequest, HandshakeResponse,
     Ticket,
 };
 use dashmap::DashMap;
-use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
-use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
-use datafusion_common::DataFusionError;
-use datafusion_execution::object_store::ObjectStoreUrl;
+use datafusion::{
+    error::DataFusionError,
+    execution::object_store::ObjectStoreUrl,
+    physical_plan::{ExecutionPlan, ExecutionPlanProperties},
+    prelude::{ParquetReadOptions, SessionConfig, SessionContext},
+};
 use futures::{Stream, TryStreamExt};
 use log::{debug, info};
 use prost::bytes::Bytes;

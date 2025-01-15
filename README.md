@@ -21,9 +21,12 @@ use tonic::transport::Server;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = "0.0.0.0:50051".parse()?;
 
-    let split_sql = FlightServiceServer::new(SplitSqlService::try_new()?);
+    let split_sql = SplitSqlService::try_new()?;
 
-    Server::builder().add_service(split_sql).serve(addr).await?;
+    Server::builder()
+        .add_service(FlightServiceServer::new(split_sql))
+        .serve(addr)
+        .await?;
 
     Ok(())
 }

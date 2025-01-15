@@ -15,8 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use datafusion_common::instant::Instant;
-use datafusion_physical_plan::metrics::{Count, ExecutionPlanMetricsSet, MetricBuilder, Time};
+use datafusion::{
+    common::instant::Instant,
+    physical_plan::metrics::{Count, ExecutionPlanMetricsSet, MetricBuilder, Time},
+};
 
 /// A timer that can be started and stopped.
 pub struct StartableTime {
