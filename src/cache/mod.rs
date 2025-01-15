@@ -28,34 +28,30 @@ use arrow_flight::{
     Action, FlightDescriptor, FlightEndpoint, FlightInfo, HandshakeRequest, HandshakeResponse,
     Ticket,
 };
-use dashmap::DashMap;
 use datafusion::{
     error::DataFusionError,
     execution::object_store::ObjectStoreUrl,
-    physical_plan::{ExecutionPlan, ExecutionPlanProperties},
-    prelude::{ParquetReadOptions, SessionConfig, SessionContext},
+    physical_plan::ExecutionPlanProperties,
+    prelude::{SessionConfig, SessionContext},
 };
 use futures::{Stream, TryStreamExt};
-use log::{debug, info};
+use log::info;
 use prost::bytes::Bytes;
 use prost::Message;
-use std::collections::HashSet;
+use service::SplitSqlServiceInner;
 use std::pin::Pin;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tonic::{Request, Response, Status, Streaming};
-use url::Url;
 use uuid::Uuid;
 
+mod service;
 mod utils;
 use utils::GcStream;
 
 pub(crate) static ACTION_REGISTER_TABLE: &str = "RegisterTable";
 
 pub struct SplitSqlService {
-    execution_plans: Arc<DashMap<String, Arc<dyn ExecutionPlan>>>,
-    registered_tables: Mutex<HashSet<String>>,
-    default_ctx: Arc<SessionContext>,
+    inner: SplitSqlServiceInner,
 }
 
 impl SplitSqlService {
@@ -66,9 +62,7 @@ impl SplitSqlService {
 
     pub fn new_with_context(default_ctx: SessionContext) -> Self {
         Self {
-            execution_plans: Default::default(),
-            registered_tables: Default::default(),
-            default_ctx: Arc::new(default_ctx),
+            inner: SplitSqlServiceInner::new(Arc::new(default_ctx)),
         }
     }
 
@@ -82,46 +76,6 @@ impl SplitSqlService {
         let object_store = object_store::local::LocalFileSystem::new();
         ctx.register_object_store(object_store_url.as_ref(), Arc::new(object_store));
         Ok(ctx)
-    }
-
-    async fn register_table(&self, url: String, table_name: String) -> Result<(), Status> {
-        let url = Url::parse(&url).map_err(|e| Status::invalid_argument(format!("{e:?}")))?;
-
-        let mut registered_tables = self.registered_tables.lock().await;
-        if registered_tables.contains(&table_name) {
-            // already registered
-            info!("table {table_name} already registered");
-            return Ok(());
-        }
-
-        self.default_ctx
-            .register_parquet(&table_name, &url, ParquetReadOptions::default())
-            .await
-            .map_err(df_error_to_status)?;
-        info!("registered table {table_name} from {url}");
-        registered_tables.insert(table_name);
-        Ok(())
-    }
-}
-
-impl SplitSqlService {
-    fn get_ctx<T>(&self, _req: &Request<T>) -> Result<Arc<SessionContext>, Status> {
-        Ok(self.default_ctx.clone())
-    }
-
-    fn get_result(&self, handle: &str) -> Result<Arc<dyn ExecutionPlan>, Status> {
-        if let Some(result) = self.execution_plans.get(handle) {
-            Ok(result.clone())
-        } else {
-            Err(Status::internal(format!(
-                "Request handle not found: {handle}"
-            )))?
-        }
-    }
-
-    fn remove_result(&self, handle: &str) -> Result<(), Status> {
-        self.execution_plans.remove(&handle.to_string());
-        Ok(())
     }
 }
 
@@ -149,12 +103,7 @@ impl FlightSqlService for SplitSqlService {
             .ok_or(Status::invalid_argument(
                 "db_schema_filter_pattern is required",
             ))?;
-        let schema = self
-            .default_ctx
-            .table_provider(&table_name)
-            .await
-            .unwrap()
-            .schema();
+        let schema = self.inner.get_table_schema(&table_name).await?;
 
         let info = FlightInfo::new()
             .try_with_schema(&schema)
@@ -164,7 +113,7 @@ impl FlightSqlService for SplitSqlService {
 
     async fn do_get_fallback(
         &self,
-        request: Request<Ticket>,
+        _request: Request<Ticket>,
         message: Any,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
         if !message.is::<FetchResults>() {
@@ -180,22 +129,8 @@ impl FlightSqlService for SplitSqlService {
             .ok_or_else(|| Status::internal("Expected FetchResults but got None!"))?;
 
         let handle = fetch_results.handle;
-
-        debug!("getting results for {handle}");
-        let execution_plan = self.get_result(&handle)?;
-
-        let displayable = datafusion::physical_plan::display::DisplayableExecutionPlan::new(
-            execution_plan.as_ref(),
-        );
-        debug!("physical plan:\n{}", displayable.indent(false));
-
-        let ctx = self.get_ctx(&request)?;
-
-        let schema = execution_plan.schema();
-        debug!("execution plan schema: {:?}", schema);
-        let stream = execution_plan
-            .execute(fetch_results.partition as usize, ctx.task_ctx())
-            .unwrap();
+        let partition = fetch_results.partition as usize;
+        let stream = self.inner.execute_plan(&handle, partition).await;
         let stream = GcStream::new(stream).map_err(|e| {
             panic!("Error executing plan: {:?}", e);
         });
@@ -212,27 +147,17 @@ impl FlightSqlService for SplitSqlService {
     async fn get_flight_info_statement(
         &self,
         cmd: CommandStatementQuery,
-        request: Request<FlightDescriptor>,
+        _request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
         let user_query = cmd.query.as_str();
-        info!("running query: {user_query}");
-
-        let ctx = self.get_ctx(&request)?;
-
-        let plan = ctx.sql(user_query).await.expect("Error generating plan");
-        let (state, plan) = plan.into_parts();
-        let plan = state.optimize(&plan).expect("Error optimizing plan");
-        let physical_plan = state
-            .create_physical_plan(&plan)
-            .await
-            .expect("Error creating physical plan");
-
+        let handle = Uuid::new_v4().hyphenated().to_string();
+        let physical_plan = self
+            .inner
+            .prepare_and_register_plan(user_query, &handle)
+            .await?;
         let partition_count = physical_plan.output_partitioning().partition_count();
 
         let schema = physical_plan.schema();
-
-        let handle = Uuid::new_v4().hyphenated().to_string();
-        self.execution_plans.insert(handle.clone(), physical_plan);
 
         let flight_desc = FlightDescriptor {
             r#type: DescriptorType::Cmd.into(),
@@ -278,8 +203,7 @@ impl FlightSqlService for SplitSqlService {
     ) -> Result<(), Status> {
         let handle = std::str::from_utf8(&handle.prepared_statement_handle);
         if let Ok(handle) = handle {
-            info!("do_action_close_prepared_statement: removing plan and results for {handle}");
-            let _ = self.remove_result(handle);
+            self.inner.remove_plan(handle);
         }
         Ok(())
     }
@@ -296,7 +220,7 @@ impl FlightSqlService for SplitSqlService {
                 .ok_or_else(|| {
                     Status::invalid_argument("Unable to unpack ActionRegisterTableRequest.")
                 })?;
-            self.register_table(cmd.url, cmd.table_name).await?;
+            self.inner.register_table(&cmd.url, &cmd.table_name).await?;
             let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
                 body: Bytes::default(),
             })]);

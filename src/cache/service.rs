@@ -1,0 +1,101 @@
+use std::{collections::HashSet, pin::Pin, sync::Arc};
+
+use arrow_schema::SchemaRef;
+use dashmap::DashMap;
+use datafusion::{
+    execution::RecordBatchStream,
+    physical_plan::{display::DisplayableExecutionPlan, ExecutionPlan},
+    prelude::{ParquetReadOptions, SessionContext},
+};
+use log::{debug, info};
+use tokio::sync::Mutex;
+use tonic::Status;
+use url::Url;
+
+use crate::cache::df_error_to_status;
+
+pub(crate) struct SplitSqlServiceInner {
+    execution_plans: Arc<DashMap<String, Arc<dyn ExecutionPlan>>>,
+    registered_tables: Mutex<HashSet<String>>,
+    default_ctx: Arc<SessionContext>,
+}
+
+impl SplitSqlServiceInner {
+    pub fn new(default_ctx: Arc<SessionContext>) -> Self {
+        Self {
+            execution_plans: Default::default(),
+            registered_tables: Default::default(),
+            default_ctx,
+        }
+    }
+
+    pub(crate) async fn register_table(&self, url: &str, table_name: &str) -> Result<(), Status> {
+        let url = Url::parse(url).map_err(|e| Status::invalid_argument(format!("{e:?}")))?;
+
+        let mut registered_tables = self.registered_tables.lock().await;
+        if registered_tables.contains(table_name) {
+            // already registered
+            info!("table {table_name} already registered");
+            return Ok(());
+        }
+
+        self.default_ctx
+            .register_parquet(table_name, url.as_str(), ParquetReadOptions::default())
+            .await
+            .map_err(df_error_to_status)?;
+        info!("registered table {table_name} from {url}");
+        registered_tables.insert(table_name.to_string());
+        Ok(())
+    }
+
+    pub(crate) async fn get_table_schema(&self, table_name: &str) -> Result<SchemaRef, Status> {
+        let schema = self
+            .default_ctx
+            .table_provider(table_name)
+            .await
+            .unwrap()
+            .schema();
+        Ok(schema)
+    }
+
+    pub(crate) async fn prepare_and_register_plan(
+        &self,
+        query: &str,
+        handle: &str,
+    ) -> Result<Arc<dyn ExecutionPlan>, Status> {
+        info!("Planning query: {query}");
+        let ctx = self.default_ctx.clone();
+        let plan = ctx.sql(query).await.expect("Error generating plan");
+        let (state, plan) = plan.into_parts();
+        let plan = state.optimize(&plan).expect("Error optimizing plan");
+        let physical_plan = state
+            .create_physical_plan(&plan)
+            .await
+            .expect("Error creating physical plan");
+
+        self.execution_plans
+            .insert(handle.to_string(), physical_plan.clone());
+
+        Ok(physical_plan)
+    }
+
+    pub(crate) async fn execute_plan(
+        &self,
+        handle: &str,
+        partition: usize,
+    ) -> Pin<Box<dyn RecordBatchStream + Send>> {
+        let plan = self.execution_plans.get(handle).unwrap();
+        let displayable = DisplayableExecutionPlan::new(plan.as_ref());
+        debug!("physical plan:\n{}", displayable.indent(false));
+        let schema = plan.schema();
+        debug!("execution plan schema: {:?}", schema);
+
+        let ctx = self.default_ctx.clone();
+
+        plan.execute(partition, ctx.task_ctx()).unwrap()
+    }
+
+    pub(crate) fn remove_plan(&self, handle: &str) {
+        self.execution_plans.remove(&handle.to_string());
+    }
+}
