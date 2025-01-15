@@ -55,7 +55,8 @@ impl SplitSqlServiceInner {
             self.default_ctx.copied_table_options(),
         );
         let format = listing_options.format;
-        let liquid_parquet = LiquidParquetFileFormat::new(format);
+        let table_parquet_options = self.default_ctx.state().table_options().parquet.clone();
+        let liquid_parquet = LiquidParquetFileFormat::new(table_parquet_options, format);
         listing_options.format = Arc::new(liquid_parquet);
 
         self.default_ctx

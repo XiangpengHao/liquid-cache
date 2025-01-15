@@ -4,6 +4,7 @@ use arrow_schema::{DataType, Field, FieldRef, Schema, SchemaRef};
 use async_trait::async_trait;
 use datafusion::{
     common::{internal_err, parsers::CompressionTypeVariant, GetExt, Statistics},
+    config::TableParquetOptions,
     datasource::{
         file_format::{
             file_compression_type::FileCompressionType, parquet::ParquetFormatFactory, FileFormat,
@@ -13,11 +14,14 @@ use datafusion::{
     },
     error::Result,
     execution::SessionState,
-    physical_plan::{ExecutionPlan, PhysicalExpr},
+    physical_optimizer::pruning::PruningPredicate,
+    physical_plan::{metrics::ExecutionPlanMetricsSet, ExecutionPlan, PhysicalExpr},
     prelude::*,
 };
-use log::info;
+use exec::LiquidParquetExec;
+use log::{debug, info};
 use object_store::{ObjectMeta, ObjectStore};
+use page_filter::PagePruningAccessPlanFilter;
 
 mod exec;
 mod opener;
@@ -60,12 +64,16 @@ impl FileFormatFactory for LiquidParquetFactory {
         options: &HashMap<String, String>,
     ) -> Result<Arc<dyn FileFormat>> {
         let inner = self.inner.create(state, options)?;
-        Ok(Arc::new(LiquidParquetFileFormat { inner }))
+        Ok(Arc::new(LiquidParquetFileFormat {
+            options: TableParquetOptions::default(),
+            inner,
+        }))
     }
 
     fn default(&self) -> Arc<dyn FileFormat> {
         Arc::new(LiquidParquetFileFormat {
             inner: self.inner.default(),
+            options: TableParquetOptions::default(),
         })
     }
 
@@ -76,12 +84,13 @@ impl FileFormatFactory for LiquidParquetFactory {
 
 #[derive(Debug)]
 pub struct LiquidParquetFileFormat {
+    options: TableParquetOptions,
     inner: Arc<dyn FileFormat>, // is actually ParquetFormat
 }
 
 impl LiquidParquetFileFormat {
-    pub fn new(inner: Arc<dyn FileFormat>) -> Self {
-        Self { inner }
+    pub fn new(options: TableParquetOptions, inner: Arc<dyn FileFormat>) -> Self {
+        Self { options, inner }
     }
 }
 
@@ -129,12 +138,55 @@ impl FileFormat for LiquidParquetFileFormat {
 
     async fn create_physical_plan(
         &self,
-        state: &SessionState,
+        _state: &SessionState,
         conf: FileScanConfig,
         filters: Option<&Arc<dyn PhysicalExpr>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         info!("create_physical_plan for liquid parquet");
-        self.inner.create_physical_plan(state, conf, filters).await
+
+        let metrics = ExecutionPlanMetricsSet::new();
+
+        let file_schema = &conf.file_schema;
+        let pruning_predicate = filters
+            .and_then(|predicate_expr| {
+                match PruningPredicate::try_new(Arc::clone(predicate_expr), Arc::clone(file_schema))
+                {
+                    Ok(pruning_predicate) => Some(Arc::new(pruning_predicate)),
+                    Err(e) => {
+                        debug!("Could not create pruning predicate for: {e}");
+                        None
+                    }
+                }
+            })
+            .filter(|p| !p.always_true());
+
+        let page_pruning_predicate = filters
+            .as_ref()
+            .map(|predicate_expr| {
+                PagePruningAccessPlanFilter::new(predicate_expr, Arc::clone(file_schema))
+            })
+            .map(Arc::new);
+
+        let (projected_schema, projected_statistics, projected_output_ordering) = conf.project();
+
+        let cache = LiquidParquetExec::compute_properties(
+            projected_schema,
+            &projected_output_ordering,
+            &conf,
+        );
+
+        let exec = LiquidParquetExec {
+            base_config: conf,
+            table_parquet_options: self.options.clone(),
+            predicate: filters.cloned(),
+            metadata_size_hint: None,
+            cache,
+            projected_statistics,
+            metrics,
+            pruning_predicate,
+            page_pruning_predicate,
+        };
+        Ok(Arc::new(exec))
     }
 
     fn supports_filters_pushdown(

@@ -1,5 +1,6 @@
 use std::{any::Any, sync::Arc};
 
+use arrow_schema::SchemaRef;
 use datafusion::{
     common::Statistics,
     config::{ConfigOptions, TableParquetOptions},
@@ -7,16 +8,18 @@ use datafusion::{
         listing::PartitionedFile,
         physical_plan::{
             parquet::DefaultParquetFileReaderFactory, FileGroupPartitioner, FileScanConfig,
-            FileStream, ParquetFileReaderFactory,
+            FileStream,
         },
-        schema_adapter::{DefaultSchemaAdapterFactory, SchemaAdapterFactory},
+        schema_adapter::DefaultSchemaAdapterFactory,
     },
     error::Result,
     execution::{SendableRecordBatchStream, TaskContext},
+    physical_expr::{EquivalenceProperties, LexOrdering},
     physical_optimizer::pruning::PruningPredicate,
     physical_plan::{
+        execution_plan::{Boundedness, EmissionType},
         metrics::{ExecutionPlanMetricsSet, MetricsSet},
-        DisplayAs, DisplayFormatType, ExecutionPlan, PhysicalExpr, PlanProperties,
+        DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PhysicalExpr, PlanProperties,
     },
 };
 use itertools::Itertools;
@@ -27,20 +30,36 @@ use super::page_filter::PagePruningAccessPlanFilter;
 
 #[derive(Debug, Clone)]
 pub(crate) struct LiquidParquetExec {
-    base_config: FileScanConfig,
-    projected_statistics: Statistics,
-    metrics: ExecutionPlanMetricsSet,
-    predicate: Option<Arc<dyn PhysicalExpr>>,
-    pruning_predicate: Option<Arc<PruningPredicate>>,
-    page_pruning_predicate: Option<Arc<PagePruningAccessPlanFilter>>,
-    metadata_size_hint: Option<usize>,
-    parquet_file_reader_factory: Option<Arc<dyn ParquetFileReaderFactory>>,
-    cache: PlanProperties,
-    table_parquet_options: TableParquetOptions,
-    schema_adapter_factory: Option<Arc<dyn SchemaAdapterFactory>>,
+    pub base_config: FileScanConfig,
+    pub projected_statistics: Statistics,
+    pub metrics: ExecutionPlanMetricsSet,
+    pub predicate: Option<Arc<dyn PhysicalExpr>>,
+    pub pruning_predicate: Option<Arc<PruningPredicate>>,
+    pub page_pruning_predicate: Option<Arc<PagePruningAccessPlanFilter>>,
+    pub metadata_size_hint: Option<usize>,
+    pub cache: PlanProperties,
+    pub table_parquet_options: TableParquetOptions,
 }
 
 impl LiquidParquetExec {
+    /// This function creates the cache object that stores the plan properties such as schema, equivalence properties, ordering, partitioning, etc.
+    pub(crate) fn compute_properties(
+        schema: SchemaRef,
+        orderings: &[LexOrdering],
+        file_config: &FileScanConfig,
+    ) -> PlanProperties {
+        PlanProperties::new(
+            EquivalenceProperties::new_with_orderings(schema, orderings),
+            Self::output_partitioning_helper(file_config), // Output Partitioning
+            EmissionType::Incremental,
+            Boundedness::Bounded,
+        )
+    }
+
+    fn output_partitioning_helper(file_config: &FileScanConfig) -> Partitioning {
+        Partitioning::UnknownPartitioning(file_config.file_groups.len())
+    }
+
     fn pushdown_filters(&self) -> bool {
         self.table_parquet_options.global.pushdown_filters
     }
@@ -109,10 +128,8 @@ impl ExecutionPlan for LiquidParquetExec {
             pruning_predicate: self.pruning_predicate.clone(),
             page_pruning_predicate: self.page_pruning_predicate.clone(),
             metadata_size_hint: self.metadata_size_hint,
-            parquet_file_reader_factory: self.parquet_file_reader_factory.clone(),
             cache: self.cache.clone(),
             table_parquet_options: self.table_parquet_options.clone(),
-            schema_adapter_factory: self.schema_adapter_factory.clone(),
         }))
     }
 
