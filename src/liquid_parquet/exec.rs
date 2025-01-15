@@ -60,20 +60,8 @@ impl LiquidParquetExec {
         Partitioning::UnknownPartitioning(file_config.file_groups.len())
     }
 
-    fn pushdown_filters(&self) -> bool {
-        self.table_parquet_options.global.pushdown_filters
-    }
-
     fn reorder_filters(&self) -> bool {
         self.table_parquet_options.global.reorder_filters
-    }
-
-    fn enable_page_index(&self) -> bool {
-        self.table_parquet_options.global.enable_page_index
-    }
-
-    fn bloom_filter_on_read(&self) -> bool {
-        self.table_parquet_options.global.bloom_filter_on_read
     }
 
     fn with_file_groups_and_update_partitioning(
@@ -184,13 +172,9 @@ impl ExecutionPlan for LiquidParquetExec {
             pruning_predicate: self.pruning_predicate.clone(),
             page_pruning_predicate: self.page_pruning_predicate.clone(),
             table_schema: Arc::clone(&self.base_config.file_schema),
-            metadata_size_hint: self.metadata_size_hint,
             metrics: self.metrics.clone(),
             parquet_file_reader_factory: reader_factory,
-            pushdown_filters: self.pushdown_filters(),
             reorder_filters: self.reorder_filters(),
-            enable_page_index: self.enable_page_index(),
-            enable_bloom_filter: self.bloom_filter_on_read(),
             schema_adapter_factory: schema_adapter,
         };
 
@@ -204,14 +188,7 @@ impl ExecutionPlan for LiquidParquetExec {
     }
 
     fn statistics(&self) -> Result<Statistics> {
-        let stats = if self.pruning_predicate.is_some()
-            || (self.predicate.is_some() && self.pushdown_filters())
-        {
-            self.projected_statistics.clone().to_inexact()
-        } else {
-            self.projected_statistics.clone()
-        };
-        Ok(stats)
+        Ok(self.projected_statistics.clone().to_inexact())
     }
 }
 

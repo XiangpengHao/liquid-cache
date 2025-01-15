@@ -38,13 +38,9 @@ pub struct LiquidParquetOpener {
     pub pruning_predicate: Option<Arc<PruningPredicate>>,
     pub page_pruning_predicate: Option<Arc<PagePruningAccessPlanFilter>>,
     pub table_schema: SchemaRef,
-    pub metadata_size_hint: Option<usize>,
     pub metrics: ExecutionPlanMetricsSet,
     pub parquet_file_reader_factory: Arc<dyn ParquetFileReaderFactory>,
-    pub pushdown_filters: bool,
     pub reorder_filters: bool,
-    pub enable_page_index: bool,
-    pub enable_bloom_filter: bool,
     pub schema_adapter_factory: Arc<dyn SchemaAdapterFactory>,
 }
 
@@ -55,7 +51,7 @@ impl FileOpener for LiquidParquetOpener {
         let file_name = file_meta.location().to_string();
         let file_metrics = ParquetFileMetrics::new(self.partition_index, &file_name, &self.metrics);
 
-        let metadata_size_hint = file_meta.metadata_size_hint.or(self.metadata_size_hint);
+        let metadata_size_hint = file_meta.metadata_size_hint;
 
         let mut reader: Box<dyn AsyncFileReader> = self.parquet_file_reader_factory.create_reader(
             self.partition_index,
@@ -75,10 +71,7 @@ impl FileOpener for LiquidParquetOpener {
         let page_pruning_predicate = self.page_pruning_predicate.clone();
         let table_schema = Arc::clone(&self.table_schema);
         let reorder_predicates = self.reorder_filters;
-        let pushdown_filters = self.pushdown_filters;
-        let enable_page_index =
-            should_enable_page_index(self.enable_page_index, &self.page_pruning_predicate);
-        let enable_bloom_filter = self.enable_bloom_filter;
+        let enable_page_index = should_enable_page_index(&self.page_pruning_predicate);
         let limit = self.limit;
 
         Ok(Box::pin(async move {
@@ -116,7 +109,7 @@ impl FileOpener for LiquidParquetOpener {
             );
 
             // Filter pushdown: evaluate predicates during scan
-            if let Some(predicate) = pushdown_filters.then_some(predicate).flatten() {
+            if let Some(predicate) = predicate {
                 let row_filter = row_filter::build_row_filter(
                     &predicate,
                     &file_schema,
@@ -163,7 +156,7 @@ impl FileOpener for LiquidParquetOpener {
                     &file_metrics,
                 );
 
-                if enable_bloom_filter && !row_groups.is_empty() {
+                if !row_groups.is_empty() {
                     row_groups
                         .prune_by_bloom_filters(
                             &file_schema,
@@ -219,11 +212,9 @@ impl FileOpener for LiquidParquetOpener {
 }
 
 fn should_enable_page_index(
-    enable_page_index: bool,
     page_pruning_predicate: &Option<Arc<PagePruningAccessPlanFilter>>,
 ) -> bool {
-    enable_page_index
-        && page_pruning_predicate.is_some()
+    page_pruning_predicate.is_some()
         && page_pruning_predicate
             .as_ref()
             .map(|p| p.filter_number() > 0)
