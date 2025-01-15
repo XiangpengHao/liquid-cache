@@ -30,7 +30,7 @@ use arrow_flight::{
 };
 use datafusion::{
     error::DataFusionError,
-    execution::object_store::ObjectStoreUrl,
+    execution::{object_store::ObjectStoreUrl, SessionStateBuilder},
     physical_plan::ExecutionPlanProperties,
     prelude::{SessionConfig, SessionContext},
 };
@@ -47,6 +47,8 @@ use uuid::Uuid;
 mod service;
 mod utils;
 use utils::GcStream;
+
+use crate::liquid_parquet::LiquidParquetFactory;
 
 pub(crate) static ACTION_REGISTER_TABLE: &str = "RegisterTable";
 
@@ -66,15 +68,24 @@ impl SplitSqlService {
         }
     }
 
+    /// Create a new SessionContext with good defaults
     pub fn context() -> Result<SessionContext, DataFusionError> {
         let mut session_config = SessionConfig::from_env()?;
         let options_mut = session_config.options_mut();
         options_mut.execution.parquet.pushdown_filters = true;
         options_mut.execution.parquet.binary_as_string = true;
-        let ctx = SessionContext::new_with_config(session_config);
+
         let object_store_url = ObjectStoreUrl::parse("file://").unwrap();
         let object_store = object_store::local::LocalFileSystem::new();
-        ctx.register_object_store(object_store_url.as_ref(), Arc::new(object_store));
+
+        let mut state = SessionStateBuilder::new()
+            .with_config(session_config)
+            .with_default_features()
+            .with_object_store(object_store_url.as_ref(), Arc::new(object_store))
+            .build();
+        state.register_file_format(Arc::new(LiquidParquetFactory::new()), true)?;
+
+        let ctx = SessionContext::new_with_state(state);
         Ok(ctx)
     }
 }
@@ -220,7 +231,10 @@ impl FlightSqlService for SplitSqlService {
                 .ok_or_else(|| {
                     Status::invalid_argument("Unable to unpack ActionRegisterTableRequest.")
                 })?;
-            self.inner.register_table(&cmd.url, &cmd.table_name).await?;
+            self.inner
+                .register_table(&cmd.url, &cmd.table_name)
+                .await
+                .map_err(df_error_to_status)?;
             let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
                 body: Bytes::default(),
             })]);

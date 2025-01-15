@@ -22,10 +22,7 @@ use tonic::transport::Server;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    env_logger::builder()
-        .format_timestamp(None)
-        .filter_level(log::LevelFilter::Info)
-        .init();
+    env_logger::builder().format_timestamp(None).init();
 
     let addr = "0.0.0.0:50051".parse()?;
 

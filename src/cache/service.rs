@@ -3,7 +3,8 @@ use std::{collections::HashSet, pin::Pin, sync::Arc};
 use arrow_schema::SchemaRef;
 use dashmap::DashMap;
 use datafusion::{
-    execution::RecordBatchStream,
+    error::{DataFusionError, Result},
+    execution::{options::ReadOptions, RecordBatchStream},
     physical_plan::{display::DisplayableExecutionPlan, ExecutionPlan},
     prelude::{ParquetReadOptions, SessionContext},
 };
@@ -12,7 +13,7 @@ use tokio::sync::Mutex;
 use tonic::Status;
 use url::Url;
 
-use crate::cache::df_error_to_status;
+use crate::liquid_parquet::LiquidParquetFileFormat;
 
 pub(crate) struct SplitSqlServiceInner {
     execution_plans: Arc<DashMap<String, Arc<dyn ExecutionPlan>>>,
@@ -29,22 +30,44 @@ impl SplitSqlServiceInner {
         }
     }
 
-    pub(crate) async fn register_table(&self, url: &str, table_name: &str) -> Result<(), Status> {
-        let url = Url::parse(url).map_err(|e| Status::invalid_argument(format!("{e:?}")))?;
+    pub(crate) async fn register_table(&self, url: &str, table_name: &str) -> Result<()> {
+        let url = Url::parse(url).map_err(|e| DataFusionError::Configuration(format!("{e:?}")))?;
 
         let mut registered_tables = self.registered_tables.lock().await;
         if registered_tables.contains(table_name) {
-            // already registered
             info!("table {table_name} already registered");
             return Ok(());
         }
 
-        self.default_ctx
-            .register_parquet(table_name, url.as_str(), ParquetReadOptions::default())
-            .await
-            .map_err(df_error_to_status)?;
+        // here we can't use register_parquet because it will use the default parquet format.
+        // we want to override with liquid parquet format.
+        self.register_liquid_parquet(table_name, url.as_str())
+            .await?;
         info!("registered table {table_name} from {url}");
         registered_tables.insert(table_name.to_string());
+        Ok(())
+    }
+
+    async fn register_liquid_parquet(&self, table_name: &str, url: &str) -> Result<()> {
+        let parquet_options = ParquetReadOptions::default();
+        let mut listing_options = parquet_options.to_listing_options(
+            &self.default_ctx.copied_config(),
+            self.default_ctx.copied_table_options(),
+        );
+        let format = listing_options.format;
+        let liquid_parquet = LiquidParquetFileFormat::new(format);
+        listing_options.format = Arc::new(liquid_parquet);
+
+        self.default_ctx
+            .register_listing_table(
+                table_name,
+                url,
+                listing_options,
+                parquet_options.schema.map(|s| Arc::new(s.to_owned())),
+                None,
+            )
+            .await?;
+
         Ok(())
     }
 

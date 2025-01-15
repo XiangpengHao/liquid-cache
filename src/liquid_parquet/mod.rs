@@ -16,9 +16,10 @@ use datafusion::{
     physical_plan::{ExecutionPlan, PhysicalExpr},
     prelude::*,
 };
+use log::info;
 use object_store::{ObjectMeta, ObjectStore};
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct LiquidParquetFactory {
     inner: ParquetFormatFactory,
 }
@@ -33,7 +34,7 @@ impl LiquidParquetFactory {
 
 impl GetExt for LiquidParquetFactory {
     fn get_ext(&self) -> String {
-        ".lpq".to_string()
+        "parquet".to_string()
     }
 }
 
@@ -61,6 +62,12 @@ impl FileFormatFactory for LiquidParquetFactory {
 #[derive(Debug)]
 pub struct LiquidParquetFileFormat {
     inner: Arc<dyn FileFormat>, // is actually ParquetFormat
+}
+
+impl LiquidParquetFileFormat {
+    pub fn new(inner: Arc<dyn FileFormat>) -> Self {
+        Self { inner }
+    }
 }
 
 #[async_trait]
@@ -111,6 +118,7 @@ impl FileFormat for LiquidParquetFileFormat {
         conf: FileScanConfig,
         filters: Option<&Arc<dyn PhysicalExpr>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
+        info!("create_physical_plan for liquid parquet");
         self.inner.create_physical_plan(state, conf, filters).await
     }
 
