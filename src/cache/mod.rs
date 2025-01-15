@@ -48,8 +48,6 @@ mod service;
 mod utils;
 use utils::GcStream;
 
-use crate::liquid_parquet::LiquidParquetFactory;
-
 pub(crate) static ACTION_REGISTER_TABLE: &str = "RegisterTable";
 
 pub struct SplitSqlService {
@@ -78,12 +76,11 @@ impl SplitSqlService {
         let object_store_url = ObjectStoreUrl::parse("file://").unwrap();
         let object_store = object_store::local::LocalFileSystem::new();
 
-        let mut state = SessionStateBuilder::new()
+        let state = SessionStateBuilder::new()
             .with_config(session_config)
             .with_default_features()
             .with_object_store(object_store_url.as_ref(), Arc::new(object_store))
             .build();
-        state.register_file_format(Arc::new(LiquidParquetFactory::new()), true)?;
 
         let ctx = SessionContext::new_with_state(state);
         Ok(ctx)

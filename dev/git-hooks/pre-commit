@@ -18,7 +18,7 @@ fi
 
 # Check documentation
 echo "Checking documentation..."
-if ! cargo doc --no-deps --document-private-items --all-features; then
+if ! RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items --all-features; then
     echo "❌ Documentation check failed. Please fix documentation issues."
     exit 1
 fi

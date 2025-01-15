@@ -7,8 +7,7 @@ use datafusion::{
     config::TableParquetOptions,
     datasource::{
         file_format::{
-            file_compression_type::FileCompressionType, parquet::ParquetFormatFactory, FileFormat,
-            FileFormatFactory, FilePushdownSupport,
+            file_compression_type::FileCompressionType, FileFormat, FilePushdownSupport,
         },
         physical_plan::FileScanConfig,
     },
@@ -39,46 +38,17 @@ mod row_filter;
 mod row_group_filter;
 
 #[derive(Debug)]
-pub struct LiquidParquetFactory {
-    inner: ParquetFormatFactory,
-}
+pub struct LiquidParquetFactory {}
 
 impl LiquidParquetFactory {
     pub fn new() -> Self {
-        Self {
-            inner: ParquetFormatFactory::new(),
-        }
+        Self {}
     }
 }
 
 impl GetExt for LiquidParquetFactory {
     fn get_ext(&self) -> String {
         "parquet".to_string()
-    }
-}
-
-impl FileFormatFactory for LiquidParquetFactory {
-    fn create(
-        &self,
-        state: &SessionState,
-        options: &HashMap<String, String>,
-    ) -> Result<Arc<dyn FileFormat>> {
-        let inner = self.inner.create(state, options)?;
-        Ok(Arc::new(LiquidParquetFileFormat {
-            options: TableParquetOptions::default(),
-            inner,
-        }))
-    }
-
-    fn default(&self) -> Arc<dyn FileFormat> {
-        Arc::new(LiquidParquetFileFormat {
-            inner: self.inner.default(),
-            options: TableParquetOptions::default(),
-        })
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 }
 
@@ -200,9 +170,6 @@ impl FileFormat for LiquidParquetFileFormat {
     }
 }
 
-/// If the table schema uses a string type, coerce the file schema to use a string type.
-///
-/// See [parquet::ParquetFormat::binary_as_string] for details
 pub(crate) fn coerce_file_schema_to_string_type(
     table_schema: &Schema,
     file_schema: &Schema,

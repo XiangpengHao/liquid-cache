@@ -1,6 +1,8 @@
-# DataFusion Cache
+# DataFusion Cache (aka. SplitSQL)
 
-Most advanced caching system tailored for DataFusion. Stay tuned for more details!
+You want a cache for object store, so we build this.
+
+Most advanced caching system tailored for DataFusion.
 
 ## Try in 5 minutes!
 Checkout the `examples` folder for more details.

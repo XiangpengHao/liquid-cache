@@ -8,7 +8,8 @@ arrow = "53.3.0"
 arrow-flight = { version = "53.3.0", features = ["flight-sql-experimental"] }
 arrow-schema = { version = "53.3.0", features = ["serde"] }
 parquet = "53.3.0"
-datafusion = { git = "https://github.com/apache/datafusion.git", branch = "main" }
+# Point to official repo until: https://github.com/apache/datafusion/pull/14139
+datafusion = { git = "https://github.com/XiangpengHao/datafusion.git", branch = "config-fix" }
 async-trait = "0.1.83"
 futures = "0.3.31"
 log = "0.4.22"

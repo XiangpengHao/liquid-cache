@@ -1,10 +1,10 @@
-use std::{collections::HashSet, pin::Pin, sync::Arc};
+use std::{collections::HashSet, sync::Arc};
 
 use arrow_schema::SchemaRef;
 use dashmap::DashMap;
 use datafusion::{
     error::{DataFusionError, Result},
-    execution::{options::ReadOptions, RecordBatchStream},
+    execution::{options::ReadOptions, SendableRecordBatchStream},
     physical_plan::{display::DisplayableExecutionPlan, ExecutionPlan},
     prelude::{ParquetReadOptions, SessionContext},
 };
@@ -107,7 +107,7 @@ impl SplitSqlServiceInner {
         &self,
         handle: &str,
         partition: usize,
-    ) -> Pin<Box<dyn RecordBatchStream + Send>> {
+    ) -> SendableRecordBatchStream {
         let plan = self.execution_plans.get(handle).unwrap();
         let displayable = DisplayableExecutionPlan::new(plan.as_ref());
         debug!("physical plan:\n{}", displayable.indent(false));
