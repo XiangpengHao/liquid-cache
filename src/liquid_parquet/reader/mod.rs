@@ -17,6 +17,8 @@ use datafusion::{
     physical_plan::{metrics::ExecutionPlanMetricsSet, ExecutionPlan, PhysicalExpr},
     prelude::*,
 };
+mod boolean_selection;
+pub(crate) use boolean_selection::BooleanSelection;
 mod exec;
 use exec::LiquidParquetExec;
 use log::{debug, info};
