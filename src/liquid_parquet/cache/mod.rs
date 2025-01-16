@@ -17,7 +17,7 @@ use std::sync::{Arc, LazyLock, RwLockReadGuard};
 use utils::RangedFile;
 
 use super::liquid_array::{
-    AsLiquidArray, EtcStringMetadata, LiquidArrayRef, LiquidPrimitiveArray, LiquidStringArray,
+    AsLiquidArray, LiquidArrayRef, LiquidPrimitiveArray, LiquidStringArray, LiquidStringMetadata,
 };
 use super::reader::BooleanSelection;
 mod iter;
@@ -51,7 +51,7 @@ enum CacheMode {
 struct EtcCompressorStates {
     #[allow(dead_code)]
     metadata:
-        OrderedRwLock<LockEtcCompressorMetadata, AHashMap<ArrayIdentifier, EtcStringMetadata>>,
+        OrderedRwLock<LockEtcCompressorMetadata, AHashMap<ArrayIdentifier, LiquidStringMetadata>>,
     fsst_compressor:
         OrderedRwLock<LockEtcFsstCompressor, AHashMap<(usize, usize), Arc<fsst::Compressor>>>, // (row_group_id, column_id) -> compressor
 }

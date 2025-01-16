@@ -53,16 +53,16 @@ impl LiquidArray for LiquidStringArray {
 }
 
 /// Metadata for the EtcStringArray.
-pub struct EtcStringMetadata {
+pub struct LiquidStringMetadata {
     compressor: Arc<Compressor>,
     uncompressed_len: u32,
     keys_original_len: u32,
     keys_bit_width: NonZero<u8>,
 }
 
-impl std::fmt::Debug for EtcStringMetadata {
+impl std::fmt::Debug for LiquidStringMetadata {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "EtcStringMetadata")
+        write!(f, "LiquidStringMetadata")
     }
 }
 
@@ -74,7 +74,7 @@ pub struct LiquidStringArray {
 }
 
 impl LiquidStringArray {
-    /// Create an EtcStringArray from a StringArray.
+    /// Create an LiquidStringArray from a StringArray.
     pub fn from_string_array(array: &StringArray, compressor: Option<Arc<Compressor>>) -> Self {
         let dict = string_to_dict_string(array);
         let (keys, values) = dict.into_parts();
@@ -102,7 +102,7 @@ impl LiquidStringArray {
         }
     }
 
-    /// Directly create an EtcStringArray from a DictionaryArray.
+    /// Directly create an LiquidStringArray from a DictionaryArray.
     pub fn from_dict_array(array: &DictionaryArray<UInt16Type>) -> Self {
         let dict = array.downcast_dict::<StringArray>().unwrap();
         let mut deduplicated = StringDictionaryBuilder::<UInt16Type>::new();
@@ -129,19 +129,19 @@ impl LiquidStringArray {
         }
     }
 
-    /// Get the compressor of the EtcStringArray.
+    /// Get the compressor of the LiquidStringArray.
     pub fn compressor(&self) -> Arc<Compressor> {
         self.values.compressor.clone()
     }
 
-    /// Convert the EtcStringArray to a DictionaryArray.
+    /// Convert the LiquidStringArray to a DictionaryArray.
     pub fn to_dict_string(&self) -> DictionaryArray<UInt16Type> {
         let primitive_key = self.keys.to_primitive().clone();
         let values: StringArray = StringArray::from(&self.values);
         unsafe { DictionaryArray::<UInt16Type>::new_unchecked(primitive_key, Arc::new(values)) }
     }
 
-    /// Convert the EtcStringArray to a DictionaryArray with a selection.
+    /// Convert the LiquidStringArray to a DictionaryArray with a selection.
     pub fn to_dict_string_with_selection(
         &self,
         selection: &BooleanArray,
@@ -155,7 +155,7 @@ impl LiquidStringArray {
         unsafe { DictionaryArray::<UInt16Type>::new_unchecked(filtered_keys, Arc::new(values)) }
     }
 
-    /// Convert the EtcStringArray to a StringArray.
+    /// Convert the LiquidStringArray to a StringArray.
     pub fn to_string_array(&self) -> StringArray {
         let dict = self.to_dict_string();
         let value = cast(&dict, &DataType::Utf8).unwrap();
@@ -163,7 +163,7 @@ impl LiquidStringArray {
     }
 
     /// Repackage the data into Arrow-compatible format, so that it can be written to disk, transferred over flight.
-    pub fn to_record_batch(&self) -> (RecordBatch, EtcStringMetadata) {
+    pub fn to_record_batch(&self) -> (RecordBatch, LiquidStringMetadata) {
         let schema = Schema::new(vec![
             Field::new("keys", DataType::UInt32, false),
             Field::new("values", DataType::Binary, false),
@@ -179,8 +179,8 @@ impl LiquidStringArray {
         (batch, self.metadata())
     }
 
-    /// Reconstruct the EtcStringArray from a RecordBatch.
-    pub fn from_record_batch(batch: RecordBatch, metadata: &EtcStringMetadata) -> Self {
+    /// Reconstruct the LiquidStringArray from a RecordBatch.
+    pub fn from_record_batch(batch: RecordBatch, metadata: &LiquidStringMetadata) -> Self {
         let key_column = batch.column(0).as_primitive::<UInt16Type>();
         let values_column = batch.column(1).as_binary();
 
@@ -197,9 +197,9 @@ impl LiquidStringArray {
         LiquidStringArray { keys, values }
     }
 
-    /// Get the metadata of the EtcStringArray.
-    pub fn metadata(&self) -> EtcStringMetadata {
-        EtcStringMetadata {
+    /// Get the metadata of the LiquidStringArray.
+    pub fn metadata(&self) -> LiquidStringMetadata {
+        LiquidStringMetadata {
             compressor: self.values.compressor.clone(),
             uncompressed_len: self.values.uncompressed_len as u32,
             keys_original_len: self.keys.values.len() as u32,
@@ -207,7 +207,7 @@ impl LiquidStringArray {
         }
     }
 
-    /// Compare the values of the EtcStringArray with a given string and return a BooleanArray of the result.
+    /// Compare the values of the LiquidStringArray with a given string and return a BooleanArray of the result.
     pub fn compare_not_equals(&self, needle: &str) -> BooleanArray {
         let result = self.compare_equals(needle);
         let (values, nulls) = result.into_parts();
@@ -215,7 +215,7 @@ impl LiquidStringArray {
         BooleanArray::new(values, nulls)
     }
 
-    /// Compare the values of the EtcStringArray with a given string.
+    /// Compare the values of the LiquidStringArray with a given string.
     pub fn compare_equals(&self, needle: &str) -> BooleanArray {
         let compressor = &self.values.compressor;
         let compressed = compressor.compress(needle.as_bytes());

@@ -12,7 +12,7 @@ pub use primitive_array::{
 };
 use raw::bit_pack_array::BitPackedArray;
 use raw::fsst_array::FsstArray;
-pub use string_array::{EtcStringMetadata, LiquidStringArray};
+pub use string_array::{LiquidStringArray, LiquidStringMetadata};
 
 /// A trait to access the underlying Liquid array.
 pub trait AsLiquidArray {

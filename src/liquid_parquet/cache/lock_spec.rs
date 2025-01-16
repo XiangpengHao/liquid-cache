@@ -7,7 +7,7 @@
 /// Note: this is a rather experimental thing that I'm quite excited about.
 /// Think of this as specification in verification context.
 ///
-/// Also read: https://lwn.net/Articles/995814/
+/// Also read: <https://lwn.net/Articles/995814/>
 /// # Safety
 /// Not safe.
 pub(crate) unsafe trait LockBefore<Other> {}
