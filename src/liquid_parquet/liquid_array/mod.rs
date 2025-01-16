@@ -1,73 +1,51 @@
-mod bit_pack_array;
-mod fsst_array;
 mod primitive_array;
+mod raw;
 mod string_array;
 
 use std::{any::Any, num::NonZero, sync::Arc};
 
-use arrow::array::{ArrayRef, ArrowPrimitiveType, BooleanArray};
-
-use bit_pack_array::BitPackedArray;
-use fastlanes::BitPacking;
-use fsst_array::FsstArray;
-
-use num_traits::AsPrimitive;
-use primitive_array::EtcPrimitiveType;
+use arrow::array::{ArrayRef, BooleanArray};
 pub use primitive_array::{
-    EtcI16Array, EtcI32Array, EtcI64Array, EtcI8Array, EtcPrimitiveArray, EtcPrimitiveMetadata,
-    EtcU16Array, EtcU32Array, EtcU64Array, EtcU8Array,
+    LiquidI16Array, LiquidI32Array, LiquidI64Array, LiquidI8Array, LiquidPrimitiveArray,
+    LiquidPrimitiveMetadata, LiquidPrimitiveType, LiquidU16Array, LiquidU32Array, LiquidU64Array,
+    LiquidU8Array,
 };
-pub use string_array::{EtcStringArray, EtcStringMetadata};
+use raw::bit_pack_array::BitPackedArray;
+use raw::fsst_array::FsstArray;
+pub use string_array::{EtcStringMetadata, LiquidStringArray};
 
-/// A trait to access the underlying ETC array.
-pub trait AsEtcArray {
+/// A trait to access the underlying Liquid array.
+pub trait AsLiquidArray {
     /// Get the underlying string array.
-    fn as_string_array_opt(&self) -> Option<&EtcStringArray>;
+    fn as_string_array_opt(&self) -> Option<&LiquidStringArray>;
 
     /// Get the underlying string array.
-    fn as_string(&self) -> &EtcStringArray {
-        self.as_string_array_opt().expect("etc string array")
+    fn as_string(&self) -> &LiquidStringArray {
+        self.as_string_array_opt().expect("liquid string array")
     }
 
     /// Get the underlying primitive array.
-    fn as_primitive_array_opt<T: EtcPrimitiveType>(&self) -> Option<&EtcPrimitiveArray<T>>
-    where
-        <<T as EtcPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native: BitPacking,
-        T::Native: AsPrimitive<i64>
-            + AsPrimitive<<<T as EtcPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native>,
-        i64: AsPrimitive<T::Native>;
+    fn as_primitive_array_opt<T: LiquidPrimitiveType>(&self) -> Option<&LiquidPrimitiveArray<T>>;
 
     /// Get the underlying primitive array.
-    fn as_primitive<T: EtcPrimitiveType>(&self) -> &EtcPrimitiveArray<T>
-    where
-        <<T as EtcPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native: BitPacking,
-        T::Native: AsPrimitive<i64>
-            + AsPrimitive<<<T as EtcPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native>,
-        i64: AsPrimitive<T::Native>,
-    {
-        self.as_primitive_array_opt().expect("etc primitive array")
+    fn as_primitive<T: LiquidPrimitiveType>(&self) -> &LiquidPrimitiveArray<T> {
+        self.as_primitive_array_opt()
+            .expect("liquid primitive array")
     }
 }
 
-impl AsEtcArray for dyn EtcArray + '_ {
-    fn as_string_array_opt(&self) -> Option<&EtcStringArray> {
+impl AsLiquidArray for dyn LiquidArray + '_ {
+    fn as_string_array_opt(&self) -> Option<&LiquidStringArray> {
         self.as_any().downcast_ref()
     }
 
-    fn as_primitive_array_opt<T: ArrowPrimitiveType + EtcPrimitiveType>(
-        &self,
-    ) -> Option<&EtcPrimitiveArray<T>>
-    where
-        <<T as EtcPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native: BitPacking,
-        T::Native: AsPrimitive<i64>,
-        i64: AsPrimitive<T::Native>,
-    {
+    fn as_primitive_array_opt<T: LiquidPrimitiveType>(&self) -> Option<&LiquidPrimitiveArray<T>> {
         self.as_any().downcast_ref()
     }
 }
 
-/// An ETC array.
-pub trait EtcArray: std::fmt::Debug + Send + Sync {
+/// A Liquid array.
+pub trait LiquidArray: std::fmt::Debug + Send + Sync {
     /// Get the underlying any type.
     fn as_any(&self) -> &dyn Any;
 
@@ -91,11 +69,11 @@ pub trait EtcArray: std::fmt::Debug + Send + Sync {
     }
 
     /// Filter the ETC array with a boolean array.
-    fn filter(&self, selection: &BooleanArray) -> EtcArrayRef;
+    fn filter(&self, selection: &BooleanArray) -> LiquidArrayRef;
 }
 
-/// A reference to an ETC array.
-pub type EtcArrayRef = Arc<dyn EtcArray>;
+/// A reference to a Liquid array.
+pub type LiquidArrayRef = Arc<dyn LiquidArray>;
 
 pub(crate) fn get_bit_width(max_value: u64) -> NonZero<u8> {
     if max_value <= 1 {

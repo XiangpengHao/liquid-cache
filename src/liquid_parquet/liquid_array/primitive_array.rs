@@ -18,33 +18,31 @@ use arrow::{
 };
 use arrow_schema::{Field, Schema};
 use fastlanes::BitPacking;
-use num_traits::AsPrimitive;
+use num_traits::{AsPrimitive, FromPrimitive};
 
 use super::BitPackedArray;
-use crate::liquid_parquet::liquid_array::{get_bit_width, EtcArray, EtcArrayRef};
+use crate::liquid_parquet::liquid_array::{get_bit_width, LiquidArray, LiquidArrayRef};
 
 mod private {
     pub trait Sealed {}
 }
 
-/// EtcPrimitiveType is a sealed trait that represents the primitive types supported by ETC.
+/// LiquidPrimitiveType is a sealed trait that represents the primitive types supported by Liquid.
 /// Implementors are: Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt16Type, UInt32Type, UInt64Type
 ///
 /// I have to admit this trait is super complicated.
 /// Luckily users never have to worry about it, they can just use the types that are already implemented.
 /// We could have implemented this as a macro, but macro is ugly.
 /// Type is spec, code is proof.
-pub trait EtcPrimitiveType:
+pub trait LiquidPrimitiveType:
     ArrowPrimitiveType<
         Native: AsPrimitive<<Self::UnSignedType as ArrowPrimitiveType>::Native>
                     + AsPrimitive<i64>
-                    + AsPrimitive<<Self::UnSignedType as ArrowPrimitiveType>::Native>,
+                    + FromPrimitive,
     > + Debug
     + private::Sealed
-where
-    i64: AsPrimitive<Self::Native>,
 {
-    type UnSignedType: ArrowPrimitiveType<Native: AsPrimitive<Self::Native> + AsPrimitive<u64>>
+    type UnSignedType: ArrowPrimitiveType<Native: AsPrimitive<Self::Native> + AsPrimitive<u64> + BitPacking>
         + Debug;
 }
 
@@ -52,7 +50,7 @@ macro_rules! impl_has_unsigned_type {
     ($($signed:ty => $unsigned:ty),*) => {
         $(
             impl private::Sealed for $signed {}
-            impl EtcPrimitiveType for $signed {
+            impl LiquidPrimitiveType for $signed {
                 type UnSignedType = $unsigned;
             }
         )*
@@ -70,18 +68,18 @@ impl_has_unsigned_type! {
     UInt8Type => UInt8Type
 }
 
-pub type EtcU8Array = EtcPrimitiveArray<UInt8Type>;
-pub type EtcU16Array = EtcPrimitiveArray<UInt16Type>;
-pub type EtcU32Array = EtcPrimitiveArray<UInt32Type>;
-pub type EtcU64Array = EtcPrimitiveArray<UInt64Type>;
-pub type EtcI8Array = EtcPrimitiveArray<Int8Type>;
-pub type EtcI16Array = EtcPrimitiveArray<Int16Type>;
-pub type EtcI32Array = EtcPrimitiveArray<Int32Type>;
-pub type EtcI64Array = EtcPrimitiveArray<Int64Type>;
+pub type LiquidU8Array = LiquidPrimitiveArray<UInt8Type>;
+pub type LiquidU16Array = LiquidPrimitiveArray<UInt16Type>;
+pub type LiquidU32Array = LiquidPrimitiveArray<UInt32Type>;
+pub type LiquidU64Array = LiquidPrimitiveArray<UInt64Type>;
+pub type LiquidI8Array = LiquidPrimitiveArray<Int8Type>;
+pub type LiquidI16Array = LiquidPrimitiveArray<Int16Type>;
+pub type LiquidI32Array = LiquidPrimitiveArray<Int32Type>;
+pub type LiquidI64Array = LiquidPrimitiveArray<Int64Type>;
 
 /// The metadata for an ETC primitive array.
 #[derive(Debug, Clone)]
-pub struct EtcPrimitiveMetadata {
+pub struct LiquidPrimitiveMetadata {
     reference_value: i64,
     bit_width: NonZero<u8>,
     original_len: usize,
@@ -89,52 +87,41 @@ pub struct EtcPrimitiveMetadata {
 
 /// ETC's primitive array
 #[derive(Debug, Clone)]
-pub struct EtcPrimitiveArray<T>
-where
-    T: EtcPrimitiveType,
-    <<T as EtcPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native: BitPacking,
-    T::Native: AsPrimitive<i64>
-        + AsPrimitive<<<T as EtcPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native>,
-    i64: AsPrimitive<T::Native>,
-{
+pub struct LiquidPrimitiveArray<T: LiquidPrimitiveType> {
     values: BitPackedArray<T::UnSignedType>,
     reference_value: T::Native,
 }
 
-impl<T> EtcPrimitiveArray<T>
+impl<T> LiquidPrimitiveArray<T>
 where
-    T: EtcPrimitiveType,
-    <<T as EtcPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native: BitPacking,
-    T::Native: AsPrimitive<i64>
-        + AsPrimitive<<<T as EtcPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native>,
-    i64: AsPrimitive<T::Native>,
+    T: LiquidPrimitiveType,
 {
-    /// Get the memory size of the ETC primitive array.
+    /// Get the memory size of the Liquid primitive array.
     pub fn get_array_memory_size(&self) -> usize {
         self.values.get_array_memory_size() + std::mem::size_of::<T::Native>()
     }
 
-    /// Get the length of the ETC primitive array.
+    /// Get the length of the Liquid primitive array.
     pub fn len(&self) -> usize {
         self.values.original_len
     }
 
-    /// Check if the ETC primitive array is empty.
+    /// Check if the Liquid primitive array is empty.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    /// Get the metadata for an ETC primitive array.
-    pub fn metadata(&self) -> EtcPrimitiveMetadata {
-        EtcPrimitiveMetadata {
+    /// Get the metadata for a Liquid primitive array.
+    pub fn metadata(&self) -> LiquidPrimitiveMetadata {
+        LiquidPrimitiveMetadata {
             reference_value: self.reference_value.to_i64().unwrap(),
             bit_width: self.values.bit_width,
             original_len: self.values.original_len,
         }
     }
 
-    /// Convert an ETC primitive array to a record batch.
-    pub fn to_record_batch(&self) -> (RecordBatch, EtcPrimitiveMetadata) {
+    /// Convert a Liquid primitive array to a record batch.
+    pub fn to_record_batch(&self) -> (RecordBatch, LiquidPrimitiveMetadata) {
         let schema = Schema::new(vec![Field::new(
             "values",
             <T as ArrowPrimitiveType>::DATA_TYPE,
@@ -148,20 +135,23 @@ where
         (batch, self.metadata())
     }
 
-    /// Create an ETC primitive array from a record batch.
-    pub fn from_record_batch(batch: RecordBatch, metadata: &EtcPrimitiveMetadata) -> Self {
+    /// Create a Liquid primitive array from a record batch.
+    pub fn from_record_batch(batch: RecordBatch, metadata: &LiquidPrimitiveMetadata) -> Self {
         let values = batch
             .column(0)
-            .as_primitive::<<T as EtcPrimitiveType>::UnSignedType>()
+            .as_primitive::<<T as LiquidPrimitiveType>::UnSignedType>()
             .clone();
         let values = BitPackedArray::from_parts(values, metadata.bit_width, metadata.original_len);
         Self {
             values,
-            reference_value: metadata.reference_value.as_(),
+            reference_value: <<T as ArrowPrimitiveType>::Native as FromPrimitive>::from_i64(
+                metadata.reference_value,
+            )
+            .unwrap(),
         }
     }
 
-    pub fn from_arrow_array(arrow_array: PrimitiveArray<T>) -> EtcPrimitiveArray<T> {
+    pub fn from_arrow_array(arrow_array: PrimitiveArray<T>) -> LiquidPrimitiveArray<T> {
         let min = match arrow::compute::kernels::aggregate::min(&arrow_array) {
             Some(v) => v,
             None => {
@@ -179,13 +169,14 @@ where
         // but we get -1i8
         // (-1i8) as u8 as u64 -> 255u64
         let sub = max.sub_wrapping(min) as <T as ArrowPrimitiveType>::Native;
-        let sub: <<T as EtcPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native = sub.as_();
+        let sub: <<T as LiquidPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native =
+            sub.as_();
         let bit_width = get_bit_width(sub.as_());
 
         let (_data_type, values, nulls) = arrow_array.clone().into_parts();
         let values = if min != T::Native::ZERO {
             ScalarBuffer::from_iter(values.iter().map(|v| {
-                let k: <<T as EtcPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native =
+                let k: <<T as LiquidPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native =
                     v.sub_wrapping(min).as_();
                 k
             }))
@@ -197,7 +188,7 @@ where
         };
 
         let unsigned_array =
-            PrimitiveArray::<<T as EtcPrimitiveType>::UnSignedType>::new(values, nulls);
+            PrimitiveArray::<<T as LiquidPrimitiveType>::UnSignedType>::new(values, nulls);
 
         let bit_packed_array = BitPackedArray::from_primitive(unsigned_array, bit_width);
 
@@ -208,12 +199,12 @@ where
     }
 }
 
-impl<T> EtcArray for EtcPrimitiveArray<T>
+impl<T> LiquidArray for LiquidPrimitiveArray<T>
 where
-    T: EtcPrimitiveType,
-    <<T as EtcPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native: BitPacking,
+    T: LiquidPrimitiveType,
+    <<T as LiquidPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native: BitPacking,
     T::Native: AsPrimitive<i64>
-        + AsPrimitive<<<T as EtcPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native>,
+        + AsPrimitive<<<T as LiquidPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native>,
     i64: AsPrimitive<T::Native>,
 {
     fn get_array_memory_size(&self) -> usize {
@@ -248,7 +239,7 @@ where
         Arc::new(PrimitiveArray::<T>::new(values, nulls))
     }
 
-    fn filter(&self, selection: &BooleanArray) -> EtcArrayRef {
+    fn filter(&self, selection: &BooleanArray) -> LiquidArrayRef {
         let values = self.to_arrow_array();
         let filtered_values = arrow::compute::kernels::filter::filter(&values, selection).unwrap();
         let primitive_values = filtered_values.as_primitive::<T>().clone();
@@ -269,8 +260,8 @@ mod tests {
                 let original: Vec<Option<<$type as ArrowPrimitiveType>::Native>> = $values;
                 let array = PrimitiveArray::<$type>::from(original.clone());
 
-                // Convert to ETC array and back
-                let etc_array = EtcPrimitiveArray::<$type>::from_arrow_array(array.clone());
+                // Convert to Liquid array and back
+                let etc_array = LiquidPrimitiveArray::<$type>::from_arrow_array(array.clone());
                 let result_array = etc_array.to_arrow_array();
 
                 assert_eq!(result_array.as_ref(), &array);
@@ -383,7 +374,7 @@ mod tests {
     fn test_all_nulls() {
         let original: Vec<Option<i32>> = vec![None, None, None];
         let array = PrimitiveArray::<Int32Type>::from(original.clone());
-        let etc_array = EtcPrimitiveArray::<Int32Type>::from_arrow_array(array);
+        let etc_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(array);
         let result_array = etc_array.to_arrow_array();
 
         assert_eq!(result_array.len(), original.len());
@@ -394,7 +385,7 @@ mod tests {
     fn test_zero_reference_value() {
         let original: Vec<Option<i32>> = vec![Some(0), Some(1), Some(2), None, Some(4)];
         let array = PrimitiveArray::<Int32Type>::from(original.clone());
-        let etc_array = EtcPrimitiveArray::<Int32Type>::from_arrow_array(array.clone());
+        let etc_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(array.clone());
         let result_array = etc_array.to_arrow_array();
 
         assert_eq!(etc_array.reference_value, 0);
@@ -405,7 +396,7 @@ mod tests {
     fn test_single_value() {
         let original: Vec<Option<i32>> = vec![Some(42)];
         let array = PrimitiveArray::<Int32Type>::from(original.clone());
-        let etc_array = EtcPrimitiveArray::<Int32Type>::from_arrow_array(array.clone());
+        let etc_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(array.clone());
         let result_array = etc_array.to_arrow_array();
 
         assert_eq!(result_array.as_ref(), &array);
@@ -416,7 +407,7 @@ mod tests {
         // Create original array with some values
         let original = vec![Some(1), Some(2), Some(3), None, Some(5)];
         let array = PrimitiveArray::<Int32Type>::from(original);
-        let etc_array = EtcPrimitiveArray::<Int32Type>::from_arrow_array(array);
+        let etc_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(array);
 
         // Create selection mask: keep indices 0, 2, and 4
         let selection = BooleanArray::from(vec![true, false, true, false, true]);
@@ -436,7 +427,7 @@ mod tests {
         // Create array with all nulls
         let original = vec![None, None, None, None];
         let array = PrimitiveArray::<Int32Type>::from(original);
-        let etc_array = EtcPrimitiveArray::<Int32Type>::from_arrow_array(array);
+        let etc_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(array);
 
         // Keep first and last elements
         let selection = BooleanArray::from(vec![true, false, false, true]);
@@ -453,7 +444,7 @@ mod tests {
     fn test_filter_empty_result() {
         let original = vec![Some(1), Some(2), Some(3)];
         let array = PrimitiveArray::<Int32Type>::from(original);
-        let etc_array = EtcPrimitiveArray::<Int32Type>::from_arrow_array(array);
+        let etc_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(array);
 
         // Filter out all elements
         let selection = BooleanArray::from(vec![false, false, false]);

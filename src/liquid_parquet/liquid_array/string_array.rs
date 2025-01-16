@@ -15,9 +15,9 @@ use fsst::Compressor;
 
 use crate::liquid_parquet::liquid_array::{get_bit_width, FsstArray};
 
-use super::{BitPackedArray, EtcArray, EtcArrayRef};
+use super::{BitPackedArray, LiquidArray, LiquidArrayRef};
 
-impl EtcArray for EtcStringArray {
+impl LiquidArray for LiquidStringArray {
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -36,7 +36,7 @@ impl EtcArray for EtcStringArray {
         Arc::new(dict)
     }
 
-    fn filter(&self, selection: &BooleanArray) -> EtcArrayRef {
+    fn filter(&self, selection: &BooleanArray) -> LiquidArrayRef {
         let values = self.values.clone();
         let keys = self.keys.clone();
         let primitive_keys = keys.to_primitive();
@@ -45,7 +45,7 @@ impl EtcArray for EtcStringArray {
             .as_primitive::<UInt16Type>()
             .clone();
         let bit_packed_array = BitPackedArray::from_primitive(filtered_keys, keys.bit_width);
-        Arc::new(EtcStringArray {
+        Arc::new(LiquidStringArray {
             keys: bit_packed_array,
             values,
         })
@@ -68,12 +68,12 @@ impl std::fmt::Debug for EtcStringMetadata {
 
 /// An array that stores strings in a dictionary format, with a bit-packed array for the keys and a FSST array for the values.
 #[derive(Debug)]
-pub struct EtcStringArray {
+pub struct LiquidStringArray {
     keys: BitPackedArray<UInt16Type>,
     values: FsstArray,
 }
 
-impl EtcStringArray {
+impl LiquidStringArray {
     /// Create an EtcStringArray from a StringArray.
     pub fn from_string_array(array: &StringArray, compressor: Option<Arc<Compressor>>) -> Self {
         let dict = string_to_dict_string(array);
@@ -96,7 +96,7 @@ impl EtcStringArray {
             }
             None => FsstArray::from(dict_values),
         };
-        EtcStringArray {
+        LiquidStringArray {
             keys: bit_packed_array,
             values: fsst_values,
         }
@@ -123,7 +123,7 @@ impl EtcStringArray {
         let bit_packed_array = BitPackedArray::from_primitive(keys.clone(), max_bit_width);
 
         let fsst_values = FsstArray::from(values);
-        EtcStringArray {
+        LiquidStringArray {
             keys: bit_packed_array,
             values: fsst_values,
         }
@@ -194,7 +194,7 @@ impl EtcStringArray {
             metadata.compressor.clone(),
             metadata.uncompressed_len as usize,
         );
-        EtcStringArray { keys, values }
+        LiquidStringArray { keys, values }
     }
 
     /// Get the metadata of the EtcStringArray.
@@ -259,7 +259,7 @@ mod tests {
     #[test]
     fn test_simple_roundtrip() {
         let input = StringArray::from(vec!["hello", "world", "hello", "rust"]);
-        let etc = EtcStringArray::from_string_array(&input, None);
+        let etc = LiquidStringArray::from_string_array(&input, None);
         let output = etc.to_string_array();
 
         assert_eq!(input.len(), output.len());
@@ -277,7 +277,7 @@ mod tests {
             None,
             Some("hello"),
         ]);
-        let etc = EtcStringArray::from_string_array(&input, None);
+        let etc = LiquidStringArray::from_string_array(&input, None);
         let output = etc.to_string_array();
 
         assert_eq!(input.len(), output.len());
@@ -296,7 +296,7 @@ mod tests {
         let input: Vec<&str> = (0..1000).map(|i| values[i % values.len()]).collect();
         let input = StringArray::from(input);
 
-        let etc = EtcStringArray::from_string_array(&input, None);
+        let etc = LiquidStringArray::from_string_array(&input, None);
         let output = etc.to_string_array();
 
         assert_eq!(input.len(), output.len());
@@ -315,7 +315,7 @@ mod tests {
             "Another long string with some common patterns",
         ]);
 
-        let etc = EtcStringArray::from_string_array(&input, None);
+        let etc = LiquidStringArray::from_string_array(&input, None);
         let output = etc.to_string_array();
 
         assert_eq!(input.len(), output.len());
@@ -327,7 +327,7 @@ mod tests {
     #[test]
     fn test_empty_strings() {
         let input = StringArray::from(vec!["", "", "non-empty", ""]);
-        let etc = EtcStringArray::from_string_array(&input, None);
+        let etc = LiquidStringArray::from_string_array(&input, None);
         let output = etc.to_string_array();
 
         assert_eq!(input.len(), output.len());
@@ -339,7 +339,7 @@ mod tests {
     #[test]
     fn test_dictionary_roundtrip() {
         let input = StringArray::from(vec!["hello", "world", "hello", "rust"]);
-        let etc = EtcStringArray::from_string_array(&input, None);
+        let etc = LiquidStringArray::from_string_array(&input, None);
         let dict = etc.to_dict_string();
 
         // Check dictionary values are unique
@@ -436,7 +436,7 @@ mod tests {
         for case in test_cases {
             let input_array: StringArray = StringArray::from(case.input.clone());
 
-            let etc = EtcStringArray::from_string_array(&input_array, None);
+            let etc = LiquidStringArray::from_string_array(&input_array, None);
 
             let result: BooleanArray = etc.compare_equals(case.needle);
 
