@@ -15,6 +15,7 @@ use std::ops::{DerefMut, Range};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock, RwLockReadGuard};
 use utils::RangedFile;
+mod stats;
 
 use super::liquid_array::{
     AsLiquidArray, LiquidArrayRef, LiquidPrimitiveArray, LiquidStringArray, LiquidStringMetadata,
