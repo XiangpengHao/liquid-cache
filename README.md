@@ -1,8 +1,9 @@
 # DataFusion Cache (aka. SplitSQL)
 
-You want a cache for object store, so we build this.
+SplitSQL -- a cache that cuts your S3 bill by 10x.
 
-Most advanced caching system tailored for DataFusion.
+![](./dev/doc/architecture.png)
+
 
 ## Try in 5 minutes!
 Checkout the `examples` folder for more details.
@@ -60,17 +61,8 @@ pub async fn main() -> Result<()> {
 
 ### 4. Enjoy!
 
-## Development Setup
 
+## Development
 
-### (Optional) Setup
+See [dev/README.md](./dev/README.md)
 
-
-**Git Hooks**
-After cloning the repository, run the following command to set up git hooks: 
-
-```bash
-./dev/install-git-hooks.sh
-```
-
-This will set up pre-commit hooks that check formatting, run clippy, and verify documentation.
