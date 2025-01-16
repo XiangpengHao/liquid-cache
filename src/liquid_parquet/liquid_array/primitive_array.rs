@@ -1,7 +1,9 @@
 use std::any::Any;
+use std::fmt::Debug;
 use std::num::NonZero;
 use std::sync::Arc;
 
+use arrow::array::ArrowNativeTypeOp;
 use arrow::buffer::ScalarBuffer;
 use arrow::{
     array::{
@@ -21,19 +23,36 @@ use num_traits::AsPrimitive;
 use super::BitPackedArray;
 use crate::liquid_parquet::liquid_array::{get_bit_width, EtcArray, EtcArrayRef};
 
-pub trait HasUnsignedType: ArrowPrimitiveType
+mod private {
+    pub trait Sealed {}
+}
+
+/// EtcPrimitiveType is a sealed trait that represents the primitive types supported by ETC.
+/// Implementors are: Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt16Type, UInt32Type, UInt64Type
+///
+/// I have to admit this trait is super complicated.
+/// Luckily users never have to worry about it, they can just use the types that are already implemented.
+/// We could have implemented this as a macro, but macro is ugly.
+/// Type is spec, code is proof.
+pub trait EtcPrimitiveType:
+    ArrowPrimitiveType<
+        Native: AsPrimitive<<Self::UnSignedType as ArrowPrimitiveType>::Native>
+                    + AsPrimitive<i64>
+                    + AsPrimitive<<Self::UnSignedType as ArrowPrimitiveType>::Native>,
+    > + Debug
+    + private::Sealed
 where
-    Self::Native:
-        AsPrimitive<i64> + AsPrimitive<<Self::UnSignedType as ArrowPrimitiveType>::Native>,
     i64: AsPrimitive<Self::Native>,
 {
-    type UnSignedType: ArrowPrimitiveType;
+    type UnSignedType: ArrowPrimitiveType<Native: AsPrimitive<Self::Native> + AsPrimitive<u64>>
+        + Debug;
 }
 
 macro_rules! impl_has_unsigned_type {
     ($($signed:ty => $unsigned:ty),*) => {
         $(
-            impl HasUnsignedType for $signed {
+            impl private::Sealed for $signed {}
+            impl EtcPrimitiveType for $signed {
                 type UnSignedType = $unsigned;
             }
         )*
@@ -51,6 +70,15 @@ impl_has_unsigned_type! {
     UInt8Type => UInt8Type
 }
 
+pub type EtcU8Array = EtcPrimitiveArray<UInt8Type>;
+pub type EtcU16Array = EtcPrimitiveArray<UInt16Type>;
+pub type EtcU32Array = EtcPrimitiveArray<UInt32Type>;
+pub type EtcU64Array = EtcPrimitiveArray<UInt64Type>;
+pub type EtcI8Array = EtcPrimitiveArray<Int8Type>;
+pub type EtcI16Array = EtcPrimitiveArray<Int16Type>;
+pub type EtcI32Array = EtcPrimitiveArray<Int32Type>;
+pub type EtcI64Array = EtcPrimitiveArray<Int64Type>;
+
 /// The metadata for an ETC primitive array.
 #[derive(Debug, Clone)]
 pub struct EtcPrimitiveMetadata {
@@ -63,10 +91,10 @@ pub struct EtcPrimitiveMetadata {
 #[derive(Debug, Clone)]
 pub struct EtcPrimitiveArray<T>
 where
-    T: HasUnsignedType,
-    <<T as HasUnsignedType>::UnSignedType as ArrowPrimitiveType>::Native: BitPacking,
+    T: EtcPrimitiveType,
+    <<T as EtcPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native: BitPacking,
     T::Native: AsPrimitive<i64>
-        + AsPrimitive<<<T as HasUnsignedType>::UnSignedType as ArrowPrimitiveType>::Native>,
+        + AsPrimitive<<<T as EtcPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native>,
     i64: AsPrimitive<T::Native>,
 {
     values: BitPackedArray<T::UnSignedType>,
@@ -75,10 +103,10 @@ where
 
 impl<T> EtcPrimitiveArray<T>
 where
-    T: HasUnsignedType,
-    <<T as HasUnsignedType>::UnSignedType as ArrowPrimitiveType>::Native: BitPacking,
+    T: EtcPrimitiveType,
+    <<T as EtcPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native: BitPacking,
     T::Native: AsPrimitive<i64>
-        + AsPrimitive<<<T as HasUnsignedType>::UnSignedType as ArrowPrimitiveType>::Native>,
+        + AsPrimitive<<<T as EtcPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native>,
     i64: AsPrimitive<T::Native>,
 {
     /// Get the memory size of the ETC primitive array.
@@ -124,7 +152,7 @@ where
     pub fn from_record_batch(batch: RecordBatch, metadata: &EtcPrimitiveMetadata) -> Self {
         let values = batch
             .column(0)
-            .as_primitive::<<T as HasUnsignedType>::UnSignedType>()
+            .as_primitive::<<T as EtcPrimitiveType>::UnSignedType>()
             .clone();
         let values = BitPackedArray::from_parts(values, metadata.bit_width, metadata.original_len);
         Self {
@@ -132,112 +160,102 @@ where
             reference_value: metadata.reference_value.as_(),
         }
     }
-}
 
-macro_rules! impl_etc_primitive_array {
-    ($ty:ty) => {
-
-        impl EtcArray for EtcPrimitiveArray<$ty> {
-            fn get_array_memory_size(&self) -> usize {
-                self.get_array_memory_size()
-            }
-
-            fn len(&self) -> usize {
-                self.len()
-            }
-
-            fn as_any(&self) -> &dyn Any {
-                self
-            }
-
-            #[inline]
-            #[allow(clippy::useless_transmute, clippy::missing_transmute_annotations)]
-            fn to_arrow_array(&self) -> ArrayRef {
-                let unsigned_array = self.values.to_primitive();
-				let (_data_type, values, nulls) = unsigned_array.into_parts();
-				let values =
-					if self.reference_value != 0 {
-						ScalarBuffer::from_iter(values.iter().map(|v| {
-							(*v)
-								.wrapping_add(self.reference_value as <<$ty as HasUnsignedType>::UnSignedType as ArrowPrimitiveType>::Native)
-								as <$ty as ArrowPrimitiveType>::Native
-						}))
-					} else {
-						unsafe { std::mem::transmute(values) }
-					};
-
-				let array = Arc::new(PrimitiveArray::<$ty>::new(values, nulls));
-				array
-            }
-
-            fn filter(&self, selection: &BooleanArray) -> EtcArrayRef {
-                let values = self.to_arrow_array();
-                let filtered_values = arrow::compute::kernels::filter::filter(&values, selection).unwrap();
-                let primitive_values = filtered_values.as_primitive::<$ty>().clone();
-                let bit_packed = Self::from_arrow_array(primitive_values);
-                Arc::new(bit_packed)
-            }
-        }
-
-        impl EtcPrimitiveArray<$ty> {
-            /// Create an ETC primitive array from an Arrow primitive array.
-            #[allow(clippy::useless_transmute, clippy::missing_transmute_annotations)]
-            pub fn from_arrow_array(arrow_array: PrimitiveArray<$ty>) -> EtcPrimitiveArray<$ty> {
-
-                let min = match arrow::compute::kernels::aggregate::min(&arrow_array){
-					Some(v) => v,
-					None => {
-						// entire array is null
-						return Self {
-							values: BitPackedArray::new_null_array(arrow_array.len()),
-							reference_value: 0,
-						};
-					},
-				};
-                let max = arrow::compute::kernels::aggregate::max(&arrow_array).unwrap();
-
-				// be careful of overflow:
-				// Want: 127i8 - (-128i8) -> 255u64,
-				// but we get -1i8
-				// (-1i8) as u8 as u64 -> 255u64
-				let sub = max.wrapping_sub(min) as <$ty as ArrowPrimitiveType>::Native;
-				let sub = sub as <<$ty as HasUnsignedType>::UnSignedType as ArrowPrimitiveType>::Native;
-                let bit_width = get_bit_width(sub as u64);
-
-                let (_data_type, values, nulls) = arrow_array.clone().into_parts();
-                let values = if min != 0 {
-                    ScalarBuffer::from_iter(
-                        values
-                            .iter()
-                            .map(|v| (v.wrapping_sub(min)) as <<$ty as HasUnsignedType>::UnSignedType as ArrowPrimitiveType>::Native),
-                    )
-                } else {
-                    unsafe { std::mem::transmute(values) }
+    pub fn from_arrow_array(arrow_array: PrimitiveArray<T>) -> EtcPrimitiveArray<T> {
+        let min = match arrow::compute::kernels::aggregate::min(&arrow_array) {
+            Some(v) => v,
+            None => {
+                // entire array is null
+                return Self {
+                    values: BitPackedArray::new_null_array(arrow_array.len()),
+                    reference_value: T::Native::ZERO,
                 };
-
-                let unsigned_array =
-                    PrimitiveArray::<<$ty as HasUnsignedType>::UnSignedType>::new(values, nulls);
-
-                let bit_packed_array =
-                    BitPackedArray::from_primitive(unsigned_array, bit_width);
-
-                Self {
-                    values: bit_packed_array,
-                    reference_value: min,
-                }
             }
+        };
+        let max = arrow::compute::kernels::aggregate::max(&arrow_array).unwrap();
+
+        // be careful of overflow:
+        // Want: 127i8 - (-128i8) -> 255u64,
+        // but we get -1i8
+        // (-1i8) as u8 as u64 -> 255u64
+        let sub = max.sub_wrapping(min) as <T as ArrowPrimitiveType>::Native;
+        let sub: <<T as EtcPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native = sub.as_();
+        let bit_width = get_bit_width(sub.as_());
+
+        let (_data_type, values, nulls) = arrow_array.clone().into_parts();
+        let values = if min != T::Native::ZERO {
+            ScalarBuffer::from_iter(values.iter().map(|v| {
+                let k: <<T as EtcPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native =
+                    v.sub_wrapping(min).as_();
+                k
+            }))
+        } else {
+            #[allow(clippy::missing_transmute_annotations)]
+            unsafe {
+                std::mem::transmute(values)
+            }
+        };
+
+        let unsigned_array =
+            PrimitiveArray::<<T as EtcPrimitiveType>::UnSignedType>::new(values, nulls);
+
+        let bit_packed_array = BitPackedArray::from_primitive(unsigned_array, bit_width);
+
+        Self {
+            values: bit_packed_array,
+            reference_value: min,
         }
-    };
+    }
 }
 
-impl_etc_primitive_array!(Int8Type);
-impl_etc_primitive_array!(Int16Type);
-impl_etc_primitive_array!(Int32Type);
-impl_etc_primitive_array!(Int64Type);
-impl_etc_primitive_array!(UInt8Type);
-impl_etc_primitive_array!(UInt16Type);
-impl_etc_primitive_array!(UInt32Type);
-impl_etc_primitive_array!(UInt64Type);
+impl<T> EtcArray for EtcPrimitiveArray<T>
+where
+    T: EtcPrimitiveType,
+    <<T as EtcPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native: BitPacking,
+    T::Native: AsPrimitive<i64>
+        + AsPrimitive<<<T as EtcPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native>,
+    i64: AsPrimitive<T::Native>,
+{
+    fn get_array_memory_size(&self) -> usize {
+        self.get_array_memory_size()
+    }
+
+    fn len(&self) -> usize {
+        self.len()
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    #[inline]
+    fn to_arrow_array(&self) -> ArrayRef {
+        let unsigned_array = self.values.to_primitive();
+        let (_data_type, values, nulls) = unsigned_array.into_parts();
+        let values = if self.reference_value != T::Native::ZERO {
+            let reference_v = self.reference_value.as_();
+            ScalarBuffer::from_iter(values.iter().map(|v| {
+                let k: <T as ArrowPrimitiveType>::Native = (*v).add_wrapping(reference_v).as_();
+                k
+            }))
+        } else {
+            #[allow(clippy::missing_transmute_annotations)]
+            unsafe {
+                std::mem::transmute(values)
+            }
+        };
+
+        Arc::new(PrimitiveArray::<T>::new(values, nulls))
+    }
+
+    fn filter(&self, selection: &BooleanArray) -> EtcArrayRef {
+        let values = self.to_arrow_array();
+        let filtered_values = arrow::compute::kernels::filter::filter(&values, selection).unwrap();
+        let primitive_values = filtered_values.as_primitive::<T>().clone();
+        let bit_packed = Self::from_arrow_array(primitive_values);
+        Arc::new(bit_packed)
+    }
+}
 
 #[cfg(test)]
 mod tests {
