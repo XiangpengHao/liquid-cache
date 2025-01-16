@@ -24,8 +24,7 @@ use datafusion::{
 };
 use itertools::Itertools;
 
-use crate::liquid_parquet::opener::LiquidParquetOpener;
-
+use super::opener::LiquidParquetOpener;
 use super::page_filter::PagePruningAccessPlanFilter;
 
 #[derive(Debug, Clone)]

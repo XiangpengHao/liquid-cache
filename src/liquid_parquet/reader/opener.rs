@@ -23,7 +23,7 @@ use parquet::arrow::{
     ParquetRecordBatchStreamBuilder, ProjectionMask,
 };
 
-use super::{
+use crate::liquid_parquet::reader::{
     coerce_file_schema_to_string_type, coerce_file_schema_to_view_type,
     page_filter::PagePruningAccessPlanFilter, row_filter,
     row_group_filter::RowGroupAccessPlanFilter,

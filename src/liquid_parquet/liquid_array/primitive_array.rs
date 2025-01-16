@@ -202,10 +202,6 @@ where
 impl<T> LiquidArray for LiquidPrimitiveArray<T>
 where
     T: LiquidPrimitiveType,
-    <<T as LiquidPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native: BitPacking,
-    T::Native: AsPrimitive<i64>
-        + AsPrimitive<<<T as LiquidPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native>,
-    i64: AsPrimitive<T::Native>,
 {
     fn get_array_memory_size(&self) -> usize {
         self.get_array_memory_size()
