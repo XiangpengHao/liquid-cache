@@ -22,7 +22,9 @@ use log::{debug, info};
 use object_store::{ObjectMeta, ObjectStore};
 use page_filter::PagePruningAccessPlanFilter;
 
+mod arrow_reader;
 mod exec;
+pub mod liquid_array;
 mod opener;
 
 // This is entirely copied from DataFusion
@@ -39,12 +41,6 @@ mod row_group_filter;
 
 #[derive(Debug)]
 pub struct LiquidParquetFactory {}
-
-impl LiquidParquetFactory {
-    pub fn new() -> Self {
-        Self {}
-    }
-}
 
 impl GetExt for LiquidParquetFactory {
     fn get_ext(&self) -> String {
@@ -71,7 +67,7 @@ impl FileFormat for LiquidParquetFileFormat {
     }
 
     fn get_ext(&self) -> String {
-        LiquidParquetFactory::new().get_ext()
+        LiquidParquetFactory {}.get_ext()
     }
 
     fn get_ext_with_compression(

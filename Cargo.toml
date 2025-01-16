@@ -7,9 +7,8 @@ edition = "2021"
 arrow = "53.3.0"
 arrow-flight = { version = "53.3.0", features = ["flight-sql-experimental"] }
 arrow-schema = { version = "53.3.0", features = ["serde"] }
-parquet = "53.3.0"
-# Point to official repo until: https://github.com/apache/datafusion/pull/14139
-datafusion = { git = "https://github.com/XiangpengHao/datafusion.git", branch = "config-fix" }
+parquet = { version = "53.3.0", features = ["async"] }
+datafusion = { git = "https://github.com/apache/datafusion.git" }
 async-trait = "0.1.83"
 futures = "0.3.31"
 log = "0.4.22"
@@ -27,6 +26,9 @@ prost-derive = "0.13.3"
 object_store = "0.11.2"
 url = "2.5.4"
 itertools = "0.14.0"
+bytes = "1.9.0"
+fastlanes = "0.1.8"
+fsst-rs = "0.4.4"
 
 [dev-dependencies]
 env_logger = "0.11.5"

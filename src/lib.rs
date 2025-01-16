@@ -17,4 +17,4 @@
 
 pub mod cache;
 pub mod compute;
-mod liquid_parquet;
+pub mod liquid_parquet;
