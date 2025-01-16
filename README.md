@@ -1,8 +1,8 @@
 # DataFusion Cache (aka. SplitSQL)
 
-SplitSQL -- a cache that cuts your S3 bill by 10x.
+SplitSQL -- a cache that understands your data and cuts your S3 bill by 10x.
 
-![](./dev/doc/architecture.png)
+![architecture](/dev/doc/arch.jpg)
 
 
 ## Try in 5 minutes!
