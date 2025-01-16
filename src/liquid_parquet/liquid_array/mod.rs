@@ -11,6 +11,7 @@ use bit_pack_array::BitPackedArray;
 use fastlanes::BitPacking;
 use fsst_array::FsstArray;
 
+use num_traits::AsPrimitive;
 use primitive_array::HasUnsignedType;
 pub use primitive_array::{EtcPrimitiveArray, EtcPrimitiveMetadata};
 pub use string_array::{EtcStringArray, EtcStringMetadata};
@@ -26,16 +27,20 @@ pub trait AsEtcArray {
     }
 
     /// Get the underlying primitive array.
-    fn as_primitive_array_opt<T: ArrowPrimitiveType + HasUnsignedType>(
-        &self,
-    ) -> Option<&EtcPrimitiveArray<T>>
-    where
-        <<T as HasUnsignedType>::UnSignedType as ArrowPrimitiveType>::Native: BitPacking;
-
-    /// Get the underlying primitive array.
-    fn as_primitive<T: ArrowPrimitiveType + HasUnsignedType>(&self) -> &EtcPrimitiveArray<T>
+    fn as_primitive_array_opt<T: HasUnsignedType>(&self) -> Option<&EtcPrimitiveArray<T>>
     where
         <<T as HasUnsignedType>::UnSignedType as ArrowPrimitiveType>::Native: BitPacking,
+        T::Native: AsPrimitive<i64>
+            + AsPrimitive<<<T as HasUnsignedType>::UnSignedType as ArrowPrimitiveType>::Native>,
+        i64: AsPrimitive<T::Native>;
+
+    /// Get the underlying primitive array.
+    fn as_primitive<T: HasUnsignedType>(&self) -> &EtcPrimitiveArray<T>
+    where
+        <<T as HasUnsignedType>::UnSignedType as ArrowPrimitiveType>::Native: BitPacking,
+        T::Native: AsPrimitive<i64>
+            + AsPrimitive<<<T as HasUnsignedType>::UnSignedType as ArrowPrimitiveType>::Native>,
+        i64: AsPrimitive<T::Native>,
     {
         self.as_primitive_array_opt().expect("etc primitive array")
     }
@@ -51,6 +56,9 @@ impl AsEtcArray for dyn EtcArray + '_ {
     ) -> Option<&EtcPrimitiveArray<T>>
     where
         <<T as HasUnsignedType>::UnSignedType as ArrowPrimitiveType>::Native: BitPacking,
+        T::Native: AsPrimitive<i64>
+            + AsPrimitive<<<T as HasUnsignedType>::UnSignedType as ArrowPrimitiveType>::Native>,
+        i64: AsPrimitive<T::Native>,
     {
         self.as_any().downcast_ref()
     }

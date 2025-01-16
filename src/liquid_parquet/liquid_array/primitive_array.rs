@@ -2,21 +2,31 @@ use std::any::Any;
 use std::num::NonZero;
 use std::sync::Arc;
 
-use arrow::array::{
-    cast::AsArray,
-    types::{
-        Int16Type, Int32Type, Int64Type, Int8Type, UInt16Type, UInt32Type, UInt64Type, UInt8Type,
-    },
-    ArrayRef, ArrowPrimitiveType, BooleanArray, PrimitiveArray, RecordBatch,
-};
 use arrow::buffer::ScalarBuffer;
+use arrow::{
+    array::{
+        cast::AsArray,
+        types::{
+            Int16Type, Int32Type, Int64Type, Int8Type, UInt16Type, UInt32Type, UInt64Type,
+            UInt8Type,
+        },
+        ArrayRef, ArrowPrimitiveType, BooleanArray, PrimitiveArray, RecordBatch,
+    },
+    datatypes::ArrowNativeType,
+};
 use arrow_schema::{Field, Schema};
 use fastlanes::BitPacking;
+use num_traits::AsPrimitive;
 
 use super::BitPackedArray;
 use crate::liquid_parquet::liquid_array::{get_bit_width, EtcArray, EtcArrayRef};
 
-pub trait HasUnsignedType: ArrowPrimitiveType {
+pub trait HasUnsignedType: ArrowPrimitiveType
+where
+    Self::Native:
+        AsPrimitive<i64> + AsPrimitive<<Self::UnSignedType as ArrowPrimitiveType>::Native>,
+    i64: AsPrimitive<Self::Native>,
+{
     type UnSignedType: ArrowPrimitiveType;
 }
 
@@ -44,7 +54,7 @@ impl_has_unsigned_type! {
 /// The metadata for an ETC primitive array.
 #[derive(Debug, Clone)]
 pub struct EtcPrimitiveMetadata {
-    reference_value: u64,
+    reference_value: i64,
     bit_width: NonZero<u8>,
     original_len: usize,
 }
@@ -53,8 +63,11 @@ pub struct EtcPrimitiveMetadata {
 #[derive(Debug, Clone)]
 pub struct EtcPrimitiveArray<T>
 where
-    T: ArrowPrimitiveType + HasUnsignedType,
+    T: HasUnsignedType,
     <<T as HasUnsignedType>::UnSignedType as ArrowPrimitiveType>::Native: BitPacking,
+    T::Native: AsPrimitive<i64>
+        + AsPrimitive<<<T as HasUnsignedType>::UnSignedType as ArrowPrimitiveType>::Native>,
+    i64: AsPrimitive<T::Native>,
 {
     values: BitPackedArray<T::UnSignedType>,
     reference_value: T::Native,
@@ -62,8 +75,11 @@ where
 
 impl<T> EtcPrimitiveArray<T>
 where
-    T: ArrowPrimitiveType + HasUnsignedType,
+    T: HasUnsignedType,
     <<T as HasUnsignedType>::UnSignedType as ArrowPrimitiveType>::Native: BitPacking,
+    T::Native: AsPrimitive<i64>
+        + AsPrimitive<<<T as HasUnsignedType>::UnSignedType as ArrowPrimitiveType>::Native>,
+    i64: AsPrimitive<T::Native>,
 {
     /// Get the memory size of the ETC primitive array.
     pub fn get_array_memory_size(&self) -> usize {
@@ -78,6 +94,43 @@ where
     /// Check if the ETC primitive array is empty.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Get the metadata for an ETC primitive array.
+    pub fn metadata(&self) -> EtcPrimitiveMetadata {
+        EtcPrimitiveMetadata {
+            reference_value: self.reference_value.to_i64().unwrap(),
+            bit_width: self.values.bit_width,
+            original_len: self.values.original_len,
+        }
+    }
+
+    /// Convert an ETC primitive array to a record batch.
+    pub fn to_record_batch(&self) -> (RecordBatch, EtcPrimitiveMetadata) {
+        let schema = Schema::new(vec![Field::new(
+            "values",
+            <T as ArrowPrimitiveType>::DATA_TYPE,
+            false,
+        )]);
+
+        let batch =
+            RecordBatch::try_new(Arc::new(schema), vec![Arc::new(self.values.values.clone())])
+                .unwrap();
+
+        (batch, self.metadata())
+    }
+
+    /// Create an ETC primitive array from a record batch.
+    pub fn from_record_batch(batch: RecordBatch, metadata: &EtcPrimitiveMetadata) -> Self {
+        let values = batch
+            .column(0)
+            .as_primitive::<<T as HasUnsignedType>::UnSignedType>()
+            .clone();
+        let values = BitPackedArray::from_parts(values, metadata.bit_width, metadata.original_len);
+        Self {
+            values,
+            reference_value: metadata.reference_value.as_(),
+        }
     }
 }
 
@@ -171,37 +224,6 @@ macro_rules! impl_etc_primitive_array {
                 Self {
                     values: bit_packed_array,
                     reference_value: min,
-                }
-            }
-
-            /// Get the metadata for an ETC primitive array.
-			pub fn metadata(&self) -> EtcPrimitiveMetadata {
-				EtcPrimitiveMetadata {
-					reference_value: self.reference_value as u64,
-					bit_width: self.values.bit_width,
-					original_len: self.values.original_len,
-				}
-			}
-
-            /// Convert an ETC primitive array to a record batch.
-			pub fn to_record_batch(&self) -> (RecordBatch, EtcPrimitiveMetadata) {
-                let schema = Schema::new(vec![Field::new("values", <$ty as ArrowPrimitiveType>::DATA_TYPE, false)]);
-
-                let batch =
-                    RecordBatch::try_new(Arc::new(schema), vec![Arc::new(self.values.values.clone())])
-						.unwrap();
-
-				(batch, self.metadata())
-			}
-
-
-            /// Create an ETC primitive array from a record batch.
-			pub fn from_record_batch(batch: RecordBatch, metadata: &EtcPrimitiveMetadata) -> Self {
-				let values = batch.column(0).as_primitive::<<$ty as HasUnsignedType>::UnSignedType>().clone();
-				let values = BitPackedArray::from_parts(values, metadata.bit_width, metadata.original_len);
-				Self {
-                    values,
-                    reference_value: metadata.reference_value as <$ty as ArrowPrimitiveType>::Native,
                 }
             }
         }
