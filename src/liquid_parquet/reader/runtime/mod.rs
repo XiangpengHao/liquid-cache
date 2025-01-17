@@ -29,6 +29,7 @@ use parquet_bridge::{
 
 mod in_memory_rg;
 mod parquet_bridge;
+mod record_batch_reader;
 
 pub struct LiquidRowFilter {
     pub(crate) predicates: Vec<Box<dyn ArrowPredicate>>,
@@ -57,7 +58,7 @@ impl ReaderFactory {
     async fn read_row_group(
         mut self,
         row_group_idx: usize,
-        mut selection: Option<RowSelection>,
+        selection: Option<RowSelection>,
         projection: ProjectionMask,
         batch_size: usize,
     ) -> ReadResult {
@@ -65,27 +66,28 @@ impl ReaderFactory {
         let offset_index = self
             .metadata
             .offset_index()
-            // filter out empty offset indexes (old versions specified Some(vec![]) when no present)
-            .filter(|index| !index.is_empty())
+            .filter(|index| index.first().map(|v| !v.is_empty()).unwrap_or(false))
             .map(|x| x[row_group_idx].as_slice());
 
         let mut row_group = InMemoryRowGroup {
             metadata: meta,
-            // schema: meta.schema_descr_ptr(),
             row_count: meta.num_rows() as usize,
             column_chunks: vec![None; meta.columns().len()],
             offset_index,
         };
 
+        let mut selection =
+            selection.unwrap_or_else(|| vec![RowSelector::select(row_group.row_count)].into());
+
         if let Some(filter) = self.filter.as_mut() {
             for predicate in filter.predicates.iter_mut() {
-                if !selects_any(selection.as_ref()) {
+                if !selection.selects_any() {
                     return Ok((self, None));
                 }
 
                 let predicate_projection = predicate.projection();
                 row_group
-                    .fetch(&mut self.input, predicate_projection, selection.as_ref())
+                    .fetch(&mut self.input, predicate_projection, Some(&selection))
                     .await?;
 
                 let array_reader = parquet::arrow::array_reader::build_array_reader(
@@ -97,32 +99,30 @@ impl ReaderFactory {
                     &row_group,
                 )?;
 
-                selection = Some(evaluate_predicate(
+                selection = evaluate_predicate(
                     batch_size,
                     array_reader,
-                    selection,
+                    Some(selection),
                     predicate.as_mut(),
-                )?);
+                )?;
             }
         }
 
-        // Compute the number of rows in the selection before applying limit and offset
-        let rows_before = selection
-            .as_ref()
-            .map(|s| s.row_count())
-            .unwrap_or(row_group.row_count);
+        let rows_before = selection.row_count();
 
         if rows_before == 0 {
             return Ok((self, None));
         }
 
-        selection = apply_range(selection, row_group.row_count, self.offset, self.limit);
+        if let Some(offset) = self.offset {
+            selection = offset_row_selection(selection, offset);
+        }
 
-        // Compute the number of rows in the selection after applying limit and offset
-        let rows_after = selection
-            .as_ref()
-            .map(|s| s.row_count())
-            .unwrap_or(row_group.row_count);
+        if let Some(limit) = self.limit {
+            selection = limit_row_selection(selection, limit);
+        }
+
+        let rows_after = selection.row_count();
 
         // Update offset if necessary
         if let Some(offset) = &mut self.offset {
@@ -140,7 +140,7 @@ impl ReaderFactory {
         }
 
         row_group
-            .fetch(&mut self.input, &projection, selection.as_ref())
+            .fetch(&mut self.input, &projection, Some(&selection))
             .await?;
 
         let reader = ParquetRecordBatchReaderInner::new_parquet(
@@ -153,7 +153,7 @@ impl ReaderFactory {
                 &projection,
                 &row_group,
             )?,
-            selection,
+            Some(selection),
         );
 
         Ok((self, Some(reader)))
@@ -195,46 +195,6 @@ pub(crate) fn evaluate_predicate(
         Some(selection) => selection.and_then(&raw),
         None => raw,
     })
-}
-
-/// Returns `true` if `selection` is `None` or selects some rows
-pub(crate) fn selects_any(selection: Option<&RowSelection>) -> bool {
-    selection.map(|x| x.selects_any()).unwrap_or(true)
-}
-
-/// Applies an optional offset and limit to an optional [`RowSelection`]
-pub(crate) fn apply_range(
-    mut selection: Option<RowSelection>,
-    row_count: usize,
-    offset: Option<usize>,
-    limit: Option<usize>,
-) -> Option<RowSelection> {
-    // If an offset is defined, apply it to the `selection`
-    if let Some(offset) = offset {
-        selection = Some(match row_count.checked_sub(offset) {
-            None => RowSelection::from(vec![]),
-            Some(remaining) => selection
-                .map(|selection| offset_row_selection(selection, offset))
-                .unwrap_or_else(|| {
-                    RowSelection::from(vec![
-                        RowSelector::skip(offset),
-                        RowSelector::select(remaining),
-                    ])
-                }),
-        });
-    }
-
-    // If a limit is defined, apply it to the final `selection`
-    if let Some(limit) = limit {
-        selection = Some(
-            selection
-                .map(|selection| limit_row_selection(selection, limit))
-                .unwrap_or_else(|| {
-                    RowSelection::from(vec![RowSelector::select(limit.min(row_count))])
-                }),
-        );
-    }
-    selection
 }
 
 enum StreamState {
