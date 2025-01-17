@@ -7,7 +7,7 @@ edition = "2021"
 arrow = "53.3.0"
 arrow-flight = { version = "53.3.0", features = ["flight-sql-experimental"] }
 arrow-schema = { version = "53.3.0", features = ["serde"] }
-parquet = { version = "53.3.0", features = ["async"] }
+parquet = { version = "53.3.0", features = ["async", "experimental"] }
 datafusion = { git = "https://github.com/apache/datafusion.git" }
 async-trait = "0.1.83"
 futures = "0.3.31"

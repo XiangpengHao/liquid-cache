@@ -25,8 +25,8 @@ use prost::Message;
 use tonic::transport::Channel;
 use tonic::Request;
 
-use crate::cache::{ActionRegisterTableRequest, ACTION_REGISTER_TABLE};
-use crate::compute::{FlightMetadata, FlightProperties};
+use crate::client::{FlightMetadata, FlightProperties};
+use crate::server::{ActionRegisterTableRequest, ACTION_REGISTER_TABLE};
 
 /// Default Flight SQL driver.
 #[derive(Clone, Debug, Default)]

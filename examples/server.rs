@@ -16,7 +16,7 @@
 // under the License.
 
 use arrow_flight::flight_service_server::FlightServiceServer;
-use datafusion_cache::cache::SplitSqlService;
+use datafusion_cache::server::SplitSqlService;
 use log::info;
 use tonic::transport::Server;
 
