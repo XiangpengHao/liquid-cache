@@ -23,10 +23,13 @@ use parquet::arrow::{
     ParquetRecordBatchStreamBuilder, ProjectionMask,
 };
 
-use crate::liquid_parquet::reader::plantime::{
-    coerce_file_schema_to_string_type, coerce_file_schema_to_view_type,
-    page_filter::PagePruningAccessPlanFilter, row_filter,
-    row_group_filter::RowGroupAccessPlanFilter,
+use crate::liquid_parquet::reader::{
+    plantime::{
+        coerce_file_schema_to_string_type, coerce_file_schema_to_view_type,
+        page_filter::PagePruningAccessPlanFilter, row_filter,
+        row_group_filter::RowGroupAccessPlanFilter,
+    },
+    runtime::LiquidParquetRecordBatchStream,
 };
 
 pub struct LiquidParquetOpener {
@@ -199,6 +202,8 @@ impl FileOpener for LiquidParquetOpener {
                 .with_batch_size(batch_size)
                 .with_row_groups(row_group_indexes)
                 .build()?;
+
+            let stream = LiquidParquetRecordBatchStream::from_parquet(stream);
 
             let adapted = stream
                 .map_err(|e| ArrowError::ExternalError(Box::new(e)))
