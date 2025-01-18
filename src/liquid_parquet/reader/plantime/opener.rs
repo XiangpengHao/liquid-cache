@@ -29,7 +29,7 @@ use crate::liquid_parquet::reader::{
         page_filter::PagePruningAccessPlanFilter, row_filter,
         row_group_filter::RowGroupAccessPlanFilter,
     },
-    runtime::LiquidParquetRecordBatchStream,
+    runtime::LiquidParquetRecordBatchStreamBuilder,
 };
 
 pub struct LiquidParquetOpener {
@@ -112,9 +112,9 @@ impl FileOpener for LiquidParquetOpener {
             );
 
             // Filter pushdown: evaluate predicates during scan
-            if let Some(predicate) = predicate {
+            let row_filter = predicate.as_ref().and_then(|p| {
                 let row_filter = row_filter::build_row_filter(
-                    &predicate,
+                    p,
                     &file_schema,
                     &table_schema,
                     builder.metadata(),
@@ -124,18 +124,17 @@ impl FileOpener for LiquidParquetOpener {
                 );
 
                 match row_filter {
-                    Ok(Some(filter)) => {
-                        builder = builder.with_row_filter(filter);
-                    }
-                    Ok(None) => {}
+                    Ok(Some(filter)) => Some(filter),
+                    Ok(None) => None,
                     Err(e) => {
                         debug!(
                             "Ignoring error building row filter for '{:?}': {}",
                             predicate, e
                         );
+                        None
                     }
-                };
-            };
+                }
+            });
 
             // Determine which row groups to actually read. The idea is to skip
             // as many row groups as possible based on the metadata and query
@@ -197,13 +196,19 @@ impl FileOpener for LiquidParquetOpener {
                 builder = builder.with_limit(limit)
             }
 
-            let stream = builder
+            let builder = builder
                 .with_projection(mask)
                 .with_batch_size(batch_size)
-                .with_row_groups(row_group_indexes)
-                .build()?;
+                .with_row_groups(row_group_indexes);
 
-            let stream = LiquidParquetRecordBatchStream::from_parquet(stream);
+            let mut liquid_builder =
+                unsafe { LiquidParquetRecordBatchStreamBuilder::from_parquet(builder) };
+
+            if let Some(row_filter) = row_filter {
+                liquid_builder = liquid_builder.with_row_filter(row_filter);
+            }
+
+            let stream = liquid_builder.build()?;
 
             let adapted = stream
                 .map_err(|e| ArrowError::ExternalError(Box::new(e)))

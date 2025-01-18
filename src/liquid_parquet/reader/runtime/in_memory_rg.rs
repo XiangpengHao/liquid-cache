@@ -16,12 +16,33 @@ use parquet::{
     },
 };
 
+use super::record_batch_reader::{CachedPageReader, PredicatePageCache};
+
 /// An in-memory collection of column chunks
 pub(super) struct InMemoryRowGroup<'a> {
     pub(super) metadata: &'a RowGroupMetaData,
     pub(super) offset_index: Option<&'a [OffsetIndexMetaData]>,
     pub(super) column_chunks: Vec<Option<Arc<ColumnChunkData>>>,
     pub(super) row_count: usize,
+    pub(super) cache: Arc<PredicatePageCache>,
+    pub(super) projection_to_cache: Option<ProjectionMask>,
+}
+
+impl<'a> InMemoryRowGroup<'a> {
+    pub(super) fn new(
+        metadata: &'a RowGroupMetaData,
+        offset_index: Option<&'a [OffsetIndexMetaData]>,
+        projection_to_cache: Option<ProjectionMask>,
+    ) -> Self {
+        Self {
+            metadata,
+            offset_index,
+            column_chunks: vec![None; metadata.columns().len()],
+            row_count: metadata.num_rows() as usize,
+            projection_to_cache,
+            cache: Arc::new(PredicatePageCache::new()),
+        }
+    }
 }
 
 impl InMemoryRowGroup<'_> {
@@ -136,12 +157,32 @@ impl RowGroups for InMemoryRowGroup<'_> {
                     // filter out empty offset indexes (old versions specified Some(vec![]) when no present)
                     .filter(|index| !index.is_empty())
                     .map(|index| index[i].page_locations.clone());
-                let page_reader: Box<dyn PageReader> = Box::new(SerializedPageReader::new(
-                    data.clone(),
-                    self.metadata.column(i),
-                    self.row_count,
-                    page_locations,
-                )?);
+
+                let cached_reader = if let Some(projection_to_cache) = &self.projection_to_cache {
+                    projection_to_cache.leaf_included(i)
+                } else {
+                    false
+                };
+
+                let page_reader: Box<dyn PageReader> = if cached_reader {
+                    Box::new(CachedPageReader::new(
+                        SerializedPageReader::new(
+                            data.clone(),
+                            self.metadata.column(i),
+                            self.row_count,
+                            page_locations,
+                        )?,
+                        self.cache.clone(),
+                        i,
+                    ))
+                } else {
+                    Box::new(SerializedPageReader::new(
+                        data.clone(),
+                        self.metadata.column(i),
+                        self.row_count,
+                        page_locations,
+                    )?)
+                };
 
                 Ok(Box::new(ColumnChunkIterator {
                     reader: Some(Ok(page_reader)),

@@ -143,7 +143,7 @@ impl FlightSqlService for SplitSqlService {
             panic!("Error executing plan: {:?}", e);
         });
 
-        let ipc_options = IpcWriteOptions::default().with_preserve_dict_id(false);
+        let ipc_options = IpcWriteOptions::default();
         let stream = FlightDataEncoderBuilder::new()
             .with_options(ipc_options)
             .build(stream)

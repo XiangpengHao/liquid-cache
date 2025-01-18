@@ -6,26 +6,25 @@ use std::{
     task::{Context, Poll},
 };
 
-use arrow::{
-    array::{Array, RecordBatch},
-    compute::prep_null_mask_filter,
-};
-use arrow_schema::SchemaRef;
+use arrow::array::RecordBatch;
+use arrow_schema::{DataType, Fields, Schema, SchemaRef};
 use futures::{future::BoxFuture, ready, FutureExt, Stream};
 use in_memory_rg::InMemoryRowGroup;
 use parquet::{
     arrow::{
-        array_reader::ArrayReader,
-        arrow_reader::{ArrowPredicate, ParquetRecordBatchReader, RowSelection, RowSelector},
-        async_reader::{AsyncFileReader, ParquetRecordBatchStream},
+        array_reader::build_array_reader,
+        arrow_reader::{ArrowPredicate, ArrowReaderBuilder, RowSelection, RowSelector},
+        async_reader::AsyncFileReader,
         ProjectionMask,
     },
     errors::ParquetError,
     file::metadata::ParquetMetaData,
 };
 use parquet_bridge::{
-    limit_row_selection, offset_row_selection, ParquetField, ParquetRecordBatchReaderInner,
+    intersect_projection_mask, limit_row_selection, offset_row_selection, union_projection_mask,
+    ParquetField,
 };
+use record_batch_reader::FilteredParquetRecordBatchReader;
 
 mod in_memory_rg;
 mod parquet_bridge;
@@ -35,7 +34,13 @@ pub struct LiquidRowFilter {
     pub(crate) predicates: Vec<Box<dyn ArrowPredicate>>,
 }
 
-type ReadResult = Result<(ReaderFactory, Option<ParquetRecordBatchReader>), ParquetError>;
+impl LiquidRowFilter {
+    pub fn new(predicates: Vec<Box<dyn ArrowPredicate>>) -> Self {
+        Self { predicates }
+    }
+}
+
+type ReadResult = Result<(ReaderFactory, Option<FilteredParquetRecordBatchReader>), ParquetError>;
 
 struct ReaderFactory {
     metadata: Arc<ParquetMetaData>,
@@ -69,42 +74,48 @@ impl ReaderFactory {
             .filter(|index| index.first().map(|v| !v.is_empty()).unwrap_or(false))
             .map(|x| x[row_group_idx].as_slice());
 
-        let mut row_group = InMemoryRowGroup {
-            metadata: meta,
-            row_count: meta.num_rows() as usize,
-            column_chunks: vec![None; meta.columns().len()],
-            offset_index,
-        };
+        let mut predicate_projection: Option<ProjectionMask> = None;
+        if let Some(filter) = self.filter.as_mut() {
+            for predicate in filter.predicates.iter_mut() {
+                let p_projection = predicate.projection();
+                if let Some(ref mut p) = predicate_projection {
+                    union_projection_mask(p, p_projection);
+                } else {
+                    predicate_projection = Some(p_projection.clone());
+                }
+            }
+        }
+        let projection_to_cache = predicate_projection.map(|mut p| {
+            intersect_projection_mask(&mut p, &projection);
+            p
+        });
+
+        let mut row_group = InMemoryRowGroup::new(meta, offset_index, projection_to_cache);
 
         let mut selection =
             selection.unwrap_or_else(|| vec![RowSelector::select(row_group.row_count)].into());
 
+        let mut filter_readers = Vec::new();
         if let Some(filter) = self.filter.as_mut() {
             for predicate in filter.predicates.iter_mut() {
                 if !selection.selects_any() {
                     return Ok((self, None));
                 }
 
-                let predicate_projection = predicate.projection();
+                let p_projection = predicate.projection();
                 row_group
-                    .fetch(&mut self.input, predicate_projection, Some(&selection))
+                    .fetch(&mut self.input, p_projection, Some(&selection))
                     .await?;
 
-                let array_reader = parquet::arrow::array_reader::build_array_reader(
+                let array_reader = build_array_reader(
                     #[allow(clippy::missing_transmute_annotations)]
                     unsafe {
                         std::mem::transmute(self.fields.as_deref())
                     },
-                    predicate_projection,
+                    p_projection,
                     &row_group,
                 )?;
-
-                selection = evaluate_predicate(
-                    batch_size,
-                    array_reader,
-                    Some(selection),
-                    predicate.as_mut(),
-                )?;
+                filter_readers.push(array_reader);
             }
         }
 
@@ -143,65 +154,31 @@ impl ReaderFactory {
             .fetch(&mut self.input, &projection, Some(&selection))
             .await?;
 
-        let reader = ParquetRecordBatchReaderInner::new_parquet(
+        let array_reader = build_array_reader(
+            #[allow(clippy::missing_transmute_annotations)]
+            unsafe {
+                std::mem::transmute(self.fields.as_deref())
+            },
+            &projection,
+            &row_group,
+        )?;
+        let reader = FilteredParquetRecordBatchReader::new(
             batch_size,
-            parquet::arrow::array_reader::build_array_reader(
-                #[allow(clippy::missing_transmute_annotations)]
-                unsafe {
-                    std::mem::transmute(self.fields.as_deref())
-                },
-                &projection,
-                &row_group,
-            )?,
-            Some(selection),
+            array_reader,
+            selection,
+            filter_readers,
+            self.filter.take(),
         );
 
         Ok((self, Some(reader)))
     }
 }
 
-pub(crate) fn evaluate_predicate(
-    batch_size: usize,
-    array_reader: Box<dyn ArrayReader>,
-    input_selection: Option<RowSelection>,
-    predicate: &mut dyn ArrowPredicate,
-) -> Result<RowSelection, ParquetError> {
-    let reader = ParquetRecordBatchReaderInner::new_parquet(
-        batch_size,
-        array_reader,
-        input_selection.clone(),
-    );
-    let mut filters = vec![];
-    for maybe_batch in reader {
-        let maybe_batch = maybe_batch?;
-        let input_rows = maybe_batch.num_rows();
-        let filter = predicate.evaluate(maybe_batch)?;
-        // Since user supplied predicate, check error here to catch bugs quickly
-        if filter.len() != input_rows {
-            return Err(ParquetError::ArrowError(
-                format! {"ArrowPredicate predicate returned {} rows, expected {input_rows}",
-                        filter.len(),
-                },
-            ));
-        }
-        match filter.null_count() {
-            0 => filters.push(filter),
-            _ => filters.push(prep_null_mask_filter(&filter)),
-        };
-    }
-
-    let raw = RowSelection::from_filters(&filters);
-    Ok(match input_selection {
-        Some(selection) => selection.and_then(&raw),
-        None => raw,
-    })
-}
-
 enum StreamState {
     /// At the start of a new row group, or the end of the parquet stream
     Init,
     /// Decoding a batch
-    Decoding(ParquetRecordBatchReader),
+    Decoding(FilteredParquetRecordBatchReader),
     /// Reading data from input
     Reading(BoxFuture<'static, ReadResult>),
     /// Error
@@ -216,6 +193,101 @@ impl std::fmt::Debug for StreamState {
             StreamState::Reading(_) => write!(f, "StreamState::Reading"),
             StreamState::Error => write!(f, "StreamState::Error"),
         }
+    }
+}
+
+pub struct LiquidParquetRecordBatchStreamBuilder {
+    pub(crate) input: Box<dyn AsyncFileReader>,
+
+    pub(crate) metadata: Arc<ParquetMetaData>,
+
+    #[allow(unused)]
+    pub(crate) schema: SchemaRef,
+
+    pub(crate) fields: Option<Arc<ParquetField>>,
+
+    pub(crate) batch_size: usize,
+
+    pub(crate) row_groups: Option<Vec<usize>>,
+
+    pub(crate) projection: ProjectionMask,
+
+    pub(crate) filter: Option<LiquidRowFilter>,
+
+    pub(crate) selection: Option<RowSelection>,
+
+    pub(crate) limit: Option<usize>,
+
+    pub(crate) offset: Option<usize>,
+}
+
+use parquet::arrow::async_reader::AsyncReader;
+
+impl LiquidParquetRecordBatchStreamBuilder {
+    pub(crate) unsafe fn from_parquet(
+        builder: ArrowReaderBuilder<AsyncReader<Box<dyn AsyncFileReader>>>,
+    ) -> Self {
+        #[allow(clippy::missing_transmute_annotations)]
+        unsafe {
+            std::mem::transmute(builder)
+        }
+    }
+
+    pub fn with_row_filter(mut self, filter: LiquidRowFilter) -> Self {
+        self.filter = Some(filter);
+        self
+    }
+
+    pub fn build(self) -> Result<LiquidParquetRecordBatchStream, ParquetError> {
+        let num_row_groups = self.metadata.row_groups().len();
+
+        let row_groups: VecDeque<usize> = match self.row_groups {
+            Some(row_groups) => {
+                if let Some(col) = row_groups.iter().find(|x| **x >= num_row_groups) {
+                    return Err(ParquetError::ArrowError(format!(
+                        "row group {} out of bounds 0..{}",
+                        col, num_row_groups
+                    )));
+                }
+                row_groups.into()
+            }
+            None => (0..self.metadata.row_groups().len()).collect(),
+        };
+
+        let batch_size = self
+            .batch_size
+            .min(self.metadata.file_metadata().num_rows() as usize);
+
+        let reader = ReaderFactory {
+            input: self.input,
+            filter: self.filter,
+            metadata: self.metadata.clone(),
+            fields: self.fields,
+            limit: self.limit,
+            offset: self.offset,
+        };
+
+        // Ensure schema of ParquetRecordBatchStream respects projection, and does
+        // not store metadata (same as for ParquetRecordBatchReader and emitted RecordBatches)
+        let projected_fields = match reader.fields.as_deref().map(|pf| &pf.arrow_type) {
+            Some(DataType::Struct(fields)) => {
+                fields.filter_leaves(|idx, _| self.projection.leaf_included(idx))
+            }
+            None => Fields::empty(),
+            _ => unreachable!("Must be Struct for root type"),
+        };
+        let schema = Arc::new(Schema::new(projected_fields));
+
+        Ok(LiquidParquetRecordBatchStream {
+            metadata: self.metadata.clone(),
+            schema: schema.clone(),
+            row_groups,
+            projection: self.projection,
+            batch_size,
+            selection: self.selection,
+            reader: Some(reader),
+            state: StreamState::Init,
+        })
     }
 }
 
@@ -250,15 +322,6 @@ impl std::fmt::Debug for LiquidParquetRecordBatchStream {
     }
 }
 
-impl LiquidParquetRecordBatchStream {
-    pub fn from_parquet(stream: ParquetRecordBatchStream<Box<dyn AsyncFileReader>>) -> Self {
-        #[allow(clippy::missing_transmute_annotations)]
-        unsafe {
-            std::mem::transmute(stream)
-        }
-    }
-}
-
 impl Stream for LiquidParquetRecordBatchStream {
     type Item = Result<RecordBatch, parquet::errors::ParquetError>;
 
@@ -273,7 +336,12 @@ impl Stream for LiquidParquetRecordBatchStream {
                         self.state = StreamState::Error;
                         return Poll::Ready(Some(Err(ParquetError::ArrowError(e.to_string()))));
                     }
-                    None => self.state = StreamState::Init,
+                    None => {
+                        // this is ugly, but works for now.
+                        let filter = batch_reader.take_filter();
+                        self.reader.as_mut().unwrap().filter = filter;
+                        self.state = StreamState::Init
+                    }
                 },
                 StreamState::Init => {
                     let row_group_idx = match self.row_groups.pop_front() {

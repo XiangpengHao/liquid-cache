@@ -86,6 +86,8 @@ use datafusion::physical_expr::expressions::{Column, Literal};
 use datafusion::physical_expr::utils::reassign_predicate_columns;
 use datafusion::physical_expr::{split_conjunction, PhysicalExpr};
 
+use crate::liquid_parquet::reader::runtime::LiquidRowFilter;
+
 /// A "compiled" predicate passed to `ParquetRecordBatchStream` to perform
 /// row-level filtering during parquet decoding.
 ///
@@ -518,7 +520,7 @@ pub fn build_row_filter(
     reorder_predicates: bool,
     file_metrics: &ParquetFileMetrics,
     schema_mapping: Arc<dyn SchemaMapper>,
-) -> Result<Option<RowFilter>> {
+) -> Result<Option<LiquidRowFilter>> {
     let rows_pruned = &file_metrics.pushdown_rows_pruned;
     let rows_matched = &file_metrics.pushdown_rows_matched;
     let time = &file_metrics.row_pushdown_eval_time;
@@ -565,5 +567,5 @@ pub fn build_row_filter(
             .map(|pred| Box::new(pred) as _)
         })
         .collect::<Result<Vec<_>, _>>()
-        .map(|filters| Some(RowFilter::new(filters)))
+        .map(|filters| Some(LiquidRowFilter::new(filters)))
 }

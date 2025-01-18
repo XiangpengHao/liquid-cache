@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use parquet::arrow::array_reader::ArrayReader;
-use parquet::arrow::arrow_reader::{RowSelection, RowSelector};
+use parquet::arrow::arrow_reader::{RowFilter, RowSelection, RowSelector};
+use parquet::file::metadata::ParquetMetaData;
 use parquet::schema::types::TypePtr;
 
 /// Representation of a parquet schema element, in terms of arrow schema elements
@@ -160,4 +161,91 @@ pub(super) fn limit_row_selection(selection: RowSelection, mut limit: usize) -> 
         }
     }
     RowSelection::from(selectors)
+}
+
+struct ProjectionMask {
+    mask: Option<Vec<bool>>,
+}
+
+impl ProjectionMask {
+    /// Union two projection masks
+    ///
+    /// Example:
+    /// ```text
+    /// mask1 = [true, false, true]
+    /// mask2 = [false, true, true]
+    /// union(mask1, mask2) = [true, true, true]
+    /// ```
+    pub fn union(&mut self, other: &Self) {
+        match (self.mask.as_ref(), other.mask.as_ref()) {
+            (None, _) | (_, None) => self.mask = None,
+            (Some(a), Some(b)) => {
+                debug_assert_eq!(a.len(), b.len());
+                let mask = a.iter().zip(b.iter()).map(|(&a, &b)| a || b).collect();
+                self.mask = Some(mask);
+            }
+        }
+    }
+
+    /// Intersect two projection masks
+    ///
+    /// Example:
+    /// ```text
+    /// mask1 = [true, false, true]
+    /// mask2 = [false, true, true]
+    /// intersect(mask1, mask2) = [false, false, true]
+    /// ```
+    pub fn intersect(&mut self, other: &Self) {
+        match (self.mask.as_ref(), other.mask.as_ref()) {
+            (None, _) => self.mask = other.mask.clone(),
+            (_, None) => {}
+            (Some(a), Some(b)) => {
+                debug_assert_eq!(a.len(), b.len());
+                let mask = a.iter().zip(b.iter()).map(|(&a, &b)| a && b).collect();
+                self.mask = Some(mask);
+            }
+        }
+    }
+}
+
+pub(super) fn intersect_projection_mask(
+    projection: &mut parquet::arrow::ProjectionMask,
+    other: &parquet::arrow::ProjectionMask,
+) {
+    let project_inner: &mut ProjectionMask = unsafe { std::mem::transmute(projection) };
+    let other_inner: &ProjectionMask = unsafe { std::mem::transmute(other) };
+    project_inner.intersect(other_inner);
+}
+
+pub(super) fn union_projection_mask(
+    projection: &mut parquet::arrow::ProjectionMask,
+    other: &parquet::arrow::ProjectionMask,
+) {
+    let project_inner: &mut ProjectionMask = unsafe { std::mem::transmute(projection) };
+    let other_inner: &ProjectionMask = unsafe { std::mem::transmute(other) };
+    project_inner.union(other_inner);
+}
+
+pub struct ArrowReaderBuilderBridge {
+    pub(crate) input: Box<dyn ArrayReader>,
+
+    pub(crate) metadata: Arc<ParquetMetaData>,
+
+    pub(crate) schema: SchemaRef,
+
+    pub(crate) fields: Option<Arc<ParquetField>>,
+
+    pub(crate) batch_size: usize,
+
+    pub(crate) row_groups: Option<Vec<usize>>,
+
+    projection: ProjectionMask,
+
+    pub(crate) filter: Option<RowFilter>,
+
+    pub(crate) selection: Option<RowSelection>,
+
+    pub(crate) limit: Option<usize>,
+
+    pub(crate) offset: Option<usize>,
 }
