@@ -29,7 +29,7 @@ use crate::liquid_parquet::reader::{
         page_filter::PagePruningAccessPlanFilter, row_filter,
         row_group_filter::RowGroupAccessPlanFilter,
     },
-    runtime::LiquidParquetRecordBatchStreamBuilder,
+    runtime::LiquidStreamBuilder,
 };
 
 pub struct LiquidParquetOpener {
@@ -202,7 +202,7 @@ impl FileOpener for LiquidParquetOpener {
                 .with_row_groups(row_group_indexes);
 
             let mut liquid_builder =
-                unsafe { LiquidParquetRecordBatchStreamBuilder::from_parquet(builder) };
+                unsafe { LiquidStreamBuilder::from_parquet(builder) };
 
             if let Some(row_filter) = row_filter {
                 liquid_builder = liquid_builder.with_row_filter(row_filter);

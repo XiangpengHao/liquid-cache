@@ -196,7 +196,7 @@ impl std::fmt::Debug for StreamState {
     }
 }
 
-pub struct LiquidParquetRecordBatchStreamBuilder {
+pub struct LiquidStreamBuilder {
     pub(crate) input: Box<dyn AsyncFileReader>,
 
     pub(crate) metadata: Arc<ParquetMetaData>,
@@ -223,7 +223,7 @@ pub struct LiquidParquetRecordBatchStreamBuilder {
 
 use parquet::arrow::async_reader::AsyncReader;
 
-impl LiquidParquetRecordBatchStreamBuilder {
+impl LiquidStreamBuilder {
     pub(crate) unsafe fn from_parquet(
         builder: ArrowReaderBuilder<AsyncReader<Box<dyn AsyncFileReader>>>,
     ) -> Self {
@@ -238,7 +238,7 @@ impl LiquidParquetRecordBatchStreamBuilder {
         self
     }
 
-    pub fn build(self) -> Result<LiquidParquetRecordBatchStream, ParquetError> {
+    pub fn build(self) -> Result<LiquidStream, ParquetError> {
         let num_row_groups = self.metadata.row_groups().len();
 
         let row_groups: VecDeque<usize> = match self.row_groups {
@@ -278,7 +278,7 @@ impl LiquidParquetRecordBatchStreamBuilder {
         };
         let schema = Arc::new(Schema::new(projected_fields));
 
-        Ok(LiquidParquetRecordBatchStream {
+        Ok(LiquidStream {
             metadata: self.metadata.clone(),
             schema: schema.clone(),
             row_groups,
@@ -291,7 +291,7 @@ impl LiquidParquetRecordBatchStreamBuilder {
     }
 }
 
-pub struct LiquidParquetRecordBatchStream {
+pub struct LiquidStream {
     metadata: Arc<ParquetMetaData>,
 
     schema: SchemaRef,
@@ -310,7 +310,7 @@ pub struct LiquidParquetRecordBatchStream {
     state: StreamState,
 }
 
-impl std::fmt::Debug for LiquidParquetRecordBatchStream {
+impl std::fmt::Debug for LiquidStream {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ParquetRecordBatchStream")
             .field("metadata", &self.metadata)
@@ -322,7 +322,7 @@ impl std::fmt::Debug for LiquidParquetRecordBatchStream {
     }
 }
 
-impl Stream for LiquidParquetRecordBatchStream {
+impl Stream for LiquidStream {
     type Item = Result<RecordBatch, parquet::errors::ParquetError>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
