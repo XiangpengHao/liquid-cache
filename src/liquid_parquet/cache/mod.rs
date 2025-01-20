@@ -1,5 +1,4 @@
 #![allow(unused)]
-
 use ahash::AHashMap;
 use arrow::array::AsArray;
 use arrow::array::{ArrayRef, BooleanArray, RecordBatch, RecordBatchWriter};
@@ -30,8 +29,7 @@ use arrow::array::types::{
     UInt64Type as ArrowUInt64Type, UInt8Type as ArrowUInt8Type,
 };
 
-static ARROW_ARRAY_CACHE: LazyLock<ArrowArrayCache> =
-    LazyLock::new(ArrowArrayCache::initialize_from_env);
+static ARROW_ARRAY_CACHE: LazyLock<LiquidCache> = LazyLock::new(LiquidCache::initialize_from_env);
 
 static ARROW_DISK_CACHE_PATH: &str = "target/arrow_disk_cache.etc";
 
@@ -213,25 +211,22 @@ impl ArrayIdentifier {
 /// CacheType is used to identify the type of cache.
 #[derive(Debug, serde::Serialize)]
 pub enum CacheType {
-    /// InMemory cache
     InMemory,
-    /// OnDisk cache
     OnDisk,
-    /// Vortex cache
-    Vortex,
-    /// Etc cache
     Etc,
 }
 
 /// ArrowArrayCache is used to cache arrow arrays in memory, on disk, or in a vortex.
-pub struct ArrowArrayCache {
+pub struct LiquidCache {
     /// Vec of RwLocks, where index is the row group index and value is the ColumnMapping
     value: Vec<OrderedRwLock<LockColumnMapping, Columns>>,
     cache_mode: CacheMode,
     batch_size: usize,
 }
 
-impl ArrowArrayCache {
+pub type LiquidCacheRef = Arc<LiquidCache>;
+
+impl LiquidCache {
     fn initialize_from_env() -> Self {
         let cache_mode = std::env::var("ARROW_CACHE_MODE").map_or(CacheMode::NoCache, |v| match v
             .to_lowercase()
@@ -244,21 +239,21 @@ impl ArrowArrayCache {
             "nocache" => CacheMode::NoCache,
             "etc" => CacheMode::Etc(EtcCompressorStates::new()),
             _ => panic!(
-                "Invalid cache mode: {}, must be one of [disk, inmemory, nocache, vortex, etc]",
+                "Invalid cache mode: {}, must be one of [disk, inmemory, nocache, etc]",
                 v
             ),
         });
 
         println!("Initializing ArrowArrayCache with {:?}", cache_mode);
 
-        ArrowArrayCache::new(cache_mode, 8192)
+        LiquidCache::new(cache_mode, 8192)
     }
 
     /// Create a new ArrowArrayCache.
     fn new(cache_mode: CacheMode, batch_size: usize) -> Self {
         assert!(batch_size.is_power_of_two());
         const MAX_ROW_GROUPS: usize = 512;
-        ArrowArrayCache {
+        LiquidCache {
             value: (0..MAX_ROW_GROUPS)
                 .map(|_| OrderedRwLock::new(Columns::new()))
                 .collect(),
@@ -268,7 +263,7 @@ impl ArrowArrayCache {
     }
 
     /// Get the static ArrowArrayCache.
-    pub fn get() -> &'static ArrowArrayCache {
+    pub fn get() -> &'static LiquidCache {
         &ARROW_ARRAY_CACHE
     }
 
@@ -356,7 +351,7 @@ impl ArrowArrayCache {
         let selection_count = selection.row_count();
         let total_row_count = selection.len();
         let is_selective = (selection_count * 16) < total_row_count;
-        let iter = ArrowArrayCache::get().get_record_batches_by_filter(
+        let iter = LiquidCache::get().get_record_batches_by_filter(
             row_group_id,
             selection,
             schema,

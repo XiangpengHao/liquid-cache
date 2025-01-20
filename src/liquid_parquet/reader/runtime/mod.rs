@@ -8,24 +8,28 @@ use std::{
 
 use arrow::array::RecordBatch;
 use arrow_schema::{DataType, Fields, Schema, SchemaRef};
+use cached_array_reader::build_array_reader;
 use futures::{future::BoxFuture, ready, FutureExt, Stream};
 use in_memory_rg::InMemoryRowGroup;
 use parquet::{
     arrow::{
-        array_reader::build_array_reader,
-        arrow_reader::{ArrowPredicate, ArrowReaderBuilder, RowSelection, RowSelector},
+        arrow_reader::{ArrowPredicate, RowSelection, RowSelector},
         async_reader::AsyncFileReader,
         ProjectionMask,
     },
     errors::ParquetError,
     file::metadata::ParquetMetaData,
 };
+pub(crate) use parquet_bridge::ArrowReaderBuilderBridge;
 use parquet_bridge::{
     intersect_projection_mask, limit_row_selection, offset_row_selection, union_projection_mask,
     ParquetField,
 };
-use record_batch_reader::FilteredParquetRecordBatchReader;
+use record_batch_reader::LiquidRecordBatchReader;
 
+use crate::liquid_parquet::cache::LiquidCacheRef;
+
+mod cached_array_reader;
 mod in_memory_rg;
 mod parquet_bridge;
 mod record_batch_reader;
@@ -40,7 +44,7 @@ impl LiquidRowFilter {
     }
 }
 
-type ReadResult = Result<(ReaderFactory, Option<FilteredParquetRecordBatchReader>), ParquetError>;
+type ReadResult = Result<(ReaderFactory, Option<LiquidRecordBatchReader>), ParquetError>;
 
 struct ReaderFactory {
     metadata: Arc<ParquetMetaData>,
@@ -54,6 +58,8 @@ struct ReaderFactory {
     limit: Option<usize>,
 
     offset: Option<usize>,
+
+    liquid_cache: Option<LiquidCacheRef>,
 }
 
 impl ReaderFactory {
@@ -108,12 +114,10 @@ impl ReaderFactory {
                     .await?;
 
                 let array_reader = build_array_reader(
-                    #[allow(clippy::missing_transmute_annotations)]
-                    unsafe {
-                        std::mem::transmute(self.fields.as_deref())
-                    },
-                    p_projection,
+                    self.fields.as_deref(),
+                    &p_projection,
                     &row_group,
+                    row_group_idx,
                 )?;
                 filter_readers.push(array_reader);
             }
@@ -155,19 +159,19 @@ impl ReaderFactory {
             .await?;
 
         let array_reader = build_array_reader(
-            #[allow(clippy::missing_transmute_annotations)]
-            unsafe {
-                std::mem::transmute(self.fields.as_deref())
-            },
+            self.fields.as_deref(),
             &projection,
             &row_group,
+            row_group_idx,
         )?;
-        let reader = FilteredParquetRecordBatchReader::new(
+
+        let reader = LiquidRecordBatchReader::new(
             batch_size,
             array_reader,
             selection,
             filter_readers,
             self.filter.take(),
+            self.liquid_cache.clone(),
         );
 
         Ok((self, Some(reader)))
@@ -178,7 +182,7 @@ enum StreamState {
     /// At the start of a new row group, or the end of the parquet stream
     Init,
     /// Decoding a batch
-    Decoding(FilteredParquetRecordBatchReader),
+    Decoding(LiquidRecordBatchReader),
     /// Reading data from input
     Reading(BoxFuture<'static, ReadResult>),
     /// Error
@@ -201,9 +205,6 @@ pub struct LiquidStreamBuilder {
 
     pub(crate) metadata: Arc<ParquetMetaData>,
 
-    #[allow(unused)]
-    pub(crate) schema: SchemaRef,
-
     pub(crate) fields: Option<Arc<ParquetField>>,
 
     pub(crate) batch_size: usize,
@@ -219,20 +220,11 @@ pub struct LiquidStreamBuilder {
     pub(crate) limit: Option<usize>,
 
     pub(crate) offset: Option<usize>,
+
+    pub(crate) liquid_cache: Option<LiquidCacheRef>,
 }
 
-use parquet::arrow::async_reader::AsyncReader;
-
 impl LiquidStreamBuilder {
-    pub(crate) unsafe fn from_parquet(
-        builder: ArrowReaderBuilder<AsyncReader<Box<dyn AsyncFileReader>>>,
-    ) -> Self {
-        #[allow(clippy::missing_transmute_annotations)]
-        unsafe {
-            std::mem::transmute(builder)
-        }
-    }
-
     pub fn with_row_filter(mut self, filter: LiquidRowFilter) -> Self {
         self.filter = Some(filter);
         self
@@ -265,6 +257,7 @@ impl LiquidStreamBuilder {
             fields: self.fields,
             limit: self.limit,
             offset: self.offset,
+            liquid_cache: self.liquid_cache,
         };
 
         // Ensure schema of ParquetRecordBatchStream respects projection, and does

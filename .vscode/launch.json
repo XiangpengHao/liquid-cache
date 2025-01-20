@@ -7,7 +7,7 @@
 		{
 			"type": "lldb",
 			"request": "launch",
-			"name": "Debug example 'client'",
+			"name": "Example - client",
 			"cargo": {
 				"args": [
 					"build",
@@ -21,6 +21,24 @@
 			},
 			"args": [],
 			"cwd": "${workspaceFolder}"
+		},
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "Example - server",
+			"cargo": {
+				"args": [
+					"build",
+					"--example=server",
+					"--package=datafusion-cache"
+				],
+				"filter": {
+					"name": "server",
+					"kind": "example"
+				}
+			},
+			"args": [],
+			"cwd": "${workspaceFolder}",
 		}
 	]
 }

@@ -6,11 +6,11 @@ use arrow::compute::concat_batches;
 use arrow_schema::{DataType, Field, Fields, Schema, SchemaRef};
 use parquet::arrow::arrow_reader::{ArrowPredicate, RowSelector};
 
-use super::{ArrayIdentifier, ArrowArrayCache, BooleanSelection};
+use super::{ArrayIdentifier, LiquidCache, BooleanSelection};
 
 /// Iterator over `RecordBatch` for `get_record_batch_by_slice`.
 pub struct SlicedRecordBatchIter<'a> {
-    cache: &'a ArrowArrayCache,
+    cache: &'a LiquidCache,
     row_group_id: usize,
     selection: VecDeque<RowSelector>,
     schema: SchemaRef,
@@ -22,7 +22,7 @@ pub struct SlicedRecordBatchIter<'a> {
 
 impl<'a> SlicedRecordBatchIter<'a> {
     pub(crate) fn new(
-        cache: &'a ArrowArrayCache,
+        cache: &'a LiquidCache,
         row_group_id: usize,
         selection: VecDeque<RowSelector>,
         mut schema: SchemaRef,
@@ -106,7 +106,7 @@ impl Iterator for SlicedRecordBatchIter<'_> {
 
 /// Iterator that yields coalesced `RecordBatch` items.
 pub struct TakeRecordBatchIter<'a> {
-    cache: &'a ArrowArrayCache,
+    cache: &'a LiquidCache,
     row_group_id: usize,
     selection: VecDeque<RowSelector>,
     schema: SchemaRef,
@@ -119,7 +119,7 @@ pub struct TakeRecordBatchIter<'a> {
 
 impl<'a> TakeRecordBatchIter<'a> {
     pub(crate) fn new(
-        cache: &'a ArrowArrayCache,
+        cache: &'a LiquidCache,
         row_group_id: usize,
         selection: VecDeque<RowSelector>,
         mut schema: SchemaRef,
@@ -293,7 +293,7 @@ impl<T: Iterator<Item = RecordBatch> + Send> Iterator for CoalescedIter<T> {
 
 /// BooleanSelectionIter is an iterator that yields record batches based on a boolean selection.
 pub struct BooleanSelectionIter<'a> {
-    cache: &'a ArrowArrayCache,
+    cache: &'a LiquidCache,
     selection: BooleanSelection,
     row_group_id: usize,
     schema: SchemaRef,
@@ -304,7 +304,7 @@ pub struct BooleanSelectionIter<'a> {
 
 impl<'a> BooleanSelectionIter<'a> {
     pub(crate) fn new(
-        cache: &'a ArrowArrayCache,
+        cache: &'a LiquidCache,
         row_group_id: usize,
         selection: BooleanSelection,
         mut schema: SchemaRef,
@@ -377,7 +377,7 @@ impl Iterator for BooleanSelectionIter<'_> {
 
 /// BooleanSelectionIter is an iterator that yields record batches based on a boolean selection.
 pub struct BooleanSelectionPredicateIter<'a, 'b: 'a> {
-    cache: &'a ArrowArrayCache,
+    cache: &'a LiquidCache,
     selection: &'b BooleanSelection,
     row_group_id: usize,
     schema: SchemaRef,
@@ -389,7 +389,7 @@ pub struct BooleanSelectionPredicateIter<'a, 'b: 'a> {
 
 impl<'a, 'b> BooleanSelectionPredicateIter<'a, 'b> {
     pub(crate) fn new(
-        cache: &'a ArrowArrayCache,
+        cache: &'a LiquidCache,
         row_group_id: usize,
         selection: &'b BooleanSelection,
         schema: SchemaRef,
@@ -456,7 +456,7 @@ mod tests {
     use parquet::arrow::arrow_reader::RowSelection;
     use std::sync::Arc;
 
-    fn set_up_cache() -> ArrowArrayCache {
+    fn set_up_cache() -> LiquidCache {
         /// Helper function to create a RecordBatch with a single Int32 column.
         fn create_record_batch(name: &str, num_rows: usize, start: i32) -> RecordBatch {
             let array = Int32Array::from_iter_values(start..(start + num_rows as i32));
@@ -464,7 +464,7 @@ mod tests {
             RecordBatch::try_new(schema, vec![Arc::new(array) as ArrayRef]).unwrap()
         }
 
-        let cache = ArrowArrayCache::new(CacheMode::InMemory, 32);
+        let cache = LiquidCache::new(CacheMode::InMemory, 32);
 
         let row_group_id = 0;
         let column_id = 0;

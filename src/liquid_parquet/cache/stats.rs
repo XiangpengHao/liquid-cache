@@ -3,7 +3,7 @@ use std::sync::{atomic::Ordering, Arc};
 use arrow::array::{DictionaryArray, RecordBatch, StringArray, UInt32Array, UInt64Array};
 use arrow_schema::{DataType, Field, Schema};
 
-use super::{ArrowArrayCache, CacheType, CachedValue, LockCtx};
+use super::{CacheType, CachedValue, LiquidCache, LockCtx};
 
 /// ArrowCacheStatistics is used to collect statistics about the arrow array cache.
 #[derive(Debug, serde::Serialize, Default)]
@@ -78,7 +78,6 @@ impl ArrowCacheStatistics {
             .map(|ct| match ct {
                 CacheType::InMemory => "InMemory",
                 CacheType::OnDisk => "OnDisk",
-                CacheType::Vortex => "Vortex",
                 CacheType::Etc => "Etc",
             })
             .collect();
@@ -117,7 +116,7 @@ impl ArrowCacheStatistics {
     }
 }
 
-impl ArrowArrayCache {
+impl LiquidCache {
     /// Collect statistics about the cache.
     pub fn stats(&self) -> ArrowCacheStatistics {
         let mut stats = ArrowCacheStatistics::new();

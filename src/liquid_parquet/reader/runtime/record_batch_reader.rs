@@ -24,6 +24,8 @@ use parquet::{
     errors::ParquetError,
 };
 
+use crate::liquid_parquet::cache::LiquidCacheRef;
+
 use super::LiquidRowFilter;
 
 fn read_selection(
@@ -74,23 +76,24 @@ fn take_next_selection(
     None
 }
 
-pub struct FilteredParquetRecordBatchReader {
+pub struct LiquidRecordBatchReader {
     batch_size: usize,
     array_reader: Box<dyn ArrayReader>,
     predicate_readers: Vec<Box<dyn ArrayReader>>,
     schema: SchemaRef,
     selection: VecDeque<RowSelector>,
     row_filter: Option<LiquidRowFilter>,
+    liquid_cache: Option<LiquidCacheRef>,
 }
 
-impl FilteredParquetRecordBatchReader {
-    #[allow(unused)]
+impl LiquidRecordBatchReader {
     pub(crate) fn new(
         batch_size: usize,
         array_reader: Box<dyn ArrayReader>,
         selection: RowSelection,
         filter_readers: Vec<Box<dyn ArrayReader>>,
         row_filter: Option<LiquidRowFilter>,
+        liquid_cache: Option<LiquidCacheRef>,
     ) -> Self {
         let schema = match array_reader.get_data_type() {
             DataType::Struct(ref fields) => Schema::new(fields.clone()),
@@ -104,6 +107,7 @@ impl FilteredParquetRecordBatchReader {
             schema: Arc::new(schema),
             selection: selection.into(),
             row_filter,
+            liquid_cache,
         }
     }
 
@@ -156,12 +160,8 @@ impl FilteredParquetRecordBatchReader {
             }
         }
     }
-}
 
-impl Iterator for FilteredParquetRecordBatchReader {
-    type Item = Result<RecordBatch, ArrowError>;
-
-    fn next(&mut self) -> Option<Self::Item> {
+    fn next_batch_inner(&mut self) -> Option<Result<RecordBatch, ArrowError>> {
         // With filter pushdown, it's very hard to predict the number of rows to return -- depends on the selectivity of the filter.
         // We can do one of the following:
         // 1. Add a coalescing step to coalesce the resulting batches.
@@ -210,7 +210,21 @@ impl Iterator for FilteredParquetRecordBatchReader {
     }
 }
 
-impl RecordBatchReader for FilteredParquetRecordBatchReader {
+impl Iterator for LiquidRecordBatchReader {
+    type Item = Result<RecordBatch, ArrowError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match &self.liquid_cache {
+            Some(cache) => {
+                std::hint::black_box(cache);
+                self.next_batch_inner()
+            }
+            None => self.next_batch_inner(),
+        }
+    }
+}
+
+impl RecordBatchReader for LiquidRecordBatchReader {
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
     }

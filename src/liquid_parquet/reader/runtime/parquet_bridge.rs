@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use parquet::arrow::array_reader::ArrayReader;
-use parquet::arrow::arrow_reader::{RowFilter, RowSelection, RowSelector};
+use parquet::arrow::arrow_reader::{ArrowReaderBuilder, RowFilter, RowSelection, RowSelector};
+use parquet::arrow::async_reader::AsyncFileReader;
 use parquet::file::metadata::ParquetMetaData;
 use parquet::schema::types::TypePtr;
 
@@ -163,7 +164,8 @@ pub(super) fn limit_row_selection(selection: RowSelection, mut limit: usize) -> 
     RowSelection::from(selectors)
 }
 
-struct ProjectionMask {
+#[derive(Debug, Clone)]
+pub struct ProjectionMask {
     mask: Option<Vec<bool>>,
 }
 
@@ -206,6 +208,10 @@ impl ProjectionMask {
             }
         }
     }
+
+    pub fn leaf_included(&self, leaf_idx: usize) -> bool {
+        self.mask.as_ref().map(|m| m[leaf_idx]).unwrap_or(true)
+    }
 }
 
 pub(super) fn intersect_projection_mask(
@@ -226,8 +232,12 @@ pub(super) fn union_projection_mask(
     project_inner.union(other_inner);
 }
 
+use parquet::arrow::async_reader::AsyncReader;
+
+use super::{LiquidStream, LiquidStreamBuilder};
+
 pub struct ArrowReaderBuilderBridge {
-    pub(crate) input: Box<dyn ArrayReader>,
+    pub(crate) input: AsyncReader<Box<dyn AsyncFileReader>>,
 
     pub(crate) metadata: Arc<ParquetMetaData>,
 
@@ -239,7 +249,7 @@ pub struct ArrowReaderBuilderBridge {
 
     pub(crate) row_groups: Option<Vec<usize>>,
 
-    projection: ProjectionMask,
+    pub(crate) projection: parquet::arrow::ProjectionMask,
 
     pub(crate) filter: Option<RowFilter>,
 
@@ -248,4 +258,48 @@ pub struct ArrowReaderBuilderBridge {
     pub(crate) limit: Option<usize>,
 
     pub(crate) offset: Option<usize>,
+}
+
+impl ArrowReaderBuilderBridge {
+    pub(crate) unsafe fn from_parquet(
+        builder: ArrowReaderBuilder<AsyncReader<Box<dyn AsyncFileReader>>>,
+    ) -> Self {
+        #[allow(clippy::missing_transmute_annotations)]
+        unsafe {
+            std::mem::transmute(builder)
+        }
+    }
+
+    pub(crate) fn into_liquid_builder(self) -> LiquidStreamBuilder {
+        let input: Box<dyn AsyncFileReader> = unsafe { std::mem::transmute(self.input) };
+        LiquidStreamBuilder {
+            input,
+            metadata: self.metadata,
+            fields: self.fields,
+            batch_size: self.batch_size,
+            row_groups: self.row_groups,
+            projection: self.projection,
+            filter: None,
+            selection: self.selection,
+            limit: self.limit,
+            offset: self.offset,
+            liquid_cache: None,
+        }
+    }
+}
+
+pub struct StructArrayReaderBridge {
+    pub children: Vec<Box<dyn ArrayReader>>,
+    pub data_type: DataType,
+    pub struct_def_level: i16,
+    pub struct_rep_level: i16,
+    pub nullable: bool,
+}
+
+use parquet::arrow::array_reader::StructArrayReader;
+
+impl StructArrayReaderBridge {
+    pub fn from_parquet(parquet: &mut StructArrayReader) -> &mut Self {
+        unsafe { std::mem::transmute(parquet) }
+    }
 }
