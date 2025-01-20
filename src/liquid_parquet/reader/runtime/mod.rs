@@ -115,7 +115,7 @@ impl ReaderFactory {
 
                 let array_reader = build_array_reader(
                     self.fields.as_deref(),
-                    &p_projection,
+                    p_projection,
                     &row_group,
                     row_group_idx,
                 )?;

@@ -165,12 +165,12 @@ fn instrument_array_reader(
 
     let bridged_reader = StructArrayReaderBridge::from_parquet(&mut struct_reader);
 
-    let children = std::mem::replace(&mut bridged_reader.children, vec![]);
+    let children = std::mem::take(&mut bridged_reader.children);
 
     assert_eq!(children.len(), column_ids.len());
     let instrumented_readers = column_ids
         .iter()
-        .zip(children.into_iter())
+        .zip(children)
         .map(|(column_id, reader)| {
             let reader = Box::new(CachedArrayReader::new(reader, row_group_idx, *column_id));
             reader as _
@@ -189,7 +189,10 @@ pub fn build_array_reader(
     row_group_idx: usize,
 ) -> Result<Box<dyn ArrayReader>, ParquetError> {
     let reader = parquet::arrow::array_reader::build_array_reader(
-        unsafe { std::mem::transmute(field) },
+        #[allow(clippy::missing_transmute_annotations)]
+        unsafe {
+            std::mem::transmute(field)
+        },
         projection,
         row_groups,
     )?;
