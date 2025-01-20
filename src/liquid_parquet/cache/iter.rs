@@ -6,7 +6,7 @@ use arrow::compute::concat_batches;
 use arrow_schema::{DataType, Field, Fields, Schema, SchemaRef};
 use parquet::arrow::arrow_reader::{ArrowPredicate, RowSelector};
 
-use super::{ArrayIdentifier, LiquidCache, BooleanSelection};
+use super::{ArrayIdentifier, BooleanSelection, LiquidCache};
 
 /// Iterator over `RecordBatch` for `get_record_batch_by_slice`.
 pub struct SlicedRecordBatchIter<'a> {
