@@ -87,7 +87,7 @@ impl ArrayReader for CachedArrayReader {
 
         let parquet_records = self.inner.consume_batch().unwrap();
 
-        if parquet_records.len() > 0 && cached_rows == 0 && parquet_count == 1 {
+        if !parquet_records.is_empty() && cached_rows == 0 && parquet_count == 1 {
             let row_id = self.current_row_id - parquet_records.len();
             let row_batch_id = row_id / 8192 * 8192;
 
