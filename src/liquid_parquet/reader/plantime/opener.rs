@@ -23,13 +23,16 @@ use parquet::arrow::{
     ParquetRecordBatchStreamBuilder, ProjectionMask,
 };
 
-use crate::liquid_parquet::reader::{
-    plantime::{
-        coerce_file_schema_to_string_type, coerce_file_schema_to_view_type,
-        page_filter::PagePruningAccessPlanFilter, row_filter,
-        row_group_filter::RowGroupAccessPlanFilter,
+use crate::liquid_parquet::{
+    cache::LiquidCacheRef,
+    reader::{
+        plantime::{
+            coerce_file_schema_to_string_type, coerce_file_schema_to_view_type,
+            page_filter::PagePruningAccessPlanFilter, row_filter,
+            row_group_filter::RowGroupAccessPlanFilter,
+        },
+        runtime::ArrowReaderBuilderBridge,
     },
-    runtime::ArrowReaderBuilderBridge,
 };
 
 pub struct LiquidParquetOpener {
@@ -44,6 +47,7 @@ pub struct LiquidParquetOpener {
     pub metrics: ExecutionPlanMetricsSet,
     pub parquet_file_reader_factory: Arc<dyn ParquetFileReaderFactory>,
     pub reorder_filters: bool,
+    pub liquid_cache: LiquidCacheRef,
     pub schema_adapter_factory: Arc<dyn SchemaAdapterFactory>,
 }
 
@@ -76,6 +80,7 @@ impl FileOpener for LiquidParquetOpener {
         let reorder_predicates = self.reorder_filters;
         let enable_page_index = should_enable_page_index(&self.page_pruning_predicate);
         let limit = self.limit;
+        let liquid_cache = self.liquid_cache.clone();
 
         Ok(Box::pin(async move {
             let options = ArrowReaderOptions::new().with_page_index(enable_page_index);
@@ -208,7 +213,7 @@ impl FileOpener for LiquidParquetOpener {
                 liquid_builder = liquid_builder.with_row_filter(row_filter);
             }
 
-            let stream = liquid_builder.build()?;
+            let stream = liquid_builder.build(liquid_cache)?;
 
             let adapted = stream
                 .map_err(|e| ArrowError::ExternalError(Box::new(e)))

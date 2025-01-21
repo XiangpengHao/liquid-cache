@@ -15,18 +15,22 @@ use url::Url;
 
 use crate::liquid_parquet::LiquidParquetFileFormat;
 
+use super::SplitSqlServiceConfig;
+
 pub(crate) struct SplitSqlServiceInner {
     execution_plans: Arc<DashMap<String, Arc<dyn ExecutionPlan>>>,
     registered_tables: Mutex<HashSet<String>>,
     default_ctx: Arc<SessionContext>,
+    config: SplitSqlServiceConfig,
 }
 
 impl SplitSqlServiceInner {
-    pub fn new(default_ctx: Arc<SessionContext>) -> Self {
+    pub fn new(default_ctx: Arc<SessionContext>, config: SplitSqlServiceConfig) -> Self {
         Self {
             execution_plans: Default::default(),
             registered_tables: Default::default(),
             default_ctx,
+            config,
         }
     }
 
@@ -56,7 +60,11 @@ impl SplitSqlServiceInner {
         );
         let format = listing_options.format;
         let table_parquet_options = self.default_ctx.state().table_options().parquet.clone();
-        let liquid_parquet = LiquidParquetFileFormat::new(table_parquet_options, format);
+        let liquid_parquet = LiquidParquetFileFormat::new(
+            table_parquet_options,
+            self.config.liquid_cache_mode,
+            format,
+        );
         listing_options.format = Arc::new(liquid_parquet);
 
         self.default_ctx

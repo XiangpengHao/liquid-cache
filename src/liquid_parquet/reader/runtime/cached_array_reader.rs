@@ -11,7 +11,7 @@ use parquet::{
 };
 
 use crate::liquid_parquet::{
-    cache::{ArrayIdentifier, LiquidCache},
+    cache::{ArrayIdentifier, LiquidCacheRef},
     reader::runtime::parquet_bridge::StructArrayReaderBridge,
 };
 
@@ -23,6 +23,7 @@ struct CachedArrayReader {
     column_id: usize,
     row_group_id: usize,
     current_cached: Vec<BufferValueType>,
+    liquid_cache: LiquidCacheRef,
 }
 
 enum BufferValueType {
@@ -31,13 +32,19 @@ enum BufferValueType {
 }
 
 impl CachedArrayReader {
-    fn new(inner: Box<dyn ArrayReader>, row_group_id: usize, column_id: usize) -> Self {
+    fn new(
+        inner: Box<dyn ArrayReader>,
+        row_group_id: usize,
+        column_id: usize,
+        liquid_cache: LiquidCacheRef,
+    ) -> Self {
         Self {
             inner,
             current_row_id: 0,
             row_group_id,
             column_id,
             current_cached: vec![],
+            liquid_cache,
         }
     }
 }
@@ -54,7 +61,7 @@ impl ArrayReader for CachedArrayReader {
     fn read_records(&mut self, request_size: usize) -> Result<usize, ParquetError> {
         let row_batch_id = self.current_row_id / 8192 * 8192;
         let batch_id = ArrayIdentifier::new(self.row_group_id, self.column_id, row_batch_id);
-        if let Some(cached_size) = LiquidCache::get().get_len(&batch_id) {
+        if let Some(cached_size) = self.liquid_cache.get_len(&batch_id) {
             if (self.current_row_id + request_size) <= (row_batch_id + cached_size) {
                 let to_skip = request_size;
                 self.current_cached
@@ -94,7 +101,8 @@ impl ArrayReader for CachedArrayReader {
             // no cached records
             // only one parquet read
             let batch_id = ArrayIdentifier::new(self.row_group_id, self.column_id, row_batch_id);
-            LiquidCache::get().insert_arrow_array(&batch_id, parquet_records.clone());
+            self.liquid_cache
+                .insert_arrow_array(&batch_id, parquet_records.clone());
         }
 
         self.current_cached.clear();
@@ -151,6 +159,7 @@ fn instrument_array_reader(
     reader: Box<dyn ArrayReader>,
     row_group_idx: usize,
     column_ids: &[usize],
+    liquid_cache: LiquidCacheRef,
 ) -> Box<dyn ArrayReader> {
     if reader
         .as_any()
@@ -172,7 +181,12 @@ fn instrument_array_reader(
         .iter()
         .zip(children)
         .map(|(column_id, reader)| {
-            let reader = Box::new(CachedArrayReader::new(reader, row_group_idx, *column_id));
+            let reader = Box::new(CachedArrayReader::new(
+                reader,
+                row_group_idx,
+                *column_id,
+                liquid_cache.clone(),
+            ));
             reader as _
         })
         .collect();
@@ -187,6 +201,7 @@ pub fn build_array_reader(
     projection: &parquet::arrow::ProjectionMask,
     row_groups: &dyn RowGroups,
     row_group_idx: usize,
+    liquid_cache: LiquidCacheRef,
 ) -> Result<Box<dyn ArrayReader>, ParquetError> {
     let reader = parquet::arrow::array_reader::build_array_reader(
         #[allow(clippy::missing_transmute_annotations)]
@@ -202,5 +217,10 @@ pub fn build_array_reader(
         return Ok(reader);
     }
 
-    Ok(instrument_array_reader(reader, row_group_idx, &column_ids))
+    Ok(instrument_array_reader(
+        reader,
+        row_group_idx,
+        &column_ids,
+        liquid_cache.clone(),
+    ))
 }

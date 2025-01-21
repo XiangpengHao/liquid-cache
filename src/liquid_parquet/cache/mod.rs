@@ -1,5 +1,5 @@
 #![allow(unused)]
-use ahash::AHashMap;
+use ahash::{AHashMap, HashMap};
 use arrow::array::AsArray;
 use arrow::array::{ArrayRef, BooleanArray, RecordBatch, RecordBatchWriter};
 use arrow::ipc::reader::FileReader;
@@ -29,8 +29,6 @@ use arrow::array::types::{
     UInt64Type as ArrowUInt64Type, UInt8Type as ArrowUInt8Type,
 };
 
-static ARROW_ARRAY_CACHE: LazyLock<LiquidCache> = LazyLock::new(LiquidCache::initialize_from_env);
-
 static ARROW_DISK_CACHE_PATH: &str = "target/arrow_disk_cache.etc";
 
 /// Row offset -> (Arrow Array, hit count)
@@ -40,7 +38,7 @@ type Rows = AHashMap<usize, CachedEntry>;
 type Columns = AHashMap<usize, Rows>;
 
 #[derive(Debug)]
-enum CacheMode {
+enum CacheStates {
     InMemory,
     OnDisk(OrderedMutex<LockDiskFile, std::fs::File>),
     NoCache,
@@ -70,14 +68,15 @@ impl EtcCompressorStates {
     }
 }
 
+#[derive(Debug)]
 struct CachedEntryInner {
-    value: CachedValue,
+    value: CachedColumnBatch,
     row_count: u32,
     hit_count: AtomicU32,
 }
 
 impl CachedEntryInner {
-    fn new(value: CachedValue, row_count: u32) -> Self {
+    fn new(value: CachedColumnBatch, row_count: u32) -> Self {
         Self {
             value,
             row_count,
@@ -86,6 +85,7 @@ impl CachedEntryInner {
     }
 }
 
+#[derive(Debug)]
 struct CachedEntry {
     inner: OrderedRwLock<LockedEntry, CachedEntryInner>,
 }
@@ -121,26 +121,27 @@ impl CachedEntry {
 
     fn new_in_memory(array: ArrayRef) -> Self {
         let len = array.len();
-        let val = CachedValue::ArrowMemory(array);
+        let val = CachedColumnBatch::ArrowMemory(array);
         CachedEntry {
             inner: OrderedRwLock::new(CachedEntryInner::new(val, len as u32)),
         }
     }
 
-    fn new(value: CachedValue, row_count: usize) -> Self {
+    fn new(value: CachedColumnBatch, row_count: usize) -> Self {
         CachedEntry {
             inner: OrderedRwLock::new(CachedEntryInner::new(value, row_count as u32)),
         }
     }
 }
 
-enum CachedValue {
+#[derive(Debug)]
+enum CachedColumnBatch {
     ArrowMemory(ArrayRef),
     ArrowDisk(Range<u64>),
     Etc(LiquidArrayRef),
 }
 
-impl CachedValue {
+impl CachedColumnBatch {
     fn memory_usage(&self) -> usize {
         match self {
             Self::ArrowMemory(array) => array.get_array_memory_size(),
@@ -149,9 +150,9 @@ impl CachedValue {
         }
     }
 
-    fn convert_to(&mut self, to: &CacheMode, ctx: &mut LockCtx<LockColumnMapping>) {
+    fn convert_to(&mut self, to: &CacheStates, ctx: &mut LockCtx<LockColumnMapping>) {
         match (&self, to) {
-            (Self::ArrowMemory(v), CacheMode::OnDisk(file)) => {
+            (Self::ArrowMemory(v), CacheStates::OnDisk(file)) => {
                 let (mut file, _) = file.lock(ctx);
 
                 // Align start_pos to next 512 boundary for better disk I/O
@@ -172,14 +173,14 @@ impl CachedValue {
 
                 let file = writer.into_inner().unwrap();
                 let end_pos = file.stream_position().unwrap();
-                *self = CachedValue::ArrowDisk(start_pos..end_pos);
+                *self = CachedColumnBatch::ArrowDisk(start_pos..end_pos);
             }
             _ => unimplemented!("convert {} to {:?} not implemented", self, to),
         }
     }
 }
 
-impl Display for CachedValue {
+impl Display for CachedColumnBatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::ArrowMemory(_) => write!(f, "ArrowMemory"),
@@ -216,41 +217,60 @@ pub enum CacheType {
     Etc,
 }
 
-/// ArrowArrayCache is used to cache arrow arrays in memory, on disk, or in a vortex.
+/// LiquidCache.
+/// Caching granularity: column batch.
+/// To identify a column batch, we need:
+/// 1. Parquet file path
+/// 2. Row group index
+/// 3. Column index
+/// 4. Row offset, assuming each batch is at most 8192 rows.
+#[derive(Debug)]
 pub struct LiquidCache {
     /// Vec of RwLocks, where index is the row group index and value is the ColumnMapping
     value: Vec<OrderedRwLock<LockColumnMapping, Columns>>,
-    cache_mode: CacheMode,
+    cache_mode: CacheStates,
     batch_size: usize,
 }
 
 pub type LiquidCacheRef = Arc<LiquidCache>;
 
+#[derive(Debug, Copy, Clone)]
+pub enum LiquidCacheMode {
+    InMemoryArrow,
+    OnDiskArrow,
+    NoCache,
+    InMemoryLiquid,
+}
+
+impl From<&CacheStates> for LiquidCacheMode {
+    fn from(cache_states: &CacheStates) -> Self {
+        match cache_states {
+            CacheStates::InMemory => LiquidCacheMode::InMemoryArrow,
+            CacheStates::OnDisk(_) => LiquidCacheMode::OnDiskArrow,
+            CacheStates::NoCache => LiquidCacheMode::NoCache,
+            CacheStates::Etc(_) => LiquidCacheMode::InMemoryLiquid,
+        }
+    }
+}
+
 impl LiquidCache {
-    fn initialize_from_env() -> Self {
-        let cache_mode = std::env::var("ARROW_CACHE_MODE").map_or(CacheMode::NoCache, |v| match v
-            .to_lowercase()
-            .as_str()
-        {
-            "disk" => CacheMode::OnDisk(OrderedMutex::new(
-                std::fs::File::create(ARROW_DISK_CACHE_PATH).unwrap(),
-            )),
-            "inmemory" => CacheMode::InMemory,
-            "nocache" => CacheMode::NoCache,
-            "etc" => CacheMode::Etc(EtcCompressorStates::new()),
-            _ => panic!(
-                "Invalid cache mode: {}, must be one of [disk, inmemory, nocache, etc]",
-                v
+    pub fn new(cache_mode: LiquidCacheMode, batch_size: usize) -> Self {
+        match cache_mode {
+            LiquidCacheMode::InMemoryArrow => Self::new_inner(CacheStates::InMemory, batch_size),
+            LiquidCacheMode::OnDiskArrow => Self::new_inner(
+                CacheStates::OnDisk(OrderedMutex::new(
+                    std::fs::File::create(ARROW_DISK_CACHE_PATH).unwrap(),
+                )),
+                batch_size,
             ),
-        });
-
-        println!("Initializing ArrowArrayCache with {:?}", cache_mode);
-
-        LiquidCache::new(cache_mode, 8192)
+            LiquidCacheMode::NoCache => Self::new_inner(CacheStates::NoCache, batch_size),
+            LiquidCacheMode::InMemoryLiquid => {
+                Self::new_inner(CacheStates::Etc(EtcCompressorStates::new()), batch_size)
+            }
+        }
     }
 
-    /// Create a new ArrowArrayCache.
-    fn new(cache_mode: CacheMode, batch_size: usize) -> Self {
+    fn new_inner(cache_mode: CacheStates, batch_size: usize) -> Self {
         assert!(batch_size.is_power_of_two());
         const MAX_ROW_GROUPS: usize = 512;
         LiquidCache {
@@ -262,14 +282,13 @@ impl LiquidCache {
         }
     }
 
-    /// Get the static ArrowArrayCache.
-    pub fn get() -> &'static LiquidCache {
-        &ARROW_ARRAY_CACHE
-    }
-
     /// Check if the cache is enabled.
     pub fn cache_enabled(&self) -> bool {
-        !matches!(self.cache_mode, CacheMode::NoCache)
+        !matches!(self.cache_mode, CacheStates::NoCache)
+    }
+
+    pub fn cache_mode(&self) -> LiquidCacheMode {
+        (&self.cache_mode).into()
     }
 
     /// Reset the cache.
@@ -340,31 +359,31 @@ impl LiquidCache {
         )
     }
 
-    /// Get a record batch from a row selection.
-    pub fn get_record_batches(
-        &self,
-        row_group_id: usize,
-        selection: BooleanSelection,
-        schema: &SchemaRef,
-        parquet_column_ids: &[usize],
-    ) -> Box<dyn Iterator<Item = RecordBatch> + Send> {
-        let selection_count = selection.row_count();
-        let total_row_count = selection.len();
-        let is_selective = (selection_count * 16) < total_row_count;
-        let iter = LiquidCache::get().get_record_batches_by_filter(
-            row_group_id,
-            selection,
-            schema,
-            parquet_column_ids,
-        );
-        if !is_selective {
-            // means we have many small selections, we should coalesce them
-            let coalesced = iter::CoalescedIter::new(iter, self.batch_size);
-            Box::new(coalesced) as Box<dyn Iterator<Item = RecordBatch> + Send>
-        } else {
-            Box::new(iter)
-        }
-    }
+    // /// Get a record batch from a row selection.
+    // pub fn get_record_batches(
+    //     &self,
+    //     row_group_id: usize,
+    //     selection: BooleanSelection,
+    //     schema: &SchemaRef,
+    //     parquet_column_ids: &[usize],
+    // ) -> Box<dyn Iterator<Item = RecordBatch> + Send> {
+    //     let selection_count = selection.row_count();
+    //     let total_row_count = selection.len();
+    //     let is_selective = (selection_count * 16) < total_row_count;
+    //     let iter = LiquidCache::get().get_record_batches_by_filter(
+    //         row_group_id,
+    //         selection,
+    //         schema,
+    //         parquet_column_ids,
+    //     );
+    //     if !is_selective {
+    //         // means we have many small selections, we should coalesce them
+    //         let coalesced = iter::CoalescedIter::new(iter, self.batch_size);
+    //         Box::new(coalesced) as Box<dyn Iterator<Item = RecordBatch> + Send>
+    //     } else {
+    //         Box::new(iter)
+    //     }
+    // }
 
     /// Get a record batch iterator from a row selection.
     /// Each record batch is `take` (instead of `filter`) from the underlying RecordBatch iterator.
@@ -438,7 +457,7 @@ impl LiquidCache {
         predicate: &mut Box<dyn ArrowPredicate>,
         schema: &SchemaRef,
     ) -> Option<BooleanArray> {
-        if matches!(self.cache_mode, CacheMode::NoCache) {
+        if matches!(self.cache_mode, CacheStates::NoCache) {
             return None;
         }
 
@@ -450,7 +469,7 @@ impl LiquidCache {
         cached_entry.increment_hit_count(&mut ctx);
         let cached_entry = cached_entry.value(&mut ctx);
         match &cached_entry.0.value {
-            CachedValue::ArrowMemory(array) => {
+            CachedColumnBatch::ArrowMemory(array) => {
                 let array = match selection {
                     Some(selection) => {
                         arrow::compute::kernels::filter::filter(array, selection).unwrap()
@@ -461,7 +480,7 @@ impl LiquidCache {
                 let array = predicate.evaluate(record_batch).unwrap();
                 Some(array)
             }
-            CachedValue::ArrowDisk(range) => {
+            CachedColumnBatch::ArrowDisk(range) => {
                 let file = std::fs::File::open(ARROW_DISK_CACHE_PATH).unwrap();
                 let ranged_file = RangedFile::new(file, range.clone()).unwrap();
                 let reader = std::io::BufReader::new(ranged_file);
@@ -478,7 +497,7 @@ impl LiquidCache {
                 let array = predicate.evaluate(batch).unwrap();
                 Some(array)
             }
-            CachedValue::Etc(array) => match selection {
+            CachedColumnBatch::Etc(array) => match selection {
                 Some(selection) => {
                     if let Some(_string_array) = array.as_string_array_opt() {
                         let filtered = array.filter(selection);
@@ -517,7 +536,7 @@ impl LiquidCache {
         id: &ArrayIdentifier,
         selection: Option<&BooleanArray>,
     ) -> Option<ArrayRef> {
-        if matches!(self.cache_mode, CacheMode::NoCache) {
+        if matches!(self.cache_mode, CacheStates::NoCache) {
             return None;
         }
 
@@ -530,13 +549,13 @@ impl LiquidCache {
         cached_entry.increment_hit_count(&mut ctx_column);
         let cached_entry = cached_entry.value(&mut ctx_column);
         match &cached_entry.0.value {
-            CachedValue::ArrowMemory(array) => match selection {
+            CachedColumnBatch::ArrowMemory(array) => match selection {
                 Some(selection) => {
                     Some(arrow::compute::kernels::filter::filter(array, selection).unwrap())
                 }
                 None => Some(array.clone()),
             },
-            CachedValue::ArrowDisk(range) => {
+            CachedColumnBatch::ArrowDisk(range) => {
                 let file = std::fs::File::open(ARROW_DISK_CACHE_PATH).ok()?;
                 let ranged_file = RangedFile::new(file, range.clone()).ok()?;
 
@@ -551,7 +570,7 @@ impl LiquidCache {
                     None => Some(array.clone()),
                 }
             }
-            CachedValue::Etc(array) => match selection {
+            CachedColumnBatch::Etc(array) => match selection {
                 Some(selection) => {
                     if let Some(string_array) = array.as_string_array_opt() {
                         let arrow_array = string_array.to_dict_string_with_selection(selection);
@@ -601,7 +620,7 @@ impl LiquidCache {
 
     /// Insert an arrow array into the cache.
     pub(crate) fn insert_arrow_array(&self, id: &ArrayIdentifier, array: ArrayRef) {
-        if matches!(self.cache_mode, CacheMode::NoCache) {
+        if matches!(self.cache_mode, CacheStates::NoCache) {
             return;
         }
 
@@ -615,23 +634,23 @@ impl LiquidCache {
         let column_cache = cache.entry(id.column_id).or_insert_with(AHashMap::new);
 
         match &self.cache_mode {
-            CacheMode::InMemory => {
+            CacheStates::InMemory => {
                 let old = column_cache.insert(id.row_id, CachedEntry::new_in_memory(array));
                 assert!(old.is_none());
             }
-            CacheMode::OnDisk(_file) => {
+            CacheStates::OnDisk(_file) => {
                 let row_count = array.len();
-                let mut cached_value = CachedValue::ArrowMemory(array);
+                let mut cached_value = CachedColumnBatch::ArrowMemory(array);
                 cached_value.convert_to(&self.cache_mode, &mut column_ctx);
 
                 column_cache.insert(id.row_id, CachedEntry::new(cached_value, row_count));
             }
 
-            CacheMode::NoCache => {
+            CacheStates::NoCache => {
                 unreachable!()
             }
 
-            CacheMode::Etc(ref states) => {
+            CacheStates::Etc(ref states) => {
                 let data_type = array.data_type();
                 let array = array.as_ref();
                 if data_type.is_primitive() {
@@ -680,7 +699,7 @@ impl LiquidCache {
                     };
                     column_cache.insert(
                         id.row_id,
-                        CachedEntry::new(CachedValue::Etc(primitive), array.len()),
+                        CachedEntry::new(CachedColumnBatch::Etc(primitive), array.len()),
                     );
                     return;
                 }
@@ -696,7 +715,7 @@ impl LiquidCache {
                             column_cache.insert(
                                 id.row_id,
                                 CachedEntry::new(
-                                    CachedValue::Etc(Arc::new(compressed)),
+                                    CachedColumnBatch::Etc(Arc::new(compressed)),
                                     array.len(),
                                 ),
                             );
@@ -711,7 +730,10 @@ impl LiquidCache {
                         compressors.insert((id.row_group_id, id.column_id), compressor);
                         column_cache.insert(
                             id.row_id,
-                            CachedEntry::new(CachedValue::Etc(Arc::new(compressed)), array.len()),
+                            CachedEntry::new(
+                                CachedColumnBatch::Etc(Arc::new(compressed)),
+                                array.len(),
+                            ),
                         );
                     }
                     DataType::Dictionary(_, _) => {
@@ -722,7 +744,7 @@ impl LiquidCache {
                                 column_cache.insert(
                                     id.row_id,
                                     CachedEntry::new(
-                                        CachedValue::Etc(Arc::new(etc_array)),
+                                        CachedColumnBatch::Etc(Arc::new(etc_array)),
                                         array.len(),
                                     ),
                                 );

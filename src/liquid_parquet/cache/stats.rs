@@ -3,11 +3,11 @@ use std::sync::{atomic::Ordering, Arc};
 use arrow::array::{DictionaryArray, RecordBatch, StringArray, UInt32Array, UInt64Array};
 use arrow_schema::{DataType, Field, Schema};
 
-use super::{CacheType, CachedValue, LiquidCache, LockCtx};
+use super::{CacheType, CachedColumnBatch, LiquidCache, LockCtx};
 
 /// ArrowCacheStatistics is used to collect statistics about the arrow array cache.
 #[derive(Debug, serde::Serialize, Default)]
-pub struct ArrowCacheStatistics {
+pub struct LiquidCacheStatistics {
     /// Row group ids
     pub row_group_ids: Vec<u64>,
     /// Column ids
@@ -24,10 +24,10 @@ pub struct ArrowCacheStatistics {
     pub hit_counts: Vec<u64>,
 }
 
-impl ArrowCacheStatistics {
+impl LiquidCacheStatistics {
     /// Create a new ArrowCacheStatistics.
     pub fn new() -> Self {
-        ArrowCacheStatistics {
+        LiquidCacheStatistics {
             row_group_ids: Vec::new(),
             column_ids: Vec::new(),
             row_start_ids: Vec::new(),
@@ -118,8 +118,8 @@ impl ArrowCacheStatistics {
 
 impl LiquidCache {
     /// Collect statistics about the cache.
-    pub fn stats(&self) -> ArrowCacheStatistics {
-        let mut stats = ArrowCacheStatistics::new();
+    pub fn stats(&self) -> LiquidCacheStatistics {
+        let mut stats = LiquidCacheStatistics::new();
         let mut ctx = LockCtx::UNLOCKED;
 
         for (row_group_id, row_group_lock) in self.value.iter().enumerate() {
@@ -129,16 +129,16 @@ impl LiquidCache {
                 for (row_start_id, cached_entry) in row_mapping {
                     let cached_entry = cached_entry.value(&mut ctx);
                     let cache_type = match &cached_entry.0.value {
-                        CachedValue::ArrowMemory(_) => CacheType::InMemory,
-                        CachedValue::ArrowDisk(_) => CacheType::OnDisk,
-                        CachedValue::Etc(_) => CacheType::Etc,
+                        CachedColumnBatch::ArrowMemory(_) => CacheType::InMemory,
+                        CachedColumnBatch::ArrowDisk(_) => CacheType::OnDisk,
+                        CachedColumnBatch::Etc(_) => CacheType::Etc,
                     };
 
                     let memory_size = cached_entry.0.value.memory_usage();
                     let row_count = match &cached_entry.0.value {
-                        CachedValue::ArrowMemory(array) => array.len(),
-                        CachedValue::ArrowDisk(_) => 0, // We don't know the row count for on-disk entries
-                        CachedValue::Etc(array) => array.len(),
+                        CachedColumnBatch::ArrowMemory(array) => array.len(),
+                        CachedColumnBatch::ArrowDisk(_) => 0, // We don't know the row count for on-disk entries
+                        CachedColumnBatch::Etc(array) => array.len(),
                     };
 
                     stats.add_entry(

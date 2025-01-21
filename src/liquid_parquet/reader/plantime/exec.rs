@@ -24,6 +24,8 @@ use datafusion::{
 };
 use itertools::Itertools;
 
+use crate::liquid_parquet::cache::LiquidCacheRef;
+
 use super::opener::LiquidParquetOpener;
 use super::page_filter::PagePruningAccessPlanFilter;
 
@@ -38,6 +40,7 @@ pub(crate) struct LiquidParquetExec {
     pub metadata_size_hint: Option<usize>,
     pub cache: PlanProperties,
     pub table_parquet_options: TableParquetOptions,
+    pub liquid_cache: LiquidCacheRef,
 }
 
 impl LiquidParquetExec {
@@ -117,6 +120,7 @@ impl ExecutionPlan for LiquidParquetExec {
             metadata_size_hint: self.metadata_size_hint,
             cache: self.cache.clone(),
             table_parquet_options: self.table_parquet_options.clone(),
+            liquid_cache: self.liquid_cache.clone(),
         }))
     }
 
@@ -175,6 +179,7 @@ impl ExecutionPlan for LiquidParquetExec {
             parquet_file_reader_factory: reader_factory,
             reorder_filters: self.reorder_filters(),
             schema_adapter_factory: schema_adapter,
+            liquid_cache: self.liquid_cache.clone(),
         };
 
         let stream = FileStream::new(&self.base_config, partition_index, opener, &self.metrics)?;

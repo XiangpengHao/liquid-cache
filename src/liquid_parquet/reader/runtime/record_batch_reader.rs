@@ -25,6 +25,7 @@ use parquet::{
 };
 
 use crate::liquid_parquet::cache::LiquidCacheRef;
+use crate::liquid_parquet::LiquidCacheMode;
 
 use super::LiquidRowFilter;
 
@@ -83,7 +84,7 @@ pub struct LiquidRecordBatchReader {
     schema: SchemaRef,
     selection: VecDeque<RowSelector>,
     row_filter: Option<LiquidRowFilter>,
-    liquid_cache: Option<LiquidCacheRef>,
+    liquid_cache: LiquidCacheRef,
 }
 
 impl LiquidRecordBatchReader {
@@ -93,7 +94,7 @@ impl LiquidRecordBatchReader {
         selection: RowSelection,
         filter_readers: Vec<Box<dyn ArrayReader>>,
         row_filter: Option<LiquidRowFilter>,
-        liquid_cache: Option<LiquidCacheRef>,
+        liquid_cache: LiquidCacheRef,
     ) -> Self {
         let schema = match array_reader.get_data_type() {
             DataType::Struct(ref fields) => Schema::new(fields.clone()),
@@ -214,12 +215,12 @@ impl Iterator for LiquidRecordBatchReader {
     type Item = Result<RecordBatch, ArrowError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match &self.liquid_cache {
-            Some(cache) => {
-                std::hint::black_box(cache);
+        match self.liquid_cache.cache_mode() {
+            LiquidCacheMode::NoCache => self.next_batch_inner(),
+            _ => {
+                std::hint::black_box(self.liquid_cache.clone());
                 self.next_batch_inner()
             }
-            None => self.next_batch_inner(),
         }
     }
 }

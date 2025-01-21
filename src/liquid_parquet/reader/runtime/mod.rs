@@ -59,7 +59,7 @@ struct ReaderFactory {
 
     offset: Option<usize>,
 
-    liquid_cache: Option<LiquidCacheRef>,
+    liquid_cache: LiquidCacheRef,
 }
 
 impl ReaderFactory {
@@ -118,6 +118,7 @@ impl ReaderFactory {
                     p_projection,
                     &row_group,
                     row_group_idx,
+                    self.liquid_cache.clone(),
                 )?;
                 filter_readers.push(array_reader);
             }
@@ -163,6 +164,7 @@ impl ReaderFactory {
             &projection,
             &row_group,
             row_group_idx,
+            self.liquid_cache.clone(),
         )?;
 
         let reader = LiquidRecordBatchReader::new(
@@ -220,8 +222,6 @@ pub struct LiquidStreamBuilder {
     pub(crate) limit: Option<usize>,
 
     pub(crate) offset: Option<usize>,
-
-    pub(crate) liquid_cache: Option<LiquidCacheRef>,
 }
 
 impl LiquidStreamBuilder {
@@ -230,7 +230,7 @@ impl LiquidStreamBuilder {
         self
     }
 
-    pub fn build(self) -> Result<LiquidStream, ParquetError> {
+    pub fn build(self, liquid_cache: LiquidCacheRef) -> Result<LiquidStream, ParquetError> {
         let num_row_groups = self.metadata.row_groups().len();
 
         let row_groups: VecDeque<usize> = match self.row_groups {
@@ -257,7 +257,7 @@ impl LiquidStreamBuilder {
             fields: self.fields,
             limit: self.limit,
             offset: self.offset,
-            liquid_cache: self.liquid_cache,
+            liquid_cache,
         };
 
         // Ensure schema of ParquetRecordBatchStream respects projection, and does

@@ -48,7 +48,27 @@ mod service;
 mod utils;
 use utils::GcStream;
 
+use crate::liquid_parquet::LiquidCacheMode;
+
 pub(crate) static ACTION_REGISTER_TABLE: &str = "RegisterTable";
+
+pub struct SplitSqlServiceConfig {
+    pub liquid_cache_mode: LiquidCacheMode,
+}
+
+impl SplitSqlServiceConfig {
+    pub fn new(liquid_cache_mode: LiquidCacheMode) -> Self {
+        Self { liquid_cache_mode }
+    }
+}
+
+impl Default for SplitSqlServiceConfig {
+    fn default() -> Self {
+        Self {
+            liquid_cache_mode: LiquidCacheMode::InMemoryLiquid,
+        }
+    }
+}
 
 pub struct SplitSqlService {
     inner: SplitSqlServiceInner,
@@ -57,12 +77,16 @@ pub struct SplitSqlService {
 impl SplitSqlService {
     pub fn try_new() -> Result<Self, DataFusionError> {
         let ctx = Self::context()?;
-        Ok(Self::new_with_context(ctx))
+        let config = SplitSqlServiceConfig::default();
+        Ok(Self::new_with_context_and_config(ctx, config))
     }
 
-    pub fn new_with_context(default_ctx: SessionContext) -> Self {
+    pub fn new_with_context_and_config(
+        default_ctx: SessionContext,
+        config: SplitSqlServiceConfig,
+    ) -> Self {
         Self {
-            inner: SplitSqlServiceInner::new(Arc::new(default_ctx)),
+            inner: SplitSqlServiceInner::new(Arc::new(default_ctx), config),
         }
     }
 

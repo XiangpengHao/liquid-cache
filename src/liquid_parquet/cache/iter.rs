@@ -447,7 +447,7 @@ impl Iterator for BooleanSelectionPredicateIter<'_, '_> {
 
 #[cfg(test)]
 mod tests {
-    use crate::liquid_parquet::cache::CacheMode;
+    use crate::liquid_parquet::cache::CacheStates;
 
     use super::*;
     use arrow::array::{ArrayRef, AsArray, Int32Array};
@@ -464,7 +464,7 @@ mod tests {
             RecordBatch::try_new(schema, vec![Arc::new(array) as ArrayRef]).unwrap()
         }
 
-        let cache = LiquidCache::new(CacheMode::InMemory, 32);
+        let cache = LiquidCache::new_inner(CacheStates::InMemory, 32);
 
         let row_group_id = 0;
         let column_id = 0;

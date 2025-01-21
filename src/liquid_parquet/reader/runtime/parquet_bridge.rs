@@ -283,7 +283,6 @@ impl ArrowReaderBuilderBridge {
             selection: self.selection,
             limit: self.limit,
             offset: self.offset,
-            liquid_cache: None,
         }
     }
 }
