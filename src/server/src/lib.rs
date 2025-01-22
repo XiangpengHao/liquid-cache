@@ -38,7 +38,7 @@ use futures::{Stream, TryStreamExt};
 use log::info;
 use prost::Message;
 use prost::bytes::Bytes;
-use service::SplitSqlServiceInner;
+use service::LiquidCacheServiceInner;
 use std::pin::Pin;
 use std::sync::Arc;
 use tonic::{Request, Response, Status, Streaming};
@@ -52,17 +52,17 @@ use liquid_parquet::LiquidCacheMode;
 
 pub static ACTION_REGISTER_TABLE: &str = "RegisterTable";
 
-pub struct SplitSqlServiceConfig {
+pub struct LiquidCacheServiceConfig {
     pub liquid_cache_mode: LiquidCacheMode,
 }
 
-impl SplitSqlServiceConfig {
+impl LiquidCacheServiceConfig {
     pub fn new(liquid_cache_mode: LiquidCacheMode) -> Self {
         Self { liquid_cache_mode }
     }
 }
 
-impl Default for SplitSqlServiceConfig {
+impl Default for LiquidCacheServiceConfig {
     fn default() -> Self {
         Self {
             liquid_cache_mode: LiquidCacheMode::InMemoryLiquid,
@@ -70,23 +70,23 @@ impl Default for SplitSqlServiceConfig {
     }
 }
 
-pub struct SplitSqlService {
-    inner: SplitSqlServiceInner,
+pub struct LiquidCacheService {
+    inner: LiquidCacheServiceInner,
 }
 
-impl SplitSqlService {
+impl LiquidCacheService {
     pub fn try_new() -> Result<Self, DataFusionError> {
         let ctx = Self::context()?;
-        let config = SplitSqlServiceConfig::default();
+        let config = LiquidCacheServiceConfig::default();
         Ok(Self::new_with_context_and_config(ctx, config))
     }
 
     pub fn new_with_context_and_config(
         default_ctx: SessionContext,
-        config: SplitSqlServiceConfig,
+        config: LiquidCacheServiceConfig,
     ) -> Self {
         Self {
-            inner: SplitSqlServiceInner::new(Arc::new(default_ctx), config),
+            inner: LiquidCacheServiceInner::new(Arc::new(default_ctx), config),
         }
     }
 
@@ -112,8 +112,8 @@ impl SplitSqlService {
 }
 
 #[tonic::async_trait]
-impl FlightSqlService for SplitSqlService {
-    type FlightService = SplitSqlService;
+impl FlightSqlService for LiquidCacheService {
+    type FlightService = LiquidCacheService;
 
     async fn do_handshake(
         &self,
