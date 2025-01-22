@@ -18,8 +18,8 @@
 use arrow::{array::ArrayRef, array::BooleanArray, datatypes::Schema};
 use datafusion::common::{Column, Result, ScalarValue};
 use datafusion::datasource::listing::FileRange;
-use datafusion::datasource::physical_plan::parquet::ParquetAccessPlan;
 use datafusion::datasource::physical_plan::ParquetFileMetrics;
+use datafusion::datasource::physical_plan::parquet::ParquetAccessPlan;
 use datafusion::physical_optimizer::pruning::{PruningPredicate, PruningStatistics};
 use parquet::arrow::arrow_reader::statistics::StatisticsConverter;
 use parquet::arrow::parquet_column;
@@ -27,7 +27,7 @@ use parquet::basic::Type;
 use parquet::data_type::Decimal;
 use parquet::schema::types::SchemaDescriptor;
 use parquet::{
-    arrow::{async_reader::AsyncFileReader, ParquetRecordBatchStreamBuilder},
+    arrow::{ParquetRecordBatchStreamBuilder, async_reader::AsyncFileReader},
     bloom_filter::Sbbf,
     file::metadata::RowGroupMetaData,
 };

@@ -3,9 +3,9 @@ use std::sync::Arc;
 use bytes::{Buf, Bytes};
 use parquet::{
     arrow::{
+        ProjectionMask,
         arrow_reader::{RowGroups, RowSelection},
         async_reader::AsyncFileReader,
-        ProjectionMask,
     },
     column::page::{PageIterator, PageReader},
     errors::ParquetError,

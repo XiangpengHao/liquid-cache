@@ -24,9 +24,9 @@ mod iter;
 mod lock_spec;
 mod utils;
 use arrow::array::types::{
-    Int16Type as ArrowInt16Type, Int32Type as ArrowInt32Type, Int64Type as ArrowInt64Type,
-    Int8Type as ArrowInt8Type, UInt16Type as ArrowUInt16Type, UInt32Type as ArrowUInt32Type,
-    UInt64Type as ArrowUInt64Type, UInt8Type as ArrowUInt8Type,
+    Int8Type as ArrowInt8Type, Int16Type as ArrowInt16Type, Int32Type as ArrowInt32Type,
+    Int64Type as ArrowInt64Type, UInt8Type as ArrowUInt8Type, UInt16Type as ArrowUInt16Type,
+    UInt32Type as ArrowUInt32Type, UInt64Type as ArrowUInt64Type,
 };
 
 static ARROW_DISK_CACHE_PATH: &str = "target/arrow_disk_cache.etc";

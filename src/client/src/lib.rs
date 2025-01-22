@@ -7,21 +7,21 @@ use std::sync::Arc;
 mod exec;
 mod metrics;
 mod sql;
-use arrow_flight::error::FlightError;
 use arrow_flight::FlightInfo;
+use arrow_flight::error::FlightError;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
 use datafusion::{
     catalog::{Session, TableProvider},
-    common::{stats::Precision, Statistics, ToDFSchema},
-    datasource::{empty::EmptyTable, DefaultTableSource, TableType},
+    common::{Statistics, ToDFSchema, stats::Precision},
+    datasource::{DefaultTableSource, TableType, empty::EmptyTable},
     error::{DataFusionError, Result},
     logical_expr::{LogicalPlan, TableProviderFilterPushDown, TableScan},
     physical_plan::ExecutionPlan,
     prelude::*,
     sql::{
-        unparser::{dialect::PostgreSqlDialect, Unparser},
         TableReference,
+        unparser::{Unparser, dialect::PostgreSqlDialect},
     },
 };
 use exec::FlightExec;

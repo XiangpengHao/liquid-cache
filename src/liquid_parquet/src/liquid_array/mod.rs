@@ -6,9 +6,9 @@ use std::{any::Any, num::NonZero, sync::Arc};
 
 use arrow::array::{ArrayRef, BooleanArray};
 pub use primitive_array::{
-    LiquidI16Array, LiquidI32Array, LiquidI64Array, LiquidI8Array, LiquidPrimitiveArray,
-    LiquidPrimitiveMetadata, LiquidPrimitiveType, LiquidU16Array, LiquidU32Array, LiquidU64Array,
-    LiquidU8Array,
+    LiquidI8Array, LiquidI16Array, LiquidI32Array, LiquidI64Array, LiquidPrimitiveArray,
+    LiquidPrimitiveMetadata, LiquidPrimitiveType, LiquidU8Array, LiquidU16Array, LiquidU32Array,
+    LiquidU64Array,
 };
 use raw::bit_pack_array::BitPackedArray;
 use raw::fsst_array::FsstArray;

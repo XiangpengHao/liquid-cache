@@ -5,12 +5,12 @@ use std::{
 };
 
 use arrow::array::{
-    builder::StringDictionaryBuilder, cast::AsArray, types::UInt16Type, Array, RecordBatch,
-    StringArray,
+    Array, RecordBatch, StringArray, builder::StringDictionaryBuilder, cast::AsArray,
+    types::UInt16Type,
 };
 use datafusion::error::Result;
-use futures::{ready, Stream};
-use futures::{stream::BoxStream, StreamExt};
+use futures::{Stream, ready};
+use futures::{StreamExt, stream::BoxStream};
 
 /// A stream that garbage collects the memory of the record batches.
 /// Applies to DictionaryArray and StringViewArray where the data may not be compact.

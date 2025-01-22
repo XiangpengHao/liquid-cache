@@ -1,6 +1,7 @@
 [package]
 name = "liquid-parquet"
 edition = { workspace = true }
+version = { workspace = true }
 
 [dependencies]
 arrow = { workspace = true }

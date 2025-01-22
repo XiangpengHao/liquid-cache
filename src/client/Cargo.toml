@@ -1,6 +1,7 @@
 [package]
 name = "liquid-cache-client"
 edition = { workspace = true }
+version = { workspace = true }
 
 
 [dependencies]

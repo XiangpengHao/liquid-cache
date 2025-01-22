@@ -1,6 +1,6 @@
 use arrow::array::{
-    builder::{BinaryBuilder, StringBuilder},
     Array, BinaryArray, GenericByteArray, StringArray,
+    builder::{BinaryBuilder, StringBuilder},
 };
 use fsst::Compressor;
 use std::mem::MaybeUninit;

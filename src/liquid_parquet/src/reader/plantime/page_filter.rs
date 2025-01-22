@@ -20,8 +20,8 @@
 use arrow::array::BooleanArray;
 use arrow::{array::ArrayRef, datatypes::SchemaRef};
 use arrow_schema::Schema;
-use datafusion::datasource::physical_plan::parquet::ParquetAccessPlan;
 use datafusion::datasource::physical_plan::ParquetFileMetrics;
+use datafusion::datasource::physical_plan::parquet::ParquetAccessPlan;
 use datafusion::physical_expr::split_conjunction;
 use datafusion::physical_optimizer::pruning::{PruningPredicate, PruningStatistics};
 use datafusion::physical_plan::PhysicalExpr;
@@ -243,7 +243,9 @@ impl PagePruningAccessPlanFilter {
                 if overall_selection.selects_any() {
                     let rows_skipped = rows_skipped(&overall_selection);
                     let rows_selected = rows_selected(&overall_selection);
-                    trace!("Overall selection from predicate skipped {rows_skipped}, selected {rows_selected}: {overall_selection:?}");
+                    trace!(
+                        "Overall selection from predicate skipped {rows_skipped}, selected {rows_selected}: {overall_selection:?}"
+                    );
                     total_skip += rows_skipped;
                     total_select += rows_selected;
                     access_plan.scan_selection(row_group_index, overall_selection)
@@ -444,11 +446,13 @@ impl<'a> PagesPruningStatistics<'a> {
 
 impl PruningStatistics for PagesPruningStatistics<'_> {
     fn min_values(&self, _column: &datafusion::common::Column) -> Option<ArrayRef> {
-        match self.converter.data_page_mins(
-            self.column_index,
-            self.offset_index,
-            [&self.row_group_index],
-        ) {
+        match self
+            .converter
+            .data_page_mins(
+                self.column_index,
+                self.offset_index,
+                [&self.row_group_index],
+            ) {
             Ok(min_values) => Some(min_values),
             Err(e) => {
                 debug!("Error evaluating data page min values {e}");
@@ -458,11 +462,13 @@ impl PruningStatistics for PagesPruningStatistics<'_> {
     }
 
     fn max_values(&self, _column: &datafusion::common::Column) -> Option<ArrayRef> {
-        match self.converter.data_page_maxes(
-            self.column_index,
-            self.offset_index,
-            [&self.row_group_index],
-        ) {
+        match self
+            .converter
+            .data_page_maxes(
+                self.column_index,
+                self.offset_index,
+                [&self.row_group_index],
+            ) {
             Ok(min_values) => Some(min_values),
             Err(e) => {
                 debug!("Error evaluating data page max values {e}");
@@ -476,11 +482,13 @@ impl PruningStatistics for PagesPruningStatistics<'_> {
     }
 
     fn null_counts(&self, _column: &datafusion::common::Column) -> Option<ArrayRef> {
-        match self.converter.data_page_null_counts(
-            self.column_index,
-            self.offset_index,
-            [&self.row_group_index],
-        ) {
+        match self
+            .converter
+            .data_page_null_counts(
+                self.column_index,
+                self.offset_index,
+                [&self.row_group_index],
+            ) {
             Ok(null_counts) => Some(Arc::new(null_counts)),
             Err(e) => {
                 debug!("Error evaluating data page null counts {e}");
@@ -490,11 +498,11 @@ impl PruningStatistics for PagesPruningStatistics<'_> {
     }
 
     fn row_counts(&self, _column: &datafusion::common::Column) -> Option<ArrayRef> {
-        match self.converter.data_page_row_counts(
-            self.offset_index,
-            self.row_group_metadatas,
-            [&self.row_group_index],
-        ) {
+        match self
+            .converter
+            .data_page_row_counts(self.offset_index, self.row_group_metadatas, [
+                &self.row_group_index
+            ]) {
             Ok(row_counts) => row_counts.map(|a| Arc::new(a) as ArrayRef),
             Err(e) => {
                 debug!("Error evaluating data page row counts {e}");
