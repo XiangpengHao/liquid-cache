@@ -4,8 +4,8 @@ use arrow_schema::SchemaRef;
 use dashmap::DashMap;
 use datafusion::{
     error::{DataFusionError, Result},
-    execution::{options::ReadOptions, SendableRecordBatchStream},
-    physical_plan::{display::DisplayableExecutionPlan, ExecutionPlan},
+    execution::{SendableRecordBatchStream, options::ReadOptions},
+    physical_plan::{ExecutionPlan, display::DisplayableExecutionPlan},
     prelude::{ParquetReadOptions, SessionContext},
 };
 use log::{debug, info};
@@ -13,7 +13,7 @@ use tokio::sync::Mutex;
 use tonic::Status;
 use url::Url;
 
-use crate::liquid_parquet::LiquidParquetFileFormat;
+use liquid_parquet::LiquidParquetFileFormat;
 
 use super::SplitSqlServiceConfig;
 

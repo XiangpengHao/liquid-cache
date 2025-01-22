@@ -447,7 +447,7 @@ impl Iterator for BooleanSelectionPredicateIter<'_, '_> {
 
 #[cfg(test)]
 mod tests {
-    use crate::liquid_parquet::cache::CacheStates;
+    use crate::cache::CacheStates;
 
     use super::*;
     use arrow::array::{ArrayRef, AsArray, Int32Array};

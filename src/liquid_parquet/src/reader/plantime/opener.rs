@@ -5,25 +5,25 @@ use datafusion::{
     common::exec_err,
     datasource::{
         physical_plan::{
-            parquet::ParquetAccessPlan, FileMeta, FileOpenFuture, FileOpener, ParquetFileMetrics,
-            ParquetFileReaderFactory,
+            FileMeta, FileOpenFuture, FileOpener, ParquetFileMetrics, ParquetFileReaderFactory,
+            parquet::ParquetAccessPlan,
         },
         schema_adapter::SchemaAdapterFactory,
     },
     error::DataFusionError,
     physical_optimizer::pruning::PruningPredicate,
-    physical_plan::{metrics::ExecutionPlanMetricsSet, PhysicalExpr},
+    physical_plan::{PhysicalExpr, metrics::ExecutionPlanMetricsSet},
 };
 use futures::StreamExt;
 use futures::TryStreamExt;
 use log::debug;
 use parquet::arrow::{
+    ParquetRecordBatchStreamBuilder, ProjectionMask,
     arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions},
     async_reader::AsyncFileReader,
-    ParquetRecordBatchStreamBuilder, ProjectionMask,
 };
 
-use crate::liquid_parquet::{
+use crate::{
     cache::LiquidCacheRef,
     reader::{
         plantime::{

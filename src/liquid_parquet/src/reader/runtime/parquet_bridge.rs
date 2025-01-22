@@ -83,7 +83,7 @@ impl ParquetRecordBatchReaderInner {
         selection: Option<RowSelection>,
     ) -> parquet::arrow::arrow_reader::ParquetRecordBatchReader {
         let schema = match array_reader.get_data_type() {
-            DataType::Struct(ref fields) => Schema::new(fields.clone()),
+            DataType::Struct(fields) => Schema::new(fields.clone()),
             _ => unreachable!("Struct array reader's data type is not struct!"),
         };
 

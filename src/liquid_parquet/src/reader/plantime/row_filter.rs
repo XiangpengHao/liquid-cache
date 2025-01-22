@@ -72,21 +72,21 @@ use arrow::error::{ArrowError, Result as ArrowResult};
 use arrow::record_batch::RecordBatch;
 use datafusion::datasource::physical_plan::ParquetFileMetrics;
 use datafusion::physical_plan::metrics;
-use parquet::arrow::arrow_reader::{ArrowPredicate, RowFilter};
 use parquet::arrow::ProjectionMask;
+use parquet::arrow::arrow_reader::{ArrowPredicate, RowFilter};
 use parquet::file::metadata::ParquetMetaData;
 
 use datafusion::common::cast::as_boolean_array;
 use datafusion::common::tree_node::{
     Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter,
 };
-use datafusion::common::{arrow_datafusion_err, DataFusionError, Result, ScalarValue};
+use datafusion::common::{DataFusionError, Result, ScalarValue, arrow_datafusion_err};
 use datafusion::datasource::schema_adapter::SchemaMapper;
 use datafusion::physical_expr::expressions::{Column, Literal};
 use datafusion::physical_expr::utils::reassign_predicate_columns;
-use datafusion::physical_expr::{split_conjunction, PhysicalExpr};
+use datafusion::physical_expr::{PhysicalExpr, split_conjunction};
 
-use crate::liquid_parquet::reader::runtime::LiquidRowFilter;
+use crate::reader::runtime::LiquidRowFilter;
 
 /// A "compiled" predicate passed to `ParquetRecordBatchStream` to perform
 /// row-level filtering during parquet decoding.

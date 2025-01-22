@@ -10,7 +10,7 @@ use parquet::{
     errors::ParquetError,
 };
 
-use crate::liquid_parquet::{
+use crate::{
     cache::{ArrayIdentifier, LiquidCacheRef},
     reader::runtime::parquet_bridge::StructArrayReaderBridge,
 };
@@ -196,7 +196,7 @@ fn instrument_array_reader(
     struct_reader
 }
 
-pub fn build_array_reader(
+pub fn build_cached_array_reader(
     field: Option<&ParquetField>,
     projection: &parquet::arrow::ProjectionMask,
     row_groups: &dyn RowGroups,

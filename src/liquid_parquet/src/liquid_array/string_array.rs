@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use arrow::array::builder::StringDictionaryBuilder;
 use arrow::array::{
-    cast::AsArray, types::UInt16Type, Array, ArrayRef, BinaryArray, BooleanArray, DictionaryArray,
-    PrimitiveArray, RecordBatch, StringArray,
+    Array, ArrayRef, BinaryArray, BooleanArray, DictionaryArray, PrimitiveArray, RecordBatch,
+    StringArray, cast::AsArray, types::UInt16Type,
 };
 use arrow::compute::{cast, kernels};
 
@@ -13,7 +13,7 @@ use arrow::buffer::BooleanBuffer;
 use arrow_schema::{DataType, Field, Schema};
 use fsst::Compressor;
 
-use crate::liquid_parquet::liquid_array::{get_bit_width, FsstArray};
+use crate::liquid_array::{FsstArray, get_bit_width};
 
 use super::{BitPackedArray, LiquidArray, LiquidArrayRef};
 
@@ -168,13 +168,10 @@ impl LiquidStringArray {
             Field::new("keys", DataType::UInt32, false),
             Field::new("values", DataType::Binary, false),
         ]);
-        let batch = RecordBatch::try_new(
-            Arc::new(schema),
-            vec![
-                Arc::new(self.keys.values.clone()),
-                Arc::new(self.values.compressed.clone()),
-            ],
-        )
+        let batch = RecordBatch::try_new(Arc::new(schema), vec![
+            Arc::new(self.keys.values.clone()),
+            Arc::new(self.values.compressed.clone()),
+        ])
         .unwrap();
         (batch, self.metadata())
     }

@@ -1,0 +1,17 @@
+[package]
+name = "liquid-cache-client"
+edition = { workspace = true }
+
+
+[dependencies]
+arrow = { workspace = true }
+arrow-flight = { workspace = true }
+datafusion = { workspace = true }
+arrow-schema = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+tonic = { workspace = true }
+async-trait = { workspace = true }
+log = { workspace = true }
+prost = { workspace = true }
+liquid-cache-server = { workspace = true }

@@ -17,16 +17,16 @@
 
 use std::collections::HashMap;
 
-use arrow_flight::sql::client::FlightSqlServiceClient;
-use arrow_flight::sql::ProstMessageExt;
 use arrow_flight::Action;
+use arrow_flight::sql::ProstMessageExt;
+use arrow_flight::sql::client::FlightSqlServiceClient;
 use arrow_flight::{error::Result, sql::CommandGetDbSchemas};
 use prost::Message;
-use tonic::transport::Channel;
 use tonic::Request;
+use tonic::transport::Channel;
 
-use crate::client::{FlightMetadata, FlightProperties};
-use crate::server::{ActionRegisterTableRequest, ACTION_REGISTER_TABLE};
+use crate::{FlightMetadata, FlightProperties};
+use liquid_cache_server::{ACTION_REGISTER_TABLE, ActionRegisterTableRequest};
 
 /// Default Flight SQL driver.
 #[derive(Clone, Debug, Default)]

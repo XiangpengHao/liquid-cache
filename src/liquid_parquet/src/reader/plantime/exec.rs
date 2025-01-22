@@ -7,8 +7,8 @@ use datafusion::{
     datasource::{
         listing::PartitionedFile,
         physical_plan::{
-            parquet::DefaultParquetFileReaderFactory, FileGroupPartitioner, FileScanConfig,
-            FileStream,
+            FileGroupPartitioner, FileScanConfig, FileStream,
+            parquet::DefaultParquetFileReaderFactory,
         },
         schema_adapter::DefaultSchemaAdapterFactory,
     },
@@ -17,14 +17,14 @@ use datafusion::{
     physical_expr::{EquivalenceProperties, LexOrdering},
     physical_optimizer::pruning::PruningPredicate,
     physical_plan::{
+        DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PhysicalExpr, PlanProperties,
         execution_plan::{Boundedness, EmissionType},
         metrics::{ExecutionPlanMetricsSet, MetricsSet},
-        DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PhysicalExpr, PlanProperties,
     },
 };
 use itertools::Itertools;
 
-use crate::liquid_parquet::cache::LiquidCacheRef;
+use crate::cache::LiquidCacheRef;
 
 use super::opener::LiquidParquetOpener;
 use super::page_filter::PagePruningAccessPlanFilter;

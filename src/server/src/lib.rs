@@ -17,27 +17,27 @@
 
 use arrow::ipc::writer::IpcWriteOptions;
 use arrow_flight::{
+    Action, FlightDescriptor, FlightEndpoint, FlightInfo, HandshakeRequest, HandshakeResponse,
+    Ticket,
     encode::FlightDataEncoderBuilder,
     flight_descriptor::DescriptorType,
     flight_service_server::FlightService,
     sql::{
-        server::{FlightSqlService, PeekableFlightDataStream},
         ActionClosePreparedStatementRequest, Any, CommandGetDbSchemas,
         CommandPreparedStatementUpdate, CommandStatementQuery, ProstMessageExt, SqlInfo,
+        server::{FlightSqlService, PeekableFlightDataStream},
     },
-    Action, FlightDescriptor, FlightEndpoint, FlightInfo, HandshakeRequest, HandshakeResponse,
-    Ticket,
 };
 use datafusion::{
     error::DataFusionError,
-    execution::{object_store::ObjectStoreUrl, SessionStateBuilder},
+    execution::{SessionStateBuilder, object_store::ObjectStoreUrl},
     physical_plan::ExecutionPlanProperties,
     prelude::{SessionConfig, SessionContext},
 };
 use futures::{Stream, TryStreamExt};
 use log::info;
-use prost::bytes::Bytes;
 use prost::Message;
+use prost::bytes::Bytes;
 use service::SplitSqlServiceInner;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -48,9 +48,9 @@ mod service;
 mod utils;
 use utils::GcStream;
 
-use crate::liquid_parquet::LiquidCacheMode;
+use liquid_parquet::LiquidCacheMode;
 
-pub(crate) static ACTION_REGISTER_TABLE: &str = "RegisterTable";
+pub static ACTION_REGISTER_TABLE: &str = "RegisterTable";
 
 pub struct SplitSqlServiceConfig {
     pub liquid_cache_mode: LiquidCacheMode,

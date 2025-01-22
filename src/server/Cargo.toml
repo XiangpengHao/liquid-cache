@@ -1,0 +1,20 @@
+[package]
+name = "liquid-cache-server"
+edition = { workspace = true }
+
+
+[dependencies]
+datafusion = { workspace = true }
+futures = { workspace = true }
+arrow = { workspace = true }
+arrow-flight = { workspace = true }
+arrow-schema = { workspace = true }
+log = { workspace = true }
+prost = { workspace = true }
+tonic = { workspace = true }
+uuid = { workspace = true }
+tokio = { workspace = true }
+url = { workspace = true }
+dashmap = { workspace = true }
+liquid-parquet = { workspace = true }
+object_store = { workspace = true }

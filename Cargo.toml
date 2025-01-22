@@ -1,9 +1,21 @@
-[package]
-name = "datafusion-cache"
+[workspace.package]
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
-[dependencies]
+[workspace]
+members = [
+	"benchmark",
+	"src/server",
+	"src/client",
+	"src/liquid_parquet",
+	"examples",
+]
+resolver = "3"
+
+[workspace.dependencies]
+liquid-cache-server = { path = "src/server" }
+liquid-cache-client = { path = "src/client" }
+liquid-parquet = { path = "src/liquid_parquet" }
 arrow = "54.0.0"
 arrow-flight = { version = "54.0", features = ["flight-sql-experimental"] }
 arrow-schema = { version = "54.0", features = ["serde"] }
@@ -11,36 +23,22 @@ parquet = { version = "54.0", features = ["async", "experimental"] }
 datafusion = { git = "https://github.com/apache/datafusion.git" }
 async-trait = "0.1.83"
 futures = "0.3.31"
+tokio = { version = "1.42.0", features = ["rt-multi-thread"] }
 log = "0.4.22"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
 tonic = { version = "0.12", features = [
 	"tls-native-roots",
 	"tls-webpki-roots",
 ] }
-dashmap = "6.1.0"
-tokio = { version = "1.42.0", features = ["rt-multi-thread"] }
-uuid = "1.7.0"
-prost = "0.13.3"
-prost-derive = "0.13.3"
-object_store = "0.11.2"
 url = "2.5.4"
 itertools = "0.14.0"
 bytes = "1.9.0"
 fastlanes = "0.1.8"
-fsst-rs = "0.4.4"
 num-traits = "0.2.19"
 ahash = "0.8.11"
-
-[dev-dependencies]
-env_logger = "0.11.5"
-rand = "0.8.5"
-
-
-[[example]]
-name = "server"
-path = "examples/server.rs"
-
-[[example]]
-name = "client"
-path = "examples/client.rs"
+uuid = "1.7.0"
+prost = "0.13.3"
+prost-derive = "0.13.3"
+object_store = "0.11.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+dashmap = "6.1.0"

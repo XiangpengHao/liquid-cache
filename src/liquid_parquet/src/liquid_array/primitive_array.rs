@@ -7,12 +7,12 @@ use arrow::array::ArrowNativeTypeOp;
 use arrow::buffer::ScalarBuffer;
 use arrow::{
     array::{
+        ArrayRef, ArrowPrimitiveType, BooleanArray, PrimitiveArray, RecordBatch,
         cast::AsArray,
         types::{
-            Int16Type, Int32Type, Int64Type, Int8Type, UInt16Type, UInt32Type, UInt64Type,
-            UInt8Type,
+            Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt16Type, UInt32Type,
+            UInt64Type,
         },
-        ArrayRef, ArrowPrimitiveType, BooleanArray, PrimitiveArray, RecordBatch,
     },
     datatypes::ArrowNativeType,
 };
@@ -21,7 +21,7 @@ use fastlanes::BitPacking;
 use num_traits::{AsPrimitive, FromPrimitive};
 
 use super::BitPackedArray;
-use crate::liquid_parquet::liquid_array::{get_bit_width, LiquidArray, LiquidArrayRef};
+use crate::liquid_array::{LiquidArray, LiquidArrayRef, get_bit_width};
 
 mod private {
     pub trait Sealed {}
@@ -266,104 +266,98 @@ mod tests {
     }
 
     // Test cases for Int8Type
-    test_roundtrip!(
-        test_int8_roundtrip_basic,
-        Int8Type,
-        vec![Some(1), Some(2), Some(3), None, Some(5)]
-    );
-    test_roundtrip!(
-        test_int8_roundtrip_negative,
-        Int8Type,
-        vec![Some(-128), Some(-64), Some(0), Some(63), Some(127)]
-    );
+    test_roundtrip!(test_int8_roundtrip_basic, Int8Type, vec![
+        Some(1),
+        Some(2),
+        Some(3),
+        None,
+        Some(5)
+    ]);
+    test_roundtrip!(test_int8_roundtrip_negative, Int8Type, vec![
+        Some(-128),
+        Some(-64),
+        Some(0),
+        Some(63),
+        Some(127)
+    ]);
 
     // Test cases for Int16Type
-    test_roundtrip!(
-        test_int16_roundtrip_basic,
-        Int16Type,
-        vec![Some(1), Some(2), Some(3), None, Some(5)]
-    );
-    test_roundtrip!(
-        test_int16_roundtrip_negative,
-        Int16Type,
-        vec![
-            Some(-32768),
-            Some(-16384),
-            Some(0),
-            Some(16383),
-            Some(32767)
-        ]
-    );
+    test_roundtrip!(test_int16_roundtrip_basic, Int16Type, vec![
+        Some(1),
+        Some(2),
+        Some(3),
+        None,
+        Some(5)
+    ]);
+    test_roundtrip!(test_int16_roundtrip_negative, Int16Type, vec![
+        Some(-32768),
+        Some(-16384),
+        Some(0),
+        Some(16383),
+        Some(32767)
+    ]);
 
     // Test cases for Int32Type
-    test_roundtrip!(
-        test_int32_roundtrip_basic,
-        Int32Type,
-        vec![Some(1), Some(2), Some(3), None, Some(5)]
-    );
-    test_roundtrip!(
-        test_int32_roundtrip_negative,
-        Int32Type,
-        vec![
-            Some(-2147483648),
-            Some(-1073741824),
-            Some(0),
-            Some(1073741823),
-            Some(2147483647)
-        ]
-    );
+    test_roundtrip!(test_int32_roundtrip_basic, Int32Type, vec![
+        Some(1),
+        Some(2),
+        Some(3),
+        None,
+        Some(5)
+    ]);
+    test_roundtrip!(test_int32_roundtrip_negative, Int32Type, vec![
+        Some(-2147483648),
+        Some(-1073741824),
+        Some(0),
+        Some(1073741823),
+        Some(2147483647)
+    ]);
 
     // Test cases for Int64Type
-    test_roundtrip!(
-        test_int64_roundtrip_basic,
-        Int64Type,
-        vec![Some(1), Some(2), Some(3), None, Some(5)]
-    );
-    test_roundtrip!(
-        test_int64_roundtrip_negative,
-        Int64Type,
-        vec![
-            Some(-9223372036854775808),
-            Some(-4611686018427387904),
-            Some(0),
-            Some(4611686018427387903),
-            Some(9223372036854775807)
-        ]
-    );
+    test_roundtrip!(test_int64_roundtrip_basic, Int64Type, vec![
+        Some(1),
+        Some(2),
+        Some(3),
+        None,
+        Some(5)
+    ]);
+    test_roundtrip!(test_int64_roundtrip_negative, Int64Type, vec![
+        Some(-9223372036854775808),
+        Some(-4611686018427387904),
+        Some(0),
+        Some(4611686018427387903),
+        Some(9223372036854775807)
+    ]);
 
     // Test cases for unsigned types
-    test_roundtrip!(
-        test_uint8_roundtrip,
-        UInt8Type,
-        vec![Some(0), Some(128), Some(255), None, Some(64)]
-    );
-    test_roundtrip!(
-        test_uint16_roundtrip,
-        UInt16Type,
-        vec![Some(0), Some(32768), Some(65535), None, Some(16384)]
-    );
-    test_roundtrip!(
-        test_uint32_roundtrip,
-        UInt32Type,
-        vec![
-            Some(0),
-            Some(2147483648),
-            Some(4294967295),
-            None,
-            Some(1073741824)
-        ]
-    );
-    test_roundtrip!(
-        test_uint64_roundtrip,
-        UInt64Type,
-        vec![
-            Some(0),
-            Some(9223372036854775808),
-            Some(18446744073709551615),
-            None,
-            Some(4611686018427387904)
-        ]
-    );
+    test_roundtrip!(test_uint8_roundtrip, UInt8Type, vec![
+        Some(0),
+        Some(128),
+        Some(255),
+        None,
+        Some(64)
+    ]);
+    test_roundtrip!(test_uint16_roundtrip, UInt16Type, vec![
+        Some(0),
+        Some(32768),
+        Some(65535),
+        None,
+        Some(16384)
+    ]);
+    test_roundtrip!(test_uint32_roundtrip, UInt32Type, vec![
+        Some(0),
+        Some(2147483648),
+        Some(4294967295),
+        None,
+        Some(1073741824)
+    ]);
+    test_roundtrip!(test_uint64_roundtrip, UInt64Type, vec![
+        Some(0),
+        Some(9223372036854775808),
+        Some(18446744073709551615),
+        None,
+        Some(4611686018427387904)
+    ]);
 
     // Edge cases
     #[test]

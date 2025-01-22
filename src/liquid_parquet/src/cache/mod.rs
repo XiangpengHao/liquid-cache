@@ -138,7 +138,7 @@ impl CachedEntry {
 enum CachedColumnBatch {
     ArrowMemory(ArrayRef),
     ArrowDisk(Range<u64>),
-    Etc(LiquidArrayRef),
+    LiquidMemory(LiquidArrayRef),
 }
 
 impl CachedColumnBatch {
@@ -146,7 +146,7 @@ impl CachedColumnBatch {
         match self {
             Self::ArrowMemory(array) => array.get_array_memory_size(),
             Self::ArrowDisk(_) => 0,
-            Self::Etc(array) => array.get_array_memory_size(),
+            Self::LiquidMemory(array) => array.get_array_memory_size(),
         }
     }
 
@@ -185,7 +185,7 @@ impl Display for CachedColumnBatch {
         match self {
             Self::ArrowMemory(_) => write!(f, "ArrowMemory"),
             Self::ArrowDisk(_) => write!(f, "ArrowDisk"),
-            Self::Etc(_) => write!(f, "Etc"),
+            Self::LiquidMemory(_) => write!(f, "LiquidMemory"),
         }
     }
 }
@@ -497,7 +497,7 @@ impl LiquidCache {
                 let array = predicate.evaluate(batch).unwrap();
                 Some(array)
             }
-            CachedColumnBatch::Etc(array) => match selection {
+            CachedColumnBatch::LiquidMemory(array) => match selection {
                 Some(selection) => {
                     if let Some(_string_array) = array.as_string_array_opt() {
                         let filtered = array.filter(selection);
@@ -570,7 +570,7 @@ impl LiquidCache {
                     None => Some(array.clone()),
                 }
             }
-            CachedColumnBatch::Etc(array) => match selection {
+            CachedColumnBatch::LiquidMemory(array) => match selection {
                 Some(selection) => {
                     if let Some(string_array) = array.as_string_array_opt() {
                         let arrow_array = string_array.to_dict_string_with_selection(selection);
@@ -650,7 +650,7 @@ impl LiquidCache {
                 unreachable!()
             }
 
-            CacheStates::Etc(ref states) => {
+            CacheStates::Etc(states) => {
                 let data_type = array.data_type();
                 let array = array.as_ref();
                 if data_type.is_primitive() {
@@ -699,7 +699,7 @@ impl LiquidCache {
                     };
                     column_cache.insert(
                         id.row_id,
-                        CachedEntry::new(CachedColumnBatch::Etc(primitive), array.len()),
+                        CachedEntry::new(CachedColumnBatch::LiquidMemory(primitive), array.len()),
                     );
                     return;
                 }
@@ -715,7 +715,7 @@ impl LiquidCache {
                             column_cache.insert(
                                 id.row_id,
                                 CachedEntry::new(
-                                    CachedColumnBatch::Etc(Arc::new(compressed)),
+                                    CachedColumnBatch::LiquidMemory(Arc::new(compressed)),
                                     array.len(),
                                 ),
                             );
@@ -731,7 +731,7 @@ impl LiquidCache {
                         column_cache.insert(
                             id.row_id,
                             CachedEntry::new(
-                                CachedColumnBatch::Etc(Arc::new(compressed)),
+                                CachedColumnBatch::LiquidMemory(Arc::new(compressed)),
                                 array.len(),
                             ),
                         );
@@ -744,7 +744,7 @@ impl LiquidCache {
                                 column_cache.insert(
                                     id.row_id,
                                     CachedEntry::new(
-                                        CachedColumnBatch::Etc(Arc::new(etc_array)),
+                                        CachedColumnBatch::LiquidMemory(Arc::new(etc_array)),
                                         array.len(),
                                     ),
                                 );

@@ -3,18 +3,18 @@ use std::{any::Any, collections::HashMap, sync::Arc};
 use arrow_schema::{DataType, Field, FieldRef, Schema, SchemaRef};
 use async_trait::async_trait;
 use datafusion::{
-    common::{internal_err, parsers::CompressionTypeVariant, GetExt, Statistics},
+    common::{GetExt, Statistics, internal_err, parsers::CompressionTypeVariant},
     config::TableParquetOptions,
     datasource::{
         file_format::{
-            file_compression_type::FileCompressionType, FileFormat, FilePushdownSupport,
+            FileFormat, FilePushdownSupport, file_compression_type::FileCompressionType,
         },
         physical_plan::FileScanConfig,
     },
     error::Result,
     execution::SessionState,
     physical_optimizer::pruning::PruningPredicate,
-    physical_plan::{metrics::ExecutionPlanMetricsSet, ExecutionPlan, PhysicalExpr},
+    physical_plan::{ExecutionPlan, PhysicalExpr, metrics::ExecutionPlanMetricsSet},
     prelude::*,
 };
 use exec::LiquidParquetExec;
@@ -22,7 +22,7 @@ use log::{debug, info};
 use object_store::{ObjectMeta, ObjectStore};
 use page_filter::PagePruningAccessPlanFilter;
 
-use crate::liquid_parquet::cache::{LiquidCache, LiquidCacheMode};
+use crate::cache::{LiquidCache, LiquidCacheMode};
 
 // This is entirely copied from DataFusion
 // We should make DataFusion to public this

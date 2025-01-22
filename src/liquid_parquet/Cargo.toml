@@ -1,0 +1,25 @@
+[package]
+name = "liquid-parquet"
+edition = { workspace = true }
+
+[dependencies]
+arrow = { workspace = true }
+arrow-flight = { workspace = true }
+arrow-schema = { workspace = true }
+parquet = { workspace = true }
+datafusion = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+tonic = { workspace = true }
+tokio = { workspace = true }
+url = { workspace = true }
+ahash = { workspace = true }
+dashmap = { workspace = true }
+fsst-rs = "0.4.4"
+serde = { workspace = true }
+bytes = { workspace = true }
+log = { workspace = true }
+object_store = { workspace = true }
+itertools = { workspace = true }
+fastlanes = { workspace = true }
+num-traits = { workspace = true }

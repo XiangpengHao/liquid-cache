@@ -1,5 +1,5 @@
-use std::collections::hash_map::Entry;
 use std::collections::VecDeque;
+use std::collections::hash_map::Entry;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
@@ -24,8 +24,8 @@ use parquet::{
     errors::ParquetError,
 };
 
-use crate::liquid_parquet::cache::LiquidCacheRef;
-use crate::liquid_parquet::LiquidCacheMode;
+use crate::LiquidCacheMode;
+use crate::cache::LiquidCacheRef;
 
 use super::LiquidRowFilter;
 
@@ -97,7 +97,7 @@ impl LiquidRecordBatchReader {
         liquid_cache: LiquidCacheRef,
     ) -> Self {
         let schema = match array_reader.get_data_type() {
-            DataType::Struct(ref fields) => Schema::new(fields.clone()),
+            DataType::Struct(fields) => Schema::new(fields.clone()),
             _ => unreachable!("Struct array reader's data type is not struct!"),
         };
 

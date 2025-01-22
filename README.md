@@ -1,6 +1,6 @@
-# DataFusion Cache (aka. SplitSQL)
+# DataFusion Cache (aka. LiquidCache)
 
-SplitSQL -- a cache that understands your data and cuts your S3 bill by 10x.
+LiquidCache -- a cache that understands your data and cuts your S3 bill by 10x.
 
 ![architecture](/dev/doc/arch.jpg)
 

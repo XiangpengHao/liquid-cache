@@ -8,26 +8,26 @@ use std::{
 
 use arrow::array::RecordBatch;
 use arrow_schema::{DataType, Fields, Schema, SchemaRef};
-use cached_array_reader::build_array_reader;
-use futures::{future::BoxFuture, ready, FutureExt, Stream};
+use cached_array_reader::build_cached_array_reader;
+use futures::{FutureExt, Stream, future::BoxFuture, ready};
 use in_memory_rg::InMemoryRowGroup;
 use parquet::{
     arrow::{
+        ProjectionMask,
         arrow_reader::{ArrowPredicate, RowSelection, RowSelector},
         async_reader::AsyncFileReader,
-        ProjectionMask,
     },
     errors::ParquetError,
     file::metadata::ParquetMetaData,
 };
 pub(crate) use parquet_bridge::ArrowReaderBuilderBridge;
 use parquet_bridge::{
-    intersect_projection_mask, limit_row_selection, offset_row_selection, union_projection_mask,
-    ParquetField,
+    ParquetField, intersect_projection_mask, limit_row_selection, offset_row_selection,
+    union_projection_mask,
 };
 use record_batch_reader::LiquidRecordBatchReader;
 
-use crate::liquid_parquet::cache::LiquidCacheRef;
+use crate::cache::LiquidCacheRef;
 
 mod cached_array_reader;
 mod in_memory_rg;
@@ -113,7 +113,7 @@ impl ReaderFactory {
                     .fetch(&mut self.input, p_projection, Some(&selection))
                     .await?;
 
-                let array_reader = build_array_reader(
+                let array_reader = build_cached_array_reader(
                     self.fields.as_deref(),
                     p_projection,
                     &row_group,
@@ -159,7 +159,7 @@ impl ReaderFactory {
             .fetch(&mut self.input, &projection, Some(&selection))
             .await?;
 
-        let array_reader = build_array_reader(
+        let array_reader = build_cached_array_reader(
             self.fields.as_deref(),
             &projection,
             &row_group,

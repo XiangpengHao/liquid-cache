@@ -22,10 +22,10 @@ use std::fmt::{Debug, Formatter};
 use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::task::{ready, Context, Poll};
+use std::task::{Context, Poll, ready};
 
-use crate::client::metrics::{FlightStreamMetrics, FlightTableMetrics};
-use crate::client::{flight_channel, to_df_err, FlightMetadata, FlightProperties};
+use crate::metrics::{FlightStreamMetrics, FlightTableMetrics};
+use crate::{FlightMetadata, FlightProperties, flight_channel, to_df_err};
 use arrow::array::RecordBatch;
 use arrow::datatypes::ToByteSlice;
 use arrow_flight::flight_service_client::FlightServiceClient;
@@ -39,10 +39,10 @@ use datafusion::{
     execution::{RecordBatchStream, SendableRecordBatchStream, TaskContext},
     physical_expr::EquivalenceProperties,
     physical_plan::{
+        DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
         execution_plan::{Boundedness, EmissionType},
         metrics::{ExecutionPlanMetricsSet, MetricsSet},
         stream::RecordBatchStreamAdapter,
-        DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
     },
 };
 use futures::future::BoxFuture;
