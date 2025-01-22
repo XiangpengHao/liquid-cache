@@ -1,11 +1,12 @@
 use std::{
     fs::File,
     io::{BufRead, BufReader},
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc,
 };
 
 use datafusion::{
+    arrow::util::pretty,
     error::Result,
     prelude::{SessionConfig, SessionContext},
 };
@@ -15,7 +16,7 @@ use url::Url;
 
 use clap::{Command, arg, value_parser};
 
-fn get_query(query_path: impl AsRef<Path>) -> Result<Vec<String>> {
+fn get_query(query_path: impl AsRef<Path>, query_number: Option<u32>) -> Result<Vec<String>> {
     let query_path = query_path.as_ref();
     let file = File::open(query_path)?;
     let reader = BufReader::new(file);
@@ -23,7 +24,11 @@ fn get_query(query_path: impl AsRef<Path>) -> Result<Vec<String>> {
     for line in reader.lines() {
         queries.push(line?);
     }
-    Ok(queries)
+    if let Some(query_number) = query_number {
+        return Ok(vec![queries[query_number as usize].clone()]);
+    } else {
+        Ok(queries)
+    }
 }
 
 #[tokio::main]
@@ -39,8 +44,8 @@ pub async fn main() -> Result<()> {
         )
         .arg(
             arg!(--query <NUMBER>)
-                .required(true)
-                .help("Query number to run")
+                .required(false)
+                .help("Query number to run, if not provided, all queries will be run")
                 .value_parser(value_parser!(u32)),
         )
         .arg(
@@ -59,11 +64,9 @@ pub async fn main() -> Result<()> {
         .get_matches();
 
     let server_url = matches.get_one::<String>("server").unwrap();
-    let file = matches.get_one::<String>("file").unwrap();
-    let query_path = matches.get_one::<String>("query-path").unwrap();
-    let queries = get_query(query_path)?;
-    let query_number = matches.get_one::<u32>("query").unwrap();
-    let query = &queries[*query_number as usize];
+    let file = matches.get_one::<PathBuf>("file").unwrap();
+    let query_path = matches.get_one::<PathBuf>("query-path").unwrap();
+    let queries = get_query(query_path, matches.get_one::<u32>("query").map(|x| *x))?;
 
     let mut session_config = SessionConfig::from_env()?;
     session_config
@@ -73,17 +76,20 @@ pub async fn main() -> Result<()> {
         .pushdown_filters = true;
     let ctx = Arc::new(SessionContext::new_with_config(session_config));
 
-    info!("SQL to be executed: {}", query);
-
     let table_name = "hits";
 
     let current_dir = std::env::current_dir()?.to_string_lossy().to_string();
-    let table_url = Url::parse(&format!("file://{}/{}", current_dir, file)).unwrap();
+    let table_url = Url::parse(&format!("file://{}/{}", current_dir, file.display())).unwrap();
 
     let table = SplitSqlTableFactory::open_table(server_url, table_name, table_url).await?;
     ctx.register_table(table_name, Arc::new(table))?;
 
-    ctx.sql(query).await?.show().await?;
+    for query in queries {
+        info!("SQL to be executed: \n{}", query);
+        let result = ctx.sql(&query).await?.collect().await?;
+        let result_str = pretty::pretty_format_batches(&result).unwrap();
+        info!("Query result: \n{}", result_str);
+    }
 
     Ok(())
 }

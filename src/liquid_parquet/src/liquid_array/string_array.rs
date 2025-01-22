@@ -7,6 +7,7 @@ use arrow::array::{
     Array, ArrayRef, BinaryArray, BooleanArray, DictionaryArray, PrimitiveArray, RecordBatch,
     StringArray, cast::AsArray, types::UInt16Type,
 };
+use arrow::array::{ArrayAccessor, ArrayIter, StringViewArray};
 use arrow::compute::{cast, kernels};
 
 use arrow::buffer::BooleanBuffer;
@@ -74,10 +75,25 @@ pub struct LiquidStringArray {
 }
 
 impl LiquidStringArray {
+    pub fn from_string_view_array(
+        array: &StringViewArray,
+        compressor: Option<Arc<Compressor>>,
+    ) -> Self {
+        let dict = string_to_dict_string(array.iter());
+        Self::from_dict_array_with_compressor(dict, compressor)
+    }
+
     /// Create an LiquidStringArray from a StringArray.
     pub fn from_string_array(array: &StringArray, compressor: Option<Arc<Compressor>>) -> Self {
-        let dict = string_to_dict_string(array);
-        let (keys, values) = dict.into_parts();
+        let dict = string_to_dict_string(array.iter());
+        Self::from_dict_array_with_compressor(dict, compressor)
+    }
+
+    fn from_dict_array_with_compressor(
+        array: DictionaryArray<UInt16Type>,
+        compressor: Option<Arc<Compressor>>,
+    ) -> Self {
+        let (keys, values) = array.into_parts();
 
         let (_, keys, nulls) = keys.into_parts();
         let keys = PrimitiveArray::<UInt16Type>::try_new(keys, nulls).unwrap();
@@ -103,6 +119,7 @@ impl LiquidStringArray {
     }
 
     /// Directly create an LiquidStringArray from a DictionaryArray.
+    /// This function will build a new compressor for the values.
     pub fn from_dict_array(array: &DictionaryArray<UInt16Type>) -> Self {
         let dict = array.downcast_dict::<StringArray>().unwrap();
         let mut deduplicated = StringDictionaryBuilder::<UInt16Type>::new();
@@ -240,9 +257,11 @@ impl LiquidStringArray {
     }
 }
 
-fn string_to_dict_string(input: &StringArray) -> DictionaryArray<UInt16Type> {
+fn string_to_dict_string<'a, T: ArrayAccessor<Item = &'a str>>(
+    input: ArrayIter<T>,
+) -> DictionaryArray<UInt16Type> {
     let mut builder = StringDictionaryBuilder::<UInt16Type>::new();
-    for s in input.iter() {
+    for s in input {
         builder.append_option(s);
     }
     builder.finish()

@@ -705,6 +705,37 @@ impl LiquidCache {
                 }
                 // other types
                 match array.data_type() {
+                    DataType::Utf8View => {
+                        let (compressor, _) = states.fsst_compressor.read(&mut column_ctx);
+                        if let Some(compressor) = compressor.get(&(id.row_group_id, id.column_id)) {
+                            let compressed = LiquidStringArray::from_string_view_array(
+                                array.as_string_view(),
+                                Some(compressor.clone()),
+                            );
+                            column_cache.insert(
+                                id.row_id,
+                                CachedEntry::new(
+                                    CachedColumnBatch::LiquidMemory(Arc::new(compressed)),
+                                    array.len(),
+                                ),
+                            );
+                            return;
+                        }
+
+                        drop(compressor);
+                        let (mut compressors, _) = states.fsst_compressor.write(&mut column_ctx);
+                        let compressed =
+                            LiquidStringArray::from_string_view_array(array.as_string_view(), None);
+                        let compressor = compressed.compressor();
+                        compressors.insert((id.row_group_id, id.column_id), compressor);
+                        column_cache.insert(
+                            id.row_id,
+                            CachedEntry::new(
+                                CachedColumnBatch::LiquidMemory(Arc::new(compressed)),
+                                array.len(),
+                            ),
+                        );
+                    }
                     DataType::Utf8 => {
                         let (compressor, _) = states.fsst_compressor.read(&mut column_ctx);
                         if let Some(compressor) = compressor.get(&(id.row_group_id, id.column_id)) {

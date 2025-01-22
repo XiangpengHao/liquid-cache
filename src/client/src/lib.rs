@@ -212,7 +212,7 @@ impl TableProvider for FlightTable {
             unparsed_sql.to_string()
         };
 
-        info!("SQL send to cache: {}", unparsed_sql);
+        info!("SQL send to cache: \n{}", unparsed_sql);
 
         let metadata = self
             .driver
