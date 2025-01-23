@@ -110,8 +110,8 @@ impl_lock_before_all!(LockEtcCompressorMetadata => LockEtcFsstCompressor);
 
 impl_lock_before_one!(LockColumnMapping=> LockVortexCompression);
 
-pub(crate) struct LockCtx<ID>(std::marker::PhantomData<ID>);
+pub(super) struct LockCtx<ID>(std::marker::PhantomData<ID>);
 
 impl LockCtx<UnLocked> {
-    pub(crate) const UNLOCKED: LockCtx<UnLocked> = LockCtx(std::marker::PhantomData);
+    pub(super) const UNLOCKED: LockCtx<UnLocked> = LockCtx(std::marker::PhantomData);
 }

@@ -1,11 +1,4 @@
-use std::{
-    collections::VecDeque,
-    fmt::Formatter,
-    pin::Pin,
-    sync::Arc,
-    task::{Context, Poll},
-};
-
+use crate::cache::LiquidCacheRef;
 use arrow::array::RecordBatch;
 use arrow_schema::{DataType, Fields, Schema, SchemaRef};
 use cached_array_reader::build_cached_array_reader;
@@ -26,13 +19,18 @@ use parquet_bridge::{
     union_projection_mask,
 };
 use record_batch_reader::LiquidRecordBatchReader;
-
-use crate::cache::LiquidCacheRef;
-
+use std::{
+    collections::VecDeque,
+    fmt::Formatter,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+};
 mod cached_array_reader;
 mod in_memory_rg;
 mod parquet_bridge;
 mod record_batch_reader;
+mod utils;
 
 pub struct LiquidRowFilter {
     pub(crate) predicates: Vec<Box<dyn ArrowPredicate>>,

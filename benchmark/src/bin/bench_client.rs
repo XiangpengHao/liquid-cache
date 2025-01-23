@@ -25,7 +25,7 @@ fn get_query(query_path: impl AsRef<Path>, query_number: Option<u32>) -> Result<
         queries.push(line?);
     }
     if let Some(query_number) = query_number {
-        return Ok(vec![queries[query_number as usize].clone()]);
+        Ok(vec![queries[query_number as usize].clone()])
     } else {
         Ok(queries)
     }
@@ -66,7 +66,7 @@ pub async fn main() -> Result<()> {
     let server_url = matches.get_one::<String>("server").unwrap();
     let file = matches.get_one::<PathBuf>("file").unwrap();
     let query_path = matches.get_one::<PathBuf>("query-path").unwrap();
-    let queries = get_query(query_path, matches.get_one::<u32>("query").map(|x| *x))?;
+    let queries = get_query(query_path, matches.get_one::<u32>("query").copied())?;
 
     let mut session_config = SessionConfig::from_env()?;
     session_config

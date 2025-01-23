@@ -112,7 +112,6 @@ impl LiquidRecordBatchReader {
         }
     }
 
-    #[allow(unused)]
     pub(crate) fn take_filter(&mut self) -> Option<LiquidRowFilter> {
         self.row_filter.take()
     }

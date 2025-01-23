@@ -207,6 +207,10 @@ impl ArrayIdentifier {
             row_id,
         }
     }
+
+    pub(crate) fn row_id(&self) -> usize {
+        self.row_id
+    }
 }
 
 /// CacheType is used to identify the type of cache.
@@ -229,6 +233,7 @@ pub struct LiquidCache {
     /// Vec of RwLocks, where index is the row group index and value is the ColumnMapping
     value: Vec<OrderedRwLock<LockColumnMapping, Columns>>,
     cache_mode: CacheStates,
+    // cache granularity
     batch_size: usize,
 }
 
@@ -280,6 +285,10 @@ impl LiquidCache {
             cache_mode,
             batch_size,
         }
+    }
+
+    pub fn batch_size(&self) -> usize {
+        self.batch_size
     }
 
     /// Check if the cache is enabled.
@@ -601,7 +610,7 @@ impl LiquidCache {
         self.get_arrow_array_with_selection(id, None)
     }
 
-    pub(crate) fn is_cached<L>(&self, id: &ArrayIdentifier, ctx: &mut LockCtx<L>) -> bool
+    fn is_cached<L>(&self, id: &ArrayIdentifier, ctx: &mut LockCtx<L>) -> bool
     where
         L: LockBefore<LockColumnMapping>,
     {
