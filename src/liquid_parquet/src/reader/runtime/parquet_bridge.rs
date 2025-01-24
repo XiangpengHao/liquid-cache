@@ -69,7 +69,6 @@ pub enum ParquetFieldType {
     },
 }
 
-
 fn trim_row_selection(selection: RowSelection) -> RowSelection {
     let mut selection: Vec<RowSelector> = selection.into();
     while selection.last().map(|x| x.skip).unwrap_or(false) {
