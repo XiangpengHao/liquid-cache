@@ -107,9 +107,12 @@ jobs:
         uses: dtolnay/rust-toolchain@nightly
         with:
           components: rustfmt, clippy, rust-src
+      
+      - name: Build LiquidCache server
+        run: cargo build --release --bin liquid_parquet_server
 
       - name: Start LiquidCache server
-        run: env RUST_LOG=info cargo run --release --bin liquid_parquet_server & sleep 2
+        run: env RUST_LOG=info nohup cargo run --release --bin liquid_parquet_server &> server.log &
 
       - name: Run simple ClickBench
         run: |
@@ -122,3 +125,7 @@ jobs:
       - name: Run ClickBench partition 0
         run: |
           env RUST_LOG=info cargo run --release --bin bench_client -- --query-path benchmark/queries.sql --file benchmark/data/hits_0.parquet
+
+      - name: Display server logs (on failure)
+        if: failure()
+        run: cat server.log
