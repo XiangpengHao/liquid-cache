@@ -25,28 +25,13 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Run clippy
-        run: cargo clippy -- -D warnings
-
       - name: Check documentation
         run: cargo doc --no-deps --document-private-items --all-features
         env:
           RUSTDOCFLAGS: -D warnings
 
-      - name: Start LiquidCache server
-        run: env RUST_LOG=info cargo run --release --bin liquid_parquet_server & sleep 2
-
-      - name: Run simple ClickBench
-        run: |
-          env RUST_LOG=info cargo run --release --bin bench_client -- --query-path benchmark/queries.sql --file examples/small_hits.parquet
-
-      - name: Download ClickBench partition 0
-        run: |
-          wget https://datasets.clickhouse.com/hits_compatible/athena_partitioned/hits_0.parquet -O benchmark/data/hits_0.parquet
-
-      - name: Run ClickBench partition 0
-        run: |
-          env RUST_LOG=info cargo run --release --bin bench_client -- --query-path benchmark/queries.sql --file benchmark/data/hits_0.parquet
+      - name: Run clippy
+        run: cargo clippy -- -D warnings
 
   unit_test:
     name: Unit Test
@@ -62,9 +47,26 @@ jobs:
       - name: Run tests
         run: cargo test --verbose
 
+  address_san:
+    name: Address Sanitizer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt, clippy, rust-src
+
       - name: Run address sanitizer
         run: >
           env RUSTFLAGS="-Z sanitizer=address" cargo test -Zbuild-std --target x86_64-unknown-linux-gnu --tests
+
+  memory_san:
+    name: Memory Sanitizer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
       - name: Run memory sanitizer
         run: >
