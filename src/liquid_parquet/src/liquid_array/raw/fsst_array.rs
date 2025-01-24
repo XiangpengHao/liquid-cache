@@ -95,12 +95,14 @@ impl From<&FsstArray> for StringArray {
         let total_size = value.uncompressed_len;
         let mut builder = StringBuilder::with_capacity(value.compressed.len(), total_size);
 
+        let buffer_capacity = 8192;
         let decompressor = value.compressor.decompressor();
-        let mut decompress_buffer: Vec<u8> = Vec::with_capacity(1024);
+        let mut decompress_buffer: Vec<u8> = Vec::with_capacity(buffer_capacity);
         for v in value.compressed.iter() {
             match v {
                 Some(v) => {
                     let cap = decompressor.max_decompression_capacity(v);
+                    assert!(cap <= buffer_capacity);
                     let decompressed = unsafe {
                         std::slice::from_raw_parts_mut(
                             decompress_buffer.as_mut_ptr() as *mut MaybeUninit<u8>,
