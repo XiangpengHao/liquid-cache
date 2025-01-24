@@ -115,8 +115,7 @@ impl ReaderFactory {
                     self.fields.as_deref(),
                     p_projection,
                     &row_group,
-                    row_group_idx,
-                    self.liquid_cache.clone(),
+                    self.liquid_cache.row_group(row_group_idx).clone(),
                 )?;
                 filter_readers.push(array_reader);
             }
@@ -161,8 +160,7 @@ impl ReaderFactory {
             self.fields.as_deref(),
             &projection,
             &row_group,
-            row_group_idx,
-            self.liquid_cache.clone(),
+            self.liquid_cache.row_group(row_group_idx).clone(),
         )?;
 
         let reader = LiquidRecordBatchReader::new(

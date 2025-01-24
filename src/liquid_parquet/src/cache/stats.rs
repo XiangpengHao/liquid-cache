@@ -8,19 +8,12 @@ use super::{CacheType, CachedColumnBatch, LiquidCache, LockCtx};
 /// ArrowCacheStatistics is used to collect statistics about the arrow array cache.
 #[derive(Debug, serde::Serialize, Default)]
 pub struct LiquidCacheStatistics {
-    /// Row group ids
     pub row_group_ids: Vec<u64>,
-    /// Column ids
     pub column_ids: Vec<u64>,
-    /// Row start ids
     pub row_start_ids: Vec<u64>,
-    /// Row counts
     pub row_counts: Vec<u64>,
-    /// Memory sizes
     pub memory_sizes: Vec<u64>,
-    /// Cache types
     pub cache_types: Vec<CacheType>,
-    /// Hit counts
     pub hit_counts: Vec<u64>,
 }
 
@@ -123,10 +116,10 @@ impl LiquidCache {
         let mut ctx = LockCtx::UNLOCKED;
 
         for (row_group_id, row_group_lock) in self.value.iter().enumerate() {
-            let (row_group, mut ctx) = row_group_lock.read(&mut ctx);
+            let (row_group, mut ctx) = row_group_lock.columns.read(&mut ctx);
 
             for (column_id, row_mapping) in row_group.iter() {
-                for (row_start_id, cached_entry) in row_mapping {
+                for (row_start_id, cached_entry) in row_mapping.rows.iter() {
                     let cached_entry = cached_entry.value(&mut ctx);
                     let cache_type = match &cached_entry.0.value {
                         CachedColumnBatch::ArrowMemory(_) => CacheType::InMemory,
