@@ -3,7 +3,7 @@ use std::sync::{Arc, atomic::Ordering};
 use arrow::array::{DictionaryArray, RecordBatch, StringArray, UInt32Array, UInt64Array};
 use arrow_schema::{DataType, Field, Schema};
 
-use super::{CacheType, CachedColumnBatch, LiquidCache, LockCtx};
+use super::{CacheType, CachedColumnBatch, LiquidCache};
 
 /// ArrowCacheStatistics is used to collect statistics about the arrow array cache.
 #[derive(Debug, serde::Serialize, Default)]
@@ -113,35 +113,35 @@ impl LiquidCache {
     /// Collect statistics about the cache.
     pub fn stats(&self) -> LiquidCacheStatistics {
         let mut stats = LiquidCacheStatistics::new();
-        let mut ctx = LockCtx::UNLOCKED;
 
-        for (row_group_id, row_group_lock) in self.value.iter().enumerate() {
-            let (row_group, mut ctx) = row_group_lock.columns.read(&mut ctx);
+        let row_groups = self.row_groups.lock().unwrap();
+        for (row_group_id, row_group_lock) in row_groups.iter() {
+            let row_group = row_group_lock.columns.read().unwrap();
 
             for (column_id, row_mapping) in row_group.iter() {
                 for (row_start_id, cached_entry) in row_mapping.rows.iter() {
-                    let cached_entry = cached_entry.value(&mut ctx);
-                    let cache_type = match &cached_entry.0.value {
+                    let cached_entry = cached_entry.value();
+                    let cache_type = match &cached_entry.value {
                         CachedColumnBatch::ArrowMemory(_) => CacheType::InMemory,
                         CachedColumnBatch::ArrowDisk(_) => CacheType::OnDisk,
                         CachedColumnBatch::LiquidMemory(_) => CacheType::Etc,
                     };
 
-                    let memory_size = cached_entry.0.value.memory_usage();
-                    let row_count = match &cached_entry.0.value {
+                    let memory_size = cached_entry.value.memory_usage();
+                    let row_count = match &cached_entry.value {
                         CachedColumnBatch::ArrowMemory(array) => array.len(),
                         CachedColumnBatch::ArrowDisk(_) => 0, // We don't know the row count for on-disk entries
                         CachedColumnBatch::LiquidMemory(array) => array.len(),
                     };
 
                     stats.add_entry(
-                        row_group_id as u64,
+                        *row_group_id as u64,
                         *column_id as u64,
                         *row_start_id as u64,
                         row_count as u64,
                         memory_size as u64,
                         cache_type,
-                        cached_entry.0.hit_count.load(Ordering::Relaxed) as u64,
+                        cached_entry.hit_count.load(Ordering::Relaxed) as u64,
                     );
                 }
             }
