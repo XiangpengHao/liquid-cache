@@ -13,10 +13,6 @@ jobs:
   check:
     name: Basic check
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        os: [ubuntu-latest]
-      fail-fast: true
     steps:
       - uses: actions/checkout@v4
 
@@ -40,10 +36,6 @@ jobs:
   unit_test:
     name: Unit Test
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        os: [ubuntu-latest]
-      fail-fast: true
     steps:
       - uses: actions/checkout@v4
 
@@ -58,10 +50,6 @@ jobs:
   address_san:
     name: Address Sanitizer
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        os: [ubuntu-latest]
-      fail-fast: true
     steps:
       - uses: actions/checkout@v4
 
@@ -77,10 +65,6 @@ jobs:
   memory_san:
     name: Memory Sanitizer
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        os: [ubuntu-latest]
-      fail-fast: true
     steps:
       - uses: actions/checkout@v4
 
@@ -96,10 +80,6 @@ jobs:
   integration_test:
     name: Integration Test
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        os: [ubuntu-latest]
-      fail-fast: true
     steps:
       - uses: actions/checkout@v4
 
@@ -107,12 +87,12 @@ jobs:
         uses: dtolnay/rust-toolchain@nightly
         with:
           components: rustfmt, clippy, rust-src
-      
+
       - name: Build LiquidCache server
-        run: cargo build --release --bin liquid_parquet_server
+        run: cargo build --release --bin bench_server
 
       - name: Start LiquidCache server
-        run: env RUST_LOG=info nohup cargo run --release --bin liquid_parquet_server &> server.log &
+        run: env RUST_LOG=info nohup cargo run --release --bin bench_server &> server.log &
 
       - name: Run simple ClickBench
         run: |
