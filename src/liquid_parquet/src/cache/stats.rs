@@ -78,6 +78,7 @@ impl StatsWriter {
         ])?)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn append_entry(
         &mut self,
         file_path: &str,
