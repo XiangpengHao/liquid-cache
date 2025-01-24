@@ -1,26 +1,21 @@
-#![allow(unused)]
-use ahash::{AHashMap, HashMap};
+use ahash::AHashMap;
 use arrow::array::AsArray;
-use arrow::array::{ArrayRef, BooleanArray, RecordBatch, RecordBatchWriter};
+use arrow::array::{ArrayRef, RecordBatch, RecordBatchWriter};
 use arrow::ipc::reader::FileReader;
 use arrow::ipc::writer::FileWriter;
-use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use arrow_schema::{DataType, Field, Schema};
 use lock_spec::*;
-use parquet::arrow::arrow_reader::{ArrowPredicate, RowSelection};
-use std::collections::HashSet;
 use std::fmt::Display;
 use std::io::Seek;
 use std::ops::{DerefMut, Range};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, LazyLock, RwLockReadGuard};
+use std::sync::{Arc, RwLockReadGuard};
 use utils::RangedFile;
 mod stats;
 
 use super::liquid_array::{
     AsLiquidArray, LiquidArrayRef, LiquidPrimitiveArray, LiquidStringArray, LiquidStringMetadata,
 };
-use super::reader::BooleanSelection;
-mod iter;
 mod lock_spec;
 mod utils;
 use arrow::array::types::{
@@ -208,6 +203,7 @@ impl ArrayIdentifier {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn row_id(&self) -> usize {
         self.row_id
     }
@@ -309,242 +305,8 @@ impl LiquidCache {
         }
     }
 
-    /// Returns a list of ranges that are cached.
-    /// The ranges are sorted by the starting row id.
-    pub fn get_cached_ranges_of_column(
-        &self,
-        row_group_id: usize,
-        column_id: usize,
-    ) -> Option<HashSet<Range<usize>>> {
-        let mut ctx = LockCtx::UNLOCKED;
-        let (v, mut ctx) = self.value[row_group_id].read(&mut ctx);
-        let rows = v.get(&column_id)?;
-
-        let mut result_ranges = HashSet::new();
-        for (row_id, cached_entry) in rows.iter() {
-            let start = *row_id;
-            let end = row_id + cached_entry.row_count(&mut ctx) as usize;
-
-            result_ranges.insert(start..end);
-        }
-        Some(result_ranges)
-    }
-
-    /// Get a record batch iterator from a boolean selection.
-    pub fn get_record_batches_by_filter<'a>(
-        &'a self,
-        row_group_id: usize,
-        selection: BooleanSelection,
-        schema: &SchemaRef,
-        parquet_column_ids: &[usize],
-    ) -> iter::BooleanSelectionIter<'a> {
-        iter::BooleanSelectionIter::new(
-            self,
-            row_group_id,
-            selection,
-            schema.clone(),
-            parquet_column_ids.to_vec(),
-            self.batch_size,
-        )
-    }
-
-    /// Get a record batch iterator from a boolean selection with a predicate.
-    pub fn get_record_batches_by_selection_with_predicate<'a, 'b>(
-        &'a self,
-        row_group_id: usize,
-        selection: &'b BooleanSelection,
-        schema: &SchemaRef,
-        parquet_column_id: usize,
-        predicate: &'b mut Box<dyn ArrowPredicate>,
-    ) -> iter::BooleanSelectionPredicateIter<'a, 'b> {
-        iter::BooleanSelectionPredicateIter::new(
-            self,
-            row_group_id,
-            selection,
-            schema.clone(),
-            parquet_column_id,
-            self.batch_size,
-            predicate,
-        )
-    }
-
-    // /// Get a record batch from a row selection.
-    // pub fn get_record_batches(
-    //     &self,
-    //     row_group_id: usize,
-    //     selection: BooleanSelection,
-    //     schema: &SchemaRef,
-    //     parquet_column_ids: &[usize],
-    // ) -> Box<dyn Iterator<Item = RecordBatch> + Send> {
-    //     let selection_count = selection.row_count();
-    //     let total_row_count = selection.len();
-    //     let is_selective = (selection_count * 16) < total_row_count;
-    //     let iter = LiquidCache::get().get_record_batches_by_filter(
-    //         row_group_id,
-    //         selection,
-    //         schema,
-    //         parquet_column_ids,
-    //     );
-    //     if !is_selective {
-    //         // means we have many small selections, we should coalesce them
-    //         let coalesced = iter::CoalescedIter::new(iter, self.batch_size);
-    //         Box::new(coalesced) as Box<dyn Iterator<Item = RecordBatch> + Send>
-    //     } else {
-    //         Box::new(iter)
-    //     }
-    // }
-
-    /// Get a record batch iterator from a row selection.
-    /// Each record batch is `take` (instead of `filter`) from the underlying RecordBatch iterator.
-    pub fn get_record_batch_by_take(
-        &self,
-        row_group_id: usize,
-        selection: &RowSelection,
-        schema: &SchemaRef,
-        parquet_column_ids: &[usize],
-    ) -> iter::TakeRecordBatchIter {
-        iter::TakeRecordBatchIter::new(
-            self,
-            row_group_id,
-            selection.clone().into(),
-            schema.clone(),
-            parquet_column_ids.to_vec(),
-            self.batch_size,
-        )
-    }
-
-    /// Get a record batch iterator from a row selection.
-    pub fn get_record_batch_by_slice(
-        &self,
-        row_group_id: usize,
-        selection: &RowSelection,
-        schema: &SchemaRef,
-        parquet_column_ids: &[usize],
-    ) -> iter::SlicedRecordBatchIter {
-        iter::SlicedRecordBatchIter::new(
-            self,
-            row_group_id,
-            selection.clone().into(),
-            schema.clone(),
-            parquet_column_ids.to_vec(),
-            self.batch_size,
-        )
-    }
-
-    /// Returns the cached ranges for the given row group and column indices.
-    ///
-    /// It returns the **intersection** of the cached ranges for the given column indices.
-    /// If any column indices' cached ranges are not found, the function returns `None`.
-    pub fn get_cached_ranges_of_columns(
-        &self,
-        row_group_id: usize,
-        column_ids: &[usize],
-    ) -> Option<HashSet<Range<usize>>> {
-        let mut intersected_ranges: Option<HashSet<Range<usize>>> = None;
-
-        for column_idx in column_ids.iter() {
-            if let Some(cached_ranges) = self.get_cached_ranges_of_column(row_group_id, *column_idx)
-            {
-                intersected_ranges = match intersected_ranges {
-                    None => Some(cached_ranges),
-                    Some(existing_ranges) => {
-                        Some(intersect_ranges(existing_ranges, &cached_ranges))
-                    }
-                };
-            } else {
-                return None;
-            }
-        }
-        intersected_ranges
-    }
-
     /// Get an arrow array from the cache with a selection.
-    pub fn get_arrow_array_with_selection_and_predicate(
-        &self,
-        id: &ArrayIdentifier,
-        selection: Option<&BooleanArray>,
-        predicate: &mut Box<dyn ArrowPredicate>,
-        schema: &SchemaRef,
-    ) -> Option<BooleanArray> {
-        if matches!(self.cache_mode, CacheStates::NoCache) {
-            return None;
-        }
-
-        let mut ctx = LockCtx::UNLOCKED;
-        let (cache, mut ctx) = self.value[id.row_group_id].read(&mut ctx);
-
-        let column_cache = cache.get(&id.column_id).unwrap();
-        let cached_entry = column_cache.get(&id.row_id).unwrap();
-        cached_entry.increment_hit_count(&mut ctx);
-        let cached_entry = cached_entry.value(&mut ctx);
-        match &cached_entry.0.value {
-            CachedColumnBatch::ArrowMemory(array) => {
-                let array = match selection {
-                    Some(selection) => {
-                        arrow::compute::kernels::filter::filter(array, selection).unwrap()
-                    }
-                    None => array.clone(),
-                };
-                let record_batch = RecordBatch::try_new(schema.clone(), vec![array]).unwrap();
-                let array = predicate.evaluate(record_batch).unwrap();
-                Some(array)
-            }
-            CachedColumnBatch::ArrowDisk(range) => {
-                let file = std::fs::File::open(ARROW_DISK_CACHE_PATH).unwrap();
-                let ranged_file = RangedFile::new(file, range.clone()).unwrap();
-                let reader = std::io::BufReader::new(ranged_file);
-
-                let mut arrow_reader = FileReader::try_new(reader, None).unwrap();
-                let batch = arrow_reader.next().unwrap().unwrap();
-                let batch = match selection {
-                    Some(selection) => {
-                        arrow::compute::kernels::filter::filter_record_batch(&batch, selection)
-                            .unwrap()
-                    }
-                    None => batch,
-                };
-                let array = predicate.evaluate(batch).unwrap();
-                Some(array)
-            }
-            CachedColumnBatch::LiquidMemory(array) => match selection {
-                Some(selection) => {
-                    if let Some(_string_array) = array.as_string_array_opt() {
-                        let filtered = array.filter(selection);
-                        todo!("evaluate_any!");
-                        // let result = predicate.evaluate_any(&filtered).unwrap();
-                        // Some(result)
-                    } else {
-                        let etc_primitive = array.to_arrow_array();
-
-                        let filtered =
-                            arrow::compute::kernels::filter::filter(&etc_primitive, selection)
-                                .unwrap();
-
-                        let schema = Schema::new(vec![Field::new(
-                            "",
-                            etc_primitive.data_type().clone(),
-                            etc_primitive.is_nullable(),
-                        )]);
-                        let record_batch =
-                            RecordBatch::try_new(Arc::new(schema), vec![filtered]).unwrap();
-                        let result = predicate.evaluate(record_batch).unwrap();
-                        Some(result)
-                    }
-                }
-                None => {
-                    todo!("evaluate_any!");
-                    // Some(predicate.evaluate_any(array).unwrap())
-                }
-            },
-        }
-    }
-
-    /// Get an arrow array from the cache with a selection.
-    pub fn get_arrow_array_with_selection(
-        &self,
-        id: &ArrayIdentifier,
-        selection: Option<&BooleanArray>,
-    ) -> Option<ArrayRef> {
+    pub fn get_arrow_array(&self, id: &ArrayIdentifier) -> Option<ArrayRef> {
         if matches!(self.cache_mode, CacheStates::NoCache) {
             return None;
         }
@@ -558,12 +320,7 @@ impl LiquidCache {
         cached_entry.increment_hit_count(&mut ctx_column);
         let cached_entry = cached_entry.value(&mut ctx_column);
         match &cached_entry.0.value {
-            CachedColumnBatch::ArrowMemory(array) => match selection {
-                Some(selection) => {
-                    Some(arrow::compute::kernels::filter::filter(array, selection).unwrap())
-                }
-                None => Some(array.clone()),
-            },
+            CachedColumnBatch::ArrowMemory(array) => Some(array.clone()),
             CachedColumnBatch::ArrowDisk(range) => {
                 let file = std::fs::File::open(ARROW_DISK_CACHE_PATH).ok()?;
                 let ranged_file = RangedFile::new(file, range.clone()).ok()?;
@@ -572,42 +329,18 @@ impl LiquidCache {
                 let mut arrow_reader = FileReader::try_new(reader, None).ok()?;
                 let batch = arrow_reader.next().unwrap().unwrap();
                 let array = batch.column(0);
-                match selection {
-                    Some(selection) => {
-                        Some(arrow::compute::kernels::filter::filter(array, selection).unwrap())
-                    }
-                    None => Some(array.clone()),
+                Some(array.clone())
+            }
+            CachedColumnBatch::LiquidMemory(array) => {
+                if let Some(string_array) = array.as_string_array_opt() {
+                    let arrow_array = string_array.to_dict_string();
+                    Some(Arc::new(arrow_array))
+                } else {
+                    let arrow_array = array.to_arrow_array();
+                    Some(arrow_array)
                 }
             }
-            CachedColumnBatch::LiquidMemory(array) => match selection {
-                Some(selection) => {
-                    if let Some(string_array) = array.as_string_array_opt() {
-                        let arrow_array = string_array.to_dict_string_with_selection(selection);
-                        Some(Arc::new(arrow_array))
-                    } else {
-                        let etc_primitive = array.to_arrow_array();
-                        let filtered =
-                            arrow::compute::kernels::filter::filter(&etc_primitive, selection)
-                                .unwrap();
-                        Some(filtered)
-                    }
-                }
-                None => {
-                    if let Some(string_array) = array.as_string_array_opt() {
-                        let arrow_array = string_array.to_dict_string();
-                        Some(Arc::new(arrow_array))
-                    } else {
-                        let arrow_array = array.to_arrow_array();
-                        Some(arrow_array)
-                    }
-                }
-            },
         }
-    }
-
-    /// Get an arrow array from the cache.
-    pub fn get_arrow_array(&self, id: &ArrayIdentifier) -> Option<ArrayRef> {
-        self.get_arrow_array_with_selection(id, None)
     }
 
     fn is_cached<L>(&self, id: &ArrayIdentifier, ctx: &mut LockCtx<L>) -> bool
@@ -799,17 +532,4 @@ impl LiquidCache {
             }
         }
     }
-}
-
-/// Returns the ranges that are present in both `base` and `input`.
-/// Ranges in both sets are assumed to be non-overlapping.
-///
-/// The returned ranges are exactly those that appear in both input sets,
-/// preserving their original bounds for use in cache retrieval.
-fn intersect_ranges(
-    mut base: HashSet<Range<usize>>,
-    input: &HashSet<Range<usize>>,
-) -> HashSet<Range<usize>> {
-    base.retain(|range| input.contains(range));
-    base
 }
