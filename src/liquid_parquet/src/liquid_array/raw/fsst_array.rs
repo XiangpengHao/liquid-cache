@@ -92,17 +92,20 @@ impl FsstArray {
 
 impl From<&FsstArray> for StringArray {
     fn from(value: &FsstArray) -> Self {
+        // TODO (xiangpeng): we should not use a builder here, directly decompress to the buffer.
         let total_size = value.uncompressed_len;
         let mut builder = StringBuilder::with_capacity(value.compressed.len(), total_size);
 
-        let buffer_capacity = 8192;
         let decompressor = value.compressor.decompressor();
-        let mut decompress_buffer: Vec<u8> = Vec::with_capacity(buffer_capacity);
+        let mut decompress_buffer: Vec<u8> = Vec::with_capacity(1024);
         for v in value.compressed.iter() {
             match v {
                 Some(v) => {
                     let cap = decompressor.max_decompression_capacity(v);
-                    assert!(cap <= buffer_capacity);
+                    if cap > decompress_buffer.capacity() {
+                        decompress_buffer.reserve(cap - decompress_buffer.capacity());
+                    }
+
                     let decompressed = unsafe {
                         std::slice::from_raw_parts_mut(
                             decompress_buffer.as_mut_ptr() as *mut MaybeUninit<u8>,
