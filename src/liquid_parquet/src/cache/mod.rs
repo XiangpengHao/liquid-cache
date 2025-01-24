@@ -135,14 +135,6 @@ impl Display for CachedBatch {
     }
 }
 
-/// CacheType is used to identify the type of cache.
-#[derive(Debug, serde::Serialize)]
-pub enum CacheType {
-    InMemory,
-    OnDisk,
-    Etc,
-}
-
 #[derive(Debug)]
 pub struct LiquidCachedColumn {
     #[allow(unused)]
