@@ -1,4 +1,4 @@
-use std::{collections::HashSet, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use arrow_schema::SchemaRef;
 use dashmap::DashMap;
@@ -19,7 +19,7 @@ use super::LiquidCacheServiceConfig;
 
 pub(crate) struct LiquidCacheServiceInner {
     execution_plans: Arc<DashMap<String, Arc<dyn ExecutionPlan>>>,
-    registered_tables: Mutex<HashSet<String>>,
+    registered_tables: Mutex<HashMap<String, String>>, // table name -> path
     default_ctx: Arc<SessionContext>,
     config: LiquidCacheServiceConfig,
 }
@@ -34,13 +34,18 @@ impl LiquidCacheServiceInner {
         }
     }
 
-    pub(crate) async fn register_table(&self, url: &str, table_name: &str) -> Result<()> {
-        let url = Url::parse(url).map_err(|e| DataFusionError::Configuration(format!("{e:?}")))?;
+    pub(crate) async fn register_table(&self, url_str: &str, table_name: &str) -> Result<()> {
+        let url =
+            Url::parse(url_str).map_err(|e| DataFusionError::Configuration(format!("{e:?}")))?;
 
         let mut registered_tables = self.registered_tables.lock().await;
-        if registered_tables.contains(table_name) {
-            info!("table {table_name} already registered");
-            return Ok(());
+        if let Some(path) = registered_tables.get(table_name) {
+            if path.as_str() == url_str {
+                info!("table {table_name} already registered at {path}");
+                return Ok(());
+            } else {
+                panic!("table {table_name} already registered at {path} but not at {url}");
+            }
         }
 
         // here we can't use register_parquet because it will use the default parquet format.
@@ -48,7 +53,7 @@ impl LiquidCacheServiceInner {
         self.register_liquid_parquet(table_name, url.as_str())
             .await?;
         info!("registered table {table_name} from {url}");
-        registered_tables.insert(table_name.to_string());
+        registered_tables.insert(table_name.to_string(), url_str.to_string());
         Ok(())
     }
 

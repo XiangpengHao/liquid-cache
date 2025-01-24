@@ -98,9 +98,15 @@ jobs:
         run: |
           env RUST_LOG=info cargo run --release --bin bench_client -- --query-path benchmark/queries.sql --file examples/small_hits.parquet
 
+      - name: Kill LiquidCache server
+        run: pkill bench_server || true
+
       - name: Download ClickBench partition 0
         run: |
           wget https://datasets.clickhouse.com/hits_compatible/athena_partitioned/hits_0.parquet -O benchmark/data/hits_0.parquet
+
+      - name: Start LiquidCache server (for partition 0)
+        run: env RUST_LOG=info nohup cargo run --release --bin bench_server &> server.log &
 
       - name: Run ClickBench partition 0
         run: |

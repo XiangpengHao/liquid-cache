@@ -158,7 +158,6 @@ impl FileFormat for LiquidParquetFileFormat {
             base_config: conf,
             table_parquet_options: self.options.clone(),
             predicate: filters.cloned(),
-            metadata_size_hint: None,
             cache,
             projected_statistics,
             metrics,
