@@ -119,16 +119,16 @@ impl LiquidCache {
             let row_group = row_group_lock.columns.read().unwrap();
 
             for (column_id, row_mapping) in row_group.iter() {
-                for (row_start_id, cached_entry) in row_mapping.rows.iter() {
-                    let cached_entry = cached_entry.value();
-                    let cache_type = match &cached_entry.value {
+                for (row_start_id, cached_entry) in row_mapping.rows.read().unwrap().iter() {
+                    let cached_entry_v = cached_entry.value();
+                    let cache_type = match cached_entry_v {
                         CachedColumnBatch::ArrowMemory(_) => CacheType::InMemory,
                         CachedColumnBatch::ArrowDisk(_) => CacheType::OnDisk,
                         CachedColumnBatch::LiquidMemory(_) => CacheType::Etc,
                     };
 
-                    let memory_size = cached_entry.value.memory_usage();
-                    let row_count = match &cached_entry.value {
+                    let memory_size = cached_entry_v.memory_usage();
+                    let row_count = match cached_entry_v {
                         CachedColumnBatch::ArrowMemory(array) => array.len(),
                         CachedColumnBatch::ArrowDisk(_) => 0, // We don't know the row count for on-disk entries
                         CachedColumnBatch::LiquidMemory(array) => array.len(),

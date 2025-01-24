@@ -10,7 +10,10 @@ use parquet::{
     errors::ParquetError,
 };
 
-use crate::{cache::CachedRowGroupRef, reader::runtime::parquet_bridge::StructArrayReaderBridge};
+use crate::{
+    cache::{CachedColumnRef, CachedRowGroupRef},
+    reader::runtime::parquet_bridge::StructArrayReaderBridge,
+};
 
 use super::parquet_bridge::{ParquetField, ParquetFieldType};
 
@@ -32,18 +35,16 @@ struct CachedArrayReader {
     inner: Box<dyn ArrayReader>,
     current_row: usize,
     inner_row_id: usize,
-    column_id: usize,
     selection: VecDeque<RowSelector>,
-    liquid_cache: CachedRowGroupRef,
+    liquid_cache: CachedColumnRef,
 }
 
 impl CachedArrayReader {
-    fn new(inner: Box<dyn ArrayReader>, column_id: usize, liquid_cache: CachedRowGroupRef) -> Self {
+    fn new(inner: Box<dyn ArrayReader>, liquid_cache: CachedColumnRef) -> Self {
         Self {
             inner,
             current_row: 0,
             inner_row_id: 0,
-            column_id,
             selection: VecDeque::new(),
             liquid_cache,
         }
@@ -63,8 +64,7 @@ impl CachedArrayReader {
         }
         let read = self.inner.read_records(self.batch_size())?;
         let batch = self.inner.consume_batch()?;
-        self.liquid_cache
-            .insert_arrow_array(self.column_id, batch_id, batch);
+        self.liquid_cache.insert_arrow_array(batch_id, batch);
         self.inner_row_id += read;
         Ok(())
     }
@@ -78,16 +78,11 @@ impl CachedArrayReader {
         let starting_batch_id = self.current_row / batch_size * batch_size;
         let ending_batch_id = (self.current_row + request_size - 1) / batch_size * batch_size;
 
-        if !self
-            .liquid_cache
-            .is_cached(self.column_id, starting_batch_id)
-        {
+        if !self.liquid_cache.is_cached(starting_batch_id) {
             self.fetch_batch(starting_batch_id)?;
         }
 
-        if ending_batch_id != starting_batch_id
-            && !self.liquid_cache.is_cached(self.column_id, ending_batch_id)
-        {
+        if ending_batch_id != starting_batch_id && !self.liquid_cache.is_cached(ending_batch_id) {
             self.fetch_batch(ending_batch_id)?;
         }
 
@@ -146,7 +141,7 @@ impl ArrayReader for CachedArrayReader {
                 // easy case
                 let full_array = self
                     .liquid_cache
-                    .get_arrow_array(self.column_id, starting_batch_id)
+                    .get_arrow_array(starting_batch_id)
                     .unwrap();
                 let offset = current_row - starting_batch_id;
                 rt.push(full_array.slice(offset, selector.row_count));
@@ -154,12 +149,9 @@ impl ArrayReader for CachedArrayReader {
                 // need to split the select
                 let start_full_array = self
                     .liquid_cache
-                    .get_arrow_array(self.column_id, starting_batch_id)
+                    .get_arrow_array(starting_batch_id)
                     .unwrap();
-                let end_full_array = self
-                    .liquid_cache
-                    .get_arrow_array(self.column_id, ending_batch_id)
-                    .unwrap();
+                let end_full_array = self.liquid_cache.get_arrow_array(ending_batch_id).unwrap();
 
                 let start_select = ending_batch_id - current_row;
                 let end_select = ending_row - ending_batch_id;
@@ -266,11 +258,8 @@ fn instrument_array_reader(
         .iter()
         .zip(children)
         .map(|(column_id, reader)| {
-            let reader = Box::new(CachedArrayReader::new(
-                reader,
-                *column_id,
-                liquid_cache.clone(),
-            ));
+            let column_cache = liquid_cache.column(*column_id);
+            let reader = Box::new(CachedArrayReader::new(reader, column_cache));
             reader as _
         })
         .collect();
@@ -374,14 +363,14 @@ mod tests {
     const BATCH_SIZE: usize = 32;
     const TOTAL_ROWS: usize = 96;
 
-    fn set_up_reader() -> (CachedArrayReader, CachedRowGroupRef) {
+    fn set_up_reader() -> (CachedArrayReader, CachedColumnRef) {
         let liquid_cache = Arc::new(LiquidCache::new(LiquidCacheMode::InMemoryArrow, BATCH_SIZE));
         let row_group = liquid_cache.row_group(0);
-        let reader = set_up_reader_with_cache(row_group.clone());
-        (reader, row_group)
+        let reader = set_up_reader_with_cache(row_group.column(0).clone());
+        (reader, row_group.column(0))
     }
 
-    fn set_up_reader_with_cache(cache: CachedRowGroupRef) -> CachedArrayReader {
+    fn set_up_reader_with_cache(cache: CachedColumnRef) -> CachedArrayReader {
         let rows: Vec<i32> = (0..TOTAL_ROWS as i32).collect();
         let mock_reader = MockArrayReader {
             rows: rows.clone(),
@@ -390,7 +379,7 @@ mod tests {
             read_cnt: 0,
             skip_cnt: 0,
         };
-        CachedArrayReader::new(Box::new(mock_reader), 0, cache)
+        CachedArrayReader::new(Box::new(mock_reader), cache)
     }
 
     fn get_expected_cached_value(id: usize) -> ArrayRef {
@@ -409,7 +398,7 @@ mod tests {
             let read1 = reader.read_records(32).unwrap();
             assert_eq!(read1, 32);
             let expected = reader.consume_batch().unwrap();
-            let actual = cache.get_arrow_array(0, i).unwrap();
+            let actual = cache.get_arrow_array(i).unwrap();
             assert_eq!(&expected, &actual);
             let cache_expected = get_expected_cached_value(i);
             assert_eq!(&cache_expected, &actual);
@@ -426,7 +415,7 @@ mod tests {
 
         let mut cached = vec![];
         for i in (0..96).step_by(32) {
-            let array = cache.get_arrow_array(0, i).unwrap();
+            let array = cache.get_arrow_array(i).unwrap();
             let expected = get_expected_cached_value(i);
             assert_eq!(&array, &expected);
             cached.push(array);
@@ -555,19 +544,19 @@ mod tests {
         assert_eq!(array.len(), 40);
     }
 
-    fn assert_contains(cache: &CachedRowGroupRef, id: usize) {
-        let actual = cache.get_arrow_array(0, id).unwrap();
+    fn assert_contains(cache: &CachedColumnRef, id: usize) {
+        let actual = cache.get_arrow_array(id).unwrap();
         let expected = get_expected_cached_value(id);
         assert_eq!(&actual, &expected);
     }
 
-    fn assert_not_contains(cache: &CachedRowGroupRef, id: usize) {
-        assert!(cache.get_arrow_array(0, id).is_none());
+    fn assert_not_contains(cache: &CachedColumnRef, id: usize) {
+        assert!(cache.get_arrow_array(id).is_none());
     }
 
     #[test]
     fn test_read_with_partial_cached() {
-        fn get_warm_cache() -> CachedRowGroupRef {
+        fn get_warm_cache() -> CachedColumnRef {
             let (mut reader, cache) = set_up_reader();
             reader.read_records(32).unwrap();
             reader.skip_records(32).unwrap();
