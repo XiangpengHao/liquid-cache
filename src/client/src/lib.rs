@@ -26,6 +26,7 @@ use datafusion::{
 };
 use exec::FlightExec;
 use log::info;
+use owo_colors::OwoColorize;
 use serde::{Deserialize, Serialize};
 use sql::FlightSqlDriver;
 use tonic::transport::Channel;
@@ -212,7 +213,7 @@ impl TableProvider for FlightTable {
             unparsed_sql.to_string()
         };
 
-        info!("SQL send to cache: \n{}", unparsed_sql);
+        info!("SQL send to cache: \n{}", unparsed_sql.cyan());
 
         let metadata = self
             .driver

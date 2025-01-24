@@ -20,7 +20,7 @@ jobs:
         # Unfortunately, the fastlanes need to use nightly rustc.
         uses: dtolnay/rust-toolchain@nightly
         with:
-          components: rustfmt, clippy
+          components: rustfmt, clippy, rust-src
 
       - name: Check formatting
         run: cargo fmt --all -- --check

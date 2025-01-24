@@ -12,6 +12,7 @@ use datafusion::{
 };
 use liquid_cache_client::SplitSqlTableFactory;
 use log::info;
+use owo_colors::OwoColorize;
 use url::Url;
 
 use clap::{Command, arg, value_parser};
@@ -85,10 +86,10 @@ pub async fn main() -> Result<()> {
     ctx.register_table(table_name, Arc::new(table))?;
 
     for query in queries {
-        info!("SQL to be executed: \n{}", query);
+        info!("SQL to be executed: \n{}", query.cyan());
         let result = ctx.sql(&query).await?.collect().await?;
         let result_str = pretty::pretty_format_batches(&result).unwrap();
-        info!("Query result: \n{}", result_str);
+        info!("Query result: \n{}", result_str.cyan());
     }
 
     Ok(())
