@@ -3,7 +3,7 @@ use std::sync::{Arc, atomic::Ordering};
 use arrow::array::{DictionaryArray, RecordBatch, StringArray, UInt32Array, UInt64Array};
 use arrow_schema::{DataType, Field, Schema};
 
-use super::{CacheType, CachedColumnBatch, LiquidCache};
+use super::{CacheType, CachedBatch, LiquidCache};
 
 /// ArrowCacheStatistics is used to collect statistics about the arrow array cache.
 #[derive(Debug, serde::Serialize, Default)]
@@ -15,6 +15,7 @@ pub struct LiquidCacheStatistics {
     pub memory_sizes: Vec<u64>,
     pub cache_types: Vec<CacheType>,
     pub hit_counts: Vec<u64>,
+    pub file_paths: Vec<String>,
 }
 
 impl LiquidCacheStatistics {
@@ -28,6 +29,7 @@ impl LiquidCacheStatistics {
             memory_sizes: Vec::new(),
             cache_types: Vec::new(),
             hit_counts: Vec::new(),
+            file_paths: Vec::new(),
         }
     }
 
@@ -42,6 +44,7 @@ impl LiquidCacheStatistics {
         memory_size: u64,
         cache_type: CacheType,
         hit_count: u64,
+        file_path: &str,
     ) {
         self.row_group_ids.push(row_group_id);
         self.column_ids.push(column_id);
@@ -50,6 +53,7 @@ impl LiquidCacheStatistics {
         self.memory_sizes.push(memory_size);
         self.cache_types.push(cache_type);
         self.hit_counts.push(hit_count);
+        self.file_paths.push(file_path.to_string());
     }
 
     /// Get the total memory usage of the cache.
@@ -94,6 +98,7 @@ impl LiquidCacheStatistics {
                     false,
                 ),
                 Field::new("hit_count", DataType::UInt64, false),
+                Field::new("file_path", DataType::Utf8, false),
             ])),
             vec![
                 row_group_ids,
@@ -114,35 +119,38 @@ impl LiquidCache {
     pub fn stats(&self) -> LiquidCacheStatistics {
         let mut stats = LiquidCacheStatistics::new();
 
-        let row_groups = self.row_groups.lock().unwrap();
-        for (row_group_id, row_group_lock) in row_groups.iter() {
-            let row_group = row_group_lock.columns.read().unwrap();
+        let files = self.files.lock().unwrap();
+        for (file_path, file_lock) in files.iter() {
+            let row_groups = file_lock.row_groups.lock().unwrap();
+            for (row_group_id, row_group) in row_groups.iter() {
+                let columns = row_group.columns.read().unwrap();
+                for (column_id, row_mapping) in columns.iter() {
+                    for (row_start_id, cached_entry) in row_mapping.rows.read().unwrap().iter() {
+                        let cached_entry_v = cached_entry.value();
+                        let cache_type = match cached_entry_v {
+                            CachedBatch::ArrowMemory(_) => CacheType::InMemory,
+                            CachedBatch::ArrowDisk(_) => CacheType::OnDisk,
+                            CachedBatch::LiquidMemory(_) => CacheType::Etc,
+                        };
 
-            for (column_id, row_mapping) in row_group.iter() {
-                for (row_start_id, cached_entry) in row_mapping.rows.read().unwrap().iter() {
-                    let cached_entry_v = cached_entry.value();
-                    let cache_type = match cached_entry_v {
-                        CachedColumnBatch::ArrowMemory(_) => CacheType::InMemory,
-                        CachedColumnBatch::ArrowDisk(_) => CacheType::OnDisk,
-                        CachedColumnBatch::LiquidMemory(_) => CacheType::Etc,
-                    };
+                        let memory_size = cached_entry_v.memory_usage();
+                        let row_count = match cached_entry_v {
+                            CachedBatch::ArrowMemory(array) => array.len(),
+                            CachedBatch::ArrowDisk(_) => 0, // We don't know the row count for on-disk entries
+                            CachedBatch::LiquidMemory(array) => array.len(),
+                        };
 
-                    let memory_size = cached_entry_v.memory_usage();
-                    let row_count = match cached_entry_v {
-                        CachedColumnBatch::ArrowMemory(array) => array.len(),
-                        CachedColumnBatch::ArrowDisk(_) => 0, // We don't know the row count for on-disk entries
-                        CachedColumnBatch::LiquidMemory(array) => array.len(),
-                    };
-
-                    stats.add_entry(
-                        *row_group_id as u64,
-                        *column_id as u64,
-                        *row_start_id as u64,
-                        row_count as u64,
-                        memory_size as u64,
-                        cache_type,
-                        cached_entry.hit_count.load(Ordering::Relaxed) as u64,
-                    );
+                        stats.add_entry(
+                            *row_group_id as u64,
+                            *column_id as u64,
+                            *row_start_id as u64,
+                            row_count as u64,
+                            memory_size as u64,
+                            cache_type,
+                            cached_entry.hit_count.load(Ordering::Relaxed) as u64,
+                            file_path,
+                        );
+                    }
                 }
             }
         }

@@ -213,7 +213,8 @@ impl FileOpener for LiquidParquetOpener {
                 liquid_builder = liquid_builder.with_row_filter(row_filter);
             }
 
-            let stream = liquid_builder.build(liquid_cache)?;
+            let cached_file = liquid_cache.file(file_name);
+            let stream = liquid_builder.build(cached_file)?;
 
             let adapted = stream
                 .map_err(|e| ArrowError::ExternalError(Box::new(e)))

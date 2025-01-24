@@ -11,7 +11,7 @@ use parquet::{
 };
 
 use crate::{
-    cache::{CachedColumnRef, CachedRowGroupRef},
+    cache::{LiquidCachedColumnRef, LiquidCachedRowGroupRef},
     reader::runtime::parquet_bridge::StructArrayReaderBridge,
 };
 
@@ -36,11 +36,11 @@ struct CachedArrayReader {
     current_row: usize,
     inner_row_id: usize,
     selection: VecDeque<RowSelector>,
-    liquid_cache: CachedColumnRef,
+    liquid_cache: LiquidCachedColumnRef,
 }
 
 impl CachedArrayReader {
-    fn new(inner: Box<dyn ArrayReader>, liquid_cache: CachedColumnRef) -> Self {
+    fn new(inner: Box<dyn ArrayReader>, liquid_cache: LiquidCachedColumnRef) -> Self {
         Self {
             inner,
             current_row: 0,
@@ -236,7 +236,7 @@ fn get_column_ids(
 fn instrument_array_reader(
     reader: Box<dyn ArrayReader>,
     column_ids: &[usize],
-    liquid_cache: CachedRowGroupRef,
+    liquid_cache: LiquidCachedRowGroupRef,
 ) -> Box<dyn ArrayReader> {
     if reader
         .as_any()
@@ -273,7 +273,7 @@ pub fn build_cached_array_reader(
     field: Option<&ParquetField>,
     projection: &parquet::arrow::ProjectionMask,
     row_groups: &dyn RowGroups,
-    liquid_cache: CachedRowGroupRef,
+    liquid_cache: LiquidCachedRowGroupRef,
 ) -> Result<Box<dyn ArrayReader>, ParquetError> {
     let reader = parquet::arrow::array_reader::build_array_reader(
         #[allow(clippy::missing_transmute_annotations)]
@@ -363,14 +363,15 @@ mod tests {
     const BATCH_SIZE: usize = 32;
     const TOTAL_ROWS: usize = 96;
 
-    fn set_up_reader() -> (CachedArrayReader, CachedColumnRef) {
+    fn set_up_reader() -> (CachedArrayReader, LiquidCachedColumnRef) {
         let liquid_cache = Arc::new(LiquidCache::new(LiquidCacheMode::InMemoryArrow, BATCH_SIZE));
-        let row_group = liquid_cache.row_group(0);
+        let file = liquid_cache.file("test".to_string());
+        let row_group = file.row_group(0);
         let reader = set_up_reader_with_cache(row_group.column(0).clone());
         (reader, row_group.column(0))
     }
 
-    fn set_up_reader_with_cache(cache: CachedColumnRef) -> CachedArrayReader {
+    fn set_up_reader_with_cache(cache: LiquidCachedColumnRef) -> CachedArrayReader {
         let rows: Vec<i32> = (0..TOTAL_ROWS as i32).collect();
         let mock_reader = MockArrayReader {
             rows: rows.clone(),
@@ -544,19 +545,19 @@ mod tests {
         assert_eq!(array.len(), 40);
     }
 
-    fn assert_contains(cache: &CachedColumnRef, id: usize) {
+    fn assert_contains(cache: &LiquidCachedColumnRef, id: usize) {
         let actual = cache.get_arrow_array(id).unwrap();
         let expected = get_expected_cached_value(id);
         assert_eq!(&actual, &expected);
     }
 
-    fn assert_not_contains(cache: &CachedColumnRef, id: usize) {
+    fn assert_not_contains(cache: &LiquidCachedColumnRef, id: usize) {
         assert!(cache.get_arrow_array(id).is_none());
     }
 
     #[test]
     fn test_read_with_partial_cached() {
-        fn get_warm_cache() -> CachedColumnRef {
+        fn get_warm_cache() -> LiquidCachedColumnRef {
             let (mut reader, cache) = set_up_reader();
             reader.read_records(32).unwrap();
             reader.skip_records(32).unwrap();

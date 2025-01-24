@@ -25,7 +25,7 @@ use parquet::{
 };
 
 use crate::LiquidCacheMode;
-use crate::cache::LiquidCacheRef;
+use crate::cache::LiquidCachedFileRef;
 
 use super::LiquidRowFilter;
 
@@ -84,7 +84,7 @@ pub struct LiquidRecordBatchReader {
     schema: SchemaRef,
     selection: VecDeque<RowSelector>,
     row_filter: Option<LiquidRowFilter>,
-    liquid_cache: LiquidCacheRef,
+    liquid_cache: LiquidCachedFileRef,
 }
 
 impl LiquidRecordBatchReader {
@@ -94,7 +94,7 @@ impl LiquidRecordBatchReader {
         selection: RowSelection,
         filter_readers: Vec<Box<dyn ArrayReader>>,
         row_filter: Option<LiquidRowFilter>,
-        liquid_cache: LiquidCacheRef,
+        liquid_cache: LiquidCachedFileRef,
     ) -> Self {
         let schema = match array_reader.get_data_type() {
             DataType::Struct(fields) => Schema::new(fields.clone()),

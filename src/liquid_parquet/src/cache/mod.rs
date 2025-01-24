@@ -50,7 +50,7 @@ impl LiquidCompressorStates {
 
 #[derive(Debug)]
 struct CachedEntry {
-    value: CachedColumnBatch,
+    value: CachedBatch,
     hit_count: AtomicU32,
 }
 
@@ -59,19 +59,19 @@ impl CachedEntry {
         self.hit_count.fetch_add(1, Ordering::Relaxed);
     }
 
-    fn value(&self) -> &CachedColumnBatch {
+    fn value(&self) -> &CachedBatch {
         &self.value
     }
 
     fn new_in_memory(array: ArrayRef) -> Self {
-        let val = CachedColumnBatch::ArrowMemory(array);
+        let val = CachedBatch::ArrowMemory(array);
         CachedEntry {
             value: val,
             hit_count: AtomicU32::new(0),
         }
     }
 
-    fn new(value: CachedColumnBatch) -> Self {
+    fn new(value: CachedBatch) -> Self {
         CachedEntry {
             value,
             hit_count: AtomicU32::new(0),
@@ -80,13 +80,13 @@ impl CachedEntry {
 }
 
 #[derive(Debug)]
-enum CachedColumnBatch {
+enum CachedBatch {
     ArrowMemory(ArrayRef),
     ArrowDisk(Range<u64>),
     LiquidMemory(LiquidArrayRef),
 }
 
-impl CachedColumnBatch {
+impl CachedBatch {
     fn memory_usage(&self) -> usize {
         match self {
             Self::ArrowMemory(array) => array.get_array_memory_size(),
@@ -118,14 +118,14 @@ impl CachedColumnBatch {
 
                 let file = writer.into_inner().unwrap();
                 let end_pos = file.stream_position().unwrap();
-                *self = CachedColumnBatch::ArrowDisk(start_pos..end_pos);
+                *self = CachedBatch::ArrowDisk(start_pos..end_pos);
             }
             _ => unimplemented!("convert {} to {:?} not implemented", self, to),
         }
     }
 }
 
-impl Display for CachedColumnBatch {
+impl Display for CachedBatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::ArrowMemory(_) => write!(f, "ArrowMemory"),
@@ -144,7 +144,7 @@ pub enum CacheType {
 }
 
 #[derive(Debug)]
-pub struct CachedColumn {
+pub struct LiquidCachedColumn {
     #[allow(unused)]
     row_group_id: usize,
     #[allow(unused)]
@@ -154,9 +154,9 @@ pub struct CachedColumn {
     rows: RwLock<AHashMap<usize, CachedEntry>>,
 }
 
-pub type CachedColumnRef = Arc<CachedColumn>;
+pub type LiquidCachedColumnRef = Arc<LiquidCachedColumn>;
 
-impl CachedColumn {
+impl LiquidCachedColumn {
     fn new(
         row_group_id: usize,
         column_id: usize,
@@ -192,8 +192,8 @@ impl CachedColumn {
         cached_entry.increment_hit_count();
         let cached_entry = cached_entry.value();
         match cached_entry {
-            CachedColumnBatch::ArrowMemory(array) => Some(array.clone()),
-            CachedColumnBatch::ArrowDisk(range) => {
+            CachedBatch::ArrowMemory(array) => Some(array.clone()),
+            CachedBatch::ArrowDisk(range) => {
                 let file = std::fs::File::open(ARROW_DISK_CACHE_PATH).ok()?;
                 let ranged_file = RangedFile::new(file, range.clone()).ok()?;
 
@@ -203,7 +203,7 @@ impl CachedColumn {
                 let array = batch.column(0);
                 Some(array.clone())
             }
-            CachedColumnBatch::LiquidMemory(array) => {
+            CachedBatch::LiquidMemory(array) => {
                 if let Some(string_array) = array.as_string_array_opt() {
                     let arrow_array = string_array.to_dict_string();
                     Some(Arc::new(arrow_array))
@@ -232,7 +232,7 @@ impl CachedColumn {
                 assert!(old.is_none());
             }
             CacheStates::OnDisk(_file) => {
-                let mut cached_value = CachedColumnBatch::ArrowMemory(array);
+                let mut cached_value = CachedBatch::ArrowMemory(array);
                 cached_value.convert_to(&self.cache_mode);
 
                 rows.insert(row_id, CachedEntry::new(cached_value));
@@ -291,7 +291,7 @@ impl CachedColumn {
                     };
                     rows.insert(
                         row_id,
-                        CachedEntry::new(CachedColumnBatch::LiquidMemory(primitive)),
+                        CachedEntry::new(CachedBatch::LiquidMemory(primitive)),
                     );
                     return;
                 }
@@ -306,9 +306,7 @@ impl CachedColumn {
                             );
                             rows.insert(
                                 row_id,
-                                CachedEntry::new(CachedColumnBatch::LiquidMemory(Arc::new(
-                                    compressed,
-                                ))),
+                                CachedEntry::new(CachedBatch::LiquidMemory(Arc::new(compressed))),
                             );
                             return;
                         }
@@ -321,7 +319,7 @@ impl CachedColumn {
                         *compressors = Some(compressor);
                         rows.insert(
                             row_id,
-                            CachedEntry::new(CachedColumnBatch::LiquidMemory(Arc::new(compressed))),
+                            CachedEntry::new(CachedBatch::LiquidMemory(Arc::new(compressed))),
                         );
                     }
                     DataType::Utf8 => {
@@ -333,9 +331,7 @@ impl CachedColumn {
                             );
                             rows.insert(
                                 row_id,
-                                CachedEntry::new(CachedColumnBatch::LiquidMemory(Arc::new(
-                                    compressed,
-                                ))),
+                                CachedEntry::new(CachedBatch::LiquidMemory(Arc::new(compressed))),
                             );
                             return;
                         }
@@ -348,7 +344,7 @@ impl CachedColumn {
                         *compressors = Some(compressor);
                         rows.insert(
                             row_id,
-                            CachedEntry::new(CachedColumnBatch::LiquidMemory(Arc::new(compressed))),
+                            CachedEntry::new(CachedBatch::LiquidMemory(Arc::new(compressed))),
                         );
                     }
                     DataType::Dictionary(_, _) => {
@@ -358,7 +354,7 @@ impl CachedColumn {
                                 let etc_array = LiquidStringArray::from_dict_array(dict_array);
                                 rows.insert(
                                     row_id,
-                                    CachedEntry::new(CachedColumnBatch::LiquidMemory(Arc::new(
+                                    CachedEntry::new(CachedBatch::LiquidMemory(Arc::new(
                                         etc_array,
                                     ))),
                                 );
@@ -376,14 +372,14 @@ impl CachedColumn {
 }
 
 #[derive(Debug)]
-pub struct CachedRowGroup {
+pub struct LiquidCachedRowGroup {
     row_group_id: usize,
     cache_mode: LiquidCacheMode,
     batch_size: usize,
-    columns: RwLock<AHashMap<usize, Arc<CachedColumn>>>,
+    columns: RwLock<AHashMap<usize, Arc<LiquidCachedColumn>>>,
 }
 
-impl CachedRowGroup {
+impl LiquidCachedRowGroup {
     fn new(row_group_id: usize, cache_mode: LiquidCacheMode, batch_size: usize) -> Self {
         Self {
             row_group_id,
@@ -393,13 +389,13 @@ impl CachedRowGroup {
         }
     }
 
-    pub fn column(&self, column_id: usize) -> CachedColumnRef {
+    pub fn column(&self, column_id: usize) -> LiquidCachedColumnRef {
         self.columns
             .write()
             .unwrap()
             .entry(column_id)
             .or_insert_with(|| {
-                Arc::new(CachedColumn::new(
+                Arc::new(LiquidCachedColumn::new(
                     self.row_group_id,
                     column_id,
                     LiquidCache::make_states(self.cache_mode),
@@ -410,20 +406,52 @@ impl CachedRowGroup {
     }
 }
 
-pub type CachedRowGroupRef = Arc<CachedRowGroup>;
+pub type LiquidCachedRowGroupRef = Arc<LiquidCachedRowGroup>;
 
-/// LiquidCache.
-/// Caching granularity: column batch.
-/// To identify a column batch, we need:
-/// 1. Parquet file path
-/// 2. Row group index
-/// 3. Column index
-/// 4. Row offset, assuming each batch is at most 8192 rows.
+#[derive(Debug)]
+pub struct LiquidCachedFile {
+    row_groups: Mutex<AHashMap<usize, Arc<LiquidCachedRowGroup>>>,
+    cache_mode: LiquidCacheMode,
+    batch_size: usize,
+}
+
+impl LiquidCachedFile {
+    fn new(cache_mode: LiquidCacheMode, batch_size: usize) -> Self {
+        Self {
+            cache_mode,
+            batch_size,
+            row_groups: Mutex::new(AHashMap::new()),
+        }
+    }
+
+    pub fn row_group(&self, row_group_id: usize) -> LiquidCachedRowGroupRef {
+        let mut row_groups = self.row_groups.lock().unwrap();
+        let row_group = row_groups.entry(row_group_id).or_insert_with(|| {
+            Arc::new(LiquidCachedRowGroup::new(
+                row_group_id,
+                self.cache_mode,
+                self.batch_size,
+            ))
+        });
+        row_group.clone()
+    }
+
+    pub fn cache_mode(&self) -> LiquidCacheMode {
+        self.cache_mode
+    }
+}
+
+pub type LiquidCachedFileRef = Arc<LiquidCachedFile>;
+
 #[derive(Debug)]
 pub struct LiquidCache {
-    row_groups: Mutex<AHashMap<usize, Arc<CachedRowGroup>>>,
+    /// Files -> RowGroups -> Columns -> Batches
+    files: Mutex<AHashMap<String, Arc<LiquidCachedFile>>>,
+
+    /// One of Arrow, Liquid, or NoCache
     cache_mode: LiquidCacheMode,
-    // cache granularity
+
+    /// cache granularity
     batch_size: usize,
 }
 
@@ -449,14 +477,22 @@ impl From<&CacheStates> for LiquidCacheMode {
 }
 
 impl LiquidCache {
-    pub fn new(cache_mode: LiquidCacheMode, batch_size: usize) -> Self {
+    pub(crate) fn new(cache_mode: LiquidCacheMode, batch_size: usize) -> Self {
         assert!(batch_size.is_power_of_two());
 
         LiquidCache {
-            row_groups: Mutex::new(AHashMap::new()),
+            files: Mutex::new(AHashMap::new()),
             cache_mode,
             batch_size,
         }
+    }
+
+    pub(crate) fn file(&self, file_path: String) -> LiquidCachedFileRef {
+        let mut files = self.files.lock().unwrap();
+        let file = files
+            .entry(file_path.clone())
+            .or_insert_with(|| Arc::new(LiquidCachedFile::new(self.cache_mode, self.batch_size)));
+        file.clone()
     }
 
     fn make_states(cache_mode: LiquidCacheMode) -> CacheStates {
@@ -483,21 +519,9 @@ impl LiquidCache {
         self.cache_mode
     }
 
-    pub fn row_group(&self, row_group_id: usize) -> CachedRowGroupRef {
-        let mut row_groups = self.row_groups.lock().unwrap();
-        let row_group = row_groups.entry(row_group_id).or_insert_with(|| {
-            Arc::new(CachedRowGroup::new(
-                row_group_id,
-                self.cache_mode,
-                self.batch_size,
-            ))
-        });
-        row_group.clone()
-    }
-
     /// Reset the cache.
     pub fn reset(&self) {
-        let mut row_groups = self.row_groups.lock().unwrap();
-        row_groups.clear();
+        let mut files = self.files.lock().unwrap();
+        files.clear();
     }
 }

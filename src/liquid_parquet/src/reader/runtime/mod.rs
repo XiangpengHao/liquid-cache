@@ -1,4 +1,4 @@
-use crate::cache::LiquidCacheRef;
+use crate::cache::LiquidCachedFileRef;
 use arrow::array::RecordBatch;
 use arrow_schema::{DataType, Fields, Schema, SchemaRef};
 use cached_array_reader::build_cached_array_reader;
@@ -57,7 +57,7 @@ struct ReaderFactory {
 
     offset: Option<usize>,
 
-    liquid_cache: LiquidCacheRef,
+    liquid_cache: LiquidCachedFileRef,
 }
 
 impl ReaderFactory {
@@ -226,7 +226,7 @@ impl LiquidStreamBuilder {
         self
     }
 
-    pub fn build(self, liquid_cache: LiquidCacheRef) -> Result<LiquidStream, ParquetError> {
+    pub fn build(self, liquid_cache: LiquidCachedFileRef) -> Result<LiquidStream, ParquetError> {
         let num_row_groups = self.metadata.row_groups().len();
 
         let row_groups: VecDeque<usize> = match self.row_groups {
