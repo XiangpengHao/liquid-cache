@@ -7,38 +7,42 @@
 		{
 			"type": "lldb",
 			"request": "launch",
-			"name": "Example - client",
+			"name": "bench_server",
 			"cargo": {
 				"args": [
 					"build",
-					"--example=client",
-					"--package=datafusion-cache"
+					"--bin=bench_server",
 				],
 				"filter": {
-					"name": "client",
-					"kind": "example"
+					"name": "bench_server",
+					"kind": "bin"
 				}
 			},
+			"env": {
+				"RUST_LOG": "info"
+			},
 			"args": [],
-			"cwd": "${workspaceFolder}"
+			"cwd": "${workspaceFolder}",
 		},
 		{
 			"type": "lldb",
 			"request": "launch",
-			"name": "Example - server",
+			"name": "bench_client",
 			"cargo": {
 				"args": [
 					"build",
-					"--example=server",
-					"--package=datafusion-cache"
+					"--bin=bench_client",
 				],
 				"filter": {
-					"name": "server",
-					"kind": "example"
+					"name": "bench_client",
+					"kind": "bin"
 				}
 			},
+			"env": {
+				"RUST_LOG": "info"
+			},
 			"args": [],
-			"cwd": "${workspaceFolder}",
+			"cwd": "${workspaceFolder}"
 		}
 	]
 }

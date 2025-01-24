@@ -69,33 +69,6 @@ pub enum ParquetFieldType {
     },
 }
 
-pub struct ParquetRecordBatchReaderInner {
-    batch_size: usize,
-    array_reader: Box<dyn ArrayReader>,
-    schema: SchemaRef,
-    selection: Option<VecDeque<RowSelector>>,
-}
-
-impl ParquetRecordBatchReaderInner {
-    pub fn new_parquet(
-        batch_size: usize,
-        array_reader: Box<dyn ArrayReader>,
-        selection: Option<RowSelection>,
-    ) -> parquet::arrow::arrow_reader::ParquetRecordBatchReader {
-        let schema = match array_reader.get_data_type() {
-            DataType::Struct(fields) => Schema::new(fields.clone()),
-            _ => unreachable!("Struct array reader's data type is not struct!"),
-        };
-
-        let v = Self {
-            batch_size,
-            array_reader,
-            schema: Arc::new(schema),
-            selection: selection.map(|s| trim_row_selection(s).into()),
-        };
-        unsafe { std::mem::transmute(v) }
-    }
-}
 
 fn trim_row_selection(selection: RowSelection) -> RowSelection {
     let mut selection: Vec<RowSelector> = selection.into();
