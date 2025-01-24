@@ -44,9 +44,11 @@ jobs:
         run: >
           env RUSTFLAGS="-Z sanitizer=memory" cargo test -Zbuild-std --target x86_64-unknown-linux-gnu --tests
 
+      - name: Start LiquidCache server
+        run: env RUST_LOG=info cargo run --release --bin liquid_parquet_server & sleep 2
+
       - name: Run simple ClickBench
         run: |
-          env RUST_LOG=info cargo run --release --bin bench_server 
           env RUST_LOG=info cargo run --release --bin bench_client -- --query-path benchmark/queries.sql --file examples/small_hits.parquet
 
       - name: Download ClickBench partition 0
@@ -55,5 +57,4 @@ jobs:
 
       - name: Run ClickBench partition 0
         run: |
-          env RUST_LOG=info cargo run --release --bin bench_server 
           env RUST_LOG=info cargo run --release --bin bench_client -- --query-path benchmark/queries.sql --file benchmark/data/hits_0.parquet
