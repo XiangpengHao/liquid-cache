@@ -5,7 +5,7 @@ runs:
   using: "composite"
   steps:
     - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@nightly-2025-01-23
+      uses: dtolnay/rust-toolchain@nightly-2025-01-24
       with:
         components: rustfmt, clippy, rust-src
 
