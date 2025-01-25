@@ -17,7 +17,7 @@ runs:
       uses: actions/cache@v4
       with:
         path: ~/.cache/sccache
-        key: ${{ runner.os }}-sccache-${{ hashFiles('**/Cargo.lock') }}
+        key: ${{ runner.os }}-sccache-${{ hashFiles('**/Cargo.toml') }}
         restore-keys: |
           ${{ runner.os }}-sccache-
 
