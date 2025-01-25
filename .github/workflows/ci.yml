@@ -15,13 +15,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        # Unfortunately, the fastlanes need to use nightly rustc.
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: rustfmt, clippy, rust-src
-
+      - uses: ./.github/actions/rust-setup
+      
       - name: Check formatting
         run: cargo fmt --all -- --check
 
@@ -33,61 +28,57 @@ jobs:
       - name: Run clippy
         run: cargo clippy -- -D warnings
 
+      - name: Show final sccache stats
+        run: sccache --show-stats
+
   unit_test:
     name: Unit Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: rustfmt, clippy, rust-src
-
+      - uses: ./.github/actions/rust-setup
+      
       - name: Run tests
         run: cargo test --verbose
+
+      - name: Show sccache stats
+        run: sccache --show-stats
 
   address_san:
     name: Address Sanitizer
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: rustfmt, clippy, rust-src
-
+      - uses: ./.github/actions/rust-setup
+      
       - name: Run address sanitizer
         run: >
           env RUSTFLAGS="-Z sanitizer=address" cargo test -Zbuild-std --target x86_64-unknown-linux-gnu --tests
+
+      - name: Show sccache stats
+        run: sccache --show-stats
 
   memory_san:
     name: Memory Sanitizer
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: rustfmt, clippy, rust-src
-
+      - uses: ./.github/actions/rust-setup
+      
       - name: Run memory sanitizer
         run: >
           env RUSTFLAGS="-Z sanitizer=memory" cargo test -Zbuild-std --target x86_64-unknown-linux-gnu --tests
+
+      - name: Show sccache stats
+        run: sccache --show-stats
 
   integration_test:
     name: Integration Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: rustfmt, clippy, rust-src
-
+      - uses: ./.github/actions/rust-setup
+      
       - name: Build LiquidCache server
         run: cargo build --release --bin bench_server
 
@@ -115,3 +106,6 @@ jobs:
       - name: Display server logs (on failure)
         if: failure()
         run: cat server.log
+
+      - name: Show final sccache stats
+        run: sccache --show-stats

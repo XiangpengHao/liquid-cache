@@ -1,0 +1,33 @@
+name: "Rust Setup"
+description: "Sets up Rust with sccache and caching"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@nightly
+      with:
+        components: rustfmt, clippy, rust-src
+
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.7
+
+    - name: Cache sccache output
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/sccache
+        key: ${{ runner.os }}-sccache-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-sccache-
+
+    - name: Show initial sccache stats
+      shell: bash
+      run: sccache --show-stats
+
+    - name: Configure runtime env
+      shell: bash
+      run: |
+        echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV  
+        echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV 
+        echo "RUST_BACKTRACE=1" >> $GITHUB_ENV
+        echo "RUSTFLAGS=-C debuginfo=line-tables-only -C incremental=false" >> $GITHUB_ENV
