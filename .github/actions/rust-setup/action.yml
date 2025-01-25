@@ -16,10 +16,18 @@ runs:
     - name: Cache sccache output
       uses: actions/cache@v4
       with:
-        path: ~/.cache/sccache
-        key: ${{ runner.os }}-sccache-${{ hashFiles('**/Cargo.toml') }}
+        # these represent dependencies downloaded by cargo
+        # and thus do not depend on the OS, arch nor rust version.
+        #
+        # source https://github.com/actions/cache/blob/main/examples.md#rust---cargo
+        path: |
+          /usr/local/cargo/bin/
+          /usr/local/cargo/registry/index/
+          /usr/local/cargo/registry/cache/
+          /usr/local/cargo/git/db/
+        key: ${{ runner.os }}-cache4-${{ hashFiles('**/Cargo.toml') }}
         restore-keys: |
-          ${{ runner.os }}-sccache-
+          ${{ runner.os }}-cache4-
 
     - name: Show initial sccache stats
       shell: bash
