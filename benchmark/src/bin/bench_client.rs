@@ -36,7 +36,7 @@ fn get_query(query_path: impl AsRef<Path>, query_number: Option<u32>) -> Result<
 pub async fn main() -> Result<()> {
     env_logger::builder().format_timestamp(None).init();
 
-    let matches = Command::new("SplitSQL Benchmark Server")
+    let matches = Command::new("SplitSQL Benchmark Client")
         .arg(
             arg!(--"query-path" <PATH>)
                 .required(true)

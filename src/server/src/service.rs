@@ -13,7 +13,7 @@ use tokio::sync::Mutex;
 use tonic::Status;
 use url::Url;
 
-use liquid_parquet::LiquidParquetFileFormat;
+use liquid_parquet::{LiquidCache, LiquidCacheRef, LiquidParquetFileFormat};
 
 use super::LiquidCacheServiceConfig;
 
@@ -21,16 +21,18 @@ pub(crate) struct LiquidCacheServiceInner {
     execution_plans: Arc<DashMap<String, Arc<dyn ExecutionPlan>>>,
     registered_tables: Mutex<HashMap<String, String>>, // table name -> path
     default_ctx: Arc<SessionContext>,
-    config: LiquidCacheServiceConfig,
+    liquid_cache: LiquidCacheRef,
 }
 
 impl LiquidCacheServiceInner {
     pub fn new(default_ctx: Arc<SessionContext>, config: LiquidCacheServiceConfig) -> Self {
+        let batch_size = default_ctx.state().config().batch_size();
+        let liquid_cache = Arc::new(LiquidCache::new(config.liquid_cache_mode, batch_size));
         Self {
             execution_plans: Default::default(),
             registered_tables: Default::default(),
             default_ctx,
-            config,
+            liquid_cache,
         }
     }
 
@@ -65,11 +67,8 @@ impl LiquidCacheServiceInner {
         );
         let format = listing_options.format;
         let table_parquet_options = self.default_ctx.state().table_options().parquet.clone();
-        let liquid_parquet = LiquidParquetFileFormat::new(
-            table_parquet_options,
-            self.config.liquid_cache_mode,
-            format,
-        );
+        let liquid_parquet =
+            LiquidParquetFileFormat::new(table_parquet_options, format, self.liquid_cache.clone());
         listing_options.format = Arc::new(liquid_parquet);
 
         self.default_ctx

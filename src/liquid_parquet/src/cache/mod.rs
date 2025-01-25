@@ -469,7 +469,7 @@ impl From<&CacheStates> for LiquidCacheMode {
 }
 
 impl LiquidCache {
-    pub(crate) fn new(cache_mode: LiquidCacheMode, batch_size: usize) -> Self {
+    pub fn new(cache_mode: LiquidCacheMode, batch_size: usize) -> Self {
         assert!(batch_size.is_power_of_two());
 
         LiquidCache {

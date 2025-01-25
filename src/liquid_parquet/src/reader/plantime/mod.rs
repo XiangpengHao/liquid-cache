@@ -22,7 +22,7 @@ use log::{debug, info};
 use object_store::{ObjectMeta, ObjectStore};
 use page_filter::PagePruningAccessPlanFilter;
 
-use crate::cache::{LiquidCache, LiquidCacheMode};
+use crate::cache::LiquidCacheRef;
 
 // This is entirely copied from DataFusion
 // We should make DataFusion to public this
@@ -52,19 +52,19 @@ impl GetExt for LiquidParquetFactory {
 #[derive(Debug)]
 pub struct LiquidParquetFileFormat {
     options: TableParquetOptions,
-    liquid_cache_mode: LiquidCacheMode,
     inner: Arc<dyn FileFormat>, // is actually ParquetFormat
+    liquid_cache: LiquidCacheRef,
 }
 
 impl LiquidParquetFileFormat {
     pub fn new(
         options: TableParquetOptions,
-        liquid_cache_mode: LiquidCacheMode,
         inner: Arc<dyn FileFormat>,
+        liquid_cache: LiquidCacheRef,
     ) -> Self {
         Self {
             options,
-            liquid_cache_mode,
+            liquid_cache,
             inner,
         }
     }
@@ -114,7 +114,7 @@ impl FileFormat for LiquidParquetFileFormat {
 
     async fn create_physical_plan(
         &self,
-        state: &SessionState,
+        _state: &SessionState,
         conf: FileScanConfig,
         filters: Option<&Arc<dyn PhysicalExpr>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
@@ -151,9 +151,6 @@ impl FileFormat for LiquidParquetFileFormat {
             &conf,
         );
 
-        let batch_size = state.config().batch_size();
-        let liquid_cache = Arc::new(LiquidCache::new(self.liquid_cache_mode, batch_size));
-
         let exec = LiquidParquetExec {
             base_config: conf,
             table_parquet_options: self.options.clone(),
@@ -163,7 +160,7 @@ impl FileFormat for LiquidParquetFileFormat {
             metrics,
             pruning_predicate,
             page_pruning_predicate,
-            liquid_cache,
+            liquid_cache: self.liquid_cache.clone(),
         };
         Ok(Arc::new(exec))
     }
