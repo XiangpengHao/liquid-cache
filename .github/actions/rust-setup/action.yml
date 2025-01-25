@@ -5,9 +5,10 @@ runs:
   using: "composite"
   steps:
     - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@nightly-2025-01-24
+      uses: dtolnay/rust-toolchain@master
       with:
         components: rustfmt, clippy, rust-src
+        toolchain: nightly-2025-01-24
 
     - name: Setup sccache
       uses: mozilla-actions/sccache-action@v0.0.7
