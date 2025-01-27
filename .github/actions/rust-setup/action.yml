@@ -11,41 +11,19 @@ runs:
         echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV 
         echo "RUST_BACKTRACE=1" >> $GITHUB_ENV
         echo "RUSTFLAGS=-C debuginfo=line-tables-only -C incremental=false" >> $GITHUB_ENV
-        echo "CACHE_VERSION=v1" >> $GITHUB_ENV
-        echo "SCCACHE_VERSION=0.9.1" >> $GITHUB_ENV
 
-    - name: Cache
-      uses: actions/cache@v3
+    - name: Cache Rust compilation
+      uses: metalbear-co/sccache-action@v1
       with:
-        key: ${{ runner.os }}-rust-${{ env.CACHE_VERSION }}-build-${{ hashFiles('**/Cargo.toml') }}
-        path: |
-          ~/.cargo/bin/
-          ~/.cargo/registry/index/
-          ~/.cargo/registry/cache/
-          ~/.cargo/git/db/
-          ~/.cache/sccache/
-          ~/.rustup/
-          target/
-        restore-keys: |
-          ${{ runner.os }}-rust-${{ env.CACHE_VERSION }}-build-
-          ${{ runner.os }}-rust-${{ env.CACHE_VERSION }}
- 
-    - name: Setup sccache
-      uses: mozilla-actions/sccache-action@v0.0.7
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        # Optional, default is `sccache-`
+        cache-from: sccache-${{ runner.os }}-
+        # Optional, default is `sccache-latest`
+        cache-to: sccache-${{ runner.os }}-${{ github.sha }}
 
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@master
       with:
         components: rustfmt, clippy, rust-src
         toolchain: nightly-2025-01-24
-    
-    - name: Cargo Binary Install
-      uses: cargo-bins/cargo-binstall@main
-    
-    - name: Install sccache
-      shell: bash
-      run: cargo binstall -y sccache@${{ env.SCCACHE_VERSION }}
 
-    - name: Show initial sccache stats
-      shell: bash
-      run: sccache --show-stats
