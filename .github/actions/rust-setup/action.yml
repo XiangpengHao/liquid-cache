@@ -11,19 +11,36 @@ runs:
         echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV 
         echo "RUST_BACKTRACE=1" >> $GITHUB_ENV
         echo "RUSTFLAGS=-C debuginfo=line-tables-only -C incremental=false" >> $GITHUB_ENV
+        echo "CACHE_VERSION=v1" >> $GITHUB_ENV
+        echo "SCCACHE_VERSION=0.9.1" >> $GITHUB_ENV
 
-    - name: Cache Rust compilation
-      uses: metalbear-co/sccache-action@v1
+    - name: Cache
+      uses: actions/cache@v3
       with:
-        github-token: ${{ secrets.GITHUB_TOKEN }}
-        # Optional, default is `sccache-`
-        cache-from: sccache-${{ runner.os }}-
-        # Optional, default is `sccache-latest`
-        cache-to: sccache-${{ runner.os }}-${{ github.sha }}
+        path: |
+          /usr/local/cargo/bin/
+          /usr/local/cargo/registry/index/
+          /usr/local/cargo/registry/cache/
+          /usr/local/cargo/git/db/
+          /usr/local/cache/sccache/
+          /usr/local/rustup/
+          /usr/local/target/
+        key: cargo-cache3-${{ hashFiles('**/Cargo.toml') }}
+        restore-keys: cargo-cache3-
+
+    - name: Generate lockfile
+      shell: bash
+      run: cargo fetch
+ 
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.7
 
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@master
       with:
         components: rustfmt, clippy, rust-src
-        toolchain: nightly-2025-01-24
+        toolchain: nightly-2025-01-24s
 
+    - name: Show initial sccache stats
+      shell: bash
+      run: sccache --show-stats
