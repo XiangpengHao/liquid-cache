@@ -75,7 +75,7 @@ jobs:
         run: sccache --show-stats
 
   integration_test:
-    name: Integration Test
+    name: Integration Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
