@@ -20,7 +20,7 @@ arrow = "54.0.0"
 arrow-flight = { version = "54.0", features = ["flight-sql-experimental"] }
 arrow-schema = { version = "54.0", features = ["serde"] }
 parquet = { version = "54.0", features = ["async", "experimental"] }
-datafusion = { git = "https://github.com/apache/datafusion.git" }
+datafusion = { git = "https://github.com/apache/datafusion.git", rev = "4dc97b2" }
 async-trait = "0.1.83"
 futures = "0.3.31"
 tokio = { version = "1.42.0", features = ["rt-multi-thread"] }
