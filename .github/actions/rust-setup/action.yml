@@ -33,6 +33,7 @@ runs:
       uses: cargo-bins/cargo-binstall@main
     
     - name: Install sccache
+      shell: bash
       run: cargo binstall -y sccache@${{ env.SCCACHE_VERSION }}
 
     - name: Show initial sccache stats
