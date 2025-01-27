@@ -49,6 +49,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rust-setup
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-all-crates: true
       
       - name: Run address sanitizer
         run: >
@@ -61,6 +63,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rust-setup
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-all-crates: true
 
       - name: Run memory sanitizer
         run: >
