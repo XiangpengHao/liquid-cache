@@ -37,7 +37,7 @@ runs:
       uses: dtolnay/rust-toolchain@master
       with:
         components: rustfmt, clippy, rust-src
-        toolchain: nightly-2025-01-24s
+        toolchain: nightly-2025-01-24
 
     - name: Show initial sccache stats
       shell: bash
