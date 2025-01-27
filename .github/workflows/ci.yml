@@ -15,11 +15,10 @@ jobs:
   check:
     name: Basic check
     runs-on: ubuntu-latest
-    container:
-      image: amd64/rust
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rust-setup
+      - uses: Swatinem/rust-cache@v2
       
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -38,11 +37,10 @@ jobs:
   unit_test:
     name: Unit Test
     runs-on: ubuntu-latest
-    container:
-      image: amd64/rust
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rust-setup
+      - uses: Swatinem/rust-cache@v2
       
       - name: Run tests
         run: cargo test --verbose
@@ -53,11 +51,10 @@ jobs:
   address_san:
     name: Address Sanitizer
     runs-on: ubuntu-latest
-    container:
-      image: amd64/rust
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rust-setup
+      - uses: Swatinem/rust-cache@v2
       
       - name: Run address sanitizer
         run: >
@@ -69,11 +66,10 @@ jobs:
   memory_san:
     name: Memory Sanitizer
     runs-on: ubuntu-latest
-    container:
-      image: amd64/rust
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rust-setup
+      - uses: Swatinem/rust-cache@v2
       
       - name: Run memory sanitizer
         run: >
@@ -85,12 +81,10 @@ jobs:
   integration_test:
     name: Integration Test
     runs-on: ubuntu-latest
-    container:
-      image: amd64/rust
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rust-setup
-      
+      - uses: Swatinem/rust-cache@v2
       - name: Build LiquidCache server
         run: cargo build --release --bin bench_server
 
