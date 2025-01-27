@@ -4,39 +4,15 @@ description: "Sets up Rust with sccache and caching"
 runs:
   using: "composite"
   steps:
-    - name: Cache
-      uses: actions/cache@v3
-      with:
-        key: ${{ runner.os }}-rust-${{ env.CACHE_VERSION }}-build-${{ hashFiles('**/Cargo.toml') }}
-        path: |
-          ~/.cargo/bin/
-          ~/.cargo/registry/index/
-          ~/.cargo/registry/cache/
-          ~/.cargo/git/db/
-          ~/.cache/sccache/
-          ~/.rustup/
-          target/
-        restore-keys: |
-          ${{ runner.os }}-rust-${{ env.CACHE_VERSION }}-build-
-          ${{ runner.os }}-rust-${{ env.CACHE_VERSION }}
- 
-    - name: Setup sccache
-      uses: mozilla-actions/sccache-action@v0.0.7
-
-    - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@master
-      with:
-        components: rustfmt, clippy, rust-src
-        toolchain: nightly-2025-01-24
-
-    - name: Show initial sccache stats
-      shell: bash
-      run: sccache --show-stats
-
     - name: Configure runtime env
       shell: bash
       run: |
-        echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV  
-        echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV 
         echo "RUST_BACKTRACE=1" >> $GITHUB_ENV
         echo "RUSTFLAGS=-C debuginfo=line-tables-only -C incremental=false" >> $GITHUB_ENV
+
+    - name: Setup Rust toolchain
+      shell: bash
+      run: |
+        echo "Installing nightly-2025-01-24"
+        rustup toolchain install nightly-2025-01-24 --component rustfmt --component clippy --component rust-src --profile minimal --no-self-update
+        rustup default nightly-2025-01-24

@@ -18,6 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rust-setup
+      - uses: Swatinem/rust-cache@v2
       
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -30,21 +31,16 @@ jobs:
       - name: Run clippy
         run: cargo clippy -- -D warnings
 
-      - name: Show final sccache stats
-        run: sccache --show-stats
-
   unit_test:
     name: Unit Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rust-setup
+      - uses: Swatinem/rust-cache@v2
       
       - name: Run tests
         run: cargo test --verbose
-
-      - name: Show sccache stats
-        run: sccache --show-stats
 
   address_san:
     name: Address Sanitizer
@@ -52,13 +48,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rust-setup
-      
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-all-crates: true
+      - run: sudo apt install llvm-dev 
       - name: Run address sanitizer
         run: >
-          env RUSTFLAGS="-Z sanitizer=address" cargo test -Zbuild-std --target x86_64-unknown-linux-gnu --tests
-
-      - name: Show sccache stats
-        run: sccache --show-stats
+          env RUSTFLAGS="-Z sanitizer=address" cargo test --target x86_64-unknown-linux-gnu --tests
 
   memory_san:
     name: Memory Sanitizer
@@ -66,13 +62,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rust-setup
-      
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-all-crates: true
+      - run: sudo apt install llvm-dev 
       - name: Run memory sanitizer
         run: >
-          env RUSTFLAGS="-Z sanitizer=memory" cargo test -Zbuild-std --target x86_64-unknown-linux-gnu --tests
-
-      - name: Show sccache stats
-        run: sccache --show-stats
+          env RUSTFLAGS="-Z sanitizer=memory" cargo test --target x86_64-unknown-linux-gnu --tests
 
   integration_test:
     name: Integration Test
@@ -80,7 +76,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rust-setup
-      
+      - uses: Swatinem/rust-cache@v2
       - name: Build LiquidCache server
         run: cargo build --release --bin bench_server
 
@@ -108,6 +104,3 @@ jobs:
       - name: Display server logs (on failure)
         if: failure()
         run: cat server.log
-
-      - name: Show final sccache stats
-        run: sccache --show-stats
