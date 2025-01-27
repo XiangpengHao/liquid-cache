@@ -11,8 +11,6 @@ runs:
         echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV 
         echo "RUST_BACKTRACE=1" >> $GITHUB_ENV
         echo "RUSTFLAGS=-C debuginfo=line-tables-only -C incremental=false" >> $GITHUB_ENV
-        echo "CACHE_VERSION=v1" >> $GITHUB_ENV
-        echo "SCCACHE_VERSION=0.9.1" >> $GITHUB_ENV
 
     - name: Cache
       uses: actions/cache@v3
@@ -27,13 +25,13 @@ runs:
           /usr/local/target/
         key: cargo-cache3-${{ hashFiles('**/Cargo.toml') }}
         restore-keys: cargo-cache3-
+ 
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.7
 
     - name: Generate lockfile
       shell: bash
       run: cargo fetch
- 
-    - name: Setup sccache
-      uses: mozilla-actions/sccache-action@v0.0.7
 
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@master
