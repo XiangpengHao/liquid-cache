@@ -28,6 +28,10 @@ runs:
       with:
         components: rustfmt, clippy, rust-src
         toolchain: nightly-2025-01-24
+    
+    - name: Cargo Binary Install
+      uses: cargo-bins/cargo-binstall@main
+      run: cargo binstall -y sccache@${{ env.SCCACHE_VERSION }}
 
     - name: Show initial sccache stats
       shell: bash
