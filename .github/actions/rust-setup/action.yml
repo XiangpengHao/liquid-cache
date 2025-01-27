@@ -4,6 +4,16 @@ description: "Sets up Rust with sccache and caching"
 runs:
   using: "composite"
   steps:
+    - name: Configure runtime env
+      shell: bash
+      run: |
+        echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV  
+        echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV 
+        echo "RUST_BACKTRACE=1" >> $GITHUB_ENV
+        echo "RUSTFLAGS=-C debuginfo=line-tables-only -C incremental=false" >> $GITHUB_ENV
+        echo "CACHE_VERSION=v1" >> $GITHUB_ENV
+        echo "SCCACHE_VERSION=0.9.1" >> $GITHUB_ENV
+
     - name: Cache
       uses: actions/cache@v3
       with:
@@ -39,13 +49,3 @@ runs:
     - name: Show initial sccache stats
       shell: bash
       run: sccache --show-stats
-
-    - name: Configure runtime env
-      shell: bash
-      run: |
-        echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV  
-        echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV 
-        echo "RUST_BACKTRACE=1" >> $GITHUB_ENV
-        echo "RUSTFLAGS=-C debuginfo=line-tables-only -C incremental=false" >> $GITHUB_ENV
-        echo "CACHE_VERSION=v1" >> $GITHUB_ENV
-        echo "SCCACHE_VERSION=0.9.1" >> $GITHUB_ENV
