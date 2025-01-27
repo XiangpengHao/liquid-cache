@@ -51,7 +51,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-all-crates: true
-      
+      - run: sudo apt install llvm-dev 
       - name: Run address sanitizer
         run: >
           env RUSTFLAGS="-Z sanitizer=address" cargo test --target x86_64-unknown-linux-gnu --tests
@@ -65,7 +65,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-all-crates: true
-
+      - run: sudo apt install llvm-dev 
       - name: Run memory sanitizer
         run: >
           env RUSTFLAGS="-Z sanitizer=memory" cargo test --target x86_64-unknown-linux-gnu --tests
