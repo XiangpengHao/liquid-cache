@@ -47,3 +47,5 @@ runs:
         echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV 
         echo "RUST_BACKTRACE=1" >> $GITHUB_ENV
         echo "RUSTFLAGS=-C debuginfo=line-tables-only -C incremental=false" >> $GITHUB_ENV
+        echo "CACHE_VERSION=v1" >> $GITHUB_ENV
+        echo "SCCACHE_VERSION=0.9.1" >> $GITHUB_ENV
