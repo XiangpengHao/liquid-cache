@@ -21,13 +21,14 @@ runs:
         #
         # source https://github.com/actions/cache/blob/main/examples.md#rust---cargo
         path: |
-          /usr/local/cargo/bin/
-          /usr/local/cargo/registry/index/
-          /usr/local/cargo/registry/cache/
-          /usr/local/cargo/git/db/
-        key: ${{ runner.os }}-cache4-${{ hashFiles('**/Cargo.toml') }}
-        restore-keys: |
-          ${{ runner.os }}-cache4-
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
+        save-always: true
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: ${{ runner.os }}-cargo-
 
     - name: Show initial sccache stats
       shell: bash
