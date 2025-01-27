@@ -1,7 +1,6 @@
 use crate::cache::LiquidCachedFileRef;
 use arrow::array::RecordBatch;
 use arrow_schema::{DataType, Fields, Schema, SchemaRef};
-use cached_array_reader::build_cached_array_reader;
 use futures::{FutureExt, Stream, future::BoxFuture, ready};
 use in_memory_rg::InMemoryRowGroup;
 use parquet::{
@@ -19,6 +18,7 @@ use parquet_bridge::{
     union_projection_mask,
 };
 use reader::LiquidBatchReader;
+use reader::build_cached_array_reader;
 use std::{
     collections::VecDeque,
     fmt::Formatter,
@@ -26,7 +26,6 @@ use std::{
     sync::Arc,
     task::{Context, Poll},
 };
-mod cached_array_reader;
 mod in_memory_rg;
 mod parquet_bridge;
 mod reader;

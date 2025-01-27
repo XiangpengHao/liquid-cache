@@ -15,7 +15,7 @@ use crate::{
     reader::runtime::parquet_bridge::StructArrayReaderBridge,
 };
 
-use super::parquet_bridge::{ParquetField, ParquetFieldType};
+use super::super::parquet_bridge::{ParquetField, ParquetFieldType};
 
 /// A cached array reader will cache the rows in batch_size granularity.
 ///

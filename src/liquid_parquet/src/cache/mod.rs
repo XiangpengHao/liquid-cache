@@ -6,7 +6,7 @@ use arrow::compute::prep_null_mask_filter;
 use arrow::ipc::reader::FileReader;
 use arrow::ipc::writer::FileWriter;
 use arrow_schema::{ArrowError, DataType, Field, Schema};
-use parquet::arrow::arrow_reader::{ArrowPredicate, RowSelection};
+use parquet::arrow::arrow_reader::ArrowPredicate;
 use std::fmt::Display;
 use std::io::Seek;
 use std::ops::{DerefMut, Range};
@@ -437,14 +437,6 @@ impl LiquidCachedRowGroup {
 
     pub fn get_column(&self, column_id: usize) -> Option<LiquidCachedColumnRef> {
         self.columns.read().unwrap().get(&column_id).cloned()
-    }
-
-    pub(crate) fn cache_mode(&self) -> LiquidCacheMode {
-        self.cache_mode
-    }
-
-    pub(crate) fn selection_in_cache(&self, selection: &RowSelection) -> bool {
-        todo!()
     }
 }
 

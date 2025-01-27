@@ -1,6 +1,6 @@
 [package]
-name = "splitsql-benchmarks"
-description = "SplitSQL Benchmarks"
+name = "liquid-cache-benchmarks"
+description = "LiquidCache Benchmarks"
 edition = { workspace = true }
 
 

@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use arrow::array::{Array, RecordBatch, RecordBatchReader};
+use arrow::array::{Array, BooleanArray, RecordBatch, RecordBatchReader};
 use arrow::buffer::BooleanBuffer;
 use arrow::compute::prep_null_mask_filter;
 use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
@@ -13,24 +13,49 @@ use crate::reader::runtime::parquet_bridge::get_predicate_column_id;
 use crate::reader::runtime::utils::{boolean_buffer_and_then, take_next_batch};
 
 use super::LiquidRowFilter;
-use super::utils::{row_selector_to_boolean_buffer, take_next_selection};
+use super::utils::row_selector_to_boolean_buffer;
 
-pub(super) mod parquet_batch_reader;
+mod cached_array_reader;
+pub(crate) use cached_array_reader::build_cached_array_reader;
+pub(super) mod cached_page;
 
 fn build_predicate_from_cache(
     cache: &LiquidCachedRowGroupRef,
     row_id: usize,
-    selection: &BooleanBuffer,
+    input_selection: &BooleanBuffer,
     predicate: &mut Box<dyn ArrowPredicate>,
 ) -> Option<BooleanBuffer> {
     let projection = predicate.projection();
     let column_id = get_predicate_column_id(projection);
     let cache = cache.get_column(column_id)?;
     let result = cache
-        .eval_selection_with_predicate(row_id, selection, predicate.as_mut())
+        .eval_selection_with_predicate(row_id, input_selection, predicate.as_mut())
         .transpose()
         .unwrap();
     result
+}
+
+fn read_record_batch_from_parquet<'a>(
+    reader: &mut Box<dyn ArrayReader>,
+    selection: impl Iterator<Item = &'a RowSelector>,
+) -> Result<RecordBatch, ArrowError> {
+    for selector in selection {
+        if selector.skip {
+            reader.skip_records(selector.row_count)?;
+        } else {
+            reader.read_records(selector.row_count)?;
+        }
+    }
+    let array = reader.consume_batch()?;
+    let record_batch = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![Field::new(
+            "-",
+            array.data_type().clone(),
+            array.is_nullable(),
+        )])),
+        vec![array],
+    )?;
+    Ok(record_batch)
 }
 
 pub(super) struct LiquidBatchReader {
@@ -77,9 +102,9 @@ impl LiquidBatchReader {
     fn build_predicate_filter(
         &mut self,
         selection: Vec<RowSelector>,
-    ) -> Result<BooleanBuffer, ArrowError> {
+    ) -> Result<RowSelection, ArrowError> {
         match &mut self.row_filter {
-            None => Ok(row_selector_to_boolean_buffer(&selection)),
+            None => Ok(selection.into()),
             Some(filter) => {
                 debug_assert_eq!(
                     self.predicate_readers.len(),
@@ -105,40 +130,37 @@ impl LiquidBatchReader {
                     } else {
                         // slow case, where the predicate column is not cached
                         // we need to read from parquet file
-                        for selector in selection.iter() {
-                            if selector.skip {
-                                reader.skip_records(selector.row_count).unwrap();
-                            } else {
-                                reader.read_records(selector.row_count).unwrap();
-                            }
-                        }
-                        let batch = reader.consume_batch().unwrap();
-                        let record_batch = RecordBatch::try_new(
-                            Arc::new(Schema::new(vec![Field::new(
-                                "-",
-                                batch.data_type().clone(),
-                                batch.is_nullable(),
-                            )])),
-                            vec![batch],
-                        )
-                        .unwrap();
-                        let predicate = predicate.evaluate(record_batch).unwrap();
-                        let predicate = match predicate.null_count() {
-                            0 => predicate,
-                            _ => prep_null_mask_filter(&predicate),
+                        let record_batch =
+                            read_record_batch_from_parquet(reader, selection.iter())?;
+                        let filter_mask = predicate.evaluate(record_batch).unwrap();
+                        let filter_mask = match filter_mask.null_count() {
+                            0 => filter_mask,
+                            _ => prep_null_mask_filter(&filter_mask),
                         };
-                        let (buffer, _) = predicate.into_parts();
+                        let (buffer, null) = filter_mask.into_parts();
+                        assert!(null.is_none());
                         cur_selection = boolean_buffer_and_then(&cur_selection, &buffer);
                     }
                 }
-                self.current_row_id += self.batch_size;
-                Ok(cur_selection)
+                let filter = BooleanArray::new(cur_selection, None);
+                Ok(RowSelection::from_filters(&[filter]))
             }
         }
     }
 
-    fn read_selection(&mut self, selection: BooleanBuffer) -> Result<RecordBatch, ArrowError> {
-        todo!()
+    fn read_selection(&mut self, selection: RowSelection) -> Result<RecordBatch, ArrowError> {
+        self.current_row_id += self.batch_size;
+        for selector in selection.iter() {
+            if selector.skip {
+                self.projection_reader.skip_records(selector.row_count)?;
+            } else {
+                self.projection_reader.read_records(selector.row_count)?;
+            }
+        }
+        let array = self.projection_reader.consume_batch()?;
+        let schema = self.schema.clone();
+        let batch = RecordBatch::try_new(schema, vec![array])?;
+        Ok(batch)
     }
 }
 
