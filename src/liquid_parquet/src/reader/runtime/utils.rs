@@ -1,6 +1,9 @@
 use std::collections::VecDeque;
 
-use arrow::{array::BooleanBufferBuilder, buffer::BooleanBuffer};
+use arrow::{
+    array::BooleanBufferBuilder,
+    buffer::{BooleanBuffer, MutableBuffer},
+};
 use parquet::arrow::arrow_reader::{RowSelection, RowSelector};
 
 /// Consolidate the selection to the batch granularity
@@ -92,29 +95,86 @@ pub(super) fn take_next_selection(
 pub(super) fn take_next_batch(
     selection: &mut VecDeque<RowSelector>,
     batch_size: usize,
-) -> Option<BooleanBuffer> {
+) -> Option<Vec<RowSelector>> {
     let mut current_selected = 0;
-    let mut rt = BooleanBufferBuilder::new(batch_size);
+    let mut rt = Vec::new();
     while let Some(mut front) = selection.pop_front() {
-        let to_select = if front.row_count + current_selected > batch_size {
-            batch_size - current_selected
-        } else {
-            front.row_count
-        };
-        if front.skip {
-            rt.append_n(to_select, false);
-        } else {
-            rt.append_n(to_select, true);
-        }
-        current_selected += to_select;
-        let remaining = front.row_count - to_select;
-        if remaining > 0 {
+        if front.row_count + current_selected > batch_size {
+            let to_select = batch_size - current_selected;
+            if to_select > 0 {
+                let mut sub_front = front.clone();
+                sub_front.row_count = to_select;
+                rt.push(sub_front);
+            }
+            let remaining = front.row_count - to_select;
             front.row_count = remaining;
             selection.push_front(front);
             break;
+        } else {
+            rt.push(front);
+            current_selected += front.row_count;
         }
     }
+    if current_selected == 0 {
+        return None;
+    }
     Some(rt.into())
+}
+
+/// Combines this [`BooleanBuffer`] with another using logical AND on the selected bits.
+///
+/// Unlike intersection, the `other` [`BooleanBuffer`] must have exactly as many **set bits** as `self`,
+/// i.e., self.count_set_bits() == other.len().
+///
+/// This method will keep only the bits in `self` that are also set in `other`
+/// at the positions corresponding to `self`'s set bits.
+/// For example:
+/// left:   NNYYYNNYYNYN
+/// right:    YNY  NY N
+/// result: NNYNYNNNYNNN
+pub(super) fn boolean_buffer_and_then(
+    left: &BooleanBuffer,
+    right: &BooleanBuffer,
+) -> BooleanBuffer {
+    debug_assert_eq!(
+        left.count_set_bits(),
+        right.len(),
+        "the right selection must have the same number of set bits as the left selection"
+    );
+
+    if left.len() == right.len() {
+        debug_assert_eq!(left.count_set_bits(), left.len());
+        return right.clone();
+    }
+
+    let mut buffer = MutableBuffer::from_len_zeroed(left.values().len());
+    buffer.copy_from_slice(left.values());
+    let mut builder = BooleanBufferBuilder::new_from_buffer(buffer, left.len());
+
+    let mut other_bits = right.iter();
+
+    for bit_idx in left.set_indices() {
+        let predicate = other_bits
+            .next()
+            .expect("Mismatch in set bits between self and other");
+        if !predicate {
+            builder.set_bit(bit_idx, false);
+        }
+    }
+
+    builder.finish()
+}
+
+pub(super) fn row_selector_to_boolean_buffer(selection: &[RowSelector]) -> BooleanBuffer {
+    let mut buffer = BooleanBufferBuilder::new(8192);
+    for selector in selection.iter() {
+        if selector.skip {
+            buffer.append_n(selector.row_count, false);
+        } else {
+            buffer.append_n(selector.row_count, true);
+        }
+    }
+    buffer.finish()
 }
 
 #[cfg(test)]
@@ -123,29 +183,24 @@ mod tests {
 
     #[test]
     fn test_take_next_batch() {
-        let batch_size = 8;
-
         {
             let mut queue = VecDeque::new();
-            let selection = take_next_batch(&mut queue, batch_size).unwrap();
-            assert_eq!(selection.len(), batch_size);
-            assert_eq!(selection.count_set_bits(), 0);
+            let selection = take_next_batch(&mut queue, 8);
+            assert!(selection.is_none());
             assert!(queue.is_empty());
         }
 
         {
             let mut queue = VecDeque::from(vec![RowSelector::select(8)]);
             let selection = take_next_batch(&mut queue, 8).unwrap();
-            assert_eq!(selection.len(), 8);
-            assert_eq!(selection.count_set_bits(), 8);
+            assert_eq!(selection, vec![RowSelector::select(8)]);
             assert!(queue.is_empty());
         }
 
         {
             let mut queue = VecDeque::from(vec![RowSelector::select(10)]);
             let selection = take_next_batch(&mut queue, 8).unwrap();
-            assert_eq!(selection.len(), 8);
-            assert_eq!(selection.count_set_bits(), 8);
+            assert_eq!(selection, vec![RowSelector::select(8)]);
             assert_eq!(queue, vec![RowSelector::select(2)]);
         }
 
@@ -158,16 +213,22 @@ mod tests {
                 RowSelector::select(2),
             ]);
             let selection = take_next_batch(&mut queue, 8).unwrap();
-            assert_eq!(selection.len(), 8);
-            assert_eq!(selection.count_set_bits(), 4);
+            assert_eq!(selection, vec![
+                RowSelector::select(2),
+                RowSelector::skip(2),
+                RowSelector::select(2),
+                RowSelector::skip(2),
+            ]);
             assert_eq!(queue, vec![RowSelector::select(2)]);
         }
 
         {
             let mut queue = VecDeque::from(vec![RowSelector::select(3), RowSelector::skip(2)]);
             let selection = take_next_batch(&mut queue, 8).unwrap();
-            assert_eq!(selection.len(), 8);
-            assert_eq!(selection.count_set_bits(), 3);
+            assert_eq!(selection, vec![
+                RowSelector::select(3),
+                RowSelector::skip(2)
+            ]);
             assert!(queue.is_empty());
         }
 
@@ -178,8 +239,11 @@ mod tests {
                 RowSelector::select(6),
             ]);
             let selection = take_next_batch(&mut queue, 8).unwrap();
-            assert_eq!(selection.len(), 8);
-            assert_eq!(selection.count_set_bits(), 4);
+            assert_eq!(selection, vec![
+                RowSelector::select(2),
+                RowSelector::skip(4),
+                RowSelector::select(2),
+            ]);
             assert_eq!(queue, vec![RowSelector::select(4)]);
         }
 
@@ -190,10 +254,12 @@ mod tests {
                 RowSelector::skip(2),
                 RowSelector::select(7),
             ]);
-            let selection = take_next_batch(&mut queue, batch_size).unwrap();
-            assert_eq!(selection.len(), batch_size);
-            assert_eq!(selection.count_set_bits(), 3);
-            assert_eq!(queue, vec![RowSelector::skip(2), RowSelector::select(7)]);
+            let selection = take_next_batch(&mut queue, 8).unwrap();
+            assert_eq!(selection, vec![
+                RowSelector::skip(5),
+                RowSelector::select(3),
+            ]);
+            assert_eq!(queue, vec![RowSelector::select(2), RowSelector::select(7)]);
         }
     }
 

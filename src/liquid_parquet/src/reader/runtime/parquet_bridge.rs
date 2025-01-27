@@ -204,6 +204,26 @@ pub(super) fn union_projection_mask(
     project_inner.union(other_inner);
 }
 
+pub(super) fn get_predicate_column_id(projection: &parquet::arrow::ProjectionMask) -> usize {
+    let project_inner: &ProjectionMask = unsafe { std::mem::transmute(projection) };
+    debug_assert!(
+        project_inner
+            .mask
+            .as_ref()
+            .map(|m| m.iter().filter(|&x| *x).count() == 1)
+            .unwrap_or(false)
+    );
+    project_inner
+        .mask
+        .as_ref()
+        .map(|m| {
+            m.iter()
+                .position(|&x| x)
+                .expect("one column must be selected")
+        })
+        .expect("predicate projection can't select all")
+}
+
 use parquet::arrow::async_reader::AsyncReader;
 
 use super::{LiquidStream, LiquidStreamBuilder};

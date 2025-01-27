@@ -1,41 +1,51 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use arrow::array::{RecordBatch, RecordBatchReader};
-use arrow_schema::{ArrowError, DataType, Schema, SchemaRef};
+use arrow::array::{Array, RecordBatch, RecordBatchReader};
+use arrow::buffer::BooleanBuffer;
+use arrow::compute::prep_null_mask_filter;
+use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
 use parquet::arrow::array_reader::ArrayReader;
 use parquet::arrow::arrow_reader::{ArrowPredicate, RowSelection, RowSelector};
-use parquet_batch_reader::ParquetRecordBatchReader;
 
 use crate::cache::LiquidCachedRowGroupRef;
+use crate::reader::runtime::parquet_bridge::get_predicate_column_id;
+use crate::reader::runtime::utils::{boolean_buffer_and_then, take_next_batch};
 
 use super::LiquidRowFilter;
-use super::utils::take_next_selection;
+use super::utils::{row_selector_to_boolean_buffer, take_next_selection};
 
 pub(super) mod parquet_batch_reader;
 
-/// Assumptions:
-/// 1. The selection must be in range of the cache.
-/// 2. The predicate must be operate on only one column.
-fn build_predicate_from_cache_with_filter(
+fn build_predicate_from_cache(
     cache: &LiquidCachedRowGroupRef,
-    input_selection: RowSelection,
+    row_id: usize,
+    selection: &BooleanBuffer,
     predicate: &mut Box<dyn ArrowPredicate>,
-) -> Result<RowSelection, ArrowError> {
-    todo!()
+) -> Option<BooleanBuffer> {
+    let projection = predicate.projection();
+    let column_id = get_predicate_column_id(projection);
+    let cache = cache.get_column(column_id)?;
+    let result = cache
+        .eval_selection_with_predicate(row_id, selection, predicate.as_mut())
+        .transpose()
+        .unwrap();
+    result
 }
 
-struct LiquidBatchReader {
-    parquet_reader: ParquetRecordBatchReader,
+pub(super) struct LiquidBatchReader {
     liquid_cache: LiquidCachedRowGroupRef,
     current_row_id: usize,
     selection: VecDeque<RowSelector>,
     schema: SchemaRef,
     batch_size: usize,
+    row_filter: Option<LiquidRowFilter>,
+    predicate_readers: Vec<Box<dyn ArrayReader>>,
+    projection_reader: Box<dyn ArrayReader>,
 }
 
 impl LiquidBatchReader {
-    fn new(
+    pub(super) fn new(
         batch_size: usize,
         array_reader: Box<dyn ArrayReader>,
         selection: RowSelection,
@@ -48,22 +58,87 @@ impl LiquidBatchReader {
             _ => unreachable!("Struct array reader's data type is not struct!"),
         };
 
-        let parquet_reader = ParquetRecordBatchReader::new(
-            batch_size,
-            array_reader,
-            selection.clone(),
-            filter_readers,
-            row_filter,
-        );
-
         Self {
-            parquet_reader,
             liquid_cache,
             current_row_id: 0,
             selection: selection.into(),
             schema: Arc::new(schema),
             batch_size,
+            row_filter,
+            predicate_readers: filter_readers,
+            projection_reader: array_reader,
         }
+    }
+
+    pub(super) fn take_filter(&mut self) -> Option<LiquidRowFilter> {
+        self.row_filter.take()
+    }
+
+    fn build_predicate_filter(
+        &mut self,
+        selection: Vec<RowSelector>,
+    ) -> Result<BooleanBuffer, ArrowError> {
+        match &mut self.row_filter {
+            None => Ok(row_selector_to_boolean_buffer(&selection)),
+            Some(filter) => {
+                debug_assert_eq!(
+                    self.predicate_readers.len(),
+                    filter.predicates.len(),
+                    "predicate readers and predicates should have the same length"
+                );
+
+                let mut cur_selection = row_selector_to_boolean_buffer(&selection);
+
+                for (predicate, reader) in filter
+                    .predicates
+                    .iter_mut()
+                    .zip(self.predicate_readers.iter_mut())
+                {
+                    if let Some(result) = build_predicate_from_cache(
+                        &self.liquid_cache,
+                        self.current_row_id,
+                        &cur_selection,
+                        predicate,
+                    ) {
+                        cur_selection = boolean_buffer_and_then(&cur_selection, &result);
+                        reader.skip_records(self.batch_size).unwrap();
+                    } else {
+                        // slow case, where the predicate column is not cached
+                        // we need to read from parquet file
+                        for selector in selection.iter() {
+                            if selector.skip {
+                                reader.skip_records(selector.row_count).unwrap();
+                            } else {
+                                reader.read_records(selector.row_count).unwrap();
+                            }
+                        }
+                        let batch = reader.consume_batch().unwrap();
+                        let record_batch = RecordBatch::try_new(
+                            Arc::new(Schema::new(vec![Field::new(
+                                "-",
+                                batch.data_type().clone(),
+                                batch.is_nullable(),
+                            )])),
+                            vec![batch],
+                        )
+                        .unwrap();
+                        let predicate = predicate.evaluate(record_batch).unwrap();
+                        let predicate = match predicate.null_count() {
+                            0 => predicate,
+                            _ => prep_null_mask_filter(&predicate),
+                        };
+                        let (buffer, _) = predicate.into_parts();
+                        cur_selection = boolean_buffer_and_then(&cur_selection, &buffer);
+                    }
+                }
+                self.current_row_id += self.batch_size;
+                Ok(cur_selection)
+            }
+        }
+    }
+
+    fn read_selection(&mut self, selection: BooleanBuffer) -> Result<RecordBatch, ArrowError> {
+        todo!()
     }
 }
 
@@ -71,18 +146,12 @@ impl Iterator for LiquidBatchReader {
     type Item = Result<RecordBatch, ArrowError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let mut selected = 0;
-        while let Some(cur_selection) =
-            take_next_selection(&mut self.selection, self.batch_size - selected)
-        {
-            todo!()
+        if let Some(selection) = take_next_batch(&mut self.selection, self.batch_size) {
+            let filtered_selection = self.build_predicate_filter(selection).unwrap();
+            let record_batch = self.read_selection(filtered_selection).unwrap();
+            return Some(Ok(record_batch));
         }
-
-        if selected == 0 {
-            return None;
-        }
-
-        todo!()
+        None
     }
 }
 

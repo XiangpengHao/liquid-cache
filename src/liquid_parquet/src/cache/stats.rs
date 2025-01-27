@@ -190,7 +190,7 @@ mod tests {
                         let file_name = format!("test_{file_no}.parquet");
                         let file = cache.file(file_name);
                         let row_group = file.row_group(rg);
-                        let column = row_group.column(col);
+                        let column = row_group.get_column_or_create(col);
                         column.insert_arrow_array(row, array.clone());
 
                         row_group_id_sum += rg as u64;
