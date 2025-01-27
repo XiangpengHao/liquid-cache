@@ -4,31 +4,30 @@ description: "Sets up Rust with sccache and caching"
 runs:
   using: "composite"
   steps:
-    - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@master
+    - name: Cache
+      uses: actions/cache@v3
       with:
-        components: rustfmt, clippy, rust-src
-        toolchain: nightly-2025-01-24
-
-    - name: Setup sccache
-      uses: mozilla-actions/sccache-action@v0.0.7
-
-    - name: Cache sccache output
-      uses: actions/cache@v4
-      with:
-        # these represent dependencies downloaded by cargo
-        # and thus do not depend on the OS, arch nor rust version.
-        #
-        # source https://github.com/actions/cache/blob/main/examples.md#rust---cargo
+        key: ${{ runner.os }}-rust-${{ env.CACHE_VERSION }}-build-${{ hashFiles('**/Cargo.toml') }}
         path: |
           ~/.cargo/bin/
           ~/.cargo/registry/index/
           ~/.cargo/registry/cache/
           ~/.cargo/git/db/
+          ~/.cache/sccache/
+          ~/.rustup/
           target/
-        save-always: true
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: ${{ runner.os }}-cargo-
+        restore-keys: |
+          ${{ runner.os }}-rust-${{ env.CACHE_VERSION }}-build-
+          ${{ runner.os }}-rust-${{ env.CACHE_VERSION }}
+ 
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.7
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@master
+      with:
+        components: rustfmt, clippy, rust-src
+        toolchain: nightly-2025-01-24
 
     - name: Show initial sccache stats
       shell: bash
