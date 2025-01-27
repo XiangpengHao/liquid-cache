@@ -16,7 +16,7 @@ use parquet::{
     },
 };
 
-use super::record_batch_reader::{CachedPageReader, PredicatePageCache};
+use super::reader::parquet_batch_reader::{CachedPageReader, PredicatePageCache};
 
 /// An in-memory collection of column chunks
 pub(super) struct InMemoryRowGroup<'a> {

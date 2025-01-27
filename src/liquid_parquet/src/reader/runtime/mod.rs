@@ -18,7 +18,7 @@ use parquet_bridge::{
     ParquetField, intersect_projection_mask, limit_row_selection, offset_row_selection,
     union_projection_mask,
 };
-use record_batch_reader::LiquidRecordBatchReader;
+use reader::parquet_batch_reader::ParquetRecordBatchReader;
 use std::{
     collections::VecDeque,
     fmt::Formatter,
@@ -29,7 +29,7 @@ use std::{
 mod cached_array_reader;
 mod in_memory_rg;
 mod parquet_bridge;
-mod record_batch_reader;
+mod reader;
 mod utils;
 
 pub struct LiquidRowFilter {
@@ -42,7 +42,7 @@ impl LiquidRowFilter {
     }
 }
 
-type ReadResult = Result<(ReaderFactory, Option<LiquidRecordBatchReader>), ParquetError>;
+type ReadResult = Result<(ReaderFactory, Option<ParquetRecordBatchReader>), ParquetError>;
 
 struct ReaderFactory {
     metadata: Arc<ParquetMetaData>,
@@ -156,20 +156,20 @@ impl ReaderFactory {
             .fetch(&mut self.input, &projection, Some(&selection))
             .await?;
 
+        let cached_row_group = self.liquid_cache.row_group(row_group_idx);
         let array_reader = build_cached_array_reader(
             self.fields.as_deref(),
             &projection,
             &row_group,
-            self.liquid_cache.row_group(row_group_idx).clone(),
+            cached_row_group.clone(),
         )?;
 
-        let reader = LiquidRecordBatchReader::new(
+        let reader = ParquetRecordBatchReader::new(
             batch_size,
             array_reader,
             selection,
             filter_readers,
             self.filter.take(),
-            self.liquid_cache.clone(),
         );
 
         Ok((self, Some(reader)))
@@ -180,7 +180,7 @@ enum StreamState {
     /// At the start of a new row group, or the end of the parquet stream
     Init,
     /// Decoding a batch
-    Decoding(LiquidRecordBatchReader),
+    Decoding(ParquetRecordBatchReader),
     /// Reading data from input
     Reading(BoxFuture<'static, ReadResult>),
     /// Error

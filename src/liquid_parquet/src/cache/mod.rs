@@ -4,6 +4,7 @@ use arrow::array::{ArrayRef, RecordBatch, RecordBatchWriter};
 use arrow::ipc::reader::FileReader;
 use arrow::ipc::writer::FileWriter;
 use arrow_schema::{DataType, Field, Schema};
+use parquet::arrow::arrow_reader::RowSelection;
 use std::fmt::Display;
 use std::io::Seek;
 use std::ops::{DerefMut, Range};
@@ -396,6 +397,14 @@ impl LiquidCachedRowGroup {
             })
             .clone()
     }
+
+    pub(crate) fn cache_mode(&self) -> LiquidCacheMode {
+        self.cache_mode
+    }
+
+    pub(crate) fn selection_in_cache(&self, selection: &RowSelection) -> bool {
+        todo!()
+    }
 }
 
 pub type LiquidCachedRowGroupRef = Arc<LiquidCachedRowGroup>;
@@ -426,10 +435,6 @@ impl LiquidCachedFile {
             ))
         });
         row_group.clone()
-    }
-
-    pub fn cache_mode(&self) -> LiquidCacheMode {
-        self.cache_mode
     }
 }
 

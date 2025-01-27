@@ -1,3 +1,6 @@
+use std::collections::VecDeque;
+
+use arrow::{array::BooleanBufferBuilder, buffer::BooleanBuffer};
 use parquet::arrow::arrow_reader::{RowSelection, RowSelector};
 
 /// Consolidate the selection to the batch granularity
@@ -52,9 +55,210 @@ fn consolidate_selection_to_batch_granularity(
     RowSelection::from(new_selection)
 }
 
+/// Take the next selection from the selection queue, and return the selection
+/// whose selected row count is to_select or less (if input selection is exhausted).
+pub(super) fn take_next_selection(
+    selection: &mut VecDeque<RowSelector>,
+    to_select: usize,
+) -> Option<RowSelection> {
+    let mut current_selected = 0;
+    let mut rt = Vec::new();
+    while let Some(front) = selection.pop_front() {
+        if front.skip {
+            rt.push(front);
+            continue;
+        }
+
+        if current_selected + front.row_count <= to_select {
+            rt.push(front);
+            current_selected += front.row_count;
+        } else {
+            let select = to_select - current_selected;
+            let remaining = front.row_count - select;
+            rt.push(RowSelector::select(select));
+            selection.push_front(RowSelector::select(remaining));
+
+            return Some(rt.into());
+        }
+    }
+    if !rt.is_empty() {
+        return Some(rt.into());
+    }
+    None
+}
+
+/// Take the next batch from the selection queue.
+/// The returning selection will have exactly the batch size, or less if the selection is exhausted.
+pub(super) fn take_next_batch(
+    selection: &mut VecDeque<RowSelector>,
+    batch_size: usize,
+) -> Option<BooleanBuffer> {
+    let mut current_selected = 0;
+    let mut rt = BooleanBufferBuilder::new(batch_size);
+    while let Some(mut front) = selection.pop_front() {
+        let to_select = if front.row_count + current_selected > batch_size {
+            batch_size - current_selected
+        } else {
+            front.row_count
+        };
+        if front.skip {
+            rt.append_n(to_select, false);
+        } else {
+            rt.append_n(to_select, true);
+        }
+        current_selected += to_select;
+        let remaining = front.row_count - to_select;
+        if remaining > 0 {
+            front.row_count = remaining;
+            selection.push_front(front);
+            break;
+        }
+    }
+    Some(rt.into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_take_next_batch() {
+        let batch_size = 8;
+
+        {
+            let mut queue = VecDeque::new();
+            let selection = take_next_batch(&mut queue, batch_size).unwrap();
+            assert_eq!(selection.len(), batch_size);
+            assert_eq!(selection.count_set_bits(), 0);
+            assert!(queue.is_empty());
+        }
+
+        {
+            let mut queue = VecDeque::from(vec![RowSelector::select(8)]);
+            let selection = take_next_batch(&mut queue, 8).unwrap();
+            assert_eq!(selection.len(), 8);
+            assert_eq!(selection.count_set_bits(), 8);
+            assert!(queue.is_empty());
+        }
+
+        {
+            let mut queue = VecDeque::from(vec![RowSelector::select(10)]);
+            let selection = take_next_batch(&mut queue, 8).unwrap();
+            assert_eq!(selection.len(), 8);
+            assert_eq!(selection.count_set_bits(), 8);
+            assert_eq!(queue, vec![RowSelector::select(2)]);
+        }
+
+        {
+            let mut queue = VecDeque::from(vec![
+                RowSelector::select(2),
+                RowSelector::skip(2),
+                RowSelector::select(2),
+                RowSelector::skip(2),
+                RowSelector::select(2),
+            ]);
+            let selection = take_next_batch(&mut queue, 8).unwrap();
+            assert_eq!(selection.len(), 8);
+            assert_eq!(selection.count_set_bits(), 4);
+            assert_eq!(queue, vec![RowSelector::select(2)]);
+        }
+
+        {
+            let mut queue = VecDeque::from(vec![RowSelector::select(3), RowSelector::skip(2)]);
+            let selection = take_next_batch(&mut queue, 8).unwrap();
+            assert_eq!(selection.len(), 8);
+            assert_eq!(selection.count_set_bits(), 3);
+            assert!(queue.is_empty());
+        }
+
+        {
+            let mut queue = VecDeque::from(vec![
+                RowSelector::select(2),
+                RowSelector::skip(4),
+                RowSelector::select(6),
+            ]);
+            let selection = take_next_batch(&mut queue, 8).unwrap();
+            assert_eq!(selection.len(), 8);
+            assert_eq!(selection.count_set_bits(), 4);
+            assert_eq!(queue, vec![RowSelector::select(4)]);
+        }
+
+        {
+            let mut queue = VecDeque::from(vec![
+                RowSelector::skip(5),
+                RowSelector::select(3),
+                RowSelector::skip(2),
+                RowSelector::select(7),
+            ]);
+            let selection = take_next_batch(&mut queue, batch_size).unwrap();
+            assert_eq!(selection.len(), batch_size);
+            assert_eq!(selection.count_set_bits(), 3);
+            assert_eq!(queue, vec![RowSelector::skip(2), RowSelector::select(7)]);
+        }
+    }
+
+    #[test]
+    fn test_take_next_selection_exact_match() {
+        let mut queue = VecDeque::from(vec![
+            RowSelector::skip(5),
+            RowSelector::select(3),
+            RowSelector::skip(2),
+            RowSelector::select(7),
+        ]);
+
+        // Request exactly 10 rows (5 skip + 3 select + 2 skip)
+        let selection = take_next_selection(&mut queue, 3).unwrap();
+        assert_eq!(
+            selection,
+            vec![
+                RowSelector::skip(5),
+                RowSelector::select(3),
+                RowSelector::skip(2)
+            ]
+            .into()
+        );
+
+        // Check remaining queue
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].row_count, 7);
+        assert!(!queue[0].skip);
+    }
+
+    #[test]
+    fn test_take_next_selection_split_required() {
+        let mut queue = VecDeque::from(vec![RowSelector::select(10), RowSelector::select(10)]);
+
+        // Request 15 rows, which should split the first selector
+        let selection = take_next_selection(&mut queue, 15).unwrap();
+
+        assert_eq!(
+            selection,
+            vec![RowSelector::select(10), RowSelector::select(5)].into()
+        );
+
+        // Check remaining queue - should have 5 rows from split and original 10
+        assert_eq!(queue.len(), 1);
+        assert!(!queue[0].skip);
+        assert_eq!(queue[0].row_count, 5);
+    }
+
+    #[test]
+    fn test_take_next_selection_empty_queue() {
+        let mut queue = VecDeque::new();
+
+        // Should return None for empty queue
+        let selection = take_next_selection(&mut queue, 10);
+        assert!(selection.is_none());
+
+        // Test with queue that becomes empty
+        queue.push_back(RowSelector::select(5));
+        let selection = take_next_selection(&mut queue, 10).unwrap();
+        assert_eq!(selection, vec![RowSelector::select(5)].into());
+
+        // Queue should now be empty
+        let selection = take_next_selection(&mut queue, 10);
+        assert!(selection.is_none());
+    }
 
     #[test]
     fn test_selection() {
