@@ -1,6 +1,6 @@
-# DataFusion Cache (aka. LiquidCache)
+<p align="center"> <img src="/dev/doc/liquid_cache.png" alt="liquid_cache_logo" width="400"/> </p>
 
-LiquidCache -- a cache that understands your data and cuts your S3 bill by 10x.
+## Architecture
 
 ![architecture](/dev/doc/arch.jpg)
 
