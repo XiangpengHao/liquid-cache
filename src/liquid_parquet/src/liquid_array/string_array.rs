@@ -33,7 +33,7 @@ impl LiquidArray for LiquidStringArray {
 
     #[inline]
     fn to_arrow_array(&self) -> ArrayRef {
-        let dict = self.to_string_array();
+        let dict = self.to_arrow_array();
         Arc::new(dict)
     }
 
@@ -49,6 +49,7 @@ impl LiquidArray for LiquidStringArray {
         Arc::new(LiquidStringArray {
             keys: bit_packed_array,
             values,
+            arrow_type: self.arrow_type,
         })
     }
 }
@@ -67,11 +68,31 @@ impl std::fmt::Debug for LiquidStringMetadata {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+enum ArrowStringType {
+    Utf8,
+    Utf8View,
+    Dict16, // DictionaryArray<UInt16Type>
+}
+
+impl ArrowStringType {
+    pub fn to_arrow_type(&self) -> DataType {
+        match self {
+            ArrowStringType::Utf8 => DataType::Utf8,
+            ArrowStringType::Utf8View => DataType::Utf8View,
+            ArrowStringType::Dict16 => {
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8))
+            }
+        }
+    }
+}
+
 /// An array that stores strings in a dictionary format, with a bit-packed array for the keys and a FSST array for the values.
 #[derive(Debug)]
 pub struct LiquidStringArray {
     keys: BitPackedArray<UInt16Type>,
     values: FsstArray,
+    arrow_type: ArrowStringType,
 }
 
 impl LiquidStringArray {
@@ -80,18 +101,19 @@ impl LiquidStringArray {
         compressor: Option<Arc<Compressor>>,
     ) -> Self {
         let dict = string_to_dict_string(array.iter());
-        Self::from_dict_array_with_compressor(dict, compressor)
+        Self::from_dict_array_with_compressor(dict, compressor, ArrowStringType::Utf8View)
     }
 
     /// Create an LiquidStringArray from a StringArray.
     pub fn from_string_array(array: &StringArray, compressor: Option<Arc<Compressor>>) -> Self {
         let dict = string_to_dict_string(array.iter());
-        Self::from_dict_array_with_compressor(dict, compressor)
+        Self::from_dict_array_with_compressor(dict, compressor, ArrowStringType::Utf8)
     }
 
     fn from_dict_array_with_compressor(
         array: DictionaryArray<UInt16Type>,
         compressor: Option<Arc<Compressor>>,
+        arrow_type: ArrowStringType,
     ) -> Self {
         let (keys, values) = array.into_parts();
 
@@ -115,6 +137,7 @@ impl LiquidStringArray {
         LiquidStringArray {
             keys: bit_packed_array,
             values: fsst_values,
+            arrow_type,
         }
     }
 
@@ -143,6 +166,7 @@ impl LiquidStringArray {
         LiquidStringArray {
             keys: bit_packed_array,
             values: fsst_values,
+            arrow_type: ArrowStringType::Dict16,
         }
     }
 
@@ -173,10 +197,9 @@ impl LiquidStringArray {
     }
 
     /// Convert the LiquidStringArray to a StringArray.
-    pub fn to_string_array(&self) -> StringArray {
+    pub fn to_arrow_array(&self) -> ArrayRef {
         let dict = self.to_dict_string();
-        let value = cast(&dict, &DataType::Utf8).unwrap();
-        value.as_string::<i32>().clone()
+        cast(&dict, &self.arrow_type.to_arrow_type()).unwrap()
     }
 
     /// Repackage the data into Arrow-compatible format, so that it can be written to disk, transferred over flight.
@@ -208,7 +231,11 @@ impl LiquidStringArray {
             metadata.compressor.clone(),
             metadata.uncompressed_len as usize,
         );
-        LiquidStringArray { keys, values }
+        LiquidStringArray {
+            keys,
+            values,
+            arrow_type: ArrowStringType::Dict16,
+        }
     }
 
     /// Get the metadata of the LiquidStringArray.
@@ -276,12 +303,39 @@ mod tests {
     fn test_simple_roundtrip() {
         let input = StringArray::from(vec!["hello", "world", "hello", "rust"]);
         let etc = LiquidStringArray::from_string_array(&input, None);
-        let output = etc.to_string_array();
-
-        assert_eq!(input.len(), output.len());
+        let output = etc.to_arrow_array();
+        let string_array = output.as_string::<i32>();
+        assert_eq!(input.len(), string_array.len());
         for i in 0..input.len() {
-            assert_eq!(input.value(i), output.value(i));
+            assert_eq!(input.value(i), string_array.value(i));
         }
+    }
+
+    #[test]
+    fn test_to_arrow_array_preserve_arrow_type() {
+        let input = StringArray::from(vec!["hello", "world", "hello", "rust"]);
+        let etc = LiquidStringArray::from_string_array(&input, None);
+        let output = etc.to_arrow_array();
+        assert_eq!(&input, output.as_string::<i32>());
+
+        let input = cast(&input, &DataType::Utf8View)
+            .unwrap()
+            .as_string_view()
+            .clone();
+        let etc = LiquidStringArray::from_string_view_array(&input, None);
+        let output = etc.to_arrow_array();
+        assert_eq!(&input, output.as_string_view());
+
+        let input = cast(
+            &input,
+            &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+        )
+        .unwrap()
+        .as_dictionary()
+        .clone();
+        let etc = LiquidStringArray::from_dict_array(&input);
+        let output = etc.to_arrow_array();
+        assert_eq!(&input, output.as_dictionary());
     }
 
     #[test]
@@ -294,14 +348,15 @@ mod tests {
             Some("hello"),
         ]);
         let etc = LiquidStringArray::from_string_array(&input, None);
-        let output = etc.to_string_array();
+        let output = etc.to_arrow_array();
+        let string_array = output.as_string::<i32>();
 
-        assert_eq!(input.len(), output.len());
+        assert_eq!(input.len(), string_array.len());
         for i in 0..input.len() {
             if input.is_null(i) {
-                assert!(output.is_null(i));
+                assert!(string_array.is_null(i));
             } else {
-                assert_eq!(input.value(i), output.value(i));
+                assert_eq!(input.value(i), string_array.value(i));
             }
         }
     }
@@ -313,11 +368,12 @@ mod tests {
         let input = StringArray::from(input);
 
         let etc = LiquidStringArray::from_string_array(&input, None);
-        let output = etc.to_string_array();
+        let output = etc.to_arrow_array();
+        let string_array = output.as_string::<i32>();
 
-        assert_eq!(input.len(), output.len());
+        assert_eq!(input.len(), string_array.len());
         for i in 0..input.len() {
-            assert_eq!(input.value(i), output.value(i));
+            assert_eq!(input.value(i), string_array.value(i));
         }
     }
 
@@ -332,11 +388,11 @@ mod tests {
         ]);
 
         let etc = LiquidStringArray::from_string_array(&input, None);
-        let output = etc.to_string_array();
-
-        assert_eq!(input.len(), output.len());
+        let output = etc.to_arrow_array();
+        let string_array = output.as_string::<i32>();
+        assert_eq!(input.len(), string_array.len());
         for i in 0..input.len() {
-            assert_eq!(input.value(i), output.value(i));
+            assert_eq!(input.value(i), string_array.value(i));
         }
     }
 
@@ -344,11 +400,11 @@ mod tests {
     fn test_empty_strings() {
         let input = StringArray::from(vec!["", "", "non-empty", ""]);
         let etc = LiquidStringArray::from_string_array(&input, None);
-        let output = etc.to_string_array();
-
-        assert_eq!(input.len(), output.len());
+        let output = etc.to_arrow_array();
+        let string_array = output.as_string::<i32>();
+        assert_eq!(input.len(), string_array.len());
         for i in 0..input.len() {
-            assert_eq!(input.value(i), output.value(i));
+            assert_eq!(input.value(i), string_array.value(i));
         }
     }
 
@@ -369,10 +425,11 @@ mod tests {
         assert_eq!(unique_values.len(), 3); // "hello", "world", "rust"
 
         // Convert back to string array and verify
-        let output = etc.to_string_array();
-        assert_eq!(input.len(), output.len());
+        let output = etc.to_arrow_array();
+        let string_array = output.as_string::<i32>();
+        assert_eq!(input.len(), string_array.len());
         for i in 0..input.len() {
-            assert_eq!(input.value(i), output.value(i));
+            assert_eq!(input.value(i), string_array.value(i));
         }
     }
 

@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use arrow::array::{Array, BooleanArray, RecordBatch, RecordBatchReader};
+use arrow::array::{Array, AsArray, BooleanArray, RecordBatch, RecordBatchReader};
 use arrow::buffer::BooleanBuffer;
 use arrow::compute::prep_null_mask_filter;
 use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
@@ -18,6 +18,9 @@ use super::utils::row_selector_to_boolean_buffer;
 mod cached_array_reader;
 pub(crate) use cached_array_reader::build_cached_array_reader;
 pub(super) mod cached_page;
+
+#[cfg(test)]
+mod tests;
 
 fn build_predicate_from_cache(
     cache: &LiquidCachedRowGroupRef,
@@ -158,8 +161,8 @@ impl LiquidBatchReader {
             }
         }
         let array = self.projection_reader.consume_batch()?;
-        let schema = self.schema.clone();
-        let batch = RecordBatch::try_new(schema, vec![array])?;
+        let struct_array = array.as_struct();
+        let batch = RecordBatch::from(struct_array);
         Ok(batch)
     }
 }

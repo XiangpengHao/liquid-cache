@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use utils::RangedFile;
 mod stats;
 
-use super::liquid_array::{AsLiquidArray, LiquidArrayRef, LiquidPrimitiveArray, LiquidStringArray};
+use super::liquid_array::{LiquidArrayRef, LiquidPrimitiveArray, LiquidStringArray};
 mod utils;
 use arrow::array::types::{
     Int8Type as ArrowInt8Type, Int16Type as ArrowInt16Type, Int32Type as ArrowInt32Type,
@@ -233,15 +233,7 @@ impl LiquidCachedColumn {
                 let array = batch.column(0);
                 Some(array.clone())
             }
-            CachedBatch::LiquidMemory(array) => {
-                if let Some(string_array) = array.as_string_array_opt() {
-                    let arrow_array = string_array.to_dict_string();
-                    Some(Arc::new(arrow_array))
-                } else {
-                    let arrow_array = array.to_arrow_array();
-                    Some(arrow_array)
-                }
-            }
+            CachedBatch::LiquidMemory(array) => Some(array.to_arrow_array()),
         }
     }
 
@@ -450,7 +442,7 @@ pub struct LiquidCachedFile {
 }
 
 impl LiquidCachedFile {
-    fn new(cache_mode: LiquidCacheMode, batch_size: usize) -> Self {
+    pub(crate) fn new(cache_mode: LiquidCacheMode, batch_size: usize) -> Self {
         Self {
             cache_mode,
             batch_size,
