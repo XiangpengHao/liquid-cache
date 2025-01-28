@@ -1,18 +1,19 @@
 use arrow::{
     array::{
-        Int8Array, Int16Array, Int32Array, Int64Array, StringViewBuilder, UInt8Array, UInt16Array,
-        UInt32Array, UInt64Array,
+        BooleanArray, Int8Array, Int16Array, Int32Array, Int64Array, StringViewBuilder, UInt8Array,
+        UInt16Array, UInt32Array, UInt64Array,
     },
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
+use arrow_schema::ArrowError;
 use bytes::Bytes;
 use futures::future::BoxFuture;
 use futures::{FutureExt, StreamExt};
 use parquet::{
     arrow::{
-        ArrowWriter, ParquetRecordBatchStreamBuilder,
-        arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions},
+        ArrowWriter, ParquetRecordBatchStreamBuilder, ProjectionMask,
+        arrow_reader::{ArrowPredicate, ArrowReaderMetadata, ArrowReaderOptions},
         async_reader::AsyncFileReader,
     },
     errors::ParquetError,
@@ -27,7 +28,7 @@ use tempfile::NamedTempFile;
 use crate::{
     LiquidCacheMode,
     cache::LiquidCachedFile,
-    reader::runtime::{ArrowReaderBuilderBridge, LiquidStreamBuilder},
+    reader::runtime::{ArrowReaderBuilderBridge, LiquidRowFilter, LiquidStreamBuilder},
 };
 
 fn test_schema() -> Schema {
@@ -190,6 +191,99 @@ async fn basic_stuff() {
 
     for (i, batch) in batches.iter().enumerate() {
         let expected = create_record_batch(batch_size, i);
+        assert_batch_eq(&expected, batch);
+    }
+}
+
+#[tokio::test]
+async fn test_reading_with_projection() {
+    let column_projections = vec![0, 3, 6, 8];
+    let mut builder = get_test_reader().await;
+    builder.projection = ProjectionMask::roots(
+        builder.metadata.file_metadata().schema_descr(),
+        column_projections.iter().cloned(),
+    );
+    let batch_size = builder.batch_size;
+    let liquid_cache = LiquidCachedFile::new(LiquidCacheMode::InMemoryLiquid, batch_size);
+    let reader = builder.build(Arc::new(liquid_cache)).unwrap();
+
+    let batches = reader
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .map(|batch| batch.unwrap())
+        .collect::<Vec<_>>();
+
+    let expected_schema = test_schema().project(&column_projections).unwrap();
+    for (i, batch) in batches.iter().enumerate() {
+        assert_eq!(batch.schema().as_ref(), &expected_schema);
+        let expected = create_record_batch(batch_size, i)
+            .project(&column_projections)
+            .unwrap();
+        assert_batch_eq(&expected, batch);
+    }
+}
+
+struct TestPredicate {
+    projection_mask: ProjectionMask,
+}
+
+impl TestPredicate {
+    fn new(parquet_meta: Arc<ParquetMetaData>, projection: Vec<usize>) -> Self {
+        Self {
+            projection_mask: ProjectionMask::roots(
+                parquet_meta.file_metadata().schema_descr(),
+                projection.iter().cloned(),
+            ),
+        }
+    }
+}
+
+impl ArrowPredicate for TestPredicate {
+    fn evaluate(&mut self, batch: RecordBatch) -> Result<BooleanArray, ArrowError> {
+        Ok(BooleanArray::from(vec![false; batch.num_rows()]))
+    }
+
+    fn projection(&self) -> &ProjectionMask {
+        &self.projection_mask
+    }
+}
+
+#[tokio::test]
+async fn test_reading_with_filter() {
+    let projection = vec![0, 3, 5, 6, 8];
+    let mut builder = get_test_reader().await;
+    builder.projection = ProjectionMask::roots(
+        builder.metadata.file_metadata().schema_descr(),
+        projection.iter().cloned(),
+    );
+
+    {
+        let filter1 = TestPredicate::new(builder.metadata.clone(), vec![0]);
+        let filter2 = TestPredicate::new(builder.metadata.clone(), vec![5]);
+        let filter3 = TestPredicate::new(builder.metadata.clone(), vec![6]);
+        let filters = vec![
+            Box::new(filter1) as Box<dyn ArrowPredicate>,
+            Box::new(filter2),
+            Box::new(filter3),
+        ];
+        builder.filter = Some(LiquidRowFilter::new(filters));
+    }
+    let batch_size = builder.batch_size;
+    let liquid_cache = LiquidCachedFile::new(LiquidCacheMode::InMemoryLiquid, batch_size);
+    let reader = builder.build(Arc::new(liquid_cache)).unwrap();
+
+    let batches = reader
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .map(|batch| batch.unwrap())
+        .collect::<Vec<_>>();
+
+    for (i, batch) in batches.iter().enumerate() {
+        let expected = create_record_batch(batch_size, i)
+            .project(&projection)
+            .unwrap();
         assert_batch_eq(&expected, batch);
     }
 }
