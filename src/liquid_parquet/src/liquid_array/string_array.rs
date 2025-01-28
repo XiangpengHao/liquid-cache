@@ -76,7 +76,7 @@ enum ArrowStringType {
 }
 
 impl ArrowStringType {
-    pub fn to_arrow_type(&self) -> DataType {
+    pub fn to_arrow_type(self) -> DataType {
         match self {
             ArrowStringType::Utf8 => DataType::Utf8,
             ArrowStringType::Utf8View => DataType::Utf8View,
