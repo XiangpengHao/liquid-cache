@@ -1,5 +1,8 @@
 <p align="center"> <img src="/dev/doc/liquid_cache.png" alt="liquid_cache_logo" width="400"/> </p>
 
+
+<p align="center"> Cache that understands your data and cuts your S3 bill by 10x. </p>
+
 ## Architecture
 
 ![architecture](/dev/doc/arch.jpg)
