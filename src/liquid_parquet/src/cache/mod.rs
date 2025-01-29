@@ -209,7 +209,9 @@ impl LiquidCachedColumn {
                 Some(Ok(buffer))
             }
             CachedBatch::LiquidMemory(array) => {
-                let boolean_array = predicate.evaluate_liquid(array).unwrap();
+                let boolean_array = BooleanArray::new(selection.clone(), None);
+                let filtered = array.filter(&boolean_array);
+                let boolean_array = predicate.evaluate_liquid(&filtered).unwrap();
                 let (buffer, _) = boolean_array.into_parts();
                 Some(Ok(buffer))
             }
