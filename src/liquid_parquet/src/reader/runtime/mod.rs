@@ -1,6 +1,6 @@
-use crate::cache::LiquidCachedFileRef;
-use arrow::array::RecordBatch;
-use arrow_schema::{DataType, Fields, Schema, SchemaRef};
+use crate::{cache::LiquidCachedFileRef, liquid_array::LiquidArrayRef};
+use arrow::array::{BooleanArray, RecordBatch};
+use arrow_schema::{ArrowError, DataType, Fields, Schema, SchemaRef};
 use futures::{FutureExt, Stream, future::BoxFuture, ready};
 use in_memory_rg::InMemoryRowGroup;
 use parquet::{
@@ -31,12 +31,19 @@ mod parquet_bridge;
 mod reader;
 mod utils;
 
+pub trait LiquidPredicate: ArrowPredicate {
+    fn evaluate_liquid(&mut self, array: &LiquidArrayRef) -> Result<BooleanArray, ArrowError>;
+    fn evaluate_arrow(&mut self, array: RecordBatch) -> Result<BooleanArray, ArrowError> {
+        self.evaluate(array)
+    }
+}
+
 pub struct LiquidRowFilter {
-    pub(crate) predicates: Vec<Box<dyn ArrowPredicate>>,
+    pub(crate) predicates: Vec<Box<dyn LiquidPredicate>>,
 }
 
 impl LiquidRowFilter {
-    pub fn new(predicates: Vec<Box<dyn ArrowPredicate>>) -> Self {
+    pub fn new(predicates: Vec<Box<dyn LiquidPredicate>>) -> Self {
         Self { predicates }
     }
 }

@@ -66,10 +66,11 @@ use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use arrow::array::BooleanArray;
+use arrow::array::{ArrayRef, BooleanArray};
 use arrow::datatypes::{DataType, Schema};
 use arrow::error::{ArrowError, Result as ArrowResult};
 use arrow::record_batch::RecordBatch;
+use arrow_schema::Field;
 use datafusion::datasource::physical_plan::ParquetFileMetrics;
 use datafusion::physical_plan::metrics;
 use parquet::arrow::ProjectionMask;
@@ -86,6 +87,8 @@ use datafusion::physical_expr::expressions::{Column, Literal};
 use datafusion::physical_expr::utils::reassign_predicate_columns;
 use datafusion::physical_expr::{PhysicalExpr, split_conjunction};
 
+use crate::LiquidPredicate;
+use crate::liquid_array::LiquidArrayRef;
 use crate::reader::runtime::LiquidRowFilter;
 
 /// A "compiled" predicate passed to `ParquetRecordBatchStream` to perform
@@ -151,6 +154,24 @@ impl DatafusionArrowPredicate {
             time,
             schema_mapping,
         })
+    }
+}
+
+fn array_to_record_batch(array: ArrayRef) -> RecordBatch {
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "_",
+        array.data_type().clone(),
+        array.is_nullable(),
+    )]));
+    RecordBatch::try_new(schema, vec![array]).unwrap()
+}
+
+impl LiquidPredicate for DatafusionArrowPredicate {
+    fn evaluate_liquid(&mut self, array: &LiquidArrayRef) -> Result<BooleanArray, ArrowError> {
+        // TODO: actually evaluate predicate on the encoded array.
+        // currently we just convert to arrow array and evaluate predicate on it.
+        let batch = array_to_record_batch(array.to_arrow_array());
+        self.evaluate(batch)
     }
 }
 

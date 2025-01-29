@@ -6,14 +6,14 @@ use arrow::buffer::BooleanBuffer;
 use arrow::compute::prep_null_mask_filter;
 use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
 use parquet::arrow::array_reader::ArrayReader;
-use parquet::arrow::arrow_reader::{ArrowPredicate, RowSelection, RowSelector};
+use parquet::arrow::arrow_reader::{RowSelection, RowSelector};
 
 use crate::cache::LiquidCachedRowGroupRef;
 use crate::reader::runtime::parquet_bridge::get_predicate_column_id;
 use crate::reader::runtime::utils::{boolean_buffer_and_then, take_next_batch};
 
-use super::LiquidRowFilter;
 use super::utils::row_selector_to_boolean_buffer;
+use super::{LiquidPredicate, LiquidRowFilter};
 
 mod cached_array_reader;
 pub(crate) use cached_array_reader::build_cached_array_reader;
@@ -26,7 +26,7 @@ fn build_predicate_from_cache(
     cache: &LiquidCachedRowGroupRef,
     row_id: usize,
     input_selection: &BooleanBuffer,
-    predicate: &mut Box<dyn ArrowPredicate>,
+    predicate: &mut Box<dyn LiquidPredicate>,
 ) -> Option<BooleanBuffer> {
     let projection = predicate.projection();
     let column_id = get_predicate_column_id(projection);

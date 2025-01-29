@@ -6,7 +6,6 @@ use arrow::compute::prep_null_mask_filter;
 use arrow::ipc::reader::FileReader;
 use arrow::ipc::writer::FileWriter;
 use arrow_schema::{ArrowError, DataType, Field, Schema};
-use parquet::arrow::arrow_reader::ArrowPredicate;
 use std::fmt::Display;
 use std::io::Seek;
 use std::ops::{DerefMut, Range};
@@ -14,6 +13,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use utils::RangedFile;
 mod stats;
+
+use crate::LiquidPredicate;
 
 use super::liquid_array::{LiquidArrayRef, LiquidPrimitiveArray, LiquidStringArray};
 mod utils;
@@ -151,6 +152,15 @@ pub struct LiquidCachedColumn {
 
 pub type LiquidCachedColumnRef = Arc<LiquidCachedColumn>;
 
+fn array_to_record_batch(array: ArrayRef) -> RecordBatch {
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "_",
+        array.data_type().clone(),
+        array.is_nullable(),
+    )]));
+    RecordBatch::try_new(schema, vec![array]).unwrap()
+}
+
 impl LiquidCachedColumn {
     fn new(
         row_group_id: usize,
@@ -176,20 +186,11 @@ impl LiquidCachedColumn {
         rows.contains_key(&row_id)
     }
 
-    fn array_to_record_batch(&self, array: ArrayRef) -> RecordBatch {
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "_",
-            array.data_type().clone(),
-            array.is_nullable(),
-        )]));
-        RecordBatch::try_new(schema, vec![array]).unwrap()
-    }
-
     pub(crate) fn eval_selection_with_predicate(
         &self,
         row_id: usize,
         selection: &BooleanBuffer,
-        predicate: &mut dyn ArrowPredicate,
+        predicate: &mut dyn LiquidPredicate,
     ) -> Option<Result<BooleanBuffer, ArrowError>> {
         let cached_entry = self.rows.read().unwrap();
         let entry = cached_entry.get(&row_id)?;
@@ -198,13 +199,18 @@ impl LiquidCachedColumn {
             CachedBatch::ArrowMemory(array) => {
                 let boolean_array = BooleanArray::new(selection.clone(), None);
                 let selected = arrow::compute::filter(array, &boolean_array).unwrap();
-                let record_batch = self.array_to_record_batch(selected);
+                let record_batch = array_to_record_batch(selected);
                 let boolean_array = predicate.evaluate(record_batch).unwrap();
                 let predicate_filter = match boolean_array.null_count() {
                     0 => boolean_array,
                     _ => prep_null_mask_filter(&boolean_array),
                 };
                 let (buffer, _) = predicate_filter.into_parts();
+                Some(Ok(buffer))
+            }
+            CachedBatch::LiquidMemory(array) => {
+                let boolean_array = predicate.evaluate_liquid(array).unwrap();
+                let (buffer, _) = boolean_array.into_parts();
                 Some(Ok(buffer))
             }
             _ => todo!(),
