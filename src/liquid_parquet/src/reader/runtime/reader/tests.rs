@@ -3,6 +3,7 @@ use arrow::{
         AsArray, BooleanArray, BooleanBuilder, Int8Array, Int16Array, Int32Array, Int64Array,
         StringViewBuilder, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
     },
+    buffer::BooleanBuffer,
     compute::filter,
     datatypes::{
         DataType, Field, Int8Type, Int16Type, Int32Type, Int64Type, Schema, UInt8Type, UInt16Type,
@@ -228,6 +229,44 @@ async fn test_reading_with_projection() {
     }
 }
 
+#[tokio::test]
+async fn test_reading_warm() {
+    let column_projections = vec![0, 3, 6, 8];
+    let mut builder = get_test_reader().await;
+    let batch_size = builder.batch_size;
+    let liquid_cache = Arc::new(LiquidCachedFile::new(
+        LiquidCacheMode::InMemoryLiquid,
+        batch_size,
+    ));
+    builder.projection = ProjectionMask::roots(
+        builder.metadata.file_metadata().schema_descr(),
+        column_projections.iter().cloned(),
+    );
+    let reader = builder.build(liquid_cache.clone()).unwrap();
+    let _batches = reader.collect::<Vec<_>>().await;
+
+    let mut builder = get_test_reader().await;
+    builder.projection = ProjectionMask::roots(
+        builder.metadata.file_metadata().schema_descr(),
+        column_projections.iter().cloned(),
+    );
+    let reader = builder.build(liquid_cache.clone()).unwrap();
+
+    let batches = reader
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .map(|batch| batch.unwrap())
+        .collect::<Vec<_>>();
+
+    for (i, batch) in batches.iter().enumerate() {
+        let expected = create_record_batch(batch_size, i)
+            .project(&column_projections)
+            .unwrap();
+        assert_batch_eq(&expected, batch);
+    }
+}
+
 struct TestPredicate {
     projection_mask: ProjectionMask,
     strategy: FilterStrategy,
@@ -304,27 +343,32 @@ enum FilterStrategy {
 async fn test_reading_with_filter() {
     let projection = vec![0, 3, 5, 6, 8];
     let mut builder = get_test_reader().await;
+    let batch_size = builder.batch_size;
+
     builder.projection = ProjectionMask::roots(
         builder.metadata.file_metadata().schema_descr(),
         projection.iter().cloned(),
     );
 
-    {
-        let filter1 = TestPredicate::new(&builder.metadata, 0, FilterStrategy::NoOdd);
-        let filter2 =
-            TestPredicate::new(&builder.metadata, 5, FilterStrategy::NoSmallerThan(10_000));
-        let filter3 =
-            TestPredicate::new(&builder.metadata, 6, FilterStrategy::NoLargerThan(20_000));
+    fn get_filters(metadata: &ParquetMetaData) -> Vec<Box<dyn ArrowPredicate>> {
+        let filter1 = TestPredicate::new(metadata, 0, FilterStrategy::NoOdd);
+        let filter2 = TestPredicate::new(metadata, 5, FilterStrategy::NoSmallerThan(10_000));
+        let filter3 = TestPredicate::new(metadata, 6, FilterStrategy::NoLargerThan(20_000));
         let filters = vec![
             Box::new(filter1) as Box<dyn ArrowPredicate>,
             Box::new(filter2),
             Box::new(filter3),
         ];
-        builder.filter = Some(LiquidRowFilter::new(filters));
+        filters
     }
-    let batch_size = builder.batch_size;
-    let liquid_cache = LiquidCachedFile::new(LiquidCacheMode::InMemoryLiquid, batch_size);
-    let reader = builder.build(Arc::new(liquid_cache)).unwrap();
+    builder.filter = Some(LiquidRowFilter::new(get_filters(&builder.metadata)));
+
+    let liquid_cache = Arc::new(LiquidCachedFile::new(
+        LiquidCacheMode::InMemoryLiquid,
+        batch_size,
+    ));
+
+    let reader = builder.build(liquid_cache.clone()).unwrap();
 
     let batches = reader
         .collect::<Vec<_>>()
@@ -339,51 +383,60 @@ async fn test_reading_with_filter() {
             .unwrap();
 
         let col_u8 = expected.column(0).as_primitive::<UInt8Type>();
-        let mask1: Vec<bool> = col_u8
-            .iter()
-            .map(|val| match val {
-                None => false,
-                Some(v) => v % 2 == 0,
-            })
-            .collect();
+        let mask1 = BooleanBuffer::from_iter(
+            col_u8
+                .iter()
+                .map(|val| val.map(|v| v % 2 == 0).unwrap_or(false)),
+        );
 
         let col_i16 = expected.column(2).as_primitive::<Int16Type>();
-        let mask2: Vec<bool> = col_i16
-            .iter()
-            .map(|val| match val {
-                None => false,
-                Some(v) => (v as i64) >= 10000,
-            })
-            .collect();
+        let mask2 = BooleanBuffer::from_iter(
+            col_i16
+                .iter()
+                .map(|val| val.map(|v| v >= 10000).unwrap_or(false)),
+        );
 
         let col_i32 = expected.column(3).as_primitive::<Int32Type>();
-        let mask3: Vec<bool> = col_i32
-            .iter()
-            .map(|val| match val {
-                None => false,
-                Some(v) => (v as i64) <= 20000,
-            })
-            .collect();
+        let mask3 = BooleanBuffer::from_iter(
+            col_i32
+                .iter()
+                .map(|val| val.map(|v| v <= 20000).unwrap_or(false)),
+        );
 
-        let combined_mask: Vec<bool> = mask1
-            .iter()
-            .zip(&mask2)
-            .zip(&mask3)
-            .map(|((m1, m2), m3)| *m1 && *m2 && *m3)
-            .collect();
+        let combined_mask = &mask1 & &mask2;
+        let combined_mask = &combined_mask & &mask3;
 
         let expected = filter_record_batch(&expected, combined_mask);
 
         assert_batch_eq(&expected, batch);
     }
+
+    // now run again with the same cache
+    let mut builder = get_test_reader().await;
+    builder.projection = ProjectionMask::roots(
+        builder.metadata.file_metadata().schema_descr(),
+        projection.iter().cloned(),
+    );
+    builder.filter = Some(LiquidRowFilter::new(get_filters(&builder.metadata)));
+    let reader = builder.build(liquid_cache.clone()).unwrap();
+    let warm_batches = reader
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .map(|batch| batch.unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(batches.len(), warm_batches.len());
+    for (batch, warm_batch) in batches.iter().zip(warm_batches.iter()) {
+        assert_batch_eq(&batch, &warm_batch);
+    }
 }
 
-fn filter_record_batch(batch: &RecordBatch, mask: Vec<bool>) -> RecordBatch {
-    let filter_array = BooleanArray::from(mask);
+fn filter_record_batch(batch: &RecordBatch, mask: BooleanBuffer) -> RecordBatch {
+    let mask = BooleanArray::new(mask, None);
     let filtered_columns = batch
         .columns()
         .iter()
-        .map(|col| filter(col, &filter_array).unwrap())
+        .map(|col| filter(col, &mask).unwrap())
         .collect::<Vec<_>>();
 
     RecordBatch::try_new(batch.schema(), filtered_columns).unwrap()
