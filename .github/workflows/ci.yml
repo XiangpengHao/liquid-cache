@@ -10,12 +10,11 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUNNER: cloudlab 
 
 jobs:
   check:
     name: Basic check
-    runs-on: ${{ env.RUNNER }}
+    runs-on: cloudlab
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rust-setup
@@ -34,7 +33,7 @@ jobs:
 
   unit_test:
     name: Unit Test
-    runs-on: ${{ env.RUNNER }}
+    runs-on: cloudlab
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rust-setup
@@ -45,7 +44,7 @@ jobs:
 
   address_san:
     name: Address Sanitizer
-    runs-on: ${{ env.RUNNER }}
+    runs-on: cloudlab
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rust-setup
@@ -61,7 +60,7 @@ jobs:
 
   memory_san:
     name: Memory Sanitizer
-    runs-on: ${{ env.RUNNER }}
+    runs-on: cloudlab
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rust-setup
@@ -76,7 +75,7 @@ jobs:
 
   integration_test:
     name: Integration Test
-    runs-on: ${{ env.RUNNER }}
+    runs-on: cloudlab
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rust-setup
