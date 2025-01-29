@@ -1,7 +1,7 @@
 use arrow::{
     array::{
         AsArray, BooleanArray, BooleanBuilder, Int8Array, Int16Array, Int32Array, Int64Array,
-        StringViewBuilder, StructArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
+        StringViewBuilder, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
     },
     buffer::BooleanBuffer,
     compute::filter,
@@ -11,7 +11,7 @@ use arrow::{
     },
     record_batch::RecordBatch,
 };
-use arrow_schema::{ArrowError, Fields};
+use arrow_schema::ArrowError;
 use bytes::Bytes;
 use futures::future::BoxFuture;
 use futures::{FutureExt, StreamExt};
@@ -287,16 +287,13 @@ impl TestPredicate {
 impl LiquidPredicate for TestPredicate {
     fn evaluate_liquid(&mut self, array: &LiquidArrayRef) -> Result<BooleanArray, ArrowError> {
         let batch = array.to_arrow_array();
-        let field = Fields::from(vec![Field::new(
+
+        let schema = Schema::new(vec![Field::new(
             "_",
             batch.data_type().clone(),
             batch.is_nullable(),
         )]);
-        let struct_array = StructArray::new(field.clone(), vec![batch], None);
-
-        let batch_field = Field::new("_", DataType::Struct(field.clone()), false);
-        let schema = Schema::new(vec![batch_field]);
-        let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(struct_array)]).unwrap();
+        let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(batch)]).unwrap();
         self.evaluate(batch)
     }
 }
@@ -305,8 +302,6 @@ impl ArrowPredicate for TestPredicate {
     fn evaluate(&mut self, batch: RecordBatch) -> Result<BooleanArray, ArrowError> {
         assert_eq!(batch.num_columns(), 1);
         let column = batch.column(0);
-        let typed = column.as_struct();
-        let column = typed.column(0);
 
         let mut builder = BooleanBuilder::new();
 
