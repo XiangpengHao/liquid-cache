@@ -10,11 +10,12 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  RUNNER: cloudlab 
 
 jobs:
   check:
     name: Basic check
-    runs-on: ubuntu-latest
+    runs-on: ${{ env.RUNNER }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rust-setup
@@ -33,7 +34,7 @@ jobs:
 
   unit_test:
     name: Unit Test
-    runs-on: ubuntu-latest
+    runs-on: ${{ env.RUNNER }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rust-setup
@@ -44,7 +45,7 @@ jobs:
 
   address_san:
     name: Address Sanitizer
-    runs-on: ubuntu-latest
+    runs-on: ${{ env.RUNNER }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rust-setup
@@ -60,7 +61,7 @@ jobs:
 
   memory_san:
     name: Memory Sanitizer
-    runs-on: ubuntu-latest
+    runs-on: ${{ env.RUNNER }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rust-setup
@@ -75,7 +76,7 @@ jobs:
 
   integration_test:
     name: Integration Test
-    runs-on: ubuntu-latest
+    runs-on: ${{ env.RUNNER }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rust-setup
@@ -84,26 +85,45 @@ jobs:
         run: cargo build --release --bin bench_server
 
       - name: Start LiquidCache server
-        run: env RUST_LOG=info nohup cargo run --release --bin bench_server &> server.log &
+        run: |
+          env RUST_LOG=info nohup cargo run --release --bin bench_server &> server.log &
+          echo $! > server.pid  # Save PID for later cleanup
 
       - name: Run simple ClickBench
         run: |
           env RUST_LOG=info cargo run --release --bin bench_client -- --query-path benchmark/queries.sql --file examples/small_hits.parquet
+        # Always clean up after this step
+        shell: bash
+        if: always()
 
-      - name: Kill LiquidCache server
-        run: pkill bench_server || true
+      - name: Kill LiquidCache server and show logs
+        if: always()
+        run: |
+          echo "=== Server logs ==="
+          cat server.log || echo "No server log found"
+          pkill -F server.pid || true
+          rm -f server.pid
 
       - name: Download ClickBench partition 0
         run: |
           wget https://datasets.clickhouse.com/hits_compatible/athena_partitioned/hits_0.parquet -O benchmark/data/hits_0.parquet
 
       - name: Start LiquidCache server (for partition 0)
-        run: env RUST_LOG=info nohup cargo run --release --bin bench_server &> server.log &
+        run: |
+          env RUST_LOG=info nohup cargo run --release --bin bench_server &> server.log &
+          echo $! > server.pid  # Save PID for later cleanup
+          sleep 2  # Wait for server to start up
 
       - name: Run ClickBench partition 0
         run: |
           env RUST_LOG=info cargo run --release --bin bench_client -- --query-path benchmark/queries.sql --file benchmark/data/hits_0.parquet
+        shell: bash
+        if: always()
 
-      - name: Display server logs (on failure)
-        if: failure()
-        run: cat server.log
+      - name: Kill LiquidCache server and show logs (partition 0)
+        if: always()
+        run: |
+          echo "=== Server logs (partition 0) ==="
+          cat server.log || echo "No server log found"
+          pkill -F server.pid || true
+          rm -f server.pid
