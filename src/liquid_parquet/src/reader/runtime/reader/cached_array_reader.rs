@@ -15,7 +15,7 @@ use crate::{
     reader::runtime::parquet_bridge::StructArrayReaderBridge,
 };
 
-use super::parquet_bridge::{ParquetField, ParquetFieldType};
+use super::super::parquet_bridge::{ParquetField, ParquetFieldType};
 
 /// A cached array reader will cache the rows in batch_size granularity.
 ///
@@ -258,7 +258,7 @@ fn instrument_array_reader(
         .iter()
         .zip(children)
         .map(|(column_id, reader)| {
-            let column_cache = liquid_cache.column(*column_id);
+            let column_cache = liquid_cache.get_column_or_create(*column_id);
             let reader = Box::new(CachedArrayReader::new(reader, column_cache));
             reader as _
         })
@@ -367,8 +367,8 @@ mod tests {
         let liquid_cache = Arc::new(LiquidCache::new(LiquidCacheMode::InMemoryArrow, BATCH_SIZE));
         let file = liquid_cache.file("test".to_string());
         let row_group = file.row_group(0);
-        let reader = set_up_reader_with_cache(row_group.column(0).clone());
-        (reader, row_group.column(0))
+        let reader = set_up_reader_with_cache(row_group.get_column_or_create(0).clone());
+        (reader, row_group.get_column_or_create(0))
     }
 
     fn set_up_reader_with_cache(cache: LiquidCachedColumnRef) -> CachedArrayReader {

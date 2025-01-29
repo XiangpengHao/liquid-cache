@@ -1,9 +1,11 @@
 use ahash::AHashMap;
-use arrow::array::AsArray;
+use arrow::array::{Array, AsArray, BooleanArray};
 use arrow::array::{ArrayRef, RecordBatch, RecordBatchWriter};
+use arrow::buffer::BooleanBuffer;
+use arrow::compute::prep_null_mask_filter;
 use arrow::ipc::reader::FileReader;
 use arrow::ipc::writer::FileWriter;
-use arrow_schema::{DataType, Field, Schema};
+use arrow_schema::{ArrowError, DataType, Field, Schema};
 use std::fmt::Display;
 use std::io::Seek;
 use std::ops::{DerefMut, Range};
@@ -12,7 +14,9 @@ use std::sync::{Arc, Mutex, RwLock};
 use utils::RangedFile;
 mod stats;
 
-use super::liquid_array::{AsLiquidArray, LiquidArrayRef, LiquidPrimitiveArray, LiquidStringArray};
+use crate::LiquidPredicate;
+
+use super::liquid_array::{LiquidArrayRef, LiquidPrimitiveArray, LiquidStringArray};
 mod utils;
 use arrow::array::types::{
     Int8Type as ArrowInt8Type, Int16Type as ArrowInt16Type, Int32Type as ArrowInt32Type,
@@ -148,6 +152,15 @@ pub struct LiquidCachedColumn {
 
 pub type LiquidCachedColumnRef = Arc<LiquidCachedColumn>;
 
+fn array_to_record_batch(array: ArrayRef) -> RecordBatch {
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "_",
+        array.data_type().clone(),
+        array.is_nullable(),
+    )]));
+    RecordBatch::try_new(schema, vec![array]).unwrap()
+}
+
 impl LiquidCachedColumn {
     fn new(
         row_group_id: usize,
@@ -173,6 +186,39 @@ impl LiquidCachedColumn {
         rows.contains_key(&row_id)
     }
 
+    pub(crate) fn eval_selection_with_predicate(
+        &self,
+        row_id: usize,
+        selection: &BooleanBuffer,
+        predicate: &mut dyn LiquidPredicate,
+    ) -> Option<Result<BooleanBuffer, ArrowError>> {
+        let cached_entry = self.rows.read().unwrap();
+        let entry = cached_entry.get(&row_id)?;
+        let inner_value = entry.value();
+        match inner_value {
+            CachedBatch::ArrowMemory(array) => {
+                let boolean_array = BooleanArray::new(selection.clone(), None);
+                let selected = arrow::compute::filter(array, &boolean_array).unwrap();
+                let record_batch = array_to_record_batch(selected);
+                let boolean_array = predicate.evaluate(record_batch).unwrap();
+                let predicate_filter = match boolean_array.null_count() {
+                    0 => boolean_array,
+                    _ => prep_null_mask_filter(&boolean_array),
+                };
+                let (buffer, _) = predicate_filter.into_parts();
+                Some(Ok(buffer))
+            }
+            CachedBatch::LiquidMemory(array) => {
+                let boolean_array = BooleanArray::new(selection.clone(), None);
+                let filtered = array.filter(&boolean_array);
+                let boolean_array = predicate.evaluate_liquid(&filtered).unwrap();
+                let (buffer, _) = boolean_array.into_parts();
+                Some(Ok(buffer))
+            }
+            _ => todo!(),
+        }
+    }
+
     pub(crate) fn get_arrow_array(&self, row_id: usize) -> Option<ArrayRef> {
         if matches!(self.cache_mode, CacheStates::NoCache) {
             return None;
@@ -195,15 +241,7 @@ impl LiquidCachedColumn {
                 let array = batch.column(0);
                 Some(array.clone())
             }
-            CachedBatch::LiquidMemory(array) => {
-                if let Some(string_array) = array.as_string_array_opt() {
-                    let arrow_array = string_array.to_dict_string();
-                    Some(Arc::new(arrow_array))
-                } else {
-                    let arrow_array = array.to_arrow_array();
-                    Some(arrow_array)
-                }
-            }
+            CachedBatch::LiquidMemory(array) => Some(array.to_arrow_array()),
         }
     }
 
@@ -381,7 +419,7 @@ impl LiquidCachedRowGroup {
         }
     }
 
-    pub fn column(&self, column_id: usize) -> LiquidCachedColumnRef {
+    pub fn get_column_or_create(&self, column_id: usize) -> LiquidCachedColumnRef {
         self.columns
             .write()
             .unwrap()
@@ -396,6 +434,10 @@ impl LiquidCachedRowGroup {
             })
             .clone()
     }
+
+    pub fn get_column(&self, column_id: usize) -> Option<LiquidCachedColumnRef> {
+        self.columns.read().unwrap().get(&column_id).cloned()
+    }
 }
 
 pub type LiquidCachedRowGroupRef = Arc<LiquidCachedRowGroup>;
@@ -408,7 +450,7 @@ pub struct LiquidCachedFile {
 }
 
 impl LiquidCachedFile {
-    fn new(cache_mode: LiquidCacheMode, batch_size: usize) -> Self {
+    pub(crate) fn new(cache_mode: LiquidCacheMode, batch_size: usize) -> Self {
         Self {
             cache_mode,
             batch_size,
@@ -426,10 +468,6 @@ impl LiquidCachedFile {
             ))
         });
         row_group.clone()
-    }
-
-    pub fn cache_mode(&self) -> LiquidCacheMode {
-        self.cache_mode
     }
 }
 

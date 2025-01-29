@@ -7,3 +7,4 @@ mod runtime;
 mod utils;
 
 pub use plantime::LiquidParquetFileFormat;
+pub use runtime::LiquidPredicate;

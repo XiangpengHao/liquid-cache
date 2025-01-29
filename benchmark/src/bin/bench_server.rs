@@ -13,10 +13,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::builder().format_timestamp(None).init();
 
     // Be loud and crash loudly if any thread panics.
-    std::panic::set_hook(Box::new(|info| {
-        eprintln!("Some thread panicked: {:?}", info);
-        std::process::exit(1);
-    }));
+    // This will stop the server if any thread panics, good for testing.
+    // But will prevent debugger to break on panic, so only enable in release mode.
+    #[cfg(not(debug_assertions))]
+    {
+        std::panic::set_hook(Box::new(|info| {
+            eprintln!("Some thread panicked: {:?}", info);
+            std::process::exit(1);
+        }));
+    }
 
     let addr = "0.0.0.0:50051".parse()?;
 

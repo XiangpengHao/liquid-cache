@@ -1,7 +1,6 @@
-use crate::cache::LiquidCachedFileRef;
-use arrow::array::RecordBatch;
-use arrow_schema::{DataType, Fields, Schema, SchemaRef};
-use cached_array_reader::build_cached_array_reader;
+use crate::{cache::LiquidCachedFileRef, liquid_array::LiquidArrayRef};
+use arrow::array::{BooleanArray, RecordBatch};
+use arrow_schema::{ArrowError, DataType, Fields, Schema, SchemaRef};
 use futures::{FutureExt, Stream, future::BoxFuture, ready};
 use in_memory_rg::InMemoryRowGroup;
 use parquet::{
@@ -18,7 +17,8 @@ use parquet_bridge::{
     ParquetField, intersect_projection_mask, limit_row_selection, offset_row_selection,
     union_projection_mask,
 };
-use record_batch_reader::LiquidRecordBatchReader;
+use reader::LiquidBatchReader;
+use reader::build_cached_array_reader;
 use std::{
     collections::VecDeque,
     fmt::Formatter,
@@ -26,23 +26,29 @@ use std::{
     sync::Arc,
     task::{Context, Poll},
 };
-mod cached_array_reader;
 mod in_memory_rg;
 mod parquet_bridge;
-mod record_batch_reader;
+mod reader;
 mod utils;
 
+pub trait LiquidPredicate: ArrowPredicate {
+    fn evaluate_liquid(&mut self, array: &LiquidArrayRef) -> Result<BooleanArray, ArrowError>;
+    fn evaluate_arrow(&mut self, array: RecordBatch) -> Result<BooleanArray, ArrowError> {
+        self.evaluate(array)
+    }
+}
+
 pub struct LiquidRowFilter {
-    pub(crate) predicates: Vec<Box<dyn ArrowPredicate>>,
+    pub(crate) predicates: Vec<Box<dyn LiquidPredicate>>,
 }
 
 impl LiquidRowFilter {
-    pub fn new(predicates: Vec<Box<dyn ArrowPredicate>>) -> Self {
+    pub fn new(predicates: Vec<Box<dyn LiquidPredicate>>) -> Self {
         Self { predicates }
     }
 }
 
-type ReadResult = Result<(ReaderFactory, Option<LiquidRecordBatchReader>), ParquetError>;
+type ReadResult = Result<(ReaderFactory, Option<LiquidBatchReader>), ParquetError>;
 
 struct ReaderFactory {
     metadata: Arc<ParquetMetaData>,
@@ -156,20 +162,21 @@ impl ReaderFactory {
             .fetch(&mut self.input, &projection, Some(&selection))
             .await?;
 
+        let cached_row_group = self.liquid_cache.row_group(row_group_idx);
         let array_reader = build_cached_array_reader(
             self.fields.as_deref(),
             &projection,
             &row_group,
-            self.liquid_cache.row_group(row_group_idx).clone(),
+            cached_row_group.clone(),
         )?;
 
-        let reader = LiquidRecordBatchReader::new(
+        let reader = LiquidBatchReader::new(
             batch_size,
             array_reader,
             selection,
             filter_readers,
             self.filter.take(),
-            self.liquid_cache.clone(),
+            cached_row_group,
         );
 
         Ok((self, Some(reader)))
@@ -180,7 +187,7 @@ enum StreamState {
     /// At the start of a new row group, or the end of the parquet stream
     Init,
     /// Decoding a batch
-    Decoding(LiquidRecordBatchReader),
+    Decoding(LiquidBatchReader),
     /// Reading data from input
     Reading(BoxFuture<'static, ReadResult>),
     /// Error
