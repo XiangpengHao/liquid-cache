@@ -13,10 +13,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::builder().format_timestamp(None).init();
 
     // Be loud and crash loudly if any thread panics.
-    std::panic::set_hook(Box::new(|info| {
-        eprintln!("Some thread panicked: {:?}", info);
-        std::process::exit(1);
-    }));
+    // std::panic::set_hook(Box::new(|info| {
+    //     eprintln!("Some thread panicked: {:?}", info);
+    //     std::process::exit(1);
+    // }));
 
     let addr = "0.0.0.0:50051".parse()?;
 

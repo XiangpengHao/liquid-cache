@@ -4,7 +4,7 @@ use std::sync::Arc;
 use arrow::array::{Array, AsArray, BooleanArray, RecordBatch, RecordBatchReader};
 use arrow::buffer::BooleanBuffer;
 use arrow::compute::prep_null_mask_filter;
-use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
+use arrow_schema::{ArrowError, DataType, Schema, SchemaRef};
 use parquet::arrow::array_reader::ArrayReader;
 use parquet::arrow::arrow_reader::{RowSelection, RowSelector};
 
@@ -50,14 +50,10 @@ fn read_record_batch_from_parquet<'a>(
         }
     }
     let array = reader.consume_batch()?;
-    let record_batch = RecordBatch::try_new(
-        Arc::new(Schema::new(vec![Field::new(
-            "-",
-            array.data_type().clone(),
-            array.is_nullable(),
-        )])),
-        vec![array],
-    )?;
+    // TODO:
+    // If consume_batch always returns a struct array, why don't we just return StrutArray instead of ArrayRef?
+    // This is code smell. We need to fix this.
+    let record_batch = RecordBatch::from(array.as_struct());
     Ok(record_batch)
 }
 
