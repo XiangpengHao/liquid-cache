@@ -1,9 +1,13 @@
 use arrow::{
     array::{
-        BooleanArray, Int8Array, Int16Array, Int32Array, Int64Array, StringViewBuilder, UInt8Array,
-        UInt16Array, UInt32Array, UInt64Array,
+        AsArray, BooleanArray, BooleanBuilder, Int8Array, Int16Array, Int32Array, Int64Array,
+        StringViewBuilder, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
     },
-    datatypes::{DataType, Field, Schema},
+    compute::filter,
+    datatypes::{
+        DataType, Field, Int8Type, Int16Type, Int32Type, Int64Type, Schema, UInt8Type, UInt16Type,
+        UInt32Type, UInt64Type,
+    },
     record_batch::RecordBatch,
 };
 use arrow_schema::ArrowError;
@@ -226,27 +230,74 @@ async fn test_reading_with_projection() {
 
 struct TestPredicate {
     projection_mask: ProjectionMask,
+    strategy: FilterStrategy,
 }
 
 impl TestPredicate {
-    fn new(parquet_meta: Arc<ParquetMetaData>, projection: Vec<usize>) -> Self {
+    fn new(parquet_meta: &ParquetMetaData, column_id: usize, strategy: FilterStrategy) -> Self {
         Self {
-            projection_mask: ProjectionMask::roots(
-                parquet_meta.file_metadata().schema_descr(),
-                projection.iter().cloned(),
-            ),
+            projection_mask: ProjectionMask::roots(parquet_meta.file_metadata().schema_descr(), [
+                column_id,
+            ]),
+            strategy,
         }
     }
 }
 
 impl ArrowPredicate for TestPredicate {
     fn evaluate(&mut self, batch: RecordBatch) -> Result<BooleanArray, ArrowError> {
-        Ok(BooleanArray::from(vec![false; batch.num_rows()]))
+        assert_eq!(batch.num_columns(), 1);
+        let column = batch.column(0);
+        let typed = column.as_struct();
+        let column = typed.column(0);
+
+        let mut builder = BooleanBuilder::new();
+
+        // A helper macro to reduce code duplication:
+        macro_rules! filter_values {
+            ($ARRAY:ty, $CAST:ty) => {{
+                let typed = column.as_primitive::<$CAST>();
+                for v in typed {
+                    match v {
+                        Some(v) => {
+                            let v = v as i64;
+                            let keep = match self.strategy {
+                                FilterStrategy::NoOdd => v % 2 == 0,
+                                FilterStrategy::NoSmallerThan(min) => v >= min,
+                                FilterStrategy::NoLargerThan(max) => v <= max,
+                            };
+                            builder.append_value(keep);
+                        }
+                        None => builder.append_null(),
+                    }
+                }
+            }};
+        }
+
+        match column.data_type() {
+            DataType::Int8 => filter_values!(Int8Array, Int8Type),
+            DataType::Int16 => filter_values!(Int16Array, Int16Type),
+            DataType::Int32 => filter_values!(Int32Array, Int32Type),
+            DataType::Int64 => filter_values!(Int64Array, Int64Type),
+            DataType::UInt8 => filter_values!(UInt8Array, UInt8Type),
+            DataType::UInt16 => filter_values!(UInt16Array, UInt16Type),
+            DataType::UInt32 => filter_values!(UInt32Array, UInt32Type),
+            DataType::UInt64 => filter_values!(UInt64Array, UInt64Type),
+            _ => panic!("not supported {:?}", column.data_type()),
+        }
+
+        Ok(builder.finish())
     }
 
     fn projection(&self) -> &ProjectionMask {
         &self.projection_mask
     }
+}
+
+enum FilterStrategy {
+    NoOdd,
+    NoSmallerThan(i64),
+    NoLargerThan(i64),
 }
 
 #[tokio::test]
@@ -259,9 +310,11 @@ async fn test_reading_with_filter() {
     );
 
     {
-        let filter1 = TestPredicate::new(builder.metadata.clone(), vec![0]);
-        let filter2 = TestPredicate::new(builder.metadata.clone(), vec![5]);
-        let filter3 = TestPredicate::new(builder.metadata.clone(), vec![6]);
+        let filter1 = TestPredicate::new(&builder.metadata, 0, FilterStrategy::NoOdd);
+        let filter2 =
+            TestPredicate::new(&builder.metadata, 5, FilterStrategy::NoSmallerThan(10_000));
+        let filter3 =
+            TestPredicate::new(&builder.metadata, 6, FilterStrategy::NoLargerThan(20_000));
         let filters = vec![
             Box::new(filter1) as Box<dyn ArrowPredicate>,
             Box::new(filter2),
@@ -284,6 +337,54 @@ async fn test_reading_with_filter() {
         let expected = create_record_batch(batch_size, i)
             .project(&projection)
             .unwrap();
+
+        let col_u8 = expected.column(0).as_primitive::<UInt8Type>();
+        let mask1: Vec<bool> = col_u8
+            .iter()
+            .map(|val| match val {
+                None => false,
+                Some(v) => v % 2 == 0,
+            })
+            .collect();
+
+        let col_i16 = expected.column(2).as_primitive::<Int16Type>();
+        let mask2: Vec<bool> = col_i16
+            .iter()
+            .map(|val| match val {
+                None => false,
+                Some(v) => (v as i64) >= 10000,
+            })
+            .collect();
+
+        let col_i32 = expected.column(3).as_primitive::<Int32Type>();
+        let mask3: Vec<bool> = col_i32
+            .iter()
+            .map(|val| match val {
+                None => false,
+                Some(v) => (v as i64) <= 20000,
+            })
+            .collect();
+
+        let combined_mask: Vec<bool> = mask1
+            .iter()
+            .zip(&mask2)
+            .zip(&mask3)
+            .map(|((m1, m2), m3)| *m1 && *m2 && *m3)
+            .collect();
+
+        let expected = filter_record_batch(&expected, combined_mask);
+
         assert_batch_eq(&expected, batch);
     }
+}
+
+fn filter_record_batch(batch: &RecordBatch, mask: Vec<bool>) -> RecordBatch {
+    let filter_array = BooleanArray::from(mask);
+    let filtered_columns = batch
+        .columns()
+        .iter()
+        .map(|col| filter(col, &filter_array).unwrap())
+        .collect::<Vec<_>>();
+
+    RecordBatch::try_new(batch.schema(), filtered_columns).unwrap()
 }

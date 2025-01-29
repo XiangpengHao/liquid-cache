@@ -133,8 +133,12 @@ impl LiquidBatchReader {
                     } else {
                         // slow case, where the predicate column is not cached
                         // we need to read from parquet file
+                        let row_selection = RowSelection::from_filters(&[BooleanArray::new(
+                            cur_selection.clone(),
+                            None,
+                        )]);
                         let record_batch =
-                            read_record_batch_from_parquet(reader, selection.iter())?;
+                            read_record_batch_from_parquet(reader, row_selection.iter())?;
                         let filter_mask = predicate.evaluate(record_batch).unwrap();
                         let filter_mask = match filter_mask.null_count() {
                             0 => filter_mask,
