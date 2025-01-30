@@ -81,11 +81,11 @@ jobs:
       - uses: ./.github/actions/rust-setup
       - uses: Swatinem/rust-cache@v2
       - name: Build LiquidCache server
-        run: cargo build --release --bin bench_server -- --poison-panic
+        run: cargo build --release --bin bench_server
 
       - name: Start LiquidCache server
         run: |
-          env RUST_LOG=info nohup cargo run --release --bin bench_server &> server.log &
+          env RUST_LOG=info nohup cargo run --release --bin bench_server -- --poison-panic &> server.log &
           echo $! > server.pid  # Save PID for later cleanup
 
       - name: Run simple ClickBench
