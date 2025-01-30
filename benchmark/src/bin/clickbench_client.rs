@@ -3,15 +3,17 @@ use std::{
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
     sync::Arc,
+    time::Instant,
 };
 
 use datafusion::{
     arrow::util::pretty,
     error::Result,
+    physical_plan::{collect, display::DisplayableExecutionPlan},
     prelude::{SessionConfig, SessionContext},
 };
 use liquid_cache_client::SplitSqlTableFactory;
-use log::info;
+use log::{debug, info};
 use owo_colors::OwoColorize;
 use url::Url;
 
@@ -36,7 +38,7 @@ fn get_query(query_path: impl AsRef<Path>, query_number: Option<u32>) -> Result<
 pub async fn main() -> Result<()> {
     env_logger::builder().format_timestamp(None).init();
 
-    let matches = Command::new("SplitSQL Benchmark Client")
+    let matches = Command::new("ClickBench Benchmark Client")
         .arg(
             arg!(--"query-path" <PATH>)
                 .required(true)
@@ -87,8 +89,24 @@ pub async fn main() -> Result<()> {
 
     for query in queries {
         info!("SQL to be executed: \n{}", query.cyan());
-        let result = ctx.sql(&query).await?.collect().await?;
-        let result_str = pretty::pretty_format_batches(&result).unwrap();
+        let now = Instant::now();
+        let df = ctx.sql(&query).await?;
+        let (state, logical_plan) = df.into_parts();
+
+        // create physical plan will invoke the optimizer
+        let physical_plan = state.create_physical_plan(&logical_plan).await?;
+        let results = collect(physical_plan.clone(), state.task_ctx()).await?;
+        let elapsed = now.elapsed();
+        info!("Query execution time: {:?}", elapsed);
+
+        let physical_plan_with_metrics =
+            DisplayableExecutionPlan::with_metrics(physical_plan.as_ref());
+
+        debug!(
+            "Physical plan: \n{}",
+            physical_plan_with_metrics.indent(true).magenta()
+        );
+        let result_str = pretty::pretty_format_batches(&results).unwrap();
         info!("Query result: \n{}", result_str.cyan());
     }
 

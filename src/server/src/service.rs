@@ -15,7 +15,7 @@ use url::Url;
 
 use liquid_parquet::{LiquidCache, LiquidCacheRef, LiquidParquetFileFormat};
 
-use super::LiquidCacheServiceConfig;
+use super::LiquidCacheConfig;
 
 pub(crate) struct LiquidCacheServiceInner {
     execution_plans: Arc<DashMap<String, Arc<dyn ExecutionPlan>>>,
@@ -25,7 +25,7 @@ pub(crate) struct LiquidCacheServiceInner {
 }
 
 impl LiquidCacheServiceInner {
-    pub fn new(default_ctx: Arc<SessionContext>, config: LiquidCacheServiceConfig) -> Self {
+    pub fn new(default_ctx: Arc<SessionContext>, config: LiquidCacheConfig) -> Self {
         let batch_size = default_ctx.state().config().batch_size();
         let liquid_cache = Arc::new(LiquidCache::new(config.liquid_cache_mode, batch_size));
         Self {

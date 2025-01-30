@@ -241,7 +241,7 @@ impl LiquidCachedColumn {
                 let array = batch.column(0);
                 Some(array.clone())
             }
-            CachedBatch::LiquidMemory(array) => Some(array.to_arrow_array()),
+            CachedBatch::LiquidMemory(array) => Some(array.to_best_arrow_array()),
         }
     }
 

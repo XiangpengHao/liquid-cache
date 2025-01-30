@@ -37,6 +37,12 @@ impl LiquidArray for LiquidStringArray {
         Arc::new(dict)
     }
 
+    fn to_best_arrow_array(&self) -> ArrayRef {
+        // the best arrow string is DictionaryArray<UInt16Type>
+        let dict = self.to_dict_string();
+        Arc::new(dict)
+    }
+
     fn filter(&self, selection: &BooleanArray) -> LiquidArrayRef {
         let values = self.values.clone();
         let keys = self.keys.clone();

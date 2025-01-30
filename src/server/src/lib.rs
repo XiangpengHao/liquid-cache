@@ -19,7 +19,7 @@ use arrow::ipc::writer::IpcWriteOptions;
 use arrow_flight::{
     Action, FlightDescriptor, FlightEndpoint, FlightInfo, HandshakeRequest, HandshakeResponse,
     Ticket,
-    encode::FlightDataEncoderBuilder,
+    encode::{DictionaryHandling, FlightDataEncoderBuilder},
     flight_descriptor::DescriptorType,
     flight_service_server::FlightService,
     sql::{
@@ -52,17 +52,17 @@ use liquid_parquet::LiquidCacheMode;
 
 pub static ACTION_REGISTER_TABLE: &str = "RegisterTable";
 
-pub struct LiquidCacheServiceConfig {
+pub struct LiquidCacheConfig {
     pub liquid_cache_mode: LiquidCacheMode,
 }
 
-impl LiquidCacheServiceConfig {
+impl LiquidCacheConfig {
     pub fn new(liquid_cache_mode: LiquidCacheMode) -> Self {
         Self { liquid_cache_mode }
     }
 }
 
-impl Default for LiquidCacheServiceConfig {
+impl Default for LiquidCacheConfig {
     fn default() -> Self {
         Self {
             liquid_cache_mode: LiquidCacheMode::InMemoryLiquid,
@@ -76,14 +76,14 @@ pub struct LiquidCacheService {
 
 impl LiquidCacheService {
     pub fn try_new() -> Result<Self, DataFusionError> {
-        let ctx = Self::context()?;
-        let config = LiquidCacheServiceConfig::default();
+        let ctx = Self::context(None)?;
+        let config = LiquidCacheConfig::default();
         Ok(Self::new_with_context_and_config(ctx, config))
     }
 
     pub fn new_with_context_and_config(
         default_ctx: SessionContext,
-        config: LiquidCacheServiceConfig,
+        config: LiquidCacheConfig,
     ) -> Self {
         Self {
             inner: LiquidCacheServiceInner::new(Arc::new(default_ctx), config),
@@ -91,11 +91,14 @@ impl LiquidCacheService {
     }
 
     /// Create a new SessionContext with good defaults
-    pub fn context() -> Result<SessionContext, DataFusionError> {
+    pub fn context(partitions: Option<usize>) -> Result<SessionContext, DataFusionError> {
         let mut session_config = SessionConfig::from_env()?;
         let options_mut = session_config.options_mut();
         options_mut.execution.parquet.pushdown_filters = true;
         options_mut.execution.parquet.binary_as_string = true;
+        if let Some(partitions) = partitions {
+            options_mut.execution.target_partitions = partitions;
+        }
 
         let object_store_url = ObjectStoreUrl::parse("file://").unwrap();
         let object_store = object_store::local::LocalFileSystem::new();
@@ -170,6 +173,7 @@ impl FlightSqlService for LiquidCacheService {
         let ipc_options = IpcWriteOptions::default();
         let stream = FlightDataEncoderBuilder::new()
             .with_options(ipc_options)
+            .with_dictionary_handling(DictionaryHandling::Resend)
             .build(stream)
             .map_err(Status::from);
 

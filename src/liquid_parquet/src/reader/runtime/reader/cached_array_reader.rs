@@ -172,14 +172,22 @@ impl ArrayReader for CachedArrayReader {
         }
         self.selection.clear();
 
-        if rt.is_empty() {
-            // return empty array
-            return self.inner.consume_batch();
-        }
-        let concat =
-            arrow::compute::concat(&rt.as_slice().iter().map(|a| a.as_ref()).collect::<Vec<_>>())
+        match rt.len() {
+            0 => {
+                // return empty array
+                return self.inner.consume_batch();
+            }
+            1 => {
+                return Ok(rt.into_iter().next().unwrap());
+            }
+            _ => {
+                let concat = arrow::compute::concat(
+                    &rt.as_slice().iter().map(|a| a.as_ref()).collect::<Vec<_>>(),
+                )
                 .unwrap();
-        Ok(concat)
+                Ok(concat)
+            }
+        }
     }
 
     fn skip_records(&mut self, to_skip: usize) -> Result<usize, ParquetError> {

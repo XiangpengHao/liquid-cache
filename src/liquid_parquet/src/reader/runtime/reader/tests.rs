@@ -171,10 +171,10 @@ async fn get_test_reader() -> LiquidStreamBuilder {
 /// We could directly assert_eq!(left, right) but this is more debugging friendly
 fn assert_batch_eq(left: &RecordBatch, right: &RecordBatch) {
     assert_eq!(left.num_rows(), right.num_rows());
-    assert_eq!(left.schema(), right.schema());
     assert_eq!(left.columns().len(), right.columns().len());
     for (c_l, c_r) in left.columns().iter().zip(right.columns().iter()) {
-        assert_eq!(c_l, c_r);
+        let casted = arrow::compute::cast(c_l, c_r.data_type()).unwrap();
+        assert_eq!(&casted, c_r);
     }
 }
 
