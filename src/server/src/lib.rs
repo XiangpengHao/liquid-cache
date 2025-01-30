@@ -102,7 +102,7 @@ impl LiquidCacheService {
             // but liquid cache has its own encodings, and don't need to use view types.
             options_mut.execution.parquet.schema_force_view_types = false;
         }
-        
+
         if let Some(partitions) = partitions {
             options_mut.execution.target_partitions = partitions;
         }
