@@ -190,9 +190,7 @@ impl ArrayReader for CachedArrayReader {
                 // return empty array
                 self.inner.consume_batch()
             }
-            1 => {
-                Ok(rt.into_iter().next().unwrap())
-            }
+            1 => Ok(rt.into_iter().next().unwrap()),
             _ => {
                 let concat = arrow::compute::concat(
                     &rt.as_slice().iter().map(|a| a.as_ref()).collect::<Vec<_>>(),
