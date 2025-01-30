@@ -90,7 +90,7 @@ jobs:
 
       - name: Run simple ClickBench
         run: |
-          env RUST_LOG=info cargo run --release --bin bench_client -- --query-path benchmark/queries.sql --file examples/small_hits.parquet
+          env RUST_LOG=info cargo run --release --bin clickbench_client -- --query-path benchmark/queries.sql --file examples/small_hits.parquet
         # Always clean up after this step
         shell: bash
         if: always()
@@ -115,7 +115,7 @@ jobs:
 
       - name: Run ClickBench partition 0
         run: |
-          env RUST_LOG=info cargo run --release --bin bench_client -- --query-path benchmark/queries.sql --file benchmark/data/hits_0.parquet
+          env RUST_LOG=info cargo run --release --bin clickbench_client -- --query-path benchmark/queries.sql --file benchmark/data/hits_0.parquet
         shell: bash
         if: always()
 
