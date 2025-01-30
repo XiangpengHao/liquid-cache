@@ -188,10 +188,10 @@ impl ArrayReader for CachedArrayReader {
         match rt.len() {
             0 => {
                 // return empty array
-                return self.inner.consume_batch();
+                self.inner.consume_batch()
             }
             1 => {
-                return Ok(rt.into_iter().next().unwrap());
+                Ok(rt.into_iter().next().unwrap())
             }
             _ => {
                 let concat = arrow::compute::concat(

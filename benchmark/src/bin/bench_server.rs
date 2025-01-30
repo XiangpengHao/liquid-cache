@@ -60,10 +60,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("SplitSQL server listening on {addr:?}");
 
-    Server::builder()
-        .add_service(flight)
-        .serve(addr.clone())
-        .await?;
+    Server::builder().add_service(flight).serve(*addr).await?;
 
     Ok(())
 }
