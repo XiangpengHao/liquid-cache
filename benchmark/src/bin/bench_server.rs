@@ -15,17 +15,6 @@ static GLOBAL: MiMalloc = MiMalloc;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::builder().format_timestamp(None).init();
 
-    // Be loud and crash loudly if any thread panics.
-    // This will stop the server if any thread panics, good for testing.
-    // But will prevent debugger to break on panic, so only enable in release mode.
-    #[cfg(not(debug_assertions))]
-    {
-        std::panic::set_hook(Box::new(|info| {
-            eprintln!("Some thread panicked: {:?}", info);
-            std::process::exit(1);
-        }));
-    }
-
     let matches = Command::new("ClickBench Benchmark Client")
         .arg(
             arg!(--"address" <ADDRESS>)
@@ -39,7 +28,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .help("Number of partitions to use")
                 .value_parser(value_parser!(usize)),
         )
+        .arg(
+            arg!(--"poison-panic")
+                .required(false)
+                .help("Poison panics")
+                .action(clap::ArgAction::SetTrue),
+        )
         .get_matches();
+
+    let poison_panic = matches.get_flag("poison-panic");
+    if poison_panic {
+        // Be loud and crash loudly if any thread panics.
+        // This will stop the server if any thread panics.
+        // But will prevent debugger to break on panic.
+        std::panic::set_hook(Box::new(|info| {
+            eprintln!("Some thread panicked: {:?}", info);
+            std::process::exit(1);
+        }));
+    }
 
     let default_addr = "0.0.0.0:50051".parse().unwrap();
     let addr = matches

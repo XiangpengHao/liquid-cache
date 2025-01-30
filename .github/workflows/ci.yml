@@ -81,7 +81,7 @@ jobs:
       - uses: ./.github/actions/rust-setup
       - uses: Swatinem/rust-cache@v2
       - name: Build LiquidCache server
-        run: cargo build --release --bin bench_server
+        run: cargo build --release --bin bench_server -- --poison-panic
 
       - name: Start LiquidCache server
         run: |
@@ -109,7 +109,7 @@ jobs:
 
       - name: Start LiquidCache server (for partition 0)
         run: |
-          env RUST_LOG=info nohup cargo run --release --bin bench_server &> server.log &
+          env RUST_LOG=info nohup cargo run --release --bin bench_server -- --poison-panic &> server.log &
           echo $! > server.pid  # Save PID for later cleanup
           sleep 2  # Wait for server to start up
 

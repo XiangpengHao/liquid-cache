@@ -255,7 +255,8 @@ impl ArrowPredicate for DatafusionArrowPredicate {
             batch = batch.project(&self.projection)?;
         };
 
-        println!("batch: {:?}", batch);
+        // we deliberately don't map schema here, because when a schema mismatch occurs,
+        // something deeper is wrong, and we should fix it instead of hiding it.
         // let batch = self.schema_mapping.map_partial_batch(batch)?;
 
         // scoped timer updates on drop
