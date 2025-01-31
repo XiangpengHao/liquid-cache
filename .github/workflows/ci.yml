@@ -51,7 +51,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-all-crates: true
-      - run: sudo apt install llvm-dev 
+      - run: sudo apt install llvm-dev -y
   
       
       - name: Run address sanitizer
@@ -67,7 +67,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-all-crates: true
-      - run: sudo apt install llvm-dev 
+      - run: sudo apt install llvm-dev -y
 
       - name: Run memory sanitizer
         run: >
