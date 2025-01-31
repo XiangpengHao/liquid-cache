@@ -19,7 +19,7 @@ use arrow::ipc::writer::IpcWriteOptions;
 use arrow_flight::{
     Action, FlightDescriptor, FlightEndpoint, FlightInfo, HandshakeRequest, HandshakeResponse,
     Ticket,
-    encode::FlightDataEncoderBuilder,
+    encode::{DictionaryHandling, FlightDataEncoderBuilder},
     flight_descriptor::DescriptorType,
     flight_service_server::FlightService,
     sql::{
@@ -46,23 +46,24 @@ use uuid::Uuid;
 
 mod service;
 mod utils;
-use utils::GcStream;
+use utils::FinalStream;
 
-use liquid_parquet::LiquidCacheMode;
+use liquid_parquet::{LiquidCacheMode, LiquidCacheRef};
 
 pub static ACTION_REGISTER_TABLE: &str = "RegisterTable";
 
-pub struct LiquidCacheServiceConfig {
+pub struct LiquidCacheConfig {
     pub liquid_cache_mode: LiquidCacheMode,
 }
 
-impl LiquidCacheServiceConfig {
-    pub fn new(liquid_cache_mode: LiquidCacheMode) -> Self {
-        Self { liquid_cache_mode }
+impl LiquidCacheConfig {
+    pub fn with_liquid_cache_mode(mut self, liquid_cache_mode: LiquidCacheMode) -> Self {
+        self.liquid_cache_mode = liquid_cache_mode;
+        self
     }
 }
 
-impl Default for LiquidCacheServiceConfig {
+impl Default for LiquidCacheConfig {
     fn default() -> Self {
         Self {
             liquid_cache_mode: LiquidCacheMode::InMemoryLiquid,
@@ -70,32 +71,63 @@ impl Default for LiquidCacheServiceConfig {
     }
 }
 
+/// A trait to collect stats for the execution plan.
+/// The server calls `start` right before polling the stream,
+/// and calls `stop` right after exhausting the stream.
+pub trait StatsCollector: Send + Sync {
+    fn start(&self);
+    fn stop(&self);
+}
+
 pub struct LiquidCacheService {
     inner: LiquidCacheServiceInner,
+    stats_collector: Vec<Arc<dyn StatsCollector>>,
 }
 
 impl LiquidCacheService {
     pub fn try_new() -> Result<Self, DataFusionError> {
-        let ctx = Self::context()?;
-        let config = LiquidCacheServiceConfig::default();
+        let ctx = Self::context(None)?;
+        let config = LiquidCacheConfig::default();
         Ok(Self::new_with_context_and_config(ctx, config))
     }
 
     pub fn new_with_context_and_config(
         default_ctx: SessionContext,
-        config: LiquidCacheServiceConfig,
+        config: LiquidCacheConfig,
     ) -> Self {
         Self {
             inner: LiquidCacheServiceInner::new(Arc::new(default_ctx), config),
+            stats_collector: vec![],
         }
     }
 
+    pub fn new_with_ctx_and_cache(ctx: Arc<SessionContext>, cache: LiquidCacheRef) -> Self {
+        Self {
+            inner: LiquidCacheServiceInner::new_ctx_and_cache(ctx, cache),
+            stats_collector: vec![],
+        }
+    }
+
+    pub fn add_stats_collector(&mut self, collector: Arc<dyn StatsCollector>) {
+        self.stats_collector.push(collector);
+    }
+
     /// Create a new SessionContext with good defaults
-    pub fn context() -> Result<SessionContext, DataFusionError> {
+    pub fn context(partitions: Option<usize>) -> Result<SessionContext, DataFusionError> {
         let mut session_config = SessionConfig::from_env()?;
         let options_mut = session_config.options_mut();
         options_mut.execution.parquet.pushdown_filters = true;
         options_mut.execution.parquet.binary_as_string = true;
+
+        {
+            // View types only provide benefits for parquet decoding and filtering.
+            // but liquid cache has its own encodings, and don't need to use view types.
+            options_mut.execution.parquet.schema_force_view_types = false;
+        }
+
+        if let Some(partitions) = partitions {
+            options_mut.execution.target_partitions = partitions;
+        }
 
         let object_store_url = ObjectStoreUrl::parse("file://").unwrap();
         let object_store = object_store::local::LocalFileSystem::new();
@@ -163,13 +195,14 @@ impl FlightSqlService for LiquidCacheService {
         let handle = fetch_results.handle;
         let partition = fetch_results.partition as usize;
         let stream = self.inner.execute_plan(&handle, partition).await;
-        let stream = GcStream::new(stream).map_err(|e| {
+        let stream = FinalStream::new(stream, self.stats_collector.clone()).map_err(|e| {
             panic!("Error executing plan: {:?}", e);
         });
 
         let ipc_options = IpcWriteOptions::default();
         let stream = FlightDataEncoderBuilder::new()
             .with_options(ipc_options)
+            .with_dictionary_handling(DictionaryHandling::Resend)
             .build(stream)
             .map_err(Status::from);
 

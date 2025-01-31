@@ -14,7 +14,7 @@ env:
 jobs:
   check:
     name: Basic check
-    runs-on: cloudlab
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rust-setup
@@ -33,7 +33,7 @@ jobs:
 
   unit_test:
     name: Unit Test
-    runs-on: cloudlab
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rust-setup
@@ -44,14 +44,14 @@ jobs:
 
   address_san:
     name: Address Sanitizer
-    runs-on: cloudlab
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rust-setup
       - uses: Swatinem/rust-cache@v2
         with:
           cache-all-crates: true
-      - run: sudo apt install llvm-dev 
+      - run: sudo apt install llvm-dev -y
   
       
       - name: Run address sanitizer
@@ -60,14 +60,14 @@ jobs:
 
   memory_san:
     name: Memory Sanitizer
-    runs-on: cloudlab
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rust-setup
       - uses: Swatinem/rust-cache@v2
         with:
           cache-all-crates: true
-      - run: sudo apt install llvm-dev 
+      - run: sudo apt install llvm-dev -y
 
       - name: Run memory sanitizer
         run: >
@@ -75,7 +75,7 @@ jobs:
 
   integration_test:
     name: Integration Test
-    runs-on: cloudlab
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rust-setup
@@ -85,12 +85,12 @@ jobs:
 
       - name: Start LiquidCache server
         run: |
-          env RUST_LOG=info nohup cargo run --release --bin bench_server &> server.log &
+          env RUST_LOG=info nohup cargo run --release --bin bench_server -- --abort-on-panic &> server.log &
           echo $! > server.pid  # Save PID for later cleanup
 
       - name: Run simple ClickBench
         run: |
-          env RUST_LOG=info cargo run --release --bin bench_client -- --query-path benchmark/queries.sql --file examples/small_hits.parquet
+          env RUST_LOG=info cargo run --release --bin clickbench_client -- --query-path benchmark/queries.sql --file examples/small_hits.parquet
         # Always clean up after this step
         shell: bash
         if: always()
@@ -109,13 +109,13 @@ jobs:
 
       - name: Start LiquidCache server (for partition 0)
         run: |
-          env RUST_LOG=info nohup cargo run --release --bin bench_server &> server.log &
+          env RUST_LOG=info nohup cargo run --release --bin bench_server -- --abort-on-panic &> server.log &
           echo $! > server.pid  # Save PID for later cleanup
           sleep 2  # Wait for server to start up
 
       - name: Run ClickBench partition 0
         run: |
-          env RUST_LOG=info cargo run --release --bin bench_client -- --query-path benchmark/queries.sql --file benchmark/data/hits_0.parquet
+          env RUST_LOG=info cargo run --release --bin clickbench_client -- --query-path benchmark/queries.sql --file benchmark/data/hits_0.parquet
         shell: bash
         if: always()
 

@@ -21,7 +21,10 @@
 			"env": {
 				"RUST_LOG": "info"
 			},
-			"args": [],
+			"args": [
+				"--partitions",
+				"1"
+			],
 			"cwd": "${workspaceFolder}",
 		},
 		{

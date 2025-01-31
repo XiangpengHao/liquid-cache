@@ -49,26 +49,28 @@ pub trait LiquidArray: std::fmt::Debug + Send + Sync {
     /// Get the underlying any type.
     fn as_any(&self) -> &dyn Any;
 
-    /// Get the memory size of the ETC array.
+    /// Get the memory size of the Liquid array.
     fn get_array_memory_size(&self) -> usize;
 
-    /// Get the length of the ETC array.
+    /// Get the length of the Liquid array.
     fn len(&self) -> usize;
 
-    /// Check if the ETC array is empty.
+    /// Check if the Liquid array is empty.
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    /// Convert the ETC array to an Arrow array.
+    /// Convert the Liquid array to an Arrow array.
     fn to_arrow_array(&self) -> ArrayRef;
 
-    /// Convert the ETC array to an Arrow array.
+    /// Convert the Liquid array to an Arrow array.
+    /// Except that it will pick the best encoding for the arrow array.
+    /// Meaning that it may not obey the data type of the original arrow array.
     fn to_best_arrow_array(&self) -> ArrayRef {
         self.to_arrow_array()
     }
 
-    /// Filter the ETC array with a boolean array.
+    /// Filter the Liquid array with a boolean array.
     fn filter(&self, selection: &BooleanArray) -> LiquidArrayRef;
 }
 

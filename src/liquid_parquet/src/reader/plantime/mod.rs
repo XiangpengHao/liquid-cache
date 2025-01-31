@@ -230,51 +230,6 @@ pub(crate) fn coerce_file_schema_to_string_type(
     }
 }
 
-/// Coerces the file schema if the table schema uses a view type.
-pub(crate) fn coerce_file_schema_to_view_type(
-    table_schema: &Schema,
-    file_schema: &Schema,
-) -> Option<Schema> {
-    let mut transform = false;
-    let table_fields: HashMap<_, _> = table_schema
-        .fields
-        .iter()
-        .map(|f| {
-            let dt = f.data_type();
-            if dt.equals_datatype(&DataType::Utf8View) || dt.equals_datatype(&DataType::BinaryView)
-            {
-                transform = true;
-            }
-            (f.name(), dt)
-        })
-        .collect();
-
-    if !transform {
-        return None;
-    }
-
-    let transformed_fields: Vec<Arc<Field>> = file_schema
-        .fields
-        .iter()
-        .map(
-            |field| match (table_fields.get(field.name()), field.data_type()) {
-                (Some(DataType::Utf8View), DataType::Utf8 | DataType::LargeUtf8) => {
-                    field_with_new_type(field, DataType::Utf8View)
-                }
-                (Some(DataType::BinaryView), DataType::Binary | DataType::LargeBinary) => {
-                    field_with_new_type(field, DataType::BinaryView)
-                }
-                _ => Arc::clone(field),
-            },
-        )
-        .collect();
-
-    Some(Schema::new_with_metadata(
-        transformed_fields,
-        file_schema.metadata.clone(),
-    ))
-}
-
 /// Create a new field with the specified data type, copying the other
 /// properties from the input field
 fn field_with_new_type(field: &FieldRef, new_type: DataType) -> FieldRef {

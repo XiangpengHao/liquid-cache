@@ -12,22 +12,41 @@ use datafusion::error::Result;
 use futures::{Stream, ready};
 use futures::{StreamExt, stream::BoxStream};
 
-/// A stream that garbage collects the memory of the record batches.
-/// Applies to DictionaryArray and StringViewArray where the data may not be compact.
-/// Useful before sending the data over the network.
-pub struct GcStream {
+use crate::StatsCollector;
+
+/// A stream that finalizes the record batches.
+/// It currently do two things:
+/// 1. Gc the record batches, especially for arrays after filtering.
+/// 2. Collect stats for the execution plan.
+pub struct FinalStream {
     inner: BoxStream<'static, Result<RecordBatch>>,
+    stats_collector: Vec<Arc<dyn StatsCollector>>,
 }
 
-impl GcStream {
-    pub fn new<S: Stream<Item = Result<RecordBatch>> + Send + 'static>(inner: S) -> Self {
+impl FinalStream {
+    pub fn new<S: Stream<Item = Result<RecordBatch>> + Send + 'static>(
+        inner: S,
+        mut stats_collector: Vec<Arc<dyn StatsCollector>>,
+    ) -> Self {
+        for collector in stats_collector.iter_mut() {
+            collector.start();
+        }
         Self {
             inner: inner.boxed(),
+            stats_collector,
         }
     }
 }
 
-impl Stream for GcStream {
+impl Drop for FinalStream {
+    fn drop(&mut self) {
+        for collector in self.stats_collector.iter_mut() {
+            collector.stop();
+        }
+    }
+}
+
+impl Stream for FinalStream {
     type Item = Result<RecordBatch>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {

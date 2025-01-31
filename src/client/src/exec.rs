@@ -47,6 +47,8 @@ use datafusion::{
 };
 use futures::future::BoxFuture;
 use futures::{Stream, TryStreamExt};
+use log::debug;
+use owo_colors::OwoColorize;
 use serde::{Deserialize, Serialize};
 use tonic::metadata::{AsciiMetadataKey, MetadataMap};
 
@@ -350,6 +352,9 @@ impl Stream for FlightStream {
         self.metrics.time_processing.stop();
         match result {
             Poll::Ready(Some(Ok(batch))) => {
+                if self.metrics.output_rows.value() == 0 {
+                    debug!("Received batch schema: {:?}", batch.schema().magenta());
+                }
                 self.metrics.output_rows.add(batch.num_rows());
                 self.metrics
                     .bytes_transferred

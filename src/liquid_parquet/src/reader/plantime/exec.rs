@@ -1,14 +1,17 @@
-use std::{any::Any, sync::Arc};
-
+use super::opener::LiquidParquetOpener;
+use super::page_filter::PagePruningAccessPlanFilter;
+use crate::cache::LiquidCacheRef;
+use ahash::{HashMap, HashMapExt};
 use arrow_schema::SchemaRef;
+use bytes::Bytes;
 use datafusion::{
     common::Statistics,
     config::{ConfigOptions, TableParquetOptions},
     datasource::{
         listing::PartitionedFile,
         physical_plan::{
-            FileGroupPartitioner, FileScanConfig, FileStream,
-            parquet::DefaultParquetFileReaderFactory,
+            FileGroupPartitioner, FileMeta, FileScanConfig, FileStream, ParquetFileMetrics,
+            ParquetFileReaderFactory,
         },
         schema_adapter::DefaultSchemaAdapterFactory,
     },
@@ -22,12 +25,111 @@ use datafusion::{
         metrics::{ExecutionPlanMetricsSet, MetricsSet},
     },
 };
+use futures::{FutureExt, future::BoxFuture};
 use itertools::Itertools;
+use object_store::{ObjectStore, path::Path};
+use parquet::{
+    arrow::async_reader::{AsyncFileReader, ParquetObjectReader},
+    file::metadata::ParquetMetaData,
+};
+use std::{
+    any::Any,
+    ops::Range,
+    sync::{Arc, LazyLock, RwLock},
+};
 
-use crate::cache::LiquidCacheRef;
+static META_CACHE: LazyLock<MetadataCache> = LazyLock::new(MetadataCache::new);
 
-use super::opener::LiquidParquetOpener;
-use super::page_filter::PagePruningAccessPlanFilter;
+#[derive(Debug)]
+struct CachedMetaReaderFactory {
+    store: Arc<dyn ObjectStore>,
+}
+
+impl CachedMetaReaderFactory {
+    fn new(store: Arc<dyn ObjectStore>) -> Self {
+        Self { store }
+    }
+}
+
+impl ParquetFileReaderFactory for CachedMetaReaderFactory {
+    fn create_reader(
+        &self,
+        partition_index: usize,
+        file_meta: FileMeta,
+        metadata_size_hint: Option<usize>,
+        metrics: &ExecutionPlanMetricsSet,
+    ) -> Result<Box<dyn AsyncFileReader + Send>> {
+        let path = file_meta.location().clone();
+        let store = Arc::clone(&self.store);
+        let mut inner = ParquetObjectReader::new(store, file_meta.object_meta);
+
+        if let Some(hint) = metadata_size_hint {
+            inner = inner.with_footer_size_hint(hint);
+        }
+
+        Ok(Box::new(ParquetMetadataCacheReader {
+            file_metrics: ParquetFileMetrics::new(partition_index, path.as_ref(), metrics),
+            inner,
+            path,
+        }))
+    }
+}
+
+struct MetadataCache {
+    val: RwLock<HashMap<Path, Arc<ParquetMetaData>>>,
+}
+
+impl MetadataCache {
+    fn new() -> Self {
+        Self {
+            val: RwLock::new(HashMap::new()),
+        }
+    }
+}
+
+pub struct ParquetMetadataCacheReader {
+    file_metrics: ParquetFileMetrics,
+    inner: ParquetObjectReader,
+    path: Path,
+}
+
+impl AsyncFileReader for ParquetMetadataCacheReader {
+    fn get_byte_ranges(
+        &mut self,
+        ranges: Vec<Range<usize>>,
+    ) -> BoxFuture<'_, parquet::errors::Result<Vec<Bytes>>> {
+        let total = ranges.iter().map(|r| r.end - r.start).sum();
+        self.file_metrics.bytes_scanned.add(total);
+        self.inner.get_byte_ranges(ranges)
+    }
+
+    fn get_bytes(&mut self, range: Range<usize>) -> BoxFuture<'_, parquet::errors::Result<Bytes>> {
+        self.file_metrics.bytes_scanned.add(range.end - range.start);
+        self.inner.get_bytes(range)
+    }
+
+    fn get_metadata(&mut self) -> BoxFuture<'_, parquet::errors::Result<Arc<ParquetMetaData>>> {
+        let cache = META_CACHE.val.read().unwrap();
+        let path = &self.path;
+
+        if let Some(meta) = cache.get(path) {
+            let meta = meta.clone();
+            return async move { Ok(meta) }.boxed();
+        }
+
+        drop(cache);
+
+        let path = self.path.clone();
+        let get_meta = self.inner.get_metadata();
+        async move {
+            let meta = get_meta.await?;
+            let mut cache = META_CACHE.val.write().unwrap();
+            cache.entry(path).or_insert(meta.clone());
+            Ok(meta)
+        }
+        .boxed()
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct LiquidParquetExec {
@@ -161,7 +263,7 @@ impl ExecutionPlan for LiquidParquetExec {
         let reader_factory = ctx
             .runtime_env()
             .object_store(&self.base_config.object_store_url)
-            .map(|store| Arc::new(DefaultParquetFileReaderFactory::new(store)))?;
+            .map(|store| Arc::new(CachedMetaReaderFactory::new(store)))?;
         let schema_adapter = Arc::new(DefaultSchemaAdapterFactory);
 
         let opener = LiquidParquetOpener {

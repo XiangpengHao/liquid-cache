@@ -1,7 +1,7 @@
 use arrow::{
     array::{
         AsArray, BooleanArray, BooleanBuilder, Int8Array, Int16Array, Int32Array, Int64Array,
-        StringViewBuilder, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
+        StringBuilder, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
     },
     buffer::BooleanBuffer,
     compute::filter,
@@ -47,7 +47,7 @@ fn test_schema() -> Schema {
         Field::new("i16_col", DataType::Int16, false),
         Field::new("i32_col", DataType::Int32, false),
         Field::new("i64_col", DataType::Int64, false),
-        Field::new("string_view_col", DataType::Utf8View, false),
+        Field::new("string_col", DataType::Utf8, false),
     ])
 }
 
@@ -83,7 +83,7 @@ fn create_record_batch(batch_size: usize, batch_id: usize) -> RecordBatch {
     let mut i16_builder = Int16Array::builder(batch_size);
     let mut i32_builder = Int32Array::builder(batch_size);
     let mut i64_builder = Int64Array::builder(batch_size);
-    let mut string_builder = StringViewBuilder::new();
+    let mut string_builder = StringBuilder::new();
 
     for i in batch_id * batch_size..(batch_id + 1) * batch_size {
         // Numeric values
@@ -171,10 +171,10 @@ async fn get_test_reader() -> LiquidStreamBuilder {
 /// We could directly assert_eq!(left, right) but this is more debugging friendly
 fn assert_batch_eq(left: &RecordBatch, right: &RecordBatch) {
     assert_eq!(left.num_rows(), right.num_rows());
-    assert_eq!(left.schema(), right.schema());
     assert_eq!(left.columns().len(), right.columns().len());
     for (c_l, c_r) in left.columns().iter().zip(right.columns().iter()) {
-        assert_eq!(c_l, c_r);
+        let casted = arrow::compute::cast(c_l, c_r.data_type()).unwrap();
+        assert_eq!(&casted, c_r);
     }
 }
 
@@ -220,9 +220,7 @@ async fn test_reading_with_projection() {
         .map(|batch| batch.unwrap())
         .collect::<Vec<_>>();
 
-    let expected_schema = test_schema().project(&column_projections).unwrap();
     for (i, batch) in batches.iter().enumerate() {
-        assert_eq!(batch.schema().as_ref(), &expected_schema);
         let expected = create_record_batch(batch_size, i)
             .project(&column_projections)
             .unwrap();

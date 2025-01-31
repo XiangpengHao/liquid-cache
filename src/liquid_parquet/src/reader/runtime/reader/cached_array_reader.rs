@@ -1,7 +1,7 @@
 use std::{any::Any, collections::VecDeque};
 
 use arrow::array::ArrayRef;
-use arrow_schema::DataType;
+use arrow_schema::{DataType, Field, Fields};
 use parquet::{
     arrow::{
         array_reader::{ArrayReader, StructArrayReader},
@@ -33,6 +33,7 @@ use super::super::parquet_bridge::{ParquetField, ParquetFieldType};
 /// 1. The sum of read_records rows should be equal to the records returned by consume_batch.
 struct CachedArrayReader {
     inner: Box<dyn ArrayReader>,
+    data_type: DataType,
     current_row: usize,
     inner_row_id: usize,
     selection: VecDeque<RowSelector>,
@@ -41,8 +42,17 @@ struct CachedArrayReader {
 
 impl CachedArrayReader {
     fn new(inner: Box<dyn ArrayReader>, liquid_cache: LiquidCachedColumnRef) -> Self {
+        let inner_type = inner.get_data_type();
+        let data_type = match inner_type {
+            DataType::Utf8 | DataType::Utf8View | DataType::LargeUtf8 => {
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8))
+            }
+            _ => inner_type.clone(),
+        };
+
         Self {
             inner,
+            data_type,
             current_row: 0,
             inner_row_id: 0,
             selection: VecDeque::new(),
@@ -108,7 +118,7 @@ impl ArrayReader for CachedArrayReader {
     }
 
     fn get_data_type(&self) -> &DataType {
-        self.inner.get_data_type()
+        &self.data_type
     }
 
     fn read_records(&mut self, request_size: usize) -> Result<usize, ParquetError> {
@@ -143,6 +153,7 @@ impl ArrayReader for CachedArrayReader {
                     .liquid_cache
                     .get_arrow_array(starting_batch_id)
                     .unwrap();
+                debug_assert_eq!(full_array.data_type(), &self.data_type);
                 let offset = current_row - starting_batch_id;
                 rt.push(full_array.slice(offset, selector.row_count));
             } else {
@@ -151,7 +162,9 @@ impl ArrayReader for CachedArrayReader {
                     .liquid_cache
                     .get_arrow_array(starting_batch_id)
                     .unwrap();
+                debug_assert_eq!(start_full_array.data_type(), &self.data_type);
                 let end_full_array = self.liquid_cache.get_arrow_array(ending_batch_id).unwrap();
+                debug_assert_eq!(end_full_array.data_type(), &self.data_type);
 
                 let start_select = ending_batch_id - current_row;
                 let end_select = ending_row - ending_batch_id;
@@ -172,14 +185,20 @@ impl ArrayReader for CachedArrayReader {
         }
         self.selection.clear();
 
-        if rt.is_empty() {
-            // return empty array
-            return self.inner.consume_batch();
-        }
-        let concat =
-            arrow::compute::concat(&rt.as_slice().iter().map(|a| a.as_ref()).collect::<Vec<_>>())
+        match rt.len() {
+            0 => {
+                // return empty array
+                self.inner.consume_batch()
+            }
+            1 => Ok(rt.into_iter().next().unwrap()),
+            _ => {
+                let concat = arrow::compute::concat(
+                    &rt.as_slice().iter().map(|a| a.as_ref()).collect::<Vec<_>>(),
+                )
                 .unwrap();
-        Ok(concat)
+                Ok(concat)
+            }
+        }
     }
 
     fn skip_records(&mut self, to_skip: usize) -> Result<usize, ParquetError> {
@@ -254,7 +273,7 @@ fn instrument_array_reader(
     let children = std::mem::take(&mut bridged_reader.children);
 
     assert_eq!(children.len(), column_ids.len());
-    let instrumented_readers = column_ids
+    let instrumented_readers: Vec<Box<dyn ArrayReader>> = column_ids
         .iter()
         .zip(children)
         .map(|(column_id, reader)| {
@@ -264,6 +283,23 @@ fn instrument_array_reader(
         })
         .collect();
 
+    let previous_datatype = &bridged_reader.data_type;
+    let previous_fields = match previous_datatype {
+        DataType::Struct(fields) => fields,
+        _ => panic!("The previous data type must be a struct"),
+    };
+    let fields = Fields::from(
+        instrumented_readers
+            .iter()
+            .zip(previous_fields)
+            .map(|(r, f)| {
+                let name = f.name();
+                Field::new(name, r.get_data_type().clone(), f.is_nullable())
+            })
+            .collect::<Vec<Field>>(),
+    );
+    let new_data_type = DataType::Struct(fields);
+    bridged_reader.data_type = new_data_type;
     bridged_reader.children = instrumented_readers;
 
     struct_reader
@@ -320,7 +356,7 @@ mod tests {
         }
 
         fn get_data_type(&self) -> &DataType {
-            todo!()
+            &DataType::Int32
         }
 
         fn get_def_levels(&self) -> Option<&[i16]> {

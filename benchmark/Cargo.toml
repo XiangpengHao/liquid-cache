@@ -7,6 +7,7 @@ edition = { workspace = true }
 [dependencies]
 liquid-cache-server = { workspace = true }
 liquid-cache-client = { workspace = true }
+liquid-parquet = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 datafusion = { workspace = true }
@@ -19,3 +20,6 @@ env_logger = "0.11.5"
 url = { workspace = true }
 owo-colors = { workspace = true }
 mimalloc = "0.1.43"
+pprof = { version = "0.14.0", features = ["flamegraph"] }
+serde_json.workspace = true
+serde.workspace = true
