@@ -85,7 +85,7 @@ jobs:
 
       - name: Start LiquidCache server
         run: |
-          env RUST_LOG=info nohup cargo run --release --bin bench_server -- --poison-panic &> server.log &
+          env RUST_LOG=info nohup cargo run --release --bin bench_server -- --abort-on-panic &> server.log &
           echo $! > server.pid  # Save PID for later cleanup
 
       - name: Run simple ClickBench
@@ -109,7 +109,7 @@ jobs:
 
       - name: Start LiquidCache server (for partition 0)
         run: |
-          env RUST_LOG=info nohup cargo run --release --bin bench_server -- --poison-panic &> server.log &
+          env RUST_LOG=info nohup cargo run --release --bin bench_server -- --abort-on-panic &> server.log &
           echo $! > server.pid  # Save PID for later cleanup
           sleep 2  # Wait for server to start up
 

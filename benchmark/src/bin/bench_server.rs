@@ -30,9 +30,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .value_parser(value_parser!(usize)),
         )
         .arg(
-            arg!(--"poison-panic")
+            arg!(--"abort-on-panic")
                 .required(false)
-                .help("Poison panics")
+                .help("Abort the server if any thread panics")
                 .action(clap::ArgAction::SetTrue),
         )
         .arg(
@@ -44,8 +44,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .get_matches();
 
     let flamegraph_dir = matches.get_one::<PathBuf>("flamegraph-dir").cloned();
-    let poison_panic = matches.get_flag("poison-panic");
-    if poison_panic {
+    let abort_on_panic = matches.get_flag("abort-on-panic");
+    if abort_on_panic {
         // Be loud and crash loudly if any thread panics.
         // This will stop the server if any thread panics.
         // But will prevent debugger to break on panic.
