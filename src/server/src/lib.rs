@@ -195,7 +195,12 @@ impl FlightSqlService for LiquidCacheService {
         let handle = fetch_results.handle;
         let partition = fetch_results.partition as usize;
         let stream = self.inner.execute_plan(&handle, partition).await;
-        let stream = FinalStream::new(stream, self.stats_collector.clone()).map_err(|e| {
+        let stream = FinalStream::new(
+            stream,
+            self.stats_collector.clone(),
+            self.inner.batch_size(),
+        )
+        .map_err(|e| {
             panic!("Error executing plan: {:?}", e);
         });
 

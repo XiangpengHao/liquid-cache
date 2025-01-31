@@ -1,7 +1,11 @@
-use arrow::array::{
-    Array, BinaryArray, GenericByteArray, StringArray,
-    builder::{BinaryBuilder, StringBuilder},
+use arrow::{
+    array::{
+        Array, ArrayDataBuilder, BinaryArray, BufferBuilder, GenericByteArray, StringArray,
+        builder::BinaryBuilder,
+    },
+    buffer::Buffer,
 };
+use arrow_schema::DataType;
 use fsst::Compressor;
 use std::mem::MaybeUninit;
 use std::sync::Arc;
@@ -92,39 +96,49 @@ impl FsstArray {
 
 impl From<&FsstArray> for StringArray {
     fn from(value: &FsstArray) -> Self {
-        // TODO (xiangpeng): we should not use a builder here, directly decompress to the buffer.
-        let total_size = value.uncompressed_len;
-        let mut builder = StringBuilder::with_capacity(value.compressed.len(), total_size);
-
+        // we can directly use the null buffer in the compressed array.
+        let null_buffer = value.compressed.nulls().cloned();
+        // TODO: please explain why we need to add 8 here: https://github.com/spiraldb/fsst/issues/69
+        // We should fix fsst rather than workaround here.
+        let mut value_buffer: Vec<u8> = Vec::with_capacity(value.uncompressed_len + 8);
+        let mut offsets_builder = BufferBuilder::<i32>::new(value.compressed.len() + 1);
+        offsets_builder.append(0);
         let decompressor = value.compressor.decompressor();
-        let mut decompress_buffer: Vec<u8> = Vec::with_capacity(1024);
+
         for v in value.compressed.iter() {
             match v {
                 Some(v) => {
-                    let cap = decompressor.max_decompression_capacity(v);
-                    if cap > decompress_buffer.capacity() {
-                        decompress_buffer.reserve(cap - decompress_buffer.capacity());
-                    }
-
-                    let decompressed = unsafe {
+                    let cap_needed = decompressor.max_decompression_capacity(v);
+                    let slice = unsafe {
                         std::slice::from_raw_parts_mut(
-                            decompress_buffer.as_mut_ptr() as *mut MaybeUninit<u8>,
-                            cap,
+                            value_buffer.as_mut_ptr().add(value_buffer.len())
+                                as *mut MaybeUninit<u8>,
+                            cap_needed,
                         )
                     };
-                    let len = decompressor.decompress_into(v, decompressed);
+                    let len = decompressor.decompress_into(v, slice);
+                    let new_len = value_buffer.len() + len;
+                    debug_assert!(new_len <= value_buffer.capacity());
                     unsafe {
-                        decompress_buffer.set_len(len);
+                        value_buffer.set_len(new_len);
                     }
-                    let s = unsafe { std::str::from_utf8_unchecked(&decompress_buffer) };
-                    builder.append_value(s);
+                    offsets_builder.append(value_buffer.len() as i32);
                 }
                 None => {
-                    builder.append_null();
+                    offsets_builder.append(value_buffer.len() as i32);
                 }
             }
         }
-        builder.finish()
+        assert_eq!(value_buffer.len(), value.uncompressed_len);
+        let value_buffer = Buffer::from(value_buffer);
+        let offsets_buffer = offsets_builder.finish();
+        let array_builder = ArrayDataBuilder::new(DataType::Utf8)
+            .len(value.compressed.len())
+            .add_buffer(offsets_buffer)
+            .add_buffer(value_buffer)
+            .nulls(null_buffer);
+        let array_data = unsafe { array_builder.build_unchecked() };
+        GenericByteArray::from(array_data)
     }
 }
 
@@ -137,6 +151,7 @@ impl From<&StringArray> for FsstArray {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow::array::StringBuilder;
 
     #[test]
     fn test_etc_string_roundtrip() {

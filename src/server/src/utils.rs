@@ -4,9 +4,12 @@ use std::{
     task::{Context, Poll},
 };
 
-use arrow::array::{
-    Array, RecordBatch, StringArray, builder::StringDictionaryBuilder, cast::AsArray,
-    types::UInt16Type,
+use arrow::{
+    array::{
+        Array, RecordBatch, StringArray, builder::StringDictionaryBuilder, cast::AsArray,
+        types::UInt16Type,
+    },
+    compute::concat_batches,
 };
 use datafusion::error::Result;
 use futures::{Stream, ready};
@@ -18,15 +21,20 @@ use crate::StatsCollector;
 /// It currently do two things:
 /// 1. Gc the record batches, especially for arrays after filtering.
 /// 2. Collect stats for the execution plan.
+/// 3. Merge small batches into a large one.
 pub struct FinalStream {
     inner: BoxStream<'static, Result<RecordBatch>>,
     stats_collector: Vec<Arc<dyn StatsCollector>>,
+    target_batch_size: usize,
+    buffered_batches: Vec<RecordBatch>,
+    current_buffered_rows: usize,
 }
 
 impl FinalStream {
     pub fn new<S: Stream<Item = Result<RecordBatch>> + Send + 'static>(
         inner: S,
         mut stats_collector: Vec<Arc<dyn StatsCollector>>,
+        target_batch_size: usize,
     ) -> Self {
         for collector in stats_collector.iter_mut() {
             collector.start();
@@ -34,6 +42,9 @@ impl FinalStream {
         Self {
             inner: inner.boxed(),
             stats_collector,
+            target_batch_size,
+            buffered_batches: Vec::new(),
+            current_buffered_rows: 0,
         }
     }
 }
@@ -50,14 +61,37 @@ impl Stream for FinalStream {
     type Item = Result<RecordBatch>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let batch = ready!(self.inner.poll_next_unpin(cx));
-        match batch {
-            Some(Ok(batch)) => {
-                let batch = gc_batch(batch);
-                Poll::Ready(Some(Ok(batch)))
+        let this = &mut *self;
+        loop {
+            let threshold = (this.target_batch_size * 3) / 4;
+            if this.current_buffered_rows >= threshold {
+                let batches = std::mem::take(&mut this.buffered_batches);
+                this.current_buffered_rows = 0;
+                let schema = batches[0].schema();
+                let result = concat_batches(&schema, batches.iter()).unwrap();
+                let result = gc_batch(result);
+                return Poll::Ready(Some(Ok(result)));
             }
-            Some(Err(e)) => Poll::Ready(Some(Err(e))),
-            None => Poll::Ready(None),
+
+            match ready!(this.inner.poll_next_unpin(cx)) {
+                Some(Ok(batch)) => {
+                    let num_rows = batch.num_rows();
+                    this.current_buffered_rows += num_rows;
+                    this.buffered_batches.push(batch);
+                }
+                Some(Err(e)) => return Poll::Ready(Some(Err(e))),
+                None => {
+                    if this.buffered_batches.is_empty() {
+                        return Poll::Ready(None);
+                    }
+                    let batches = std::mem::take(&mut this.buffered_batches);
+                    this.current_buffered_rows = 0;
+                    let schema = batches[0].schema();
+                    let result = concat_batches(&schema, batches.iter()).unwrap();
+                    let result = gc_batch(result);
+                    return Poll::Ready(Some(Ok(result)));
+                }
+            }
         }
     }
 }
