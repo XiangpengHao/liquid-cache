@@ -46,7 +46,7 @@ use uuid::Uuid;
 
 mod service;
 mod utils;
-use utils::GcStream;
+use utils::FinalStream;
 
 use liquid_parquet::LiquidCacheMode;
 
@@ -57,8 +57,9 @@ pub struct LiquidCacheConfig {
 }
 
 impl LiquidCacheConfig {
-    pub fn new(liquid_cache_mode: LiquidCacheMode) -> Self {
-        Self { liquid_cache_mode }
+    pub fn with_liquid_cache_mode(mut self, liquid_cache_mode: LiquidCacheMode) -> Self {
+        self.liquid_cache_mode = liquid_cache_mode;
+        self
     }
 }
 
@@ -70,8 +71,17 @@ impl Default for LiquidCacheConfig {
     }
 }
 
+/// A trait to collect stats for the execution plan.
+/// The server calls `start` right before polling the stream,
+/// and calls `stop` right after exhausting the stream.
+pub trait StatsCollector: Send + Sync {
+    fn start(&self);
+    fn stop(&self);
+}
+
 pub struct LiquidCacheService {
     inner: LiquidCacheServiceInner,
+    stats_collector: Vec<Arc<dyn StatsCollector>>,
 }
 
 impl LiquidCacheService {
@@ -87,7 +97,12 @@ impl LiquidCacheService {
     ) -> Self {
         Self {
             inner: LiquidCacheServiceInner::new(Arc::new(default_ctx), config),
+            stats_collector: vec![],
         }
+    }
+
+    pub fn add_stats_collector(&mut self, collector: Arc<dyn StatsCollector>) {
+        self.stats_collector.push(collector);
     }
 
     /// Create a new SessionContext with good defaults
@@ -173,7 +188,7 @@ impl FlightSqlService for LiquidCacheService {
         let handle = fetch_results.handle;
         let partition = fetch_results.partition as usize;
         let stream = self.inner.execute_plan(&handle, partition).await;
-        let stream = GcStream::new(stream).map_err(|e| {
+        let stream = FinalStream::new(stream, self.stats_collector.clone()).map_err(|e| {
             panic!("Error executing plan: {:?}", e);
         });
 

@@ -1,7 +1,8 @@
-use std::net::SocketAddr;
+use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
 use arrow_flight::flight_service_server::FlightServiceServer;
 use clap::{Command, arg, value_parser};
+use liquid_cache_benchmarks::FlameGraphReport;
 use liquid_cache_server::{LiquidCacheConfig, LiquidCacheService};
 use log::info;
 use tonic::transport::Server;
@@ -34,8 +35,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .help("Poison panics")
                 .action(clap::ArgAction::SetTrue),
         )
+        .arg(
+            arg!(--"flamegraph-dir" <PATH>)
+                .required(false)
+                .help("Path to output flamegraph directory")
+                .value_parser(value_parser!(PathBuf)),
+        )
         .get_matches();
 
+    let flamegraph_dir = matches.get_one::<PathBuf>("flamegraph-dir").cloned();
     let poison_panic = matches.get_flag("poison-panic");
     if poison_panic {
         // Be loud and crash loudly if any thread panics.
@@ -55,7 +63,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let ctx = LiquidCacheService::context(partitions)?;
     let config = LiquidCacheConfig::default();
-    let split_sql = LiquidCacheService::new_with_context_and_config(ctx, config);
+    let mut split_sql = LiquidCacheService::new_with_context_and_config(ctx, config);
+    if let Some(flamegraph_dir) = flamegraph_dir {
+        assert!(
+            flamegraph_dir.is_dir(),
+            "Flamegraph output must be a directory"
+        );
+        split_sql.add_stats_collector(Arc::new(FlameGraphReport::new(flamegraph_dir)));
+    }
+
     let flight = FlightServiceServer::new(split_sql);
 
     info!("SplitSQL server listening on {addr:?}");
