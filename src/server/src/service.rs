@@ -36,6 +36,15 @@ impl LiquidCacheServiceInner {
         }
     }
 
+    pub fn new_ctx_and_cache(ctx: Arc<SessionContext>, cache: LiquidCacheRef) -> Self {
+        Self {
+            execution_plans: Default::default(),
+            registered_tables: Default::default(),
+            default_ctx: ctx,
+            liquid_cache: cache,
+        }
+    }
+
     pub(crate) async fn register_table(&self, url_str: &str, table_name: &str) -> Result<()> {
         let url =
             Url::parse(url_str).map_err(|e| DataFusionError::Configuration(format!("{e:?}")))?;

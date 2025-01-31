@@ -48,7 +48,7 @@ mod service;
 mod utils;
 use utils::FinalStream;
 
-use liquid_parquet::LiquidCacheMode;
+use liquid_parquet::{LiquidCacheMode, LiquidCacheRef};
 
 pub static ACTION_REGISTER_TABLE: &str = "RegisterTable";
 
@@ -97,6 +97,13 @@ impl LiquidCacheService {
     ) -> Self {
         Self {
             inner: LiquidCacheServiceInner::new(Arc::new(default_ctx), config),
+            stats_collector: vec![],
+        }
+    }
+
+    pub fn new_with_ctx_and_cache(ctx: Arc<SessionContext>, cache: LiquidCacheRef) -> Self {
+        Self {
+            inner: LiquidCacheServiceInner::new_ctx_and_cache(ctx, cache),
             stats_collector: vec![],
         }
     }
