@@ -325,14 +325,15 @@ impl LiquidCachedColumn {
                     );
                     return;
                 }
-                // other types
+
+                // string types
                 match array.data_type() {
                     DataType::Utf8View => {
                         let compressor = states.fsst_compressor.read().unwrap();
                         if let Some(compressor) = compressor.as_ref() {
                             let compressed = LiquidStringArray::from_string_view_array(
                                 array.as_string_view(),
-                                Some(compressor.clone()),
+                                compressor.clone(),
                             );
                             rows.insert(
                                 row_id,
@@ -343,9 +344,8 @@ impl LiquidCachedColumn {
 
                         drop(compressor);
                         let mut compressors = states.fsst_compressor.write().unwrap();
-                        let compressed =
-                            LiquidStringArray::from_string_view_array(array.as_string_view(), None);
-                        let compressor = compressed.compressor();
+                        let (compressor, compressed) =
+                            LiquidStringArray::train_from_arrow_view(array.as_string_view());
                         *compressors = Some(compressor);
                         rows.insert(
                             row_id,
@@ -357,7 +357,7 @@ impl LiquidCachedColumn {
                         if let Some(compressor) = compressor.as_ref() {
                             let compressed = LiquidStringArray::from_string_array(
                                 array.as_string::<i32>(),
-                                Some(compressor.clone()),
+                                compressor.clone(),
                             );
                             rows.insert(
                                 row_id,
@@ -368,9 +368,8 @@ impl LiquidCachedColumn {
 
                         drop(compressor);
                         let mut compressors = states.fsst_compressor.write().unwrap();
-                        let compressed =
-                            LiquidStringArray::from_string_array(array.as_string::<i32>(), None);
-                        let compressor = compressed.compressor();
+                        let (compressor, compressed) =
+                            LiquidStringArray::train_from_arrow(array.as_string::<i32>());
                         *compressors = Some(compressor);
                         rows.insert(
                             row_id,
@@ -379,19 +378,32 @@ impl LiquidCachedColumn {
                     }
                     DataType::Dictionary(_, _) => {
                         if let Some(dict_array) = array.as_dictionary_opt::<ArrowUInt16Type>() {
-                            let values = dict_array.values();
-                            if let Some(_string_array) = values.as_string_opt::<i32>() {
-                                let etc_array = LiquidStringArray::from_dict_array(dict_array);
+                            let compressor = states.fsst_compressor.read().unwrap();
+                            if let Some(compressor) = compressor.as_ref() {
+                                let liquid_array = LiquidStringArray::from_dict_array(
+                                    dict_array,
+                                    compressor.clone(),
+                                );
                                 rows.insert(
                                     row_id,
                                     CachedEntry::new(CachedBatch::LiquidMemory(Arc::new(
-                                        etc_array,
+                                        liquid_array,
                                     ))),
                                 );
                                 return;
                             }
-                        }
 
+                            drop(compressor);
+                            let mut compressors = states.fsst_compressor.write().unwrap();
+                            let (compressor, liquid_array) =
+                                LiquidStringArray::train_from_arrow_dict(dict_array);
+                            *compressors = Some(compressor);
+                            rows.insert(
+                                row_id,
+                                CachedEntry::new(CachedBatch::LiquidMemory(Arc::new(liquid_array))),
+                            );
+                            return;
+                        }
                         panic!("unsupported data type {:?}", array.data_type());
                     }
                     _ => panic!("unsupported data type {:?}", array.data_type()),

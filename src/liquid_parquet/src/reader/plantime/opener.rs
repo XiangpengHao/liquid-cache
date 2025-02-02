@@ -27,8 +27,8 @@ use crate::{
     cache::LiquidCacheRef,
     reader::{
         plantime::{
-            coerce_file_schema_to_string_type, page_filter::PagePruningAccessPlanFilter,
-            row_filter, row_group_filter::RowGroupAccessPlanFilter,
+            page_filter::PagePruningAccessPlanFilter, row_filter,
+            row_group_filter::RowGroupAccessPlanFilter,
         },
         runtime::ArrowReaderBuilderBridge,
     },
@@ -89,10 +89,6 @@ impl FileOpener for LiquidParquetOpener {
             let mut metadata_timer = file_metrics.metadata_load_time.timer();
             let metadata = ArrowReaderMetadata::load_async(&mut reader, options.clone()).await?;
             let mut schema = Arc::clone(metadata.schema());
-
-            if let Some(merged) = coerce_file_schema_to_string_type(&table_schema, &schema) {
-                schema = Arc::new(merged);
-            }
 
             if let Some(merged) = coerce_file_schema_to_liquid_cache_types(&table_schema, &schema) {
                 schema = Arc::new(merged);

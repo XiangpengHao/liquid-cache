@@ -1,4 +1,4 @@
-use std::{any::Any, collections::HashMap, sync::Arc};
+use std::{any::Any, sync::Arc};
 
 use arrow_schema::{DataType, Field, FieldRef, Schema, SchemaRef};
 use async_trait::async_trait;
@@ -178,60 +178,6 @@ impl FileFormat for LiquidParquetFileFormat {
     }
 }
 
-pub(crate) fn coerce_file_schema_to_string_type(
-    table_schema: &Schema,
-    file_schema: &Schema,
-) -> Option<Schema> {
-    let mut transform = false;
-    let table_fields: HashMap<_, _> = table_schema
-        .fields
-        .iter()
-        .map(|f| (f.name(), f.data_type()))
-        .collect();
-    let transformed_fields: Vec<Arc<Field>> = file_schema
-        .fields
-        .iter()
-        .map(
-            |field| match (table_fields.get(field.name()), field.data_type()) {
-                // table schema uses string type, coerce the file schema to use string type
-                (
-                    Some(DataType::Utf8),
-                    DataType::Binary | DataType::LargeBinary | DataType::BinaryView,
-                ) => {
-                    transform = true;
-                    field_with_new_type(field, DataType::Utf8)
-                }
-                // table schema uses large string type, coerce the file schema to use large string type
-                (
-                    Some(DataType::LargeUtf8),
-                    DataType::Binary | DataType::LargeBinary | DataType::BinaryView,
-                ) => {
-                    transform = true;
-                    field_with_new_type(field, DataType::LargeUtf8)
-                }
-                // table schema uses string view type, coerce the file schema to use view type
-                (
-                    Some(DataType::Utf8View),
-                    DataType::Binary | DataType::LargeBinary | DataType::BinaryView,
-                ) => {
-                    transform = true;
-                    field_with_new_type(field, DataType::Utf8View)
-                }
-                _ => Arc::clone(field),
-            },
-        )
-        .collect();
-
-    if !transform {
-        None
-    } else {
-        Some(Schema::new_with_metadata(
-            transformed_fields,
-            file_schema.metadata.clone(),
-        ))
-    }
-}
-
 /// Create a new field with the specified data type, copying the other
 /// properties from the input field
 fn field_with_new_type(field: &FieldRef, new_type: DataType) -> FieldRef {
@@ -266,6 +212,9 @@ pub(crate) fn coerce_file_schema_to_liquid_cache_types(
         if field.data_type().equals_datatype(&DataType::Dictionary(
             Box::new(DataType::UInt16),
             Box::new(DataType::Utf8),
+        )) || field.data_type().equals_datatype(&DataType::Dictionary(
+            Box::new(DataType::UInt16),
+            Box::new(DataType::Binary),
         )) {
             transform = true;
         }
