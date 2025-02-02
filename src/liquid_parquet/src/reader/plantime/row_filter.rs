@@ -191,7 +191,7 @@ impl LiquidPredicate for DatafusionArrowPredicate {
                         }
                     }
 
-                    let dict_array = array.to_dict_string();
+                    let dict_array = array.to_dict_arrow();
                     let lhs = ColumnarValue::Array(Arc::new(dict_array));
                     let rhs = ColumnarValue::Scalar(literal.value().clone());
 
@@ -216,7 +216,7 @@ impl LiquidPredicate for DatafusionArrowPredicate {
             }
         } else if let Some(like_expr) = self.physical_expr.as_any().downcast_ref::<LikeExpr>() {
             if let Some(literal) = like_expr.pattern().as_any().downcast_ref::<Literal>() {
-                let arrow_dict = array.as_string().to_dict_string();
+                let arrow_dict = array.as_string().to_dict_arrow();
 
                 let lhs = ColumnarValue::Array(Arc::new(arrow_dict));
                 let rhs = ColumnarValue::Scalar(literal.value().clone());
@@ -252,7 +252,7 @@ impl ArrowPredicate for DatafusionArrowPredicate {
 
     fn evaluate(&mut self, mut batch: RecordBatch) -> ArrowResult<BooleanArray> {
         if !self.projection.is_empty() {
-            batch = batch.project(&self.projection)?;
+            batch = batch.project(&self.projection).unwrap();
         };
 
         // we deliberately don't map schema here, because when a schema mismatch occurs,

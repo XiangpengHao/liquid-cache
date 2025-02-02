@@ -50,6 +50,9 @@ impl CachedArrayReader {
             DataType::Utf8 | DataType::Utf8View | DataType::LargeUtf8 => {
                 DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8))
             }
+            DataType::Binary | DataType::BinaryView | DataType::LargeBinary => {
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Binary))
+            }
             _ => inner_type.clone(),
         };
 

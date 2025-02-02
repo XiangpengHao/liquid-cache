@@ -4,9 +4,8 @@ use arrow::{
         builder::BinaryBuilder,
     },
     buffer::Buffer,
-    datatypes::{ArrowNativeType, ByteArrayType},
+    datatypes::{ArrowNativeType, ByteArrayType, Utf8Type},
 };
-use arrow_schema::DataType;
 use fsst::Compressor;
 use std::mem::MaybeUninit;
 use std::sync::Arc;
@@ -88,18 +87,17 @@ impl FsstArray {
     pub(crate) fn get_array_memory_size(&self) -> usize {
         self.compressed.get_array_memory_size() + std::mem::size_of::<FsstArray>()
     }
-}
 
-impl From<&FsstArray> for StringArray {
-    fn from(value: &FsstArray) -> Self {
+    pub(crate) fn to_arrow_byte_array<T: ByteArrayType>(&self) -> GenericByteArray<T> {
         // we can directly use the null buffer in the compressed array.
-        let null_buffer = value.compressed.nulls().cloned();
-        let mut value_buffer: Vec<u8> = Vec::with_capacity(value.uncompressed_len + 8);
-        let mut offsets_builder = BufferBuilder::<i32>::new(value.compressed.len() + 1);
+        let null_buffer = self.compressed.nulls().cloned();
+        let mut value_buffer: Vec<u8> = Vec::with_capacity(self.uncompressed_len + 8);
+        let mut offsets_builder = BufferBuilder::<i32>::new(self.compressed.len() + 1);
         offsets_builder.append(0);
-        let decompressor = value.compressor.decompressor();
 
-        for v in value.compressed.iter() {
+        let decompressor = self.compressor.decompressor();
+
+        for v in self.compressed.iter() {
             match v {
                 Some(v) => {
                     let slice = unsafe {
@@ -122,16 +120,22 @@ impl From<&FsstArray> for StringArray {
                 }
             }
         }
-        assert_eq!(value_buffer.len(), value.uncompressed_len);
+        assert_eq!(value_buffer.len(), self.uncompressed_len);
         let value_buffer = Buffer::from(value_buffer);
         let offsets_buffer = offsets_builder.finish();
-        let array_builder = ArrayDataBuilder::new(DataType::Utf8)
-            .len(value.compressed.len())
+        let array_builder = ArrayDataBuilder::new(T::DATA_TYPE)
+            .len(self.compressed.len())
             .add_buffer(offsets_buffer)
             .add_buffer(value_buffer)
             .nulls(null_buffer);
         let array_data = unsafe { array_builder.build_unchecked() };
         GenericByteArray::from(array_data)
+    }
+}
+
+impl From<&FsstArray> for StringArray {
+    fn from(value: &FsstArray) -> Self {
+        value.to_arrow_byte_array::<Utf8Type>()
     }
 }
 

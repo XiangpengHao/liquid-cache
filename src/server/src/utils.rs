@@ -79,7 +79,9 @@ impl Stream for FinalStream {
                     this.current_buffered_rows += num_rows;
                     this.buffered_batches.push(batch);
                 }
-                Some(Err(e)) => return Poll::Ready(Some(Err(e))),
+                Some(Err(e)) => {
+                    panic!("Poll next batch error: {:?}", e);
+                }
                 None => {
                     if this.buffered_batches.is_empty() {
                         return Poll::Ready(None);
