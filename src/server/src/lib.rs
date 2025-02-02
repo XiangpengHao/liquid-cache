@@ -363,8 +363,8 @@ fn df_error_to_status(err: datafusion::error::DataFusionError) -> Status {
     Status::internal(format!("{err:?}"))
 }
 
-/// TODO: we need to workaround a arrow-flight bug here:
-/// https://github.com/apache/arrow-rs/issues/7058
+// TODO: we need to workaround a arrow-flight bug here:
+// https://github.com/apache/arrow-rs/issues/7058
 fn encode_schema_to_ipc_bytes(schema: &arrow_schema::Schema) -> Bytes {
     #[allow(deprecated)]
     let options = IpcWriteOptions::default().with_preserve_dict_id(true);
