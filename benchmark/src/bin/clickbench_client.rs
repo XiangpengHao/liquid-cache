@@ -91,7 +91,7 @@ pub async fn main() -> Result<()> {
         .arg(
             arg!(--iteration <NUMBER>)
                 .required(false)
-                .default_value("1")
+                .default_value("3")
                 .help("Number of times to run each query")
                 .value_parser(value_parser!(u32)),
         )

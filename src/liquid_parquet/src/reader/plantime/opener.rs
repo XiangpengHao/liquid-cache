@@ -34,6 +34,8 @@ use crate::{
     },
 };
 
+use super::coerce_file_schema_to_liquid_cache_types;
+
 pub struct LiquidParquetOpener {
     pub partition_index: usize,
     pub projection: Arc<[usize]>,
@@ -89,6 +91,10 @@ impl FileOpener for LiquidParquetOpener {
             let mut schema = Arc::clone(metadata.schema());
 
             if let Some(merged) = coerce_file_schema_to_string_type(&table_schema, &schema) {
+                schema = Arc::new(merged);
+            }
+
+            if let Some(merged) = coerce_file_schema_to_liquid_cache_types(&table_schema, &schema) {
                 schema = Arc::new(merged);
             }
 
@@ -210,11 +216,7 @@ impl FileOpener for LiquidParquetOpener {
             let cached_file = liquid_cache.file(file_name);
             let stream = liquid_builder.build(cached_file)?;
 
-            let adapted = stream
-                .map_err(|e| ArrowError::ExternalError(Box::new(e)))
-                .map(move |maybe_batch| {
-                    maybe_batch.and_then(|b| schema_mapping.map_batch(b).map_err(Into::into))
-                });
+            let adapted = stream.map_err(|e| ArrowError::ExternalError(Box::new(e)));
 
             Ok(adapted.boxed())
         }))
