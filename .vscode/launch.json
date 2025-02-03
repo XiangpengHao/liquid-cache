@@ -30,21 +30,28 @@
 		{
 			"type": "lldb",
 			"request": "launch",
-			"name": "bench_client",
+			"name": "clickbench_client",
 			"cargo": {
 				"args": [
 					"build",
-					"--bin=bench_client",
+					"--bin=clickbench_client",
 				],
 				"filter": {
-					"name": "bench_client",
+					"name": "clickbench_client",
 					"kind": "bin"
 				}
 			},
 			"env": {
 				"RUST_LOG": "info"
 			},
-			"args": [],
+			"args": [
+				"--query-path",
+				"benchmark/queries.sql",
+				"--file",
+				"benchmark/data/hits_0.parquet",
+				"--query",
+				"22"
+			],
 			"cwd": "${workspaceFolder}"
 		}
 	]

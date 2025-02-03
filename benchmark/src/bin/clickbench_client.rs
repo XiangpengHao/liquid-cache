@@ -103,6 +103,80 @@ fn save_result(result: &[RecordBatch], query_id: u32) -> Result<()> {
     Ok(())
 }
 
+fn check_result_against_answer(
+    results: &Vec<RecordBatch>,
+    answer_dir: &PathBuf,
+    query_id: u32,
+    query: &str,
+) -> Result<()> {
+    // - If query returns no results, check if baseline exists
+    // - If baseline does not exist, skip query
+    // - If baseline exists, panic
+    if results.is_empty() {
+        let baseline_exists = format!("{}/Q{}.parquet", answer_dir.display(), query_id);
+        match File::open(baseline_exists) {
+            Err(_) => {
+                info!(
+                    "Query {} returned no results (matches baseline)",
+                    query_id.to_string().red()
+                );
+                return Ok(());
+            }
+            Ok(_) => panic!(
+                "Query {} returned no results but baseline exists",
+                query_id.to_string().red()
+            ),
+        }
+    }
+    // Read answers
+    let baseline_path = format!("{}/Q{}.parquet", answer_dir.display(), query_id);
+    let baseline_file = File::open(baseline_path)?;
+    let mut baseline_batches = Vec::new();
+    let reader = ParquetRecordBatchReaderBuilder::try_new(baseline_file)?.build()?;
+    for batch in reader {
+        baseline_batches.push(batch?);
+    }
+
+    // Compare answers and result
+    let result_batch = datafusion::arrow::compute::concat_batches(&results[0].schema(), results)?;
+    let baseline_batch = datafusion::arrow::compute::concat_batches(
+        &baseline_batches[0].schema(),
+        &baseline_batches,
+    )?;
+    if query.contains("LIMIT") {
+        info!(
+            "Query {} contains LIMIT, only validating the shape of the result",
+            query_id.to_string().red()
+        );
+        let (result_num_rows, result_columns) =
+            (result_batch.num_rows(), result_batch.columns().len());
+        let (baseline_num_rows, baseline_columns) =
+            (baseline_batch.num_rows(), baseline_batch.columns().len());
+        if result_num_rows != baseline_num_rows || result_columns != baseline_columns {
+            save_result(&results, query_id)?;
+            panic!(
+                "Query {} result does not match baseline. Result(num_rows: {}, num_columns: {}): {:?}, Baseline(num_rows: {}, num_columns: {}): {:?}",
+                query_id.to_string().red(),
+                result_num_rows,
+                result_columns,
+                result_batch.red(),
+                baseline_num_rows,
+                baseline_columns,
+                baseline_batch.red()
+            );
+        }
+    } else if !assert_batch_eq(&result_batch, &baseline_batch) {
+        save_result(&results, query_id)?;
+        panic!(
+            "Query {} result does not match baseline. Result: {:?}, Baseline: {:?}",
+            query_id.to_string().red(),
+            result_batch.red(),
+            baseline_batch.red()
+        );
+    }
+    Ok(())
+}
+
 #[tokio::main]
 pub async fn main() -> Result<()> {
     env_logger::builder().format_timestamp(None).init();
@@ -147,15 +221,8 @@ pub async fn main() -> Result<()> {
                 .value_parser(value_parser!(std::path::PathBuf)),
         )
         .arg(
-            arg!(--"validate")
+            arg!(--"answer-dir" <PATH>)
                 .required(false)
-                .help("Validate results against baseline")
-                .action(clap::ArgAction::SetTrue),
-        )
-        .arg(
-            arg!(--"validate-dir" <PATH>)
-                .required(false)
-                .default_value("dev/baseline/results")
                 .help("Path to the baseline directory")
                 .value_parser(value_parser!(std::path::PathBuf)),
         )
@@ -167,7 +234,7 @@ pub async fn main() -> Result<()> {
     let queries = get_query(query_path, matches.get_one::<u32>("query").copied())?;
     let iteration = matches.get_one::<u32>("iteration").unwrap();
     let output_path = matches.get_one::<PathBuf>("output");
-    let validate = *matches.get_one::<bool>("validate").unwrap();
+    let answer_dir = matches.get_one::<PathBuf>("answer-dir");
 
     let mut session_config = SessionConfig::from_env()?;
     session_config
@@ -193,10 +260,7 @@ pub async fn main() -> Result<()> {
         queries: Vec::new(),
     };
 
-    // Create results directory (store failed queries only)
-    if validate {
-        std::fs::create_dir_all("benchmark/data/results")?;
-    }
+    std::fs::create_dir_all("benchmark/data/results")?;
 
     for (id, query) in queries {
         let mut times_millis = Vec::new();
@@ -222,80 +286,11 @@ pub async fn main() -> Result<()> {
             let result_str = pretty::pretty_format_batches(&results).unwrap();
             info!("Query result: \n{}", result_str.cyan());
 
-            // Benchmark Validation
-            if !validate {
-                continue;
+            // Check query answers
+            if let Some(answer_dir) = answer_dir {
+                check_result_against_answer(&results, answer_dir, id, &query)?;
+                info!("Query {} passed validation", id.to_string().red());
             }
-            let baseline_dir = matches.get_one::<PathBuf>("validate-dir").unwrap();
-            // - If query returns no results, check if baseline exists
-            // - If baseline does not exist, skip query
-            // - If baseline exists, panic
-            if results.is_empty() {
-                let baseline_exists = format!("{}/Q{}.parquet", baseline_dir.display(), id);
-                match File::open(baseline_exists) {
-                    Err(_) => {
-                        info!(
-                            "Query {} returned no results (matches baseline)",
-                            id.to_string().red()
-                        );
-                        continue;
-                    }
-                    Ok(_) => panic!(
-                        "Query {} returned no results but baseline exists",
-                        id.to_string().red()
-                    ),
-                }
-            }
-
-            // Read baseline
-            let baseline_path = format!("{}/Q{}.parquet", baseline_dir.display(), id);
-            let baseline_file = File::open(baseline_path)?;
-            let mut baseline_batches = Vec::new();
-            let reader = ParquetRecordBatchReaderBuilder::try_new(baseline_file)?.build()?;
-            for batch in reader {
-                baseline_batches.push(batch?);
-            }
-
-            // Compare baseline and result
-            let result_batch =
-                datafusion::arrow::compute::concat_batches(&results[0].schema(), &results)?;
-            let baseline_batch = datafusion::arrow::compute::concat_batches(
-                &baseline_batches[0].schema(),
-                &baseline_batches,
-            )?;
-            if query.contains("LIMIT") {
-                info!(
-                    "Query {} contains LIMIT, only validating the shape of the result",
-                    id.to_string().red()
-                );
-                let (result_num_rows, result_columns) =
-                    (result_batch.num_rows(), result_batch.columns().len());
-                let (baseline_num_rows, baseline_columns) =
-                    (baseline_batch.num_rows(), baseline_batch.columns().len());
-                if result_num_rows != baseline_num_rows || result_columns != baseline_columns {
-                    save_result(&results, id)?;
-                    panic!(
-                        "Query {} result does not match baseline. Result(num_rows: {}, num_columns: {}): {:?}, Baseline(num_rows: {}, num_columns: {}): {:?}",
-                        id.to_string().red(),
-                        result_num_rows,
-                        result_columns,
-                        result_batch.red(),
-                        baseline_num_rows,
-                        baseline_columns,
-                        baseline_batch.red()
-                    );
-                }
-            } else if !assert_batch_eq(&result_batch, &baseline_batch) {
-                save_result(&results, id)?;
-                panic!(
-                    "Query {} result does not match baseline. Result: {:?}, Baseline: {:?}",
-                    id.to_string().red(),
-                    result_batch.red(),
-                    baseline_batch.red()
-                );
-            }
-
-            info!("Query {} passed validation", id.to_string().red());
         }
         benchmark_result.queries.push(QueryResult {
             id,
