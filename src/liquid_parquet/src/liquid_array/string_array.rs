@@ -7,7 +7,8 @@ use arrow::array::{
     Array, ArrayRef, BooleanArray, DictionaryArray, PrimitiveArray, RecordBatch, StringArray,
     cast::AsArray, types::UInt16Type,
 };
-use arrow::array::{ArrayAccessor, ArrayIter, BooleanBuilder, StringViewArray};
+use arrow::array::{ArrayAccessor, ArrayIter, StringViewArray, UInt16Array};
+use arrow::buffer::{BooleanBuffer, NullBuffer};
 use arrow::compute::cast;
 use arrow_schema::{DataType, Field, Schema};
 use fsst::Compressor;
@@ -261,6 +262,10 @@ impl LiquidStringArray {
         BooleanArray::new(values, nulls)
     }
 
+    pub fn nulls(&self) -> Option<&NullBuffer> {
+        self.keys.values.nulls()
+    }
+
     /// Compare the values of the LiquidStringArray with a given string.
     /// Leverage the distinct values to speed up the comparison.
     /// TODO: We can further optimize this by vectorizing the comparison.
@@ -271,32 +276,16 @@ impl LiquidStringArray {
         let values = &self.values.compressed;
         let keys = self.keys.to_primitive();
 
-        for (idx, v) in values.iter().enumerate() {
-            if let Some(v) = v {
-                if v == compressed {
-                    let mut builder = BooleanBuilder::new();
-                    for i in keys.iter() {
-                        if i.is_none() {
-                            builder.append_null();
-                        } else {
-                            builder.append_value(i == Some(idx as u16));
-                        }
-                    }
-                    return builder.finish();
-                }
-            }
-        }
+        let idx = values.iter().position(|v| v == Some(compressed.as_ref()));
 
-        let mut builder = BooleanBuilder::new();
-        for i in keys.iter() {
-            if i.is_none() {
-                builder.append_null();
-            } else {
-                builder.append_value(false);
-            }
+        if let Some(idx) = idx {
+            let to_compare = UInt16Array::new_scalar(idx as u16);
+            let result = arrow::compute::kernels::cmp::eq(&keys, &to_compare).unwrap();
+            return result;
+        } else {
+            let buffer = BooleanBuffer::new_unset(keys.len());
+            return BooleanArray::new(buffer, self.nulls().cloned());
         }
-
-        builder.finish()
     }
 }
 
