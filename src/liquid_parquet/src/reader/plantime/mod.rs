@@ -195,6 +195,26 @@ pub(crate) fn transform_to_liquid_cache_types(schema: &Schema) -> Schema {
             ),
             DataType::Binary | DataType::LargeBinary | DataType::BinaryView => field_with_new_type(
                 field,
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            ),
+            _ => field.clone(),
+        })
+        .collect();
+    Schema::new_with_metadata(transformed_fields, schema.metadata.clone())
+}
+
+/// FIXME: see this: https://github.com/XiangpengHao/datafusion-cache/issues/27
+pub(crate) fn coerce_to_parquet_reader_types(schema: &Schema) -> Schema {
+    let transformed_fields: Vec<Arc<Field>> = schema
+        .fields
+        .iter()
+        .map(|field| match field.data_type() {
+            DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => field_with_new_type(
+                field,
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            ),
+            DataType::Binary | DataType::LargeBinary | DataType::BinaryView => field_with_new_type(
+                field,
                 DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Binary)),
             ),
             _ => field.clone(),
@@ -203,26 +223,24 @@ pub(crate) fn transform_to_liquid_cache_types(schema: &Schema) -> Schema {
     Schema::new_with_metadata(transformed_fields, schema.metadata.clone())
 }
 
-pub(crate) fn coerce_file_schema_to_liquid_cache_types(
-    table_schema: &Schema,
-    file_schema: &Schema,
-) -> Option<Schema> {
-    let mut transform = false;
-    for field in table_schema.fields() {
-        if field.data_type().equals_datatype(&DataType::Dictionary(
-            Box::new(DataType::UInt16),
-            Box::new(DataType::Utf8),
-        )) || field.data_type().equals_datatype(&DataType::Dictionary(
-            Box::new(DataType::UInt16),
-            Box::new(DataType::Binary),
-        )) {
-            transform = true;
-        }
-    }
-
-    if !transform {
-        return None;
-    }
-
-    Some(transform_to_liquid_cache_types(file_schema))
+/// FIXME: see this: https://github.com/XiangpengHao/datafusion-cache/issues/27
+pub(crate) fn coerce_from_reader_to_liquid_types(schema: &Schema) -> Schema {
+    let transformed_fields: Vec<Arc<Field>> = schema
+        .fields
+        .iter()
+        .map(|field| {
+            if field.data_type().equals_datatype(&DataType::Dictionary(
+                Box::new(DataType::UInt16),
+                Box::new(DataType::Binary),
+            )) {
+                field_with_new_type(
+                    field,
+                    DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+                )
+            } else {
+                field.clone()
+            }
+        })
+        .collect();
+    Schema::new_with_metadata(transformed_fields, schema.metadata.clone())
 }

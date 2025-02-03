@@ -26,6 +26,8 @@ use std::{
     sync::Arc,
     task::{Context, Poll},
 };
+
+use super::plantime::coerce_from_reader_to_liquid_types;
 mod in_memory_rg;
 mod parquet_bridge;
 mod reader;
@@ -270,10 +272,11 @@ impl LiquidStreamBuilder {
             _ => unreachable!("Must be Struct for root type"),
         };
         let schema = Arc::new(Schema::new(projected_fields));
+        let schema = Arc::new(coerce_from_reader_to_liquid_types(&schema));
 
         Ok(LiquidStream {
             metadata: self.metadata.clone(),
-            schema: schema.clone(),
+            schema,
             row_groups,
             projection: self.projection,
             batch_size,

@@ -1,7 +1,7 @@
 use std::{any::Any, collections::VecDeque};
 
 use arrow::{
-    array::{ArrayRef, BooleanBufferBuilder},
+    array::{ArrayRef, BooleanBufferBuilder, new_empty_array},
     buffer::BooleanBuffer,
 };
 use arrow_schema::{DataType, Field, Fields};
@@ -46,14 +46,13 @@ struct CachedArrayReader {
 impl CachedArrayReader {
     fn new(inner: Box<dyn ArrayReader>, liquid_cache: LiquidCachedColumnRef) -> Self {
         let inner_type = inner.get_data_type();
-        let data_type = match inner_type {
-            DataType::Utf8 | DataType::Utf8View | DataType::LargeUtf8 => {
-                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8))
-            }
-            DataType::Binary | DataType::BinaryView | DataType::LargeBinary => {
-                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Binary))
-            }
-            _ => inner_type.clone(),
+        let data_type = if inner_type.equals_datatype(&DataType::Dictionary(
+            Box::new(DataType::UInt16),
+            Box::new(DataType::Binary),
+        )) {
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8))
+        } else {
+            inner_type.clone()
         };
 
         Self {
@@ -79,7 +78,10 @@ impl CachedArrayReader {
             self.inner_row_id = batch_id;
         }
         let read = self.inner.read_records(self.batch_size())?;
-        let batch = self.inner.consume_batch()?;
+        let mut batch = self.inner.consume_batch()?;
+        if !batch.data_type().equals_datatype(&self.data_type) {
+            batch = arrow::compute::cast(batch.as_ref(), &self.data_type)?;
+        }
         self.liquid_cache.insert_arrow_array(batch_id, batch);
         self.inner_row_id += read;
         Ok(())
@@ -155,7 +157,7 @@ impl ArrayReader for CachedArrayReader {
         let start_row = self.current_row - row_count;
 
         if row_count == 0 {
-            return self.inner.consume_batch();
+            return Ok(new_empty_array(&self.data_type));
         }
 
         let selection_buffer = row_selection_to_boolean_buffer(row_count, self.selection.iter());
@@ -201,7 +203,7 @@ impl ArrayReader for CachedArrayReader {
         self.selection.clear();
 
         match rt.len() {
-            0 => self.inner.consume_batch(),
+            0 => Ok(new_empty_array(&self.data_type)),
             1 => Ok(rt.into_iter().next().unwrap()),
             _ => Ok(arrow::compute::concat(
                 &rt.iter().map(|a| a.as_ref()).collect::<Vec<_>>(),
