@@ -203,7 +203,7 @@ pub(crate) fn transform_to_liquid_cache_types(schema: &Schema) -> Schema {
     Schema::new_with_metadata(transformed_fields, schema.metadata.clone())
 }
 
-/// FIXME: see this: https://github.com/XiangpengHao/datafusion-cache/issues/27
+// FIXME: see this: https://github.com/XiangpengHao/datafusion-cache/issues/27
 pub(crate) fn coerce_to_parquet_reader_types(schema: &Schema) -> Schema {
     let transformed_fields: Vec<Arc<Field>> = schema
         .fields
@@ -223,7 +223,7 @@ pub(crate) fn coerce_to_parquet_reader_types(schema: &Schema) -> Schema {
     Schema::new_with_metadata(transformed_fields, schema.metadata.clone())
 }
 
-/// FIXME: see this: https://github.com/XiangpengHao/datafusion-cache/issues/27
+// FIXME: see this: https://github.com/XiangpengHao/datafusion-cache/issues/27
 pub(crate) fn coerce_from_reader_to_liquid_types(schema: &Schema) -> Schema {
     let transformed_fields: Vec<Arc<Field>> = schema
         .fields
