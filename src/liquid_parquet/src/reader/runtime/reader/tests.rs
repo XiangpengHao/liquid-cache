@@ -1,13 +1,13 @@
 use arrow::{
     array::{
-        AsArray, BooleanArray, BooleanBuilder, Int8Array, Int16Array, Int32Array, Int64Array,
-        StringBuilder, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
+        AsArray, BooleanArray, BooleanBuilder, GenericByteDictionaryBuilder, Int8Array, Int16Array,
+        Int32Array, Int64Array, StringBuilder, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
     },
     buffer::BooleanBuffer,
     compute::filter,
     datatypes::{
-        DataType, Field, Int8Type, Int16Type, Int32Type, Int64Type, Schema, UInt8Type, UInt16Type,
-        UInt32Type, UInt64Type,
+        BinaryType, DataType, Field, Int8Type, Int16Type, Int32Type, Int64Type, Schema, UInt8Type,
+        UInt16Type, UInt32Type, UInt64Type,
     },
     record_batch::RecordBatch,
 };
@@ -48,6 +48,11 @@ fn test_schema() -> Schema {
         Field::new("i32_col", DataType::Int32, false),
         Field::new("i64_col", DataType::Int64, false),
         Field::new("string_col", DataType::Utf8, false),
+        Field::new(
+            "binary_col",
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Binary)),
+            false,
+        ),
     ])
 }
 
@@ -84,6 +89,7 @@ fn create_record_batch(batch_size: usize, batch_id: usize) -> RecordBatch {
     let mut i32_builder = Int32Array::builder(batch_size);
     let mut i64_builder = Int64Array::builder(batch_size);
     let mut string_builder = StringBuilder::new();
+    let mut binary_builder = GenericByteDictionaryBuilder::<UInt16Type, BinaryType>::new();
 
     for i in batch_id * batch_size..(batch_id + 1) * batch_size {
         // Numeric values
@@ -102,7 +108,8 @@ fn create_record_batch(batch_size: usize, batch_id: usize) -> RecordBatch {
             1 => "long_string_".repeat(50),
             _ => format!("value_{}", i % 100), // Repeating patterns
         };
-        string_builder.append_value(s);
+        string_builder.append_value(&s);
+        binary_builder.append_value(s.as_bytes());
     }
 
     RecordBatch::try_new(Arc::new(test_schema()), vec![
@@ -115,6 +122,7 @@ fn create_record_batch(batch_size: usize, batch_id: usize) -> RecordBatch {
         Arc::new(i32_builder.finish()),
         Arc::new(i64_builder.finish()),
         Arc::new(string_builder.finish()),
+        Arc::new(binary_builder.finish()),
     ])
     .unwrap()
 }

@@ -58,7 +58,8 @@ impl StatsCollector for FlameGraphReport {
         let datetime = now.duration_since(std::time::UNIX_EPOCH).unwrap();
         let minute = (datetime.as_secs() / 60) % 60;
         let second = datetime.as_secs() % 60;
-        let filename = format!("flamegraph-{:02}-{:02}.svg", minute, second);
+        let subsec = datetime.subsec_millis();
+        let filename = format!("flamegraph-{:02}-{:02}-{:03}.svg", minute, second, subsec);
         let filepath = self.output_dir.join(filename);
         let file = std::fs::File::create(&filepath).unwrap();
         report.flamegraph(file).unwrap();
@@ -100,7 +101,8 @@ impl StatsCollector for StatsReport {
         let datetime = now.duration_since(std::time::UNIX_EPOCH).unwrap();
         let minute = (datetime.as_secs() / 60) % 60;
         let second = datetime.as_secs() % 60;
-        let filename = format!("stats-{:02}-{:02}.parquet", minute, second);
+        let subsec = datetime.subsec_millis();
+        let filename = format!("stats-{:02}-{:02}-{:03}.parquet", minute, second, subsec);
         let parquet_file_path = self.output_dir.join(filename);
         self.cache.write_stats(&parquet_file_path).unwrap();
         log::info!("Stats saved to {}", parquet_file_path.display());

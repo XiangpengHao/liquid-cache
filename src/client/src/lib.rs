@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 use sql::FlightSqlDriver;
 use tonic::transport::Channel;
 
-fn transform_flight_schema_to_original_type(schema: &SchemaRef) -> Schema {
+fn transform_flight_schema_to_output_schema(schema: &SchemaRef) -> Schema {
     let transformed_fields: Vec<Arc<Field>> = schema
         .fields
         .iter()
@@ -39,6 +39,8 @@ fn transform_flight_schema_to_original_type(schema: &SchemaRef) -> Schema {
             DataType::Dictionary(key, value) => {
                 if key.as_ref() == &DataType::UInt16 && value.as_ref() == &DataType::Utf8 {
                     Arc::new(field.as_ref().clone().with_data_type(DataType::Utf8))
+                } else if key.as_ref() == &DataType::UInt16 && value.as_ref() == &DataType::Binary {
+                    Arc::new(field.as_ref().clone().with_data_type(DataType::Binary))
                 } else {
                     field.clone()
                 }
@@ -89,7 +91,7 @@ impl SplitSqlTableFactory {
             .map_err(to_df_err)?;
         let num_rows = precision(metadata.info.total_records);
         let total_byte_size = precision(metadata.info.total_bytes);
-        let output_schema = Arc::new(transform_flight_schema_to_original_type(&metadata.schema));
+        let output_schema = Arc::new(transform_flight_schema_to_output_schema(&metadata.schema));
         let flight_schema = metadata.schema;
         let stats = Statistics {
             num_rows,
@@ -167,7 +169,10 @@ pub struct FlightTable {
     channel: Channel,
     origin: String,
     table_name: TableReference,
+    /// Flight schema is the schema sent between network.
     flight_schema: SchemaRef,
+    /// Output schema is the schema we emit to users.
+    /// The flight schema is only optimized for transmission, so we need a schema adapter to change it to the output schema.
     output_schema: SchemaRef,
     stats: Statistics,
 }
