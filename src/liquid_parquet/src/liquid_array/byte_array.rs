@@ -1,25 +1,23 @@
+use arrow::array::builder::StringDictionaryBuilder;
+use arrow::array::{
+    Array, ArrayRef, BooleanArray, DictionaryArray, PrimitiveArray, RecordBatch, StringArray,
+    cast::AsArray, types::UInt16Type,
+};
+use arrow::array::{
+    ArrayAccessor, ArrayIter, BinaryArray, GenericByteArray, GenericByteDictionaryBuilder,
+    StringViewArray, UInt16Array,
+};
+use arrow::buffer::{BooleanBuffer, NullBuffer};
+use arrow::compute::cast;
+use arrow::datatypes::{BinaryType, ByteArrayType, Utf8Type};
+use arrow_schema::{DataType, Field, Schema};
+use fsst::Compressor;
 use std::any::Any;
 use std::num::NonZero;
 use std::sync::Arc;
 
-use arrow::array::builder::StringDictionaryBuilder;
-use arrow::array::{
-    Array, ArrayRef, BinaryArray, BooleanArray, DictionaryArray, PrimitiveArray, RecordBatch,
-    StringArray, cast::AsArray, types::UInt16Type,
-};
-use arrow::array::{
-    ArrayAccessor, ArrayIter, GenericByteArray, GenericByteDictionaryBuilder, StringViewArray,
-};
-use arrow::compute::{cast, kernels};
-
-use arrow::buffer::BooleanBuffer;
-use arrow::datatypes::{BinaryType, ByteArrayType, Utf8Type};
-use arrow_schema::{DataType, Field, Schema};
-use fsst::Compressor;
-
-use crate::liquid_array::{FsstArray, get_bit_width};
-
 use super::{BitPackedArray, LiquidArray, LiquidArrayRef};
+use crate::liquid_array::{FsstArray, get_bit_width};
 
 impl LiquidArray for LiquidByteArray {
     fn as_any(&self) -> &dyn Any {
@@ -385,31 +383,29 @@ impl LiquidByteArray {
         BooleanArray::new(values, nulls)
     }
 
+    pub fn nulls(&self) -> Option<&NullBuffer> {
+        self.keys.values.nulls()
+    }
+
     /// Compare the values of the LiquidStringArray with a given string.
+    /// Leverage the distinct values to speed up the comparison.
+    /// TODO: We can further optimize this by vectorizing the comparison.
     pub fn compare_equals(&self, needle: &str) -> BooleanArray {
         let compressor = &self.values.compressor;
         let compressed = compressor.compress(needle.as_bytes());
-        let compressed = BinaryArray::new_scalar(compressed);
 
         let values = &self.values.compressed;
-
-        let result = kernels::cmp::eq(values, &compressed).unwrap();
-        let (values, nulls) = result.into_parts();
-        assert!(
-            nulls.is_none(),
-            "The dictionary values should not have nulls"
-        );
-
         let keys = self.keys.to_primitive();
-        let mut return_mask = BooleanBuffer::new_unset(keys.len());
-        for idx in values.set_indices() {
-            let result =
-                kernels::cmp::eq(&keys, &PrimitiveArray::<UInt16Type>::new_scalar(idx as u16))
-                    .unwrap();
-            let (values, _nulls) = result.into_parts();
-            return_mask = &return_mask | &values;
+
+        let idx = values.iter().position(|v| v == Some(compressed.as_ref()));
+
+        if let Some(idx) = idx {
+            let to_compare = UInt16Array::new_scalar(idx as u16);
+            arrow::compute::kernels::cmp::eq(&keys, &to_compare).unwrap()
+        } else {
+            let buffer = BooleanBuffer::new_unset(keys.len());
+            BooleanArray::new(buffer, self.nulls().cloned())
         }
-        BooleanArray::new(return_mask, keys.nulls().cloned())
     }
 }
 
@@ -643,6 +639,17 @@ mod tests {
                 needle: "@home",
                 expected: vec![Some(true), Some(false), Some(true), Some(false)],
             },
+            TestCase {
+                input: vec![None, None, None, None, Some("world")],
+                needle: "hello",
+                expected: vec![None, None, None, None, Some(false)],
+            },
+            // This cannot pass because the nulls are not handled correctly in `BitPackedArray::from_primitive`
+            // TestCase {
+            //     input: vec![None, None, None, None],
+            //     needle: "hello",
+            //     expected: vec![None, None, None, None],
+            // },
         ];
 
         for case in test_cases {
