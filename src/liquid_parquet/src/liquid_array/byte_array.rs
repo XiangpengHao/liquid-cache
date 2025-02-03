@@ -21,7 +21,7 @@ use crate::liquid_array::{FsstArray, get_bit_width};
 
 use super::{BitPackedArray, LiquidArray, LiquidArrayRef};
 
-impl LiquidArray for LiquidStringArray {
+impl LiquidArray for LiquidByteArray {
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -55,10 +55,10 @@ impl LiquidArray for LiquidStringArray {
             .as_primitive::<UInt16Type>()
             .clone();
         let bit_packed_array = BitPackedArray::from_primitive(filtered_keys, keys.bit_width);
-        Arc::new(LiquidStringArray {
+        Arc::new(LiquidByteArray {
             keys: bit_packed_array,
             values,
-            arrow_type: self.arrow_type,
+            original_arrow_type: self.original_arrow_type,
         })
     }
 }
@@ -136,14 +136,15 @@ impl ArrowStringType {
 
 /// An array that stores strings in a dictionary format, with a bit-packed array for the keys and a FSST array for the values.
 #[derive(Debug)]
-pub struct LiquidStringArray {
+pub struct LiquidByteArray {
     keys: BitPackedArray<UInt16Type>,
     /// TODO: we need to specify that the values in the FsstArray must be unique, this enables us some optimizations.
     values: FsstArray,
-    arrow_type: ArrowStringType,
+    /// Used to convert back to the original arrow type.
+    original_arrow_type: ArrowStringType,
 }
 
-impl LiquidStringArray {
+impl LiquidByteArray {
     pub fn from_string_view_array(array: &StringViewArray, compressor: Arc<Compressor>) -> Self {
         let dict = byte_array_to_dict_array::<Utf8Type, _>(array.iter());
         Self::from_dict_array_inner(dict, compressor, ArrowStringType::Utf8View)
@@ -184,7 +185,7 @@ impl LiquidStringArray {
         let compressor = Self::train_compressor(dict.values().as_string::<i32>().iter());
         (
             compressor.clone(),
-            Self::from_dict_array_inner(dict, compressor, ArrowStringType::Dict16Utf8),
+            Self::from_dict_array_inner(dict, compressor, ArrowStringType::Utf8View),
         )
     }
 
@@ -256,10 +257,10 @@ impl LiquidStringArray {
         } else {
             panic!("Unsupported dictionary type")
         };
-        LiquidStringArray {
+        LiquidByteArray {
             keys: bit_packed_array,
             values: fsst_values,
-            arrow_type,
+            original_arrow_type: arrow_type,
         }
     }
 
@@ -301,8 +302,8 @@ impl LiquidStringArray {
     pub fn to_dict_arrow(&self) -> DictionaryArray<UInt16Type> {
         let primitive_key = self.keys.to_primitive().clone();
 
-        if self.arrow_type.is_string() {
-            let values: StringArray = StringArray::from(&self.values);
+        if self.original_arrow_type.is_string() {
+            let values = self.values.to_arrow_byte_array::<Utf8Type>();
             unsafe { DictionaryArray::<UInt16Type>::new_unchecked(primitive_key, Arc::new(values)) }
         } else {
             let values = self.values.to_arrow_byte_array::<BinaryType>();
@@ -327,7 +328,7 @@ impl LiquidStringArray {
     /// Convert the LiquidStringArray to a StringArray.
     pub fn to_arrow_array(&self) -> ArrayRef {
         let dict = self.to_dict_arrow();
-        cast(&dict, &self.arrow_type.to_arrow_type()).unwrap()
+        cast(&dict, &self.original_arrow_type.to_arrow_type()).unwrap()
     }
 
     /// Repackage the data into Arrow-compatible format, so that it can be written to disk, transferred over flight.
@@ -359,10 +360,10 @@ impl LiquidStringArray {
             metadata.compressor.clone(),
             metadata.uncompressed_len as usize,
         );
-        LiquidStringArray {
+        LiquidByteArray {
             keys,
             values,
-            arrow_type: ArrowStringType::Dict16Binary,
+            original_arrow_type: ArrowStringType::Dict16Binary,
         }
     }
 
@@ -430,8 +431,8 @@ mod tests {
     #[test]
     fn test_simple_roundtrip() {
         let input = StringArray::from(vec!["hello", "world", "hello", "rust"]);
-        let compressor = LiquidStringArray::train_compressor(input.iter());
-        let etc = LiquidStringArray::from_string_array(&input, compressor);
+        let compressor = LiquidByteArray::train_compressor(input.iter());
+        let etc = LiquidByteArray::from_string_array(&input, compressor);
         let output = etc.to_arrow_array();
         let string_array = output.as_string::<i32>();
         assert_eq!(input.len(), string_array.len());
@@ -443,8 +444,8 @@ mod tests {
     #[test]
     fn test_to_arrow_array_preserve_arrow_type() {
         let input = StringArray::from(vec!["hello", "world", "hello", "rust"]);
-        let compressor = LiquidStringArray::train_compressor(input.iter());
-        let etc = LiquidStringArray::from_string_array(&input, compressor);
+        let compressor = LiquidByteArray::train_compressor(input.iter());
+        let etc = LiquidByteArray::from_string_array(&input, compressor);
         let output = etc.to_arrow_array();
         assert_eq!(&input, output.as_string::<i32>());
 
@@ -452,8 +453,8 @@ mod tests {
             .unwrap()
             .as_string_view()
             .clone();
-        let compressor = LiquidStringArray::train_compressor(input.iter());
-        let etc = LiquidStringArray::from_string_view_array(&input, compressor);
+        let compressor = LiquidByteArray::train_compressor(input.iter());
+        let etc = LiquidByteArray::from_string_view_array(&input, compressor);
         let output = etc.to_arrow_array();
         assert_eq!(&input, output.as_string_view());
 
@@ -465,8 +466,8 @@ mod tests {
         .as_dictionary()
         .clone();
         let compressor =
-            LiquidStringArray::train_compressor(input.values().as_string::<i32>().iter());
-        let etc = LiquidStringArray::from_dict_array(&input, compressor);
+            LiquidByteArray::train_compressor(input.values().as_string::<i32>().iter());
+        let etc = LiquidByteArray::from_dict_array(&input, compressor);
         let output = etc.to_arrow_array();
         assert_eq!(&input, output.as_dictionary());
     }
@@ -480,8 +481,8 @@ mod tests {
             None,
             Some("hello"),
         ]);
-        let compressor = LiquidStringArray::train_compressor(input.iter());
-        let etc = LiquidStringArray::from_string_array(&input, compressor);
+        let compressor = LiquidByteArray::train_compressor(input.iter());
+        let etc = LiquidByteArray::from_string_array(&input, compressor);
         let output = etc.to_arrow_array();
         let string_array = output.as_string::<i32>();
 
@@ -501,8 +502,8 @@ mod tests {
         let input: Vec<&str> = (0..1000).map(|i| values[i % values.len()]).collect();
         let input = StringArray::from(input);
 
-        let compressor = LiquidStringArray::train_compressor(input.iter());
-        let etc = LiquidStringArray::from_string_array(&input, compressor);
+        let compressor = LiquidByteArray::train_compressor(input.iter());
+        let etc = LiquidByteArray::from_string_array(&input, compressor);
         let output = etc.to_arrow_array();
         let string_array = output.as_string::<i32>();
 
@@ -522,8 +523,8 @@ mod tests {
             "Another long string with some common patterns",
         ]);
 
-        let compressor = LiquidStringArray::train_compressor(input.iter());
-        let etc = LiquidStringArray::from_string_array(&input, compressor);
+        let compressor = LiquidByteArray::train_compressor(input.iter());
+        let etc = LiquidByteArray::from_string_array(&input, compressor);
         let output = etc.to_arrow_array();
         let string_array = output.as_string::<i32>();
         assert_eq!(input.len(), string_array.len());
@@ -535,8 +536,8 @@ mod tests {
     #[test]
     fn test_empty_strings() {
         let input = StringArray::from(vec!["", "", "non-empty", ""]);
-        let compressor = LiquidStringArray::train_compressor(input.iter());
-        let etc = LiquidStringArray::from_string_array(&input, compressor);
+        let compressor = LiquidByteArray::train_compressor(input.iter());
+        let etc = LiquidByteArray::from_string_array(&input, compressor);
         let output = etc.to_arrow_array();
         let string_array = output.as_string::<i32>();
         assert_eq!(input.len(), string_array.len());
@@ -548,8 +549,8 @@ mod tests {
     #[test]
     fn test_dictionary_roundtrip() {
         let input = StringArray::from(vec!["hello", "world", "hello", "rust"]);
-        let compressor = LiquidStringArray::train_compressor(input.iter());
-        let etc = LiquidStringArray::from_string_array(&input, compressor);
+        let compressor = LiquidByteArray::train_compressor(input.iter());
+        let etc = LiquidByteArray::from_string_array(&input, compressor);
         let dict = etc.to_dict_arrow();
 
         // Check dictionary values are unique
@@ -647,8 +648,8 @@ mod tests {
         for case in test_cases {
             let input_array: StringArray = StringArray::from(case.input.clone());
 
-            let compressor = LiquidStringArray::train_compressor(input_array.iter());
-            let etc = LiquidStringArray::from_string_array(&input_array, compressor);
+            let compressor = LiquidByteArray::train_compressor(input_array.iter());
+            let etc = LiquidByteArray::from_string_array(&input_array, compressor);
 
             let result: BooleanArray = etc.compare_equals(case.needle);
 
@@ -662,7 +663,7 @@ mod tests {
     fn test_to_dict_arrow_preserves_type() {
         // Test string type preservation
         let input_str = StringArray::from(vec!["hello", "world", "test"]);
-        let (_compressor_str, liquid_str) = LiquidStringArray::train_from_arrow(&input_str);
+        let (_compressor_str, liquid_str) = LiquidByteArray::train_from_arrow(&input_str);
         let dict_str = liquid_str.to_dict_arrow();
         assert_eq!(
             dict_str.values().data_type(),
@@ -675,7 +676,7 @@ mod tests {
             .unwrap()
             .as_binary::<i32>()
             .clone();
-        let (_compressor_bin, liquid_bin) = LiquidStringArray::train_from_arrow(&input_bin);
+        let (_compressor_bin, liquid_bin) = LiquidByteArray::train_from_arrow(&input_bin);
         let dict_bin = liquid_bin.to_dict_arrow();
         assert_eq!(
             dict_bin.values().data_type(),
@@ -685,7 +686,7 @@ mod tests {
 
         // Test dictionary-string array
         let dict_array = DictionaryArray::<UInt16Type>::from_iter(input_str.iter());
-        let (_compressor_dict, liquid_dict) = LiquidStringArray::train_from_arrow_dict(&dict_array);
+        let (_compressor_dict, liquid_dict) = LiquidByteArray::train_from_arrow_dict(&dict_array);
         let dict_result = liquid_dict.to_dict_arrow();
         assert_eq!(
             dict_result.values().data_type(),
@@ -701,7 +702,7 @@ mod tests {
         )
         .unwrap();
         let (_compressor_dict, liquid_dict) =
-            LiquidStringArray::train_from_arrow_dict(dict_array.as_dictionary());
+            LiquidByteArray::train_from_arrow_dict(dict_array.as_dictionary());
         let dict_result = liquid_dict.to_dict_arrow();
         assert_eq!(
             dict_result.values().data_type(),

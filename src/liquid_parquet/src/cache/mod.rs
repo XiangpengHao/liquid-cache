@@ -16,7 +16,7 @@ mod stats;
 
 use crate::LiquidPredicate;
 
-use super::liquid_array::{LiquidArrayRef, LiquidPrimitiveArray, LiquidStringArray};
+use super::liquid_array::{LiquidArrayRef, LiquidPrimitiveArray, LiquidByteArray};
 mod utils;
 use arrow::array::types::{
     Int8Type as ArrowInt8Type, Int16Type as ArrowInt16Type, Int32Type as ArrowInt32Type,
@@ -331,7 +331,7 @@ impl LiquidCachedColumn {
                     DataType::Utf8View => {
                         let compressor = states.fsst_compressor.read().unwrap();
                         if let Some(compressor) = compressor.as_ref() {
-                            let compressed = LiquidStringArray::from_string_view_array(
+                            let compressed = LiquidByteArray::from_string_view_array(
                                 array.as_string_view(),
                                 compressor.clone(),
                             );
@@ -345,7 +345,7 @@ impl LiquidCachedColumn {
                         drop(compressor);
                         let mut compressors = states.fsst_compressor.write().unwrap();
                         let (compressor, compressed) =
-                            LiquidStringArray::train_from_arrow_view(array.as_string_view());
+                            LiquidByteArray::train_from_arrow_view(array.as_string_view());
                         *compressors = Some(compressor);
                         rows.insert(
                             row_id,
@@ -355,7 +355,7 @@ impl LiquidCachedColumn {
                     DataType::Utf8 => {
                         let compressor = states.fsst_compressor.read().unwrap();
                         if let Some(compressor) = compressor.as_ref() {
-                            let compressed = LiquidStringArray::from_string_array(
+                            let compressed = LiquidByteArray::from_string_array(
                                 array.as_string::<i32>(),
                                 compressor.clone(),
                             );
@@ -369,7 +369,7 @@ impl LiquidCachedColumn {
                         drop(compressor);
                         let mut compressors = states.fsst_compressor.write().unwrap();
                         let (compressor, compressed) =
-                            LiquidStringArray::train_from_arrow(array.as_string::<i32>());
+                            LiquidByteArray::train_from_arrow(array.as_string::<i32>());
                         *compressors = Some(compressor);
                         rows.insert(
                             row_id,
@@ -380,7 +380,7 @@ impl LiquidCachedColumn {
                         if let Some(dict_array) = array.as_dictionary_opt::<ArrowUInt16Type>() {
                             let compressor = states.fsst_compressor.read().unwrap();
                             if let Some(compressor) = compressor.as_ref() {
-                                let liquid_array = LiquidStringArray::from_dict_array(
+                                let liquid_array = LiquidByteArray::from_dict_array(
                                     dict_array,
                                     compressor.clone(),
                                 );
@@ -396,7 +396,7 @@ impl LiquidCachedColumn {
                             drop(compressor);
                             let mut compressors = states.fsst_compressor.write().unwrap();
                             let (compressor, liquid_array) =
-                                LiquidStringArray::train_from_arrow_dict(dict_array);
+                                LiquidByteArray::train_from_arrow_dict(dict_array);
                             *compressors = Some(compressor);
                             rows.insert(
                                 row_id,
