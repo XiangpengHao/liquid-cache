@@ -213,7 +213,7 @@ impl ArrayReader for CachedArrayReader {
 
     fn consume_batch(&mut self) -> Result<ArrayRef, ParquetError> {
         let array = self.consume_batch_inner()?;
-        debug_assert!(self.data_type.equals_datatype(&array.data_type()));
+        debug_assert_eq!(&self.data_type, array.data_type());
         Ok(array)
     }
 
