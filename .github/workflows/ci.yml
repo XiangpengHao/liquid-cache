@@ -10,6 +10,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  RUSTFLAGS: "-C debuginfo=line-tables-only -C incremental=false"
 
 jobs:
   check:
@@ -17,7 +19,11 @@ jobs:
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/rust-setup
+      # - uses: ./.github/actions/rust-setup
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2025-01-24
+
       - uses: Swatinem/rust-cache@v2
       
       - name: Check formatting
@@ -36,7 +42,10 @@ jobs:
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/rust-setup
+      # - uses: ./.github/actions/rust-setup
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2025-01-24
       - uses: Swatinem/rust-cache@v2
       
       - name: Run tests
@@ -47,7 +56,10 @@ jobs:
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/rust-setup
+      # - uses: ./.github/actions/rust-setup
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2025-01-24
       - uses: Swatinem/rust-cache@v2
         with:
           cache-all-crates: true
@@ -63,7 +75,10 @@ jobs:
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/rust-setup
+      # - uses: ./.github/actions/rust-setup
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2025-01-24
       - uses: Swatinem/rust-cache@v2
         with:
           cache-all-crates: true
@@ -78,7 +93,10 @@ jobs:
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/rust-setup
+      # - uses: ./.github/actions/rust-setup
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2025-01-24
       - uses: Swatinem/rust-cache@v2
       - name: Build LiquidCache server
         run: cargo build --release --bin bench_server
