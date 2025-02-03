@@ -191,7 +191,7 @@ impl LiquidPredicate for DatafusionArrowPredicate {
                         }
                     }
 
-                    let dict_array = array.to_dict_string();
+                    let dict_array = array.to_dict_arrow();
                     let lhs = ColumnarValue::Array(Arc::new(dict_array));
                     let rhs = ColumnarValue::Scalar(literal.value().clone());
 
@@ -216,7 +216,7 @@ impl LiquidPredicate for DatafusionArrowPredicate {
             }
         } else if let Some(like_expr) = self.physical_expr.as_any().downcast_ref::<LikeExpr>() {
             if let Some(literal) = like_expr.pattern().as_any().downcast_ref::<Literal>() {
-                let arrow_dict = array.as_string().to_dict_string();
+                let arrow_dict = array.as_string().to_dict_arrow();
 
                 let lhs = ColumnarValue::Array(Arc::new(arrow_dict));
                 let rhs = ColumnarValue::Scalar(literal.value().clone());
@@ -252,7 +252,7 @@ impl ArrowPredicate for DatafusionArrowPredicate {
 
     fn evaluate(&mut self, mut batch: RecordBatch) -> ArrowResult<BooleanArray> {
         if !self.projection.is_empty() {
-            batch = batch.project(&self.projection)?;
+            batch = batch.project(&self.projection).unwrap();
         };
 
         // we deliberately don't map schema here, because when a schema mismatch occurs,
@@ -645,6 +645,12 @@ pub fn build_row_filter(
         });
     }
 
+    candidates.sort_unstable_by(|c1, c2| {
+        let p1 = get_priority(&c1.expr);
+        let p2 = get_priority(&c2.expr);
+        p1.cmp(&p2)
+    });
+
     candidates
         .into_iter()
         .map(|candidate| {
@@ -661,4 +667,21 @@ pub fn build_row_filter(
         })
         .collect::<Result<Vec<_>, _>>()
         .map(|filters| Some(LiquidRowFilter::new(filters)))
+}
+
+fn get_priority(expr: &Arc<dyn PhysicalExpr>) -> u8 {
+    if let Some(binary) = expr.as_any().downcast_ref::<BinaryExpr>() {
+        match binary.op() {
+            Operator::Eq | Operator::NotEq => 0,    // Highest priority
+            Operator::Lt | Operator::LtEq |        // Medium priority
+            Operator::Gt | Operator::GtEq => 1,
+            Operator::LikeMatch | Operator::ILikeMatch |  // Lower priority
+            Operator::NotLikeMatch | Operator::NotILikeMatch => 2,
+            _ => 3,                               // Lowest priority
+        }
+    } else if expr.as_any().downcast_ref::<LikeExpr>().is_some() {
+        4 // LIKE expressions
+    } else {
+        5 // All other expression types
+    }
 }

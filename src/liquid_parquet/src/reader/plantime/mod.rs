@@ -1,4 +1,4 @@
-use std::{any::Any, collections::HashMap, sync::Arc};
+use std::{any::Any, sync::Arc};
 
 use arrow_schema::{DataType, Field, FieldRef, Schema, SchemaRef};
 use async_trait::async_trait;
@@ -97,7 +97,9 @@ impl FileFormat for LiquidParquetFileFormat {
         store: &Arc<dyn ObjectStore>,
         objects: &[ObjectMeta],
     ) -> Result<SchemaRef> {
-        self.inner.infer_schema(state, store, objects).await
+        let parquet_schema = self.inner.infer_schema(state, store, objects).await?;
+        let transformed = transform_to_liquid_cache_types(&parquet_schema);
+        Ok(Arc::new(transformed))
     }
 
     async fn infer_stats(
@@ -176,62 +178,51 @@ impl FileFormat for LiquidParquetFileFormat {
     }
 }
 
-pub(crate) fn coerce_file_schema_to_string_type(
-    table_schema: &Schema,
-    file_schema: &Schema,
-) -> Option<Schema> {
-    let mut transform = false;
-    let table_fields: HashMap<_, _> = table_schema
-        .fields
-        .iter()
-        .map(|f| (f.name(), f.data_type()))
-        .collect();
-    let transformed_fields: Vec<Arc<Field>> = file_schema
-        .fields
-        .iter()
-        .map(
-            |field| match (table_fields.get(field.name()), field.data_type()) {
-                // table schema uses string type, coerce the file schema to use string type
-                (
-                    Some(DataType::Utf8),
-                    DataType::Binary | DataType::LargeBinary | DataType::BinaryView,
-                ) => {
-                    transform = true;
-                    field_with_new_type(field, DataType::Utf8)
-                }
-                // table schema uses large string type, coerce the file schema to use large string type
-                (
-                    Some(DataType::LargeUtf8),
-                    DataType::Binary | DataType::LargeBinary | DataType::BinaryView,
-                ) => {
-                    transform = true;
-                    field_with_new_type(field, DataType::LargeUtf8)
-                }
-                // table schema uses string view type, coerce the file schema to use view type
-                (
-                    Some(DataType::Utf8View),
-                    DataType::Binary | DataType::LargeBinary | DataType::BinaryView,
-                ) => {
-                    transform = true;
-                    field_with_new_type(field, DataType::Utf8View)
-                }
-                _ => Arc::clone(field),
-            },
-        )
-        .collect();
-
-    if !transform {
-        None
-    } else {
-        Some(Schema::new_with_metadata(
-            transformed_fields,
-            file_schema.metadata.clone(),
-        ))
-    }
-}
-
 /// Create a new field with the specified data type, copying the other
 /// properties from the input field
 fn field_with_new_type(field: &FieldRef, new_type: DataType) -> FieldRef {
     Arc::new(field.as_ref().clone().with_data_type(new_type))
+}
+
+pub(crate) fn transform_to_liquid_cache_types(schema: &Schema) -> Schema {
+    let transformed_fields: Vec<Arc<Field>> = schema
+        .fields
+        .iter()
+        .map(|field| match field.data_type() {
+            DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => field_with_new_type(
+                field,
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            ),
+            DataType::Binary | DataType::LargeBinary | DataType::BinaryView => field_with_new_type(
+                field,
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Binary)),
+            ),
+            _ => field.clone(),
+        })
+        .collect();
+    Schema::new_with_metadata(transformed_fields, schema.metadata.clone())
+}
+
+pub(crate) fn coerce_file_schema_to_liquid_cache_types(
+    table_schema: &Schema,
+    file_schema: &Schema,
+) -> Option<Schema> {
+    let mut transform = false;
+    for field in table_schema.fields() {
+        if field.data_type().equals_datatype(&DataType::Dictionary(
+            Box::new(DataType::UInt16),
+            Box::new(DataType::Utf8),
+        )) || field.data_type().equals_datatype(&DataType::Dictionary(
+            Box::new(DataType::UInt16),
+            Box::new(DataType::Binary),
+        )) {
+            transform = true;
+        }
+    }
+
+    if !transform {
+        return None;
+    }
+
+    Some(transform_to_liquid_cache_types(file_schema))
 }

@@ -143,4 +143,8 @@ impl LiquidCacheServiceInner {
     pub(crate) fn remove_plan(&self, handle: &str) {
         self.execution_plans.remove(&handle.to_string());
     }
+
+    pub(crate) fn batch_size(&self) -> usize {
+        self.default_ctx.state().config().batch_size()
+    }
 }

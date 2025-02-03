@@ -1,6 +1,9 @@
 use std::{any::Any, collections::VecDeque};
 
-use arrow::array::ArrayRef;
+use arrow::{
+    array::{ArrayRef, BooleanBufferBuilder},
+    buffer::BooleanBuffer,
+};
 use arrow_schema::{DataType, Field, Fields};
 use parquet::{
     arrow::{
@@ -46,6 +49,9 @@ impl CachedArrayReader {
         let data_type = match inner_type {
             DataType::Utf8 | DataType::Utf8View | DataType::LargeUtf8 => {
                 DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8))
+            }
+            DataType::Binary | DataType::BinaryView | DataType::LargeBinary => {
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Binary))
             }
             _ => inner_type.clone(),
         };
@@ -112,6 +118,17 @@ impl CachedArrayReader {
     }
 }
 
+fn row_selection_to_boolean_buffer<'a>(
+    row_count: usize,
+    selection: impl Iterator<Item = &'a RowSelector>,
+) -> BooleanBuffer {
+    let mut buffer = BooleanBufferBuilder::new(row_count);
+    for selector in selection {
+        buffer.append_n(selector.row_count, !selector.skip);
+    }
+    buffer.finish()
+}
+
 impl ArrayReader for CachedArrayReader {
     fn as_any(&self) -> &dyn Any {
         self.inner.as_any()
@@ -135,69 +152,60 @@ impl ArrayReader for CachedArrayReader {
     fn consume_batch(&mut self) -> Result<ArrayRef, ParquetError> {
         let row_count: usize = self.selection.iter().map(|s| s.row_count).sum();
         let batch_size = self.liquid_cache.batch_size();
-        let mut current_row = self.current_row - row_count;
+        let start_row = self.current_row - row_count;
+
+        if row_count == 0 {
+            return self.inner.consume_batch();
+        }
+
+        let selection_buffer = row_selection_to_boolean_buffer(row_count, self.selection.iter());
+        let selection_array = arrow::array::BooleanArray::from(selection_buffer);
+
+        // Calculate batch range involved in this selection
+        let start_batch = start_row / batch_size;
+        let end_batch = (start_row + row_count - 1) / batch_size;
 
         let mut rt = vec![];
-        for selector in self.selection.iter() {
-            if selector.skip {
-                current_row += selector.row_count;
+        for batch_id in start_batch..=end_batch {
+            let batch_start = batch_id * batch_size;
+            let batch_end = batch_start + batch_size - 1;
+
+            // Calculate overlap between selection and this batch
+            let overlap_start = start_row.max(batch_start);
+            let overlap_end = (start_row + row_count - 1).min(batch_end);
+
+            if overlap_start > overlap_end {
+                continue; // No overlap with this batch
+            }
+
+            // Get corresponding slice from selection buffer
+            let selection_start = overlap_start - start_row;
+            let selection_length = overlap_end - overlap_start + 1;
+            let mask = selection_array.slice(selection_start, selection_length);
+
+            if mask.true_count() == 0 {
                 continue;
             }
-            let ending_row = current_row + selector.row_count;
-            let starting_batch_id = current_row / batch_size * batch_size;
-            let ending_batch_id = (ending_row - 1) / batch_size * batch_size;
 
-            if starting_batch_id == ending_batch_id {
-                // easy case
-                let full_array = self
-                    .liquid_cache
-                    .get_arrow_array(starting_batch_id)
-                    .unwrap();
-                debug_assert_eq!(full_array.data_type(), &self.data_type);
-                let offset = current_row - starting_batch_id;
-                rt.push(full_array.slice(offset, selector.row_count));
-            } else {
-                // need to split the select
-                let start_full_array = self
-                    .liquid_cache
-                    .get_arrow_array(starting_batch_id)
-                    .unwrap();
-                debug_assert_eq!(start_full_array.data_type(), &self.data_type);
-                let end_full_array = self.liquid_cache.get_arrow_array(ending_batch_id).unwrap();
-                debug_assert_eq!(end_full_array.data_type(), &self.data_type);
+            // Get cached array and apply filter
+            let array = self
+                .liquid_cache
+                .get_arrow_array(batch_id * batch_size)
+                .unwrap();
+            let array_slice = array.slice(overlap_start - batch_start, selection_length);
+            let filtered = arrow::compute::filter(&array_slice, &mask)?;
 
-                let start_select = ending_batch_id - current_row;
-                let end_select = ending_row - ending_batch_id;
-                debug_assert_eq!(
-                    current_row - starting_batch_id + start_select,
-                    start_full_array.len(),
-                    "if we have a next batch, then the previous batch must be fully selected"
-                );
-                debug_assert_eq!(
-                    start_full_array.len(),
-                    batch_size,
-                    "if we have a next batch, then the previous batch must be size of batch_size"
-                );
-                rt.push(start_full_array.slice(current_row - starting_batch_id, start_select));
-                rt.push(end_full_array.slice(0, end_select));
-            }
-            current_row += selector.row_count;
+            rt.push(filtered);
         }
+
         self.selection.clear();
 
         match rt.len() {
-            0 => {
-                // return empty array
-                self.inner.consume_batch()
-            }
+            0 => self.inner.consume_batch(),
             1 => Ok(rt.into_iter().next().unwrap()),
-            _ => {
-                let concat = arrow::compute::concat(
-                    &rt.as_slice().iter().map(|a| a.as_ref()).collect::<Vec<_>>(),
-                )
-                .unwrap();
-                Ok(concat)
-            }
+            _ => Ok(arrow::compute::concat(
+                &rt.iter().map(|a| a.as_ref()).collect::<Vec<_>>(),
+            )?),
         }
     }
 

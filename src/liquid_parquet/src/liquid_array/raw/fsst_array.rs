@@ -1,6 +1,10 @@
-use arrow::array::{
-    Array, BinaryArray, GenericByteArray, StringArray,
-    builder::{BinaryBuilder, StringBuilder},
+use arrow::{
+    array::{
+        Array, ArrayDataBuilder, BinaryArray, BufferBuilder, GenericByteArray, StringArray,
+        builder::BinaryBuilder,
+    },
+    buffer::Buffer,
+    datatypes::{ArrowNativeType, ByteArrayType, Utf8Type},
 };
 use fsst::Compressor;
 use std::mem::MaybeUninit;
@@ -32,32 +36,27 @@ impl FsstArray {
         }
     }
 
-    pub fn from_string_array(input: &StringArray) -> Self {
-        let strings = input
-            .iter()
-            .filter_map(|s| s.as_ref().map(|s| s.as_bytes()))
-            .collect::<Vec<_>>();
-
-        let compressor = Arc::new(fsst::Compressor::train(&strings));
-
-        Self::from_string_array_with_compressor(input, compressor)
+    pub fn train_compressor<'a>(input: impl Iterator<Item = &'a [u8]>) -> Compressor {
+        let strings = input.collect::<Vec<_>>();
+        fsst::Compressor::train(&strings)
     }
 
-    pub fn from_string_array_with_compressor(
-        input: &StringArray,
+    pub fn from_byte_array_with_compressor<T: ByteArrayType>(
+        input: &GenericByteArray<T>,
         compressor: Arc<Compressor>,
     ) -> Self {
-        let data_capacity = input.offsets().last().unwrap_or(&0);
+        let default_offset = T::Offset::default();
+        let data_capacity = input.offsets().last().unwrap_or(&default_offset);
         let item_capacity = input.offsets().len();
 
         let mut compress_buffer = Vec::with_capacity(2 * 1024 * 1024);
-        let mut builder = BinaryBuilder::with_capacity(item_capacity, *data_capacity as usize);
+        let mut builder = BinaryBuilder::with_capacity(item_capacity, data_capacity.as_usize());
         let mut total_len = 0;
 
         for s in input.iter() {
             match s {
                 Some(s) => {
-                    let bytes = s.as_bytes();
+                    let bytes: &[u8] = s.as_ref();
                     total_len += bytes.len();
                     unsafe {
                         compressor.compress_into(bytes, &mut compress_buffer);
@@ -88,58 +87,65 @@ impl FsstArray {
     pub(crate) fn get_array_memory_size(&self) -> usize {
         self.compressed.get_array_memory_size() + std::mem::size_of::<FsstArray>()
     }
+
+    pub(crate) fn to_arrow_byte_array<T: ByteArrayType>(&self) -> GenericByteArray<T> {
+        // we can directly use the null buffer in the compressed array.
+        let null_buffer = self.compressed.nulls().cloned();
+        let mut value_buffer: Vec<u8> = Vec::with_capacity(self.uncompressed_len + 8);
+        let mut offsets_builder = BufferBuilder::<i32>::new(self.compressed.len() + 1);
+        offsets_builder.append(0);
+
+        let decompressor = self.compressor.decompressor();
+
+        for v in self.compressed.iter() {
+            match v {
+                Some(v) => {
+                    let slice = unsafe {
+                        std::slice::from_raw_parts_mut(
+                            value_buffer.as_mut_ptr().add(value_buffer.len())
+                                as *mut MaybeUninit<u8>,
+                            value_buffer.capacity(), // we don't care about the capacity here
+                        )
+                    };
+                    let len = unsafe { decompressor.decompress_into(v, slice) };
+                    let new_len = value_buffer.len() + len;
+                    debug_assert!(new_len <= value_buffer.capacity());
+                    unsafe {
+                        value_buffer.set_len(new_len);
+                    }
+                    offsets_builder.append(value_buffer.len() as i32);
+                }
+                None => {
+                    offsets_builder.append(value_buffer.len() as i32);
+                }
+            }
+        }
+        assert_eq!(value_buffer.len(), self.uncompressed_len);
+        let value_buffer = Buffer::from(value_buffer);
+        let offsets_buffer = offsets_builder.finish();
+        let array_builder = ArrayDataBuilder::new(T::DATA_TYPE)
+            .len(self.compressed.len())
+            .add_buffer(offsets_buffer)
+            .add_buffer(value_buffer)
+            .nulls(null_buffer);
+        let array_data = unsafe { array_builder.build_unchecked() };
+        GenericByteArray::from(array_data)
+    }
 }
 
 impl From<&FsstArray> for StringArray {
     fn from(value: &FsstArray) -> Self {
-        // TODO (xiangpeng): we should not use a builder here, directly decompress to the buffer.
-        let total_size = value.uncompressed_len;
-        let mut builder = StringBuilder::with_capacity(value.compressed.len(), total_size);
-
-        let decompressor = value.compressor.decompressor();
-        let mut decompress_buffer: Vec<u8> = Vec::with_capacity(1024);
-        for v in value.compressed.iter() {
-            match v {
-                Some(v) => {
-                    let cap = decompressor.max_decompression_capacity(v);
-                    if cap > decompress_buffer.capacity() {
-                        decompress_buffer.reserve(cap - decompress_buffer.capacity());
-                    }
-
-                    let decompressed = unsafe {
-                        std::slice::from_raw_parts_mut(
-                            decompress_buffer.as_mut_ptr() as *mut MaybeUninit<u8>,
-                            cap,
-                        )
-                    };
-                    let len = decompressor.decompress_into(v, decompressed);
-                    unsafe {
-                        decompress_buffer.set_len(len);
-                    }
-                    let s = unsafe { std::str::from_utf8_unchecked(&decompress_buffer) };
-                    builder.append_value(s);
-                }
-                None => {
-                    builder.append_null();
-                }
-            }
-        }
-        builder.finish()
-    }
-}
-
-impl From<&StringArray> for FsstArray {
-    fn from(input: &StringArray) -> Self {
-        FsstArray::from_string_array(input)
+        value.to_arrow_byte_array::<Utf8Type>()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow::array::StringBuilder;
 
     #[test]
-    fn test_etc_string_roundtrip() {
+    fn test_liquid_string_roundtrip() {
         // Create test data with mix of strings and nulls
         let mut builder = StringBuilder::new();
         for i in 0..5000 {
@@ -165,7 +171,9 @@ mod tests {
 
         println!("original len: {}", original.get_array_memory_size());
         // Convert to EtcString and back
-        let etc = FsstArray::from(&original);
+        let compressor =
+            FsstArray::train_compressor(original.iter().flat_map(|s| s.map(|s| s.as_bytes())));
+        let etc = FsstArray::from_byte_array_with_compressor(&original, Arc::new(compressor));
         println!("etc len: {}", etc.compressed.get_array_memory_size());
 
         let roundtrip = StringArray::from(&etc);

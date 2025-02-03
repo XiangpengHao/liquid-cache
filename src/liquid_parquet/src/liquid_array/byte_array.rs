@@ -1,23 +1,25 @@
-use std::any::Any;
-use std::num::NonZero;
-use std::sync::Arc;
-
 use arrow::array::builder::StringDictionaryBuilder;
 use arrow::array::{
     Array, ArrayRef, BooleanArray, DictionaryArray, PrimitiveArray, RecordBatch, StringArray,
     cast::AsArray, types::UInt16Type,
 };
-use arrow::array::{ArrayAccessor, ArrayIter, StringViewArray, UInt16Array};
+use arrow::array::{
+    ArrayAccessor, ArrayIter, BinaryArray, GenericByteArray, GenericByteDictionaryBuilder,
+    StringViewArray, UInt16Array,
+};
 use arrow::buffer::{BooleanBuffer, NullBuffer};
 use arrow::compute::cast;
+use arrow::datatypes::{BinaryType, ByteArrayType, Utf8Type};
 use arrow_schema::{DataType, Field, Schema};
 use fsst::Compressor;
-
-use crate::liquid_array::{FsstArray, get_bit_width};
+use std::any::Any;
+use std::num::NonZero;
+use std::sync::Arc;
 
 use super::{BitPackedArray, LiquidArray, LiquidArrayRef};
+use crate::liquid_array::{FsstArray, get_bit_width};
 
-impl LiquidArray for LiquidStringArray {
+impl LiquidArray for LiquidByteArray {
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -38,7 +40,7 @@ impl LiquidArray for LiquidStringArray {
 
     fn to_best_arrow_array(&self) -> ArrayRef {
         // the best arrow string is DictionaryArray<UInt16Type>
-        let dict = self.to_dict_string();
+        let dict = self.to_dict_arrow();
         Arc::new(dict)
     }
 
@@ -51,10 +53,10 @@ impl LiquidArray for LiquidStringArray {
             .as_primitive::<UInt16Type>()
             .clone();
         let bit_packed_array = BitPackedArray::from_primitive(filtered_keys, keys.bit_width);
-        Arc::new(LiquidStringArray {
+        Arc::new(LiquidByteArray {
             keys: bit_packed_array,
             values,
-            arrow_type: self.arrow_type,
+            original_arrow_type: self.original_arrow_type,
         })
     }
 }
@@ -77,7 +79,10 @@ impl std::fmt::Debug for LiquidStringMetadata {
 enum ArrowStringType {
     Utf8,
     Utf8View,
-    Dict16, // DictionaryArray<UInt16Type>
+    Dict16Binary, // DictionaryArray<UInt16Type>
+    Dict16Utf8,   // DictionaryArray<UInt16Type>
+    Binary,
+    BinaryView,
 }
 
 impl ArrowStringType {
@@ -85,39 +90,151 @@ impl ArrowStringType {
         match self {
             ArrowStringType::Utf8 => DataType::Utf8,
             ArrowStringType::Utf8View => DataType::Utf8View,
-            ArrowStringType::Dict16 => {
+            ArrowStringType::Dict16Binary => {
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Binary))
+            }
+            ArrowStringType::Dict16Utf8 => {
                 DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8))
             }
+            ArrowStringType::Binary => DataType::Binary,
+            ArrowStringType::BinaryView => DataType::BinaryView,
+        }
+    }
+
+    fn is_string(&self) -> bool {
+        matches!(
+            self,
+            ArrowStringType::Utf8 | ArrowStringType::Utf8View | ArrowStringType::Dict16Utf8
+        )
+    }
+
+    pub fn from_arrow_type(ty: &DataType) -> Self {
+        match ty {
+            DataType::Utf8 => ArrowStringType::Utf8,
+            DataType::Utf8View => ArrowStringType::Utf8View,
+            DataType::Binary => ArrowStringType::Binary,
+            DataType::BinaryView => ArrowStringType::BinaryView,
+            DataType::Dictionary(_, _) => {
+                if ty
+                    == &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Binary))
+                {
+                    ArrowStringType::Dict16Binary
+                } else if ty
+                    == &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8))
+                {
+                    ArrowStringType::Dict16Utf8
+                } else {
+                    panic!("Unsupported arrow type: {:?}", ty)
+                }
+            }
+            _ => panic!("Unsupported arrow type: {:?}", ty),
         }
     }
 }
 
 /// An array that stores strings in a dictionary format, with a bit-packed array for the keys and a FSST array for the values.
 #[derive(Debug)]
-pub struct LiquidStringArray {
+pub struct LiquidByteArray {
     keys: BitPackedArray<UInt16Type>,
+    /// TODO: we need to specify that the values in the FsstArray must be unique, this enables us some optimizations.
     values: FsstArray,
-    arrow_type: ArrowStringType,
+    /// Used to convert back to the original arrow type.
+    original_arrow_type: ArrowStringType,
 }
 
-impl LiquidStringArray {
-    pub fn from_string_view_array(
-        array: &StringViewArray,
-        compressor: Option<Arc<Compressor>>,
+impl LiquidByteArray {
+    pub fn from_string_view_array(array: &StringViewArray, compressor: Arc<Compressor>) -> Self {
+        let dict = byte_array_to_dict_array::<Utf8Type, _>(array.iter());
+        Self::from_dict_array_inner(dict, compressor, ArrowStringType::Utf8View)
+    }
+
+    fn train_compressor_bytes<'a, T: ArrayAccessor<Item = &'a [u8]>>(
+        array: ArrayIter<T>,
+    ) -> Arc<Compressor> {
+        let strings = array.filter_map(|s| s.as_ref().map(|s| *s));
+        Arc::new(FsstArray::train_compressor(strings))
+    }
+
+    fn train_compressor<'a, T: ArrayAccessor<Item = &'a str>>(
+        array: ArrayIter<T>,
+    ) -> Arc<Compressor> {
+        let strings = array.filter_map(|s| s.as_ref().map(|s| s.as_bytes()));
+        Arc::new(FsstArray::train_compressor(strings))
+    }
+
+    pub fn from_string_array(array: &StringArray, compressor: Arc<Compressor>) -> Self {
+        Self::from_byte_array(array, compressor)
+    }
+
+    pub fn from_byte_array<T: ByteArrayType>(
+        array: &GenericByteArray<T>,
+        compressor: Arc<Compressor>,
     ) -> Self {
-        let dict = string_to_dict_string(array.iter());
-        Self::from_dict_array_with_compressor(dict, compressor, ArrowStringType::Utf8View)
+        let dict = byte_array_to_dict_array::<T, _>(array.iter());
+        Self::from_dict_array_inner(
+            dict,
+            compressor,
+            ArrowStringType::from_arrow_type(&T::DATA_TYPE),
+        )
     }
 
-    /// Create an LiquidStringArray from a StringArray.
-    pub fn from_string_array(array: &StringArray, compressor: Option<Arc<Compressor>>) -> Self {
-        let dict = string_to_dict_string(array.iter());
-        Self::from_dict_array_with_compressor(dict, compressor, ArrowStringType::Utf8)
+    pub fn train_from_arrow_view(array: &StringViewArray) -> (Arc<Compressor>, Self) {
+        let dict = byte_array_to_dict_array::<Utf8Type, _>(array.iter());
+        let compressor = Self::train_compressor(dict.values().as_string::<i32>().iter());
+        (
+            compressor.clone(),
+            Self::from_dict_array_inner(dict, compressor, ArrowStringType::Utf8View),
+        )
     }
 
-    fn from_dict_array_with_compressor(
+    pub fn train_from_arrow<T: ByteArrayType>(
+        array: &GenericByteArray<T>,
+    ) -> (Arc<Compressor>, Self) {
+        let dict = byte_array_to_dict_array::<T, _>(array.iter());
+        let value_type = dict.values().data_type();
+
+        let compressor = if value_type == &DataType::Utf8 {
+            Self::train_compressor(dict.values().as_string::<i32>().iter())
+        } else {
+            Self::train_compressor_bytes(dict.values().as_binary::<i32>().iter())
+        };
+        (
+            compressor.clone(),
+            Self::from_dict_array_inner(
+                dict,
+                compressor,
+                ArrowStringType::from_arrow_type(&T::DATA_TYPE),
+            ),
+        )
+    }
+
+    pub fn train_from_arrow_dict(array: &DictionaryArray<UInt16Type>) -> (Arc<Compressor>, Self) {
+        if array.values().data_type() == &DataType::Utf8 {
+            let values = array.values().as_string::<i32>();
+            let compressor = Self::train_compressor(values.iter());
+            (
+                compressor.clone(),
+                Self::from_dict_array_inner(array.clone(), compressor, ArrowStringType::Dict16Utf8),
+            )
+        } else if array.values().data_type() == &DataType::Binary {
+            let values = array.values().as_binary::<i32>();
+            let compressor = Self::train_compressor_bytes(values.iter());
+            (
+                compressor.clone(),
+                Self::from_dict_array_inner(
+                    array.clone(),
+                    compressor,
+                    ArrowStringType::Dict16Binary,
+                ),
+            )
+        } else {
+            panic!("Unsupported dictionary type: {:?}", array.data_type())
+        }
+    }
+
+    fn from_dict_array_inner(
         array: DictionaryArray<UInt16Type>,
-        compressor: Option<Arc<Compressor>>,
+        compressor: Arc<Compressor>,
         arrow_type: ArrowStringType,
     ) -> Self {
         let (keys, values) = array.into_parts();
@@ -131,48 +248,46 @@ impl LiquidStringArray {
 
         let bit_packed_array = BitPackedArray::from_primitive(keys, max_bit_width);
 
-        let dict_values = values.as_string::<i32>();
-
-        let fsst_values = match compressor {
-            Some(compressor) => {
-                FsstArray::from_string_array_with_compressor(dict_values, compressor)
-            }
-            None => FsstArray::from(dict_values),
+        let fsst_values = if let Some(values) = values.as_string_opt::<i32>() {
+            FsstArray::from_byte_array_with_compressor(values, compressor)
+        } else if let Some(values) = values.as_binary_opt::<i32>() {
+            FsstArray::from_byte_array_with_compressor(values, compressor)
+        } else {
+            panic!("Unsupported dictionary type")
         };
-
-        LiquidStringArray {
+        LiquidByteArray {
             keys: bit_packed_array,
             values: fsst_values,
-            arrow_type,
+            original_arrow_type: arrow_type,
         }
     }
 
-    /// Directly create an LiquidStringArray from a DictionaryArray.
-    /// This function will build a new compressor for the values.
-    pub fn from_dict_array(array: &DictionaryArray<UInt16Type>) -> Self {
-        let dict = array.downcast_dict::<StringArray>().unwrap();
-        let mut deduplicated = StringDictionaryBuilder::<UInt16Type>::new();
-        for v in dict.into_iter() {
-            deduplicated.append_option(v);
-        }
+    pub fn from_dict_array(
+        array: &DictionaryArray<UInt16Type>,
+        compressor: Arc<Compressor>,
+    ) -> Self {
+        if array.downcast_dict::<StringArray>().is_some() {
+            let dict = array.downcast_dict::<StringArray>().unwrap();
 
-        let dict = deduplicated.finish();
-        let keys = dict.keys();
+            // We require the values to be unique, but the incoming dictionary may not be unique, has to deduplicate again here.
+            let mut deduplicated = StringDictionaryBuilder::<UInt16Type>::new();
+            for v in dict.into_iter() {
+                deduplicated.append_option(v);
+            }
+            let dict = deduplicated.finish();
+            Self::from_dict_array_inner(dict, compressor, ArrowStringType::Dict16Utf8)
+        } else if array.downcast_dict::<BinaryArray>().is_some() {
+            let dict = array.downcast_dict::<BinaryArray>().unwrap();
 
-        assert_eq!(dict.len(), array.len());
-        let values = dict.values().as_string::<i32>();
-
-        let value_count = values.len();
-        let max_bit_width = get_bit_width(value_count as u64);
-        debug_assert!(2u64.pow(max_bit_width.get() as u32) >= value_count as u64);
-
-        let bit_packed_array = BitPackedArray::from_primitive(keys.clone(), max_bit_width);
-
-        let fsst_values = FsstArray::from(values);
-        LiquidStringArray {
-            keys: bit_packed_array,
-            values: fsst_values,
-            arrow_type: ArrowStringType::Dict16,
+            // We require the values to be unique, but the incoming dictionary may not be unique, has to deduplicate again here.
+            let mut deduplicated = GenericByteDictionaryBuilder::<UInt16Type, BinaryType>::new();
+            for v in dict.into_iter() {
+                deduplicated.append_option(v);
+            }
+            let dict = deduplicated.finish();
+            Self::from_dict_array_inner(dict, compressor, ArrowStringType::Dict16Binary)
+        } else {
+            panic!("Unsupported dictionary type: {:?}", array.data_type())
         }
     }
 
@@ -182,14 +297,20 @@ impl LiquidStringArray {
     }
 
     /// Convert the LiquidStringArray to a DictionaryArray.
-    pub fn to_dict_string(&self) -> DictionaryArray<UInt16Type> {
+    pub fn to_dict_arrow(&self) -> DictionaryArray<UInt16Type> {
         let primitive_key = self.keys.to_primitive().clone();
-        let values: StringArray = StringArray::from(&self.values);
-        unsafe { DictionaryArray::<UInt16Type>::new_unchecked(primitive_key, Arc::new(values)) }
+
+        if self.original_arrow_type.is_string() {
+            let values = self.values.to_arrow_byte_array::<Utf8Type>();
+            unsafe { DictionaryArray::<UInt16Type>::new_unchecked(primitive_key, Arc::new(values)) }
+        } else {
+            let values = self.values.to_arrow_byte_array::<BinaryType>();
+            unsafe { DictionaryArray::<UInt16Type>::new_unchecked(primitive_key, Arc::new(values)) }
+        }
     }
 
     /// Convert the LiquidStringArray to a DictionaryArray with a selection.
-    pub fn to_dict_string_with_selection(
+    pub fn to_dict_arrow_with_selection(
         &self,
         selection: &BooleanArray,
     ) -> DictionaryArray<UInt16Type> {
@@ -204,8 +325,8 @@ impl LiquidStringArray {
 
     /// Convert the LiquidStringArray to a StringArray.
     pub fn to_arrow_array(&self) -> ArrayRef {
-        let dict = self.to_dict_string();
-        cast(&dict, &self.arrow_type.to_arrow_type()).unwrap()
+        let dict = self.to_dict_arrow();
+        cast(&dict, &self.original_arrow_type.to_arrow_type()).unwrap()
     }
 
     /// Repackage the data into Arrow-compatible format, so that it can be written to disk, transferred over flight.
@@ -237,10 +358,10 @@ impl LiquidStringArray {
             metadata.compressor.clone(),
             metadata.uncompressed_len as usize,
         );
-        LiquidStringArray {
+        LiquidByteArray {
             keys,
             values,
-            arrow_type: ArrowStringType::Dict16,
+            original_arrow_type: ArrowStringType::Dict16Binary,
         }
     }
 
@@ -288,10 +409,10 @@ impl LiquidStringArray {
     }
 }
 
-fn string_to_dict_string<'a, T: ArrayAccessor<Item = &'a str>>(
-    input: ArrayIter<T>,
+fn byte_array_to_dict_array<'a, T: ByteArrayType, I: ArrayAccessor<Item = &'a T::Native>>(
+    input: ArrayIter<I>,
 ) -> DictionaryArray<UInt16Type> {
-    let mut builder = StringDictionaryBuilder::<UInt16Type>::new();
+    let mut builder = GenericByteDictionaryBuilder::<UInt16Type, T>::new();
     for s in input {
         builder.append_option(s);
     }
@@ -306,7 +427,8 @@ mod tests {
     #[test]
     fn test_simple_roundtrip() {
         let input = StringArray::from(vec!["hello", "world", "hello", "rust"]);
-        let etc = LiquidStringArray::from_string_array(&input, None);
+        let compressor = LiquidByteArray::train_compressor(input.iter());
+        let etc = LiquidByteArray::from_string_array(&input, compressor);
         let output = etc.to_arrow_array();
         let string_array = output.as_string::<i32>();
         assert_eq!(input.len(), string_array.len());
@@ -318,7 +440,8 @@ mod tests {
     #[test]
     fn test_to_arrow_array_preserve_arrow_type() {
         let input = StringArray::from(vec!["hello", "world", "hello", "rust"]);
-        let etc = LiquidStringArray::from_string_array(&input, None);
+        let compressor = LiquidByteArray::train_compressor(input.iter());
+        let etc = LiquidByteArray::from_string_array(&input, compressor);
         let output = etc.to_arrow_array();
         assert_eq!(&input, output.as_string::<i32>());
 
@@ -326,7 +449,8 @@ mod tests {
             .unwrap()
             .as_string_view()
             .clone();
-        let etc = LiquidStringArray::from_string_view_array(&input, None);
+        let compressor = LiquidByteArray::train_compressor(input.iter());
+        let etc = LiquidByteArray::from_string_view_array(&input, compressor);
         let output = etc.to_arrow_array();
         assert_eq!(&input, output.as_string_view());
 
@@ -337,7 +461,9 @@ mod tests {
         .unwrap()
         .as_dictionary()
         .clone();
-        let etc = LiquidStringArray::from_dict_array(&input);
+        let compressor =
+            LiquidByteArray::train_compressor(input.values().as_string::<i32>().iter());
+        let etc = LiquidByteArray::from_dict_array(&input, compressor);
         let output = etc.to_arrow_array();
         assert_eq!(&input, output.as_dictionary());
     }
@@ -351,7 +477,8 @@ mod tests {
             None,
             Some("hello"),
         ]);
-        let etc = LiquidStringArray::from_string_array(&input, None);
+        let compressor = LiquidByteArray::train_compressor(input.iter());
+        let etc = LiquidByteArray::from_string_array(&input, compressor);
         let output = etc.to_arrow_array();
         let string_array = output.as_string::<i32>();
 
@@ -371,7 +498,8 @@ mod tests {
         let input: Vec<&str> = (0..1000).map(|i| values[i % values.len()]).collect();
         let input = StringArray::from(input);
 
-        let etc = LiquidStringArray::from_string_array(&input, None);
+        let compressor = LiquidByteArray::train_compressor(input.iter());
+        let etc = LiquidByteArray::from_string_array(&input, compressor);
         let output = etc.to_arrow_array();
         let string_array = output.as_string::<i32>();
 
@@ -391,7 +519,8 @@ mod tests {
             "Another long string with some common patterns",
         ]);
 
-        let etc = LiquidStringArray::from_string_array(&input, None);
+        let compressor = LiquidByteArray::train_compressor(input.iter());
+        let etc = LiquidByteArray::from_string_array(&input, compressor);
         let output = etc.to_arrow_array();
         let string_array = output.as_string::<i32>();
         assert_eq!(input.len(), string_array.len());
@@ -403,7 +532,8 @@ mod tests {
     #[test]
     fn test_empty_strings() {
         let input = StringArray::from(vec!["", "", "non-empty", ""]);
-        let etc = LiquidStringArray::from_string_array(&input, None);
+        let compressor = LiquidByteArray::train_compressor(input.iter());
+        let etc = LiquidByteArray::from_string_array(&input, compressor);
         let output = etc.to_arrow_array();
         let string_array = output.as_string::<i32>();
         assert_eq!(input.len(), string_array.len());
@@ -415,8 +545,9 @@ mod tests {
     #[test]
     fn test_dictionary_roundtrip() {
         let input = StringArray::from(vec!["hello", "world", "hello", "rust"]);
-        let etc = LiquidStringArray::from_string_array(&input, None);
-        let dict = etc.to_dict_string();
+        let compressor = LiquidByteArray::train_compressor(input.iter());
+        let etc = LiquidByteArray::from_string_array(&input, compressor);
+        let dict = etc.to_dict_arrow();
 
         // Check dictionary values are unique
         let dict_values = dict.values();
@@ -524,7 +655,8 @@ mod tests {
         for case in test_cases {
             let input_array: StringArray = StringArray::from(case.input.clone());
 
-            let etc = LiquidStringArray::from_string_array(&input_array, None);
+            let compressor = LiquidByteArray::train_compressor(input_array.iter());
+            let etc = LiquidByteArray::from_string_array(&input_array, compressor);
 
             let result: BooleanArray = etc.compare_equals(case.needle);
 
@@ -532,5 +664,57 @@ mod tests {
 
             assert_eq!(result, expected_array,);
         }
+    }
+
+    #[test]
+    fn test_to_dict_arrow_preserves_type() {
+        // Test string type preservation
+        let input_str = StringArray::from(vec!["hello", "world", "test"]);
+        let (_compressor_str, liquid_str) = LiquidByteArray::train_from_arrow(&input_str);
+        let dict_str = liquid_str.to_dict_arrow();
+        assert_eq!(
+            dict_str.values().data_type(),
+            &DataType::Utf8,
+            "String values should be preserved as Utf8"
+        );
+
+        // Test binary type preservation
+        let input_bin = cast(&input_str, &DataType::Binary)
+            .unwrap()
+            .as_binary::<i32>()
+            .clone();
+        let (_compressor_bin, liquid_bin) = LiquidByteArray::train_from_arrow(&input_bin);
+        let dict_bin = liquid_bin.to_dict_arrow();
+        assert_eq!(
+            dict_bin.values().data_type(),
+            &DataType::Binary,
+            "Binary values should be preserved as Binary"
+        );
+
+        // Test dictionary-string array
+        let dict_array = DictionaryArray::<UInt16Type>::from_iter(input_str.iter());
+        let (_compressor_dict, liquid_dict) = LiquidByteArray::train_from_arrow_dict(&dict_array);
+        let dict_result = liquid_dict.to_dict_arrow();
+        assert_eq!(
+            dict_result.values().data_type(),
+            &DataType::Utf8,
+            "Dictionary with binary values should preserve Utf8 type"
+        );
+
+        // Test dictionary-binary array
+        let dict_array = DictionaryArray::<UInt16Type>::from_iter(input_str.iter());
+        let dict_array = cast(
+            &dict_array,
+            &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Binary)),
+        )
+        .unwrap();
+        let (_compressor_dict, liquid_dict) =
+            LiquidByteArray::train_from_arrow_dict(dict_array.as_dictionary());
+        let dict_result = liquid_dict.to_dict_arrow();
+        assert_eq!(
+            dict_result.values().data_type(),
+            &DataType::Binary,
+            "Dictionary with binary values should preserve Binary type"
+        );
     }
 }

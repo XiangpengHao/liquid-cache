@@ -1,10 +1,11 @@
+mod byte_array;
 mod primitive_array;
 mod raw;
-mod string_array;
 
 use std::{any::Any, num::NonZero, sync::Arc};
 
 use arrow::array::{ArrayRef, BooleanArray};
+pub use byte_array::{LiquidByteArray, LiquidStringMetadata};
 pub use primitive_array::{
     LiquidI8Array, LiquidI16Array, LiquidI32Array, LiquidI64Array, LiquidPrimitiveArray,
     LiquidPrimitiveMetadata, LiquidPrimitiveType, LiquidU8Array, LiquidU16Array, LiquidU32Array,
@@ -12,16 +13,21 @@ pub use primitive_array::{
 };
 use raw::bit_pack_array::BitPackedArray;
 use raw::fsst_array::FsstArray;
-pub use string_array::{LiquidStringArray, LiquidStringMetadata};
 
 /// A trait to access the underlying Liquid array.
 pub trait AsLiquidArray {
     /// Get the underlying string array.
-    fn as_string_array_opt(&self) -> Option<&LiquidStringArray>;
+    fn as_string_array_opt(&self) -> Option<&LiquidByteArray>;
 
     /// Get the underlying string array.
-    fn as_string(&self) -> &LiquidStringArray {
+    fn as_string(&self) -> &LiquidByteArray {
         self.as_string_array_opt().expect("liquid string array")
+    }
+
+    fn as_binary_array_opt(&self) -> Option<&LiquidByteArray>;
+
+    fn as_binary(&self) -> &LiquidByteArray {
+        self.as_binary_array_opt().expect("liquid binary array")
     }
 
     /// Get the underlying primitive array.
@@ -35,11 +41,15 @@ pub trait AsLiquidArray {
 }
 
 impl AsLiquidArray for dyn LiquidArray + '_ {
-    fn as_string_array_opt(&self) -> Option<&LiquidStringArray> {
+    fn as_string_array_opt(&self) -> Option<&LiquidByteArray> {
         self.as_any().downcast_ref()
     }
 
     fn as_primitive_array_opt<T: LiquidPrimitiveType>(&self) -> Option<&LiquidPrimitiveArray<T>> {
+        self.as_any().downcast_ref()
+    }
+
+    fn as_binary_array_opt(&self) -> Option<&LiquidByteArray> {
         self.as_any().downcast_ref()
     }
 }

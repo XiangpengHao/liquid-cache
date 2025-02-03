@@ -190,8 +190,6 @@ enum StreamState {
     Decoding(LiquidBatchReader),
     /// Reading data from input
     Reading(BoxFuture<'static, ReadResult>),
-    /// Error
-    Error,
 }
 
 impl std::fmt::Debug for StreamState {
@@ -200,7 +198,6 @@ impl std::fmt::Debug for StreamState {
             StreamState::Init => write!(f, "StreamState::Init"),
             StreamState::Decoding(_) => write!(f, "StreamState::Decoding"),
             StreamState::Reading(_) => write!(f, "StreamState::Reading"),
-            StreamState::Error => write!(f, "StreamState::Error"),
         }
     }
 }
@@ -329,8 +326,7 @@ impl Stream for LiquidStream {
                         return Poll::Ready(Some(Ok(batch)));
                     }
                     Some(Err(e)) => {
-                        self.state = StreamState::Error;
-                        return Poll::Ready(Some(Err(ParquetError::ArrowError(e.to_string()))));
+                        panic!("Decoding next batch error: {:?}", e);
                     }
                     None => {
                         // this is ugly, but works for now.
@@ -373,11 +369,9 @@ impl Stream for LiquidStream {
                         }
                     }
                     Err(e) => {
-                        self.state = StreamState::Error;
-                        return Poll::Ready(Some(Err(e)));
+                        panic!("Reading next batch error: {:?}", e);
                     }
                 },
-                StreamState::Error => return Poll::Ready(None), // Ends the stream as error happens.
             }
         }
     }

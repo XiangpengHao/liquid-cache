@@ -18,7 +18,7 @@
 use arrow::ipc::writer::IpcWriteOptions;
 use arrow_flight::{
     Action, FlightDescriptor, FlightEndpoint, FlightInfo, HandshakeRequest, HandshakeResponse,
-    Ticket,
+    IpcMessage, SchemaAsIpc, Ticket,
     encode::{DictionaryHandling, FlightDataEncoderBuilder},
     flight_descriptor::DescriptorType,
     flight_service_server::FlightService,
@@ -43,7 +43,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tonic::{Request, Response, Status, Streaming};
 use uuid::Uuid;
-
 mod service;
 mod utils;
 use utils::FinalStream;
@@ -117,7 +116,7 @@ impl LiquidCacheService {
         let mut session_config = SessionConfig::from_env()?;
         let options_mut = session_config.options_mut();
         options_mut.execution.parquet.pushdown_filters = true;
-        options_mut.execution.parquet.binary_as_string = true;
+        options_mut.execution.parquet.binary_as_string = false;
 
         {
             // View types only provide benefits for parquet decoding and filtering.
@@ -169,9 +168,9 @@ impl FlightSqlService for LiquidCacheService {
             ))?;
         let schema = self.inner.get_table_schema(&table_name).await?;
 
-        let info = FlightInfo::new()
-            .try_with_schema(&schema)
-            .expect("encoding failed");
+        let mut info = FlightInfo::new();
+        info.schema = encode_schema_to_ipc_bytes(&schema);
+
         Ok(Response::new(info))
     }
 
@@ -195,11 +194,17 @@ impl FlightSqlService for LiquidCacheService {
         let handle = fetch_results.handle;
         let partition = fetch_results.partition as usize;
         let stream = self.inner.execute_plan(&handle, partition).await;
-        let stream = FinalStream::new(stream, self.stats_collector.clone()).map_err(|e| {
+        let stream = FinalStream::new(
+            stream,
+            self.stats_collector.clone(),
+            self.inner.batch_size(),
+        )
+        .map_err(|e| {
             panic!("Error executing plan: {:?}", e);
         });
 
-        let ipc_options = IpcWriteOptions::default();
+        #[allow(deprecated)]
+        let ipc_options = IpcWriteOptions::default().with_preserve_dict_id(true);
         let stream = FlightDataEncoderBuilder::new()
             .with_options(ipc_options)
             .with_dictionary_handling(DictionaryHandling::Resend)
@@ -230,10 +235,8 @@ impl FlightSqlService for LiquidCacheService {
             path: vec![],
         };
 
-        let mut info = FlightInfo::new()
-            .try_with_schema(&schema)
-            .expect("encoding failed")
-            .with_descriptor(flight_desc);
+        let mut info = FlightInfo::new().with_descriptor(flight_desc);
+        info.schema = encode_schema_to_ipc_bytes(&schema);
 
         for partition in 0..partition_count {
             let fetch = FetchResults {
@@ -358,4 +361,14 @@ fn arrow_error_to_status(err: arrow_schema::ArrowError) -> Status {
 
 fn df_error_to_status(err: datafusion::error::DataFusionError) -> Status {
     Status::internal(format!("{err:?}"))
+}
+
+// TODO: we need to workaround a arrow-flight bug here:
+// https://github.com/apache/arrow-rs/issues/7058
+fn encode_schema_to_ipc_bytes(schema: &arrow_schema::Schema) -> Bytes {
+    #[allow(deprecated)]
+    let options = IpcWriteOptions::default().with_preserve_dict_id(true);
+    let schema_as_ipc = SchemaAsIpc::new(schema, &options);
+    let IpcMessage(schema) = schema_as_ipc.try_into().unwrap();
+    schema
 }

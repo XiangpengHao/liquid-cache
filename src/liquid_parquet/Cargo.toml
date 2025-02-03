@@ -16,7 +16,7 @@ tokio = { workspace = true }
 url = { workspace = true }
 ahash = { workspace = true }
 dashmap = { workspace = true }
-fsst-rs = "0.4.4"
+fsst-rs = "0.5.0"
 serde = { workspace = true }
 bytes = { workspace = true }
 log = { workspace = true }
