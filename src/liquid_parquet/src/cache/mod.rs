@@ -16,7 +16,7 @@ mod stats;
 
 use crate::LiquidPredicate;
 
-use super::liquid_array::{LiquidArrayRef, LiquidPrimitiveArray, LiquidByteArray};
+use super::liquid_array::{LiquidArrayRef, LiquidByteArray, LiquidPrimitiveArray};
 mod utils;
 use arrow::array::types::{
     Int8Type as ArrowInt8Type, Int16Type as ArrowInt16Type, Int32Type as ArrowInt32Type,
