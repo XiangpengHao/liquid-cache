@@ -280,11 +280,10 @@ impl LiquidStringArray {
 
         if let Some(idx) = idx {
             let to_compare = UInt16Array::new_scalar(idx as u16);
-            let result = arrow::compute::kernels::cmp::eq(&keys, &to_compare).unwrap();
-            return result;
+            arrow::compute::kernels::cmp::eq(&keys, &to_compare).unwrap()
         } else {
             let buffer = BooleanBuffer::new_unset(keys.len());
-            return BooleanArray::new(buffer, self.nulls().cloned());
+            BooleanArray::new(buffer, self.nulls().cloned())
         }
     }
 }
