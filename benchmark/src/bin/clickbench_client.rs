@@ -105,7 +105,7 @@ fn save_result(result: &[RecordBatch], query_id: u32) -> Result<()> {
 
 fn check_result_against_answer(
     results: &Vec<RecordBatch>,
-    answer_dir: &PathBuf,
+    answer_dir: &Path,
     query_id: u32,
     query: &str,
 ) -> Result<()> {
@@ -153,7 +153,7 @@ fn check_result_against_answer(
         let (baseline_num_rows, baseline_columns) =
             (baseline_batch.num_rows(), baseline_batch.columns().len());
         if result_num_rows != baseline_num_rows || result_columns != baseline_columns {
-            save_result(&results, query_id)?;
+            save_result(results, query_id)?;
             panic!(
                 "Query {} result does not match baseline. Result(num_rows: {}, num_columns: {}): {:?}, Baseline(num_rows: {}, num_columns: {}): {:?}",
                 query_id.to_string().red(),
@@ -166,7 +166,7 @@ fn check_result_against_answer(
             );
         }
     } else if !assert_batch_eq(&result_batch, &baseline_batch) {
-        save_result(&results, query_id)?;
+        save_result(results, query_id)?;
         panic!(
             "Query {} result does not match baseline. Result: {:?}, Baseline: {:?}",
             query_id.to_string().red(),
