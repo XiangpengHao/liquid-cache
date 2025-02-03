@@ -118,40 +118,8 @@ impl CachedArrayReader {
 
         Ok(to_skip)
     }
-}
 
-fn row_selection_to_boolean_buffer<'a>(
-    row_count: usize,
-    selection: impl Iterator<Item = &'a RowSelector>,
-) -> BooleanBuffer {
-    let mut buffer = BooleanBufferBuilder::new(row_count);
-    for selector in selection {
-        buffer.append_n(selector.row_count, !selector.skip);
-    }
-    buffer.finish()
-}
-
-impl ArrayReader for CachedArrayReader {
-    fn as_any(&self) -> &dyn Any {
-        self.inner.as_any()
-    }
-
-    fn get_data_type(&self) -> &DataType {
-        &self.data_type
-    }
-
-    fn read_records(&mut self, request_size: usize) -> Result<usize, ParquetError> {
-        let batch_size = self.batch_size();
-        let mut read = 0;
-
-        while read < request_size {
-            let size = std::cmp::min(batch_size, request_size - read);
-            read += self.read_records_inner(size)?;
-        }
-        Ok(read)
-    }
-
-    fn consume_batch(&mut self) -> Result<ArrayRef, ParquetError> {
+    fn consume_batch_inner(&mut self) -> Result<ArrayRef, ParquetError> {
         let row_count: usize = self.selection.iter().map(|s| s.row_count).sum();
         let batch_size = self.liquid_cache.batch_size();
         let start_row = self.current_row - row_count;
@@ -209,6 +177,44 @@ impl ArrayReader for CachedArrayReader {
                 &rt.iter().map(|a| a.as_ref()).collect::<Vec<_>>(),
             )?),
         }
+    }
+}
+
+fn row_selection_to_boolean_buffer<'a>(
+    row_count: usize,
+    selection: impl Iterator<Item = &'a RowSelector>,
+) -> BooleanBuffer {
+    let mut buffer = BooleanBufferBuilder::new(row_count);
+    for selector in selection {
+        buffer.append_n(selector.row_count, !selector.skip);
+    }
+    buffer.finish()
+}
+
+impl ArrayReader for CachedArrayReader {
+    fn as_any(&self) -> &dyn Any {
+        self.inner.as_any()
+    }
+
+    fn get_data_type(&self) -> &DataType {
+        &self.data_type
+    }
+
+    fn read_records(&mut self, request_size: usize) -> Result<usize, ParquetError> {
+        let batch_size = self.batch_size();
+        let mut read = 0;
+
+        while read < request_size {
+            let size = std::cmp::min(batch_size, request_size - read);
+            read += self.read_records_inner(size)?;
+        }
+        Ok(read)
+    }
+
+    fn consume_batch(&mut self) -> Result<ArrayRef, ParquetError> {
+        let array = self.consume_batch_inner()?;
+        debug_assert!(self.data_type.equals_datatype(&array.data_type()));
+        Ok(array)
     }
 
     fn skip_records(&mut self, to_skip: usize) -> Result<usize, ParquetError> {
