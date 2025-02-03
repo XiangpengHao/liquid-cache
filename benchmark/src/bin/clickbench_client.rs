@@ -7,8 +7,13 @@ use std::{
 };
 
 use datafusion::{
-    arrow::util::pretty,
+    arrow::{array::RecordBatch, util::pretty},
     error::Result,
+    parquet::{
+        arrow::{ArrowWriter, arrow_reader::ParquetRecordBatchReaderBuilder},
+        basic::Compression,
+        file::properties::WriterProperties,
+    },
     physical_plan::{collect, display::DisplayableExecutionPlan},
     prelude::{SessionConfig, SessionContext},
 };
@@ -58,6 +63,120 @@ fn get_query(
     }
 }
 
+fn assert_batch_eq(left: &RecordBatch, right: &RecordBatch) -> bool {
+    use datafusion::arrow::compute::*;
+
+    if left.num_rows() != right.num_rows() {
+        return false;
+    }
+    if left.columns().len() != right.columns().len() {
+        return false;
+    }
+    for (c_l, c_r) in left.columns().iter().zip(right.columns().iter()) {
+        let casted = cast(c_l, c_r.data_type()).unwrap();
+        let sorted_c_l = sort(&casted, None).unwrap();
+        let sorted_c_r = sort(c_r, None).unwrap();
+
+        if sorted_c_l != sorted_c_r {
+            return false;
+        }
+    }
+    true
+}
+
+fn save_result(result: &[RecordBatch], query_id: u32) -> Result<()> {
+    let file_path = format!("benchmark/data/results/Q{}.parquet", query_id);
+    let file = File::create(&file_path)?;
+    let props = WriterProperties::builder()
+        .set_compression(Compression::SNAPPY)
+        .build();
+    let mut writer = ArrowWriter::try_new(file, result[0].schema(), Some(props)).unwrap();
+    for batch in result {
+        writer.write(batch).unwrap();
+    }
+    writer.close().unwrap();
+    info!(
+        "Query {} result saved to {}",
+        query_id.to_string().red(),
+        file_path.yellow()
+    );
+    Ok(())
+}
+
+fn check_result_against_answer(
+    results: &Vec<RecordBatch>,
+    answer_dir: &Path,
+    query_id: u32,
+    query: &str,
+) -> Result<()> {
+    // - If query returns no results, check if baseline exists
+    // - If baseline does not exist, skip query
+    // - If baseline exists, panic
+    if results.is_empty() {
+        let baseline_exists = format!("{}/Q{}.parquet", answer_dir.display(), query_id);
+        match File::open(baseline_exists) {
+            Err(_) => {
+                info!(
+                    "Query {} returned no results (matches baseline)",
+                    query_id.to_string().red()
+                );
+                return Ok(());
+            }
+            Ok(_) => panic!(
+                "Query {} returned no results but baseline exists",
+                query_id.to_string().red()
+            ),
+        }
+    }
+    // Read answers
+    let baseline_path = format!("{}/Q{}.parquet", answer_dir.display(), query_id);
+    let baseline_file = File::open(baseline_path)?;
+    let mut baseline_batches = Vec::new();
+    let reader = ParquetRecordBatchReaderBuilder::try_new(baseline_file)?.build()?;
+    for batch in reader {
+        baseline_batches.push(batch?);
+    }
+
+    // Compare answers and result
+    let result_batch = datafusion::arrow::compute::concat_batches(&results[0].schema(), results)?;
+    let baseline_batch = datafusion::arrow::compute::concat_batches(
+        &baseline_batches[0].schema(),
+        &baseline_batches,
+    )?;
+    if query.contains("LIMIT") {
+        info!(
+            "Query {} contains LIMIT, only validating the shape of the result",
+            query_id.to_string().red()
+        );
+        let (result_num_rows, result_columns) =
+            (result_batch.num_rows(), result_batch.columns().len());
+        let (baseline_num_rows, baseline_columns) =
+            (baseline_batch.num_rows(), baseline_batch.columns().len());
+        if result_num_rows != baseline_num_rows || result_columns != baseline_columns {
+            save_result(results, query_id)?;
+            panic!(
+                "Query {} result does not match baseline. Result(num_rows: {}, num_columns: {}): {:?}, Baseline(num_rows: {}, num_columns: {}): {:?}",
+                query_id.to_string().red(),
+                result_num_rows,
+                result_columns,
+                result_batch.red(),
+                baseline_num_rows,
+                baseline_columns,
+                baseline_batch.red()
+            );
+        }
+    } else if !assert_batch_eq(&result_batch, &baseline_batch) {
+        save_result(results, query_id)?;
+        panic!(
+            "Query {} result does not match baseline. Result: {:?}, Baseline: {:?}",
+            query_id.to_string().red(),
+            result_batch.red(),
+            baseline_batch.red()
+        );
+    }
+    Ok(())
+}
+
 #[tokio::main]
 pub async fn main() -> Result<()> {
     env_logger::builder().format_timestamp(None).init();
@@ -101,6 +220,12 @@ pub async fn main() -> Result<()> {
                 .help("Path to the output JSON file")
                 .value_parser(value_parser!(std::path::PathBuf)),
         )
+        .arg(
+            arg!(--"answer-dir" <PATH>)
+                .required(false)
+                .help("Path to the baseline directory")
+                .value_parser(value_parser!(std::path::PathBuf)),
+        )
         .get_matches();
 
     let server_url = matches.get_one::<String>("server").unwrap();
@@ -109,6 +234,7 @@ pub async fn main() -> Result<()> {
     let queries = get_query(query_path, matches.get_one::<u32>("query").copied())?;
     let iteration = matches.get_one::<u32>("iteration").unwrap();
     let output_path = matches.get_one::<PathBuf>("output");
+    let answer_dir = matches.get_one::<PathBuf>("answer-dir");
 
     let mut session_config = SessionConfig::from_env()?;
     session_config
@@ -134,6 +260,8 @@ pub async fn main() -> Result<()> {
         queries: Vec::new(),
     };
 
+    std::fs::create_dir_all("benchmark/data/results")?;
+
     for (id, query) in queries {
         let mut times_millis = Vec::new();
         for _i in 0..*iteration {
@@ -157,6 +285,12 @@ pub async fn main() -> Result<()> {
             );
             let result_str = pretty::pretty_format_batches(&results).unwrap();
             info!("Query result: \n{}", result_str.cyan());
+
+            // Check query answers
+            if let Some(answer_dir) = answer_dir {
+                check_result_against_answer(&results, answer_dir, id, &query)?;
+                info!("Query {} passed validation", id.to_string().red());
+            }
         }
         benchmark_result.queries.push(QueryResult {
             id,
