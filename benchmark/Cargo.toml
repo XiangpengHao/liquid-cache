@@ -23,3 +23,4 @@ mimalloc = "0.1.43"
 pprof = { version = "0.14.0", features = ["flamegraph"] }
 serde_json.workspace = true
 serde.workspace = true
+half = "2.4.1"
