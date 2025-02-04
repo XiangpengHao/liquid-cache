@@ -155,14 +155,12 @@ fn check_result_against_answer(
         if result_num_rows != baseline_num_rows || result_columns != baseline_columns {
             save_result(results, query_id)?;
             panic!(
-                "Query {} result does not match baseline. Result(num_rows: {}, num_columns: {}): {:?}, Baseline(num_rows: {}, num_columns: {}): {:?}",
+                "Query {} result does not match baseline. Result(num_rows: {}, num_columns: {}), Baseline(num_rows: {}, num_columns: {})",
                 query_id.to_string().red(),
                 result_num_rows,
                 result_columns,
-                result_batch.red(),
                 baseline_num_rows,
                 baseline_columns,
-                baseline_batch.red()
             );
         }
     } else if !assert_batch_eq(&result_batch, &baseline_batch) {

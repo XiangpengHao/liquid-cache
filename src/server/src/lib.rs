@@ -203,8 +203,7 @@ impl FlightSqlService for LiquidCacheService {
             panic!("Error executing plan: {:?}", e);
         });
 
-        #[allow(deprecated)]
-        let ipc_options = IpcWriteOptions::default().with_preserve_dict_id(true);
+        let ipc_options = IpcWriteOptions::default();
         let stream = FlightDataEncoderBuilder::new()
             .with_options(ipc_options)
             .with_dictionary_handling(DictionaryHandling::Resend)
@@ -366,8 +365,7 @@ fn df_error_to_status(err: datafusion::error::DataFusionError) -> Status {
 // TODO: we need to workaround a arrow-flight bug here:
 // https://github.com/apache/arrow-rs/issues/7058
 fn encode_schema_to_ipc_bytes(schema: &arrow_schema::Schema) -> Bytes {
-    #[allow(deprecated)]
-    let options = IpcWriteOptions::default().with_preserve_dict_id(true);
+    let options = IpcWriteOptions::default();
     let schema_as_ipc = SchemaAsIpc::new(schema, &options);
     let IpcMessage(schema) = schema_as_ipc.try_into().unwrap();
     schema
