@@ -362,9 +362,13 @@ impl Stream for FlightStream {
                 let new_batch = self.schema_mapper.map_batch(batch).unwrap();
                 Poll::Ready(Some(Ok(new_batch)))
             }
-            Poll::Ready(None) | Poll::Ready(Some(Err(_))) => {
+            Poll::Ready(None) => {
                 self.metrics.time_reading_total.stop();
                 Poll::Ready(None)
+            }
+            Poll::Ready(Some(Err(e))) => {
+                self.metrics.time_reading_total.stop();
+                panic!("Error reading flight stream: {}", e);
             }
             _ => Poll::Pending,
         }

@@ -34,7 +34,7 @@ use crate::{
     },
 };
 
-use super::coerce_file_schema_to_liquid_cache_types;
+use super::{coerce_to_parquet_reader_types, transform_to_liquid_cache_types};
 
 pub struct LiquidParquetOpener {
     pub partition_index: usize,
@@ -88,22 +88,21 @@ impl FileOpener for LiquidParquetOpener {
 
             let mut metadata_timer = file_metrics.metadata_load_time.timer();
             let metadata = ArrowReaderMetadata::load_async(&mut reader, options.clone()).await?;
-            let mut schema = Arc::clone(metadata.schema());
+            let schema = Arc::clone(metadata.schema());
 
-            if let Some(merged) = coerce_file_schema_to_liquid_cache_types(&table_schema, &schema) {
-                schema = Arc::new(merged);
-            }
+            let reader_schema = Arc::new(coerce_to_parquet_reader_types(&schema));
+            let output_schema = Arc::new(transform_to_liquid_cache_types(&schema));
 
             let options = ArrowReaderOptions::new()
                 .with_page_index(enable_page_index)
-                .with_schema(Arc::clone(&schema));
+                .with_schema(Arc::clone(&reader_schema));
             let metadata = ArrowReaderMetadata::try_new(Arc::clone(metadata.metadata()), options)?;
 
             metadata_timer.stop();
 
             let mut builder = ParquetRecordBatchStreamBuilder::new_with_metadata(reader, metadata);
 
-            let file_schema = Arc::clone(builder.schema());
+            let file_schema = Arc::clone(&output_schema);
 
             let (schema_mapping, adapted_projections) = schema_adapter.map_schema(&file_schema)?;
 

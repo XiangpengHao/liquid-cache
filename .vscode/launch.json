@@ -50,7 +50,7 @@
 				"--file",
 				"benchmark/data/hits_0.parquet",
 				"--query",
-				"22"
+				"23"
 			],
 			"cwd": "${workspaceFolder}"
 		}

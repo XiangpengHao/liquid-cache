@@ -64,7 +64,7 @@ impl Stream for FinalStream {
         let this = &mut *self;
         loop {
             let threshold = (this.target_batch_size * 3) / 4;
-            if this.current_buffered_rows >= threshold {
+            if this.current_buffered_rows > threshold {
                 let batches = std::mem::take(&mut this.buffered_batches);
                 this.current_buffered_rows = 0;
                 let schema = batches[0].schema();

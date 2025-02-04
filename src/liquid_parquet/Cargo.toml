@@ -26,4 +26,4 @@ fastlanes = { workspace = true }
 num-traits = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3.15.0"
+tempfile = "3.16.0"

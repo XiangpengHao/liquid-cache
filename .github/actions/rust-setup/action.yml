@@ -12,32 +12,32 @@ runs:
         echo "RUST_BACKTRACE=1" >> $GITHUB_ENV
         echo "RUSTFLAGS=-C debuginfo=line-tables-only -C incremental=false" >> $GITHUB_ENV
 
-    - name: Cache
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/.cargo/bin/
-          ~/.cargo/registry/index/
-          ~/.cargo/registry/cache/
-          ~/.cargo/git/db/
-          ~/.cache/sccache/
-          ~/.rustup/
-          target/
-        key: cargo-cache3-${{ hashFiles('**/Cargo.toml') }}
-        restore-keys: cargo-cache3-
+    # - name: Cache
+    #   uses: actions/cache@v3
+    #   with:
+    #     path: |
+    #       ~/.cargo/bin/
+    #       ~/.cargo/registry/index/
+    #       ~/.cargo/registry/cache/
+    #       ~/.cargo/git/db/
+    #       ~/.cache/sccache/
+    #       ~/.rustup/
+    #       target/
+    #     key: cargo-cache3-${{ hashFiles('**/Cargo.toml') }}
+    #     restore-keys: cargo-cache3-
 
-    - name: Setup sccache
-      uses: mozilla-actions/sccache-action@v0.0.7
+    # - name: Setup sccache
+    #   uses: mozilla-actions/sccache-action@v0.0.7
 
-    - name: Setup Rust toolchain
-      shell: bash
-      run: |
-        echo "Installing nightly-2025-01-24"
-        curl --proto '=https' --tlsv1.2 --retry 10 --retry-connrefused --location --silent --show-error --fail "https://sh.rustup.rs" | sh -s -- --default-toolchain none -y
-        echo "${CARGO_HOME:-$HOME/.cargo}/bin" >> $GITHUB_PATH
-        rustup toolchain install nightly-2025-01-24 --component rustfmt --component clippy --component rust-src --profile minimal --no-self-update
-        rustup default nightly-2025-01-24
+    # - name: Setup Rust toolchain
+    #   shell: bash
+    #   run: |
+    #     echo "Installing nightly-2025-01-24"
+    #     curl --proto '=https' --tlsv1.2 --retry 10 --retry-connrefused --location --silent --show-error --fail "https://sh.rustup.rs" | sh -s -- --default-toolchain none -y
+    #     echo "${CARGO_HOME:-$HOME/.cargo}/bin" >> $GITHUB_PATH
+    #     rustup toolchain install nightly-2025-01-24 --component rustfmt --component clippy --component rust-src --profile minimal --no-self-update
+    #     rustup default nightly-2025-01-24
     
-    - name: Generate lockfile
-      shell: bash
-      run: cargo fetch
+    # - name: Generate lockfile
+    #   shell: bash
+    #   run: cargo fetch

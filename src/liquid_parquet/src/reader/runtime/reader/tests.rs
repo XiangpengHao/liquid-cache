@@ -6,8 +6,8 @@ use arrow::{
     buffer::BooleanBuffer,
     compute::filter,
     datatypes::{
-        BinaryType, DataType, Field, Int8Type, Int16Type, Int32Type, Int64Type, Schema, UInt8Type,
-        UInt16Type, UInt32Type, UInt64Type,
+        DataType, Field, Int8Type, Int16Type, Int32Type, Int64Type, Schema, UInt8Type, UInt16Type,
+        UInt32Type, UInt64Type, Utf8Type,
     },
     record_batch::RecordBatch,
 };
@@ -34,10 +34,13 @@ use crate::{
     LiquidCacheMode, LiquidPredicate,
     cache::LiquidCachedFile,
     liquid_array::LiquidArrayRef,
-    reader::runtime::{ArrowReaderBuilderBridge, LiquidRowFilter, LiquidStreamBuilder},
+    reader::{
+        plantime::coerce_to_parquet_reader_types,
+        runtime::{ArrowReaderBuilderBridge, LiquidRowFilter, LiquidStreamBuilder},
+    },
 };
 
-fn test_schema() -> Schema {
+fn test_input_schema() -> Schema {
     Schema::new(vec![
         Field::new("u8_col", DataType::UInt8, false),
         Field::new("u16_col", DataType::UInt16, false),
@@ -49,15 +52,38 @@ fn test_schema() -> Schema {
         Field::new("i64_col", DataType::Int64, false),
         Field::new("string_col", DataType::Utf8, false),
         Field::new(
-            "binary_col",
-            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Binary)),
+            "string_dict",
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            false,
+        ),
+    ])
+}
+
+fn test_output_schema() -> Schema {
+    Schema::new(vec![
+        Field::new("u8_col", DataType::UInt8, false),
+        Field::new("u16_col", DataType::UInt16, false),
+        Field::new("u32_col", DataType::UInt32, false),
+        Field::new("u64_col", DataType::UInt64, false),
+        Field::new("i8_col", DataType::Int8, false),
+        Field::new("i16_col", DataType::Int16, false),
+        Field::new("i32_col", DataType::Int32, false),
+        Field::new("i64_col", DataType::Int64, false),
+        Field::new(
+            "string_col",
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            false,
+        ),
+        Field::new(
+            "string_dict",
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
             false,
         ),
     ])
 }
 
 pub fn generate_test_parquet() -> NamedTempFile {
-    let schema = test_schema();
+    let schema = test_input_schema();
     let temp_file = NamedTempFile::new().unwrap();
     let props = WriterProperties::builder()
         .set_max_row_group_size(16384) // 8192 * 2
@@ -89,7 +115,7 @@ fn create_record_batch(batch_size: usize, batch_id: usize) -> RecordBatch {
     let mut i32_builder = Int32Array::builder(batch_size);
     let mut i64_builder = Int64Array::builder(batch_size);
     let mut string_builder = StringBuilder::new();
-    let mut binary_builder = GenericByteDictionaryBuilder::<UInt16Type, BinaryType>::new();
+    let mut string_dict_builder = GenericByteDictionaryBuilder::<UInt16Type, Utf8Type>::new();
 
     for i in batch_id * batch_size..(batch_id + 1) * batch_size {
         // Numeric values
@@ -109,10 +135,10 @@ fn create_record_batch(batch_size: usize, batch_id: usize) -> RecordBatch {
             _ => format!("value_{}", i % 100), // Repeating patterns
         };
         string_builder.append_value(&s);
-        binary_builder.append_value(s.as_bytes());
+        string_dict_builder.append_value(&s);
     }
 
-    RecordBatch::try_new(Arc::new(test_schema()), vec![
+    RecordBatch::try_new(Arc::new(test_input_schema()), vec![
         Arc::new(u8_builder.finish()),
         Arc::new(u16_builder.finish()),
         Arc::new(u32_builder.finish()),
@@ -122,7 +148,7 @@ fn create_record_batch(batch_size: usize, batch_id: usize) -> RecordBatch {
         Arc::new(i32_builder.finish()),
         Arc::new(i64_builder.finish()),
         Arc::new(string_builder.finish()),
-        Arc::new(binary_builder.finish()),
+        Arc::new(string_dict_builder.finish()),
     ])
     .unwrap()
 }
@@ -160,10 +186,16 @@ async fn get_test_reader() -> LiquidStreamBuilder {
     let data = Bytes::from(std::fs::read(file.path()).unwrap());
     let mut async_reader = TestReader::new_dyn(data);
 
-    let options = ArrowReaderOptions::new().with_page_index(true);
-    let metadata = ArrowReaderMetadata::load_async(&mut async_reader, options)
+    let metadata = ArrowReaderMetadata::load_async(&mut async_reader, Default::default())
         .await
         .unwrap();
+    let schema = Arc::clone(metadata.schema());
+
+    let reader_schema = Arc::new(coerce_to_parquet_reader_types(&schema));
+
+    let options = ArrowReaderOptions::new().with_schema(Arc::clone(&reader_schema));
+    let metadata = ArrowReaderMetadata::try_new(Arc::clone(metadata.metadata()), options).unwrap();
+
     let builder = ParquetRecordBatchStreamBuilder::new_with_metadata(async_reader, metadata)
         .with_batch_size(8192);
 
@@ -194,7 +226,7 @@ async fn basic_stuff() {
     let reader = builder.build(Arc::new(liquid_cache)).unwrap();
 
     let schema = &reader.schema;
-    assert_eq!(schema.as_ref(), &test_schema());
+    assert_eq!(schema.as_ref(), &test_output_schema());
 
     let batches = reader
         .collect::<Vec<_>>()

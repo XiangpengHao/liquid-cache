@@ -16,30 +16,41 @@ resolver = "3"
 liquid-cache-server = { path = "src/server" }
 liquid-cache-client = { path = "src/client" }
 liquid-parquet = { path = "src/liquid_parquet" }
-arrow = "54.0.0"
-arrow-flight = { version = "54.0", features = ["flight-sql-experimental"] }
-arrow-schema = { version = "54.0", features = ["serde"] }
-parquet = { version = "54.0", features = ["async", "experimental"] }
-datafusion = { git = "https://github.com/apache/datafusion.git", rev = "4dc97b2" }
-async-trait = "0.1.83"
+arrow = "54.1"
+arrow-flight = { version = "54.1", features = ["flight-sql-experimental"] }
+arrow-schema = { version = "54.1", features = ["serde"] }
+parquet = { version = "54.1", features = ["async", "experimental"] }
+datafusion = { git = "https://github.com/XiangpengHao/datafusion.git", branch = "sota" }
+async-trait = "0.1.86"
 futures = "0.3.31"
-tokio = { version = "1.42.0", features = ["rt-multi-thread"] }
-log = "0.4.22"
+tokio = { version = "1.43.0", features = ["rt-multi-thread"] }
+log = "0.4.25"
 tonic = { version = "0.12", features = [
 	"tls-native-roots",
 	"tls-webpki-roots",
 ] }
 url = "2.5.4"
 itertools = "0.14.0"
-bytes = "1.9.0"
+bytes = "1.10.0"
 fastlanes = "0.1.8"
 num-traits = "0.2.19"
 ahash = "0.8.11"
-uuid = "1.7.0"
-prost = "0.13.3"
-prost-derive = "0.13.3"
+uuid = "1.12.1"
+prost = "0.13.4"
+prost-derive = "0.13.4"
 object_store = "0.11.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 dashmap = "6.1.0"
 owo-colors = "4"
+
+
+[patch.crates-io]
+arrow = { git = "https://github.com/XiangpengHao/arrow-rs.git", branch = "sota" }
+arrow-array = { git = "https://github.com/XiangpengHao/arrow-rs.git", branch = "sota" }
+arrow-buffer = { git = "https://github.com/XiangpengHao/arrow-rs.git", branch = "sota" }
+arrow-flight = { git = "https://github.com/XiangpengHao/arrow-rs.git", branch = "sota" }
+arrow-ipc = { git = "https://github.com/XiangpengHao/arrow-rs.git", branch = "sota" }
+arrow-ord = { git = "https://github.com/XiangpengHao/arrow-rs.git", branch = "sota" }
+arrow-schema = { git = "https://github.com/XiangpengHao/arrow-rs.git", branch = "sota" }
+parquet = { git = "https://github.com/XiangpengHao/arrow-rs.git", branch = "sota" }
