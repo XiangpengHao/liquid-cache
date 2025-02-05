@@ -1,18 +1,20 @@
+use ahash::HashMap;
 use arrow::array::builder::StringDictionaryBuilder;
 use arrow::array::{
     Array, ArrayRef, BooleanArray, DictionaryArray, PrimitiveArray, RecordBatch, StringArray,
     cast::AsArray, types::UInt16Type,
 };
 use arrow::array::{
-    ArrayAccessor, ArrayIter, BinaryArray, GenericByteArray, GenericByteDictionaryBuilder,
-    StringViewArray, UInt16Array,
+    ArrayAccessor, ArrayIter, BinaryArray, BooleanBufferBuilder, BufferBuilder, GenericByteArray,
+    GenericByteDictionaryBuilder, StringViewArray, UInt16Array,
 };
-use arrow::buffer::{BooleanBuffer, NullBuffer};
+use arrow::buffer::{BooleanBuffer, Buffer, NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::compute::cast;
 use arrow::datatypes::{BinaryType, ByteArrayType, Utf8Type};
 use arrow_schema::{DataType, Field, Schema};
 use fsst::Compressor;
 use std::any::Any;
+use std::mem::MaybeUninit;
 use std::num::NonZero;
 use std::sync::Arc;
 
@@ -296,10 +298,18 @@ impl LiquidByteArray {
         self.values.compressor.clone()
     }
 
-    /// Convert the LiquidStringArray to a DictionaryArray.
+    /// Convert the LiquidStringArray to arrow's DictionaryArray.
     pub fn to_dict_arrow(&self) -> DictionaryArray<UInt16Type> {
-        let primitive_key = self.keys.to_primitive().clone();
+        if self.keys.len() < (self.values.compressed.len() * 2) {
+            // a heuristic to selective decompress.
+            self.to_dict_arrow_decompress_keyed()
+        } else {
+            self.to_dict_arrow_decompress_all()
+        }
+    }
 
+    fn to_dict_arrow_decompress_all(&self) -> DictionaryArray<UInt16Type> {
+        let primitive_key = self.keys.to_primitive();
         if self.original_arrow_type.is_string() {
             let values = self.values.to_arrow_byte_array::<Utf8Type>();
             unsafe { DictionaryArray::<UInt16Type>::new_unchecked(primitive_key, Arc::new(values)) }
@@ -307,6 +317,80 @@ impl LiquidByteArray {
             let values = self.values.to_arrow_byte_array::<BinaryType>();
             unsafe { DictionaryArray::<UInt16Type>::new_unchecked(primitive_key, Arc::new(values)) }
         }
+    }
+
+    fn to_dict_arrow_decompress_keyed(&self) -> DictionaryArray<UInt16Type> {
+        let primitive_key = self.keys.to_primitive();
+        let mut hit_mask = BooleanBufferBuilder::new(self.values.compressed.len());
+        hit_mask.advance(self.values.compressed.len());
+        for v in primitive_key.iter().flatten() {
+            hit_mask.set_bit(v as usize, true);
+        }
+        let hit_mask = hit_mask.finish();
+        let selected_cnt = hit_mask.count_set_bits();
+
+        let mut key_map =
+            HashMap::with_capacity_and_hasher(selected_cnt, ahash::RandomState::new());
+        let mut offset = 0;
+        for (i, select) in hit_mask.iter().enumerate() {
+            if select {
+                key_map.insert(i, offset);
+                offset += 1;
+            }
+        }
+        let new_keys = UInt16Array::from_iter(
+            primitive_key
+                .iter()
+                .map(|v| v.map(|v| key_map[&(v as usize)])),
+        );
+
+        let decompressor = self.values.compressor.decompressor();
+        let mut value_buffer: Vec<u8> = Vec::with_capacity(self.values.uncompressed_len + 8);
+        let mut offsets_builder = BufferBuilder::<i32>::new(selected_cnt + 1);
+        offsets_builder.append(0);
+
+        assert_eq!(hit_mask.len(), self.values.compressed.len());
+        for (_select, v) in hit_mask
+            .iter()
+            .zip(self.values.compressed.iter())
+            .filter(|(select, _v)| *select)
+        {
+            let v = v.expect("values array can't be null");
+            let slice = unsafe {
+                std::slice::from_raw_parts_mut(
+                    value_buffer.as_mut_ptr().add(value_buffer.len()) as *mut MaybeUninit<u8>,
+                    value_buffer.capacity(),
+                )
+            };
+            let len = unsafe { decompressor.decompress_into(v, slice) };
+            let new_len = value_buffer.len() + len;
+            debug_assert!(new_len <= value_buffer.capacity());
+            unsafe {
+                value_buffer.set_len(new_len);
+            }
+            offsets_builder.append(value_buffer.len() as i32);
+        }
+        value_buffer.shrink_to_fit();
+        let value_buffer = Buffer::from(value_buffer);
+        let offsets_buffer: ScalarBuffer<i32> = ScalarBuffer::from(offsets_builder.finish());
+        let values = if self.original_arrow_type.is_string() {
+            unsafe {
+                Arc::new(GenericByteArray::<Utf8Type>::new_unchecked(
+                    OffsetBuffer::new_unchecked(offsets_buffer),
+                    value_buffer,
+                    None,
+                )) as ArrayRef
+            }
+        } else {
+            unsafe {
+                Arc::new(GenericByteArray::<BinaryType>::new_unchecked(
+                    OffsetBuffer::new_unchecked(offsets_buffer),
+                    value_buffer,
+                    None,
+                ))
+            }
+        };
+        unsafe { DictionaryArray::<UInt16Type>::new_unchecked(new_keys, values) }
     }
 
     /// Convert the LiquidStringArray to a DictionaryArray with a selection.
@@ -716,5 +800,87 @@ mod tests {
             &DataType::Binary,
             "Dictionary with binary values should preserve Binary type"
         );
+    }
+
+    #[test]
+    fn test_decompress_keyed_all_same_value() {
+        // Tests when all keys reference the same compressed value
+        let input_values = vec!["repeat"; 8];
+        let input_array = StringArray::from(input_values);
+
+        // Create liquid array with all keys pointing to index 0
+        let compressor = LiquidByteArray::train_compressor(input_array.iter());
+        let mut etc = LiquidByteArray::from_string_array(&input_array, compressor);
+        etc.keys = BitPackedArray::from_primitive(
+            UInt16Array::from(vec![0; 1000]),
+            NonZero::new(1).unwrap(),
+        );
+
+        let dict = etc.to_dict_arrow_decompress_keyed();
+
+        // Verify only one unique value exists
+        assert_eq!(dict.values().len(), 1);
+        assert_eq!(dict.values().as_string::<i32>().value(0), "repeat");
+
+        // Verify all keys are remapped to 0
+        let keys = dict.keys();
+        assert!(keys.iter().all(|v| v == Some(0)));
+    }
+
+    #[test]
+    fn test_decompress_keyed_sparse_references() {
+        // Tests when only a subset of values are referenced
+        let values = vec!["a", "b", "c", "d", "e"];
+        let input_keys = UInt16Array::from(vec![0, 2, 4, 2, 0]); // References a, c, e, c, a
+        let input_array = StringArray::from(values.clone());
+
+        let compressor = LiquidByteArray::train_compressor(input_array.iter());
+        let etc = LiquidByteArray {
+            keys: BitPackedArray::from_primitive(input_keys.clone(), NonZero::new(3).unwrap()),
+            values: FsstArray::from_byte_array_with_compressor(&input_array, compressor),
+            original_arrow_type: ArrowStringType::Dict16Utf8,
+        };
+
+        let dict = etc.to_dict_arrow_decompress_keyed();
+
+        // Should only decompress a, c, e (indexes 0,2,4 from original)
+        assert_eq!(dict.values().len(), 3);
+        let dict_values = dict.values().as_string::<i32>();
+        assert_eq!(dict_values.value(0), "a");
+        assert_eq!(dict_values.value(1), "c");
+        assert_eq!(dict_values.value(2), "e");
+
+        // Verify key remapping: original 0→0, 2→1, 4→2
+        let expected_keys = UInt16Array::from(vec![0, 1, 2, 1, 0]);
+        assert_eq!(dict.keys(), &expected_keys);
+    }
+
+    #[test]
+    fn test_decompress_keyed_with_nulls_and_unreferenced() {
+        // Tests null handling and unreferenced values
+        let values = vec!["a", "b", "c", "d"];
+        let input_keys = UInt16Array::from(vec![Some(0), None, Some(3), Some(0), None, Some(2)]);
+        let input_array = StringArray::from(values.clone());
+
+        let compressor = LiquidByteArray::train_compressor(input_array.iter());
+        let etc = LiquidByteArray {
+            keys: BitPackedArray::from_primitive(input_keys.clone(), NonZero::new(2).unwrap()),
+            values: FsstArray::from_byte_array_with_compressor(&input_array, compressor),
+            original_arrow_type: ArrowStringType::Dict16Utf8,
+        };
+
+        let dict = etc.to_dict_arrow_decompress_keyed();
+
+        // Verify values
+        assert_eq!(dict.values().len(), 3);
+        let dict_values = dict.values().as_string::<i32>();
+        assert_eq!(dict_values.value(0), "a");
+        assert_eq!(dict_values.value(1), "c");
+        assert_eq!(dict_values.value(2), "d");
+
+        // Verify keys and nulls
+        let expected_keys = UInt16Array::from(vec![Some(0), None, Some(2), Some(0), None, Some(1)]);
+        assert_eq!(dict.keys(), &expected_keys);
+        assert_eq!(dict.nulls(), input_keys.nulls());
     }
 }
