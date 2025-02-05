@@ -511,11 +511,11 @@ fn gc_dictionary_array(array: &DictionaryArray<UInt16Type>) -> DictionaryArray<U
             .downcast_dict::<GenericByteArray<BinaryType>>()
             .unwrap();
         let iter = typed.into_iter();
-        return byte_array_to_dict_array::<BinaryType, _>(iter);
+        byte_array_to_dict_array::<BinaryType, _>(iter)
     } else if let DataType::Utf8 = value_type {
         let typed = array.downcast_dict::<GenericByteArray<Utf8Type>>().unwrap();
         let iter = typed.into_iter();
-        return byte_array_to_dict_array::<Utf8Type, _>(iter);
+        byte_array_to_dict_array::<Utf8Type, _>(iter)
     } else {
         unreachable!("Unsupported dictionary type: {:?}", value_type);
     }

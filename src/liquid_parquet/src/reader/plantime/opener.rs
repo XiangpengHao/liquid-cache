@@ -91,7 +91,7 @@ impl FileOpener for LiquidParquetOpener {
             let parquet_metadata = reader.get_metadata().await?;
             let metadata = ArrowReaderMetadata::try_new(parquet_metadata, options)?;
             debug_assert!(
-                Arc::strong_count(&metadata.metadata()) > 1,
+                Arc::strong_count(metadata.metadata()) > 1,
                 "meta data must be cached already"
             );
             let schema = Arc::clone(metadata.schema());
