@@ -30,13 +30,14 @@ use itertools::Itertools;
 use object_store::{ObjectStore, path::Path};
 use parquet::{
     arrow::async_reader::{AsyncFileReader, ParquetObjectReader},
-    file::metadata::ParquetMetaData,
+    file::metadata::{ParquetMetaData, ParquetMetaDataReader},
 };
 use std::{
     any::Any,
     ops::Range,
-    sync::{Arc, LazyLock, RwLock},
+    sync::{Arc, LazyLock},
 };
+use tokio::sync::RwLock;
 
 static META_CACHE: LazyLock<MetadataCache> = LazyLock::new(MetadataCache::new);
 
@@ -109,23 +110,31 @@ impl AsyncFileReader for ParquetMetadataCacheReader {
     }
 
     fn get_metadata(&mut self) -> BoxFuture<'_, parquet::errors::Result<Arc<ParquetMetaData>>> {
-        let cache = META_CACHE.val.read().unwrap();
-        let path = &self.path;
-
-        if let Some(meta) = cache.get(path) {
-            let meta = meta.clone();
-            return async move { Ok(meta) }.boxed();
-        }
-
-        drop(cache);
-
         let path = self.path.clone();
-        let get_meta = self.inner.get_metadata();
         async move {
-            let meta = get_meta.await?;
-            let mut cache = META_CACHE.val.write().unwrap();
-            cache.entry(path).or_insert(meta.clone());
-            Ok(meta)
+            // First check with read lock
+            {
+                let cache = META_CACHE.val.read().await;
+                if let Some(meta) = cache.get(&path) {
+                    return Ok(meta.clone());
+                }
+            }
+
+            // Upgrade to write lock and double-check
+            let mut cache = META_CACHE.val.write().await;
+            match cache.entry(path.clone()) {
+                std::collections::hash_map::Entry::Occupied(entry) => Ok(entry.get().clone()),
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    let meta = self.inner.get_metadata().await?;
+                    let meta = Arc::try_unwrap(meta).unwrap_or_else(|e| e.as_ref().clone());
+                    let mut reader = ParquetMetaDataReader::new_with_metadata(meta.clone())
+                        .with_page_indexes(true);
+                    reader.load_page_index(&mut self.inner).await?;
+                    let meta = Arc::new(reader.finish()?);
+                    entry.insert(meta.clone());
+                    Ok(meta)
+                }
+            }
         }
         .boxed()
     }

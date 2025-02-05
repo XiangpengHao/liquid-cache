@@ -34,7 +34,13 @@ impl StatsCollector for FlameGraphReport {
         }
         let old = guard.take();
         assert!(old.is_none(), "FlameGraphReport is already started");
-        *guard = Some(pprof::ProfilerGuardBuilder::default().build().unwrap());
+        *guard = Some(
+            pprof::ProfilerGuardBuilder::default()
+                .frequency(199)
+                .blocklist(&["libpthread.so.0", "libm.so.6", "libgcc_s.so.1"])
+                .build()
+                .unwrap(),
+        );
     }
 
     fn stop(&self) {

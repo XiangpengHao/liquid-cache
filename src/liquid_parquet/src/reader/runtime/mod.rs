@@ -255,7 +255,7 @@ impl LiquidStreamBuilder {
         let reader = ReaderFactory {
             input: self.input,
             filter: self.filter,
-            metadata: self.metadata.clone(),
+            metadata: Arc::clone(&self.metadata),
             fields: self.fields,
             limit: self.limit,
             offset: self.offset,
@@ -275,7 +275,7 @@ impl LiquidStreamBuilder {
         let schema = Arc::new(coerce_from_reader_to_liquid_types(&schema));
 
         Ok(LiquidStream {
-            metadata: self.metadata.clone(),
+            metadata: self.metadata,
             schema,
             row_groups,
             projection: self.projection,

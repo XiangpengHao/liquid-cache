@@ -118,6 +118,11 @@ impl LiquidBatchReader {
                     .iter_mut()
                     .zip(self.predicate_readers.iter_mut())
                 {
+                    if cur_selection.count_set_bits() == 0 {
+                        reader.skip_records(cur_selection.len()).unwrap();
+                        continue;
+                    }
+
                     if let Some(result) = build_predicate_from_cache(
                         &self.liquid_cache,
                         self.current_row_id,
@@ -125,7 +130,7 @@ impl LiquidBatchReader {
                         predicate,
                     ) {
                         cur_selection = boolean_buffer_and_then(&cur_selection, &result);
-                        reader.skip_records(self.batch_size).unwrap();
+                        reader.skip_records(cur_selection.len()).unwrap();
                     } else {
                         // slow case, where the predicate column is not cached
                         // we need to read from parquet file
@@ -133,6 +138,7 @@ impl LiquidBatchReader {
                             cur_selection.clone(),
                             None,
                         )]);
+
                         let record_batch =
                             read_record_batch_from_parquet(reader, row_selection.iter())?;
                         let filter_mask = predicate.evaluate(record_batch).unwrap();
@@ -171,10 +177,12 @@ impl Iterator for LiquidBatchReader {
     type Item = Result<RecordBatch, ArrowError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Some(selection) = take_next_batch(&mut self.selection, self.batch_size) {
+        while let Some(selection) = take_next_batch(&mut self.selection, self.batch_size) {
             let filtered_selection = self.build_predicate_filter(selection).unwrap();
-            let record_batch = self.read_selection(filtered_selection).unwrap();
-            return Some(Ok(record_batch));
+            if filtered_selection.selects_any() {
+                let record_batch = self.read_selection(filtered_selection).unwrap();
+                return Some(Ok(record_batch));
+            }
         }
         None
     }
