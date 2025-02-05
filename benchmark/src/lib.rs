@@ -2,6 +2,7 @@ use std::{
     path::PathBuf,
     sync::{Mutex, atomic::AtomicUsize},
 };
+pub mod utils;
 
 use liquid_cache_server::StatsCollector;
 use liquid_parquet::LiquidCacheRef;
