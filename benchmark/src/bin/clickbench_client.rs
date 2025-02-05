@@ -17,6 +17,7 @@ use datafusion::{
     physical_plan::{collect, display::DisplayableExecutionPlan},
     prelude::{SessionConfig, SessionContext},
 };
+use liquid_cache_benchmarks::utils::assert_batch_eq;
 use liquid_cache_client::SplitSqlTableFactory;
 use log::{debug, info};
 use owo_colors::OwoColorize;
@@ -61,27 +62,6 @@ fn get_query(
     } else {
         Ok(queries)
     }
-}
-
-fn assert_batch_eq(left: &RecordBatch, right: &RecordBatch) -> bool {
-    use datafusion::arrow::compute::*;
-
-    if left.num_rows() != right.num_rows() {
-        return false;
-    }
-    if left.columns().len() != right.columns().len() {
-        return false;
-    }
-    for (c_l, c_r) in left.columns().iter().zip(right.columns().iter()) {
-        let casted = cast(c_l, c_r.data_type()).unwrap();
-        let sorted_c_l = sort(&casted, None).unwrap();
-        let sorted_c_r = sort(c_r, None).unwrap();
-
-        if sorted_c_l != sorted_c_r {
-            return false;
-        }
-    }
-    true
 }
 
 fn save_result(result: &[RecordBatch], query_id: u32) -> Result<()> {
