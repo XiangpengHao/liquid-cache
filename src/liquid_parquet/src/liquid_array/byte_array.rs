@@ -323,10 +323,8 @@ impl LiquidByteArray {
         let primitive_key = self.keys.to_primitive();
         let mut hit_mask = BooleanBufferBuilder::new(self.values.compressed.len());
         hit_mask.advance(self.values.compressed.len());
-        for v in primitive_key.iter() {
-            if let Some(v) = v {
-                hit_mask.set_bit(v as usize, true);
-            }
+        for v in primitive_key.iter().flatten() {
+            hit_mask.set_bit(v as usize, true);
         }
         let hit_mask = hit_mask.finish();
         let selected_cnt = hit_mask.count_set_bits();
@@ -392,7 +390,7 @@ impl LiquidByteArray {
                 ))
             }
         };
-        return unsafe { DictionaryArray::<UInt16Type>::new_unchecked(new_keys, values) };
+        unsafe { DictionaryArray::<UInt16Type>::new_unchecked(new_keys, values) }
     }
 
     /// Convert the LiquidStringArray to a DictionaryArray with a selection.
