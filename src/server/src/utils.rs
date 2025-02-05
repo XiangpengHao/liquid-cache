@@ -4,13 +4,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use arrow::{
-    array::{
-        Array, RecordBatch, StringArray, builder::StringDictionaryBuilder, cast::AsArray,
-        types::UInt16Type,
-    },
-    compute::concat_batches,
-};
+use arrow::{array::RecordBatch, compute::concat_batches};
 use datafusion::error::Result;
 use futures::{Stream, ready};
 use futures::{StreamExt, stream::BoxStream};
@@ -69,7 +63,6 @@ impl Stream for FinalStream {
                 this.current_buffered_rows = 0;
                 let schema = batches[0].schema();
                 let result = concat_batches(&schema, batches.iter()).unwrap();
-                let result = gc_batch(result);
                 return Poll::Ready(Some(Ok(result)));
             }
 
@@ -90,34 +83,9 @@ impl Stream for FinalStream {
                     this.current_buffered_rows = 0;
                     let schema = batches[0].schema();
                     let result = concat_batches(&schema, batches.iter()).unwrap();
-                    let result = gc_batch(result);
                     return Poll::Ready(Some(Ok(result)));
                 }
             }
         }
     }
-}
-
-fn gc_batch(batch: RecordBatch) -> RecordBatch {
-    let new_columns = batch.columns().iter().map(|column| {
-        if let Some(dict_array) = column.as_dictionary_opt::<UInt16Type>() {
-            if let Some(typed_dict_array) = dict_array.downcast_dict::<StringArray>() {
-                let array_len = dict_array.len();
-                let values_len = typed_dict_array.values().len();
-                if values_len > array_len {
-                    let mut gc_array = StringDictionaryBuilder::<UInt16Type>::with_capacity(
-                        array_len, values_len, 1024,
-                    );
-                    for v in typed_dict_array.into_iter() {
-                        gc_array.append_option(v);
-                    }
-                    let gc_array = gc_array.finish();
-                    return Arc::new(gc_array) as _;
-                }
-            }
-        }
-        column.clone()
-    });
-
-    RecordBatch::try_new(batch.schema(), new_columns.collect()).unwrap()
 }
