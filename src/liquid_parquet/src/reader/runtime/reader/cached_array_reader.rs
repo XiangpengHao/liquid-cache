@@ -1,7 +1,7 @@
 use std::{any::Any, collections::VecDeque};
 
 use arrow::{
-    array::{ArrayRef, BooleanBufferBuilder, new_empty_array},
+    array::{ArrayRef, BooleanArray, BooleanBufferBuilder, new_empty_array},
     buffer::BooleanBuffer,
 };
 use arrow_schema::{DataType, Field, Fields};
@@ -129,7 +129,6 @@ impl CachedArrayReader {
         }
 
         let selection_buffer = row_selection_to_boolean_buffer(row_count, self.selection.iter());
-        let selection_array = arrow::array::BooleanArray::from(selection_buffer);
 
         // Calculate batch range involved in this selection
         let start_batch = start_row / batch_size;
@@ -151,21 +150,20 @@ impl CachedArrayReader {
             // Get corresponding slice from selection buffer
             let selection_start = overlap_start - start_row;
             let selection_length = overlap_end - overlap_start + 1;
-            let mask = selection_array.slice(selection_start, selection_length);
+            let mask = selection_buffer.slice(selection_start, selection_length);
 
-            if mask.true_count() == 0 {
+            if mask.count_set_bits() == 0 {
                 continue;
             }
 
+            let mask_array = BooleanArray::from(mask);
             // Get cached array and apply filter
             let array = self
                 .liquid_cache
-                .get_arrow_array(batch_id * batch_size)
+                .get_arrow_array_with_filter(batch_id * batch_size, &mask_array)
                 .unwrap();
-            let array_slice = array.slice(overlap_start - batch_start, selection_length);
-            let filtered = arrow::compute::filter(&array_slice, &mask)?;
 
-            rt.push(filtered);
+            rt.push(array);
         }
 
         self.selection.clear();
@@ -451,7 +449,7 @@ mod tests {
             let read1 = reader.read_records(32).unwrap();
             assert_eq!(read1, 32);
             let expected = reader.consume_batch().unwrap();
-            let actual = cache.get_arrow_array(i).unwrap();
+            let actual = cache.get_arrow_array_test_only(i).unwrap();
             assert_eq!(&expected, &actual);
             let cache_expected = get_expected_cached_value(i);
             assert_eq!(&cache_expected, &actual);
@@ -468,7 +466,7 @@ mod tests {
 
         let mut cached = vec![];
         for i in (0..96).step_by(32) {
-            let array = cache.get_arrow_array(i).unwrap();
+            let array = cache.get_arrow_array_test_only(i).unwrap();
             let expected = get_expected_cached_value(i);
             assert_eq!(&array, &expected);
             cached.push(array);
@@ -598,13 +596,13 @@ mod tests {
     }
 
     fn assert_contains(cache: &LiquidCachedColumnRef, id: usize) {
-        let actual = cache.get_arrow_array(id).unwrap();
+        let actual = cache.get_arrow_array_test_only(id).unwrap();
         let expected = get_expected_cached_value(id);
         assert_eq!(&actual, &expected);
     }
 
     fn assert_not_contains(cache: &LiquidCachedColumnRef, id: usize) {
-        assert!(cache.get_arrow_array(id).is_none());
+        assert!(cache.get_arrow_array_test_only(id).is_none());
     }
 
     #[test]

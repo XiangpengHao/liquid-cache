@@ -219,11 +219,41 @@ impl LiquidCachedColumn {
         }
     }
 
-    pub(crate) fn get_arrow_array(&self, row_id: usize) -> Option<ArrayRef> {
-        if matches!(self.cache_mode, CacheStates::NoCache) {
-            return None;
-        }
+    pub(crate) fn get_arrow_array_with_filter(
+        &self,
+        row_id: usize,
+        filter: &BooleanArray,
+    ) -> Option<ArrayRef> {
+        let rows = self.rows.read().unwrap();
 
+        let cached_entry = rows.get(&row_id)?;
+        cached_entry.increment_hit_count();
+        let inner_value = cached_entry.value();
+        match inner_value {
+            CachedBatch::ArrowMemory(array) => {
+                let filtered = arrow::compute::filter(array, filter).unwrap();
+                Some(filtered)
+            }
+            CachedBatch::ArrowDisk(range) => {
+                let file = std::fs::File::open(ARROW_DISK_CACHE_PATH).ok()?;
+                let ranged_file = RangedFile::new(file, range.clone()).ok()?;
+
+                let reader = std::io::BufReader::new(ranged_file);
+                let mut arrow_reader = FileReader::try_new(reader, None).ok()?;
+                let batch = arrow_reader.next().unwrap().unwrap();
+                let array = batch.column(0);
+                let filtered = arrow::compute::filter(&array, filter).unwrap();
+                Some(filtered)
+            }
+            CachedBatch::LiquidMemory(array) => {
+                let filtered = array.filter(filter);
+                Some(filtered.to_best_arrow_array())
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn get_arrow_array_test_only(&self, row_id: usize) -> Option<ArrayRef> {
         let rows = self.rows.read().unwrap();
 
         let cached_entry = rows.get(&row_id)?;

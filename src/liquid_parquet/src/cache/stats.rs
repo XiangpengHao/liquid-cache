@@ -200,7 +200,7 @@ mod tests {
                         memory_size_sum += array.get_array_memory_size();
 
                         if row % 2 == 0 {
-                            _ = column.get_arrow_array(row).unwrap();
+                            _ = column.get_arrow_array_test_only(row).unwrap();
                             hit_count_sum += 1;
                         }
                     }
