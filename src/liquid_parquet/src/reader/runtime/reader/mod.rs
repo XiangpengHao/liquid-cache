@@ -112,12 +112,18 @@ impl LiquidBatchReader {
                 );
 
                 let mut cur_selection = row_selector_to_boolean_buffer(&selection);
+                let selection_size = cur_selection.len();
 
                 for (predicate, reader) in filter
                     .predicates
                     .iter_mut()
                     .zip(self.predicate_readers.iter_mut())
                 {
+                    if cur_selection.count_set_bits() == 0 {
+                        reader.skip_records(selection_size).unwrap();
+                        continue;
+                    }
+
                     if let Some(result) = build_predicate_from_cache(
                         &self.liquid_cache,
                         self.current_row_id,
@@ -125,7 +131,7 @@ impl LiquidBatchReader {
                         predicate,
                     ) {
                         cur_selection = boolean_buffer_and_then(&cur_selection, &result);
-                        reader.skip_records(self.batch_size).unwrap();
+                        reader.skip_records(selection_size).unwrap();
                     } else {
                         // slow case, where the predicate column is not cached
                         // we need to read from parquet file
@@ -133,6 +139,7 @@ impl LiquidBatchReader {
                             cur_selection.clone(),
                             None,
                         )]);
+
                         let record_batch =
                             read_record_batch_from_parquet(reader, row_selection.iter())?;
                         let filter_mask = predicate.evaluate(record_batch).unwrap();
@@ -151,8 +158,16 @@ impl LiquidBatchReader {
         }
     }
 
-    fn read_selection(&mut self, selection: RowSelection) -> Result<RecordBatch, ArrowError> {
+    fn read_selection(
+        &mut self,
+        selection: RowSelection,
+    ) -> Result<Option<RecordBatch>, ArrowError> {
         self.current_row_id += self.batch_size;
+        if !selection.selects_any() {
+            self.projection_reader.skip_records(self.batch_size)?;
+            return Ok(None);
+        }
+
         for selector in selection.iter() {
             if selector.skip {
                 self.projection_reader.skip_records(selector.row_count)?;
@@ -163,7 +178,7 @@ impl LiquidBatchReader {
         let array = self.projection_reader.consume_batch()?;
         let struct_array = array.as_struct();
         let batch = RecordBatch::from(struct_array);
-        Ok(batch)
+        Ok(Some(batch))
     }
 }
 
@@ -171,10 +186,11 @@ impl Iterator for LiquidBatchReader {
     type Item = Result<RecordBatch, ArrowError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Some(selection) = take_next_batch(&mut self.selection, self.batch_size) {
+        while let Some(selection) = take_next_batch(&mut self.selection, self.batch_size) {
             let filtered_selection = self.build_predicate_filter(selection).unwrap();
-            let record_batch = self.read_selection(filtered_selection).unwrap();
-            return Some(Ok(record_batch));
+            if let Some(record_batch) = self.read_selection(filtered_selection).unwrap() {
+                return Some(Ok(record_batch));
+            }
         }
         None
     }

@@ -27,6 +27,11 @@ use clap::{Command, arg, value_parser};
 use serde::Serialize;
 use std::fs::File as StdFile;
 
+use mimalloc::MiMalloc;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+
 #[derive(Serialize)]
 struct BenchmarkResult {
     server_url: String,

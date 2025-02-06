@@ -47,7 +47,7 @@ impl FsstArray {
     ) -> Self {
         let default_offset = T::Offset::default();
         let data_capacity = input.offsets().last().unwrap_or(&default_offset);
-        let item_capacity = input.offsets().len();
+        let item_capacity = input.len();
 
         let mut compress_buffer = Vec::with_capacity(2 * 1024 * 1024);
         let mut builder = BinaryBuilder::with_capacity(item_capacity, data_capacity.as_usize());

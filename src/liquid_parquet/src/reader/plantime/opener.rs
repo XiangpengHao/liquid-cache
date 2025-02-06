@@ -87,7 +87,13 @@ impl FileOpener for LiquidParquetOpener {
             let options = ArrowReaderOptions::new().with_page_index(enable_page_index);
 
             let mut metadata_timer = file_metrics.metadata_load_time.timer();
-            let metadata = ArrowReaderMetadata::load_async(&mut reader, options.clone()).await?;
+
+            let parquet_metadata = reader.get_metadata().await?;
+            let metadata = ArrowReaderMetadata::try_new(parquet_metadata, options)?;
+            debug_assert!(
+                Arc::strong_count(metadata.metadata()) > 1,
+                "meta data must be cached already"
+            );
             let schema = Arc::clone(metadata.schema());
 
             let reader_schema = Arc::new(coerce_to_parquet_reader_types(&schema));
@@ -104,7 +110,7 @@ impl FileOpener for LiquidParquetOpener {
 
             let file_schema = Arc::clone(&output_schema);
 
-            let (schema_mapping, adapted_projections) = schema_adapter.map_schema(&file_schema)?;
+            let (_schema_mapping, adapted_projections) = schema_adapter.map_schema(&file_schema)?;
 
             let mask = ProjectionMask::roots(
                 builder.parquet_schema(),
@@ -120,7 +126,6 @@ impl FileOpener for LiquidParquetOpener {
                     builder.metadata(),
                     reorder_predicates,
                     &file_metrics,
-                    Arc::clone(&schema_mapping),
                 );
 
                 match row_filter {

@@ -99,16 +99,18 @@ jobs:
           toolchain: nightly-2025-01-24
       - uses: Swatinem/rust-cache@v2
       - name: Build LiquidCache server
-        run: cargo build --release --bin bench_server
+        run: cargo build --bin bench_server
+      - name: Build ClickBench client
+        run: cargo build --bin clickbench_client
 
       - name: Start LiquidCache server
         run: |
-          env RUST_LOG=info nohup cargo run --release --bin bench_server -- --abort-on-panic &> server.log &
+          env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic &> server.log &
           echo $! > server.pid  # Save PID for later cleanup
 
       - name: Run simple ClickBench
         run: |
-          env RUST_LOG=info cargo run --release --bin clickbench_client -- --query-path benchmark/queries.sql --file examples/small_hits.parquet
+          env RUST_LOG=info cargo run --bin clickbench_client -- --query-path benchmark/queries.sql --file examples/small_hits.parquet
         # Always clean up after this step
         shell: bash
         if: always()
@@ -127,13 +129,13 @@ jobs:
 
       - name: Start LiquidCache server (for partition 0)
         run: |
-          env RUST_LOG=info nohup cargo run --release --bin bench_server -- --abort-on-panic &> server.log &
+          env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic &> server.log &
           echo $! > server.pid  # Save PID for later cleanup
           sleep 2  # Wait for server to start up
 
       - name: Run ClickBench partition 0
         run: |
-          env RUST_LOG=info cargo run --release --bin clickbench_client -- --query-path benchmark/queries.sql --file benchmark/data/hits_0.parquet --answer-dir benchmark/answers/clickbench_0
+          env RUST_LOG=info cargo run --bin clickbench_client -- --query-path benchmark/queries.sql --file benchmark/data/hits_0.parquet --answer-dir benchmark/answers/clickbench_0
         shell: bash
         if: always()
 

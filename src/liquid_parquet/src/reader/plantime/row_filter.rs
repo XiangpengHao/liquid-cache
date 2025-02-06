@@ -120,8 +120,6 @@ pub(crate) struct DatafusionArrowPredicate {
     rows_matched: metrics::Count,
     /// how long was spent evaluating this predicate
     time: metrics::Time,
-    /// used to perform type coercion while filtering rows
-    schema_mapping: Arc<dyn SchemaMapper>,
 }
 
 impl DatafusionArrowPredicate {
@@ -133,7 +131,6 @@ impl DatafusionArrowPredicate {
         rows_pruned: metrics::Count,
         rows_matched: metrics::Count,
         time: metrics::Time,
-        schema_mapping: Arc<dyn SchemaMapper>,
     ) -> Result<Self> {
         let schema = Arc::new(schema.project(&candidate.projection)?);
         let physical_expr = reassign_predicate_columns(candidate.expr, &schema, true)?;
@@ -156,7 +153,6 @@ impl DatafusionArrowPredicate {
             rows_pruned,
             rows_matched,
             time,
-            schema_mapping,
         })
     }
 }
@@ -612,7 +608,6 @@ pub fn build_row_filter(
     metadata: &ParquetMetaData,
     reorder_predicates: bool,
     file_metrics: &ParquetFileMetrics,
-    schema_mapping: Arc<dyn SchemaMapper>,
 ) -> Result<Option<LiquidRowFilter>> {
     let rows_pruned = &file_metrics.pushdown_rows_pruned;
     let rows_matched = &file_metrics.pushdown_rows_matched;
@@ -661,7 +656,6 @@ pub fn build_row_filter(
                 rows_pruned.clone(),
                 rows_matched.clone(),
                 time.clone(),
-                Arc::clone(&schema_mapping),
             )
             .map(|pred| Box::new(pred) as _)
         })

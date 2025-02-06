@@ -239,7 +239,8 @@ impl LiquidByteArray {
         compressor: Arc<Compressor>,
         arrow_type: ArrowStringType,
     ) -> Self {
-        let (keys, values) = array.into_parts();
+        let gc_ed = gc_dictionary_array(&array);
+        let (keys, values) = gc_ed.into_parts();
 
         let (_, keys, nulls) = keys.into_parts();
         let keys = PrimitiveArray::<UInt16Type>::try_new(keys, nulls).unwrap();
@@ -501,6 +502,23 @@ fn byte_array_to_dict_array<'a, T: ByteArrayType, I: ArrayAccessor<Item = &'a T:
         builder.append_option(s);
     }
     builder.finish()
+}
+
+fn gc_dictionary_array(array: &DictionaryArray<UInt16Type>) -> DictionaryArray<UInt16Type> {
+    let value_type = array.values().data_type();
+    if let DataType::Binary = value_type {
+        let typed = array
+            .downcast_dict::<GenericByteArray<BinaryType>>()
+            .unwrap();
+        let iter = typed.into_iter();
+        byte_array_to_dict_array::<BinaryType, _>(iter)
+    } else if let DataType::Utf8 = value_type {
+        let typed = array.downcast_dict::<GenericByteArray<Utf8Type>>().unwrap();
+        let iter = typed.into_iter();
+        byte_array_to_dict_array::<Utf8Type, _>(iter)
+    } else {
+        unreachable!("Unsupported dictionary type: {:?}", value_type);
+    }
 }
 
 #[cfg(test)]
