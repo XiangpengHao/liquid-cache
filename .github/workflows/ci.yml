@@ -98,12 +98,15 @@ jobs:
         with:
           toolchain: nightly-2025-01-24
       - uses: Swatinem/rust-cache@v2
+      - name: Build LiquidCache server
+        run: cargo build --bin bench_server
+      - name: Build ClickBench client
+        run: cargo build --bin clickbench_client
 
       - name: Start LiquidCache server
         run: |
           env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic &> server.log &
           echo $! > server.pid  # Save PID for later cleanup
-          sleep 2  # Wait for server to start up
 
       - name: Run simple ClickBench
         run: |
