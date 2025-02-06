@@ -666,15 +666,14 @@ pub fn build_row_filter(
 fn get_priority(expr: &Arc<dyn PhysicalExpr>) -> u8 {
     if let Some(binary) = expr.as_any().downcast_ref::<BinaryExpr>() {
         match binary.op() {
-            Operator::Eq | Operator::NotEq => 0,    // Highest priority
-            Operator::Lt | Operator::LtEq |        // Medium priority
-            Operator::Gt | Operator::GtEq => 1,
-            Operator::LikeMatch | Operator::ILikeMatch |  // Lower priority
+            Operator::Eq | Operator::NotEq => 0, // Highest priority
+            Operator::LikeMatch | Operator::ILikeMatch => 1,
             Operator::NotLikeMatch | Operator::NotILikeMatch => 2,
-            _ => 3,                               // Lowest priority
+            Operator::Lt | Operator::LtEq | Operator::Gt | Operator::GtEq => 3,
+            _ => 4,
         }
     } else if expr.as_any().downcast_ref::<LikeExpr>().is_some() {
-        4 // LIKE expressions
+        1 // LIKE expressions
     } else {
         5 // All other expression types
     }
