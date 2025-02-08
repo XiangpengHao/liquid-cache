@@ -21,14 +21,14 @@ wget https://datasets.clickhouse.com/hits_compatible/athena/hits.parquet -O benc
 
 ```bash
 cargo run --release --bin bench_server
-cargo run --release --bin bench_client -- --query-path benchmark/queries.sql --file benchmark/data/hits.parquet
+cargo run --release --bin clickbench_client -- --query-path benchmark/queries.sql --file benchmark/data/hits.parquet
 ```
 
 ### Advanced
 
 ```bash
-env RUST_LOG=info cargo run --release --bin bench_server
-env RUST_LOG=info cargo run --release --bin bench_client -- --query-path benchmark/queries.sql --file benchmark/data/hits_0.parquet --query 42
+env RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS='-C target-cpu=native' cargo run --release --bin bench_server
+env RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS='-C target-cpu=native' cargo run --release --bin clickbench_client -- --query-path benchmark/queries.sql --file benchmark/data/hits.parquet --query 42
 ```
 
 ## Profile

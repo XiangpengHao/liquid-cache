@@ -25,7 +25,7 @@ use prost::Message;
 use tonic::Request;
 use tonic::transport::Channel;
 
-use crate::{FlightMetadata, FlightProperties};
+use crate::{FlightMetadata, FlightProperties, ParquetMode};
 use liquid_cache_server::{ACTION_REGISTER_TABLE, ActionRegisterTableRequest};
 
 /// Default Flight SQL driver.
@@ -40,6 +40,7 @@ impl FlightSqlDriver {
         channel: Channel,
         table_name: &str,
         table_url: &str,
+        parquet_mode: ParquetMode,
     ) -> Result<FlightMetadata> {
         let mut client = FlightSqlServiceClient::new(channel);
 
@@ -47,6 +48,7 @@ impl FlightSqlDriver {
             let register_table_request = ActionRegisterTableRequest {
                 url: table_url.to_string(),
                 table_name: table_name.to_string(),
+                table_provider: parquet_mode.to_string(),
             };
             let action = Action {
                 r#type: ACTION_REGISTER_TABLE.to_string(),

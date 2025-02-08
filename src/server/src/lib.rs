@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::ipc::writer::IpcWriteOptions;
+use arrow::ipc::{CompressionType, writer::IpcWriteOptions};
 use arrow_flight::{
     Action, FlightDescriptor, FlightEndpoint, FlightInfo, HandshakeRequest, HandshakeResponse,
     IpcMessage, SchemaAsIpc, Ticket,
@@ -203,7 +203,9 @@ impl FlightSqlService for LiquidCacheService {
             panic!("Error executing plan: {:?}", e);
         });
 
-        let ipc_options = IpcWriteOptions::default();
+        let ipc_options = IpcWriteOptions::default()
+            .try_with_compression(Some(CompressionType::LZ4_FRAME))
+            .unwrap();
         let stream = FlightDataEncoderBuilder::new()
             .with_options(ipc_options)
             .with_dictionary_handling(DictionaryHandling::Resend)
@@ -288,9 +290,10 @@ impl FlightSqlService for LiquidCacheService {
                     Status::invalid_argument("Unable to unpack ActionRegisterTableRequest.")
                 })?;
             self.inner
-                .register_table(&cmd.url, &cmd.table_name)
+                .register_table(&cmd.url, &cmd.table_name, &cmd.table_provider)
                 .await
                 .map_err(df_error_to_status)?;
+
             let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
                 body: Bytes::default(),
             })]);
@@ -335,6 +338,9 @@ pub struct ActionRegisterTableRequest {
 
     #[prost(string, tag = "2")]
     pub table_name: ::prost::alloc::string::String,
+
+    #[prost(string, tag = "3")]
+    pub table_provider: ::prost::alloc::string::String,
 }
 
 impl ProstMessageExt for ActionRegisterTableRequest {

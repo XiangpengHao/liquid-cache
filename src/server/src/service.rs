@@ -45,7 +45,12 @@ impl LiquidCacheServiceInner {
         }
     }
 
-    pub(crate) async fn register_table(&self, url_str: &str, table_name: &str) -> Result<()> {
+    pub(crate) async fn register_table(
+        &self,
+        url_str: &str,
+        table_name: &str,
+        provider: &str,
+    ) -> Result<()> {
         let url =
             Url::parse(url_str).map_err(|e| DataFusionError::Configuration(format!("{e:?}")))?;
 
@@ -58,12 +63,23 @@ impl LiquidCacheServiceInner {
                 panic!("table {table_name} already registered at {path} but not at {url}");
             }
         }
-
-        // here we can't use register_parquet because it will use the default parquet format.
-        // we want to override with liquid parquet format.
-        self.register_liquid_parquet(table_name, url.as_str())
-            .await?;
-        info!("registered table {table_name} from {url}");
+        match provider {
+            "original" => {
+                self.default_ctx
+                    .register_parquet(table_name, url.as_str(), Default::default())
+                    .await?;
+            }
+            "liquid" => {
+                // here we can't use register_parquet because it will use the default parquet format.
+                // we want to override with liquid parquet format.
+                self.register_liquid_parquet(table_name, url.as_str())
+                    .await?;
+            }
+            _ => {
+                panic!("Unsupported table provider: {}", provider);
+            }
+        }
+        info!("registered table {table_name} from {url} as {provider}");
         registered_tables.insert(table_name.to_string(), url_str.to_string());
         Ok(())
     }

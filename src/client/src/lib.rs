@@ -1,8 +1,8 @@
-use std::any::Any;
 use std::collections::HashMap;
 use std::error::Error;
-use std::fmt::Debug;
+use std::fmt::{Debug, Display};
 use std::sync::Arc;
+use std::{any::Any, str::FromStr};
 
 mod exec;
 mod metrics;
@@ -51,6 +51,39 @@ fn transform_flight_schema_to_output_schema(schema: &SchemaRef) -> Schema {
     Schema::new_with_metadata(transformed_fields, schema.metadata.clone())
 }
 
+#[derive(Clone, Debug, Default, Copy, PartialEq, Eq)]
+pub enum ParquetMode {
+    #[default]
+    Original,
+    Liquid,
+}
+
+impl Display for ParquetMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", match self {
+            ParquetMode::Original => "original",
+            ParquetMode::Liquid => "liquid",
+        })
+    }
+}
+
+impl FromStr for ParquetMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "original" => ParquetMode::Original,
+            "liquid" => ParquetMode::Liquid,
+            _ => {
+                return Err(format!(
+                    "Invalid parquet mode: {}, must be one of: original, liquid",
+                    s
+                ));
+            }
+        })
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SplitSqlTableFactory {
     driver: Arc<FlightSqlDriver>,
@@ -66,11 +99,17 @@ impl SplitSqlTableFactory {
         cache_server: impl AsRef<str>,
         table_name: impl AsRef<str>,
         url: impl AsRef<str>,
+        parquet_mode: ParquetMode,
     ) -> Result<FlightTable> {
         let driver = Arc::new(FlightSqlDriver::default());
         let factory = SplitSqlTableFactory::new(driver);
         factory
-            .open_table_inner(cache_server.as_ref(), table_name.as_ref(), url.as_ref())
+            .open_table_inner(
+                cache_server.as_ref(),
+                table_name.as_ref(),
+                url.as_ref(),
+                parquet_mode,
+            )
             .await
     }
 
@@ -80,13 +119,14 @@ impl SplitSqlTableFactory {
         cache_server: &str,
         table_name: &str,
         object_url: &str,
+        parquet_mode: ParquetMode,
     ) -> Result<FlightTable> {
         let origin = cache_server.into();
         let channel = flight_channel(&origin).await?;
 
         let metadata = self
             .driver
-            .metadata(channel.clone(), table_name, object_url)
+            .metadata(channel.clone(), table_name, object_url, parquet_mode)
             .await
             .map_err(to_df_err)?;
         let num_rows = precision(metadata.info.total_records);

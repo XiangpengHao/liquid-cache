@@ -7,7 +7,7 @@ use datafusion::{
     physical_plan::{collect, displayable},
     prelude::{SessionConfig, SessionContext},
 };
-use liquid_cache_client::SplitSqlTableFactory;
+use liquid_cache_client::{ParquetMode, SplitSqlTableFactory};
 use log::{debug, info};
 use owo_colors::OwoColorize;
 use url::Url;
@@ -125,8 +125,13 @@ impl TpchRunner {
         ))
         .unwrap();
 
-        let table =
-            SplitSqlTableFactory::open_table(&self.server_url, table_name, table_url).await?;
+        let table = SplitSqlTableFactory::open_table(
+            &self.server_url,
+            table_name,
+            table_url,
+            ParquetMode::Liquid,
+        )
+        .await?;
         Ok(Arc::new(table))
     }
 }

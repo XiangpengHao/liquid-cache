@@ -18,7 +18,7 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use liquid_cache_benchmarks::utils::assert_batch_eq;
-use liquid_cache_client::SplitSqlTableFactory;
+use liquid_cache_client::{ParquetMode, SplitSqlTableFactory};
 use log::{debug, info};
 use owo_colors::OwoColorize;
 use url::Url;
@@ -209,6 +209,13 @@ pub async fn main() -> Result<()> {
                 .help("Path to the baseline directory")
                 .value_parser(value_parser!(std::path::PathBuf)),
         )
+        .arg(
+            arg!(--"parquet-mode" <MODE>)
+                .required(false)
+                .default_value("liquid")
+                .help("Parquet mode to use")
+                .value_parser(value_parser!(ParquetMode)),
+        )
         .get_matches();
 
     let server_url = matches.get_one::<String>("server").unwrap();
@@ -218,6 +225,7 @@ pub async fn main() -> Result<()> {
     let iteration = matches.get_one::<u32>("iteration").unwrap();
     let output_path = matches.get_one::<PathBuf>("output");
     let answer_dir = matches.get_one::<PathBuf>("answer-dir");
+    let parquet_mode = matches.get_one::<ParquetMode>("parquet-mode").unwrap();
 
     let mut session_config = SessionConfig::from_env()?;
     session_config
@@ -232,7 +240,8 @@ pub async fn main() -> Result<()> {
     let current_dir = std::env::current_dir()?.to_string_lossy().to_string();
     let table_url = Url::parse(&format!("file://{}/{}", current_dir, file.display())).unwrap();
 
-    let table = SplitSqlTableFactory::open_table(server_url, table_name, table_url).await?;
+    let table =
+        SplitSqlTableFactory::open_table(server_url, table_name, table_url, *parquet_mode).await?;
     ctx.register_table(table_name, Arc::new(table))?;
 
     let mut benchmark_result = BenchmarkResult {
@@ -248,7 +257,7 @@ pub async fn main() -> Result<()> {
     for (id, query) in queries {
         let mut times_millis = Vec::new();
         for _i in 0..*iteration {
-            info!("SQL to be executed: \n{}", query.cyan());
+            info!("Running query {}: \n{}", id.magenta(), query.cyan());
             let now = Instant::now();
             let df = ctx.sql(&query).await?;
             let (state, logical_plan) = df.into_parts();
