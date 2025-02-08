@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::{Debug, Display};
 use std::sync::Arc;
+use std::time::Duration;
 use std::{any::Any, str::FromStr};
 
 mod exec;
@@ -305,11 +306,10 @@ pub(crate) fn to_df_err<E: Error + Send + Sync + 'static>(err: E) -> DataFusionE
 pub(crate) async fn flight_channel(source: impl Into<String>) -> Result<Channel> {
     // No tls here, to avoid the overhead of TLS
     // we assume both server and client are running on the trusted network.
-    Channel::from_shared(source.into())
+    let endpoint = Channel::from_shared(source.into())
         .map_err(to_df_err)?
-        .connect()
-        .await
-        .map_err(to_df_err)
+        .tcp_keepalive(Some(Duration::from_secs(10)));
+    endpoint.connect().await.map_err(to_df_err)
 }
 
 fn precision(total: i64) -> Precision<usize> {

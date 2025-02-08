@@ -357,7 +357,7 @@ impl Stream for FlightStream {
                 }
                 self.metrics.output_rows.add(batch.num_rows());
                 self.metrics
-                    .bytes_transferred
+                    .bytes_decoded
                     .add(batch.get_array_memory_size());
                 let new_batch = self.schema_mapper.map_batch(batch).unwrap();
                 Poll::Ready(Some(Ok(new_batch)))

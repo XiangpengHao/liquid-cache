@@ -20,6 +20,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .arg(
             arg!(--"address" <ADDRESS>)
                 .required(false)
+                .default_value("127.0.0.1:50051")
                 .help("Address to listen on")
                 .value_parser(value_parser!(std::net::SocketAddr)),
         )
@@ -62,10 +63,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }));
     }
 
-    let default_addr = "0.0.0.0:50051".parse().unwrap();
-    let addr = matches
-        .get_one::<SocketAddr>("address")
-        .unwrap_or(&default_addr);
+    let addr = matches.get_one::<SocketAddr>("address").unwrap();
     let partitions = matches.get_one::<usize>("partitions").cloned();
 
     let ctx = LiquidCacheService::context(partitions)?;
