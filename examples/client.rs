@@ -24,6 +24,7 @@ use datafusion::{
 use liquid_cache_client::SplitSqlTableFactory;
 use log::info;
 use url::Url;
+use std::env;
 
 #[tokio::main]
 pub async fn main() -> Result<()> {
@@ -40,7 +41,12 @@ pub async fn main() -> Result<()> {
         .pushdown_filters = true;
     let ctx = Arc::new(SessionContext::new_with_config(session_config));
 
-    let entry_point = "http://localhost:50051";
+    let port: u16 = env::var("PORT")
+        .unwrap_or_else(|_| "50051".to_string()) // Default to "50051" if PORT is not set
+        .parse()
+        .expect("Failed to parse PORT as a number");
+
+    let entry_point = format!("http://localhost:{}", port);
 
     let sql = "SELECT COUNT(*) FROM small_hits WHERE \"URL\" <> '';";
 

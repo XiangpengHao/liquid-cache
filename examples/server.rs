@@ -19,12 +19,19 @@ use arrow_flight::flight_service_server::FlightServiceServer;
 use liquid_cache_server::LiquidCacheService;
 use log::info;
 use tonic::transport::Server;
+use std::env;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+
     env_logger::builder().format_timestamp(None).init();
 
-    let addr = "0.0.0.0:50051".parse()?;
+    let port: u16 = env::var("PORT")
+        .unwrap_or_else(|_| "50051".to_string()) // Default to "50051" if PORT is not set
+        .parse()
+        .expect("Failed to parse PORT as a number");
+
+    let addr = format!("0.0.0.0:{}", port).parse()?;
 
     let split_sql = LiquidCacheService::try_new()?;
     let flight = FlightServiceServer::new(split_sql);

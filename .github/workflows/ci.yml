@@ -146,3 +146,36 @@ jobs:
           cat server.log || echo "No server log found"
           pkill -F server.pid || true
           rm -f server.pid
+
+  examples:
+    name: Run client/server examples
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # - uses: ./.github/actions/rust-setup
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2025-01-24
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install netcat
+        run: sudo apt-get update && sudo apt-get install -y netcat
+      
+      - name: Start server (in background) and client
+        run: |
+          env PORT=50051 cargo run --bin server & SERVER_PID=$!
+          while ! nc -z localhost 50051; do
+              if ! kill -0 $SERVER_PID; then
+                  exit 1
+              fi
+              sleep 0.1
+          done
+          sleep 5
+          env PORT=50051 cargo run --bin client
+          EXIT=$?
+          kill $SERVER_PID
+
+          exit $EXIT
+
+
