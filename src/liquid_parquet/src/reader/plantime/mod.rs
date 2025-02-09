@@ -17,7 +17,10 @@ use datafusion::{
     physical_plan::{ExecutionPlan, PhysicalExpr, metrics::ExecutionPlanMetricsSet},
     prelude::*,
 };
+#[cfg(test)]
+pub(crate) use exec::CachedMetaReaderFactory;
 use exec::LiquidParquetExec;
+pub(crate) use exec::ParquetMetadataCacheReader;
 use log::{debug, info};
 use object_store::{ObjectMeta, ObjectStore};
 use page_filter::PagePruningAccessPlanFilter;

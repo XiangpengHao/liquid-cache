@@ -107,6 +107,7 @@ jobs:
         run: |
           env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic &> server.log &
           echo $! > server.pid  # Save PID for later cleanup
+          sleep 2  # Wait for server to start up
 
       - name: Run simple ClickBench
         run: |

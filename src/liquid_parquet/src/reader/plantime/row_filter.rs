@@ -646,6 +646,15 @@ pub fn build_row_filter(
         p1.cmp(&p2)
     });
 
+    log::debug!(
+        "Predicate eval order: {}",
+        candidates
+            .iter()
+            .map(|c| c.expr.as_ref().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
     candidates
         .into_iter()
         .map(|candidate| {

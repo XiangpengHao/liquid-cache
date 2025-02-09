@@ -5,8 +5,7 @@ use datafusion::{
     common::exec_err,
     datasource::{
         physical_plan::{
-            FileMeta, FileOpenFuture, FileOpener, ParquetFileMetrics, ParquetFileReaderFactory,
-            parquet::ParquetAccessPlan,
+            FileMeta, FileOpenFuture, FileOpener, ParquetFileMetrics, parquet::ParquetAccessPlan,
         },
         schema_adapter::SchemaAdapterFactory,
     },
@@ -34,7 +33,9 @@ use crate::{
     },
 };
 
-use super::{coerce_to_parquet_reader_types, transform_to_liquid_cache_types};
+use super::{
+    coerce_to_parquet_reader_types, exec::CachedMetaReaderFactory, transform_to_liquid_cache_types,
+};
 
 pub struct LiquidParquetOpener {
     pub partition_index: usize,
@@ -46,7 +47,7 @@ pub struct LiquidParquetOpener {
     pub page_pruning_predicate: Option<Arc<PagePruningAccessPlanFilter>>,
     pub table_schema: SchemaRef,
     pub metrics: ExecutionPlanMetricsSet,
-    pub parquet_file_reader_factory: Arc<dyn ParquetFileReaderFactory>,
+    pub parquet_file_reader_factory: Arc<CachedMetaReaderFactory>,
     pub reorder_filters: bool,
     pub liquid_cache: LiquidCacheRef,
     pub schema_adapter_factory: Arc<dyn SchemaAdapterFactory>,
@@ -61,12 +62,12 @@ impl FileOpener for LiquidParquetOpener {
 
         let metadata_size_hint = file_meta.metadata_size_hint;
 
-        let mut reader: Box<dyn AsyncFileReader> = self.parquet_file_reader_factory.create_reader(
+        let mut reader = self.parquet_file_reader_factory.create_liquid_reader(
             self.partition_index,
             file_meta,
             metadata_size_hint,
             &self.metrics,
-        )?;
+        );
 
         let batch_size = self.batch_size;
 

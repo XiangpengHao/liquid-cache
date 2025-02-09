@@ -1,7 +1,9 @@
 use std::{
+    fmt::Display,
     fs::File,
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
+    str::FromStr,
     sync::Arc,
     time::Instant,
 };
@@ -18,9 +20,11 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use liquid_cache_benchmarks::utils::assert_batch_eq;
-use liquid_cache_client::SplitSqlTableFactory;
+use liquid_cache_client::{ParquetMode, SplitSqlTableFactory};
 use log::{debug, info};
+use object_store::ClientConfigKey;
 use owo_colors::OwoColorize;
+use sysinfo::Networks;
 use url::Url;
 
 use clap::{Command, arg, value_parser};
@@ -45,7 +49,57 @@ struct BenchmarkResult {
 struct QueryResult {
     id: u32,
     query: String,
-    times_millis: Vec<u64>,
+    iteration_results: Vec<IterationResult>,
+}
+
+impl QueryResult {
+    fn new(id: u32, query: String) -> Self {
+        Self {
+            id,
+            query,
+            iteration_results: Vec::new(),
+        }
+    }
+
+    fn add(&mut self, iteration_result: IterationResult) {
+        self.iteration_results.push(iteration_result);
+    }
+}
+#[derive(Serialize)]
+struct IterationResult {
+    network_traffic: u64,
+    time_millis: u64,
+}
+
+#[derive(Clone, Debug, Default, Copy, PartialEq, Eq)]
+enum BenchmarkMode {
+    ParquetFileserver,
+    ParquetPushdown,
+    #[default]
+    LiquidCache,
+}
+
+impl Display for BenchmarkMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", match self {
+            BenchmarkMode::ParquetFileserver => "parquet-fileserver",
+            BenchmarkMode::ParquetPushdown => "parquet-pushdown",
+            BenchmarkMode::LiquidCache => "liquid-cache",
+        })
+    }
+}
+
+impl FromStr for BenchmarkMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "parquet-fileserver" => BenchmarkMode::ParquetFileserver,
+            "parquet-pushdown" => BenchmarkMode::ParquetPushdown,
+            "liquid-cache" => BenchmarkMode::LiquidCache,
+            _ => return Err(format!("Invalid benchmark mode: {}", s)),
+        })
+    }
 }
 
 fn get_query(
@@ -209,8 +263,14 @@ pub async fn main() -> Result<()> {
                 .help("Path to the baseline directory")
                 .value_parser(value_parser!(std::path::PathBuf)),
         )
+        .arg(
+            arg!(--"bench-mode" <MODE>)
+                .required(false)
+                .default_value("liquid-cache")
+                .help("Benchmark mode to use")
+                .value_parser(value_parser!(BenchmarkMode)),
+        )
         .get_matches();
-
     let server_url = matches.get_one::<String>("server").unwrap();
     let file = matches.get_one::<PathBuf>("file").unwrap();
     let query_path = matches.get_one::<PathBuf>("query-path").unwrap();
@@ -218,22 +278,9 @@ pub async fn main() -> Result<()> {
     let iteration = matches.get_one::<u32>("iteration").unwrap();
     let output_path = matches.get_one::<PathBuf>("output");
     let answer_dir = matches.get_one::<PathBuf>("answer-dir");
+    let bench_mode = matches.get_one::<BenchmarkMode>("bench-mode").unwrap();
 
-    let mut session_config = SessionConfig::from_env()?;
-    session_config
-        .options_mut()
-        .execution
-        .parquet
-        .pushdown_filters = true;
-    let ctx = Arc::new(SessionContext::new_with_config(session_config));
-
-    let table_name = "hits";
-
-    let current_dir = std::env::current_dir()?.to_string_lossy().to_string();
-    let table_url = Url::parse(&format!("file://{}/{}", current_dir, file.display())).unwrap();
-
-    let table = SplitSqlTableFactory::open_table(server_url, table_name, table_url).await?;
-    ctx.register_table(table_name, Arc::new(table))?;
+    let ctx = setup_ctx(bench_mode, file, server_url).await?;
 
     let mut benchmark_result = BenchmarkResult {
         server_url: server_url.clone(),
@@ -245,10 +292,12 @@ pub async fn main() -> Result<()> {
 
     std::fs::create_dir_all("benchmark/data/results")?;
 
+    let mut networks = Networks::new_with_refreshed_list();
+
     for (id, query) in queries {
-        let mut times_millis = Vec::new();
+        let mut query_result = QueryResult::new(id, query.clone());
         for _i in 0..*iteration {
-            info!("SQL to be executed: \n{}", query.cyan());
+            info!("Running query {}: \n{}", id.magenta(), query.cyan());
             let now = Instant::now();
             let df = ctx.sql(&query).await?;
             let (state, logical_plan) = df.into_parts();
@@ -256,8 +305,14 @@ pub async fn main() -> Result<()> {
             let physical_plan = state.create_physical_plan(&logical_plan).await?;
             let results = collect(physical_plan.clone(), state.task_ctx()).await?;
             let elapsed = now.elapsed();
-            times_millis.push(elapsed.as_millis() as u64);
             info!("Query execution time: {:?}", elapsed);
+
+            networks.refresh(true);
+            let network_info = networks.get("lo").unwrap();
+            query_result.add(IterationResult {
+                network_traffic: network_info.received(),
+                time_millis: elapsed.as_millis() as u64,
+            });
 
             let physical_plan_with_metrics =
                 DisplayableExecutionPlan::with_metrics(physical_plan.as_ref());
@@ -275,11 +330,7 @@ pub async fn main() -> Result<()> {
                 info!("Query {} passed validation", id.to_string().red());
             }
         }
-        benchmark_result.queries.push(QueryResult {
-            id,
-            query: query.clone(),
-            times_millis,
-        });
+        benchmark_result.queries.push(query_result);
     }
 
     if let Some(output_path) = output_path {
@@ -288,4 +339,74 @@ pub async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+async fn setup_ctx(
+    benchmark_mode: &BenchmarkMode,
+    file_path: &Path,
+    server_url: &str,
+) -> Result<Arc<SessionContext>> {
+    let mut session_config = SessionConfig::from_env()?;
+    let table_name = "hits";
+    let current_dir = std::env::current_dir()?.to_string_lossy().to_string();
+    let table_url = Url::parse(&format!("file://{}/{}", current_dir, file_path.display())).unwrap();
+
+    match benchmark_mode {
+        BenchmarkMode::ParquetFileserver => {
+            let ctx = Arc::new(SessionContext::new_with_config(session_config));
+            let base_url = Url::parse(server_url).unwrap();
+
+            let object_store = object_store::http::HttpBuilder::new()
+                .with_url(base_url.clone())
+                .with_config(ClientConfigKey::AllowHttp, "true")
+                .build()
+                .unwrap();
+            ctx.register_object_store(&base_url, Arc::new(object_store));
+
+            // Register Parquet file as a table
+            ctx.register_parquet(
+                "hits",
+                format!("{}/hits.parquet", server_url),
+                Default::default(),
+            )
+            .await?;
+            Ok(ctx)
+        }
+        BenchmarkMode::ParquetPushdown => {
+            session_config
+                .options_mut()
+                .execution
+                .parquet
+                .pushdown_filters = true;
+            let ctx = Arc::new(SessionContext::new_with_config(session_config));
+
+            let table = SplitSqlTableFactory::open_table(
+                server_url,
+                table_name,
+                table_url,
+                ParquetMode::Original,
+            )
+            .await?;
+            ctx.register_table(table_name, Arc::new(table))?;
+            Ok(ctx)
+        }
+        BenchmarkMode::LiquidCache => {
+            session_config
+                .options_mut()
+                .execution
+                .parquet
+                .pushdown_filters = true;
+            let ctx = Arc::new(SessionContext::new_with_config(session_config));
+
+            let table = SplitSqlTableFactory::open_table(
+                server_url,
+                table_name,
+                table_url,
+                ParquetMode::Liquid,
+            )
+            .await?;
+            ctx.register_table(table_name, Arc::new(table))?;
+            Ok(ctx)
+        }
+    }
 }

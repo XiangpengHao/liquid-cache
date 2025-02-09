@@ -15,17 +15,21 @@ use parquet::{
         reader::{ChunkReader, Length, SerializedPageReader},
     },
 };
+use tokio::sync::Mutex;
 
-use super::reader::cached_page::{CachedPageReader, PredicatePageCache};
+use super::{
+    ClonableAsyncFileReader,
+    reader::cached_page::{CachedPageReader, PredicatePageCache},
+};
 
 /// An in-memory collection of column chunks
 pub(super) struct InMemoryRowGroup<'a> {
-    pub(super) metadata: &'a RowGroupMetaData,
-    pub(super) offset_index: Option<&'a [OffsetIndexMetaData]>,
-    pub(super) column_chunks: Vec<Option<Arc<ColumnChunkData>>>,
-    pub(super) row_count: usize,
-    pub(super) cache: Arc<PredicatePageCache>,
-    pub(super) projection_to_cache: Option<ProjectionMask>,
+    metadata: &'a RowGroupMetaData,
+    offset_index: Option<&'a [OffsetIndexMetaData]>,
+    column_chunks: Vec<Option<Arc<ColumnChunkData>>>,
+    row_count: usize,
+    cache: Arc<PredicatePageCache>,
+    projection_to_cache: Option<ProjectionMask>,
 }
 
 impl<'a> InMemoryRowGroup<'a> {
@@ -47,13 +51,13 @@ impl<'a> InMemoryRowGroup<'a> {
 
 impl InMemoryRowGroup<'_> {
     /// Fetches the necessary column data into memory
-    pub(crate) async fn fetch<T: AsyncFileReader + Send>(
+    pub(crate) async fn fetch(
         &mut self,
-        input: &mut T,
+        input: &ClonableAsyncFileReader,
         projection: &ProjectionMask,
-        selection: Option<&RowSelection>,
+        selection: &RowSelection,
     ) -> Result<(), parquet::errors::ParquetError> {
-        if let Some((selection, offset_index)) = selection.zip(self.offset_index) {
+        if let Some(offset_index) = self.offset_index {
             // If we have a `RowSelection` and an `OffsetIndex` then only fetch pages required for the
             // `RowSelection`
             let mut page_start_offsets: Vec<Vec<usize>> = vec![];
@@ -85,7 +89,8 @@ impl InMemoryRowGroup<'_> {
                 })
                 .collect();
 
-            let mut chunk_data = input.get_byte_ranges(fetch_ranges).await?.into_iter();
+            let mut reader = input.0.lock().await;
+            let mut chunk_data = reader.get_byte_ranges(fetch_ranges).await?.into_iter();
             let mut page_start_offsets = page_start_offsets.into_iter();
 
             for (idx, chunk) in self.column_chunks.iter_mut().enumerate() {
@@ -106,31 +111,18 @@ impl InMemoryRowGroup<'_> {
                 }
             }
         } else {
-            let fetch_ranges = self
-                .column_chunks
-                .iter()
-                .enumerate()
-                .filter(|&(idx, chunk)| chunk.is_none() && projection.leaf_included(idx))
-                .map(|(idx, _chunk)| {
-                    let column = self.metadata.column(idx);
-                    let (start, length) = column.byte_range();
-                    start as usize..(start + length) as usize
-                })
-                .collect();
-
-            let mut chunk_data = input.get_byte_ranges(fetch_ranges).await?.into_iter();
-
             for (idx, chunk) in self.column_chunks.iter_mut().enumerate() {
                 if chunk.is_some() || !projection.leaf_included(idx) {
                     continue;
                 }
 
-                if let Some(data) = chunk_data.next() {
-                    *chunk = Some(Arc::new(ColumnChunkData::Dense {
-                        offset: self.metadata.column(idx).byte_range().0 as usize,
-                        data,
-                    }));
-                }
+                let (start, length) = self.metadata.column(idx).byte_range();
+                *chunk = Some(Arc::new(ColumnChunkData::Lazy {
+                    reader: input.clone(),
+                    offset: start as usize,
+                    length: length as usize,
+                    data: Arc::new(Mutex::new(None)),
+                }));
             }
         }
 
@@ -204,7 +196,14 @@ pub(super) enum ColumnChunkData {
         data: Vec<(usize, Bytes)>,
     },
     /// Full column chunk and its offset
+    #[allow(dead_code)]
     Dense { offset: usize, data: Bytes },
+    Lazy {
+        reader: ClonableAsyncFileReader,
+        offset: usize,
+        length: usize,
+        data: Arc<Mutex<Option<Bytes>>>,
+    },
 }
 
 impl ColumnChunkData {
@@ -222,6 +221,29 @@ impl ColumnChunkData {
                 let start = start as usize - *offset;
                 Ok(data.slice(start..))
             }
+            ColumnChunkData::Lazy {
+                reader,
+                offset,
+                length,
+                data,
+            } => {
+                let bytes = tokio::task::block_in_place(|| {
+                    let handle = tokio::runtime::Handle::current();
+                    handle.block_on(async {
+                        let mut data = data.lock().await;
+                        if data.is_none() {
+                            let range = *offset..(*offset + *length);
+                            let mut locked_reader = reader.0.lock().await;
+                            let bytes = locked_reader.get_bytes(range).await.unwrap();
+                            *data = Some(bytes);
+                        }
+                        data.as_ref().unwrap().clone()
+                    })
+                });
+
+                let start = start as usize - *offset;
+                Ok(bytes.slice(start..))
+            }
         }
     }
 }
@@ -231,6 +253,7 @@ impl Length for ColumnChunkData {
         match &self {
             ColumnChunkData::Sparse { length, .. } => *length as u64,
             ColumnChunkData::Dense { data, .. } => data.len() as u64,
+            ColumnChunkData::Lazy { length, .. } => *length as u64,
         }
     }
 }

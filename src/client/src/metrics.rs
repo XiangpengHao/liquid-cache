@@ -65,7 +65,7 @@ pub(crate) struct FlightStreamMetrics {
     pub time_reading_total: StartableTime,
     pub poll_count: Count,
     pub output_rows: Count,
-    pub bytes_transferred: Count,
+    pub bytes_decoded: Count,
 }
 
 impl FlightStreamMetrics {
@@ -81,7 +81,7 @@ impl FlightStreamMetrics {
             },
             output_rows: MetricBuilder::new(metrics).output_rows(partition),
             poll_count: MetricBuilder::new(metrics).counter("poll_count", partition),
-            bytes_transferred: MetricBuilder::new(metrics).counter("bytes_transferred", partition),
+            bytes_decoded: MetricBuilder::new(metrics).counter("bytes_decoded", partition),
         }
     }
 }
