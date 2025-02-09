@@ -42,13 +42,35 @@ use tokio::sync::RwLock;
 static META_CACHE: LazyLock<MetadataCache> = LazyLock::new(MetadataCache::new);
 
 #[derive(Debug)]
-struct CachedMetaReaderFactory {
+pub(crate) struct CachedMetaReaderFactory {
     store: Arc<dyn ObjectStore>,
 }
 
 impl CachedMetaReaderFactory {
-    fn new(store: Arc<dyn ObjectStore>) -> Self {
+    pub(crate) fn new(store: Arc<dyn ObjectStore>) -> Self {
         Self { store }
+    }
+
+    pub(crate) fn create_liquid_reader(
+        &self,
+        partition_index: usize,
+        file_meta: FileMeta,
+        metadata_size_hint: Option<usize>,
+        metrics: &ExecutionPlanMetricsSet,
+    ) -> ParquetMetadataCacheReader {
+        let path = file_meta.location().clone();
+        let store = Arc::clone(&self.store);
+        let mut inner = ParquetObjectReader::new(store, file_meta.object_meta);
+
+        if let Some(hint) = metadata_size_hint {
+            inner = inner.with_footer_size_hint(hint);
+        }
+
+        ParquetMetadataCacheReader {
+            file_metrics: ParquetFileMetrics::new(partition_index, path.as_ref(), metrics),
+            inner,
+            path,
+        }
     }
 }
 
@@ -60,19 +82,9 @@ impl ParquetFileReaderFactory for CachedMetaReaderFactory {
         metadata_size_hint: Option<usize>,
         metrics: &ExecutionPlanMetricsSet,
     ) -> Result<Box<dyn AsyncFileReader + Send>> {
-        let path = file_meta.location().clone();
-        let store = Arc::clone(&self.store);
-        let mut inner = ParquetObjectReader::new(store, file_meta.object_meta);
-
-        if let Some(hint) = metadata_size_hint {
-            inner = inner.with_footer_size_hint(hint);
-        }
-
-        Ok(Box::new(ParquetMetadataCacheReader {
-            file_metrics: ParquetFileMetrics::new(partition_index, path.as_ref(), metrics),
-            inner,
-            path,
-        }))
+        let reader =
+            self.create_liquid_reader(partition_index, file_meta, metadata_size_hint, metrics);
+        Ok(Box::new(reader))
     }
 }
 

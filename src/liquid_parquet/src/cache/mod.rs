@@ -30,7 +30,6 @@ static ARROW_DISK_CACHE_PATH: &str = "target/arrow_disk_cache.etc";
 enum CacheStates {
     InMemory,
     OnDisk(Mutex<std::fs::File>),
-    NoCache,
     Liquid(LiquidCompressorStates),
 }
 
@@ -276,10 +275,6 @@ impl LiquidCachedColumn {
     }
 
     pub(crate) fn insert_arrow_array(&self, row_id: usize, array: ArrayRef) {
-        if matches!(self.cache_mode, CacheStates::NoCache) {
-            return;
-        }
-
         if self.is_cached(row_id) {
             return;
         }
@@ -296,10 +291,6 @@ impl LiquidCachedColumn {
                 cached_value.convert_to(&self.cache_mode);
 
                 rows.insert(row_id, CachedEntry::new(cached_value));
-            }
-
-            CacheStates::NoCache => {
-                unreachable!()
             }
 
             CacheStates::Liquid(states) => {
@@ -533,7 +524,6 @@ pub type LiquidCacheRef = Arc<LiquidCache>;
 pub enum LiquidCacheMode {
     InMemoryArrow,
     OnDiskArrow,
-    NoCache,
     InMemoryLiquid,
 }
 
@@ -542,7 +532,6 @@ impl From<&CacheStates> for LiquidCacheMode {
         match cache_states {
             CacheStates::InMemory => LiquidCacheMode::InMemoryArrow,
             CacheStates::OnDisk(_) => LiquidCacheMode::OnDiskArrow,
-            CacheStates::NoCache => LiquidCacheMode::NoCache,
             CacheStates::Liquid(_) => LiquidCacheMode::InMemoryLiquid,
         }
     }
@@ -573,18 +562,12 @@ impl LiquidCache {
             LiquidCacheMode::OnDiskArrow => CacheStates::OnDisk(Mutex::new(
                 std::fs::File::create(ARROW_DISK_CACHE_PATH).unwrap(),
             )),
-            LiquidCacheMode::NoCache => CacheStates::NoCache,
             LiquidCacheMode::InMemoryLiquid => CacheStates::Liquid(LiquidCompressorStates::new()),
         }
     }
 
     pub fn batch_size(&self) -> usize {
         self.batch_size
-    }
-
-    /// Check if the cache is enabled.
-    pub fn cache_enabled(&self) -> bool {
-        !matches!(self.cache_mode, LiquidCacheMode::NoCache)
     }
 
     pub fn cache_mode(&self) -> LiquidCacheMode {
