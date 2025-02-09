@@ -203,9 +203,7 @@ impl FlightSqlService for LiquidCacheService {
             panic!("Error executing plan: {:?}", e);
         });
 
-        let ipc_options = IpcWriteOptions::default()
-            .try_with_compression(Some(CompressionType::LZ4_FRAME))
-            .unwrap();
+        let ipc_options = IpcWriteOptions::default();
         let stream = FlightDataEncoderBuilder::new()
             .with_options(ipc_options)
             .with_dictionary_handling(DictionaryHandling::Resend)

@@ -70,23 +70,26 @@ jobs:
         run: >
           env RUSTFLAGS="-Z sanitizer=address" cargo test -Zbuild-std --target x86_64-unknown-linux-gnu --tests
 
-  memory_san:
-    name: Memory Sanitizer
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      # - uses: ./.github/actions/rust-setup
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly-2025-01-24
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-all-crates: true
-      - run: sudo apt install llvm-dev -y
+# Memory sanitizer are too slow to build and run on CI
+# We get little value from it anyway.
+# Disable it for now, until we have more budget to run CI (i.e., after open source).
+  # memory_san:
+  #   name: Memory Sanitizer
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     # - uses: ./.github/actions/rust-setup
+  #     - uses: dtolnay/rust-toolchain@master
+  #       with:
+  #         toolchain: nightly-2025-01-24
+  #     - uses: Swatinem/rust-cache@v2
+  #       with:
+  #         cache-all-crates: true
+  #     - run: sudo apt install llvm-dev -y
 
-      - name: Run memory sanitizer
-        run: >
-          env RUSTFLAGS="-Z sanitizer=memory" cargo test -Zbuild-std --target x86_64-unknown-linux-gnu --tests
+  #     - name: Run memory sanitizer
+  #       run: >
+  #         env RUSTFLAGS="-Z sanitizer=memory" cargo test -Zbuild-std --target x86_64-unknown-linux-gnu --tests
 
   integration_test:
     name: Integration Test
