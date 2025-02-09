@@ -173,7 +173,7 @@ mod tests {
 
     #[test]
     fn test_stats_writer() -> Result<(), ParquetError> {
-        let cache = LiquidCache::new(LiquidCacheMode::InMemoryArrow, 1024);
+        let cache = LiquidCache::new(1024);
         let array = Arc::new(arrow::array::Int32Array::from(vec![1, 2, 3]));
         let num_rows = 8 * 8 * 8 * 8;
 
@@ -188,7 +188,7 @@ mod tests {
                 for col in 0..8 {
                     for row in 0..8 {
                         let file_name = format!("test_{file_no}.parquet");
-                        let file = cache.file(file_name);
+                        let file = cache.register_file(file_name, LiquidCacheMode::InMemoryLiquid);
                         let row_group = file.row_group(rg);
                         let column = row_group.get_column_or_create(col);
                         column.insert_arrow_array(row, array.clone());

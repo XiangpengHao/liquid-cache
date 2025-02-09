@@ -1,10 +1,9 @@
+use std::any::Any;
 use std::collections::HashMap;
 use std::error::Error;
-use std::fmt::{Debug, Display};
+use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::Duration;
-use std::{any::Any, str::FromStr};
-
 mod exec;
 mod metrics;
 mod sql;
@@ -26,6 +25,7 @@ use datafusion::{
     },
 };
 use exec::FlightExec;
+use liquid_common::ParquetMode;
 use log::info;
 use owo_colors::OwoColorize;
 use serde::{Deserialize, Serialize};
@@ -51,40 +51,6 @@ fn transform_flight_schema_to_output_schema(schema: &SchemaRef) -> Schema {
         .collect();
     Schema::new_with_metadata(transformed_fields, schema.metadata.clone())
 }
-
-#[derive(Clone, Debug, Default, Copy, PartialEq, Eq)]
-pub enum ParquetMode {
-    #[default]
-    Original,
-    Liquid,
-}
-
-impl Display for ParquetMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", match self {
-            ParquetMode::Original => "original",
-            ParquetMode::Liquid => "liquid",
-        })
-    }
-}
-
-impl FromStr for ParquetMode {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(match s {
-            "original" => ParquetMode::Original,
-            "liquid" => ParquetMode::Liquid,
-            _ => {
-                return Err(format!(
-                    "Invalid parquet mode: {}, must be one of: original, liquid",
-                    s
-                ));
-            }
-        })
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct SplitSqlTableFactory {
     driver: Arc<FlightSqlDriver>,

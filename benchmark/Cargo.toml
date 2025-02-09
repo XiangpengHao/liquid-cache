@@ -8,6 +8,7 @@ edition = { workspace = true }
 liquid-cache-server = { workspace = true }
 liquid-cache-client = { workspace = true }
 liquid-parquet = { workspace = true }
+liquid-common = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 datafusion = { workspace = true }

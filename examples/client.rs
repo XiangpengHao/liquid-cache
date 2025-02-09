@@ -21,7 +21,8 @@ use datafusion::{
     error::Result,
     prelude::{SessionConfig, SessionContext},
 };
-use liquid_cache_client::{ParquetMode, SplitSqlTableFactory};
+use liquid_cache_client::SplitSqlTableFactory;
+use liquid_common::ParquetMode;
 use log::info;
 use url::Url;
 

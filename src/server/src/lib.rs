@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::ipc::writer::IpcWriteOptions;
+use arrow::ipc::{CompressionType, writer::IpcWriteOptions};
 use arrow_flight::{
     Action, FlightDescriptor, FlightEndpoint, FlightInfo, HandshakeRequest, HandshakeResponse,
     IpcMessage, SchemaAsIpc, Ticket,
@@ -35,40 +35,21 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use futures::{Stream, TryStreamExt};
+use liquid_common::ParquetMode;
+use liquid_parquet::LiquidCacheRef;
 use log::info;
 use prost::Message;
 use prost::bytes::Bytes;
 use service::LiquidCacheServiceInner;
-use std::pin::Pin;
 use std::sync::Arc;
+use std::{pin::Pin, str::FromStr};
 use tonic::{Request, Response, Status, Streaming};
 use uuid::Uuid;
 mod service;
 mod utils;
 use utils::FinalStream;
 
-use liquid_parquet::{LiquidCacheMode, LiquidCacheRef};
-
 pub static ACTION_REGISTER_TABLE: &str = "RegisterTable";
-
-pub struct LiquidCacheConfig {
-    pub liquid_cache_mode: LiquidCacheMode,
-}
-
-impl LiquidCacheConfig {
-    pub fn with_liquid_cache_mode(mut self, liquid_cache_mode: LiquidCacheMode) -> Self {
-        self.liquid_cache_mode = liquid_cache_mode;
-        self
-    }
-}
-
-impl Default for LiquidCacheConfig {
-    fn default() -> Self {
-        Self {
-            liquid_cache_mode: LiquidCacheMode::InMemoryLiquid,
-        }
-    }
-}
 
 /// A trait to collect stats for the execution plan.
 /// The server calls `start` right before polling the stream,
@@ -86,25 +67,18 @@ pub struct LiquidCacheService {
 impl LiquidCacheService {
     pub fn try_new() -> Result<Self, DataFusionError> {
         let ctx = Self::context(None)?;
-        let config = LiquidCacheConfig::default();
-        Ok(Self::new_with_context_and_config(ctx, config))
+        Ok(Self::new_with_context(ctx))
     }
 
-    pub fn new_with_context_and_config(
-        default_ctx: SessionContext,
-        config: LiquidCacheConfig,
-    ) -> Self {
+    pub fn new_with_context(ctx: SessionContext) -> Self {
         Self {
-            inner: LiquidCacheServiceInner::new(Arc::new(default_ctx), config),
+            inner: LiquidCacheServiceInner::new(Arc::new(ctx)),
             stats_collector: vec![],
         }
     }
 
-    pub fn new_with_ctx_and_cache(ctx: Arc<SessionContext>, cache: LiquidCacheRef) -> Self {
-        Self {
-            inner: LiquidCacheServiceInner::new_ctx_and_cache(ctx, cache),
-            stats_collector: vec![],
-        }
+    pub fn cache(&self) -> &LiquidCacheRef {
+        self.inner.cache()
     }
 
     pub fn add_stats_collector(&mut self, collector: Arc<dyn StatsCollector>) {
@@ -203,7 +177,9 @@ impl FlightSqlService for LiquidCacheService {
             panic!("Error executing plan: {:?}", e);
         });
 
-        let ipc_options = IpcWriteOptions::default();
+        let ipc_options = IpcWriteOptions::default()
+            .try_with_compression(Some(CompressionType::LZ4_FRAME))
+            .unwrap();
         let stream = FlightDataEncoderBuilder::new()
             .with_options(ipc_options)
             .with_dictionary_handling(DictionaryHandling::Resend)
@@ -287,8 +263,9 @@ impl FlightSqlService for LiquidCacheService {
                 .ok_or_else(|| {
                     Status::invalid_argument("Unable to unpack ActionRegisterTableRequest.")
                 })?;
+            let parquet_mode = ParquetMode::from_str(&cmd.table_provider).unwrap();
             self.inner
-                .register_table(&cmd.url, &cmd.table_name, &cmd.table_provider)
+                .register_table(&cmd.url, &cmd.table_name, parquet_mode)
                 .await
                 .map_err(df_error_to_status)?;
 

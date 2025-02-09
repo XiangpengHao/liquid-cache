@@ -23,7 +23,7 @@ use parquet::arrow::{
 };
 
 use crate::{
-    cache::LiquidCacheRef,
+    cache::LiquidCachedFileRef,
     reader::{
         plantime::{
             page_filter::PagePruningAccessPlanFilter, row_filter,
@@ -49,7 +49,7 @@ pub struct LiquidParquetOpener {
     pub metrics: ExecutionPlanMetricsSet,
     pub parquet_file_reader_factory: Arc<CachedMetaReaderFactory>,
     pub reorder_filters: bool,
-    pub liquid_cache: LiquidCacheRef,
+    pub liquid_cache: LiquidCachedFileRef,
     pub schema_adapter_factory: Arc<dyn SchemaAdapterFactory>,
 }
 
@@ -83,7 +83,6 @@ impl FileOpener for LiquidParquetOpener {
         let enable_page_index = should_enable_page_index(&self.page_pruning_predicate);
         let limit = self.limit;
         let liquid_cache = self.liquid_cache.clone();
-
         Ok(Box::pin(async move {
             let options = ArrowReaderOptions::new().with_page_index(enable_page_index);
 
@@ -214,8 +213,7 @@ impl FileOpener for LiquidParquetOpener {
                 liquid_builder = liquid_builder.with_row_filter(row_filter);
             }
 
-            let cached_file = liquid_cache.file(file_name);
-            let stream = liquid_builder.build(cached_file)?;
+            let stream = liquid_builder.build(liquid_cache)?;
 
             let adapted = stream.map_err(|e| ArrowError::ExternalError(Box::new(e)));
 

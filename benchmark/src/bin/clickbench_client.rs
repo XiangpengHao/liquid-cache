@@ -20,7 +20,8 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use liquid_cache_benchmarks::utils::assert_batch_eq;
-use liquid_cache_client::{ParquetMode, SplitSqlTableFactory};
+use liquid_cache_client::SplitSqlTableFactory;
+use liquid_common::ParquetMode;
 use log::{debug, info};
 use object_store::ClientConfigKey;
 use owo_colors::OwoColorize;
@@ -42,6 +43,8 @@ struct BenchmarkResult {
     file_path: PathBuf,
     query_path: PathBuf,
     iteration: u32,
+    bench_mode: BenchmarkMode,
+    output_path: Option<PathBuf>,
     queries: Vec<QueryResult>,
 }
 
@@ -71,10 +74,11 @@ struct IterationResult {
     time_millis: u64,
 }
 
-#[derive(Clone, Debug, Default, Copy, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Copy, PartialEq, Eq, Serialize)]
 enum BenchmarkMode {
     ParquetFileserver,
     ParquetPushdown,
+    ArrowPushdown,
     #[default]
     LiquidCache,
 }
@@ -85,6 +89,7 @@ impl Display for BenchmarkMode {
             BenchmarkMode::ParquetFileserver => "parquet-fileserver",
             BenchmarkMode::ParquetPushdown => "parquet-pushdown",
             BenchmarkMode::LiquidCache => "liquid-cache",
+            BenchmarkMode::ArrowPushdown => "arrow-pushdown",
         })
     }
 }
@@ -96,6 +101,7 @@ impl FromStr for BenchmarkMode {
         Ok(match s {
             "parquet-fileserver" => BenchmarkMode::ParquetFileserver,
             "parquet-pushdown" => BenchmarkMode::ParquetPushdown,
+            "arrow-pushdown" => BenchmarkMode::ArrowPushdown,
             "liquid-cache" => BenchmarkMode::LiquidCache,
             _ => return Err(format!("Invalid benchmark mode: {}", s)),
         })
@@ -287,6 +293,8 @@ pub async fn main() -> Result<()> {
         file_path: file.clone(),
         query_path: query_path.clone(),
         iteration: *iteration,
+        output_path: output_path.cloned(),
+        bench_mode: *bench_mode,
         queries: Vec::new(),
     };
 
@@ -385,6 +393,23 @@ async fn setup_ctx(
                 table_name,
                 table_url,
                 ParquetMode::Original,
+            )
+            .await?;
+            ctx.register_table(table_name, Arc::new(table))?;
+            Ok(ctx)
+        }
+        BenchmarkMode::ArrowPushdown => {
+            session_config
+                .options_mut()
+                .execution
+                .parquet
+                .pushdown_filters = true;
+            let ctx = Arc::new(SessionContext::new_with_config(session_config));
+            let table = SplitSqlTableFactory::open_table(
+                server_url,
+                table_name,
+                table_url,
+                ParquetMode::Arrow,
             )
             .await?;
             ctx.register_table(table_name, Arc::new(table))?;

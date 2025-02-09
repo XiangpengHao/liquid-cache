@@ -1,6 +1,6 @@
 use super::opener::LiquidParquetOpener;
 use super::page_filter::PagePruningAccessPlanFilter;
-use crate::cache::LiquidCacheRef;
+use crate::cache::LiquidCachedFileRef;
 use ahash::{HashMap, HashMapExt};
 use arrow_schema::SchemaRef;
 use bytes::Bytes;
@@ -162,7 +162,7 @@ pub(crate) struct LiquidParquetExec {
     pub page_pruning_predicate: Option<Arc<PagePruningAccessPlanFilter>>,
     pub cache: PlanProperties,
     pub table_parquet_options: TableParquetOptions,
-    pub liquid_cache: LiquidCacheRef,
+    pub liquid_cache: LiquidCachedFileRef,
 }
 
 impl LiquidParquetExec {
