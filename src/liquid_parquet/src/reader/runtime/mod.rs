@@ -161,7 +161,7 @@ impl ReaderFactory {
         }
 
         row_group
-            .fetch(&mut self.input, &projection, &selection)
+            .fetch(&self.input, &projection, &selection)
             .await?;
 
         let cached_row_group = self.liquid_cache.row_group(row_group_idx);

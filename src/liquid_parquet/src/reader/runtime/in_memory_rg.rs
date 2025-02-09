@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use bytes::{Buf, Bytes};
 use parquet::{
@@ -15,6 +15,7 @@ use parquet::{
         reader::{ChunkReader, Length, SerializedPageReader},
     },
 };
+use tokio::sync::Mutex;
 
 use super::{
     ClonableAsyncFileReader,
@@ -229,7 +230,7 @@ impl ColumnChunkData {
                 let bytes = tokio::task::block_in_place(|| {
                     let handle = tokio::runtime::Handle::current();
                     handle.block_on(async {
-                        let mut data = data.lock().unwrap();
+                        let mut data = data.lock().await;
                         if data.is_none() {
                             let range = *offset..(*offset + *length);
                             let mut locked_reader = reader.0.lock().await;
