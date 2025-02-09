@@ -18,12 +18,11 @@
 use arrow_flight::flight_service_server::FlightServiceServer;
 use liquid_cache_server::LiquidCacheService;
 use log::info;
-use tonic::transport::Server;
 use std::env;
+use tonic::transport::Server;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-
     env_logger::builder().format_timestamp(None).init();
 
     let port: u16 = env::var("PORT")

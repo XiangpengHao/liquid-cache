@@ -23,8 +23,8 @@ use datafusion::{
 };
 use liquid_cache_client::SplitSqlTableFactory;
 use log::info;
-use url::Url;
 use std::env;
+use url::Url;
 
 #[tokio::main]
 pub async fn main() -> Result<()> {
