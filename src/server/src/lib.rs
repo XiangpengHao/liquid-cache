@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::ipc::{CompressionType, writer::IpcWriteOptions};
+use arrow::ipc::writer::IpcWriteOptions;
 use arrow_flight::{
     Action, FlightDescriptor, FlightEndpoint, FlightInfo, HandshakeRequest, HandshakeResponse,
     IpcMessage, SchemaAsIpc, Ticket,
