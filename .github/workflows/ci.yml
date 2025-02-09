@@ -160,7 +160,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Install netcat
-        run: sudo apt-get update && sudo apt-get install -y netcat
+        run: sudo apt-get update && sudo apt-get install -y netcat-traditional
       
       - name: Start server (in background) and client
         run: |
