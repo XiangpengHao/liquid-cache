@@ -502,6 +502,11 @@ impl LiquidCachedFile {
         });
         row_group.clone()
     }
+
+    fn reset(&self) {
+        let mut row_groups = self.row_groups.lock().unwrap();
+        row_groups.clear();
+    }
 }
 
 pub type LiquidCachedFileRef = Arc<LiquidCachedFile>;
@@ -570,7 +575,9 @@ impl LiquidCache {
     /// Reset the cache.
     pub fn reset(&self) {
         let mut files = self.files.lock().unwrap();
-        files.clear();
+        for file in files.values_mut() {
+            file.reset();
+        }
     }
 }
 

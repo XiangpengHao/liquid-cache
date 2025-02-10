@@ -26,7 +26,7 @@ use datafusion::{
 use futures::StreamExt;
 use liquid_cache_benchmarks::utils::assert_batch_eq;
 use liquid_cache_client::SplitSqlTableFactory;
-use liquid_cache_server::{ACTION_EXECUTION_METRICS, ExecutionMetricsResponse};
+use liquid_cache_server::{ACTION_EXECUTION_METRICS, ACTION_RESET_CACHE, ExecutionMetricsResponse};
 use liquid_common::ParquetMode;
 use log::{debug, info};
 use object_store::ClientConfigKey;
@@ -228,6 +228,17 @@ impl BenchmarkMode {
                 any.unpack::<ExecutionMetricsResponse>().unwrap().unwrap()
             }
         }
+    }
+
+    async fn reset_cache(&self, server_url: &str) -> Result<()> {
+        let mut flight_client = get_flight_client(server_url).await;
+        let action = Action {
+            r#type: ACTION_RESET_CACHE.to_string(),
+            body: Bytes::new(),
+        };
+        let mut result_stream = flight_client.do_action(action).await.unwrap();
+        let _result = result_stream.next().await.unwrap().unwrap();
+        Ok(())
     }
 }
 
@@ -497,6 +508,7 @@ pub async fn main() -> Result<()> {
                 cache_memory_usage: metrics_response.cache_memory_usage,
             });
         }
+        bench_mode.reset_cache(server_url).await?;
         benchmark_result.queries.push(query_result);
     }
 

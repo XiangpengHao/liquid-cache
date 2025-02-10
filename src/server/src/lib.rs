@@ -50,6 +50,7 @@ use utils::FinalStream;
 
 pub static ACTION_REGISTER_TABLE: &str = "RegisterTable";
 pub static ACTION_EXECUTION_METRICS: &str = "ExecutionMetrics";
+pub static ACTION_RESET_CACHE: &str = "ResetCache";
 
 /// A trait to collect stats for the execution plan.
 /// The server calls `start` right before polling the stream,
@@ -282,6 +283,13 @@ impl FlightSqlService for LiquidCacheService {
             let response = self.inner.get_metrics(execution_id).unwrap();
             let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
                 body: response.as_any().encode_to_vec().into(),
+            })]);
+            return Ok(Response::new(Box::pin(output)));
+        } else if request.get_ref().r#type == ACTION_RESET_CACHE {
+            self.inner.cache().reset();
+
+            let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
+                body: Bytes::default(),
             })]);
             return Ok(Response::new(Box::pin(output)));
         }
