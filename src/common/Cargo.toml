@@ -1,0 +1,8 @@
+[package]
+name = "liquid-common"
+edition = { workspace = true }
+version = { workspace = true }
+
+[dependencies]
+
+[dev-dependencies]

@@ -2,7 +2,6 @@ use arrow_flight::flight_service_server::FlightServiceServer;
 use clap::{Command, arg, value_parser};
 use liquid_cache_benchmarks::{FlameGraphReport, StatsReport};
 use liquid_cache_server::LiquidCacheService;
-use liquid_parquet::{LiquidCache, LiquidCacheMode};
 use log::info;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 use tonic::transport::Server;
@@ -67,13 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let partitions = matches.get_one::<usize>("partitions").cloned();
 
     let ctx = LiquidCacheService::context(partitions)?;
-    let batch_size = ctx.state().config().batch_size();
-    let liquid_cache = Arc::new(LiquidCache::new(
-        LiquidCacheMode::InMemoryLiquid,
-        batch_size,
-    ));
-    let mut split_sql =
-        LiquidCacheService::new_with_ctx_and_cache(Arc::new(ctx), liquid_cache.clone());
+    let mut split_sql = LiquidCacheService::new_with_context(ctx);
 
     if let Some(flamegraph_dir) = flamegraph_dir {
         assert!(
@@ -85,7 +78,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if let Some(stats_dir) = stats_dir {
         assert!(stats_dir.is_dir(), "Stats output must be a directory");
-        split_sql.add_stats_collector(Arc::new(StatsReport::new(stats_dir, liquid_cache)));
+        split_sql.add_stats_collector(Arc::new(StatsReport::new(
+            stats_dir,
+            split_sql.cache().clone(),
+        )));
     }
 
     let flight = FlightServiceServer::new(split_sql);

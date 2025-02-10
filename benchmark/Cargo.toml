@@ -8,6 +8,7 @@ edition = { workspace = true }
 liquid-cache-server = { workspace = true }
 liquid-cache-client = { workspace = true }
 liquid-parquet = { workspace = true }
+liquid-common = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 datafusion = { workspace = true }
@@ -25,3 +26,5 @@ serde_json.workspace = true
 serde.workspace = true
 sysinfo = "0.33.1"
 object_store = { workspace = true, features = ["http"] }
+bytes = { workspace = true }
+prost = { workspace = true }

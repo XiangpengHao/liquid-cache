@@ -7,7 +7,8 @@ use datafusion::{
     physical_plan::{collect, displayable},
     prelude::{SessionConfig, SessionContext},
 };
-use liquid_cache_client::{ParquetMode, SplitSqlTableFactory};
+use liquid_cache_client::SplitSqlTableFactory;
+use liquid_common::ParquetMode;
 use log::{debug, info};
 use owo_colors::OwoColorize;
 use url::Url;

@@ -15,18 +15,17 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::collections::HashMap;
-
+use crate::{FlightMetadata, FlightProperties};
 use arrow_flight::Action;
 use arrow_flight::sql::ProstMessageExt;
 use arrow_flight::sql::client::FlightSqlServiceClient;
 use arrow_flight::{error::Result, sql::CommandGetDbSchemas};
+use liquid_cache_server::{ACTION_REGISTER_TABLE, ActionRegisterTableRequest};
+use liquid_common::ParquetMode;
 use prost::Message;
+use std::collections::HashMap;
 use tonic::Request;
 use tonic::transport::Channel;
-
-use crate::{FlightMetadata, FlightProperties, ParquetMode};
-use liquid_cache_server::{ACTION_REGISTER_TABLE, ActionRegisterTableRequest};
 
 /// Default Flight SQL driver.
 #[derive(Clone, Debug, Default)]

@@ -8,6 +8,7 @@ members = [
 	"src/server",
 	"src/client",
 	"src/liquid_parquet",
+	"src/common",
 	"examples",
 ]
 resolver = "3"
@@ -16,6 +17,7 @@ resolver = "3"
 liquid-cache-server = { path = "src/server" }
 liquid-cache-client = { path = "src/client" }
 liquid-parquet = { path = "src/liquid_parquet" }
+liquid-common = { path = "src/common" }
 arrow = "54.1"
 arrow-flight = { version = "54.1", features = ["flight-sql-experimental"] }
 arrow-schema = { version = "54.1", features = ["serde"] }

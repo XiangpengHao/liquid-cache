@@ -195,9 +195,6 @@ pub(super) enum ColumnChunkData {
         /// of (page offset, page data)
         data: Vec<(usize, Bytes)>,
     },
-    /// Full column chunk and its offset
-    #[allow(dead_code)]
-    Dense { offset: usize, data: Bytes },
     Lazy {
         reader: ClonableAsyncFileReader,
         offset: usize,
@@ -217,10 +214,6 @@ impl ColumnChunkData {
                         "Invalid offset in sparse column chunk data: {start}"
                     ))
                 }),
-            ColumnChunkData::Dense { offset, data } => {
-                let start = start as usize - *offset;
-                Ok(data.slice(start..))
-            }
             ColumnChunkData::Lazy {
                 reader,
                 offset,
@@ -252,7 +245,6 @@ impl Length for ColumnChunkData {
     fn len(&self) -> u64 {
         match &self {
             ColumnChunkData::Sparse { length, .. } => *length as u64,
-            ColumnChunkData::Dense { data, .. } => data.len() as u64,
             ColumnChunkData::Lazy { length, .. } => *length as u64,
         }
     }

@@ -14,6 +14,7 @@ path = "client.rs"
 datafusion = { workspace = true }
 liquid-cache-server = { workspace = true }
 liquid-cache-client = { workspace = true }
+liquid-common = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 tokio = { workspace = true }

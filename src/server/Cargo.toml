@@ -19,3 +19,5 @@ url = { workspace = true }
 dashmap = { workspace = true }
 liquid-parquet = { workspace = true }
 object_store = { workspace = true }
+liquid-common = { workspace = true }
+owo-colors = { workspace = true }
