@@ -1,5 +1,4 @@
 use std::{
-    io::Write,
     path::PathBuf,
     sync::{
         Arc, Mutex,
@@ -7,15 +6,10 @@ use std::{
     },
 };
 pub mod utils;
-
-use datafusion::physical_plan::{
-    ExecutionPlan, display::DisplayableExecutionPlan, metrics::MetricValue,
-};
+use datafusion::physical_plan::ExecutionPlan;
 use liquid_cache_server::StatsCollector;
 use liquid_parquet::LiquidCacheRef;
-use owo_colors::OwoColorize;
 use pprof::ProfilerGuard;
-use serde_json::json;
 
 pub struct FlameGraphReport {
     output_dir: PathBuf,
@@ -136,87 +130,5 @@ impl StatsCollector for StatsReport {
         let parquet_file_path = self.output_dir.join(filename);
         self.cache.write_stats(&parquet_file_path).unwrap();
         log::info!("Stats saved to {}", parquet_file_path.display());
-    }
-}
-
-pub struct MetricsReport {
-    output_dir: PathBuf,
-    running_count: AtomicUsize,
-    cache: LiquidCacheRef,
-    metric_id: AtomicU32,
-}
-
-impl MetricsReport {
-    pub fn new(output: PathBuf, cache: LiquidCacheRef) -> Self {
-        Self {
-            output_dir: output,
-            running_count: AtomicUsize::new(0),
-            cache,
-            metric_id: AtomicU32::new(0),
-        }
-    }
-}
-
-impl StatsCollector for MetricsReport {
-    fn start(&self, _partition: usize, _plan: &Arc<dyn ExecutionPlan>) {
-        self.running_count
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    fn stop(&self, _partition: usize, maybe_leaf: &Arc<dyn ExecutionPlan>) {
-        let previous = self
-            .running_count
-            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-        if previous != 1 {
-            return;
-        }
-        let now = std::time::SystemTime::now();
-        let datetime = now.duration_since(std::time::UNIX_EPOCH).unwrap();
-        let minute = (datetime.as_secs() / 60) % 60;
-        let second = datetime.as_secs() % 60;
-        let metric_id = self
-            .metric_id
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let filename = format!(
-            "metrics-id{:02}-{:02}-{:02}.json",
-            metric_id, minute, second
-        );
-        let metric_file_path = self.output_dir.join(filename);
-        // this is fragile, but it works for now
-        let plan = if let Some(plan) = maybe_leaf.children().first() {
-            *plan
-        } else {
-            maybe_leaf
-        };
-        let metrics = plan
-            .metrics()
-            .unwrap()
-            .aggregate_by_name()
-            .sorted_for_display()
-            .timestamps_removed();
-
-        let displayable = DisplayableExecutionPlan::with_metrics(plan.as_ref());
-        log::debug!("Execution plan: \n{}", displayable.indent(true).magenta());
-
-        let mut time_elapsed_processing_millis = 0;
-        for metric in metrics.iter() {
-            if let MetricValue::Time { name, time } = metric.value() {
-                if name == "time_elapsed_processing" {
-                    time_elapsed_processing_millis = time.value() / 1_000_000;
-                    log::info!("time_elapsed_processing: {}", time);
-                }
-            }
-        }
-        let memory_consumption_bytes = self.cache.memory_consumption_bytes();
-
-        let value = json!({
-            "id": metric_id,
-            "time_elapsed_processing_millis": time_elapsed_processing_millis,
-            "memory_consumption_bytes": memory_consumption_bytes,
-        });
-
-        let mut file = std::fs::File::create(&metric_file_path).unwrap();
-        file.write_all(value.to_string().as_bytes()).unwrap();
-        log::info!("Metrics saved to {}", metric_file_path.display());
     }
 }

@@ -23,8 +23,8 @@ use arrow_flight::{
     flight_descriptor::DescriptorType,
     flight_service_server::FlightService,
     sql::{
-        ActionClosePreparedStatementRequest, Any, CommandGetDbSchemas,
-        CommandPreparedStatementUpdate, CommandStatementQuery, ProstMessageExt, SqlInfo,
+        Any, CommandGetDbSchemas, CommandPreparedStatementUpdate, CommandStatementQuery,
+        ProstMessageExt, SqlInfo,
         server::{FlightSqlService, PeekableFlightDataStream},
     },
 };
@@ -41,15 +41,15 @@ use log::info;
 use prost::Message;
 use prost::bytes::Bytes;
 use service::LiquidCacheServiceInner;
-use std::sync::Arc;
+use std::sync::{Arc, atomic::AtomicU64};
 use std::{pin::Pin, str::FromStr};
 use tonic::{Request, Response, Status, Streaming};
-use uuid::Uuid;
 mod service;
 mod utils;
-use utils::{CpuTimeCollector, FinalStream};
+use utils::FinalStream;
 
 pub static ACTION_REGISTER_TABLE: &str = "RegisterTable";
+pub static ACTION_EXECUTION_METRICS: &str = "ExecutionMetrics";
 
 /// A trait to collect stats for the execution plan.
 /// The server calls `start` right before polling the stream,
@@ -62,7 +62,8 @@ pub trait StatsCollector: Send + Sync {
 pub struct LiquidCacheService {
     inner: LiquidCacheServiceInner,
     stats_collector: Vec<Arc<dyn StatsCollector>>,
-    cpu_time_collector: Arc<CpuTimeCollector>,
+    next_execution_id: AtomicU64,
+    most_recent_execution_id: AtomicU64,
 }
 
 impl LiquidCacheService {
@@ -75,7 +76,8 @@ impl LiquidCacheService {
         Self {
             inner: LiquidCacheServiceInner::new(Arc::new(ctx)),
             stats_collector: vec![],
-            cpu_time_collector: Arc::new(CpuTimeCollector::new()),
+            next_execution_id: AtomicU64::new(0),
+            most_recent_execution_id: AtomicU64::new(0),
         }
     }
 
@@ -115,6 +117,11 @@ impl LiquidCacheService {
 
         let ctx = SessionContext::new_with_state(state);
         Ok(ctx)
+    }
+
+    fn get_next_execution_id(&self) -> u64 {
+        self.next_execution_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -169,14 +176,13 @@ impl FlightSqlService for LiquidCacheService {
 
         let handle = fetch_results.handle;
         let partition = fetch_results.partition as usize;
-        let stream = self.inner.execute_plan(&handle, partition).await;
-        let execution_plan = self.inner.get_plan(&handle).await?;
+        let stream = self.inner.execute_plan(handle, partition).await;
+        let execution_plan = self.inner.get_plan(handle).unwrap();
         let stream = FinalStream::new(
             stream,
             self.stats_collector.clone(),
             self.inner.batch_size(),
             partition,
-            self.cpu_time_collector.clone(),
             execution_plan,
         )
         .map_err(|e| {
@@ -191,6 +197,8 @@ impl FlightSqlService for LiquidCacheService {
             .with_dictionary_handling(DictionaryHandling::Resend)
             .build(stream)
             .map_err(Status::from);
+        self.most_recent_execution_id
+            .store(handle, std::sync::atomic::Ordering::Relaxed);
 
         Ok(Response::new(Box::pin(stream)))
     }
@@ -201,10 +209,10 @@ impl FlightSqlService for LiquidCacheService {
         _request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
         let user_query = cmd.query.as_str();
-        let handle = Uuid::new_v4().hyphenated().to_string();
+        let handle = self.get_next_execution_id();
         let physical_plan = self
             .inner
-            .prepare_and_register_plan(user_query, &handle)
+            .prepare_and_register_plan(user_query, handle)
             .await?;
         let partition_count = physical_plan.output_partitioning().partition_count();
 
@@ -221,7 +229,7 @@ impl FlightSqlService for LiquidCacheService {
 
         for partition in 0..partition_count {
             let fetch = FetchResults {
-                handle: handle.clone(),
+                handle,
                 partition: partition as u32,
             };
             let buf = fetch.as_any().encode_to_vec().into();
@@ -243,18 +251,6 @@ impl FlightSqlService for LiquidCacheService {
         // statements like "CREATE TABLE.." or "SET datafusion.nnn.." call this function
         // and we are required to return some row count here
         Ok(-1)
-    }
-
-    async fn do_action_close_prepared_statement(
-        &self,
-        handle: ActionClosePreparedStatementRequest,
-        _request: Request<Action>,
-    ) -> Result<(), Status> {
-        let handle = std::str::from_utf8(&handle.prepared_statement_handle);
-        if let Ok(handle) = handle {
-            self.inner.remove_plan(handle);
-        }
-        Ok(())
     }
 
     async fn do_action_fallback(
@@ -279,6 +275,15 @@ impl FlightSqlService for LiquidCacheService {
                 body: Bytes::default(),
             })]);
             return Ok(Response::new(Box::pin(output)));
+        } else if request.get_ref().r#type == ACTION_EXECUTION_METRICS {
+            let execution_id = self
+                .most_recent_execution_id
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let response = self.inner.get_metrics(execution_id).unwrap();
+            let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
+                body: response.as_any().encode_to_vec().into(),
+            })]);
+            return Ok(Response::new(Box::pin(output)));
         }
 
         Err(Status::invalid_argument(format!(
@@ -292,8 +297,8 @@ impl FlightSqlService for LiquidCacheService {
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FetchResults {
-    #[prost(string, tag = "1")]
-    pub handle: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "1")]
+    pub handle: u64,
 
     #[prost(uint32, tag = "2")]
     pub partition: u32,
@@ -332,6 +337,43 @@ impl ProstMessageExt for ActionRegisterTableRequest {
     fn as_any(&self) -> Any {
         Any {
             type_url: ActionRegisterTableRequest::type_url().to_string(),
+            value: ::prost::Message::encode_to_vec(self).into(),
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ActionExecutionMetrics {}
+
+impl ProstMessageExt for ActionExecutionMetrics {
+    fn type_url() -> &'static str {
+        "type.googleapis.com/datafusion.example.com.sql.ActionExecutionMetrics"
+    }
+
+    fn as_any(&self) -> Any {
+        Any {
+            type_url: ActionExecutionMetrics::type_url().to_string(),
+            value: ::prost::Message::encode_to_vec(self).into(),
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ExecutionMetricsResponse {
+    #[prost(uint64, tag = "1")]
+    pub pushdown_eval_time: u64,
+    #[prost(uint64, tag = "2")]
+    pub cache_memory_usage: u64,
+}
+
+impl ProstMessageExt for ExecutionMetricsResponse {
+    fn type_url() -> &'static str {
+        "type.googleapis.com/datafusion.example.com.sql.ActionGetMostRecentExecutionMetricsResponse"
+    }
+
+    fn as_any(&self) -> Any {
+        Any {
+            type_url: Self::type_url().to_string(),
             value: ::prost::Message::encode_to_vec(self).into(),
         }
     }

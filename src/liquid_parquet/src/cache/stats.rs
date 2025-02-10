@@ -114,7 +114,7 @@ impl StatsWriter {
 }
 
 impl LiquidCache {
-    pub fn memory_consumption_bytes(&self) -> u64 {
+    pub fn memory_usage_bytes(&self) -> u64 {
         let files = self.files.lock().unwrap();
         let mut memory_consumption = 0;
         for (_, file_lock) in files.iter() {

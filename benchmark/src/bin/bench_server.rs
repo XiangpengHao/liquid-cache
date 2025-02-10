@@ -1,6 +1,6 @@
 use arrow_flight::flight_service_server::FlightServiceServer;
 use clap::{Command, arg, value_parser};
-use liquid_cache_benchmarks::{FlameGraphReport, MetricsReport, StatsReport};
+use liquid_cache_benchmarks::{FlameGraphReport, StatsReport};
 use liquid_cache_server::LiquidCacheService;
 use log::info;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
@@ -47,17 +47,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .help("Path to output cache internal stats directory")
                 .value_parser(value_parser!(PathBuf)),
         )
-        .arg(
-            arg!(--"metrics-dir" <PATH>)
-                .required(false)
-                .help("Path to output metrics directory")
-                .value_parser(value_parser!(PathBuf)),
-        )
         .get_matches();
 
     let flamegraph_dir = matches.get_one::<PathBuf>("flamegraph-dir").cloned();
     let stats_dir = matches.get_one::<PathBuf>("stats-dir").cloned();
-    let metrics_dir = matches.get_one::<PathBuf>("metrics-dir").cloned();
     let abort_on_panic = matches.get_flag("abort-on-panic");
     if abort_on_panic {
         // Be loud and crash loudly if any thread panics.
@@ -91,13 +84,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )));
     }
 
-    if let Some(metrics_dir) = metrics_dir {
-        assert!(metrics_dir.is_dir(), "Metrics output must be a directory");
-        split_sql.add_stats_collector(Arc::new(MetricsReport::new(
-            metrics_dir,
-            split_sql.cache().clone(),
-        )));
-    }
     let flight = FlightServiceServer::new(split_sql);
 
     info!("SplitSQL server listening on {addr:?}");

@@ -3,7 +3,7 @@ use dashmap::DashMap;
 use datafusion::{
     error::{DataFusionError, Result},
     execution::{SendableRecordBatchStream, options::ReadOptions},
-    physical_plan::{ExecutionPlan, display::DisplayableExecutionPlan},
+    physical_plan::{ExecutionPlan, display::DisplayableExecutionPlan, metrics::MetricValue},
     prelude::{ParquetReadOptions, SessionContext},
 };
 use liquid_common::ParquetMode;
@@ -16,8 +16,10 @@ use tokio::sync::Mutex;
 use tonic::Status;
 use url::Url;
 
+use crate::ExecutionMetricsResponse;
+
 pub(crate) struct LiquidCacheServiceInner {
-    execution_plans: Arc<DashMap<String, Arc<dyn ExecutionPlan>>>,
+    execution_plans: Arc<DashMap<u64, Arc<dyn ExecutionPlan>>>,
     registered_tables: Mutex<HashMap<String, (String, ParquetMode)>>, // table name -> (path, cached file)
     default_ctx: Arc<SessionContext>,
     cache: LiquidCacheRef,
@@ -129,7 +131,7 @@ impl LiquidCacheServiceInner {
     pub(crate) async fn prepare_and_register_plan(
         &self,
         query: &str,
-        handle: &str,
+        handle: u64,
     ) -> Result<Arc<dyn ExecutionPlan>, Status> {
         info!("Planning query: {query}");
         let ctx = self.default_ctx.clone();
@@ -141,28 +143,22 @@ impl LiquidCacheServiceInner {
             .await
             .expect("Error creating physical plan");
 
-        self.execution_plans
-            .insert(handle.to_string(), physical_plan.clone());
+        self.execution_plans.insert(handle, physical_plan.clone());
 
         Ok(physical_plan)
     }
 
-    pub(crate) async fn get_plan(&self, handle: &str) -> Result<Arc<dyn ExecutionPlan>, Status> {
-        let plan = self
-            .execution_plans
-            .get(handle)
-            .ok_or(Status::not_found(format!(
-                "Execution plan with handle {handle} not found"
-            )))?;
-        Ok(plan.clone())
+    pub(crate) fn get_plan(&self, handle: u64) -> Option<Arc<dyn ExecutionPlan>> {
+        let plan = self.execution_plans.get(&handle)?;
+        Some(plan.clone())
     }
 
     pub(crate) async fn execute_plan(
         &self,
-        handle: &str,
+        handle: u64,
         partition: usize,
     ) -> SendableRecordBatchStream {
-        let plan = self.execution_plans.get(handle).unwrap();
+        let plan = self.execution_plans.get(&handle).unwrap();
         let displayable = DisplayableExecutionPlan::new(plan.as_ref());
         debug!("physical plan:\n{}", displayable.indent(false));
         let schema = plan.schema();
@@ -173,11 +169,47 @@ impl LiquidCacheServiceInner {
         plan.execute(partition, ctx.task_ctx()).unwrap()
     }
 
-    pub(crate) fn remove_plan(&self, handle: &str) {
-        self.execution_plans.remove(&handle.to_string());
-    }
-
     pub(crate) fn batch_size(&self) -> usize {
         self.default_ctx.state().config().batch_size()
+    }
+
+    pub(crate) fn get_metrics(&self, plan_id: u64) -> Option<ExecutionMetricsResponse> {
+        let maybe_leaf = self.get_plan(plan_id)?;
+
+        let displayable = DisplayableExecutionPlan::with_metrics(maybe_leaf.as_ref());
+        debug!("physical plan:\n{}", displayable.indent(true));
+
+        let plan = if let Some(plan) = maybe_leaf.children().first() {
+            *plan
+        } else {
+            &maybe_leaf
+        };
+        let metrics = plan
+            .metrics()
+            .unwrap()
+            .aggregate_by_name()
+            .sorted_for_display()
+            .timestamps_removed();
+
+        let mut time_elapsed_processing_millis = 0;
+        let mut bytes_scanned = 0;
+        for metric in metrics.iter() {
+            if let MetricValue::Time { name, time } = metric.value() {
+                if name == "time_elapsed_processing" {
+                    time_elapsed_processing_millis = time.value() / 1_000_000;
+                }
+            } else if let MetricValue::Count { name, count } = metric.value() {
+                if name == "bytes_scanned" {
+                    bytes_scanned = count.value();
+                }
+            }
+        }
+        let cache_memory_usage = self.cache().memory_usage_bytes() + bytes_scanned as u64;
+
+        let response = ExecutionMetricsResponse {
+            pushdown_eval_time: time_elapsed_processing_millis as u64,
+            cache_memory_usage,
+        };
+        Some(response)
     }
 }
