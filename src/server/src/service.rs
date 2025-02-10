@@ -147,6 +147,16 @@ impl LiquidCacheServiceInner {
         Ok(physical_plan)
     }
 
+    pub(crate) async fn get_plan(&self, handle: &str) -> Result<Arc<dyn ExecutionPlan>, Status> {
+        let plan = self
+            .execution_plans
+            .get(handle)
+            .ok_or(Status::not_found(format!(
+                "Execution plan with handle {handle} not found"
+            )))?;
+        Ok(plan.clone())
+    }
+
     pub(crate) async fn execute_plan(
         &self,
         handle: &str,

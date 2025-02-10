@@ -1,15 +1,36 @@
+use arrow::{array::RecordBatch, compute::concat_batches};
+use datafusion::{error::Result, physical_plan::ExecutionPlan};
+use futures::{Stream, ready};
+use futures::{StreamExt, stream::BoxStream};
 use std::{
     pin::Pin,
-    sync::Arc,
+    sync::{Arc, atomic::AtomicU64},
     task::{Context, Poll},
 };
 
-use arrow::{array::RecordBatch, compute::concat_batches};
-use datafusion::error::Result;
-use futures::{Stream, ready};
-use futures::{StreamExt, stream::BoxStream};
-
 use crate::StatsCollector;
+
+pub struct CpuTimeCollector {
+    running_count: AtomicU64,
+}
+
+impl CpuTimeCollector {
+    pub fn new() -> Self {
+        Self {
+            running_count: AtomicU64::new(0),
+        }
+    }
+
+    pub fn start_one(&self) {
+        self.running_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn stop_one(&self) -> u64 {
+        self.running_count
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed)
+    }
+}
 
 /// A stream that finalizes the record batches.
 /// It currently do two things:
@@ -22,6 +43,9 @@ pub struct FinalStream {
     target_batch_size: usize,
     buffered_batches: Vec<RecordBatch>,
     current_buffered_rows: usize,
+    partition: usize,
+    cpu_time_collector: Arc<CpuTimeCollector>,
+    execution_plan: Arc<dyn ExecutionPlan>,
 }
 
 impl FinalStream {
@@ -29,16 +53,24 @@ impl FinalStream {
         inner: S,
         mut stats_collector: Vec<Arc<dyn StatsCollector>>,
         target_batch_size: usize,
+        partition: usize,
+        cpu_time_collector: Arc<CpuTimeCollector>,
+        execution_plan: Arc<dyn ExecutionPlan>,
     ) -> Self {
         for collector in stats_collector.iter_mut() {
-            collector.start();
+            collector.start(partition, &execution_plan);
         }
+
+        cpu_time_collector.start_one();
         Self {
             inner: inner.boxed(),
             stats_collector,
             target_batch_size,
             buffered_batches: Vec::new(),
             current_buffered_rows: 0,
+            partition,
+            cpu_time_collector,
+            execution_plan,
         }
     }
 }
@@ -46,8 +78,9 @@ impl FinalStream {
 impl Drop for FinalStream {
     fn drop(&mut self) {
         for collector in self.stats_collector.iter_mut() {
-            collector.stop();
+            collector.stop(self.partition, &self.execution_plan);
         }
+        self.cpu_time_collector.stop_one();
     }
 }
 

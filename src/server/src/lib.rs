@@ -31,7 +31,7 @@ use arrow_flight::{
 use datafusion::{
     error::DataFusionError,
     execution::{SessionStateBuilder, object_store::ObjectStoreUrl},
-    physical_plan::ExecutionPlanProperties,
+    physical_plan::{ExecutionPlan, ExecutionPlanProperties},
     prelude::{SessionConfig, SessionContext},
 };
 use futures::{Stream, TryStreamExt};
@@ -47,7 +47,7 @@ use tonic::{Request, Response, Status, Streaming};
 use uuid::Uuid;
 mod service;
 mod utils;
-use utils::FinalStream;
+use utils::{CpuTimeCollector, FinalStream};
 
 pub static ACTION_REGISTER_TABLE: &str = "RegisterTable";
 
@@ -55,13 +55,14 @@ pub static ACTION_REGISTER_TABLE: &str = "RegisterTable";
 /// The server calls `start` right before polling the stream,
 /// and calls `stop` right after exhausting the stream.
 pub trait StatsCollector: Send + Sync {
-    fn start(&self);
-    fn stop(&self);
+    fn start(&self, partition: usize, plan: &Arc<dyn ExecutionPlan>);
+    fn stop(&self, partition: usize, plan: &Arc<dyn ExecutionPlan>);
 }
 
 pub struct LiquidCacheService {
     inner: LiquidCacheServiceInner,
     stats_collector: Vec<Arc<dyn StatsCollector>>,
+    cpu_time_collector: Arc<CpuTimeCollector>,
 }
 
 impl LiquidCacheService {
@@ -74,6 +75,7 @@ impl LiquidCacheService {
         Self {
             inner: LiquidCacheServiceInner::new(Arc::new(ctx)),
             stats_collector: vec![],
+            cpu_time_collector: Arc::new(CpuTimeCollector::new()),
         }
     }
 
@@ -168,10 +170,14 @@ impl FlightSqlService for LiquidCacheService {
         let handle = fetch_results.handle;
         let partition = fetch_results.partition as usize;
         let stream = self.inner.execute_plan(&handle, partition).await;
+        let execution_plan = self.inner.get_plan(&handle).await?;
         let stream = FinalStream::new(
             stream,
             self.stats_collector.clone(),
             self.inner.batch_size(),
+            partition,
+            self.cpu_time_collector.clone(),
+            execution_plan,
         )
         .map_err(|e| {
             panic!("Error executing plan: {:?}", e);

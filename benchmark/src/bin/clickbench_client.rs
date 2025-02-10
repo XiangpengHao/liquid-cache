@@ -371,7 +371,6 @@ async fn setup_ctx(
                 .unwrap();
             ctx.register_object_store(&base_url, Arc::new(object_store));
 
-            // Register Parquet file as a table
             ctx.register_parquet(
                 "hits",
                 format!("{}/hits.parquet", server_url),
