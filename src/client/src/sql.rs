@@ -20,8 +20,8 @@ use arrow_flight::Action;
 use arrow_flight::sql::ProstMessageExt;
 use arrow_flight::sql::client::FlightSqlServiceClient;
 use arrow_flight::{error::Result, sql::CommandGetDbSchemas};
-use liquid_cache_server::{ACTION_REGISTER_TABLE, ActionRegisterTableRequest};
 use liquid_common::ParquetMode;
+use liquid_common::rpc::{RegisterTableRequest, LiquidCacheActions};
 use prost::Message;
 use std::collections::HashMap;
 use tonic::Request;
@@ -44,13 +44,13 @@ impl FlightSqlDriver {
         let mut client = FlightSqlServiceClient::new(channel);
 
         {
-            let register_table_request = ActionRegisterTableRequest {
+            let register_table_request = RegisterTableRequest {
                 url: table_url.to_string(),
                 table_name: table_name.to_string(),
                 table_provider: parquet_mode.to_string(),
             };
             let action = Action {
-                r#type: ACTION_REGISTER_TABLE.to_string(),
+                r#type: LiquidCacheActions::RegisterTable.to_string(),
                 body: register_table_request.as_any().encode_to_vec().into(),
             };
             client.do_action(Request::new(action)).await?;

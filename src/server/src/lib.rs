@@ -35,7 +35,10 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use futures::{Stream, TryStreamExt};
-use liquid_common::ParquetMode;
+use liquid_common::{
+    ParquetMode,
+    rpc::{FetchResults, RegisterTableRequest, LiquidCacheActions},
+};
 use liquid_parquet::LiquidCacheRef;
 use log::info;
 use prost::Message;
@@ -47,10 +50,6 @@ use tonic::{Request, Response, Status, Streaming};
 mod service;
 mod utils;
 use utils::FinalStream;
-
-pub static ACTION_REGISTER_TABLE: &str = "RegisterTable";
-pub static ACTION_EXECUTION_METRICS: &str = "ExecutionMetrics";
-pub static ACTION_RESET_CACHE: &str = "ResetCache";
 
 /// A trait to collect stats for the execution plan.
 /// The server calls `start` right before polling the stream,
@@ -258,135 +257,51 @@ impl FlightSqlService for LiquidCacheService {
         &self,
         request: Request<Action>,
     ) -> Result<Response<<Self as FlightService>::DoActionStream>, Status> {
-        if request.get_ref().r#type == ACTION_REGISTER_TABLE {
-            let any = Any::decode(&*request.get_ref().body).map_err(decode_error_to_status)?;
-            let cmd: ActionRegisterTableRequest = any
-                .unpack()
-                .map_err(arrow_error_to_status)?
-                .ok_or_else(|| {
-                    Status::invalid_argument("Unable to unpack ActionRegisterTableRequest.")
-                })?;
-            let parquet_mode = ParquetMode::from_str(&cmd.table_provider).unwrap();
-            self.inner
-                .register_table(&cmd.url, &cmd.table_name, parquet_mode)
-                .await
-                .map_err(df_error_to_status)?;
+        let action = LiquidCacheActions::from_str(&request.get_ref().r#type)
+            .map_err(|_| Status::invalid_argument("Invalid action"))?;
+        match action {
+            LiquidCacheActions::RegisterTable => {
+                let any = Any::decode(&*request.get_ref().body).map_err(decode_error_to_status)?;
+                let cmd: RegisterTableRequest = any
+                    .unpack()
+                    .map_err(arrow_error_to_status)?
+                    .ok_or_else(|| {
+                        Status::invalid_argument("Unable to unpack ActionRegisterTableRequest.")
+                    })?;
+                let parquet_mode = ParquetMode::from_str(&cmd.table_provider).unwrap();
+                self.inner
+                    .register_table(&cmd.url, &cmd.table_name, parquet_mode)
+                    .await
+                    .map_err(df_error_to_status)?;
 
-            let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
-                body: Bytes::default(),
-            })]);
-            return Ok(Response::new(Box::pin(output)));
-        } else if request.get_ref().r#type == ACTION_EXECUTION_METRICS {
-            let execution_id = self
-                .most_recent_execution_id
-                .load(std::sync::atomic::Ordering::Relaxed);
-            let response = self.inner.get_metrics(execution_id).unwrap();
-            let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
-                body: response.as_any().encode_to_vec().into(),
-            })]);
-            return Ok(Response::new(Box::pin(output)));
-        } else if request.get_ref().r#type == ACTION_RESET_CACHE {
-            self.inner.cache().reset();
+                let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
+                    body: Bytes::default(),
+                })]);
+                return Ok(Response::new(Box::pin(output)));
+            }
+            LiquidCacheActions::ExecutionMetrics => {
+                let execution_id = self
+                    .most_recent_execution_id
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                let response = self.inner.get_metrics(execution_id).unwrap();
+                let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
+                    body: response.as_any().encode_to_vec().into(),
+                })]);
+                return Ok(Response::new(Box::pin(output)));
+            }
+            LiquidCacheActions::ResetCache => {
+                self.inner.cache().reset();
 
-            let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
-                body: Bytes::default(),
-            })]);
-            return Ok(Response::new(Box::pin(output)));
+                let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
+                    body: Bytes::default(),
+                })]);
+                return Ok(Response::new(Box::pin(output)));
+            }
         }
-
-        Err(Status::invalid_argument(format!(
-            "do_action: The defined request is invalid: {:?}",
-            request.get_ref().r#type
-        )))
     }
 
     async fn register_sql_info(&self, _id: i32, _result: &SqlInfo) {}
 }
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct FetchResults {
-    #[prost(uint64, tag = "1")]
-    pub handle: u64,
-
-    #[prost(uint32, tag = "2")]
-    pub partition: u32,
-}
-
-impl ProstMessageExt for FetchResults {
-    fn type_url() -> &'static str {
-        "type.googleapis.com/datafusion.example.com.sql.FetchResults"
-    }
-
-    fn as_any(&self) -> Any {
-        Any {
-            type_url: FetchResults::type_url().to_string(),
-            value: ::prost::Message::encode_to_vec(self).into(),
-        }
-    }
-}
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ActionRegisterTableRequest {
-    #[prost(string, tag = "1")]
-    pub url: ::prost::alloc::string::String,
-
-    #[prost(string, tag = "2")]
-    pub table_name: ::prost::alloc::string::String,
-
-    #[prost(string, tag = "3")]
-    pub table_provider: ::prost::alloc::string::String,
-}
-
-impl ProstMessageExt for ActionRegisterTableRequest {
-    fn type_url() -> &'static str {
-        "type.googleapis.com/datafusion.example.com.sql.ActionRegisterTableRequest"
-    }
-
-    fn as_any(&self) -> Any {
-        Any {
-            type_url: ActionRegisterTableRequest::type_url().to_string(),
-            value: ::prost::Message::encode_to_vec(self).into(),
-        }
-    }
-}
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ActionExecutionMetrics {}
-
-impl ProstMessageExt for ActionExecutionMetrics {
-    fn type_url() -> &'static str {
-        "type.googleapis.com/datafusion.example.com.sql.ActionExecutionMetrics"
-    }
-
-    fn as_any(&self) -> Any {
-        Any {
-            type_url: ActionExecutionMetrics::type_url().to_string(),
-            value: ::prost::Message::encode_to_vec(self).into(),
-        }
-    }
-}
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ExecutionMetricsResponse {
-    #[prost(uint64, tag = "1")]
-    pub pushdown_eval_time: u64,
-    #[prost(uint64, tag = "2")]
-    pub cache_memory_usage: u64,
-}
-
-impl ProstMessageExt for ExecutionMetricsResponse {
-    fn type_url() -> &'static str {
-        "type.googleapis.com/datafusion.example.com.sql.ActionGetMostRecentExecutionMetricsResponse"
-    }
-
-    fn as_any(&self) -> Any {
-        Any {
-            type_url: Self::type_url().to_string(),
-            value: ::prost::Message::encode_to_vec(self).into(),
-        }
-    }
-}
-
 fn decode_error_to_status(err: prost::DecodeError) -> Status {
     Status::invalid_argument(format!("{err:?}"))
 }

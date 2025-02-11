@@ -25,9 +25,11 @@ use datafusion::{
 };
 use futures::StreamExt;
 use liquid_cache_benchmarks::utils::assert_batch_eq;
-use liquid_cache_client::SplitSqlTableFactory;
-use liquid_cache_server::{ACTION_EXECUTION_METRICS, ACTION_RESET_CACHE, ExecutionMetricsResponse};
-use liquid_common::ParquetMode;
+use liquid_cache_client::LiquidCacheTableFactory;
+use liquid_common::{
+    ParquetMode,
+    rpc::{ExecutionMetricsResponse, LiquidCacheActions},
+};
 use log::{debug, info};
 use object_store::ClientConfigKey;
 use owo_colors::OwoColorize;
@@ -129,7 +131,7 @@ impl BenchmarkMode {
                     .pushdown_filters = true;
                 let ctx = Arc::new(SessionContext::new_with_config(session_config));
 
-                let table = SplitSqlTableFactory::open_table(
+                let table = LiquidCacheTableFactory::open_table(
                     server_url,
                     table_name,
                     table_url,
@@ -146,7 +148,7 @@ impl BenchmarkMode {
                     .parquet
                     .pushdown_filters = true;
                 let ctx = Arc::new(SessionContext::new_with_config(session_config));
-                let table = SplitSqlTableFactory::open_table(
+                let table = LiquidCacheTableFactory::open_table(
                     server_url,
                     table_name,
                     table_url,
@@ -164,7 +166,7 @@ impl BenchmarkMode {
                     .pushdown_filters = true;
                 let ctx = Arc::new(SessionContext::new_with_config(session_config));
 
-                let table = SplitSqlTableFactory::open_table(
+                let table = LiquidCacheTableFactory::open_table(
                     server_url,
                     table_name,
                     table_url,
@@ -219,7 +221,7 @@ impl BenchmarkMode {
             | BenchmarkMode::LiquidCache => {
                 let mut flight_client = get_flight_client(server_url).await;
                 let action = Action {
-                    r#type: ACTION_EXECUTION_METRICS.to_string(),
+                    r#type: LiquidCacheActions::ExecutionMetrics.to_string(),
                     body: Bytes::new(),
                 };
                 let mut result_stream = flight_client.do_action(action).await.unwrap();
@@ -233,7 +235,7 @@ impl BenchmarkMode {
     async fn reset_cache(&self, server_url: &str) -> Result<()> {
         let mut flight_client = get_flight_client(server_url).await;
         let action = Action {
-            r#type: ACTION_RESET_CACHE.to_string(),
+            r#type: LiquidCacheActions::ResetCache.to_string(),
             body: Bytes::new(),
         };
         let mut result_stream = flight_client.do_action(action).await.unwrap();

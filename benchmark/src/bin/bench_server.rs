@@ -66,27 +66,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let partitions = matches.get_one::<usize>("partitions").cloned();
 
     let ctx = LiquidCacheService::context(partitions)?;
-    let mut split_sql = LiquidCacheService::new_with_context(ctx);
+    let mut liquid_cache_server = LiquidCacheService::new_with_context(ctx);
 
     if let Some(flamegraph_dir) = flamegraph_dir {
         assert!(
             flamegraph_dir.is_dir(),
             "Flamegraph output must be a directory"
         );
-        split_sql.add_stats_collector(Arc::new(FlameGraphReport::new(flamegraph_dir)));
+        liquid_cache_server.add_stats_collector(Arc::new(FlameGraphReport::new(flamegraph_dir)));
     }
 
     if let Some(stats_dir) = stats_dir {
         assert!(stats_dir.is_dir(), "Stats output must be a directory");
-        split_sql.add_stats_collector(Arc::new(StatsReport::new(
+        liquid_cache_server.add_stats_collector(Arc::new(StatsReport::new(
             stats_dir,
-            split_sql.cache().clone(),
+            liquid_cache_server.cache().clone(),
         )));
     }
 
-    let flight = FlightServiceServer::new(split_sql);
+    let flight = FlightServiceServer::new(liquid_cache_server);
 
-    info!("SplitSQL server listening on {addr:?}");
+    info!("LiquidCache server listening on {addr:?}");
 
     Server::builder().add_service(flight).serve(*addr).await?;
 
