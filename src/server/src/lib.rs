@@ -37,7 +37,7 @@ use datafusion::{
 use futures::{Stream, TryStreamExt};
 use liquid_common::{
     ParquetMode,
-    rpc::{FetchResults, RegisterTableRequest, LiquidCacheActions},
+    rpc::{FetchResults, LiquidCacheActions},
 };
 use liquid_parquet::LiquidCacheRef;
 use log::info;
@@ -257,18 +257,10 @@ impl FlightSqlService for LiquidCacheService {
         &self,
         request: Request<Action>,
     ) -> Result<Response<<Self as FlightService>::DoActionStream>, Status> {
-        let action = LiquidCacheActions::from_str(&request.get_ref().r#type)
-            .map_err(|_| Status::invalid_argument("Invalid action"))?;
+        let action = LiquidCacheActions::from(request.into_inner());
         match action {
-            LiquidCacheActions::RegisterTable => {
-                let any = Any::decode(&*request.get_ref().body).map_err(decode_error_to_status)?;
-                let cmd: RegisterTableRequest = any
-                    .unpack()
-                    .map_err(arrow_error_to_status)?
-                    .ok_or_else(|| {
-                        Status::invalid_argument("Unable to unpack ActionRegisterTableRequest.")
-                    })?;
-                let parquet_mode = ParquetMode::from_str(&cmd.table_provider).unwrap();
+            LiquidCacheActions::RegisterTable(cmd) => {
+                let parquet_mode = ParquetMode::from_str(&cmd.parquet_mode).unwrap();
                 self.inner
                     .register_table(&cmd.url, &cmd.table_name, parquet_mode)
                     .await
@@ -301,13 +293,6 @@ impl FlightSqlService for LiquidCacheService {
     }
 
     async fn register_sql_info(&self, _id: i32, _result: &SqlInfo) {}
-}
-fn decode_error_to_status(err: prost::DecodeError) -> Status {
-    Status::invalid_argument(format!("{err:?}"))
-}
-
-fn arrow_error_to_status(err: arrow_schema::ArrowError) -> Status {
-    Status::internal(format!("{err:?}"))
 }
 
 fn df_error_to_status(err: datafusion::error::DataFusionError) -> Status {

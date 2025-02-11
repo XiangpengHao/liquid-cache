@@ -8,8 +8,7 @@ use std::{
     time::Instant,
 };
 
-use arrow_flight::{Action, FlightClient, flight_service_client::FlightServiceClient, sql::Any};
-use bytes::Bytes;
+use arrow_flight::{FlightClient, flight_service_client::FlightServiceClient, sql::Any};
 use datafusion::{
     arrow::{array::RecordBatch, util::pretty},
     error::Result,
@@ -220,10 +219,7 @@ impl BenchmarkMode {
             | BenchmarkMode::ArrowPushdown
             | BenchmarkMode::LiquidCache => {
                 let mut flight_client = get_flight_client(server_url).await;
-                let action = Action {
-                    r#type: LiquidCacheActions::ExecutionMetrics.to_string(),
-                    body: Bytes::new(),
-                };
+                let action = LiquidCacheActions::ExecutionMetrics.into();
                 let mut result_stream = flight_client.do_action(action).await.unwrap();
                 let result = result_stream.next().await.unwrap().unwrap();
                 let any = Any::decode(&*result).unwrap();
@@ -234,10 +230,7 @@ impl BenchmarkMode {
 
     async fn reset_cache(&self, server_url: &str) -> Result<()> {
         let mut flight_client = get_flight_client(server_url).await;
-        let action = Action {
-            r#type: LiquidCacheActions::ResetCache.to_string(),
-            body: Bytes::new(),
-        };
+        let action = LiquidCacheActions::ResetCache.into();
         let mut result_stream = flight_client.do_action(action).await.unwrap();
         let _result = result_stream.next().await.unwrap().unwrap();
         Ok(())

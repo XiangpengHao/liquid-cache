@@ -1,33 +1,45 @@
-use std::{fmt::Display, str::FromStr};
-
-use arrow_flight::sql::{Any, ProstMessageExt};
+use arrow_flight::{
+    Action,
+    sql::{Any, ProstMessageExt},
+};
+use bytes::Bytes;
+use prost::Message;
 
 pub enum LiquidCacheActions {
-    RegisterTable,
+    RegisterTable(RegisterTableRequest),
     ExecutionMetrics,
     ResetCache,
 }
 
-impl FromStr for LiquidCacheActions {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "RegisterTable" => Ok(LiquidCacheActions::RegisterTable),
-            "ExecutionMetrics" => Ok(LiquidCacheActions::ExecutionMetrics),
-            "ResetCache" => Ok(LiquidCacheActions::ResetCache),
-            _ => Err(format!("Invalid action: {}", s)),
+impl From<LiquidCacheActions> for Action {
+    fn from(action: LiquidCacheActions) -> Self {
+        match action {
+            LiquidCacheActions::RegisterTable(request) => Action {
+                r#type: "RegisterTable".to_string(),
+                body: request.as_any().encode_to_vec().into(),
+            },
+            LiquidCacheActions::ExecutionMetrics => Action {
+                r#type: "ExecutionMetrics".to_string(),
+                body: Bytes::new(),
+            },
+            LiquidCacheActions::ResetCache => Action {
+                r#type: "ResetCache".to_string(),
+                body: Bytes::new(),
+            },
         }
     }
 }
 
-impl Display for LiquidCacheActions {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", match self {
-            LiquidCacheActions::RegisterTable => "RegisterTable",
-            LiquidCacheActions::ExecutionMetrics => "ExecutionMetrics",
-            LiquidCacheActions::ResetCache => "ResetCache",
-        })
+impl From<Action> for LiquidCacheActions {
+    fn from(action: Action) -> Self {
+        match action.r#type.as_str() {
+            "RegisterTable" => LiquidCacheActions::RegisterTable(
+                RegisterTableRequest::decode(action.body).unwrap(),
+            ),
+            "ExecutionMetrics" => LiquidCacheActions::ExecutionMetrics,
+            "ResetCache" => LiquidCacheActions::ResetCache,
+            _ => panic!("Invalid action: {}", action.r#type),
+        }
     }
 }
 
@@ -40,7 +52,7 @@ pub struct RegisterTableRequest {
     pub table_name: ::prost::alloc::string::String,
 
     #[prost(string, tag = "3")]
-    pub table_provider: ::prost::alloc::string::String,
+    pub parquet_mode: ::prost::alloc::string::String,
 }
 
 impl ProstMessageExt for RegisterTableRequest {
