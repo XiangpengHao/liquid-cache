@@ -401,10 +401,12 @@ impl LiquidCachedColumn {
                         if let Some(dict_array) = array.as_dictionary_opt::<ArrowUInt16Type>() {
                             let compressor = states.fsst_compressor.read().unwrap();
                             if let Some(compressor) = compressor.as_ref() {
-                                let liquid_array = LiquidByteArray::from_dict_array(
-                                    dict_array,
-                                    compressor.clone(),
-                                );
+                                let liquid_array = unsafe {
+                                    LiquidByteArray::from_parquet_reader_dict_array(
+                                        dict_array,
+                                        compressor.clone(),
+                                    )
+                                };
                                 rows.insert(
                                     row_id,
                                     CachedEntry::new(CachedBatch::LiquidMemory(Arc::new(

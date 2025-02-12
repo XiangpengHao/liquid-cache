@@ -4,8 +4,8 @@ pub mod rpc;
 
 #[derive(Clone, Debug, Default, Copy, PartialEq, Eq)]
 pub enum ParquetMode {
-    #[default]
     Original,
+    #[default]
     Liquid,
     Arrow,
 }

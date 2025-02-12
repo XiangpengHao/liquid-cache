@@ -33,9 +33,11 @@ impl From<LiquidCacheActions> for Action {
 impl From<Action> for LiquidCacheActions {
     fn from(action: Action) -> Self {
         match action.r#type.as_str() {
-            "RegisterTable" => LiquidCacheActions::RegisterTable(
-                RegisterTableRequest::decode(action.body).unwrap(),
-            ),
+            "RegisterTable" => {
+                let any = Any::decode(action.body).unwrap();
+                let request = any.unpack::<RegisterTableRequest>().unwrap().unwrap();
+                LiquidCacheActions::RegisterTable(request)
+            }
             "ExecutionMetrics" => LiquidCacheActions::ExecutionMetrics,
             "ResetCache" => LiquidCacheActions::ResetCache,
             _ => panic!("Invalid action: {}", action.r#type),
