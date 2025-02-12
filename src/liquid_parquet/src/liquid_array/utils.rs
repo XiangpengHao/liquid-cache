@@ -83,3 +83,55 @@ fn byte_array_to_dict_array<'a, T: ByteArrayType, I: ArrayAccessor<Item = &'a T:
     let dict = builder.finish();
     CheckedDictionaryArray { val: dict }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::{BinaryArray, DictionaryArray};
+    use std::sync::Arc;
+
+    fn create_test_dictionary(values: Vec<&[u8]>) -> DictionaryArray<UInt16Type> {
+        let binary_array = BinaryArray::from_iter_values(values);
+        DictionaryArray::new(vec![0u16, 1, 2, 3].into(), Arc::new(binary_array))
+    }
+
+    #[test]
+    fn test_gc_behavior() {
+        // Test duplicate removal
+        let dup_dict = create_test_dictionary(vec![b"a", b"a", b"b", b"b"]);
+        let checked = CheckedDictionaryArray::new_checked(&dup_dict);
+        let dict_values = checked.as_ref().values();
+        assert_eq!(dict_values.len(), 2);
+        assert_eq!(
+            dict_values
+                .as_any()
+                .downcast_ref::<BinaryArray>()
+                .unwrap()
+                .value(0),
+            b"a"
+        );
+        assert_eq!(
+            dict_values
+                .as_any()
+                .downcast_ref::<BinaryArray>()
+                .unwrap()
+                .value(1),
+            b"b"
+        );
+
+        // Test already unique values
+        let unique_dict = create_test_dictionary(vec![b"a", b"b", b"c", b"d"]);
+        let checked_unique = CheckedDictionaryArray::new_checked(&unique_dict);
+        assert_eq!(checked_unique.as_ref().values().len(), 4);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "the input dictionary values are not unique")]
+    fn test_unchecked_duplicates_panic() {
+        let dup_dict = create_test_dictionary(vec![b"a", b"a", b"b", b"b"]);
+        unsafe {
+            CheckedDictionaryArray::new_unchecked_i_know_what_i_am_doing(&dup_dict);
+        }
+    }
+}

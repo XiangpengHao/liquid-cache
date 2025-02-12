@@ -192,7 +192,13 @@ impl BenchmarkMode {
                 while let Some(child) = plan.children().first() {
                     plan = child;
                 }
-                assert!(plan.name() == "ParquetExec");
+                if plan.name() != "ParquetExec" {
+                    // the scan is completely pruned, so the memory usage is 0
+                    return ExecutionMetricsResponse {
+                        pushdown_eval_time: 0,
+                        cache_memory_usage: 0,
+                    };
+                }
                 let metrics = plan
                     .metrics()
                     .unwrap()
@@ -229,6 +235,10 @@ impl BenchmarkMode {
     }
 
     async fn reset_cache(&self, server_url: &str) -> Result<()> {
+        if self == &BenchmarkMode::ParquetFileserver {
+            // File server relies on OS page cache, so we don't need to reset it
+            return Ok(());
+        }
         let mut flight_client = get_flight_client(server_url).await;
         let action = LiquidCacheActions::ResetCache.into();
         let mut result_stream = flight_client.do_action(action).await.unwrap();
