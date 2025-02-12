@@ -17,19 +17,15 @@
 
 //! Execution plan for reading flights from Arrow Flight services
 
-use std::any::Any;
-use std::fmt::{Debug, Formatter};
-use std::pin::Pin;
-use std::str::FromStr;
-use std::sync::Arc;
-use std::task::{Context, Poll, ready};
-
-use crate::metrics::{FlightStreamMetrics, FlightTableMetrics};
-use crate::{FlightMetadata, FlightProperties, flight_channel, to_df_err};
-use arrow::array::RecordBatch;
-use arrow::datatypes::ToByteSlice;
-use arrow_flight::flight_service_client::FlightServiceClient;
-use arrow_flight::{FlightClient, FlightEndpoint, Ticket};
+use crate::{
+    FlightMetadata, FlightProperties, flight_channel,
+    metrics::{FlightStreamMetrics, FlightTableMetrics},
+    to_df_err,
+};
+use arrow::{array::RecordBatch, datatypes::ToByteSlice};
+use arrow_flight::{
+    FlightClient, FlightEndpoint, Ticket, flight_service_client::FlightServiceClient,
+};
 use arrow_schema::SchemaRef;
 use datafusion::{
     common::project_schema,
@@ -45,11 +41,18 @@ use datafusion::{
         stream::RecordBatchStreamAdapter,
     },
 };
-use futures::future::BoxFuture;
-use futures::{Stream, TryStreamExt};
+use futures::{Stream, TryStreamExt, future::BoxFuture};
 use log::debug;
 use owo_colors::OwoColorize;
 use serde::{Deserialize, Serialize};
+use std::{
+    any::Any,
+    fmt::{Debug, Formatter},
+    pin::Pin,
+    str::FromStr,
+    sync::Arc,
+    task::{Context, Poll, ready},
+};
 use tonic::metadata::{AsciiMetadataKey, MetadataMap};
 
 /// Arrow Flight physical plan that maps flight endpoints to partitions

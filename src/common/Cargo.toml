@@ -4,5 +4,8 @@ edition = { workspace = true }
 version = { workspace = true }
 
 [dependencies]
+arrow-flight = { workspace = true }
+prost = { workspace = true }
+bytes = { workspace = true }
 
 [dev-dependencies]

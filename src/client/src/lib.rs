@@ -52,11 +52,11 @@ fn transform_flight_schema_to_output_schema(schema: &SchemaRef) -> Schema {
     Schema::new_with_metadata(transformed_fields, schema.metadata.clone())
 }
 #[derive(Clone, Debug)]
-pub struct SplitSqlTableFactory {
+pub struct LiquidCacheTableFactory {
     driver: Arc<FlightSqlDriver>,
 }
 
-impl SplitSqlTableFactory {
+impl LiquidCacheTableFactory {
     /// Create a data source using the provided driver
     fn new(driver: Arc<FlightSqlDriver>) -> Self {
         Self { driver }
@@ -69,7 +69,7 @@ impl SplitSqlTableFactory {
         parquet_mode: ParquetMode,
     ) -> Result<FlightTable> {
         let driver = Arc::new(FlightSqlDriver::default());
-        let factory = SplitSqlTableFactory::new(driver);
+        let factory = LiquidCacheTableFactory::new(driver);
         factory
             .open_table_inner(
                 cache_server.as_ref(),

@@ -7,7 +7,7 @@ use datafusion::{
     physical_plan::{collect, displayable},
     prelude::{SessionConfig, SessionContext},
 };
-use liquid_cache_client::SplitSqlTableFactory;
+use liquid_cache_client::LiquidCacheTableFactory;
 use liquid_common::ParquetMode;
 use log::{debug, info};
 use owo_colors::OwoColorize;
@@ -126,7 +126,7 @@ impl TpchRunner {
         ))
         .unwrap();
 
-        let table = SplitSqlTableFactory::open_table(
+        let table = LiquidCacheTableFactory::open_table(
             &self.server_url,
             table_name,
             table_url,
@@ -139,7 +139,7 @@ impl TpchRunner {
 
 #[tokio::main]
 pub async fn main() -> Result<()> {
-    let matches = Command::new("SplitSQL Benchmark Client")
+    let matches = Command::new("LiquidCache Benchmark Client")
         .arg(
             arg!(--"query-dir" <PATH>)
                 .required(true)

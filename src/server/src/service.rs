@@ -6,7 +6,7 @@ use datafusion::{
     physical_plan::{ExecutionPlan, display::DisplayableExecutionPlan, metrics::MetricValue},
     prelude::{ParquetReadOptions, SessionContext},
 };
-use liquid_common::ParquetMode;
+use liquid_common::{ParquetMode, rpc::ExecutionMetricsResponse};
 use liquid_parquet::{
     LiquidCache, LiquidCacheMode, LiquidCacheRef, LiquidCachedFileRef, LiquidParquetFileFormat,
 };
@@ -15,8 +15,6 @@ use std::{collections::HashMap, sync::Arc};
 use tokio::sync::Mutex;
 use tonic::Status;
 use url::Url;
-
-use crate::ExecutionMetricsResponse;
 
 pub(crate) struct LiquidCacheServiceInner {
     execution_plans: Arc<DashMap<u64, Arc<dyn ExecutionPlan>>>,

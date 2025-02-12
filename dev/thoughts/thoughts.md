@@ -17,7 +17,7 @@ This does not work for people who already have their own `TableProvider`.
 In that case, they might want to re-implement many parts of our system. 
 
 ### In-process mode
-While SplitSQL is a one-stop comprehensive solution for disaggregated cache, many people might want to use part of our components.
+While LiquidCache is a one-stop comprehensive solution for disaggregated cache, many people might want to use part of our components.
 For example, some people might want disaggregated cache, others might want to use only `LiquidParquetExec`.
 
 ### Rigorous testing

@@ -8,8 +8,7 @@ use std::{
     time::Instant,
 };
 
-use arrow_flight::{Action, FlightClient, flight_service_client::FlightServiceClient, sql::Any};
-use bytes::Bytes;
+use arrow_flight::{FlightClient, flight_service_client::FlightServiceClient, sql::Any};
 use datafusion::{
     arrow::{array::RecordBatch, util::pretty},
     error::Result,
@@ -25,9 +24,11 @@ use datafusion::{
 };
 use futures::StreamExt;
 use liquid_cache_benchmarks::utils::assert_batch_eq;
-use liquid_cache_client::SplitSqlTableFactory;
-use liquid_cache_server::{ACTION_EXECUTION_METRICS, ACTION_RESET_CACHE, ExecutionMetricsResponse};
-use liquid_common::ParquetMode;
+use liquid_cache_client::LiquidCacheTableFactory;
+use liquid_common::{
+    ParquetMode,
+    rpc::{ExecutionMetricsResponse, LiquidCacheActions},
+};
 use log::{debug, info};
 use object_store::ClientConfigKey;
 use owo_colors::OwoColorize;
@@ -129,7 +130,7 @@ impl BenchmarkMode {
                     .pushdown_filters = true;
                 let ctx = Arc::new(SessionContext::new_with_config(session_config));
 
-                let table = SplitSqlTableFactory::open_table(
+                let table = LiquidCacheTableFactory::open_table(
                     server_url,
                     table_name,
                     table_url,
@@ -146,7 +147,7 @@ impl BenchmarkMode {
                     .parquet
                     .pushdown_filters = true;
                 let ctx = Arc::new(SessionContext::new_with_config(session_config));
-                let table = SplitSqlTableFactory::open_table(
+                let table = LiquidCacheTableFactory::open_table(
                     server_url,
                     table_name,
                     table_url,
@@ -164,7 +165,7 @@ impl BenchmarkMode {
                     .pushdown_filters = true;
                 let ctx = Arc::new(SessionContext::new_with_config(session_config));
 
-                let table = SplitSqlTableFactory::open_table(
+                let table = LiquidCacheTableFactory::open_table(
                     server_url,
                     table_name,
                     table_url,
@@ -191,7 +192,13 @@ impl BenchmarkMode {
                 while let Some(child) = plan.children().first() {
                     plan = child;
                 }
-                assert!(plan.name() == "ParquetExec");
+                if plan.name() != "ParquetExec" {
+                    // the scan is completely pruned, so the memory usage is 0
+                    return ExecutionMetricsResponse {
+                        pushdown_eval_time: 0,
+                        cache_memory_usage: 0,
+                    };
+                }
                 let metrics = plan
                     .metrics()
                     .unwrap()
@@ -218,10 +225,7 @@ impl BenchmarkMode {
             | BenchmarkMode::ArrowPushdown
             | BenchmarkMode::LiquidCache => {
                 let mut flight_client = get_flight_client(server_url).await;
-                let action = Action {
-                    r#type: ACTION_EXECUTION_METRICS.to_string(),
-                    body: Bytes::new(),
-                };
+                let action = LiquidCacheActions::ExecutionMetrics.into();
                 let mut result_stream = flight_client.do_action(action).await.unwrap();
                 let result = result_stream.next().await.unwrap().unwrap();
                 let any = Any::decode(&*result).unwrap();
@@ -231,11 +235,12 @@ impl BenchmarkMode {
     }
 
     async fn reset_cache(&self, server_url: &str) -> Result<()> {
+        if self == &BenchmarkMode::ParquetFileserver {
+            // File server relies on OS page cache, so we don't need to reset it
+            return Ok(());
+        }
         let mut flight_client = get_flight_client(server_url).await;
-        let action = Action {
-            r#type: ACTION_RESET_CACHE.to_string(),
-            body: Bytes::new(),
-        };
+        let action = LiquidCacheActions::ResetCache.into();
         let mut result_stream = flight_client.do_action(action).await.unwrap();
         let _result = result_stream.next().await.unwrap().unwrap();
         Ok(())
