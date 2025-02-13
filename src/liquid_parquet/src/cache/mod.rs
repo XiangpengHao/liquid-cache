@@ -30,7 +30,6 @@ static ARROW_DISK_CACHE_PATH: &str = "target/arrow_disk_cache.etc";
 enum CacheStates {
     InMemory,
     OnDisk(Mutex<std::fs::File>),
-    NoCache,
     Liquid(LiquidCompressorStates),
 }
 
@@ -276,10 +275,6 @@ impl LiquidCachedColumn {
     }
 
     pub(crate) fn insert_arrow_array(&self, row_id: usize, array: ArrayRef) {
-        if matches!(self.cache_mode, CacheStates::NoCache) {
-            return;
-        }
-
         if self.is_cached(row_id) {
             return;
         }
@@ -296,10 +291,6 @@ impl LiquidCachedColumn {
                 cached_value.convert_to(&self.cache_mode);
 
                 rows.insert(row_id, CachedEntry::new(cached_value));
-            }
-
-            CacheStates::NoCache => {
-                unreachable!()
             }
 
             CacheStates::Liquid(states) => {
@@ -470,7 +461,7 @@ impl LiquidCachedRowGroup {
                 Arc::new(LiquidCachedColumn::new(
                     self.row_group_id,
                     column_id,
-                    LiquidCache::make_states(self.cache_mode),
+                    make_states(self.cache_mode),
                     self.batch_size,
                 ))
             })
@@ -511,6 +502,11 @@ impl LiquidCachedFile {
         });
         row_group.clone()
     }
+
+    fn reset(&self) {
+        let mut row_groups = self.row_groups.lock().unwrap();
+        row_groups.clear();
+    }
 }
 
 pub type LiquidCachedFileRef = Arc<LiquidCachedFile>;
@@ -519,9 +515,6 @@ pub type LiquidCachedFileRef = Arc<LiquidCachedFile>;
 pub struct LiquidCache {
     /// Files -> RowGroups -> Columns -> Batches
     files: Mutex<AHashMap<String, Arc<LiquidCachedFile>>>,
-
-    /// One of Arrow, Liquid, or NoCache
-    cache_mode: LiquidCacheMode,
 
     /// cache granularity
     batch_size: usize,
@@ -533,7 +526,6 @@ pub type LiquidCacheRef = Arc<LiquidCache>;
 pub enum LiquidCacheMode {
     InMemoryArrow,
     OnDiskArrow,
-    NoCache,
     InMemoryLiquid,
 }
 
@@ -542,58 +534,59 @@ impl From<&CacheStates> for LiquidCacheMode {
         match cache_states {
             CacheStates::InMemory => LiquidCacheMode::InMemoryArrow,
             CacheStates::OnDisk(_) => LiquidCacheMode::OnDiskArrow,
-            CacheStates::NoCache => LiquidCacheMode::NoCache,
             CacheStates::Liquid(_) => LiquidCacheMode::InMemoryLiquid,
         }
     }
 }
 
 impl LiquidCache {
-    pub fn new(cache_mode: LiquidCacheMode, batch_size: usize) -> Self {
+    pub fn new(batch_size: usize) -> Self {
         assert!(batch_size.is_power_of_two());
 
         LiquidCache {
             files: Mutex::new(AHashMap::new()),
-            cache_mode,
             batch_size,
         }
     }
 
-    pub(crate) fn file(&self, file_path: String) -> LiquidCachedFileRef {
+    /// Register a file in the cache. Panic if the file is already registered.
+    pub fn register_file(
+        &self,
+        file_path: String,
+        cache_mode: LiquidCacheMode,
+    ) -> LiquidCachedFileRef {
+        let file = Arc::new(LiquidCachedFile::new(cache_mode, self.batch_size));
         let mut files = self.files.lock().unwrap();
-        let file = files
-            .entry(file_path.clone())
-            .or_insert_with(|| Arc::new(LiquidCachedFile::new(self.cache_mode, self.batch_size)));
-        file.clone()
+        let old = files.insert(file_path.clone(), file.clone());
+        assert!(old.is_none(), "file already registered");
+        file
     }
 
-    fn make_states(cache_mode: LiquidCacheMode) -> CacheStates {
-        match cache_mode {
-            LiquidCacheMode::InMemoryArrow => CacheStates::InMemory,
-            LiquidCacheMode::OnDiskArrow => CacheStates::OnDisk(Mutex::new(
-                std::fs::File::create(ARROW_DISK_CACHE_PATH).unwrap(),
-            )),
-            LiquidCacheMode::NoCache => CacheStates::NoCache,
-            LiquidCacheMode::InMemoryLiquid => CacheStates::Liquid(LiquidCompressorStates::new()),
-        }
+    /// Get a file from the cache.
+    pub fn get_file(&self, file_path: String) -> Option<LiquidCachedFileRef> {
+        let files = self.files.lock().unwrap();
+        files.get(&file_path).cloned()
     }
 
     pub fn batch_size(&self) -> usize {
         self.batch_size
     }
 
-    /// Check if the cache is enabled.
-    pub fn cache_enabled(&self) -> bool {
-        !matches!(self.cache_mode, LiquidCacheMode::NoCache)
-    }
-
-    pub fn cache_mode(&self) -> LiquidCacheMode {
-        self.cache_mode
-    }
-
     /// Reset the cache.
     pub fn reset(&self) {
         let mut files = self.files.lock().unwrap();
-        files.clear();
+        for file in files.values_mut() {
+            file.reset();
+        }
+    }
+}
+
+fn make_states(cache_mode: LiquidCacheMode) -> CacheStates {
+    match cache_mode {
+        LiquidCacheMode::InMemoryArrow => CacheStates::InMemory,
+        LiquidCacheMode::OnDiskArrow => CacheStates::OnDisk(Mutex::new(
+            std::fs::File::create(ARROW_DISK_CACHE_PATH).unwrap(),
+        )),
+        LiquidCacheMode::InMemoryLiquid => CacheStates::Liquid(LiquidCompressorStates::new()),
     }
 }

@@ -12,6 +12,7 @@ path = "create_nano_hits.rs"
 liquid-cache-server = { workspace = true }
 liquid-cache-client = { workspace = true }
 liquid-parquet = { workspace = true }
+liquid-common = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 datafusion = { workspace = true }
@@ -28,3 +29,7 @@ pprof = { version = "0.14.0", features = ["flamegraph"] }
 serde_json.workspace = true
 serde.workspace = true
 parquet = { workspace = true }
+sysinfo = "0.33.1"
+object_store = { workspace = true, features = ["http"] }
+bytes = { workspace = true }
+prost = { workspace = true }

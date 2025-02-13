@@ -23,88 +23,66 @@ use arrow_flight::{
     flight_descriptor::DescriptorType,
     flight_service_server::FlightService,
     sql::{
-        ActionClosePreparedStatementRequest, Any, CommandGetDbSchemas,
-        CommandPreparedStatementUpdate, CommandStatementQuery, ProstMessageExt, SqlInfo,
+        Any, CommandGetDbSchemas, CommandPreparedStatementUpdate, CommandStatementQuery,
+        ProstMessageExt, SqlInfo,
         server::{FlightSqlService, PeekableFlightDataStream},
     },
 };
 use datafusion::{
     error::DataFusionError,
     execution::{SessionStateBuilder, object_store::ObjectStoreUrl},
-    physical_plan::ExecutionPlanProperties,
+    physical_plan::{ExecutionPlan, ExecutionPlanProperties},
     prelude::{SessionConfig, SessionContext},
 };
 use futures::{Stream, TryStreamExt};
+use liquid_common::{
+    ParquetMode,
+    rpc::{FetchResults, LiquidCacheActions},
+};
+use liquid_parquet::LiquidCacheRef;
 use log::info;
 use prost::Message;
 use prost::bytes::Bytes;
 use service::LiquidCacheServiceInner;
-use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, atomic::AtomicU64};
+use std::{pin::Pin, str::FromStr};
 use tonic::{Request, Response, Status, Streaming};
-use uuid::Uuid;
 mod service;
 mod utils;
 use utils::FinalStream;
-
-use liquid_parquet::{LiquidCacheMode, LiquidCacheRef};
-
-pub static ACTION_REGISTER_TABLE: &str = "RegisterTable";
-
-pub struct LiquidCacheConfig {
-    pub liquid_cache_mode: LiquidCacheMode,
-}
-
-impl LiquidCacheConfig {
-    pub fn with_liquid_cache_mode(mut self, liquid_cache_mode: LiquidCacheMode) -> Self {
-        self.liquid_cache_mode = liquid_cache_mode;
-        self
-    }
-}
-
-impl Default for LiquidCacheConfig {
-    fn default() -> Self {
-        Self {
-            liquid_cache_mode: LiquidCacheMode::InMemoryLiquid,
-        }
-    }
-}
 
 /// A trait to collect stats for the execution plan.
 /// The server calls `start` right before polling the stream,
 /// and calls `stop` right after exhausting the stream.
 pub trait StatsCollector: Send + Sync {
-    fn start(&self);
-    fn stop(&self);
+    fn start(&self, partition: usize, plan: &Arc<dyn ExecutionPlan>);
+    fn stop(&self, partition: usize, plan: &Arc<dyn ExecutionPlan>);
 }
 
 pub struct LiquidCacheService {
     inner: LiquidCacheServiceInner,
     stats_collector: Vec<Arc<dyn StatsCollector>>,
+    next_execution_id: AtomicU64,
+    most_recent_execution_id: AtomicU64,
 }
 
 impl LiquidCacheService {
     pub fn try_new() -> Result<Self, DataFusionError> {
         let ctx = Self::context(None)?;
-        let config = LiquidCacheConfig::default();
-        Ok(Self::new_with_context_and_config(ctx, config))
+        Ok(Self::new_with_context(ctx))
     }
 
-    pub fn new_with_context_and_config(
-        default_ctx: SessionContext,
-        config: LiquidCacheConfig,
-    ) -> Self {
+    pub fn new_with_context(ctx: SessionContext) -> Self {
         Self {
-            inner: LiquidCacheServiceInner::new(Arc::new(default_ctx), config),
+            inner: LiquidCacheServiceInner::new(Arc::new(ctx)),
             stats_collector: vec![],
+            next_execution_id: AtomicU64::new(0),
+            most_recent_execution_id: AtomicU64::new(0),
         }
     }
 
-    pub fn new_with_ctx_and_cache(ctx: Arc<SessionContext>, cache: LiquidCacheRef) -> Self {
-        Self {
-            inner: LiquidCacheServiceInner::new_ctx_and_cache(ctx, cache),
-            stats_collector: vec![],
-        }
+    pub fn cache(&self) -> &LiquidCacheRef {
+        self.inner.cache()
     }
 
     pub fn add_stats_collector(&mut self, collector: Arc<dyn StatsCollector>) {
@@ -139,6 +117,11 @@ impl LiquidCacheService {
 
         let ctx = SessionContext::new_with_state(state);
         Ok(ctx)
+    }
+
+    fn get_next_execution_id(&self) -> u64 {
+        self.next_execution_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -193,11 +176,14 @@ impl FlightSqlService for LiquidCacheService {
 
         let handle = fetch_results.handle;
         let partition = fetch_results.partition as usize;
-        let stream = self.inner.execute_plan(&handle, partition).await;
+        let stream = self.inner.execute_plan(handle, partition).await;
+        let execution_plan = self.inner.get_plan(handle).unwrap();
         let stream = FinalStream::new(
             stream,
             self.stats_collector.clone(),
             self.inner.batch_size(),
+            partition,
+            execution_plan,
         )
         .map_err(|e| {
             panic!("Error executing plan: {:?}", e);
@@ -209,6 +195,8 @@ impl FlightSqlService for LiquidCacheService {
             .with_dictionary_handling(DictionaryHandling::Resend)
             .build(stream)
             .map_err(Status::from);
+        self.most_recent_execution_id
+            .store(handle, std::sync::atomic::Ordering::Relaxed);
 
         Ok(Response::new(Box::pin(stream)))
     }
@@ -219,10 +207,10 @@ impl FlightSqlService for LiquidCacheService {
         _request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
         let user_query = cmd.query.as_str();
-        let handle = Uuid::new_v4().hyphenated().to_string();
+        let handle = self.get_next_execution_id();
         let physical_plan = self
             .inner
-            .prepare_and_register_plan(user_query, &handle)
+            .prepare_and_register_plan(user_query, handle)
             .await?;
         let partition_count = physical_plan.output_partitioning().partition_count();
 
@@ -239,7 +227,7 @@ impl FlightSqlService for LiquidCacheService {
 
         for partition in 0..partition_count {
             let fetch = FetchResults {
-                handle: handle.clone(),
+                handle,
                 partition: partition as u32,
             };
             let buf = fetch.as_any().encode_to_vec().into();
@@ -263,99 +251,46 @@ impl FlightSqlService for LiquidCacheService {
         Ok(-1)
     }
 
-    async fn do_action_close_prepared_statement(
-        &self,
-        handle: ActionClosePreparedStatementRequest,
-        _request: Request<Action>,
-    ) -> Result<(), Status> {
-        let handle = std::str::from_utf8(&handle.prepared_statement_handle);
-        if let Ok(handle) = handle {
-            self.inner.remove_plan(handle);
-        }
-        Ok(())
-    }
-
     async fn do_action_fallback(
         &self,
         request: Request<Action>,
     ) -> Result<Response<<Self as FlightService>::DoActionStream>, Status> {
-        if request.get_ref().r#type == ACTION_REGISTER_TABLE {
-            let any = Any::decode(&*request.get_ref().body).map_err(decode_error_to_status)?;
-            let cmd: ActionRegisterTableRequest = any
-                .unpack()
-                .map_err(arrow_error_to_status)?
-                .ok_or_else(|| {
-                    Status::invalid_argument("Unable to unpack ActionRegisterTableRequest.")
-                })?;
-            self.inner
-                .register_table(&cmd.url, &cmd.table_name)
-                .await
-                .map_err(df_error_to_status)?;
-            let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
-                body: Bytes::default(),
-            })]);
-            return Ok(Response::new(Box::pin(output)));
-        }
+        let action = LiquidCacheActions::from(request.into_inner());
+        match action {
+            LiquidCacheActions::RegisterTable(cmd) => {
+                let parquet_mode = ParquetMode::from_str(&cmd.parquet_mode).unwrap();
+                self.inner
+                    .register_table(&cmd.url, &cmd.table_name, parquet_mode)
+                    .await
+                    .map_err(df_error_to_status)?;
 
-        Err(Status::invalid_argument(format!(
-            "do_action: The defined request is invalid: {:?}",
-            request.get_ref().r#type
-        )))
+                let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
+                    body: Bytes::default(),
+                })]);
+                return Ok(Response::new(Box::pin(output)));
+            }
+            LiquidCacheActions::ExecutionMetrics => {
+                let execution_id = self
+                    .most_recent_execution_id
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                let response = self.inner.get_metrics(execution_id).unwrap();
+                let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
+                    body: response.as_any().encode_to_vec().into(),
+                })]);
+                return Ok(Response::new(Box::pin(output)));
+            }
+            LiquidCacheActions::ResetCache => {
+                self.inner.cache().reset();
+
+                let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
+                    body: Bytes::default(),
+                })]);
+                return Ok(Response::new(Box::pin(output)));
+            }
+        }
     }
 
     async fn register_sql_info(&self, _id: i32, _result: &SqlInfo) {}
-}
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct FetchResults {
-    #[prost(string, tag = "1")]
-    pub handle: ::prost::alloc::string::String,
-
-    #[prost(uint32, tag = "2")]
-    pub partition: u32,
-}
-
-impl ProstMessageExt for FetchResults {
-    fn type_url() -> &'static str {
-        "type.googleapis.com/datafusion.example.com.sql.FetchResults"
-    }
-
-    fn as_any(&self) -> Any {
-        Any {
-            type_url: FetchResults::type_url().to_string(),
-            value: ::prost::Message::encode_to_vec(self).into(),
-        }
-    }
-}
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ActionRegisterTableRequest {
-    #[prost(string, tag = "1")]
-    pub url: ::prost::alloc::string::String,
-
-    #[prost(string, tag = "2")]
-    pub table_name: ::prost::alloc::string::String,
-}
-
-impl ProstMessageExt for ActionRegisterTableRequest {
-    fn type_url() -> &'static str {
-        "type.googleapis.com/datafusion.example.com.sql.ActionRegisterTableRequest"
-    }
-
-    fn as_any(&self) -> Any {
-        Any {
-            type_url: ActionRegisterTableRequest::type_url().to_string(),
-            value: ::prost::Message::encode_to_vec(self).into(),
-        }
-    }
-}
-
-fn decode_error_to_status(err: prost::DecodeError) -> Status {
-    Status::invalid_argument(format!("{err:?}"))
-}
-
-fn arrow_error_to_status(err: arrow_schema::ArrowError) -> Status {
-    Status::internal(format!("{err:?}"))
 }
 
 fn df_error_to_status(err: datafusion::error::DataFusionError) -> Status {

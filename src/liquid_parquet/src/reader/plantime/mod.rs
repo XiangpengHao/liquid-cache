@@ -17,12 +17,15 @@ use datafusion::{
     physical_plan::{ExecutionPlan, PhysicalExpr, metrics::ExecutionPlanMetricsSet},
     prelude::*,
 };
+#[cfg(test)]
+pub(crate) use exec::CachedMetaReaderFactory;
 use exec::LiquidParquetExec;
+pub(crate) use exec::ParquetMetadataCacheReader;
 use log::{debug, info};
 use object_store::{ObjectMeta, ObjectStore};
 use page_filter::PagePruningAccessPlanFilter;
 
-use crate::cache::LiquidCacheRef;
+use crate::cache::LiquidCachedFileRef;
 
 // This is entirely copied from DataFusion
 // We should make DataFusion to public this
@@ -53,14 +56,14 @@ impl GetExt for LiquidParquetFactory {
 pub struct LiquidParquetFileFormat {
     options: TableParquetOptions,
     inner: Arc<dyn FileFormat>, // is actually ParquetFormat
-    liquid_cache: LiquidCacheRef,
+    liquid_cache: LiquidCachedFileRef,
 }
 
 impl LiquidParquetFileFormat {
     pub fn new(
         options: TableParquetOptions,
         inner: Arc<dyn FileFormat>,
-        liquid_cache: LiquidCacheRef,
+        liquid_cache: LiquidCachedFileRef,
     ) -> Self {
         Self {
             options,

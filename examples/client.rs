@@ -21,7 +21,8 @@ use datafusion::{
     error::Result,
     prelude::{SessionConfig, SessionContext},
 };
-use liquid_cache_client::SplitSqlTableFactory;
+use liquid_cache_client::LiquidCacheTableFactory;
+use liquid_common::ParquetMode;
 use log::info;
 use url::Url;
 
@@ -55,7 +56,13 @@ pub async fn main() -> Result<()> {
     ))
     .unwrap();
 
-    let table = SplitSqlTableFactory::open_table(entry_point, table_name, table_url).await?;
+    let table = LiquidCacheTableFactory::open_table(
+        entry_point,
+        table_name,
+        table_url,
+        ParquetMode::Liquid,
+    )
+    .await?;
     ctx.register_table(table_name, Arc::new(table))?;
 
     ctx.sql(sql).await?.show().await?;

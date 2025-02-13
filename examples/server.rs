@@ -26,10 +26,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let addr = "0.0.0.0:50051".parse()?;
 
-    let split_sql = LiquidCacheService::try_new()?;
-    let flight = FlightServiceServer::new(split_sql);
+    let liquid_cache = LiquidCacheService::try_new()?;
+    let flight = FlightServiceServer::new(liquid_cache);
 
-    info!("SplitSQL server listening on {addr:?}");
+    info!("LiquidCache server listening on {addr:?}");
 
     Server::builder().add_service(flight).serve(addr).await?;
 

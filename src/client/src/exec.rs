@@ -17,19 +17,15 @@
 
 //! Execution plan for reading flights from Arrow Flight services
 
-use std::any::Any;
-use std::fmt::{Debug, Formatter};
-use std::pin::Pin;
-use std::str::FromStr;
-use std::sync::Arc;
-use std::task::{Context, Poll, ready};
-
-use crate::metrics::{FlightStreamMetrics, FlightTableMetrics};
-use crate::{FlightMetadata, FlightProperties, flight_channel, to_df_err};
-use arrow::array::RecordBatch;
-use arrow::datatypes::ToByteSlice;
-use arrow_flight::flight_service_client::FlightServiceClient;
-use arrow_flight::{FlightClient, FlightEndpoint, Ticket};
+use crate::{
+    FlightMetadata, FlightProperties, flight_channel,
+    metrics::{FlightStreamMetrics, FlightTableMetrics},
+    to_df_err,
+};
+use arrow::{array::RecordBatch, datatypes::ToByteSlice};
+use arrow_flight::{
+    FlightClient, FlightEndpoint, Ticket, flight_service_client::FlightServiceClient,
+};
 use arrow_schema::SchemaRef;
 use datafusion::{
     common::project_schema,
@@ -45,11 +41,18 @@ use datafusion::{
         stream::RecordBatchStreamAdapter,
     },
 };
-use futures::future::BoxFuture;
-use futures::{Stream, TryStreamExt};
+use futures::{Stream, TryStreamExt, future::BoxFuture};
 use log::debug;
 use owo_colors::OwoColorize;
 use serde::{Deserialize, Serialize};
+use std::{
+    any::Any,
+    fmt::{Debug, Formatter},
+    pin::Pin,
+    str::FromStr,
+    sync::Arc,
+    task::{Context, Poll, ready},
+};
 use tonic::metadata::{AsciiMetadataKey, MetadataMap};
 
 /// Arrow Flight physical plan that maps flight endpoints to partitions
@@ -349,7 +352,6 @@ impl Stream for FlightStream {
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.metrics.time_processing.start();
         let result = self.poll_inner(cx);
-        self.metrics.time_processing.stop();
         match result {
             Poll::Ready(Some(Ok(batch))) => {
                 if self.metrics.output_rows.value() == 0 {
@@ -357,9 +359,10 @@ impl Stream for FlightStream {
                 }
                 self.metrics.output_rows.add(batch.num_rows());
                 self.metrics
-                    .bytes_transferred
+                    .bytes_decoded
                     .add(batch.get_array_memory_size());
                 let new_batch = self.schema_mapper.map_batch(batch).unwrap();
+                self.metrics.time_processing.stop();
                 Poll::Ready(Some(Ok(new_batch)))
             }
             Poll::Ready(None) => {
@@ -370,7 +373,10 @@ impl Stream for FlightStream {
                 self.metrics.time_reading_total.stop();
                 panic!("Error reading flight stream: {}", e);
             }
-            _ => Poll::Pending,
+            _ => {
+                self.metrics.time_processing.stop();
+                Poll::Pending
+            }
         }
     }
 }

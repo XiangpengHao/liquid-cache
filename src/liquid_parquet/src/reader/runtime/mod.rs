@@ -7,7 +7,6 @@ use parquet::{
     arrow::{
         ProjectionMask,
         arrow_reader::{ArrowPredicate, RowSelection, RowSelector},
-        async_reader::AsyncFileReader,
     },
     errors::ParquetError,
     file::metadata::ParquetMetaData,
@@ -26,8 +25,9 @@ use std::{
     sync::Arc,
     task::{Context, Poll},
 };
+use tokio::sync::Mutex;
 
-use super::plantime::coerce_from_reader_to_liquid_types;
+use super::plantime::{ParquetMetadataCacheReader, coerce_from_reader_to_liquid_types};
 mod in_memory_rg;
 mod parquet_bridge;
 mod reader;
@@ -57,7 +57,7 @@ struct ReaderFactory {
 
     fields: Option<Arc<ParquetField>>,
 
-    input: Box<dyn AsyncFileReader>,
+    input: ClonableAsyncFileReader,
 
     filter: Option<LiquidRowFilter>,
 
@@ -105,7 +105,7 @@ impl ReaderFactory {
         let mut row_group = InMemoryRowGroup::new(meta, offset_index, projection_to_cache);
 
         let mut selection =
-            selection.unwrap_or_else(|| vec![RowSelector::select(row_group.row_count)].into());
+            selection.unwrap_or_else(|| vec![RowSelector::select(meta.num_rows() as usize)].into());
 
         let mut filter_readers = Vec::new();
         if let Some(filter) = self.filter.as_mut() {
@@ -116,7 +116,7 @@ impl ReaderFactory {
 
                 let p_projection = predicate.projection();
                 row_group
-                    .fetch(&mut self.input, p_projection, Some(&selection))
+                    .fetch(&self.input, p_projection, &selection)
                     .await?;
 
                 let array_reader = build_cached_array_reader(
@@ -161,7 +161,7 @@ impl ReaderFactory {
         }
 
         row_group
-            .fetch(&mut self.input, &projection, Some(&selection))
+            .fetch(&self.input, &projection, &selection)
             .await?;
 
         let cached_row_group = self.liquid_cache.row_group(row_group_idx);
@@ -204,8 +204,11 @@ impl std::fmt::Debug for StreamState {
     }
 }
 
+#[derive(Clone)]
+pub struct ClonableAsyncFileReader(Arc<Mutex<ParquetMetadataCacheReader>>);
+
 pub struct LiquidStreamBuilder {
-    pub(crate) input: Box<dyn AsyncFileReader>,
+    pub(crate) input: ClonableAsyncFileReader,
 
     pub(crate) metadata: Arc<ParquetMetaData>,
 

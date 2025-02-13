@@ -9,9 +9,9 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use arrow_schema::ArrowError;
-use bytes::Bytes;
-use futures::future::BoxFuture;
-use futures::{FutureExt, StreamExt};
+use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
+use futures::StreamExt;
+use object_store::ObjectMeta;
 use parquet::{
     arrow::{
         ParquetRecordBatchStreamBuilder, ProjectionMask,
@@ -28,7 +28,7 @@ use crate::{
     cache::LiquidCachedFile,
     liquid_array::LiquidArrayRef,
     reader::{
-        plantime::coerce_to_parquet_reader_types,
+        plantime::{CachedMetaReaderFactory, coerce_to_parquet_reader_types},
         runtime::{ArrowReaderBuilderBridge, LiquidRowFilter, LiquidStreamBuilder},
     },
 };
@@ -277,39 +277,11 @@ async fn create_record_batch(batch_size: usize, i: usize) -> RecordBatch {
     return batch;
 }
 
-struct TestReader {
-    data: Bytes,
-    metadata: Arc<ParquetMetaData>,
-}
-
-impl AsyncFileReader for TestReader {
-    fn get_bytes(&mut self, range: Range<usize>) -> BoxFuture<'_, Result<Bytes, ParquetError>> {
-        futures::future::ready(Ok(self.data.slice(range))).boxed()
-    }
-
-    fn get_metadata(&mut self) -> BoxFuture<'_, Result<Arc<ParquetMetaData>, ParquetError>> {
-        futures::future::ready(Ok(self.metadata.clone())).boxed()
-    }
-}
-
-impl TestReader {
-    fn new_dyn(data: Bytes) -> Box<dyn AsyncFileReader> {
-        Box::new(TestReader {
-            metadata: Arc::new(
-                ParquetMetaDataReader::new()
-                    .parse_and_finish(&data)
-                    .unwrap(),
-            ),
-            data,
-        })
-    }
-}
-
-async fn get_test_reader() -> LiquidStreamBuilder {
+async fn get_test_reader() -> (LiquidStreamBuilder, NamedTempFile) {
     let file = generate_test_parquet();
     let data = Bytes::from(file);
     let mut async_reader = TestReader::new_dyn(data);
-
+  
     let metadata = ArrowReaderMetadata::load_async(&mut async_reader, Default::default())
         .await
         .unwrap();
@@ -349,7 +321,7 @@ fn assert_batch_eq(left: &RecordBatch, right: &RecordBatch) {
 
 #[tokio::test]
 async fn basic_stuff() {
-    let builder = get_test_reader().await;
+    let (builder, _file) = get_test_reader().await;
     let batch_size = builder.batch_size;
     let liquid_cache = LiquidCachedFile::new(LiquidCacheMode::InMemoryLiquid, batch_size);
     let reader = builder.build(Arc::new(liquid_cache)).unwrap();
@@ -376,7 +348,7 @@ async fn basic_stuff() {
 #[tokio::test]
 async fn test_reading_with_projection() {
     let column_projections = vec![0, 3, 6, 8];
-    let mut builder = get_test_reader().await;
+    let (mut builder, _file) = get_test_reader().await;
     builder.projection = ProjectionMask::roots(
         builder.metadata.file_metadata().schema_descr(),
         column_projections.iter().cloned(),
@@ -404,7 +376,7 @@ async fn test_reading_with_projection() {
 #[tokio::test]
 async fn test_reading_warm() {
     let column_projections = vec![0, 3, 6, 8];
-    let mut builder = get_test_reader().await;
+    let (mut builder, _file) = get_test_reader().await;
     let batch_size = builder.batch_size;
     let liquid_cache = Arc::new(LiquidCachedFile::new(
         LiquidCacheMode::InMemoryLiquid,
@@ -417,7 +389,7 @@ async fn test_reading_warm() {
     let reader = builder.build(liquid_cache.clone()).unwrap();
     let _batches = reader.collect::<Vec<_>>().await;
 
-    let mut builder = get_test_reader().await;
+    let (mut builder, _file) = get_test_reader().await;
     builder.projection = ProjectionMask::roots(
         builder.metadata.file_metadata().schema_descr(),
         column_projections.iter().cloned(),
@@ -527,7 +499,7 @@ enum FilterStrategy {
 #[tokio::test]
 async fn test_reading_with_filter() {
     let projection = vec![0, 3, 5, 6, 8];
-    let mut builder = get_test_reader().await;
+    let (mut builder, _file) = get_test_reader().await;
     let batch_size = builder.batch_size;
 
     builder.projection = ProjectionMask::roots(
@@ -591,7 +563,7 @@ async fn test_reading_with_filter() {
     }
 
     // now run again with the same cache
-    let mut builder = get_test_reader().await;
+    let (mut builder, _file) = get_test_reader().await;
     builder.projection = ProjectionMask::roots(
         builder.metadata.file_metadata().schema_descr(),
         projection.iter().cloned(),

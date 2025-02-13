@@ -8,6 +8,7 @@ members = [
 	"src/server",
 	"src/client",
 	"src/liquid_parquet",
+	"src/common",
 	"examples",
 ]
 resolver = "3"
@@ -16,6 +17,7 @@ resolver = "3"
 liquid-cache-server = { path = "src/server" }
 liquid-cache-client = { path = "src/client" }
 liquid-parquet = { path = "src/liquid_parquet" }
+liquid-common = { path = "src/common" }
 arrow = "54.1"
 arrow-flight = { version = "54.1", features = ["flight-sql-experimental"] }
 arrow-schema = { version = "54.1", features = ["serde"] }
@@ -32,14 +34,12 @@ tonic = { version = "0.12", features = [
 url = "2.5.4"
 itertools = "0.14.0"
 bytes = "1.10.0"
-fastlanes = "0.1.8"
-num-traits = "0.2.19"
 ahash = "0.8.11"
 uuid = "1.12.1"
 prost = "0.13.4"
 prost-derive = "0.13.4"
-object_store = "0.11.2"
-serde = { version = "1.0", features = ["derive"] }
+object_store = { version = "0.11.2", default-features = false }
+serde = "1.0"
 serde_json = "1.0"
 dashmap = "6.1.0"
 owo-colors = "4"
