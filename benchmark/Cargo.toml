@@ -3,6 +3,10 @@ name = "liquid-cache-benchmarks"
 description = "LiquidCache Benchmarks"
 edition = { workspace = true }
 
+[[bin]]
+name = "create_nano_hits"
+path = "create_nano_hits.rs"
+
 
 [dependencies]
 liquid-cache-server = { workspace = true }
@@ -23,3 +27,4 @@ mimalloc = "0.1.43"
 pprof = { version = "0.14.0", features = ["flamegraph"] }
 serde_json.workspace = true
 serde.workspace = true
+parquet = { workspace = true }

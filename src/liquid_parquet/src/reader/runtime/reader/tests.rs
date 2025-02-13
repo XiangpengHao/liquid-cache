@@ -1,13 +1,10 @@
 use arrow::{
-    array::{
-        AsArray, BooleanArray, BooleanBuilder, GenericByteDictionaryBuilder, Int8Array, Int16Array,
-        Int32Array, Int64Array, StringBuilder, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
-    },
+    array::{AsArray, BooleanArray, BooleanBuilder},
     buffer::BooleanBuffer,
     compute::filter,
     datatypes::{
         DataType, Field, Int8Type, Int16Type, Int32Type, Int64Type, Schema, UInt8Type, UInt16Type,
-        UInt32Type, UInt64Type, Utf8Type,
+        UInt32Type, UInt64Type,
     },
     record_batch::RecordBatch,
 };
@@ -17,18 +14,14 @@ use futures::future::BoxFuture;
 use futures::{FutureExt, StreamExt};
 use parquet::{
     arrow::{
-        ArrowWriter, ParquetRecordBatchStreamBuilder, ProjectionMask,
+        ParquetRecordBatchStreamBuilder, ProjectionMask,
         arrow_reader::{ArrowPredicate, ArrowReaderMetadata, ArrowReaderOptions},
         async_reader::AsyncFileReader,
     },
     errors::ParquetError,
-    file::{
-        metadata::{ParquetMetaData, ParquetMetaDataReader},
-        properties::WriterProperties,
-    },
+    file::metadata::{ParquetMetaData, ParquetMetaDataReader},
 };
 use std::{ops::Range, sync::Arc};
-use tempfile::NamedTempFile;
 
 use crate::{
     LiquidCacheMode, LiquidPredicate,
@@ -40,117 +33,248 @@ use crate::{
     },
 };
 
-fn test_input_schema() -> Schema {
-    Schema::new(vec![
-        Field::new("u8_col", DataType::UInt8, false),
-        Field::new("u16_col", DataType::UInt16, false),
-        Field::new("u32_col", DataType::UInt32, false),
-        Field::new("u64_col", DataType::UInt64, false),
-        Field::new("i8_col", DataType::Int8, false),
-        Field::new("i16_col", DataType::Int16, false),
-        Field::new("i32_col", DataType::Int32, false),
-        Field::new("i64_col", DataType::Int64, false),
-        Field::new("string_col", DataType::Utf8, false),
-        Field::new(
-            "string_dict",
-            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            false,
-        ),
-    ])
-}
+use std::fs;
 
 fn test_output_schema() -> Schema {
     Schema::new(vec![
-        Field::new("u8_col", DataType::UInt8, false),
-        Field::new("u16_col", DataType::UInt16, false),
-        Field::new("u32_col", DataType::UInt32, false),
-        Field::new("u64_col", DataType::UInt64, false),
-        Field::new("i8_col", DataType::Int8, false),
-        Field::new("i16_col", DataType::Int16, false),
-        Field::new("i32_col", DataType::Int32, false),
-        Field::new("i64_col", DataType::Int64, false),
+        Field::new("WatchID", DataType::Int64, false),
+        Field::new("JavaEnable", DataType::Int16, false),
         Field::new(
-            "string_col",
+            "Title",
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            false,
+        ),
+        Field::new("GoodEvent", DataType::Int16, false),
+        Field::new("EventTime", DataType::Int64, false),
+        Field::new("EventDate", DataType::UInt16, false),
+        Field::new("CounterID", DataType::Int32, false),
+        Field::new("ClientIP", DataType::Int32, false),
+        Field::new("RegionID", DataType::Int32, false),
+        Field::new("UserID", DataType::Int64, false),
+        Field::new("CounterClass", DataType::Int16, false),
+        Field::new("OS", DataType::Int16, false),
+        Field::new("UserAgent", DataType::Int16, false),
+        Field::new(
+            "URL",
             DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
             false,
         ),
         Field::new(
-            "string_dict",
+            "Referer",
             DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
             false,
         ),
+        Field::new("IsRefresh", DataType::Int16, false),
+        Field::new("RefererCategoryID", DataType::Int16, false),
+        Field::new("RefererRegionID", DataType::Int32, false),
+        Field::new("URLCategoryID", DataType::Int16, false),
+        Field::new("URLRegionID", DataType::Int32, false),
+        Field::new("ResolutionWidth", DataType::Int16, false),
+        Field::new("ResolutionHeight", DataType::Int16, false),
+        Field::new("ResolutionDepth", DataType::Int16, false),
+        Field::new("FlashMajor", DataType::Int16, false),
+        Field::new("FlashMinor", DataType::Int16, false),
+        Field::new(
+            "FlashMinor2",
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            false,
+        ),
+        Field::new("NetMajor", DataType::Int16, false),
+        Field::new("NetMinor", DataType::Int16, false),
+        Field::new("UserAgentMajor", DataType::Int16, false),
+        Field::new(
+            "UserAgentMinor",
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            false,
+        ),
+        Field::new("CookieEnable", DataType::Int16, false),
+        Field::new("JavascriptEnable", DataType::Int16, false),
+        Field::new("IsMobile", DataType::Int16, false),
+        Field::new("MobilePhone", DataType::Int16, false),
+        Field::new(
+            "MobilePhoneModel",
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            false,
+        ),
+        Field::new(
+            "Params",
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            false,
+        ),
+        Field::new("IPNetworkID", DataType::Int32, false),
+        Field::new("TraficSourceID", DataType::Int16, false),
+        Field::new("SearchEngineID", DataType::Int16, false),
+        Field::new(
+            "SearchPhrase",
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            false,
+        ),
+        Field::new("AdvEngineID", DataType::Int16, false),
+        Field::new("IsArtifical", DataType::Int16, false),
+        Field::new("WindowClientWidth", DataType::Int16, false),
+        Field::new("WindowClientHeight", DataType::Int16, false),
+        Field::new("ClientTimeZone", DataType::Int16, false),
+        Field::new("ClientEventTime", DataType::Int64, false),
+        Field::new("SilverlightVersion1", DataType::Int16, false),
+        Field::new("SilverlightVersion2", DataType::Int16, false),
+        Field::new("SilverlightVersion3", DataType::Int32, false),
+        Field::new("SilverlightVersion4", DataType::Int16, false),
+        Field::new(
+            "PageCharset",
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            false,
+        ),
+        Field::new("CodeVersion", DataType::Int32, false),
+        Field::new("IsLink", DataType::Int16, false),
+        Field::new("IsDownload", DataType::Int16, false),
+        Field::new("IsNotBounce", DataType::Int16, false),
+        Field::new("FUniqID", DataType::Int64, false),
+        Field::new(
+            "OriginalURL",
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            false,
+        ),
+        Field::new("HID", DataType::Int32, false),
+        Field::new("IsOldCounter", DataType::Int16, false),
+        Field::new("IsEvent", DataType::Int16, false),
+        Field::new("IsParameter", DataType::Int16, false),
+        Field::new("DontCountHits", DataType::Int16, false),
+        Field::new("WithHash", DataType::Int16, false),
+        Field::new(
+            "HitColor",
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            false,
+        ),
+        Field::new("LocalEventTime", DataType::Int64, false),
+        Field::new("Age", DataType::Int16, false),
+        Field::new("Sex", DataType::Int16, false),
+        Field::new("Income", DataType::Int16, false),
+        Field::new("Interests", DataType::Int16, false),
+        Field::new("Robotness", DataType::Int16, false),
+        Field::new("RemoteIP", DataType::Int32, false),
+        Field::new("WindowName", DataType::Int32, false),
+        Field::new("OpenerName", DataType::Int32, false),
+        Field::new("HistoryLength", DataType::Int16, false),
+        Field::new(
+            "BrowserLanguage",
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            false,
+        ),
+        Field::new(
+            "BrowserCountry",
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            false,
+        ),
+        Field::new(
+            "SocialNetwork",
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            false,
+        ),
+        Field::new(
+            "SocialAction",
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            false,
+        ),
+        Field::new("HTTPError", DataType::Int16, false),
+        Field::new("SendTiming", DataType::Int32, false),
+        Field::new("DNSTiming", DataType::Int32, false),
+        Field::new("ConnectTiming", DataType::Int32, false),
+        Field::new("ResponseStartTiming", DataType::Int32, false),
+        Field::new("ResponseEndTiming", DataType::Int32, false),
+        Field::new("FetchTiming", DataType::Int32, false),
+        Field::new("SocialSourceNetworkID", DataType::Int16, false),
+        Field::new(
+            "SocialSourcePage",
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            false,
+        ),
+        Field::new("ParamPrice", DataType::Int64, false),
+        Field::new(
+            "ParamOrderID",
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            false,
+        ),
+        Field::new(
+            "ParamCurrency",
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            false,
+        ),
+        Field::new("ParamCurrencyID", DataType::Int16, false),
+        Field::new(
+            "OpenstatServiceName",
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            false,
+        ),
+        Field::new(
+            "OpenstatCampaignID",
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            false,
+        ),
+        Field::new(
+            "OpenstatAdID",
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            false,
+        ),
+        Field::new(
+            "OpenstatSourceID",
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            false,
+        ),
+        Field::new(
+            "UTMSource",
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            false,
+        ),
+        Field::new(
+            "UTMMedium",
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            false,
+        ),
+        Field::new(
+            "UTMCampaign",
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            false,
+        ),
+        Field::new(
+            "UTMContent",
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            false,
+        ),
+        Field::new(
+            "UTMTerm",
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            false,
+        ),
+        Field::new(
+            "FromTag",
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            false,
+        ),
+        Field::new("HasGCLID", DataType::Int16, false),
+        Field::new("RefererHash", DataType::Int64, false),
+        Field::new("URLHash", DataType::Int64, false),
+        Field::new("CLID", DataType::Int32, false),
     ])
 }
 
-pub fn generate_test_parquet() -> NamedTempFile {
-    let schema = test_input_schema();
-    let temp_file = NamedTempFile::new().unwrap();
-    let props = WriterProperties::builder()
-        .set_max_row_group_size(16384) // 8192 * 2
-        .build();
-
-    let mut writer =
-        ArrowWriter::try_new(temp_file.reopen().unwrap(), Arc::new(schema), Some(props)).unwrap();
-
-    let mut batch_id = 0;
-    for _ in 0..2 {
-        for _ in 0..2 {
-            let batch = create_record_batch(8192, batch_id);
-            writer.write(&batch).unwrap();
-            batch_id += 1;
-        }
-    }
-
-    writer.close().unwrap();
-    temp_file
+pub fn generate_test_parquet() -> Vec<u8> {
+    println!("{}", std::env::current_dir().unwrap().display().to_string());
+    return fs::read("../../benchmark/data/nano_hits.parquet").unwrap();
 }
 
-fn create_record_batch(batch_size: usize, batch_id: usize) -> RecordBatch {
-    let mut u8_builder = UInt8Array::builder(batch_size);
-    let mut u16_builder = UInt16Array::builder(batch_size);
-    let mut u32_builder = UInt32Array::builder(batch_size);
-    let mut u64_builder = UInt64Array::builder(batch_size);
-    let mut i8_builder = Int8Array::builder(batch_size);
-    let mut i16_builder = Int16Array::builder(batch_size);
-    let mut i32_builder = Int32Array::builder(batch_size);
-    let mut i64_builder = Int64Array::builder(batch_size);
-    let mut string_builder = StringBuilder::new();
-    let mut string_dict_builder = GenericByteDictionaryBuilder::<UInt16Type, Utf8Type>::new();
+async fn create_record_batch(batch_size: usize, i: usize) -> RecordBatch {
+    let mut reader = get_test_reader().await;
+    reader.batch_size = batch_size;
+    let reader = reader
+        .build(Arc::new(LiquidCachedFile::new(
+            LiquidCacheMode::InMemoryLiquid,
+            batch_size,
+        )))
+        .unwrap();
 
-    for i in batch_id * batch_size..(batch_id + 1) * batch_size {
-        // Numeric values
-        u8_builder.append_value((i % u8::MAX as usize) as u8);
-        u16_builder.append_value(i as u16);
-        u32_builder.append_value(i as u32);
-        u64_builder.append_value(i as u64);
-        i8_builder.append_value((i as i8).wrapping_neg());
-        i16_builder.append_value(-(i as i16));
-        i32_builder.append_value(-(i as i32));
-        i64_builder.append_value(-(i as i64));
-
-        // String values with varying lengths and repetitions
-        let s = match i % 10 {
-            0 => "short".to_string(),
-            1 => "long_string_".repeat(50),
-            _ => format!("value_{}", i % 100), // Repeating patterns
-        };
-        string_builder.append_value(&s);
-        string_dict_builder.append_value(&s);
-    }
-
-    RecordBatch::try_new(Arc::new(test_input_schema()), vec![
-        Arc::new(u8_builder.finish()),
-        Arc::new(u16_builder.finish()),
-        Arc::new(u32_builder.finish()),
-        Arc::new(u64_builder.finish()),
-        Arc::new(i8_builder.finish()),
-        Arc::new(i16_builder.finish()),
-        Arc::new(i32_builder.finish()),
-        Arc::new(i64_builder.finish()),
-        Arc::new(string_builder.finish()),
-        Arc::new(string_dict_builder.finish()),
-    ])
-    .unwrap()
+    let mut batches = reader.collect::<Vec<_>>().await;
+    let batch = batches.remove(i).unwrap();
+    return batch;
 }
 
 struct TestReader {
@@ -183,13 +307,18 @@ impl TestReader {
 
 async fn get_test_reader() -> LiquidStreamBuilder {
     let file = generate_test_parquet();
-    let data = Bytes::from(std::fs::read(file.path()).unwrap());
+    let data = Bytes::from(file);
     let mut async_reader = TestReader::new_dyn(data);
 
     let metadata = ArrowReaderMetadata::load_async(&mut async_reader, Default::default())
         .await
         .unwrap();
     let schema = Arc::clone(metadata.schema());
+
+    println!("Schema:");
+    for field in schema.fields() {
+        println!("  {} - {}", field.name(), field.data_type());
+    }
 
     let reader_schema = Arc::new(coerce_to_parquet_reader_types(&schema));
 
@@ -204,7 +333,7 @@ async fn get_test_reader() -> LiquidStreamBuilder {
 
     let metadata = &liquid_builder.metadata;
     assert_eq!(metadata.num_row_groups(), 2);
-    assert_eq!(metadata.file_metadata().num_rows(), 8192 * 2 * 2);
+    assert_eq!(metadata.file_metadata().num_rows(), 8192 * 3 + 10);
     liquid_builder
 }
 
@@ -226,6 +355,9 @@ async fn basic_stuff() {
     let reader = builder.build(Arc::new(liquid_cache)).unwrap();
 
     let schema = &reader.schema;
+    //println!("{:?}", schema);
+    //println!("{:?}", test_output_schema());
+    //println!("===========================");
     assert_eq!(schema.as_ref(), &test_output_schema());
 
     let batches = reader
@@ -236,7 +368,7 @@ async fn basic_stuff() {
         .collect::<Vec<_>>();
 
     for (i, batch) in batches.iter().enumerate() {
-        let expected = create_record_batch(batch_size, i);
+        let expected = create_record_batch(batch_size, i).await;
         assert_batch_eq(&expected, batch);
     }
 }
@@ -262,6 +394,7 @@ async fn test_reading_with_projection() {
 
     for (i, batch) in batches.iter().enumerate() {
         let expected = create_record_batch(batch_size, i)
+            .await
             .project(&column_projections)
             .unwrap();
         assert_batch_eq(&expected, batch);
@@ -300,6 +433,7 @@ async fn test_reading_warm() {
 
     for (i, batch) in batches.iter().enumerate() {
         let expected = create_record_batch(batch_size, i)
+            .await
             .project(&column_projections)
             .unwrap();
         assert_batch_eq(&expected, batch);
@@ -430,32 +564,26 @@ async fn test_reading_with_filter() {
 
     for (i, batch) in batches.iter().enumerate() {
         let expected = create_record_batch(batch_size, i)
+            .await
             .project(&projection)
             .unwrap();
 
-        let col_u8 = expected.column(0).as_primitive::<UInt8Type>();
+        let col_i64 = expected.column(0).as_primitive::<Int64Type>();
         let mask1 = BooleanBuffer::from_iter(
-            col_u8
+            col_i64
                 .iter()
                 .map(|val| val.map(|v| v % 2 == 0).unwrap_or(false)),
         );
 
-        let col_i16 = expected.column(2).as_primitive::<Int16Type>();
+        // 1373872581 is the average value of that column
+        let col_i32 = expected.column(4).as_primitive::<Int32Type>();
         let mask2 = BooleanBuffer::from_iter(
-            col_i16
-                .iter()
-                .map(|val| val.map(|v| v >= 10000).unwrap_or(false)),
-        );
-
-        let col_i32 = expected.column(3).as_primitive::<Int32Type>();
-        let mask3 = BooleanBuffer::from_iter(
             col_i32
                 .iter()
-                .map(|val| val.map(|v| v <= 20000).unwrap_or(false)),
+                .map(|val| val.map(|v| v <= 1373872581).unwrap_or(false)),
         );
 
         let combined_mask = &mask1 & &mask2;
-        let combined_mask = &combined_mask & &mask3;
 
         let expected = filter_record_batch(&expected, combined_mask);
 
