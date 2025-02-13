@@ -11,7 +11,7 @@ use arrow_schema::DataType;
 /// This is because we leverage the fact that the values are unique in the dictionary to short cut the
 /// comparison process, i.e., return the index on first match.
 /// If the values are not unique, we are screwed.
-pub(crate) struct CheckedDictionaryArray {
+pub struct CheckedDictionaryArray {
     val: DictionaryArray<UInt16Type>,
 }
 

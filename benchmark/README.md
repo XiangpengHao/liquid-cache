@@ -50,3 +50,10 @@ cargo run --release --bin bench_server -- --stats-dir benchmark/data/cache_stats
 It will generate a parquet file that contains the cache stats for each query that the server executed.
 You can use [`parquet-viewer`](https://parquet-viewer.xiangpeng.systems) to view the stats in the browser.
 
+
+### Run encoding benchmarks
+
+```bash
+RUST_LOG=info RUSTFLAGS='-C target-cpu=native' cargo run --release --bin encoding -- --file benchmark/data/hits.parquet --column 2
+```
+This will benchmark the encoding time of the `URL` column.

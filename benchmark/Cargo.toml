@@ -28,3 +28,4 @@ sysinfo = "0.33.1"
 object_store = { workspace = true, features = ["http"] }
 bytes = { workspace = true }
 prost = { workspace = true }
+fsst-rs = "0.5.0"

@@ -1,7 +1,7 @@
 use ahash::HashMap;
 use arrow::array::{
-    Array, ArrayRef, BooleanArray, DictionaryArray, PrimitiveArray, RecordBatch, StringArray,
-    cast::AsArray, types::UInt16Type,
+    Array, ArrayRef, BooleanArray, DictionaryArray, RecordBatch, StringArray, cast::AsArray,
+    types::UInt16Type,
 };
 use arrow::array::{
     ArrayAccessor, ArrayIter, BinaryArray, BooleanBufferBuilder, BufferBuilder, GenericByteArray,
@@ -150,14 +150,14 @@ impl LiquidByteArray {
         Self::from_dict_array_inner(dict, compressor, ArrowStringType::Utf8View)
     }
 
-    fn train_compressor_bytes<'a, T: ArrayAccessor<Item = &'a [u8]>>(
+    pub fn train_compressor_bytes<'a, T: ArrayAccessor<Item = &'a [u8]>>(
         array: ArrayIter<T>,
     ) -> Arc<Compressor> {
         let strings = array.filter_map(|s| s.as_ref().map(|s| *s));
         Arc::new(FsstArray::train_compressor(strings))
     }
 
-    fn train_compressor<'a, T: ArrayAccessor<Item = &'a str>>(
+    pub fn train_compressor<'a, T: ArrayAccessor<Item = &'a str>>(
         array: ArrayIter<T>,
     ) -> Arc<Compressor> {
         let strings = array.filter_map(|s| s.as_ref().map(|s| s.as_bytes()));
@@ -245,9 +245,6 @@ impl LiquidByteArray {
         arrow_type: ArrowStringType,
     ) -> Self {
         let (keys, values) = array.into_inner().into_parts();
-
-        let (_, keys, nulls) = keys.into_parts();
-        let keys = PrimitiveArray::<UInt16Type>::try_new(keys, nulls).unwrap();
 
         let distinct_count = values.len();
         let max_bit_width = get_bit_width(distinct_count as u64);

@@ -2220,6 +2220,7 @@ dependencies = [
  "clap",
  "datafusion",
  "env_logger",
+ "fsst-rs",
  "futures",
  "liquid-cache-client",
  "liquid-cache-server",
