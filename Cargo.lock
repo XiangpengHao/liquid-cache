@@ -2229,6 +2229,7 @@ dependencies = [
  "mimalloc",
  "object_store",
  "owo-colors",
+ "parquet",
  "pprof",
  "prost",
  "serde",

@@ -1,10 +1,13 @@
 use arrow::{
-    array::{AsArray, BooleanArray, BooleanBuilder},
+    array::{
+        AsArray, BooleanArray, BooleanBuilder, GenericByteDictionaryBuilder, Int8Array, Int16Array,
+        Int32Array, Int64Array, StringBuilder, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
+    },
     buffer::BooleanBuffer,
     compute::filter,
     datatypes::{
         DataType, Field, Int8Type, Int16Type, Int32Type, Int64Type, Schema, UInt8Type, UInt16Type,
-        UInt32Type, UInt64Type,
+        UInt32Type, UInt64Type, Utf8Type,
     },
     record_batch::RecordBatch,
 };
@@ -14,14 +17,13 @@ use futures::StreamExt;
 use object_store::ObjectMeta;
 use parquet::{
     arrow::{
-        ParquetRecordBatchStreamBuilder, ProjectionMask,
+        ArrowWriter, ParquetRecordBatchStreamBuilder, ProjectionMask,
         arrow_reader::{ArrowPredicate, ArrowReaderMetadata, ArrowReaderOptions},
-        async_reader::AsyncFileReader,
     },
-    errors::ParquetError,
-    file::metadata::{ParquetMetaData, ParquetMetaDataReader},
+    file::{metadata::ParquetMetaData, properties::WriterProperties},
 };
-use std::{ops::Range, sync::Arc};
+use std::{fs::File, sync::Arc};
+use tempfile::NamedTempFile;
 
 use crate::{
     LiquidCacheMode, LiquidPredicate,
@@ -33,7 +35,24 @@ use crate::{
     },
 };
 
-use std::fs;
+fn test_input_schema() -> Schema {
+    Schema::new(vec![
+        Field::new("u8_col", DataType::UInt8, false),
+        Field::new("u16_col", DataType::UInt16, false),
+        Field::new("u32_col", DataType::UInt32, false),
+        Field::new("u64_col", DataType::UInt64, false),
+        Field::new("i8_col", DataType::Int8, false),
+        Field::new("i16_col", DataType::Int16, false),
+        Field::new("i32_col", DataType::Int32, false),
+        Field::new("i64_col", DataType::Int64, false),
+        Field::new("string_col", DataType::Utf8, false),
+        Field::new(
+            "string_dict",
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            false,
+        ),
+    ])
+}
 
 fn test_output_schema() -> Schema {
     Schema::new(vec![
@@ -257,13 +276,15 @@ fn test_output_schema() -> Schema {
     ])
 }
 
-pub fn generate_test_parquet() -> Vec<u8> {
-    println!("{}", std::env::current_dir().unwrap().display().to_string());
-    return fs::read("../../benchmark/data/nano_hits.parquet").unwrap();
+pub fn generate_test_parquet() -> (File, String) {
+    return (
+        File::open("../../benchmark/data/nano_hits.parquet").unwrap(),
+        "../../benchmark/data/nano_hits.parquet".to_string(),
+    );
 }
 
 async fn create_record_batch(batch_size: usize, i: usize) -> RecordBatch {
-    let mut reader = get_test_reader().await;
+    let (mut reader, _) = get_test_reader().await;
     reader.batch_size = batch_size;
     let reader = reader
         .build(Arc::new(LiquidCachedFile::new(
@@ -277,20 +298,28 @@ async fn create_record_batch(batch_size: usize, i: usize) -> RecordBatch {
     return batch;
 }
 
-async fn get_test_reader() -> (LiquidStreamBuilder, NamedTempFile) {
-    let file = generate_test_parquet();
-    let data = Bytes::from(file);
-    let mut async_reader = TestReader::new_dyn(data);
-  
+async fn get_test_reader() -> (LiquidStreamBuilder, File) {
+    let (file, path) = generate_test_parquet();
+    let object_store = Arc::new(object_store::local::LocalFileSystem::new());
+
+    let file_metadata = file.metadata().unwrap();
+    let object_meta = ObjectMeta {
+        location: object_store::path::Path::from_filesystem_path(path).unwrap(),
+        size: file_metadata.len() as usize,
+        last_modified: file_metadata.modified().unwrap().into(),
+        e_tag: None,
+        version: None,
+    };
+
+    let metrics = ExecutionPlanMetricsSet::new();
+    let reader_factory = CachedMetaReaderFactory::new(object_store);
+    let mut async_reader =
+        reader_factory.create_liquid_reader(0, object_meta.into(), None, &metrics);
+
     let metadata = ArrowReaderMetadata::load_async(&mut async_reader, Default::default())
         .await
         .unwrap();
     let schema = Arc::clone(metadata.schema());
-
-    println!("Schema:");
-    for field in schema.fields() {
-        println!("  {} - {}", field.name(), field.data_type());
-    }
 
     let reader_schema = Arc::new(coerce_to_parquet_reader_types(&schema));
 
@@ -306,7 +335,7 @@ async fn get_test_reader() -> (LiquidStreamBuilder, NamedTempFile) {
     let metadata = &liquid_builder.metadata;
     assert_eq!(metadata.num_row_groups(), 2);
     assert_eq!(metadata.file_metadata().num_rows(), 8192 * 3 + 10);
-    liquid_builder
+    (liquid_builder, file)
 }
 
 /// We could directly assert_eq!(left, right) but this is more debugging friendly
@@ -327,9 +356,6 @@ async fn basic_stuff() {
     let reader = builder.build(Arc::new(liquid_cache)).unwrap();
 
     let schema = &reader.schema;
-    //println!("{:?}", schema);
-    //println!("{:?}", test_output_schema());
-    //println!("===========================");
     assert_eq!(schema.as_ref(), &test_output_schema());
 
     let batches = reader
