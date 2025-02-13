@@ -11,7 +11,7 @@ use std::mem::MaybeUninit;
 use std::sync::Arc;
 
 #[derive(Clone)]
-pub(crate) struct FsstArray {
+pub struct FsstArray {
     pub(crate) compressor: Arc<Compressor>,
     pub(crate) compressed: BinaryArray,
     pub(crate) uncompressed_len: usize,
@@ -84,11 +84,11 @@ impl FsstArray {
         }
     }
 
-    pub(crate) fn get_array_memory_size(&self) -> usize {
+    pub fn get_array_memory_size(&self) -> usize {
         self.compressed.get_array_memory_size() + std::mem::size_of::<FsstArray>()
     }
 
-    pub(crate) fn to_arrow_byte_array<T: ByteArrayType>(&self) -> GenericByteArray<T> {
+    pub fn to_arrow_byte_array<T: ByteArrayType>(&self) -> GenericByteArray<T> {
         // we can directly use the null buffer in the compressed array.
         let null_buffer = self.compressed.nulls().cloned();
         let mut value_buffer: Vec<u8> = Vec::with_capacity(self.uncompressed_len + 8);
