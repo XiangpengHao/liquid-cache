@@ -10,7 +10,7 @@ use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use tokio::runtime::Runtime;
 mod stats;
 use super::liquid_array::{LiquidArrayRef, LiquidByteArray, LiquidPrimitiveArray};
-use crate::LiquidPredicate;
+use crate::{ABLATION_STUDY_MODE, AblationStudyMode, LiquidPredicate};
 use arrow::array::types::{
     Int8Type as ArrowInt8Type, Int16Type as ArrowInt16Type, Int32Type as ArrowInt32Type,
     Int64Type as ArrowInt64Type, UInt8Type as ArrowUInt8Type, UInt16Type as ArrowUInt16Type,
@@ -169,13 +169,35 @@ impl LiquidCachedColumn {
                 let (buffer, _) = predicate_filter.into_parts();
                 Some(Ok(buffer))
             }
-            CachedBatch::LiquidMemory(array) => {
-                let boolean_array = BooleanArray::new(selection.clone(), None);
-                let filtered = array.filter(&boolean_array);
-                let boolean_array = predicate.evaluate_liquid(&filtered).unwrap();
-                let (buffer, _) = boolean_array.into_parts();
-                Some(Ok(buffer))
-            }
+            CachedBatch::LiquidMemory(array) => match ABLATION_STUDY_MODE {
+                AblationStudyMode::FullDecoding => {
+                    let boolean_array = BooleanArray::new(selection.clone(), None);
+                    let arrow = array.to_arrow_array();
+                    let filtered = arrow::compute::filter(&arrow, &boolean_array).unwrap();
+                    let record_batch = array_to_record_batch(filtered);
+                    let boolean_array = predicate.evaluate(record_batch).unwrap();
+                    let (buffer, _) = boolean_array.into_parts();
+                    Some(Ok(buffer))
+                }
+                AblationStudyMode::SelectiveDecoding
+                | AblationStudyMode::SelectiveWithLateMaterialization => {
+                    let boolean_array = BooleanArray::new(selection.clone(), None);
+                    let filtered = array.filter(&boolean_array);
+                    let arrow = filtered.to_arrow_array();
+                    let record_batch = array_to_record_batch(arrow);
+                    let boolean_array = predicate.evaluate(record_batch).unwrap();
+                    let (buffer, _) = boolean_array.into_parts();
+                    Some(Ok(buffer))
+                }
+                AblationStudyMode::EvaluateOnEncodedData
+                | AblationStudyMode::EvaluateOnPartialEncodedData => {
+                    let boolean_array = BooleanArray::new(selection.clone(), None);
+                    let filtered = array.filter(&boolean_array);
+                    let boolean_array = predicate.evaluate_liquid(&filtered).unwrap();
+                    let (buffer, _) = boolean_array.into_parts();
+                    Some(Ok(buffer))
+                }
+            },
         }
     }
 
@@ -194,10 +216,17 @@ impl LiquidCachedColumn {
                 let filtered = arrow::compute::filter(array, filter).unwrap();
                 Some(filtered)
             }
-            CachedBatch::LiquidMemory(array) => {
-                let filtered = array.filter(filter);
-                Some(filtered.to_best_arrow_array())
-            }
+            CachedBatch::LiquidMemory(array) => match ABLATION_STUDY_MODE {
+                AblationStudyMode::FullDecoding => {
+                    let arrow = array.to_arrow_array();
+                    let filtered = arrow::compute::filter(&arrow, filter).unwrap();
+                    Some(filtered)
+                }
+                _ => {
+                    let filtered = array.filter(filter);
+                    Some(filtered.to_best_arrow_array())
+                }
+            },
         }
     }
 
