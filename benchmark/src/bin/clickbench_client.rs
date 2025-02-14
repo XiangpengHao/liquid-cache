@@ -440,6 +440,13 @@ pub async fn main() -> Result<()> {
                 .help("Benchmark mode to use")
                 .value_parser(value_parser!(BenchmarkMode)),
         )
+        .arg(
+            arg!(--"reset-cache")
+                .required(false)
+                .help("Reset the cache before running a new query")
+                .default_value("false")
+                .value_parser(value_parser!(bool)),
+        )
         .get_matches();
     let server_url = matches.get_one::<String>("server").unwrap();
     let file = matches.get_one::<PathBuf>("file").unwrap();
@@ -449,7 +456,7 @@ pub async fn main() -> Result<()> {
     let output_path = matches.get_one::<PathBuf>("output");
     let answer_dir = matches.get_one::<PathBuf>("answer-dir");
     let bench_mode = matches.get_one::<BenchmarkMode>("bench-mode").unwrap();
-
+    let reset_cache = matches.get_one::<bool>("reset-cache").unwrap();
     let ctx = bench_mode.setup_ctx(server_url, file).await?;
 
     let mut benchmark_result = BenchmarkResult {
@@ -513,7 +520,9 @@ pub async fn main() -> Result<()> {
                 cache_memory_usage: metrics_response.cache_memory_usage,
             });
         }
-        bench_mode.reset_cache(server_url).await?;
+        if *reset_cache {
+            bench_mode.reset_cache(server_url).await?;
+        }
         benchmark_result.queries.push(query_result);
     }
 

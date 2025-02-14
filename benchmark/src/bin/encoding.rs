@@ -214,6 +214,8 @@ fn build_reader(path: &Path, column_id: usize) -> ParquetRecordBatchReader {
 }
 
 fn bench(path: &Path, column_id: usize) -> Bencher {
+    let mut bencher = Bencher::new(path, column_id);
+
     let compressor = {
         let mut reader = build_reader(path, column_id);
         let batch = reader.next().unwrap().unwrap();
@@ -229,7 +231,6 @@ fn bench(path: &Path, column_id: usize) -> Bencher {
     let schema = Arc::new(Schema::new(vec![Field::new("test", DataType::Utf8, false)]));
     let mut writer = ArrowWriter::try_new(&mut buffer, schema.clone(), Some(props)).unwrap();
 
-    let mut bencher = Bencher::new(path, column_id);
     while let Some(batch) = bencher.parquet_to_arrow_one(&mut reader) {
         let dict = bencher.arrow_to_dict_one(batch.column(0));
         let (bit_packed_array, values) = bencher.dict_to_bit_pack_one(dict);
