@@ -6,7 +6,8 @@ use arrow::compute::prep_null_mask_filter;
 use arrow_schema::{ArrowError, DataType, Field, Schema};
 use std::fmt::Display;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, LazyLock, Mutex, RwLock};
+use tokio::runtime::Runtime;
 mod stats;
 use super::liquid_array::{LiquidArrayRef, LiquidByteArray, LiquidPrimitiveArray};
 use crate::LiquidPredicate;
@@ -15,6 +16,17 @@ use arrow::array::types::{
     Int64Type as ArrowInt64Type, UInt8Type as ArrowUInt8Type, UInt16Type as ArrowUInt16Type,
     UInt32Type as ArrowUInt32Type, UInt64Type as ArrowUInt64Type,
 };
+
+/// A dedicated Tokio thread pool for background transcoding tasks.
+/// This pool is built with 4 worker threads.
+static TRANSCODE_THREAD_POOL: LazyLock<Runtime> = LazyLock::new(|| {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .thread_name("transcode-worker")
+        .enable_all()
+        .build()
+        .unwrap()
+});
 
 struct LiquidCompressorStates {
     fsst_compressor: RwLock<Option<Arc<fsst::Compressor>>>,
@@ -53,13 +65,6 @@ impl CachedEntry {
         let val = CachedBatch::ArrowMemory(array);
         CachedEntry {
             value: val,
-            hit_count: AtomicU32::new(0),
-        }
-    }
-
-    fn new(value: CachedBatch) -> Self {
-        CachedEntry {
-            value,
             hit_count: AtomicU32::new(0),
         }
     }
@@ -209,7 +214,7 @@ impl LiquidCachedColumn {
         }
     }
 
-    pub(crate) fn insert_arrow_array(&self, row_id: usize, array: ArrayRef) {
+    pub(crate) fn insert_arrow_array(self: &Arc<Self>, row_id: usize, array: ArrayRef) {
         if self.is_cached(row_id) {
             return;
         }
@@ -225,140 +230,143 @@ impl LiquidCachedColumn {
                 unimplemented!()
             }
             LiquidCacheMode::InMemoryLiquid => {
-                let data_type = array.data_type();
-                let array = array.as_ref();
-                if data_type.is_primitive() {
-                    let primitive: LiquidArrayRef = match data_type {
-                        DataType::Int8 => {
-                            Arc::new(LiquidPrimitiveArray::<ArrowInt8Type>::from_arrow_array(
-                                array.as_primitive::<ArrowInt8Type>().clone(),
-                            ))
-                        }
-                        DataType::Int16 => {
-                            Arc::new(LiquidPrimitiveArray::<ArrowInt16Type>::from_arrow_array(
-                                array.as_primitive::<ArrowInt16Type>().clone(),
-                            ))
-                        }
-                        DataType::Int32 => {
-                            Arc::new(LiquidPrimitiveArray::<ArrowInt32Type>::from_arrow_array(
-                                array.as_primitive::<ArrowInt32Type>().clone(),
-                            ))
-                        }
-                        DataType::Int64 => {
-                            Arc::new(LiquidPrimitiveArray::<ArrowInt64Type>::from_arrow_array(
-                                array.as_primitive::<ArrowInt64Type>().clone(),
-                            ))
-                        }
-                        DataType::UInt8 => {
-                            Arc::new(LiquidPrimitiveArray::<ArrowUInt8Type>::from_arrow_array(
-                                array.as_primitive::<ArrowUInt8Type>().clone(),
-                            ))
-                        }
-                        DataType::UInt16 => {
-                            Arc::new(LiquidPrimitiveArray::<ArrowUInt16Type>::from_arrow_array(
-                                array.as_primitive::<ArrowUInt16Type>().clone(),
-                            ))
-                        }
-                        DataType::UInt32 => {
-                            Arc::new(LiquidPrimitiveArray::<ArrowUInt32Type>::from_arrow_array(
-                                array.as_primitive::<ArrowUInt32Type>().clone(),
-                            ))
-                        }
-                        DataType::UInt64 => {
-                            Arc::new(LiquidPrimitiveArray::<ArrowUInt64Type>::from_arrow_array(
-                                array.as_primitive::<ArrowUInt64Type>().clone(),
-                            ))
-                        }
-                        _ => panic!("unsupported data type {:?}", data_type),
-                    };
-                    rows.insert(
-                        row_id,
-                        CachedEntry::new(CachedBatch::LiquidMemory(primitive)),
-                    );
-                    return;
-                }
+                // Insert the arrow array first, without doing the expensive transcoding.
+                rows.insert(row_id, CachedEntry::new_in_memory(array.clone()));
 
-                // string types
-                match array.data_type() {
-                    DataType::Utf8View => {
-                        let compressor = self.fsst_compressor().read().unwrap();
-                        if let Some(compressor) = compressor.as_ref() {
-                            let compressed = LiquidByteArray::from_string_view_array(
-                                array.as_string_view(),
-                                compressor.clone(),
-                            );
-                            rows.insert(
-                                row_id,
-                                CachedEntry::new(CachedBatch::LiquidMemory(Arc::new(compressed))),
-                            );
-                            return;
-                        }
+                // Submit a background transcoding task to our dedicated thread pool.
+                let column_arc = Arc::clone(self);
+                TRANSCODE_THREAD_POOL.spawn(async move {
+                    column_arc.background_transcode(row_id);
+                });
+            }
+        }
+    }
 
-                        drop(compressor);
-                        let mut compressors = self.fsst_compressor().write().unwrap();
-                        let (compressor, compressed) =
-                            LiquidByteArray::train_from_arrow_view(array.as_string_view());
-                        *compressors = Some(compressor);
-                        rows.insert(
-                            row_id,
-                            CachedEntry::new(CachedBatch::LiquidMemory(Arc::new(compressed))),
-                        );
-                    }
-                    DataType::Utf8 => {
-                        let compressor = self.fsst_compressor().read().unwrap();
-                        if let Some(compressor) = compressor.as_ref() {
-                            let compressed = LiquidByteArray::from_string_array(
-                                array.as_string::<i32>(),
-                                compressor.clone(),
-                            );
-                            rows.insert(
-                                row_id,
-                                CachedEntry::new(CachedBatch::LiquidMemory(Arc::new(compressed))),
-                            );
-                            return;
-                        }
-
-                        drop(compressor);
-                        let mut compressors = self.fsst_compressor().write().unwrap();
-                        let (compressor, compressed) =
-                            LiquidByteArray::train_from_arrow(array.as_string::<i32>());
-                        *compressors = Some(compressor);
-                        rows.insert(
-                            row_id,
-                            CachedEntry::new(CachedBatch::LiquidMemory(Arc::new(compressed))),
-                        );
-                    }
-                    DataType::Dictionary(_, _) => {
-                        if let Some(dict_array) = array.as_dictionary_opt::<ArrowUInt16Type>() {
-                            let compressor = self.fsst_compressor().read().unwrap();
-                            if let Some(compressor) = compressor.as_ref() {
-                                let liquid_array = LiquidByteArray::from_dict_array(
-                                    dict_array,
-                                    compressor.clone(),
-                                );
-                                rows.insert(
-                                    row_id,
-                                    CachedEntry::new(CachedBatch::LiquidMemory(Arc::new(
-                                        liquid_array,
-                                    ))),
-                                );
+    /// This method is run in the background. It acquires a write lock on the cache,
+    /// checks that the stored value is still an ArrowMemory batch, and then runs the
+    /// expensive transcoding, replacing the entry with a LiquidMemory batch.
+    fn background_transcode(self: &Arc<Self>, row_id: usize) {
+        let mut rows = self.rows.write().unwrap();
+        if let Some(entry) = rows.get_mut(&row_id) {
+            match &entry.value {
+                CachedBatch::ArrowMemory(array) => {
+                    let data_type = array.data_type();
+                    if data_type.is_primitive() {
+                        // For primitive types, perform the transcoding.
+                        let liquid_array: LiquidArrayRef = match data_type {
+                            DataType::Int8 => {
+                                Arc::new(LiquidPrimitiveArray::<ArrowInt8Type>::from_arrow_array(
+                                    array.as_primitive::<ArrowInt8Type>().clone(),
+                                ))
+                            }
+                            DataType::Int16 => {
+                                Arc::new(LiquidPrimitiveArray::<ArrowInt16Type>::from_arrow_array(
+                                    array.as_primitive::<ArrowInt16Type>().clone(),
+                                ))
+                            }
+                            DataType::Int32 => {
+                                Arc::new(LiquidPrimitiveArray::<ArrowInt32Type>::from_arrow_array(
+                                    array.as_primitive::<ArrowInt32Type>().clone(),
+                                ))
+                            }
+                            DataType::Int64 => {
+                                Arc::new(LiquidPrimitiveArray::<ArrowInt64Type>::from_arrow_array(
+                                    array.as_primitive::<ArrowInt64Type>().clone(),
+                                ))
+                            }
+                            DataType::UInt8 => {
+                                Arc::new(LiquidPrimitiveArray::<ArrowUInt8Type>::from_arrow_array(
+                                    array.as_primitive::<ArrowUInt8Type>().clone(),
+                                ))
+                            }
+                            DataType::UInt16 => {
+                                Arc::new(LiquidPrimitiveArray::<ArrowUInt16Type>::from_arrow_array(
+                                    array.as_primitive::<ArrowUInt16Type>().clone(),
+                                ))
+                            }
+                            DataType::UInt32 => {
+                                Arc::new(LiquidPrimitiveArray::<ArrowUInt32Type>::from_arrow_array(
+                                    array.as_primitive::<ArrowUInt32Type>().clone(),
+                                ))
+                            }
+                            DataType::UInt64 => {
+                                Arc::new(LiquidPrimitiveArray::<ArrowUInt64Type>::from_arrow_array(
+                                    array.as_primitive::<ArrowUInt64Type>().clone(),
+                                ))
+                            }
+                            _ => {
+                                // For unsupported primitive types, leave the value unchanged.
                                 return;
                             }
-
-                            drop(compressor);
-                            let mut compressors = self.fsst_compressor().write().unwrap();
-                            let (compressor, liquid_array) =
-                                LiquidByteArray::train_from_arrow_dict(dict_array);
-                            *compressors = Some(compressor);
-                            rows.insert(
-                                row_id,
-                                CachedEntry::new(CachedBatch::LiquidMemory(Arc::new(liquid_array))),
-                            );
-                            return;
+                        };
+                        entry.value = CachedBatch::LiquidMemory(liquid_array);
+                    } else {
+                        // Handle string/dictionary types.
+                        match array.data_type() {
+                            DataType::Utf8View => {
+                                let compressor = self.fsst_compressor().read().unwrap();
+                                if let Some(compressor) = compressor.as_ref() {
+                                    let compressed = LiquidByteArray::from_string_view_array(
+                                        array.as_string_view(),
+                                        compressor.clone(),
+                                    );
+                                    entry.value = CachedBatch::LiquidMemory(Arc::new(compressed));
+                                    return;
+                                }
+                                drop(compressor);
+                                let mut compressors = self.fsst_compressor().write().unwrap();
+                                let (compressor, compressed) =
+                                    LiquidByteArray::train_from_arrow_view(array.as_string_view());
+                                *compressors = Some(compressor);
+                                entry.value = CachedBatch::LiquidMemory(Arc::new(compressed));
+                            }
+                            DataType::Utf8 => {
+                                let compressor = self.fsst_compressor().read().unwrap();
+                                if let Some(compressor) = compressor.as_ref() {
+                                    let compressed = LiquidByteArray::from_string_array(
+                                        array.as_string::<i32>(),
+                                        compressor.clone(),
+                                    );
+                                    entry.value = CachedBatch::LiquidMemory(Arc::new(compressed));
+                                    return;
+                                }
+                                drop(compressor);
+                                let mut compressors = self.fsst_compressor().write().unwrap();
+                                let (compressor, compressed) =
+                                    LiquidByteArray::train_from_arrow(array.as_string::<i32>());
+                                *compressors = Some(compressor);
+                                entry.value = CachedBatch::LiquidMemory(Arc::new(compressed));
+                            }
+                            DataType::Dictionary(_, _) => {
+                                if let Some(dict_array) =
+                                    array.as_dictionary_opt::<ArrowUInt16Type>()
+                                {
+                                    let compressor = self.fsst_compressor().read().unwrap();
+                                    if let Some(compressor) = compressor.as_ref() {
+                                        let liquid_array = LiquidByteArray::from_dict_array(
+                                            dict_array,
+                                            compressor.clone(),
+                                        );
+                                        entry.value =
+                                            CachedBatch::LiquidMemory(Arc::new(liquid_array));
+                                        return;
+                                    }
+                                    drop(compressor);
+                                    let mut compressors = self.fsst_compressor().write().unwrap();
+                                    let (compressor, liquid_array) =
+                                        LiquidByteArray::train_from_arrow_dict(dict_array);
+                                    *compressors = Some(compressor);
+                                    entry.value = CachedBatch::LiquidMemory(Arc::new(liquid_array));
+                                    return;
+                                }
+                                panic!("unsupported data type {:?}", array.data_type());
+                            }
+                            _ => panic!("unsupported data type {:?}", array.data_type()),
                         }
-                        panic!("unsupported data type {:?}", array.data_type());
                     }
-                    _ => panic!("unsupported data type {:?}", array.data_type()),
+                }
+                CachedBatch::LiquidMemory(_) => {
+                    // Already transcoded.
                 }
             }
         }
