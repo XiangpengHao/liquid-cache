@@ -1,37 +1,20 @@
 use ahash::AHashMap;
 use arrow::array::{Array, AsArray, BooleanArray};
-use arrow::array::{ArrayRef, RecordBatch, RecordBatchWriter};
+use arrow::array::{ArrayRef, RecordBatch};
 use arrow::buffer::BooleanBuffer;
 use arrow::compute::prep_null_mask_filter;
-use arrow::ipc::reader::FileReader;
-use arrow::ipc::writer::FileWriter;
 use arrow_schema::{ArrowError, DataType, Field, Schema};
 use std::fmt::Display;
-use std::io::Seek;
-use std::ops::{DerefMut, Range};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use utils::RangedFile;
 mod stats;
-
-use crate::LiquidPredicate;
-
 use super::liquid_array::{LiquidArrayRef, LiquidByteArray, LiquidPrimitiveArray};
-mod utils;
+use crate::LiquidPredicate;
 use arrow::array::types::{
     Int8Type as ArrowInt8Type, Int16Type as ArrowInt16Type, Int32Type as ArrowInt32Type,
     Int64Type as ArrowInt64Type, UInt8Type as ArrowUInt8Type, UInt16Type as ArrowUInt16Type,
     UInt32Type as ArrowUInt32Type, UInt64Type as ArrowUInt64Type,
 };
-
-static ARROW_DISK_CACHE_PATH: &str = "target/arrow_disk_cache.etc";
-
-#[derive(Debug)]
-enum CacheStates {
-    InMemory,
-    OnDisk(Mutex<std::fs::File>),
-    Liquid(LiquidCompressorStates),
-}
 
 struct LiquidCompressorStates {
     fsst_compressor: RwLock<Option<Arc<fsst::Compressor>>>,
@@ -85,7 +68,6 @@ impl CachedEntry {
 #[derive(Debug)]
 enum CachedBatch {
     ArrowMemory(ArrayRef),
-    ArrowDisk(Range<u64>),
     LiquidMemory(LiquidArrayRef),
 }
 
@@ -93,37 +75,7 @@ impl CachedBatch {
     fn memory_usage(&self) -> usize {
         match self {
             Self::ArrowMemory(array) => array.get_array_memory_size(),
-            Self::ArrowDisk(_) => 0,
             Self::LiquidMemory(array) => array.get_array_memory_size(),
-        }
-    }
-
-    fn convert_to(&mut self, to: &CacheStates) {
-        match (&self, to) {
-            (Self::ArrowMemory(v), CacheStates::OnDisk(file)) => {
-                let mut file = file.lock().unwrap();
-
-                // Align start_pos to next 512 boundary for better disk I/O
-                let start_pos = file.metadata().unwrap().len();
-                let start_pos = (start_pos + 511) & !511;
-                let start_pos = file.seek(std::io::SeekFrom::Start(start_pos)).unwrap();
-
-                let mut writer = std::io::BufWriter::new(file.deref_mut());
-                let schema = Arc::new(Schema::new(vec![Field::new(
-                    "_",
-                    v.data_type().clone(),
-                    v.is_nullable(),
-                )]));
-                let mut arrow_writer = FileWriter::try_new(&mut writer, &schema).unwrap();
-                let record_batch = RecordBatch::try_new(schema, vec![v.clone()]).unwrap();
-                arrow_writer.write(&record_batch).unwrap();
-                arrow_writer.close().unwrap();
-
-                let file = writer.into_inner().unwrap();
-                let end_pos = file.stream_position().unwrap();
-                *self = CachedBatch::ArrowDisk(start_pos..end_pos);
-            }
-            _ => unimplemented!("convert {} to {:?} not implemented", self, to),
         }
     }
 }
@@ -132,7 +84,6 @@ impl Display for CachedBatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::ArrowMemory(_) => write!(f, "ArrowMemory"),
-            Self::ArrowDisk(_) => write!(f, "ArrowDisk"),
             Self::LiquidMemory(_) => write!(f, "LiquidMemory"),
         }
     }
@@ -144,7 +95,8 @@ pub struct LiquidCachedColumn {
     row_group_id: usize,
     #[allow(unused)]
     column_id: usize,
-    cache_mode: CacheStates,
+    cache_mode: LiquidCacheMode,
+    liquid_compressor_states: LiquidCompressorStates,
     batch_size: usize,
     rows: RwLock<AHashMap<usize, CachedEntry>>,
 }
@@ -164,7 +116,7 @@ impl LiquidCachedColumn {
     fn new(
         row_group_id: usize,
         column_id: usize,
-        cache_mode: CacheStates,
+        cache_mode: LiquidCacheMode,
         batch_size: usize,
     ) -> Self {
         Self {
@@ -173,7 +125,12 @@ impl LiquidCachedColumn {
             cache_mode,
             batch_size,
             rows: RwLock::new(AHashMap::new()),
+            liquid_compressor_states: LiquidCompressorStates::new(),
         }
+    }
+
+    fn fsst_compressor(&self) -> &RwLock<Option<Arc<fsst::Compressor>>> {
+        &self.liquid_compressor_states.fsst_compressor
     }
 
     pub(crate) fn batch_size(&self) -> usize {
@@ -214,7 +171,6 @@ impl LiquidCachedColumn {
                 let (buffer, _) = boolean_array.into_parts();
                 Some(Ok(buffer))
             }
-            _ => todo!(),
         }
     }
 
@@ -233,17 +189,6 @@ impl LiquidCachedColumn {
                 let filtered = arrow::compute::filter(array, filter).unwrap();
                 Some(filtered)
             }
-            CachedBatch::ArrowDisk(range) => {
-                let file = std::fs::File::open(ARROW_DISK_CACHE_PATH).ok()?;
-                let ranged_file = RangedFile::new(file, range.clone()).ok()?;
-
-                let reader = std::io::BufReader::new(ranged_file);
-                let mut arrow_reader = FileReader::try_new(reader, None).ok()?;
-                let batch = arrow_reader.next().unwrap().unwrap();
-                let array = batch.column(0);
-                let filtered = arrow::compute::filter(&array, filter).unwrap();
-                Some(filtered)
-            }
             CachedBatch::LiquidMemory(array) => {
                 let filtered = array.filter(filter);
                 Some(filtered.to_best_arrow_array())
@@ -260,16 +205,6 @@ impl LiquidCachedColumn {
         let cached_entry = cached_entry.value();
         match cached_entry {
             CachedBatch::ArrowMemory(array) => Some(array.clone()),
-            CachedBatch::ArrowDisk(range) => {
-                let file = std::fs::File::open(ARROW_DISK_CACHE_PATH).ok()?;
-                let ranged_file = RangedFile::new(file, range.clone()).ok()?;
-
-                let reader = std::io::BufReader::new(ranged_file);
-                let mut arrow_reader = FileReader::try_new(reader, None).ok()?;
-                let batch = arrow_reader.next().unwrap().unwrap();
-                let array = batch.column(0);
-                Some(array.clone())
-            }
             CachedBatch::LiquidMemory(array) => Some(array.to_best_arrow_array()),
         }
     }
@@ -282,18 +217,14 @@ impl LiquidCachedColumn {
         let mut rows = self.rows.write().unwrap();
 
         match &self.cache_mode {
-            CacheStates::InMemory => {
+            LiquidCacheMode::InMemoryArrow => {
                 let old = rows.insert(row_id, CachedEntry::new_in_memory(array));
                 assert!(old.is_none());
             }
-            CacheStates::OnDisk(_file) => {
-                let mut cached_value = CachedBatch::ArrowMemory(array);
-                cached_value.convert_to(&self.cache_mode);
-
-                rows.insert(row_id, CachedEntry::new(cached_value));
+            LiquidCacheMode::OnDiskArrow => {
+                unimplemented!()
             }
-
-            CacheStates::Liquid(states) => {
+            LiquidCacheMode::InMemoryLiquid => {
                 let data_type = array.data_type();
                 let array = array.as_ref();
                 if data_type.is_primitive() {
@@ -350,7 +281,7 @@ impl LiquidCachedColumn {
                 // string types
                 match array.data_type() {
                     DataType::Utf8View => {
-                        let compressor = states.fsst_compressor.read().unwrap();
+                        let compressor = self.fsst_compressor().read().unwrap();
                         if let Some(compressor) = compressor.as_ref() {
                             let compressed = LiquidByteArray::from_string_view_array(
                                 array.as_string_view(),
@@ -364,7 +295,7 @@ impl LiquidCachedColumn {
                         }
 
                         drop(compressor);
-                        let mut compressors = states.fsst_compressor.write().unwrap();
+                        let mut compressors = self.fsst_compressor().write().unwrap();
                         let (compressor, compressed) =
                             LiquidByteArray::train_from_arrow_view(array.as_string_view());
                         *compressors = Some(compressor);
@@ -374,7 +305,7 @@ impl LiquidCachedColumn {
                         );
                     }
                     DataType::Utf8 => {
-                        let compressor = states.fsst_compressor.read().unwrap();
+                        let compressor = self.fsst_compressor().read().unwrap();
                         if let Some(compressor) = compressor.as_ref() {
                             let compressed = LiquidByteArray::from_string_array(
                                 array.as_string::<i32>(),
@@ -388,7 +319,7 @@ impl LiquidCachedColumn {
                         }
 
                         drop(compressor);
-                        let mut compressors = states.fsst_compressor.write().unwrap();
+                        let mut compressors = self.fsst_compressor().write().unwrap();
                         let (compressor, compressed) =
                             LiquidByteArray::train_from_arrow(array.as_string::<i32>());
                         *compressors = Some(compressor);
@@ -399,7 +330,7 @@ impl LiquidCachedColumn {
                     }
                     DataType::Dictionary(_, _) => {
                         if let Some(dict_array) = array.as_dictionary_opt::<ArrowUInt16Type>() {
-                            let compressor = states.fsst_compressor.read().unwrap();
+                            let compressor = self.fsst_compressor().read().unwrap();
                             if let Some(compressor) = compressor.as_ref() {
                                 let liquid_array = LiquidByteArray::from_dict_array(
                                     dict_array,
@@ -415,7 +346,7 @@ impl LiquidCachedColumn {
                             }
 
                             drop(compressor);
-                            let mut compressors = states.fsst_compressor.write().unwrap();
+                            let mut compressors = self.fsst_compressor().write().unwrap();
                             let (compressor, liquid_array) =
                                 LiquidByteArray::train_from_arrow_dict(dict_array);
                             *compressors = Some(compressor);
@@ -461,7 +392,7 @@ impl LiquidCachedRowGroup {
                 Arc::new(LiquidCachedColumn::new(
                     self.row_group_id,
                     column_id,
-                    make_states(self.cache_mode),
+                    self.cache_mode,
                     self.batch_size,
                 ))
             })
@@ -529,16 +460,6 @@ pub enum LiquidCacheMode {
     InMemoryLiquid,
 }
 
-impl From<&CacheStates> for LiquidCacheMode {
-    fn from(cache_states: &CacheStates) -> Self {
-        match cache_states {
-            CacheStates::InMemory => LiquidCacheMode::InMemoryArrow,
-            CacheStates::OnDisk(_) => LiquidCacheMode::OnDiskArrow,
-            CacheStates::Liquid(_) => LiquidCacheMode::InMemoryLiquid,
-        }
-    }
-}
-
 impl LiquidCache {
     pub fn new(batch_size: usize) -> Self {
         assert!(batch_size.is_power_of_two());
@@ -578,15 +499,5 @@ impl LiquidCache {
         for file in files.values_mut() {
             file.reset();
         }
-    }
-}
-
-fn make_states(cache_mode: LiquidCacheMode) -> CacheStates {
-    match cache_mode {
-        LiquidCacheMode::InMemoryArrow => CacheStates::InMemory,
-        LiquidCacheMode::OnDiskArrow => CacheStates::OnDisk(Mutex::new(
-            std::fs::File::create(ARROW_DISK_CACHE_PATH).unwrap(),
-        )),
-        LiquidCacheMode::InMemoryLiquid => CacheStates::Liquid(LiquidCompressorStates::new()),
     }
 }
