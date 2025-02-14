@@ -11,6 +11,7 @@ use parquet::arrow::arrow_reader::{RowSelection, RowSelector};
 use crate::cache::LiquidCachedRowGroupRef;
 use crate::reader::runtime::parquet_bridge::get_predicate_column_id;
 use crate::reader::runtime::utils::{boolean_buffer_and_then, take_next_batch};
+use crate::{ABLATION_STUDY_MODE, AblationStudyMode};
 
 use super::utils::row_selector_to_boolean_buffer;
 use super::{LiquidPredicate, LiquidRowFilter};
@@ -111,32 +112,33 @@ impl LiquidBatchReader {
                     "predicate readers and predicates should have the same length"
                 );
 
-                let mut cur_selection = row_selector_to_boolean_buffer(&selection);
-                let selection_size = cur_selection.len();
+                let mut input_selection = row_selector_to_boolean_buffer(&selection);
+                let mut final_selection = input_selection.clone();
+                let selection_size = input_selection.len();
 
                 for (predicate, reader) in filter
                     .predicates
                     .iter_mut()
                     .zip(self.predicate_readers.iter_mut())
                 {
-                    if cur_selection.count_set_bits() == 0 {
+                    if input_selection.count_set_bits() == 0 {
                         reader.skip_records(selection_size).unwrap();
                         continue;
                     }
 
-                    if let Some(result) = build_predicate_from_cache(
+                    let result = if let Some(result) = build_predicate_from_cache(
                         &self.liquid_cache,
                         self.current_row_id,
-                        &cur_selection,
+                        &input_selection,
                         predicate,
                     ) {
-                        cur_selection = boolean_buffer_and_then(&cur_selection, &result);
                         reader.skip_records(selection_size).unwrap();
+                        result
                     } else {
                         // slow case, where the predicate column is not cached
                         // we need to read from parquet file
                         let row_selection = RowSelection::from_filters(&[BooleanArray::new(
-                            cur_selection.clone(),
+                            input_selection.clone(),
                             None,
                         )]);
 
@@ -149,10 +151,18 @@ impl LiquidBatchReader {
                         };
                         let (buffer, null) = filter_mask.into_parts();
                         assert!(null.is_none());
-                        cur_selection = boolean_buffer_and_then(&cur_selection, &buffer);
+                        buffer
+                    };
+                    if ABLATION_STUDY_MODE >= AblationStudyMode::SelectiveWithLateMaterialization {
+                        input_selection = boolean_buffer_and_then(&input_selection, &result);
+                    } else {
+                        final_selection = boolean_buffer_and_then(&final_selection, &result);
                     }
                 }
-                let filter = BooleanArray::new(cur_selection, None);
+                if ABLATION_STUDY_MODE >= AblationStudyMode::SelectiveWithLateMaterialization {
+                    final_selection = input_selection;
+                }
+                let filter = BooleanArray::new(final_selection, None);
                 Ok(RowSelection::from_filters(&[filter]))
             }
         }
