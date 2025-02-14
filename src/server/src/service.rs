@@ -68,9 +68,22 @@ impl LiquidCacheServiceInner {
             ParquetMode::Liquid => {
                 // here we can't use register_parquet because it will use the default parquet format.
                 // we want to override with liquid parquet format.
-                let cached_file = self
-                    .cache
-                    .register_file(url_str.to_string(), LiquidCacheMode::InMemoryLiquid);
+                let cached_file = self.cache.register_file(
+                    url_str.to_string(),
+                    LiquidCacheMode::InMemoryLiquid {
+                        transcode_in_background: true,
+                    },
+                );
+                self.register_liquid_parquet(table_name, url.as_str(), cached_file)
+                    .await?;
+            }
+            ParquetMode::LiquidEagerTranscode => {
+                let cached_file = self.cache.register_file(
+                    url_str.to_string(),
+                    LiquidCacheMode::InMemoryLiquid {
+                        transcode_in_background: false,
+                    },
+                );
                 self.register_liquid_parquet(table_name, url.as_str(), cached_file)
                     .await?;
             }

@@ -145,14 +145,12 @@ impl LiquidCache {
                         let cached_entry_v = cached_entry.value();
                         let cache_type = match cached_entry_v {
                             CachedBatch::ArrowMemory(_) => "InMemory",
-                            CachedBatch::ArrowDisk(_) => "OnDisk",
                             CachedBatch::LiquidMemory(_) => "LiquidMemory",
                         };
 
                         let memory_size = cached_entry_v.memory_usage();
                         let row_count = match cached_entry_v {
                             CachedBatch::ArrowMemory(array) => Some(array.len() as u64),
-                            CachedBatch::ArrowDisk(_) => None, // We don't know the row count for on-disk entries
                             CachedBatch::LiquidMemory(array) => Some(array.len() as u64),
                         };
 
