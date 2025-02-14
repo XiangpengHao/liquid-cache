@@ -258,15 +258,25 @@ impl LiquidCachedColumn {
             LiquidCacheMode::OnDiskArrow => {
                 unimplemented!()
             }
-            LiquidCacheMode::InMemoryLiquid => {
-                // Insert the arrow array first, without doing the expensive transcoding.
-                rows.insert(row_id, CachedEntry::new_in_memory(array.clone()));
+            LiquidCacheMode::InMemoryLiquid {
+                transcode_in_background,
+            } => {
+                if *transcode_in_background {
+                    // Insert the arrow array first, without doing the expensive transcoding.
+                    rows.insert(row_id, CachedEntry::new_in_memory(array.clone()));
 
-                // Submit a background transcoding task to our dedicated thread pool.
-                let column_arc = Arc::clone(self);
-                TRANSCODE_THREAD_POOL.spawn(async move {
-                    column_arc.background_transcode(row_id);
-                });
+                    // Submit a background transcoding task to our dedicated thread pool.
+                    let column_arc = Arc::clone(self);
+                    TRANSCODE_THREAD_POOL.spawn(async move {
+                        column_arc.background_transcode(row_id);
+                    });
+                } else {
+                    // Insert the arrow array first, without doing the expensive transcoding.
+                    rows.insert(row_id, CachedEntry::new_in_memory(array.clone()));
+                    drop(rows);
+                    // Do the transcoding in the current thread.
+                    self.background_transcode(row_id);
+                }
             }
         }
     }
@@ -494,7 +504,7 @@ pub type LiquidCacheRef = Arc<LiquidCache>;
 pub enum LiquidCacheMode {
     InMemoryArrow,
     OnDiskArrow,
-    InMemoryLiquid,
+    InMemoryLiquid { transcode_in_background: bool },
 }
 
 impl LiquidCache {

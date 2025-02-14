@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
     str::FromStr,
     sync::Arc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use arrow_flight::{FlightClient, flight_service_client::FlightServiceClient, sql::Any};
@@ -83,6 +83,7 @@ struct IterationResult {
     time_millis: u64,
     cache_cpu_time: u64,
     cache_memory_usage: u64,
+    starting_timestamp: Duration,
 }
 
 #[derive(Clone, Debug, Default, Copy, PartialEq, Eq, Serialize)]
@@ -472,12 +473,14 @@ pub async fn main() -> Result<()> {
     std::fs::create_dir_all("benchmark/data/results")?;
 
     let mut networks = Networks::new_with_refreshed_list();
+    let bench_start_time = Instant::now();
 
     for (id, query) in queries {
         let mut query_result = QueryResult::new(id, query.clone());
         for _i in 0..*iteration {
             info!("Running query {}: \n{}", id.magenta(), query.cyan());
             let now = Instant::now();
+            let starting_timestamp = bench_start_time.elapsed();
             let df = ctx.sql(&query).await?;
             let (state, logical_plan) = df.into_parts();
 
@@ -518,6 +521,7 @@ pub async fn main() -> Result<()> {
                 time_millis: elapsed.as_millis() as u64,
                 cache_cpu_time: metrics_response.pushdown_eval_time,
                 cache_memory_usage: metrics_response.cache_memory_usage,
+                starting_timestamp,
             });
         }
         if *reset_cache {

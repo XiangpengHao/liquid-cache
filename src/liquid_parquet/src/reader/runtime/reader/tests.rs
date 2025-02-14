@@ -202,7 +202,12 @@ fn assert_batch_eq(left: &RecordBatch, right: &RecordBatch) {
 async fn basic_stuff() {
     let (builder, _file) = get_test_reader().await;
     let batch_size = builder.batch_size;
-    let liquid_cache = LiquidCachedFile::new(LiquidCacheMode::InMemoryLiquid, batch_size);
+    let liquid_cache = LiquidCachedFile::new(
+        LiquidCacheMode::InMemoryLiquid {
+            transcode_in_background: false,
+        },
+        batch_size,
+    );
     let reader = builder.build(Arc::new(liquid_cache)).unwrap();
 
     let schema = &reader.schema;
@@ -230,7 +235,12 @@ async fn test_reading_with_projection() {
         column_projections.iter().cloned(),
     );
     let batch_size = builder.batch_size;
-    let liquid_cache = LiquidCachedFile::new(LiquidCacheMode::InMemoryLiquid, batch_size);
+    let liquid_cache = LiquidCachedFile::new(
+        LiquidCacheMode::InMemoryLiquid {
+            transcode_in_background: false,
+        },
+        batch_size,
+    );
     let reader = builder.build(Arc::new(liquid_cache)).unwrap();
 
     let batches = reader
@@ -254,7 +264,9 @@ async fn test_reading_warm() {
     let (mut builder, _file) = get_test_reader().await;
     let batch_size = builder.batch_size;
     let liquid_cache = Arc::new(LiquidCachedFile::new(
-        LiquidCacheMode::InMemoryLiquid,
+        LiquidCacheMode::InMemoryLiquid {
+            transcode_in_background: false,
+        },
         batch_size,
     ));
     builder.projection = ProjectionMask::roots(
@@ -395,7 +407,9 @@ async fn test_reading_with_filter() {
     builder.filter = Some(LiquidRowFilter::new(get_filters(&builder.metadata)));
 
     let liquid_cache = Arc::new(LiquidCachedFile::new(
-        LiquidCacheMode::InMemoryLiquid,
+        LiquidCacheMode::InMemoryLiquid {
+            transcode_in_background: false,
+        },
         batch_size,
     ));
 

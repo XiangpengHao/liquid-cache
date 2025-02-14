@@ -6,7 +6,8 @@ pub mod rpc;
 pub enum ParquetMode {
     Original,
     #[default]
-    Liquid,
+    Liquid, // Transcode happens in background
+    LiquidEagerTranscode, // Transcode blocks query execution
     Arrow,
 }
 
@@ -15,6 +16,7 @@ impl Display for ParquetMode {
         write!(f, "{}", match self {
             ParquetMode::Original => "original",
             ParquetMode::Liquid => "liquid",
+            ParquetMode::LiquidEagerTranscode => "liquid_eager_transcode",
             ParquetMode::Arrow => "arrow",
         })
     }
@@ -27,6 +29,7 @@ impl FromStr for ParquetMode {
         Ok(match s {
             "original" => ParquetMode::Original,
             "liquid" => ParquetMode::Liquid,
+            "liquid_eager_transcode" => ParquetMode::LiquidEagerTranscode,
             "arrow" => ParquetMode::Arrow,
             _ => {
                 return Err(format!(
