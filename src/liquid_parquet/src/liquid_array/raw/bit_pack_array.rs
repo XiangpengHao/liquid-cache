@@ -9,9 +9,9 @@ pub struct BitPackedArray<T: ArrowPrimitiveType>
 where
     T::Native: BitPacking,
 {
-    pub(crate) values: PrimitiveArray<T>,
-    pub(crate) bit_width: NonZero<u8>,
-    pub(crate) original_len: usize,
+    pub values: PrimitiveArray<T>,
+    pub bit_width: NonZero<u8>,
+    pub original_len: usize,
 }
 
 impl<T: ArrowPrimitiveType> Clone for BitPackedArray<T>
