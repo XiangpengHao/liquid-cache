@@ -416,7 +416,7 @@ mod tests {
     fn set_up_reader() -> (CachedArrayReader, LiquidCachedColumnRef) {
         let liquid_cache = Arc::new(LiquidCache::new(BATCH_SIZE));
         let file =
-            liquid_cache.register_file("test".to_string(), LiquidCacheMode::InMemoryLiquid {
+            liquid_cache.register_or_get_file("test".to_string(), LiquidCacheMode::InMemoryLiquid {
                 transcode_in_background: false,
             });
         let row_group = file.row_group(0);

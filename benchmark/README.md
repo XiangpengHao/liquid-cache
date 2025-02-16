@@ -15,6 +15,19 @@ To download the entire dataset (~15GB):
 wget https://datasets.clickhouse.com/hits_compatible/athena/hits.parquet -O benchmark/data/hits.parquet
 ```
 
+To download the partitioned dataset (100 files, ~150MB each):
+```bash
+for i in (seq 0 99)
+    wget https://datasets.clickhouse.com/hits_compatible/athena_partitioned/hits_$i.parquet -O benchmark/data/partitioned/hits_$i.parquet
+end
+```
+Or bash :
+```bash
+for i in {0..99}; do
+    wget https://datasets.clickhouse.com/hits_compatible/athena_partitioned/hits_$i.parquet -O benchmark/data/partitioned/hits_$i.parquet
+done
+```
+
 ## Run benchmarks
 
 ### Minimal 

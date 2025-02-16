@@ -1,6 +1,6 @@
 use super::opener::LiquidParquetOpener;
 use super::page_filter::PagePruningAccessPlanFilter;
-use crate::cache::LiquidCachedFileRef;
+use crate::{LiquidCacheMode, LiquidCacheRef};
 use ahash::{HashMap, HashMapExt};
 use arrow_schema::SchemaRef;
 use bytes::Bytes;
@@ -162,7 +162,8 @@ pub(crate) struct LiquidParquetExec {
     pub page_pruning_predicate: Option<Arc<PagePruningAccessPlanFilter>>,
     pub cache: PlanProperties,
     pub table_parquet_options: TableParquetOptions,
-    pub liquid_cache: LiquidCachedFileRef,
+    pub liquid_cache: LiquidCacheRef,
+    pub liquid_cache_mode: LiquidCacheMode,
 }
 
 impl LiquidParquetExec {
@@ -242,6 +243,7 @@ impl ExecutionPlan for LiquidParquetExec {
             cache: self.cache.clone(),
             table_parquet_options: self.table_parquet_options.clone(),
             liquid_cache: self.liquid_cache.clone(),
+            liquid_cache_mode: self.liquid_cache_mode.clone(),
         }))
     }
 
@@ -301,6 +303,7 @@ impl ExecutionPlan for LiquidParquetExec {
             reorder_filters: self.reorder_filters(),
             schema_adapter_factory: schema_adapter,
             liquid_cache: self.liquid_cache.clone(),
+            liquid_cache_mode: self.liquid_cache_mode.clone(),
         };
 
         let stream = FileStream::new(&self.base_config, partition_index, opener, &self.metrics)?;

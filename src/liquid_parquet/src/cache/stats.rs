@@ -202,7 +202,7 @@ mod tests {
         let mut hit_count_sum = 0;
         for file_no in 0..8 {
             let file_name = format!("test_{file_no}.parquet");
-            let file = cache.register_file(file_name, LiquidCacheMode::InMemoryArrow);
+            let file = cache.register_or_get_file(file_name, LiquidCacheMode::InMemoryArrow);
             for rg in 0..8 {
                 for col in 0..8 {
                     for row in 0..8 {

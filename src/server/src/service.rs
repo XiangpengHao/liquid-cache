@@ -7,9 +7,7 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionContext},
 };
 use liquid_common::{ParquetMode, rpc::ExecutionMetricsResponse};
-use liquid_parquet::{
-    LiquidCache, LiquidCacheMode, LiquidCacheRef, LiquidCachedFileRef, LiquidParquetFileFormat,
-};
+use liquid_parquet::{LiquidCache, LiquidCacheMode, LiquidCacheRef, LiquidParquetFileFormat};
 use log::{debug, info};
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::Mutex;
@@ -66,32 +64,22 @@ impl LiquidCacheServiceInner {
                     .await?;
             }
             ParquetMode::Liquid => {
-                // here we can't use register_parquet because it will use the default parquet format.
-                // we want to override with liquid parquet format.
-                let cached_file = self.cache.register_file(
-                    url_str.to_string(),
-                    LiquidCacheMode::InMemoryLiquid {
-                        transcode_in_background: true,
-                    },
-                );
-                self.register_liquid_parquet(table_name, url.as_str(), cached_file)
+                let mode = LiquidCacheMode::InMemoryLiquid {
+                    transcode_in_background: true,
+                };
+                self.register_liquid_parquet(table_name, url.as_str(), mode)
                     .await?;
             }
             ParquetMode::LiquidEagerTranscode => {
-                let cached_file = self.cache.register_file(
-                    url_str.to_string(),
-                    LiquidCacheMode::InMemoryLiquid {
-                        transcode_in_background: false,
-                    },
-                );
-                self.register_liquid_parquet(table_name, url.as_str(), cached_file)
+                let mode = LiquidCacheMode::InMemoryLiquid {
+                    transcode_in_background: false,
+                };
+                self.register_liquid_parquet(table_name, url.as_str(), mode)
                     .await?;
             }
             ParquetMode::Arrow => {
-                let cached_file = self
-                    .cache
-                    .register_file(url_str.to_string(), LiquidCacheMode::InMemoryArrow);
-                self.register_liquid_parquet(table_name, url.as_str(), cached_file)
+                let mode = LiquidCacheMode::InMemoryArrow;
+                self.register_liquid_parquet(table_name, url.as_str(), mode)
                     .await?;
             }
         }
@@ -104,7 +92,7 @@ impl LiquidCacheServiceInner {
         &self,
         table_name: &str,
         url: &str,
-        cache: LiquidCachedFileRef,
+        liquid_cache_mode: LiquidCacheMode,
     ) -> Result<()> {
         let parquet_options = ParquetReadOptions::default();
         let mut listing_options = parquet_options.to_listing_options(
@@ -113,7 +101,12 @@ impl LiquidCacheServiceInner {
         );
         let format = listing_options.format;
         let table_parquet_options = self.default_ctx.state().table_options().parquet.clone();
-        let liquid_parquet = LiquidParquetFileFormat::new(table_parquet_options, format, cache);
+        let liquid_parquet = LiquidParquetFileFormat::new(
+            table_parquet_options,
+            format,
+            self.cache.clone(),
+            liquid_cache_mode,
+        );
         listing_options.format = Arc::new(liquid_parquet);
 
         self.default_ctx

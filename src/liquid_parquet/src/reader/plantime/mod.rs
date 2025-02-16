@@ -25,7 +25,7 @@ use log::{debug, info};
 use object_store::{ObjectMeta, ObjectStore};
 use page_filter::PagePruningAccessPlanFilter;
 
-use crate::cache::LiquidCachedFileRef;
+use crate::{LiquidCacheMode, LiquidCacheRef};
 
 // This is entirely copied from DataFusion
 // We should make DataFusion to public this
@@ -55,19 +55,22 @@ impl GetExt for LiquidParquetFactory {
 #[derive(Debug)]
 pub struct LiquidParquetFileFormat {
     options: TableParquetOptions,
-    inner: Arc<dyn FileFormat>, // is actually ParquetFormat
-    liquid_cache: LiquidCachedFileRef,
+    inner: Arc<dyn FileFormat>,   // is actually ParquetFormat
+    liquid_cache: LiquidCacheRef, // a file format deals with multiple files
+    liquid_cache_mode: LiquidCacheMode,
 }
 
 impl LiquidParquetFileFormat {
     pub fn new(
         options: TableParquetOptions,
         inner: Arc<dyn FileFormat>,
-        liquid_cache: LiquidCachedFileRef,
+        liquid_cache: LiquidCacheRef,
+        liquid_cache_mode: LiquidCacheMode,
     ) -> Self {
         Self {
             options,
             liquid_cache,
+            liquid_cache_mode,
             inner,
         }
     }
@@ -166,6 +169,7 @@ impl FileFormat for LiquidParquetFileFormat {
             pruning_predicate,
             page_pruning_predicate,
             liquid_cache: self.liquid_cache.clone(),
+            liquid_cache_mode: self.liquid_cache_mode,
         };
         Ok(Arc::new(exec))
     }
