@@ -243,7 +243,7 @@ impl ExecutionPlan for LiquidParquetExec {
             cache: self.cache.clone(),
             table_parquet_options: self.table_parquet_options.clone(),
             liquid_cache: self.liquid_cache.clone(),
-            liquid_cache_mode: self.liquid_cache_mode.clone(),
+            liquid_cache_mode: self.liquid_cache_mode,
         }))
     }
 
@@ -303,7 +303,7 @@ impl ExecutionPlan for LiquidParquetExec {
             reorder_filters: self.reorder_filters(),
             schema_adapter_factory: schema_adapter,
             liquid_cache: self.liquid_cache.clone(),
-            liquid_cache_mode: self.liquid_cache_mode.clone(),
+            liquid_cache_mode: self.liquid_cache_mode,
         };
 
         let stream = FileStream::new(&self.base_config, partition_index, opener, &self.metrics)?;
