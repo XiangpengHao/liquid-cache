@@ -405,7 +405,7 @@ pub async fn main() -> Result<()> {
         .arg(
             arg!(--file <PATH>)
                 .required(true)
-                .help("Path to the ClickBench file")
+                .help("Path to the ClickBench file, hit.parquet or directory to partitioned files")
                 .value_parser(value_parser!(std::path::PathBuf)),
         )
         .arg(

@@ -517,17 +517,17 @@ impl LiquidCache {
         }
     }
 
-    /// Register a file in the cache. Panic if the file is already registered.
-    pub fn register_file(
+    /// Register a file in the cache.
+    pub fn register_or_get_file(
         &self,
         file_path: String,
         cache_mode: LiquidCacheMode,
     ) -> LiquidCachedFileRef {
-        let file = Arc::new(LiquidCachedFile::new(cache_mode, self.batch_size));
         let mut files = self.files.lock().unwrap();
-        let old = files.insert(file_path.clone(), file.clone());
-        assert!(old.is_none(), "file already registered");
-        file
+        let value = files
+            .entry(file_path.clone())
+            .or_insert_with(|| Arc::new(LiquidCachedFile::new(cache_mode, self.batch_size)));
+        value.clone()
     }
 
     /// Get a file from the cache.

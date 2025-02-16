@@ -13,7 +13,6 @@ arrow-schema = { workspace = true }
 log = { workspace = true }
 prost = { workspace = true }
 tonic = { workspace = true }
-uuid = { workspace = true }
 tokio = { workspace = true }
 url = { workspace = true }
 dashmap = { workspace = true }
