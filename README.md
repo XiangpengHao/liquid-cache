@@ -3,6 +3,8 @@
 
 <p align="center"> Cache that understands your data and cuts your S3 bill by 10x. </p>
 
+[![Rust CI](https://github.com/XiangpengHao/datafusion-cache/actions/workflows/ci.yml/badge.svg)](https://github.com/XiangpengHao/datafusion-cache/actions/workflows/ci.yml)
+
 ## Architecture
 
 ![architecture](/dev/doc/arch.jpg)
@@ -55,7 +57,7 @@ pub async fn main() -> Result<()> {
     let ctx = Arc::new(SessionContext::new());
     ctx.register_table("table_name", Arc::new(table))?;
 
-    let sql = "SELECT COUNT(*) FROM small_hits WHERE \"URL\" <> '';";
+    let sql = "SELECT COUNT(*) FROM table_name WHERE \"URL\" <> '';";
 
     ctx.sql(sql).await?.show().await?;
     Ok(())
