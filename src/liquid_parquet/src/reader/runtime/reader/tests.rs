@@ -1,160 +1,78 @@
-use arrow::{
-    array::{
-        AsArray, BooleanArray, BooleanBuilder, GenericByteDictionaryBuilder, Int8Array, Int16Array,
-        Int32Array, Int64Array, StringBuilder, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
-    },
-    buffer::BooleanBuffer,
-    compute::filter,
-    datatypes::{
-        DataType, Field, Int8Type, Int16Type, Int32Type, Int64Type, Schema, UInt8Type, UInt16Type,
-        UInt32Type, UInt64Type, Utf8Type,
-    },
-    record_batch::RecordBatch,
-};
-use arrow_schema::ArrowError;
-use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
-use futures::StreamExt;
-use object_store::ObjectMeta;
-use parquet::{
-    arrow::{
-        ArrowWriter, ParquetRecordBatchStreamBuilder, ProjectionMask,
-        arrow_reader::{ArrowPredicate, ArrowReaderMetadata, ArrowReaderOptions},
-    },
-    file::{metadata::ParquetMetaData, properties::WriterProperties},
-};
-use std::sync::Arc;
-use tempfile::NamedTempFile;
-
 use crate::{
     LiquidCacheMode, LiquidPredicate,
     cache::LiquidCachedFile,
     liquid_array::LiquidArrayRef,
     reader::{
-        plantime::{CachedMetaReaderFactory, transform_to_liquid_cache_types},
+        plantime::{
+            CachedMetaReaderFactory, coerce_binary_to_string, coerce_string_to_view,
+            coerce_to_liquid_cache_types,
+        },
         runtime::{ArrowReaderBuilderBridge, LiquidRowFilter, LiquidStreamBuilder},
     },
 };
+use arrow::{
+    array::{AsArray, BooleanArray, BooleanBuilder},
+    buffer::BooleanBuffer,
+    compute::filter,
+    datatypes::{
+        DataType, Field, Int8Type, Int16Type, Int32Type, Int64Type, Schema, UInt8Type, UInt16Type,
+        UInt32Type, UInt64Type,
+    },
+    record_batch::RecordBatch,
+};
+use arrow_schema::{ArrowError, SchemaRef};
+use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
+use futures::StreamExt;
+use object_store::ObjectMeta;
+use parquet::{
+    arrow::{
+        ParquetRecordBatchStreamBuilder, ProjectionMask,
+        arrow_reader::{ArrowPredicate, ArrowReaderMetadata, ArrowReaderOptions},
+    },
+    file::metadata::ParquetMetaData,
+};
+use std::{fs::File, sync::Arc};
 
-fn test_input_schema() -> Schema {
-    Schema::new(vec![
-        Field::new("u8_col", DataType::UInt8, false),
-        Field::new("u16_col", DataType::UInt16, false),
-        Field::new("u32_col", DataType::UInt32, false),
-        Field::new("u64_col", DataType::UInt64, false),
-        Field::new("i8_col", DataType::Int8, false),
-        Field::new("i16_col", DataType::Int16, false),
-        Field::new("i32_col", DataType::Int32, false),
-        Field::new("i64_col", DataType::Int64, false),
-        Field::new("string_col", DataType::Utf8, false),
-        Field::new(
-            "string_dict",
-            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            false,
-        ),
-    ])
+const TEST_FILE_PATH: &str = "../../benchmark/data/nano_hits.parquet";
+
+fn test_output_schema() -> SchemaRef {
+    let file = File::open(TEST_FILE_PATH).unwrap();
+    let builder = ArrowReaderMetadata::load(&file, Default::default()).unwrap();
+    let schema = builder.schema().clone();
+    Arc::new(coerce_to_liquid_cache_types(schema.as_ref()))
 }
 
-fn test_output_schema() -> Schema {
-    Schema::new(vec![
-        Field::new("u8_col", DataType::UInt8, false),
-        Field::new("u16_col", DataType::UInt16, false),
-        Field::new("u32_col", DataType::UInt32, false),
-        Field::new("u64_col", DataType::UInt64, false),
-        Field::new("i8_col", DataType::Int8, false),
-        Field::new("i16_col", DataType::Int16, false),
-        Field::new("i32_col", DataType::Int32, false),
-        Field::new("i64_col", DataType::Int64, false),
-        Field::new(
-            "string_col",
-            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            false,
-        ),
-        Field::new(
-            "string_dict",
-            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            false,
-        ),
-    ])
+pub fn generate_test_parquet() -> (File, String) {
+    return (
+        File::open(TEST_FILE_PATH).unwrap(),
+        TEST_FILE_PATH.to_string(),
+    );
 }
 
-pub fn generate_test_parquet() -> NamedTempFile {
-    let schema = test_input_schema();
-    let temp_file = NamedTempFile::new().unwrap();
-    let props = WriterProperties::builder()
-        .set_max_row_group_size(16384) // 8192 * 2
-        .build();
+async fn create_record_batch(batch_size: usize, i: usize) -> RecordBatch {
+    let (mut reader, _) = get_test_reader().await;
+    reader.batch_size = batch_size;
+    let reader = reader
+        .build(Arc::new(LiquidCachedFile::new(
+            LiquidCacheMode::InMemoryLiquid {
+                transcode_in_background: false,
+            },
+            batch_size,
+        )))
+        .unwrap();
 
-    let mut writer =
-        ArrowWriter::try_new(temp_file.reopen().unwrap(), Arc::new(schema), Some(props)).unwrap();
-
-    let mut batch_id = 0;
-    for _ in 0..2 {
-        for _ in 0..2 {
-            let batch = create_record_batch(8192, batch_id);
-            writer.write(&batch).unwrap();
-            batch_id += 1;
-        }
-    }
-
-    writer.close().unwrap();
-    temp_file
+    let mut batches = reader.collect::<Vec<_>>().await;
+    let batch = batches.remove(i).unwrap();
+    return batch;
 }
 
-fn create_record_batch(batch_size: usize, batch_id: usize) -> RecordBatch {
-    let mut u8_builder = UInt8Array::builder(batch_size);
-    let mut u16_builder = UInt16Array::builder(batch_size);
-    let mut u32_builder = UInt32Array::builder(batch_size);
-    let mut u64_builder = UInt64Array::builder(batch_size);
-    let mut i8_builder = Int8Array::builder(batch_size);
-    let mut i16_builder = Int16Array::builder(batch_size);
-    let mut i32_builder = Int32Array::builder(batch_size);
-    let mut i64_builder = Int64Array::builder(batch_size);
-    let mut string_builder = StringBuilder::new();
-    let mut string_dict_builder = GenericByteDictionaryBuilder::<UInt16Type, Utf8Type>::new();
-
-    for i in batch_id * batch_size..(batch_id + 1) * batch_size {
-        // Numeric values
-        u8_builder.append_value((i % u8::MAX as usize) as u8);
-        u16_builder.append_value(i as u16);
-        u32_builder.append_value(i as u32);
-        u64_builder.append_value(i as u64);
-        i8_builder.append_value((i as i8).wrapping_neg());
-        i16_builder.append_value(-(i as i16));
-        i32_builder.append_value(-(i as i32));
-        i64_builder.append_value(-(i as i64));
-
-        // String values with varying lengths and repetitions
-        let s = match i % 10 {
-            0 => "short".to_string(),
-            1 => "long_string_".repeat(50),
-            _ => format!("value_{}", i % 100), // Repeating patterns
-        };
-        string_builder.append_value(&s);
-        string_dict_builder.append_value(&s);
-    }
-
-    RecordBatch::try_new(Arc::new(test_input_schema()), vec![
-        Arc::new(u8_builder.finish()),
-        Arc::new(u16_builder.finish()),
-        Arc::new(u32_builder.finish()),
-        Arc::new(u64_builder.finish()),
-        Arc::new(i8_builder.finish()),
-        Arc::new(i16_builder.finish()),
-        Arc::new(i32_builder.finish()),
-        Arc::new(i64_builder.finish()),
-        Arc::new(string_builder.finish()),
-        Arc::new(string_dict_builder.finish()),
-    ])
-    .unwrap()
-}
-
-async fn get_test_reader() -> (LiquidStreamBuilder, NamedTempFile) {
-    let file = generate_test_parquet();
+async fn get_test_reader() -> (LiquidStreamBuilder, File) {
+    let (file, path) = generate_test_parquet();
     let object_store = Arc::new(object_store::local::LocalFileSystem::new());
 
-    let file_metadata = file.as_file().metadata().unwrap();
+    let file_metadata = file.metadata().unwrap();
     let object_meta = ObjectMeta {
-        location: object_store::path::Path::from_filesystem_path(file.path()).unwrap(),
+        location: object_store::path::Path::from_filesystem_path(path).unwrap(),
         size: file_metadata.len() as usize,
         last_modified: file_metadata.modified().unwrap().into(),
         e_tag: None,
@@ -170,8 +88,8 @@ async fn get_test_reader() -> (LiquidStreamBuilder, NamedTempFile) {
         .await
         .unwrap();
     let schema = Arc::clone(metadata.schema());
-
-    let reader_schema = Arc::new(transform_to_liquid_cache_types(&schema));
+    let schema = coerce_binary_to_string(&schema);
+    let reader_schema = Arc::new(coerce_string_to_view(&schema));
 
     let options = ArrowReaderOptions::new().with_schema(Arc::clone(&reader_schema));
     let metadata = ArrowReaderMetadata::try_new(Arc::clone(metadata.metadata()), options).unwrap();
@@ -184,7 +102,7 @@ async fn get_test_reader() -> (LiquidStreamBuilder, NamedTempFile) {
 
     let metadata = &liquid_builder.metadata;
     assert_eq!(metadata.num_row_groups(), 2);
-    assert_eq!(metadata.file_metadata().num_rows(), 8192 * 2 * 2);
+    assert_eq!(metadata.file_metadata().num_rows(), 8192 * 3 + 10);
     (liquid_builder, file)
 }
 
@@ -211,7 +129,7 @@ async fn basic_stuff() {
     let reader = builder.build(Arc::new(liquid_cache)).unwrap();
 
     let schema = &reader.schema;
-    assert_eq!(schema.as_ref(), &test_output_schema());
+    assert_eq!(schema.as_ref(), test_output_schema().as_ref());
 
     let batches = reader
         .collect::<Vec<_>>()
@@ -221,7 +139,7 @@ async fn basic_stuff() {
         .collect::<Vec<_>>();
 
     for (i, batch) in batches.iter().enumerate() {
-        let expected = create_record_batch(batch_size, i);
+        let expected = create_record_batch(batch_size, i).await;
         assert_batch_eq(&expected, batch);
     }
 }
@@ -252,6 +170,7 @@ async fn test_reading_with_projection() {
 
     for (i, batch) in batches.iter().enumerate() {
         let expected = create_record_batch(batch_size, i)
+            .await
             .project(&column_projections)
             .unwrap();
         assert_batch_eq(&expected, batch);
@@ -292,6 +211,7 @@ async fn test_reading_warm() {
 
     for (i, batch) in batches.iter().enumerate() {
         let expected = create_record_batch(batch_size, i)
+            .await
             .project(&column_projections)
             .unwrap();
         assert_batch_eq(&expected, batch);
@@ -424,32 +344,26 @@ async fn test_reading_with_filter() {
 
     for (i, batch) in batches.iter().enumerate() {
         let expected = create_record_batch(batch_size, i)
+            .await
             .project(&projection)
             .unwrap();
 
-        let col_u8 = expected.column(0).as_primitive::<UInt8Type>();
+        let col_i64 = expected.column(0).as_primitive::<Int64Type>();
         let mask1 = BooleanBuffer::from_iter(
-            col_u8
+            col_i64
                 .iter()
                 .map(|val| val.map(|v| v % 2 == 0).unwrap_or(false)),
         );
 
-        let col_i16 = expected.column(2).as_primitive::<Int16Type>();
+        // 1373872581 is the average value of that column
+        let col_i32 = expected.column(4).as_primitive::<Int32Type>();
         let mask2 = BooleanBuffer::from_iter(
-            col_i16
-                .iter()
-                .map(|val| val.map(|v| v >= 10000).unwrap_or(false)),
-        );
-
-        let col_i32 = expected.column(3).as_primitive::<Int32Type>();
-        let mask3 = BooleanBuffer::from_iter(
             col_i32
                 .iter()
-                .map(|val| val.map(|v| v <= 20000).unwrap_or(false)),
+                .map(|val| val.map(|v| v <= 1373872581).unwrap_or(false)),
         );
 
         let combined_mask = &mask1 & &mask2;
-        let combined_mask = &combined_mask & &mask3;
 
         let expected = filter_record_batch(&expected, combined_mask);
 

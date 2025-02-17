@@ -3,6 +3,9 @@ name = "liquid-cache-benchmarks"
 description = "LiquidCache Benchmarks"
 edition = { workspace = true }
 
+[[bin]]
+name = "create_nano_hits"
+path = "create_nano_hits.rs"
 
 [dependencies]
 liquid-cache-server = { workspace = true }
@@ -29,3 +32,4 @@ object_store = { workspace = true, features = ["http"] }
 bytes = { workspace = true }
 prost = { workspace = true }
 fsst-rs = "0.5.0"
+parquet = { workspace = true }

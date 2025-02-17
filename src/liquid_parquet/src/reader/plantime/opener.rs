@@ -34,7 +34,7 @@ use crate::{
     },
 };
 
-use super::{exec::CachedMetaReaderFactory, transform_to_liquid_cache_types};
+use super::{coerce_to_liquid_cache_types, exec::CachedMetaReaderFactory};
 
 pub struct LiquidParquetOpener {
     pub partition_index: usize,
@@ -110,7 +110,7 @@ impl FileOpener for LiquidParquetOpener {
                 };
             let output_schema =
                 if matches!(liquid_cache_mode, LiquidCacheMode::InMemoryLiquid { .. }) {
-                    Arc::new(transform_to_liquid_cache_types(&reader_schema))
+                    Arc::new(coerce_to_liquid_cache_types(&reader_schema))
                 } else {
                     schema.clone()
                 };
