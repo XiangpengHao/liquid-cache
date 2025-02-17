@@ -97,8 +97,9 @@ impl LiquidCacheService {
         options_mut.execution.parquet.binary_as_string = true;
 
         {
-            // View types only provide benefits for parquet decoding and filtering.
-            // but liquid cache has its own encodings, and don't need to use view types.
+            // view types cause excessive memory usage because they are not gced.
+            // For Arrow memory mode, we need to read as UTF-8
+            // For Liquid cache, we have our own way of handling string columns
             options_mut.execution.parquet.schema_force_view_types = false;
         }
 

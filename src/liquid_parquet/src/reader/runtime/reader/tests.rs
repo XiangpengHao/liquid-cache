@@ -3,10 +3,7 @@ use crate::{
     cache::LiquidCachedFile,
     liquid_array::LiquidArrayRef,
     reader::{
-        plantime::{
-            CachedMetaReaderFactory, coerce_to_parquet_reader_types,
-            transform_to_liquid_cache_types,
-        },
+        plantime::{CachedMetaReaderFactory, transform_to_liquid_cache_types},
         runtime::{ArrowReaderBuilderBridge, LiquidRowFilter, LiquidStreamBuilder},
     },
 };
@@ -89,7 +86,7 @@ async fn get_test_reader() -> (LiquidStreamBuilder, File) {
         .unwrap();
     let schema = Arc::clone(metadata.schema());
 
-    let reader_schema = Arc::new(coerce_to_parquet_reader_types(&schema));
+    let reader_schema = Arc::new(transform_to_liquid_cache_types(&schema));
 
     let options = ArrowReaderOptions::new().with_schema(Arc::clone(&reader_schema));
     let metadata = ArrowReaderMetadata::try_new(Arc::clone(metadata.metadata()), options).unwrap();
