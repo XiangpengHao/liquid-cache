@@ -17,9 +17,9 @@ use std::mem::MaybeUninit;
 use std::num::NonZero;
 use std::sync::Arc;
 
-use super::utils::CheckedDictionaryArray;
 use super::{BitPackedArray, LiquidArray, LiquidArrayRef};
 use crate::liquid_array::{FsstArray, get_bit_width};
+use crate::utils::CheckedDictionaryArray;
 
 impl LiquidArray for LiquidByteArray {
     fn as_any(&self) -> &dyn Any {
@@ -271,7 +271,7 @@ impl LiquidByteArray {
     ///
     /// # Safety
     /// The caller must ensure that the values in the dictionary are unique.
-    pub unsafe fn from_parquet_reader_dict_array(
+    pub unsafe fn from_unique_dict_array(
         array: &DictionaryArray<UInt16Type>,
         compressor: Arc<Compressor>,
     ) -> Self {

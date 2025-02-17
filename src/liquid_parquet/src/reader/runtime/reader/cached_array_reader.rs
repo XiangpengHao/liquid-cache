@@ -14,6 +14,7 @@ use parquet::{
 };
 
 use crate::{
+    LiquidCacheMode,
     cache::{LiquidCachedColumnRef, LiquidCachedRowGroupRef},
     reader::runtime::parquet_bridge::StructArrayReaderBridge,
 };
@@ -46,10 +47,11 @@ struct CachedArrayReader {
 impl CachedArrayReader {
     fn new(inner: Box<dyn ArrayReader>, liquid_cache: LiquidCachedColumnRef) -> Self {
         let inner_type = inner.get_data_type();
-        let data_type = if inner_type.equals_datatype(&DataType::Dictionary(
-            Box::new(DataType::UInt16),
-            Box::new(DataType::Binary),
-        )) {
+        let data_type = if inner_type.equals_datatype(&DataType::Utf8View)
+            && matches!(
+                liquid_cache.cache_mode(),
+                LiquidCacheMode::InMemoryLiquid { .. }
+            ) {
             DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8))
         } else {
             inner_type.clone()
@@ -78,11 +80,8 @@ impl CachedArrayReader {
             self.inner_row_id = batch_id;
         }
         let read = self.inner.read_records(self.batch_size())?;
-        let mut batch = self.inner.consume_batch()?;
-        if !batch.data_type().equals_datatype(&self.data_type) {
-            batch = arrow::compute::cast(batch.as_ref(), &self.data_type)?;
-        }
-        self.liquid_cache.insert_arrow_array(batch_id, batch);
+        let array = self.inner.consume_batch()?;
+        self.liquid_cache.insert_arrow_array(batch_id, array);
         self.inner_row_id += read;
         Ok(())
     }
@@ -162,6 +161,14 @@ impl CachedArrayReader {
                 .liquid_cache
                 .get_arrow_array_with_filter(batch_id * batch_size, &mask_array)
                 .unwrap();
+
+            if !array.data_type().equals_datatype(&self.data_type) {
+                panic!(
+                    "data type mismatch, input {:?}, expected {:?}",
+                    array.data_type(),
+                    self.data_type
+                );
+            }
 
             rt.push(array);
         }

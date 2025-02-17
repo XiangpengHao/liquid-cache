@@ -93,6 +93,7 @@ enum BenchmarkMode {
     ArrowPushdown,
     #[default]
     LiquidCache,
+    LiquidEagerTranscode,
 }
 
 impl BenchmarkMode {
@@ -103,7 +104,7 @@ impl BenchmarkMode {
         let table_url =
             Url::parse(&format!("file://{}/{}", current_dir, file_path.display())).unwrap();
 
-        match self {
+        let mode = match self {
             BenchmarkMode::ParquetFileserver => {
                 let ctx = Arc::new(SessionContext::new_with_config(session_config));
                 let base_url = Url::parse(server_url).unwrap();
@@ -121,62 +122,24 @@ impl BenchmarkMode {
                     Default::default(),
                 )
                 .await?;
-                Ok(ctx)
+                return Ok(ctx);
             }
-            BenchmarkMode::ParquetPushdown => {
-                session_config
-                    .options_mut()
-                    .execution
-                    .parquet
-                    .pushdown_filters = true;
-                let ctx = Arc::new(SessionContext::new_with_config(session_config));
+            BenchmarkMode::ParquetPushdown => ParquetMode::Original,
+            BenchmarkMode::ArrowPushdown => ParquetMode::Arrow,
+            BenchmarkMode::LiquidCache => ParquetMode::Liquid,
+            BenchmarkMode::LiquidEagerTranscode => ParquetMode::LiquidEagerTranscode,
+        };
+        session_config
+            .options_mut()
+            .execution
+            .parquet
+            .pushdown_filters = true;
+        let ctx = Arc::new(SessionContext::new_with_config(session_config));
 
-                let table = LiquidCacheTableFactory::open_table(
-                    server_url,
-                    table_name,
-                    table_url,
-                    ParquetMode::Original,
-                )
-                .await?;
-                ctx.register_table(table_name, Arc::new(table))?;
-                Ok(ctx)
-            }
-            BenchmarkMode::ArrowPushdown => {
-                session_config
-                    .options_mut()
-                    .execution
-                    .parquet
-                    .pushdown_filters = true;
-                let ctx = Arc::new(SessionContext::new_with_config(session_config));
-                let table = LiquidCacheTableFactory::open_table(
-                    server_url,
-                    table_name,
-                    table_url,
-                    ParquetMode::Arrow,
-                )
-                .await?;
-                ctx.register_table(table_name, Arc::new(table))?;
-                Ok(ctx)
-            }
-            BenchmarkMode::LiquidCache => {
-                session_config
-                    .options_mut()
-                    .execution
-                    .parquet
-                    .pushdown_filters = true;
-                let ctx = Arc::new(SessionContext::new_with_config(session_config));
-
-                let table = LiquidCacheTableFactory::open_table(
-                    server_url,
-                    table_name,
-                    table_url,
-                    ParquetMode::Liquid,
-                )
-                .await?;
-                ctx.register_table(table_name, Arc::new(table))?;
-                Ok(ctx)
-            }
-        }
+        let table =
+            LiquidCacheTableFactory::open_table(server_url, table_name, table_url, mode).await?;
+        ctx.register_table(table_name, Arc::new(table))?;
+        Ok(ctx)
     }
 
     async fn get_execution_metrics(
@@ -224,7 +187,8 @@ impl BenchmarkMode {
             }
             BenchmarkMode::ParquetPushdown
             | BenchmarkMode::ArrowPushdown
-            | BenchmarkMode::LiquidCache => {
+            | BenchmarkMode::LiquidCache
+            | BenchmarkMode::LiquidEagerTranscode => {
                 let mut flight_client = get_flight_client(server_url).await;
                 let action = LiquidCacheActions::ExecutionMetrics.into();
                 let mut result_stream = flight_client.do_action(action).await.unwrap();
@@ -255,6 +219,7 @@ impl Display for BenchmarkMode {
             BenchmarkMode::ParquetPushdown => "parquet-pushdown",
             BenchmarkMode::LiquidCache => "liquid-cache",
             BenchmarkMode::ArrowPushdown => "arrow-pushdown",
+            BenchmarkMode::LiquidEagerTranscode => "liquid-eager-transcode",
         })
     }
 }
@@ -268,6 +233,7 @@ impl FromStr for BenchmarkMode {
             "parquet-pushdown" => BenchmarkMode::ParquetPushdown,
             "arrow-pushdown" => BenchmarkMode::ArrowPushdown,
             "liquid-cache" => BenchmarkMode::LiquidCache,
+            "liquid-eager-transcode" => BenchmarkMode::LiquidEagerTranscode,
             _ => return Err(format!("Invalid benchmark mode: {}", s)),
         })
     }
