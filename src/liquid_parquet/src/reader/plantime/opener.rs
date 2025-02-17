@@ -26,6 +26,7 @@ use crate::{
     LiquidCacheMode, LiquidCacheRef,
     reader::{
         plantime::{
+            coerce_binary_to_string, coerce_string_to_view,
             page_filter::PagePruningAccessPlanFilter, row_filter,
             row_group_filter::RowGroupAccessPlanFilter,
         },
@@ -33,9 +34,7 @@ use crate::{
     },
 };
 
-use super::{
-    coerce_to_parquet_reader_types, exec::CachedMetaReaderFactory, transform_to_liquid_cache_types,
-};
+use super::{exec::CachedMetaReaderFactory, transform_to_liquid_cache_types};
 
 pub struct LiquidParquetOpener {
     pub partition_index: usize,
@@ -66,6 +65,7 @@ impl FileOpener for LiquidParquetOpener {
         let liquid_cache = self
             .liquid_cache
             .register_or_get_file(file_meta.location().to_string(), self.liquid_cache_mode);
+        let liquid_cache_mode = self.liquid_cache_mode;
 
         let mut reader = self.parquet_file_reader_factory.create_liquid_reader(
             self.partition_index,
@@ -100,9 +100,20 @@ impl FileOpener for LiquidParquetOpener {
                 "meta data must be cached already"
             );
             let schema = Arc::clone(metadata.schema());
+            let schema = Arc::new(coerce_binary_to_string(&schema));
 
-            let reader_schema = Arc::new(coerce_to_parquet_reader_types(&schema));
-            let output_schema = Arc::new(transform_to_liquid_cache_types(&schema));
+            let reader_schema =
+                if matches!(liquid_cache_mode, LiquidCacheMode::InMemoryLiquid { .. }) {
+                    Arc::new(coerce_string_to_view(&schema))
+                } else {
+                    schema.clone()
+                };
+            let output_schema =
+                if matches!(liquid_cache_mode, LiquidCacheMode::InMemoryLiquid { .. }) {
+                    Arc::new(transform_to_liquid_cache_types(&reader_schema))
+                } else {
+                    schema.clone()
+                };
 
             let options = ArrowReaderOptions::new()
                 .with_page_index(enable_page_index)

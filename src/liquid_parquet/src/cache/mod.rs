@@ -98,7 +98,6 @@ impl Display for CachedBatch {
 pub struct LiquidCachedColumn {
     cache_mode: LiquidCacheMode,
     liquid_compressor_states: LiquidCompressorStates,
-    output_string_type: DataType,
     batch_size: usize,
     rows: RwLock<AHashMap<usize, CachedEntry>>,
 }
@@ -119,13 +118,13 @@ impl LiquidCachedColumn {
         Self {
             cache_mode,
             batch_size,
-            output_string_type: DataType::Dictionary(
-                Box::new(DataType::UInt16),
-                Box::new(DataType::Utf8),
-            ),
             rows: RwLock::new(AHashMap::new()),
             liquid_compressor_states: LiquidCompressorStates::new(),
         }
+    }
+
+    pub(crate) fn cache_mode(&self) -> LiquidCacheMode {
+        self.cache_mode
     }
 
     fn fsst_compressor(&self) -> &RwLock<Option<Arc<fsst::Compressor>>> {
@@ -238,13 +237,9 @@ impl LiquidCachedColumn {
     }
 
     /// Insert an arrow array into the cache.
-    pub(crate) fn insert_arrow_array(self: &Arc<Self>, row_id: usize, mut array: ArrayRef) {
+    pub(crate) fn insert_arrow_array(self: &Arc<Self>, row_id: usize, array: ArrayRef) {
         if self.is_cached(row_id) {
             return;
-        }
-
-        if array.data_type() == &DataType::Utf8View || array.data_type() == &DataType::BinaryView {
-            array = cast(&array, &self.output_string_type).unwrap();
         }
 
         let mut rows = self.rows.write().unwrap();
@@ -260,6 +255,16 @@ impl LiquidCachedColumn {
             LiquidCacheMode::InMemoryLiquid {
                 transcode_in_background,
             } => {
+                let array = if array.data_type() == &DataType::Utf8View {
+                    cast(
+                        &array,
+                        &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+                    )
+                    .unwrap()
+                } else {
+                    array
+                };
+
                 if *transcode_in_background {
                     // Insert the arrow array first, without doing the expensive transcoding.
                     rows.insert(row_id, CachedEntry::new_in_memory(array.clone()));
@@ -470,6 +475,10 @@ impl LiquidCachedFile {
         let mut row_groups = self.row_groups.lock().unwrap();
         row_groups.clear();
     }
+
+    pub fn cache_mode(&self) -> LiquidCacheMode {
+        self.cache_mode
+    }
 }
 
 pub type LiquidCachedFileRef = Arc<LiquidCachedFile>;
@@ -487,9 +496,12 @@ pub type LiquidCacheRef = Arc<LiquidCache>;
 
 #[derive(Debug, Copy, Clone)]
 pub enum LiquidCacheMode {
+    /// The baseline that reads the schema as is.
     InMemoryArrow,
     OnDiskArrow,
-    InMemoryLiquid { transcode_in_background: bool },
+    InMemoryLiquid {
+        transcode_in_background: bool,
+    },
 }
 
 impl LiquidCache {

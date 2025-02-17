@@ -104,7 +104,13 @@ impl FileFormat for LiquidParquetFileFormat {
         objects: &[ObjectMeta],
     ) -> Result<SchemaRef> {
         let parquet_schema = self.inner.infer_schema(state, store, objects).await?;
-        let transformed = transform_to_liquid_cache_types(&parquet_schema);
+        let mut transformed = coerce_binary_to_string(&parquet_schema);
+        if matches!(
+            self.liquid_cache_mode,
+            LiquidCacheMode::InMemoryLiquid { .. }
+        ) {
+            transformed = transform_to_liquid_cache_types(&transformed);
+        }
         Ok(Arc::new(transformed))
     }
 
@@ -191,7 +197,32 @@ fn field_with_new_type(field: &FieldRef, new_type: DataType) -> FieldRef {
     Arc::new(field.as_ref().clone().with_data_type(new_type))
 }
 
-/// Liquid cache uses Dictionary<UInt16, Utf8> for string type.
+pub(crate) fn coerce_binary_to_string(schema: &Schema) -> Schema {
+    let transformed_fields: Vec<Arc<Field>> = schema
+        .fields
+        .iter()
+        .map(|field| match field.data_type() {
+            DataType::Binary | DataType::LargeBinary | DataType::BinaryView => {
+                field_with_new_type(field, DataType::Utf8)
+            }
+            _ => field.clone(),
+        })
+        .collect();
+    Schema::new_with_metadata(transformed_fields, schema.metadata.clone())
+}
+
+pub(crate) fn coerce_string_to_view(schema: &Schema) -> Schema {
+    let transformed_fields: Vec<Arc<Field>> = schema
+        .fields
+        .iter()
+        .map(|field| match field.data_type() {
+            DataType::Utf8 | DataType::LargeUtf8 => field_with_new_type(field, DataType::Utf8View),
+            _ => field.clone(),
+        })
+        .collect();
+    Schema::new_with_metadata(transformed_fields, schema.metadata.clone())
+}
+
 pub(crate) fn transform_to_liquid_cache_types(schema: &Schema) -> Schema {
     let transformed_fields: Vec<Arc<Field>> = schema
         .fields
@@ -205,24 +236,6 @@ pub(crate) fn transform_to_liquid_cache_types(schema: &Schema) -> Schema {
                 field,
                 DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
             ),
-            _ => field.clone(),
-        })
-        .collect();
-    Schema::new_with_metadata(transformed_fields, schema.metadata.clone())
-}
-
-/// Liquid cache Parquet reader read string as StringView.
-pub(crate) fn coerce_to_parquet_reader_types(schema: &Schema) -> Schema {
-    let transformed_fields: Vec<Arc<Field>> = schema
-        .fields
-        .iter()
-        .map(|field| match field.data_type() {
-            DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => {
-                field_with_new_type(field, DataType::Utf8View)
-            }
-            DataType::Binary | DataType::LargeBinary | DataType::BinaryView => {
-                field_with_new_type(field, DataType::Utf8View)
-            }
             _ => field.clone(),
         })
         .collect();

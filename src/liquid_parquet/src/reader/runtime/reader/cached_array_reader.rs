@@ -3,7 +3,6 @@ use std::{any::Any, collections::VecDeque};
 use arrow::{
     array::{ArrayRef, BooleanArray, BooleanBufferBuilder, new_empty_array},
     buffer::BooleanBuffer,
-    compute::cast,
 };
 use arrow_schema::{DataType, Field, Fields};
 use parquet::{
@@ -15,6 +14,7 @@ use parquet::{
 };
 
 use crate::{
+    LiquidCacheMode,
     cache::{LiquidCachedColumnRef, LiquidCachedRowGroupRef},
     reader::runtime::parquet_bridge::StructArrayReaderBridge,
 };
@@ -47,7 +47,11 @@ struct CachedArrayReader {
 impl CachedArrayReader {
     fn new(inner: Box<dyn ArrayReader>, liquid_cache: LiquidCachedColumnRef) -> Self {
         let inner_type = inner.get_data_type();
-        let data_type = if inner_type.equals_datatype(&DataType::Utf8View) {
+        let data_type = if inner_type.equals_datatype(&DataType::Utf8View)
+            && matches!(
+                liquid_cache.cache_mode(),
+                LiquidCacheMode::InMemoryLiquid { .. }
+            ) {
             DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8))
         } else {
             inner_type.clone()
@@ -153,13 +157,17 @@ impl CachedArrayReader {
 
             let mask_array = BooleanArray::from(mask);
             // Get cached array and apply filter
-            let mut array = self
+            let array = self
                 .liquid_cache
                 .get_arrow_array_with_filter(batch_id * batch_size, &mask_array)
                 .unwrap();
 
             if !array.data_type().equals_datatype(&self.data_type) {
-                array = cast(&array, &self.data_type).unwrap();
+                panic!(
+                    "data type mismatch, input {:?}, expected {:?}",
+                    array.data_type(),
+                    self.data_type
+                );
             }
 
             rt.push(array);
