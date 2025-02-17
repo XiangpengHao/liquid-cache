@@ -4,6 +4,7 @@ mod reader;
 pub use cache::{LiquidCache, LiquidCacheMode, LiquidCacheRef, LiquidCachedFileRef};
 pub use reader::LiquidParquetFileFormat;
 pub use reader::LiquidPredicate;
+pub(crate) mod utils;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd)]
 #[allow(unused)]

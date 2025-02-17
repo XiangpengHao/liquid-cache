@@ -191,6 +191,7 @@ fn field_with_new_type(field: &FieldRef, new_type: DataType) -> FieldRef {
     Arc::new(field.as_ref().clone().with_data_type(new_type))
 }
 
+/// Liquid cache uses Dictionary<UInt16, Utf8> for string type.
 pub(crate) fn transform_to_liquid_cache_types(schema: &Schema) -> Schema {
     let transformed_fields: Vec<Arc<Field>> = schema
         .fields
@@ -210,36 +211,31 @@ pub(crate) fn transform_to_liquid_cache_types(schema: &Schema) -> Schema {
     Schema::new_with_metadata(transformed_fields, schema.metadata.clone())
 }
 
-// FIXME: see this: https://github.com/XiangpengHao/datafusion-cache/issues/27
+/// Liquid cache Parquet reader read string as StringView.
 pub(crate) fn coerce_to_parquet_reader_types(schema: &Schema) -> Schema {
     let transformed_fields: Vec<Arc<Field>> = schema
         .fields
         .iter()
         .map(|field| match field.data_type() {
-            DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => field_with_new_type(
-                field,
-                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            ),
-            DataType::Binary | DataType::LargeBinary | DataType::BinaryView => field_with_new_type(
-                field,
-                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Binary)),
-            ),
+            DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => {
+                field_with_new_type(field, DataType::Utf8View)
+            }
+            DataType::Binary | DataType::LargeBinary | DataType::BinaryView => {
+                field_with_new_type(field, DataType::Utf8View)
+            }
             _ => field.clone(),
         })
         .collect();
     Schema::new_with_metadata(transformed_fields, schema.metadata.clone())
 }
 
-// FIXME: see this: https://github.com/XiangpengHao/datafusion-cache/issues/27
+/// Liquid cache reads binary as strings.
 pub(crate) fn coerce_from_reader_to_liquid_types(schema: &Schema) -> Schema {
     let transformed_fields: Vec<Arc<Field>> = schema
         .fields
         .iter()
         .map(|field| {
-            if field.data_type().equals_datatype(&DataType::Dictionary(
-                Box::new(DataType::UInt16),
-                Box::new(DataType::Binary),
-            )) {
+            if field.data_type().equals_datatype(&DataType::Utf8View) {
                 field_with_new_type(
                     field,
                     DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),

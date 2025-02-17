@@ -3,6 +3,7 @@ use std::{any::Any, collections::VecDeque};
 use arrow::{
     array::{ArrayRef, BooleanArray, BooleanBufferBuilder, new_empty_array},
     buffer::BooleanBuffer,
+    compute::cast,
 };
 use arrow_schema::{DataType, Field, Fields};
 use parquet::{
@@ -46,10 +47,7 @@ struct CachedArrayReader {
 impl CachedArrayReader {
     fn new(inner: Box<dyn ArrayReader>, liquid_cache: LiquidCachedColumnRef) -> Self {
         let inner_type = inner.get_data_type();
-        let data_type = if inner_type.equals_datatype(&DataType::Dictionary(
-            Box::new(DataType::UInt16),
-            Box::new(DataType::Binary),
-        )) {
+        let data_type = if inner_type.equals_datatype(&DataType::Utf8View) {
             DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8))
         } else {
             inner_type.clone()
@@ -78,11 +76,8 @@ impl CachedArrayReader {
             self.inner_row_id = batch_id;
         }
         let read = self.inner.read_records(self.batch_size())?;
-        let mut batch = self.inner.consume_batch()?;
-        if !batch.data_type().equals_datatype(&self.data_type) {
-            batch = arrow::compute::cast(batch.as_ref(), &self.data_type)?;
-        }
-        self.liquid_cache.insert_arrow_array(batch_id, batch);
+        let array = self.inner.consume_batch()?;
+        self.liquid_cache.insert_arrow_array(batch_id, array);
         self.inner_row_id += read;
         Ok(())
     }
@@ -158,10 +153,14 @@ impl CachedArrayReader {
 
             let mask_array = BooleanArray::from(mask);
             // Get cached array and apply filter
-            let array = self
+            let mut array = self
                 .liquid_cache
                 .get_arrow_array_with_filter(batch_id * batch_size, &mask_array)
                 .unwrap();
+
+            if !array.data_type().equals_datatype(&self.data_type) {
+                array = cast(&array, &self.data_type).unwrap();
+            }
 
             rt.push(array);
         }

@@ -76,7 +76,11 @@ fn gc_dictionary_array(array: &DictionaryArray<UInt16Type>) -> CheckedDictionary
 fn byte_array_to_dict_array<'a, T: ByteArrayType, I: ArrayAccessor<Item = &'a T::Native>>(
     input: ArrayIter<I>,
 ) -> CheckedDictionaryArray {
-    let mut builder = GenericByteDictionaryBuilder::<UInt16Type, T>::new();
+    let mut builder = GenericByteDictionaryBuilder::<UInt16Type, T>::with_capacity(
+        input.size_hint().0,
+        input.size_hint().0,
+        input.size_hint().0,
+    );
     for s in input {
         builder.append_option(s);
     }
