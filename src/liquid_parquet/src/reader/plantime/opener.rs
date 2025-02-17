@@ -34,7 +34,7 @@ use crate::{
     },
 };
 
-use super::{exec::CachedMetaReaderFactory, coerce_to_liquid_cache_types};
+use super::{coerce_to_liquid_cache_types, exec::CachedMetaReaderFactory};
 
 pub struct LiquidParquetOpener {
     pub partition_index: usize,
