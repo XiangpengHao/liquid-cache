@@ -1,285 +1,51 @@
-use arrow::{
-    array::{
-        AsArray, BooleanArray, BooleanBuilder, GenericByteDictionaryBuilder, Int8Array, Int16Array,
-        Int32Array, Int64Array, StringBuilder, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
-    },
-    buffer::BooleanBuffer,
-    compute::filter,
-    datatypes::{
-        DataType, Field, Int8Type, Int16Type, Int32Type, Int64Type, Schema, UInt8Type, UInt16Type,
-        UInt32Type, UInt64Type, Utf8Type,
-    },
-    record_batch::RecordBatch,
-};
-use arrow_schema::ArrowError;
-use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
-use futures::StreamExt;
-use object_store::ObjectMeta;
-use parquet::{
-    arrow::{
-        ArrowWriter, ParquetRecordBatchStreamBuilder, ProjectionMask,
-        arrow_reader::{ArrowPredicate, ArrowReaderMetadata, ArrowReaderOptions},
-    },
-    file::{metadata::ParquetMetaData, properties::WriterProperties},
-};
-use std::{fs::File, sync::Arc};
-use tempfile::NamedTempFile;
-
 use crate::{
     LiquidCacheMode, LiquidPredicate,
     cache::LiquidCachedFile,
     liquid_array::LiquidArrayRef,
     reader::{
-        plantime::{CachedMetaReaderFactory, coerce_to_parquet_reader_types},
+        plantime::{
+            CachedMetaReaderFactory, coerce_to_parquet_reader_types,
+            transform_to_liquid_cache_types,
+        },
         runtime::{ArrowReaderBuilderBridge, LiquidRowFilter, LiquidStreamBuilder},
     },
 };
+use arrow::{
+    array::{AsArray, BooleanArray, BooleanBuilder},
+    buffer::BooleanBuffer,
+    compute::filter,
+    datatypes::{
+        DataType, Field, Int8Type, Int16Type, Int32Type, Int64Type, Schema, UInt8Type, UInt16Type,
+        UInt32Type, UInt64Type,
+    },
+    record_batch::RecordBatch,
+};
+use arrow_schema::{ArrowError, SchemaRef};
+use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
+use futures::StreamExt;
+use object_store::ObjectMeta;
+use parquet::{
+    arrow::{
+        ParquetRecordBatchStreamBuilder, ProjectionMask,
+        arrow_reader::{ArrowPredicate, ArrowReaderMetadata, ArrowReaderOptions},
+    },
+    file::metadata::ParquetMetaData,
+};
+use std::{fs::File, sync::Arc};
 
-fn test_input_schema() -> Schema {
-    Schema::new(vec![
-        Field::new("u8_col", DataType::UInt8, false),
-        Field::new("u16_col", DataType::UInt16, false),
-        Field::new("u32_col", DataType::UInt32, false),
-        Field::new("u64_col", DataType::UInt64, false),
-        Field::new("i8_col", DataType::Int8, false),
-        Field::new("i16_col", DataType::Int16, false),
-        Field::new("i32_col", DataType::Int32, false),
-        Field::new("i64_col", DataType::Int64, false),
-        Field::new("string_col", DataType::Utf8, false),
-        Field::new(
-            "string_dict",
-            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            false,
-        ),
-    ])
-}
+const TEST_FILE_PATH: &str = "../../benchmark/data/nano_hits.parquet";
 
-fn test_output_schema() -> Schema {
-    Schema::new(vec![
-        Field::new("WatchID", DataType::Int64, false),
-        Field::new("JavaEnable", DataType::Int16, false),
-        Field::new(
-            "Title",
-            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            false,
-        ),
-        Field::new("GoodEvent", DataType::Int16, false),
-        Field::new("EventTime", DataType::Int64, false),
-        Field::new("EventDate", DataType::UInt16, false),
-        Field::new("CounterID", DataType::Int32, false),
-        Field::new("ClientIP", DataType::Int32, false),
-        Field::new("RegionID", DataType::Int32, false),
-        Field::new("UserID", DataType::Int64, false),
-        Field::new("CounterClass", DataType::Int16, false),
-        Field::new("OS", DataType::Int16, false),
-        Field::new("UserAgent", DataType::Int16, false),
-        Field::new(
-            "URL",
-            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            false,
-        ),
-        Field::new(
-            "Referer",
-            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            false,
-        ),
-        Field::new("IsRefresh", DataType::Int16, false),
-        Field::new("RefererCategoryID", DataType::Int16, false),
-        Field::new("RefererRegionID", DataType::Int32, false),
-        Field::new("URLCategoryID", DataType::Int16, false),
-        Field::new("URLRegionID", DataType::Int32, false),
-        Field::new("ResolutionWidth", DataType::Int16, false),
-        Field::new("ResolutionHeight", DataType::Int16, false),
-        Field::new("ResolutionDepth", DataType::Int16, false),
-        Field::new("FlashMajor", DataType::Int16, false),
-        Field::new("FlashMinor", DataType::Int16, false),
-        Field::new(
-            "FlashMinor2",
-            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            false,
-        ),
-        Field::new("NetMajor", DataType::Int16, false),
-        Field::new("NetMinor", DataType::Int16, false),
-        Field::new("UserAgentMajor", DataType::Int16, false),
-        Field::new(
-            "UserAgentMinor",
-            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            false,
-        ),
-        Field::new("CookieEnable", DataType::Int16, false),
-        Field::new("JavascriptEnable", DataType::Int16, false),
-        Field::new("IsMobile", DataType::Int16, false),
-        Field::new("MobilePhone", DataType::Int16, false),
-        Field::new(
-            "MobilePhoneModel",
-            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            false,
-        ),
-        Field::new(
-            "Params",
-            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            false,
-        ),
-        Field::new("IPNetworkID", DataType::Int32, false),
-        Field::new("TraficSourceID", DataType::Int16, false),
-        Field::new("SearchEngineID", DataType::Int16, false),
-        Field::new(
-            "SearchPhrase",
-            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            false,
-        ),
-        Field::new("AdvEngineID", DataType::Int16, false),
-        Field::new("IsArtifical", DataType::Int16, false),
-        Field::new("WindowClientWidth", DataType::Int16, false),
-        Field::new("WindowClientHeight", DataType::Int16, false),
-        Field::new("ClientTimeZone", DataType::Int16, false),
-        Field::new("ClientEventTime", DataType::Int64, false),
-        Field::new("SilverlightVersion1", DataType::Int16, false),
-        Field::new("SilverlightVersion2", DataType::Int16, false),
-        Field::new("SilverlightVersion3", DataType::Int32, false),
-        Field::new("SilverlightVersion4", DataType::Int16, false),
-        Field::new(
-            "PageCharset",
-            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            false,
-        ),
-        Field::new("CodeVersion", DataType::Int32, false),
-        Field::new("IsLink", DataType::Int16, false),
-        Field::new("IsDownload", DataType::Int16, false),
-        Field::new("IsNotBounce", DataType::Int16, false),
-        Field::new("FUniqID", DataType::Int64, false),
-        Field::new(
-            "OriginalURL",
-            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            false,
-        ),
-        Field::new("HID", DataType::Int32, false),
-        Field::new("IsOldCounter", DataType::Int16, false),
-        Field::new("IsEvent", DataType::Int16, false),
-        Field::new("IsParameter", DataType::Int16, false),
-        Field::new("DontCountHits", DataType::Int16, false),
-        Field::new("WithHash", DataType::Int16, false),
-        Field::new(
-            "HitColor",
-            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            false,
-        ),
-        Field::new("LocalEventTime", DataType::Int64, false),
-        Field::new("Age", DataType::Int16, false),
-        Field::new("Sex", DataType::Int16, false),
-        Field::new("Income", DataType::Int16, false),
-        Field::new("Interests", DataType::Int16, false),
-        Field::new("Robotness", DataType::Int16, false),
-        Field::new("RemoteIP", DataType::Int32, false),
-        Field::new("WindowName", DataType::Int32, false),
-        Field::new("OpenerName", DataType::Int32, false),
-        Field::new("HistoryLength", DataType::Int16, false),
-        Field::new(
-            "BrowserLanguage",
-            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            false,
-        ),
-        Field::new(
-            "BrowserCountry",
-            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            false,
-        ),
-        Field::new(
-            "SocialNetwork",
-            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            false,
-        ),
-        Field::new(
-            "SocialAction",
-            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            false,
-        ),
-        Field::new("HTTPError", DataType::Int16, false),
-        Field::new("SendTiming", DataType::Int32, false),
-        Field::new("DNSTiming", DataType::Int32, false),
-        Field::new("ConnectTiming", DataType::Int32, false),
-        Field::new("ResponseStartTiming", DataType::Int32, false),
-        Field::new("ResponseEndTiming", DataType::Int32, false),
-        Field::new("FetchTiming", DataType::Int32, false),
-        Field::new("SocialSourceNetworkID", DataType::Int16, false),
-        Field::new(
-            "SocialSourcePage",
-            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            false,
-        ),
-        Field::new("ParamPrice", DataType::Int64, false),
-        Field::new(
-            "ParamOrderID",
-            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            false,
-        ),
-        Field::new(
-            "ParamCurrency",
-            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            false,
-        ),
-        Field::new("ParamCurrencyID", DataType::Int16, false),
-        Field::new(
-            "OpenstatServiceName",
-            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            false,
-        ),
-        Field::new(
-            "OpenstatCampaignID",
-            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            false,
-        ),
-        Field::new(
-            "OpenstatAdID",
-            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            false,
-        ),
-        Field::new(
-            "OpenstatSourceID",
-            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            false,
-        ),
-        Field::new(
-            "UTMSource",
-            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            false,
-        ),
-        Field::new(
-            "UTMMedium",
-            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            false,
-        ),
-        Field::new(
-            "UTMCampaign",
-            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            false,
-        ),
-        Field::new(
-            "UTMContent",
-            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            false,
-        ),
-        Field::new(
-            "UTMTerm",
-            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            false,
-        ),
-        Field::new(
-            "FromTag",
-            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            false,
-        ),
-        Field::new("HasGCLID", DataType::Int16, false),
-        Field::new("RefererHash", DataType::Int64, false),
-        Field::new("URLHash", DataType::Int64, false),
-        Field::new("CLID", DataType::Int32, false),
-    ])
+fn test_output_schema() -> SchemaRef {
+    let file = File::open(TEST_FILE_PATH).unwrap();
+    let builder = ArrowReaderMetadata::load(&file, Default::default()).unwrap();
+    let schema = builder.schema().clone();
+    Arc::new(transform_to_liquid_cache_types(schema.as_ref()))
 }
 
 pub fn generate_test_parquet() -> (File, String) {
     return (
-        File::open("../../benchmark/data/nano_hits.parquet").unwrap(),
-        "../../benchmark/data/nano_hits.parquet".to_string(),
+        File::open(TEST_FILE_PATH).unwrap(),
+        TEST_FILE_PATH.to_string(),
     );
 }
 
@@ -363,7 +129,7 @@ async fn basic_stuff() {
     let reader = builder.build(Arc::new(liquid_cache)).unwrap();
 
     let schema = &reader.schema;
-    assert_eq!(schema.as_ref(), &test_output_schema());
+    assert_eq!(schema.as_ref(), test_output_schema().as_ref());
 
     let batches = reader
         .collect::<Vec<_>>()
