@@ -55,7 +55,7 @@ pub async fn main() -> Result<()> {
     let ctx = Arc::new(SessionContext::new());
     ctx.register_table("table_name", Arc::new(table))?;
 
-    let sql = "SELECT COUNT(*) FROM small_hits WHERE \"URL\" <> '';";
+    let sql = "SELECT COUNT(*) FROM table_name WHERE \"URL\" <> '';";
 
     ctx.sql(sql).await?.show().await?;
     Ok(())

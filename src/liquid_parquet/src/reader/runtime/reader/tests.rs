@@ -33,7 +33,7 @@ use parquet::{
 };
 use std::{fs::File, sync::Arc};
 
-const TEST_FILE_PATH: &str = "../../benchmark/data/nano_hits.parquet";
+const TEST_FILE_PATH: &str = "../../examples/nano_hits.parquet";
 
 fn test_output_schema() -> SchemaRef {
     let file = File::open(TEST_FILE_PATH).unwrap();

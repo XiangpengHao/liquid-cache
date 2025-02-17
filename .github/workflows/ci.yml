@@ -19,7 +19,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # - uses: ./.github/actions/rust-setup
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2025-01-24
@@ -42,7 +41,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # - uses: ./.github/actions/rust-setup
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2025-01-24
@@ -56,7 +54,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # - uses: ./.github/actions/rust-setup
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2025-01-24
@@ -96,7 +93,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # - uses: ./.github/actions/rust-setup
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2025-01-24
@@ -114,7 +110,7 @@ jobs:
 
       - name: Run simple ClickBench
         run: |
-          env RUST_LOG=info cargo run --bin clickbench_client -- --query-path benchmark/queries.sql --file examples/small_hits.parquet
+          env RUST_LOG=info cargo run --bin clickbench_client -- --query-path benchmark/queries.sql --file examples/nano_hits.parquet
         # Always clean up after this step
         shell: bash
         if: always()
