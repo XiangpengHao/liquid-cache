@@ -109,7 +109,7 @@ impl FileFormat for LiquidParquetFileFormat {
             self.liquid_cache_mode,
             LiquidCacheMode::InMemoryLiquid { .. }
         ) {
-            transformed = transform_to_liquid_cache_types(&transformed);
+            transformed = coerce_to_liquid_cache_types(&transformed);
         }
         Ok(Arc::new(transformed))
     }
@@ -223,7 +223,7 @@ pub(crate) fn coerce_string_to_view(schema: &Schema) -> Schema {
     Schema::new_with_metadata(transformed_fields, schema.metadata.clone())
 }
 
-pub(crate) fn transform_to_liquid_cache_types(schema: &Schema) -> Schema {
+pub(crate) fn coerce_to_liquid_cache_types(schema: &Schema) -> Schema {
     let transformed_fields: Vec<Arc<Field>> = schema
         .fields
         .iter()
