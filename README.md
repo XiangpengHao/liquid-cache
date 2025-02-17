@@ -3,6 +3,8 @@
 
 <p align="center"> Cache that understands your data and cuts your S3 bill by 10x. </p>
 
+[![Rust CI](https://github.com/XiangpengHao/datafusion-cache/actions/workflows/ci.yml/badge.svg)](https://github.com/XiangpengHao/datafusion-cache/actions/workflows/ci.yml)
+
 ## Architecture
 
 ![architecture](/dev/doc/arch.jpg)
