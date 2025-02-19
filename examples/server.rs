@@ -18,7 +18,6 @@
 use arrow_flight::flight_service_server::FlightServiceServer;
 use liquid_cache_server::LiquidCacheService;
 use log::info;
-use std::env;
 use tonic::transport::Server;
 
 #[tokio::main]
