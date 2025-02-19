@@ -15,20 +15,33 @@ To download the entire dataset (~15GB):
 wget https://datasets.clickhouse.com/hits_compatible/athena/hits.parquet -O benchmark/data/hits.parquet
 ```
 
+To download the partitioned dataset (100 files, ~150MB each):
+```bash
+for i in (seq 0 99)
+    wget https://datasets.clickhouse.com/hits_compatible/athena_partitioned/hits_$i.parquet -O benchmark/data/partitioned/hits_$i.parquet
+end
+```
+Or bash :
+```bash
+for i in {0..99}; do
+    wget https://datasets.clickhouse.com/hits_compatible/athena_partitioned/hits_$i.parquet -O benchmark/data/partitioned/hits_$i.parquet
+done
+```
+
 ## Run benchmarks
 
 ### Minimal 
 
 ```bash
 cargo run --release --bin bench_server
-cargo run --release --bin bench_client -- --query-path benchmark/queries.sql --file benchmark/data/hits.parquet
+cargo run --release --bin clickbench_client -- --query-path benchmark/queries.sql --file benchmark/data/hits.parquet
 ```
 
 ### Advanced
 
 ```bash
-env RUST_LOG=info cargo run --release --bin bench_server
-env RUST_LOG=info cargo run --release --bin bench_client -- --query-path benchmark/queries.sql --file benchmark/data/hits_0.parquet --query 42
+env RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS='-C target-cpu=native' cargo run --release --bin bench_server
+env RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS='-C target-cpu=native' cargo run --release --bin clickbench_client -- --query-path benchmark/queries.sql --file benchmark/data/hits.parquet --query 42
 ```
 
 ## Profile
@@ -50,3 +63,10 @@ cargo run --release --bin bench_server -- --stats-dir benchmark/data/cache_stats
 It will generate a parquet file that contains the cache stats for each query that the server executed.
 You can use [`parquet-viewer`](https://parquet-viewer.xiangpeng.systems) to view the stats in the browser.
 
+
+### Run encoding benchmarks
+
+```bash
+RUST_LOG=info RUSTFLAGS='-C target-cpu=native' cargo run --release --bin encoding -- --file benchmark/data/hits.parquet --column 2
+```
+This will benchmark the encoding time of the `URL` column.

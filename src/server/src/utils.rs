@@ -1,13 +1,12 @@
+use arrow::{array::RecordBatch, compute::concat_batches};
+use datafusion::{error::Result, physical_plan::ExecutionPlan};
+use futures::{Stream, ready};
+use futures::{StreamExt, stream::BoxStream};
 use std::{
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
 };
-
-use arrow::{array::RecordBatch, compute::concat_batches};
-use datafusion::error::Result;
-use futures::{Stream, ready};
-use futures::{StreamExt, stream::BoxStream};
 
 use crate::StatsCollector;
 
@@ -22,6 +21,8 @@ pub struct FinalStream {
     target_batch_size: usize,
     buffered_batches: Vec<RecordBatch>,
     current_buffered_rows: usize,
+    partition: usize,
+    execution_plan: Arc<dyn ExecutionPlan>,
 }
 
 impl FinalStream {
@@ -29,16 +30,21 @@ impl FinalStream {
         inner: S,
         mut stats_collector: Vec<Arc<dyn StatsCollector>>,
         target_batch_size: usize,
+        partition: usize,
+        execution_plan: Arc<dyn ExecutionPlan>,
     ) -> Self {
         for collector in stats_collector.iter_mut() {
-            collector.start();
+            collector.start(partition, &execution_plan);
         }
+
         Self {
             inner: inner.boxed(),
             stats_collector,
             target_batch_size,
             buffered_batches: Vec::new(),
             current_buffered_rows: 0,
+            partition,
+            execution_plan,
         }
     }
 }
@@ -46,7 +52,7 @@ impl FinalStream {
 impl Drop for FinalStream {
     fn drop(&mut self) {
         for collector in self.stats_collector.iter_mut() {
-            collector.stop();
+            collector.stop(self.partition, &self.execution_plan);
         }
     }
 }

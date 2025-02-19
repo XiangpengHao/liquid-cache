@@ -1,12 +1,11 @@
 use ahash::HashMap;
-use arrow::array::builder::StringDictionaryBuilder;
 use arrow::array::{
-    Array, ArrayRef, BooleanArray, DictionaryArray, PrimitiveArray, RecordBatch, StringArray,
-    cast::AsArray, types::UInt16Type,
+    Array, ArrayRef, BooleanArray, DictionaryArray, RecordBatch, StringArray, cast::AsArray,
+    types::UInt16Type,
 };
 use arrow::array::{
     ArrayAccessor, ArrayIter, BinaryArray, BooleanBufferBuilder, BufferBuilder, GenericByteArray,
-    GenericByteDictionaryBuilder, StringViewArray, UInt16Array,
+    StringViewArray, UInt16Array,
 };
 use arrow::buffer::{BooleanBuffer, Buffer, NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::compute::cast;
@@ -20,6 +19,7 @@ use std::sync::Arc;
 
 use super::{BitPackedArray, LiquidArray, LiquidArrayRef};
 use crate::liquid_array::{FsstArray, get_bit_width};
+use crate::utils::CheckedDictionaryArray;
 
 impl LiquidArray for LiquidByteArray {
     fn as_any(&self) -> &dyn Any {
@@ -146,18 +146,18 @@ pub struct LiquidByteArray {
 
 impl LiquidByteArray {
     pub fn from_string_view_array(array: &StringViewArray, compressor: Arc<Compressor>) -> Self {
-        let dict = byte_array_to_dict_array::<Utf8Type, _>(array.iter());
+        let dict = CheckedDictionaryArray::from_string_view_array(array);
         Self::from_dict_array_inner(dict, compressor, ArrowStringType::Utf8View)
     }
 
-    fn train_compressor_bytes<'a, T: ArrayAccessor<Item = &'a [u8]>>(
+    pub fn train_compressor_bytes<'a, T: ArrayAccessor<Item = &'a [u8]>>(
         array: ArrayIter<T>,
     ) -> Arc<Compressor> {
         let strings = array.filter_map(|s| s.as_ref().map(|s| *s));
         Arc::new(FsstArray::train_compressor(strings))
     }
 
-    fn train_compressor<'a, T: ArrayAccessor<Item = &'a str>>(
+    pub fn train_compressor<'a, T: ArrayAccessor<Item = &'a str>>(
         array: ArrayIter<T>,
     ) -> Arc<Compressor> {
         let strings = array.filter_map(|s| s.as_ref().map(|s| s.as_bytes()));
@@ -172,7 +172,7 @@ impl LiquidByteArray {
         array: &GenericByteArray<T>,
         compressor: Arc<Compressor>,
     ) -> Self {
-        let dict = byte_array_to_dict_array::<T, _>(array.iter());
+        let dict = CheckedDictionaryArray::from_byte_array::<T>(array);
         Self::from_dict_array_inner(
             dict,
             compressor,
@@ -181,8 +181,8 @@ impl LiquidByteArray {
     }
 
     pub fn train_from_arrow_view(array: &StringViewArray) -> (Arc<Compressor>, Self) {
-        let dict = byte_array_to_dict_array::<Utf8Type, _>(array.iter());
-        let compressor = Self::train_compressor(dict.values().as_string::<i32>().iter());
+        let dict = CheckedDictionaryArray::from_string_view_array(array);
+        let compressor = Self::train_compressor(dict.as_ref().values().as_string::<i32>().iter());
         (
             compressor.clone(),
             Self::from_dict_array_inner(dict, compressor, ArrowStringType::Utf8View),
@@ -192,13 +192,13 @@ impl LiquidByteArray {
     pub fn train_from_arrow<T: ByteArrayType>(
         array: &GenericByteArray<T>,
     ) -> (Arc<Compressor>, Self) {
-        let dict = byte_array_to_dict_array::<T, _>(array.iter());
-        let value_type = dict.values().data_type();
+        let dict = CheckedDictionaryArray::from_byte_array::<T>(array);
+        let value_type = dict.as_ref().values().data_type();
 
         let compressor = if value_type == &DataType::Utf8 {
-            Self::train_compressor(dict.values().as_string::<i32>().iter())
+            Self::train_compressor(dict.as_ref().values().as_string::<i32>().iter())
         } else {
-            Self::train_compressor_bytes(dict.values().as_binary::<i32>().iter())
+            Self::train_compressor_bytes(dict.as_ref().values().as_binary::<i32>().iter())
         };
         (
             compressor.clone(),
@@ -213,10 +213,15 @@ impl LiquidByteArray {
     pub fn train_from_arrow_dict(array: &DictionaryArray<UInt16Type>) -> (Arc<Compressor>, Self) {
         if array.values().data_type() == &DataType::Utf8 {
             let values = array.values().as_string::<i32>();
+
             let compressor = Self::train_compressor(values.iter());
             (
                 compressor.clone(),
-                Self::from_dict_array_inner(array.clone(), compressor, ArrowStringType::Dict16Utf8),
+                Self::from_dict_array_inner(
+                    CheckedDictionaryArray::new_checked(array),
+                    compressor,
+                    ArrowStringType::Dict16Utf8,
+                ),
             )
         } else if array.values().data_type() == &DataType::Binary {
             let values = array.values().as_binary::<i32>();
@@ -224,7 +229,7 @@ impl LiquidByteArray {
             (
                 compressor.clone(),
                 Self::from_dict_array_inner(
-                    array.clone(),
+                    CheckedDictionaryArray::new_checked(array),
                     compressor,
                     ArrowStringType::Dict16Binary,
                 ),
@@ -235,15 +240,11 @@ impl LiquidByteArray {
     }
 
     fn from_dict_array_inner(
-        array: DictionaryArray<UInt16Type>,
+        array: CheckedDictionaryArray,
         compressor: Arc<Compressor>,
         arrow_type: ArrowStringType,
     ) -> Self {
-        let gc_ed = gc_dictionary_array(&array);
-        let (keys, values) = gc_ed.into_parts();
-
-        let (_, keys, nulls) = keys.into_parts();
-        let keys = PrimitiveArray::<UInt16Type>::try_new(keys, nulls).unwrap();
+        let (keys, values) = array.into_inner().into_parts();
 
         let distinct_count = values.len();
         let max_bit_width = get_bit_width(distinct_count as u64);
@@ -265,29 +266,31 @@ impl LiquidByteArray {
         }
     }
 
+    /// Only used when the dictionary is read from a trusted parquet reader,
+    /// which reads a trusted parquet file, written by a trusted writer.
+    ///
+    /// # Safety
+    /// The caller must ensure that the values in the dictionary are unique.
+    pub unsafe fn from_unique_dict_array(
+        array: &DictionaryArray<UInt16Type>,
+        compressor: Arc<Compressor>,
+    ) -> Self {
+        Self::from_dict_array_inner(
+            unsafe { CheckedDictionaryArray::new_unchecked_i_know_what_i_am_doing(array) },
+            compressor,
+            ArrowStringType::Dict16Utf8,
+        )
+    }
+
     pub fn from_dict_array(
         array: &DictionaryArray<UInt16Type>,
         compressor: Arc<Compressor>,
     ) -> Self {
         if array.downcast_dict::<StringArray>().is_some() {
-            let dict = array.downcast_dict::<StringArray>().unwrap();
-
-            // We require the values to be unique, but the incoming dictionary may not be unique, has to deduplicate again here.
-            let mut deduplicated = StringDictionaryBuilder::<UInt16Type>::new();
-            for v in dict.into_iter() {
-                deduplicated.append_option(v);
-            }
-            let dict = deduplicated.finish();
+            let dict = CheckedDictionaryArray::new_checked(array);
             Self::from_dict_array_inner(dict, compressor, ArrowStringType::Dict16Utf8)
         } else if array.downcast_dict::<BinaryArray>().is_some() {
-            let dict = array.downcast_dict::<BinaryArray>().unwrap();
-
-            // We require the values to be unique, but the incoming dictionary may not be unique, has to deduplicate again here.
-            let mut deduplicated = GenericByteDictionaryBuilder::<UInt16Type, BinaryType>::new();
-            for v in dict.into_iter() {
-                deduplicated.append_option(v);
-            }
-            let dict = deduplicated.finish();
+            let dict = CheckedDictionaryArray::new_checked(array);
             Self::from_dict_array_inner(dict, compressor, ArrowStringType::Dict16Binary)
         } else {
             panic!("Unsupported dictionary type: {:?}", array.data_type())
@@ -301,7 +304,7 @@ impl LiquidByteArray {
 
     /// Convert the LiquidStringArray to arrow's DictionaryArray.
     pub fn to_dict_arrow(&self) -> DictionaryArray<UInt16Type> {
-        if self.keys.len() < (self.values.compressed.len() * 2) {
+        if self.keys.len() < 1024 {
             // a heuristic to selective decompress.
             self.to_dict_arrow_decompress_keyed()
         } else {
@@ -491,33 +494,6 @@ impl LiquidByteArray {
             let buffer = BooleanBuffer::new_unset(keys.len());
             BooleanArray::new(buffer, self.nulls().cloned())
         }
-    }
-}
-
-fn byte_array_to_dict_array<'a, T: ByteArrayType, I: ArrayAccessor<Item = &'a T::Native>>(
-    input: ArrayIter<I>,
-) -> DictionaryArray<UInt16Type> {
-    let mut builder = GenericByteDictionaryBuilder::<UInt16Type, T>::new();
-    for s in input {
-        builder.append_option(s);
-    }
-    builder.finish()
-}
-
-fn gc_dictionary_array(array: &DictionaryArray<UInt16Type>) -> DictionaryArray<UInt16Type> {
-    let value_type = array.values().data_type();
-    if let DataType::Binary = value_type {
-        let typed = array
-            .downcast_dict::<GenericByteArray<BinaryType>>()
-            .unwrap();
-        let iter = typed.into_iter();
-        byte_array_to_dict_array::<BinaryType, _>(iter)
-    } else if let DataType::Utf8 = value_type {
-        let typed = array.downcast_dict::<GenericByteArray<Utf8Type>>().unwrap();
-        let iter = typed.into_iter();
-        byte_array_to_dict_array::<Utf8Type, _>(iter)
-    } else {
-        unreachable!("Unsupported dictionary type: {:?}", value_type);
     }
 }
 

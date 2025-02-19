@@ -17,12 +17,15 @@ use datafusion::{
     physical_plan::{ExecutionPlan, PhysicalExpr, metrics::ExecutionPlanMetricsSet},
     prelude::*,
 };
+#[cfg(test)]
+pub(crate) use exec::CachedMetaReaderFactory;
 use exec::LiquidParquetExec;
+pub(crate) use exec::ParquetMetadataCacheReader;
 use log::{debug, info};
 use object_store::{ObjectMeta, ObjectStore};
 use page_filter::PagePruningAccessPlanFilter;
 
-use crate::cache::LiquidCacheRef;
+use crate::{LiquidCacheMode, LiquidCacheRef};
 
 // This is entirely copied from DataFusion
 // We should make DataFusion to public this
@@ -52,8 +55,9 @@ impl GetExt for LiquidParquetFactory {
 #[derive(Debug)]
 pub struct LiquidParquetFileFormat {
     options: TableParquetOptions,
-    inner: Arc<dyn FileFormat>, // is actually ParquetFormat
-    liquid_cache: LiquidCacheRef,
+    inner: Arc<dyn FileFormat>,   // is actually ParquetFormat
+    liquid_cache: LiquidCacheRef, // a file format deals with multiple files
+    liquid_cache_mode: LiquidCacheMode,
 }
 
 impl LiquidParquetFileFormat {
@@ -61,10 +65,12 @@ impl LiquidParquetFileFormat {
         options: TableParquetOptions,
         inner: Arc<dyn FileFormat>,
         liquid_cache: LiquidCacheRef,
+        liquid_cache_mode: LiquidCacheMode,
     ) -> Self {
         Self {
             options,
             liquid_cache,
+            liquid_cache_mode,
             inner,
         }
     }
@@ -98,7 +104,13 @@ impl FileFormat for LiquidParquetFileFormat {
         objects: &[ObjectMeta],
     ) -> Result<SchemaRef> {
         let parquet_schema = self.inner.infer_schema(state, store, objects).await?;
-        let transformed = transform_to_liquid_cache_types(&parquet_schema);
+        let mut transformed = coerce_binary_to_string(&parquet_schema);
+        if matches!(
+            self.liquid_cache_mode,
+            LiquidCacheMode::InMemoryLiquid { .. }
+        ) {
+            transformed = coerce_to_liquid_cache_types(&transformed);
+        }
         Ok(Arc::new(transformed))
     }
 
@@ -163,6 +175,7 @@ impl FileFormat for LiquidParquetFileFormat {
             pruning_predicate,
             page_pruning_predicate,
             liquid_cache: self.liquid_cache.clone(),
+            liquid_cache_mode: self.liquid_cache_mode,
         };
         Ok(Arc::new(exec))
     }
@@ -184,7 +197,33 @@ fn field_with_new_type(field: &FieldRef, new_type: DataType) -> FieldRef {
     Arc::new(field.as_ref().clone().with_data_type(new_type))
 }
 
-pub(crate) fn transform_to_liquid_cache_types(schema: &Schema) -> Schema {
+pub(crate) fn coerce_binary_to_string(schema: &Schema) -> Schema {
+    let transformed_fields: Vec<Arc<Field>> = schema
+        .fields
+        .iter()
+        .map(|field| match field.data_type() {
+            DataType::Binary | DataType::LargeBinary | DataType::BinaryView => {
+                field_with_new_type(field, DataType::Utf8)
+            }
+            _ => field.clone(),
+        })
+        .collect();
+    Schema::new_with_metadata(transformed_fields, schema.metadata.clone())
+}
+
+pub(crate) fn coerce_string_to_view(schema: &Schema) -> Schema {
+    let transformed_fields: Vec<Arc<Field>> = schema
+        .fields
+        .iter()
+        .map(|field| match field.data_type() {
+            DataType::Utf8 | DataType::LargeUtf8 => field_with_new_type(field, DataType::Utf8View),
+            _ => field.clone(),
+        })
+        .collect();
+    Schema::new_with_metadata(transformed_fields, schema.metadata.clone())
+}
+
+pub(crate) fn coerce_to_liquid_cache_types(schema: &Schema) -> Schema {
     let transformed_fields: Vec<Arc<Field>> = schema
         .fields
         .iter()
@@ -203,36 +242,13 @@ pub(crate) fn transform_to_liquid_cache_types(schema: &Schema) -> Schema {
     Schema::new_with_metadata(transformed_fields, schema.metadata.clone())
 }
 
-// FIXME: see this: https://github.com/XiangpengHao/datafusion-cache/issues/27
-pub(crate) fn coerce_to_parquet_reader_types(schema: &Schema) -> Schema {
-    let transformed_fields: Vec<Arc<Field>> = schema
-        .fields
-        .iter()
-        .map(|field| match field.data_type() {
-            DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => field_with_new_type(
-                field,
-                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            ),
-            DataType::Binary | DataType::LargeBinary | DataType::BinaryView => field_with_new_type(
-                field,
-                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Binary)),
-            ),
-            _ => field.clone(),
-        })
-        .collect();
-    Schema::new_with_metadata(transformed_fields, schema.metadata.clone())
-}
-
-// FIXME: see this: https://github.com/XiangpengHao/datafusion-cache/issues/27
+/// Liquid cache reads binary as strings.
 pub(crate) fn coerce_from_reader_to_liquid_types(schema: &Schema) -> Schema {
     let transformed_fields: Vec<Arc<Field>> = schema
         .fields
         .iter()
         .map(|field| {
-            if field.data_type().equals_datatype(&DataType::Dictionary(
-                Box::new(DataType::UInt16),
-                Box::new(DataType::Binary),
-            )) {
+            if field.data_type().equals_datatype(&DataType::Utf8View) {
                 field_with_new_type(
                     field,
                     DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),

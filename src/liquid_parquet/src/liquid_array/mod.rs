@@ -11,8 +11,8 @@ pub use primitive_array::{
     LiquidPrimitiveMetadata, LiquidPrimitiveType, LiquidU8Array, LiquidU16Array, LiquidU32Array,
     LiquidU64Array,
 };
-use raw::bit_pack_array::BitPackedArray;
-use raw::fsst_array::FsstArray;
+pub use raw::bit_pack_array::BitPackedArray;
+pub use raw::fsst_array::FsstArray;
 
 /// A trait to access the underlying Liquid array.
 pub trait AsLiquidArray {

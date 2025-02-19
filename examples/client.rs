@@ -21,7 +21,8 @@ use datafusion::{
     error::Result,
     prelude::{SessionConfig, SessionContext},
 };
-use liquid_cache_client::SplitSqlTableFactory;
+use liquid_cache_client::LiquidCacheTableFactory;
+use liquid_common::ParquetMode;
 use log::info;
 use url::Url;
 
@@ -42,20 +43,26 @@ pub async fn main() -> Result<()> {
 
     let entry_point = "http://localhost:50051";
 
-    let sql = "SELECT COUNT(*) FROM small_hits WHERE \"URL\" <> '';";
+    let sql = "SELECT COUNT(*) FROM nano_hits WHERE \"URL\" <> '';";
 
     info!("SQL to be executed: {}", sql);
 
-    let table_name = "small_hits";
+    let table_name = "nano_hits";
 
     let current_dir = std::env::current_dir()?.to_string_lossy().to_string();
     let table_url = Url::parse(&format!(
-        "file://{}/examples/small_hits.parquet",
+        "file://{}/examples/nano_hits.parquet",
         current_dir
     ))
     .unwrap();
 
-    let table = SplitSqlTableFactory::open_table(entry_point, table_name, table_url).await?;
+    let table = LiquidCacheTableFactory::open_table(
+        entry_point,
+        table_name,
+        table_url,
+        ParquetMode::Liquid,
+    )
+    .await?;
     ctx.register_table(table_name, Arc::new(table))?;
 
     ctx.sql(sql).await?.show().await?;

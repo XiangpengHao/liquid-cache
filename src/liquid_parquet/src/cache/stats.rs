@@ -114,6 +114,25 @@ impl StatsWriter {
 }
 
 impl LiquidCache {
+    pub fn memory_usage_bytes(&self) -> u64 {
+        let files = self.files.lock().unwrap();
+        let mut memory_consumption = 0;
+        for (_, file_lock) in files.iter() {
+            let row_groups = file_lock.row_groups.lock().unwrap();
+            for (_, row_group) in row_groups.iter() {
+                let columns = row_group.columns.read().unwrap();
+                for (_, column) in columns.iter() {
+                    let cached_entry = column.rows.read().unwrap();
+                    for (_, cached_entry) in cached_entry.iter() {
+                        let cached_entry_v = cached_entry.value();
+                        memory_consumption += cached_entry_v.memory_usage();
+                    }
+                }
+            }
+        }
+        memory_consumption as u64
+    }
+
     pub fn write_stats(&self, parquet_file_path: impl AsRef<Path>) -> Result<(), ParquetError> {
         let mut writer = StatsWriter::new(parquet_file_path)?;
         let files = self.files.lock().unwrap();
@@ -126,14 +145,12 @@ impl LiquidCache {
                         let cached_entry_v = cached_entry.value();
                         let cache_type = match cached_entry_v {
                             CachedBatch::ArrowMemory(_) => "InMemory",
-                            CachedBatch::ArrowDisk(_) => "OnDisk",
                             CachedBatch::LiquidMemory(_) => "LiquidMemory",
                         };
 
                         let memory_size = cached_entry_v.memory_usage();
                         let row_count = match cached_entry_v {
                             CachedBatch::ArrowMemory(array) => Some(array.len() as u64),
-                            CachedBatch::ArrowDisk(_) => None, // We don't know the row count for on-disk entries
                             CachedBatch::LiquidMemory(array) => Some(array.len() as u64),
                         };
 
@@ -173,7 +190,7 @@ mod tests {
 
     #[test]
     fn test_stats_writer() -> Result<(), ParquetError> {
-        let cache = LiquidCache::new(LiquidCacheMode::InMemoryArrow, 1024);
+        let cache = LiquidCache::new(1024);
         let array = Arc::new(arrow::array::Int32Array::from(vec![1, 2, 3]));
         let num_rows = 8 * 8 * 8 * 8;
 
@@ -184,11 +201,11 @@ mod tests {
         let mut memory_size_sum = 0;
         let mut hit_count_sum = 0;
         for file_no in 0..8 {
+            let file_name = format!("test_{file_no}.parquet");
+            let file = cache.register_or_get_file(file_name, LiquidCacheMode::InMemoryArrow);
             for rg in 0..8 {
                 for col in 0..8 {
                     for row in 0..8 {
-                        let file_name = format!("test_{file_no}.parquet");
-                        let file = cache.file(file_name);
                         let row_group = file.row_group(rg);
                         let column = row_group.get_column_or_create(col);
                         column.insert_arrow_array(row, array.clone());

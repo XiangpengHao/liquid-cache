@@ -1,9 +1,12 @@
 use std::{
     path::PathBuf,
-    sync::{Mutex, atomic::AtomicUsize},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU32, AtomicUsize},
+    },
 };
 pub mod utils;
-
+use datafusion::physical_plan::ExecutionPlan;
 use liquid_cache_server::StatsCollector;
 use liquid_parquet::LiquidCacheRef;
 use pprof::ProfilerGuard;
@@ -12,6 +15,7 @@ pub struct FlameGraphReport {
     output_dir: PathBuf,
     guard: Mutex<Option<ProfilerGuard<'static>>>,
     running_count: AtomicUsize,
+    flame_graph_id: AtomicU32,
 }
 
 impl FlameGraphReport {
@@ -20,12 +24,13 @@ impl FlameGraphReport {
             output_dir: output,
             guard: Mutex::new(None),
             running_count: AtomicUsize::new(0),
+            flame_graph_id: AtomicU32::new(0),
         }
     }
 }
 
 impl StatsCollector for FlameGraphReport {
-    fn start(&self) {
+    fn start(&self, _partition: usize, _plan: &Arc<dyn ExecutionPlan>) {
         self.running_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut guard = self.guard.lock().unwrap();
@@ -36,14 +41,14 @@ impl StatsCollector for FlameGraphReport {
         assert!(old.is_none(), "FlameGraphReport is already started");
         *guard = Some(
             pprof::ProfilerGuardBuilder::default()
-                .frequency(199)
+                .frequency(500)
                 .blocklist(&["libpthread.so.0", "libm.so.6", "libgcc_s.so.1"])
                 .build()
                 .unwrap(),
         );
     }
 
-    fn stop(&self) {
+    fn stop(&self, _partition: usize, _plan: &Arc<dyn ExecutionPlan>) {
         let previous = self
             .running_count
             .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
@@ -65,8 +70,13 @@ impl StatsCollector for FlameGraphReport {
         let datetime = now.duration_since(std::time::UNIX_EPOCH).unwrap();
         let minute = (datetime.as_secs() / 60) % 60;
         let second = datetime.as_secs() % 60;
-        let subsec = datetime.subsec_millis();
-        let filename = format!("flamegraph-{:02}-{:02}-{:03}.svg", minute, second, subsec);
+        let flame_graph_id = self
+            .flame_graph_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let filename = format!(
+            "flamegraph-id{:02}-{:02}-{:03}.svg",
+            flame_graph_id, minute, second
+        );
         let filepath = self.output_dir.join(filename);
         let file = std::fs::File::create(&filepath).unwrap();
         report.flamegraph(file).unwrap();
@@ -78,6 +88,7 @@ pub struct StatsReport {
     output_dir: PathBuf,
     cache: LiquidCacheRef,
     running_count: AtomicUsize,
+    stats_id: AtomicU32,
 }
 
 impl StatsReport {
@@ -86,17 +97,18 @@ impl StatsReport {
             output_dir: output,
             cache,
             running_count: AtomicUsize::new(0),
+            stats_id: AtomicU32::new(0),
         }
     }
 }
 
 impl StatsCollector for StatsReport {
-    fn start(&self) {
+    fn start(&self, _partition: usize, _plan: &Arc<dyn ExecutionPlan>) {
         self.running_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
-    fn stop(&self) {
+    fn stop(&self, _partition: usize, _plan: &Arc<dyn ExecutionPlan>) {
         let previous = self
             .running_count
             .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
@@ -108,8 +120,13 @@ impl StatsCollector for StatsReport {
         let datetime = now.duration_since(std::time::UNIX_EPOCH).unwrap();
         let minute = (datetime.as_secs() / 60) % 60;
         let second = datetime.as_secs() % 60;
-        let subsec = datetime.subsec_millis();
-        let filename = format!("stats-{:02}-{:02}-{:03}.parquet", minute, second, subsec);
+        let stats_id = self
+            .stats_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let filename = format!(
+            "stats-id{:02}-{:02}-{:03}.parquet",
+            stats_id, minute, second
+        );
         let parquet_file_path = self.output_dir.join(filename);
         self.cache.write_stats(&parquet_file_path).unwrap();
         log::info!("Stats saved to {}", parquet_file_path.display());

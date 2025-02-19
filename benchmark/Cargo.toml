@@ -3,11 +3,15 @@ name = "liquid-cache-benchmarks"
 description = "LiquidCache Benchmarks"
 edition = { workspace = true }
 
+[[bin]]
+name = "create_nano_hits"
+path = "create_nano_hits.rs"
 
 [dependencies]
 liquid-cache-server = { workspace = true }
 liquid-cache-client = { workspace = true }
 liquid-parquet = { workspace = true }
+liquid-common = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 datafusion = { workspace = true }
@@ -23,3 +27,9 @@ mimalloc = "0.1.43"
 pprof = { version = "0.14.0", features = ["flamegraph"] }
 serde_json.workspace = true
 serde.workspace = true
+sysinfo = "0.33.1"
+object_store = { workspace = true, features = ["http"] }
+bytes = { workspace = true }
+prost = { workspace = true }
+fsst-rs = "0.5.0"
+parquet = { workspace = true }

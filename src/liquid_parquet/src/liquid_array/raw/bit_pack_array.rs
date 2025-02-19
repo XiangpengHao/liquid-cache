@@ -5,7 +5,7 @@ use arrow::buffer::{Buffer, ScalarBuffer};
 use fastlanes::BitPacking;
 
 #[derive(Debug)]
-pub(crate) struct BitPackedArray<T: ArrowPrimitiveType>
+pub struct BitPackedArray<T: ArrowPrimitiveType>
 where
     T::Native: BitPacking,
 {
@@ -51,7 +51,7 @@ where
         }
     }
 
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.original_len
     }
 
@@ -122,7 +122,7 @@ where
         }
     }
 
-    pub(crate) fn to_primitive(&self) -> PrimitiveArray<T> {
+    pub fn to_primitive(&self) -> PrimitiveArray<T> {
         let nulls = self.values.nulls().cloned();
         if let Some(nulls) = nulls {
             if nulls.null_count() == self.original_len {
@@ -167,7 +167,7 @@ where
         PrimitiveArray::<T>::new(ScalarBuffer::from(output), nulls)
     }
 
-    pub(crate) fn get_array_memory_size(&self) -> usize {
+    pub fn get_array_memory_size(&self) -> usize {
         self.values.get_array_memory_size()
     }
 }

@@ -5,8 +5,7 @@ use datafusion::{
     common::exec_err,
     datasource::{
         physical_plan::{
-            FileMeta, FileOpenFuture, FileOpener, ParquetFileMetrics, ParquetFileReaderFactory,
-            parquet::ParquetAccessPlan,
+            FileMeta, FileOpenFuture, FileOpener, ParquetFileMetrics, parquet::ParquetAccessPlan,
         },
         schema_adapter::SchemaAdapterFactory,
     },
@@ -24,9 +23,10 @@ use parquet::arrow::{
 };
 
 use crate::{
-    cache::LiquidCacheRef,
+    LiquidCacheMode, LiquidCacheRef,
     reader::{
         plantime::{
+            coerce_binary_to_string, coerce_string_to_view,
             page_filter::PagePruningAccessPlanFilter, row_filter,
             row_group_filter::RowGroupAccessPlanFilter,
         },
@@ -34,7 +34,7 @@ use crate::{
     },
 };
 
-use super::{coerce_to_parquet_reader_types, transform_to_liquid_cache_types};
+use super::{coerce_to_liquid_cache_types, exec::CachedMetaReaderFactory};
 
 pub struct LiquidParquetOpener {
     pub partition_index: usize,
@@ -46,9 +46,10 @@ pub struct LiquidParquetOpener {
     pub page_pruning_predicate: Option<Arc<PagePruningAccessPlanFilter>>,
     pub table_schema: SchemaRef,
     pub metrics: ExecutionPlanMetricsSet,
-    pub parquet_file_reader_factory: Arc<dyn ParquetFileReaderFactory>,
+    pub parquet_file_reader_factory: Arc<CachedMetaReaderFactory>,
     pub reorder_filters: bool,
     pub liquid_cache: LiquidCacheRef,
+    pub liquid_cache_mode: LiquidCacheMode,
     pub schema_adapter_factory: Arc<dyn SchemaAdapterFactory>,
 }
 
@@ -61,12 +62,17 @@ impl FileOpener for LiquidParquetOpener {
 
         let metadata_size_hint = file_meta.metadata_size_hint;
 
-        let mut reader: Box<dyn AsyncFileReader> = self.parquet_file_reader_factory.create_reader(
+        let liquid_cache = self
+            .liquid_cache
+            .register_or_get_file(file_meta.location().to_string(), self.liquid_cache_mode);
+        let liquid_cache_mode = self.liquid_cache_mode;
+
+        let mut reader = self.parquet_file_reader_factory.create_liquid_reader(
             self.partition_index,
             file_meta,
             metadata_size_hint,
             &self.metrics,
-        )?;
+        );
 
         let batch_size = self.batch_size;
 
@@ -81,7 +87,6 @@ impl FileOpener for LiquidParquetOpener {
         let reorder_predicates = self.reorder_filters;
         let enable_page_index = should_enable_page_index(&self.page_pruning_predicate);
         let limit = self.limit;
-        let liquid_cache = self.liquid_cache.clone();
 
         Ok(Box::pin(async move {
             let options = ArrowReaderOptions::new().with_page_index(enable_page_index);
@@ -95,9 +100,20 @@ impl FileOpener for LiquidParquetOpener {
                 "meta data must be cached already"
             );
             let schema = Arc::clone(metadata.schema());
+            let schema = Arc::new(coerce_binary_to_string(&schema));
 
-            let reader_schema = Arc::new(coerce_to_parquet_reader_types(&schema));
-            let output_schema = Arc::new(transform_to_liquid_cache_types(&schema));
+            let reader_schema =
+                if matches!(liquid_cache_mode, LiquidCacheMode::InMemoryLiquid { .. }) {
+                    Arc::new(coerce_string_to_view(&schema))
+                } else {
+                    schema.clone()
+                };
+            let output_schema =
+                if matches!(liquid_cache_mode, LiquidCacheMode::InMemoryLiquid { .. }) {
+                    Arc::new(coerce_to_liquid_cache_types(&reader_schema))
+                } else {
+                    schema.clone()
+                };
 
             let options = ArrowReaderOptions::new()
                 .with_page_index(enable_page_index)
@@ -213,8 +229,7 @@ impl FileOpener for LiquidParquetOpener {
                 liquid_builder = liquid_builder.with_row_filter(row_filter);
             }
 
-            let cached_file = liquid_cache.file(file_name);
-            let stream = liquid_builder.build(cached_file)?;
+            let stream = liquid_builder.build(liquid_cache)?;
 
             let adapted = stream.map_err(|e| ArrowError::ExternalError(Box::new(e)));
 
