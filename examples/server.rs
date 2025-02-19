@@ -25,12 +25,7 @@ use tonic::transport::Server;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::builder().format_timestamp(None).init();
 
-    let port: u16 = env::var("PORT")
-        .unwrap_or_else(|_| "50051".to_string()) // Default to "50051" if PORT is not set
-        .parse()
-        .expect("Failed to parse PORT as a number");
-
-    let addr = format!("0.0.0.0:{}", port).parse()?;
+    let addr = "0.0.0.0:50051".parse()?;
 
     let split_sql = LiquidCacheService::try_new()?;
     let flight = FlightServiceServer::new(split_sql);
