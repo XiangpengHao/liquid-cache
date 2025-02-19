@@ -152,7 +152,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # - uses: ./.github/actions/rust-setup
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2025-01-24
@@ -164,7 +163,7 @@ jobs:
       
       - name: Start server (in background) and client
         run: |
-          env PORT=50051 cargo run --bin server & SERVER_PID=$!
+          cargo run --bin server & SERVER_PID=$!
           while ! nc -z localhost 50051; do
               if ! kill -0 $SERVER_PID; then
                   exit 1
@@ -172,7 +171,7 @@ jobs:
               sleep 0.1
           done
           sleep 5
-          env PORT=50051 cargo run --bin client
+          cargo run --bin client
           EXIT=$?
           kill $SERVER_PID
 
