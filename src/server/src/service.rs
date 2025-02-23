@@ -9,7 +9,7 @@ use datafusion::{
 use liquid_common::{ParquetMode, rpc::ExecutionMetricsResponse};
 use liquid_parquet::{LiquidCache, LiquidCacheMode, LiquidCacheRef, LiquidParquetFileFormat};
 use log::{debug, info};
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, usize};
 use tokio::sync::Mutex;
 use tonic::Status;
 use url::Url;
@@ -22,9 +22,12 @@ pub(crate) struct LiquidCacheServiceInner {
 }
 
 impl LiquidCacheServiceInner {
-    pub fn new(default_ctx: Arc<SessionContext>) -> Self {
+    pub fn new(default_ctx: Arc<SessionContext>, max_cache_bytes: Option<usize>) -> Self {
         let batch_size = default_ctx.state().config().batch_size();
-        let liquid_cache = Arc::new(LiquidCache::new(batch_size));
+        let liquid_cache = Arc::new(LiquidCache::new(
+            batch_size,
+            max_cache_bytes.unwrap_or(usize::MAX),
+        ));
         Self {
             execution_plans: Default::default(),
             registered_tables: Default::default(),

@@ -69,12 +69,12 @@ pub struct LiquidCacheService {
 impl LiquidCacheService {
     pub fn try_new() -> Result<Self, DataFusionError> {
         let ctx = Self::context(None)?;
-        Ok(Self::new_with_context(ctx))
+        Ok(Self::new_with_context(ctx, None))
     }
 
-    pub fn new_with_context(ctx: SessionContext) -> Self {
+    pub fn new_with_context(ctx: SessionContext, max_cache_bytes: Option<usize>) -> Self {
         Self {
-            inner: LiquidCacheServiceInner::new(Arc::new(ctx)),
+            inner: LiquidCacheServiceInner::new(Arc::new(ctx), max_cache_bytes),
             stats_collector: vec![],
             next_execution_id: AtomicU64::new(0),
             most_recent_execution_id: AtomicU64::new(0),

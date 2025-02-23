@@ -421,7 +421,7 @@ mod tests {
     const TOTAL_ROWS: usize = 96;
 
     fn set_up_reader() -> (CachedArrayReader, LiquidCachedColumnRef) {
-        let liquid_cache = Arc::new(LiquidCache::new(BATCH_SIZE));
+        let liquid_cache = Arc::new(LiquidCache::new(BATCH_SIZE, usize::MAX));
         let file = liquid_cache.register_or_get_file(
             "test".to_string(),
             LiquidCacheMode::InMemoryLiquid {

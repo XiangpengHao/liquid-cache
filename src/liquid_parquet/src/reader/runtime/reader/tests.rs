@@ -1,6 +1,6 @@
 use crate::{
     LiquidCacheMode, LiquidPredicate,
-    cache::LiquidCachedFile,
+    cache::{CacheConfig, LiquidCachedFile},
     liquid_array::LiquidArrayRef,
     reader::{
         plantime::{
@@ -57,7 +57,7 @@ async fn create_record_batch(batch_size: usize, i: usize) -> RecordBatch {
             LiquidCacheMode::InMemoryLiquid {
                 transcode_in_background: false,
             },
-            batch_size,
+            CacheConfig::new(batch_size, usize::MAX),
         )))
         .unwrap();
 
@@ -124,7 +124,7 @@ async fn basic_stuff() {
         LiquidCacheMode::InMemoryLiquid {
             transcode_in_background: false,
         },
-        batch_size,
+        CacheConfig::new(batch_size, usize::MAX),
     );
     let reader = builder.build(Arc::new(liquid_cache)).unwrap();
 
@@ -157,7 +157,7 @@ async fn test_reading_with_projection() {
         LiquidCacheMode::InMemoryLiquid {
             transcode_in_background: false,
         },
-        batch_size,
+        CacheConfig::new(batch_size, usize::MAX),
     );
     let reader = builder.build(Arc::new(liquid_cache)).unwrap();
 
@@ -186,7 +186,7 @@ async fn test_reading_warm() {
         LiquidCacheMode::InMemoryLiquid {
             transcode_in_background: false,
         },
-        batch_size,
+        CacheConfig::new(batch_size, usize::MAX),
     ));
     builder.projection = ProjectionMask::roots(
         builder.metadata.file_metadata().schema_descr(),
@@ -330,7 +330,7 @@ async fn test_reading_with_filter() {
         LiquidCacheMode::InMemoryLiquid {
             transcode_in_background: false,
         },
-        batch_size,
+        CacheConfig::new(batch_size, usize::MAX),
     ));
 
     let reader = builder.build(liquid_cache.clone()).unwrap();

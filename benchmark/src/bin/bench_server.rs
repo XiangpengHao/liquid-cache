@@ -47,11 +47,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .help("Path to output cache internal stats directory")
                 .value_parser(value_parser!(PathBuf)),
         )
+        .arg(
+            arg!(--"max-cache-mb" <SIZE>)
+                .required(false)
+                .help("Maximum cache size in MB")
+                .value_parser(value_parser!(usize)),
+        )
         .get_matches();
 
     let flamegraph_dir = matches.get_one::<PathBuf>("flamegraph-dir").cloned();
     let stats_dir = matches.get_one::<PathBuf>("stats-dir").cloned();
     let abort_on_panic = matches.get_flag("abort-on-panic");
+    let max_cache_bytes = matches
+        .get_one::<usize>("max-cache-mb")
+        .cloned()
+        .map(|size| size * 1024 * 1024);
     if abort_on_panic {
         // Be loud and crash loudly if any thread panics.
         // This will stop the server if any thread panics.
@@ -66,7 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let partitions = matches.get_one::<usize>("partitions").cloned();
 
     let ctx = LiquidCacheService::context(partitions)?;
-    let mut liquid_cache_server = LiquidCacheService::new_with_context(ctx);
+    let mut liquid_cache_server = LiquidCacheService::new_with_context(ctx, max_cache_bytes);
 
     if let Some(flamegraph_dir) = flamegraph_dir {
         assert!(
