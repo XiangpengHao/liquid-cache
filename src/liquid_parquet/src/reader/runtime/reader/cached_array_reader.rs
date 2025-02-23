@@ -1,5 +1,6 @@
 use std::{any::Any, collections::VecDeque};
 
+use ahash::AHashMap;
 use arrow::{
     array::{ArrayRef, BooleanArray, BooleanBufferBuilder, new_empty_array},
     buffer::BooleanBuffer,
@@ -42,6 +43,7 @@ struct CachedArrayReader {
     inner_row_id: usize,
     selection: VecDeque<RowSelector>,
     liquid_cache: LiquidCachedColumnRef,
+    reader_local_cache: AHashMap<usize, ArrayRef>,
 }
 
 impl CachedArrayReader {
@@ -64,6 +66,7 @@ impl CachedArrayReader {
             inner_row_id: 0,
             selection: VecDeque::new(),
             liquid_cache,
+            reader_local_cache: AHashMap::new(),
         }
     }
 
@@ -81,7 +84,12 @@ impl CachedArrayReader {
         }
         let read = self.inner.read_records(self.batch_size())?;
         let array = self.inner.consume_batch()?;
-        self.liquid_cache.insert_arrow_array(batch_id, array);
+        if let Err(crate::cache::InsertArrowArrayError::CacheFull(array)) =
+            self.liquid_cache.insert_arrow_array(batch_id, array)
+        {
+            self.reader_local_cache.insert(batch_id, array);
+        }
+
         self.inner_row_id += read;
         Ok(())
     }
@@ -157,10 +165,20 @@ impl CachedArrayReader {
 
             let mask_array = BooleanArray::from(mask);
             // Get cached array and apply filter
-            let array = self
+            let array = match self
                 .liquid_cache
                 .get_arrow_array_with_filter(batch_id * batch_size, &mask_array)
-                .unwrap();
+            {
+                Some(array) => array,
+                None => {
+                    let array = self
+                        .reader_local_cache
+                        .remove(&(batch_id * batch_size))
+                        .unwrap();
+                    let filtered = arrow::compute::filter(&array, &mask_array).unwrap();
+                    filtered
+                }
+            };
 
             if !array.data_type().equals_datatype(&self.data_type) {
                 panic!(

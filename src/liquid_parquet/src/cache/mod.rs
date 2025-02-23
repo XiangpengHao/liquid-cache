@@ -114,6 +114,11 @@ fn array_to_record_batch(array: ArrayRef) -> RecordBatch {
     RecordBatch::try_new(schema, vec![array]).unwrap()
 }
 
+pub enum InsertArrowArrayError {
+    CacheFull(ArrayRef),
+    AlreadyCached,
+}
+
 impl LiquidCachedColumn {
     fn new(cache_mode: LiquidCacheMode, config: CacheConfig) -> Self {
         Self {
@@ -239,15 +244,19 @@ impl LiquidCachedColumn {
 
     /// Insert an arrow array into the cache.
     // TODO: return an error if the array is too large to fit in the cache.
-    pub(crate) fn insert_arrow_array(self: &Arc<Self>, row_id: usize, array: ArrayRef) {
+    pub(crate) fn insert_arrow_array(
+        self: &Arc<Self>,
+        row_id: usize,
+        array: ArrayRef,
+    ) -> Result<(), InsertArrowArrayError> {
         if self.is_cached(row_id) {
-            return;
+            return Err(InsertArrowArrayError::AlreadyCached);
         }
 
         let current_cache_size = self.config.current_cache_size.load(Ordering::Relaxed);
         let array_size = array.get_array_memory_size();
         if current_cache_size + array_size > self.config.max_cache_bytes {
-            return;
+            return Err(InsertArrowArrayError::CacheFull(array));
         }
 
         let mut rows = self.rows.write().unwrap();
@@ -259,6 +268,7 @@ impl LiquidCachedColumn {
                 self.config
                     .current_cache_size
                     .fetch_add(array_size, Ordering::Relaxed);
+                Ok(())
             }
             LiquidCacheMode::OnDiskArrow => {
                 unimplemented!()
@@ -289,6 +299,7 @@ impl LiquidCachedColumn {
                     TRANSCODE_THREAD_POOL.spawn(async move {
                         column_arc.background_transcode(row_id);
                     });
+                    Ok(())
                 } else {
                     let transcoded = self.transcode_inner(&array);
                     let new_size = transcoded.memory_usage();
@@ -299,7 +310,7 @@ impl LiquidCachedColumn {
                         value: transcoded,
                         hit_count: AtomicU32::new(0),
                     });
-                    drop(rows);
+                    Ok(())
                 }
             }
         }
@@ -518,6 +529,11 @@ impl LiquidCachedFile {
     pub fn cache_mode(&self) -> LiquidCacheMode {
         self.cache_mode
     }
+
+    #[cfg(test)]
+    pub fn memory_usage(&self) -> usize {
+        self.config.current_cache_size.load(Ordering::Relaxed)
+    }
 }
 
 pub type LiquidCachedFileRef = Arc<LiquidCachedFile>;
@@ -633,7 +649,7 @@ mod tests {
         // Test 1: Basic insertion and size tracking
         let array1 = Arc::new(Int32Array::from(vec![1; 100])) as ArrayRef;
         let array1_size = array_mem_size(&array1);
-        column.insert_arrow_array(0, array1.clone());
+        assert!(column.insert_arrow_array(0, array1.clone()).is_ok());
         assert!(column.is_cached(0));
         assert_eq!(
             column.config.current_cache_size.load(Ordering::Relaxed),
@@ -643,7 +659,7 @@ mod tests {
         // Test 2: Multiple insertions within limit
         let array2 = Arc::new(Int32Array::from(vec![2; 200])) as ArrayRef;
         let array2_size = array_mem_size(&array2);
-        column.insert_arrow_array(1, array2.clone());
+        assert!(column.insert_arrow_array(1, array2.clone()).is_ok());
         assert!(column.is_cached(1));
         assert_eq!(
             column.config.current_cache_size.load(Ordering::Relaxed),
@@ -652,14 +668,18 @@ mod tests {
 
         let remaining_space = max_cache_bytes - (array1_size + array2_size);
         let exact_fit_array = Arc::new(Int32Array::from(vec![3; remaining_space / 4])) as ArrayRef;
-        column.insert_arrow_array(2, exact_fit_array.clone());
+        assert!(
+            column
+                .insert_arrow_array(2, exact_fit_array.clone())
+                .is_err()
+        );
         assert!(!column.is_cached(2));
         assert_eq!(
             column.config.current_cache_size.load(Ordering::Relaxed),
             array1_size + array2_size
         );
 
-        column.insert_arrow_array(0, array1.clone());
+        assert!(column.insert_arrow_array(0, array1.clone()).is_err());
         assert_eq!(
             column.config.current_cache_size.load(Ordering::Relaxed),
             array1_size + array2_size
@@ -684,7 +704,7 @@ mod tests {
         let arrow_array = Arc::new(Int32Array::from(vec![10; 100_000])) as ArrayRef;
         let arrow_size = arrow_array.get_array_memory_size();
 
-        column.insert_arrow_array(0, arrow_array.clone());
+        assert!(column.insert_arrow_array(0, arrow_array.clone()).is_ok());
 
         // Immediately after insertion, the batch should be of type ArrowMemory.
         {

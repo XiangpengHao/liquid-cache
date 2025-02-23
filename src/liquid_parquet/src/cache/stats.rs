@@ -208,7 +208,7 @@ mod tests {
                     for row in 0..8 {
                         let row_group = file.row_group(rg);
                         let column = row_group.get_column_or_create(col);
-                        column.insert_arrow_array(row, array.clone());
+                        assert!(column.insert_arrow_array(row, array.clone()).is_ok());
 
                         row_group_id_sum += rg as u64;
                         column_id_sum += col as u64;
