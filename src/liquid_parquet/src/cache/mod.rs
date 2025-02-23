@@ -242,6 +242,54 @@ impl LiquidCachedColumn {
         }
     }
 
+    /// Try to reserve space in the cache.
+    /// Returns true if the space was reserved, false if the cache is full.
+    pub(crate) fn try_reserve_space(&self, array_size: usize) -> bool {
+        let remaining_size = self.config.remaining_cache_size.load(Ordering::Relaxed);
+        if remaining_size < array_size {
+            return false;
+        }
+        match self.config.remaining_cache_size.compare_exchange_weak(
+            remaining_size,
+            remaining_size - array_size,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => true,
+            Err(_) => return self.try_reserve_space(array_size),
+        }
+    }
+
+    /// Adjust the cache size after transcoding.
+    /// Returns true if the size was adjusted, false if the cache is full, when new_size is larger than old_size.
+    pub(crate) fn adjust_cache_size_after_transcoding(
+        &self,
+        old_size: usize,
+        new_size: usize,
+    ) -> bool {
+        if old_size < new_size {
+            if (new_size - old_size) > 1024 * 1024 {
+                warn!(
+                    "Transcoding increased the size of the array by at least 1MB, previous size: {}, new size: {}, double check this is correct",
+                    old_size, new_size
+                );
+            }
+
+            if !self.try_reserve_space(new_size - old_size) {
+                self.config
+                    .remaining_cache_size
+                    .fetch_add(old_size, Ordering::Relaxed);
+                return false;
+            }
+            true
+        } else {
+            self.config
+                .remaining_cache_size
+                .fetch_add(old_size - new_size, Ordering::Relaxed);
+            true
+        }
+    }
+
     /// Insert an arrow array into the cache.
     // TODO: return an error if the array is too large to fit in the cache.
     pub(crate) fn insert_arrow_array(
@@ -253,21 +301,16 @@ impl LiquidCachedColumn {
             return Err(InsertArrowArrayError::AlreadyCached);
         }
 
-        let current_cache_size = self.config.current_cache_size.load(Ordering::Relaxed);
-        let array_size = array.get_array_memory_size();
-        if current_cache_size + array_size > self.config.max_cache_bytes {
-            return Err(InsertArrowArrayError::CacheFull(array));
-        }
-
         let mut rows = self.rows.write().unwrap();
-
         match &self.cache_mode {
             LiquidCacheMode::InMemoryArrow => {
-                let old = rows.insert(row_id, CachedEntry::new_in_memory(array));
-                assert!(old.is_none());
-                self.config
-                    .current_cache_size
-                    .fetch_add(array_size, Ordering::Relaxed);
+                let array_size = array.get_array_memory_size();
+                if self.try_reserve_space(array_size) {
+                    let old = rows.insert(row_id, CachedEntry::new_in_memory(array));
+                    assert!(old.is_none());
+                } else {
+                    return Err(InsertArrowArrayError::CacheFull(array));
+                }
                 Ok(())
             }
             LiquidCacheMode::OnDiskArrow => {
@@ -276,6 +319,11 @@ impl LiquidCachedColumn {
             LiquidCacheMode::InMemoryLiquid {
                 transcode_in_background,
             } => {
+                let arrow_size = array.get_array_memory_size();
+                if !self.try_reserve_space(arrow_size) {
+                    return Err(InsertArrowArrayError::CacheFull(array));
+                }
+
                 let array = if array.data_type() == &DataType::Utf8View {
                     cast(
                         &array,
@@ -286,11 +334,12 @@ impl LiquidCachedColumn {
                     array
                 };
 
-                if *transcode_in_background {
-                    self.config
-                        .current_cache_size
-                        .fetch_add(array.get_array_memory_size(), Ordering::Relaxed);
+                let dict_size = array.get_array_memory_size();
+                if !self.adjust_cache_size_after_transcoding(arrow_size, dict_size) {
+                    return Err(InsertArrowArrayError::CacheFull(array));
+                }
 
+                if *transcode_in_background {
                     // Insert the arrow array first, without doing the expensive transcoding.
                     rows.insert(row_id, CachedEntry::new_in_memory(array.clone()));
 
@@ -303,9 +352,9 @@ impl LiquidCachedColumn {
                 } else {
                     let transcoded = self.transcode_inner(&array);
                     let new_size = transcoded.memory_usage();
-                    self.config
-                        .current_cache_size
-                        .fetch_add(new_size, Ordering::Relaxed);
+                    if !self.adjust_cache_size_after_transcoding(dict_size, new_size) {
+                        return Err(InsertArrowArrayError::CacheFull(array));
+                    }
                     rows.insert(row_id, CachedEntry {
                         value: transcoded,
                         hit_count: AtomicU32::new(0),
@@ -327,16 +376,9 @@ impl LiquidCachedColumn {
                     let previous_size = entry.value.memory_usage();
                     let transcoded = self.transcode_inner(array);
                     let new_size = transcoded.memory_usage();
-                    if previous_size < new_size {
-                        warn!(
-                            "Transcoding increased the size of the array, previous size: {}, new size: {}, double check this is correct",
-                            previous_size, new_size
-                        );
+                    if !self.adjust_cache_size_after_transcoding(previous_size, new_size) {
                         return;
                     }
-                    self.config
-                        .current_cache_size
-                        .fetch_sub(previous_size - new_size, Ordering::Relaxed);
                     entry.value = transcoded;
                 }
                 CachedBatch::LiquidMemory(_) => {
@@ -532,7 +574,7 @@ impl LiquidCachedFile {
 
     #[cfg(test)]
     pub fn memory_usage(&self) -> usize {
-        self.config.current_cache_size.load(Ordering::Relaxed)
+        self.config.memory_usage()
     }
 }
 
@@ -562,7 +604,7 @@ pub enum LiquidCacheMode {
 pub(crate) struct CacheConfig {
     batch_size: usize,
     max_cache_bytes: usize,
-    current_cache_size: Arc<AtomicUsize>,
+    remaining_cache_size: Arc<AtomicUsize>,
 }
 
 impl CacheConfig {
@@ -571,8 +613,12 @@ impl CacheConfig {
         Self {
             batch_size,
             max_cache_bytes,
-            current_cache_size: Arc::new(AtomicUsize::new(0)),
+            remaining_cache_size: Arc::new(AtomicUsize::new(max_cache_bytes)),
         }
+    }
+
+    pub fn memory_usage(&self) -> usize {
+        self.max_cache_bytes - self.remaining_cache_size.load(Ordering::Relaxed)
     }
 }
 
@@ -585,7 +631,7 @@ impl LiquidCache {
             config: CacheConfig {
                 batch_size,
                 max_cache_bytes,
-                current_cache_size: Arc::new(AtomicUsize::new(0)),
+                remaining_cache_size: Arc::new(AtomicUsize::new(max_cache_bytes)),
             },
         }
     }
@@ -619,6 +665,17 @@ impl LiquidCache {
         for file in files.values_mut() {
             file.reset();
         }
+        self.config
+            .remaining_cache_size
+            .store(self.config.max_cache_bytes, Ordering::Relaxed);
+    }
+
+    pub fn remaining_cache_size(&self) -> usize {
+        self.config.remaining_cache_size.load(Ordering::Relaxed)
+    }
+
+    pub fn used_cache_size(&self) -> usize {
+        self.config.memory_usage()
     }
 }
 
@@ -626,7 +683,6 @@ impl LiquidCache {
 mod tests {
     use super::*;
     use arrow::array::{Array, Int32Array};
-    use std::sync::atomic::Ordering;
     use std::{thread, time::Duration};
 
     /// Helper function to get the memory size from an Arrow array.
@@ -651,20 +707,14 @@ mod tests {
         let array1_size = array_mem_size(&array1);
         assert!(column.insert_arrow_array(0, array1.clone()).is_ok());
         assert!(column.is_cached(0));
-        assert_eq!(
-            column.config.current_cache_size.load(Ordering::Relaxed),
-            array1_size
-        );
+        assert_eq!(column.config.memory_usage(), array1_size);
 
         // Test 2: Multiple insertions within limit
         let array2 = Arc::new(Int32Array::from(vec![2; 200])) as ArrayRef;
         let array2_size = array_mem_size(&array2);
         assert!(column.insert_arrow_array(1, array2.clone()).is_ok());
         assert!(column.is_cached(1));
-        assert_eq!(
-            column.config.current_cache_size.load(Ordering::Relaxed),
-            array1_size + array2_size
-        );
+        assert_eq!(column.config.memory_usage(), array1_size + array2_size);
 
         let remaining_space = max_cache_bytes - (array1_size + array2_size);
         let exact_fit_array = Arc::new(Int32Array::from(vec![3; remaining_space / 4])) as ArrayRef;
@@ -674,16 +724,10 @@ mod tests {
                 .is_err()
         );
         assert!(!column.is_cached(2));
-        assert_eq!(
-            column.config.current_cache_size.load(Ordering::Relaxed),
-            array1_size + array2_size
-        );
+        assert_eq!(column.config.memory_usage(), array1_size + array2_size);
 
         assert!(column.insert_arrow_array(0, array1.clone()).is_err());
-        assert_eq!(
-            column.config.current_cache_size.load(Ordering::Relaxed),
-            array1_size + array2_size
-        );
+        assert_eq!(column.config.memory_usage(), array1_size + array2_size);
     }
 
     /// Test that verifies background transcoding updates both the stored value type
@@ -715,7 +759,7 @@ mod tests {
                 CachedBatch::LiquidMemory(_) => panic!("Should not have transcoded immediately"),
             }
         }
-        let size_before = column.config.current_cache_size.load(Ordering::Relaxed);
+        let size_before = column.config.memory_usage();
         assert_eq!(size_before, arrow_size);
 
         // Wait briefly to let the background transcoding complete.
@@ -742,7 +786,7 @@ mod tests {
                 }
             }
         }
-        let size_after = column.config.current_cache_size.load(Ordering::Relaxed);
+        let size_after = column.config.memory_usage();
         assert!(
             size_after <= size_before,
             "Cache memory counter should have decreased after transcoding"
@@ -751,6 +795,60 @@ mod tests {
         println!(
             "Test background transcoding: size_before={} size_after={}",
             size_before, size_after
+        );
+    }
+
+    #[test]
+    fn test_concurrent_arrow_insert_race_condition_over_allocation() {
+        use arrow::array::{ArrayRef, Int32Array};
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let batch_size = 64;
+        let dummy_array: ArrayRef =
+            Arc::new(Int32Array::from((0..100).map(|_| 0).collect::<Vec<i32>>()));
+        let dummy_size = dummy_array.get_array_memory_size();
+
+        let max_cache_bytes = dummy_size;
+
+        let cache = LiquidCache::new(batch_size, max_cache_bytes);
+        let file = cache.register_or_get_file(
+            "race_condition_test_file".to_string(),
+            LiquidCacheMode::InMemoryArrow,
+        );
+        let row_group = file.row_group(0);
+        let column = row_group.get_column_or_create(0);
+
+        // Spawn many threads so that they all attempt to insert concurrently.
+        let num_threads = 4;
+        let barrier = Arc::new(Barrier::new(num_threads));
+
+        let handles: Vec<_> = (0..num_threads)
+            .map(|i| {
+                let barrier = barrier.clone();
+                let column = Arc::clone(&column);
+                thread::spawn(move || {
+                    // Wait until all threads are ready.
+                    let array: ArrayRef = Arc::new(Int32Array::from(
+                        (0..100).map(|_| i as i32).collect::<Vec<_>>(),
+                    ));
+                    barrier.wait();
+                    let _ = column.insert_arrow_array(i, array);
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let final_mem = column.config.memory_usage();
+
+        assert!(
+            final_mem <= max_cache_bytes,
+            "Final memory usage {} exceeds configured max {}",
+            final_mem,
+            max_cache_bytes
         );
     }
 }

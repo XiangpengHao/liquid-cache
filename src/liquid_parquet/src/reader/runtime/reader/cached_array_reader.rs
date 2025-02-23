@@ -74,24 +74,28 @@ impl CachedArrayReader {
         self.liquid_cache.batch_size()
     }
 
-    fn fetch_batch(&mut self, batch_id: usize) -> Result<(), ParquetError> {
+    fn fetch_batch(&mut self, row_id: usize) -> Result<(), ParquetError> {
         // now we need to read from inner reader, first check if the inner id is up to date.
-        if self.inner_row_id < batch_id {
-            let to_skip = batch_id - self.inner_row_id;
+        if self.inner_row_id < row_id {
+            let to_skip = row_id - self.inner_row_id;
             let skipped = self.inner.skip_records(to_skip)?;
             assert_eq!(skipped, to_skip);
-            self.inner_row_id = batch_id;
+            self.inner_row_id = row_id;
         }
         let read = self.inner.read_records(self.batch_size())?;
         let array = self.inner.consume_batch()?;
         if let Err(crate::cache::InsertArrowArrayError::CacheFull(array)) =
-            self.liquid_cache.insert_arrow_array(batch_id, array)
+            self.liquid_cache.insert_arrow_array(row_id, array)
         {
-            self.reader_local_cache.insert(batch_id, array);
+            self.reader_local_cache.insert(row_id, array);
         }
 
         self.inner_row_id += read;
         Ok(())
+    }
+
+    fn is_cached(&self, row_id: usize) -> bool {
+        self.liquid_cache.is_cached(row_id) || self.reader_local_cache.contains_key(&row_id)
     }
 
     fn read_records_inner(&mut self, request_size: usize) -> Result<usize, ParquetError> {
@@ -100,15 +104,15 @@ impl CachedArrayReader {
 
         self.selection.push_back(RowSelector::select(request_size));
 
-        let starting_batch_id = self.current_row / batch_size * batch_size;
-        let ending_batch_id = (self.current_row + request_size - 1) / batch_size * batch_size;
+        let starting_row_id = self.current_row / batch_size * batch_size;
+        let ending_row_id = (self.current_row + request_size - 1) / batch_size * batch_size;
 
-        if !self.liquid_cache.is_cached(starting_batch_id) {
-            self.fetch_batch(starting_batch_id)?;
+        if !self.is_cached(starting_row_id) {
+            self.fetch_batch(starting_row_id)?;
         }
 
-        if ending_batch_id != starting_batch_id && !self.liquid_cache.is_cached(ending_batch_id) {
-            self.fetch_batch(ending_batch_id)?;
+        if ending_row_id != starting_row_id && !self.is_cached(ending_row_id) {
+            self.fetch_batch(ending_row_id)?;
         }
 
         self.current_row += request_size;

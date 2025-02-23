@@ -29,3 +29,9 @@ env RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS='-C target-cpu=native' cargo run --
 env RUST_LOG=info,clickbench_client=debug RUST_BACKTRACE=1 RUSTFLAGS='-C target-cpu=native' cargo run --release --bin clickbench_client -- --query-path benchmark/query_select.sql --file benchmark/data/hits.parquet --bench-mode liquid-eager-transcode --server http://127.0.0.1:5001 --iteration 5 --output benchmark/data/liquid_eager_transcode.json --reset-cache
 ```
 
+
+### Start server with limited memory
+```bash
+systemd-run --scope -p MemoryMax=16G ./target/release/bench_server --address 127.0.0.1:5001 --max-
+cache-mb 12288
+```
