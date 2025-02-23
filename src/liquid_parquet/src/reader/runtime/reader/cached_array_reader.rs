@@ -175,8 +175,7 @@ impl CachedArrayReader {
                         .reader_local_cache
                         .remove(&(batch_id * batch_size))
                         .unwrap();
-                    let filtered = arrow::compute::filter(&array, &mask_array).unwrap();
-                    filtered
+                    arrow::compute::filter(&array, &mask_array).unwrap()
                 }
             };
 

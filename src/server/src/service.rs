@@ -9,7 +9,7 @@ use datafusion::{
 use liquid_common::{ParquetMode, rpc::ExecutionMetricsResponse};
 use liquid_parquet::{LiquidCache, LiquidCacheMode, LiquidCacheRef, LiquidParquetFileFormat};
 use log::{debug, info};
-use std::{collections::HashMap, sync::Arc, usize};
+use std::{collections::HashMap, sync::Arc};
 use tokio::sync::Mutex;
 use tonic::Status;
 use url::Url;

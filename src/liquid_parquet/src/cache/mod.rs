@@ -416,7 +416,7 @@ impl LiquidCachedColumn {
                 let (compressor, compressed) =
                     LiquidByteArray::train_from_arrow_view(array.as_string_view());
                 *compressors = Some(compressor);
-                return CachedBatch::LiquidMemory(Arc::new(compressed));
+                CachedBatch::LiquidMemory(Arc::new(compressed))
             }
             DataType::Utf8 => {
                 let compressor = self.fsst_compressor().read().unwrap();
@@ -432,7 +432,7 @@ impl LiquidCachedColumn {
                 let (compressor, compressed) =
                     LiquidByteArray::train_from_arrow(array.as_string::<i32>());
                 *compressors = Some(compressor);
-                return CachedBatch::LiquidMemory(Arc::new(compressed));
+                CachedBatch::LiquidMemory(Arc::new(compressed))
             }
             DataType::Dictionary(_, _) => {
                 if let Some(dict_array) = array.as_dictionary_opt::<ArrowUInt16Type>() {
