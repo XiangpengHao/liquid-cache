@@ -1,6 +1,6 @@
 use crate::{
     LiquidCacheMode, LiquidPredicate,
-    cache::LiquidCachedFile,
+    cache::{CacheConfig, LiquidCachedFile},
     liquid_array::LiquidArrayRef,
     reader::{
         plantime::{
@@ -57,7 +57,7 @@ async fn create_record_batch(batch_size: usize, i: usize) -> RecordBatch {
             LiquidCacheMode::InMemoryLiquid {
                 transcode_in_background: false,
             },
-            batch_size,
+            CacheConfig::new(batch_size, usize::MAX),
         )))
         .unwrap();
 
@@ -124,7 +124,7 @@ async fn basic_stuff() {
         LiquidCacheMode::InMemoryLiquid {
             transcode_in_background: false,
         },
-        batch_size,
+        CacheConfig::new(batch_size, usize::MAX),
     );
     let reader = builder.build(Arc::new(liquid_cache)).unwrap();
 
@@ -157,7 +157,7 @@ async fn test_reading_with_projection() {
         LiquidCacheMode::InMemoryLiquid {
             transcode_in_background: false,
         },
-        batch_size,
+        CacheConfig::new(batch_size, usize::MAX),
     );
     let reader = builder.build(Arc::new(liquid_cache)).unwrap();
 
@@ -186,7 +186,7 @@ async fn test_reading_warm() {
         LiquidCacheMode::InMemoryLiquid {
             transcode_in_background: false,
         },
-        batch_size,
+        CacheConfig::new(batch_size, usize::MAX),
     ));
     builder.projection = ProjectionMask::roots(
         builder.metadata.file_metadata().schema_descr(),
@@ -330,7 +330,7 @@ async fn test_reading_with_filter() {
         LiquidCacheMode::InMemoryLiquid {
             transcode_in_background: false,
         },
-        batch_size,
+        CacheConfig::new(batch_size, usize::MAX),
     ));
 
     let reader = builder.build(liquid_cache.clone()).unwrap();
@@ -399,4 +399,42 @@ fn filter_record_batch(batch: &RecordBatch, mask: BooleanBuffer) -> RecordBatch 
         .collect::<Vec<_>>();
 
     RecordBatch::try_new(batch.schema(), filtered_columns).unwrap()
+}
+
+#[tokio::test]
+async fn test_reading_with_full_cache() {
+    let column_projections = vec![0, 3, 6, 8];
+    let (mut builder, _file) = get_test_reader().await;
+    let batch_size = builder.batch_size;
+
+    // Create a cache with a very small max size to force cache misses
+    let liquid_cache = Arc::new(LiquidCachedFile::new(
+        LiquidCacheMode::InMemoryLiquid {
+            transcode_in_background: false,
+        },
+        CacheConfig::new(batch_size, 1), // Set tiny max cache size to force cache misses
+    ));
+
+    builder.projection = ProjectionMask::roots(
+        builder.metadata.file_metadata().schema_descr(),
+        column_projections.iter().cloned(),
+    );
+    let reader = builder.build(liquid_cache.clone()).unwrap();
+
+    let batches = reader
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .map(|batch| batch.unwrap())
+        .collect::<Vec<_>>();
+
+    // Verify we got the expected results even with a full cache
+    for (i, batch) in batches.iter().enumerate() {
+        let expected = create_record_batch(batch_size, i)
+            .await
+            .project(&column_projections)
+            .unwrap();
+        assert_batch_eq(&expected, batch);
+    }
+    assert_eq!(liquid_cache.memory_usage(), 0);
 }

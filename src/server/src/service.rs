@@ -22,9 +22,12 @@ pub(crate) struct LiquidCacheServiceInner {
 }
 
 impl LiquidCacheServiceInner {
-    pub fn new(default_ctx: Arc<SessionContext>) -> Self {
+    pub fn new(default_ctx: Arc<SessionContext>, max_cache_bytes: Option<usize>) -> Self {
         let batch_size = default_ctx.state().config().batch_size();
-        let liquid_cache = Arc::new(LiquidCache::new(batch_size));
+        let liquid_cache = Arc::new(LiquidCache::new(
+            batch_size,
+            max_cache_bytes.unwrap_or(usize::MAX),
+        ));
         Self {
             execution_plans: Default::default(),
             registered_tables: Default::default(),
