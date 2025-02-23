@@ -256,7 +256,7 @@ impl LiquidCachedColumn {
             Ordering::Relaxed,
         ) {
             Ok(_) => true,
-            Err(_) => return self.try_reserve_space(array_size),
+            Err(_) => self.try_reserve_space(array_size),
         }
     }
 

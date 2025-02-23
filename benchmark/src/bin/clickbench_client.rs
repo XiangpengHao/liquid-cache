@@ -481,7 +481,9 @@ pub async fn main() -> Result<()> {
                 .await;
             info!(
                 "Server processing time: {} ms, cache memory usage: {} bytes, liquid cache usage: {} bytes",
-                metrics_response.pushdown_eval_time, metrics_response.cache_memory_usage, metrics_response.liquid_cache_usage
+                metrics_response.pushdown_eval_time,
+                metrics_response.cache_memory_usage,
+                metrics_response.liquid_cache_usage
             );
 
             query_result.add(IterationResult {
