@@ -98,6 +98,8 @@ pub struct ExecutionMetricsResponse {
     pub pushdown_eval_time: u64,
     #[prost(uint64, tag = "2")]
     pub cache_memory_usage: u64,
+    #[prost(uint64, tag = "3")]
+    pub liquid_cache_usage: u64,
 }
 
 impl ProstMessageExt for ExecutionMetricsResponse {

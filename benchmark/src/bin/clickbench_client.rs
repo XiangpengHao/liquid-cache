@@ -161,6 +161,7 @@ impl BenchmarkMode {
                     return ExecutionMetricsResponse {
                         pushdown_eval_time: 0,
                         cache_memory_usage: 0,
+                        liquid_cache_usage: 0,
                     };
                 }
                 let metrics = plan
@@ -183,6 +184,7 @@ impl BenchmarkMode {
                 ExecutionMetricsResponse {
                     pushdown_eval_time: 0,
                     cache_memory_usage: bytes_scanned as u64,
+                    liquid_cache_usage: 0,
                 }
             }
             BenchmarkMode::ParquetPushdown
@@ -478,8 +480,10 @@ pub async fn main() -> Result<()> {
                 .get_execution_metrics(server_url, &physical_plan)
                 .await;
             info!(
-                "Server processing time: {} ms, cache memory usage: {} bytes",
-                metrics_response.pushdown_eval_time, metrics_response.cache_memory_usage
+                "Server processing time: {} ms, cache memory usage: {} bytes, liquid cache usage: {} bytes",
+                metrics_response.pushdown_eval_time,
+                metrics_response.cache_memory_usage,
+                metrics_response.liquid_cache_usage
             );
 
             query_result.add(IterationResult {

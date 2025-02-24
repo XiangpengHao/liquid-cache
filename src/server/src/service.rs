@@ -211,11 +211,13 @@ impl LiquidCacheServiceInner {
                 }
             }
         }
-        let cache_memory_usage = self.cache().memory_usage_bytes() + bytes_scanned as u64;
+        let liquid_cache_usage = self.cache().memory_usage_bytes();
+        let cache_memory_usage = liquid_cache_usage + bytes_scanned as u64;
 
         let response = ExecutionMetricsResponse {
             pushdown_eval_time: time_elapsed_processing_millis as u64,
             cache_memory_usage,
+            liquid_cache_usage,
         };
         Some(response)
     }
