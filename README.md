@@ -3,11 +3,11 @@
 
 <p align="center"> Cache that understands your data and cuts your S3 bill by 10x. </p>
 
-[![Rust CI](https://github.com/XiangpengHao/datafusion-cache/actions/workflows/ci.yml/badge.svg)](https://github.com/XiangpengHao/datafusion-cache/actions/workflows/ci.yml)
+[![Rust CI](https://github.com/XiangpengHao/liquid-cache/actions/workflows/ci.yml/badge.svg)](https://github.com/XiangpengHao/liquid-cache/actions/workflows/ci.yml)
 
 ## Architecture
 
-![architecture](/dev/doc/arch.jpg)
+![architecture](/dev/doc/arch.svg)
 
 
 ## Try in 5 minutes!
@@ -16,25 +16,27 @@ Checkout the `examples` folder for more details.
 ### 1. Add dependency
 ```toml
 [dependencies]
-datafusion-cache = "0.1.0"
+liquid-cache-common = "0.1.0"
+liquid-cache-client = "0.1.0"
+liquid-cache-server = "0.1.0"
 ```
 
 ### 2. Start a cache server:
 ```rust
 use arrow_flight::flight_service_server::FlightServiceServer;
-use datafusion_cache::cache::SplitSqlService;
+use liquid_cache_server::LiquidCacheService;
 use tonic::transport::Server;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = "0.0.0.0:50051".parse()?;
 
-    let split_sql = SplitSqlService::try_new()?;
+    let liquid_cache = LiquidCacheService::try_new()?;
+    let flight = FlightServiceServer::new(liquid_cache);
 
-    Server::builder()
-        .add_service(FlightServiceServer::new(split_sql))
-        .serve(addr)
-        .await?;
+    info!("LiquidCache server listening on {addr:?}");
+
+    Server::builder().add_service(flight).serve(addr).await?;
 
     Ok(())
 }
@@ -42,24 +44,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### 3. Connect to the cache server:
 ```rust
-use datafusion::prelude::*;
-use datafusion_cache::compute::SplitSqlTableFactory;
+use std::sync::Arc;
+use datafusion::{
+    error::Result,
+    prelude::{SessionConfig, SessionContext},
+};
+use liquid_cache_client::LiquidCacheTableFactory;
+use liquid_common::ParquetMode;
+use url::Url;
 
 #[tokio::main]
 pub async fn main() -> Result<()> {
-   let table = SplitSqlTableFactory::open_table(
-        "http://localhost:50051",
-        "table_name",
-        "s3://bucket/your_file.parquet",
+    let mut session_config = SessionConfig::from_env()?;
+    session_config
+        .options_mut()
+        .execution
+        .parquet
+        .pushdown_filters = true;
+    let ctx = Arc::new(SessionContext::new_with_config(session_config));
+
+    let entry_point = "http://localhost:50051";
+    let sql = "SELECT COUNT(*) FROM nano_hits WHERE \"URL\" <> '';";
+    let table_url = Url::parse("file:///examples/nano_hits.parquet").unwrap();
+
+    let table = LiquidCacheTableFactory::open_table(
+        entry_point,
+        "nano_hits",
+        table_url,
+        ParquetMode::Liquid,
     )
     .await?;
-
-    let ctx = Arc::new(SessionContext::new());
-    ctx.register_table("table_name", Arc::new(table))?;
-
-    let sql = "SELECT COUNT(*) FROM table_name WHERE \"URL\" <> '';";
+    ctx.register_table("nano_hits", Arc::new(table))?;
 
     ctx.sql(sql).await?.show().await?;
+
     Ok(())
 }
 ```
@@ -71,3 +89,6 @@ pub async fn main() -> Result<()> {
 
 See [dev/README.md](./dev/README.md)
 
+## Benchmark
+
+See [benchmark/README.md](./benchmark/README.md)
