@@ -1,13 +1,21 @@
 <p align="center"> <img src="/dev/doc/logo.png" alt="liquid_cache_logo" width="450"/> </p>
 
 
-<p align="center"> Cache that understands your data and cuts your S3 bill by 10x. </p>
-
 [![Rust CI](https://github.com/XiangpengHao/liquid-cache/actions/workflows/ci.yml/badge.svg)](https://github.com/XiangpengHao/liquid-cache/actions/workflows/ci.yml)
 
 ## Architecture
 
-<img src="/dev/doc/arch.png" alt="architecture" width="600"/>
+Welcome to LiquidCache's disaggregated architecture! 🚀
+
+Our design is beautifully simple yet powerful - we run both cache and compute nodes on standard cloud servers, but each is specially configured for what it does best:
+
+- Cache servers come packed with **high memory** and **modest CPU power**
+- Compute servers feature **powerful CPUs** with just enough memory for their tasks
+
+Everything stays connected through speedy modern networks, making it easy for multiple compute servers to share a single cache server. 
+The best part? You can **scale each component independently** as your workload grows. Need more compute power? Add compute nodes! Need more caching? Expand your cache servers! It's that simple.
+
+<img src="/dev/doc/arch.png" alt="architecture" width="400"/>
 
 
 ## Run ClickBench to feel the performance
