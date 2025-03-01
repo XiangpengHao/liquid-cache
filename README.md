@@ -7,23 +7,23 @@
 
 ## Architecture
 
-![architecture](/dev/doc/arch.png)
+<img src="/dev/doc/arch.png" alt="architecture" width="600"/>
 
 
-## Run ClickBench to see the performance
+## Run ClickBench to feel the performance
 
-### 1. Setup repo
+#### 1. Setup repo
 ```bash
 git clone https://github.com/XiangpengHao/liquid-cache.git
 cd liquid-cache
 ```
 
-### 2. Run a LiquidCache server
+#### 2. Run a LiquidCache server
 ```bash
 cargo run --bin bench_server --release
 ```
 
-### 3. Run a ClickBench client
+#### 3. Run a ClickBench client
 In a different terminal, run the ClickBench client.
 ```bash
 cargo run --bin clickbench_client --release -- --query-path benchmark/queries.sql --file examples/nano_hits.parquet
@@ -32,7 +32,7 @@ cargo run --bin clickbench_client --release -- --query-path benchmark/queries.sq
 ## Try LiquidCache
 Checkout the `examples` folder for more details. We are working on a crates.io release, stay tuned!
 
-### 1. Start a cache server:
+#### 1. Start a cache server:
 ```rust
 use arrow_flight::flight_service_server::FlightServiceServer;
 use liquid_cache_server::LiquidCacheService;
@@ -53,7 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### 2. Connect to the cache server:
+#### 2. Connect to the cache server:
 ```rust
 use std::sync::Arc;
 use datafusion::{
@@ -93,7 +93,7 @@ pub async fn main() -> Result<()> {
 }
 ```
 
-### 3. Enjoy!
+#### 3. Enjoy!
 
 
 ## Development
