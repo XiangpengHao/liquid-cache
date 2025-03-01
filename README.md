@@ -1,4 +1,4 @@
-<p align="center"> <img src="/dev/doc/liquid_cache.png" alt="liquid_cache_logo" width="450"/> </p>
+<p align="center"> <img src="/dev/doc/logo.png" alt="liquid_cache_logo" width="450"/> </p>
 
 
 <p align="center"> Cache that understands your data and cuts your S3 bill by 10x. </p>
@@ -7,21 +7,32 @@
 
 ## Architecture
 
-![architecture](/dev/doc/arch.svg)
+![architecture](/dev/doc/arch.png)
 
 
-## Try in 5 minutes!
-Checkout the `examples` folder for more details.
+## Run ClickBench to see the performance
 
-### 1. Add dependency
-```toml
-[dependencies]
-liquid-cache-common = "0.1.0"
-liquid-cache-client = "0.1.0"
-liquid-cache-server = "0.1.0"
+### 1. Setup repo
+```bash
+git clone https://github.com/XiangpengHao/liquid-cache.git
+cd liquid-cache
 ```
 
-### 2. Start a cache server:
+### 2. Run a LiquidCache server
+```bash
+cargo run --bin bench_server --release
+```
+
+### 3. Run a ClickBench client
+In a different terminal, run the ClickBench client.
+```bash
+cargo run --bin clickbench_client --release -- --query-path benchmark/queries.sql --file examples/nano_hits.parquet
+```
+
+## Try LiquidCache
+Checkout the `examples` folder for more details. We are working on a crates.io release, stay tuned!
+
+### 1. Start a cache server:
 ```rust
 use arrow_flight::flight_service_server::FlightServiceServer;
 use liquid_cache_server::LiquidCacheService;
@@ -42,7 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### 3. Connect to the cache server:
+### 2. Connect to the cache server:
 ```rust
 use std::sync::Arc;
 use datafusion::{
@@ -82,7 +93,7 @@ pub async fn main() -> Result<()> {
 }
 ```
 
-### 4. Enjoy!
+### 3. Enjoy!
 
 
 ## Development
@@ -92,3 +103,38 @@ See [dev/README.md](./dev/README.md)
 ## Benchmark
 
 See [benchmark/README.md](./benchmark/README.md)
+
+## FAQ
+
+**Can I use LiquidCache in production today?**
+
+No. While production-ready is our goal, we are still working on implementing more features and polishing it.
+LiquidCache starts with a research project, mainly to demonstrate a new approach to build cost-effective caching systems. Like most research projects, it takes time to mature, we welcome your help!
+
+**Nightly Rust, seriously?**
+
+We will use stable Rust once we believe the project is ready for production.
+
+**How LiquidCache works?**
+
+We are currently submitting a paper to VLDB (as of Mar 1, 2025), in the meanwhile, we are happy to share our paper on request.
+We are also working on a tech blog to introduce LiquidCache in a more techy way.
+
+**How can I get involved?**
+
+We are always looking for contributors, any feedback/improvement is welcome! Feel free to take a look at the issue list and contribute to the project.
+If you want to get involved in the research process, feel free to [reach out](https://haoxp.xyz/work-with-me/).
+
+**Who made this?**
+
+LiquidCache is a research project funded by:
+- [InfluxData](https://www.influxdata.com/)
+- Taxpayers of the state of Wisconsin and federal government. 
+
+As such, LiquidCache is and will always be open source and free to use.
+
+Your support to science is greatly appreciated!
+
+## License
+
+This project is licensed under the [Apache License 2.0](./LICENSE).
