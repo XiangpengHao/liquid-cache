@@ -5,15 +5,15 @@
 
 ## Architecture
 
-Welcome to LiquidCache's disaggregated architecture! 🚀
+Welcome to LiquidCache! 🚀
 
-Our design is simple yet powerful - both cache and compute nodes run on standard cloud servers, but each is specially configured for what it does best:
+The architecture is simple - both cache and compute nodes run on standard cloud servers, but each is configured differently:
 
-- Cache servers come packed with **high memory** and **modest CPU power**
-- Compute servers feature **powerful CPUs** with **just enough memory** for their tasks
+- Cache servers are equipped with memory/CPU ratio of 16:1 (e.g., 64GB memory and 4 cores)
+- Compute servers are often 2:1 (e.g., 64GB memory and 32 cores)
 
 Everything stays connected through speedy modern networks, making it easy for multiple compute servers to share a single cache server. 
-The best part? You can **scale each component independently** as your workload grows. Need more compute power? Add compute nodes! Need more caching? Scale your cache servers! 
+You can **scale each component independently** as your workload grows. 
 
 <img src="/dev/doc/arch.png" alt="architecture" width="400"/>
 
