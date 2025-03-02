@@ -458,8 +458,11 @@ pub async fn main() -> Result<()> {
             info!("Query execution time: {:?}", elapsed);
 
             networks.refresh(true);
-            let network_info = networks.get("lo").unwrap();
-
+            // for mac its lo0 and for linux its lo.
+            let network_info = networks
+                .get("lo0")
+                .or_else(|| networks.get("lo"))
+                .expect("No loopback interface found in networks");
             let physical_plan_with_metrics =
                 DisplayableExecutionPlan::with_metrics(physical_plan.as_ref());
 
