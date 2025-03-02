@@ -138,7 +138,7 @@ We will use stable Rust once we believe the project is ready for production.
 
 #### How does LiquidCache work?
 
-Check out our [paper](/dev/doc/paper.pdf) (under submission to VLDB) for more details, in the meanwhile, we are working on a tech blog to introduce LiquidCache in a more human-readable way.
+Check out our [paper](/dev/doc/liquid-cache-vldb.pdf) (under submission to VLDB) for more details, in the meanwhile, we are working on a tech blog to introduce LiquidCache in a more human-readable way.
 
 #### How can I get involved?
 
