@@ -3,17 +3,23 @@
 
 [![Rust CI](https://github.com/XiangpengHao/liquid-cache/actions/workflows/ci.yml/badge.svg)](https://github.com/XiangpengHao/liquid-cache/actions/workflows/ci.yml)
 
-## Architecture
-
 Welcome to LiquidCache! 🚀
 
-The architecture is simple - both cache and compute nodes run on standard cloud servers, but is configured differently:
+LiquidCache is a cache server for [DataFusion](https://github.com/apache/datafusion) based systems. Simply register LiquidCache as the `TableProvider`, and you can enjoy the performance boost.
 
-- Cache servers are equipped with memory/CPU ratio of 16:1 (e.g., 64GB memory and 4 cores)
-- Compute servers are often 2:1 (e.g., 64GB memory and 32 cores)
+Under the hood, LiquidCache transcodes and caches the Parquet data from object store, and evaluates the filters before sending the data to the DataFusion,
+effectively reducing both CPU utilization and network data transfer on cache servers.
+Depending on your usage, LiquidCache can easily achieve 10x lower cost and latency.
 
-Compute and cache are connected through networks, allowing multiple compute servers to share a single cache server. 
-You can **scale each component independently** as your workload grows. 
+## Architecture
+
+Both LiquidCache and DataFusion run on cloud servers within the same region, but is configured differently:
+
+- LiquidCache often have memory/CPU ratio of 16:1 (e.g., 64GB memory and 4 cores)
+- DataFusion often have memory/CPU ratio of 2:1 (e.g., 32GB memory and 16 cores)
+
+Multiple DataFusion nodes share the same LiquidCache through network. 
+Each component can be scaled independently as the workload grows. 
 
 <img src="/dev/doc/arch.png" alt="architecture" width="400"/>
 
@@ -36,6 +42,7 @@ In a different terminal, run the ClickBench client.
 ```bash
 cargo run --bin clickbench_client --release -- --query-path benchmark/queries.sql --file examples/nano_hits.parquet
 ```
+(note: replace `nano_hits.parquet` with [real ClickBench dataset](https://github.com/ClickHouse/ClickBench))
 
 ## Try LiquidCache
 Checkout the `examples` folder for more details. We are working on a crates.io release, stay tuned!
@@ -114,26 +121,31 @@ See [benchmark/README.md](./benchmark/README.md)
 
 ## FAQ
 
-**Can I use LiquidCache in production today?**
+#### Can I use LiquidCache in production today?
 
 No. While production-ready is our goal, we are still working on implementing more features and polishing it.
-LiquidCache starts with a research project, mainly to demonstrate a new approach to build cost-effective caching systems. Like most research projects, it takes time to mature, we welcome your help!
+LiquidCache starts with a research project -- exploring new approaches to build cost-effective caching systems. Like most research projects, it takes time to mature, and we welcome your help!
 
-**Nightly Rust, seriously?**
+#### Does LiquidCache cache data or results?
+
+LiquidCache is a data cache, it caches logically equivalent but physically different data from object store.
+
+LiquidCaches does not cache query results, it only caches data, allowing the same cache to be used for different queries.
+
+#### Nightly Rust, seriously?
 
 We will use stable Rust once we believe the project is ready for production.
 
-**How LiquidCache works?**
+#### How does LiquidCache work?
 
-We are currently submitting a paper to VLDB (as of Mar 1, 2025), in the meanwhile, we are happy to share our paper on request.
-We are also working on a tech blog to introduce LiquidCache in a more techy way.
+Check out our [paper](/dev/doc/paper.pdf) (under submission to VLDB) for more details, in the meanwhile, we are working on a tech blog to introduce LiquidCache in a more human-readable way.
 
-**How can I get involved?**
+#### How can I get involved?
 
 We are always looking for contributors, any feedback/improvement is welcome! Feel free to take a look at the issue list and contribute to the project.
 If you want to get involved in the research process, feel free to [reach out](https://haoxp.xyz/work-with-me/).
 
-**Who made this?**
+#### Who is behind LiquidCache?
 
 LiquidCache is a research project funded by:
 - [InfluxData](https://www.influxdata.com/)
@@ -145,4 +157,4 @@ Your support to science is greatly appreciated!
 
 ## License
 
-This project is licensed under the [Apache License 2.0](./LICENSE).
+[Apache License 2.0](./LICENSE)
