@@ -5,10 +5,7 @@
 
 Welcome to LiquidCache! 🚀
 
-LiquidCache is a cache server for [DataFusion](https://github.com/apache/datafusion) based systems. Simply register LiquidCache as the `TableProvider`, and you can enjoy the performance boost.
-
-Under the hood, LiquidCache transcodes and caches the Parquet data from object store, and evaluates the filters before sending the data to the DataFusion,
-effectively reducing both CPU utilization and network data transfer on cache servers.
+LiquidCache is a cache server for [DataFusion](https://github.com/apache/datafusion) based systems. Simply register LiquidCache as the `TableProvider` to enjoy the performance boost. 
 Depending on your usage, LiquidCache can easily achieve 10x lower cost and latency.
 
 ## Architecture
@@ -20,6 +17,9 @@ Both LiquidCache and DataFusion run on cloud servers within the same region, but
 
 Multiple DataFusion nodes share the same LiquidCache through network. 
 Each component can be scaled independently as the workload grows. 
+
+Under the hood, LiquidCache transcodes and caches the Parquet data from object store, and evaluates the filters before sending the data to the DataFusion,
+effectively reducing both CPU utilization and network data transfer on cache servers.
 
 <img src="/dev/doc/arch.png" alt="architecture" width="400"/>
 
