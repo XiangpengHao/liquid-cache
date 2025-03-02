@@ -2,11 +2,11 @@
 name = "examples"
 edition = { workspace = true }
 
-[[bin]]
+[[example]]
 name = "server"
 path = "server.rs"
 
-[[bin]]
+[[example]]
 name = "client"
 path = "client.rs"
 
