@@ -459,7 +459,10 @@ pub async fn main() -> Result<()> {
 
             networks.refresh(true);
             // for mac its lo0 and for linux its lo.
-            let network_info = networks.get("lo0").or_else(|| networks.get("lo")).expect("No loopback interface found in networks");
+            let network_info = networks
+                .get("lo0")
+                .or_else(|| networks.get("lo"))
+                .expect("No loopback interface found in networks");
             let physical_plan_with_metrics =
                 DisplayableExecutionPlan::with_metrics(physical_plan.as_ref());
 
