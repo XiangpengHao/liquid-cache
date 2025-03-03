@@ -1,6 +1,8 @@
 
 ## Development Setup
 
+**Engineering is art, it has to be beautiful.**
+
 Install Rust toolchain:
 
 ```bash
@@ -13,12 +15,7 @@ Run tests:
 cargo test
 ```
 
-
-
-
-
 ### (Optional) Setup
-
 
 **Git Hooks**
 After cloning the repository, run the following command to set up git hooks: 
@@ -28,3 +25,4 @@ After cloning the repository, run the following command to set up git hooks:
 ```
 
 This will set up pre-commit hooks that check formatting, run clippy, and verify documentation.
+

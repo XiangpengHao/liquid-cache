@@ -3,12 +3,12 @@ name = "examples"
 edition = { workspace = true }
 
 [[bin]]
-name = "server"
-path = "server.rs"
+name = "example_server"
+path = "example_server.rs"
 
 [[bin]]
-name = "client"
-path = "client.rs"
+name = "example_client"
+path = "example_client.rs"
 
 [dependencies]
 datafusion = { workspace = true }

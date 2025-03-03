@@ -126,7 +126,7 @@ jobs:
 
       - name: Run simple ClickBench
         run: |
-          env RUST_LOG=info cargo run --bin clickbench_client -- --query-path benchmark/queries.sql --file examples/nano_hits.parquet
+          env RUST_LOG=info cargo run --bin clickbench_client -- --query-path benchmark/clickbench/queries/queries.sql --file examples/nano_hits.parquet
         # Always clean up after this step
         shell: bash
         if: always()
@@ -152,7 +152,7 @@ jobs:
 
       - name: Run ClickBench partition 0
         run: |
-          env RUST_LOG=info cargo run --bin clickbench_client -- --query-path benchmark/queries.sql --file benchmark/data/hits_0.parquet --answer-dir benchmark/answers/clickbench_0
+          env RUST_LOG=info cargo run --bin clickbench_client -- --query-path benchmark/clickbench/queries/queries.sql --file benchmark/data/hits_0.parquet --answer-dir benchmark/clickbench/answers/clickbench_0
         shell: bash
         if: always()
 
@@ -180,19 +180,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build LiquidCache server
-        run: cargo build --bin server
+        run: cargo build --bin example_server
       - name: Build LiquidCache client
-        run: cargo build --bin client
+        run: cargo build --bin example_client
 
       - name: Start LiquidCache server
         run: |
-          env RUST_LOG=info nohup cargo run --bin server -- --abort-on-panic &> server.log &
+          env RUST_LOG=info nohup cargo run --bin example_server -- --abort-on-panic &> server.log &
           echo $! > server.pid  # Save PID for later cleanup
           sleep 2  # Wait for server to start up
 
       - name: Start LiquidCache client
         run: |
-          env RUST_LOG=info cargo run --bin client
+          env RUST_LOG=info cargo run --bin example_client
 
       - name: Kill LiquidCache server and show logs
         if: always()

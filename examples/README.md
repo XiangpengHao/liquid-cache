@@ -3,11 +3,11 @@ DataFusion Cache examples
 ## Server
 
 ```bash
-cargo run --bin server
+cargo run --bin example_server
 ```
 
 ## Client
 
 ```bash
-cargo run --bin client
+cargo run --bin example_client
 ```
