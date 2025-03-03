@@ -274,7 +274,7 @@ fn get_queries(query_dir: impl AsRef<Path>) -> Vec<(u32, PathBuf, String)> {
 
     println!("{}", query_data[0].2);
 
-    return query_data;
+    query_data
 }
 
 fn save_result(result: &[RecordBatch], query_id: u32) -> Result<()> {

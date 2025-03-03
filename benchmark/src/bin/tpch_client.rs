@@ -95,7 +95,7 @@ enum BenchmarkMode {
 }
 
 impl BenchmarkMode {
-    async fn setup_ctx(&self, server_url: &str, data_dir: &PathBuf) -> Result<Arc<SessionContext>> {
+    async fn setup_ctx(&self, server_url: &str, data_dir: &Path) -> Result<Arc<SessionContext>> {
         let mut session_config = SessionConfig::from_env()?;
         let current_dir = std::env::current_dir()?.to_string_lossy().to_string();
 
@@ -282,7 +282,7 @@ fn get_queries(query_dir: impl AsRef<Path>) -> Vec<(u32, PathBuf, String)> {
 
     println!("{}", query_data[0].2);
 
-    return query_data;
+    query_data
 }
 
 fn save_result(result: &[RecordBatch], query_id: u32) -> Result<()> {
