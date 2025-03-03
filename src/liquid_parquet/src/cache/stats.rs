@@ -66,16 +66,19 @@ impl StatsWriter {
         let cache_type_array = self.cache_type_builder.finish();
         let hit_count_array = self.hit_count_builder.finish();
         let file_path_array = self.file_path_builder.finish();
-        Ok(RecordBatch::try_new(self.schema.clone(), vec![
-            Arc::new(row_group_id_array),
-            Arc::new(column_id_array),
-            Arc::new(row_start_id_array),
-            Arc::new(row_count_array),
-            Arc::new(memory_size_array),
-            Arc::new(cache_type_array),
-            Arc::new(hit_count_array),
-            Arc::new(file_path_array),
-        ])?)
+        Ok(RecordBatch::try_new(
+            self.schema.clone(),
+            vec![
+                Arc::new(row_group_id_array),
+                Arc::new(column_id_array),
+                Arc::new(row_start_id_array),
+                Arc::new(row_count_array),
+                Arc::new(memory_size_array),
+                Arc::new(cache_type_array),
+                Arc::new(hit_count_array),
+                Arc::new(file_path_array),
+            ],
+        )?)
     }
 
     #[allow(clippy::too_many_arguments)]

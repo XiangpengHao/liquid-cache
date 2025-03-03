@@ -140,6 +140,8 @@ impl FlightMetadata {
     }
 
     /// Customize flight properties and try to use the FlightInfo schema
+    // TODO: fix from upstream
+    #[allow(clippy::result_large_err)]
     pub fn try_new(info: FlightInfo, props: FlightProperties) -> arrow_flight::error::Result<Self> {
         let schema = Arc::new(info.clone().try_decode_schema()?);
         Ok(Self::new(info, props, schema))

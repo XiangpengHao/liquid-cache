@@ -182,22 +182,25 @@ mod tests {
                 RowSelector::select(2),
             ]);
             let selection = take_next_batch(&mut queue, 8).unwrap();
-            assert_eq!(selection, vec![
-                RowSelector::select(2),
-                RowSelector::skip(2),
-                RowSelector::select(2),
-                RowSelector::skip(2),
-            ]);
+            assert_eq!(
+                selection,
+                vec![
+                    RowSelector::select(2),
+                    RowSelector::skip(2),
+                    RowSelector::select(2),
+                    RowSelector::skip(2),
+                ]
+            );
             assert_eq!(queue, vec![RowSelector::select(2)]);
         }
 
         {
             let mut queue = VecDeque::from(vec![RowSelector::select(3), RowSelector::skip(2)]);
             let selection = take_next_batch(&mut queue, 8).unwrap();
-            assert_eq!(selection, vec![
-                RowSelector::select(3),
-                RowSelector::skip(2)
-            ]);
+            assert_eq!(
+                selection,
+                vec![RowSelector::select(3), RowSelector::skip(2)]
+            );
             assert!(queue.is_empty());
         }
 
@@ -208,11 +211,14 @@ mod tests {
                 RowSelector::select(6),
             ]);
             let selection = take_next_batch(&mut queue, 8).unwrap();
-            assert_eq!(selection, vec![
-                RowSelector::select(2),
-                RowSelector::skip(4),
-                RowSelector::select(2),
-            ]);
+            assert_eq!(
+                selection,
+                vec![
+                    RowSelector::select(2),
+                    RowSelector::skip(4),
+                    RowSelector::select(2),
+                ]
+            );
             assert_eq!(queue, vec![RowSelector::select(4)]);
         }
 
@@ -224,10 +230,10 @@ mod tests {
                 RowSelector::select(7),
             ]);
             let selection = take_next_batch(&mut queue, 8).unwrap();
-            assert_eq!(selection, vec![
-                RowSelector::skip(5),
-                RowSelector::select(3),
-            ]);
+            assert_eq!(
+                selection,
+                vec![RowSelector::skip(5), RowSelector::select(3),]
+            );
             assert_eq!(queue, vec![RowSelector::skip(2), RowSelector::select(7)]);
         }
     }

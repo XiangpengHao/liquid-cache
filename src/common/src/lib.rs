@@ -13,12 +13,16 @@ pub enum ParquetMode {
 
 impl Display for ParquetMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", match self {
-            ParquetMode::Original => "original",
-            ParquetMode::Liquid => "liquid",
-            ParquetMode::LiquidEagerTranscode => "liquid_eager_transcode",
-            ParquetMode::Arrow => "arrow",
-        })
+        write!(
+            f,
+            "{}",
+            match self {
+                ParquetMode::Original => "original",
+                ParquetMode::Liquid => "liquid",
+                ParquetMode::LiquidEagerTranscode => "liquid_eager_transcode",
+                ParquetMode::Arrow => "arrow",
+            }
+        )
     }
 }
 

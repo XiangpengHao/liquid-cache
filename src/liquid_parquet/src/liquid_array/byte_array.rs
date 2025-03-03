@@ -423,10 +423,13 @@ impl LiquidByteArray {
             Field::new("keys", DataType::UInt32, false),
             Field::new("values", DataType::Binary, false),
         ]);
-        let batch = RecordBatch::try_new(Arc::new(schema), vec![
-            Arc::new(self.keys.values.clone()),
-            Arc::new(self.values.compressed.clone()),
-        ])
+        let batch = RecordBatch::try_new(
+            Arc::new(schema),
+            vec![
+                Arc::new(self.keys.values.clone()),
+                Arc::new(self.values.compressed.clone()),
+            ],
+        )
         .unwrap();
         (batch, self.metadata())
     }

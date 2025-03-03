@@ -216,13 +216,17 @@ impl BenchmarkMode {
 
 impl Display for BenchmarkMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", match self {
-            BenchmarkMode::ParquetFileserver => "parquet-fileserver",
-            BenchmarkMode::ParquetPushdown => "parquet-pushdown",
-            BenchmarkMode::LiquidCache => "liquid-cache",
-            BenchmarkMode::ArrowPushdown => "arrow-pushdown",
-            BenchmarkMode::LiquidEagerTranscode => "liquid-eager-transcode",
-        })
+        write!(
+            f,
+            "{}",
+            match self {
+                BenchmarkMode::ParquetFileserver => "parquet-fileserver",
+                BenchmarkMode::ParquetPushdown => "parquet-pushdown",
+                BenchmarkMode::LiquidCache => "liquid-cache",
+                BenchmarkMode::ArrowPushdown => "arrow-pushdown",
+                BenchmarkMode::LiquidEagerTranscode => "liquid-eager-transcode",
+            }
+        )
     }
 }
 
