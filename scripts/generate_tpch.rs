@@ -27,5 +27,5 @@ fn main() -> Result<()> {
         println!("{}", table_name);
     }
 
-    return Ok(());
+    Ok(())
 }
