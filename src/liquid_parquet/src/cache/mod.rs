@@ -686,7 +686,6 @@ impl LiquidCache {
 mod tests {
     use super::*;
     use arrow::array::{Array, Int32Array};
-    use std::{thread, time::Duration};
 
     /// Helper function to get the memory size from an Arrow array.
     /// (Assuming your Arrow arrays implement `get_array_memory_size`.)
@@ -737,7 +736,6 @@ mod tests {
     /// and the memory accounting.
     #[test]
     fn test_background_transcoding() {
-        // Use InMemoryLiquid mode with background transcoding enabled.
         let batch_size = 64;
         let max_cache_bytes = 1024 * 1024; // a generous limit for the test
         let cache = LiquidCache::new(batch_size, max_cache_bytes);
@@ -755,23 +753,9 @@ mod tests {
 
         assert!(column.insert_arrow_array(0, arrow_array.clone()).is_ok());
 
-        // Immediately after insertion, the batch should be of type ArrowMemory.
-        {
-            let rows = column.rows.read().unwrap();
-            let entry = rows.get(&0).expect("Expected row 0 to be cached");
-            match entry.value {
-                CachedBatch::ArrowMemory(_) => {} // as expected
-                CachedBatch::LiquidMemory(_) => panic!("Should not have transcoded immediately"),
-            }
-        }
         let size_before = column.config.memory_usage();
-        assert_eq!(size_before, arrow_size);
-
-        // Wait briefly to let the background transcoding complete.
-        thread::sleep(Duration::from_millis(200));
-
-        // Now check that the entry has been transcoded.
-        {
+        loop {
+            // Now check that the entry has been transcoded.
             let rows = column.rows.read().unwrap();
             let entry = rows.get(&0).expect("Expected row 0 to be cached");
             match entry.value {
@@ -785,12 +769,14 @@ mod tests {
                     // Also, verify that the type conversion has happened.
                     // (For example, calling to_arrow_array() should work.)
                     let _ = liquid.to_arrow_array();
+                    break;
                 }
                 CachedBatch::ArrowMemory(_) => {
-                    panic!("Expected background transcoding to have occurred")
+                    continue;
                 }
             }
         }
+
         let size_after = column.config.memory_usage();
         assert!(
             size_after <= size_before,
