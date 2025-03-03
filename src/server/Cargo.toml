@@ -2,6 +2,10 @@
 name = "liquid-cache-server"
 version = { workspace = true }
 edition = { workspace = true }
+license = { workspace = true }
+readme = { workspace = true }
+description = { workspace = true }
+repository = { workspace = true }
 
 
 [dependencies]

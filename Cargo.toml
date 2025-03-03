@@ -1,6 +1,12 @@
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+repository = "https://github.com/XiangpengHao/liquid-cache"
+authors = ["XiangpengHao <xiangpeng.hao@wisc.edu>"]
+license = "Apache-2.0"
+readme = "README.md"
+description = "A distributed cache system for data analytics"
+
 
 [workspace]
 members = [
@@ -18,11 +24,13 @@ liquid-cache-server = { path = "src/server" }
 liquid-cache-client = { path = "src/client" }
 liquid-parquet = { path = "src/liquid_parquet" }
 liquid-common = { path = "src/common" }
-arrow = { version = "54.1", default-features = false, features = ["prettyprint"] }
-arrow-flight = { version = "54.1", features = ["flight-sql-experimental"] }
-arrow-schema = { version = "54.1", features = ["serde"] }
-parquet = { version = "54.1", features = ["async", "experimental"] }
-datafusion = { git = "https://github.com/XiangpengHao/datafusion.git", branch = "sota" }
+arrow = { version = "54.2.1", default-features = false, features = [
+	"prettyprint",
+] }
+arrow-flight = { version = "54.2.1", features = ["flight-sql-experimental"] }
+arrow-schema = { version = "54.2.1", features = ["serde"] }
+parquet = { version = "54.2.1", features = ["async", "experimental"] }
+datafusion = { version = "45.0.0" }
 async-trait = "0.1.86"
 futures = { version = "0.3.31", default-features = false, features = ["std"] }
 tokio = { version = "1.43.0", features = ["rt-multi-thread"] }
