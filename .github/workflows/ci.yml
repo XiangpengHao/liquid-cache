@@ -37,8 +37,12 @@ jobs:
         run: cargo clippy -- -D warnings
 
   unit_test:
-    name: Unit Test
-    runs-on: ubuntu-latest
+    name: Unit Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+      fail-fast: false
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -89,8 +93,12 @@ jobs:
   #         env RUSTFLAGS="-Z sanitizer=memory" cargo test -Zbuild-std --target x86_64-unknown-linux-gnu --tests
 
   integration_test:
-    name: Integration Test
-    runs-on: ubuntu-latest
+    name: Integration Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+      fail-fast: false
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -101,6 +109,14 @@ jobs:
         run: cargo build --bin bench_server
       - name: Build ClickBench client
         run: cargo build --bin clickbench_client
+
+      - name: Install required packages (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y wget
+
+      - name: Install required packages (macOS)
+        if: matrix.os == 'macos-latest'
+        run: brew install wget || true
 
       - name: Start LiquidCache server
         run: |
@@ -125,6 +141,7 @@ jobs:
 
       - name: Download ClickBench partition 0
         run: |
+          mkdir -p benchmark/data
           wget https://datasets.clickhouse.com/hits_compatible/athena_partitioned/hits_0.parquet -O benchmark/data/hits_0.parquet
 
       - name: Start LiquidCache server (for partition 0)
@@ -148,8 +165,12 @@ jobs:
           rm -f server.pid
 
   examples:
-    name: Run client/server examples
-    runs-on: ubuntu-latest
+    name: Run client/server examples (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+      fail-fast: false
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -158,8 +179,13 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install netcat
+      - name: Install netcat (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
         run: sudo apt-get update && sudo apt-get install -y netcat-traditional
+      
+      - name: Install netcat (macOS)
+        if: matrix.os == 'macos-latest'
+        run: brew install netcat || true
       
       - name: Start server (in background) and client
         run: |
@@ -176,5 +202,3 @@ jobs:
           kill $SERVER_PID
 
           exit $EXIT
-
-
