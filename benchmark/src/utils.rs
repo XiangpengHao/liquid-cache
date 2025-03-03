@@ -5,7 +5,7 @@ use datafusion::arrow::{
     array::{AsArray, RecordBatch},
     datatypes::DataType,
 };
-use log::{debug, info};
+use log::info;
 use std::sync::Arc;
 
 fn float_eq_helper<T: ArrowPrimitiveType, F: Fn(T::Native) -> bool>(

@@ -1,7 +1,6 @@
 use std::{
     fmt::Display,
     fs::File,
-    io::{BufRead, BufReader},
     path::{Path, PathBuf},
     str::FromStr,
     sync::Arc,
@@ -177,6 +176,7 @@ impl BenchmarkMode {
                     return ExecutionMetricsResponse {
                         pushdown_eval_time: 0,
                         cache_memory_usage: 0,
+                        liquid_cache_usage: 0,
                     };
                 }
                 let metrics = plan
@@ -199,6 +199,7 @@ impl BenchmarkMode {
                 ExecutionMetricsResponse {
                     pushdown_eval_time: 0,
                     cache_memory_usage: bytes_scanned as u64,
+                    liquid_cache_usage: 0,
                 }
             }
             BenchmarkMode::ParquetPushdown

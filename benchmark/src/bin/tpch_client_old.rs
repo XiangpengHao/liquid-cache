@@ -1,7 +1,6 @@
 use std::{
     fmt::Display,
-    fs::{File, read_dir, read_to_string},
-    io::{BufRead, BufReader},
+    fs::File,
     path::{Path, PathBuf},
     str::FromStr,
     sync::Arc,
@@ -175,6 +174,7 @@ impl BenchmarkMode {
                     return ExecutionMetricsResponse {
                         pushdown_eval_time: 0,
                         cache_memory_usage: 0,
+                        liquid_cache_usage: 0,
                     };
                 }
                 let metrics = plan
@@ -197,6 +197,7 @@ impl BenchmarkMode {
                 ExecutionMetricsResponse {
                     pushdown_eval_time: 0,
                     cache_memory_usage: bytes_scanned as u64,
+                    liquid_cache_usage: 0,
                 }
             }
             BenchmarkMode::ParquetPushdown
@@ -456,7 +457,7 @@ pub async fn main() -> Result<()> {
         .setup_ctx(server_url, Path::new("tpch_data/data"))
         .await?;
 
-    for (id, file, query) in queries {
+    for (id, _file, query) in queries {
         let mut query_result = QueryResult::new(id, query.clone());
         for _i in 0..*iteration {
             info!("Running query {}: \n{}", id.magenta(), query.cyan());
