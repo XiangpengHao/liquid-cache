@@ -1,8 +1,12 @@
 [package]
 name = "liquid-cache-client"
+authors = { workspace = true }
 edition = { workspace = true }
 version = { workspace = true }
-
+license = { workspace = true }
+readme = { workspace = true }
+description = { workspace = true }
+repository = { workspace = true }
 
 [dependencies]
 arrow = { workspace = true }

@@ -355,10 +355,13 @@ impl LiquidCachedColumn {
                     if !self.adjust_cache_size_after_transcoding(dict_size, new_size) {
                         return Err(InsertArrowArrayError::CacheFull(array));
                     }
-                    rows.insert(row_id, CachedEntry {
-                        value: transcoded,
-                        hit_count: AtomicU32::new(0),
-                    });
+                    rows.insert(
+                        row_id,
+                        CachedEntry {
+                            value: transcoded,
+                            hit_count: AtomicU32::new(0),
+                        },
+                    );
                     Ok(())
                 }
             }
@@ -738,10 +741,12 @@ mod tests {
         let batch_size = 64;
         let max_cache_bytes = 1024 * 1024; // a generous limit for the test
         let cache = LiquidCache::new(batch_size, max_cache_bytes);
-        let file =
-            cache.register_or_get_file("test_file2".to_string(), LiquidCacheMode::InMemoryLiquid {
+        let file = cache.register_or_get_file(
+            "test_file2".to_string(),
+            LiquidCacheMode::InMemoryLiquid {
                 transcode_in_background: true,
-            });
+            },
+        );
         let row_group = file.row_group(0);
         let column = row_group.get_column_or_create(0);
 

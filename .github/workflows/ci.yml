@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2025-01-24
+          toolchain: nightly-2025-03-03
 
       - uses: Swatinem/rust-cache@v2
       
@@ -47,7 +47,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2025-01-24
+          toolchain: nightly-2025-03-03
       - uses: Swatinem/rust-cache@v2
       
       - name: Run tests
@@ -60,7 +60,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2025-01-24
+          toolchain: nightly-2025-03-03
       - uses: Swatinem/rust-cache@v2
         with:
           cache-all-crates: true
@@ -82,7 +82,7 @@ jobs:
   #     # - uses: ./.github/actions/rust-setup
   #     - uses: dtolnay/rust-toolchain@master
   #       with:
-  #         toolchain: nightly-2025-01-24
+  #         toolchain: nightly-2025-03-03
   #     - uses: Swatinem/rust-cache@v2
   #       with:
   #         cache-all-crates: true
@@ -103,7 +103,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2025-01-24
+          toolchain: nightly-2025-03-03
       - uses: Swatinem/rust-cache@v2
       - name: Build LiquidCache server
         run: cargo build --bin bench_server
@@ -175,30 +175,29 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2025-01-24
+          toolchain: nightly-2025-03-03
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install netcat (Ubuntu)
-        if: matrix.os == 'ubuntu-latest'
-        run: sudo apt-get update && sudo apt-get install -y netcat-traditional
-      
-      - name: Install netcat (macOS)
-        if: matrix.os == 'macos-latest'
-        run: brew install netcat || true
-      
-      - name: Start server (in background) and client
-        run: |
-          cargo run --bin server & SERVER_PID=$!
-          while ! nc -z localhost 50051; do
-              if ! kill -0 $SERVER_PID; then
-                  exit 1
-              fi
-              sleep 0.1
-          done
-          sleep 5
-          cargo run --bin client
-          EXIT=$?
-          kill $SERVER_PID
+      - name: Build LiquidCache server
+        run: cargo build --bin server
+      - name: Build LiquidCache client
+        run: cargo build --bin client
 
-          exit $EXIT
+      - name: Start LiquidCache server
+        run: |
+          env RUST_LOG=info nohup cargo run --bin server -- --abort-on-panic &> server.log &
+          echo $! > server.pid  # Save PID for later cleanup
+          sleep 2  # Wait for server to start up
+
+      - name: Start LiquidCache client
+        run: |
+          env RUST_LOG=info cargo run --bin client
+
+      - name: Kill LiquidCache server and show logs
+        if: always()
+        run: |
+          echo "=== Server logs ==="
+          cat server.log || echo "No server log found"
+          pkill -F server.pid || true
+          rm -f server.pid

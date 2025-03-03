@@ -226,9 +226,10 @@ struct TestPredicate {
 impl TestPredicate {
     fn new(parquet_meta: &ParquetMetaData, column_id: usize, strategy: FilterStrategy) -> Self {
         Self {
-            projection_mask: ProjectionMask::roots(parquet_meta.file_metadata().schema_descr(), [
-                column_id,
-            ]),
+            projection_mask: ProjectionMask::roots(
+                parquet_meta.file_metadata().schema_descr(),
+                [column_id],
+            ),
             strategy,
         }
     }

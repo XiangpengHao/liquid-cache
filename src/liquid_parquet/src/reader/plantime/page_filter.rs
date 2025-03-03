@@ -446,13 +446,11 @@ impl<'a> PagesPruningStatistics<'a> {
 
 impl PruningStatistics for PagesPruningStatistics<'_> {
     fn min_values(&self, _column: &datafusion::common::Column) -> Option<ArrayRef> {
-        match self
-            .converter
-            .data_page_mins(
-                self.column_index,
-                self.offset_index,
-                [&self.row_group_index],
-            ) {
+        match self.converter.data_page_mins(
+            self.column_index,
+            self.offset_index,
+            [&self.row_group_index],
+        ) {
             Ok(min_values) => Some(min_values),
             Err(e) => {
                 debug!("Error evaluating data page min values {e}");
@@ -462,13 +460,11 @@ impl PruningStatistics for PagesPruningStatistics<'_> {
     }
 
     fn max_values(&self, _column: &datafusion::common::Column) -> Option<ArrayRef> {
-        match self
-            .converter
-            .data_page_maxes(
-                self.column_index,
-                self.offset_index,
-                [&self.row_group_index],
-            ) {
+        match self.converter.data_page_maxes(
+            self.column_index,
+            self.offset_index,
+            [&self.row_group_index],
+        ) {
             Ok(min_values) => Some(min_values),
             Err(e) => {
                 debug!("Error evaluating data page max values {e}");
@@ -482,13 +478,11 @@ impl PruningStatistics for PagesPruningStatistics<'_> {
     }
 
     fn null_counts(&self, _column: &datafusion::common::Column) -> Option<ArrayRef> {
-        match self
-            .converter
-            .data_page_null_counts(
-                self.column_index,
-                self.offset_index,
-                [&self.row_group_index],
-            ) {
+        match self.converter.data_page_null_counts(
+            self.column_index,
+            self.offset_index,
+            [&self.row_group_index],
+        ) {
             Ok(null_counts) => Some(Arc::new(null_counts)),
             Err(e) => {
                 debug!("Error evaluating data page null counts {e}");
@@ -498,11 +492,11 @@ impl PruningStatistics for PagesPruningStatistics<'_> {
     }
 
     fn row_counts(&self, _column: &datafusion::common::Column) -> Option<ArrayRef> {
-        match self
-            .converter
-            .data_page_row_counts(self.offset_index, self.row_group_metadatas, [
-                &self.row_group_index
-            ]) {
+        match self.converter.data_page_row_counts(
+            self.offset_index,
+            self.row_group_metadatas,
+            [&self.row_group_index],
+        ) {
             Ok(row_counts) => row_counts.map(|a| Arc::new(a) as ArrayRef),
             Err(e) => {
                 debug!("Error evaluating data page row counts {e}");

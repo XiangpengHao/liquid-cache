@@ -65,7 +65,7 @@ where
         let (_data_type, values, nulls) = array.into_parts();
 
         let bit_width_usize = bit_width.get() as usize;
-        let num_chunks = (original_len + 1023) / 1024;
+        let num_chunks = original_len.div_ceil(1024);
         let num_full_chunks = original_len / 1024;
         let packed_len = (1024 * bit_width_usize).div_ceil(size_of::<T::Native>() * 8);
 
@@ -134,7 +134,7 @@ where
         let length = self.original_len;
         let offset = 0;
 
-        let num_chunks = (offset + length + 1023) / 1024;
+        let num_chunks = (offset + length).div_ceil(1024);
         let elements_per_chunk = (1024 * bit_width).div_ceil(size_of::<T::Native>() * 8);
 
         let mut output = Vec::<T::Native>::with_capacity(num_chunks * 1024 - offset);

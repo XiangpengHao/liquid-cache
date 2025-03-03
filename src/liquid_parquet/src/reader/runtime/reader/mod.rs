@@ -32,11 +32,10 @@ fn build_predicate_from_cache(
     let projection = predicate.projection();
     let column_id = get_predicate_column_id(projection);
     let cache = cache.get_column(column_id)?;
-    let result = cache
+    cache
         .eval_selection_with_predicate(row_id, input_selection, predicate.as_mut())
         .transpose()
-        .unwrap();
-    result
+        .unwrap()
 }
 
 fn read_record_batch_from_parquet<'a>(
