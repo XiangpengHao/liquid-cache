@@ -228,13 +228,17 @@ impl BenchmarkMode {
 
 impl Display for BenchmarkMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", match self {
-            BenchmarkMode::ParquetFileserver => "parquet-fileserver",
-            BenchmarkMode::ParquetPushdown => "parquet-pushdown",
-            BenchmarkMode::LiquidCache => "liquid-cache",
-            BenchmarkMode::ArrowPushdown => "arrow-pushdown",
-            BenchmarkMode::LiquidEagerTranscode => "liquid-eager-transcode",
-        })
+        write!(
+            f,
+            "{}",
+            match self {
+                BenchmarkMode::ParquetFileserver => "parquet-fileserver",
+                BenchmarkMode::ParquetPushdown => "parquet-pushdown",
+                BenchmarkMode::LiquidCache => "liquid-cache",
+                BenchmarkMode::ArrowPushdown => "arrow-pushdown",
+                BenchmarkMode::LiquidEagerTranscode => "liquid-eager-transcode",
+            }
+        )
     }
 }
 
@@ -452,7 +456,6 @@ pub async fn main() -> Result<()> {
         .setup_ctx(server_url, Path::new("tpch_data/data"))
         .await?;
 
-
     for (id, file, query) in queries {
         let mut query_result = QueryResult::new(id, query.clone());
         for _i in 0..*iteration {
@@ -469,7 +472,6 @@ pub async fn main() -> Result<()> {
 
             networks.refresh(true);
             let network_info = networks.get("lo").unwrap();
-            
 
             let physical_plan_with_metrics =
                 DisplayableExecutionPlan::with_metrics(physical_plan.as_ref());
@@ -480,7 +482,6 @@ pub async fn main() -> Result<()> {
             );
             let result_str = pretty::pretty_format_batches(&results).unwrap();
             info!("Query result: \n{}", result_str.cyan());
-
 
             // Check query answers
             if let Some(answer_dir) = answer_dir {

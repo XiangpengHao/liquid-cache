@@ -230,13 +230,17 @@ impl BenchmarkMode {
 
 impl Display for BenchmarkMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", match self {
-            BenchmarkMode::ParquetFileserver => "parquet-fileserver",
-            BenchmarkMode::ParquetPushdown => "parquet-pushdown",
-            BenchmarkMode::LiquidCache => "liquid-cache",
-            BenchmarkMode::ArrowPushdown => "arrow-pushdown",
-            BenchmarkMode::LiquidEagerTranscode => "liquid-eager-transcode",
-        })
+        write!(
+            f,
+            "{}",
+            match self {
+                BenchmarkMode::ParquetFileserver => "parquet-fileserver",
+                BenchmarkMode::ParquetPushdown => "parquet-pushdown",
+                BenchmarkMode::LiquidCache => "liquid-cache",
+                BenchmarkMode::ArrowPushdown => "arrow-pushdown",
+                BenchmarkMode::LiquidEagerTranscode => "liquid-eager-transcode",
+            }
+        )
     }
 }
 
@@ -265,7 +269,12 @@ fn get_queries(query_dir: impl AsRef<Path>) -> Vec<(u32, PathBuf, String)> {
             path.push(format!("q{i}.sql"));
 
             let query = std::fs::read_to_string(&path).unwrap();
-            info!("Loaded queries: id={}, path={}, query={}", i, path.display(), query);
+            info!(
+                "Loaded queries: id={}, path={}, query={}",
+                i,
+                path.display(),
+                query
+            );
             (i, path, query)
         })
         .collect();
@@ -451,7 +460,6 @@ pub async fn main() -> Result<()> {
         bench_mode: *bench_mode,
         queries: Vec::new(),
     };
-
 
     let queries = get_queries(query_dir);
 
