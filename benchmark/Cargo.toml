@@ -3,10 +3,6 @@ name = "liquid-cache-benchmarks"
 description = "LiquidCache Benchmarks"
 edition = { workspace = true }
 
-[[bin]]
-name = "create_nano_hits"
-path = "create_nano_hits.rs"
-
 [dependencies]
 liquid-cache-server = { workspace = true }
 liquid-cache-client = { workspace = true }

@@ -1,0 +1,16 @@
+[package]
+name = "scripts"
+description = "Scripts used for development/testing"
+edition = { workspace = true }
+
+[[bin]]
+name = "create_nano_hits"
+path = "create_nano_hits.rs"
+
+[[bin]]
+name = "generate_tpch"
+path = "generate_tpch.rs"
+
+[dependencies]
+parquet = { workspace = true }
+duckdb = { version = "1.2.0", features = ["bundled"] }

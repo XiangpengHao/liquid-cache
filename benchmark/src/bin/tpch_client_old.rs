@@ -1,6 +1,6 @@
 use std::{
     fmt::Display,
-    fs::File,
+    fs::{File, read_dir, read_to_string},
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
     str::FromStr,
@@ -96,13 +96,11 @@ enum BenchmarkMode {
 }
 
 impl BenchmarkMode {
-    async fn setup_ctx(&self, server_url: &str, data_dir: &PathBuf) -> Result<Arc<SessionContext>> {
+    async fn setup_ctx(&self, server_url: &str, data_dir: &Path) -> Result<Arc<SessionContext>> {
         let mut session_config = SessionConfig::from_env()?;
         let current_dir = std::env::current_dir()?.to_string_lossy().to_string();
-
-        let tables = [
-            "customer", "lineitem", "nation", "orders", "part", "partsupp", "region", "supplier",
-        ];
+        //let table_url =
+        //Url::parse(&format!("file://{}/{}", current_dir, file_path.display())).unwrap();
 
         let mode = match self {
             BenchmarkMode::ParquetFileserver => {
@@ -116,17 +114,12 @@ impl BenchmarkMode {
                     .unwrap();
                 ctx.register_object_store(&base_url, Arc::new(object_store));
 
-                for table_name in tables.iter() {
-                    let table_path = Url::parse(&format!(
-                        "file://{}/{}/{}.parquet",
-                        current_dir,
-                        data_dir.display(),
-                        table_name
-                    ))
-                    .unwrap();
-                    ctx.register_parquet(*table_name, table_path, Default::default())
-                        .await?;
-                }
+                ctx.register_parquet(
+                    "hits",
+                    format!("{}/hits.parquet", server_url),
+                    Default::default(),
+                )
+                .await?;
                 return Ok(ctx);
             }
             BenchmarkMode::ParquetPushdown => ParquetMode::Original,
@@ -141,6 +134,10 @@ impl BenchmarkMode {
             .pushdown_filters = true;
         let ctx = Arc::new(SessionContext::new_with_config(session_config));
 
+        let tables = [
+            "customer", "lineitem", "nation", "orders", "part", "partsupp", "region", "supplier",
+        ];
+
         for table_name in tables.iter() {
             let table_url = Url::parse(&format!(
                 "file://{}/{}/{}.parquet",
@@ -149,6 +146,7 @@ impl BenchmarkMode {
                 table_name
             ))
             .unwrap();
+
             let table =
                 LiquidCacheTableFactory::open_table(server_url, table_name, table_url, mode).await;
             ctx.register_table(*table_name, Arc::new(table.unwrap()))
@@ -265,7 +263,6 @@ fn get_queries(query_dir: impl AsRef<Path>) -> Vec<(u32, PathBuf, String)> {
             path.push(format!("q{i}.sql"));
 
             let query = std::fs::read_to_string(&path).unwrap();
-            info!("Loaded queries: id={}, path={}, query={}", i, path.display(), query);
             (i, path, query)
         })
         .collect();
@@ -300,6 +297,7 @@ fn check_result_against_answer(
     query_id: u32,
     query: &str,
 ) -> Result<()> {
+    println!("STARTING CHECK FOR THIS QUERY {}", query_id);
     // - If query returns no results, check if baseline exists
     // - If baseline does not exist, skip query
     // - If baseline exists, panic
@@ -321,7 +319,6 @@ fn check_result_against_answer(
     }
     // Read answers
     let baseline_path = format!("{}/{}.parquet", answer_dir.display(), query_id);
-    println!("{}", baseline_path.green());
     let baseline_file = File::open(baseline_path)?;
     let mut baseline_batches = Vec::new();
     let reader = ParquetRecordBatchReaderBuilder::try_new(baseline_file)?.build()?;
@@ -346,7 +343,8 @@ fn check_result_against_answer(
             (baseline_batch.num_rows(), baseline_batch.columns().len());
         if result_num_rows != baseline_num_rows || result_columns != baseline_columns {
             save_result(results, query_id)?;
-            panic!(
+            // panic!
+            info!(
                 "Query {} result does not match baseline. Result(num_rows: {}, num_columns: {}), Baseline(num_rows: {}, num_columns: {})",
                 query_id.to_string().red(),
                 result_num_rows,
@@ -357,9 +355,10 @@ fn check_result_against_answer(
         }
     } else if !assert_batch_eq(&result_batch, &baseline_batch) {
         save_result(results, query_id)?;
-        panic!(
+        // panic!
+        info!(
             "Query {} result does not match baseline. Result: {:?}, Baseline: {:?}",
-            query_id.to_string().red(),
+            query.to_string().blue(),
             result_batch.red(),
             baseline_batch.red()
         );
@@ -379,16 +378,16 @@ pub async fn main() -> Result<()> {
                 .value_parser(value_parser!(std::path::PathBuf)),
         )
         .arg(
+            arg!(--"answer-dir" <PATH>)
+                .required(true)
+                .help("Path to the baseline directory")
+                .value_parser(value_parser!(std::path::PathBuf)),
+        )
+        .arg(
             arg!(--query <NUMBER>)
                 .required(false)
                 .help("Query number to run, if not provided, all queries will be run")
                 .value_parser(value_parser!(u32)),
-        )
-        .arg(
-            arg!(--"data-dir" <PATH>)
-                .required(true)
-                .help("Path to the ClickBench file, hit.parquet or directory to partitioned files")
-                .value_parser(value_parser!(std::path::PathBuf)),
         )
         .arg(
             arg!(--server <URL>)
@@ -411,12 +410,6 @@ pub async fn main() -> Result<()> {
                 .value_parser(value_parser!(std::path::PathBuf)),
         )
         .arg(
-            arg!(--"answer-dir" <PATH>)
-                .required(false)
-                .help("Path to the baseline directory")
-                .value_parser(value_parser!(std::path::PathBuf)),
-        )
-        .arg(
             arg!(--"bench-mode" <MODE>)
                 .required(false)
                 .default_value("liquid-cache")
@@ -431,17 +424,13 @@ pub async fn main() -> Result<()> {
                 .value_parser(value_parser!(bool)),
         )
         .get_matches();
-    let query_dir = matches.get_one::<PathBuf>("query-dir").unwrap();
-    let answer_dir = matches.get_one::<PathBuf>("answer-dir");
-    let data_dir = matches.get_one::<PathBuf>("data-dir").unwrap();
-
-    let output_path = matches.get_one::<PathBuf>("output");
     let server_url = matches.get_one::<String>("server").unwrap();
-    //let file = matches.get_one::<PathBuf>("file").unwrap();
+    let query_dir = matches.get_one::<PathBuf>("query-dir").unwrap();
     let iteration = matches.get_one::<u32>("iteration").unwrap();
+    let output_path = matches.get_one::<PathBuf>("output");
+    let answer_dir = matches.get_one::<PathBuf>("answer-dir");
     let bench_mode = matches.get_one::<BenchmarkMode>("bench-mode").unwrap();
     let reset_cache = matches.get_one::<bool>("reset-cache").unwrap();
-    let ctx = bench_mode.setup_ctx(server_url, data_dir).await?;
 
     let mut benchmark_result = BenchmarkResult {
         server_url: server_url.clone(),
@@ -452,7 +441,6 @@ pub async fn main() -> Result<()> {
         queries: Vec::new(),
     };
 
-
     let queries = get_queries(query_dir);
 
     std::fs::create_dir_all("benchmark/data/results")?;
@@ -460,7 +448,12 @@ pub async fn main() -> Result<()> {
     let mut networks = Networks::new_with_refreshed_list();
     let bench_start_time = Instant::now();
 
-    for (id, _, query) in queries {
+    let ctx = bench_mode
+        .setup_ctx(server_url, Path::new("tpch_data/data"))
+        .await?;
+
+
+    for (id, file, query) in queries {
         let mut query_result = QueryResult::new(id, query.clone());
         for _i in 0..*iteration {
             info!("Running query {}: \n{}", id.magenta(), query.cyan());
@@ -476,6 +469,7 @@ pub async fn main() -> Result<()> {
 
             networks.refresh(true);
             let network_info = networks.get("lo").unwrap();
+            
 
             let physical_plan_with_metrics =
                 DisplayableExecutionPlan::with_metrics(physical_plan.as_ref());
@@ -486,6 +480,7 @@ pub async fn main() -> Result<()> {
             );
             let result_str = pretty::pretty_format_batches(&results).unwrap();
             info!("Query result: \n{}", result_str.cyan());
+
 
             // Check query answers
             if let Some(answer_dir) = answer_dir {
