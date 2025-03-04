@@ -2,11 +2,8 @@
 import os
 import sys
 import glob
-import pyarrow as pa
 import pyarrow.csv as csv
 import pyarrow.parquet as pq
-import argparse
-from pathlib import Path
 
 def convert_tbl_to_parquet(input_file):
     output_file = input_file.replace('.tbl', '.parquet')
