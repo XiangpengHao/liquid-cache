@@ -16,7 +16,6 @@ members = [
 	"src/liquid_parquet",
 	"src/common",
 	"examples",
-	"scripts"
 ]
 resolver = "3"
 
