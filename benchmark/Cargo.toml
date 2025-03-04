@@ -3,10 +3,6 @@ name = "liquid-cache-benchmarks"
 description = "LiquidCache Benchmarks"
 edition = { workspace = true }
 
-[[bin]]
-name = "create_nano_hits"
-path = "create_nano_hits.rs"
-
 [dependencies]
 liquid-cache-server = { workspace = true }
 liquid-cache-client = { workspace = true }
@@ -33,3 +29,15 @@ bytes = { workspace = true }
 prost = { workspace = true }
 fsst-rs = "0.5.0"
 parquet = { workspace = true }
+
+[[bin]]
+name = "clickbench_client"
+path = "clickbench/clickbench_client.rs"
+
+[[bin]]
+name = "tpch_client"
+path = "tpch/tpch_client.rs"
+
+[[bin]]
+name = "bench_server"
+path = "bench_server.rs"

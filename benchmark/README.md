@@ -1,9 +1,8 @@
 # Benchmark Guide
 
-## Download dataset
+## [ClickBench](https://github.com/ClickHouse/ClickBench) 
 
-We currently support [ClickBench](https://github.com/ClickHouse/ClickBench).
-
+### Download dataset
 To download partitioned dataset (~100MB):
 ```bash
 wget https://datasets.clickhouse.com/hits_compatible/athena_partitioned/hits_0.parquet -O benchmark/data/hits_0.parquet
@@ -28,21 +27,33 @@ for i in {0..99}; do
 done
 ```
 
-## Run benchmarks
+### Run benchmarks
 
-### Minimal 
+#### Minimal 
 
 ```bash
 cargo run --release --bin bench_server
 cargo run --release --bin clickbench_client -- --query-path benchmark/queries.sql --file benchmark/data/hits.parquet
 ```
 
-### Advanced
+#### Advanced
 
 ```bash
 env RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS='-C target-cpu=native' cargo run --release --bin bench_server
 env RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS='-C target-cpu=native' cargo run --release --bin clickbench_client -- --query-path benchmark/queries.sql --file benchmark/data/hits.parquet --query 42
 ```
+
+## TPCH
+
+### Generate data
+
+(make sure you have [docker](https://github.com/docker/docker-install) and [uv](https://docs.astral.sh/uv/getting-started/installation/) installed)
+
+```bash
+cd benchmark/tpch
+bash tpch_gen.sh 0.1 # Generate data at scale factor 0.1
+```
+
 
 ## Profile
 

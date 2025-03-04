@@ -5,6 +5,7 @@ use datafusion::arrow::{
     array::{AsArray, RecordBatch},
     datatypes::DataType,
 };
+use log::info;
 use std::sync::Arc;
 
 fn float_eq_helper<T: ArrowPrimitiveType, F: Fn(T::Native) -> bool>(
@@ -27,9 +28,19 @@ pub fn assert_batch_eq(left: &RecordBatch, right: &RecordBatch) -> bool {
     use datafusion::arrow::compute::*;
 
     if left.num_rows() != right.num_rows() {
+        info!(
+            "Left (result) had {} rows, but right (baseline) had {} rows",
+            left.num_rows(),
+            right.num_rows()
+        );
         return false;
     }
     if left.columns().len() != right.columns().len() {
+        info!(
+            "Left (result) had {} cols, but right (baseline) had {} cols",
+            left.columns().len(),
+            right.columns().len()
+        );
         return false;
     }
     for (c_l, c_r) in left.columns().iter().zip(right.columns().iter()) {
