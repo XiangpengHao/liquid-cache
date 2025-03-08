@@ -85,7 +85,9 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
       # - uses: Swatinem/rust-cache@v2
-      - run: source <(cargo llvm-cov show-env --export-prefix)
+      - run: cargo llvm-cov show-env --export-prefix
+      - run: cargo llvm-cov show-env --export-prefix >> $GITHUB_ENV
+      - run: cat $GITHUB_ENV
       - run: cargo llvm-cov clean --workspace
       - name: Build LiquidCache server
         run: cargo build --bin bench_server
