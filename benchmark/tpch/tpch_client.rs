@@ -1,13 +1,5 @@
-use std::{
-    fmt::Display,
-    fs::File,
-    path::{Path, PathBuf},
-    str::FromStr,
-    sync::Arc,
-    time::{Duration, Instant},
-};
-
 use arrow_flight::{FlightClient, flight_service_client::FlightServiceClient, sql::Any};
+use clap::{Parser, arg};
 use datafusion::{
     arrow::{array::RecordBatch, util::pretty},
     error::Result,
@@ -29,21 +21,66 @@ use liquid_common::{
     rpc::{ExecutionMetricsResponse, LiquidCacheActions},
 };
 use log::{debug, info};
+use mimalloc::MiMalloc;
 use object_store::ClientConfigKey;
 use owo_colors::OwoColorize;
 use prost::Message;
+use serde::Serialize;
+use std::fs::File as StdFile;
+use std::{
+    fmt::Display,
+    fs::File,
+    path::{Path, PathBuf},
+    str::FromStr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use sysinfo::Networks;
 use tonic::transport::Channel;
 use url::Url;
 
-use clap::{Command, arg, value_parser};
-use serde::Serialize;
-use std::fs::File as StdFile;
-
-use mimalloc::MiMalloc;
-
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
+
+#[derive(Parser)]
+#[command(name = "TPCH Benchmark Client")]
+struct CliArgs {
+    /// Path to the query directory
+    #[arg(long = "query-dir")]
+    query_dir: PathBuf,
+
+    /// Query number to run, if not provided, all queries will be run
+    #[arg(long)]
+    query: Option<u32>,
+
+    /// Path to the data directory with TPCH data
+    #[arg(long = "data-dir")]
+    data_dir: PathBuf,
+
+    /// Server URL
+    #[arg(long, default_value = "http://localhost:50051")]
+    server: String,
+
+    /// Number of times to run each query
+    #[arg(long, default_value = "3")]
+    iteration: u32,
+
+    /// Path to the output JSON file
+    #[arg(long)]
+    output: Option<PathBuf>,
+
+    /// Path to the baseline directory
+    #[arg(long = "answer-dir")]
+    answer_dir: Option<PathBuf>,
+
+    /// Benchmark mode to use
+    #[arg(long = "bench-mode", default_value = "liquid-cache")]
+    bench_mode: BenchmarkMode,
+
+    /// Reset the cache before running a new query
+    #[arg(long = "reset-cache", default_value = "false")]
+    reset_cache: bool,
+}
 
 #[derive(Serialize)]
 struct BenchmarkResult {
@@ -381,88 +418,23 @@ fn check_result_against_answer(
 pub async fn main() -> Result<()> {
     env_logger::builder().format_timestamp(None).init();
 
-    let matches = Command::new("ClickBench Benchmark Client")
-        .arg(
-            arg!(--"query-dir" <PATH>)
-                .required(true)
-                .help("Path to the query file")
-                .value_parser(value_parser!(std::path::PathBuf)),
-        )
-        .arg(
-            arg!(--query <NUMBER>)
-                .required(false)
-                .help("Query number to run, if not provided, all queries will be run")
-                .value_parser(value_parser!(u32)),
-        )
-        .arg(
-            arg!(--"data-dir" <PATH>)
-                .required(true)
-                .help("Path to the ClickBench file, hit.parquet or directory to partitioned files")
-                .value_parser(value_parser!(std::path::PathBuf)),
-        )
-        .arg(
-            arg!(--server <URL>)
-                .required(false)
-                .default_value("http://localhost:50051")
-                .help("Server URL")
-                .value_parser(value_parser!(String)),
-        )
-        .arg(
-            arg!(--iteration <NUMBER>)
-                .required(false)
-                .default_value("3")
-                .help("Number of times to run each query")
-                .value_parser(value_parser!(u32)),
-        )
-        .arg(
-            arg!(--output <PATH>)
-                .required(false)
-                .help("Path to the output JSON file")
-                .value_parser(value_parser!(std::path::PathBuf)),
-        )
-        .arg(
-            arg!(--"answer-dir" <PATH>)
-                .required(false)
-                .help("Path to the baseline directory")
-                .value_parser(value_parser!(std::path::PathBuf)),
-        )
-        .arg(
-            arg!(--"bench-mode" <MODE>)
-                .required(false)
-                .default_value("liquid-cache")
-                .help("Benchmark mode to use")
-                .value_parser(value_parser!(BenchmarkMode)),
-        )
-        .arg(
-            arg!(--"reset-cache")
-                .required(false)
-                .help("Reset the cache before running a new query")
-                .default_value("false")
-                .value_parser(value_parser!(bool)),
-        )
-        .get_matches();
-    let query_dir = matches.get_one::<PathBuf>("query-dir").unwrap();
-    let answer_dir = matches.get_one::<PathBuf>("answer-dir");
-    let data_dir = matches.get_one::<PathBuf>("data-dir").unwrap();
+    let args = CliArgs::parse();
 
-    let output_path = matches.get_one::<PathBuf>("output");
-    let server_url = matches.get_one::<String>("server").unwrap();
-    //let file = matches.get_one::<PathBuf>("file").unwrap();
-    let iteration = matches.get_one::<u32>("iteration").unwrap();
-    let bench_mode = matches.get_one::<BenchmarkMode>("bench-mode").unwrap();
-    let reset_cache = matches.get_one::<bool>("reset-cache").unwrap();
-    let ctx = bench_mode.setup_ctx(server_url, data_dir).await?;
+    let ctx = args
+        .bench_mode
+        .setup_ctx(&args.server, &args.data_dir)
+        .await?;
 
     let mut benchmark_result = BenchmarkResult {
-        server_url: server_url.clone(),
-        query_dir: query_dir.clone(),
-        iteration: *iteration,
-        output_path: output_path.cloned(),
-        bench_mode: *bench_mode,
+        server_url: args.server.clone(),
+        query_dir: args.query_dir.clone(),
+        iteration: args.iteration,
+        output_path: args.output.clone(),
+        bench_mode: args.bench_mode,
         queries: Vec::new(),
     };
 
-    let queries = get_queries(query_dir);
+    let queries = get_queries(&args.query_dir);
 
     std::fs::create_dir_all("benchmark/data/results")?;
 
@@ -471,7 +443,7 @@ pub async fn main() -> Result<()> {
 
     for (id, _, query) in queries {
         let mut query_result = QueryResult::new(id, query.clone());
-        for _i in 0..*iteration {
+        for _i in 0..args.iteration {
             info!("Running query {}: \n{}", id.magenta(), query.cyan());
             let now = Instant::now();
             let starting_timestamp = bench_start_time.elapsed();
@@ -484,8 +456,11 @@ pub async fn main() -> Result<()> {
             info!("Query execution time: {:?}", elapsed);
 
             networks.refresh(true);
-            let network_info = networks.get("lo").unwrap();
-
+            // for mac its lo0 and for linux its lo.
+            let network_info = networks
+                .get("lo0")
+                .or_else(|| networks.get("lo"))
+                .expect("No loopback interface found in networks");
             let physical_plan_with_metrics =
                 DisplayableExecutionPlan::with_metrics(physical_plan.as_ref());
 
@@ -497,17 +472,20 @@ pub async fn main() -> Result<()> {
             info!("Query result: \n{}", result_str.cyan());
 
             // Check query answers
-            if let Some(answer_dir) = answer_dir {
+            if let Some(answer_dir) = &args.answer_dir {
                 check_result_against_answer(&results, answer_dir, id, &query)?;
                 info!("Query {} passed validation", id.to_string().red());
             }
 
-            let metrics_response = bench_mode
-                .get_execution_metrics(server_url, &physical_plan)
+            let metrics_response = args
+                .bench_mode
+                .get_execution_metrics(&args.server, &physical_plan)
                 .await;
             info!(
-                "Server processing time: {} ms, cache memory usage: {} bytes",
-                metrics_response.pushdown_eval_time, metrics_response.cache_memory_usage
+                "Server processing time: {} ms, cache memory usage: {} bytes, liquid cache usage: {} bytes",
+                metrics_response.pushdown_eval_time,
+                metrics_response.cache_memory_usage,
+                metrics_response.liquid_cache_usage
             );
 
             query_result.add(IterationResult {
@@ -518,13 +496,13 @@ pub async fn main() -> Result<()> {
                 starting_timestamp,
             });
         }
-        if *reset_cache {
-            bench_mode.reset_cache(server_url).await?;
+        if args.reset_cache {
+            args.bench_mode.reset_cache(&args.server).await?;
         }
         benchmark_result.queries.push(query_result);
     }
 
-    if let Some(output_path) = output_path {
+    if let Some(output_path) = &args.output {
         let output_file = StdFile::create(output_path)?;
         serde_json::to_writer_pretty(output_file, &benchmark_result).unwrap();
     }

@@ -9,6 +9,7 @@ use std::{
 };
 
 use arrow_flight::{FlightClient, flight_service_client::FlightServiceClient, sql::Any};
+use clap::{Parser, arg, command};
 use datafusion::{
     arrow::{array::RecordBatch, util::pretty},
     error::Result,
@@ -30,18 +31,15 @@ use liquid_common::{
     rpc::{ExecutionMetricsResponse, LiquidCacheActions},
 };
 use log::{debug, info};
+use mimalloc::MiMalloc;
 use object_store::ClientConfigKey;
 use owo_colors::OwoColorize;
 use prost::Message;
+use serde::Serialize;
+use std::fs::File as StdFile;
 use sysinfo::Networks;
 use tonic::transport::Channel;
 use url::Url;
-
-use clap::{Command, arg, value_parser};
-use serde::Serialize;
-use std::fs::File as StdFile;
-
-use mimalloc::MiMalloc;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -357,87 +355,62 @@ fn check_result_against_answer(
     Ok(())
 }
 
+#[derive(Parser)]
+#[command(name = "ClickBench Benchmark Client")]
+struct CliArgs {
+    /// Path to the query file
+    #[arg(long)]
+    query_path: PathBuf,
+
+    /// Query number to run, if not provided, all queries will be run
+    #[arg(long)]
+    query: Option<u32>,
+
+    /// Path to the ClickBench file, hit.parquet or directory to partitioned files
+    #[arg(long)]
+    file: PathBuf,
+
+    /// Server URL
+    #[arg(long, default_value = "http://localhost:50051")]
+    server: String,
+
+    /// Number of times to run each query
+    #[arg(long, default_value = "3")]
+    iteration: u32,
+
+    /// Path to the output JSON file
+    #[arg(long)]
+    output: Option<PathBuf>,
+
+    /// Path to the baseline directory
+    #[arg(long = "answer-dir")]
+    answer_dir: Option<PathBuf>,
+
+    /// Benchmark mode to use
+    #[arg(long = "bench-mode", default_value = "liquid-cache")]
+    bench_mode: BenchmarkMode,
+
+    /// Reset the cache before running a new query
+    #[arg(long = "reset-cache", default_value = "false")]
+    reset_cache: bool,
+}
+
 #[tokio::main]
 pub async fn main() -> Result<()> {
     env_logger::builder().format_timestamp(None).init();
 
-    let matches = Command::new("ClickBench Benchmark Client")
-        .arg(
-            arg!(--"query-path" <PATH>)
-                .required(true)
-                .help("Path to the query file")
-                .value_parser(value_parser!(std::path::PathBuf)),
-        )
-        .arg(
-            arg!(--query <NUMBER>)
-                .required(false)
-                .help("Query number to run, if not provided, all queries will be run")
-                .value_parser(value_parser!(u32)),
-        )
-        .arg(
-            arg!(--file <PATH>)
-                .required(true)
-                .help("Path to the ClickBench file, hit.parquet or directory to partitioned files")
-                .value_parser(value_parser!(std::path::PathBuf)),
-        )
-        .arg(
-            arg!(--server <URL>)
-                .required(false)
-                .default_value("http://localhost:50051")
-                .help("Server URL")
-                .value_parser(value_parser!(String)),
-        )
-        .arg(
-            arg!(--iteration <NUMBER>)
-                .required(false)
-                .default_value("3")
-                .help("Number of times to run each query")
-                .value_parser(value_parser!(u32)),
-        )
-        .arg(
-            arg!(--output <PATH>)
-                .required(false)
-                .help("Path to the output JSON file")
-                .value_parser(value_parser!(std::path::PathBuf)),
-        )
-        .arg(
-            arg!(--"answer-dir" <PATH>)
-                .required(false)
-                .help("Path to the baseline directory")
-                .value_parser(value_parser!(std::path::PathBuf)),
-        )
-        .arg(
-            arg!(--"bench-mode" <MODE>)
-                .required(false)
-                .default_value("liquid-cache")
-                .help("Benchmark mode to use")
-                .value_parser(value_parser!(BenchmarkMode)),
-        )
-        .arg(
-            arg!(--"reset-cache")
-                .required(false)
-                .help("Reset the cache before running a new query")
-                .default_value("false")
-                .value_parser(value_parser!(bool)),
-        )
-        .get_matches();
-    let server_url = matches.get_one::<String>("server").unwrap();
-    let file = matches.get_one::<PathBuf>("file").unwrap();
-    let query_path = matches.get_one::<PathBuf>("query-path").unwrap();
-    let queries = get_query(query_path, matches.get_one::<u32>("query").copied())?;
-    let iteration = matches.get_one::<u32>("iteration").unwrap();
-    let output_path = matches.get_one::<PathBuf>("output");
-    let answer_dir = matches.get_one::<PathBuf>("answer-dir");
-    let bench_mode = matches.get_one::<BenchmarkMode>("bench-mode").unwrap();
-    let reset_cache = matches.get_one::<bool>("reset-cache").unwrap();
-    let ctx = bench_mode.setup_ctx(server_url, file).await?;
+    let args = CliArgs::parse();
+
+    let queries = get_query(&args.query_path, args.query)?;
+    let bench_mode = &args.bench_mode;
+    let ctx = bench_mode.setup_ctx(&args.server, &args.file).await?;
 
     let mut benchmark_result = BenchmarkResult {
-        server_url: server_url.clone(),
-        file_path: file.clone(),
-        query_path: query_path.clone(),
-        iteration: *iteration,
-        output_path: output_path.cloned(),
+        server_url: args.server.clone(),
+        file_path: args.file.clone(),
+        query_path: args.query_path.clone(),
+        iteration: args.iteration,
+        output_path: args.output.clone(),
         bench_mode: *bench_mode,
         queries: Vec::new(),
     };
@@ -449,7 +422,7 @@ pub async fn main() -> Result<()> {
 
     for (id, query) in queries {
         let mut query_result = QueryResult::new(id, query.clone());
-        for _i in 0..*iteration {
+        for _i in 0..args.iteration {
             info!("Running query {}: \n{}", id.magenta(), query.cyan());
             let now = Instant::now();
             let starting_timestamp = bench_start_time.elapsed();
@@ -478,13 +451,13 @@ pub async fn main() -> Result<()> {
             info!("Query result: \n{}", result_str.cyan());
 
             // Check query answers
-            if let Some(answer_dir) = answer_dir {
+            if let Some(answer_dir) = &args.answer_dir {
                 check_result_against_answer(&results, answer_dir, id, &query)?;
                 info!("Query {} passed validation", id.to_string().red());
             }
 
             let metrics_response = bench_mode
-                .get_execution_metrics(server_url, &physical_plan)
+                .get_execution_metrics(&args.server, &physical_plan)
                 .await;
             info!(
                 "Server processing time: {} ms, cache memory usage: {} bytes, liquid cache usage: {} bytes",
@@ -501,13 +474,13 @@ pub async fn main() -> Result<()> {
                 starting_timestamp,
             });
         }
-        if *reset_cache {
-            bench_mode.reset_cache(server_url).await?;
+        if args.reset_cache {
+            bench_mode.reset_cache(&args.server).await?;
         }
         benchmark_result.queries.push(query_result);
     }
 
-    if let Some(output_path) = output_path {
+    if let Some(output_path) = &args.output {
         let output_file = StdFile::create(output_path)?;
         serde_json::to_writer_pretty(output_file, &benchmark_result).unwrap();
     }

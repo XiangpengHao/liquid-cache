@@ -1,5 +1,5 @@
 use arrow_flight::flight_service_server::FlightServiceServer;
-use clap::{Command, arg, value_parser};
+use clap::Parser;
 use liquid_cache_benchmarks::{FlameGraphReport, StatsReport, admin_server::run_http_server};
 use liquid_cache_server::LiquidCacheService;
 use log::info;
@@ -10,69 +10,47 @@ use tonic::transport::Server;
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
+#[derive(Parser)]
+#[command(name = "ClickBench Benchmark Server")]
+struct CliArgs {
+    /// Address to listen on
+    #[arg(long, default_value = "127.0.0.1:50051")]
+    address: SocketAddr,
+
+    /// HTTP address for admin endpoint
+    #[arg(long = "admin-address", default_value = "127.0.0.1:8080")]
+    admin_address: SocketAddr,
+
+    /// Number of partitions to use
+    #[arg(long)]
+    partitions: Option<usize>,
+
+    /// Abort the server if any thread panics
+    #[arg(long = "abort-on-panic")]
+    abort_on_panic: bool,
+
+    /// Path to output flamegraph directory
+    #[arg(long = "flamegraph-dir")]
+    flamegraph_dir: Option<PathBuf>,
+
+    /// Path to output cache internal stats directory
+    #[arg(long = "stats-dir")]
+    stats_dir: Option<PathBuf>,
+
+    /// Maximum cache size in MB
+    #[arg(long = "max-cache-mb")]
+    max_cache_mb: Option<usize>,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::builder().format_timestamp(None).init();
 
-    let matches = Command::new("ClickBench Benchmark Client")
-        .arg(
-            arg!(--"address" <ADDRESS>)
-                .required(false)
-                .default_value("127.0.0.1:50051")
-                .help("Address to listen on")
-                .value_parser(value_parser!(std::net::SocketAddr)),
-        )
-        .arg(
-            arg!(--"admin-address" <ADDRESS>)
-                .required(false)
-                .default_value("127.0.0.1:8080")
-                .help("HTTP address for admin endpoint")
-                .value_parser(value_parser!(std::net::SocketAddr)),
-        )
-        .arg(
-            arg!(--partitions<NUMBER>)
-                .required(false)
-                .help("Number of partitions to use")
-                .value_parser(value_parser!(usize)),
-        )
-        .arg(
-            arg!(--"abort-on-panic")
-                .required(false)
-                .help("Abort the server if any thread panics")
-                .action(clap::ArgAction::SetTrue),
-        )
-        .arg(
-            arg!(--"flamegraph-dir" <PATH>)
-                .required(false)
-                .help("Path to output flamegraph directory")
-                .value_parser(value_parser!(PathBuf)),
-        )
-        .arg(
-            arg!(--"stats-dir" <PATH>)
-                .required(false)
-                .help("Path to output cache internal stats directory")
-                .value_parser(value_parser!(PathBuf)),
-        )
-        .arg(
-            arg!(--"max-cache-mb" <SIZE>)
-                .required(false)
-                .help("Maximum cache size in MB")
-                .value_parser(value_parser!(usize)),
-        )
-        .get_matches();
+    let args = CliArgs::parse();
 
-    let addr = matches.get_one::<SocketAddr>("address").unwrap();
-    let admin_addr = matches.get_one::<SocketAddr>("admin-address").unwrap();
-    let partitions = matches.get_one::<usize>("partitions").cloned();
+    let max_cache_bytes = args.max_cache_mb.map(|size| size * 1024 * 1024);
 
-    let flamegraph_dir = matches.get_one::<PathBuf>("flamegraph-dir").cloned();
-    let stats_dir = matches.get_one::<PathBuf>("stats-dir").cloned();
-    let abort_on_panic = matches.get_flag("abort-on-panic");
-    let max_cache_bytes = matches
-        .get_one::<usize>("max-cache-mb")
-        .cloned()
-        .map(|size| size * 1024 * 1024);
-    if abort_on_panic {
+    if args.abort_on_panic {
         // Be loud and crash loudly if any thread panics.
         // This will stop the server if any thread panics.
         // But will prevent debugger to break on panic.
@@ -82,36 +60,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }));
     }
 
-    let ctx = LiquidCacheService::context(partitions)?;
+    let ctx = LiquidCacheService::context(args.partitions)?;
     let mut liquid_cache_server = LiquidCacheService::new_with_context(ctx, max_cache_bytes);
 
-    if let Some(flamegraph_dir) = flamegraph_dir {
+    if let Some(flamegraph_dir) = &args.flamegraph_dir {
         assert!(
             flamegraph_dir.is_dir(),
             "Flamegraph output must be a directory"
         );
-        liquid_cache_server.add_stats_collector(Arc::new(FlameGraphReport::new(flamegraph_dir)));
+        liquid_cache_server
+            .add_stats_collector(Arc::new(FlameGraphReport::new(flamegraph_dir.clone())));
     }
 
-    if let Some(stats_dir) = stats_dir {
+    if let Some(stats_dir) = &args.stats_dir {
         assert!(stats_dir.is_dir(), "Stats output must be a directory");
         liquid_cache_server.add_stats_collector(Arc::new(StatsReport::new(
-            stats_dir,
+            stats_dir.clone(),
             liquid_cache_server.cache().clone(),
         )));
     }
 
     let flight = FlightServiceServer::new(liquid_cache_server);
 
-    info!("LiquidCache server listening on {addr}");
-    info!("Admin server listening on {admin_addr}");
+    info!("LiquidCache server listening on {}", args.address);
+    info!("Admin server listening on {}", args.admin_address);
 
     // Run both servers concurrently
     tokio::select! {
-        result = Server::builder().add_service(flight).serve(*addr) => {
+        result = Server::builder().add_service(flight).serve(args.address) => {
             result?;
         },
-        result = run_http_server(*admin_addr) => {
+        result = run_http_server(args.admin_address) => {
             result?;
         },
     }
