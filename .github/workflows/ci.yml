@@ -146,7 +146,7 @@ jobs:
           pkill -F server.pid || true
           rm -f server.pid
       - name: Generate code coverage
-        run: cargo llvm-cov report --all-features --workspace --codecov --output-path codecov_integration_test.json
+        run: cargo llvm-cov report --codecov --output-path codecov_integration_test.json
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v3
         with:
