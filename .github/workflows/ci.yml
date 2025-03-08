@@ -64,36 +64,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2025-03-03
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-all-crates: true
+      # Address sanitizers can't be cached: https://github.com/Swatinem/rust-cache/issues/161
       - run: sudo apt install llvm-dev -y
-  
-      
       - name: Run address sanitizer
         run: >
           env RUSTFLAGS="-Z sanitizer=address" cargo test -Zbuild-std --target x86_64-unknown-linux-gnu --tests
-
-# Memory sanitizer are too slow to build and run on CI
-# We get little value from it anyway.
-# Disable it for now, until we have more budget to run CI (i.e., after open source).
-  # memory_san:
-  #   name: Memory Sanitizer
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     # - uses: ./.github/actions/rust-setup
-  #     - uses: dtolnay/rust-toolchain@master
-  #       with:
-  #         toolchain: nightly-2025-03-03
-  #     - uses: Swatinem/rust-cache@v2
-  #       with:
-  #         cache-all-crates: true
-  #     - run: sudo apt install llvm-dev -y
-
-  #     - name: Run memory sanitizer
-  #       run: >
-  #         env RUSTFLAGS="-Z sanitizer=memory" cargo test -Zbuild-std --target x86_64-unknown-linux-gnu --tests
 
   integration_test:
     name: Integration Test (${{ matrix.os }})
@@ -171,7 +146,7 @@ jobs:
           pkill -F server.pid || true
           rm -f server.pid
       - name: Generate code coverage
-        run: cargo llvm-cov --all-features --workspace --codecov --output-path codecov_integration_test.json
+        run: cargo llvm-cov report --all-features --workspace --codecov --output-path codecov_integration_test.json
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v3
         with:
