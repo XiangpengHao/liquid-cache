@@ -3,16 +3,16 @@ use std::{any::Any, sync::Arc};
 use arrow_schema::{DataType, Field, FieldRef, Schema, SchemaRef};
 use async_trait::async_trait;
 use datafusion::{
+    catalog::Session,
     common::{GetExt, Statistics, internal_err, parsers::CompressionTypeVariant},
     config::TableParquetOptions,
     datasource::{
         file_format::{
             FileFormat, FilePushdownSupport, file_compression_type::FileCompressionType,
         },
-        physical_plan::FileScanConfig,
+        physical_plan::{FileScanConfig, FileSource},
     },
     error::Result,
-    execution::SessionState,
     physical_optimizer::pruning::PruningPredicate,
     physical_plan::{ExecutionPlan, PhysicalExpr, metrics::ExecutionPlanMetricsSet},
     prelude::*,
@@ -99,7 +99,7 @@ impl FileFormat for LiquidParquetFileFormat {
 
     async fn infer_schema(
         &self,
-        state: &SessionState,
+        state: &dyn Session,
         store: &Arc<dyn ObjectStore>,
         objects: &[ObjectMeta],
     ) -> Result<SchemaRef> {
@@ -116,7 +116,7 @@ impl FileFormat for LiquidParquetFileFormat {
 
     async fn infer_stats(
         &self,
-        state: &SessionState,
+        state: &dyn Session,
         store: &Arc<dyn ObjectStore>,
         table_schema: SchemaRef,
         object: &ObjectMeta,
@@ -128,7 +128,7 @@ impl FileFormat for LiquidParquetFileFormat {
 
     async fn create_physical_plan(
         &self,
-        _state: &SessionState,
+        _state: &dyn Session,
         conf: FileScanConfig,
         filters: Option<&Arc<dyn PhysicalExpr>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
@@ -188,6 +188,11 @@ impl FileFormat for LiquidParquetFileFormat {
     ) -> Result<FilePushdownSupport> {
         self.inner
             .supports_filters_pushdown(file_schema, table_schema, filters)
+    }
+
+    fn file_source(&self) -> Arc<dyn FileSource> {
+        // this can be anything, as we don't really use it.
+        self.inner.file_source()
     }
 }
 

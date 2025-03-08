@@ -15,7 +15,7 @@ tokio = { workspace = true }
 log = { workspace = true }
 arrow-flight = { workspace = true }
 tonic = { workspace = true }
-clap = "4.5.28"
+clap = "4.5.31"
 env_logger = "0.11.6"
 url = { workspace = true }
 owo-colors = { workspace = true }
@@ -23,13 +23,18 @@ mimalloc = "0.1.43"
 pprof = { version = "0.14.0", features = ["flamegraph"] }
 serde_json.workspace = true
 serde.workspace = true
-sysinfo = "0.33.1"
+sysinfo = { version = "0.33.1", default-features = false, features = [
+	"network",
+] }
 object_store = { workspace = true, features = ["http"] }
 bytes = { workspace = true }
 prost = { workspace = true }
 fsst-rs = "0.5.0"
 parquet = { workspace = true }
-axum = { version = "0.7.5", default-features = false, features = ["tokio", "http2"] }
+axum = { version = "0.7.9", default-features = false, features = [
+	"tokio",
+	"http2",
+] }
 
 [[bin]]
 name = "clickbench_client"
