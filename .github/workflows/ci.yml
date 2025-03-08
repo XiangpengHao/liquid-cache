@@ -37,21 +37,24 @@ jobs:
         run: cargo clippy -- -D warnings
 
   unit_test:
-    name: Unit Test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-      fail-fast: false
+    name: Unit Test
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2025-03-03
       - uses: Swatinem/rust-cache@v2
-      
-      - name: Run tests
-        run: cargo test --verbose
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Generate code coverage
+        run: cargo llvm-cov --all-features --workspace --codecov --output-path codecov.json
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }} 
+          files: codecov.json
+          fail_ci_if_error: true
 
   address_san:
     name: Address Sanitizer
@@ -61,108 +64,56 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2025-03-03
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-all-crates: true
+      # Address sanitizers can't be cached: https://github.com/Swatinem/rust-cache/issues/161
       - run: sudo apt install llvm-dev -y
-  
-      
       - name: Run address sanitizer
         run: >
           env RUSTFLAGS="-Z sanitizer=address" cargo test -Zbuild-std --target x86_64-unknown-linux-gnu --tests
 
-# Memory sanitizer are too slow to build and run on CI
-# We get little value from it anyway.
-# Disable it for now, until we have more budget to run CI (i.e., after open source).
-  # memory_san:
-  #   name: Memory Sanitizer
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     # - uses: ./.github/actions/rust-setup
-  #     - uses: dtolnay/rust-toolchain@master
-  #       with:
-  #         toolchain: nightly-2025-03-03
-  #     - uses: Swatinem/rust-cache@v2
-  #       with:
-  #         cache-all-crates: true
-  #     - run: sudo apt install llvm-dev -y
-
-  #     - name: Run memory sanitizer
-  #       run: >
-  #         env RUSTFLAGS="-Z sanitizer=memory" cargo test -Zbuild-std --target x86_64-unknown-linux-gnu --tests
-
   integration_test:
-    name: Integration Test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-      fail-fast: false
+    name: Integration Test
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2025-03-03
+      - run: sudo apt-get update && sudo apt-get install -y wget
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
       - uses: Swatinem/rust-cache@v2
-      - name: Build LiquidCache server
-        run: cargo build --bin bench_server
-      - name: Build ClickBench client
-        run: cargo build --bin clickbench_client
-
-      - name: Install required packages (Ubuntu)
-        if: matrix.os == 'ubuntu-latest'
-        run: sudo apt-get update && sudo apt-get install -y wget
-
-      - name: Install required packages (macOS)
-        if: matrix.os == 'macos-latest'
-        run: brew install wget || true
-
-      - name: Start LiquidCache server
-        run: |
-          env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic &> server.log &
-          echo $! > server.pid  # Save PID for later cleanup
-          sleep 2  # Wait for server to start up
-
-      - name: Run simple ClickBench
-        run: |
-          env RUST_LOG=info cargo run --bin clickbench_client -- --query-path benchmark/clickbench/queries/queries.sql --file examples/nano_hits.parquet
-        # Always clean up after this step
-        shell: bash
-        if: always()
-
-      - name: Kill LiquidCache server and show logs
-        if: always()
-        run: |
-          echo "=== Server logs ==="
-          cat server.log || echo "No server log found"
-          pkill -F server.pid || true
-          rm -f server.pid
-
       - name: Download ClickBench partition 0
         run: |
           mkdir -p benchmark/data
           wget https://datasets.clickhouse.com/hits_compatible/athena_partitioned/hits_0.parquet -O benchmark/data/hits_0.parquet
-
-      - name: Start LiquidCache server (for partition 0)
-        run: |
+      - run: |
+          source <(cargo llvm-cov show-env --export-prefix)
+          cargo llvm-cov clean --workspace
+          cargo build --bin bench_server
+          cargo build --bin clickbench_client
           env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic &> server.log &
           echo $! > server.pid  # Save PID for later cleanup
           sleep 2  # Wait for server to start up
-
-      - name: Run ClickBench partition 0
-        run: |
+          env RUST_LOG=info cargo run --bin clickbench_client -- --query-path benchmark/clickbench/queries/queries.sql --file examples/nano_hits.parquet
+          echo "=== Server logs ==="
+          cat server.log || echo "No server log found"
+          pkill -F server.pid || true
+          rm -f server.pid
+          env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic &> server.log &
+          echo $! > server.pid  # Save PID for later cleanup
+          sleep 2  # Wait for server to start up
           env RUST_LOG=info cargo run --bin clickbench_client -- --query-path benchmark/clickbench/queries/queries.sql --file benchmark/data/hits_0.parquet --answer-dir benchmark/clickbench/answers/clickbench_0
-        shell: bash
-        if: always()
-
-      - name: Kill LiquidCache server and show logs (partition 0)
-        if: always()
-        run: |
           echo "=== Server logs (partition 0) ==="
           cat server.log || echo "No server log found"
           pkill -F server.pid || true
           rm -f server.pid
+          cargo llvm-cov report --codecov --output-path codecov_integration_test.json
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: codecov_integration_test.json
+          fail_ci_if_error: true
 
   examples:
     name: Run client/server examples (${{ matrix.os }})
