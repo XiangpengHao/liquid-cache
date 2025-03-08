@@ -1,12 +1,11 @@
 use arrow_flight::flight_service_server::FlightServiceServer;
 use clap::{Command, arg, value_parser};
-use liquid_cache_benchmarks::{FlameGraphReport, StatsReport};
+use liquid_cache_benchmarks::{FlameGraphReport, StatsReport, admin_server::run_http_server};
 use liquid_cache_server::LiquidCacheService;
 use log::info;
+use mimalloc::MiMalloc;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 use tonic::transport::Server;
-
-use mimalloc::MiMalloc;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -21,6 +20,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .required(false)
                 .default_value("127.0.0.1:50051")
                 .help("Address to listen on")
+                .value_parser(value_parser!(std::net::SocketAddr)),
+        )
+        .arg(
+            arg!(--"admin-address" <ADDRESS>)
+                .required(false)
+                .default_value("127.0.0.1:8080")
+                .help("HTTP address for admin endpoint")
                 .value_parser(value_parser!(std::net::SocketAddr)),
         )
         .arg(
@@ -55,6 +61,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .get_matches();
 
+    let addr = matches.get_one::<SocketAddr>("address").unwrap();
+    let admin_addr = matches.get_one::<SocketAddr>("admin-address").unwrap();
+    let partitions = matches.get_one::<usize>("partitions").cloned();
+
     let flamegraph_dir = matches.get_one::<PathBuf>("flamegraph-dir").cloned();
     let stats_dir = matches.get_one::<PathBuf>("stats-dir").cloned();
     let abort_on_panic = matches.get_flag("abort-on-panic");
@@ -71,9 +81,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(1);
         }));
     }
-
-    let addr = matches.get_one::<SocketAddr>("address").unwrap();
-    let partitions = matches.get_one::<usize>("partitions").cloned();
 
     let ctx = LiquidCacheService::context(partitions)?;
     let mut liquid_cache_server = LiquidCacheService::new_with_context(ctx, max_cache_bytes);
@@ -96,9 +103,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let flight = FlightServiceServer::new(liquid_cache_server);
 
-    info!("LiquidCache server listening on {addr:?}");
+    info!("LiquidCache server listening on {addr}");
+    info!("Admin server listening on {admin_addr}");
 
-    Server::builder().add_service(flight).serve(*addr).await?;
+    // Run both servers concurrently
+    tokio::select! {
+        result = Server::builder().add_service(flight).serve(*addr) => {
+            result?;
+        },
+        result = run_http_server(*admin_addr) => {
+            result?;
+        },
+    }
 
     Ok(())
 }

@@ -10,6 +10,7 @@ use datafusion::physical_plan::ExecutionPlan;
 use liquid_cache_server::StatsCollector;
 use liquid_parquet::LiquidCacheRef;
 use pprof::ProfilerGuard;
+pub mod admin_server;
 
 pub struct FlameGraphReport {
     output_dir: PathBuf,
