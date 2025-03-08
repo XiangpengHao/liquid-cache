@@ -37,21 +37,24 @@ jobs:
         run: cargo clippy -- -D warnings
 
   unit_test:
-    name: Unit Test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-      fail-fast: false
+    name: Unit Test
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2025-03-03
       - uses: Swatinem/rust-cache@v2
-      
-      - name: Run tests
-        run: cargo test --verbose
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Generate code coverage
+        run: cargo llvm-cov --all-features --workspace --codecov --output-path codecov.json
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }} 
+          files: codecov.json
+          fail_ci_if_error: true
 
   address_san:
     name: Address Sanitizer
@@ -104,7 +107,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2025-03-03
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
       - uses: Swatinem/rust-cache@v2
+      - run: source <(cargo llvm-cov show-env --export-prefix)
+      - run: cargo llvm-cov clean --workspace
       - name: Build LiquidCache server
         run: cargo build --bin bench_server
       - name: Build ClickBench client
@@ -163,6 +170,14 @@ jobs:
           cat server.log || echo "No server log found"
           pkill -F server.pid || true
           rm -f server.pid
+      - name: Generate code coverage
+        run: cargo llvm-cov --all-features --workspace --codecov --output-path codecov_integration_test.json
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: codecov_integration_test.json
+          fail_ci_if_error: true
 
   examples:
     name: Run client/server examples (${{ matrix.os }})
