@@ -306,7 +306,12 @@ impl ExecutionPlan for LiquidParquetExec {
             liquid_cache_mode: self.liquid_cache_mode,
         };
 
-        let stream = FileStream::new(&self.base_config, partition_index, opener, &self.metrics)?;
+        let stream = FileStream::new(
+            &self.base_config,
+            partition_index,
+            Arc::new(opener),
+            &self.metrics,
+        )?;
 
         Ok(Box::pin(stream))
     }

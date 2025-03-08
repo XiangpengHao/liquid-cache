@@ -3,7 +3,7 @@ version = "0.1.0"
 edition = "2024"
 repository = "https://github.com/XiangpengHao/liquid-cache"
 authors = ["XiangpengHao <xiangpeng.hao@wisc.edu>"]
-license = "Apache-2.0"
+license = "Apache-2.0 OR MIT"
 readme = "README.md"
 description = "A distributed cache system for data analytics"
 
@@ -30,18 +30,18 @@ arrow = { version = "54.2.1", default-features = false, features = [
 arrow-flight = { version = "54.2.1", features = ["flight-sql-experimental"] }
 arrow-schema = { version = "54.2.1", features = ["serde"] }
 parquet = { version = "54.2.1", features = ["async", "experimental"] }
-datafusion = { version = "45.0.0" }
-async-trait = "0.1.86"
+datafusion = { version = "46.0.0" }
+async-trait = "0.1.87"
 futures = { version = "0.3.31", default-features = false, features = ["std"] }
-tokio = { version = "1.43.0", features = ["rt-multi-thread"] }
-log = "0.4.25"
+tokio = { version = "1.44.0", features = ["rt-multi-thread"] }
+log = "0.4.26"
 tonic = { version = "0.12" }
 url = "2.5.4"
 itertools = "0.14.0"
-bytes = { version = "1.10.0", default-features = false }
+bytes = { version = "1.10.1", default-features = false }
 ahash = "0.8.11"
-prost = "0.13.4"
-prost-derive = "0.13.4"
+prost = "0.13.5"
+prost-derive = "0.13.5"
 object_store = { version = "0.11.2", default-features = false }
 serde = { version = "1.0", default-features = false, features = ["derive"] }
 serde_json = { version = "1.0", default-features = false, features = ["std"] }

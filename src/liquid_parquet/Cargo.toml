@@ -24,4 +24,4 @@ fastlanes = "0.1.8"
 num-traits = "0.2.19"
 
 [dev-dependencies]
-tempfile = "3.16.0"
+tempfile = "3.18.0"
