@@ -84,7 +84,7 @@ jobs:
           toolchain: nightly-2025-03-03
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
-      - uses: Swatinem/rust-cache@v2
+      # - uses: Swatinem/rust-cache@v2
       - run: source <(cargo llvm-cov show-env --export-prefix)
       - run: cargo llvm-cov clean --workspace
       - name: Build LiquidCache server
