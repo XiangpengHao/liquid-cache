@@ -47,11 +47,11 @@ env RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS='-C target-cpu=native' cargo run --
 
 ### Generate data
 
-(make sure you have [docker](https://github.com/docker/docker-install) and [uv](https://docs.astral.sh/uv/getting-started/installation/) installed)
+(make sure you have [uv](https://docs.astral.sh/uv/getting-started/installation/) installed)
 
 ```bash
 cd benchmark/tpch
-bash tpch_gen.sh 0.1 # Generate data at scale factor 0.1
+uvx --from duckdb python tpch_gen_duckdb.py --scale 0.01
 ```
 
 

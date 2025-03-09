@@ -1,48 +1,25 @@
-use arrow_flight::{FlightClient, flight_service_client::FlightServiceClient, sql::Any};
 use clap::{Parser, arg};
 use datafusion::{
     arrow::{array::RecordBatch, util::pretty},
     error::Result,
-    parquet::{
-        arrow::{ArrowWriter, arrow_reader::ParquetRecordBatchReaderBuilder},
-        basic::Compression,
-        file::properties::WriterProperties,
-    },
-    physical_plan::{
-        ExecutionPlan, collect, display::DisplayableExecutionPlan, metrics::MetricValue,
-    },
-    prelude::{SessionConfig, SessionContext},
+    parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder,
+    physical_plan::{collect, display::DisplayableExecutionPlan},
 };
-use futures::StreamExt;
-use liquid_cache_benchmarks::utils::assert_batch_eq;
-use liquid_cache_client::LiquidCacheTableFactory;
-use liquid_common::{
-    ParquetMode,
-    rpc::{ExecutionMetricsResponse, LiquidCacheActions},
+use liquid_cache_benchmarks::{
+    BenchmarkMode, BenchmarkResult, IterationResult, QueryResult, utils::assert_batch_eq,
 };
 use log::{debug, info};
 use mimalloc::MiMalloc;
-use object_store::ClientConfigKey;
 use owo_colors::OwoColorize;
-use prost::Message;
 use serde::Serialize;
-use std::fs::File as StdFile;
-use std::{
-    fmt::Display,
-    fs::File,
-    path::{Path, PathBuf},
-    str::FromStr,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{fs::File as StdFile, path::Path};
+use std::{fs::File, path::PathBuf, time::Instant};
 use sysinfo::Networks;
-use tonic::transport::Channel;
-use url::Url;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
-#[derive(Parser)]
+#[derive(Parser, Serialize, Clone)]
 #[command(name = "TPCH Benchmark Client")]
 struct CliArgs {
     /// Path to the query directory
@@ -82,222 +59,7 @@ struct CliArgs {
     reset_cache: bool,
 }
 
-#[derive(Serialize)]
-struct BenchmarkResult {
-    server_url: String,
-    query_dir: PathBuf,
-    iteration: u32,
-    bench_mode: BenchmarkMode,
-    output_path: Option<PathBuf>,
-    queries: Vec<QueryResult>,
-}
-
-#[derive(Serialize)]
-struct QueryResult {
-    id: u32,
-    query: String,
-    iteration_results: Vec<IterationResult>,
-}
-
-impl QueryResult {
-    fn new(id: u32, query: String) -> Self {
-        Self {
-            id,
-            query,
-            iteration_results: Vec::new(),
-        }
-    }
-
-    fn add(&mut self, iteration_result: IterationResult) {
-        self.iteration_results.push(iteration_result);
-    }
-}
-#[derive(Serialize)]
-struct IterationResult {
-    network_traffic: u64,
-    time_millis: u64,
-    cache_cpu_time: u64,
-    cache_memory_usage: u64,
-    starting_timestamp: Duration,
-}
-
-#[derive(Clone, Debug, Default, Copy, PartialEq, Eq, Serialize)]
-enum BenchmarkMode {
-    ParquetFileserver,
-    ParquetPushdown,
-    ArrowPushdown,
-    #[default]
-    LiquidCache,
-    LiquidEagerTranscode,
-}
-
-impl BenchmarkMode {
-    async fn setup_ctx(&self, server_url: &str, data_dir: &Path) -> Result<Arc<SessionContext>> {
-        let mut session_config = SessionConfig::from_env()?;
-        let current_dir = std::env::current_dir()?.to_string_lossy().to_string();
-
-        let tables = [
-            "customer", "lineitem", "nation", "orders", "part", "partsupp", "region", "supplier",
-        ];
-
-        let mode = match self {
-            BenchmarkMode::ParquetFileserver => {
-                let ctx = Arc::new(SessionContext::new_with_config(session_config));
-                let base_url = Url::parse(server_url).unwrap();
-
-                let object_store = object_store::http::HttpBuilder::new()
-                    .with_url(base_url.clone())
-                    .with_config(ClientConfigKey::AllowHttp, "true")
-                    .build()
-                    .unwrap();
-                ctx.register_object_store(&base_url, Arc::new(object_store));
-
-                for table_name in tables.iter() {
-                    let table_path = Url::parse(&format!(
-                        "file://{}/{}/{}.parquet",
-                        current_dir,
-                        data_dir.display(),
-                        table_name
-                    ))
-                    .unwrap();
-                    ctx.register_parquet(*table_name, table_path, Default::default())
-                        .await?;
-                }
-                return Ok(ctx);
-            }
-            BenchmarkMode::ParquetPushdown => ParquetMode::Original,
-            BenchmarkMode::ArrowPushdown => ParquetMode::Arrow,
-            BenchmarkMode::LiquidCache => ParquetMode::Liquid,
-            BenchmarkMode::LiquidEagerTranscode => ParquetMode::LiquidEagerTranscode,
-        };
-        session_config
-            .options_mut()
-            .execution
-            .parquet
-            .pushdown_filters = true;
-        let ctx = Arc::new(SessionContext::new_with_config(session_config));
-
-        for table_name in tables.iter() {
-            let table_url = Url::parse(&format!(
-                "file://{}/{}/{}.parquet",
-                current_dir,
-                data_dir.display(),
-                table_name
-            ))
-            .unwrap();
-            let table =
-                LiquidCacheTableFactory::open_table(server_url, table_name, table_url, mode).await;
-            ctx.register_table(*table_name, Arc::new(table.unwrap()))
-                .unwrap();
-        }
-
-        Ok(ctx)
-    }
-
-    async fn get_execution_metrics(
-        &self,
-        server_url: &str,
-        execution_plan: &Arc<dyn ExecutionPlan>,
-    ) -> ExecutionMetricsResponse {
-        match self {
-            BenchmarkMode::ParquetFileserver => {
-                // for parquet fileserver, the memory usage is the bytes scanned.
-                // It's not easy to get the memory usage as it is cached in the kernel's page cache.
-                // So the bytes scanned is the minimum cache memory usage, actual usage is slightly higher.
-                let mut plan = execution_plan;
-                while let Some(child) = plan.children().first() {
-                    plan = child;
-                }
-                if plan.name() != "ParquetExec" {
-                    // the scan is completely pruned, so the memory usage is 0
-                    return ExecutionMetricsResponse {
-                        pushdown_eval_time: 0,
-                        cache_memory_usage: 0,
-                        liquid_cache_usage: 0,
-                    };
-                }
-                let metrics = plan
-                    .metrics()
-                    .unwrap()
-                    .aggregate_by_name()
-                    .sorted_for_display()
-                    .timestamps_removed();
-
-                let mut bytes_scanned = 0;
-
-                for metric in metrics.iter() {
-                    if let MetricValue::Count { name, count } = metric.value() {
-                        if name == "bytes_scanned" {
-                            bytes_scanned = count.value();
-                        }
-                    }
-                }
-
-                ExecutionMetricsResponse {
-                    pushdown_eval_time: 0,
-                    cache_memory_usage: bytes_scanned as u64,
-                    liquid_cache_usage: 0,
-                }
-            }
-            BenchmarkMode::ParquetPushdown
-            | BenchmarkMode::ArrowPushdown
-            | BenchmarkMode::LiquidCache
-            | BenchmarkMode::LiquidEagerTranscode => {
-                let mut flight_client = get_flight_client(server_url).await;
-                let action = LiquidCacheActions::ExecutionMetrics.into();
-                let mut result_stream = flight_client.do_action(action).await.unwrap();
-                let result = result_stream.next().await.unwrap().unwrap();
-                let any = Any::decode(&*result).unwrap();
-                any.unpack::<ExecutionMetricsResponse>().unwrap().unwrap()
-            }
-        }
-    }
-
-    async fn reset_cache(&self, server_url: &str) -> Result<()> {
-        if self == &BenchmarkMode::ParquetFileserver {
-            // File server relies on OS page cache, so we don't need to reset it
-            return Ok(());
-        }
-        let mut flight_client = get_flight_client(server_url).await;
-        let action = LiquidCacheActions::ResetCache.into();
-        let mut result_stream = flight_client.do_action(action).await.unwrap();
-        let _result = result_stream.next().await.unwrap().unwrap();
-        Ok(())
-    }
-}
-
-impl Display for BenchmarkMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                BenchmarkMode::ParquetFileserver => "parquet-fileserver",
-                BenchmarkMode::ParquetPushdown => "parquet-pushdown",
-                BenchmarkMode::LiquidCache => "liquid-cache",
-                BenchmarkMode::ArrowPushdown => "arrow-pushdown",
-                BenchmarkMode::LiquidEagerTranscode => "liquid-eager-transcode",
-            }
-        )
-    }
-}
-
-impl FromStr for BenchmarkMode {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(match s {
-            "parquet-fileserver" => BenchmarkMode::ParquetFileserver,
-            "parquet-pushdown" => BenchmarkMode::ParquetPushdown,
-            "arrow-pushdown" => BenchmarkMode::ArrowPushdown,
-            "liquid-cache" => BenchmarkMode::LiquidCache,
-            "liquid-eager-transcode" => BenchmarkMode::LiquidEagerTranscode,
-            _ => return Err(format!("Invalid benchmark mode: {}", s)),
-        })
-    }
-}
-
-fn get_queries(query_dir: impl AsRef<Path>) -> Vec<(u32, PathBuf, String)> {
+fn get_queries(query_dir: impl AsRef<Path>, query: Option<u32>) -> Vec<(u32, PathBuf, String)> {
     let query_dir = query_dir.as_ref();
 
     let query_data: Vec<(u32, PathBuf, String)> = (1..22)
@@ -307,68 +69,20 @@ fn get_queries(query_dir: impl AsRef<Path>) -> Vec<(u32, PathBuf, String)> {
             path.push(format!("q{i}.sql"));
 
             let query = std::fs::read_to_string(&path).unwrap();
-            info!(
-                "Loaded queries: id={}, path={}, query={}",
-                i,
-                path.display(),
-                query
-            );
             (i, path, query)
         })
+        .filter(|(i, _, _)| query.is_none() || Some(*i) == query)
         .collect();
 
-    println!("{}", query_data[0].2);
-
     query_data
-}
-
-fn save_result(result: &[RecordBatch], query_id: u32) -> Result<()> {
-    let file_path = format!("benchmark/data/results/Q{}.parquet", query_id);
-    let file = File::create(&file_path)?;
-    let props = WriterProperties::builder()
-        .set_compression(Compression::SNAPPY)
-        .build();
-    let mut writer = ArrowWriter::try_new(file, result[0].schema(), Some(props)).unwrap();
-    for batch in result {
-        writer.write(batch).unwrap();
-    }
-    writer.close().unwrap();
-    info!(
-        "Query {} result saved to {}",
-        query_id.to_string().red(),
-        file_path.yellow()
-    );
-    Ok(())
 }
 
 fn check_result_against_answer(
     results: &Vec<RecordBatch>,
     answer_dir: &Path,
     query_id: u32,
-    query: &str,
 ) -> Result<()> {
-    // - If query returns no results, check if baseline exists
-    // - If baseline does not exist, skip query
-    // - If baseline exists, panic
-    if results.is_empty() {
-        let baseline_exists = format!("{}/{}.parquet", answer_dir.display(), query_id);
-        match File::open(baseline_exists) {
-            Err(_) => {
-                info!(
-                    "Query {} returned no results (matches baseline)",
-                    query_id.to_string().red()
-                );
-                return Ok(());
-            }
-            Ok(_) => panic!(
-                "Query {} returned no results but baseline exists",
-                query_id.to_string().red()
-            ),
-        }
-    }
-    // Read answers
-    let baseline_path = format!("{}/{}.parquet", answer_dir.display(), query_id);
-    println!("{}", baseline_path.green());
+    let baseline_path = format!("{}/q{}.parquet", answer_dir.display(), query_id);
     let baseline_file = File::open(baseline_path)?;
     let mut baseline_batches = Vec::new();
     let reader = ParquetRecordBatchReaderBuilder::try_new(baseline_file)?.build()?;
@@ -378,39 +92,11 @@ fn check_result_against_answer(
 
     // Compare answers and result
     let result_batch = datafusion::arrow::compute::concat_batches(&results[0].schema(), results)?;
-    let baseline_batch = datafusion::arrow::compute::concat_batches(
+    let answer_batch = datafusion::arrow::compute::concat_batches(
         &baseline_batches[0].schema(),
         &baseline_batches,
     )?;
-    if query.contains("LIMIT") {
-        info!(
-            "Query {} contains LIMIT, only validating the shape of the result",
-            query_id.to_string().red()
-        );
-        let (result_num_rows, result_columns) =
-            (result_batch.num_rows(), result_batch.columns().len());
-        let (baseline_num_rows, baseline_columns) =
-            (baseline_batch.num_rows(), baseline_batch.columns().len());
-        if result_num_rows != baseline_num_rows || result_columns != baseline_columns {
-            save_result(results, query_id)?;
-            panic!(
-                "Query {} result does not match baseline. Result(num_rows: {}, num_columns: {}), Baseline(num_rows: {}, num_columns: {})",
-                query_id.to_string().red(),
-                result_num_rows,
-                result_columns,
-                baseline_num_rows,
-                baseline_columns,
-            );
-        }
-    } else if !assert_batch_eq(&result_batch, &baseline_batch) {
-        save_result(results, query_id)?;
-        panic!(
-            "Query {} result does not match baseline. Result: {:?}, Baseline: {:?}",
-            query_id.to_string().red(),
-            result_batch.red(),
-            baseline_batch.red()
-        );
-    }
+    assert_batch_eq(&answer_batch, &result_batch);
     Ok(())
 }
 
@@ -422,19 +108,15 @@ pub async fn main() -> Result<()> {
 
     let ctx = args
         .bench_mode
-        .setup_ctx(&args.server, &args.data_dir)
+        .setup_tpch_ctx(&args.server, &args.data_dir)
         .await?;
 
     let mut benchmark_result = BenchmarkResult {
-        server_url: args.server.clone(),
-        query_dir: args.query_dir.clone(),
-        iteration: args.iteration,
-        output_path: args.output.clone(),
-        bench_mode: args.bench_mode,
-        queries: Vec::new(),
+        args: args.clone(),
+        results: Vec::new(),
     };
 
-    let queries = get_queries(&args.query_dir);
+    let queries = get_queries(&args.query_dir, args.query);
 
     std::fs::create_dir_all("benchmark/data/results")?;
 
@@ -473,7 +155,7 @@ pub async fn main() -> Result<()> {
 
             // Check query answers
             if let Some(answer_dir) = &args.answer_dir {
-                check_result_against_answer(&results, answer_dir, id, &query)?;
+                check_result_against_answer(&results, answer_dir, id)?;
                 info!("Query {} passed validation", id.to_string().red());
             }
 
@@ -499,7 +181,7 @@ pub async fn main() -> Result<()> {
         if args.reset_cache {
             args.bench_mode.reset_cache(&args.server).await?;
         }
-        benchmark_result.queries.push(query_result);
+        benchmark_result.results.push(query_result);
     }
 
     if let Some(output_path) = &args.output {
@@ -508,11 +190,4 @@ pub async fn main() -> Result<()> {
     }
 
     Ok(())
-}
-
-async fn get_flight_client(server_url: &str) -> FlightClient {
-    let endpoint = Channel::from_shared(server_url.to_string()).unwrap();
-    let channel = endpoint.connect().await.unwrap();
-    let inner_client = FlightServiceClient::new(channel);
-    FlightClient::new_from_inner(inner_client)
 }
