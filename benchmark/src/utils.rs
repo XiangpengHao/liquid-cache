@@ -6,6 +6,7 @@ use datafusion::arrow::{
     array::{AsArray, RecordBatch},
     datatypes::DataType,
 };
+use log::warn;
 use owo_colors::OwoColorize;
 
 fn float_eq_helper<T: ArrowPrimitiveType, F: Fn(T::Native) -> bool>(
@@ -19,7 +20,7 @@ fn float_eq_helper<T: ArrowPrimitiveType, F: Fn(T::Native) -> bool>(
     let scale = scale.as_primitive_opt::<T>().unwrap();
     for d in scale.iter().flatten() {
         if abs_f(d) {
-            println!("scale: {:?}", scale);
+            warn!("scale: {:?}", scale);
             return false;
         }
     }
