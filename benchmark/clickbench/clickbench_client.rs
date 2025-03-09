@@ -129,14 +129,8 @@ fn check_result_against_answer(
                 baseline_columns,
             );
         }
-    } else if !assert_batch_eq(&result_batch, &baseline_batch) {
-        save_result(results, query_id)?;
-        panic!(
-            "Query {} result does not match baseline. Result: {:?}, Baseline: {:?}",
-            query_id.to_string().red(),
-            result_batch.red(),
-            baseline_batch.red()
-        );
+    } else {
+        assert_batch_eq(&result_batch, &baseline_batch);
     }
     Ok(())
 }

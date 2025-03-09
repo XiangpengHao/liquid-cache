@@ -2,11 +2,7 @@ use clap::{Parser, arg};
 use datafusion::{
     arrow::{array::RecordBatch, util::pretty},
     error::Result,
-    parquet::{
-        arrow::{ArrowWriter, arrow_reader::ParquetRecordBatchReaderBuilder},
-        basic::Compression,
-        file::properties::WriterProperties,
-    },
+    parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder,
     physical_plan::{collect, display::DisplayableExecutionPlan},
 };
 use liquid_cache_benchmarks::{
@@ -63,7 +59,7 @@ struct CliArgs {
     reset_cache: bool,
 }
 
-fn get_queries(query_dir: impl AsRef<Path>) -> Vec<(u32, PathBuf, String)> {
+fn get_queries(query_dir: impl AsRef<Path>, query: Option<u32>) -> Vec<(u32, PathBuf, String)> {
     let query_dir = query_dir.as_ref();
 
     let query_data: Vec<(u32, PathBuf, String)> = (1..22)
@@ -75,58 +71,18 @@ fn get_queries(query_dir: impl AsRef<Path>) -> Vec<(u32, PathBuf, String)> {
             let query = std::fs::read_to_string(&path).unwrap();
             (i, path, query)
         })
+        .filter(|(i, _, _)| query.is_none() || Some(*i) == query)
         .collect();
 
     query_data
-}
-
-fn save_result(result: &[RecordBatch], query_id: u32) -> Result<()> {
-    let file_path = format!("benchmark/data/results/Q{}.parquet", query_id);
-    let file = File::create(&file_path)?;
-    let props = WriterProperties::builder()
-        .set_compression(Compression::SNAPPY)
-        .build();
-    let mut writer = ArrowWriter::try_new(file, result[0].schema(), Some(props)).unwrap();
-    for batch in result {
-        writer.write(batch).unwrap();
-    }
-    writer.close().unwrap();
-    info!(
-        "Query {} result saved to {}",
-        query_id.to_string().red(),
-        file_path.yellow()
-    );
-    Ok(())
 }
 
 fn check_result_against_answer(
     results: &Vec<RecordBatch>,
     answer_dir: &Path,
     query_id: u32,
-    query: &str,
 ) -> Result<()> {
-    // - If query returns no results, check if baseline exists
-    // - If baseline does not exist, skip query
-    // - If baseline exists, panic
-    if results.is_empty() {
-        let baseline_exists = format!("{}/{}.parquet", answer_dir.display(), query_id);
-        match File::open(baseline_exists) {
-            Err(_) => {
-                info!(
-                    "Query {} returned no results (matches baseline)",
-                    query_id.to_string().red()
-                );
-                return Ok(());
-            }
-            Ok(_) => panic!(
-                "Query {} returned no results but baseline exists",
-                query_id.to_string().red()
-            ),
-        }
-    }
-    // Read answers
-    let baseline_path = format!("{}/{}.parquet", answer_dir.display(), query_id);
-    println!("{}", baseline_path.green());
+    let baseline_path = format!("{}/q{}.parquet", answer_dir.display(), query_id);
     let baseline_file = File::open(baseline_path)?;
     let mut baseline_batches = Vec::new();
     let reader = ParquetRecordBatchReaderBuilder::try_new(baseline_file)?.build()?;
@@ -136,39 +92,11 @@ fn check_result_against_answer(
 
     // Compare answers and result
     let result_batch = datafusion::arrow::compute::concat_batches(&results[0].schema(), results)?;
-    let baseline_batch = datafusion::arrow::compute::concat_batches(
+    let answer_batch = datafusion::arrow::compute::concat_batches(
         &baseline_batches[0].schema(),
         &baseline_batches,
     )?;
-    if query.contains("LIMIT") {
-        info!(
-            "Query {} contains LIMIT, only validating the shape of the result",
-            query_id.to_string().red()
-        );
-        let (result_num_rows, result_columns) =
-            (result_batch.num_rows(), result_batch.columns().len());
-        let (baseline_num_rows, baseline_columns) =
-            (baseline_batch.num_rows(), baseline_batch.columns().len());
-        if result_num_rows != baseline_num_rows || result_columns != baseline_columns {
-            save_result(results, query_id)?;
-            panic!(
-                "Query {} result does not match baseline. Result(num_rows: {}, num_columns: {}), Baseline(num_rows: {}, num_columns: {})",
-                query_id.to_string().red(),
-                result_num_rows,
-                result_columns,
-                baseline_num_rows,
-                baseline_columns,
-            );
-        }
-    } else if !assert_batch_eq(&result_batch, &baseline_batch) {
-        save_result(results, query_id)?;
-        panic!(
-            "Query {} result does not match baseline. Result: {:?}, Baseline: {:?}",
-            query_id.to_string().red(),
-            result_batch.red(),
-            baseline_batch.red()
-        );
-    }
+    assert_batch_eq(&answer_batch, &result_batch);
     Ok(())
 }
 
@@ -188,7 +116,7 @@ pub async fn main() -> Result<()> {
         results: Vec::new(),
     };
 
-    let queries = get_queries(&args.query_dir);
+    let queries = get_queries(&args.query_dir, args.query);
 
     std::fs::create_dir_all("benchmark/data/results")?;
 
@@ -227,7 +155,7 @@ pub async fn main() -> Result<()> {
 
             // Check query answers
             if let Some(answer_dir) = &args.answer_dir {
-                check_result_against_answer(&results, answer_dir, id, &query)?;
+                check_result_against_answer(&results, answer_dir, id)?;
                 info!("Query {} passed validation", id.to_string().red());
             }
 

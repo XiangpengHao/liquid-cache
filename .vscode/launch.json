@@ -46,11 +46,40 @@
 			},
 			"args": [
 				"--query-path",
-				"benchmark/queries.sql",
+				"benchmark/clickbench/queries/queries.sql",
 				"--file",
-				"benchmark/data/hits_0.parquet",
+				"benchmark/clickbench/data/hits_0.parquet",
 				"--query",
 				"23"
+			],
+			"cwd": "${workspaceFolder}"
+		},
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "tpch_client",
+			"cargo": {
+				"args": [
+					"build",
+					"--bin=tpch_client",
+				],
+				"filter": {
+					"name": "tpch_client",
+					"kind": "bin"
+				}
+			},
+			"env": {
+				"RUST_LOG": "info"
+			},
+			"args": [
+				"--query-dir",
+				"benchmark/tpch/queries",
+				"--data-dir",
+				"benchmark/tpch/data/sf0.01",
+				"--query",
+				"1",
+				"--answer-dir",
+				"benchmark/tpch/answers/sf0.01"
 			],
 			"cwd": "${workspaceFolder}"
 		}
