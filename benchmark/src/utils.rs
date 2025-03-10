@@ -1,7 +1,7 @@
 use datafusion::arrow;
-use datafusion::arrow::array::{Array, ArrowPrimitiveType};
+use datafusion::arrow::array::Array;
 use datafusion::arrow::compute::kernels::numeric::{div, sub_wrapping};
-use datafusion::arrow::datatypes::{Float32Type, Float64Type};
+use datafusion::arrow::datatypes::Float64Type;
 use datafusion::arrow::{
     array::{AsArray, RecordBatch},
     datatypes::DataType,
@@ -9,17 +9,21 @@ use datafusion::arrow::{
 use log::warn;
 use owo_colors::OwoColorize;
 
-fn float_eq_helper<T: ArrowPrimitiveType, F: Fn(T::Native) -> bool>(
-    left: &dyn Array,
-    right: &dyn Array,
-    abs_f: F,
-) -> bool {
+fn float_eq_helper(left: &dyn Array, right: &dyn Array, tol: f64) -> bool {
     let diff = sub_wrapping(&left, &right).unwrap();
+    let diff = arrow::compute::kernels::cast(&diff, &DataType::Float64).unwrap();
+    let diff = diff.as_primitive_opt::<Float64Type>().unwrap();
+
+    // Check if all differences are within tolerance
+    if diff.iter().flatten().all(|v| v.abs() <= tol) {
+        return true;
+    }
+
     let scale = div(&diff, &left).unwrap();
     let scale = arrow::compute::kernels::cast(&scale, &DataType::Float64).unwrap();
-    let scale = scale.as_primitive_opt::<T>().unwrap();
+    let scale = scale.as_primitive_opt::<Float64Type>().unwrap();
     for d in scale.iter().flatten() {
-        if abs_f(d) {
+        if d.abs() > tol {
             warn!("scale: {:?}", scale);
             return false;
         }
@@ -55,18 +59,13 @@ pub fn assert_batch_eq(expected: &RecordBatch, actual: &RecordBatch) {
         let sorted_actual = sort(c_actual, None).unwrap();
 
         let data_type = c_expected.data_type();
-        let tol: f32 = 1e-4;
+        let tol: f64 = 1e-4;
         let ok = match data_type {
             DataType::Float16 => {
                 unreachable!()
             }
-            DataType::Float32 => {
-                let abs_f = |d: f32| d.abs() > tol;
-                float_eq_helper::<Float32Type, _>(&sorted_expected, &sorted_actual, abs_f)
-            }
-            DataType::Float64 => {
-                let abs_f = |d: f64| d.abs() > tol.into();
-                float_eq_helper::<Float64Type, _>(&sorted_expected, &sorted_actual, abs_f)
+            DataType::Float32 | DataType::Float64 => {
+                float_eq_helper(&sorted_expected, &sorted_actual, tol)
             }
             _ => {
                 let eq =
@@ -96,16 +95,26 @@ mod tests {
             1.9481948778949233e18,
             1.9481948778941111e18,
             1.9481948778949233e18,
+            0.00,
         ]);
         let right = Float64Array::from(vec![
             1.948194877894922e18,
             1.9481948778942222e18,
             1.948194877894922e18,
+            0.00,
         ]);
-        assert!(float_eq_helper::<Float64Type, _>(
-            &left,
-            &right,
-            |d: f64| d.abs() > 1e-9
-        ));
+        assert!(float_eq_helper(&left, &right, 1e-9));
+
+        let left = Float64Array::from(vec![0.00]);
+        let right = Float64Array::from(vec![0.00]);
+        assert!(float_eq_helper(&left, &right, 1e-9));
+    }
+
+    #[should_panic]
+    #[test]
+    fn test_float_eq_helper() {
+        let left = Float64Array::from(vec![0.00]);
+        let right = Float64Array::from(vec![1.00]);
+        assert!(float_eq_helper(&left, &right, 1e-9));
     }
 }
