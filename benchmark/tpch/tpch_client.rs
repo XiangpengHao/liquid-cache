@@ -3,7 +3,8 @@ use datafusion::{
     arrow::{array::RecordBatch, util::pretty},
     error::Result,
     parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder,
-    physical_plan::{collect, display::DisplayableExecutionPlan},
+    physical_plan::{ExecutionPlan, collect, display::DisplayableExecutionPlan},
+    prelude::SessionContext,
 };
 use liquid_cache_benchmarks::{
     BenchmarkMode, BenchmarkResult, IterationResult, QueryResult, utils::assert_batch_eq,
@@ -12,7 +13,7 @@ use log::{debug, info};
 use mimalloc::MiMalloc;
 use owo_colors::OwoColorize;
 use serde::Serialize;
-use std::{fs::File as StdFile, path::Path};
+use std::{fs::File as StdFile, path::Path, sync::Arc};
 use std::{fs::File, path::PathBuf, time::Instant};
 use sysinfo::Networks;
 
@@ -59,22 +60,18 @@ struct CliArgs {
     reset_cache: bool,
 }
 
-fn get_queries(query_dir: impl AsRef<Path>, query: Option<u32>) -> Vec<(u32, PathBuf, String)> {
+/// One query file can contain multiple queries, separated by `;`
+fn get_query_by_id(query_dir: impl AsRef<Path>, query_id: u32) -> Result<Vec<String>> {
     let query_dir = query_dir.as_ref();
-
-    let query_data: Vec<(u32, PathBuf, String)> = (1..22)
-        .map(|i| {
-            // Convert to owned PathBuf
-            let mut path = query_dir.to_owned();
-            path.push(format!("q{i}.sql"));
-
-            let query = std::fs::read_to_string(&path).unwrap();
-            (i, path, query)
-        })
-        .filter(|(i, _, _)| query.is_none() || Some(*i) == query)
-        .collect();
-
-    query_data
+    let mut path = query_dir.to_owned();
+    path.push(format!("q{query_id}.sql"));
+    let content = std::fs::read_to_string(&path)?;
+    Ok(content
+        .split(';')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect())
 }
 
 fn check_result_against_answer(
@@ -100,6 +97,17 @@ fn check_result_against_answer(
     Ok(())
 }
 
+async fn run_query(
+    ctx: &Arc<SessionContext>,
+    query: &str,
+) -> Result<(Vec<RecordBatch>, Arc<dyn ExecutionPlan>)> {
+    let df = ctx.sql(query).await?;
+    let (state, logical_plan) = df.into_parts();
+    let physical_plan = state.create_physical_plan(&logical_plan).await?;
+    let results = collect(physical_plan.clone(), state.task_ctx()).await?;
+    Ok((results, physical_plan))
+}
+
 #[tokio::main]
 pub async fn main() -> Result<()> {
     env_logger::builder().format_timestamp(None).init();
@@ -116,24 +124,43 @@ pub async fn main() -> Result<()> {
         results: Vec::new(),
     };
 
-    let queries = get_queries(&args.query_dir, args.query);
+    let query_ids = if let Some(query) = args.query {
+        vec![query]
+    } else {
+        (1..=22).collect()
+    };
 
     std::fs::create_dir_all("benchmark/data/results")?;
 
     let mut networks = Networks::new_with_refreshed_list();
     let bench_start_time = Instant::now();
 
-    for (id, _, query) in queries {
-        let mut query_result = QueryResult::new(id, query.clone());
+    for id in query_ids {
+        let query = get_query_by_id(&args.query_dir, id)?;
+        let mut query_result = QueryResult::new(id, query.join(";"));
         for _i in 0..args.iteration {
-            info!("Running query {}: \n{}", id.magenta(), query.cyan());
+            info!(
+                "Running query {}: \n{}",
+                id.magenta(),
+                query.join(";").cyan()
+            );
             let now = Instant::now();
             let starting_timestamp = bench_start_time.elapsed();
-            let df = ctx.sql(&query).await?;
-            let (state, logical_plan) = df.into_parts();
-
-            let physical_plan = state.create_physical_plan(&logical_plan).await?;
-            let results = collect(physical_plan.clone(), state.task_ctx()).await?;
+            let (results, physical_plan) = if id == 15 {
+                // Q15 has three queries, the second one is the one we want to test
+                let mut results = Vec::new();
+                let mut physical_plan = None;
+                for (i, q) in query.iter().enumerate() {
+                    let (result, plan) = run_query(&ctx, q).await?;
+                    if i == 1 {
+                        physical_plan = Some(plan);
+                        results = result;
+                    }
+                }
+                (results, physical_plan.unwrap())
+            } else {
+                run_query(&ctx, &query[0]).await?
+            };
             let elapsed = now.elapsed();
             info!("Query execution time: {:?}", elapsed);
 

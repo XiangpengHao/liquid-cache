@@ -77,7 +77,7 @@
 				"--data-dir",
 				"benchmark/tpch/data/sf0.01",
 				"--query",
-				"1",
+				"15",
 				"--answer-dir",
 				"benchmark/tpch/answers/sf0.01"
 			],

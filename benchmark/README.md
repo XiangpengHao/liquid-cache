@@ -51,7 +51,7 @@ env RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS='-C target-cpu=native' cargo run --
 
 ```bash
 cd benchmark/tpch
-uvx --from duckdb python tpch_gen_duckdb.py --scale 0.01
+uvx --from duckdb python tpch_gen.py --scale 0.01
 ```
 
 

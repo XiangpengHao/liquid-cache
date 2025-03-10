@@ -70,8 +70,8 @@ jobs:
         run: >
           env RUSTFLAGS="-Z sanitizer=address" cargo test -Zbuild-std --target x86_64-unknown-linux-gnu --tests
 
-  integration_test:
-    name: Integration Test
+  clickbench:
+    name: ClickBench
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -86,7 +86,8 @@ jobs:
         run: |
           mkdir -p benchmark/data
           wget https://datasets.clickhouse.com/hits_compatible/athena_partitioned/hits_0.parquet -O benchmark/data/hits_0.parquet
-      - run: |
+      - name: Run ClickBench
+        run: |
           source <(cargo llvm-cov show-env --export-prefix)
           cargo llvm-cov clean --workspace
           cargo build --bin bench_server
@@ -103,12 +104,49 @@ jobs:
           echo "=== Server logs (partition 0) ==="
           cat server.log || echo "No server log found"
           curl http://localhost:8080/shutdown
-          cargo llvm-cov report --codecov --output-path codecov_integration_test.json
+          cargo llvm-cov report --codecov --output-path codecov_clickbench.json
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v3
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: codecov_integration_test.json
+          files: codecov_clickbench.json
+          fail_ci_if_error: true
+
+  tpch:
+    name: TPC-H
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2025-03-03
+      - run: sudo apt-get update && sudo apt-get install -y wget
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: Swatinem/rust-cache@v2
+      - name: Setup TPC-H data
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          cd benchmark/tpch
+          uvx --from duckdb python tpch_gen.py --scale 0.1
+      - name: Run TPC-H
+        run: |
+          source <(cargo llvm-cov show-env --export-prefix)
+          cargo llvm-cov clean --workspace
+          cargo build --bin bench_server
+          cargo build --bin tpch_client
+          env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic &> server.log &
+          sleep 2  # Wait for server to start up
+          env RUST_LOG=info cargo run --bin tpch_client -- --query-dir benchmark/tpch/queries --answer-dir benchmark/tpch/answers/sf0.1 --data-dir benchmark/tpch/data/sf0.1
+          echo "=== Server logs ==="
+          cat server.log || echo "No server log found"
+          curl http://localhost:8080/shutdown
+          cargo llvm-cov report --codecov --output-path codecov_tpch.json
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: codecov_tpch.json
           fail_ci_if_error: true
 
   examples:
