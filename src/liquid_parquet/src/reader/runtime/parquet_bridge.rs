@@ -152,7 +152,7 @@ pub(super) fn get_predicate_column_id(projection: &parquet::arrow::ProjectionMas
                 .filter_map(|(pos, &x)| if x { Some(pos) } else { None })
                 .collect::<Vec<usize>>()
         })
-        .unwrap_or_else(|| Vec::new())
+        .unwrap_or_default()
 }
 
 use parquet::arrow::async_reader::AsyncReader;

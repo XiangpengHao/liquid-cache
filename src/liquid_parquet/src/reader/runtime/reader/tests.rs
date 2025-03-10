@@ -389,6 +389,99 @@ async fn test_reading_with_filter() {
     }
 }
 
+#[tokio::test]
+async fn test_reading_with_filter_two_columns() {
+    let projection = vec![11, 12]; // OS and UserAgent
+    let (mut builder, _file) = get_test_reader().await;
+    let batch_size = builder.batch_size;
+
+    builder.projection = ProjectionMask::roots(
+        builder.metadata.file_metadata().schema_descr(),
+        projection.iter().cloned(),
+    );
+
+    struct TwoColumnsPredicate {
+        projection_mask: ProjectionMask,
+    }
+
+    impl LiquidPredicate for TwoColumnsPredicate {
+        fn evaluate_liquid(&mut self, _array: &LiquidArrayRef) -> Result<BooleanArray, ArrowError> {
+            unimplemented!()
+        }
+    }
+
+    impl ArrowPredicate for TwoColumnsPredicate {
+        fn evaluate(&mut self, batch: RecordBatch) -> Result<BooleanArray, ArrowError> {
+            assert_eq!(batch.num_columns(), 2);
+            let column1 = batch.column(0);
+            let column2 = batch.column(1);
+            let mask = arrow::compute::kernels::cmp::gt(column1, column2).unwrap();
+            Ok(mask)
+        }
+
+        fn projection(&self) -> &ProjectionMask {
+            &self.projection_mask
+        }
+    }
+    let predicate = TwoColumnsPredicate {
+        projection_mask: ProjectionMask::roots(
+            builder.metadata.file_metadata().schema_descr(),
+            projection.iter().cloned(),
+        ),
+    };
+
+    builder.filter = Some(LiquidRowFilter::new(vec![Box::new(predicate)]));
+
+    let liquid_cache = Arc::new(LiquidCachedFile::new(
+        LiquidCacheMode::InMemoryLiquid {
+            transcode_in_background: false,
+        },
+        CacheConfig::new(batch_size, usize::MAX),
+    ));
+
+    let reader = builder.build(liquid_cache.clone()).unwrap();
+
+    let batches = reader
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .map(|batch| batch.unwrap())
+        .collect::<Vec<_>>();
+
+    for (_i, batch) in batches.iter().enumerate() {
+        let col_1 = batch.column(0).as_primitive::<Int16Type>();
+        let col_2 = batch.column(1).as_primitive::<Int16Type>();
+        for (c1, c2) in col_1.iter().zip(col_2.iter()) {
+            assert!(c1 > c2);
+        }
+    }
+
+    // now run again with the same cache
+    let (mut builder, _file) = get_test_reader().await;
+    builder.projection = ProjectionMask::roots(
+        builder.metadata.file_metadata().schema_descr(),
+        projection.iter().cloned(),
+    );
+    let predicate = TwoColumnsPredicate {
+        projection_mask: ProjectionMask::roots(
+            builder.metadata.file_metadata().schema_descr(),
+            projection.iter().cloned(),
+        ),
+    };
+    builder.filter = Some(LiquidRowFilter::new(vec![Box::new(predicate)]));
+    let reader = builder.build(liquid_cache.clone()).unwrap();
+    let warm_batches = reader
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .map(|batch| batch.unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(batches.len(), warm_batches.len());
+    for (batch, warm_batch) in batches.iter().zip(warm_batches.iter()) {
+        assert_batch_eq(&batch, &warm_batch);
+    }
+}
+
 fn filter_record_batch(batch: &RecordBatch, mask: BooleanBuffer) -> RecordBatch {
     let mask = BooleanArray::new(mask, None);
     let filtered_columns = batch
