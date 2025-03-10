@@ -54,6 +54,19 @@ cd benchmark/tpch
 uvx --from duckdb python tpch_gen.py --scale 0.01
 ```
 
+### Run server (same as ClickBench)
+
+```bash
+cargo run --release --bin bench_server
+```
+
+### Run client
+
+```bash
+env RUST_LOG=info,clickbench_client=debug RUSTFLAGS='-C target-cpu=native' cargo run --release --bin tpch_client -- --query-dir benchmark/tpch/queries/ --data-dir benchmark/tpch/data/sf0.1  --iteration 3 --bench-mode liquid-eager-transcode --answer-dir benchmark/tpch/answers/sf0.1
+```
+
+
 
 ## Profile
 
