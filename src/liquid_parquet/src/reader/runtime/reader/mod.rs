@@ -2,19 +2,17 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use arrow::array::{Array, AsArray, BooleanArray, RecordBatch, RecordBatchReader};
-use arrow::buffer::BooleanBuffer;
 use arrow::compute::prep_null_mask_filter;
 use arrow_schema::{ArrowError, DataType, Schema, SchemaRef};
 use parquet::arrow::array_reader::ArrayReader;
 use parquet::arrow::arrow_reader::{RowSelection, RowSelector};
 
 use crate::cache::LiquidCachedRowGroupRef;
-use crate::reader::runtime::parquet_bridge::get_predicate_column_id;
 use crate::reader::runtime::utils::{boolean_buffer_and_then, take_next_batch};
 use crate::{ABLATION_STUDY_MODE, AblationStudyMode};
 
+use super::LiquidRowFilter;
 use super::utils::row_selector_to_boolean_buffer;
-use super::{LiquidPredicate, LiquidRowFilter};
 
 mod cached_array_reader;
 pub(crate) use cached_array_reader::build_cached_array_reader;
@@ -22,21 +20,6 @@ pub(super) mod cached_page;
 
 #[cfg(test)]
 mod tests;
-
-fn build_predicate_from_cache(
-    cache: &LiquidCachedRowGroupRef,
-    row_id: usize,
-    input_selection: &BooleanBuffer,
-    predicate: &mut Box<dyn LiquidPredicate>,
-) -> Option<BooleanBuffer> {
-    let projection = predicate.projection();
-    let column_id = get_predicate_column_id(projection);
-    let cache = cache.get_column(column_id)?;
-    cache
-        .eval_selection_with_predicate(row_id, input_selection, predicate.as_mut())
-        .transpose()
-        .unwrap()
-}
 
 fn read_record_batch_from_parquet<'a>(
     reader: &mut Box<dyn ArrayReader>,
@@ -125,14 +108,15 @@ impl LiquidBatchReader {
                         continue;
                     }
 
-                    let result = if let Some(result) = build_predicate_from_cache(
-                        &self.liquid_cache,
+                    let cached_result = self.liquid_cache.evaluate_selection_with_predicate(
                         self.current_row_id,
                         &input_selection,
-                        predicate,
-                    ) {
+                        predicate.as_mut(),
+                    );
+
+                    let boolean_mask = if let Some(result) = cached_result {
                         reader.skip_records(selection_size).unwrap();
-                        result
+                        result?
                     } else {
                         // slow case, where the predicate column is not cached
                         // we need to read from parquet file
@@ -152,10 +136,11 @@ impl LiquidBatchReader {
                         assert!(null.is_none());
                         buffer
                     };
+
                     if ABLATION_STUDY_MODE >= AblationStudyMode::SelectiveWithLateMaterialization {
-                        input_selection = boolean_buffer_and_then(&input_selection, &result);
+                        input_selection = boolean_buffer_and_then(&input_selection, &boolean_mask);
                     } else {
-                        final_selection = boolean_buffer_and_then(&final_selection, &result);
+                        final_selection = boolean_buffer_and_then(&final_selection, &boolean_mask);
                     }
                 }
                 if ABLATION_STUDY_MODE >= AblationStudyMode::SelectiveWithLateMaterialization {

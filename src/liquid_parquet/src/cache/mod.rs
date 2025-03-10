@@ -105,13 +105,13 @@ pub struct LiquidCachedColumn {
 
 pub type LiquidCachedColumnRef = Arc<LiquidCachedColumn>;
 
-fn array_to_record_batch(array: ArrayRef) -> RecordBatch {
-    let schema = Arc::new(Schema::new(vec![Field::new(
-        "_",
-        array.data_type().clone(),
-        array.is_nullable(),
-    )]));
-    RecordBatch::try_new(schema, vec![array]).unwrap()
+fn arrays_to_record_batch(arrays: &[ArrayRef]) -> RecordBatch {
+    let fields = arrays
+        .iter()
+        .map(|array| Field::new("_", array.data_type().clone(), array.is_nullable()))
+        .collect::<Vec<_>>();
+    let schema = Arc::new(Schema::new(fields));
+    RecordBatch::try_new(schema, arrays.to_vec()).unwrap()
 }
 
 pub enum InsertArrowArrayError {
@@ -159,7 +159,7 @@ impl LiquidCachedColumn {
             CachedBatch::ArrowMemory(array) => {
                 let boolean_array = BooleanArray::new(selection.clone(), None);
                 let selected = arrow::compute::filter(array, &boolean_array).unwrap();
-                let record_batch = array_to_record_batch(selected);
+                let record_batch = arrays_to_record_batch(&[selected]);
                 let boolean_array = predicate.evaluate(record_batch).unwrap();
                 let predicate_filter = match boolean_array.null_count() {
                     0 => boolean_array,
@@ -173,7 +173,7 @@ impl LiquidCachedColumn {
                     let boolean_array = BooleanArray::new(selection.clone(), None);
                     let arrow = array.to_arrow_array();
                     let filtered = arrow::compute::filter(&arrow, &boolean_array).unwrap();
-                    let record_batch = array_to_record_batch(filtered);
+                    let record_batch = arrays_to_record_batch(&[filtered]);
                     let boolean_array = predicate.evaluate(record_batch).unwrap();
                     let (buffer, _) = boolean_array.into_parts();
                     Some(Ok(buffer))
@@ -183,7 +183,7 @@ impl LiquidCachedColumn {
                     let boolean_array = BooleanArray::new(selection.clone(), None);
                     let filtered = array.filter(&boolean_array);
                     let arrow = filtered.to_arrow_array();
-                    let record_batch = array_to_record_batch(arrow);
+                    let record_batch = arrays_to_record_batch(&[arrow]);
                     let boolean_array = predicate.evaluate(record_batch).unwrap();
                     let (buffer, _) = boolean_array.into_parts();
                     Some(Ok(buffer))
@@ -534,6 +534,35 @@ impl LiquidCachedRowGroup {
 
     pub fn get_column(&self, column_id: usize) -> Option<LiquidCachedColumnRef> {
         self.columns.read().unwrap().get(&column_id).cloned()
+    }
+
+    pub fn evaluate_selection_with_predicate(
+        &self,
+        row_id: usize,
+        selection: &BooleanBuffer,
+        predicate: &mut dyn LiquidPredicate,
+    ) -> Option<Result<BooleanBuffer, ArrowError>> {
+        let column_ids = predicate.predicate_column_ids();
+
+        if column_ids.len() == 1 {
+            // If we only have one column, we can short-circuit and try to evaluate the predicate on encoded data.
+            let column_id = column_ids[0];
+            let cache = self.get_column(column_id)?;
+            cache.eval_selection_with_predicate(row_id, selection, predicate)
+        } else {
+            // Otherwise, we need to first convert the data into arrow arrays.
+            let mask = BooleanArray::from(selection.clone());
+            let mut arrays = Vec::new();
+            for column_id in column_ids {
+                let column = self.get_column(column_id)?;
+                let array = column.get_arrow_array_with_filter(row_id, &mask)?;
+                arrays.push(array);
+            }
+            let record_batch = arrays_to_record_batch(&arrays);
+            let boolean_array = predicate.evaluate(record_batch).unwrap();
+            let (buffer, _) = boolean_array.into_parts();
+            Some(Ok(buffer))
+        }
     }
 }
 

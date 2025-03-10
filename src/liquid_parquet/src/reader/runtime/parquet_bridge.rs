@@ -141,87 +141,18 @@ pub struct ProjectionMask {
     mask: Option<Vec<bool>>,
 }
 
-impl ProjectionMask {
-    /// Union two projection masks
-    ///
-    /// Example:
-    /// ```text
-    /// mask1 = [true, false, true]
-    /// mask2 = [false, true, true]
-    /// union(mask1, mask2) = [true, true, true]
-    /// ```
-    pub fn union(&mut self, other: &Self) {
-        match (self.mask.as_ref(), other.mask.as_ref()) {
-            (None, _) | (_, None) => self.mask = None,
-            (Some(a), Some(b)) => {
-                debug_assert_eq!(a.len(), b.len());
-                let mask = a.iter().zip(b.iter()).map(|(&a, &b)| a || b).collect();
-                self.mask = Some(mask);
-            }
-        }
-    }
-
-    /// Intersect two projection masks
-    ///
-    /// Example:
-    /// ```text
-    /// mask1 = [true, false, true]
-    /// mask2 = [false, true, true]
-    /// intersect(mask1, mask2) = [false, false, true]
-    /// ```
-    pub fn intersect(&mut self, other: &Self) {
-        match (self.mask.as_ref(), other.mask.as_ref()) {
-            (None, _) => self.mask = other.mask.clone(),
-            (_, None) => {}
-            (Some(a), Some(b)) => {
-                debug_assert_eq!(a.len(), b.len());
-                let mask = a.iter().zip(b.iter()).map(|(&a, &b)| a && b).collect();
-                self.mask = Some(mask);
-            }
-        }
-    }
-
-    pub fn leaf_included(&self, leaf_idx: usize) -> bool {
-        self.mask.as_ref().map(|m| m[leaf_idx]).unwrap_or(true)
-    }
-}
-
-pub(super) fn intersect_projection_mask(
-    projection: &mut parquet::arrow::ProjectionMask,
-    other: &parquet::arrow::ProjectionMask,
-) {
-    let project_inner: &mut ProjectionMask = unsafe { std::mem::transmute(projection) };
-    let other_inner: &ProjectionMask = unsafe { std::mem::transmute(other) };
-    project_inner.intersect(other_inner);
-}
-
-pub(super) fn union_projection_mask(
-    projection: &mut parquet::arrow::ProjectionMask,
-    other: &parquet::arrow::ProjectionMask,
-) {
-    let project_inner: &mut ProjectionMask = unsafe { std::mem::transmute(projection) };
-    let other_inner: &ProjectionMask = unsafe { std::mem::transmute(other) };
-    project_inner.union(other_inner);
-}
-
-pub(super) fn get_predicate_column_id(projection: &parquet::arrow::ProjectionMask) -> usize {
+pub(super) fn get_predicate_column_id(projection: &parquet::arrow::ProjectionMask) -> Vec<usize> {
     let project_inner: &ProjectionMask = unsafe { std::mem::transmute(projection) };
-    debug_assert!(
-        project_inner
-            .mask
-            .as_ref()
-            .map(|m| m.iter().filter(|&x| *x).count() == 1)
-            .unwrap_or(false)
-    );
     project_inner
         .mask
         .as_ref()
         .map(|m| {
             m.iter()
-                .position(|&x| x)
-                .expect("one column must be selected")
+                .enumerate()
+                .filter_map(|(pos, &x)| if x { Some(pos) } else { None })
+                .collect::<Vec<usize>>()
         })
-        .expect("predicate projection can't select all")
+        .unwrap_or_else(|| Vec::new())
 }
 
 use parquet::arrow::async_reader::AsyncReader;
@@ -296,5 +227,21 @@ use parquet::arrow::array_reader::StructArrayReader;
 impl StructArrayReaderBridge {
     pub fn from_parquet(parquet: &mut StructArrayReader) -> &mut Self {
         unsafe { std::mem::transmute(parquet) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::mem::transmute;
+
+    #[test]
+    fn test_valid_projection_mask() {
+        // Create a valid projection mask with one `true` at index 1.
+        let proj = ProjectionMask {
+            mask: Some(vec![false, true, false, true, true, false]),
+        };
+        let predicate_ids = unsafe { get_predicate_column_id(transmute(&proj)) };
+        assert_eq!(predicate_ids, vec![1, 3, 4]);
     }
 }

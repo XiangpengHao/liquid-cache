@@ -27,7 +27,10 @@ use object_store::ObjectMeta;
 use parquet::{
     arrow::{
         ParquetRecordBatchStreamBuilder, ProjectionMask,
-        arrow_reader::{ArrowPredicate, ArrowReaderMetadata, ArrowReaderOptions},
+        arrow_reader::{
+            ArrowPredicate, ArrowReaderMetadata, ArrowReaderOptions,
+            ParquetRecordBatchReaderBuilder,
+        },
     },
     file::metadata::ParquetMetaData,
 };
@@ -49,21 +52,21 @@ pub fn generate_test_parquet() -> (File, String) {
     );
 }
 
-async fn create_record_batch(batch_size: usize, i: usize) -> RecordBatch {
-    let (mut reader, _) = get_test_reader().await;
-    reader.batch_size = batch_size;
-    let reader = reader
-        .build(Arc::new(LiquidCachedFile::new(
-            LiquidCacheMode::InMemoryLiquid {
-                transcode_in_background: false,
-            },
-            CacheConfig::new(batch_size, usize::MAX),
-        )))
-        .unwrap();
-
-    let mut batches = reader.collect::<Vec<_>>().await;
-    let batch = batches.remove(i).unwrap();
-    return batch;
+fn get_baseline_record_batch(batch_size: usize, projection: &[usize]) -> Vec<RecordBatch> {
+    let (file, _path) = generate_test_parquet();
+    let metadata = ArrowReaderMetadata::load(&file, Default::default()).unwrap();
+    let builder = ParquetRecordBatchReaderBuilder::new_with_metadata(file, metadata.clone())
+        .with_batch_size(batch_size)
+        .with_projection(ProjectionMask::roots(
+            metadata.parquet_schema(),
+            projection.iter().cloned(),
+        ));
+    let reader = builder.build().unwrap();
+    reader
+        .collect::<Vec<_>>()
+        .into_iter()
+        .map(|batch| batch.unwrap())
+        .collect()
 }
 
 async fn get_test_reader() -> (LiquidStreamBuilder, File) {
@@ -131,6 +134,8 @@ async fn basic_stuff() {
     let schema = &reader.schema;
     assert_eq!(schema.as_ref(), test_output_schema().as_ref());
 
+    let projection = (0..schema.fields().len()).collect::<Vec<_>>();
+
     let batches = reader
         .collect::<Vec<_>>()
         .await
@@ -138,9 +143,10 @@ async fn basic_stuff() {
         .map(|batch| batch.unwrap())
         .collect::<Vec<_>>();
 
+    let baseline_batches = get_baseline_record_batch(batch_size, &projection);
+
     for (i, batch) in batches.iter().enumerate() {
-        let expected = create_record_batch(batch_size, i).await;
-        assert_batch_eq(&expected, batch);
+        assert_batch_eq(&baseline_batches[i], batch);
     }
 }
 
@@ -167,13 +173,10 @@ async fn test_reading_with_projection() {
         .into_iter()
         .map(|batch| batch.unwrap())
         .collect::<Vec<_>>();
+    let baseline_batches = get_baseline_record_batch(batch_size, &column_projections);
 
     for (i, batch) in batches.iter().enumerate() {
-        let expected = create_record_batch(batch_size, i)
-            .await
-            .project(&column_projections)
-            .unwrap();
-        assert_batch_eq(&expected, batch);
+        assert_batch_eq(&baseline_batches[i], batch);
     }
 }
 
@@ -208,13 +211,10 @@ async fn test_reading_warm() {
         .into_iter()
         .map(|batch| batch.unwrap())
         .collect::<Vec<_>>();
+    let baseline_batches = get_baseline_record_batch(batch_size, &column_projections);
 
     for (i, batch) in batches.iter().enumerate() {
-        let expected = create_record_batch(batch_size, i)
-            .await
-            .project(&column_projections)
-            .unwrap();
-        assert_batch_eq(&expected, batch);
+        assert_batch_eq(&baseline_batches[i], batch);
     }
 }
 
@@ -342,12 +342,10 @@ async fn test_reading_with_filter() {
         .into_iter()
         .map(|batch| batch.unwrap())
         .collect::<Vec<_>>();
+    let baseline_batches = get_baseline_record_batch(batch_size, &projection);
 
     for (i, batch) in batches.iter().enumerate() {
-        let expected = create_record_batch(batch_size, i)
-            .await
-            .project(&projection)
-            .unwrap();
+        let expected = &baseline_batches[i];
 
         let col_i64 = expected.column(0).as_primitive::<Int64Type>();
         let mask1 = BooleanBuffer::from_iter(
@@ -429,13 +427,11 @@ async fn test_reading_with_full_cache() {
         .map(|batch| batch.unwrap())
         .collect::<Vec<_>>();
 
+    let baseline_batches = get_baseline_record_batch(batch_size, &column_projections);
+
     // Verify we got the expected results even with a full cache
     for (i, batch) in batches.iter().enumerate() {
-        let expected = create_record_batch(batch_size, i)
-            .await
-            .project(&column_projections)
-            .unwrap();
-        assert_batch_eq(&expected, batch);
+        assert_batch_eq(&baseline_batches[i], batch);
     }
     assert_eq!(liquid_cache.memory_usage(), 0);
 }

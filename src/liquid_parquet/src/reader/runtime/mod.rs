@@ -13,8 +13,7 @@ use parquet::{
 };
 pub(crate) use parquet_bridge::ArrowReaderBuilderBridge;
 use parquet_bridge::{
-    ParquetField, intersect_projection_mask, limit_row_selection, offset_row_selection,
-    union_projection_mask,
+    ParquetField, get_predicate_column_id, limit_row_selection, offset_row_selection,
 };
 use reader::LiquidBatchReader;
 use reader::build_cached_array_reader;
@@ -37,6 +36,11 @@ pub trait LiquidPredicate: ArrowPredicate {
     fn evaluate_liquid(&mut self, array: &LiquidArrayRef) -> Result<BooleanArray, ArrowError>;
     fn evaluate_arrow(&mut self, array: RecordBatch) -> Result<BooleanArray, ArrowError> {
         self.evaluate(array)
+    }
+
+    fn predicate_column_ids(&self) -> Vec<usize> {
+        let projection = self.projection();
+        get_predicate_column_id(projection)
     }
 }
 
@@ -91,14 +95,14 @@ impl ReaderFactory {
             for predicate in filter.predicates.iter_mut() {
                 let p_projection = predicate.projection();
                 if let Some(ref mut p) = predicate_projection {
-                    union_projection_mask(p, p_projection);
+                    p.union(p_projection);
                 } else {
                     predicate_projection = Some(p_projection.clone());
                 }
             }
         }
         let projection_to_cache = predicate_projection.map(|mut p| {
-            intersect_projection_mask(&mut p, &projection);
+            p.intersect(&projection);
             p
         });
 
