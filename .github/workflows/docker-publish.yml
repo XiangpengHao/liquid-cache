@@ -25,12 +25,18 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Set lower case owner name
+        run: |
+          echo "OWNER_LC=${OWNER,,}" >> ${GITHUB_ENV}
+        env:
+          OWNER: '${{ github.repository_owner }}'
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v4
         with:
           context: .
           push: true
-          tags: ghcr.io/${{ github.repository_owner | lowercase }}/liquid-cache/liquid-cache-server:latest,ghcr.io/${{ github.repository_owner | lowercase }}/liquid-cache/liquid-cache-server:${{ github.event.release.tag_name }}
+          tags: ghcr.io/${{ env.OWNER_LC }}/liquid-cache/liquid-cache-server:latest,ghcr.io/${{ env.OWNER_LC }}/liquid-cache/liquid-cache-server:${{ github.event.release.tag_name }}
           file: dev/liquid_cache_server.dockerfile
           
