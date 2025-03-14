@@ -26,3 +26,9 @@ After cloning the repository, run the following command to set up git hooks:
 
 This will set up pre-commit hooks that check formatting, run clippy, and verify documentation.
 
+
+### Deploy a LiquidCache server with Docker
+
+```bash
+docker run -p 50051:50051 -p 50052:50052 ghcr.io/xiangpenghao/liquid-cache/liquid-cache-server:latest
+```
