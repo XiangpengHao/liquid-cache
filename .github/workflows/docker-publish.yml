@@ -1,0 +1,36 @@
+name: Docker
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2025-03-03
+      - uses: Swatinem/rust-cache@v2
+      - name: Build binary
+        run: cargo build --release -p bench_server 
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/${{ github.repository }}/liquid-cache-server:latest,ghcr.io/${{ github.repository }}/liquid-cache-server:${{ github.event.release.tag_name }}
+          file: dev/liquid_cache_server.dockerfile
+          

@@ -1,12 +1,10 @@
 #![allow(unused)]
 
-use std::collections::VecDeque;
 use std::sync::Arc;
 
-use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use arrow_schema::{DataType, Field, SchemaRef};
 use parquet::arrow::array_reader::ArrayReader;
 use parquet::arrow::arrow_reader::{ArrowReaderBuilder, RowFilter, RowSelection, RowSelector};
-use parquet::arrow::async_reader::AsyncFileReader;
 use parquet::file::metadata::ParquetMetaData;
 use parquet::schema::types::TypePtr;
 
@@ -67,14 +65,6 @@ pub enum ParquetFieldType {
     Group {
         children: Vec<ParquetField>,
     },
-}
-
-fn trim_row_selection(selection: RowSelection) -> RowSelection {
-    let mut selection: Vec<RowSelector> = selection.into();
-    while selection.last().map(|x| x.skip).unwrap_or(false) {
-        selection.pop();
-    }
-    RowSelection::from(selection)
 }
 
 pub(super) fn offset_row_selection(selection: RowSelection, offset: usize) -> RowSelection {
@@ -160,7 +150,7 @@ use tokio::sync::Mutex;
 
 use crate::reader::plantime::ParquetMetadataCacheReader;
 
-use super::{ClonableAsyncFileReader, LiquidStream, LiquidStreamBuilder};
+use super::{ClonableAsyncFileReader, LiquidStreamBuilder};
 
 pub struct ArrowReaderBuilderBridge {
     pub(crate) input: AsyncReader<ParquetMetadataCacheReader>,

@@ -11,44 +11,44 @@ Depending on your usage, LiquidCache can easily achieve 10x lower cost and laten
 
 ## Architecture
 
-Both LiquidCache and DataFusion run on cloud servers within the same region, but is configured differently:
+Both LiquidCache and DataFusion run on cloud servers within the same region, but are configured differently:
 
-- LiquidCache often have memory/CPU ratio of 16:1 (e.g., 64GB memory and 4 cores)
-- DataFusion often have memory/CPU ratio of 2:1 (e.g., 32GB memory and 16 cores)
+- LiquidCache often has a memory/CPU ratio of 16:1 (e.g., 64GB memory and 4 cores)
+- DataFusion often has a memory/CPU ratio of 2:1 (e.g., 32GB memory and 16 cores)
 
-Multiple DataFusion nodes share the same LiquidCache through network. 
+Multiple DataFusion nodes share the same LiquidCache instance through network connections. 
 Each component can be scaled independently as the workload grows. 
 
-Under the hood, LiquidCache transcodes and caches the Parquet data from object store, and evaluates the filters before sending the data to the DataFusion,
+Under the hood, LiquidCache transcodes and caches Parquet data from object storage, and evaluates filters before sending data to DataFusion,
 effectively reducing both CPU utilization and network data transfer on cache servers.
 
 <img src="/dev/doc/arch.png" alt="architecture" width="400"/>
 
 
-## Run ClickBench to feel the performance
+## Run ClickBench to Experience the Performance
 
-#### 1. Setup repo
+#### 1. Setup the Repository
 ```bash
 git clone https://github.com/XiangpengHao/liquid-cache.git
 cd liquid-cache
 ```
 
-#### 2. Run a LiquidCache server
+#### 2. Run a LiquidCache Server
 ```bash
 cargo run --bin bench_server --release
 ```
 
-#### 3. Run a ClickBench client
-In a different terminal, run the ClickBench client.
+#### 3. Run a ClickBench Client
+In a different terminal, run the ClickBench client:
 ```bash
-cargo run --bin clickbench_client --release -- --query-path benchmark/queries.sql --file examples/nano_hits.parquet
+cargo run --bin clickbench_client --release -- --query-path benchmark/clickbench/queries.sql --file examples/nano_hits.parquet
 ```
-(note: replace `nano_hits.parquet` with [real ClickBench dataset](https://github.com/ClickHouse/ClickBench))
+(Note: replace `nano_hits.parquet` with the [real ClickBench dataset](https://github.com/ClickHouse/ClickBench) for full benchmarking)
 
 ## Try LiquidCache
-Checkout the `examples` folder for more details. We are working on a crates.io release, stay tuned!
+Check out the `examples` folder for more details. We are working on a crates.io release, stay tuned!
 
-#### 1. Start a cache server:
+#### 1. Start a Cache Server:
 ```rust
 use arrow_flight::flight_service_server::FlightServiceServer;
 use liquid_cache_server::LiquidCacheService;
@@ -69,7 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-#### 2. Connect to the cache server:
+#### 2. Connect to the Cache Server:
 ```rust
 use std::sync::Arc;
 use datafusion::{
@@ -124,37 +124,37 @@ See [benchmark/README.md](./benchmark/README.md)
 
 #### Can I use LiquidCache in production today?
 
-No. While production-ready is our goal, we are still working on implementing more features and polishing it.
-LiquidCache starts with a research project -- exploring new approaches to build cost-effective caching systems. Like most research projects, it takes time to mature, and we welcome your help!
+Not yet. While production readiness is our goal, we are still implementing features and polishing the system.
+LiquidCache began as a research project exploring new approaches to build cost-effective caching systems. Like most research projects, it takes time to mature, and we welcome your help!
 
 #### Does LiquidCache cache data or results?
 
-LiquidCache is a data cache, it caches logically equivalent but physically different data from object store.
+LiquidCache is a data cache. It caches logically equivalent but physically different data from object storage.
 
-LiquidCaches does not cache query results, it only caches data, allowing the same cache to be used for different queries.
+LiquidCache does not cache query results - it only caches data, allowing the same cache to be used for different queries.
 
 #### Nightly Rust, seriously?
 
-We will use stable Rust once we believe the project is ready for production.
+We will transition to stable Rust once we believe the project is ready for production.
 
 #### How does LiquidCache work?
 
-Check out our [paper](/dev/doc/liquid-cache-vldb.pdf) (under submission to VLDB) for more details, in the meanwhile, we are working on a tech blog to introduce LiquidCache in a more human-readable way.
+Check out our [paper](/dev/doc/liquid-cache-vldb.pdf) (under submission to VLDB) for more details. Meanwhile, we are working on a technical blog to introduce LiquidCache in a more accessible way.
 
 #### How can I get involved?
 
-We are always looking for contributors, any feedback/improvement is welcome! Feel free to take a look at the issue list and contribute to the project.
+We are always looking for contributors! Any feedback or improvements are welcome. Feel free to explore the issue list and contribute to the project.
 If you want to get involved in the research process, feel free to [reach out](https://haoxp.xyz/work-with-me/).
 
 #### Who is behind LiquidCache?
 
 LiquidCache is a research project funded by:
 - [InfluxData](https://www.influxdata.com/)
-- Taxpayers of the state of Wisconsin and federal government. 
+- Taxpayers of the state of Wisconsin and the federal government. 
 
 As such, LiquidCache is and will always be open source and free to use.
 
-Your support to science is greatly appreciated!
+Your support for science is greatly appreciated!
 
 ## License
 
