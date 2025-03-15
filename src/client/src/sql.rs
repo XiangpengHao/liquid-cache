@@ -18,8 +18,8 @@
 use crate::{FlightMetadata, FlightProperties};
 use arrow_flight::sql::client::FlightSqlServiceClient;
 use arrow_flight::{error::Result, sql::CommandGetDbSchemas};
-use liquid_common::ParquetMode;
-use liquid_common::rpc::{LiquidCacheActions, RegisterTableRequest};
+use liquid_common::CacheMode;
+use liquid_common::rpc::{LiquidCacheActions, RegisterObjectStoreRequest, RegisterTableRequest};
 use std::collections::HashMap;
 use tonic::Request;
 use tonic::transport::Channel;
@@ -36,7 +36,7 @@ impl FlightSqlDriver {
         channel: Channel,
         table_name: &str,
         table_url: &str,
-        parquet_mode: ParquetMode,
+        cache_mode: CacheMode,
     ) -> Result<FlightMetadata> {
         let mut client = FlightSqlServiceClient::new(channel);
 
@@ -44,7 +44,7 @@ impl FlightSqlDriver {
             let register_table_request = RegisterTableRequest {
                 url: table_url.to_string(),
                 table_name: table_name.to_string(),
-                parquet_mode: parquet_mode.to_string(),
+                cache_mode: cache_mode.to_string(),
             };
             let action = LiquidCacheActions::RegisterTable(register_table_request).into();
             client.do_action(Request::new(action)).await?;
@@ -61,6 +61,22 @@ impl FlightSqlDriver {
             grpc_headers.insert("authorization".into(), format!("Bearer {}", token));
         }
         FlightMetadata::try_new(info, FlightProperties::default().grpc_headers(grpc_headers))
+    }
+
+    pub async fn register_object_store(
+        &self,
+        channel: Channel,
+        table_url: &str,
+        object_store_options: HashMap<String, String>,
+    ) -> Result<()> {
+        let mut client = FlightSqlServiceClient::new(channel);
+        let action = LiquidCacheActions::RegisterObjectStore(RegisterObjectStoreRequest {
+            url: table_url.to_string(),
+            options: object_store_options,
+        })
+        .into();
+        client.do_action(Request::new(action)).await?;
+        Ok(())
     }
 
     pub async fn run_sql(&self, channel: Channel, sql: &str) -> Result<FlightMetadata> {

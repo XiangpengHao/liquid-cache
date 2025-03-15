@@ -25,7 +25,7 @@ use datafusion::{
     },
 };
 use exec::FlightExec;
-use liquid_common::ParquetMode;
+use liquid_common::CacheMode;
 use log::info;
 use owo_colors::OwoColorize;
 use serde::{Deserialize, Serialize};
@@ -65,17 +65,19 @@ impl LiquidCacheTableFactory {
     pub async fn open_table(
         cache_server: impl AsRef<str>,
         table_name: impl AsRef<str>,
-        url: impl AsRef<str>,
-        parquet_mode: ParquetMode,
-    ) -> Result<FlightTable> {
+        table_url: impl AsRef<str>,
+        object_store_options: Option<HashMap<String, String>>,
+        cache_mode: CacheMode,
+    ) -> Result<LiquidCacheTable> {
         let driver = Arc::new(FlightSqlDriver::default());
         let factory = LiquidCacheTableFactory::new(driver);
         factory
             .open_table_inner(
                 cache_server.as_ref(),
                 table_name.as_ref(),
-                url.as_ref(),
-                parquet_mode,
+                table_url.as_ref(),
+                object_store_options.unwrap_or_default(),
+                cache_mode,
             )
             .await
     }
@@ -86,14 +88,19 @@ impl LiquidCacheTableFactory {
         cache_server: &str,
         table_name: &str,
         object_url: &str,
-        parquet_mode: ParquetMode,
-    ) -> Result<FlightTable> {
+        object_store_options: HashMap<String, String>,
+        cache_mode: CacheMode,
+    ) -> Result<LiquidCacheTable> {
         let origin = cache_server.into();
         let channel = flight_channel(&origin).await?;
+        self.driver
+            .register_object_store(channel.clone(), object_url, object_store_options)
+            .await
+            .map_err(to_df_err)?;
 
         let metadata = self
             .driver
-            .metadata(channel.clone(), table_name, object_url, parquet_mode)
+            .metadata(channel.clone(), table_name, object_url, cache_mode)
             .await
             .map_err(to_df_err)?;
         let num_rows = precision(metadata.info.total_records);
@@ -105,7 +112,7 @@ impl LiquidCacheTableFactory {
             total_byte_size,
             column_statistics: vec![],
         };
-        Ok(FlightTable {
+        Ok(LiquidCacheTable {
             driver: self.driver.clone(),
             channel,
             origin,
@@ -114,6 +121,18 @@ impl LiquidCacheTableFactory {
             output_schema,
             stats,
         })
+    }
+
+    pub async fn register_object_store(
+        &self,
+        channel: Channel,
+        table_url: &str,
+        object_store_options: HashMap<String, String>,
+    ) -> Result<()> {
+        self.driver
+            .register_object_store(channel, table_url, object_store_options)
+            .await
+            .map_err(to_df_err)
     }
 }
 
@@ -173,7 +192,7 @@ impl FlightProperties {
 
 /// Table provider that wraps a specific flight from an Arrow Flight service
 #[derive(Debug)]
-pub struct FlightTable {
+pub struct LiquidCacheTable {
     driver: Arc<FlightSqlDriver>,
     channel: Channel,
     origin: String,
@@ -187,7 +206,7 @@ pub struct FlightTable {
 }
 
 #[async_trait]
-impl TableProvider for FlightTable {
+impl TableProvider for LiquidCacheTable {
     fn as_any(&self) -> &dyn Any {
         self
     }

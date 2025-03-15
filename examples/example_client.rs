@@ -22,7 +22,7 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use liquid_cache_client::LiquidCacheTableFactory;
-use liquid_common::ParquetMode;
+use liquid_common::CacheMode;
 use log::info;
 use url::Url;
 
@@ -60,7 +60,8 @@ pub async fn main() -> Result<()> {
         entry_point,
         table_name,
         table_url,
-        ParquetMode::Liquid,
+        None,
+        CacheMode::Liquid,
     )
     .await?;
     ctx.register_table(table_name, Arc::new(table))?;

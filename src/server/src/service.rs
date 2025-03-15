@@ -6,7 +6,7 @@ use datafusion::{
     physical_plan::{ExecutionPlan, display::DisplayableExecutionPlan, metrics::MetricValue},
     prelude::{ParquetReadOptions, SessionContext},
 };
-use liquid_common::{ParquetMode, rpc::ExecutionMetricsResponse};
+use liquid_common::{CacheMode, rpc::ExecutionMetricsResponse};
 use liquid_parquet::{LiquidCache, LiquidCacheMode, LiquidCacheRef, LiquidParquetFileFormat};
 use log::{debug, info};
 use std::{collections::HashMap, sync::Arc};
@@ -16,7 +16,7 @@ use url::Url;
 
 pub(crate) struct LiquidCacheServiceInner {
     execution_plans: Arc<DashMap<u64, Arc<dyn ExecutionPlan>>>,
-    registered_tables: Mutex<HashMap<String, (String, ParquetMode)>>, // table name -> (path, cached file)
+    registered_tables: Mutex<HashMap<String, (String, CacheMode)>>, // table name -> (path, cached file)
     default_ctx: Arc<SessionContext>,
     cache: LiquidCacheRef,
 }
@@ -28,6 +28,7 @@ impl LiquidCacheServiceInner {
             batch_size,
             max_cache_bytes.unwrap_or(usize::MAX),
         ));
+
         Self {
             execution_plans: Default::default(),
             registered_tables: Default::default(),
@@ -40,11 +41,28 @@ impl LiquidCacheServiceInner {
         &self.cache
     }
 
+    pub(crate) async fn register_object_store(
+        &self,
+        url: &Url,
+        options: HashMap<String, String>,
+    ) -> Result<()> {
+        let (object_store, path) = object_store::parse_url_opts(url, options)?;
+        if path.as_ref() != "" {
+            return Err(DataFusionError::Configuration(format!(
+                "object store url should not be a full path, got {}",
+                path.as_ref()
+            )));
+        }
+        self.default_ctx
+            .register_object_store(url, Arc::new(object_store));
+        Ok(())
+    }
+
     pub(crate) async fn register_table(
         &self,
         url_str: &str,
         table_name: &str,
-        parquet_mode: ParquetMode,
+        parquet_mode: CacheMode,
     ) -> Result<()> {
         let url =
             Url::parse(url_str).map_err(|e| DataFusionError::Configuration(format!("{e:?}")))?;
@@ -61,26 +79,26 @@ impl LiquidCacheServiceInner {
             }
         }
         match parquet_mode {
-            ParquetMode::Original => {
+            CacheMode::Parquet => {
                 self.default_ctx
                     .register_parquet(table_name, url.as_str(), Default::default())
                     .await?;
             }
-            ParquetMode::Liquid => {
+            CacheMode::Liquid => {
                 let mode = LiquidCacheMode::InMemoryLiquid {
                     transcode_in_background: true,
                 };
                 self.register_liquid_parquet(table_name, url.as_str(), mode)
                     .await?;
             }
-            ParquetMode::LiquidEagerTranscode => {
+            CacheMode::LiquidEagerTranscode => {
                 let mode = LiquidCacheMode::InMemoryLiquid {
                     transcode_in_background: false,
                 };
                 self.register_liquid_parquet(table_name, url.as_str(), mode)
                     .await?;
             }
-            ParquetMode::Arrow => {
+            CacheMode::Arrow => {
                 let mode = LiquidCacheMode::InMemoryArrow;
                 self.register_liquid_parquet(table_name, url.as_str(), mode)
                     .await?;
@@ -220,5 +238,49 @@ impl LiquidCacheServiceInner {
             liquid_cache_usage,
         };
         Some(response)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_register_object_store() {
+        let server = LiquidCacheServiceInner::new(Arc::new(SessionContext::new()), None);
+        let url = Url::parse("file:///").unwrap();
+        server
+            .register_object_store(&url, HashMap::new())
+            .await
+            .unwrap();
+
+        let url = Url::parse("s3://test_data").unwrap();
+        server
+            .register_object_store(&url, HashMap::new())
+            .await
+            .unwrap();
+
+        let url = Url::parse("http://test_data").unwrap();
+        server
+            .register_object_store(&url, HashMap::new())
+            .await
+            .unwrap();
+
+        let url = Url::parse("s3://test_data2").unwrap();
+        let config = HashMap::from([
+            ("access_key_id".to_string(), "test".to_string()),
+            ("secret_access_key".to_string(), "test".to_string()),
+        ]);
+        server.register_object_store(&url, config).await.unwrap();
+
+        let url = Url::parse("s3://test_data3/a.parquet").unwrap();
+        let v = server.register_object_store(&url, HashMap::new()).await;
+        assert!(v.is_err());
+
+        let url = Url::parse("s3://test_data3/").unwrap();
+        server
+            .register_object_store(&url, HashMap::new())
+            .await
+            .unwrap();
     }
 }

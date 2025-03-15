@@ -36,7 +36,7 @@ use datafusion::{
 };
 use futures::{Stream, TryStreamExt};
 use liquid_common::{
-    ParquetMode,
+    CacheMode,
     rpc::{FetchResults, LiquidCacheActions},
 };
 use liquid_parquet::LiquidCacheRef;
@@ -47,6 +47,7 @@ use service::LiquidCacheServiceInner;
 use std::sync::{Arc, atomic::AtomicU64};
 use std::{pin::Pin, str::FromStr};
 use tonic::{Request, Response, Status, Streaming};
+use url::Url;
 mod service;
 mod utils;
 use utils::FinalStream;
@@ -258,8 +259,19 @@ impl FlightSqlService for LiquidCacheService {
     ) -> Result<Response<<Self as FlightService>::DoActionStream>, Status> {
         let action = LiquidCacheActions::from(request.into_inner());
         match action {
+            LiquidCacheActions::RegisterObjectStore(cmd) => {
+                self.inner
+                    .register_object_store(&Url::parse(&cmd.url).unwrap(), cmd.options)
+                    .await
+                    .map_err(df_error_to_status)?;
+
+                let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
+                    body: Bytes::default(),
+                })]);
+                return Ok(Response::new(Box::pin(output)));
+            }
             LiquidCacheActions::RegisterTable(cmd) => {
-                let parquet_mode = ParquetMode::from_str(&cmd.parquet_mode).unwrap();
+                let parquet_mode = CacheMode::from_str(&cmd.cache_mode).unwrap();
                 self.inner
                     .register_table(&cmd.url, &cmd.table_name, parquet_mode)
                     .await

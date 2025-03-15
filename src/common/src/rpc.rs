@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use arrow_flight::{
     Action,
     sql::{Any, ProstMessageExt},
@@ -9,6 +11,7 @@ pub enum LiquidCacheActions {
     RegisterTable(RegisterTableRequest),
     ExecutionMetrics,
     ResetCache,
+    RegisterObjectStore(RegisterObjectStoreRequest),
 }
 
 impl From<LiquidCacheActions> for Action {
@@ -25,6 +28,10 @@ impl From<LiquidCacheActions> for Action {
             LiquidCacheActions::ResetCache => Action {
                 r#type: "ResetCache".to_string(),
                 body: Bytes::new(),
+            },
+            LiquidCacheActions::RegisterObjectStore(request) => Action {
+                r#type: "RegisterObjectStore".to_string(),
+                body: request.as_any().encode_to_vec().into(),
             },
         }
     }
@@ -54,7 +61,7 @@ pub struct RegisterTableRequest {
     pub table_name: ::prost::alloc::string::String,
 
     #[prost(string, tag = "3")]
-    pub parquet_mode: ::prost::alloc::string::String,
+    pub cache_mode: ::prost::alloc::string::String,
 }
 
 impl ProstMessageExt for RegisterTableRequest {
@@ -65,6 +72,28 @@ impl ProstMessageExt for RegisterTableRequest {
     fn as_any(&self) -> Any {
         Any {
             type_url: RegisterTableRequest::type_url().to_string(),
+            value: ::prost::Message::encode_to_vec(self).into(),
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RegisterObjectStoreRequest {
+    #[prost(string, tag = "1")]
+    pub url: ::prost::alloc::string::String,
+
+    #[prost(map = "string, string", tag = "2")]
+    pub options: HashMap<String, String>,
+}
+
+impl ProstMessageExt for RegisterObjectStoreRequest {
+    fn type_url() -> &'static str {
+        "type.googleapis.com/datafusion.example.com.sql.ActionRegisterObjectStoreRequest"
+    }
+
+    fn as_any(&self) -> Any {
+        Any {
+            type_url: RegisterObjectStoreRequest::type_url().to_string(),
             value: ::prost::Message::encode_to_vec(self).into(),
         }
     }
