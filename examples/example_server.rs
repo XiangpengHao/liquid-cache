@@ -16,22 +16,24 @@
 // under the License.
 
 use arrow_flight::flight_service_server::FlightServiceServer;
+use datafusion::prelude::SessionContext;
 use liquid_cache_server::LiquidCacheService;
-use log::info;
 use tonic::transport::Server;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    env_logger::builder().format_timestamp(None).init();
+    let liquid_cache = LiquidCacheService::new(
+        SessionContext::new(),
+        Some(1024 * 1024 * 1024),               // max memory cache size 1GB
+        Some(tempfile::tempdir()?.into_path()), // disk cache dir
+    );
 
-    let addr = "0.0.0.0:50051".parse()?;
-
-    let liquid_cache = LiquidCacheService::try_new()?;
     let flight = FlightServiceServer::new(liquid_cache);
 
-    info!("LiquidCache server listening on {addr:?}");
-
-    Server::builder().add_service(flight).serve(addr).await?;
+    Server::builder()
+        .add_service(flight)
+        .serve("0.0.0.0:50051".parse()?)
+        .await?;
 
     Ok(())
 }

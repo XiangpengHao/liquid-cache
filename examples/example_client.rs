@@ -15,24 +15,16 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::sync::Arc;
-
 use datafusion::{
     error::Result,
     prelude::{SessionConfig, SessionContext},
 };
-use liquid_cache_client::LiquidCacheTableFactory;
-use liquid_common::ParquetMode;
-use log::info;
+use liquid_cache_client::LiquidCacheTableBuilder;
+use std::sync::Arc;
 use url::Url;
 
 #[tokio::main]
 pub async fn main() -> Result<()> {
-    env_logger::builder()
-        .format_timestamp(None)
-        .filter_level(log::LevelFilter::Info)
-        .init();
-
     let mut session_config = SessionConfig::from_env()?;
     session_config
         .options_mut()
@@ -41,28 +33,21 @@ pub async fn main() -> Result<()> {
         .pushdown_filters = true;
     let ctx = Arc::new(SessionContext::new_with_config(session_config));
 
-    let entry_point = "http://localhost:50051";
-
-    let sql = "SELECT COUNT(*) FROM nano_hits WHERE \"URL\" <> '';";
-
-    info!("SQL to be executed: {}", sql);
-
-    let table_name = "nano_hits";
-
-    let current_dir = std::env::current_dir()?.to_string_lossy().to_string();
-    let table_url = Url::parse(&format!(
-        "file://{}/examples/nano_hits.parquet",
-        current_dir
-    ))
-    .unwrap();
-
-    let table = LiquidCacheTableFactory::open_table(
-        entry_point,
-        table_name,
-        table_url,
-        ParquetMode::Liquid,
+    let cache_server = "http://localhost:50051";
+    let table_name = "aws_locations";
+    let url = Url::parse(
+        "https://raw.githubusercontent.com/tobilg/aws-edge-locations/main/data/aws-edge-locations.parquet",
     )
-    .await?;
+    .unwrap();
+    let sql = "SELECT COUNT(*) FROM aws_locations WHERE \"countryCode\" = 'US';";
+
+    let table = LiquidCacheTableBuilder::new(cache_server, table_name, url.as_ref())
+        .with_object_store(
+            format!("{}://{}", url.scheme(), url.host_str().unwrap_or_default()),
+            None,
+        )
+        .build()
+        .await?;
     ctx.register_table(table_name, Arc::new(table))?;
 
     ctx.sql(sql).await?.show().await?;

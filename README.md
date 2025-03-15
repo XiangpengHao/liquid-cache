@@ -51,19 +51,24 @@ Check out the `examples` folder for more details. We are working on a crates.io 
 #### 1. Start a Cache Server:
 ```rust
 use arrow_flight::flight_service_server::FlightServiceServer;
+use datafusion::prelude::SessionContext;
 use liquid_cache_server::LiquidCacheService;
 use tonic::transport::Server;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let addr = "0.0.0.0:50051".parse()?;
+    let liquid_cache = LiquidCacheService::new(
+        SessionContext::new(),
+        Some(1024 * 1024 * 1024),               // max memory cache size 1GB
+        Some(tempfile::tempdir()?.into_path()), // disk cache dir
+    );
 
-    let liquid_cache = LiquidCacheService::try_new()?;
     let flight = FlightServiceServer::new(liquid_cache);
 
-    info!("LiquidCache server listening on {addr:?}");
-
-    Server::builder().add_service(flight).serve(addr).await?;
+    Server::builder()
+        .add_service(flight)
+        .serve("0.0.0.0:50051".parse()?)
+        .await?;
 
     Ok(())
 }
@@ -71,13 +76,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #### 2. Connect to the Cache Server:
 ```rust
-use std::sync::Arc;
 use datafusion::{
     error::Result,
     prelude::{SessionConfig, SessionContext},
 };
-use liquid_cache_client::LiquidCacheTableFactory;
-use liquid_common::ParquetMode;
+use liquid_cache_client::LiquidCacheTableBuilder;
+use std::sync::Arc;
 use url::Url;
 
 #[tokio::main]
@@ -90,24 +94,28 @@ pub async fn main() -> Result<()> {
         .pushdown_filters = true;
     let ctx = Arc::new(SessionContext::new_with_config(session_config));
 
-    let entry_point = "http://localhost:50051";
-    let sql = "SELECT COUNT(*) FROM nano_hits WHERE \"URL\" <> '';";
-    let table_url = Url::parse("file:///examples/nano_hits.parquet").unwrap();
-
-    let table = LiquidCacheTableFactory::open_table(
-        entry_point,
-        "nano_hits",
-        table_url,
-        ParquetMode::Liquid,
+    let cache_server = "http://localhost:50051";
+    let table_name = "aws_locations";
+    let url = Url::parse(
+        "https://raw.githubusercontent.com/tobilg/aws-edge-locations/main/data/aws-edge-locations.parquet",
     )
-    .await?;
-    ctx.register_table("nano_hits", Arc::new(table))?;
+    .unwrap();
+    let sql = "SELECT COUNT(*) FROM aws_locations WHERE \"countryCode\" = 'US';";
+
+    let table = LiquidCacheTableBuilder::new(cache_server, table_name, url.as_ref())
+        .with_object_store(
+            format!("{}://{}", url.scheme(), url.host_str().unwrap_or_default()),
+            None,
+        )
+        .build()
+        .await?;
+    ctx.register_table(table_name, Arc::new(table))?;
 
     ctx.sql(sql).await?.show().await?;
 
     Ok(())
 }
-```
+
 
 #### 3. Enjoy!
 

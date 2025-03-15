@@ -6,9 +6,9 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use futures::StreamExt;
-use liquid_cache_client::LiquidCacheTableFactory;
+use liquid_cache_client::LiquidCacheTableBuilder;
 use liquid_cache_server::StatsCollector;
-use liquid_common::ParquetMode;
+use liquid_common::CacheMode;
 use liquid_common::rpc::{ExecutionMetricsResponse, LiquidCacheActions};
 use liquid_parquet::LiquidCacheRef;
 use object_store::ClientConfigKey;
@@ -201,10 +201,10 @@ impl BenchmarkMode {
                 }
                 return Ok(ctx);
             }
-            BenchmarkMode::ParquetPushdown => ParquetMode::Original,
-            BenchmarkMode::ArrowPushdown => ParquetMode::Arrow,
-            BenchmarkMode::LiquidCache => ParquetMode::Liquid,
-            BenchmarkMode::LiquidEagerTranscode => ParquetMode::LiquidEagerTranscode,
+            BenchmarkMode::ParquetPushdown => CacheMode::Parquet,
+            BenchmarkMode::ArrowPushdown => CacheMode::Arrow,
+            BenchmarkMode::LiquidCache => CacheMode::Liquid,
+            BenchmarkMode::LiquidEagerTranscode => CacheMode::LiquidEagerTranscode,
         };
         session_config
             .options_mut()
@@ -221,10 +221,11 @@ impl BenchmarkMode {
                 table_name
             ))
             .unwrap();
-            let table =
-                LiquidCacheTableFactory::open_table(server_url, table_name, table_url, mode).await;
-            ctx.register_table(*table_name, Arc::new(table.unwrap()))
-                .unwrap();
+            let table = LiquidCacheTableBuilder::new(server_url, table_name, table_url)
+                .with_cache_mode(mode)
+                .build()
+                .await?;
+            ctx.register_table(*table_name, Arc::new(table))?;
         }
 
         Ok(ctx)
@@ -261,10 +262,10 @@ impl BenchmarkMode {
                 .await?;
                 return Ok(ctx);
             }
-            BenchmarkMode::ParquetPushdown => ParquetMode::Original,
-            BenchmarkMode::ArrowPushdown => ParquetMode::Arrow,
-            BenchmarkMode::LiquidCache => ParquetMode::Liquid,
-            BenchmarkMode::LiquidEagerTranscode => ParquetMode::LiquidEagerTranscode,
+            BenchmarkMode::ParquetPushdown => CacheMode::Parquet,
+            BenchmarkMode::ArrowPushdown => CacheMode::Arrow,
+            BenchmarkMode::LiquidCache => CacheMode::Liquid,
+            BenchmarkMode::LiquidEagerTranscode => CacheMode::LiquidEagerTranscode,
         };
         session_config
             .options_mut()
@@ -273,8 +274,10 @@ impl BenchmarkMode {
             .pushdown_filters = true;
         let ctx = Arc::new(SessionContext::new_with_config(session_config));
 
-        let table =
-            LiquidCacheTableFactory::open_table(server_url, table_name, table_url, mode).await?;
+        let table = LiquidCacheTableBuilder::new(server_url, table_name, table_url)
+            .with_cache_mode(mode)
+            .build()
+            .await?;
         ctx.register_table(table_name, Arc::new(table))?;
         Ok(ctx)
     }

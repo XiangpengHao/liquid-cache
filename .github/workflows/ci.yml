@@ -178,6 +178,8 @@ jobs:
       - name: Start LiquidCache client
         run: |
           env RUST_LOG=info cargo run --bin example_client
+          # Run twice to test the cache
+          env RUST_LOG=info cargo run --bin example_client 
 
       - name: Kill LiquidCache server and show logs
         if: always()

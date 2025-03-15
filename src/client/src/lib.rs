@@ -25,7 +25,7 @@ use datafusion::{
     },
 };
 use exec::FlightExec;
-use liquid_common::ParquetMode;
+use liquid_common::CacheMode;
 use log::info;
 use owo_colors::OwoColorize;
 use serde::{Deserialize, Serialize};
@@ -52,48 +52,65 @@ fn transform_flight_schema_to_output_schema(schema: &SchemaRef) -> Schema {
     Schema::new_with_metadata(transformed_fields, schema.metadata.clone())
 }
 #[derive(Clone, Debug)]
-pub struct LiquidCacheTableFactory {
+pub struct LiquidCacheTableBuilder {
     driver: Arc<FlightSqlDriver>,
+    object_stores: Vec<(String, HashMap<String, String>)>,
+    cache_mode: CacheMode,
+    cache_server: String,
+    table_name: String,
+    table_url: String,
 }
 
-impl LiquidCacheTableFactory {
-    /// Create a data source using the provided driver
-    fn new(driver: Arc<FlightSqlDriver>) -> Self {
-        Self { driver }
-    }
-
-    pub async fn open_table(
+impl LiquidCacheTableBuilder {
+    pub fn new(
         cache_server: impl AsRef<str>,
         table_name: impl AsRef<str>,
-        url: impl AsRef<str>,
-        parquet_mode: ParquetMode,
-    ) -> Result<FlightTable> {
-        let driver = Arc::new(FlightSqlDriver::default());
-        let factory = LiquidCacheTableFactory::new(driver);
-        factory
-            .open_table_inner(
-                cache_server.as_ref(),
-                table_name.as_ref(),
-                url.as_ref(),
-                parquet_mode,
-            )
-            .await
+        table_url: impl AsRef<str>,
+    ) -> Self {
+        Self {
+            driver: Arc::new(FlightSqlDriver::default()),
+            object_stores: vec![],
+            cache_mode: CacheMode::Liquid,
+            cache_server: cache_server.as_ref().to_string(),
+            table_name: table_name.as_ref().to_string(),
+            table_url: table_url.as_ref().to_string(),
+        }
     }
 
-    /// Convenient way to create a [FlightTable] programatically, as an alternative to DDL.
-    async fn open_table_inner(
-        &self,
-        cache_server: &str,
-        table_name: &str,
-        object_url: &str,
-        parquet_mode: ParquetMode,
-    ) -> Result<FlightTable> {
-        let origin = cache_server.into();
-        let channel = flight_channel(&origin).await?;
+    pub fn with_object_store(
+        mut self,
+        url: impl AsRef<str>,
+        object_store_options: Option<HashMap<String, String>>,
+    ) -> Self {
+        self.object_stores.push((
+            url.as_ref().to_string(),
+            object_store_options.unwrap_or_default(),
+        ));
+        self
+    }
+
+    pub fn with_cache_mode(mut self, cache_mode: CacheMode) -> Self {
+        self.cache_mode = cache_mode;
+        self
+    }
+
+    pub async fn build(self) -> Result<LiquidCacheTable> {
+        let channel = flight_channel(&self.cache_server).await?;
+        for (url, object_store_options) in self.object_stores {
+            self.driver
+                .register_object_store(channel.clone(), &url, object_store_options)
+                .await
+                .map_err(to_df_err)?;
+        }
 
         let metadata = self
             .driver
-            .metadata(channel.clone(), table_name, object_url, parquet_mode)
+            .metadata(
+                channel.clone(),
+                &self.table_name,
+                &self.table_url,
+                self.cache_mode,
+            )
             .await
             .map_err(to_df_err)?;
         let num_rows = precision(metadata.info.total_records);
@@ -105,15 +122,27 @@ impl LiquidCacheTableFactory {
             total_byte_size,
             column_statistics: vec![],
         };
-        Ok(FlightTable {
+        Ok(LiquidCacheTable {
             driver: self.driver.clone(),
             channel,
-            origin,
-            table_name: table_name.into(),
+            origin: self.cache_server,
+            table_name: self.table_name.into(),
             flight_schema,
             output_schema,
             stats,
         })
+    }
+
+    pub async fn register_object_store(
+        &self,
+        channel: Channel,
+        table_url: &str,
+        object_store_options: HashMap<String, String>,
+    ) -> Result<()> {
+        self.driver
+            .register_object_store(channel, table_url, object_store_options)
+            .await
+            .map_err(to_df_err)
     }
 }
 
@@ -173,7 +202,7 @@ impl FlightProperties {
 
 /// Table provider that wraps a specific flight from an Arrow Flight service
 #[derive(Debug)]
-pub struct FlightTable {
+pub struct LiquidCacheTable {
     driver: Arc<FlightSqlDriver>,
     channel: Channel,
     origin: String,
@@ -187,7 +216,7 @@ pub struct FlightTable {
 }
 
 #[async_trait]
-impl TableProvider for FlightTable {
+impl TableProvider for LiquidCacheTable {
     fn as_any(&self) -> &dyn Any {
         self
     }

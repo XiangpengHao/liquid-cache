@@ -3,41 +3,41 @@ use std::str::FromStr;
 pub mod rpc;
 
 #[derive(Clone, Debug, Default, Copy, PartialEq, Eq)]
-pub enum ParquetMode {
-    Original,
+pub enum CacheMode {
+    Parquet,
     #[default]
     Liquid, // Transcode happens in background
     LiquidEagerTranscode, // Transcode blocks query execution
     Arrow,
 }
 
-impl Display for ParquetMode {
+impl Display for CacheMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
             "{}",
             match self {
-                ParquetMode::Original => "original",
-                ParquetMode::Liquid => "liquid",
-                ParquetMode::LiquidEagerTranscode => "liquid_eager_transcode",
-                ParquetMode::Arrow => "arrow",
+                CacheMode::Parquet => "parquet",
+                CacheMode::Liquid => "liquid",
+                CacheMode::LiquidEagerTranscode => "liquid_eager_transcode",
+                CacheMode::Arrow => "arrow",
             }
         )
     }
 }
 
-impl FromStr for ParquetMode {
+impl FromStr for CacheMode {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s {
-            "original" => ParquetMode::Original,
-            "liquid" => ParquetMode::Liquid,
-            "liquid_eager_transcode" => ParquetMode::LiquidEagerTranscode,
-            "arrow" => ParquetMode::Arrow,
+            "parquet" => CacheMode::Parquet,
+            "liquid" => CacheMode::Liquid,
+            "liquid_eager_transcode" => CacheMode::LiquidEagerTranscode,
+            "arrow" => CacheMode::Arrow,
             _ => {
                 return Err(format!(
-                    "Invalid parquet mode: {}, must be one of: original, liquid, arrow",
+                    "Invalid cache mode: {}, must be one of: parquet, liquid, liquid_eager_transcode, arrow",
                     s
                 ));
             }

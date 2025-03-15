@@ -36,7 +36,7 @@ use datafusion::{
 };
 use futures::{Stream, TryStreamExt};
 use liquid_common::{
-    ParquetMode,
+    CacheMode,
     rpc::{FetchResults, LiquidCacheActions},
 };
 use liquid_parquet::LiquidCacheRef;
@@ -44,12 +44,17 @@ use log::info;
 use prost::Message;
 use prost::bytes::Bytes;
 use service::LiquidCacheServiceInner;
-use std::sync::{Arc, atomic::AtomicU64};
+use std::{
+    path::PathBuf,
+    sync::{Arc, atomic::AtomicU64},
+};
 use std::{pin::Pin, str::FromStr};
 use tonic::{Request, Response, Status, Streaming};
+use url::Url;
 mod service;
 mod utils;
 use utils::FinalStream;
+mod local_cache;
 
 /// A trait to collect stats for the execution plan.
 /// The server calls `start` right before polling the stream,
@@ -66,15 +71,27 @@ pub struct LiquidCacheService {
     most_recent_execution_id: AtomicU64,
 }
 
+impl Default for LiquidCacheService {
+    fn default() -> Self {
+        Self::try_new().unwrap()
+    }
+}
+
 impl LiquidCacheService {
+    /// Create a new LiquidCacheService with a default SessionContext
+    /// With no disk cache and unbounded memory usage.
     pub fn try_new() -> Result<Self, DataFusionError> {
         let ctx = Self::context(None)?;
-        Ok(Self::new_with_context(ctx, None))
+        Ok(Self::new(ctx, None, None))
     }
 
-    pub fn new_with_context(ctx: SessionContext, max_cache_bytes: Option<usize>) -> Self {
+    pub fn new(
+        ctx: SessionContext,
+        max_cache_bytes: Option<usize>,
+        disk_cache_dir: Option<PathBuf>,
+    ) -> Self {
         Self {
-            inner: LiquidCacheServiceInner::new(Arc::new(ctx), max_cache_bytes),
+            inner: LiquidCacheServiceInner::new(Arc::new(ctx), max_cache_bytes, disk_cache_dir),
             stats_collector: vec![],
             next_execution_id: AtomicU64::new(0),
             most_recent_execution_id: AtomicU64::new(0),
@@ -258,8 +275,19 @@ impl FlightSqlService for LiquidCacheService {
     ) -> Result<Response<<Self as FlightService>::DoActionStream>, Status> {
         let action = LiquidCacheActions::from(request.into_inner());
         match action {
+            LiquidCacheActions::RegisterObjectStore(cmd) => {
+                self.inner
+                    .register_object_store(&Url::parse(&cmd.url).unwrap(), cmd.options)
+                    .await
+                    .map_err(df_error_to_status)?;
+
+                let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
+                    body: Bytes::default(),
+                })]);
+                return Ok(Response::new(Box::pin(output)));
+            }
             LiquidCacheActions::RegisterTable(cmd) => {
-                let parquet_mode = ParquetMode::from_str(&cmd.parquet_mode).unwrap();
+                let parquet_mode = CacheMode::from_str(&cmd.cache_mode).unwrap();
                 self.inner
                     .register_table(&cmd.url, &cmd.table_name, parquet_mode)
                     .await
