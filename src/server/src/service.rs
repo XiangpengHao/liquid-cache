@@ -266,6 +266,10 @@ mod tests {
             .await
             .unwrap();
 
+        let url = Url::parse("http://test_data/asdf").unwrap();
+        let v = server.register_object_store(&url, HashMap::new()).await;
+        assert!(v.is_err());
+
         let url = Url::parse("s3://test_data2").unwrap();
         let config = HashMap::from([
             ("access_key_id".to_string(), "test".to_string()),

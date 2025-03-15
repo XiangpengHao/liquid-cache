@@ -71,13 +71,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #### 2. Connect to the Cache Server:
 ```rust
-use std::sync::Arc;
+
 use datafusion::{
     error::Result,
     prelude::{SessionConfig, SessionContext},
 };
-use liquid_cache_client::LiquidCacheTableFactory;
-use liquid_common::ParquetMode;
+use liquid_cache_client::LiquidCacheTableBuilder;
+use std::sync::Arc;
 use url::Url;
 
 #[tokio::main]
@@ -90,18 +90,25 @@ pub async fn main() -> Result<()> {
         .pushdown_filters = true;
     let ctx = Arc::new(SessionContext::new_with_config(session_config));
 
-    let entry_point = "http://localhost:50051";
-    let sql = "SELECT COUNT(*) FROM nano_hits WHERE \"URL\" <> '';";
-    let table_url = Url::parse("file:///examples/nano_hits.parquet").unwrap();
+    let cache_server = "http://localhost:50051";
 
-    let table = LiquidCacheTableFactory::open_table(
-        entry_point,
-        "nano_hits",
-        table_url,
-        ParquetMode::Liquid,
-    )
-    .await?;
-    ctx.register_table("nano_hits", Arc::new(table))?;
+    let sql = "SELECT COUNT(*) FROM nano_hits WHERE \"URL\" <> '';";
+
+    info!("SQL to be executed: {}", sql);
+
+    let table_name = "nano_hits";
+
+    let current_dir = std::env::current_dir()?.to_string_lossy().to_string();
+    let table_url = Url::parse(&format!(
+        "file://{}/examples/nano_hits.parquet",
+        current_dir
+    ))
+    .unwrap();
+
+    let table = LiquidCacheTableBuilder::new(cache_server, table_name, table_url)
+        .build()
+        .await?;
+    ctx.register_table(table_name, Arc::new(table))?;
 
     ctx.sql(sql).await?.show().await?;
 

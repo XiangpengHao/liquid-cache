@@ -15,15 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::sync::Arc;
-
 use datafusion::{
     error::Result,
     prelude::{SessionConfig, SessionContext},
 };
-use liquid_cache_client::LiquidCacheTableFactory;
-use liquid_common::CacheMode;
+use liquid_cache_client::LiquidCacheTableBuilder;
 use log::info;
+use std::sync::Arc;
 use url::Url;
 
 #[tokio::main]
@@ -41,7 +39,7 @@ pub async fn main() -> Result<()> {
         .pushdown_filters = true;
     let ctx = Arc::new(SessionContext::new_with_config(session_config));
 
-    let entry_point = "http://localhost:50051";
+    let cache_server = "http://localhost:50051";
 
     let sql = "SELECT COUNT(*) FROM nano_hits WHERE \"URL\" <> '';";
 
@@ -56,14 +54,9 @@ pub async fn main() -> Result<()> {
     ))
     .unwrap();
 
-    let table = LiquidCacheTableFactory::open_table(
-        entry_point,
-        table_name,
-        table_url,
-        None,
-        CacheMode::Liquid,
-    )
-    .await?;
+    let table = LiquidCacheTableBuilder::new(cache_server, table_name, table_url)
+        .build()
+        .await?;
     ctx.register_table(table_name, Arc::new(table))?;
 
     ctx.sql(sql).await?.show().await?;
