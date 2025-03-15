@@ -2,27 +2,35 @@ use arrow_schema::SchemaRef;
 use dashmap::DashMap;
 use datafusion::{
     error::{DataFusionError, Result},
-    execution::{SendableRecordBatchStream, options::ReadOptions},
+    execution::{SendableRecordBatchStream, object_store::ObjectStoreUrl, options::ReadOptions},
     physical_plan::{ExecutionPlan, display::DisplayableExecutionPlan, metrics::MetricValue},
     prelude::{ParquetReadOptions, SessionContext},
 };
 use liquid_common::{CacheMode, rpc::ExecutionMetricsResponse};
 use liquid_parquet::{LiquidCache, LiquidCacheMode, LiquidCacheRef, LiquidParquetFileFormat};
 use log::{debug, info};
-use std::{collections::HashMap, sync::Arc};
+use object_store::ObjectStore;
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use tokio::sync::Mutex;
 use tonic::Status;
 use url::Url;
+
+use crate::local_cache::LocalCache;
 
 pub(crate) struct LiquidCacheServiceInner {
     execution_plans: Arc<DashMap<u64, Arc<dyn ExecutionPlan>>>,
     registered_tables: Mutex<HashMap<String, (String, CacheMode)>>, // table name -> (path, cached file)
     default_ctx: Arc<SessionContext>,
     cache: LiquidCacheRef,
+    disk_cache_dir: Option<PathBuf>,
 }
 
 impl LiquidCacheServiceInner {
-    pub fn new(default_ctx: Arc<SessionContext>, max_cache_bytes: Option<usize>) -> Self {
+    pub fn new(
+        default_ctx: Arc<SessionContext>,
+        max_cache_bytes: Option<usize>,
+        disk_cache_dir: Option<PathBuf>,
+    ) -> Self {
         let batch_size = default_ctx.state().config().batch_size();
         let liquid_cache = Arc::new(LiquidCache::new(
             batch_size,
@@ -34,6 +42,7 @@ impl LiquidCacheServiceInner {
             registered_tables: Default::default(),
             default_ctx,
             cache: liquid_cache,
+            disk_cache_dir,
         }
     }
 
@@ -53,8 +62,31 @@ impl LiquidCacheServiceInner {
                 path.as_ref()
             )));
         }
+        let object_store_url = ObjectStoreUrl::parse(url.as_str())?;
+        let existing = self
+            .default_ctx
+            .runtime_env()
+            .object_store(&object_store_url);
+
+        if existing.is_ok() {
+            // if the object store is already registered, we don't need to register it again
+            info!("object store already registered at {url}");
+            return Ok(());
+        }
+
+        let object_store: Arc<dyn ObjectStore> = match &self.disk_cache_dir {
+            Some(disk_cache_dir) => {
+                let sanitized_url = sanitize_url_for_dirname(url);
+                let store_cache_dir = disk_cache_dir.join(sanitized_url);
+                let local_cache = LocalCache::new(Arc::new(object_store), store_cache_dir);
+                Arc::new(local_cache)
+            }
+            None => Arc::new(object_store),
+        };
+
         self.default_ctx
-            .register_object_store(url, Arc::new(object_store));
+            .runtime_env()
+            .register_object_store(object_store_url.as_ref(), object_store);
         Ok(())
     }
 
@@ -241,19 +273,38 @@ impl LiquidCacheServiceInner {
     }
 }
 
+pub(crate) fn sanitize_url_for_dirname(url: &Url) -> String {
+    let mut parts = vec![url.scheme()];
+
+    if let Some(host) = url.host_str() {
+        parts.push(host);
+    }
+
+    let dirname = parts.join("_");
+
+    dirname.replace(['/', ':', '?', '&', '=', '\\'], "_")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[tokio::test]
     async fn test_register_object_store() {
-        let server = LiquidCacheServiceInner::new(Arc::new(SessionContext::new()), None);
+        let server = LiquidCacheServiceInner::new(Arc::new(SessionContext::new()), None, None);
         let url = Url::parse("file:///").unwrap();
         server
             .register_object_store(&url, HashMap::new())
             .await
             .unwrap();
 
+        let url = Url::parse("s3://test_data").unwrap();
+        server
+            .register_object_store(&url, HashMap::new())
+            .await
+            .unwrap();
+
+        // reregister should be ok
         let url = Url::parse("s3://test_data").unwrap();
         server
             .register_object_store(&url, HashMap::new())

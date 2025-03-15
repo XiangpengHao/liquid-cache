@@ -23,6 +23,10 @@ dashmap = { workspace = true }
 liquid-parquet = { workspace = true }
 object_store = { workspace = true, features = ["aws", "http"] }
 liquid-common = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+async-stream = "0.3"
 
 [dev-dependencies]
 liquid-cache-client = { workspace = true }
+tempfile = "3.18.0"

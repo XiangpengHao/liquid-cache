@@ -80,10 +80,12 @@ impl LiquidCacheTableBuilder {
     pub fn with_object_store(
         mut self,
         url: impl AsRef<str>,
-        object_store_options: HashMap<String, String>,
+        object_store_options: Option<HashMap<String, String>>,
     ) -> Self {
-        self.object_stores
-            .push((url.as_ref().to_string(), object_store_options));
+        self.object_stores.push((
+            url.as_ref().to_string(),
+            object_store_options.unwrap_or_default(),
+        ));
         self
     }
 

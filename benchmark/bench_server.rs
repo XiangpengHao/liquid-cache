@@ -40,6 +40,10 @@ struct CliArgs {
     /// Maximum cache size in MB
     #[arg(long = "max-cache-mb")]
     max_cache_mb: Option<usize>,
+
+    /// Path to disk cache directory
+    #[arg(long = "disk-cache-dir")]
+    disk_cache_dir: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -61,7 +65,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let ctx = LiquidCacheService::context(args.partitions)?;
-    let mut liquid_cache_server = LiquidCacheService::new_with_context(ctx, max_cache_bytes);
+    let mut liquid_cache_server =
+        LiquidCacheService::new(ctx, max_cache_bytes, args.disk_cache_dir.clone());
 
     if let Some(flamegraph_dir) = &args.flamegraph_dir {
         assert!(

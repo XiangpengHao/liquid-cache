@@ -47,6 +47,11 @@ impl From<Action> for LiquidCacheActions {
             }
             "ExecutionMetrics" => LiquidCacheActions::ExecutionMetrics,
             "ResetCache" => LiquidCacheActions::ResetCache,
+            "RegisterObjectStore" => {
+                let any = Any::decode(action.body).unwrap();
+                let request = any.unpack::<RegisterObjectStoreRequest>().unwrap().unwrap();
+                LiquidCacheActions::RegisterObjectStore(request)
+            }
             _ => panic!("Invalid action: {}", action.r#type),
         }
     }
