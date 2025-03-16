@@ -115,6 +115,7 @@ pub async fn main() -> Result<()> {
 
     Ok(())
 }
+```
 
 
 #### 3. Enjoy!
