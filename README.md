@@ -25,27 +25,8 @@ effectively reducing both CPU utilization and network data transfer on cache ser
 <img src="/dev/doc/arch.png" alt="architecture" width="400"/>
 
 
-## Run ClickBench to Experience the Performance
 
-#### 1. Setup the Repository
-```bash
-git clone https://github.com/XiangpengHao/liquid-cache.git
-cd liquid-cache
-```
-
-#### 2. Run a LiquidCache Server
-```bash
-cargo run --bin bench_server --release
-```
-
-#### 3. Run a ClickBench Client
-In a different terminal, run the ClickBench client:
-```bash
-cargo run --bin clickbench_client --release -- --query-path benchmark/clickbench/queries.sql --file examples/nano_hits.parquet
-```
-(Note: replace `nano_hits.parquet` with the [real ClickBench dataset](https://github.com/ClickHouse/ClickBench) for full benchmarking)
-
-## Try LiquidCache
+## Integrate LiquidCache in 5 Minutes
 Check out the `examples` folder for more details. We are working on a crates.io release, stay tuned!
 
 #### 1. Start a Cache Server:
@@ -74,7 +55,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-#### 2. Connect to the Cache Server:
+Or use our pre-built docker image:
+```bash
+docker run -p 50051:50051 -v ~/liquid_cache:/cache \
+  ghcr.io/xiangpenghao/liquid-cache/liquid-cache-server:latest \
+  /app/bench_server \
+  --address 0.0.0.0:50051 \
+  --disk-cache-dir /cache
+```
+
+#### 2. Setup client:
 ```rust
 use datafusion::{
     error::Result,
@@ -117,8 +107,47 @@ pub async fn main() -> Result<()> {
 }
 ```
 
+## Community server
 
-#### 3. Enjoy!
+We run a community server for LiquidCache at https://hex.tail0766e4.ts.net:50051 (hosted on Xiangpeng's NAS, use at your own risk).
+
+You can try it out by running:
+```bash
+cargo run --bin example_client --release -- \
+    --cache-server https://hex.tail0766e4.ts.net:50051 \
+    --file "https://huggingface.co/datasets/HuggingFaceFW/fineweb/resolve/main/data/CC-MAIN-2024-51/000_00042.parquet" \
+    --query "SELECT COUNT(*) FROM \"000_00042\" WHERE \"token_count\" < 100"
+```
+
+Expected output (within a second):
+```
++----------+
+| count(*) |
++----------+
+| 44805    |
++----------+
+```
+
+
+## Run ClickBench 
+
+#### 1. Setup the Repository
+```bash
+git clone https://github.com/XiangpengHao/liquid-cache.git
+cd liquid-cache
+```
+
+#### 2. Run a LiquidCache Server
+```bash
+cargo run --bin bench_server --release
+```
+
+#### 3. Run a ClickBench Client
+In a different terminal, run the ClickBench client:
+```bash
+cargo run --bin clickbench_client --release -- --query-path benchmark/clickbench/queries.sql --file examples/nano_hits.parquet
+```
+(Note: replace `nano_hits.parquet` with the [real ClickBench dataset](https://github.com/ClickHouse/ClickBench) for full benchmarking)
 
 
 ## Development

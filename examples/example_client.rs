@@ -15,13 +15,36 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use clap::{Parser, command};
 use datafusion::{
     error::Result,
     prelude::{SessionConfig, SessionContext},
 };
 use liquid_cache_client::LiquidCacheTableBuilder;
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 use url::Url;
+
+#[derive(Parser, Clone)]
+#[command(name = "Example Client")]
+struct CliArgs {
+    /// SQL query to execute
+    #[arg(
+        long,
+        default_value = "SELECT COUNT(*) FROM \"aws-edge-locations\" WHERE \"countryCode\" = 'US';"
+    )]
+    query: String,
+
+    /// URL of the table to query
+    #[arg(
+        long,
+        default_value = "https://raw.githubusercontent.com/tobilg/aws-edge-locations/main/data/aws-edge-locations.parquet"
+    )]
+    file: String,
+
+    /// Server URL
+    #[arg(long, default_value = "http://localhost:50051")]
+    cache_server: String,
+}
 
 #[tokio::main]
 pub async fn main() -> Result<()> {
@@ -33,13 +56,16 @@ pub async fn main() -> Result<()> {
         .pushdown_filters = true;
     let ctx = Arc::new(SessionContext::new_with_config(session_config));
 
-    let cache_server = "http://localhost:50051";
-    let table_name = "aws_locations";
-    let url = Url::parse(
-        "https://raw.githubusercontent.com/tobilg/aws-edge-locations/main/data/aws-edge-locations.parquet",
-    )
-    .unwrap();
-    let sql = "SELECT COUNT(*) FROM aws_locations WHERE \"countryCode\" = 'US';";
+    let args = CliArgs::parse();
+
+    let cache_server = args.cache_server;
+    let url = Url::parse(&args.file).unwrap();
+    let table_name = Path::new(url.path())
+        .file_stem()
+        .unwrap_or_default()
+        .to_str()
+        .unwrap_or("default");
+    let sql = args.query;
 
     let table = LiquidCacheTableBuilder::new(cache_server, table_name, url.as_ref())
         .with_object_store(
@@ -50,7 +76,7 @@ pub async fn main() -> Result<()> {
         .await?;
     ctx.register_table(table_name, Arc::new(table))?;
 
-    ctx.sql(sql).await?.show().await?;
+    ctx.sql(&sql).await?.show().await?;
 
     Ok(())
 }
