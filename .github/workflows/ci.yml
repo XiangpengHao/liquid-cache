@@ -177,9 +177,17 @@ jobs:
 
       - name: Start LiquidCache client
         run: |
-          env RUST_LOG=info cargo run --bin example_client
+          # First run to populate the cache
+          env RUST_LOG=info cargo run --bin example_client -- \
+            --query "SELECT COUNT(*) FROM \"aws-edge-locations.parquet\" WHERE \"countryCode\" = 'US';" \
+            --file "https://raw.githubusercontent.com/tobilg/aws-edge-locations/main/data/aws-edge-locations.parquet" \
+            --cache-server "http://localhost:50051"
+            
           # Run twice to test the cache
-          env RUST_LOG=info cargo run --bin example_client 
+          env RUST_LOG=info cargo run --bin example_client -- \
+            --query "SELECT COUNT(*) FROM \"aws-edge-locations.parquet\" WHERE \"countryCode\" = 'US';" \
+            --file "https://raw.githubusercontent.com/tobilg/aws-edge-locations/main/data/aws-edge-locations.parquet" \
+            --cache-server "http://localhost:50051"
 
       - name: Kill LiquidCache server and show logs
         if: always()
