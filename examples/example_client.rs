@@ -30,7 +30,7 @@ struct CliArgs {
     /// SQL query to execute
     #[arg(
         long,
-        default_value = "SELECT COUNT(*) FROM aws_locations WHERE \"countryCode\" = 'US';"
+        default_value = "SELECT COUNT(*) FROM \"aws-edge-locations.parquet\" WHERE \"countryCode\" = 'US';"
     )]
     query: String,
 
