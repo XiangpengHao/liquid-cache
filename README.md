@@ -116,7 +116,7 @@ You can try it out by running:
 cargo run --bin example_client --release -- \
     --cache-server https://hex.tail0766e4.ts.net:50051 \
     --file "https://huggingface.co/datasets/HuggingFaceFW/fineweb/resolve/main/data/CC-MAIN-2024-51/000_00042.parquet" \
-    --query "SELECT COUNT(*) FROM \"000_00042.parquet\" WHERE \"token_count\" < 100"
+    --query "SELECT COUNT(*) FROM \"000_00042\" WHERE \"token_count\" < 100"
 ```
 
 Expected output (within a second):

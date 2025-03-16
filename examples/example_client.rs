@@ -21,7 +21,7 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use liquid_cache_client::LiquidCacheTableBuilder;
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 use url::Url;
 
 #[derive(Parser, Clone)]
@@ -30,7 +30,7 @@ struct CliArgs {
     /// SQL query to execute
     #[arg(
         long,
-        default_value = "SELECT COUNT(*) FROM \"aws-edge-locations.parquet\" WHERE \"countryCode\" = 'US';"
+        default_value = "SELECT COUNT(*) FROM \"aws-edge-locations\" WHERE \"countryCode\" = 'US';"
     )]
     query: String,
 
@@ -60,7 +60,11 @@ pub async fn main() -> Result<()> {
 
     let cache_server = args.cache_server;
     let url = Url::parse(&args.file).unwrap();
-    let table_name = url.path().split('/').next_back().unwrap_or("default");
+    let table_name = Path::new(url.path())
+        .file_stem()
+        .unwrap_or_default()
+        .to_str()
+        .unwrap_or("default");
     let sql = args.query;
 
     let table = LiquidCacheTableBuilder::new(cache_server, table_name, url.as_ref())
