@@ -1,6 +1,6 @@
 use std::num::NonZero;
 
-use arrow::array::{Array, ArrayDataBuilder, ArrowPrimitiveType, PrimitiveArray};
+use arrow::array::{ArrowPrimitiveType, PrimitiveArray};
 use arrow::buffer::{Buffer, NullBuffer, ScalarBuffer};
 use arrow::datatypes::ArrowNativeType;
 use fastlanes::BitPacking;
@@ -16,6 +16,8 @@ where
     original_len: usize,
 }
 
+/// Implement Clone for any T that implements ArrowPrimitiveType and BitPacking
+/// This allows us to clone it without requiring T to implement Clone
 impl<T: ArrowPrimitiveType> Clone for BitPackedArray<T>
 where
     T::Native: BitPacking,
@@ -118,16 +120,7 @@ where
         }
 
         let buffer = Buffer::from(output);
-        let scalar_buffer = ScalarBuffer::new(buffer.clone(), 0, num_chunks * packed_len);
-        let array_builder = unsafe {
-            ArrayDataBuilder::new(T::DATA_TYPE)
-                .len(num_chunks * packed_len)
-                .add_buffer(buffer)
-                .build_unchecked()
-        };
-
-        let values = PrimitiveArray::<T>::from(array_builder);
-        assert!(values.nulls().is_none());
+        let scalar_buffer = ScalarBuffer::new(buffer, 0, num_chunks * packed_len);
 
         Self {
             packed_values: scalar_buffer,
@@ -201,7 +194,7 @@ fn best_arrow_primitive_width(bit_width: NonZero<u8>) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::datatypes::UInt32Type;
+    use arrow::{array::Array, datatypes::UInt32Type};
 
     #[test]
     fn test_bit_pack_roundtrip() {

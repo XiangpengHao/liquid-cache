@@ -348,7 +348,7 @@ impl LiquidByteArray {
                     value_buffer.capacity(),
                 )
             };
-            let len = unsafe { decompressor.decompress_into(v, slice) };
+            let len = decompressor.decompress_into(v, slice);
             let new_len = value_buffer.len() + len;
             debug_assert!(new_len <= value_buffer.capacity());
             unsafe {

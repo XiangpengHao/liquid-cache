@@ -107,7 +107,7 @@ impl FsstArray {
                             value_buffer.capacity(), // we don't care about the capacity here
                         )
                     };
-                    let len = unsafe { decompressor.decompress_into(v, slice) };
+                    let len = decompressor.decompress_into(v, slice);
                     let new_len = value_buffer.len() + len;
                     debug_assert!(new_len <= value_buffer.capacity());
                     unsafe {
