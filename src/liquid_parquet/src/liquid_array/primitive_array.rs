@@ -1,9 +1,10 @@
 use std::any::Any;
-use std::fmt::Debug;
+use std::collections::HashMap;
+use std::fmt::{Debug, Display};
 use std::num::NonZero;
 use std::sync::Arc;
 
-use arrow::array::ArrowNativeTypeOp;
+use arrow::array::{Array, ArrowNativeTypeOp};
 use arrow::buffer::ScalarBuffer;
 use arrow::{
     array::{
@@ -38,7 +39,8 @@ pub trait LiquidPrimitiveType:
     ArrowPrimitiveType<
         Native: AsPrimitive<<Self::UnSignedType as ArrowPrimitiveType>::Native>
                     + AsPrimitive<i64>
-                    + FromPrimitive,
+                    + FromPrimitive
+                    + Display,
     > + Debug
     + private::Sealed
 {
@@ -85,10 +87,31 @@ pub struct LiquidPrimitiveMetadata {
     original_len: usize,
 }
 
+impl LiquidPrimitiveMetadata {
+    fn to_hashmap(&self) -> HashMap<String, String> {
+        HashMap::from([
+            (
+                "reference_value".to_string(),
+                self.reference_value.to_string(),
+            ),
+            ("bit_width".to_string(), self.bit_width.to_string()),
+            ("original_len".to_string(), self.original_len.to_string()),
+        ])
+    }
+
+    fn from_hashmap(map: &HashMap<String, String>) -> Self {
+        Self {
+            reference_value: map["reference_value"].parse::<i64>().unwrap(),
+            bit_width: NonZero::new(map["bit_width"].parse::<u8>().unwrap()).unwrap(),
+            original_len: map["original_len"].parse::<usize>().unwrap(),
+        }
+    }
+}
+
 /// ETC's primitive array
 #[derive(Debug, Clone)]
 pub struct LiquidPrimitiveArray<T: LiquidPrimitiveType> {
-    values: BitPackedArray<T::UnSignedType>,
+    bit_packed: BitPackedArray<T::UnSignedType>,
     reference_value: T::Native,
 }
 
@@ -98,12 +121,12 @@ where
 {
     /// Get the memory size of the Liquid primitive array.
     pub fn get_array_memory_size(&self) -> usize {
-        self.values.get_array_memory_size() + std::mem::size_of::<T::Native>()
+        self.bit_packed.get_array_memory_size() + std::mem::size_of::<T::Native>()
     }
 
     /// Get the length of the Liquid primitive array.
     pub fn len(&self) -> usize {
-        self.values.original_len
+        self.bit_packed.len()
     }
 
     /// Check if the Liquid primitive array is empty.
@@ -115,39 +138,8 @@ where
     pub fn metadata(&self) -> LiquidPrimitiveMetadata {
         LiquidPrimitiveMetadata {
             reference_value: self.reference_value.to_i64().unwrap(),
-            bit_width: self.values.bit_width,
-            original_len: self.values.original_len,
-        }
-    }
-
-    /// Convert a Liquid primitive array to a record batch.
-    pub fn to_record_batch(&self) -> (RecordBatch, LiquidPrimitiveMetadata) {
-        let schema = Schema::new(vec![Field::new(
-            "values",
-            <T as ArrowPrimitiveType>::DATA_TYPE,
-            false,
-        )]);
-
-        let batch =
-            RecordBatch::try_new(Arc::new(schema), vec![Arc::new(self.values.values.clone())])
-                .unwrap();
-
-        (batch, self.metadata())
-    }
-
-    /// Create a Liquid primitive array from a record batch.
-    pub fn from_record_batch(batch: RecordBatch, metadata: &LiquidPrimitiveMetadata) -> Self {
-        let values = batch
-            .column(0)
-            .as_primitive::<<T as LiquidPrimitiveType>::UnSignedType>()
-            .clone();
-        let values = BitPackedArray::from_parts(values, metadata.bit_width, metadata.original_len);
-        Self {
-            values,
-            reference_value: <<T as ArrowPrimitiveType>::Native as FromPrimitive>::from_i64(
-                metadata.reference_value,
-            )
-            .unwrap(),
+            bit_width: self.bit_packed.bit_width(),
+            original_len: self.bit_packed.len(),
         }
     }
 
@@ -157,7 +149,7 @@ where
             None => {
                 // entire array is null
                 return Self {
-                    values: BitPackedArray::new_null_array(arrow_array.len()),
+                    bit_packed: BitPackedArray::new_null_array(arrow_array.len()),
                     reference_value: T::Native::ZERO,
                 };
             }
@@ -193,7 +185,7 @@ where
         let bit_packed_array = BitPackedArray::from_primitive(unsigned_array, bit_width);
 
         Self {
-            values: bit_packed_array,
+            bit_packed: bit_packed_array,
             reference_value: min,
         }
     }
@@ -217,8 +209,9 @@ where
 
     #[inline]
     fn to_arrow_array(&self) -> ArrayRef {
-        let unsigned_array = self.values.to_primitive();
-        let (_data_type, values, nulls) = unsigned_array.into_parts();
+        let unsigned_array = self.bit_packed.to_primitive();
+        let (_data_type, values, _nulls) = unsigned_array.into_parts();
+        let nulls = self.bit_packed.nulls();
         let values = if self.reference_value != T::Native::ZERO {
             let reference_v = self.reference_value.as_();
             ScalarBuffer::from_iter(values.iter().map(|v| {
@@ -232,7 +225,7 @@ where
             }
         };
 
-        Arc::new(PrimitiveArray::<T>::new(values, nulls))
+        Arc::new(PrimitiveArray::<T>::new(values, nulls.cloned()))
     }
 
     fn filter(&self, selection: &BooleanArray) -> LiquidArrayRef {
@@ -257,8 +250,8 @@ mod tests {
                 let array = PrimitiveArray::<$type>::from(original.clone());
 
                 // Convert to Liquid array and back
-                let etc_array = LiquidPrimitiveArray::<$type>::from_arrow_array(array.clone());
-                let result_array = etc_array.to_arrow_array();
+                let liquid_array = LiquidPrimitiveArray::<$type>::from_arrow_array(array.clone());
+                let result_array = liquid_array.to_arrow_array();
 
                 assert_eq!(result_array.as_ref(), &array);
             }
@@ -370,8 +363,8 @@ mod tests {
     fn test_all_nulls() {
         let original: Vec<Option<i32>> = vec![None, None, None];
         let array = PrimitiveArray::<Int32Type>::from(original.clone());
-        let etc_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(array);
-        let result_array = etc_array.to_arrow_array();
+        let liquid_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(array);
+        let result_array = liquid_array.to_arrow_array();
 
         assert_eq!(result_array.len(), original.len());
         assert_eq!(result_array.null_count(), original.len());
@@ -381,10 +374,10 @@ mod tests {
     fn test_zero_reference_value() {
         let original: Vec<Option<i32>> = vec![Some(0), Some(1), Some(2), None, Some(4)];
         let array = PrimitiveArray::<Int32Type>::from(original.clone());
-        let etc_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(array.clone());
-        let result_array = etc_array.to_arrow_array();
+        let liquid_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(array.clone());
+        let result_array = liquid_array.to_arrow_array();
 
-        assert_eq!(etc_array.reference_value, 0);
+        assert_eq!(liquid_array.reference_value, 0);
         assert_eq!(result_array.as_ref(), &array);
     }
 
@@ -392,8 +385,8 @@ mod tests {
     fn test_single_value() {
         let original: Vec<Option<i32>> = vec![Some(42)];
         let array = PrimitiveArray::<Int32Type>::from(original.clone());
-        let etc_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(array.clone());
-        let result_array = etc_array.to_arrow_array();
+        let liquid_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(array.clone());
+        let result_array = liquid_array.to_arrow_array();
 
         assert_eq!(result_array.as_ref(), &array);
     }
@@ -403,13 +396,13 @@ mod tests {
         // Create original array with some values
         let original = vec![Some(1), Some(2), Some(3), None, Some(5)];
         let array = PrimitiveArray::<Int32Type>::from(original);
-        let etc_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(array);
+        let liquid_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(array);
 
         // Create selection mask: keep indices 0, 2, and 4
         let selection = BooleanArray::from(vec![true, false, true, false, true]);
 
         // Apply filter
-        let filtered = etc_array.filter(&selection);
+        let filtered = liquid_array.filter(&selection);
         let result_array = filtered.to_arrow_array();
 
         // Expected result after filtering
@@ -423,12 +416,12 @@ mod tests {
         // Create array with all nulls
         let original = vec![None, None, None, None];
         let array = PrimitiveArray::<Int32Type>::from(original);
-        let etc_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(array);
+        let liquid_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(array);
 
         // Keep first and last elements
         let selection = BooleanArray::from(vec![true, false, false, true]);
 
-        let filtered = etc_array.filter(&selection);
+        let filtered = liquid_array.filter(&selection);
         let result_array = filtered.to_arrow_array();
 
         let expected = PrimitiveArray::<Int32Type>::from(vec![None, None]);
@@ -440,12 +433,12 @@ mod tests {
     fn test_filter_empty_result() {
         let original = vec![Some(1), Some(2), Some(3)];
         let array = PrimitiveArray::<Int32Type>::from(original);
-        let etc_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(array);
+        let liquid_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(array);
 
         // Filter out all elements
         let selection = BooleanArray::from(vec![false, false, false]);
 
-        let filtered = etc_array.filter(&selection);
+        let filtered = liquid_array.filter(&selection);
         let result_array = filtered.to_arrow_array();
 
         assert_eq!(result_array.len(), 0);

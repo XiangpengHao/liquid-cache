@@ -1,7 +1,7 @@
 use std::num::NonZero;
 
 use arrow::array::{Array, ArrayDataBuilder, ArrowPrimitiveType, PrimitiveArray};
-use arrow::buffer::{Buffer, ScalarBuffer};
+use arrow::buffer::{Buffer, NullBuffer, ScalarBuffer};
 use fastlanes::BitPacking;
 
 #[derive(Debug)]
@@ -9,9 +9,10 @@ pub struct BitPackedArray<T: ArrowPrimitiveType>
 where
     T::Native: BitPacking,
 {
-    pub(crate) values: PrimitiveArray<T>,
-    pub(crate) bit_width: NonZero<u8>,
-    pub(crate) original_len: usize,
+    packed: PrimitiveArray<T>, // must be non-null
+    nulls: Option<NullBuffer>,
+    bit_width: NonZero<u8>,
+    original_len: usize,
 }
 
 impl<T: ArrowPrimitiveType> Clone for BitPackedArray<T>
@@ -20,7 +21,8 @@ where
 {
     fn clone(&self) -> Self {
         Self {
-            values: self.values.clone(),
+            packed: self.packed.clone(),
+            nulls: self.nulls.clone(),
             bit_width: self.bit_width,
             original_len: self.original_len,
         }
@@ -32,12 +34,15 @@ where
     T::Native: BitPacking,
 {
     pub fn from_parts(
-        values: PrimitiveArray<T>,
+        packed: PrimitiveArray<T>,
+        nulls: Option<NullBuffer>,
         bit_width: NonZero<u8>,
         original_len: usize,
     ) -> Self {
+        assert!(packed.nulls().is_none());
         Self {
-            values,
+            packed,
+            nulls,
             bit_width,
             original_len,
         }
@@ -45,7 +50,8 @@ where
 
     pub fn new_null_array(len: usize) -> Self {
         Self {
-            values: PrimitiveArray::<T>::new_null(len),
+            packed: PrimitiveArray::<T>::new_null(len),
+            nulls: Some(NullBuffer::new_null(len)),
             bit_width: NonZero::new(u8::MAX).unwrap(),
             original_len: len,
         }
@@ -55,9 +61,16 @@ where
         self.original_len
     }
 
-    #[allow(dead_code)]
+    pub(crate) fn nulls(&self) -> Option<&NullBuffer> {
+        self.nulls.as_ref()
+    }
+
+    pub(crate) fn bit_width(&self) -> NonZero<u8> {
+        self.bit_width
+    }
+
     pub fn is_nullable(&self) -> bool {
-        self.values.is_nullable()
+        self.packed.is_nullable()
     }
 
     pub fn from_primitive(array: PrimitiveArray<T>, bit_width: NonZero<u8>) -> Self {
@@ -109,28 +122,29 @@ where
             ArrayDataBuilder::new(T::DATA_TYPE)
                 .len(num_chunks * packed_len)
                 .add_buffer(scalar_buffer)
-                .nulls(nulls)
                 .build_unchecked()
         };
 
         let values = PrimitiveArray::<T>::from(array_builder);
+        assert!(values.nulls().is_none());
 
         Self {
-            values,
+            packed: values,
+            nulls,
             bit_width,
             original_len,
         }
     }
 
     pub fn to_primitive(&self) -> PrimitiveArray<T> {
-        let nulls = self.values.nulls().cloned();
-        if let Some(nulls) = nulls {
+        // Special case for all nulls, don't unpack
+        if let Some(nulls) = self.nulls() {
             if nulls.null_count() == self.original_len {
-                return self.values.clone();
+                return PrimitiveArray::<T>::new_null(self.original_len);
             }
         }
         let bit_width = self.bit_width.get() as usize;
-        let packed = self.values.values().as_ref();
+        let packed = self.packed.values().as_ref();
         let length = self.original_len;
         let offset = 0;
 
@@ -163,12 +177,12 @@ where
             output.shrink_to_fit();
         }
 
-        let nulls = self.values.nulls().cloned();
+        let nulls = self.nulls.clone();
         PrimitiveArray::<T>::new(ScalarBuffer::from(output), nulls)
     }
 
     pub fn get_array_memory_size(&self) -> usize {
-        self.values.get_array_memory_size()
+        self.packed.get_array_memory_size()
     }
 }
 

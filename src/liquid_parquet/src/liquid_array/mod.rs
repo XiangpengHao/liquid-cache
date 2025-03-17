@@ -8,8 +8,7 @@ use arrow::array::{ArrayRef, BooleanArray};
 pub use byte_array::{LiquidByteArray, LiquidStringMetadata};
 pub use primitive_array::{
     LiquidI8Array, LiquidI16Array, LiquidI32Array, LiquidI64Array, LiquidPrimitiveArray,
-    LiquidPrimitiveMetadata, LiquidPrimitiveType, LiquidU8Array, LiquidU16Array, LiquidU32Array,
-    LiquidU64Array,
+    LiquidPrimitiveType, LiquidU8Array, LiquidU16Array, LiquidU32Array, LiquidU64Array,
 };
 pub use raw::bit_pack_array::BitPackedArray;
 pub use raw::fsst_array::FsstArray;

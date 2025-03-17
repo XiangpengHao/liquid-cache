@@ -1,7 +1,6 @@
 use ahash::HashMap;
 use arrow::array::{
-    Array, ArrayRef, BooleanArray, DictionaryArray, RecordBatch, StringArray, cast::AsArray,
-    types::UInt16Type,
+    Array, ArrayRef, BooleanArray, DictionaryArray, StringArray, cast::AsArray, types::UInt16Type,
 };
 use arrow::array::{
     ArrayAccessor, ArrayIter, BinaryArray, BooleanBufferBuilder, BufferBuilder, GenericByteArray,
@@ -10,7 +9,7 @@ use arrow::array::{
 use arrow::buffer::{BooleanBuffer, Buffer, NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::compute::cast;
 use arrow::datatypes::{BinaryType, ByteArrayType, Utf8Type};
-use arrow_schema::{DataType, Field, Schema};
+use arrow_schema::DataType;
 use fsst::Compressor;
 use std::any::Any;
 use std::mem::MaybeUninit;
@@ -54,7 +53,7 @@ impl LiquidArray for LiquidByteArray {
             .unwrap()
             .as_primitive::<UInt16Type>()
             .clone();
-        let bit_packed_array = BitPackedArray::from_primitive(filtered_keys, keys.bit_width);
+        let bit_packed_array = BitPackedArray::from_primitive(filtered_keys, keys.bit_width());
         Arc::new(LiquidByteArray {
             keys: bit_packed_array,
             values,
@@ -63,7 +62,7 @@ impl LiquidArray for LiquidByteArray {
     }
 }
 
-/// Metadata for the EtcStringArray.
+/// Metadata for the LiquidStringArray.
 pub struct LiquidStringMetadata {
     compressor: Arc<Compressor>,
     uncompressed_len: u32,
@@ -417,52 +416,13 @@ impl LiquidByteArray {
         cast(&dict, &self.original_arrow_type.to_arrow_type()).unwrap()
     }
 
-    /// Repackage the data into Arrow-compatible format, so that it can be written to disk, transferred over flight.
-    pub fn to_record_batch(&self) -> (RecordBatch, LiquidStringMetadata) {
-        let schema = Schema::new(vec![
-            Field::new("keys", DataType::UInt32, false),
-            Field::new("values", DataType::Binary, false),
-        ]);
-        let batch = RecordBatch::try_new(
-            Arc::new(schema),
-            vec![
-                Arc::new(self.keys.values.clone()),
-                Arc::new(self.values.compressed.clone()),
-            ],
-        )
-        .unwrap();
-        (batch, self.metadata())
-    }
-
-    /// Reconstruct the LiquidStringArray from a RecordBatch.
-    pub fn from_record_batch(batch: RecordBatch, metadata: &LiquidStringMetadata) -> Self {
-        let key_column = batch.column(0).as_primitive::<UInt16Type>();
-        let values_column = batch.column(1).as_binary();
-
-        let keys = BitPackedArray::from_parts(
-            key_column.clone(),
-            metadata.keys_bit_width,
-            metadata.keys_original_len as usize,
-        );
-        let values = FsstArray::from_parts(
-            values_column.clone(),
-            metadata.compressor.clone(),
-            metadata.uncompressed_len as usize,
-        );
-        LiquidByteArray {
-            keys,
-            values,
-            original_arrow_type: ArrowStringType::Dict16Binary,
-        }
-    }
-
     /// Get the metadata of the LiquidStringArray.
     pub fn metadata(&self) -> LiquidStringMetadata {
         LiquidStringMetadata {
             compressor: self.values.compressor.clone(),
             uncompressed_len: self.values.uncompressed_len as u32,
-            keys_original_len: self.keys.values.len() as u32,
-            keys_bit_width: self.keys.bit_width,
+            keys_original_len: self.keys.len() as u32,
+            keys_bit_width: self.keys.bit_width(),
         }
     }
 
@@ -475,7 +435,7 @@ impl LiquidByteArray {
     }
 
     pub fn nulls(&self) -> Option<&NullBuffer> {
-        self.keys.values.nulls()
+        self.keys.nulls()
     }
 
     /// Compare the values of the LiquidStringArray with a given string.
