@@ -1,10 +1,8 @@
 use ahash::HashMap;
 use arrow::array::{
-    Array, ArrayRef, BooleanArray, DictionaryArray, StringArray, cast::AsArray, types::UInt16Type,
-};
-use arrow::array::{
-    ArrayAccessor, ArrayIter, BinaryArray, BooleanBufferBuilder, BufferBuilder, GenericByteArray,
-    StringViewArray, UInt16Array,
+    Array, ArrayAccessor, ArrayIter, ArrayRef, BinaryArray, BooleanArray, BooleanBufferBuilder,
+    BufferBuilder, DictionaryArray, GenericByteArray, StringArray, StringViewArray, UInt16Array,
+    cast::AsArray, types::UInt16Type,
 };
 use arrow::buffer::{BooleanBuffer, Buffer, NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::compute::cast;
@@ -13,7 +11,6 @@ use arrow_schema::DataType;
 use fsst::Compressor;
 use std::any::Any;
 use std::mem::MaybeUninit;
-use std::num::NonZero;
 use std::sync::Arc;
 
 use super::{BitPackedArray, LiquidArray, LiquidArrayRef};
@@ -59,20 +56,6 @@ impl LiquidArray for LiquidByteArray {
             values,
             original_arrow_type: self.original_arrow_type,
         })
-    }
-}
-
-/// Metadata for the LiquidStringArray.
-pub struct LiquidStringMetadata {
-    compressor: Arc<Compressor>,
-    uncompressed_len: u32,
-    keys_original_len: u32,
-    keys_bit_width: NonZero<u8>,
-}
-
-impl std::fmt::Debug for LiquidStringMetadata {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "LiquidStringMetadata")
     }
 }
 
@@ -416,16 +399,6 @@ impl LiquidByteArray {
         cast(&dict, &self.original_arrow_type.to_arrow_type()).unwrap()
     }
 
-    /// Get the metadata of the LiquidStringArray.
-    pub fn metadata(&self) -> LiquidStringMetadata {
-        LiquidStringMetadata {
-            compressor: self.values.compressor.clone(),
-            uncompressed_len: self.values.uncompressed_len as u32,
-            keys_original_len: self.keys.len() as u32,
-            keys_bit_width: self.keys.bit_width(),
-        }
-    }
-
     /// Compare the values of the LiquidStringArray with a given string and return a BooleanArray of the result.
     pub fn compare_not_equals(&self, needle: &str) -> BooleanArray {
         let result = self.compare_equals(needle);
@@ -462,6 +435,8 @@ impl LiquidByteArray {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZero;
+
     use super::*;
     use arrow::array::Array;
 

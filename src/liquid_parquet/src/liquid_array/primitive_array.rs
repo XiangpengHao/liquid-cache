@@ -1,23 +1,15 @@
 use std::any::Any;
-use std::collections::HashMap;
 use std::fmt::{Debug, Display};
-use std::num::NonZero;
 use std::sync::Arc;
 
-use arrow::array::{Array, ArrowNativeTypeOp};
-use arrow::buffer::ScalarBuffer;
-use arrow::{
-    array::{
-        ArrayRef, ArrowPrimitiveType, BooleanArray, PrimitiveArray, RecordBatch,
-        cast::AsArray,
-        types::{
-            Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt16Type, UInt32Type,
-            UInt64Type,
-        },
+use arrow::array::{
+    ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType, BooleanArray, PrimitiveArray,
+    cast::AsArray,
+    types::{
+        Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt16Type, UInt32Type, UInt64Type,
     },
-    datatypes::ArrowNativeType,
 };
-use arrow_schema::{Field, Schema};
+use arrow::buffer::ScalarBuffer;
 use fastlanes::BitPacking;
 use num_traits::{AsPrimitive, FromPrimitive};
 
@@ -79,36 +71,7 @@ pub type LiquidI16Array = LiquidPrimitiveArray<Int16Type>;
 pub type LiquidI32Array = LiquidPrimitiveArray<Int32Type>;
 pub type LiquidI64Array = LiquidPrimitiveArray<Int64Type>;
 
-/// The metadata for an ETC primitive array.
-#[derive(Debug, Clone)]
-pub struct LiquidPrimitiveMetadata {
-    reference_value: i64,
-    bit_width: NonZero<u8>,
-    original_len: usize,
-}
-
-impl LiquidPrimitiveMetadata {
-    fn to_hashmap(&self) -> HashMap<String, String> {
-        HashMap::from([
-            (
-                "reference_value".to_string(),
-                self.reference_value.to_string(),
-            ),
-            ("bit_width".to_string(), self.bit_width.to_string()),
-            ("original_len".to_string(), self.original_len.to_string()),
-        ])
-    }
-
-    fn from_hashmap(map: &HashMap<String, String>) -> Self {
-        Self {
-            reference_value: map["reference_value"].parse::<i64>().unwrap(),
-            bit_width: NonZero::new(map["bit_width"].parse::<u8>().unwrap()).unwrap(),
-            original_len: map["original_len"].parse::<usize>().unwrap(),
-        }
-    }
-}
-
-/// ETC's primitive array
+/// Liquid's primitive array
 #[derive(Debug, Clone)]
 pub struct LiquidPrimitiveArray<T: LiquidPrimitiveType> {
     bit_packed: BitPackedArray<T::UnSignedType>,
@@ -132,15 +95,6 @@ where
     /// Check if the Liquid primitive array is empty.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
-    }
-
-    /// Get the metadata for a Liquid primitive array.
-    pub fn metadata(&self) -> LiquidPrimitiveMetadata {
-        LiquidPrimitiveMetadata {
-            reference_value: self.reference_value.to_i64().unwrap(),
-            bit_width: self.bit_packed.bit_width(),
-            original_len: self.bit_packed.len(),
-        }
     }
 
     pub fn from_arrow_array(arrow_array: PrimitiveArray<T>) -> LiquidPrimitiveArray<T> {

@@ -5,7 +5,7 @@ mod raw;
 use std::{any::Any, num::NonZero, sync::Arc};
 
 use arrow::array::{ArrayRef, BooleanArray};
-pub use byte_array::{LiquidByteArray, LiquidStringMetadata};
+pub use byte_array::LiquidByteArray;
 pub use primitive_array::{
     LiquidI8Array, LiquidI16Array, LiquidI32Array, LiquidI64Array, LiquidPrimitiveArray,
     LiquidPrimitiveType, LiquidU8Array, LiquidU16Array, LiquidU32Array, LiquidU64Array,

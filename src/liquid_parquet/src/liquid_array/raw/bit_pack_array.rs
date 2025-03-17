@@ -2,6 +2,7 @@ use std::num::NonZero;
 
 use arrow::array::{Array, ArrayDataBuilder, ArrowPrimitiveType, PrimitiveArray};
 use arrow::buffer::{Buffer, NullBuffer, ScalarBuffer};
+use arrow::datatypes::ArrowNativeType;
 use fastlanes::BitPacking;
 
 #[derive(Debug)]
@@ -9,7 +10,7 @@ pub struct BitPackedArray<T: ArrowPrimitiveType>
 where
     T::Native: BitPacking,
 {
-    packed: PrimitiveArray<T>, // must be non-null
+    packed_values: ScalarBuffer<T::Native>,
     nulls: Option<NullBuffer>,
     bit_width: NonZero<u8>,
     original_len: usize,
@@ -21,7 +22,7 @@ where
 {
     fn clone(&self) -> Self {
         Self {
-            packed: self.packed.clone(),
+            packed_values: self.packed_values.clone(),
             nulls: self.nulls.clone(),
             bit_width: self.bit_width,
             original_len: self.original_len,
@@ -34,14 +35,13 @@ where
     T::Native: BitPacking,
 {
     pub fn from_parts(
-        packed: PrimitiveArray<T>,
+        packed_values: ScalarBuffer<T::Native>,
         nulls: Option<NullBuffer>,
         bit_width: NonZero<u8>,
         original_len: usize,
     ) -> Self {
-        assert!(packed.nulls().is_none());
         Self {
-            packed,
+            packed_values,
             nulls,
             bit_width,
             original_len,
@@ -50,7 +50,7 @@ where
 
     pub fn new_null_array(len: usize) -> Self {
         Self {
-            packed: PrimitiveArray::<T>::new_null(len),
+            packed_values: vec![T::Native::usize_as(0); len].into(),
             nulls: Some(NullBuffer::new_null(len)),
             bit_width: NonZero::new(u8::MAX).unwrap(),
             original_len: len,
@@ -70,7 +70,7 @@ where
     }
 
     pub fn is_nullable(&self) -> bool {
-        self.packed.is_nullable()
+        self.nulls.is_some()
     }
 
     pub fn from_primitive(array: PrimitiveArray<T>, bit_width: NonZero<u8>) -> Self {
@@ -117,11 +117,12 @@ where
             }
         }
 
-        let scalar_buffer = Buffer::from(output);
+        let buffer = Buffer::from(output);
+        let scalar_buffer = ScalarBuffer::new(buffer.clone(), 0, num_chunks * packed_len);
         let array_builder = unsafe {
             ArrayDataBuilder::new(T::DATA_TYPE)
                 .len(num_chunks * packed_len)
-                .add_buffer(scalar_buffer)
+                .add_buffer(buffer)
                 .build_unchecked()
         };
 
@@ -129,7 +130,7 @@ where
         assert!(values.nulls().is_none());
 
         Self {
-            packed: values,
+            packed_values: scalar_buffer,
             nulls,
             bit_width,
             original_len,
@@ -144,7 +145,7 @@ where
             }
         }
         let bit_width = self.bit_width.get() as usize;
-        let packed = self.packed.values().as_ref();
+        let packed = self.packed_values.as_ref();
         let length = self.original_len;
         let offset = 0;
 
@@ -182,7 +183,7 @@ where
     }
 
     pub fn get_array_memory_size(&self) -> usize {
-        self.packed.get_array_memory_size()
+        self.packed_values.inner().capacity()
     }
 }
 
