@@ -102,7 +102,7 @@ where
         }
 
         // Write values buffer
-        result.extend_from_slice(&values_bytes);
+        result.extend_from_slice(values_bytes);
 
         result
     }
@@ -216,7 +216,7 @@ where
 
         // Create a view into the values buffer
         let values_slice =
-            bytes.slice(values_offset as usize..values_offset as usize + values_length as usize);
+            bytes.slice(values_offset as usize..values_offset as usize + values_length);
         let values_buffer = Buffer::from(values_slice);
 
         // We know the packed buffer contains the serialized data, so we can simply use
