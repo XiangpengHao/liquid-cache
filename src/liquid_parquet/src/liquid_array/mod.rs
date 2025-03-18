@@ -1,6 +1,7 @@
 mod byte_array;
 mod primitive_array;
 mod raw;
+mod serde;
 
 use std::{any::Any, num::NonZero, sync::Arc};
 

@@ -71,6 +71,10 @@ where
         self.bit_width
     }
 
+    pub(crate) fn packed_values(&self) -> &ScalarBuffer<T::Native> {
+        &self.packed_values
+    }
+
     pub fn is_nullable(&self) -> bool {
         self.nulls.is_some()
     }

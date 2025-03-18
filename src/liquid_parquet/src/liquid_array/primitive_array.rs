@@ -1,5 +1,6 @@
 use std::any::Any;
 use std::fmt::{Debug, Display};
+use std::mem::size_of;
 use std::sync::Arc;
 
 use arrow::array::{
@@ -74,8 +75,8 @@ pub type LiquidI64Array = LiquidPrimitiveArray<Int64Type>;
 /// Liquid's primitive array
 #[derive(Debug, Clone)]
 pub struct LiquidPrimitiveArray<T: LiquidPrimitiveType> {
-    bit_packed: BitPackedArray<T::UnSignedType>,
-    reference_value: T::Native,
+    pub(crate) bit_packed: BitPackedArray<T::UnSignedType>,
+    pub(crate) reference_value: T::Native,
 }
 
 impl<T> LiquidPrimitiveArray<T>
@@ -84,7 +85,7 @@ where
 {
     /// Get the memory size of the Liquid primitive array.
     pub fn get_array_memory_size(&self) -> usize {
-        self.bit_packed.get_array_memory_size() + std::mem::size_of::<T::Native>()
+        self.bit_packed.get_array_memory_size() + size_of::<T::Native>()
     }
 
     /// Get the length of the Liquid primitive array.
