@@ -207,8 +207,11 @@ mod tests {
                 // Convert to Liquid array and back
                 let liquid_array = LiquidPrimitiveArray::<$type>::from_arrow_array(array.clone());
                 let result_array = liquid_array.to_arrow_array();
+                let bytes_array =
+                    LiquidPrimitiveArray::<$type>::from_bytes(liquid_array.to_bytes().into());
 
                 assert_eq!(result_array.as_ref(), &array);
+                assert_eq!(bytes_array.to_arrow_array().as_ref(), &array);
             }
         };
     }
