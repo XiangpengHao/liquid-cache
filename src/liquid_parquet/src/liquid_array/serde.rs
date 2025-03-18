@@ -16,6 +16,30 @@ where
         (header_size + 7) & !7
     }
 
+    /*
+    Serialized LiquidPrimitiveArray Memory Layout:
+
+    +--------------------------------------------------+
+    | LiquidPrimitiveArray Header (16 bytes)           |
+    +--------------------------------------------------+
+    | MAGIC (4 bytes)                                  |  // Offset  0..3: "LQDA" magic number (0x4C51_4441)
+    +--------------------------------------------------+
+    | VERSION (2 bytes)                                |  // Offset  4..5: Version (currently 1)
+    +--------------------------------------------------+
+    | type_id (2 bytes)                                |  // Offset  6..7: Type identifier for T
+    +--------------------------------------------------+
+    | reference_value (size_of::<T::Native> bytes)     |  // Offset  8..(8 + size_of::<T::Native> - 1):
+    |                                                  |  // the reference value (e.g. minimum value)
+    +--------------------------------------------------+
+    | Padding (to 16 bytes)                            |  // Padding to ensure 16 byte
+    +--------------------------------------------------+
+
+    +--------------------------------------------------+
+    | BitPackedArray Data                              |
+    +--------------------------------------------------+
+    | [BitPackedArray Header & Bit-Packed Values]      |  // Written by self.bit_packed.to_bytes()
+    +--------------------------------------------------+
+    */
     pub fn to_bytes(&self) -> Vec<u8> {
         // Magic number "LQDA" for LiQuid Data Array
         const MAGIC: u32 = 0x4C51_4441;
@@ -158,5 +182,127 @@ mod tests {
         let result_array = deserialized_array.to_arrow_array();
 
         assert_eq!(result_array.as_ref(), &array);
+    }
+
+    #[test]
+    fn test_roundtrip_edge_cases() {
+        // Test various edge cases
+
+        // 1. All nulls array
+        let all_nulls: Vec<Option<i32>> = vec![None; 1000];
+        let array = PrimitiveArray::<Int32Type>::from(all_nulls);
+        let liquid_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(array.clone());
+        let bytes = liquid_array.to_bytes();
+        let bytes = Bytes::from(bytes);
+        let deserialized = LiquidPrimitiveArray::<Int32Type>::from_bytes(bytes);
+        let result = deserialized.to_arrow_array();
+        assert_eq!(result.as_ref(), &array);
+
+        // 2. No nulls array
+        let no_nulls: Vec<Option<i32>> = (0..1000).map(|i| Some(i)).collect();
+        let array = PrimitiveArray::<Int32Type>::from(no_nulls);
+        let liquid_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(array.clone());
+        let bytes = liquid_array.to_bytes();
+        let bytes = Bytes::from(bytes);
+        let deserialized = LiquidPrimitiveArray::<Int32Type>::from_bytes(bytes);
+        let result = deserialized.to_arrow_array();
+        assert_eq!(result.as_ref(), &array);
+
+        // 3. Single value array
+        let single_value: Vec<Option<i32>> = vec![Some(42)];
+        let array = PrimitiveArray::<Int32Type>::from(single_value);
+        let liquid_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(array.clone());
+        let bytes = liquid_array.to_bytes();
+        let bytes = Bytes::from(bytes);
+        let deserialized = LiquidPrimitiveArray::<Int32Type>::from_bytes(bytes);
+        let result = deserialized.to_arrow_array();
+        assert_eq!(result.as_ref(), &array);
+
+        // 4. Empty array
+        let empty: Vec<Option<i32>> = vec![];
+        let array = PrimitiveArray::<Int32Type>::from(empty);
+        let liquid_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(array.clone());
+        let bytes = liquid_array.to_bytes();
+        let bytes = Bytes::from(bytes);
+        let deserialized = LiquidPrimitiveArray::<Int32Type>::from_bytes(bytes);
+        let result = deserialized.to_arrow_array();
+        assert_eq!(result.as_ref(), &array);
+
+        // 5. Large array with very sparse nulls
+        let sparse_nulls: Vec<Option<i32>> = (0..10_000)
+            .map(|i| {
+                if i == 1000 || i == 5000 || i == 9000 {
+                    None
+                } else {
+                    Some(i)
+                }
+            })
+            .collect();
+        let array = PrimitiveArray::<Int32Type>::from(sparse_nulls);
+        let liquid_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(array.clone());
+        let bytes = liquid_array.to_bytes();
+        let bytes = Bytes::from(bytes);
+        let deserialized = LiquidPrimitiveArray::<Int32Type>::from_bytes(bytes);
+        let result = deserialized.to_arrow_array();
+        assert_eq!(result.as_ref(), &array);
+    }
+
+    #[test]
+    fn test_roundtrip_multiple_data_types() {
+        use arrow::datatypes::{Int16Type, UInt32Type, UInt64Type};
+
+        // Test with Int16Type
+        let i16_values: Vec<Option<i16>> = (0..2000)
+            .map(|i| {
+                if i % 11 == 0 {
+                    None
+                } else {
+                    Some((i % 300 - 150) as i16)
+                }
+            })
+            .collect();
+        let array = PrimitiveArray::<Int16Type>::from(i16_values);
+        let liquid_array = LiquidPrimitiveArray::<Int16Type>::from_arrow_array(array.clone());
+        let bytes = liquid_array.to_bytes();
+        let bytes = Bytes::from(bytes);
+        let deserialized = LiquidPrimitiveArray::<Int16Type>::from_bytes(bytes);
+        let result = deserialized.to_arrow_array();
+        assert_eq!(result.as_ref(), &array);
+
+        // Test with UInt32Type
+        let u32_values: Vec<Option<u32>> = (0..2000)
+            .map(|i| {
+                if i % 13 == 0 {
+                    None
+                } else {
+                    Some(i as u32 * 10000)
+                }
+            })
+            .collect();
+        let array = PrimitiveArray::<UInt32Type>::from(u32_values);
+        let liquid_array = LiquidPrimitiveArray::<UInt32Type>::from_arrow_array(array.clone());
+        let bytes = liquid_array.to_bytes();
+        let bytes = Bytes::from(bytes);
+        let deserialized = LiquidPrimitiveArray::<UInt32Type>::from_bytes(bytes);
+        let result = deserialized.to_arrow_array();
+        assert_eq!(result.as_ref(), &array);
+
+        // Test with UInt64Type
+        let u64_values: Vec<Option<u64>> = (0..2000)
+            .map(|i| {
+                if i % 17 == 0 {
+                    None
+                } else {
+                    Some(u64::MAX - (i as u64 * 1000000))
+                }
+            })
+            .collect();
+        let array = PrimitiveArray::<UInt64Type>::from(u64_values);
+        let liquid_array = LiquidPrimitiveArray::<UInt64Type>::from_arrow_array(array.clone());
+        let bytes = liquid_array.to_bytes();
+        let bytes = Bytes::from(bytes);
+        let deserialized = LiquidPrimitiveArray::<UInt64Type>::from_bytes(bytes);
+        let result = deserialized.to_arrow_array();
+        assert_eq!(result.as_ref(), &array);
     }
 }

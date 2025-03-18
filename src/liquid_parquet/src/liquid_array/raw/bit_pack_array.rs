@@ -274,6 +274,11 @@ where
         let values_offset_base = header_size + if has_nulls { nulls_len } else { 0 };
         let values_offset = (values_offset_base + 7) & !7; // 8-byte aligned
 
+        if values_len == 0 {
+            // if empty array, return a new null array
+            return Self::new_null_array(original_len);
+        }
+
         // Validate offsets and lengths
         if has_nulls {
             if nulls_offset == 0 || nulls_len == 0 {
