@@ -1,7 +1,10 @@
+use std::mem::size_of;
 use std::num::NonZero;
 
-use arrow::array::{Array, ArrayDataBuilder, ArrowPrimitiveType, PrimitiveArray};
-use arrow::buffer::{Buffer, ScalarBuffer};
+use arrow::array::{ArrowPrimitiveType, PrimitiveArray};
+use arrow::buffer::{BooleanBuffer, Buffer, NullBuffer, ScalarBuffer};
+use arrow::datatypes::ArrowNativeType;
+use bytes;
 use fastlanes::BitPacking;
 
 #[derive(Debug)]
@@ -9,18 +12,22 @@ pub struct BitPackedArray<T: ArrowPrimitiveType>
 where
     T::Native: BitPacking,
 {
-    pub(crate) values: PrimitiveArray<T>,
-    pub(crate) bit_width: NonZero<u8>,
-    pub(crate) original_len: usize,
+    packed_values: ScalarBuffer<T::Native>,
+    nulls: Option<NullBuffer>,
+    bit_width: NonZero<u8>,
+    original_len: usize,
 }
 
+/// Implement Clone for any T that implements ArrowPrimitiveType and BitPacking
+/// This allows us to clone it without requiring T to implement Clone
 impl<T: ArrowPrimitiveType> Clone for BitPackedArray<T>
 where
     T::Native: BitPacking,
 {
     fn clone(&self) -> Self {
         Self {
-            values: self.values.clone(),
+            packed_values: self.packed_values.clone(),
+            nulls: self.nulls.clone(),
             bit_width: self.bit_width,
             original_len: self.original_len,
         }
@@ -32,12 +39,14 @@ where
     T::Native: BitPacking,
 {
     pub fn from_parts(
-        values: PrimitiveArray<T>,
+        packed_values: ScalarBuffer<T::Native>,
+        nulls: Option<NullBuffer>,
         bit_width: NonZero<u8>,
         original_len: usize,
     ) -> Self {
         Self {
-            values,
+            packed_values,
+            nulls,
             bit_width,
             original_len,
         }
@@ -45,7 +54,8 @@ where
 
     pub fn new_null_array(len: usize) -> Self {
         Self {
-            values: PrimitiveArray::<T>::new_null(len),
+            packed_values: vec![T::Native::usize_as(0); len].into(),
+            nulls: Some(NullBuffer::new_null(len)),
             bit_width: NonZero::new(u8::MAX).unwrap(),
             original_len: len,
         }
@@ -55,9 +65,16 @@ where
         self.original_len
     }
 
-    #[allow(dead_code)]
+    pub(crate) fn nulls(&self) -> Option<&NullBuffer> {
+        self.nulls.as_ref()
+    }
+
+    pub(crate) fn bit_width(&self) -> NonZero<u8> {
+        self.bit_width
+    }
+
     pub fn is_nullable(&self) -> bool {
-        self.values.is_nullable()
+        self.nulls.is_some()
     }
 
     pub fn from_primitive(array: PrimitiveArray<T>, bit_width: NonZero<u8>) -> Self {
@@ -104,33 +121,26 @@ where
             }
         }
 
-        let scalar_buffer = Buffer::from(output);
-        let array_builder = unsafe {
-            ArrayDataBuilder::new(T::DATA_TYPE)
-                .len(num_chunks * packed_len)
-                .add_buffer(scalar_buffer)
-                .nulls(nulls)
-                .build_unchecked()
-        };
-
-        let values = PrimitiveArray::<T>::from(array_builder);
+        let buffer = Buffer::from(output);
+        let scalar_buffer = ScalarBuffer::new(buffer, 0, num_chunks * packed_len);
 
         Self {
-            values,
+            packed_values: scalar_buffer,
+            nulls,
             bit_width,
             original_len,
         }
     }
 
     pub fn to_primitive(&self) -> PrimitiveArray<T> {
-        let nulls = self.values.nulls().cloned();
-        if let Some(nulls) = nulls {
+        // Special case for all nulls, don't unpack
+        if let Some(nulls) = self.nulls() {
             if nulls.null_count() == self.original_len {
-                return self.values.clone();
+                return PrimitiveArray::<T>::new_null(self.original_len);
             }
         }
         let bit_width = self.bit_width.get() as usize;
-        let packed = self.values.values().as_ref();
+        let packed = self.packed_values.as_ref();
         let length = self.original_len;
         let offset = 0;
 
@@ -163,12 +173,157 @@ where
             output.shrink_to_fit();
         }
 
-        let nulls = self.values.nulls().cloned();
+        let nulls = self.nulls.clone();
         PrimitiveArray::<T>::new(ScalarBuffer::from(output), nulls)
     }
 
     pub fn get_array_memory_size(&self) -> usize {
-        self.values.get_array_memory_size()
+        self.packed_values.inner().capacity()
+    }
+
+    /*
+    Memory Layout (serialized):
+
+    +-----------------------------+  // Header (16 bytes total)
+    | original_len (4 bytes)      |  // Offset  0 -  3: Array length (u32)
+    +-----------------------------+  //
+    | bit_width (1 byte)          |  // Offset      4: Bit width (u8)
+    +-----------------------------+  //
+    | has_nulls (1 byte)          |  // Offset      5: Null flag (1 if nulls present)
+    +-----------------------------+  //
+    | nulls_len (4 bytes)         |  // Offset  6 -  9: Length of nulls buffer (u32)
+    +-----------------------------+  //
+    | values_len (4 bytes)        |  // Offset 10 - 13: Length of values buffer (u32)
+    +-----------------------------+  //
+    | padding (2 bytes)           |  // Offset 14 - 15: Padding to ensure 16-byte header
+    +-----------------------------+
+
+    [If has_nulls == 1]
+    +-----------------------------+  // Nulls Buffer
+    | nulls data (nulls_len bytes)|  // Offset 16 - (16 + nulls_len - 1)
+    +-----------------------------+
+
+    +-----------------------------+
+    | Padding for 8-byte alignment|  // Ensure values buffer is 8-byte aligned
+    +-----------------------------+
+
+    +-----------------------------+  // Values Buffer (bit-packed data)
+    | values data (values_len)    |  // Starts at the 8-byte aligned offset
+    +-----------------------------+
+    */
+    pub fn to_bytes(&self, buffer: &mut Vec<u8>) {
+        let has_nulls = self.nulls.is_some() as u8;
+
+        let nulls_bytes = if has_nulls == 1 {
+            let nulls = self.nulls.as_ref().unwrap();
+            nulls.buffer().as_slice()
+        } else {
+            &[]
+        };
+
+        let values_bytes = self.packed_values.inner().as_slice();
+
+        let header_size = 16;
+
+        let values_offset_base = header_size + if has_nulls == 1 { nulls_bytes.len() } else { 0 };
+        let values_offset = (values_offset_base + 7) & !7;
+
+        let total_size = values_offset + values_bytes.len();
+        buffer.reserve(total_size);
+
+        let start_offset = buffer.len();
+
+        buffer.extend_from_slice(&(self.original_len as u32).to_le_bytes());
+        buffer.push(self.bit_width.get());
+        buffer.push(has_nulls);
+        buffer.extend_from_slice(&(nulls_bytes.len() as u32).to_le_bytes());
+        buffer.extend_from_slice(&(values_bytes.len() as u32).to_le_bytes());
+        buffer.extend_from_slice(&[0, 0]);
+
+        if has_nulls == 1 {
+            buffer.extend_from_slice(nulls_bytes);
+        }
+
+        while (buffer.len() - start_offset) < values_offset {
+            buffer.push(0);
+        }
+
+        buffer.extend_from_slice(values_bytes);
+    }
+
+    pub fn from_bytes(bytes: bytes::Bytes) -> Self
+    where
+        T::Native: BitPacking,
+    {
+        use std::mem::size_of;
+
+        if bytes.len() < 16 {
+            panic!("Input buffer too small for header");
+        }
+
+        // Read header fields
+        let original_len = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize;
+        let bit_width = bytes[4];
+        let has_nulls = bytes[5] != 0;
+        let nulls_len = u32::from_le_bytes(bytes[6..10].try_into().unwrap()) as usize;
+        let values_len = u32::from_le_bytes(bytes[10..14].try_into().unwrap()) as usize;
+
+        // Calculate offsets
+        let header_size = 16;
+        let nulls_offset = if has_nulls { header_size } else { 0 };
+        let values_offset_base = header_size + if has_nulls { nulls_len } else { 0 };
+        let values_offset = (values_offset_base + 7) & !7; // 8-byte aligned
+
+        if values_len == 0 {
+            // if empty array, return a new null array
+            return Self::new_null_array(original_len);
+        }
+
+        // Validate offsets and lengths
+        if has_nulls {
+            if nulls_offset == 0 || nulls_len == 0 {
+                panic!("Array has nulls but null buffer is missing");
+            }
+            if nulls_offset + nulls_len > bytes.len() {
+                panic!("Null buffer extends beyond input buffer");
+            }
+        }
+
+        if values_offset == 0 || values_len == 0 {
+            panic!("Values buffer is required");
+        }
+        if values_offset + values_len > bytes.len() {
+            panic!("Values buffer extends beyond input buffer");
+        }
+
+        // Create the nulls buffer if present
+        let nulls = if has_nulls {
+            // Create a buffer view into the nulls section
+            let nulls_slice = bytes.slice(nulls_offset..nulls_offset + nulls_len);
+            let nulls_buffer = Buffer::from(nulls_slice);
+
+            // Create a BooleanBuffer first, then wrap it in a NullBuffer
+            // In NullBuffer, true means valid (not null), false means null
+            let boolean_buffer = BooleanBuffer::new(nulls_buffer, 0, original_len);
+            Some(NullBuffer::from(boolean_buffer))
+        } else {
+            None
+        };
+
+        let values_slice = bytes.slice(values_offset..values_offset + values_len);
+        let values_buffer = Buffer::from(values_slice);
+
+        let element_size = size_of::<T::Native>();
+        let packed_len = values_len / element_size;
+
+        let packed_values = ScalarBuffer::<T::Native>::new(values_buffer, 0, packed_len);
+
+        Self {
+            packed_values,
+            nulls,
+            bit_width: NonZero::new(bit_width).unwrap(),
+            original_len,
+        }
     }
 }
 
@@ -186,7 +341,7 @@ fn best_arrow_primitive_width(bit_width: NonZero<u8>) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::datatypes::UInt32Type;
+    use arrow::{array::Array, datatypes::UInt32Type};
 
     #[test]
     fn test_bit_pack_roundtrip() {
@@ -267,6 +422,80 @@ mod tests {
             assert_eq!(unpacked.len(), 100);
             for i in 0..100 {
                 assert_eq!(unpacked.value(i), i as u32 * 2);
+            }
+        }
+    }
+
+    #[test]
+    fn test_to_bytes_from_bytes_roundtrip() {
+        // Create a test array with some values
+        let values: Vec<u32> = (0..100).collect();
+        let array = PrimitiveArray::<UInt32Type>::from(values);
+        let bit_width = NonZero::new(10).unwrap();
+        let original = BitPackedArray::from_primitive(array, bit_width);
+
+        // Serialize to bytes
+        let mut buffer = Vec::new();
+        original.to_bytes(&mut buffer);
+
+        // Make sure we have some reasonable amount of data
+        assert!(!buffer.is_empty());
+        assert!(buffer.len() > 16); // At least header size
+
+        // Deserialize back using from_bytes
+        let bytes = bytes::Bytes::from(buffer);
+        let deserialized = BitPackedArray::<UInt32Type>::from_bytes(bytes);
+
+        // Verify the deserialized data matches the original
+        assert_eq!(deserialized.bit_width(), original.bit_width());
+        assert_eq!(deserialized.len(), original.len());
+        assert_eq!(deserialized.is_nullable(), original.is_nullable());
+
+        // Convert to primitive arrays and compare values
+        let original_primitive = original.to_primitive();
+        let deserialized_primitive = deserialized.to_primitive();
+
+        assert_eq!(original_primitive.len(), deserialized_primitive.len());
+        for i in 0..original_primitive.len() {
+            assert_eq!(original_primitive.value(i), deserialized_primitive.value(i));
+        }
+    }
+
+    #[test]
+    fn test_to_bytes_from_bytes_with_nulls() {
+        // Create a test array with some nulls
+        let values: Vec<Option<u32>> = (0..100)
+            .map(|i| if i % 3 == 0 { None } else { Some(i) })
+            .collect();
+        let array = PrimitiveArray::<UInt32Type>::from(values);
+        let bit_width = NonZero::new(10).unwrap();
+        let original = BitPackedArray::from_primitive(array, bit_width);
+
+        // Serialize to bytes
+        let mut buffer = Vec::new();
+        original.to_bytes(&mut buffer);
+
+        // Deserialize back
+        let bytes = bytes::Bytes::from(buffer);
+        let deserialized = BitPackedArray::<UInt32Type>::from_bytes(bytes);
+
+        // Verify the deserialized data matches the original
+        assert_eq!(deserialized.bit_width(), original.bit_width());
+        assert_eq!(deserialized.len(), original.len());
+        assert_eq!(deserialized.is_nullable(), original.is_nullable());
+
+        // Convert to primitive arrays and compare values including nulls
+        let original_primitive = original.to_primitive();
+        let deserialized_primitive = deserialized.to_primitive();
+
+        assert_eq!(original_primitive.len(), deserialized_primitive.len());
+        for i in 0..original_primitive.len() {
+            assert_eq!(
+                original_primitive.is_null(i),
+                deserialized_primitive.is_null(i)
+            );
+            if !original_primitive.is_null(i) {
+                assert_eq!(original_primitive.value(i), deserialized_primitive.value(i));
             }
         }
     }
