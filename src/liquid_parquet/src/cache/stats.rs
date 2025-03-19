@@ -149,12 +149,14 @@ impl LiquidCache {
                         let cache_type = match cached_entry_v {
                             CachedBatch::ArrowMemory(_) => "InMemory",
                             CachedBatch::LiquidMemory(_) => "LiquidMemory",
+                            CachedBatch::OnDiskLiquid(_) => "OnDiskLiquid",
                         };
 
                         let memory_size = cached_entry_v.memory_usage();
                         let row_count = match cached_entry_v {
                             CachedBatch::ArrowMemory(array) => Some(array.len() as u64),
                             CachedBatch::LiquidMemory(array) => Some(array.len() as u64),
+                            CachedBatch::OnDiskLiquid(_) => None,
                         };
 
                         writer.append_entry(

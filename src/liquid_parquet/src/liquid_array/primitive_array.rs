@@ -14,7 +14,7 @@ use arrow::buffer::ScalarBuffer;
 use fastlanes::BitPacking;
 use num_traits::{AsPrimitive, FromPrimitive};
 
-use super::BitPackedArray;
+use super::{BitPackedArray, LiquidDataType};
 use crate::liquid_array::{LiquidArray, LiquidArrayRef, get_bit_width};
 
 mod private {
@@ -189,6 +189,14 @@ where
         let primitive_values = filtered_values.as_primitive::<T>().clone();
         let bit_packed = Self::from_arrow_array(primitive_values);
         Arc::new(bit_packed)
+    }
+
+    fn to_bytes(&self) -> Vec<u8> {
+        self.to_bytes_inner()
+    }
+
+    fn data_type(&self) -> LiquidDataType {
+        LiquidDataType::Integer
     }
 }
 

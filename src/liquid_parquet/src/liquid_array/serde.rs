@@ -10,17 +10,79 @@ use crate::liquid_array::LiquidPrimitiveType;
 use crate::liquid_array::byte_array::ArrowStringType;
 use crate::liquid_array::{BitPackedArray, FsstArray};
 
-use super::LiquidByteArray;
+use super::{LiquidByteArray, LiquidDataType};
 
 const MAGIC: u32 = 0x4C51_4441; // "LQDA" for LiQuid Data Array
 const VERSION: u16 = 1;
+
+/*
+    +--------------------------------------------------+
+    | LiquidIPCHeader (16 bytes)                       |
+    +--------------------------------------------------+
+    | MAGIC (4 bytes)                                  |  // Offset  0..3: "LQDA" magic number (0x4C51_4441)
+    +--------------------------------------------------+
+    | VERSION (2 bytes)                                |  // Offset  4..5: Version (currently 1)
+    +--------------------------------------------------+
+    | logical_type_id (2 bytes)                        |  // Offset  6..7: Logical type identifier (e.g. Integer)
+    +--------------------------------------------------+
+    | physical_type_id (2 bytes)                       |  // Offset  8..9: Physical type identifier for T
+    +--------------------------------------------------+
+    | __padding (6 bytes)                              |  // Offset 10..15: Padding to ensure 16 byte header
+    +--------------------------------------------------+
+*/
+#[repr(C)]
+struct LiquidIPCHeader {
+    magic: [u8; 4],
+    version: u16,
+    logical_type_id: u16,
+    physical_type_id: u16,
+    __padding: [u8; 6],
+}
+
+const _: () = assert!(size_of::<LiquidIPCHeader>() == LiquidIPCHeader::size());
+
+impl LiquidIPCHeader {
+    const fn size() -> usize {
+        16
+    }
+
+    fn to_bytes(&self) -> [u8; Self::size()] {
+        let mut bytes = [0; Self::size()];
+        bytes[0..4].copy_from_slice(&self.magic);
+        bytes[4..6].copy_from_slice(&self.version.to_le_bytes());
+        bytes[6..8].copy_from_slice(&self.logical_type_id.to_le_bytes());
+        bytes[8..10].copy_from_slice(&self.physical_type_id.to_le_bytes());
+        bytes
+    }
+
+    fn from_bytes(bytes: &[u8]) -> Self {
+        if bytes.len() < Self::size() {
+            panic!(
+                "value too small for LiquidIPCHeader, expected at least {} bytes, got {}",
+                Self::size(),
+                bytes.len()
+            );
+        }
+        let magic = bytes[0..4].try_into().unwrap();
+        let version = u16::from_le_bytes(bytes[4..6].try_into().unwrap());
+        let logical_type_id = u16::from_le_bytes(bytes[6..8].try_into().unwrap());
+        let physical_type_id = u16::from_le_bytes(bytes[8..10].try_into().unwrap());
+        Self {
+            magic,
+            version,
+            logical_type_id,
+            physical_type_id,
+            __padding: [0; 6],
+        }
+    }
+}
 
 impl<T> LiquidPrimitiveArray<T>
 where
     T: LiquidPrimitiveType,
 {
-    fn header_size() -> usize {
-        let header_size = 8 + size_of::<T::Native>();
+    fn bit_pack_starting_loc() -> usize {
+        let header_size = LiquidIPCHeader::size() + size_of::<T::Native>();
         (header_size + 7) & !7
     }
 
@@ -28,18 +90,13 @@ where
     Serialized LiquidPrimitiveArray Memory Layout:
 
     +--------------------------------------------------+
-    | LiquidPrimitiveArray Header (16 bytes)           |
+    | LiquidIPCHeader (16 bytes)                       |
     +--------------------------------------------------+
-    | MAGIC (4 bytes)                                  |  // Offset  0..3: "LQDA" magic number (0x4C51_4441)
+
     +--------------------------------------------------+
-    | VERSION (2 bytes)                                |  // Offset  4..5: Version (currently 1)
+    | reference_value (size_of::<T::Native> bytes)     |  // The reference value (e.g. minimum value)
     +--------------------------------------------------+
-    | type_id (2 bytes)                                |  // Offset  6..7: Type identifier for T
-    +--------------------------------------------------+
-    | reference_value (size_of::<T::Native> bytes)     |  // Offset  8..(8 + size_of::<T::Native> - 1):
-    |                                                  |  // the reference value (e.g. minimum value)
-    +--------------------------------------------------+
-    | Padding (to 16 bytes)                            |  // Padding to ensure 16 byte
+    | Padding (to 8-byte alignment)                    |  // Padding to ensure 8-byte alignment
     +--------------------------------------------------+
 
     +--------------------------------------------------+
@@ -48,18 +105,23 @@ where
     | [BitPackedArray Header & Bit-Packed Values]      |  // Written by self.bit_packed.to_bytes()
     +--------------------------------------------------+
     */
-    pub fn to_bytes(&self) -> Vec<u8> {
+    pub(crate) fn to_bytes_inner(&self) -> Vec<u8> {
         // Determine type ID based on the type
-        let type_id = get_type_id::<T>();
+        let physical_type_id = get_physical_type_id::<T>();
+        let logical_type_id = LiquidDataType::Integer as u16;
+        let header = LiquidIPCHeader {
+            magic: MAGIC.to_le_bytes(),
+            version: VERSION,
+            logical_type_id,
+            physical_type_id,
+            __padding: [0; 6],
+        };
 
-        // Create a buffer for the header (MAGIC + VERSION + type_id + reference value)
-        let header_size = Self::header_size();
-        let mut result = Vec::with_capacity(header_size + 256); // Pre-allocate a reasonable size
+        let bit_pack_starting_loc = Self::bit_pack_starting_loc();
+        let mut result = Vec::with_capacity(bit_pack_starting_loc + 256); // Pre-allocate a reasonable size
 
         // Write header
-        result.extend_from_slice(&MAGIC.to_le_bytes());
-        result.extend_from_slice(&VERSION.to_le_bytes());
-        result.extend_from_slice(&type_id.to_le_bytes());
+        result.extend_from_slice(&header.to_bytes());
 
         // Write reference value
         let ref_value_bytes = unsafe {
@@ -69,7 +131,7 @@ where
             )
         };
         result.extend_from_slice(ref_value_bytes);
-        while result.len() < header_size {
+        while result.len() < bit_pack_starting_loc {
             result.push(0);
         }
 
@@ -85,32 +147,28 @@ where
     /// previously created using `to_bytes()`. It attempts to use zero-copy semantics
     /// by creating views into the original buffer for the data portions.
     pub fn from_bytes(bytes: Bytes) -> Self {
-        // Check minimum header size
-        if bytes.len() < 10 {
-            // 4 (magic) + 2 (version) + 2 (type_id) + 2 (minimum reference value)
-            panic!("Input buffer too small for header");
-        }
+        let header = LiquidIPCHeader::from_bytes(&bytes);
 
-        // Read header fields
-        let magic = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
-        if magic != MAGIC {
+        if header.magic != MAGIC.to_le_bytes() {
             panic!("Invalid magic number");
         }
 
-        let version = u16::from_le_bytes(bytes[4..6].try_into().unwrap());
-        if version != 1 {
+        if header.version != VERSION {
             panic!("Unsupported version");
         }
 
-        let type_id = u16::from_le_bytes(bytes[6..8].try_into().unwrap());
-        assert_eq!(type_id, get_type_id::<T>());
+        let physical_id = header.physical_type_id;
+        assert_eq!(physical_id, get_physical_type_id::<T>());
+        let logical_id = header.logical_type_id;
+        assert_eq!(logical_id, LiquidDataType::Integer as u16);
 
         // Get the reference value
-        let ref_value_ptr = &bytes[8];
-        let reference_value = unsafe { *(ref_value_ptr as *const u8 as *const T::Native) };
+        let ref_value_ptr = &bytes[LiquidIPCHeader::size()];
+        let reference_value =
+            unsafe { (ref_value_ptr as *const u8 as *const T::Native).read_unaligned() };
 
         // Skip ahead to the BitPackedArray data
-        let bit_packed_data = bytes.slice(Self::header_size()..);
+        let bit_packed_data = bytes.slice(Self::bit_pack_starting_loc()..);
         let bit_packed = BitPackedArray::<T::UnSignedType>::from_bytes(bit_packed_data);
 
         Self {
@@ -120,13 +178,67 @@ where
     }
 }
 
-impl LiquidByteArray {
-    pub fn to_bytes(&self) -> Vec<u8> {
-        // Create a buffer for the final output data, starting with the header
-        let mut result = Vec::with_capacity(16 + 1024); // Pre-allocate a reasonable size
-        let header_size = 16;
+#[repr(C)]
+struct ByteArrayHeader {
+    key_size: u32,
+    value_size: u32,
+}
 
-        // Reserve space for the header (fill it later)
+impl ByteArrayHeader {
+    const fn size() -> usize {
+        8
+    }
+
+    fn to_bytes(&self) -> [u8; Self::size()] {
+        let mut bytes = [0; Self::size()];
+        bytes[0..4].copy_from_slice(&self.key_size.to_le_bytes());
+        bytes[4..8].copy_from_slice(&self.value_size.to_le_bytes());
+        bytes
+    }
+
+    fn from_bytes(bytes: &[u8]) -> Self {
+        if bytes.len() < Self::size() {
+            panic!(
+                "value too small for ByteArrayHeader, expected at least {} bytes, got {}",
+                Self::size(),
+                bytes.len()
+            );
+        }
+        let key_size = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+        let value_size = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+        Self {
+            key_size,
+            value_size,
+        }
+    }
+}
+const _: () = assert!(size_of::<ByteArrayHeader>() == ByteArrayHeader::size());
+
+impl LiquidByteArray {
+    /*
+    Serialized LiquidByteArray Memory Layout:
+
+    +--------------------------------------------------+
+    | LiquidIPCHeader (16 bytes)                       |
+    +--------------------------------------------------+
+    | ByteArrayHeader (8 bytes)                        |  // Contains key_size and value_size
+    +--------------------------------------------------+
+    | BitPackedArray Data (keys)                       |
+    +--------------------------------------------------+
+    | [BitPackedArray Header & Bit-Packed Key Values]  |  // Written by self.keys.to_bytes()
+    +--------------------------------------------------+
+    | Padding (to 8-byte alignment)                    |  // Padding to ensure 8-byte alignment
+    +--------------------------------------------------+
+    | FsstArray Data (values)                          |
+    +--------------------------------------------------+
+    | [FsstArray Data]                                 |  // Written by self.values.to_bytes()
+    +--------------------------------------------------+
+    */
+    pub(crate) fn to_bytes_inner(&self) -> Vec<u8> {
+        // Create a buffer for the final output data, starting with the header
+        let header_size = LiquidIPCHeader::size() + ByteArrayHeader::size();
+        let mut result = Vec::with_capacity(header_size + 1024); // Pre-allocate a reasonable size
+
         result.resize(header_size, 0);
 
         // Serialize the BitPackedArray (keys)
@@ -145,54 +257,47 @@ impl LiquidByteArray {
         let values_size = result.len() - values_start;
 
         // Go back and fill in the header
+        let ipc_header = LiquidIPCHeader {
+            magic: MAGIC.to_le_bytes(),
+            version: VERSION,
+            logical_type_id: LiquidDataType::ByteArray as u16,
+            physical_type_id: self.original_arrow_type as u16,
+            __padding: [0; 6],
+        };
         let header = &mut result[0..header_size];
+        header[0..LiquidIPCHeader::size()].copy_from_slice(&ipc_header.to_bytes());
 
-        // Write magic number and version
-        header[0..4].copy_from_slice(&MAGIC.to_le_bytes());
-        header[4..6].copy_from_slice(&VERSION.to_le_bytes());
-
-        // Write original arrow type as byte
-        let arrow_type_byte = self.original_arrow_type as u8;
-        header[6] = arrow_type_byte;
-
-        // Write padding byte
-        header[7] = 0;
-
-        // Write sizes of serialized components
-        header[8..12].copy_from_slice(&(keys_size as u32).to_le_bytes());
-        header[12..16].copy_from_slice(&(values_size as u32).to_le_bytes());
+        let byte_array_header = ByteArrayHeader {
+            key_size: keys_size as u32,
+            value_size: values_size as u32,
+        };
+        header[LiquidIPCHeader::size()..header_size].copy_from_slice(&byte_array_header.to_bytes());
 
         result
     }
 
     pub fn from_bytes(bytes: Bytes, compressor: Arc<Compressor>) -> Self {
-        const HEADER_SIZE: usize = 16;
+        let header_size = LiquidIPCHeader::size() + ByteArrayHeader::size();
+        let header = LiquidIPCHeader::from_bytes(&bytes);
 
-        // Check if buffer has at least the header size
-        if bytes.len() < HEADER_SIZE {
-            panic!("Input buffer too small for header");
-        }
-
-        // Read and validate header
-        let magic = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
-        if magic != MAGIC {
+        if header.magic != MAGIC.to_le_bytes() {
             panic!("Invalid magic number");
         }
 
-        let version = u16::from_le_bytes(bytes[4..6].try_into().unwrap());
-        if version != VERSION {
+        if header.version != VERSION {
             panic!("Unsupported version");
         }
 
-        // Read original arrow type and sizes
-        let arrow_type_byte = bytes[6];
-        let original_arrow_type = ArrowStringType::from(arrow_type_byte);
+        let byte_array_header =
+            ByteArrayHeader::from_bytes(&bytes[LiquidIPCHeader::size()..header_size]);
 
-        let keys_size = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
-        let values_size = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let original_arrow_type = ArrowStringType::from(header.physical_type_id);
+
+        let keys_size = byte_array_header.key_size as usize;
+        let values_size = byte_array_header.value_size as usize;
 
         // Calculate offsets
-        let keys_start = HEADER_SIZE;
+        let keys_start = header_size;
         let keys_end = keys_start + keys_size;
 
         if keys_end > bytes.len() {
@@ -222,7 +327,7 @@ impl LiquidByteArray {
     }
 }
 
-fn get_type_id<T: LiquidPrimitiveType>() -> u16 {
+fn get_physical_type_id<T: LiquidPrimitiveType>() -> u16 {
     match TypeId::of::<T>() {
         id if id == TypeId::of::<arrow::datatypes::Int8Type>() => 0,
         id if id == TypeId::of::<arrow::datatypes::Int16Type>() => 1,
@@ -255,17 +360,25 @@ mod tests {
         let liquid_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(array);
 
         // Serialize to bytes
-        let bytes = liquid_array.to_bytes();
+        let bytes = liquid_array.to_bytes_inner();
 
         // Basic validation
-        let magic = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
-        let version = u16::from_le_bytes(bytes[4..6].try_into().unwrap());
-        let type_id = u16::from_le_bytes(bytes[6..8].try_into().unwrap());
-
-        // Check header values
-        assert_eq!(magic, 0x4C51_4441, "Magic number should be LQDA");
-        assert_eq!(version, 1, "Version should be 1");
-        assert_eq!(type_id, 2, "Type ID for Int32Type should be 2");
+        let header = LiquidIPCHeader::from_bytes(&bytes);
+        assert_eq!(
+            header.magic,
+            MAGIC.to_le_bytes(),
+            "Magic number should be LQDA"
+        );
+        assert_eq!(header.version, VERSION, "Version should be 1");
+        assert_eq!(
+            header.physical_type_id, 2,
+            "Type ID for Int32Type should be 2"
+        );
+        assert_eq!(
+            header.logical_type_id,
+            LiquidDataType::Integer as u16,
+            "Logical type ID should be 1"
+        );
 
         // Check that the total size makes sense (we can't predict the exact size without knowing bit_width)
         assert!(
@@ -280,7 +393,7 @@ mod tests {
         let array = PrimitiveArray::<Int32Type>::from(original.clone());
         let liquid_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(array.clone());
 
-        let bytes = liquid_array.to_bytes();
+        let bytes = liquid_array.to_bytes_inner();
         let bytes = Bytes::from(bytes);
 
         let deserialized_array = LiquidPrimitiveArray::<Int32Type>::from_bytes(bytes);
@@ -298,7 +411,7 @@ mod tests {
         let all_nulls: Vec<Option<i32>> = vec![None; 1000];
         let array = PrimitiveArray::<Int32Type>::from(all_nulls);
         let liquid_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(array.clone());
-        let bytes = liquid_array.to_bytes();
+        let bytes = liquid_array.to_bytes_inner();
         let bytes = Bytes::from(bytes);
         let deserialized = LiquidPrimitiveArray::<Int32Type>::from_bytes(bytes);
         let result = deserialized.to_arrow_array();
@@ -308,7 +421,7 @@ mod tests {
         let no_nulls: Vec<Option<i32>> = (0..1000).map(|i| Some(i)).collect();
         let array = PrimitiveArray::<Int32Type>::from(no_nulls);
         let liquid_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(array.clone());
-        let bytes = liquid_array.to_bytes();
+        let bytes = liquid_array.to_bytes_inner();
         let bytes = Bytes::from(bytes);
         let deserialized = LiquidPrimitiveArray::<Int32Type>::from_bytes(bytes);
         let result = deserialized.to_arrow_array();
@@ -318,7 +431,7 @@ mod tests {
         let single_value: Vec<Option<i32>> = vec![Some(42)];
         let array = PrimitiveArray::<Int32Type>::from(single_value);
         let liquid_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(array.clone());
-        let bytes = liquid_array.to_bytes();
+        let bytes = liquid_array.to_bytes_inner();
         let bytes = Bytes::from(bytes);
         let deserialized = LiquidPrimitiveArray::<Int32Type>::from_bytes(bytes);
         let result = deserialized.to_arrow_array();
@@ -328,7 +441,7 @@ mod tests {
         let empty: Vec<Option<i32>> = vec![];
         let array = PrimitiveArray::<Int32Type>::from(empty);
         let liquid_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(array.clone());
-        let bytes = liquid_array.to_bytes();
+        let bytes = liquid_array.to_bytes_inner();
         let bytes = Bytes::from(bytes);
         let deserialized = LiquidPrimitiveArray::<Int32Type>::from_bytes(bytes);
         let result = deserialized.to_arrow_array();
@@ -346,7 +459,7 @@ mod tests {
             .collect();
         let array = PrimitiveArray::<Int32Type>::from(sparse_nulls);
         let liquid_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(array.clone());
-        let bytes = liquid_array.to_bytes();
+        let bytes = liquid_array.to_bytes_inner();
         let bytes = Bytes::from(bytes);
         let deserialized = LiquidPrimitiveArray::<Int32Type>::from_bytes(bytes);
         let result = deserialized.to_arrow_array();
@@ -369,7 +482,7 @@ mod tests {
             .collect();
         let array = PrimitiveArray::<Int16Type>::from(i16_values);
         let liquid_array = LiquidPrimitiveArray::<Int16Type>::from_arrow_array(array.clone());
-        let bytes = liquid_array.to_bytes();
+        let bytes = liquid_array.to_bytes_inner();
         let bytes = Bytes::from(bytes);
         let deserialized = LiquidPrimitiveArray::<Int16Type>::from_bytes(bytes);
         let result = deserialized.to_arrow_array();
@@ -387,7 +500,7 @@ mod tests {
             .collect();
         let array = PrimitiveArray::<UInt32Type>::from(u32_values);
         let liquid_array = LiquidPrimitiveArray::<UInt32Type>::from_arrow_array(array.clone());
-        let bytes = liquid_array.to_bytes();
+        let bytes = liquid_array.to_bytes_inner();
         let bytes = Bytes::from(bytes);
         let deserialized = LiquidPrimitiveArray::<UInt32Type>::from_bytes(bytes);
         let result = deserialized.to_arrow_array();
@@ -405,7 +518,7 @@ mod tests {
             .collect();
         let array = PrimitiveArray::<UInt64Type>::from(u64_values);
         let liquid_array = LiquidPrimitiveArray::<UInt64Type>::from_arrow_array(array.clone());
-        let bytes = liquid_array.to_bytes();
+        let bytes = liquid_array.to_bytes_inner();
         let bytes = Bytes::from(bytes);
         let deserialized = LiquidPrimitiveArray::<UInt64Type>::from_bytes(bytes);
         let result = deserialized.to_arrow_array();
@@ -430,7 +543,7 @@ mod tests {
 
         let original = LiquidByteArray::from_string_array(&string_array, compressor_arc.clone());
 
-        let bytes = original.to_bytes();
+        let bytes = original.to_bytes_inner();
         let bytes = Bytes::from(bytes);
         let deserialized = LiquidByteArray::from_bytes(bytes, compressor_arc);
 

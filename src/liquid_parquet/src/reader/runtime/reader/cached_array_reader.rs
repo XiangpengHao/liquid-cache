@@ -16,7 +16,7 @@ use parquet::{
 
 use crate::{
     LiquidCacheMode,
-    cache::{LiquidCachedColumnRef, LiquidCachedRowGroupRef},
+    cache::{InsertArrowArrayError, LiquidCachedColumnRef, LiquidCachedRowGroupRef},
     reader::runtime::parquet_bridge::StructArrayReaderBridge,
 };
 
@@ -84,7 +84,7 @@ impl CachedArrayReader {
         }
         let read = self.inner.read_records(self.batch_size())?;
         let array = self.inner.consume_batch()?;
-        if let Err(crate::cache::InsertArrowArrayError::CacheFull(array)) =
+        if let Err(InsertArrowArrayError::CacheFull(array)) =
             self.liquid_cache.insert_arrow_array(row_id, array)
         {
             self.reader_local_cache.insert(row_id, array);

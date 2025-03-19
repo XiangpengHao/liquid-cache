@@ -13,7 +13,7 @@ use std::any::Any;
 use std::mem::MaybeUninit;
 use std::sync::Arc;
 
-use super::{BitPackedArray, LiquidArray, LiquidArrayRef};
+use super::{BitPackedArray, LiquidArray, LiquidArrayRef, LiquidDataType};
 use crate::liquid_array::{FsstArray, get_bit_width};
 use crate::utils::CheckedDictionaryArray;
 
@@ -57,10 +57,18 @@ impl LiquidArray for LiquidByteArray {
             original_arrow_type: self.original_arrow_type,
         })
     }
+
+    fn to_bytes(&self) -> Vec<u8> {
+        self.to_bytes_inner()
+    }
+
+    fn data_type(&self) -> LiquidDataType {
+        LiquidDataType::ByteArray
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
-#[repr(u8)]
+#[repr(u16)]
 pub(crate) enum ArrowStringType {
     Utf8 = 0,
     Utf8View = 1,
@@ -70,8 +78,8 @@ pub(crate) enum ArrowStringType {
     BinaryView = 5,
 }
 
-impl From<u8> for ArrowStringType {
-    fn from(value: u8) -> Self {
+impl From<u16> for ArrowStringType {
+    fn from(value: u16) -> Self {
         match value {
             0 => ArrowStringType::Utf8,
             1 => ArrowStringType::Utf8View,
@@ -461,7 +469,7 @@ mod tests {
         let output = liquid_array.to_arrow_array();
         assert_eq!(&input, output.as_string::<i32>());
 
-        let bytes = liquid_array.to_bytes();
+        let bytes = liquid_array.to_bytes_inner();
         let bytes = Bytes::from(bytes);
         let deserialized = LiquidByteArray::from_bytes(bytes, compressor);
         let output = deserialized.to_arrow_array();
