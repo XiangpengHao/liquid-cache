@@ -1,6 +1,9 @@
 mod byte_array;
+pub mod cache_map;
 mod primitive_array;
 mod raw;
+
+use cache_map::{ColumnKey, LRUCache, LiquidCacheMap};
 
 use std::{any::Any, num::NonZero, sync::Arc};
 

@@ -10,6 +10,10 @@ path = "example_server.rs"
 name = "example_client"
 path = "example_client.rs"
 
+[[bin]]
+name = "example_shell"
+path = "example_shell.rs"
+
 [dependencies]
 datafusion = { workspace = true }
 liquid-cache-server = { workspace = true }

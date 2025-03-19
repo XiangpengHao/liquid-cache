@@ -1,3 +1,5 @@
+use crate::liquid_array::cache_map::LiquidCacheMap;
+
 use super::{CachedBatch, LiquidCache};
 use arrow::array::{ArrayBuilder, RecordBatch, StringBuilder, UInt64Builder};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
@@ -118,26 +120,24 @@ impl StatsWriter {
 
 impl LiquidCache {
     pub fn memory_usage_bytes(&self) -> u64 {
-        let files = self.files.lock().unwrap();
+        self.column_cache.try_read().unwrap().memory_usage()
+
+        /*let files = self.files.lock().unwrap();
         let mut memory_consumption = 0;
         for (_, file_lock) in files.iter() {
             let row_groups = file_lock.row_groups.lock().unwrap();
             for (_, row_group) in row_groups.iter() {
                 let columns = row_group.columns.read().unwrap();
                 for (_, column) in columns.iter() {
-                    let cached_entry = column.rows.read().unwrap();
-                    for (_, cached_entry) in cached_entry.iter() {
-                        let cached_entry_v = cached_entry.value();
-                        memory_consumption += cached_entry_v.memory_usage();
-                    }
+                    memory_consumption += column.memory_usage();
                 }
             }
         }
-        memory_consumption as u64
+        memory_consumption as u64*/
     }
 
     pub fn write_stats(&self, parquet_file_path: impl AsRef<Path>) -> Result<(), ParquetError> {
-        let mut writer = StatsWriter::new(parquet_file_path)?;
+        /*let mut writer = StatsWriter::new(parquet_file_path)?;
         let files = self.files.lock().unwrap();
         for (file_path, file_lock) in files.iter() {
             let row_groups = file_lock.row_groups.lock().unwrap();
@@ -172,7 +172,8 @@ impl LiquidCache {
             }
         }
         writer.finish()?;
-        Ok(())
+        Ok(())*/
+        Ok(()) // TODO: FIX THIS!!!!!
     }
 }
 

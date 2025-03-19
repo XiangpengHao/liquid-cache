@@ -11,6 +11,9 @@ use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use tokio::runtime::Runtime;
 mod stats;
 use super::liquid_array::{LiquidArrayRef, LiquidByteArray, LiquidPrimitiveArray};
+use crate::liquid_array::cache_map::LiquidCacheMap;
+use crate::liquid_array::cache_map::{ColumnKey, LRUCache};
+
 use crate::{ABLATION_STUDY_MODE, AblationStudyMode, LiquidPredicate};
 use arrow::array::types::{
     Int8Type as ArrowInt8Type, Int16Type as ArrowInt16Type, Int32Type as ArrowInt32Type,
@@ -97,6 +100,7 @@ impl Display for CachedBatch {
 
 #[derive(Debug)]
 pub struct LiquidCachedColumn {
+    uid: usize,
     cache_mode: LiquidCacheMode,
     config: CacheConfig,
     liquid_compressor_states: LiquidCompressorStates,
@@ -120,8 +124,9 @@ pub enum InsertArrowArrayError {
 }
 
 impl LiquidCachedColumn {
-    fn new(cache_mode: LiquidCacheMode, config: CacheConfig) -> Self {
+    fn new(uid: usize, cache_mode: LiquidCacheMode, config: CacheConfig) -> Self {
         Self {
+            uid,
             cache_mode,
             config,
             rows: RwLock::new(AHashMap::new()),
@@ -500,40 +505,88 @@ impl LiquidCachedColumn {
             _ => panic!("unsupported data type {:?}", array.data_type()),
         }
     }
+
+    pub(crate) fn memory_usage(&self) -> usize {
+        let mut memory_consumption: usize = 0;
+        let cached_entry = self.rows.read().unwrap();
+        for (_, cached_entry) in cached_entry.iter() {
+            let cached_entry_v = cached_entry.value();
+            memory_consumption += cached_entry_v.memory_usage();
+        }
+        return memory_consumption;
+    }
 }
 
 #[derive(Debug)]
 pub struct LiquidCachedRowGroup {
+    uid: usize,
+    file_path: String,
     cache_mode: LiquidCacheMode,
     config: CacheConfig,
-    columns: RwLock<AHashMap<usize, Arc<LiquidCachedColumn>>>,
+    //columns: RwLock<AHashMap<usize, Arc<LiquidCachedColumn>>>,
+    column_cache: Arc<RwLock<LRUCache>>,
 }
 
 impl LiquidCachedRowGroup {
-    fn new(cache_mode: LiquidCacheMode, config: CacheConfig) -> Self {
+    fn new(
+        uid: usize,
+        file_path: String,
+        cache_mode: LiquidCacheMode,
+        config: CacheConfig,
+        column_cache: Arc<RwLock<LRUCache>>,
+    ) -> Self {
         Self {
+            uid,
+            file_path,
             cache_mode,
             config,
-            columns: RwLock::new(AHashMap::new()),
+            //columns: RwLock::new(AHashMap::new()),
+            column_cache,
         }
     }
 
     pub fn get_column_or_create(&self, column_id: usize) -> LiquidCachedColumnRef {
-        self.columns
-            .write()
-            .unwrap()
-            .entry(column_id)
-            .or_insert_with(|| {
-                Arc::new(LiquidCachedColumn::new(
-                    self.cache_mode,
-                    self.config.clone(),
-                ))
-            })
-            .clone()
+        /*self.columns
+        .write()
+        .unwrap()
+        .entry(column_id)
+        .or_insert_with(|| {
+            Arc::new(LiquidCachedColumn::new(
+                column_id,
+                self.cache_mode,
+                self.config.clone(),
+            ))
+        })
+        .clone()*/
+        let col_key = ColumnKey {
+            file: self.file_path.clone(),
+            row_group: self.uid,
+            column: column_id,
+        };
+        if let Some(col) = self.column_cache.write().unwrap().get(&col_key) {
+            return col;
+        } else {
+            let new_col = Arc::new(LiquidCachedColumn::new(
+                column_id,
+                self.cache_mode,
+                self.config.clone(),
+            ));
+
+            self.column_cache
+                .write()
+                .unwrap()
+                .put(col_key, new_col.clone());
+            return new_col;
+        }
     }
 
     pub fn get_column(&self, column_id: usize) -> Option<LiquidCachedColumnRef> {
-        self.columns.read().unwrap().get(&column_id).cloned()
+        //self.columns.read().unwrap().get(&column_id).cloned()
+        self.column_cache.write().unwrap().get(&ColumnKey {
+            file: self.file_path.clone(),
+            row_group: self.uid,
+            column: column_id,
+        })
     }
 
     pub fn evaluate_selection_with_predicate(
@@ -570,17 +623,26 @@ pub type LiquidCachedRowGroupRef = Arc<LiquidCachedRowGroup>;
 
 #[derive(Debug)]
 pub struct LiquidCachedFile {
+    file_path: String,
     row_groups: Mutex<AHashMap<usize, Arc<LiquidCachedRowGroup>>>,
     cache_mode: LiquidCacheMode,
     config: CacheConfig,
+    column_cache: Arc<RwLock<LRUCache>>,
 }
 
 impl LiquidCachedFile {
-    pub(crate) fn new(cache_mode: LiquidCacheMode, config: CacheConfig) -> Self {
+    pub(crate) fn new(
+        file_path: String,
+        cache_mode: LiquidCacheMode,
+        config: CacheConfig,
+        column_cache: Arc<RwLock<LRUCache>>,
+    ) -> Self {
         Self {
+            file_path,
             cache_mode,
             config,
             row_groups: Mutex::new(AHashMap::new()),
+            column_cache,
         }
     }
 
@@ -588,8 +650,11 @@ impl LiquidCachedFile {
         let mut row_groups = self.row_groups.lock().unwrap();
         let row_group = row_groups.entry(row_group_id).or_insert_with(|| {
             Arc::new(LiquidCachedRowGroup::new(
+                row_group_id,
+                self.file_path.clone(),
                 self.cache_mode,
                 self.config.clone(),
+                self.column_cache.clone(),
             ))
         });
         row_group.clone()
@@ -615,6 +680,7 @@ pub type LiquidCachedFileRef = Arc<LiquidCachedFile>;
 #[derive(Debug)]
 pub struct LiquidCache {
     /// Files -> RowGroups -> Columns -> Batches
+    column_cache: Arc<RwLock<LRUCache>>,
     files: Mutex<AHashMap<String, Arc<LiquidCachedFile>>>,
 
     config: CacheConfig,
@@ -635,7 +701,7 @@ pub enum LiquidCacheMode {
 #[derive(Debug, Clone)]
 pub(crate) struct CacheConfig {
     batch_size: usize,
-    max_cache_bytes: usize,
+    pub max_cache_bytes: usize,
     remaining_cache_size: Arc<AtomicUsize>,
 }
 
@@ -658,7 +724,14 @@ impl LiquidCache {
     pub fn new(batch_size: usize, max_cache_bytes: usize) -> Self {
         assert!(batch_size.is_power_of_two());
 
+        let config = CacheConfig {
+            batch_size,
+            max_cache_bytes,
+            remaining_cache_size: Arc::new(AtomicUsize::new(max_cache_bytes)),
+        };
+
         LiquidCache {
+            column_cache: Arc::new(RwLock::new(LRUCache::new(config))),
             files: Mutex::new(AHashMap::new()),
             config: CacheConfig {
                 batch_size,
@@ -675,9 +748,14 @@ impl LiquidCache {
         cache_mode: LiquidCacheMode,
     ) -> LiquidCachedFileRef {
         let mut files = self.files.lock().unwrap();
-        let value = files
-            .entry(file_path.clone())
-            .or_insert_with(|| Arc::new(LiquidCachedFile::new(cache_mode, self.config.clone())));
+        let value = files.entry(file_path.clone()).or_insert_with(|| {
+            Arc::new(LiquidCachedFile::new(
+                file_path,
+                cache_mode,
+                self.config.clone(),
+                self.column_cache.clone(),
+            ))
+        });
         value.clone()
     }
 
