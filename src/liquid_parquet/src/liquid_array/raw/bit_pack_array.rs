@@ -301,9 +301,6 @@ where
             // Create a buffer view into the nulls section
             let nulls_slice = bytes.slice(nulls_offset..nulls_offset + nulls_len);
             let nulls_buffer = Buffer::from(nulls_slice);
-
-            // Create a BooleanBuffer first, then wrap it in a NullBuffer
-            // In NullBuffer, true means valid (not null), false means null
             let boolean_buffer = BooleanBuffer::new(nulls_buffer, 0, original_len);
             Some(NullBuffer::from(boolean_buffer))
         } else {
