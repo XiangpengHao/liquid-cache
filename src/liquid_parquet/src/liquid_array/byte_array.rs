@@ -8,7 +8,7 @@ use arrow::buffer::{BooleanBuffer, Buffer, NullBuffer, OffsetBuffer, ScalarBuffe
 use arrow::compute::cast;
 use arrow::datatypes::{BinaryType, ByteArrayType, Utf8Type};
 use arrow_schema::DataType;
-use fsst::Compressor;
+use fsst::{Compressor, Decompressor};
 use std::any::Any;
 use std::mem::MaybeUninit;
 use std::sync::Arc;
@@ -60,7 +60,7 @@ impl LiquidArray for LiquidByteArray {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum ArrowStringType {
+pub(crate) enum ArrowStringType {
     Utf8,
     Utf8View,
     Dict16Binary, // DictionaryArray<UInt16Type>
@@ -119,11 +119,11 @@ impl ArrowStringType {
 /// An array that stores strings in a dictionary format, with a bit-packed array for the keys and a FSST array for the values.
 #[derive(Debug)]
 pub struct LiquidByteArray {
-    keys: BitPackedArray<UInt16Type>,
+    pub(crate) keys: BitPackedArray<UInt16Type>,
     /// TODO: we need to specify that the values in the FsstArray must be unique, this enables us some optimizations.
-    values: FsstArray,
+    pub(crate) values: FsstArray,
     /// Used to convert back to the original arrow type.
-    original_arrow_type: ArrowStringType,
+    pub(crate) original_arrow_type: ArrowStringType,
 }
 
 impl LiquidByteArray {
@@ -280,8 +280,8 @@ impl LiquidByteArray {
     }
 
     /// Get the compressor of the LiquidStringArray.
-    pub fn compressor(&self) -> Arc<Compressor> {
-        self.values.compressor.clone()
+    pub fn decompressor(&self) -> Decompressor {
+        self.values.decompressor()
     }
 
     /// Convert the LiquidStringArray to arrow's DictionaryArray.
@@ -330,7 +330,7 @@ impl LiquidByteArray {
                 .map(|v| v.map(|v| key_map[&(v as usize)])),
         );
 
-        let decompressor = self.values.compressor.decompressor();
+        let decompressor = self.values.decompressor();
         let mut value_buffer: Vec<u8> = Vec::with_capacity(self.values.uncompressed_len + 8);
         let mut offsets_builder = BufferBuilder::<i32>::new(selected_cnt + 1);
         offsets_builder.append(0);
@@ -415,7 +415,7 @@ impl LiquidByteArray {
     /// Leverage the distinct values to speed up the comparison.
     /// TODO: We can further optimize this by vectorizing the comparison.
     pub fn compare_equals(&self, needle: &str) -> BooleanArray {
-        let compressor = &self.values.compressor;
+        let compressor = self.values.compressor();
         let compressed = compressor.compress(needle.as_bytes());
 
         let values = &self.values.compressed;
@@ -435,22 +435,28 @@ impl LiquidByteArray {
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZero;
-
     use super::*;
     use arrow::array::Array;
+    use bytes::Bytes;
+    use std::num::NonZero;
+
+    fn test_roundtrip(input: StringArray) {
+        let compressor = LiquidByteArray::train_compressor(input.iter());
+        let liquid_array = LiquidByteArray::from_string_array(&input, compressor.clone());
+        let output = liquid_array.to_arrow_array();
+        assert_eq!(&input, output.as_string::<i32>());
+
+        let bytes = liquid_array.to_bytes();
+        let bytes = Bytes::from(bytes);
+        let deserialized = LiquidByteArray::from_bytes(bytes, compressor);
+        let output = deserialized.to_arrow_array();
+        assert_eq!(&input, output.as_string::<i32>());
+    }
 
     #[test]
     fn test_simple_roundtrip() {
         let input = StringArray::from(vec!["hello", "world", "hello", "rust"]);
-        let compressor = LiquidByteArray::train_compressor(input.iter());
-        let etc = LiquidByteArray::from_string_array(&input, compressor);
-        let output = etc.to_arrow_array();
-        let string_array = output.as_string::<i32>();
-        assert_eq!(input.len(), string_array.len());
-        for i in 0..input.len() {
-            assert_eq!(input.value(i), string_array.value(i));
-        }
+        test_roundtrip(input);
     }
 
     #[test]
@@ -493,19 +499,7 @@ mod tests {
             None,
             Some("hello"),
         ]);
-        let compressor = LiquidByteArray::train_compressor(input.iter());
-        let etc = LiquidByteArray::from_string_array(&input, compressor);
-        let output = etc.to_arrow_array();
-        let string_array = output.as_string::<i32>();
-
-        assert_eq!(input.len(), string_array.len());
-        for i in 0..input.len() {
-            if input.is_null(i) {
-                assert!(string_array.is_null(i));
-            } else {
-                assert_eq!(input.value(i), string_array.value(i));
-            }
-        }
+        test_roundtrip(input);
     }
 
     #[test]
@@ -513,16 +507,7 @@ mod tests {
         let values = vec!["a", "b", "c"];
         let input: Vec<&str> = (0..1000).map(|i| values[i % values.len()]).collect();
         let input = StringArray::from(input);
-
-        let compressor = LiquidByteArray::train_compressor(input.iter());
-        let etc = LiquidByteArray::from_string_array(&input, compressor);
-        let output = etc.to_arrow_array();
-        let string_array = output.as_string::<i32>();
-
-        assert_eq!(input.len(), string_array.len());
-        for i in 0..input.len() {
-            assert_eq!(input.value(i), string_array.value(i));
-        }
+        test_roundtrip(input);
     }
 
     #[test]
@@ -534,28 +519,13 @@ mod tests {
             "Some unique text here to mix things up",
             "Another long string with some common patterns",
         ]);
-
-        let compressor = LiquidByteArray::train_compressor(input.iter());
-        let etc = LiquidByteArray::from_string_array(&input, compressor);
-        let output = etc.to_arrow_array();
-        let string_array = output.as_string::<i32>();
-        assert_eq!(input.len(), string_array.len());
-        for i in 0..input.len() {
-            assert_eq!(input.value(i), string_array.value(i));
-        }
+        test_roundtrip(input);
     }
 
     #[test]
     fn test_empty_strings() {
         let input = StringArray::from(vec!["", "", "non-empty", ""]);
-        let compressor = LiquidByteArray::train_compressor(input.iter());
-        let etc = LiquidByteArray::from_string_array(&input, compressor);
-        let output = etc.to_arrow_array();
-        let string_array = output.as_string::<i32>();
-        assert_eq!(input.len(), string_array.len());
-        for i in 0..input.len() {
-            assert_eq!(input.value(i), string_array.value(i));
-        }
+        test_roundtrip(input);
     }
 
     #[test]
@@ -814,5 +784,42 @@ mod tests {
         let expected_keys = UInt16Array::from(vec![Some(0), None, Some(2), Some(0), None, Some(1)]);
         assert_eq!(dict.keys(), &expected_keys);
         assert_eq!(dict.nulls(), input_keys.nulls());
+    }
+
+    #[test]
+    fn test_roundtrip_edge_cases() {
+        use arrow::array::StringBuilder;
+
+        // Create a string array with various edge cases
+        let mut builder = StringBuilder::new();
+
+        // Empty string
+        builder.append_value("");
+
+        // Section of nulls
+        for _ in 0..10 {
+            builder.append_null();
+        }
+
+        // Very long string
+        let long_string = "a".repeat(10_000);
+        builder.append_value(&long_string);
+
+        // Unicode and special characters
+        builder.append_value("こんにちは世界"); // Hello world in Japanese
+        builder.append_value("🚀🔥🌈⭐"); // Emoji characters
+        builder.append_value("Special chars: !@#$%^&*(){}[]|\\/.,<>?`~");
+
+        // Single character strings
+        for c in "abcdefghijklmnopqrstuvwxyz".chars() {
+            builder.append_value(&c.to_string());
+        }
+
+        // Highly repetitive string to test compression effectiveness
+        builder.append_value("ABABABABABABABABABABABABABABAB");
+
+        // Test the roundtrip
+        let string_array = builder.finish();
+        test_roundtrip(string_array);
     }
 }

@@ -1,11 +1,15 @@
+use std::sync::Arc;
 use std::{any::TypeId, mem::size_of};
 
+use arrow::array::types::UInt16Type;
 use bytes::Bytes;
+use fsst::Compressor;
 
-use crate::liquid_array::BitPackedArray;
 use crate::liquid_array::LiquidPrimitiveArray;
+use crate::liquid_array::LiquidPrimitiveType;
+use crate::liquid_array::{BitPackedArray, FsstArray};
 
-use super::LiquidPrimitiveType;
+use super::LiquidByteArray;
 
 impl<T> LiquidPrimitiveArray<T>
 where
@@ -119,6 +123,131 @@ where
     }
 }
 
+impl LiquidByteArray {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        // Magic number "LQBA" for LiQuid Byte Array
+        const MAGIC: u32 = 0x4C51_4241;
+        const VERSION: u16 = 1;
+
+        // Create a buffer for the final output data, starting with the header
+        let mut result = Vec::with_capacity(16 + 1024); // Pre-allocate a reasonable size
+        let header_size = 16;
+
+        // Reserve space for the header (fill it later)
+        result.resize(header_size, 0);
+
+        // Serialize the BitPackedArray (keys)
+        let keys_start = result.len();
+        self.keys.to_bytes(&mut result);
+        let keys_size = result.len() - keys_start;
+
+        // Add padding to ensure FsstArray starts at an 8-byte aligned position
+        while result.len() % 8 != 0 {
+            result.push(0);
+        }
+
+        // Serialize the FsstArray (values)
+        let values_start = result.len();
+        self.values.to_bytes(&mut result);
+        let values_size = result.len() - values_start;
+
+        // Go back and fill in the header
+        let header = &mut result[0..header_size];
+
+        // Write magic number and version
+        header[0..4].copy_from_slice(&MAGIC.to_le_bytes());
+        header[4..6].copy_from_slice(&VERSION.to_le_bytes());
+
+        // Write original arrow type as byte
+        let arrow_type_byte = match self.original_arrow_type {
+            // Convert enum to byte directly in the method
+            crate::liquid_array::byte_array::ArrowStringType::Utf8 => 0,
+            crate::liquid_array::byte_array::ArrowStringType::Utf8View => 1,
+            crate::liquid_array::byte_array::ArrowStringType::Dict16Binary => 2,
+            crate::liquid_array::byte_array::ArrowStringType::Dict16Utf8 => 3,
+            crate::liquid_array::byte_array::ArrowStringType::Binary => 4,
+            crate::liquid_array::byte_array::ArrowStringType::BinaryView => 5,
+        };
+        header[6] = arrow_type_byte;
+
+        // Write padding byte
+        header[7] = 0;
+
+        // Write sizes of serialized components
+        header[8..12].copy_from_slice(&(keys_size as u32).to_le_bytes());
+        header[12..16].copy_from_slice(&(values_size as u32).to_le_bytes());
+
+        result
+    }
+
+    pub fn from_bytes(bytes: Bytes, compressor: Arc<Compressor>) -> Self {
+        // Magic number "LQBA" for LiQuid Byte Array
+        const MAGIC: u32 = 0x4C51_4241;
+        const VERSION: u16 = 1;
+        const HEADER_SIZE: usize = 16;
+
+        // Check if buffer has at least the header size
+        if bytes.len() < HEADER_SIZE {
+            panic!("Input buffer too small for header");
+        }
+
+        // Read and validate header
+        let magic = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+        if magic != MAGIC {
+            panic!("Invalid magic number");
+        }
+
+        let version = u16::from_le_bytes(bytes[4..6].try_into().unwrap());
+        if version != VERSION {
+            panic!("Unsupported version");
+        }
+
+        // Read original arrow type and sizes
+        let arrow_type_byte = bytes[6];
+        let original_arrow_type = match arrow_type_byte {
+            0 => crate::liquid_array::byte_array::ArrowStringType::Utf8,
+            1 => crate::liquid_array::byte_array::ArrowStringType::Utf8View,
+            2 => crate::liquid_array::byte_array::ArrowStringType::Dict16Binary,
+            3 => crate::liquid_array::byte_array::ArrowStringType::Dict16Utf8,
+            4 => crate::liquid_array::byte_array::ArrowStringType::Binary,
+            5 => crate::liquid_array::byte_array::ArrowStringType::BinaryView,
+            _ => panic!("Invalid arrow type byte: {}", arrow_type_byte),
+        };
+
+        let keys_size = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+        let values_size = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+
+        // Calculate offsets
+        let keys_start = HEADER_SIZE;
+        let keys_end = keys_start + keys_size;
+
+        if keys_end > bytes.len() {
+            panic!("Keys data extends beyond input buffer");
+        }
+
+        // Ensure values data starts at 8-byte aligned position
+        let values_start = (keys_end + 7) & !7; // Round up to next 8-byte boundary
+        let values_end = values_start + values_size;
+
+        if values_end > bytes.len() {
+            panic!("Values data extends beyond input buffer");
+        }
+
+        // Extract and deserialize components
+        let keys_data = bytes.slice(keys_start..keys_end);
+        let keys = BitPackedArray::<UInt16Type>::from_bytes(keys_data);
+
+        let values_data = bytes.slice(values_start..values_end);
+        let values = FsstArray::from_bytes(values_data, compressor);
+
+        Self {
+            keys,
+            values,
+            original_arrow_type,
+        }
+    }
+}
+
 fn get_type_id<T: LiquidPrimitiveType>() -> u16 {
     match TypeId::of::<T>() {
         id if id == TypeId::of::<arrow::datatypes::Int8Type>() => 0,
@@ -135,7 +264,10 @@ fn get_type_id<T: LiquidPrimitiveType>() -> u16 {
 
 #[cfg(test)]
 mod tests {
-    use arrow::{array::PrimitiveArray, datatypes::Int32Type};
+    use arrow::{
+        array::{PrimitiveArray, StringArray},
+        datatypes::Int32Type,
+    };
 
     use crate::liquid_array::LiquidArray;
 
@@ -304,5 +436,39 @@ mod tests {
         let deserialized = LiquidPrimitiveArray::<UInt64Type>::from_bytes(bytes);
         let result = deserialized.to_arrow_array();
         assert_eq!(result.as_ref(), &array);
+    }
+
+    #[test]
+    fn test_byte_array_roundtrip() {
+        let string_array = StringArray::from(vec![
+            Some("hello"),
+            Some("world"),
+            None,
+            Some("liquid"),
+            Some("byte"),
+            Some("array"),
+        ]);
+
+        // Create a compressor and LiquidByteArray
+        let compressor =
+            FsstArray::train_compressor(string_array.iter().flat_map(|s| s.map(|s| s.as_bytes())));
+        let compressor_arc = Arc::new(compressor);
+
+        let original = LiquidByteArray::from_string_array(&string_array, compressor_arc.clone());
+
+        let bytes = original.to_bytes();
+        let bytes = Bytes::from(bytes);
+        let deserialized = LiquidByteArray::from_bytes(bytes, compressor_arc);
+
+        let original_arrow = original.to_arrow_array();
+        let deserialized_arrow = deserialized.to_arrow_array();
+
+        assert_eq!(original_arrow.as_ref(), deserialized_arrow.as_ref());
+
+        // Verify the original arrow type is preserved
+        assert_eq!(
+            original.original_arrow_type as u8,
+            deserialized.original_arrow_type as u8
+        );
     }
 }
