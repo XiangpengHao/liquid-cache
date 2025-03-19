@@ -1,5 +1,5 @@
 mod byte_array;
-mod ipc;
+pub mod ipc;
 mod primitive_array;
 mod raw;
 

@@ -2,6 +2,9 @@ use std::sync::Arc;
 use std::{any::TypeId, mem::size_of};
 
 use arrow::array::types::UInt16Type;
+use arrow::datatypes::{
+    Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt32Type, UInt64Type,
+};
 use bytes::Bytes;
 use fsst::Compressor;
 
@@ -10,7 +13,7 @@ use crate::liquid_array::LiquidPrimitiveType;
 use crate::liquid_array::byte_array::ArrowStringType;
 use crate::liquid_array::{BitPackedArray, FsstArray};
 
-use super::{LiquidByteArray, LiquidDataType};
+use super::{LiquidArrayRef, LiquidByteArray, LiquidDataType};
 
 const MAGIC: u32 = 0x4C51_4441; // "LQDA" for LiQuid Data Array
 const VERSION: u16 = 1;
@@ -77,6 +80,29 @@ impl LiquidIPCHeader {
     }
 }
 
+pub fn read_from_bytes(bytes: Bytes, context: Arc<dyn std::any::Any>) -> LiquidArrayRef {
+    let header = LiquidIPCHeader::from_bytes(&bytes);
+    let logical_type = LiquidDataType::from(header.logical_type_id);
+    match logical_type {
+        LiquidDataType::Integer => match header.physical_type_id {
+            0 => Arc::new(LiquidPrimitiveArray::<Int8Type>::from_bytes(bytes)),
+            1 => Arc::new(LiquidPrimitiveArray::<Int16Type>::from_bytes(bytes)),
+            2 => Arc::new(LiquidPrimitiveArray::<Int32Type>::from_bytes(bytes)),
+            3 => Arc::new(LiquidPrimitiveArray::<Int64Type>::from_bytes(bytes)),
+            4 => Arc::new(LiquidPrimitiveArray::<UInt8Type>::from_bytes(bytes)),
+            5 => Arc::new(LiquidPrimitiveArray::<UInt16Type>::from_bytes(bytes)),
+            6 => Arc::new(LiquidPrimitiveArray::<UInt32Type>::from_bytes(bytes)),
+            7 => Arc::new(LiquidPrimitiveArray::<UInt64Type>::from_bytes(bytes)),
+            _ => panic!("Unsupported physical type"),
+        },
+        LiquidDataType::ByteArray => {
+            let compressor: &Arc<Compressor> =
+                context.downcast_ref().expect("Expected a compressor");
+            Arc::new(LiquidByteArray::from_bytes(bytes, compressor.clone()))
+        }
+    }
+}
+
 impl<T> LiquidPrimitiveArray<T>
 where
     T: LiquidPrimitiveType,
@@ -88,7 +114,6 @@ where
 
     /*
     Serialized LiquidPrimitiveArray Memory Layout:
-
     +--------------------------------------------------+
     | LiquidIPCHeader (16 bytes)                       |
     +--------------------------------------------------+

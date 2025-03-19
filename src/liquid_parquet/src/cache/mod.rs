@@ -4,16 +4,17 @@ use arrow::array::{ArrayRef, RecordBatch};
 use arrow::buffer::BooleanBuffer;
 use arrow::compute::{cast, prep_null_mask_filter};
 use arrow_schema::{ArrowError, DataType, Field, Schema};
+use bytes::Bytes;
 use log::warn;
 use std::fmt::Display;
 use std::fs::File;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use tokio::runtime::Runtime;
 mod stats;
 use super::liquid_array::{LiquidArrayRef, LiquidByteArray, LiquidPrimitiveArray};
-use crate::liquid_array::LiquidDataType;
+use crate::liquid_array::ipc;
 use crate::{ABLATION_STUDY_MODE, AblationStudyMode, LiquidPredicate};
 use arrow::array::types::{
     Int8Type as ArrowInt8Type, Int16Type as ArrowInt16Type, Int32Type as ArrowInt32Type,
@@ -78,7 +79,7 @@ impl CachedEntry {
 enum CachedBatch {
     ArrowMemory(ArrayRef),
     LiquidMemory(LiquidArrayRef),
-    OnDiskLiquid(LiquidDataType),
+    OnDiskLiquid,
 }
 
 impl CachedBatch {
@@ -86,7 +87,7 @@ impl CachedBatch {
         match self {
             Self::ArrowMemory(array) => array.get_array_memory_size(),
             Self::LiquidMemory(array) => array.get_array_memory_size(),
-            Self::OnDiskLiquid(_) => 0,
+            Self::OnDiskLiquid => 0,
         }
     }
 }
@@ -96,7 +97,7 @@ impl Display for CachedBatch {
         match self {
             Self::ArrowMemory(_) => write!(f, "ArrowMemory"),
             Self::LiquidMemory(_) => write!(f, "LiquidMemory"),
-            Self::OnDiskLiquid(data_type) => write!(f, "OnDiskLiquid({:?})", data_type),
+            Self::OnDiskLiquid => write!(f, "OnDiskLiquid"),
         }
     }
 }
@@ -152,6 +153,16 @@ impl LiquidCachedColumn {
         rows.contains_key(&row_id)
     }
 
+    fn get_on_disk_liquid(&self, row_id: usize) -> Option<LiquidArrayRef> {
+        let path = format!("liquid_cache_{}.bin", row_id);
+        let mut file = File::open(path).unwrap();
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).unwrap();
+        let bytes = Bytes::from(bytes);
+        let context = &self.fsst_compressor().read().unwrap();
+        let compressor = context.as_ref().unwrap().clone();
+        Some(ipc::read_from_bytes(bytes, compressor))
+    }
     pub(crate) fn eval_selection_with_predicate(
         &self,
         row_id: usize,
@@ -174,8 +185,13 @@ impl LiquidCachedColumn {
                 let (buffer, _) = predicate_filter.into_parts();
                 Some(Ok(buffer))
             }
-            CachedBatch::OnDiskLiquid(_) => {
-                todo!()
+            CachedBatch::OnDiskLiquid => {
+                let array = self.get_on_disk_liquid(row_id).unwrap();
+                let boolean_array = BooleanArray::new(selection.clone(), None);
+                let filtered = array.filter(&boolean_array);
+                let boolean_array = predicate.evaluate_liquid(&filtered).unwrap();
+                let (buffer, _) = boolean_array.into_parts();
+                Some(Ok(buffer))
             }
             CachedBatch::LiquidMemory(array) => match ABLATION_STUDY_MODE {
                 AblationStudyMode::FullDecoding => {
@@ -235,17 +251,16 @@ impl LiquidCachedColumn {
                     Some(filtered.to_best_arrow_array())
                 }
             },
-            CachedBatch::OnDiskLiquid(data_type) => {
-                todo!()
+            CachedBatch::OnDiskLiquid => {
+                let array = self.get_on_disk_liquid(row_id).unwrap();
+                let filtered = array.filter(filter);
+                Some(filtered.to_best_arrow_array())
             }
         }
     }
 
     #[cfg(test)]
     pub(crate) fn get_arrow_array_test_only(&self, row_id: usize) -> Option<ArrayRef> {
-        use bytes::Bytes;
-        use std::io::Read;
-
         let rows = self.rows.read().unwrap();
 
         let cached_entry = rows.get(&row_id)?;
@@ -254,22 +269,9 @@ impl LiquidCachedColumn {
         match cached_entry {
             CachedBatch::ArrowMemory(array) => Some(array.clone()),
             CachedBatch::LiquidMemory(array) => Some(array.to_best_arrow_array()),
-            CachedBatch::OnDiskLiquid(data_type) => {
-                let file_path = format!("liquid_cache_{}.bin", row_id);
-                let mut file = File::open(file_path).unwrap();
-                let mut bytes = Vec::new();
-                file.read_to_end(&mut bytes).unwrap();
-                let bytes = Bytes::from(bytes);
-                todo!()
-                // let array = match data_type {
-                //     LiquidDataType::ByteArray => {
-                //         LiquidByteArray::from_bytes(bytes, self.fsst_compressor().read().unwrap())
-                //     }
-                //     LiquidDataType::Integer => {
-                //         LiquidPrimitiveArray::<ArrowInt64Type>::from_bytes(bytes)
-                //     }
-                // };
-                // Some(array.to_best_arrow_array())
+            CachedBatch::OnDiskLiquid => {
+                let array = self.get_on_disk_liquid(row_id).unwrap();
+                Some(array.to_best_arrow_array())
             }
         }
     }
@@ -352,7 +354,7 @@ impl LiquidCachedColumn {
             } => {
                 let arrow_size = array.get_array_memory_size();
                 if !self.try_reserve_space(arrow_size) {
-                    // self.background_write_to_disk(arrow_size);
+                    self.background_write_to_disk(arrow_size);
                     return Err(InsertArrowArrayError::CacheFull(array));
                 }
 
@@ -415,11 +417,14 @@ impl LiquidCachedColumn {
                     let mut file = File::create(file_path).unwrap();
                     file.write_all(&bytes).unwrap();
                     evicted_size += bytes.len();
-                    entry.value = CachedBatch::OnDiskLiquid(array.data_type());
+                    entry.value = CachedBatch::OnDiskLiquid;
                 }
-                CachedBatch::OnDiskLiquid(_) => {
+                CachedBatch::OnDiskLiquid => {
                     // Already on disk.
                 }
+            }
+            if evicted_size >= target_size {
+                break;
             }
         }
     }
@@ -443,7 +448,7 @@ impl LiquidCachedColumn {
                 CachedBatch::LiquidMemory(_) => {
                     // Already transcoded.
                 }
-                CachedBatch::OnDiskLiquid(_) => {
+                CachedBatch::OnDiskLiquid => {
                     // Not arrow memory, so we don't need to transcode.
                 }
             }
@@ -859,7 +864,7 @@ mod tests {
                     let _ = liquid.to_arrow_array();
                     break;
                 }
-                CachedBatch::ArrowMemory(_) | CachedBatch::OnDiskLiquid(_) => {
+                CachedBatch::ArrowMemory(_) | CachedBatch::OnDiskLiquid => {
                     continue;
                 }
             }
