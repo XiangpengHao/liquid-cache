@@ -1,13 +1,12 @@
 mod byte_array;
+mod ipc;
 mod primitive_array;
 mod raw;
-mod serde;
 
 use std::{any::Any, num::NonZero, sync::Arc};
 
 use arrow::array::{ArrayRef, BooleanArray};
 pub use byte_array::LiquidByteArray;
-use bytes::Bytes;
 pub use primitive_array::{
     LiquidI8Array, LiquidI16Array, LiquidI32Array, LiquidI64Array, LiquidPrimitiveArray,
     LiquidPrimitiveType, LiquidU8Array, LiquidU16Array, LiquidU32Array, LiquidU64Array,
