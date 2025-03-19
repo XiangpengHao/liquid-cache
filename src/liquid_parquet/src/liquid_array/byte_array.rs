@@ -60,13 +60,28 @@ impl LiquidArray for LiquidByteArray {
 }
 
 #[derive(Debug, Clone, Copy)]
+#[repr(u8)]
 pub(crate) enum ArrowStringType {
-    Utf8,
-    Utf8View,
-    Dict16Binary, // DictionaryArray<UInt16Type>
-    Dict16Utf8,   // DictionaryArray<UInt16Type>
-    Binary,
-    BinaryView,
+    Utf8 = 0,
+    Utf8View = 1,
+    Dict16Binary = 2, // DictionaryArray<UInt16Type>
+    Dict16Utf8 = 3,   // DictionaryArray<UInt16Type>
+    Binary = 4,
+    BinaryView = 5,
+}
+
+impl From<u8> for ArrowStringType {
+    fn from(value: u8) -> Self {
+        match value {
+            0 => ArrowStringType::Utf8,
+            1 => ArrowStringType::Utf8View,
+            2 => ArrowStringType::Dict16Binary,
+            3 => ArrowStringType::Dict16Utf8,
+            4 => ArrowStringType::Binary,
+            5 => ArrowStringType::BinaryView,
+            _ => panic!("Invalid arrow string type: {}", value),
+        }
+    }
 }
 
 impl ArrowStringType {

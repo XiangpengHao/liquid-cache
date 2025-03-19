@@ -7,9 +7,13 @@ use fsst::Compressor;
 
 use crate::liquid_array::LiquidPrimitiveArray;
 use crate::liquid_array::LiquidPrimitiveType;
+use crate::liquid_array::byte_array::ArrowStringType;
 use crate::liquid_array::{BitPackedArray, FsstArray};
 
 use super::LiquidByteArray;
+
+const MAGIC: u32 = 0x4C51_4441; // "LQDA" for LiQuid Data Array
+const VERSION: u16 = 1;
 
 impl<T> LiquidPrimitiveArray<T>
 where
@@ -45,10 +49,6 @@ where
     +--------------------------------------------------+
     */
     pub fn to_bytes(&self) -> Vec<u8> {
-        // Magic number "LQDA" for LiQuid Data Array
-        const MAGIC: u32 = 0x4C51_4441;
-        const VERSION: u16 = 1;
-
         // Determine type ID based on the type
         let type_id = get_type_id::<T>();
 
@@ -85,9 +85,6 @@ where
     /// previously created using `to_bytes()`. It attempts to use zero-copy semantics
     /// by creating views into the original buffer for the data portions.
     pub fn from_bytes(bytes: Bytes) -> Self {
-        // Magic number "LQDA" for LiQuid Data Array
-        const MAGIC: u32 = 0x4C51_4441;
-
         // Check minimum header size
         if bytes.len() < 10 {
             // 4 (magic) + 2 (version) + 2 (type_id) + 2 (minimum reference value)
@@ -125,10 +122,6 @@ where
 
 impl LiquidByteArray {
     pub fn to_bytes(&self) -> Vec<u8> {
-        // Magic number "LQBA" for LiQuid Byte Array
-        const MAGIC: u32 = 0x4C51_4241;
-        const VERSION: u16 = 1;
-
         // Create a buffer for the final output data, starting with the header
         let mut result = Vec::with_capacity(16 + 1024); // Pre-allocate a reasonable size
         let header_size = 16;
@@ -159,15 +152,7 @@ impl LiquidByteArray {
         header[4..6].copy_from_slice(&VERSION.to_le_bytes());
 
         // Write original arrow type as byte
-        let arrow_type_byte = match self.original_arrow_type {
-            // Convert enum to byte directly in the method
-            crate::liquid_array::byte_array::ArrowStringType::Utf8 => 0,
-            crate::liquid_array::byte_array::ArrowStringType::Utf8View => 1,
-            crate::liquid_array::byte_array::ArrowStringType::Dict16Binary => 2,
-            crate::liquid_array::byte_array::ArrowStringType::Dict16Utf8 => 3,
-            crate::liquid_array::byte_array::ArrowStringType::Binary => 4,
-            crate::liquid_array::byte_array::ArrowStringType::BinaryView => 5,
-        };
+        let arrow_type_byte = self.original_arrow_type as u8;
         header[6] = arrow_type_byte;
 
         // Write padding byte
@@ -181,9 +166,6 @@ impl LiquidByteArray {
     }
 
     pub fn from_bytes(bytes: Bytes, compressor: Arc<Compressor>) -> Self {
-        // Magic number "LQBA" for LiQuid Byte Array
-        const MAGIC: u32 = 0x4C51_4241;
-        const VERSION: u16 = 1;
         const HEADER_SIZE: usize = 16;
 
         // Check if buffer has at least the header size
@@ -204,15 +186,7 @@ impl LiquidByteArray {
 
         // Read original arrow type and sizes
         let arrow_type_byte = bytes[6];
-        let original_arrow_type = match arrow_type_byte {
-            0 => crate::liquid_array::byte_array::ArrowStringType::Utf8,
-            1 => crate::liquid_array::byte_array::ArrowStringType::Utf8View,
-            2 => crate::liquid_array::byte_array::ArrowStringType::Dict16Binary,
-            3 => crate::liquid_array::byte_array::ArrowStringType::Dict16Utf8,
-            4 => crate::liquid_array::byte_array::ArrowStringType::Binary,
-            5 => crate::liquid_array::byte_array::ArrowStringType::BinaryView,
-            _ => panic!("Invalid arrow type byte: {}", arrow_type_byte),
-        };
+        let original_arrow_type = ArrowStringType::from(arrow_type_byte);
 
         let keys_size = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
         let values_size = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
