@@ -302,13 +302,27 @@ impl LiquidCachedColumn {
         }
     }
 
-    fn insert_as_liquid_foreground(self: &Arc<Self>, row_id: usize, array: ArrayRef) {
-        let transcoded = self.transcode_liquid_inner(&array).unwrap();
+    fn insert_as_liquid_foreground(
+        self: &Arc<Self>,
+        row_id: usize,
+        array: ArrayRef,
+    ) -> Result<(), InsertArrowArrayError> {
+        let transcoded = match self.transcode_liquid_inner(&array) {
+            Ok(transcoded) => transcoded,
+            Err(_) => {
+                log::warn!(
+                    "unsupported data type {:?}, inserting as arrow array",
+                    array.data_type()
+                );
+                return self.insert_as_arrow_array(row_id, array);
+            }
+        };
+
         let memory_required = transcoded.get_array_memory_size();
 
         if self.config.try_reserve_memory(memory_required).is_err() {
             self.write_to_disk(transcoded, row_id);
-            return;
+            return Ok(());
         }
 
         let mut rows = self.rows.write().unwrap();
@@ -319,6 +333,7 @@ impl LiquidCachedColumn {
                 hit_count: AtomicU32::new(0),
             },
         );
+        Ok(())
     }
 
     fn insert_as_liquid_background(
@@ -331,7 +346,7 @@ impl LiquidCachedColumn {
             let column_arc = Arc::clone(self);
             let array_to_write = array.clone();
             TRANSCODE_THREAD_POOL.spawn(async move {
-                column_arc.transcode_and_write_to_disk(array_to_write, row_id);
+                column_arc.background_transcode_to_disk(array_to_write, row_id);
             });
             return Err(InsertArrowArrayError::CacheFull(array));
         }
@@ -365,9 +380,21 @@ impl LiquidCachedColumn {
             LiquidCacheMode::InMemoryLiquid {
                 transcode_in_background,
             } => {
+                // This is a special case for the Utf8View type, because the rest of the system expects a Dictionary type,
+                // But the reader reads as Utf8View types.
+                // So to be consistent, we cast to a Dictionary type here.
+                let array = if array.data_type() == &DataType::Utf8View {
+                    arrow::compute::kernels::cast(
+                        &array,
+                        &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+                    )
+                    .unwrap()
+                } else {
+                    array
+                };
+
                 if *transcode_in_background {
-                    self.insert_as_liquid_foreground(row_id, array);
-                    Ok(())
+                    self.insert_as_liquid_foreground(row_id, array)
                 } else {
                     self.insert_as_liquid_background(row_id, array)
                 }
@@ -375,10 +402,11 @@ impl LiquidCachedColumn {
         }
     }
 
-    fn transcode_and_write_to_disk(self: &Arc<Self>, array: ArrayRef, row_id: usize) {
+    fn background_transcode_to_disk(self: &Arc<Self>, array: ArrayRef, row_id: usize) {
         let transcoded = self
             .transcode_liquid_inner(&array)
             .expect("failed to transcode");
+        // Here we have no thing but to panic, because we are in a background thread, and we run out of memory, and we don't support the data type.
 
         self.write_to_disk(transcoded, row_id);
     }
@@ -410,18 +438,23 @@ impl LiquidCachedColumn {
             match &entry.value {
                 CachedBatch::ArrowMemory(array) => {
                     let previous_size = entry.value.memory_usage();
-                    let transcoded = self
-                        .transcode_liquid_inner(array)
-                        .expect("failed to transcode");
-                    let new_size = transcoded.get_array_memory_size();
-                    if self
-                        .config
-                        .try_update_memory_usage_after_transcoding(previous_size, new_size)
-                        .is_err()
-                    {
-                        return;
+                    match self.transcode_liquid_inner(array) {
+                        Ok(transcoded) => {
+                            let new_size = transcoded.get_array_memory_size();
+                            if self
+                                .config
+                                .try_update_memory_usage_after_transcoding(previous_size, new_size)
+                                .is_err()
+                            {
+                                return;
+                            }
+                            entry.value = CachedBatch::LiquidMemory(transcoded);
+                        }
+                        Err(array) => {
+                            // if the array data type is not supported yet, we just leave it as is.
+                            log::warn!("unsupported data type {:?}", array.data_type());
+                        }
                     }
-                    entry.value = CachedBatch::LiquidMemory(transcoded);
                 }
                 CachedBatch::LiquidMemory(_) => {
                     // Already transcoded.

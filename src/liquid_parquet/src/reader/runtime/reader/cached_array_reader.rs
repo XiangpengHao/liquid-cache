@@ -4,7 +4,6 @@ use ahash::AHashMap;
 use arrow::{
     array::{ArrayRef, BooleanArray, BooleanBufferBuilder, new_empty_array},
     buffer::BooleanBuffer,
-    compute::kernels::cast,
 };
 use arrow_schema::{DataType, Field, Fields};
 use parquet::{
@@ -15,13 +14,12 @@ use parquet::{
     errors::ParquetError,
 };
 
+use super::super::parquet_bridge::{ParquetField, ParquetFieldType};
 use crate::{
     LiquidCacheMode,
     cache::{InsertArrowArrayError, LiquidCachedColumnRef, LiquidCachedRowGroupRef},
     reader::runtime::parquet_bridge::StructArrayReaderBridge,
 };
-
-use super::super::parquet_bridge::{ParquetField, ParquetFieldType};
 
 /// A cached array reader will cache the rows in batch_size granularity.
 ///
@@ -184,14 +182,13 @@ impl CachedArrayReader {
                 }
             };
 
-            let array = if !array.data_type().equals_datatype(&self.data_type) {
-                // if the array data type is not as expected, potentially because the array is not transcoded yet.
-                // we cast it to the expected data type.
-                // TODO: how can we test this more robustly?
-                cast(&array, &self.data_type).unwrap()
-            } else {
-                array
-            };
+            if !array.data_type().equals_datatype(&self.data_type) {
+                panic!(
+                    "data type mismatch, input {:?}, expected {:?}",
+                    array.data_type(),
+                    self.data_type
+                );
+            }
 
             rt.push(array);
         }
