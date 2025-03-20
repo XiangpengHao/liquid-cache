@@ -12,7 +12,7 @@ pub fn sanitize_object_store_url_for_dirname(url: &Url) -> String {
     dirname.replace(['/', ':', '?', '&', '=', '\\'], "_")
 }
 
-pub fn sanitize_path_for_dirname(path: &String) -> String {
+pub fn sanitize_path_for_dirname(path: &str) -> String {
     path.replace(['/', ':', '?', '&', '=', '\\'], "_")
 }
 
