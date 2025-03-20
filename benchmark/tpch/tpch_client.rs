@@ -52,7 +52,7 @@ struct CliArgs {
     answer_dir: Option<PathBuf>,
 
     /// Benchmark mode to use
-    #[arg(long = "bench-mode", default_value = "liquid-cache")]
+    #[arg(long = "bench-mode", default_value = "liquid-eager-transcode")]
     bench_mode: BenchmarkMode,
 
     /// Reset the cache before running a new query

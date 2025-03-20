@@ -80,7 +80,17 @@ impl LiquidIPCHeader {
     }
 }
 
-pub fn read_from_bytes(bytes: Bytes, context: Arc<dyn std::any::Any>) -> LiquidArrayRef {
+pub struct LiquidIPCContext {
+    compressor: Option<Arc<Compressor>>,
+}
+
+impl LiquidIPCContext {
+    pub fn new(compressor: Option<Arc<Compressor>>) -> Self {
+        Self { compressor }
+    }
+}
+
+pub fn read_from_bytes(bytes: Bytes, context: &LiquidIPCContext) -> LiquidArrayRef {
     let header = LiquidIPCHeader::from_bytes(&bytes);
     let logical_type = LiquidDataType::from(header.logical_type_id);
     match logical_type {
@@ -96,8 +106,7 @@ pub fn read_from_bytes(bytes: Bytes, context: Arc<dyn std::any::Any>) -> LiquidA
             _ => panic!("Unsupported physical type"),
         },
         LiquidDataType::ByteArray => {
-            let compressor: &Arc<Compressor> =
-                context.downcast_ref().expect("Expected a compressor");
+            let compressor = context.compressor.as_ref().expect("Expected a compressor");
             Arc::new(LiquidByteArray::from_bytes(bytes, compressor.clone()))
         }
     }

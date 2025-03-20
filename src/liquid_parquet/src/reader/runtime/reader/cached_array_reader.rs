@@ -4,6 +4,7 @@ use ahash::AHashMap;
 use arrow::{
     array::{ArrayRef, BooleanArray, BooleanBufferBuilder, new_empty_array},
     buffer::BooleanBuffer,
+    compute::kernels::cast,
 };
 use arrow_schema::{DataType, Field, Fields};
 use parquet::{
@@ -183,13 +184,14 @@ impl CachedArrayReader {
                 }
             };
 
-            if !array.data_type().equals_datatype(&self.data_type) {
-                panic!(
-                    "data type mismatch, input {:?}, expected {:?}",
-                    array.data_type(),
-                    self.data_type
-                );
-            }
+            let array = if !array.data_type().equals_datatype(&self.data_type) {
+                // if the array data type is not as expected, potentially because the array is not transcoded yet.
+                // we cast it to the expected data type.
+                // TODO: how can we test this more robustly?
+                cast(&array, &self.data_type).unwrap()
+            } else {
+                array
+            };
 
             rt.push(array);
         }

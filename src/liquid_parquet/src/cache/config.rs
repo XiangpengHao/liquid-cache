@@ -6,7 +6,7 @@ use log::warn;
 pub(crate) struct CacheConfig {
     batch_size: usize,
     max_cache_bytes: usize,
-    remaining_memory_bytes: AtomicUsize,
+    used_memory_bytes: AtomicUsize,
     used_disk_bytes: AtomicUsize,
 }
 
@@ -15,7 +15,7 @@ impl CacheConfig {
         Self {
             batch_size,
             max_cache_bytes,
-            remaining_memory_bytes: AtomicUsize::new(max_cache_bytes),
+            used_memory_bytes: AtomicUsize::new(0),
             used_disk_bytes: AtomicUsize::new(0),
         }
     }
@@ -26,31 +26,36 @@ impl CacheConfig {
 
     #[cfg(test)]
     pub fn memory_usage_bytes(&self) -> usize {
-        self.max_cache_bytes - self.remaining_memory_bytes.load(Ordering::Relaxed)
+        self.used_memory_bytes.load(Ordering::Relaxed)
     }
 
+    #[allow(unused)]
     pub fn update_usage_after_eviction(&self, evicted_size: usize) {
-        self.remaining_memory_bytes
-            .fetch_add(evicted_size, Ordering::Relaxed);
-        self.used_disk_bytes
+        self.used_memory_bytes
             .fetch_sub(evicted_size, Ordering::Relaxed);
+        self.used_disk_bytes
+            .fetch_add(evicted_size, Ordering::Relaxed);
+    }
+
+    pub fn add_used_disk_bytes(&self, bytes: usize) {
+        self.used_disk_bytes.fetch_add(bytes, Ordering::Relaxed);
     }
 
     /// Try to reserve space in the cache.
     /// Returns true if the space was reserved, false if the cache is full.
-    pub fn try_reserve_memory(&self, request_bytes: usize) -> bool {
-        let remaining = self.remaining_memory_bytes.load(Ordering::Relaxed);
-        if remaining < request_bytes {
-            return false;
+    pub fn try_reserve_memory(&self, request_bytes: usize) -> Result<(), ()> {
+        let used = self.used_memory_bytes.load(Ordering::Relaxed);
+        if used + request_bytes > self.max_cache_bytes {
+            return Err(());
         }
 
-        match self.remaining_memory_bytes.compare_exchange(
-            remaining,
-            remaining - request_bytes,
+        match self.used_memory_bytes.compare_exchange(
+            used,
+            used + request_bytes,
             Ordering::Relaxed,
             Ordering::Relaxed,
         ) {
-            Ok(_) => true,
+            Ok(_) => Ok(()),
             Err(_) => self.try_reserve_memory(request_bytes),
         }
     }
@@ -63,29 +68,91 @@ impl CacheConfig {
         new_size: usize,
     ) -> Result<(), ()> {
         if old_size < new_size {
-            if (new_size - old_size) > 1024 * 1024 {
+            let diff = new_size - old_size;
+            if diff > 1024 * 1024 {
                 warn!(
                     "Transcoding increased the size of the array by at least 1MB, previous size: {}, new size: {}, double check this is correct",
                     old_size, new_size
                 );
             }
 
-            if !self.try_reserve_memory(new_size - old_size) {
-                self.remaining_memory_bytes
-                    .fetch_add(old_size, Ordering::Relaxed);
-                return Err(());
-            }
+            self.try_reserve_memory(diff)?;
             Ok(())
         } else {
-            self.remaining_memory_bytes
-                .fetch_add(old_size - new_size, Ordering::Relaxed);
+            self.used_memory_bytes
+                .fetch_sub(old_size - new_size, Ordering::Relaxed);
             Ok(())
         }
     }
 
     pub fn reset_usage(&self) {
-        self.remaining_memory_bytes
-            .store(self.max_cache_bytes, Ordering::Relaxed);
+        self.used_memory_bytes.store(0, Ordering::Relaxed);
         self.used_disk_bytes.store(0, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_memory_reservation_and_accounting() {
+        let config = CacheConfig::new(100, 1000);
+
+        // Check initial state
+        assert_eq!(config.memory_usage_bytes(), 0);
+
+        // Basic reservation
+        assert!(config.try_reserve_memory(500).is_ok());
+        assert_eq!(config.memory_usage_bytes(), 500);
+
+        // Additional reservation within limits
+        assert!(config.try_reserve_memory(300).is_ok());
+        assert_eq!(config.memory_usage_bytes(), 800);
+
+        // Reservation exceeding limit
+        assert!(config.try_reserve_memory(300).is_err());
+        assert_eq!(config.memory_usage_bytes(), 800);
+
+        // Test eviction accounting
+        config.update_usage_after_eviction(200);
+        assert_eq!(config.memory_usage_bytes(), 600);
+
+        // Reset usage
+        config.reset_usage();
+        assert_eq!(config.memory_usage_bytes(), 0);
+    }
+
+    #[test]
+    fn test_memory_transcoding_accounting() {
+        let config = CacheConfig::new(100, 1000);
+
+        // Initial reservation
+        assert!(config.try_reserve_memory(400).is_ok());
+        assert_eq!(config.memory_usage_bytes(), 400);
+
+        // Update after transcoding - size decrease
+        assert!(
+            config
+                .try_update_memory_usage_after_transcoding(300, 200)
+                .is_ok()
+        );
+        assert_eq!(config.memory_usage_bytes(), 300); // 400 - (300 - 200)
+
+        // Update after transcoding - size increase within limits
+        assert!(
+            config
+                .try_update_memory_usage_after_transcoding(200, 500)
+                .is_ok()
+        );
+        assert_eq!(config.memory_usage_bytes(), 600); // 300 + (500 - 200)
+
+        // Update after transcoding - size increase exceeding limits
+        assert!(
+            config
+                .try_update_memory_usage_after_transcoding(100, 600)
+                .is_err()
+        );
+        assert_eq!(config.memory_usage_bytes(), 600); // Unchanged because update failed
     }
 }
