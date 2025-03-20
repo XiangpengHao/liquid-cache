@@ -26,7 +26,7 @@ liquid-common = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 async-stream = "0.3"
+tempfile = { workspace = true }
 
 [dev-dependencies]
 liquid-cache-client = { workspace = true }
-tempfile = "3.18.0"

@@ -14,13 +14,12 @@ use parquet::{
     errors::ParquetError,
 };
 
+use super::super::parquet_bridge::{ParquetField, ParquetFieldType};
 use crate::{
     LiquidCacheMode,
-    cache::{LiquidCachedColumnRef, LiquidCachedRowGroupRef},
+    cache::{InsertArrowArrayError, LiquidCachedColumnRef, LiquidCachedRowGroupRef},
     reader::runtime::parquet_bridge::StructArrayReaderBridge,
 };
-
-use super::super::parquet_bridge::{ParquetField, ParquetFieldType};
 
 /// A cached array reader will cache the rows in batch_size granularity.
 ///
@@ -84,7 +83,7 @@ impl CachedArrayReader {
         }
         let read = self.inner.read_records(self.batch_size())?;
         let array = self.inner.consume_batch()?;
-        if let Err(crate::cache::InsertArrowArrayError::CacheFull(array)) =
+        if let Err(InsertArrowArrayError::CacheFull(array)) =
             self.liquid_cache.insert_arrow_array(row_id, array)
         {
             self.reader_local_cache.insert(row_id, array);
@@ -442,7 +441,12 @@ mod tests {
     const TOTAL_ROWS: usize = 96;
 
     fn set_up_reader() -> (CachedArrayReader, LiquidCachedColumnRef) {
-        let liquid_cache = Arc::new(LiquidCache::new(BATCH_SIZE, usize::MAX));
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let liquid_cache = Arc::new(LiquidCache::new(
+            BATCH_SIZE,
+            usize::MAX,
+            tmp_dir.path().to_path_buf(),
+        ));
         let file = liquid_cache.register_or_get_file(
             "test".to_string(),
             LiquidCacheMode::InMemoryLiquid {

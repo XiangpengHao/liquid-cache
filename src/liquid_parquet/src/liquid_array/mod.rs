@@ -1,7 +1,7 @@
 mod byte_array;
+pub mod ipc;
 mod primitive_array;
 mod raw;
-mod serde;
 
 use std::{any::Any, num::NonZero, sync::Arc};
 
@@ -13,6 +13,24 @@ pub use primitive_array::{
 };
 pub use raw::bit_pack_array::BitPackedArray;
 pub use raw::fsst_array::FsstArray;
+
+/// Liquid data type is only logical type
+#[derive(Debug, Clone, Copy)]
+#[repr(u16)]
+pub enum LiquidDataType {
+    ByteArray = 0,
+    Integer = 1,
+}
+
+impl From<u16> for LiquidDataType {
+    fn from(value: u16) -> Self {
+        match value {
+            0 => LiquidDataType::ByteArray,
+            1 => LiquidDataType::Integer,
+            _ => panic!("Invalid liquid data type: {}", value),
+        }
+    }
+}
 
 /// A trait to access the underlying Liquid array.
 pub trait AsLiquidArray {
@@ -79,6 +97,12 @@ pub trait LiquidArray: std::fmt::Debug + Send + Sync {
     fn to_best_arrow_array(&self) -> ArrayRef {
         self.to_arrow_array()
     }
+
+    /// Get the logical data type of the Liquid array.
+    fn data_type(&self) -> LiquidDataType;
+
+    /// Serialize the Liquid array to a byte array.
+    fn to_bytes(&self) -> Vec<u8>;
 
     /// Filter the Liquid array with a boolean array.
     fn filter(&self, selection: &BooleanArray) -> LiquidArrayRef;
