@@ -29,6 +29,11 @@ impl CacheConfig {
         self.used_memory_bytes.load(Ordering::Relaxed)
     }
 
+    #[cfg(test)]
+    pub fn disk_usage_bytes(&self) -> usize {
+        self.used_disk_bytes.load(Ordering::Relaxed)
+    }
+
     #[allow(unused)]
     pub fn update_usage_after_eviction(&self, evicted_size: usize) {
         self.used_memory_bytes

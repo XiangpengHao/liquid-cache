@@ -372,6 +372,19 @@ impl LiquidCachedColumn {
             return Err(InsertArrowArrayError::AlreadyCached);
         }
 
+        // This is a special case for the Utf8View type, because the rest of the system expects a Dictionary type,
+        // But the reader reads as Utf8View types.
+        // So to be consistent, we cast to a Dictionary type here.
+        let array = if array.data_type() == &DataType::Utf8View {
+            arrow::compute::kernels::cast(
+                &array,
+                &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            )
+            .unwrap()
+        } else {
+            array
+        };
+
         match &self.cache_mode {
             LiquidCacheMode::InMemoryArrow => self.insert_as_arrow_array(row_id, array),
             LiquidCacheMode::OnDiskArrow => {
@@ -380,23 +393,10 @@ impl LiquidCachedColumn {
             LiquidCacheMode::InMemoryLiquid {
                 transcode_in_background,
             } => {
-                // This is a special case for the Utf8View type, because the rest of the system expects a Dictionary type,
-                // But the reader reads as Utf8View types.
-                // So to be consistent, we cast to a Dictionary type here.
-                let array = if array.data_type() == &DataType::Utf8View {
-                    arrow::compute::kernels::cast(
-                        &array,
-                        &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-                    )
-                    .unwrap()
-                } else {
-                    array
-                };
-
                 if *transcode_in_background {
-                    self.insert_as_liquid_foreground(row_id, array)
-                } else {
                     self.insert_as_liquid_background(row_id, array)
+                } else {
+                    self.insert_as_liquid_foreground(row_id, array)
                 }
             }
         }
@@ -957,5 +957,100 @@ mod tests {
             final_mem,
             max_cache_bytes
         );
+    }
+
+    #[test]
+    fn test_on_disk_cache() {
+        // Create a cache with a small memory limit to force on-disk storage
+        let batch_size = 64;
+        let max_cache_bytes = 1024; // Small enough to force disk storage
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let cache_path = tmp_dir.path().to_path_buf();
+
+        let cache = LiquidCache::new(batch_size, max_cache_bytes, cache_path.clone());
+
+        // Register a file with non-background transcode mode
+        let file_name = "test_on_disk_file".to_string();
+        let file = cache.register_or_get_file(
+            file_name.clone(),
+            LiquidCacheMode::InMemoryLiquid {
+                transcode_in_background: false,
+            },
+        );
+
+        // Create row group and column
+        let row_group_id = 5;
+        let column_id = 10;
+        let row_group = file.row_group(row_group_id);
+        let column = row_group.get_column_or_create(column_id);
+
+        // Create a large array that won't fit in memory
+        let large_array = Arc::new(Int32Array::from(vec![42; 10000])) as ArrayRef;
+        let array_size = large_array.get_array_memory_size();
+
+        // Verify array is larger than our memory limit
+        assert!(
+            array_size > max_cache_bytes,
+            "Test array should be larger than memory limit"
+        );
+
+        // Insert the array
+        let row_id = 20;
+        assert!(
+            column
+                .insert_arrow_array(row_id, large_array.clone())
+                .is_ok()
+        );
+
+        // 1. Verify the file path structure
+        let expected_file_path = cache_path
+            .join("test_on_disk_file")
+            .join(format!("rg_{}", row_group_id))
+            .join(format!("col_{}", column_id))
+            .join(format!("row_{}.bin", row_id));
+
+        assert!(
+            expected_file_path.exists(),
+            "On-disk cache file not found at expected path: {:?}",
+            expected_file_path
+        );
+
+        // 2. Verify memory accounting
+        let memory_usage = column.config.memory_usage_bytes();
+        let disk_usage = column.config.disk_usage_bytes();
+
+        // Memory usage should be minimal since data is on disk
+        assert!(
+            memory_usage < array_size,
+            "Memory usage ({}) should be less than original array size ({})",
+            memory_usage,
+            array_size
+        );
+
+        // Disk usage should be non-zero
+        assert!(
+            disk_usage > 0,
+            "Disk usage should be greater than zero, got {}",
+            disk_usage
+        );
+
+        // 3. Check that the data is stored as OnDiskLiquid
+        {
+            let rows = column.rows.read().unwrap();
+            let cached_entry = rows.get(&row_id).expect("Row should be cached");
+            match cached_entry.value() {
+                CachedBatch::OnDiskLiquid => {
+                    // This is what we expect
+                }
+                other => panic!("Expected OnDiskLiquid, got: {}", other),
+            }
+        }
+
+        // 4. Read the data back and verify its content
+        let retrieved_array = column
+            .get_arrow_array_test_only(row_id)
+            .expect("Failed to read array");
+
+        assert_eq!(&retrieved_array, &large_array);
     }
 }
