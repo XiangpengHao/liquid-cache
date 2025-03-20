@@ -22,7 +22,7 @@ pub(crate) struct LiquidCacheServiceInner {
     registered_tables: Mutex<HashMap<String, (String, CacheMode)>>, // table name -> (path, cached file)
     default_ctx: Arc<SessionContext>,
     cache: LiquidCacheRef,
-    disk_cache_dir: Option<PathBuf>,
+    parquet_cache_dir: PathBuf,
 }
 
 impl LiquidCacheServiceInner {
@@ -32,9 +32,16 @@ impl LiquidCacheServiceInner {
         disk_cache_dir: Option<PathBuf>,
     ) -> Self {
         let batch_size = default_ctx.state().config().batch_size();
+
+        let disk_cache_dir =
+            disk_cache_dir.unwrap_or_else(|| tempfile::tempdir().unwrap().into_path());
+
+        let parquet_cache_dir = disk_cache_dir.join("parquet");
+        let liquid_cache_dir = disk_cache_dir.join("liquid");
         let liquid_cache = Arc::new(LiquidCache::new(
             batch_size,
             max_cache_bytes.unwrap_or(usize::MAX),
+            liquid_cache_dir,
         ));
 
         Self {
@@ -42,7 +49,7 @@ impl LiquidCacheServiceInner {
             registered_tables: Default::default(),
             default_ctx,
             cache: liquid_cache,
-            disk_cache_dir,
+            parquet_cache_dir,
         }
     }
 
@@ -74,14 +81,11 @@ impl LiquidCacheServiceInner {
             return Ok(());
         }
 
-        let object_store: Arc<dyn ObjectStore> = match &self.disk_cache_dir {
-            Some(disk_cache_dir) => {
-                let sanitized_url = sanitize_url_for_dirname(url);
-                let store_cache_dir = disk_cache_dir.join(sanitized_url);
-                let local_cache = LocalCache::new(Arc::new(object_store), store_cache_dir);
-                Arc::new(local_cache)
-            }
-            None => Arc::new(object_store),
+        let object_store: Arc<dyn ObjectStore> = {
+            let sanitized_url = liquid_common::utils::sanitize_object_store_url_for_dirname(url);
+            let store_cache_dir = self.parquet_cache_dir.join(sanitized_url);
+            let local_cache = LocalCache::new(Arc::new(object_store), store_cache_dir);
+            Arc::new(local_cache)
         };
 
         self.default_ctx
@@ -271,18 +275,6 @@ impl LiquidCacheServiceInner {
         };
         Some(response)
     }
-}
-
-pub(crate) fn sanitize_url_for_dirname(url: &Url) -> String {
-    let mut parts = vec![url.scheme()];
-
-    if let Some(host) = url.host_str() {
-        parts.push(host);
-    }
-
-    let dirname = parts.join("_");
-
-    dirname.replace(['/', ':', '?', '&', '=', '\\'], "_")
 }
 
 #[cfg(test)]

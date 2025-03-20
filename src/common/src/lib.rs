@@ -1,6 +1,7 @@
 use std::fmt::Display;
 use std::str::FromStr;
 pub mod rpc;
+pub mod utils;
 
 #[derive(Clone, Debug, Default, Copy, PartialEq, Eq)]
 pub enum CacheMode {

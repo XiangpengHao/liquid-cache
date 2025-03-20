@@ -195,7 +195,8 @@ mod tests {
 
     #[test]
     fn test_stats_writer() -> Result<(), ParquetError> {
-        let cache = LiquidCache::new(1024, usize::MAX);
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let cache = LiquidCache::new(1024, usize::MAX, tmp_dir.path().to_path_buf());
         let array = Arc::new(arrow::array::Int32Array::from(vec![1, 2, 3]));
         let num_rows = 8 * 8 * 8 * 8;
 

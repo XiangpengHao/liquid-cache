@@ -1,26 +1,28 @@
-use ahash::AHashMap;
-use arrow::array::{Array, AsArray, BooleanArray};
-use arrow::array::{ArrayRef, RecordBatch};
-use arrow::buffer::BooleanBuffer;
-use arrow::compute::{cast, prep_null_mask_filter};
-use arrow_schema::{ArrowError, DataType, Field, Schema};
-use bytes::Bytes;
-use log::warn;
-use std::fmt::Display;
-use std::fs::File;
-use std::io::{Read, Write};
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, RwLock};
-use tokio::runtime::Runtime;
-mod stats;
 use super::liquid_array::{LiquidArrayRef, LiquidByteArray, LiquidPrimitiveArray};
 use crate::liquid_array::ipc;
 use crate::{ABLATION_STUDY_MODE, AblationStudyMode, LiquidPredicate};
+use ahash::AHashMap;
 use arrow::array::types::{
     Int8Type as ArrowInt8Type, Int16Type as ArrowInt16Type, Int32Type as ArrowInt32Type,
     Int64Type as ArrowInt64Type, UInt8Type as ArrowUInt8Type, UInt16Type as ArrowUInt16Type,
     UInt32Type as ArrowUInt32Type, UInt64Type as ArrowUInt64Type,
 };
+use arrow::array::{Array, ArrayRef, AsArray, BooleanArray, RecordBatch};
+use arrow::buffer::BooleanBuffer;
+use arrow::compute::{cast, prep_null_mask_filter};
+use arrow_schema::{ArrowError, DataType, Field, Schema};
+use bytes::Bytes;
+use std::fmt::Display;
+use std::fs::File;
+use std::io::{Read, Write};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, LazyLock, Mutex, RwLock};
+use tokio::runtime::Runtime;
+
+mod config;
+mod stats;
+pub(crate) use config::CacheConfig;
 
 /// A dedicated Tokio thread pool for background transcoding tasks.
 /// This pool is built with 4 worker threads.
@@ -105,9 +107,10 @@ impl Display for CachedBatch {
 #[derive(Debug)]
 pub struct LiquidCachedColumn {
     cache_mode: LiquidCacheMode,
-    config: CacheConfig,
+    config: Arc<CacheConfig>,
     liquid_compressor_states: LiquidCompressorStates,
     rows: RwLock<AHashMap<usize, CachedEntry>>,
+    cache_dir: PathBuf,
 }
 
 pub type LiquidCachedColumnRef = Arc<LiquidCachedColumn>;
@@ -127,10 +130,11 @@ pub enum InsertArrowArrayError {
 }
 
 impl LiquidCachedColumn {
-    fn new(cache_mode: LiquidCacheMode, config: CacheConfig) -> Self {
+    fn new(cache_mode: LiquidCacheMode, config: Arc<CacheConfig>, cache_dir: PathBuf) -> Self {
         Self {
             cache_mode,
             config,
+            cache_dir,
             rows: RwLock::new(AHashMap::new()),
             liquid_compressor_states: LiquidCompressorStates::new(),
         }
@@ -145,7 +149,7 @@ impl LiquidCachedColumn {
     }
 
     pub(crate) fn batch_size(&self) -> usize {
-        self.config.batch_size
+        self.config.batch_size()
     }
 
     pub(crate) fn is_cached(&self, row_id: usize) -> bool {
@@ -154,7 +158,7 @@ impl LiquidCachedColumn {
     }
 
     fn get_on_disk_liquid(&self, row_id: usize) -> Option<LiquidArrayRef> {
-        let path = format!("liquid_cache_{}.bin", row_id);
+        let path = self.cache_dir.join(format!("row_{}.bin", row_id));
         let mut file = File::open(path).unwrap();
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes).unwrap();
@@ -276,54 +280,6 @@ impl LiquidCachedColumn {
         }
     }
 
-    /// Try to reserve space in the cache.
-    /// Returns true if the space was reserved, false if the cache is full.
-    pub(crate) fn try_reserve_space(&self, array_size: usize) -> bool {
-        let remaining_size = self.config.remaining_cache_size.load(Ordering::Relaxed);
-        if remaining_size < array_size {
-            return false;
-        }
-        match self.config.remaining_cache_size.compare_exchange_weak(
-            remaining_size,
-            remaining_size - array_size,
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-        ) {
-            Ok(_) => true,
-            Err(_) => self.try_reserve_space(array_size),
-        }
-    }
-
-    /// Adjust the cache size after transcoding.
-    /// Returns true if the size was adjusted, false if the cache is full, when new_size is larger than old_size.
-    pub(crate) fn adjust_cache_size_after_transcoding(
-        &self,
-        old_size: usize,
-        new_size: usize,
-    ) -> bool {
-        if old_size < new_size {
-            if (new_size - old_size) > 1024 * 1024 {
-                warn!(
-                    "Transcoding increased the size of the array by at least 1MB, previous size: {}, new size: {}, double check this is correct",
-                    old_size, new_size
-                );
-            }
-
-            if !self.try_reserve_space(new_size - old_size) {
-                self.config
-                    .remaining_cache_size
-                    .fetch_add(old_size, Ordering::Relaxed);
-                return false;
-            }
-            true
-        } else {
-            self.config
-                .remaining_cache_size
-                .fetch_add(old_size - new_size, Ordering::Relaxed);
-            true
-        }
-    }
-
     /// Insert an arrow array into the cache.
     pub(crate) fn insert_arrow_array(
         self: &Arc<Self>,
@@ -338,7 +294,7 @@ impl LiquidCachedColumn {
         match &self.cache_mode {
             LiquidCacheMode::InMemoryArrow => {
                 let array_size = array.get_array_memory_size();
-                if self.try_reserve_space(array_size) {
+                if self.config.try_reserve_memory(array_size) {
                     let old = rows.insert(row_id, CachedEntry::new_in_memory(array));
                     assert!(old.is_none());
                 } else {
@@ -353,8 +309,11 @@ impl LiquidCachedColumn {
                 transcode_in_background,
             } => {
                 let arrow_size = array.get_array_memory_size();
-                if !self.try_reserve_space(arrow_size) {
-                    self.background_write_to_disk(arrow_size);
+                if !self.config.try_reserve_memory(arrow_size) {
+                    let column_arc = Arc::clone(self);
+                    TRANSCODE_THREAD_POOL.spawn(async move {
+                        column_arc.background_write_to_disk(arrow_size);
+                    });
                     return Err(InsertArrowArrayError::CacheFull(array));
                 }
 
@@ -369,7 +328,11 @@ impl LiquidCachedColumn {
                 };
 
                 let dict_size = array.get_array_memory_size();
-                if !self.adjust_cache_size_after_transcoding(arrow_size, dict_size) {
+                if self
+                    .config
+                    .try_update_memory_usage_after_transcoding(arrow_size, dict_size)
+                    .is_err()
+                {
                     return Err(InsertArrowArrayError::CacheFull(array));
                 }
 
@@ -386,7 +349,11 @@ impl LiquidCachedColumn {
                 } else {
                     let transcoded = self.transcode_liquid_inner(&array);
                     let new_size = transcoded.memory_usage();
-                    if !self.adjust_cache_size_after_transcoding(dict_size, new_size) {
+                    if self
+                        .config
+                        .try_update_memory_usage_after_transcoding(dict_size, new_size)
+                        .is_err()
+                    {
                         return Err(InsertArrowArrayError::CacheFull(array));
                     }
                     rows.insert(
@@ -412,12 +379,14 @@ impl LiquidCachedColumn {
                     // Need to wait until it is transcoded.
                 }
                 CachedBatch::LiquidMemory(array) => {
+                    let memory_size = array.get_array_memory_size();
                     let bytes = array.to_bytes();
-                    let file_path = format!("liquid_cache_{}.bin", row_id);
+                    let file_path = self.cache_dir.join(format!("row_{}.bin", row_id));
                     let mut file = File::create(file_path).unwrap();
                     file.write_all(&bytes).unwrap();
-                    evicted_size += bytes.len();
+                    evicted_size += memory_size;
                     entry.value = CachedBatch::OnDiskLiquid;
+                    self.config.update_usage_after_eviction(memory_size);
                 }
                 CachedBatch::OnDiskLiquid => {
                     // Already on disk.
@@ -440,7 +409,11 @@ impl LiquidCachedColumn {
                     let previous_size = entry.value.memory_usage();
                     let transcoded = self.transcode_liquid_inner(array);
                     let new_size = transcoded.memory_usage();
-                    if !self.adjust_cache_size_after_transcoding(previous_size, new_size) {
+                    if self
+                        .config
+                        .try_update_memory_usage_after_transcoding(previous_size, new_size)
+                        .is_err()
+                    {
                         return;
                     }
                     entry.value = transcoded;
@@ -569,16 +542,19 @@ impl LiquidCachedColumn {
 #[derive(Debug)]
 pub struct LiquidCachedRowGroup {
     cache_mode: LiquidCacheMode,
-    config: CacheConfig,
+    config: Arc<CacheConfig>,
     columns: RwLock<AHashMap<usize, Arc<LiquidCachedColumn>>>,
+    cache_dir: PathBuf,
 }
 
 impl LiquidCachedRowGroup {
-    fn new(cache_mode: LiquidCacheMode, config: CacheConfig) -> Self {
+    fn new(cache_mode: LiquidCacheMode, config: Arc<CacheConfig>, cache_dir: PathBuf) -> Self {
+        std::fs::create_dir_all(&cache_dir).expect("Failed to create cache directory");
         Self {
             cache_mode,
             config,
             columns: RwLock::new(AHashMap::new()),
+            cache_dir,
         }
     }
 
@@ -588,9 +564,12 @@ impl LiquidCachedRowGroup {
             .unwrap()
             .entry(column_id)
             .or_insert_with(|| {
+                let cache_dir = self.cache_dir.join(format!("col_{}", column_id));
+                std::fs::create_dir_all(&cache_dir).expect("Failed to create cache directory");
                 Arc::new(LiquidCachedColumn::new(
                     self.cache_mode,
                     self.config.clone(),
+                    cache_dir,
                 ))
             })
             .clone()
@@ -636,14 +615,21 @@ pub type LiquidCachedRowGroupRef = Arc<LiquidCachedRowGroup>;
 pub struct LiquidCachedFile {
     row_groups: Mutex<AHashMap<usize, Arc<LiquidCachedRowGroup>>>,
     cache_mode: LiquidCacheMode,
-    config: CacheConfig,
+    config: Arc<CacheConfig>,
+    cache_dir: PathBuf,
 }
 
 impl LiquidCachedFile {
-    pub(crate) fn new(cache_mode: LiquidCacheMode, config: CacheConfig) -> Self {
+    pub(crate) fn new(
+        cache_mode: LiquidCacheMode,
+        config: Arc<CacheConfig>,
+        cache_dir: PathBuf,
+    ) -> Self {
+        std::fs::create_dir_all(&cache_dir).expect("Failed to create cache directory");
         Self {
             cache_mode,
             config,
+            cache_dir,
             row_groups: Mutex::new(AHashMap::new()),
         }
     }
@@ -651,9 +637,11 @@ impl LiquidCachedFile {
     pub fn row_group(&self, row_group_id: usize) -> LiquidCachedRowGroupRef {
         let mut row_groups = self.row_groups.lock().unwrap();
         let row_group = row_groups.entry(row_group_id).or_insert_with(|| {
+            let cache_dir = self.cache_dir.join(format!("rg_{}", row_group_id));
             Arc::new(LiquidCachedRowGroup::new(
                 self.cache_mode,
                 self.config.clone(),
+                cache_dir,
             ))
         });
         row_group.clone()
@@ -670,7 +658,7 @@ impl LiquidCachedFile {
 
     #[cfg(test)]
     pub fn memory_usage(&self) -> usize {
-        self.config.memory_usage()
+        self.config.memory_usage_bytes()
     }
 }
 
@@ -681,7 +669,9 @@ pub struct LiquidCache {
     /// Files -> RowGroups -> Columns -> Batches
     files: Mutex<AHashMap<String, Arc<LiquidCachedFile>>>,
 
-    config: CacheConfig,
+    config: Arc<CacheConfig>,
+
+    cache_dir: PathBuf,
 }
 
 pub type LiquidCacheRef = Arc<LiquidCache>;
@@ -696,39 +686,14 @@ pub enum LiquidCacheMode {
     },
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct CacheConfig {
-    batch_size: usize,
-    max_cache_bytes: usize,
-    remaining_cache_size: Arc<AtomicUsize>,
-}
-
-impl CacheConfig {
-    #[cfg(test)]
-    pub fn new(batch_size: usize, max_cache_bytes: usize) -> Self {
-        Self {
-            batch_size,
-            max_cache_bytes,
-            remaining_cache_size: Arc::new(AtomicUsize::new(max_cache_bytes)),
-        }
-    }
-
-    pub fn memory_usage(&self) -> usize {
-        self.max_cache_bytes - self.remaining_cache_size.load(Ordering::Relaxed)
-    }
-}
-
 impl LiquidCache {
-    pub fn new(batch_size: usize, max_cache_bytes: usize) -> Self {
+    pub fn new(batch_size: usize, max_cache_bytes: usize, cache_dir: PathBuf) -> Self {
         assert!(batch_size.is_power_of_two());
 
         LiquidCache {
             files: Mutex::new(AHashMap::new()),
-            config: CacheConfig {
-                batch_size,
-                max_cache_bytes,
-                remaining_cache_size: Arc::new(AtomicUsize::new(max_cache_bytes)),
-            },
+            config: Arc::new(CacheConfig::new(batch_size, max_cache_bytes)),
+            cache_dir,
         }
     }
 
@@ -739,9 +704,15 @@ impl LiquidCache {
         cache_mode: LiquidCacheMode,
     ) -> LiquidCachedFileRef {
         let mut files = self.files.lock().unwrap();
-        let value = files
-            .entry(file_path.clone())
-            .or_insert_with(|| Arc::new(LiquidCachedFile::new(cache_mode, self.config.clone())));
+        let value = files.entry(file_path.clone()).or_insert_with(|| {
+            let sanitized_file_path = liquid_common::utils::sanitize_path_for_dirname(&file_path);
+            let cache_dir = self.cache_dir.join(&sanitized_file_path);
+            Arc::new(LiquidCachedFile::new(
+                cache_mode,
+                self.config.clone(),
+                cache_dir,
+            ))
+        });
         value.clone()
     }
 
@@ -752,7 +723,7 @@ impl LiquidCache {
     }
 
     pub fn batch_size(&self) -> usize {
-        self.config.batch_size
+        self.config.batch_size()
     }
 
     /// Reset the cache.
@@ -761,17 +732,7 @@ impl LiquidCache {
         for file in files.values_mut() {
             file.reset();
         }
-        self.config
-            .remaining_cache_size
-            .store(self.config.max_cache_bytes, Ordering::Relaxed);
-    }
-
-    pub fn remaining_cache_size(&self) -> usize {
-        self.config.remaining_cache_size.load(Ordering::Relaxed)
-    }
-
-    pub fn used_cache_size(&self) -> usize {
-        self.config.memory_usage()
+        self.config.reset_usage();
     }
 }
 
@@ -791,7 +752,8 @@ mod tests {
     fn test_memory_accounting() {
         let batch_size = 64;
         let max_cache_bytes = 4096;
-        let cache = LiquidCache::new(batch_size, max_cache_bytes);
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let cache = LiquidCache::new(batch_size, max_cache_bytes, tmp_dir.path().to_path_buf());
         let file =
             cache.register_or_get_file("test_file".to_string(), LiquidCacheMode::InMemoryArrow);
         let row_group = file.row_group(0);
@@ -802,14 +764,17 @@ mod tests {
         let array1_size = array_mem_size(&array1);
         assert!(column.insert_arrow_array(0, array1.clone()).is_ok());
         assert!(column.is_cached(0));
-        assert_eq!(column.config.memory_usage(), array1_size);
+        assert_eq!(column.config.memory_usage_bytes(), array1_size);
 
         // Test 2: Multiple insertions within limit
         let array2 = Arc::new(Int32Array::from(vec![2; 200])) as ArrayRef;
         let array2_size = array_mem_size(&array2);
         assert!(column.insert_arrow_array(1, array2.clone()).is_ok());
         assert!(column.is_cached(1));
-        assert_eq!(column.config.memory_usage(), array1_size + array2_size);
+        assert_eq!(
+            column.config.memory_usage_bytes(),
+            array1_size + array2_size
+        );
 
         let remaining_space = max_cache_bytes - (array1_size + array2_size);
         let exact_fit_array = Arc::new(Int32Array::from(vec![3; remaining_space / 4])) as ArrayRef;
@@ -819,10 +784,16 @@ mod tests {
                 .is_err()
         );
         assert!(!column.is_cached(2));
-        assert_eq!(column.config.memory_usage(), array1_size + array2_size);
+        assert_eq!(
+            column.config.memory_usage_bytes(),
+            array1_size + array2_size
+        );
 
         assert!(column.insert_arrow_array(0, array1.clone()).is_err());
-        assert_eq!(column.config.memory_usage(), array1_size + array2_size);
+        assert_eq!(
+            column.config.memory_usage_bytes(),
+            array1_size + array2_size
+        );
     }
 
     /// Test that verifies background transcoding updates both the stored value type
@@ -831,7 +802,8 @@ mod tests {
     fn test_background_transcoding() {
         let batch_size = 64;
         let max_cache_bytes = 1024 * 1024; // a generous limit for the test
-        let cache = LiquidCache::new(batch_size, max_cache_bytes);
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let cache = LiquidCache::new(batch_size, max_cache_bytes, tmp_dir.path().to_path_buf());
         let file = cache.register_or_get_file(
             "test_file2".to_string(),
             LiquidCacheMode::InMemoryLiquid {
@@ -846,7 +818,7 @@ mod tests {
 
         assert!(column.insert_arrow_array(0, arrow_array.clone()).is_ok());
 
-        let size_before = column.config.memory_usage();
+        let size_before = column.config.memory_usage_bytes();
         loop {
             // Now check that the entry has been transcoded.
             let rows = column.rows.read().unwrap();
@@ -870,7 +842,7 @@ mod tests {
             }
         }
 
-        let size_after = column.config.memory_usage();
+        let size_after = column.config.memory_usage_bytes();
         assert!(
             size_after <= size_before,
             "Cache memory counter should have decreased after transcoding"
@@ -895,7 +867,8 @@ mod tests {
 
         let max_cache_bytes = dummy_size;
 
-        let cache = LiquidCache::new(batch_size, max_cache_bytes);
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let cache = LiquidCache::new(batch_size, max_cache_bytes, tmp_dir.path().to_path_buf());
         let file = cache.register_or_get_file(
             "race_condition_test_file".to_string(),
             LiquidCacheMode::InMemoryArrow,
@@ -926,7 +899,7 @@ mod tests {
             handle.join().unwrap();
         }
 
-        let final_mem = column.config.memory_usage();
+        let final_mem = column.config.memory_usage_bytes();
 
         assert!(
             final_mem <= max_cache_bytes,
