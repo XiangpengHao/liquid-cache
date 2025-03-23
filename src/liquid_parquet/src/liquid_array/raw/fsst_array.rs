@@ -11,6 +11,7 @@ use fsst::{Compressor, Decompressor};
 use std::mem::MaybeUninit;
 use std::sync::Arc;
 
+/// A wrapper around a FsstArray that provides a reference to the compressor.
 #[derive(Clone)]
 pub struct FsstArray {
     compressor: Arc<Compressor>,
@@ -26,6 +27,7 @@ impl std::fmt::Debug for FsstArray {
 }
 
 impl FsstArray {
+    /// Creates a new FsstArray from a BinaryArray, a compressor, and an uncompressed length.
     pub fn from_parts(
         compressed: BinaryArray,
         compressor: Arc<Compressor>,
@@ -38,11 +40,13 @@ impl FsstArray {
         }
     }
 
+    /// Trains a compressor on a sequence of strings.
     pub fn train_compressor<'a>(input: impl Iterator<Item = &'a [u8]>) -> Compressor {
         let strings = input.collect::<Vec<_>>();
         fsst::Compressor::train(&strings)
     }
 
+    /// Creates a new FsstArray from a GenericByteArray, a compressor, and an uncompressed length.
     pub fn from_byte_array_with_compressor<T: ByteArrayType>(
         input: &GenericByteArray<T>,
         compressor: Arc<Compressor>,
@@ -86,10 +90,12 @@ impl FsstArray {
         }
     }
 
+    /// Returns the memory size of the FsstArray.
     pub fn get_array_memory_size(&self) -> usize {
         self.compressed.get_array_memory_size() + std::mem::size_of::<FsstArray>()
     }
 
+    /// Converts the FsstArray to a GenericByteArray.
     pub fn to_arrow_byte_array<T: ByteArrayType>(&self) -> GenericByteArray<T> {
         // we can directly use the null buffer in the compressed array.
         let null_buffer = self.compressed.nulls().cloned();
@@ -134,10 +140,12 @@ impl FsstArray {
         GenericByteArray::from(array_data)
     }
 
+    /// Returns a decompressor for the FsstArray.
     pub fn decompressor(&self) -> Decompressor {
         self.compressor.decompressor()
     }
 
+    /// Returns a reference to the compressor.
     pub fn compressor(&self) -> &Compressor {
         &self.compressor
     }
@@ -176,6 +184,7 @@ impl FsstArray {
     | values data (values_len)      |  // Starts at the 8-byte aligned offset
     +-------------------------------+
     */
+    /// Serializes the FsstArray to a byte buffer.
     pub fn to_bytes(&self, buffer: &mut Vec<u8>) {
         let (offsets, values, nulls) = self.compressed.clone().into_parts();
         let has_nulls = nulls.is_some() as u8;
@@ -243,6 +252,7 @@ impl FsstArray {
         buffer.extend_from_slice(values_bytes);
     }
 
+    /// Deserializes a FsstArray from a byte buffer.
     pub fn from_bytes(bytes: bytes::Bytes, compressor: Arc<Compressor>) -> Self {
         if bytes.len() < 17 {
             panic!("Input buffer too small for header");

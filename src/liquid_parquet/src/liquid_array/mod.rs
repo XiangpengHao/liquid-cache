@@ -4,7 +4,7 @@
 mod byte_array;
 pub(crate) mod ipc;
 mod primitive_array;
-mod raw;
+pub mod raw;
 
 use std::{any::Any, num::NonZero, sync::Arc};
 
@@ -14,8 +14,6 @@ pub use primitive_array::{
     LiquidI8Array, LiquidI16Array, LiquidI32Array, LiquidI64Array, LiquidPrimitiveArray,
     LiquidPrimitiveType, LiquidU8Array, LiquidU16Array, LiquidU32Array, LiquidU64Array,
 };
-pub use raw::bit_pack_array::BitPackedArray;
-pub use raw::fsst_array::FsstArray;
 
 /// Liquid data type is only logical type
 #[derive(Debug, Clone, Copy)]

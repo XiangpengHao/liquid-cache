@@ -11,7 +11,7 @@ use fsst::Compressor;
 use crate::liquid_array::LiquidPrimitiveArray;
 use crate::liquid_array::LiquidPrimitiveType;
 use crate::liquid_array::byte_array::ArrowStringType;
-use crate::liquid_array::{BitPackedArray, FsstArray};
+use crate::liquid_array::raw::{BitPackedArray, FsstArray};
 
 use super::{LiquidArrayRef, LiquidByteArray, LiquidDataType};
 

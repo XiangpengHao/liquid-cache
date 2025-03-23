@@ -7,6 +7,7 @@ use arrow::datatypes::ArrowNativeType;
 use bytes;
 use fastlanes::BitPacking;
 
+/// A bit-packed array.
 #[derive(Debug)]
 pub struct BitPackedArray<T: ArrowPrimitiveType>
 where
@@ -38,20 +39,7 @@ impl<T: ArrowPrimitiveType> BitPackedArray<T>
 where
     T::Native: BitPacking,
 {
-    pub fn from_parts(
-        packed_values: ScalarBuffer<T::Native>,
-        nulls: Option<NullBuffer>,
-        bit_width: NonZero<u8>,
-        original_len: usize,
-    ) -> Self {
-        Self {
-            packed_values,
-            nulls,
-            bit_width,
-            original_len,
-        }
-    }
-
+    /// Creates a new null array with the given length.
     pub fn new_null_array(len: usize) -> Self {
         Self {
             packed_values: vec![T::Native::usize_as(0); len].into(),
@@ -73,10 +61,13 @@ where
         self.bit_width
     }
 
-    pub fn is_nullable(&self) -> bool {
+    /// Returns true if the array is nullable.
+    #[cfg(test)]
+    fn is_nullable(&self) -> bool {
         self.nulls.is_some()
     }
 
+    /// Creates a new bit-packed array from a primitive array and a bit width.
     pub fn from_primitive(array: PrimitiveArray<T>, bit_width: NonZero<u8>) -> Self {
         let original_len = array.len();
         let (_data_type, values, nulls) = array.into_parts();
@@ -132,6 +123,7 @@ where
         }
     }
 
+    /// Converts the bit-packed array to a primitive array.
     pub fn to_primitive(&self) -> PrimitiveArray<T> {
         // Special case for all nulls, don't unpack
         if let Some(nulls) = self.nulls() {
@@ -177,6 +169,7 @@ where
         PrimitiveArray::<T>::new(ScalarBuffer::from(output), nulls)
     }
 
+    /// Returns the memory size of the bit-packed array.
     pub fn get_array_memory_size(&self) -> usize {
         self.packed_values.inner().capacity()
     }
@@ -211,6 +204,7 @@ where
     | values data (values_len)    |  // Starts at the 8-byte aligned offset
     +-----------------------------+
     */
+    /// Serializes the bit-packed array to a byte buffer.
     pub fn to_bytes(&self, buffer: &mut Vec<u8>) {
         let has_nulls = self.nulls.is_some() as u8;
 
@@ -251,6 +245,7 @@ where
         buffer.extend_from_slice(values_bytes);
     }
 
+    /// Deserializes a bit-packed array from a byte buffer.
     pub fn from_bytes(bytes: bytes::Bytes) -> Self
     where
         T::Native: BitPacking,

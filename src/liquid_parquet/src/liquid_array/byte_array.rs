@@ -13,8 +13,8 @@ use std::any::Any;
 use std::mem::MaybeUninit;
 use std::sync::Arc;
 
-use super::{BitPackedArray, LiquidArray, LiquidArrayRef, LiquidDataType};
-use crate::liquid_array::{FsstArray, get_bit_width};
+use super::{LiquidArray, LiquidArrayRef, LiquidDataType};
+use crate::liquid_array::{get_bit_width, raw::BitPackedArray, raw::FsstArray};
 use crate::utils::CheckedDictionaryArray;
 
 impl LiquidArray for LiquidByteArray {

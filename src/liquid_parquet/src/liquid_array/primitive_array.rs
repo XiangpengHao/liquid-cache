@@ -14,9 +14,9 @@ use arrow::buffer::ScalarBuffer;
 use fastlanes::BitPacking;
 use num_traits::{AsPrimitive, FromPrimitive};
 
-use super::{BitPackedArray, LiquidDataType};
+use super::LiquidDataType;
+use crate::liquid_array::raw::BitPackedArray;
 use crate::liquid_array::{LiquidArray, LiquidArrayRef, get_bit_width};
-
 mod private {
     pub trait Sealed {}
 }
