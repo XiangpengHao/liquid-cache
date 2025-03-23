@@ -126,7 +126,7 @@ pub async fn main() -> Result<()> {
 
 ## Community server
 
-We run a community server for LiquidCache at https://hex.tail0766e4.ts.net:50051 (hosted on Xiangpeng's NAS, use at your own risk).
+We run a community server for LiquidCache at <https://hex.tail0766e4.ts.net:50051> (hosted on Xiangpeng's NAS, use at your own risk).
 
 You can try it out by running:
 ```bash
