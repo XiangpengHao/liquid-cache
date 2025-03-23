@@ -38,11 +38,11 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use futures::{Stream, TryStreamExt};
-use liquid_common::{
+use liquid_cache_common::{
     CacheMode,
     rpc::{FetchResults, LiquidCacheActions},
 };
-use liquid_parquet::LiquidCacheRef;
+use liquid_cache_parquet::LiquidCacheRef;
 use log::info;
 use prost::Message;
 use prost::bytes::Bytes;

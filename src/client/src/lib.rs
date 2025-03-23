@@ -27,7 +27,7 @@ use datafusion::{
     },
 };
 use exec::FlightExec;
-use liquid_common::CacheMode;
+use liquid_cache_common::CacheMode;
 use log::info;
 use owo_colors::OwoColorize;
 use serde::{Deserialize, Serialize};

@@ -20,4 +20,4 @@ async-trait = { workspace = true }
 log = { workspace = true }
 prost = { workspace = true }
 owo-colors = { workspace = true }
-liquid-common = { workspace = true }
+liquid-cache-common = { workspace = true }

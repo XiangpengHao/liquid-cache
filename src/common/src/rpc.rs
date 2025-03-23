@@ -1,3 +1,6 @@
+//! RPC definitions for the LiquidCache service.
+//! You should not use this module directly.
+//! Instead, use the `liquid_cache_server` and `liquid_cache_client` crates to interact with the LiquidCache service.
 use std::collections::HashMap;
 
 use arrow_flight::{
@@ -7,10 +10,15 @@ use arrow_flight::{
 use bytes::Bytes;
 use prost::Message;
 
+/// The actions that can be performed on the LiquidCache service.
 pub enum LiquidCacheActions {
+    /// Register a table with the LiquidCache service.
     RegisterTable(RegisterTableRequest),
+    /// Get the most recent execution metrics from the LiquidCache service.
     ExecutionMetrics,
+    /// Reset the cache.
     ResetCache,
+    /// Register an object store with the LiquidCache service.
     RegisterObjectStore(RegisterObjectStoreRequest),
 }
 

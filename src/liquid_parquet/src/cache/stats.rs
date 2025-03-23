@@ -117,6 +117,7 @@ impl StatsWriter {
 }
 
 impl LiquidCache {
+    /// Get the memory usage of the cache in bytes.
     pub fn memory_usage_bytes(&self) -> u64 {
         let files = self.files.lock().unwrap();
         let mut memory_consumption = 0;
@@ -136,6 +137,7 @@ impl LiquidCache {
         memory_consumption as u64
     }
 
+    /// Write the stats of the cache to a parquet file.
     pub fn write_stats(&self, parquet_file_path: impl AsRef<Path>) -> Result<(), ParquetError> {
         let mut writer = StatsWriter::new(parquet_file_path)?;
         let files = self.files.lock().unwrap();

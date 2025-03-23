@@ -22,8 +22,8 @@ resolver = "3"
 [workspace.dependencies]
 liquid-cache-server = { path = "src/server" }
 liquid-cache-client = { path = "src/client" }
-liquid-parquet = { path = "src/liquid_parquet" }
-liquid-common = { path = "src/common" }
+liquid-cache-parquet = { path = "src/liquid_parquet" }
+liquid-cache-common = { path = "src/common" }
 arrow = { version = "54.3.0", default-features = false, features = [
 	"prettyprint",
 ] }

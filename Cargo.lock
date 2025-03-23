@@ -1487,8 +1487,8 @@ dependencies = [
  "env_logger",
  "futures",
  "liquid-cache-client",
+ "liquid-cache-common",
  "liquid-cache-server",
- "liquid-common",
  "log",
  "tempfile",
  "tokio",
@@ -2313,9 +2313,9 @@ dependencies = [
  "fsst-rs",
  "futures",
  "liquid-cache-client",
+ "liquid-cache-common",
+ "liquid-cache-parquet",
  "liquid-cache-server",
- "liquid-common",
- "liquid-parquet",
  "log",
  "mimalloc",
  "object_store",
@@ -2341,12 +2341,50 @@ dependencies = [
  "async-trait",
  "datafusion",
  "futures",
- "liquid-common",
+ "liquid-cache-common",
  "log",
  "owo-colors",
  "prost",
  "serde",
  "tonic",
+]
+
+[[package]]
+name = "liquid-cache-common"
+version = "0.1.0"
+dependencies = [
+ "arrow-flight",
+ "bytes",
+ "prost",
+ "tempfile",
+ "url",
+]
+
+[[package]]
+name = "liquid-cache-parquet"
+version = "0.1.0"
+dependencies = [
+ "ahash",
+ "arrow",
+ "arrow-schema",
+ "async-trait",
+ "bytes",
+ "dashmap",
+ "datafusion",
+ "fastlanes",
+ "fsst-rs",
+ "futures",
+ "itertools 0.14.0",
+ "liquid-cache-common",
+ "log",
+ "num-traits",
+ "object_store",
+ "parquet",
+ "serde",
+ "tempfile",
+ "tokio",
+ "url",
+ "zerocopy 0.8.24",
 ]
 
 [[package]]
@@ -2363,8 +2401,8 @@ dependencies = [
  "datafusion",
  "futures",
  "liquid-cache-client",
- "liquid-common",
- "liquid-parquet",
+ "liquid-cache-common",
+ "liquid-cache-parquet",
  "log",
  "object_store",
  "prost",
@@ -2372,44 +2410,6 @@ dependencies = [
  "tokio",
  "tonic",
  "url",
-]
-
-[[package]]
-name = "liquid-common"
-version = "0.1.0"
-dependencies = [
- "arrow-flight",
- "bytes",
- "prost",
- "tempfile",
- "url",
-]
-
-[[package]]
-name = "liquid-parquet"
-version = "0.1.0"
-dependencies = [
- "ahash",
- "arrow",
- "arrow-schema",
- "async-trait",
- "bytes",
- "dashmap",
- "datafusion",
- "fastlanes",
- "fsst-rs",
- "futures",
- "itertools 0.14.0",
- "liquid-common",
- "log",
- "num-traits",
- "object_store",
- "parquet",
- "serde",
- "tempfile",
- "tokio",
- "url",
- "zerocopy 0.8.24",
 ]
 
 [[package]]

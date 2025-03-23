@@ -1,8 +1,11 @@
 [package]
-name = "liquid-parquet"
-edition = { workspace = true }
+name = "liquid-cache-parquet"
 version = { workspace = true }
-publish = false
+edition = { workspace = true }
+license = { workspace = true }
+readme = { workspace = true }
+description = { workspace = true }
+repository = { workspace = true }
 
 [dependencies]
 arrow = { workspace = true }
@@ -24,7 +27,7 @@ itertools = { workspace = true }
 fastlanes = "0.1.8"
 num-traits = "0.2.19"
 zerocopy = { version = "0.8.24", features = ["derive"] }
-liquid-common = { workspace = true }
+liquid-cache-common = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3.19.1"

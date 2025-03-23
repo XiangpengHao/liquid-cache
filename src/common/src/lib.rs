@@ -1,3 +1,5 @@
+#![doc = include_str!("../../../README.md")]
+
 use std::fmt::Display;
 use std::str::FromStr;
 pub mod rpc;

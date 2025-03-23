@@ -310,6 +310,7 @@ impl LiquidByteArray {
         result
     }
 
+    /// Deserialize a LiquidByteArray from bytes, using zero-copy where possible.
     pub fn from_bytes(bytes: Bytes, compressor: Arc<Compressor>) -> Self {
         let header_size = LiquidIPCHeader::size() + ByteArrayHeader::size();
         let header = LiquidIPCHeader::from_bytes(&bytes);

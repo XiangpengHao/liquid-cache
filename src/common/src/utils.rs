@@ -1,5 +1,6 @@
 use url::Url;
 
+/// Sanitize an object store URL for use as a directory name.
 pub fn sanitize_object_store_url_for_dirname(url: &Url) -> String {
     let mut parts = vec![url.scheme()];
 
@@ -12,6 +13,7 @@ pub fn sanitize_object_store_url_for_dirname(url: &Url) -> String {
     dirname.replace(['/', ':', '?', '&', '=', '\\'], "_")
 }
 
+/// Sanitize a path for use as a directory name.
 pub fn sanitize_path_for_dirname(path: &str) -> String {
     path.replace(['/', ':', '?', '&', '=', '\\'], "_")
 }

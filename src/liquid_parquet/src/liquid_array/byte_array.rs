@@ -150,11 +150,13 @@ pub struct LiquidByteArray {
 }
 
 impl LiquidByteArray {
+    /// Create a LiquidByteArray from an Arrow StringViewArray.
     pub fn from_string_view_array(array: &StringViewArray, compressor: Arc<Compressor>) -> Self {
         let dict = CheckedDictionaryArray::from_string_view_array(array);
         Self::from_dict_array_inner(dict, compressor, ArrowStringType::Utf8View)
     }
 
+    /// Train a compressor from an iterator of byte arrays.
     pub fn train_compressor_bytes<'a, T: ArrayAccessor<Item = &'a [u8]>>(
         array: ArrayIter<T>,
     ) -> Arc<Compressor> {
@@ -162,6 +164,7 @@ impl LiquidByteArray {
         Arc::new(FsstArray::train_compressor(strings))
     }
 
+    /// Train a compressor from an iterator of strings.
     pub fn train_compressor<'a, T: ArrayAccessor<Item = &'a str>>(
         array: ArrayIter<T>,
     ) -> Arc<Compressor> {
@@ -169,10 +172,12 @@ impl LiquidByteArray {
         Arc::new(FsstArray::train_compressor(strings))
     }
 
+    /// Create a LiquidByteArray from an Arrow StringArray.
     pub fn from_string_array(array: &StringArray, compressor: Arc<Compressor>) -> Self {
         Self::from_byte_array(array, compressor)
     }
 
+    /// Create a LiquidByteArray from an Arrow ByteArray.
     pub fn from_byte_array<T: ByteArrayType>(
         array: &GenericByteArray<T>,
         compressor: Arc<Compressor>,
@@ -185,6 +190,7 @@ impl LiquidByteArray {
         )
     }
 
+    /// Train a compressor from an Arrow StringViewArray.
     pub fn train_from_arrow_view(array: &StringViewArray) -> (Arc<Compressor>, Self) {
         let dict = CheckedDictionaryArray::from_string_view_array(array);
         let compressor = Self::train_compressor(dict.as_ref().values().as_string::<i32>().iter());
@@ -194,6 +200,7 @@ impl LiquidByteArray {
         )
     }
 
+    /// Train a compressor from an Arrow ByteArray.
     pub fn train_from_arrow<T: ByteArrayType>(
         array: &GenericByteArray<T>,
     ) -> (Arc<Compressor>, Self) {
@@ -215,6 +222,7 @@ impl LiquidByteArray {
         )
     }
 
+    /// Train a compressor from an Arrow DictionaryArray.
     pub fn train_from_arrow_dict(array: &DictionaryArray<UInt16Type>) -> (Arc<Compressor>, Self) {
         if array.values().data_type() == &DataType::Utf8 {
             let values = array.values().as_string::<i32>();
@@ -244,6 +252,7 @@ impl LiquidByteArray {
         }
     }
 
+    /// Create a LiquidByteArray from an Arrow DictionaryArray.
     fn from_dict_array_inner(
         array: CheckedDictionaryArray,
         compressor: Arc<Compressor>,
@@ -287,6 +296,7 @@ impl LiquidByteArray {
         )
     }
 
+    /// Create a LiquidByteArray from an Arrow DictionaryArray.
     pub fn from_dict_array(
         array: &DictionaryArray<UInt16Type>,
         compressor: Arc<Compressor>,
@@ -302,7 +312,7 @@ impl LiquidByteArray {
         }
     }
 
-    /// Get the compressor of the LiquidStringArray.
+    /// Get the decompressor of the LiquidStringArray.
     pub fn decompressor(&self) -> Decompressor {
         self.values.decompressor()
     }
@@ -430,6 +440,7 @@ impl LiquidByteArray {
         BooleanArray::new(values, nulls)
     }
 
+    /// Get the nulls of the LiquidStringArray.
     pub fn nulls(&self) -> Option<&NullBuffer> {
         self.keys.nulls()
     }

@@ -1,5 +1,8 @@
+//! LiquidArray is the core data structure of LiquidCache.
+//! You should not use this module directly.
+//! Instead, use `liquid_cache_server` or `liquid_cache_client` to interact with LiquidCache.
 mod byte_array;
-pub mod ipc;
+pub(crate) mod ipc;
 mod primitive_array;
 mod raw;
 
@@ -18,7 +21,9 @@ pub use raw::fsst_array::FsstArray;
 #[derive(Debug, Clone, Copy)]
 #[repr(u16)]
 pub enum LiquidDataType {
+    /// A byte array.
     ByteArray = 0,
+    /// An integer.
     Integer = 1,
 }
 
@@ -42,8 +47,10 @@ pub trait AsLiquidArray {
         self.as_string_array_opt().expect("liquid string array")
     }
 
+    /// Get the underlying binary array.
     fn as_binary_array_opt(&self) -> Option<&LiquidByteArray>;
 
+    /// Get the underlying binary array.
     fn as_binary(&self) -> &LiquidByteArray {
         self.as_binary_array_opt().expect("liquid binary array")
     }

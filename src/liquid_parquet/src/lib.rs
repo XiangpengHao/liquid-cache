@@ -1,3 +1,6 @@
+#![warn(missing_docs)]
+#![doc = include_str!("../../../README.md")]
+
 mod cache;
 pub mod liquid_array;
 mod reader;
