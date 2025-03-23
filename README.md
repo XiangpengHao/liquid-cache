@@ -1,4 +1,4 @@
-<p align="center"> <img src="https://github.com/XiangpengHao/liquid-cache/blob/main/dev/doc/logo.png" alt="liquid_cache_logo" width="450"/> </p>
+<p align="center"> <img src="https://raw.githubusercontent.com/XiangpengHao/liquid-cache/main/dev/doc/logo.png" alt="liquid_cache_logo" width="450"/> </p>
 
 
 [![Crates.io Version](https://img.shields.io/crates/v/liquid-cache-client?label=liquid-cache-client)](https://crates.io/crates/liquid-cache-client)
@@ -8,9 +8,7 @@
 [![Rust CI](https://github.com/XiangpengHao/liquid-cache/actions/workflows/ci.yml/badge.svg)](https://github.com/XiangpengHao/liquid-cache/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/XiangpengHao/liquid-cache/graph/badge.svg?token=yTeQR2lVnd)](https://codecov.io/gh/XiangpengHao/liquid-cache)
 
-Welcome to LiquidCache! 🚀
-
-LiquidCache is a cache server for [DataFusion](https://github.com/apache/datafusion) based systems. Simply register LiquidCache as the `TableProvider` to enjoy the performance boost. 
+LiquidCache is a cache server for object store tailored for [DataFusion](https://github.com/apache/datafusion) based systems. Simply register LiquidCache as the `TableProvider` to enjoy the performance boost. 
 Depending on your usage, LiquidCache can easily achieve 10x lower cost and latency.
 
 ## Architecture
@@ -26,7 +24,7 @@ Each component can be scaled independently as the workload grows.
 Under the hood, LiquidCache transcodes and caches Parquet data from object storage, and evaluates filters before sending data to DataFusion,
 effectively reducing both CPU utilization and network data transfer on cache servers.
 
-<img src="https://github.com/XiangpengHao/liquid-cache/blob/main/dev/doc/arch.png" alt="architecture" width="400"/>
+<img src="https://raw.githubusercontent.com/XiangpengHao/liquid-cache/main/dev/doc/arch.png" alt="architecture" width="400"/>
 
 
 
