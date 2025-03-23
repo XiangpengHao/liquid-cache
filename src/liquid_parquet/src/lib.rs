@@ -1,3 +1,6 @@
+#![warn(missing_docs)]
+#![doc = include_str!(concat!("../", std::env!("CARGO_PKG_README")))]
+
 mod cache;
 pub mod liquid_array;
 mod reader;

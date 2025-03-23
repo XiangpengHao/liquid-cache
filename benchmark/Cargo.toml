@@ -2,12 +2,13 @@
 name = "liquid-cache-benchmarks"
 description = "LiquidCache Benchmarks"
 edition = { workspace = true }
+publish = false
 
 [dependencies]
 liquid-cache-server = { workspace = true }
 liquid-cache-client = { workspace = true }
-liquid-parquet = { workspace = true }
-liquid-common = { workspace = true }
+liquid-cache-parquet = { workspace = true }
+liquid-cache-common = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 datafusion = { workspace = true }
@@ -15,11 +16,11 @@ tokio = { workspace = true }
 log = { workspace = true }
 arrow-flight = { workspace = true }
 tonic = { workspace = true }
-clap = { version = "4.5.31", features = ["derive"] }
-env_logger = "0.11.6"
+clap = { version = "4.5.32", features = ["derive"] }
+env_logger = "0.11.7"
 url = { workspace = true }
 owo-colors = { workspace = true }
-mimalloc = "0.1.43"
+mimalloc = "0.1.44"
 pprof = { version = "0.14.0", features = ["flamegraph"] }
 serde_json.workspace = true
 serde.workspace = true
@@ -29,7 +30,7 @@ sysinfo = { version = "0.33.1", default-features = false, features = [
 object_store = { workspace = true, features = ["http"] }
 bytes = { workspace = true }
 prost = { workspace = true }
-fsst-rs = "0.5.0"
+fsst-rs = "0.5.2"
 parquet = { workspace = true }
 axum = { version = "0.7.9", default-features = false, features = [
 	"tokio",

@@ -6,8 +6,8 @@ use datafusion::{
     physical_plan::{ExecutionPlan, display::DisplayableExecutionPlan, metrics::MetricValue},
     prelude::{ParquetReadOptions, SessionContext},
 };
-use liquid_common::{CacheMode, rpc::ExecutionMetricsResponse};
-use liquid_parquet::{LiquidCache, LiquidCacheMode, LiquidCacheRef, LiquidParquetFileFormat};
+use liquid_cache_common::{CacheMode, rpc::ExecutionMetricsResponse};
+use liquid_cache_parquet::{LiquidCache, LiquidCacheMode, LiquidCacheRef, LiquidParquetFileFormat};
 use log::{debug, info};
 use object_store::ObjectStore;
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
@@ -82,7 +82,8 @@ impl LiquidCacheServiceInner {
         }
 
         let object_store: Arc<dyn ObjectStore> = {
-            let sanitized_url = liquid_common::utils::sanitize_object_store_url_for_dirname(url);
+            let sanitized_url =
+                liquid_cache_common::utils::sanitize_object_store_url_for_dirname(url);
             let store_cache_dir = self.parquet_cache_dir.join(sanitized_url);
             let local_cache = LocalCache::new(Arc::new(object_store), store_cache_dir);
             Arc::new(local_cache)

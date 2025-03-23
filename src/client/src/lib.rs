@@ -1,3 +1,5 @@
+#![warn(missing_docs)]
+#![doc = include_str!(concat!("../", std::env!("CARGO_PKG_README")))]
 use std::any::Any;
 use std::collections::HashMap;
 use std::error::Error;
@@ -25,7 +27,7 @@ use datafusion::{
     },
 };
 use exec::FlightExec;
-use liquid_common::CacheMode;
+use liquid_cache_common::CacheMode;
 use log::info;
 use owo_colors::OwoColorize;
 use serde::{Deserialize, Serialize};
@@ -51,6 +53,29 @@ fn transform_flight_schema_to_output_schema(schema: &SchemaRef) -> Schema {
         .collect();
     Schema::new_with_metadata(transformed_fields, schema.metadata.clone())
 }
+
+/// The builder for a [LiquidCacheTable].
+///
+/// # Example
+///
+/// ```no_run
+/// let mut session_config = SessionConfig::from_env()?;
+/// session_config
+///     .options_mut()
+///     .execution
+///     .parquet
+///     .pushdown_filters = true;
+/// let ctx = Arc::new(SessionContext::new_with_config(session_config));
+/// let table = LiquidCacheTableBuilder::new(cache_server, table_name, url.as_ref())
+///     .with_object_store(
+///         format!("{}://{}", url.scheme(), url.host_str().unwrap_or_default()),
+///         None,
+///     )
+///     .build()
+///     .await?;
+/// ctx.register_table(table_name, Arc::new(table))?;
+/// ctx.sql(&sql).await?.show().await?;
+/// ```
 #[derive(Clone, Debug)]
 pub struct LiquidCacheTableBuilder {
     driver: Arc<FlightSqlDriver>,
@@ -62,6 +87,13 @@ pub struct LiquidCacheTableBuilder {
 }
 
 impl LiquidCacheTableBuilder {
+    /// Create a new builder for a [LiquidCacheTable].
+    ///
+    /// # Arguments
+    ///
+    /// * `cache_server` - The address of the cache server
+    /// * `table_name` - The name of the table
+    /// * `table_url` - The url of the table
     pub fn new(
         cache_server: impl AsRef<str>,
         table_name: impl AsRef<str>,
@@ -77,6 +109,23 @@ impl LiquidCacheTableBuilder {
         }
     }
 
+    /// Add an object store to the builder.
+    ///
+    /// # Arguments
+    ///
+    /// * `url` - The url of the object store
+    /// * `object_store_options` - The options for the object store
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use liquid_cache_client::LiquidCacheTableBuilder;
+    /// use std::collections::HashMap;
+    ///
+    /// let mut builder = LiquidCacheTableBuilder::new("localhost:50051", "my_table", "my_table_url");
+    /// let object_store_options = HashMap::new();
+    /// builder.with_object_store("s3://my_bucket", Some(object_store_options)).build();
+    /// ```
     pub fn with_object_store(
         mut self,
         url: impl AsRef<str>,
@@ -89,11 +138,18 @@ impl LiquidCacheTableBuilder {
         self
     }
 
+    /// Set the cache mode for the builder.
+    ///
+    /// # Arguments
+    ///
+    /// * `cache_mode` - The cache mode to use
     pub fn with_cache_mode(mut self, cache_mode: CacheMode) -> Self {
         self.cache_mode = cache_mode;
         self
     }
 
+    /// Build the [LiquidCacheTable].
+    /// It will communicate with the cache server to get the metadata of the table.
     pub async fn build(self) -> Result<LiquidCacheTable> {
         let channel = flight_channel(&self.cache_server).await?;
         for (url, object_store_options) in self.object_stores {
@@ -131,18 +187,6 @@ impl LiquidCacheTableBuilder {
             output_schema,
             stats,
         })
-    }
-
-    pub async fn register_object_store(
-        &self,
-        channel: Channel,
-        table_url: &str,
-        object_store_options: HashMap<String, String>,
-    ) -> Result<()> {
-        self.driver
-            .register_object_store(channel, table_url, object_store_options)
-            .await
-            .map_err(to_df_err)
     }
 }
 
@@ -188,7 +232,7 @@ impl TryFrom<FlightInfo> for FlightMetadata {
 /// Meant to gradually encapsulate all sorts of knobs required
 /// for controlling the protocol and query execution details.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-pub struct FlightProperties {
+pub(crate) struct FlightProperties {
     pub(crate) unbounded_stream: bool,
     pub(crate) grpc_headers: HashMap<String, String>,
 }

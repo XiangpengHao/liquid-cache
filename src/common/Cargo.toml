@@ -1,13 +1,17 @@
 [package]
-name = "liquid-common"
-edition = { workspace = true }
+name = "liquid-cache-common"
 version = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+readme = { workspace = true }
+description = { workspace = true }
+repository = { workspace = true }
 
 [dependencies]
 arrow-flight = { workspace = true }
 prost = { workspace = true }
 bytes = { workspace = true }
 url = { workspace = true }
-tempfile = { workspace = true }
 
 [dev-dependencies]
+tempfile = { workspace = true }

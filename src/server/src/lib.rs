@@ -15,6 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+#![warn(missing_docs)]
+#![doc = include_str!(concat!("../", std::env!("CARGO_PKG_README")))]
+
 use arrow::ipc::writer::IpcWriteOptions;
 use arrow_flight::{
     Action, FlightDescriptor, FlightEndpoint, FlightInfo, HandshakeRequest, HandshakeResponse,
@@ -35,11 +38,11 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use futures::{Stream, TryStreamExt};
-use liquid_common::{
+use liquid_cache_common::{
     CacheMode,
     rpc::{FetchResults, LiquidCacheActions},
 };
-use liquid_parquet::LiquidCacheRef;
+use liquid_cache_parquet::LiquidCacheRef;
 use log::info;
 use prost::Message;
 use prost::bytes::Bytes;
@@ -60,10 +63,27 @@ mod local_cache;
 /// The server calls `start` right before polling the stream,
 /// and calls `stop` right after exhausting the stream.
 pub trait StatsCollector: Send + Sync {
+    /// Start the stats collector.
     fn start(&self, partition: usize, plan: &Arc<dyn ExecutionPlan>);
+    /// Stop the stats collector.
     fn stop(&self, partition: usize, plan: &Arc<dyn ExecutionPlan>);
 }
 
+/// The LiquidCache server.
+///
+/// # Example
+///
+/// ```rust
+/// use arrow_flight::flight_service_server::FlightServiceServer;
+/// use datafusion::prelude::SessionContext;
+/// use liquid_cache_server::LiquidCacheService;
+/// use tonic::transport::Server;
+/// let liquid_cache = LiquidCacheService::new(SessionContext::new(), None, None);
+/// let flight = FlightServiceServer::new(liquid_cache);
+/// Server::builder()
+///     .add_service(flight)
+///     .serve("0.0.0.0:50051".parse().unwrap());
+/// ```
 pub struct LiquidCacheService {
     inner: LiquidCacheServiceInner,
     stats_collector: Vec<Arc<dyn StatsCollector>>,
@@ -85,6 +105,13 @@ impl LiquidCacheService {
         Ok(Self::new(ctx, None, None))
     }
 
+    /// Create a new LiquidCacheService with a custom SessionContext
+    ///
+    /// # Arguments
+    ///
+    /// * `ctx` - The SessionContext to use
+    /// * `max_cache_bytes` - The maximum number of bytes to cache in memory
+    /// * `disk_cache_dir` - The directory to store the disk cache
     pub fn new(
         ctx: SessionContext,
         max_cache_bytes: Option<usize>,
@@ -98,15 +125,18 @@ impl LiquidCacheService {
         }
     }
 
+    /// Get a reference to the cache
     pub fn cache(&self) -> &LiquidCacheRef {
         self.inner.cache()
     }
 
+    /// Add a stats collector to the service
     pub fn add_stats_collector(&mut self, collector: Arc<dyn StatsCollector>) {
         self.stats_collector.push(collector);
     }
 
     /// Create a new SessionContext with good defaults
+    /// This is the recommended way to create a SessionContext for LiquidCache
     pub fn context(partitions: Option<usize>) -> Result<SessionContext, DataFusionError> {
         let mut session_config = SessionConfig::from_env()?;
         let options_mut = session_config.options_mut();

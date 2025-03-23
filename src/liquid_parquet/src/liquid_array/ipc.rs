@@ -11,7 +11,7 @@ use fsst::Compressor;
 use crate::liquid_array::LiquidPrimitiveArray;
 use crate::liquid_array::LiquidPrimitiveType;
 use crate::liquid_array::byte_array::ArrowStringType;
-use crate::liquid_array::{BitPackedArray, FsstArray};
+use crate::liquid_array::raw::{BitPackedArray, FsstArray};
 
 use super::{LiquidArrayRef, LiquidByteArray, LiquidDataType};
 
@@ -310,6 +310,7 @@ impl LiquidByteArray {
         result
     }
 
+    /// Deserialize a LiquidByteArray from bytes, using zero-copy where possible.
     pub fn from_bytes(bytes: Bytes, compressor: Arc<Compressor>) -> Self {
         let header_size = LiquidIPCHeader::size() + ByteArrayHeader::size();
         let header = LiquidIPCHeader::from_bytes(&bytes);

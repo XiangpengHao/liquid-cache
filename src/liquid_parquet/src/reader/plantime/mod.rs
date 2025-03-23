@@ -52,6 +52,7 @@ impl GetExt for LiquidParquetFactory {
     }
 }
 
+/// A file format for liquid parquet.
 #[derive(Debug)]
 pub struct LiquidParquetFileFormat {
     options: TableParquetOptions,
@@ -61,6 +62,7 @@ pub struct LiquidParquetFileFormat {
 }
 
 impl LiquidParquetFileFormat {
+    /// Creates a new liquid parquet file format.
     pub fn new(
         options: TableParquetOptions,
         inner: Arc<dyn FileFormat>,

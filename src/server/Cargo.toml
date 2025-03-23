@@ -20,9 +20,9 @@ tonic = { workspace = true }
 tokio = { workspace = true }
 url = { workspace = true }
 dashmap = { workspace = true }
-liquid-parquet = { workspace = true }
+liquid-cache-parquet = { workspace = true }
 object_store = { workspace = true, features = ["aws", "http"] }
-liquid-common = { workspace = true }
+liquid-cache-common = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 async-stream = "0.3"

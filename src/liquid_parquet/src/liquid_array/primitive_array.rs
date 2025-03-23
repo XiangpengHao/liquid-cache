@@ -14,9 +14,9 @@ use arrow::buffer::ScalarBuffer;
 use fastlanes::BitPacking;
 use num_traits::{AsPrimitive, FromPrimitive};
 
-use super::{BitPackedArray, LiquidDataType};
+use super::LiquidDataType;
+use crate::liquid_array::raw::BitPackedArray;
 use crate::liquid_array::{LiquidArray, LiquidArrayRef, get_bit_width};
-
 mod private {
     pub trait Sealed {}
 }
@@ -37,6 +37,7 @@ pub trait LiquidPrimitiveType:
     > + Debug
     + private::Sealed
 {
+    /// The unsigned type that can be used to represent the signed type.
     type UnSignedType: ArrowPrimitiveType<Native: AsPrimitive<Self::Native> + AsPrimitive<u64> + BitPacking>
         + Debug;
 }
@@ -63,13 +64,21 @@ impl_has_unsigned_type! {
     UInt8Type => UInt8Type
 }
 
+/// Liquid's unsigned 8-bit integer array.
 pub type LiquidU8Array = LiquidPrimitiveArray<UInt8Type>;
+/// Liquid's unsigned 16-bit integer array.
 pub type LiquidU16Array = LiquidPrimitiveArray<UInt16Type>;
+/// Liquid's unsigned 32-bit integer array.
 pub type LiquidU32Array = LiquidPrimitiveArray<UInt32Type>;
+/// Liquid's unsigned 64-bit integer array.
 pub type LiquidU64Array = LiquidPrimitiveArray<UInt64Type>;
+/// Liquid's signed 8-bit integer array.
 pub type LiquidI8Array = LiquidPrimitiveArray<Int8Type>;
+/// Liquid's signed 16-bit integer array.
 pub type LiquidI16Array = LiquidPrimitiveArray<Int16Type>;
+/// Liquid's signed 32-bit integer array.
 pub type LiquidI32Array = LiquidPrimitiveArray<Int32Type>;
+/// Liquid's signed 64-bit integer array.
 pub type LiquidI64Array = LiquidPrimitiveArray<Int64Type>;
 
 /// Liquid's primitive array
@@ -98,6 +107,7 @@ where
         self.len() == 0
     }
 
+    /// Create a Liquid primitive array from an Arrow primitive array.
     pub fn from_arrow_array(arrow_array: PrimitiveArray<T>) -> LiquidPrimitiveArray<T> {
         let min = match arrow::compute::kernels::aggregate::min(&arrow_array) {
             Some(v) => v,

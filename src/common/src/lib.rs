@@ -1,14 +1,21 @@
+#![doc = include_str!(concat!("../", std::env!("CARGO_PKG_README")))]
+
 use std::fmt::Display;
 use std::str::FromStr;
 pub mod rpc;
 pub mod utils;
 
+/// Specify how LiquidCache should cache the data
 #[derive(Clone, Debug, Default, Copy, PartialEq, Eq)]
 pub enum CacheMode {
+    /// Cache parquet files
     Parquet,
+    /// Cache LiquidArray, transcode happens in background
     #[default]
-    Liquid, // Transcode happens in background
-    LiquidEagerTranscode, // Transcode blocks query execution
+    Liquid,
+    /// Transcode blocks query execution
+    LiquidEagerTranscode,
+    /// Cache Arrow, transcode happens in background
     Arrow,
 }
 

@@ -1,11 +1,11 @@
 [workspace.package]
-version = "0.1.0"
+version = "0.1.2"
 edition = "2024"
 repository = "https://github.com/XiangpengHao/liquid-cache"
 authors = ["XiangpengHao <xiangpeng.hao@wisc.edu>"]
 license = "Apache-2.0 OR MIT"
 readme = "README.md"
-description = "A distributed cache system for data analytics"
+description = "10x lower latency for cloud-native DataFusion"
 
 
 [workspace]
@@ -20,20 +20,20 @@ members = [
 resolver = "3"
 
 [workspace.dependencies]
-liquid-cache-server = { path = "src/server" }
-liquid-cache-client = { path = "src/client" }
-liquid-parquet = { path = "src/liquid_parquet" }
-liquid-common = { path = "src/common" }
-arrow = { version = "54.2.1", default-features = false, features = [
+liquid-cache-server = { path = "src/server", version = "0.1.2" }
+liquid-cache-client = { path = "src/client", version = "0.1.2" }
+liquid-cache-parquet = { path = "src/liquid_parquet", version = "0.1.2" }
+liquid-cache-common = { path = "src/common", version = "0.1.2" }
+arrow = { version = "54.3.0", default-features = false, features = [
 	"prettyprint",
 ] }
-arrow-flight = { version = "54.2.1", features = ["flight-sql-experimental"] }
-arrow-schema = { version = "54.2.1", features = ["serde"] }
-parquet = { version = "54.2.1", features = ["async", "experimental"] }
-datafusion = { version = "46.0.0" }
-async-trait = "0.1.87"
+arrow-flight = { version = "54.3.0", features = ["flight-sql-experimental"] }
+arrow-schema = { version = "54.3.0", features = ["serde"] }
+parquet = { version = "54.3.0", features = ["async", "experimental"] }
+datafusion = { version = "46.0.1" }
+async-trait = "0.1.88"
 futures = { version = "0.3.31", default-features = false, features = ["std"] }
-tokio = { version = "1.44.0", features = ["rt-multi-thread"] }
+tokio = { version = "1.44.1", features = ["rt-multi-thread"] }
 log = "0.4.26"
 tonic = { version = "0.12" }
 url = "2.5.4"
@@ -47,15 +47,4 @@ serde = { version = "1.0", default-features = false, features = ["derive"] }
 serde_json = { version = "1.0", default-features = false, features = ["std"] }
 dashmap = "6.1.0"
 owo-colors = "4"
-tempfile = "3.18.0"
-
-
-[patch.crates-io]
-arrow = { git = "https://github.com/XiangpengHao/arrow-rs.git", branch = "sota" }
-arrow-array = { git = "https://github.com/XiangpengHao/arrow-rs.git", branch = "sota" }
-arrow-buffer = { git = "https://github.com/XiangpengHao/arrow-rs.git", branch = "sota" }
-arrow-flight = { git = "https://github.com/XiangpengHao/arrow-rs.git", branch = "sota" }
-arrow-ipc = { git = "https://github.com/XiangpengHao/arrow-rs.git", branch = "sota" }
-arrow-ord = { git = "https://github.com/XiangpengHao/arrow-rs.git", branch = "sota" }
-arrow-schema = { git = "https://github.com/XiangpengHao/arrow-rs.git", branch = "sota" }
-parquet = { git = "https://github.com/XiangpengHao/arrow-rs.git", branch = "sota" }
+tempfile = "3.19.1"

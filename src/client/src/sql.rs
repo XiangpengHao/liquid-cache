@@ -18,8 +18,10 @@
 use crate::{FlightMetadata, FlightProperties};
 use arrow_flight::sql::client::FlightSqlServiceClient;
 use arrow_flight::{error::Result, sql::CommandGetDbSchemas};
-use liquid_common::CacheMode;
-use liquid_common::rpc::{LiquidCacheActions, RegisterObjectStoreRequest, RegisterTableRequest};
+use liquid_cache_common::CacheMode;
+use liquid_cache_common::rpc::{
+    LiquidCacheActions, RegisterObjectStoreRequest, RegisterTableRequest,
+};
 use std::collections::HashMap;
 use tonic::Request;
 use tonic::transport::Channel;

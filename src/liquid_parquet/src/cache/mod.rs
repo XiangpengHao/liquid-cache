@@ -710,8 +710,10 @@ impl LiquidCachedFile {
     }
 }
 
+/// A reference to a cached file.
 pub type LiquidCachedFileRef = Arc<LiquidCachedFile>;
 
+/// The main cache structure.
 #[derive(Debug)]
 pub struct LiquidCache {
     /// Files -> RowGroups -> Columns -> Batches
@@ -722,19 +724,25 @@ pub struct LiquidCache {
     cache_dir: PathBuf,
 }
 
+/// A reference to the main cache structure.
 pub type LiquidCacheRef = Arc<LiquidCache>;
 
+/// The mode of the cache.
 #[derive(Debug, Copy, Clone)]
 pub enum LiquidCacheMode {
-    /// The baseline that reads the schema as is.
+    /// The baseline that reads the arrays as is.
     InMemoryArrow,
+    /// The baseline that reads the arrays as is, but stores the data on disk.
     OnDiskArrow,
+    /// The baseline that reads the arrays as is, but transcode the data into liquid arrays in the background.
     InMemoryLiquid {
+        /// Whether to transcode the data into liquid arrays in the background.
         transcode_in_background: bool,
     },
 }
 
 impl LiquidCache {
+    /// Create a new cache
     pub fn new(batch_size: usize, max_cache_bytes: usize, cache_dir: PathBuf) -> Self {
         assert!(batch_size.is_power_of_two());
 
@@ -753,7 +761,8 @@ impl LiquidCache {
     ) -> LiquidCachedFileRef {
         let mut files = self.files.lock().unwrap();
         let value = files.entry(file_path.clone()).or_insert_with(|| {
-            let sanitized_file_path = liquid_common::utils::sanitize_path_for_dirname(&file_path);
+            let sanitized_file_path =
+                liquid_cache_common::utils::sanitize_path_for_dirname(&file_path);
             let cache_dir = self.cache_dir.join(&sanitized_file_path);
             Arc::new(LiquidCachedFile::new(
                 cache_mode,
@@ -770,6 +779,7 @@ impl LiquidCache {
         files.get(&file_path).cloned()
     }
 
+    /// Get the batch size of the cache.
     pub fn batch_size(&self) -> usize {
         self.config.batch_size()
     }

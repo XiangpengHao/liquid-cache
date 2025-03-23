@@ -1,6 +1,7 @@
 [package]
 name = "examples"
 edition = { workspace = true }
+publish = false
 
 [[bin]]
 name = "example_server"
@@ -14,14 +15,14 @@ path = "example_client.rs"
 datafusion = { workspace = true }
 liquid-cache-server = { workspace = true }
 liquid-cache-client = { workspace = true }
-liquid-common = { workspace = true }
+liquid-cache-common = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 tokio = { workspace = true }
 log = { workspace = true }
 arrow-flight = { workspace = true }
 tonic = { workspace = true }
-env_logger = "0.11.6"
+env_logger = "0.11.7"
 url = { workspace = true }
-tempfile = "3.18.0"
-clap = { version = "4.5.31", features = ["derive"] }
+tempfile = "3.19.1"
+clap = { version = "4.5.32", features = ["derive"] }
