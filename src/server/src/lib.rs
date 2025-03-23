@@ -16,7 +16,7 @@
 // under the License.
 
 #![warn(missing_docs)]
-#![doc = include_str!("../../../README.md")]
+#![doc = include_str!(concat!("../", std::env!("CARGO_PKG_README")))]
 
 use arrow::ipc::writer::IpcWriteOptions;
 use arrow_flight::{
