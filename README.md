@@ -8,7 +8,7 @@
 [![Rust CI](https://github.com/XiangpengHao/liquid-cache/actions/workflows/ci.yml/badge.svg)](https://github.com/XiangpengHao/liquid-cache/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/XiangpengHao/liquid-cache/graph/badge.svg?token=yTeQR2lVnd)](https://codecov.io/gh/XiangpengHao/liquid-cache)
 
-LiquidCache is a cache server for object store tailored for [DataFusion](https://github.com/apache/datafusion) based systems. Simply register LiquidCache as the `TableProvider` to enjoy the performance boost. 
+LiquidCache is an object store cache designed for [DataFusion](https://github.com/apache/datafusion) based systems. Simply register LiquidCache as the `TableProvider` to enjoy the performance boost. 
 Depending on your usage, LiquidCache can easily achieve 10x lower cost and latency.
 
 ## Architecture
