@@ -2,6 +2,7 @@
 name = "liquid-common"
 edition = { workspace = true }
 version = { workspace = true }
+publish = false
 
 [dependencies]
 arrow-flight = { workspace = true }

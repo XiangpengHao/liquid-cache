@@ -2,6 +2,7 @@
 name = "liquid-parquet"
 edition = { workspace = true }
 version = { workspace = true }
+publish = false
 
 [dependencies]
 arrow = { workspace = true }
@@ -14,7 +15,7 @@ tokio = { workspace = true }
 url = { workspace = true }
 ahash = { workspace = true }
 dashmap = { workspace = true }
-fsst-rs = "0.5.0"
+fsst-rs = "0.5.2"
 serde = { workspace = true }
 bytes = { workspace = true }
 log = { workspace = true }
@@ -22,8 +23,8 @@ object_store = { workspace = true }
 itertools = { workspace = true }
 fastlanes = "0.1.8"
 num-traits = "0.2.19"
-zerocopy = { version = "0.8.23", features = ["derive"] }
+zerocopy = { version = "0.8.24", features = ["derive"] }
 liquid-common = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3.18.0"
+tempfile = "3.19.1"
