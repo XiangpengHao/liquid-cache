@@ -1,6 +1,10 @@
-<p align="center"> <img src="/dev/doc/logo.png" alt="liquid_cache_logo" width="450"/> </p>
+<p align="center"> <img src="https://github.com/XiangpengHao/liquid-cache/blob/main/dev/doc/logo.png" alt="liquid_cache_logo" width="450"/> </p>
 
 
+[![Crates.io Version](https://img.shields.io/crates/v/liquid-cache-client?label=liquid-cache-client)](https://crates.io/crates/liquid-cache-client)
+[![Crates.io Version](https://img.shields.io/crates/v/liquid-cache-server?label=liquid-cache-server)](https://crates.io/crates/liquid-cache-server)
+[![docs.rs](https://img.shields.io/docsrs/liquid-cache-client?style=flat&label=client-doc)](https://docs.rs/liquid-cache-client/latest/liquid_cache_client/)
+[![docs.rs](https://img.shields.io/docsrs/liquid-cache-server?style=flat&label=server-doc)](https://docs.rs/liquid-cache-server/latest/liquid_cache_server/)
 [![Rust CI](https://github.com/XiangpengHao/liquid-cache/actions/workflows/ci.yml/badge.svg)](https://github.com/XiangpengHao/liquid-cache/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/XiangpengHao/liquid-cache/graph/badge.svg?token=yTeQR2lVnd)](https://codecov.io/gh/XiangpengHao/liquid-cache)
 
@@ -22,14 +26,27 @@ Each component can be scaled independently as the workload grows.
 Under the hood, LiquidCache transcodes and caches Parquet data from object storage, and evaluates filters before sending data to DataFusion,
 effectively reducing both CPU utilization and network data transfer on cache servers.
 
-<img src="/dev/doc/arch.png" alt="architecture" width="400"/>
+<img src="https://github.com/XiangpengHao/liquid-cache/blob/main/dev/doc/arch.png" alt="architecture" width="400"/>
 
 
 
 ## Integrate LiquidCache in 5 Minutes
-Check out the `examples` folder for more details. We are working on a crates.io release, stay tuned!
+Check out the `examples` folder for more details. 
 
-#### 1. Start a Cache Server:
+#### 1. Include the dependencies:
+In your client's `Cargo.toml`:
+```toml
+[dependencies]
+liquid-cache-client = "0.1.0"
+```
+
+In your cache server's `Cargo.toml`:
+```toml
+[dependencies]
+liquid-cache-server = "0.1.0"
+```
+
+#### 2. Start a Cache Server:
 ```rust
 use arrow_flight::flight_service_server::FlightServiceServer;
 use datafusion::prelude::SessionContext;
@@ -64,7 +81,7 @@ docker run -p 50051:50051 -v ~/liquid_cache:/cache \
   --disk-cache-dir /cache
 ```
 
-#### 2. Setup client:
+#### 3. Setup client:
 ```rust
 use datafusion::{
     error::Result,

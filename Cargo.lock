@@ -2333,7 +2333,7 @@ dependencies = [
 
 [[package]]
 name = "liquid-cache-client"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "arrow",
  "arrow-flight",
@@ -2351,7 +2351,7 @@ dependencies = [
 
 [[package]]
 name = "liquid-cache-common"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "arrow-flight",
  "bytes",
@@ -2362,7 +2362,7 @@ dependencies = [
 
 [[package]]
 name = "liquid-cache-parquet"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ahash",
  "arrow",
@@ -2389,7 +2389,7 @@ dependencies = [
 
 [[package]]
 name = "liquid-cache-server"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "arrow",
  "arrow-flight",
