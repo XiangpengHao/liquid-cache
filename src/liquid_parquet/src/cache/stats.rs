@@ -118,7 +118,7 @@ impl StatsWriter {
 
 impl LiquidCache {
     /// Get the memory usage of the cache in bytes.
-    pub fn memory_usage_bytes(&self) -> u64 {
+    pub fn compute_memory_usage_bytes(&self) -> u64 {
         let files = self.files.lock().unwrap();
         let mut memory_consumption = 0;
         for (_, file_lock) in files.iter() {

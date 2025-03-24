@@ -784,6 +784,21 @@ impl LiquidCache {
         self.config.batch_size()
     }
 
+    /// Get the max cache bytes of the cache.
+    pub fn max_cache_bytes(&self) -> usize {
+        self.config.max_cache_bytes()
+    }
+
+    /// Get the memory usage of the cache in bytes.
+    pub fn memory_usage_bytes(&self) -> usize {
+        self.config.memory_usage_bytes()
+    }
+
+    /// Get the disk usage of the cache in bytes.
+    pub fn disk_usage_bytes(&self) -> usize {
+        self.config.disk_usage_bytes()
+    }
+
     /// Reset the cache.
     pub fn reset(&self) {
         let mut files = self.files.lock().unwrap();

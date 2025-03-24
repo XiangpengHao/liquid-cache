@@ -266,7 +266,7 @@ impl LiquidCacheServiceInner {
                 }
             }
         }
-        let liquid_cache_usage = self.cache().memory_usage_bytes();
+        let liquid_cache_usage = self.cache().compute_memory_usage_bytes();
         let cache_memory_usage = liquid_cache_usage + bytes_scanned as u64;
 
         let response = ExecutionMetricsResponse {
@@ -275,6 +275,15 @@ impl LiquidCacheServiceInner {
             liquid_cache_usage,
         };
         Some(response)
+    }
+
+    pub(crate) async fn get_registered_tables(&self) -> HashMap<String, (String, CacheMode)> {
+        let tables = self.registered_tables.lock().await;
+        tables.clone()
+    }
+
+    pub(crate) fn get_parquet_cache_dir(&self) -> &PathBuf {
+        &self.parquet_cache_dir
     }
 }
 
