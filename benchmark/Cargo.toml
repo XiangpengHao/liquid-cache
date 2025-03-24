@@ -32,10 +32,7 @@ bytes = { workspace = true }
 prost = { workspace = true }
 fsst-rs = "0.5.2"
 parquet = { workspace = true }
-axum = { version = "0.7.9", default-features = false, features = [
-	"tokio",
-	"http2",
-] }
+
 
 [[bin]]
 name = "clickbench_client"

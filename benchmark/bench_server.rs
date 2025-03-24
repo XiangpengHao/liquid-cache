@@ -1,7 +1,7 @@
 use arrow_flight::flight_service_server::FlightServiceServer;
 use clap::Parser;
-use liquid_cache_benchmarks::{FlameGraphReport, StatsReport, admin_server::run_http_server};
-use liquid_cache_server::LiquidCacheService;
+use liquid_cache_benchmarks::{FlameGraphReport, StatsReport};
+use liquid_cache_server::{LiquidCacheService, admin_server::run_admin_server};
 use log::info;
 use mimalloc::MiMalloc;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
@@ -95,7 +95,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         result = Server::builder().add_service(flight).serve(args.address) => {
             result?;
         },
-        result = run_http_server(args.admin_address) => {
+        result = run_admin_server(args.admin_address) => {
             result?;
         },
     }

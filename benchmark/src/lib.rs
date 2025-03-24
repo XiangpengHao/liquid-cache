@@ -28,7 +28,6 @@ use std::{
 use tonic::transport::Channel;
 use url::Url;
 
-pub mod admin_server;
 pub mod utils;
 
 pub struct FlameGraphReport {

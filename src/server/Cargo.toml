@@ -27,6 +27,7 @@ async-trait = { workspace = true }
 bytes = { workspace = true }
 async-stream = "0.3"
 tempfile = { workspace = true }
+axum = "0.8.1"
 
 [dev-dependencies]
 liquid-cache-client = { workspace = true }

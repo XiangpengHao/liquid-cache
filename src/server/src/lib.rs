@@ -57,6 +57,7 @@ use url::Url;
 mod service;
 mod utils;
 use utils::FinalStream;
+pub mod admin_server;
 mod local_cache;
 
 /// A trait to collect stats for the execution plan.
