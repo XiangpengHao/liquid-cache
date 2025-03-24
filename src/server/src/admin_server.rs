@@ -42,9 +42,9 @@ struct ParquetCacheUsage {
 #[derive(Serialize)]
 struct CacheInfo {
     batch_size: usize,
-    max_cache_bytes: usize,
-    memory_usage_bytes: usize,
-    disk_usage_bytes: usize,
+    max_cache_bytes: u64, // here we need to be u64 because wasm is 32 bit usize.
+    memory_usage_bytes: u64,
+    disk_usage_bytes: u64,
 }
 
 async fn shutdown_handler() -> Json<ApiResponse> {
@@ -119,7 +119,7 @@ fn get_parquet_cache_usage_inner(cache_dir: &Path) -> ParquetCacheUsage {
         Ok((count, size))
     }
 
-    if let Ok((count, size)) = walk_dir(&cache_dir) {
+    if let Ok((count, size)) = walk_dir(cache_dir) {
         file_count = count;
         total_size = size;
     }
@@ -137,16 +137,16 @@ async fn get_parquet_cache_usage_handler(
 ) -> Json<ParquetCacheUsage> {
     info!("Getting parquet cache usage...");
     let cache_dir = state.liquid_cache.get_parquet_cache_dir();
-    let usage = get_parquet_cache_usage_inner(&cache_dir);
+    let usage = get_parquet_cache_usage_inner(cache_dir);
     Json(usage)
 }
 
 async fn get_cache_info_handler(State(state): State<Arc<AppState>>) -> Json<CacheInfo> {
     info!("Getting cache info...");
     let batch_size = state.liquid_cache.cache().batch_size();
-    let max_cache_bytes = state.liquid_cache.cache().max_cache_bytes();
-    let memory_usage_bytes = state.liquid_cache.cache().memory_usage_bytes();
-    let disk_usage_bytes = state.liquid_cache.cache().disk_usage_bytes();
+    let max_cache_bytes = state.liquid_cache.cache().max_cache_bytes() as u64;
+    let memory_usage_bytes = state.liquid_cache.cache().memory_usage_bytes() as u64;
+    let disk_usage_bytes = state.liquid_cache.cache().disk_usage_bytes() as u64;
     Json(CacheInfo {
         batch_size,
         max_cache_bytes,
@@ -179,7 +179,7 @@ async fn get_system_info_handler(State(_state): State<Arc<AppState>>) -> Json<Sy
         kernel: sysinfo::System::kernel_version().unwrap_or_default(),
         os: sysinfo::System::os_version().unwrap_or_default(),
         host_name: sysinfo::System::host_name().unwrap_or_default(),
-        cpu_cores: sys.physical_core_count().unwrap_or(0) as usize,
+        cpu_cores: sys.physical_core_count().unwrap_or(0),
     })
 }
 
