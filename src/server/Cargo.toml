@@ -27,6 +27,16 @@ async-trait = { workspace = true }
 bytes = { workspace = true }
 async-stream = "0.3"
 tempfile = { workspace = true }
+axum = "0.8.1"
+serde = { workspace = true }
+tower-http = { version = "0.6.2", features = ["cors"] }
+sysinfo = { version = "0.33.1", default-features = false, features = [
+	"component",
+	"disk",
+	"network",
+	"system",
+	"user",
+] }
 
 [dev-dependencies]
 liquid-cache-client = { workspace = true }

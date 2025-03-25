@@ -48,6 +48,7 @@ use prost::Message;
 use prost::bytes::Bytes;
 use service::LiquidCacheServiceInner;
 use std::{
+    collections::HashMap,
     path::PathBuf,
     sync::{Arc, atomic::AtomicU64},
 };
@@ -57,6 +58,7 @@ use url::Url;
 mod service;
 mod utils;
 use utils::FinalStream;
+pub mod admin_server;
 mod local_cache;
 
 /// A trait to collect stats for the execution plan.
@@ -170,6 +172,16 @@ impl LiquidCacheService {
     fn get_next_execution_id(&self) -> u64 {
         self.next_execution_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Get all registered tables and their cache modes
+    pub async fn get_registered_tables(&self) -> HashMap<String, (String, CacheMode)> {
+        self.inner.get_registered_tables().await
+    }
+
+    /// Get the parquet cache directory
+    pub fn get_parquet_cache_dir(&self) -> &PathBuf {
+        self.inner.get_parquet_cache_dir()
     }
 }
 

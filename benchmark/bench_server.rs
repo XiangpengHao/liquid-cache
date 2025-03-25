@@ -1,7 +1,7 @@
 use arrow_flight::flight_service_server::FlightServiceServer;
 use clap::Parser;
-use liquid_cache_benchmarks::{FlameGraphReport, StatsReport, admin_server::run_http_server};
-use liquid_cache_server::LiquidCacheService;
+use liquid_cache_benchmarks::{FlameGraphReport, StatsReport};
+use liquid_cache_server::{LiquidCacheService, admin_server::run_admin_server};
 use log::info;
 use mimalloc::MiMalloc;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
@@ -18,7 +18,7 @@ struct CliArgs {
     address: SocketAddr,
 
     /// HTTP address for admin endpoint
-    #[arg(long = "admin-address", default_value = "127.0.0.1:8080")]
+    #[arg(long = "admin-address", default_value = "127.0.0.1:50052")]
     admin_address: SocketAddr,
 
     /// Number of partitions to use
@@ -85,7 +85,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )));
     }
 
-    let flight = FlightServiceServer::new(liquid_cache_server);
+    let liquid_cache_server = Arc::new(liquid_cache_server);
+    let flight = FlightServiceServer::from_arc(liquid_cache_server.clone());
 
     info!("LiquidCache server listening on {}", args.address);
     info!("Admin server listening on {}", args.admin_address);
@@ -95,7 +96,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         result = Server::builder().add_service(flight).serve(args.address) => {
             result?;
         },
-        result = run_http_server(args.admin_address) => {
+        result = run_admin_server(args.admin_address, liquid_cache_server) => {
             result?;
         },
     }

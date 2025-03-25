@@ -24,12 +24,14 @@ impl CacheConfig {
         self.batch_size
     }
 
-    #[cfg(test)]
+    pub fn max_cache_bytes(&self) -> usize {
+        self.max_cache_bytes
+    }
+
     pub fn memory_usage_bytes(&self) -> usize {
         self.used_memory_bytes.load(Ordering::Relaxed)
     }
 
-    #[cfg(test)]
     pub fn disk_usage_bytes(&self) -> usize {
         self.used_disk_bytes.load(Ordering::Relaxed)
     }
