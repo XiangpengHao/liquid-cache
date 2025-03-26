@@ -2397,6 +2397,7 @@ dependencies = [
  "prost",
  "serde",
  "tonic",
+ "uuid",
 ]
 
 [[package]]
@@ -2464,6 +2465,7 @@ dependencies = [
  "tonic",
  "tower-http",
  "url",
+ "uuid",
 ]
 
 [[package]]

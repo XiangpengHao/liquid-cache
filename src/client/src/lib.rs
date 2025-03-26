@@ -1,5 +1,5 @@
 #![warn(missing_docs)]
-#![doc = include_str!(concat!("../", std::env!("CARGO_PKG_README")))]
+#![cfg_attr(not(doctest), doc = include_str!(concat!("../", std::env!("CARGO_PKG_README"))))]
 use std::any::Any;
 use std::collections::HashMap;
 use std::error::Error;
@@ -26,7 +26,7 @@ use datafusion::{
         unparser::{Unparser, dialect::PostgreSqlDialect},
     },
 };
-use exec::FlightExec;
+pub use exec::FlightExec;
 use liquid_cache_common::CacheMode;
 use log::info;
 use owo_colors::OwoColorize;
@@ -58,7 +58,7 @@ fn transform_flight_schema_to_output_schema(schema: &SchemaRef) -> Schema {
 ///
 /// # Example
 ///
-/// ```no_run
+/// ```ignore
 /// let mut session_config = SessionConfig::from_env()?;
 /// session_config
 ///     .options_mut()

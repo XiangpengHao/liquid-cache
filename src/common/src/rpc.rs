@@ -15,7 +15,7 @@ pub enum LiquidCacheActions {
     /// Register a table with the LiquidCache service.
     RegisterTable(RegisterTableRequest),
     /// Get the most recent execution metrics from the LiquidCache service.
-    ExecutionMetrics,
+    ExecutionMetrics(ExecutionMetricsRequest),
     /// Reset the cache.
     ResetCache,
     /// Register an object store with the LiquidCache service.
@@ -29,9 +29,9 @@ impl From<LiquidCacheActions> for Action {
                 r#type: "RegisterTable".to_string(),
                 body: request.as_any().encode_to_vec().into(),
             },
-            LiquidCacheActions::ExecutionMetrics => Action {
+            LiquidCacheActions::ExecutionMetrics(request) => Action {
                 r#type: "ExecutionMetrics".to_string(),
-                body: Bytes::new(),
+                body: request.as_any().encode_to_vec().into(),
             },
             LiquidCacheActions::ResetCache => Action {
                 r#type: "ResetCache".to_string(),
@@ -53,7 +53,11 @@ impl From<Action> for LiquidCacheActions {
                 let request = any.unpack::<RegisterTableRequest>().unwrap().unwrap();
                 LiquidCacheActions::RegisterTable(request)
             }
-            "ExecutionMetrics" => LiquidCacheActions::ExecutionMetrics,
+            "ExecutionMetrics" => {
+                let any = Any::decode(action.body).unwrap();
+                let request = any.unpack::<ExecutionMetricsRequest>().unwrap().unwrap();
+                LiquidCacheActions::ExecutionMetrics(request)
+            }
             "ResetCache" => LiquidCacheActions::ResetCache,
             "RegisterObjectStore" => {
                 let any = Any::decode(action.body).unwrap();
@@ -61,6 +65,25 @@ impl From<Action> for LiquidCacheActions {
                 LiquidCacheActions::RegisterObjectStore(request)
             }
             _ => panic!("Invalid action: {}", action.r#type),
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ExecutionMetricsRequest {
+    #[prost(string, tag = "1")]
+    pub handle: String,
+}
+
+impl ProstMessageExt for ExecutionMetricsRequest {
+    fn type_url() -> &'static str {
+        "type.googleapis.com/datafusion.example.com.sql.ExecutionMetricsRequest"
+    }
+
+    fn as_any(&self) -> Any {
+        Any {
+            type_url: ExecutionMetricsRequest::type_url().to_string(),
+            value: ::prost::Message::encode_to_vec(self).into(),
         }
     }
 }
@@ -114,8 +137,8 @@ impl ProstMessageExt for RegisterObjectStoreRequest {
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FetchResults {
-    #[prost(uint64, tag = "1")]
-    pub handle: u64,
+    #[prost(bytes, tag = "1")]
+    pub handle: Bytes,
 
     #[prost(uint32, tag = "2")]
     pub partition: u32,

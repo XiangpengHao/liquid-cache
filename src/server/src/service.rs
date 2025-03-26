@@ -14,11 +14,12 @@ use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use tokio::sync::Mutex;
 use tonic::Status;
 use url::Url;
+use uuid::Uuid;
 
 use crate::local_cache::LocalCache;
 
 pub(crate) struct LiquidCacheServiceInner {
-    execution_plans: Arc<DashMap<u64, Arc<dyn ExecutionPlan>>>,
+    execution_plans: Arc<DashMap<Uuid, Arc<dyn ExecutionPlan>>>,
     registered_tables: Mutex<HashMap<String, (String, CacheMode)>>, // table name -> (path, cached file)
     default_ctx: Arc<SessionContext>,
     cache: LiquidCacheRef,
@@ -193,7 +194,7 @@ impl LiquidCacheServiceInner {
     pub(crate) async fn prepare_and_register_plan(
         &self,
         query: &str,
-        handle: u64,
+        handle: Uuid,
     ) -> Result<Arc<dyn ExecutionPlan>, Status> {
         info!("Planning query: {query}");
         let ctx = self.default_ctx.clone();
@@ -210,17 +211,17 @@ impl LiquidCacheServiceInner {
         Ok(physical_plan)
     }
 
-    pub(crate) fn get_plan(&self, handle: u64) -> Option<Arc<dyn ExecutionPlan>> {
-        let plan = self.execution_plans.get(&handle)?;
+    pub(crate) fn get_plan(&self, handle: &Uuid) -> Option<Arc<dyn ExecutionPlan>> {
+        let plan = self.execution_plans.get(handle)?;
         Some(plan.clone())
     }
 
     pub(crate) async fn execute_plan(
         &self,
-        handle: u64,
+        handle: &Uuid,
         partition: usize,
     ) -> SendableRecordBatchStream {
-        let plan = self.execution_plans.get(&handle).unwrap();
+        let plan = self.execution_plans.get(handle).unwrap();
         let displayable = DisplayableExecutionPlan::new(plan.as_ref());
         debug!("physical plan:\n{}", displayable.indent(false));
         let schema = plan.schema();
@@ -235,7 +236,7 @@ impl LiquidCacheServiceInner {
         self.default_ctx.state().config().batch_size()
     }
 
-    pub(crate) fn get_metrics(&self, plan_id: u64) -> Option<ExecutionMetricsResponse> {
+    pub(crate) fn get_metrics(&self, plan_id: &Uuid) -> Option<ExecutionMetricsResponse> {
         let maybe_leaf = self.get_plan(plan_id)?;
 
         let displayable = DisplayableExecutionPlan::with_metrics(maybe_leaf.as_ref());
