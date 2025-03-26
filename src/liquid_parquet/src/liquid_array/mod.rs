@@ -5,14 +5,19 @@ mod byte_array;
 pub(crate) mod ipc;
 mod primitive_array;
 pub mod raw;
+mod float_array;
 
 use std::{any::Any, num::NonZero, sync::Arc};
 
 use arrow::array::{ArrayRef, BooleanArray};
 pub use byte_array::LiquidByteArray;
+use float_array::LiquidFloatType;
 pub use primitive_array::{
     LiquidI8Array, LiquidI16Array, LiquidI32Array, LiquidI64Array, LiquidPrimitiveArray,
     LiquidPrimitiveType, LiquidU8Array, LiquidU16Array, LiquidU32Array, LiquidU64Array,
+};
+pub use float_array::{
+    LiquidFloat32Array, LiquidFloat64Array, LiquidFloatArray
 };
 
 /// Liquid data type is only logical type
@@ -23,6 +28,7 @@ pub enum LiquidDataType {
     ByteArray = 0,
     /// An integer.
     Integer = 1,
+    Float = 2
 }
 
 impl From<u16> for LiquidDataType {
@@ -30,6 +36,7 @@ impl From<u16> for LiquidDataType {
         match value {
             0 => LiquidDataType::ByteArray,
             1 => LiquidDataType::Integer,
+            2 => LiquidDataType::Float,
             _ => panic!("Invalid liquid data type: {}", value),
         }
     }
@@ -61,6 +68,12 @@ pub trait AsLiquidArray {
         self.as_primitive_array_opt()
             .expect("liquid primitive array")
     }
+
+    fn as_float_array_opt<T: LiquidFloatType>(&self) -> Option<&LiquidFloatArray<T>>;
+
+    fn as_float<T: LiquidFloatType>(&self) -> &LiquidFloatArray<T> {
+        self.as_float_array_opt().expect("liquid float array")
+    }
 }
 
 impl AsLiquidArray for dyn LiquidArray + '_ {
@@ -73,6 +86,10 @@ impl AsLiquidArray for dyn LiquidArray + '_ {
     }
 
     fn as_binary_array_opt(&self) -> Option<&LiquidByteArray> {
+        self.as_any().downcast_ref()
+    }
+
+    fn as_float_array_opt<T: LiquidFloatType>(&self) -> Option<&LiquidFloatArray<T>> {
         self.as_any().downcast_ref()
     }
 }

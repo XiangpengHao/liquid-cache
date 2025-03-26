@@ -109,6 +109,9 @@ pub fn read_from_bytes(bytes: Bytes, context: &LiquidIPCContext) -> LiquidArrayR
             let compressor = context.compressor.as_ref().expect("Expected a compressor");
             Arc::new(LiquidByteArray::from_bytes(bytes, compressor.clone()))
         }
+        LiquidDataType::Float => {
+            panic!("Conversion of float array to IPC format is not yet supported");
+        }
     }
 }
 
