@@ -38,6 +38,7 @@ pub trait LiquidFloatType:
             Native: BitPacking + 
                 AsPrimitive<<Self as ArrowPrimitiveType>::Native>
                 + AsPrimitive<<Self::SignedIntType as ArrowPrimitiveType>::Native>
+                + AsPrimitive<u64>
         > 
         + Debug;
     type SignedIntType:
@@ -45,7 +46,6 @@ pub trait LiquidFloatType:
             Native: AsPrimitive<<Self as ArrowPrimitiveType>::Native>
                 + AsPrimitive<<Self::UnsignedIntType as ArrowPrimitiveType>::Native>
                 + Ord
-                + AsPrimitive<u64>
         > 
         + Debug + Sync + Send;
 
@@ -340,7 +340,7 @@ fn encode_arrow_array<T: LiquidFloatType>(
 
     let min = encoded_values.iter().min().expect("`encoded_values` shouldn't be all nulls");
     let max = encoded_values.iter().max().expect("`encoded_values` shouldn't be all nulls");
-    let sub = max.sub_wrapping(*min);
+    let sub: <T::UnsignedIntType as ArrowPrimitiveType>::Native = max.sub_wrapping(*min).as_();
 
     let encoded_output =
     PrimitiveArray::<<T as LiquidFloatType>::UnsignedIntType>::new(
