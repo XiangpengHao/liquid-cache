@@ -1,14 +1,17 @@
 use arrow_flight::sql::Any;
 use arrow_flight::{FlightClient, flight_service_client::FlightServiceClient};
+use datafusion::common::tree_node::TreeNode;
 use datafusion::{error::Result, physical_plan::ExecutionPlan};
 use datafusion::{
     physical_plan::metrics::MetricValue,
     prelude::{SessionConfig, SessionContext},
 };
 use futures::StreamExt;
-use liquid_cache_client::LiquidCacheTableBuilder;
+use liquid_cache_client::{FlightExec, LiquidCacheTableBuilder};
 use liquid_cache_common::CacheMode;
-use liquid_cache_common::rpc::{ExecutionMetricsResponse, LiquidCacheActions};
+use liquid_cache_common::rpc::{
+    ExecutionMetricsRequest, ExecutionMetricsResponse, LiquidCacheActions,
+};
 use liquid_cache_parquet::LiquidCacheRef;
 use liquid_cache_server::StatsCollector;
 use object_store::ClientConfigKey;
@@ -330,12 +333,45 @@ impl BenchmarkMode {
             | BenchmarkMode::ArrowPushdown
             | BenchmarkMode::LiquidCache
             | BenchmarkMode::LiquidEagerTranscode => {
+                let mut handles = Vec::new();
+                execution_plan
+                    .apply(|plan| {
+                        let any_plan = plan.as_any();
+                        if let Some(flight_exec) = any_plan.downcast_ref::<FlightExec>() {
+                            let plan_handle = flight_exec.plan_handle();
+                            handles.push(plan_handle);
+                        }
+                        Ok(datafusion::common::tree_node::TreeNodeRecursion::Continue)
+                    })
+                    .unwrap();
                 let mut flight_client = get_flight_client(server_url).await;
-                let action = LiquidCacheActions::ExecutionMetrics.into();
-                let mut result_stream = flight_client.do_action(action).await.unwrap();
-                let result = result_stream.next().await.unwrap().unwrap();
-                let any = Any::decode(&*result).unwrap();
-                any.unpack::<ExecutionMetricsResponse>().unwrap().unwrap()
+                let mut metrics = Vec::new();
+                for handle in handles {
+                    let action = LiquidCacheActions::ExecutionMetrics(ExecutionMetricsRequest {
+                        handle: handle.to_string(),
+                    })
+                    .into();
+                    let mut result_stream = flight_client.do_action(action).await.unwrap();
+                    let result = result_stream.next().await.unwrap().unwrap();
+                    let any = Any::decode(&*result).unwrap();
+                    metrics.push(any.unpack::<ExecutionMetricsResponse>().unwrap().unwrap());
+                }
+                let metric =
+                    metrics
+                        .iter()
+                        .fold(None, |acc: Option<ExecutionMetricsResponse>, m| {
+                            if let Some(acc) = acc {
+                                Some(ExecutionMetricsResponse {
+                                    pushdown_eval_time: acc.pushdown_eval_time
+                                        + m.pushdown_eval_time,
+                                    cache_memory_usage: acc.cache_memory_usage,
+                                    liquid_cache_usage: acc.liquid_cache_usage,
+                                })
+                            } else {
+                                Some(m.clone())
+                            }
+                        });
+                metric.unwrap()
             }
         }
     }

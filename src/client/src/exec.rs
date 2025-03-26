@@ -42,8 +42,10 @@ use datafusion::{
     },
 };
 use futures::{Stream, TryStreamExt, future::BoxFuture};
+use liquid_cache_common::rpc::FetchResults;
 use log::debug;
 use owo_colors::OwoColorize;
+use prost::Message;
 use serde::{Deserialize, Serialize};
 use std::{
     any::Any,
@@ -54,6 +56,7 @@ use std::{
     task::{Context, Poll, ready},
 };
 use tonic::metadata::{AsciiMetadataKey, MetadataMap};
+use uuid::Uuid;
 
 /// Arrow Flight physical plan that maps flight endpoints to partitions
 #[derive(Clone, Debug)]
@@ -63,6 +66,7 @@ pub struct FlightExec {
     metadata_map: Arc<MetadataMap>,
     metrics: ExecutionPlanMetricsSet,
     flight_schema: SchemaRef,
+    plan_handle: Uuid,
 }
 
 impl FlightExec {
@@ -82,6 +86,19 @@ impl FlightExec {
             .iter()
             .map(|endpoint| FlightPartition::new(endpoint, origin.to_string()))
             .collect();
+        let plan_handle = {
+            let ticket = metadata
+                .info
+                .endpoint
+                .first()
+                .unwrap()
+                .ticket
+                .as_ref()
+                .unwrap();
+            let any = arrow_flight::sql::Any::decode(ticket.ticket.as_ref()).unwrap();
+            let fetch_result = any.unpack::<FetchResults>().unwrap().unwrap();
+            Uuid::from_bytes(fetch_result.handle.as_ref().try_into().unwrap())
+        };
         let schema = project_schema(&output_schema, projection).expect("Error projecting schema");
         let config = FlightConfig {
             origin: origin.into(),
@@ -119,7 +136,13 @@ impl FlightExec {
             flight_schema,
             metadata_map: Arc::from(mm),
             metrics,
+            plan_handle,
         })
+    }
+
+    /// Get the plan handle for the flight exec
+    pub fn plan_handle(&self) -> &Uuid {
+        &self.plan_handle
     }
 }
 

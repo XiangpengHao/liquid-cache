@@ -16,7 +16,7 @@
 // under the License.
 
 #![warn(missing_docs)]
-#![doc = include_str!(concat!("../", std::env!("CARGO_PKG_README")))]
+#![cfg_attr(not(doctest), doc = include_str!(concat!("../", std::env!("CARGO_PKG_README"))))]
 
 use arrow::ipc::writer::IpcWriteOptions;
 use arrow_flight::{
@@ -47,14 +47,11 @@ use log::info;
 use prost::Message;
 use prost::bytes::Bytes;
 use service::LiquidCacheServiceInner;
-use std::{
-    collections::HashMap,
-    path::PathBuf,
-    sync::{Arc, atomic::AtomicU64},
-};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use std::{pin::Pin, str::FromStr};
 use tonic::{Request, Response, Status, Streaming};
 use url::Url;
+use uuid::Uuid;
 mod service;
 mod utils;
 use utils::FinalStream;
@@ -89,8 +86,6 @@ pub trait StatsCollector: Send + Sync {
 pub struct LiquidCacheService {
     inner: LiquidCacheServiceInner,
     stats_collector: Vec<Arc<dyn StatsCollector>>,
-    next_execution_id: AtomicU64,
-    most_recent_execution_id: AtomicU64,
 }
 
 impl Default for LiquidCacheService {
@@ -122,8 +117,6 @@ impl LiquidCacheService {
         Self {
             inner: LiquidCacheServiceInner::new(Arc::new(ctx), max_cache_bytes, disk_cache_dir),
             stats_collector: vec![],
-            next_execution_id: AtomicU64::new(0),
-            most_recent_execution_id: AtomicU64::new(0),
         }
     }
 
@@ -169,9 +162,8 @@ impl LiquidCacheService {
         Ok(ctx)
     }
 
-    fn get_next_execution_id(&self) -> u64 {
-        self.next_execution_id
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    fn get_next_execution_id(&self) -> Uuid {
+        Uuid::new_v4()
     }
 
     /// Get all registered tables and their cache modes
@@ -234,7 +226,7 @@ impl FlightSqlService for LiquidCacheService {
             .map_err(|e| Status::internal(format!("{e:?}")))?
             .ok_or_else(|| Status::internal("Expected FetchResults but got None!"))?;
 
-        let handle = fetch_results.handle;
+        let handle = Uuid::from_bytes_ref(fetch_results.handle.as_ref().try_into().unwrap());
         let partition = fetch_results.partition as usize;
         let stream = self.inner.execute_plan(handle, partition).await;
         let execution_plan = self.inner.get_plan(handle).unwrap();
@@ -255,8 +247,6 @@ impl FlightSqlService for LiquidCacheService {
             .with_dictionary_handling(DictionaryHandling::Resend)
             .build(stream)
             .map_err(Status::from);
-        self.most_recent_execution_id
-            .store(handle, std::sync::atomic::Ordering::Relaxed);
 
         Ok(Response::new(Box::pin(stream)))
     }
@@ -285,9 +275,10 @@ impl FlightSqlService for LiquidCacheService {
         let mut info = FlightInfo::new().with_descriptor(flight_desc);
         info.schema = encode_schema_to_ipc_bytes(&schema);
 
+        let handle_bytes: Bytes = handle.into_bytes().to_vec().into();
         for partition in 0..partition_count {
             let fetch = FetchResults {
-                handle,
+                handle: handle_bytes.clone(),
                 partition: partition as u32,
             };
             let buf = fetch.as_any().encode_to_vec().into();
@@ -340,11 +331,9 @@ impl FlightSqlService for LiquidCacheService {
                 })]);
                 return Ok(Response::new(Box::pin(output)));
             }
-            LiquidCacheActions::ExecutionMetrics => {
-                let execution_id = self
-                    .most_recent_execution_id
-                    .load(std::sync::atomic::Ordering::Relaxed);
-                let response = self.inner.get_metrics(execution_id).unwrap();
+            LiquidCacheActions::ExecutionMetrics(cmd) => {
+                let execution_id = Uuid::parse_str(&cmd.handle).unwrap();
+                let response = self.inner.get_metrics(&execution_id).unwrap();
                 let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
                     body: response.as_any().encode_to_vec().into(),
                 })]);
