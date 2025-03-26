@@ -6,8 +6,10 @@ use std::error::Error;
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::Duration;
+mod client_exec;
 mod exec;
 mod metrics;
+mod optimizer;
 mod sql;
 use arrow_flight::FlightInfo;
 use arrow_flight::error::FlightError;
@@ -18,6 +20,7 @@ use datafusion::{
     common::{Statistics, ToDFSchema, stats::Precision},
     datasource::{DefaultTableSource, TableType, empty::EmptyTable},
     error::{DataFusionError, Result},
+    execution::{SessionStateBuilder, object_store::ObjectStoreUrl, runtime_env::RuntimeEnv},
     logical_expr::{LogicalPlan, TableProviderFilterPushDown, TableScan},
     physical_plan::ExecutionPlan,
     prelude::*,
@@ -29,6 +32,7 @@ use datafusion::{
 pub use exec::FlightExec;
 use liquid_cache_common::CacheMode;
 use log::info;
+pub use optimizer::PushdownOptimizer;
 use owo_colors::OwoColorize;
 use serde::{Deserialize, Serialize};
 use sql::FlightSqlDriver;
@@ -52,6 +56,62 @@ fn transform_flight_schema_to_output_schema(schema: &SchemaRef) -> Schema {
         })
         .collect();
     Schema::new_with_metadata(transformed_fields, schema.metadata.clone())
+}
+
+/// The builder for LiquidCache client state.
+pub struct LiquidCacheBuilder {
+    object_stores: Vec<(ObjectStoreUrl, HashMap<String, String>)>,
+    cache_mode: CacheMode,
+    cache_server: String,
+}
+
+impl LiquidCacheBuilder {
+    /// Create a new builder for LiquidCache client state.
+    pub fn new(cache_server: impl AsRef<str>) -> Self {
+        Self {
+            object_stores: vec![],
+            cache_mode: CacheMode::Liquid,
+            cache_server: cache_server.as_ref().to_string(),
+        }
+    }
+
+    /// Add an object store to the builder.
+    pub fn with_object_store(
+        mut self,
+        url: ObjectStoreUrl,
+        object_store_options: Option<HashMap<String, String>>,
+    ) -> Self {
+        self.object_stores
+            .push((url, object_store_options.unwrap_or_default()));
+        self
+    }
+
+    /// Set the cache mode for the builder.
+    pub fn with_cache_mode(mut self, cache_mode: CacheMode) -> Self {
+        self.cache_mode = cache_mode;
+        self
+    }
+
+    /// Build the [SessionContext].
+    pub fn build(self) -> Result<SessionContext> {
+        let mut session_config = SessionConfig::from_env()?;
+        session_config
+            .options_mut()
+            .execution
+            .parquet
+            .pushdown_filters = true;
+        let session_state = SessionStateBuilder::new()
+            .with_config(session_config)
+            .with_runtime_env(Arc::new(RuntimeEnv::default()))
+            .with_default_features()
+            .with_physical_optimizer_rule(Arc::new(PushdownOptimizer::new(
+                self.cache_server.clone(),
+                self.cache_mode,
+                self.object_stores.clone(),
+            )))
+            .build();
+        Ok(SessionContext::new_with_state(session_state))
+    }
 }
 
 /// The builder for a [LiquidCacheTable].

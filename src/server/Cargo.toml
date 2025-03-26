@@ -10,6 +10,7 @@ repository = { workspace = true }
 
 [dependencies]
 datafusion = { workspace = true }
+datafusion-proto = { workspace = true }
 futures = { workspace = true }
 arrow = { workspace = true }
 arrow-flight = { workspace = true }

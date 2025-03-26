@@ -206,9 +206,13 @@ impl LiquidCacheServiceInner {
             .await
             .expect("Error creating physical plan");
 
-        self.execution_plans.insert(handle, physical_plan.clone());
+        self.register_plan(handle, physical_plan.clone());
 
         Ok(physical_plan)
+    }
+
+    pub(crate) fn register_plan(&self, handle: Uuid, plan: Arc<dyn ExecutionPlan>) {
+        self.execution_plans.insert(handle, plan);
     }
 
     pub(crate) fn get_plan(&self, handle: &Uuid) -> Option<Arc<dyn ExecutionPlan>> {
@@ -285,6 +289,10 @@ impl LiquidCacheServiceInner {
 
     pub(crate) fn get_parquet_cache_dir(&self) -> &PathBuf {
         &self.parquet_cache_dir
+    }
+
+    pub(crate) fn get_ctx(&self) -> &Arc<SessionContext> {
+        &self.default_ctx
     }
 }
 
