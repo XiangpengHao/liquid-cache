@@ -1,6 +1,6 @@
 use std::{any::Any, fmt::Debug, ops::Mul, sync::Arc, usize};
 
-use arrow::{array::{ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType, AsArray, BooleanArray, PrimitiveArray}, buffer::ScalarBuffer, datatypes::{ArrowNativeType, Float32Type, Float64Type, Int32Type, Int64Type, UInt32Type, UInt64Type}};
+use arrow::{array::{Array, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType, AsArray, BooleanArray, PrimitiveArray}, buffer::ScalarBuffer, datatypes::{ArrowNativeType, Float32Type, Float64Type, Int32Type, Int64Type, UInt32Type, UInt64Type}};
 use fastlanes::BitPacking;
 use num_traits::{AsPrimitive, Float, FromPrimitive};
 
@@ -48,10 +48,7 @@ pub trait LiquidFloatType:
                 + AsPrimitive<u64>
         > 
         + Debug + Sync + Send;
-    // type NativeFloatType: Float 
-    //         + AsPrimitive<<Self::SignedIntType as ArrowPrimitiveType>::Native> 
-    //         + ArrowNativeType
-    //         + PartialEq + Mul<Self::NativeFloatType> + Debug + Sync + Send;
+
     const SWEET: <Self as ArrowPrimitiveType>::Native;
     const MAX_EXPONENT: u8;
     const FRACTIONAL_BITS: u8;
@@ -223,7 +220,7 @@ impl<T> LiquidArray for LiquidFloatArray<T>
         let unsigned_array = self.bit_packed.to_primitive();
         let (_data_type, values, _nulls) = unsigned_array.into_parts();
         let nulls = self.bit_packed.nulls();
-        // TODO(): Ask if we should align vectors to cache line boundary
+        // TODO(): Check if we should align vectors to cache line boundary
         let mut decoded_values = Vec::from_iter(values.iter().map(|v| {
             let mut val: <T::SignedIntType as ArrowPrimitiveType>::Native  = (*v).as_();
             val = val.add_wrapping(self.reference_value);
@@ -280,12 +277,25 @@ fn encode_arrow_array<T: LiquidFloatType>(
     let mut patch_values: Vec<T::Native> = Vec::new();
     let mut patch_count: usize = 0;
     let mut fill_value: Option<<T::SignedIntType as ArrowPrimitiveType>::Native> = None;    
-    
-    let mut encoded_values = Vec::from_iter(arrow_array.iter().map(|v| {
-        let encoded = T::encode_single_unchecked(&v.unwrap().as_(), exp);
+    let values = arrow_array.values();
+    let nulls = arrow_array.nulls();
+
+    // All values are null
+    if arrow_array.null_count() == arrow_array.len() {
+        return LiquidFloatArray::<T> {
+            bit_packed: BitPackedArray::new_null_array(arrow_array.len()),
+            exponent: Exponents { e: 0, f: 0 },
+            patch_indices: Vec::new(),
+            patch_values: Vec::new(),
+            reference_value: <T::SignedIntType as ArrowPrimitiveType>::Native::ZERO
+        };
+    }
+
+    let mut encoded_values = Vec::from_iter(values.iter().map(|v| {
+        let encoded = T::encode_single_unchecked(&v.as_(), exp);
         let decoded = T::decode_single(&encoded, exp);
         // TODO(): Check if this is a bitwise comparison
-        let neq = !decoded.eq(&v.unwrap().as_()) as usize;
+        let neq = !decoded.eq(&v.as_()) as usize;
         patch_count += neq;
         encoded
         }));
@@ -296,10 +306,10 @@ fn encode_arrow_array<T: LiquidFloatType>(
         let mut patch_index: usize = 0;
         
         for i in 0..encoded_values.len() {
-            let decoded = T::decode_single(&encoded_values.get(i).unwrap(), exp);
+            let decoded = T::decode_single(&encoded_values[i], exp);
             patch_indices[patch_index] = i.as_();
             patch_values[patch_index] = arrow_array.value(i).as_();
-            patch_index += !(decoded.eq(&encoded_values.get(i).unwrap().as_())) as usize;
+            patch_index += !(decoded.eq(&values[i].as_())) as usize;
         }
         assert_eq!(patch_index, patch_count);
         unsafe {
@@ -328,16 +338,19 @@ fn encode_arrow_array<T: LiquidFloatType>(
         }
     }
 
-    let min = encoded_values.iter().min();
-    let max = encoded_values.iter().max();
-    let sub = max.unwrap().sub_wrapping(*min.unwrap());
+    let min = encoded_values.iter().min().expect("`encoded_values` shouldn't be all nulls");
+    let max = encoded_values.iter().max().expect("`encoded_values` shouldn't be all nulls");
+    let sub = max.sub_wrapping(*min);
 
     let encoded_output =
-    PrimitiveArray::<<T as LiquidFloatType>::UnsignedIntType>::new(ScalarBuffer::from_iter(encoded_values.iter().map(|v| {
-        let k: <T::UnsignedIntType as ArrowPrimitiveType>::Native =
-                    v.sub_wrapping(*min.unwrap()).as_();
-                k
-    })), None);
+    PrimitiveArray::<<T as LiquidFloatType>::UnsignedIntType>::new(
+        ScalarBuffer::from_iter(encoded_values.iter().map(|v| {
+            let k: <T::UnsignedIntType as ArrowPrimitiveType>::Native =
+                    v.sub_wrapping(*min).as_();
+            k
+        })), 
+        nulls.cloned()
+    );
 
     let bit_width = get_bit_width(sub.as_());
     let bit_packed_array = BitPackedArray::from_primitive(encoded_output, bit_width);
@@ -347,7 +360,7 @@ fn encode_arrow_array<T: LiquidFloatType>(
         exponent: *exp,
         patch_indices: patch_indices,
         patch_values: patch_values,
-        reference_value: *min.unwrap()
+        reference_value: *min
     }
 }
 
@@ -408,10 +421,20 @@ mod tests {
         vec![Some(-1.0), Some(1.0), Some(0.0)]
     );
 
-    // test_roundtrip!(test_float32_roundtrip_with_nones, 
-    //     Float32Type, 
-    //     vec![Some(-1.0), Some(1.0), Some(0.0), None]
-    // );
+    test_roundtrip!(test_float32_roundtrip_with_nones, 
+        Float32Type, 
+        vec![Some(-1.0), Some(1.0), Some(0.0), None]
+    );
+
+    test_roundtrip!(test_float32_roundtrip_all_nones, 
+        Float32Type, 
+        vec![None, None, None, None]
+    );
+
+    test_roundtrip!(test_float32_roundtrip_empty, 
+        Float32Type, 
+        vec![]
+    );
 
     // Test cases for Float64
     test_roundtrip!(test_float64_roundtrip_basic, 
@@ -419,11 +442,72 @@ mod tests {
         vec![Some(-1.0), Some(1.0), Some(0.0)]
     );
 
-    // test_roundtrip!(test_float64_roundtrip_with_nones, 
-    //     Float64Type, 
-    //     vec![Some(-1.0), Some(1.0), Some(0.0), None]
-    // );
+    test_roundtrip!(test_float64_roundtrip_with_nones, 
+        Float64Type, 
+        vec![Some(-1.0), Some(1.0), Some(0.0), None]
+    );
 
-    // Filters
-    // All Nones
+    test_roundtrip!(test_float64_roundtrip_all_nones, 
+        Float64Type, 
+        vec![None, None, None, None]
+    );
+
+    test_roundtrip!(test_float64_roundtrip_empty, 
+        Float64Type, 
+        vec![]
+    );
+
+    // Tests with ilters
+    #[test]
+    fn test_filter_basic() {
+        // Create original array with some values
+        let original = vec![Some(1.0), Some(2.1), Some(3.2), None, Some(5.5)];
+        let array = PrimitiveArray::<Float32Type>::from(original);
+        let liquid_array = LiquidFloatArray::<Float32Type>::from_arrow_array(array);
+
+        // Create selection mask: keep indices 0, 2, and 4
+        let selection = BooleanArray::from(vec![true, false, true, false, true]);
+
+        // Apply filter
+        let filtered = liquid_array.filter(&selection);
+        let result_array = filtered.to_arrow_array();
+
+        // Expected result after filtering
+        let expected = PrimitiveArray::<Float32Type>::from(vec![Some(1.0), Some(3.2), Some(5.5)]);
+
+        assert_eq!(result_array.as_ref(), &expected);
+    }
+
+    #[test]
+    fn test_filter_all_nulls() {
+        // Create array with all nulls
+        let original = vec![None, None, None, None];
+        let array = PrimitiveArray::<Float32Type>::from(original);
+        let liquid_array = LiquidFloatArray::<Float32Type>::from_arrow_array(array);
+
+        // Keep first and last elements
+        let selection = BooleanArray::from(vec![true, false, false, true]);
+
+        let filtered = liquid_array.filter(&selection);
+        let result_array = filtered.to_arrow_array();
+
+        let expected = PrimitiveArray::<Float32Type>::from(vec![None, None]);
+
+        assert_eq!(result_array.as_ref(), &expected);
+    }
+
+    #[test]
+    fn test_filter_empty_result() {
+        let original = vec![Some(1.0), Some(2.1), Some(3.3)];
+        let array = PrimitiveArray::<Float32Type>::from(original);
+        let liquid_array = LiquidFloatArray::<Float32Type>::from_arrow_array(array);
+
+        // Filter out all elements
+        let selection = BooleanArray::from(vec![false, false, false]);
+
+        let filtered = liquid_array.filter(&selection);
+        let result_array = filtered.to_arrow_array();
+
+        assert_eq!(result_array.len(), 0);
+    }
 }
