@@ -1,16 +1,27 @@
 use std::{any::Any, fmt::Debug, ops::Mul, sync::Arc, usize};
 
-use arrow::{array::{Array, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType, AsArray, BooleanArray, PrimitiveArray}, buffer::ScalarBuffer, datatypes::{ArrowNativeType, Float32Type, Float64Type, Int32Type, Int64Type, UInt32Type, UInt64Type}};
+use arrow::{
+    array::{
+        Array, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType, AsArray, BooleanArray,
+        PrimitiveArray,
+    },
+    buffer::ScalarBuffer,
+    datatypes::{
+        ArrowNativeType, Float32Type, Float64Type, Int32Type, Int64Type, UInt32Type, UInt64Type,
+    },
+};
 use fastlanes::BitPacking;
 use num_traits::{AsPrimitive, Float, FromPrimitive};
 
 use super::LiquidDataType;
-use crate::liquid_array::{LiquidArray, LiquidArrayRef, get_bit_width};
 use crate::liquid_array::raw::BitPackedArray;
-
+use crate::liquid_array::{LiquidArray, LiquidArrayRef, get_bit_width};
 
 mod private {
-    use arrow::{array::ArrowNumericType, datatypes::{Float32Type, Float64Type}};
+    use arrow::{
+        array::ArrowNumericType,
+        datatypes::{Float32Type, Float64Type},
+    };
     use num_traits::AsPrimitive;
 
     pub trait Sealed: ArrowNumericType<Native: AsPrimitive<f64> + AsPrimitive<f32>> {}
@@ -22,33 +33,33 @@ mod private {
 const NUM_SAMPLES: usize = 32;
 
 /// LiquidFloatType is a sealed trait that represents all the float types supported by Liquid.
-/// Implementors are Float32Type and Float64Type. TODO(): What about Float16Type, decimal types? 
+/// Implementors are Float32Type and Float64Type. TODO(): What about Float16Type, decimal types?
 pub trait LiquidFloatType:
         ArrowPrimitiveType<
             Native: AsPrimitive<
                 <Self::UnsignedIntType as ArrowPrimitiveType>::Native // Native must be convertible to the Native type of Self::UnSignedType
             >
-            + AsPrimitive<<Self::SignedIntType as ArrowPrimitiveType>::Native> 
+            + AsPrimitive<<Self::SignedIntType as ArrowPrimitiveType>::Native>
             + FromPrimitive
             + AsPrimitive<<Self as ArrowPrimitiveType>::Native>
             + Mul<<Self as ArrowPrimitiveType>::Native>
             + Float // required for decode_single and encode_single_unchecked
-        > 
+        >
         + private::Sealed + Debug {
-    type UnsignedIntType: 
+    type UnsignedIntType:
         ArrowPrimitiveType<
-            Native: BitPacking + 
+            Native: BitPacking +
                 AsPrimitive<<Self as ArrowPrimitiveType>::Native>
                 + AsPrimitive<<Self::SignedIntType as ArrowPrimitiveType>::Native>
                 + AsPrimitive<u64>
-        > 
+        >
         + Debug;
     type SignedIntType:
         ArrowPrimitiveType<
             Native: AsPrimitive<<Self as ArrowPrimitiveType>::Native>
                 + AsPrimitive<<Self::UnsignedIntType as ArrowPrimitiveType>::Native>
                 + Ord
-        > 
+        >
         + Debug + Sync + Send;
 
     const SWEET: <Self as ArrowPrimitiveType>::Native;
@@ -80,8 +91,9 @@ impl LiquidFloatType for Float32Type {
     type SignedIntType = Int32Type;
     const FRACTIONAL_BITS: u8 = 23;
     const MAX_EXPONENT: u8 = 10;
-    const SWEET: <Self as ArrowPrimitiveType>::Native = (1 << Self::FRACTIONAL_BITS) as <Self as ArrowPrimitiveType>::Native + 
-            (1 << (Self::FRACTIONAL_BITS - 1)) as <Self as ArrowPrimitiveType>::Native;
+    const SWEET: <Self as ArrowPrimitiveType>::Native = (1 << Self::FRACTIONAL_BITS)
+        as <Self as ArrowPrimitiveType>::Native
+        + (1 << (Self::FRACTIONAL_BITS - 1)) as <Self as ArrowPrimitiveType>::Native;
     const F10: &'static [<Self as ArrowPrimitiveType>::Native] = &[
         1.0,
         10.0,
@@ -115,8 +127,9 @@ impl LiquidFloatType for Float64Type {
     type SignedIntType = Int64Type;
     const FRACTIONAL_BITS: u8 = 52;
     const MAX_EXPONENT: u8 = 18;
-    const SWEET: <Self as ArrowPrimitiveType>::Native = (1u64 << Self::FRACTIONAL_BITS) as <Self as ArrowPrimitiveType>::Native + 
-            (1u64 << (Self::FRACTIONAL_BITS - 1)) as <Self as ArrowPrimitiveType>::Native;
+    const SWEET: <Self as ArrowPrimitiveType>::Native = (1u64 << Self::FRACTIONAL_BITS)
+        as <Self as ArrowPrimitiveType>::Native
+        + (1u64 << (Self::FRACTIONAL_BITS - 1)) as <Self as ArrowPrimitiveType>::Native;
     const F10: &'static [<Self as ArrowPrimitiveType>::Native] = &[
         1.0,
         10.0,
@@ -143,7 +156,7 @@ impl LiquidFloatType for Float64Type {
         10000000000000000000000.0,
         100000000000000000000000.0, // 10^23
     ];
-        
+
     const IF10: &'static [<Self as ArrowPrimitiveType>::Native] = &[
         1.0,
         0.1,
@@ -184,12 +197,13 @@ pub struct LiquidFloatArray<T: LiquidFloatType> {
     bit_packed: BitPackedArray<T::UnsignedIntType>,
     patch_indices: Vec<u64>,
     patch_values: Vec<T::Native>,
-    reference_value: <T::SignedIntType as ArrowPrimitiveType>::Native
+    reference_value: <T::SignedIntType as ArrowPrimitiveType>::Native,
 }
 
-
 impl<T> LiquidFloatArray<T>
-        where T: LiquidFloatType {
+where
+    T: LiquidFloatType,
+{
     /// Get the length of the Liquid float array.
     pub fn len(&self) -> usize {
         self.bit_packed.len()
@@ -197,8 +211,10 @@ impl<T> LiquidFloatArray<T>
 
     /// Get the memory size of the Liquid primitive array.
     pub fn get_array_memory_size(&self) -> usize {
-        self.bit_packed.get_array_memory_size() + size_of::<Exponents>()
-            + self.patch_indices.len() * size_of::<u64>() + self.patch_values.len() * size_of::<T::Native>()
+        self.bit_packed.get_array_memory_size()
+            + size_of::<Exponents>()
+            + self.patch_indices.len() * size_of::<u64>()
+            + self.patch_values.len() * size_of::<T::Native>()
             + size_of::<<T::SignedIntType as ArrowPrimitiveType>::Native>()
     }
 
@@ -210,19 +226,21 @@ impl<T> LiquidFloatArray<T>
 }
 
 impl<T> LiquidArray for LiquidFloatArray<T>
-        where T: LiquidFloatType {
+where
+    T: LiquidFloatType,
+{
     fn as_any(&self) -> &dyn Any {
         self
     }
-    
+
     fn get_array_memory_size(&self) -> usize {
         self.get_array_memory_size()
     }
-    
+
     fn len(&self) -> usize {
         self.len()
     }
-    
+
     #[inline]
     fn to_arrow_array(&self) -> ArrayRef {
         let unsigned_array = self.bit_packed.to_primitive();
@@ -230,7 +248,7 @@ impl<T> LiquidArray for LiquidFloatArray<T>
         let nulls = self.bit_packed.nulls();
         // TODO(): Check if we should align vectors to cache line boundary
         let mut decoded_values = Vec::from_iter(values.iter().map(|v| {
-            let mut val: <T::SignedIntType as ArrowPrimitiveType>::Native  = (*v).as_();
+            let mut val: <T::SignedIntType as ArrowPrimitiveType>::Native = (*v).as_();
             val = val.add_wrapping(self.reference_value);
             T::decode_single(&val, &self.exponent)
         }));
@@ -242,17 +260,20 @@ impl<T> LiquidArray for LiquidFloatArray<T>
             }
         }
 
-        Arc::new(PrimitiveArray::<T>::new(ScalarBuffer::<<T as ArrowPrimitiveType>::Native>::from(decoded_values), nulls.cloned()))
+        Arc::new(PrimitiveArray::<T>::new(
+            ScalarBuffer::<<T as ArrowPrimitiveType>::Native>::from(decoded_values),
+            nulls.cloned(),
+        ))
     }
-    
+
     fn data_type(&self) -> LiquidDataType {
         LiquidDataType::Float
     }
-    
+
     fn to_bytes(&self) -> Vec<u8> {
         todo!()
     }
-    
+
     fn filter(&self, selection: &BooleanArray) -> LiquidArrayRef {
         let values = self.to_arrow_array();
         let filtered_values = arrow::compute::kernels::filter::filter(&values, selection).unwrap();
@@ -260,11 +281,11 @@ impl<T> LiquidArray for LiquidFloatArray<T>
         let bit_packed = Self::from_arrow_array(primitive_values);
         Arc::new(bit_packed)
     }
-    
+
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
-    
+
     fn to_best_arrow_array(&self) -> ArrayRef {
         self.to_arrow_array()
     }
@@ -273,18 +294,17 @@ impl<T> LiquidArray for LiquidFloatArray<T>
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct Exponents {
     e: u8,
-    f: u8
+    f: u8,
 }
 
 fn encode_arrow_array<T: LiquidFloatType>(
-        arrow_array: & PrimitiveArray<T>, 
-        exp: & Exponents
-        // fill_value: &mut Option<<T::UnsignedIntType as ArrowPrimitiveType>::Native>
-        ) -> LiquidFloatArray<T> {
+    arrow_array: &PrimitiveArray<T>,
+    exp: &Exponents, // fill_value: &mut Option<<T::UnsignedIntType as ArrowPrimitiveType>::Native>
+) -> LiquidFloatArray<T> {
     let mut patch_indices: Vec<u64> = Vec::new();
     let mut patch_values: Vec<T::Native> = Vec::new();
     let mut patch_count: usize = 0;
-    let mut fill_value: Option<<T::SignedIntType as ArrowPrimitiveType>::Native> = None;    
+    let mut fill_value: Option<<T::SignedIntType as ArrowPrimitiveType>::Native> = None;
     let values = arrow_array.values();
     let nulls = arrow_array.nulls();
 
@@ -295,7 +315,7 @@ fn encode_arrow_array<T: LiquidFloatType>(
             exponent: Exponents { e: 0, f: 0 },
             patch_indices: Vec::new(),
             patch_values: Vec::new(),
-            reference_value: <T::SignedIntType as ArrowPrimitiveType>::Native::ZERO
+            reference_value: <T::SignedIntType as ArrowPrimitiveType>::Native::ZERO,
         };
     }
 
@@ -306,13 +326,13 @@ fn encode_arrow_array<T: LiquidFloatType>(
         let neq = !decoded.eq(&v.as_()) as usize;
         patch_count += neq;
         encoded
-        }));
+    }));
 
     if patch_count > 0 {
         patch_indices.resize_with(patch_count + 1, Default::default);
         patch_values.resize_with(patch_count + 1, Default::default);
         let mut patch_index: usize = 0;
-        
+
         for i in 0..encoded_values.len() {
             let decoded = T::decode_single(&encoded_values[i], exp);
             patch_indices[patch_index] = i.as_();
@@ -346,53 +366,54 @@ fn encode_arrow_array<T: LiquidFloatType>(
         }
     }
 
-    let min = encoded_values.iter().min().expect("`encoded_values` shouldn't be all nulls");
-    let max = encoded_values.iter().max().expect("`encoded_values` shouldn't be all nulls");
+    let min = encoded_values
+        .iter()
+        .min()
+        .expect("`encoded_values` shouldn't be all nulls");
+    let max = encoded_values
+        .iter()
+        .max()
+        .expect("`encoded_values` shouldn't be all nulls");
     let sub: <T::UnsignedIntType as ArrowPrimitiveType>::Native = max.sub_wrapping(*min).as_();
 
-    let encoded_output =
-    PrimitiveArray::<<T as LiquidFloatType>::UnsignedIntType>::new(
+    let encoded_output = PrimitiveArray::<<T as LiquidFloatType>::UnsignedIntType>::new(
         ScalarBuffer::from_iter(encoded_values.iter().map(|v| {
-            let k: <T::UnsignedIntType as ArrowPrimitiveType>::Native =
-                    v.sub_wrapping(*min).as_();
+            let k: <T::UnsignedIntType as ArrowPrimitiveType>::Native = v.sub_wrapping(*min).as_();
             k
-        })), 
-        nulls.cloned()
+        })),
+        nulls.cloned(),
     );
 
     let bit_width = get_bit_width(sub.as_());
     let bit_packed_array = BitPackedArray::from_primitive(encoded_output, bit_width);
 
-    LiquidFloatArray::<T>{
+    LiquidFloatArray::<T> {
         bit_packed: bit_packed_array,
         exponent: *exp,
         patch_indices: patch_indices,
         patch_values: patch_values,
-        reference_value: *min
+        reference_value: *min,
     }
 }
 
-
-fn get_best_exponents<T: LiquidFloatType>(arrow_array: & PrimitiveArray<T>) -> Exponents {
-    let mut best_exponents = Exponents {e: 0, f: 0};
+fn get_best_exponents<T: LiquidFloatType>(arrow_array: &PrimitiveArray<T>) -> Exponents {
+    let mut best_exponents = Exponents { e: 0, f: 0 };
     let mut min_encoded_size: usize = usize::MAX;
-    
-    
-    let sample_arrow_array: Option<PrimitiveArray<T>> = (arrow_array.len() > NUM_SAMPLES).then(|| {
-        arrow_array
-            .iter()
-            .step_by(arrow_array.len() / NUM_SAMPLES)
-            .filter(|s| s.is_some())
-            .collect()
-    });
+
+    let sample_arrow_array: Option<PrimitiveArray<T>> =
+        (arrow_array.len() > NUM_SAMPLES).then(|| {
+            arrow_array
+                .iter()
+                .step_by(arrow_array.len() / NUM_SAMPLES)
+                .filter(|s| s.is_some())
+                .collect()
+        });
 
     for e in 0..T::MAX_EXPONENT {
         for f in 0..e {
             let exp = Exponents { e: e, f: f };
-            let liquid_array = encode_arrow_array(
-                sample_arrow_array.as_ref().unwrap_or(arrow_array), 
-                &exp
-            );
+            let liquid_array =
+                encode_arrow_array(sample_arrow_array.as_ref().unwrap_or(arrow_array), &exp);
             if liquid_array.get_array_memory_size() < min_encoded_size {
                 best_exponents = exp;
                 min_encoded_size = liquid_array.get_array_memory_size();
@@ -401,7 +422,6 @@ fn get_best_exponents<T: LiquidFloatType>(arrow_array: & PrimitiveArray<T>) -> E
     }
     best_exponents
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -419,51 +439,50 @@ mod tests {
 
                 assert_eq!(result_array.as_ref(), &array);
             }
-     
-       };
+        };
     }
 
     // Test cases for Float32
-    test_roundtrip!(test_float32_roundtrip_basic, 
-        Float32Type, 
+    test_roundtrip!(
+        test_float32_roundtrip_basic,
+        Float32Type,
         vec![Some(-1.0), Some(1.0), Some(0.0)]
     );
 
-    test_roundtrip!(test_float32_roundtrip_with_nones, 
-        Float32Type, 
+    test_roundtrip!(
+        test_float32_roundtrip_with_nones,
+        Float32Type,
         vec![Some(-1.0), Some(1.0), Some(0.0), None]
     );
 
-    test_roundtrip!(test_float32_roundtrip_all_nones, 
-        Float32Type, 
+    test_roundtrip!(
+        test_float32_roundtrip_all_nones,
+        Float32Type,
         vec![None, None, None, None]
     );
 
-    test_roundtrip!(test_float32_roundtrip_empty, 
-        Float32Type, 
-        vec![]
-    );
+    test_roundtrip!(test_float32_roundtrip_empty, Float32Type, vec![]);
 
     // Test cases for Float64
-    test_roundtrip!(test_float64_roundtrip_basic, 
-        Float64Type, 
+    test_roundtrip!(
+        test_float64_roundtrip_basic,
+        Float64Type,
         vec![Some(-1.0), Some(1.0), Some(0.0)]
     );
 
-    test_roundtrip!(test_float64_roundtrip_with_nones, 
-        Float64Type, 
+    test_roundtrip!(
+        test_float64_roundtrip_with_nones,
+        Float64Type,
         vec![Some(-1.0), Some(1.0), Some(0.0), None]
     );
 
-    test_roundtrip!(test_float64_roundtrip_all_nones, 
-        Float64Type, 
+    test_roundtrip!(
+        test_float64_roundtrip_all_nones,
+        Float64Type,
         vec![None, None, None, None]
     );
 
-    test_roundtrip!(test_float64_roundtrip_empty, 
-        Float64Type, 
-        vec![]
-    );
+    test_roundtrip!(test_float64_roundtrip_empty, Float64Type, vec![]);
 
     // Tests with ilters
     #[test]

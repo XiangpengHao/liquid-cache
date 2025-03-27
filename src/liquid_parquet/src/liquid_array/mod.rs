@@ -2,22 +2,20 @@
 //! You should not use this module directly.
 //! Instead, use `liquid_cache_server` or `liquid_cache_client` to interact with LiquidCache.
 mod byte_array;
+mod float_array;
 pub(crate) mod ipc;
 mod primitive_array;
 pub mod raw;
-mod float_array;
 
 use std::{any::Any, num::NonZero, sync::Arc};
 
 use arrow::array::{ArrayRef, BooleanArray};
 pub use byte_array::LiquidByteArray;
 use float_array::LiquidFloatType;
+pub use float_array::{LiquidFloat32Array, LiquidFloat64Array, LiquidFloatArray};
 pub use primitive_array::{
     LiquidI8Array, LiquidI16Array, LiquidI32Array, LiquidI64Array, LiquidPrimitiveArray,
     LiquidPrimitiveType, LiquidU8Array, LiquidU16Array, LiquidU32Array, LiquidU64Array,
-};
-pub use float_array::{
-    LiquidFloat32Array, LiquidFloat64Array, LiquidFloatArray
 };
 
 /// Liquid data type is only logical type
@@ -29,7 +27,7 @@ pub enum LiquidDataType {
     /// An integer.
     Integer = 1,
     /// A float.
-    Float = 2
+    Float = 2,
 }
 
 impl From<u16> for LiquidDataType {
