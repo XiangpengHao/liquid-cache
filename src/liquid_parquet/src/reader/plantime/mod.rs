@@ -16,12 +16,12 @@ use datafusion::{
     physical_plan::{ExecutionPlan, PhysicalExpr},
     prelude::*,
 };
+use log::info;
+use object_store::{ObjectMeta, ObjectStore};
 #[cfg(test)]
 pub(crate) use source::CachedMetaReaderFactory;
 pub use source::LiquidParquetSource;
 pub(crate) use source::ParquetMetadataCacheReader;
-use log::info;
-use object_store::{ObjectMeta, ObjectStore};
 
 use crate::{LiquidCacheMode, LiquidCacheRef};
 
@@ -31,8 +31,8 @@ mod row_filter;
 
 // This is entirely copied from DataFusion
 // We should make DataFusion to public this
-mod row_group_filter;
 mod opener;
+mod row_group_filter;
 mod source;
 
 #[derive(Debug)]
