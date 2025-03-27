@@ -53,11 +53,6 @@ impl PhysicalOptimizerRule for PushdownOptimizer {
         plan.transform_up(|plan| {
             let plan_any = plan.as_any();
             if let Some(_data_source) = plan_any.downcast_ref::<DataSourceExec>() {
-                let displayable_plan =
-                    datafusion::physical_plan::display::DisplayableExecutionPlan::new(
-                        plan.as_ref(),
-                    );
-                println!("{}", displayable_plan.indent(true));
                 Ok(Transformed::yes(Arc::new(LiquidCacheClientExec::new(
                     plan,
                     self.cache_server.clone(),

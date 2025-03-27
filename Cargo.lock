@@ -2435,6 +2435,7 @@ name = "liquid-cache-common"
 version = "0.1.2"
 dependencies = [
  "arrow-flight",
+ "arrow-schema",
  "bytes",
  "prost",
  "tempfile",

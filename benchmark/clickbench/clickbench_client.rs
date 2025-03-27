@@ -173,6 +173,10 @@ struct CliArgs {
     /// Reset the cache before running a new query
     #[arg(long = "reset-cache", default_value = "false")]
     reset_cache: bool,
+
+    /// Number of partitions to use
+    #[arg(long)]
+    partitions: Option<usize>,
 }
 
 #[tokio::main]
@@ -184,7 +188,7 @@ pub async fn main() -> Result<()> {
     let queries = get_query(&args.query_path, args.query)?;
     let bench_mode = &args.bench_mode;
     let ctx = bench_mode
-        .setup_clickbench_ctx(&args.server, &args.file)
+        .setup_clickbench_ctx(&args.server, &args.file, args.partitions)
         .await?;
 
     let mut benchmark_result = BenchmarkResult {
@@ -207,8 +211,6 @@ pub async fn main() -> Result<()> {
             let (state, logical_plan) = df.into_parts();
 
             let physical_plan = state.create_physical_plan(&logical_plan).await?;
-            let displayable_plan = DisplayableExecutionPlan::with_metrics(physical_plan.as_ref());
-            println!("{}", displayable_plan.indent(true));
             let results = collect(physical_plan.clone(), state.task_ctx()).await?;
             let elapsed = now.elapsed();
             info!("Query execution time: {:?}", elapsed);

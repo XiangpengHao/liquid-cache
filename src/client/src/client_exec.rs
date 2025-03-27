@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::task::Poll;
 use std::{any::Any, fmt::Formatter, sync::Arc};
 
 use arrow::array::RecordBatch;
@@ -6,6 +7,7 @@ use arrow_flight::sql::client::FlightSqlServiceClient;
 use arrow_schema::SchemaRef;
 use datafusion::common::Statistics;
 use datafusion::config::ConfigOptions;
+use datafusion::datasource::schema_adapter::{DefaultSchemaAdapterFactory, SchemaMapper};
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::physical_plan::Distribution;
 use datafusion::physical_plan::execution_plan::CardinalityEffect;
@@ -19,10 +21,10 @@ use datafusion::{
 };
 use datafusion_proto::bytes::physical_plan_to_bytes;
 use futures::{Stream, TryStreamExt, future::BoxFuture, lock::Mutex, ready};
-use liquid_cache_common::CacheMode;
 use liquid_cache_common::rpc::{
     FetchResults, LiquidCacheActions, RegisterObjectStoreRequest, RegisterPlanRequest,
 };
+use liquid_cache_common::{CacheMode, coerce_to_liquid_cache_types};
 use tonic::Request;
 use uuid::Uuid;
 
@@ -58,7 +60,7 @@ impl LiquidCacheClientExec {
 
     /// Get the UUID of the plan.
     pub async fn get_plan_uuid(&self) -> Option<Uuid> {
-        self.plan_register_lock.lock().await.clone()
+        *self.plan_register_lock.lock().await
     }
 }
 
@@ -107,6 +109,11 @@ impl ExecutionPlan for LiquidCacheClientExec {
         let cache_server = self.cache_server.clone();
         let plan = self.remote_plan.clone();
         let lock = self.plan_register_lock.clone();
+        let flight_schema = coerce_to_liquid_cache_types(self.remote_plan.schema().as_ref());
+        let (schema_mapper, _) =
+            DefaultSchemaAdapterFactory::from_schema(self.remote_plan.schema())
+                .map_schema(&flight_schema)
+                .unwrap();
         Ok(Box::pin(FlightStream {
             future_stream: Some(Box::pin(flight_stream(
                 cache_server,
@@ -118,6 +125,7 @@ impl ExecutionPlan for LiquidCacheClientExec {
             ))),
             state: FlightStreamState::Init,
             schema: self.remote_plan.schema().clone(),
+            schema_mapper,
         }))
     }
 
@@ -229,6 +237,7 @@ struct FlightStream {
     future_stream: Option<BoxFuture<'static, Result<SendableRecordBatchStream>>>,
     state: FlightStreamState,
     schema: SchemaRef,
+    schema_mapper: Arc<dyn SchemaMapper>,
 }
 
 impl Stream for FlightStream {
@@ -250,8 +259,17 @@ impl Stream for FlightStream {
                     continue;
                 }
                 FlightStreamState::Processing(stream) => {
-                    let result = stream.as_mut().poll_next(cx);
-                    return result;
+                    let result = ready!(stream.as_mut().poll_next(cx));
+                    match result {
+                        Some(Ok(batch)) => {
+                            let coerced_batch = self.schema_mapper.map_batch(batch).unwrap();
+                            return Poll::Ready(Some(Ok(coerced_batch)));
+                        }
+                        None => return Poll::Ready(None),
+                        Some(Err(e)) => {
+                            panic!("Error in flight stream: {:?}", e);
+                        }
+                    }
                 }
             }
         }

@@ -94,13 +94,18 @@ impl LiquidCacheBuilder {
     }
 
     /// Build the [SessionContext].
-    pub fn build(self) -> Result<SessionContext> {
-        let mut session_config = SessionConfig::from_env()?;
+    pub fn build(self, config: SessionConfig) -> Result<SessionContext> {
+        let mut session_config = config;
         session_config
             .options_mut()
             .execution
             .parquet
             .pushdown_filters = true;
+        session_config
+            .options_mut()
+            .execution
+            .parquet
+            .schema_force_view_types = false;
         let session_state = SessionStateBuilder::new()
             .with_config(session_config)
             .with_runtime_env(Arc::new(RuntimeEnv::default()))

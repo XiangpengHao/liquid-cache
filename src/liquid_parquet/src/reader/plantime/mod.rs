@@ -16,6 +16,7 @@ use datafusion::{
     physical_plan::{ExecutionPlan, PhysicalExpr},
     prelude::*,
 };
+use liquid_cache_common::coerce_to_liquid_cache_types;
 use log::info;
 use object_store::{ObjectMeta, ObjectStore};
 #[cfg(test)]
@@ -204,25 +205,6 @@ pub(crate) fn coerce_string_to_view(schema: &Schema) -> Schema {
         .iter()
         .map(|field| match field.data_type() {
             DataType::Utf8 | DataType::LargeUtf8 => field_with_new_type(field, DataType::Utf8View),
-            _ => field.clone(),
-        })
-        .collect();
-    Schema::new_with_metadata(transformed_fields, schema.metadata.clone())
-}
-
-pub(crate) fn coerce_to_liquid_cache_types(schema: &Schema) -> Schema {
-    let transformed_fields: Vec<Arc<Field>> = schema
-        .fields
-        .iter()
-        .map(|field| match field.data_type() {
-            DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => field_with_new_type(
-                field,
-                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            ),
-            DataType::Binary | DataType::LargeBinary | DataType::BinaryView => field_with_new_type(
-                field,
-                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            ),
             _ => field.clone(),
         })
         .collect();

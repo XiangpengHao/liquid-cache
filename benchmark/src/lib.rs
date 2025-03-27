@@ -237,6 +237,7 @@ impl BenchmarkMode {
         &self,
         server_url: &str,
         data_url: &Path,
+        partitions: Option<usize>,
     ) -> Result<Arc<SessionContext>> {
         let table_name = "hits";
         let current_dir = std::env::current_dir()?.to_string_lossy().to_string();
@@ -245,7 +246,10 @@ impl BenchmarkMode {
 
         let mode = match self {
             BenchmarkMode::ParquetFileserver => {
-                let session_config = SessionConfig::from_env()?;
+                let mut session_config = SessionConfig::from_env()?;
+                if let Some(partitions) = partitions {
+                    session_config.options_mut().execution.target_partitions = partitions;
+                }
                 let ctx = Arc::new(SessionContext::new_with_config(session_config));
                 let base_url = Url::parse(server_url).unwrap();
 
@@ -269,9 +273,13 @@ impl BenchmarkMode {
             BenchmarkMode::LiquidCache => CacheMode::Liquid,
             BenchmarkMode::LiquidEagerTranscode => CacheMode::LiquidEagerTranscode,
         };
+        let mut session_config = SessionConfig::from_env()?;
+        if let Some(partitions) = partitions {
+            session_config.options_mut().execution.target_partitions = partitions;
+        }
         let ctx = LiquidCacheBuilder::new(server_url)
             .with_cache_mode(mode)
-            .build()?;
+            .build(session_config)?;
 
         ctx.register_parquet(table_name, table_url, Default::default())
             .await?;

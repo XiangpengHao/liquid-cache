@@ -11,7 +11,7 @@ use datafusion::{
     physical_plan::{ExecutionPlan, display::DisplayableExecutionPlan, metrics::MetricValue},
     prelude::{ParquetReadOptions, SessionContext},
 };
-use liquid_cache_common::{CacheMode, rpc::ExecutionMetricsResponse};
+use liquid_cache_common::{CacheMode, coerce_to_liquid_cache_types, rpc::ExecutionMetricsResponse};
 use liquid_cache_parquet::{
     LiquidCache, LiquidCacheMode, LiquidCacheRef, LiquidParquetFileFormat, LiquidParquetSource,
 };
@@ -340,6 +340,9 @@ fn rewrite_data_source_plan(
                         );
                         let mut new_file_source = source.clone();
                         new_file_source.file_source = Arc::new(new_source);
+                        let coerced_schema =
+                            coerce_to_liquid_cache_types(new_file_source.file_schema.as_ref());
+                        new_file_source.file_schema = Arc::new(coerced_schema);
                         let new_file_source: Arc<dyn DataSource> = Arc::new(new_file_source);
                         let new_plan = Arc::new(DataSourceExec::new(new_file_source));
 
