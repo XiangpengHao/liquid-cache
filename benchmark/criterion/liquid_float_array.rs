@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use datafusion::arrow::{array::PrimitiveArray, buffer::ScalarBuffer, datatypes::{Float32Type, Float64Type}};
-use liquid_parquet::liquid_array::{LiquidArray, LiquidFloatArray};
+use liquid_cache_parquet::liquid_array::{LiquidArray, LiquidFloatArray};
 use rand::Rng;
 
 fn float32_liquid_from_arrow(size: usize) {

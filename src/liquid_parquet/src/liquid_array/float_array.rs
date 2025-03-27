@@ -4,7 +4,9 @@ use arrow::{array::{Array, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType, AsAr
 use fastlanes::BitPacking;
 use num_traits::{AsPrimitive, Float, FromPrimitive};
 
-use super::{get_bit_width, BitPackedArray, LiquidArray, LiquidArrayRef, LiquidDataType};
+use super::LiquidDataType;
+use crate::liquid_array::{LiquidArray, LiquidArrayRef, get_bit_width};
+use crate::liquid_array::raw::BitPackedArray;
 
 
 mod private {
@@ -170,7 +172,9 @@ impl LiquidFloatType for Float64Type {
     ];
 }
 
+/// Liquid's single-precision floating point array
 pub type LiquidFloat32Array = LiquidFloatArray<Float32Type>;
+/// Liquid's double precision floating point array
 pub type LiquidFloat64Array = LiquidFloatArray<Float64Type>;
 
 /// An array that stores floats in ALP
@@ -186,15 +190,19 @@ pub struct LiquidFloatArray<T: LiquidFloatType> {
 
 impl<T> LiquidFloatArray<T>
         where T: LiquidFloatType {
+    /// Get the length of the Liquid float array.
     pub fn len(&self) -> usize {
         self.bit_packed.len()
     }
 
+    /// Get the memory size of the Liquid primitive array.
     pub fn get_array_memory_size(&self) -> usize {
-        self.bit_packed.get_array_memory_size() + size_of::<Exponents>() + 
-            self.patch_indices.len() * size_of::<u64>() + self.patch_values.len() * size_of::<T::Native>()
+        self.bit_packed.get_array_memory_size() + size_of::<Exponents>()
+            + self.patch_indices.len() * size_of::<u64>() + self.patch_values.len() * size_of::<T::Native>()
+            + size_of::<<T::SignedIntType as ArrowPrimitiveType>::Native>()
     }
 
+    /// Create a Liquid primitive array from an Arrow float array.
     pub fn from_arrow_array(arrow_array: arrow::array::PrimitiveArray<T>) -> LiquidFloatArray<T> {
         let best_exponents = get_best_exponents::<T>(&arrow_array);
         encode_arrow_array(&arrow_array, &best_exponents)

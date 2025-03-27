@@ -28,6 +28,7 @@ pub enum LiquidDataType {
     ByteArray = 0,
     /// An integer.
     Integer = 1,
+    /// A float.
     Float = 2
 }
 
@@ -69,8 +70,10 @@ pub trait AsLiquidArray {
             .expect("liquid primitive array")
     }
 
+    /// Get the underlying float array.
     fn as_float_array_opt<T: LiquidFloatType>(&self) -> Option<&LiquidFloatArray<T>>;
 
+    /// Get the underlying float array.
     fn as_float<T: LiquidFloatType>(&self) -> &LiquidFloatArray<T> {
         self.as_float_array_opt().expect("liquid float array")
     }
