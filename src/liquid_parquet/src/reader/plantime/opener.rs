@@ -5,7 +5,8 @@ use datafusion::{
     common::exec_err,
     datasource::{
         physical_plan::{
-            FileMeta, FileOpenFuture, FileOpener, ParquetFileMetrics, parquet::ParquetAccessPlan,
+            FileMeta, FileOpenFuture, FileOpener, ParquetFileMetrics,
+            parquet::{PagePruningAccessPlanFilter, ParquetAccessPlan},
         },
         schema_adapter::SchemaAdapterFactory,
     },
@@ -26,15 +27,14 @@ use crate::{
     LiquidCacheMode, LiquidCacheRef,
     reader::{
         plantime::{
-            coerce_binary_to_string, coerce_string_to_view,
-            page_filter::PagePruningAccessPlanFilter, row_filter,
+            coerce_binary_to_string, coerce_string_to_view, row_filter,
             row_group_filter::RowGroupAccessPlanFilter,
         },
         runtime::ArrowReaderBuilderBridge,
     },
 };
 
-use super::{coerce_to_liquid_cache_types, exec::CachedMetaReaderFactory};
+use super::{coerce_to_liquid_cache_types, source::CachedMetaReaderFactory};
 
 pub struct LiquidParquetOpener {
     pub partition_index: usize,
