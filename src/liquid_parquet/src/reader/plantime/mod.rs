@@ -13,23 +13,17 @@ use datafusion::{
         physical_plan::{FileScanConfig, FileSource},
     },
     error::Result,
-    physical_optimizer::pruning::PruningPredicate,
-    physical_plan::{ExecutionPlan, PhysicalExpr, metrics::ExecutionPlanMetricsSet},
+    physical_plan::{ExecutionPlan, PhysicalExpr},
     prelude::*,
 };
 #[cfg(test)]
-pub(crate) use exec::CachedMetaReaderFactory;
-use exec::LiquidParquetExec;
-pub(crate) use exec::ParquetMetadataCacheReader;
-use log::{debug, info};
+pub(crate) use source::CachedMetaReaderFactory;
+pub use source::LiquidParquetSource;
+pub(crate) use source::ParquetMetadataCacheReader;
+use log::info;
 use object_store::{ObjectMeta, ObjectStore};
-use page_filter::PagePruningAccessPlanFilter;
 
 use crate::{LiquidCacheMode, LiquidCacheRef};
-
-// This is entirely copied from DataFusion
-// We should make DataFusion to public this
-mod page_filter;
 
 // This is entirely copied from DataFusion
 // We should make DataFusion to public this
@@ -38,10 +32,8 @@ mod row_filter;
 // This is entirely copied from DataFusion
 // We should make DataFusion to public this
 mod row_group_filter;
-
 mod opener;
-
-mod exec;
+mod source;
 
 #[derive(Debug)]
 pub struct LiquidParquetFactory {}
@@ -75,6 +67,11 @@ impl LiquidParquetFileFormat {
             liquid_cache_mode,
             inner,
         }
+    }
+
+    /// Return the metadata size hint if set
+    pub fn metadata_size_hint(&self) -> Option<usize> {
+        self.options.global.metadata_size_hint
     }
 }
 
@@ -135,51 +132,34 @@ impl FileFormat for LiquidParquetFileFormat {
         filters: Option<&Arc<dyn PhysicalExpr>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         info!("create_physical_plan for liquid parquet");
+        let mut predicate = None;
+        let mut metadata_size_hint = None;
 
-        let metrics = ExecutionPlanMetricsSet::new();
+        // If enable pruning then combine the filters to build the predicate.
+        // If disable pruning then set the predicate to None, thus readers
+        // will not prune data based on the statistics.
+        if let Some(pred) = filters.cloned() {
+            predicate = Some(pred);
+        }
 
-        let file_schema = &conf.file_schema;
-        let pruning_predicate = filters
-            .and_then(|predicate_expr| {
-                match PruningPredicate::try_new(Arc::clone(predicate_expr), Arc::clone(file_schema))
-                {
-                    Ok(pruning_predicate) => Some(Arc::new(pruning_predicate)),
-                    Err(e) => {
-                        debug!("Could not create pruning predicate for: {e}");
-                        None
-                    }
-                }
-            })
-            .filter(|p| !p.always_true());
+        if let Some(metadata) = self.metadata_size_hint() {
+            metadata_size_hint = Some(metadata);
+        }
 
-        let page_pruning_predicate = filters
-            .as_ref()
-            .map(|predicate_expr| {
-                PagePruningAccessPlanFilter::new(predicate_expr, Arc::clone(file_schema))
-            })
-            .map(Arc::new);
-
-        let (projected_schema, _, projected_statistics, projected_output_ordering) = conf.project();
-
-        let cache = LiquidParquetExec::compute_properties(
-            projected_schema,
-            &projected_output_ordering,
-            &conf,
+        let mut source = LiquidParquetSource::new(
+            self.options.clone(),
+            self.liquid_cache.clone(),
+            self.liquid_cache_mode,
         );
 
-        let exec = LiquidParquetExec {
-            base_config: conf,
-            table_parquet_options: self.options.clone(),
-            predicate: filters.cloned(),
-            cache,
-            projected_statistics,
-            metrics,
-            pruning_predicate,
-            page_pruning_predicate,
-            liquid_cache: self.liquid_cache.clone(),
-            liquid_cache_mode: self.liquid_cache_mode,
-        };
-        Ok(Arc::new(exec))
+        if let Some(predicate) = predicate {
+            source = source.with_predicate(Arc::clone(&conf.file_schema), predicate);
+        }
+        if let Some(metadata_size_hint) = metadata_size_hint {
+            source = source.with_metadata_size_hint(metadata_size_hint)
+        }
+
+        Ok(conf.with_source(Arc::new(source)).build())
     }
 
     fn supports_filters_pushdown(
