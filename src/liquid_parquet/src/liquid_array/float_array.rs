@@ -1,4 +1,4 @@
-use std::{any::Any, fmt::Debug, ops::Mul, sync::Arc, usize};
+use std::{any::Any, fmt::Debug, ops::Mul, sync::Arc};
 
 use arrow::{
     array::{
@@ -204,6 +204,11 @@ impl<T> LiquidFloatArray<T>
 where
     T: LiquidFloatType,
 {
+    /// Check if the Liquid float array is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Get the length of the Liquid float array.
     pub fn len(&self) -> usize {
         self.bit_packed.len()
@@ -254,7 +259,7 @@ where
         }));
 
         // Patch values
-        if self.patch_indices.len() > 0 {
+        if !self.patch_indices.is_empty() {
             for i in 0..self.patch_indices.len() {
                 decoded_values[self.patch_indices[i].as_usize()] = self.patch_values[i];
             }
@@ -390,8 +395,8 @@ fn encode_arrow_array<T: LiquidFloatType>(
     LiquidFloatArray::<T> {
         bit_packed: bit_packed_array,
         exponent: *exp,
-        patch_indices: patch_indices,
-        patch_values: patch_values,
+        patch_indices,
+        patch_values,
         reference_value: *min,
     }
 }
@@ -411,7 +416,7 @@ fn get_best_exponents<T: LiquidFloatType>(arrow_array: &PrimitiveArray<T>) -> Ex
 
     for e in 0..T::MAX_EXPONENT {
         for f in 0..e {
-            let exp = Exponents { e: e, f: f };
+            let exp = Exponents { e, f };
             let liquid_array =
                 encode_arrow_array(sample_arrow_array.as_ref().unwrap_or(arrow_array), &exp);
             if liquid_array.get_array_memory_size() < min_encoded_size {
