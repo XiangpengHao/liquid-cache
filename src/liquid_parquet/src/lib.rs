@@ -6,6 +6,7 @@ pub mod liquid_array;
 mod reader;
 pub use cache::{LiquidCache, LiquidCacheMode, LiquidCacheRef, LiquidCachedFileRef};
 pub use reader::LiquidParquetFileFormat;
+pub use reader::LiquidParquetSource;
 pub use reader::LiquidPredicate;
 pub(crate) mod utils;
 
