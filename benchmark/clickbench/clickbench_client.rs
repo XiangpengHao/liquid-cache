@@ -207,6 +207,8 @@ pub async fn main() -> Result<()> {
             let (state, logical_plan) = df.into_parts();
 
             let physical_plan = state.create_physical_plan(&logical_plan).await?;
+            let displayable_plan = DisplayableExecutionPlan::with_metrics(physical_plan.as_ref());
+            println!("{}", displayable_plan.indent(true));
             let results = collect(physical_plan.clone(), state.task_ctx()).await?;
             let elapsed = now.elapsed();
             info!("Query execution time: {:?}", elapsed);

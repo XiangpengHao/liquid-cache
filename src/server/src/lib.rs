@@ -229,6 +229,7 @@ impl FlightSqlService for LiquidCacheService {
 
         let handle = Uuid::from_bytes_ref(fetch_results.handle.as_ref().try_into().unwrap());
         let partition = fetch_results.partition as usize;
+        println!("Executing plan with with_partition: {:?}", partition);
         let stream = self.inner.execute_plan(handle, partition).await;
         let execution_plan = self.inner.get_plan(handle).unwrap();
         let stream = FinalStream::new(
@@ -350,8 +351,14 @@ impl FlightSqlService for LiquidCacheService {
             LiquidCacheActions::RegisterPlan(cmd) => {
                 let plan = cmd.plan;
                 let plan = physical_plan_from_bytes(&plan, self.inner.get_ctx()).unwrap();
+                let displayable_plan =
+                    datafusion::physical_plan::display::DisplayableExecutionPlan::new(
+                        plan.as_ref(),
+                    );
+                println!("registering plan: \n{}", displayable_plan.indent(true));
                 let handle = Uuid::from_bytes_ref(cmd.handle.as_ref().try_into().unwrap());
-                self.inner.register_plan(*handle, plan);
+                let cache_mode = CacheMode::from_str(&cmd.cache_mode).unwrap();
+                self.inner.register_plan(*handle, plan, cache_mode);
                 let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
                     body: Bytes::default(),
                 })]);

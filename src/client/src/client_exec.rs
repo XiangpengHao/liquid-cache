@@ -4,7 +4,12 @@ use std::{any::Any, fmt::Formatter, sync::Arc};
 use arrow::array::RecordBatch;
 use arrow_flight::sql::client::FlightSqlServiceClient;
 use arrow_schema::SchemaRef;
+use datafusion::common::Statistics;
+use datafusion::config::ConfigOptions;
 use datafusion::execution::object_store::ObjectStoreUrl;
+use datafusion::physical_plan::Distribution;
+use datafusion::physical_plan::execution_plan::CardinalityEffect;
+use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::{
     error::Result,
     execution::{RecordBatchStream, SendableRecordBatchStream},
@@ -23,8 +28,9 @@ use uuid::Uuid;
 
 use crate::{FlightSqlDriver, flight_channel, to_df_err};
 
+/// The execution plan for the LiquidCache client.
 #[derive(Debug)]
-pub(crate) struct LiquidCacheClientExec {
+pub struct LiquidCacheClientExec {
     remote_plan: Arc<dyn ExecutionPlan>,
     cache_server: String,
     driver: Arc<FlightSqlDriver>,
@@ -34,7 +40,7 @@ pub(crate) struct LiquidCacheClientExec {
 }
 
 impl LiquidCacheClientExec {
-    pub fn new(
+    pub(crate) fn new(
         remote_plan: Arc<dyn ExecutionPlan>,
         cache_server: String,
         cache_mode: CacheMode,
@@ -48,6 +54,11 @@ impl LiquidCacheClientExec {
             cache_mode,
             object_stores,
         }
+    }
+
+    /// Get the UUID of the plan.
+    pub async fn get_plan_uuid(&self) -> Option<Uuid> {
+        self.plan_register_lock.lock().await.clone()
     }
 }
 
@@ -103,10 +114,54 @@ impl ExecutionPlan for LiquidCacheClientExec {
                 lock,
                 partition,
                 self.object_stores.clone(),
+                self.cache_mode,
             ))),
             state: FlightStreamState::Init,
             schema: self.remote_plan.schema().clone(),
         }))
+    }
+
+    fn required_input_distribution(&self) -> Vec<Distribution> {
+        self.remote_plan.required_input_distribution()
+    }
+
+    fn benefits_from_input_partitioning(&self) -> Vec<bool> {
+        self.remote_plan.benefits_from_input_partitioning()
+    }
+
+    fn repartitioned(
+        &self,
+        target_partitions: usize,
+        config: &ConfigOptions,
+    ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
+        self.remote_plan.repartitioned(target_partitions, config)
+    }
+
+    fn statistics(&self) -> Result<Statistics> {
+        self.remote_plan.statistics()
+    }
+
+    fn supports_limit_pushdown(&self) -> bool {
+        self.remote_plan.supports_limit_pushdown()
+    }
+
+    fn with_fetch(&self, limit: Option<usize>) -> Option<Arc<dyn ExecutionPlan>> {
+        self.remote_plan.with_fetch(limit)
+    }
+
+    fn fetch(&self) -> Option<usize> {
+        self.remote_plan.fetch()
+    }
+
+    fn cardinality_effect(&self) -> CardinalityEffect {
+        self.remote_plan.cardinality_effect()
+    }
+
+    fn try_swapping_with_projection(
+        &self,
+        projection: &ProjectionExec,
+    ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
+        self.remote_plan.try_swapping_with_projection(projection)
     }
 }
 
@@ -116,6 +171,7 @@ async fn flight_stream(
     plan_register_lock: Arc<Mutex<Option<Uuid>>>,
     partition: usize,
     object_stores: Vec<(ObjectStoreUrl, HashMap<String, String>)>,
+    cache_mode: CacheMode,
 ) -> Result<SendableRecordBatchStream> {
     let channel = flight_channel(server).await?;
 
@@ -144,6 +200,7 @@ async fn flight_stream(
                 let action = LiquidCacheActions::RegisterPlan(RegisterPlanRequest {
                     plan: plan_bytes.to_vec(),
                     handle: handle.into_bytes().to_vec().into(),
+                    cache_mode: cache_mode.to_string(),
                 })
                 .into();
                 client.do_action(Request::new(action)).await?;

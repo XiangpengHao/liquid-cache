@@ -15,6 +15,7 @@ use arrow_flight::FlightInfo;
 use arrow_flight::error::FlightError;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
+pub use client_exec::LiquidCacheClientExec;
 use datafusion::{
     catalog::{Session, TableProvider},
     common::{Statistics, ToDFSchema, stats::Precision},

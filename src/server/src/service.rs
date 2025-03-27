@@ -1,13 +1,20 @@
 use arrow_schema::SchemaRef;
 use dashmap::DashMap;
 use datafusion::{
+    common::tree_node::{Transformed, TreeNode},
+    datasource::{
+        physical_plan::{FileScanConfig, ParquetSource},
+        source::{DataSource, DataSourceExec},
+    },
     error::{DataFusionError, Result},
     execution::{SendableRecordBatchStream, object_store::ObjectStoreUrl, options::ReadOptions},
     physical_plan::{ExecutionPlan, display::DisplayableExecutionPlan, metrics::MetricValue},
     prelude::{ParquetReadOptions, SessionContext},
 };
 use liquid_cache_common::{CacheMode, rpc::ExecutionMetricsResponse};
-use liquid_cache_parquet::{LiquidCache, LiquidCacheMode, LiquidCacheRef, LiquidParquetFileFormat};
+use liquid_cache_parquet::{
+    LiquidCache, LiquidCacheMode, LiquidCacheRef, LiquidParquetFileFormat, LiquidParquetSource,
+};
 use log::{debug, info};
 use object_store::ObjectStore;
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
@@ -206,13 +213,28 @@ impl LiquidCacheServiceInner {
             .await
             .expect("Error creating physical plan");
 
-        self.register_plan(handle, physical_plan.clone());
+        self.execution_plans.insert(handle, physical_plan.clone());
 
         Ok(physical_plan)
     }
 
-    pub(crate) fn register_plan(&self, handle: Uuid, plan: Arc<dyn ExecutionPlan>) {
-        self.execution_plans.insert(handle, plan);
+    pub(crate) fn register_plan(
+        &self,
+        handle: Uuid,
+        plan: Arc<dyn ExecutionPlan>,
+        cache_mode: CacheMode,
+    ) {
+        match cache_mode {
+            CacheMode::Parquet => {
+                self.execution_plans.insert(handle, plan);
+            }
+            _ => {
+                self.execution_plans.insert(
+                    handle,
+                    rewrite_data_source_plan(plan, &self.cache, cache_mode),
+                );
+            }
+        }
     }
 
     pub(crate) fn get_plan(&self, handle: &Uuid) -> Option<Arc<dyn ExecutionPlan>> {
@@ -294,6 +316,47 @@ impl LiquidCacheServiceInner {
     pub(crate) fn get_ctx(&self) -> &Arc<SessionContext> {
         &self.default_ctx
     }
+}
+
+fn rewrite_data_source_plan(
+    plan: Arc<dyn ExecutionPlan>,
+    cache: &LiquidCacheRef,
+    cache_mode: CacheMode,
+) -> Arc<dyn ExecutionPlan> {
+    let rewritten = plan
+        .transform_up(|node| {
+            let any_plan = node.as_any();
+            if let Some(plan) = any_plan.downcast_ref::<DataSourceExec>() {
+                let data_source = plan.data_source();
+                let any_source = data_source.as_any();
+                if let Some(source) = any_source.downcast_ref::<FileScanConfig>() {
+                    let file_source = source.file_source();
+                    let any_file_source = file_source.as_any();
+                    if let Some(file_source) = any_file_source.downcast_ref::<ParquetSource>() {
+                        let new_source = LiquidParquetSource::from_parquet_source(
+                            file_source.clone(),
+                            cache.clone(),
+                            cache_mode.into(),
+                        );
+                        let mut new_file_source = source.clone();
+                        new_file_source.file_source = Arc::new(new_source);
+                        let new_file_source: Arc<dyn DataSource> = Arc::new(new_file_source);
+                        let new_plan = Arc::new(DataSourceExec::new(new_file_source));
+
+                        // data source is at the bottom of the plan tree, so we can stop the recursion
+                        return Ok(Transformed::new(
+                            new_plan,
+                            true,
+                            datafusion::common::tree_node::TreeNodeRecursion::Stop,
+                        ));
+                    }
+                }
+                return Ok(Transformed::no(node));
+            }
+            Ok(Transformed::no(node))
+        })
+        .unwrap();
+    rewritten.data
 }
 
 #[cfg(test)]
