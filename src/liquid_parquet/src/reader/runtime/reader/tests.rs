@@ -4,7 +4,7 @@ use crate::{
     liquid_array::LiquidArrayRef,
     reader::{
         plantime::CachedMetaReaderFactory,
-        runtime::{ArrowReaderBuilderBridge, LiquidRowFilter, LiquidStreamBuilder},
+        runtime::{ArrowReaderBuilderBridge, LiquidRowFilter, liquid_stream::LiquidStreamBuilder},
     },
 };
 use arrow::{
@@ -137,7 +137,7 @@ async fn basic_stuff() {
     let liquid_cache = get_test_cached_file(batch_size, tmp_dir.path().to_path_buf());
     let reader = builder.build(liquid_cache).unwrap();
 
-    let schema = &reader.schema;
+    let schema = reader.schema();
     assert_eq!(schema.as_ref(), test_output_schema().as_ref());
 
     let projection = (0..schema.fields().len()).collect::<Vec<_>>();
@@ -339,7 +339,7 @@ async fn test_reading_with_filter() {
     let baseline_batches = get_baseline_record_batch(batch_size, &projection);
 
     for (i, batch) in batches.iter().enumerate() {
-        let expected = &baseline_batches[i];
+        let expected: &RecordBatch = &baseline_batches[i];
 
         let col_i64 = expected.column(0).as_primitive::<Int64Type>();
         let mask1 = BooleanBuffer::from_iter(

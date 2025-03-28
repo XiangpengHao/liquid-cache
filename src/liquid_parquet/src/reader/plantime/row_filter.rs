@@ -364,7 +364,7 @@ impl<'a> FilterCandidateBuilder<'a> {
     /// * `Err(e)` if an error occurs while building the candidate
     pub fn build(self, metadata: &ParquetMetaData) -> Result<Option<FilterCandidate>> {
         let Some(required_indices_into_table_schema) =
-            pushdown_columns(&self.expr, &self.table_schema)?
+            pushdown_columns(&self.expr, self.table_schema)?
         else {
             return Ok(None);
         };
@@ -376,7 +376,7 @@ impl<'a> FilterCandidateBuilder<'a> {
 
         let (schema_mapper, projection_into_file_schema) =
             DefaultSchemaAdapterFactory::from_schema(projected_table_schema.clone())
-                .map_schema(&self.file_schema)?;
+                .map_schema(self.file_schema)?;
 
         let required_bytes = size_of_columns(&projection_into_file_schema, metadata)?;
         let can_use_index = columns_sorted(&projection_into_file_schema, metadata)?;

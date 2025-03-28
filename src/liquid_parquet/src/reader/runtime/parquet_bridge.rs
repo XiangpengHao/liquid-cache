@@ -150,7 +150,7 @@ use tokio::sync::Mutex;
 
 use crate::reader::plantime::ParquetMetadataCacheReader;
 
-use super::{ClonableAsyncFileReader, LiquidStreamBuilder};
+use super::{liquid_stream::ClonableAsyncFileReader, liquid_stream::LiquidStreamBuilder};
 
 pub struct ArrowReaderBuilderBridge {
     pub(crate) input: AsyncReader<ParquetMetadataCacheReader>,
