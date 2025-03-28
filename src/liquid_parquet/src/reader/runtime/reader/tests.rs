@@ -3,10 +3,7 @@ use crate::{
     cache::{CacheConfig, LiquidCachedFile},
     liquid_array::LiquidArrayRef,
     reader::{
-        plantime::{
-            CachedMetaReaderFactory, coerce_binary_to_string, coerce_string_to_view,
-            coerce_to_liquid_cache_types,
-        },
+        plantime::CachedMetaReaderFactory,
         runtime::{ArrowReaderBuilderBridge, LiquidRowFilter, LiquidStreamBuilder},
     },
 };
@@ -23,6 +20,9 @@ use arrow::{
 use arrow_schema::{ArrowError, SchemaRef};
 use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
 use futures::StreamExt;
+use liquid_cache_common::{
+    coerce_binary_to_string, coerce_string_to_view, coerce_to_liquid_cache_types,
+};
 use object_store::ObjectMeta;
 use parquet::{
     arrow::{

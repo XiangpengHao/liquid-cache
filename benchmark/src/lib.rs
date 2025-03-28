@@ -7,7 +7,7 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use futures::StreamExt;
-use liquid_cache_client::{FlightExec, LiquidCacheTableBuilder};
+use liquid_cache_client::{LiquidCacheBuilder, LiquidCacheClientExec, LiquidCacheTableBuilder};
 use liquid_cache_common::CacheMode;
 use liquid_cache_common::rpc::{
     ExecutionMetricsRequest, ExecutionMetricsResponse, LiquidCacheActions,
@@ -160,8 +160,8 @@ pub enum BenchmarkMode {
     ParquetFileserver,
     ParquetPushdown,
     ArrowPushdown,
-    #[default]
     LiquidCache,
+    #[default]
     LiquidEagerTranscode,
 }
 
@@ -237,8 +237,8 @@ impl BenchmarkMode {
         &self,
         server_url: &str,
         data_url: &Path,
+        partitions: Option<usize>,
     ) -> Result<Arc<SessionContext>> {
-        let mut session_config = SessionConfig::from_env()?;
         let table_name = "hits";
         let current_dir = std::env::current_dir()?.to_string_lossy().to_string();
         let table_url =
@@ -246,6 +246,10 @@ impl BenchmarkMode {
 
         let mode = match self {
             BenchmarkMode::ParquetFileserver => {
+                let mut session_config = SessionConfig::from_env()?;
+                if let Some(partitions) = partitions {
+                    session_config.options_mut().execution.target_partitions = partitions;
+                }
                 let ctx = Arc::new(SessionContext::new_with_config(session_config));
                 let base_url = Url::parse(server_url).unwrap();
 
@@ -269,19 +273,17 @@ impl BenchmarkMode {
             BenchmarkMode::LiquidCache => CacheMode::Liquid,
             BenchmarkMode::LiquidEagerTranscode => CacheMode::LiquidEagerTranscode,
         };
-        session_config
-            .options_mut()
-            .execution
-            .parquet
-            .pushdown_filters = true;
-        let ctx = Arc::new(SessionContext::new_with_config(session_config));
-
-        let table = LiquidCacheTableBuilder::new(server_url, table_name, table_url)
+        let mut session_config = SessionConfig::from_env()?;
+        if let Some(partitions) = partitions {
+            session_config.options_mut().execution.target_partitions = partitions;
+        }
+        let ctx = LiquidCacheBuilder::new(server_url)
             .with_cache_mode(mode)
-            .build()
+            .build(session_config)?;
+
+        ctx.register_parquet(table_name, table_url, Default::default())
             .await?;
-        ctx.register_table(table_name, Arc::new(table))?;
-        Ok(ctx)
+        Ok(Arc::new(ctx))
     }
 
     pub async fn get_execution_metrics(
@@ -337,9 +339,9 @@ impl BenchmarkMode {
                 execution_plan
                     .apply(|plan| {
                         let any_plan = plan.as_any();
-                        if let Some(flight_exec) = any_plan.downcast_ref::<FlightExec>() {
-                            let plan_handle = flight_exec.plan_handle();
-                            handles.push(plan_handle);
+                        if let Some(flight_exec) = any_plan.downcast_ref::<LiquidCacheClientExec>()
+                        {
+                            handles.push(flight_exec);
                         }
                         Ok(datafusion::common::tree_node::TreeNodeRecursion::Continue)
                     })
@@ -348,7 +350,7 @@ impl BenchmarkMode {
                 let mut metrics = Vec::new();
                 for handle in handles {
                     let action = LiquidCacheActions::ExecutionMetrics(ExecutionMetricsRequest {
-                        handle: handle.to_string(),
+                        handle: handle.get_plan_uuid().await.unwrap().to_string(),
                     })
                     .into();
                     let mut result_stream = flight_client.do_action(action).await.unwrap();
@@ -371,7 +373,7 @@ impl BenchmarkMode {
                                 Some(m.clone())
                             }
                         });
-                metric.unwrap()
+                metric.unwrap_or_default()
             }
         }
     }

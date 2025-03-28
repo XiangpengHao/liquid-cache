@@ -16,12 +16,11 @@
 // under the License.
 
 use clap::{Parser, command};
-use datafusion::{
-    error::Result,
-    prelude::{SessionConfig, SessionContext},
-};
-use liquid_cache_client::LiquidCacheTableBuilder;
-use std::{path::Path, sync::Arc};
+use datafusion::{error::Result, execution::object_store::ObjectStoreUrl, prelude::*};
+use liquid_cache_client::LiquidCacheBuilder;
+use liquid_cache_common::CacheMode;
+use std::path::Path;
+use std::sync::Arc;
 use url::Url;
 
 #[derive(Parser, Clone)]
@@ -48,33 +47,30 @@ struct CliArgs {
 
 #[tokio::main]
 pub async fn main() -> Result<()> {
-    let mut session_config = SessionConfig::from_env()?;
-    session_config
-        .options_mut()
-        .execution
-        .parquet
-        .pushdown_filters = true;
-    let ctx = Arc::new(SessionContext::new_with_config(session_config));
-
     let args = CliArgs::parse();
-
-    let cache_server = args.cache_server;
     let url = Url::parse(&args.file).unwrap();
+    let object_store_url = format!("{}://{}", url.scheme(), url.host_str().unwrap_or_default());
+
+    let ctx = LiquidCacheBuilder::new(args.cache_server.clone())
+        .with_object_store(ObjectStoreUrl::parse(object_store_url.as_str())?, None)
+        .with_cache_mode(CacheMode::Liquid)
+        .build(SessionConfig::from_env()?)?;
+    let ctx = Arc::new(ctx);
+
     let table_name = Path::new(url.path())
         .file_stem()
         .unwrap_or_default()
         .to_str()
         .unwrap_or("default");
     let sql = args.query;
-
-    let table = LiquidCacheTableBuilder::new(cache_server, table_name, url.as_ref())
-        .with_object_store(
-            format!("{}://{}", url.scheme(), url.host_str().unwrap_or_default()),
-            None,
-        )
+    let object_store = object_store::http::HttpBuilder::new()
+        .with_url(object_store_url.as_str())
         .build()
+        .unwrap();
+    let object_store_url = ObjectStoreUrl::parse(object_store_url.as_str()).unwrap();
+    ctx.register_object_store(object_store_url.as_ref(), Arc::new(object_store));
+    ctx.register_parquet(table_name, url.as_ref(), Default::default())
         .await?;
-    ctx.register_table(table_name, Arc::new(table))?;
 
     ctx.sql(&sql).await?.show().await?;
 

@@ -37,6 +37,7 @@ use datafusion::{
     physical_plan::{ExecutionPlan, ExecutionPlanProperties},
     prelude::{SessionConfig, SessionContext},
 };
+use datafusion_proto::bytes::physical_plan_from_bytes;
 use futures::{Stream, TryStreamExt};
 use liquid_cache_common::{
     CacheMode,
@@ -281,8 +282,7 @@ impl FlightSqlService for LiquidCacheService {
                 handle: handle_bytes.clone(),
                 partition: partition as u32,
             };
-            let buf = fetch.as_any().encode_to_vec().into();
-            let ticket = Ticket { ticket: buf };
+            let ticket = fetch.into_ticket();
             let endpoint = FlightEndpoint::new().with_ticket(ticket.clone());
             info = info.with_endpoint(endpoint);
         }
@@ -342,6 +342,17 @@ impl FlightSqlService for LiquidCacheService {
             LiquidCacheActions::ResetCache => {
                 self.inner.cache().reset();
 
+                let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
+                    body: Bytes::default(),
+                })]);
+                return Ok(Response::new(Box::pin(output)));
+            }
+            LiquidCacheActions::RegisterPlan(cmd) => {
+                let plan = cmd.plan;
+                let plan = physical_plan_from_bytes(&plan, self.inner.get_ctx()).unwrap();
+                let handle = Uuid::from_bytes_ref(cmd.handle.as_ref().try_into().unwrap());
+                let cache_mode = CacheMode::from_str(&cmd.cache_mode).unwrap();
+                self.inner.register_plan(*handle, plan, cache_mode);
                 let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
                     body: Bytes::default(),
                 })]);
