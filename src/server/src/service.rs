@@ -337,13 +337,13 @@ fn rewrite_data_source_plan(
                         );
                         let mut new_file_source = source.clone();
                         new_file_source.file_source = Arc::new(new_source);
-                        let coerced_schema =
-                            coerce_to_liquid_cache_types(new_file_source.file_schema.as_ref());
+                        // let coerced_schema =
+                        //     coerce_to_liquid_cache_types(new_file_source.file_schema.as_ref());
                         new_file_source.projection = new_file_source.projection.map(|mut v| {
                             v.sort();
                             v
                         });
-                        new_file_source.file_schema = Arc::new(coerced_schema);
+                        // new_file_source.file_schema = Arc::new(coerced_schema);
                         let new_file_source: Arc<dyn DataSource> = Arc::new(new_file_source);
                         let new_plan = Arc::new(DataSourceExec::new(new_file_source));
 

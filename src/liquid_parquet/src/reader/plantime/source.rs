@@ -277,24 +277,23 @@ impl FileSource for LiquidParquetSource {
         let reader_factory = Arc::new(CachedMetaReaderFactory::new(object_store));
         let schema_adapter = Arc::new(DefaultSchemaAdapterFactory);
 
-        let opener = LiquidParquetOpener {
-            partition_index: partition,
-            projection: Arc::from(projection),
-            batch_size: self
-                .batch_size
+        let opener = LiquidParquetOpener::new(
+            partition,
+            Arc::from(projection),
+            self.batch_size
                 .expect("Batch size must be set before creating LiquidParquetOpener"),
-            limit: base_config.limit,
-            predicate: self.predicate.clone(),
-            pruning_predicate: self.pruning_predicate.clone(),
-            page_pruning_predicate: self.page_pruning_predicate.clone(),
-            table_schema: Arc::clone(&base_config.file_schema),
-            metrics: self.metrics.clone(),
-            parquet_file_reader_factory: reader_factory,
-            reorder_filters: self.reorder_filters(),
-            schema_adapter_factory: schema_adapter,
-            liquid_cache: self.liquid_cache.clone(),
-            liquid_cache_mode: self.liquid_cache_mode,
-        };
+            base_config.limit,
+            self.predicate.clone(),
+            self.pruning_predicate.clone(),
+            self.page_pruning_predicate.clone(),
+            Arc::clone(&base_config.file_schema),
+            self.metrics.clone(),
+            self.liquid_cache.clone(),
+            self.liquid_cache_mode,
+            reader_factory,
+            self.reorder_filters(),
+            schema_adapter,
+        );
 
         Arc::new(opener)
     }
