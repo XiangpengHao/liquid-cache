@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::task::Poll;
+use std::task::{Context, Poll};
 use std::{any::Any, fmt::Formatter, sync::Arc};
 
 use arrow::array::RecordBatch;
@@ -11,6 +11,7 @@ use datafusion::datasource::schema_adapter::{DefaultSchemaAdapterFactory, Schema
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::physical_plan::Distribution;
 use datafusion::physical_plan::execution_plan::CardinalityEffect;
+use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricsSet};
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::{
     error::Result,
@@ -28,17 +29,18 @@ use liquid_cache_common::rpc::{
 use tonic::Request;
 use uuid::Uuid;
 
-use crate::{FlightSqlDriver, flight_channel, to_df_err};
+use crate::metrics::FlightStreamMetrics;
+use crate::{flight_channel, to_df_err};
 
 /// The execution plan for the LiquidCache client.
 #[derive(Debug)]
 pub struct LiquidCacheClientExec {
     remote_plan: Arc<dyn ExecutionPlan>,
     cache_server: String,
-    driver: Arc<FlightSqlDriver>,
     plan_register_lock: Arc<Mutex<Option<Uuid>>>,
     cache_mode: CacheMode,
     object_stores: Vec<(ObjectStoreUrl, HashMap<String, String>)>,
+    metrics: ExecutionPlanMetricsSet,
 }
 
 impl LiquidCacheClientExec {
@@ -51,10 +53,10 @@ impl LiquidCacheClientExec {
         Self {
             remote_plan,
             cache_server,
-            driver: Arc::new(FlightSqlDriver {}),
             plan_register_lock: Arc::new(Mutex::new(None)),
             cache_mode,
             object_stores,
+            metrics: ExecutionPlanMetricsSet::new(),
         }
     }
 
@@ -94,10 +96,10 @@ impl ExecutionPlan for LiquidCacheClientExec {
         Ok(Arc::new(Self {
             remote_plan: children.first().unwrap().clone(),
             cache_server: self.cache_server.clone(),
-            driver: self.driver.clone(),
             plan_register_lock: self.plan_register_lock.clone(),
             cache_mode: self.cache_mode,
             object_stores: self.object_stores.clone(),
+            metrics: self.metrics.clone(),
         }))
     }
 
@@ -109,6 +111,7 @@ impl ExecutionPlan for LiquidCacheClientExec {
         let cache_server = self.cache_server.clone();
         let plan = self.remote_plan.clone();
         let lock = self.plan_register_lock.clone();
+        let stream_metrics = FlightStreamMetrics::new(&self.metrics, partition);
         Ok(Box::pin(FlightStream {
             future_stream: Some(Box::pin(flight_stream(
                 cache_server,
@@ -121,6 +124,7 @@ impl ExecutionPlan for LiquidCacheClientExec {
             state: FlightStreamState::Init,
             schema: self.remote_plan.schema().clone(),
             schema_mapper: None,
+            metrics: stream_metrics,
         }))
     }
 
@@ -165,6 +169,10 @@ impl ExecutionPlan for LiquidCacheClientExec {
         projection: &ProjectionExec,
     ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
         self.remote_plan.try_swapping_with_projection(projection)
+    }
+
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.metrics.clone_inner())
     }
 }
 
@@ -233,18 +241,15 @@ struct FlightStream {
     state: FlightStreamState,
     schema: SchemaRef,
     schema_mapper: Option<Arc<dyn SchemaMapper>>,
+    metrics: FlightStreamMetrics,
 }
 
-impl Stream for FlightStream {
-    type Item = Result<RecordBatch>;
-
-    fn poll_next(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
+impl FlightStream {
+    fn poll_inner(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<RecordBatch>>> {
         loop {
             match &mut self.state {
                 FlightStreamState::Init => {
+                    self.metrics.time_reading_total.start();
                     self.state = FlightStreamState::GetStream(self.future_stream.take().unwrap());
                     continue;
                 }
@@ -254,28 +259,56 @@ impl Stream for FlightStream {
                     continue;
                 }
                 FlightStreamState::Processing(stream) => {
-                    let result = ready!(stream.as_mut().poll_next(cx));
-                    match result {
-                        Some(Ok(batch)) => {
-                            let coerced_batch = if let Some(schema_mapper) = &self.schema_mapper {
-                                schema_mapper.map_batch(batch).unwrap()
-                            } else {
-                                let (schema_mapper, _) =
-                                    DefaultSchemaAdapterFactory::from_schema(self.schema.clone())
-                                        .map_schema(&batch.schema())
-                                        .unwrap();
-                                let batch = schema_mapper.map_batch(batch).unwrap();
-                                self.schema_mapper = Some(schema_mapper);
-                                batch
-                            };
-                            return Poll::Ready(Some(Ok(coerced_batch)));
-                        }
-                        None => return Poll::Ready(None),
-                        Some(Err(e)) => {
-                            panic!("Error in flight stream: {:?}", e);
-                        }
-                    }
+                    let result = stream.as_mut().poll_next(cx);
+                    self.metrics.poll_count.add(1);
+                    return result;
                 }
+            }
+        }
+    }
+}
+
+impl Stream for FlightStream {
+    type Item = Result<RecordBatch>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        self.metrics.time_processing.start();
+        let result = self.poll_inner(cx);
+        match result {
+            Poll::Ready(Some(Ok(batch))) => {
+                let coerced_batch = if let Some(schema_mapper) = &self.schema_mapper {
+                    schema_mapper.map_batch(batch).unwrap()
+                } else {
+                    let (schema_mapper, _) =
+                        DefaultSchemaAdapterFactory::from_schema(self.schema.clone())
+                            .map_schema(&batch.schema())
+                            .unwrap();
+                    let batch = schema_mapper.map_batch(batch).unwrap();
+
+                    self.schema_mapper = Some(schema_mapper);
+                    batch
+                };
+                self.metrics.output_rows.add(coerced_batch.num_rows());
+                self.metrics
+                    .bytes_decoded
+                    .add(coerced_batch.get_array_memory_size());
+                self.metrics.time_processing.stop();
+                Poll::Ready(Some(Ok(coerced_batch)))
+            }
+            Poll::Ready(None) => {
+                self.metrics.time_processing.stop();
+                self.metrics.time_reading_total.stop();
+                Poll::Ready(None)
+            }
+            Poll::Ready(Some(Err(e))) => {
+                panic!("Error in flight stream: {:?}", e);
+            }
+            Poll::Pending => {
+                self.metrics.time_processing.stop();
+                Poll::Pending
             }
         }
     }

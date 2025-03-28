@@ -365,7 +365,44 @@ fn rewrite_data_source_plan(
 
 #[cfg(test)]
 mod tests {
+    use datafusion::common::tree_node::TreeNodeRecursion;
+
     use super::*;
+
+    #[tokio::test]
+    async fn test_plan_rewrite() {
+        let ctx = SessionContext::new();
+        ctx.register_parquet(
+            "nano_hits",
+            "../../examples/nano_hits.parquet",
+            Default::default(),
+        )
+        .await
+        .unwrap();
+        let df = ctx
+            .sql("SELECT \"URL\" FROM nano_hits WHERE \"URL\" like 'https://%' limit 10")
+            .await
+            .unwrap();
+        let plan = df.create_physical_plan().await.unwrap();
+        let liquid_cache = Arc::new(LiquidCache::new(8192, 1000000, PathBuf::from("test")));
+        let rewritten = rewrite_data_source_plan(plan, &liquid_cache, CacheMode::Liquid);
+
+        rewritten
+            .apply(|node| {
+                if let Some(plan) = node.as_any().downcast_ref::<DataSourceExec>() {
+                    let data_source = plan.data_source();
+                    let any_source = data_source.as_any();
+                    let source = any_source.downcast_ref::<FileScanConfig>().unwrap();
+                    let file_source = source.file_source();
+                    let any_file_source = file_source.as_any();
+                    let _parquet_source = any_file_source
+                        .downcast_ref::<LiquidParquetSource>()
+                        .unwrap();
+                }
+                Ok(TreeNodeRecursion::Continue)
+            })
+            .unwrap();
+    }
 
     #[tokio::test]
     async fn test_register_object_store() {
