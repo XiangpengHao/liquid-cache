@@ -1509,6 +1509,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "datafusion-proto"
+version = "46.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6f6ef4c6eb52370cb48639e25e2331a415aac0b2b0a0a472b36e26603bdf184f"
+dependencies = [
+ "arrow",
+ "chrono",
+ "datafusion",
+ "datafusion-common",
+ "datafusion-expr",
+ "datafusion-proto-common",
+ "object_store",
+ "prost",
+]
+
+[[package]]
+name = "datafusion-proto-common"
+version = "46.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5faf4a9bbb0d0a305fea8a6db21ba863286b53e53a212e687d2774028dd6f03f"
+dependencies = [
+ "arrow",
+ "datafusion-common",
+ "prost",
+]
+
+[[package]]
 name = "datafusion-sql"
 version = "46.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1635,6 +1662,7 @@ dependencies = [
  "liquid-cache-common",
  "liquid-cache-server",
  "log",
+ "object_store",
  "tempfile",
  "tokio",
  "tonic",
@@ -2495,12 +2523,14 @@ dependencies = [
  "arrow-schema",
  "async-trait",
  "datafusion",
+ "datafusion-proto",
  "futures",
  "liquid-cache-common",
  "log",
  "owo-colors",
  "prost",
  "serde",
+ "tokio",
  "tonic",
  "uuid",
 ]
@@ -2510,6 +2540,7 @@ name = "liquid-cache-common"
 version = "0.1.2"
 dependencies = [
  "arrow-flight",
+ "arrow-schema",
  "bytes",
  "prost",
  "tempfile",
@@ -2556,6 +2587,7 @@ dependencies = [
  "bytes",
  "dashmap",
  "datafusion",
+ "datafusion-proto",
  "futures",
  "liquid-cache-client",
  "liquid-cache-common",

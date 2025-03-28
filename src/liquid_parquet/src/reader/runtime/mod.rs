@@ -3,6 +3,7 @@ use arrow::array::{BooleanArray, RecordBatch};
 use arrow_schema::{ArrowError, DataType, Fields, Schema, SchemaRef};
 use futures::{FutureExt, Stream, future::BoxFuture, ready};
 use in_memory_rg::InMemoryRowGroup;
+use liquid_cache_common::coerce_from_parquet_reader_to_liquid_types;
 use parquet::{
     arrow::{
         ProjectionMask,
@@ -26,7 +27,7 @@ use std::{
 };
 use tokio::sync::Mutex;
 
-use super::plantime::{ParquetMetadataCacheReader, coerce_from_reader_to_liquid_types};
+use super::plantime::ParquetMetadataCacheReader;
 mod in_memory_rg;
 mod parquet_bridge;
 mod reader;
@@ -285,7 +286,7 @@ impl LiquidStreamBuilder {
         };
         let schema = Arc::new(Schema::new(projected_fields));
         let schema = if matches!(liquid_cache_mode, LiquidCacheMode::InMemoryLiquid { .. }) {
-            Arc::new(coerce_from_reader_to_liquid_types(&schema))
+            Arc::new(coerce_from_parquet_reader_to_liquid_types(&schema))
         } else {
             schema
         };

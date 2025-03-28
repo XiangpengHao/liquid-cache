@@ -31,6 +31,7 @@ arrow-flight = { version = "54.3.0", features = ["flight-sql-experimental"] }
 arrow-schema = { version = "54.3.0", features = ["serde"] }
 parquet = { version = "54.3.0", features = ["async", "experimental"] }
 datafusion = { version = "46.0.1" }
+datafusion-proto = { version = "46.0.1" }
 async-trait = "0.1.88"
 futures = { version = "0.3.31", default-features = false, features = ["std"] }
 tokio = { version = "1.44.1", features = ["rt-multi-thread"] }

@@ -12,6 +12,7 @@ repository = { workspace = true }
 arrow = { workspace = true }
 arrow-flight = { workspace = true }
 datafusion = { workspace = true }
+datafusion-proto = { workspace = true }
 arrow-schema = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true }
@@ -22,3 +23,6 @@ prost = { workspace = true }
 owo-colors = { workspace = true }
 uuid = { workspace = true }
 liquid-cache-common = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

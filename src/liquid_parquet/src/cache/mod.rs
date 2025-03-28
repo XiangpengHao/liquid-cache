@@ -14,6 +14,7 @@ use arrow::buffer::BooleanBuffer;
 use arrow::compute::prep_null_mask_filter;
 use arrow_schema::{ArrowError, DataType, Field, Schema};
 use bytes::Bytes;
+use liquid_cache_common::CacheMode;
 use std::fmt::Display;
 use std::fs::File;
 use std::io::{Read, Write};
@@ -751,6 +752,21 @@ pub enum LiquidCacheMode {
         /// Whether to transcode the data into liquid arrays in the background.
         transcode_in_background: bool,
     },
+}
+
+impl From<CacheMode> for LiquidCacheMode {
+    fn from(value: CacheMode) -> Self {
+        match value {
+            CacheMode::Liquid => LiquidCacheMode::InMemoryLiquid {
+                transcode_in_background: true,
+            },
+            CacheMode::Arrow => LiquidCacheMode::InMemoryArrow,
+            CacheMode::LiquidEagerTranscode => LiquidCacheMode::InMemoryLiquid {
+                transcode_in_background: false,
+            },
+            CacheMode::Parquet => unreachable!(),
+        }
+    }
 }
 
 impl LiquidCache {
