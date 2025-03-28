@@ -319,18 +319,6 @@ impl FlightSqlService for LiquidCacheService {
                 })]);
                 return Ok(Response::new(Box::pin(output)));
             }
-            LiquidCacheActions::RegisterTable(cmd) => {
-                let parquet_mode = CacheMode::from_str(&cmd.cache_mode).unwrap();
-                self.inner
-                    .register_table(&cmd.url, &cmd.table_name, parquet_mode)
-                    .await
-                    .map_err(df_error_to_status)?;
-
-                let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
-                    body: Bytes::default(),
-                })]);
-                return Ok(Response::new(Box::pin(output)));
-            }
             LiquidCacheActions::ExecutionMetrics(cmd) => {
                 let execution_id = Uuid::parse_str(&cmd.handle).unwrap();
                 let response = self.inner.get_metrics(&execution_id).unwrap();

@@ -12,8 +12,6 @@ use prost::Message;
 
 /// The actions that can be performed on the LiquidCache service.
 pub enum LiquidCacheActions {
-    /// Register a table with the LiquidCache service.
-    RegisterTable(RegisterTableRequest),
     /// Get the most recent execution metrics from the LiquidCache service.
     ExecutionMetrics(ExecutionMetricsRequest),
     /// Reset the cache.
@@ -26,10 +24,6 @@ pub enum LiquidCacheActions {
 impl From<LiquidCacheActions> for Action {
     fn from(action: LiquidCacheActions) -> Self {
         match action {
-            LiquidCacheActions::RegisterTable(request) => Action {
-                r#type: "RegisterTable".to_string(),
-                body: request.as_any().encode_to_vec().into(),
-            },
             LiquidCacheActions::ExecutionMetrics(request) => Action {
                 r#type: "ExecutionMetrics".to_string(),
                 body: request.as_any().encode_to_vec().into(),
@@ -53,11 +47,6 @@ impl From<LiquidCacheActions> for Action {
 impl From<Action> for LiquidCacheActions {
     fn from(action: Action) -> Self {
         match action.r#type.as_str() {
-            "RegisterTable" => {
-                let any = Any::decode(action.body).unwrap();
-                let request = any.unpack::<RegisterTableRequest>().unwrap().unwrap();
-                LiquidCacheActions::RegisterTable(request)
-            }
             "ExecutionMetrics" => {
                 let any = Any::decode(action.body).unwrap();
                 let request = any.unpack::<ExecutionMetricsRequest>().unwrap().unwrap();

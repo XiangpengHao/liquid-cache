@@ -157,37 +157,12 @@ pub struct LiquidParquetSource {
     liquid_cache: LiquidCacheRef,
     liquid_cache_mode: LiquidCacheMode,
     batch_size: Option<usize>,
-    metadata_size_hint: Option<usize>,
     projected_statistics: Option<Statistics>,
 }
 
 impl LiquidParquetSource {
-    pub(crate) fn new(
-        table_parquet_options: TableParquetOptions,
-        liquid_cache: LiquidCacheRef,
-        liquid_cache_mode: LiquidCacheMode,
-    ) -> Self {
-        Self {
-            table_parquet_options,
-            liquid_cache,
-            liquid_cache_mode,
-            metrics: ExecutionPlanMetricsSet::default(),
-            predicate: None,
-            pruning_predicate: None,
-            page_pruning_predicate: None,
-            batch_size: None,
-            projected_statistics: None,
-            metadata_size_hint: None,
-        }
-    }
-
     fn reorder_filters(&self) -> bool {
         self.table_parquet_options.global.reorder_filters
-    }
-
-    pub(crate) fn with_metadata_size_hint(mut self, metadata_size_hint: usize) -> Self {
-        self.metadata_size_hint = Some(metadata_size_hint);
-        self
     }
 
     fn with_metrics(mut self, metrics: ExecutionPlanMetricsSet) -> Self {
@@ -246,7 +221,6 @@ impl LiquidParquetSource {
             predicate: source.predicate().cloned(),
             pruning_predicate: source.pruning_predicate().cloned(),
             page_pruning_predicate: source.page_pruning_predicate().cloned(),
-            metadata_size_hint: source.table_parquet_options().global.metadata_size_hint,
             projected_statistics: Some(source.statistics().unwrap()),
         }
     }
