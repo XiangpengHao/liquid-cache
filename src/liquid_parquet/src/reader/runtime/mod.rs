@@ -15,7 +15,12 @@ mod utils;
 /// A predicate that can be evaluated on a liquid array.
 pub trait LiquidPredicate: ArrowPredicate {
     /// Evaluates the predicate on a liquid array.
-    fn evaluate_liquid(&mut self, array: &LiquidArrayRef) -> Result<BooleanArray, ArrowError>;
+    /// Returns `None` if the predicate is not applicable to the array.
+    fn evaluate_liquid(
+        &mut self,
+        array: &LiquidArrayRef,
+    ) -> Result<Option<BooleanArray>, ArrowError>;
+
     /// Evaluates the predicate on an arrow record batch.
     fn evaluate_arrow(&mut self, array: RecordBatch) -> Result<BooleanArray, ArrowError> {
         self.evaluate(array)

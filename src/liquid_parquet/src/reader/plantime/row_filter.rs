@@ -176,7 +176,10 @@ fn get_string_needle(value: &ScalarValue) -> Option<&str> {
 }
 
 impl LiquidPredicate for DatafusionArrowPredicate {
-    fn evaluate_liquid(&mut self, array: &LiquidArrayRef) -> Result<BooleanArray, ArrowError> {
+    fn evaluate_liquid(
+        &mut self,
+        array: &LiquidArrayRef,
+    ) -> Result<Option<BooleanArray>, ArrowError> {
         if let Some(binary_expr) = self.physical_expr.as_any().downcast_ref::<BinaryExpr>() {
             if let Some(literal) = binary_expr.right().as_any().downcast_ref::<Literal>() {
                 let op = binary_expr.op();
@@ -184,10 +187,10 @@ impl LiquidPredicate for DatafusionArrowPredicate {
                     if let Some(needle) = get_string_needle(literal.value()) {
                         if op == &Operator::Eq {
                             let result = array.compare_equals(needle);
-                            return Ok(result);
+                            return Ok(Some(result));
                         } else if op == &Operator::NotEq {
                             let result = array.compare_not_equals(needle);
-                            return Ok(result);
+                            return Ok(Some(result));
                         }
                     }
 
@@ -210,7 +213,7 @@ impl LiquidPredicate for DatafusionArrowPredicate {
                     };
                     if let Ok(result) = result {
                         let filtered = result.into_array(array.len())?.as_boolean().clone();
-                        return Ok(filtered);
+                        return Ok(Some(filtered));
                     }
                 }
             }
@@ -229,19 +232,12 @@ impl LiquidPredicate for DatafusionArrowPredicate {
                 };
                 if let Ok(result) = result {
                     let filtered = result.into_array(array.len())?.as_boolean().clone();
-                    return Ok(filtered);
+                    return Ok(Some(filtered));
                 }
             }
         }
-        let arrow_array = array.to_arrow_array();
-        let schema = Schema::new(vec![Field::new(
-            "",
-            arrow_array.data_type().clone(),
-            arrow_array.is_nullable(),
-        )]);
-        let record_batch =
-            RecordBatch::try_new(Arc::new(schema), vec![Arc::new(arrow_array)]).unwrap();
-        self.evaluate(record_batch)
+        // Not supported for this data type
+        Ok(None)
     }
 }
 

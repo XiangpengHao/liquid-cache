@@ -212,12 +212,12 @@ mod tests {
             let file_name = format!("test_{file_no}.parquet");
             let file = cache.register_or_get_file(file_name, LiquidCacheMode::InMemoryArrow);
             for rg in 0..8 {
+                let row_group = file.row_group(rg);
                 for col in 0..8 {
+                    let column = row_group
+                        .create_column(col, Arc::new(Field::new("test", DataType::Int32, false)));
                     for row in 0..8 {
-                        let row_group = file.row_group(rg);
-                        let column = row_group.get_column_or_create(col);
                         assert!(column.insert_arrow_array(row, array.clone()).is_ok());
-
                         row_group_id_sum += rg as u64;
                         column_id_sum += col as u64;
                         row_start_id_sum += row as u64;

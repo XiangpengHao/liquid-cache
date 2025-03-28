@@ -234,7 +234,10 @@ impl TestPredicate {
 }
 
 impl LiquidPredicate for TestPredicate {
-    fn evaluate_liquid(&mut self, array: &LiquidArrayRef) -> Result<BooleanArray, ArrowError> {
+    fn evaluate_liquid(
+        &mut self,
+        array: &LiquidArrayRef,
+    ) -> Result<Option<BooleanArray>, ArrowError> {
         let batch = array.to_arrow_array();
 
         let schema = Schema::new(vec![Field::new(
@@ -243,7 +246,8 @@ impl LiquidPredicate for TestPredicate {
             batch.is_nullable(),
         )]);
         let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(batch)]).unwrap();
-        self.evaluate(batch)
+        let v = self.evaluate(batch)?;
+        Ok(Some(v))
     }
 }
 
@@ -399,7 +403,10 @@ async fn test_reading_with_filter_two_columns() {
     }
 
     impl LiquidPredicate for TwoColumnsPredicate {
-        fn evaluate_liquid(&mut self, _array: &LiquidArrayRef) -> Result<BooleanArray, ArrowError> {
+        fn evaluate_liquid(
+            &mut self,
+            _array: &LiquidArrayRef,
+        ) -> Result<Option<BooleanArray>, ArrowError> {
             unimplemented!()
         }
     }

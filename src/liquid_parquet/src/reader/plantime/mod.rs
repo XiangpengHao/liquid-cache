@@ -1,4 +1,3 @@
-use liquid_cache_common::coerce_to_liquid_cache_types;
 #[cfg(test)]
 pub(crate) use source::CachedMetaReaderFactory;
 pub use source::LiquidParquetSource;
