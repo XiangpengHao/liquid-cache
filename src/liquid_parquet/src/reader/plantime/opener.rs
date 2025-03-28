@@ -16,6 +16,7 @@ use datafusion::{
 };
 use futures::StreamExt;
 use futures::TryStreamExt;
+use liquid_cache_common::coerce_string_to_view;
 use log::debug;
 use parquet::arrow::{
     ParquetRecordBatchStreamBuilder, ProjectionMask,
@@ -27,8 +28,7 @@ use crate::{
     LiquidCacheMode, LiquidCacheRef,
     reader::{
         plantime::{
-            coerce_binary_to_string, coerce_string_to_view, row_filter,
-            row_group_filter::RowGroupAccessPlanFilter,
+            coerce_binary_to_string, row_filter, row_group_filter::RowGroupAccessPlanFilter,
         },
         runtime::ArrowReaderBuilderBridge,
     },

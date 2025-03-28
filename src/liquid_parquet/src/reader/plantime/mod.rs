@@ -1,6 +1,6 @@
 use std::{any::Any, sync::Arc};
 
-use arrow_schema::{DataType, Field, FieldRef, Schema, SchemaRef};
+use arrow_schema::{Schema, SchemaRef};
 use async_trait::async_trait;
 use datafusion::{
     catalog::Session,
@@ -16,7 +16,7 @@ use datafusion::{
     physical_plan::{ExecutionPlan, PhysicalExpr},
     prelude::*,
 };
-use liquid_cache_common::coerce_to_liquid_cache_types;
+use liquid_cache_common::{coerce_binary_to_string, coerce_to_liquid_cache_types};
 use log::info;
 use object_store::{ObjectMeta, ObjectStore};
 #[cfg(test)]
@@ -177,55 +177,4 @@ impl FileFormat for LiquidParquetFileFormat {
         // this can be anything, as we don't really use it.
         self.inner.file_source()
     }
-}
-
-/// Create a new field with the specified data type, copying the other
-/// properties from the input field
-fn field_with_new_type(field: &FieldRef, new_type: DataType) -> FieldRef {
-    Arc::new(field.as_ref().clone().with_data_type(new_type))
-}
-
-pub(crate) fn coerce_binary_to_string(schema: &Schema) -> Schema {
-    let transformed_fields: Vec<Arc<Field>> = schema
-        .fields
-        .iter()
-        .map(|field| match field.data_type() {
-            DataType::Binary | DataType::LargeBinary | DataType::BinaryView => {
-                field_with_new_type(field, DataType::Utf8)
-            }
-            _ => field.clone(),
-        })
-        .collect();
-    Schema::new_with_metadata(transformed_fields, schema.metadata.clone())
-}
-
-pub(crate) fn coerce_string_to_view(schema: &Schema) -> Schema {
-    let transformed_fields: Vec<Arc<Field>> = schema
-        .fields
-        .iter()
-        .map(|field| match field.data_type() {
-            DataType::Utf8 | DataType::LargeUtf8 => field_with_new_type(field, DataType::Utf8View),
-            _ => field.clone(),
-        })
-        .collect();
-    Schema::new_with_metadata(transformed_fields, schema.metadata.clone())
-}
-
-/// Liquid cache reads binary as strings.
-pub(crate) fn coerce_from_reader_to_liquid_types(schema: &Schema) -> Schema {
-    let transformed_fields: Vec<Arc<Field>> = schema
-        .fields
-        .iter()
-        .map(|field| {
-            if field.data_type().equals_datatype(&DataType::Utf8View) {
-                field_with_new_type(
-                    field,
-                    DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-                )
-            } else {
-                field.clone()
-            }
-        })
-        .collect();
-    Schema::new_with_metadata(transformed_fields, schema.metadata.clone())
 }

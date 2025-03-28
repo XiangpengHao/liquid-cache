@@ -21,10 +21,10 @@ use datafusion::{
 };
 use datafusion_proto::bytes::physical_plan_to_bytes;
 use futures::{Stream, TryStreamExt, future::BoxFuture, lock::Mutex, ready};
+use liquid_cache_common::CacheMode;
 use liquid_cache_common::rpc::{
     FetchResults, LiquidCacheActions, RegisterObjectStoreRequest, RegisterPlanRequest,
 };
-use liquid_cache_common::{CacheMode, coerce_to_liquid_cache_types};
 use tonic::Request;
 use uuid::Uuid;
 
@@ -109,11 +109,6 @@ impl ExecutionPlan for LiquidCacheClientExec {
         let cache_server = self.cache_server.clone();
         let plan = self.remote_plan.clone();
         let lock = self.plan_register_lock.clone();
-        let flight_schema = coerce_to_liquid_cache_types(self.remote_plan.schema().as_ref());
-        let (schema_mapper, _) =
-            DefaultSchemaAdapterFactory::from_schema(self.remote_plan.schema())
-                .map_schema(&flight_schema)
-                .unwrap();
         Ok(Box::pin(FlightStream {
             future_stream: Some(Box::pin(flight_stream(
                 cache_server,
@@ -125,7 +120,7 @@ impl ExecutionPlan for LiquidCacheClientExec {
             ))),
             state: FlightStreamState::Init,
             schema: self.remote_plan.schema().clone(),
-            schema_mapper,
+            schema_mapper: None,
         }))
     }
 
@@ -237,7 +232,7 @@ struct FlightStream {
     future_stream: Option<BoxFuture<'static, Result<SendableRecordBatchStream>>>,
     state: FlightStreamState,
     schema: SchemaRef,
-    schema_mapper: Arc<dyn SchemaMapper>,
+    schema_mapper: Option<Arc<dyn SchemaMapper>>,
 }
 
 impl Stream for FlightStream {
@@ -262,7 +257,17 @@ impl Stream for FlightStream {
                     let result = ready!(stream.as_mut().poll_next(cx));
                     match result {
                         Some(Ok(batch)) => {
-                            let coerced_batch = self.schema_mapper.map_batch(batch).unwrap();
+                            let coerced_batch = if let Some(schema_mapper) = &self.schema_mapper {
+                                schema_mapper.map_batch(batch).unwrap()
+                            } else {
+                                let (schema_mapper, _) =
+                                    DefaultSchemaAdapterFactory::from_schema(self.schema.clone())
+                                        .map_schema(&batch.schema())
+                                        .unwrap();
+                                let batch = schema_mapper.map_batch(batch).unwrap();
+                                self.schema_mapper = Some(schema_mapper);
+                                batch
+                            };
                             return Poll::Ready(Some(Ok(coerced_batch)));
                         }
                         None => return Poll::Ready(None),

@@ -373,7 +373,7 @@ impl BenchmarkMode {
                                 Some(m.clone())
                             }
                         });
-                metric.unwrap()
+                metric.unwrap_or_default()
             }
         }
     }

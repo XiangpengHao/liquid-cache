@@ -106,6 +106,11 @@ impl LiquidCacheBuilder {
             .execution
             .parquet
             .schema_force_view_types = false;
+        session_config
+            .options_mut()
+            .execution
+            .parquet
+            .binary_as_string = true;
         let session_state = SessionStateBuilder::new()
             .with_config(session_config)
             .with_runtime_env(Arc::new(RuntimeEnv::default()))
