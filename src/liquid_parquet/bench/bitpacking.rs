@@ -1,3 +1,4 @@
+use criterion::Throughput;
 use criterion::*;
 
 use std::num::NonZero;
@@ -7,7 +8,7 @@ use liquid_cache_parquet::liquid_array::raw::BitPackedArray;
 use rand::Rng;
 
 const MAX_BIT_WIDTH: u8 = 32;
-const MAX_ARRAY_MULTIPLIER: usize = 20;
+const MAX_ARRAY_MULTIPLIER: usize = 8;
 const BASE_ARRAY_SIZE: usize = 8192;
 
 // Function to create a random vector of u32 values with a given size and bit width
@@ -27,7 +28,7 @@ fn from_primitive_benchmark(c: &mut Criterion) {
     // `bit_widths` represents the range of bit widths to test (1 through MAX_BIT_WIDTH).
     // Each bit width determines the maximum value that can be represented in the random vector.
     // For example, a bit width of 8 allows values in the range [0, 255].
-    let bit_widths: Vec<u8> = (1..=MAX_BIT_WIDTH).collect();
+    let bit_widths: Vec<u8> = (1..=MAX_BIT_WIDTH).step_by(4).collect();
     for bit_width in bit_widths {
         // `array_sizes` represents the range of array sizes to test.
         // Each size is a multiple of BASE_ARRAY_SIZE (e.g., 8192, 16384, etc.).
@@ -39,23 +40,19 @@ fn from_primitive_benchmark(c: &mut Criterion) {
 
             // Convert the random vector into a PrimitiveArray
             let array = PrimitiveArray::<UInt32Type>::from(values);
-            let bitwidth = NonZero::new(bit_width).unwrap();
+            let bit_width = NonZero::new(bit_width).unwrap();
 
             // Benchmark from_primitive() - the conversion from PrimitiveArray to BitPackedArray
-            c.bench_function(
-                &format!(
-                    "from_primitive(bitwidth={}, array size: {})",
-                    bit_width, array_size
-                ),
-                |b| {
-                    b.iter(|| {
-                        criterion::black_box(BitPackedArray::from_primitive(
-                            array.clone(),
-                            bitwidth,
-                        ))
-                    })
-                },
-            );
+            let mut group = c.benchmark_group(format!("from_primitive_bw_{}", bit_width));
+            group.throughput(Throughput::Bytes(
+                (array_size * std::mem::size_of::<u32>()) as u64,
+            ));
+            group.bench_function(format!("size_{}", array_size), |b| {
+                b.iter(|| {
+                    criterion::black_box(BitPackedArray::from_primitive(array.clone(), bit_width))
+                })
+            });
+            group.finish();
         }
     }
 }
@@ -74,17 +71,18 @@ fn to_primitive_benchmark(c: &mut Criterion) {
 
             // Convert the random vector into a PrimitiveArray
             let array = PrimitiveArray::<UInt32Type>::from(values);
-            let bitwidth = NonZero::new(bit_width).unwrap();
-            let bit_packed = BitPackedArray::from_primitive(array, bitwidth);
+            let bit_width = NonZero::new(bit_width).unwrap();
+            let bit_packed = BitPackedArray::from_primitive(array, bit_width);
 
             // Benchmark to_primitive() - the conversion from a BitPackedArray to PrimitiveArray
-            c.bench_function(
-                &format!(
-                    "to_primitive(bitwidth={}, array size: {})",
-                    bit_width, array_size
-                ),
-                |b| b.iter(|| criterion::black_box(bit_packed.to_primitive())),
-            );
+            let mut group = c.benchmark_group(format!("to_primitive_bw_{}", bit_width));
+            group.throughput(Throughput::Bytes(
+                (array_size * std::mem::size_of::<u32>()) as u64,
+            ));
+            group.bench_function(format!("size_{}", array_size), |b| {
+                b.iter(|| criterion::black_box(bit_packed.to_primitive()))
+            });
+            group.finish();
         }
     }
 }

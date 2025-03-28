@@ -32,9 +32,6 @@ bytes = { workspace = true }
 prost = { workspace = true }
 fsst-rs = "0.5.2"
 parquet = { workspace = true }
-criterion = "0.5.1"
-arrow = { workspace = true}
-rand = "0.9.0"
 
 
 [[bin]]
@@ -48,9 +45,3 @@ path = "tpch/tpch_client.rs"
 [[bin]]
 name = "bench_server"
 path = "bench_server.rs"
-
-
-[[bench]]
-name = "bitpacking"
-path = "bitpacking/bitpacking.rs"
-harness = false
