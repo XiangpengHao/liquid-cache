@@ -112,18 +112,19 @@ pub struct LiquidCachedColumn {
     liquid_compressor_states: LiquidCompressorStates,
     rows: RwLock<AHashMap<usize, CachedEntry>>,
     cache_dir: PathBuf,
+    field: Arc<Field>,
 }
 
 pub type LiquidCachedColumnRef = Arc<LiquidCachedColumn>;
 
-fn arrays_to_record_batch(arrays: &[ArrayRef]) -> RecordBatch {
-    let fields = arrays
-        .iter()
-        .map(|array| Field::new("_", array.data_type().clone(), array.is_nullable()))
-        .collect::<Vec<_>>();
-    let schema = Arc::new(Schema::new(fields));
-    RecordBatch::try_new(schema, arrays.to_vec()).unwrap()
-}
+// fn arrays_to_record_batch(arrays: &[ArrayRef]) -> RecordBatch {
+//     let fields = arrays
+//         .iter()
+//         .map(|array| Field::new("_", array.data_type().clone(), array.is_nullable()))
+//         .collect::<Vec<_>>();
+//     let schema = Arc::new(Schema::new(fields));
+//     RecordBatch::try_new(schema, arrays.to_vec()).unwrap()
+// }
 
 pub enum InsertArrowArrayError {
     CacheFull(ArrayRef),
@@ -131,13 +132,19 @@ pub enum InsertArrowArrayError {
 }
 
 impl LiquidCachedColumn {
-    fn new(cache_mode: LiquidCacheMode, config: Arc<CacheConfig>, cache_dir: PathBuf) -> Self {
+    fn new(
+        cache_mode: LiquidCacheMode,
+        config: Arc<CacheConfig>,
+        cache_dir: PathBuf,
+        field: Arc<Field>,
+    ) -> Self {
         Self {
             cache_mode,
             config,
             cache_dir,
             rows: RwLock::new(AHashMap::new()),
             liquid_compressor_states: LiquidCompressorStates::new(),
+            field,
         }
     }
 
@@ -173,6 +180,36 @@ impl LiquidCachedColumn {
         ipc::read_from_bytes(bytes, &LiquidIPCContext::new(compressor))
     }
 
+    /// Evaluates a predicate on a liquid array.
+    /// It optimistically tries to evaluate on liquid array, and if that fails,
+    /// it falls back to evaluating on an arrow array.
+    fn eval_selection_with_predicate_inner(
+        &self,
+        predicate: &mut dyn LiquidPredicate,
+        array: &LiquidArrayRef,
+    ) -> BooleanBuffer {
+        match predicate.evaluate_liquid(array).unwrap() {
+            Some(v) => {
+                let (buffer, _) = v.into_parts();
+                buffer
+            }
+            None => {
+                let arrow_batch = array.to_arrow_array();
+                let schema = Schema::new(vec![self.field.clone()]);
+                let record_batch =
+                    RecordBatch::try_new(Arc::new(schema), vec![arrow_batch]).unwrap();
+                let boolean_array = predicate.evaluate(record_batch).unwrap();
+                let (buffer, _) = boolean_array.into_parts();
+                buffer
+            }
+        }
+    }
+
+    fn arrow_array_to_record_batch(&self, array: ArrayRef) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![self.field.clone()]));
+        RecordBatch::try_new(schema, vec![array]).unwrap()
+    }
+
     pub(crate) fn eval_selection_with_predicate(
         &self,
         row_id: usize,
@@ -186,7 +223,7 @@ impl LiquidCachedColumn {
             CachedBatch::ArrowMemory(array) => {
                 let boolean_array = BooleanArray::new(selection.clone(), None);
                 let selected = arrow::compute::filter(array, &boolean_array).unwrap();
-                let record_batch = arrays_to_record_batch(&[selected]);
+                let record_batch = self.arrow_array_to_record_batch(selected);
                 let boolean_array = predicate.evaluate(record_batch).unwrap();
                 let predicate_filter = match boolean_array.null_count() {
                     0 => boolean_array,
@@ -199,8 +236,7 @@ impl LiquidCachedColumn {
                 let array = self.read_liquid_from_disk(row_id);
                 let boolean_array = BooleanArray::new(selection.clone(), None);
                 let filtered = array.filter(&boolean_array);
-                let boolean_array = predicate.evaluate_liquid(&filtered).unwrap();
-                let (buffer, _) = boolean_array.into_parts();
+                let buffer = self.eval_selection_with_predicate_inner(predicate, &filtered);
                 Some(Ok(buffer))
             }
             CachedBatch::LiquidMemory(array) => match ABLATION_STUDY_MODE {
@@ -208,7 +244,7 @@ impl LiquidCachedColumn {
                     let boolean_array = BooleanArray::new(selection.clone(), None);
                     let arrow = array.to_arrow_array();
                     let filtered = arrow::compute::filter(&arrow, &boolean_array).unwrap();
-                    let record_batch = arrays_to_record_batch(&[filtered]);
+                    let record_batch = self.arrow_array_to_record_batch(filtered);
                     let boolean_array = predicate.evaluate(record_batch).unwrap();
                     let (buffer, _) = boolean_array.into_parts();
                     Some(Ok(buffer))
@@ -218,7 +254,7 @@ impl LiquidCachedColumn {
                     let boolean_array = BooleanArray::new(selection.clone(), None);
                     let filtered = array.filter(&boolean_array);
                     let arrow = filtered.to_arrow_array();
-                    let record_batch = arrays_to_record_batch(&[arrow]);
+                    let record_batch = self.arrow_array_to_record_batch(arrow);
                     let boolean_array = predicate.evaluate(record_batch).unwrap();
                     let (buffer, _) = boolean_array.into_parts();
                     Some(Ok(buffer))
@@ -227,8 +263,7 @@ impl LiquidCachedColumn {
                 | AblationStudyMode::EvaluateOnPartialEncodedData => {
                     let boolean_array = BooleanArray::new(selection.clone(), None);
                     let filtered = array.filter(&boolean_array);
-                    let boolean_array = predicate.evaluate_liquid(&filtered).unwrap();
-                    let (buffer, _) = boolean_array.into_parts();
+                    let buffer = self.eval_selection_with_predicate_inner(predicate, &filtered);
                     Some(Ok(buffer))
                 }
             },
@@ -607,21 +642,43 @@ impl LiquidCachedRowGroup {
         }
     }
 
-    pub fn get_column_or_create(&self, column_id: usize) -> LiquidCachedColumnRef {
-        self.columns
-            .write()
-            .unwrap()
-            .entry(column_id)
-            .or_insert_with(|| {
+    pub fn create_column(&self, column_id: usize, field: Arc<Field>) -> LiquidCachedColumnRef {
+        use std::collections::hash_map::Entry;
+        let mut columns = self.columns.write().unwrap();
+
+        let field = match field.data_type() {
+            DataType::Utf8View => {
+                let field: Field = Field::clone(&field);
+                Arc::new(field.with_data_type(DataType::Dictionary(
+                    Box::new(DataType::UInt16),
+                    Box::new(DataType::Utf8),
+                )))
+            }
+            DataType::Utf8 | DataType::LargeUtf8 => unreachable!(),
+            _ => field,
+        };
+
+        let column = columns.entry(column_id);
+
+        match column {
+            Entry::Occupied(entry) => {
+                let v = entry.get().clone();
+                assert_eq!(v.field, field);
+                v
+            }
+            Entry::Vacant(entry) => {
                 let cache_dir = self.cache_dir.join(format!("col_{}", column_id));
                 std::fs::create_dir_all(&cache_dir).expect("Failed to create cache directory");
-                Arc::new(LiquidCachedColumn::new(
+                let column = Arc::new(LiquidCachedColumn::new(
                     self.cache_mode,
                     self.config.clone(),
                     cache_dir,
-                ))
-            })
-            .clone()
+                    field,
+                ));
+                entry.insert(column.clone());
+                column
+            }
+        }
     }
 
     pub fn get_column(&self, column_id: usize) -> Option<LiquidCachedColumnRef> {
@@ -645,12 +702,15 @@ impl LiquidCachedRowGroup {
             // Otherwise, we need to first convert the data into arrow arrays.
             let mask = BooleanArray::from(selection.clone());
             let mut arrays = Vec::new();
+            let mut fields = Vec::new();
             for column_id in column_ids {
                 let column = self.get_column(column_id)?;
                 let array = column.get_arrow_array_with_filter(row_id, &mask)?;
                 arrays.push(array);
+                fields.push(column.field.clone());
             }
-            let record_batch = arrays_to_record_batch(&arrays);
+            let schema = Arc::new(Schema::new(fields));
+            let record_batch = RecordBatch::try_new(schema, arrays).unwrap();
             let boolean_array = predicate.evaluate(record_batch).unwrap();
             let (buffer, _) = boolean_array.into_parts();
             Some(Ok(buffer))
@@ -846,7 +906,8 @@ mod tests {
         let file =
             cache.register_or_get_file("test_file".to_string(), LiquidCacheMode::InMemoryArrow);
         let row_group = file.row_group(0);
-        let column = row_group.get_column_or_create(0);
+        let column =
+            row_group.create_column(0, Arc::new(Field::new("test", DataType::Int32, false)));
 
         // Test 1: Basic insertion and size tracking
         let array1 = Arc::new(Int32Array::from(vec![1; 100])) as ArrayRef;
@@ -900,7 +961,8 @@ mod tests {
             },
         );
         let row_group = file.row_group(0);
-        let column = row_group.get_column_or_create(0);
+        let column =
+            row_group.create_column(0, Arc::new(Field::new("test", DataType::Int32, false)));
 
         let arrow_array = Arc::new(Int32Array::from(vec![10; 100_000])) as ArrayRef;
         let arrow_size = arrow_array.get_array_memory_size();
@@ -965,7 +1027,8 @@ mod tests {
             LiquidCacheMode::InMemoryArrow,
         );
         let row_group = file.row_group(0);
-        let column = row_group.get_column_or_create(0);
+        let column =
+            row_group.create_column(0, Arc::new(Field::new("test", DataType::Int32, false)));
 
         // Spawn many threads so that they all attempt to insert concurrently.
         let num_threads = 4;
@@ -1023,7 +1086,10 @@ mod tests {
         let row_group_id = 5;
         let column_id = 10;
         let row_group = file.row_group(row_group_id);
-        let column = row_group.get_column_or_create(column_id);
+        let column = row_group.create_column(
+            column_id,
+            Arc::new(Field::new("test", DataType::Int32, false)),
+        );
 
         // Create a large array that won't fit in memory
         let large_array = Arc::new(Int32Array::from(vec![42; 10000])) as ArrayRef;

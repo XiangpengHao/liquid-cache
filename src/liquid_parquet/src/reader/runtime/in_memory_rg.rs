@@ -18,7 +18,7 @@ use parquet::{
 use tokio::sync::Mutex;
 
 use super::{
-    ClonableAsyncFileReader,
+    liquid_stream::ClonableAsyncFileReader,
     reader::cached_page::{CachedPageReader, PredicatePageCache},
 };
 

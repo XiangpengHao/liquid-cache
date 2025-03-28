@@ -16,7 +16,7 @@ use datafusion::{
 };
 use futures::StreamExt;
 use futures::TryStreamExt;
-use liquid_cache_common::coerce_string_to_view;
+use liquid_cache_common::{DictStringSchema, StringSchema, StringViewSchema};
 use log::debug;
 use parquet::arrow::{
     ParquetRecordBatchStreamBuilder, ProjectionMask,
@@ -27,30 +27,77 @@ use parquet::arrow::{
 use crate::{
     LiquidCacheMode, LiquidCacheRef,
     reader::{
-        plantime::{
-            coerce_binary_to_string, row_filter, row_group_filter::RowGroupAccessPlanFilter,
-        },
+        plantime::{row_filter, row_group_filter::RowGroupAccessPlanFilter},
         runtime::ArrowReaderBuilderBridge,
     },
 };
 
-use super::{coerce_to_liquid_cache_types, source::CachedMetaReaderFactory};
+use super::source::CachedMetaReaderFactory;
 
 pub struct LiquidParquetOpener {
-    pub partition_index: usize,
-    pub projection: Arc<[usize]>,
-    pub batch_size: usize,
-    pub limit: Option<usize>,
-    pub predicate: Option<Arc<dyn PhysicalExpr>>,
-    pub pruning_predicate: Option<Arc<PruningPredicate>>,
-    pub page_pruning_predicate: Option<Arc<PagePruningAccessPlanFilter>>,
-    pub table_schema: SchemaRef,
-    pub metrics: ExecutionPlanMetricsSet,
-    pub parquet_file_reader_factory: Arc<CachedMetaReaderFactory>,
-    pub reorder_filters: bool,
-    pub liquid_cache: LiquidCacheRef,
-    pub liquid_cache_mode: LiquidCacheMode,
-    pub schema_adapter_factory: Arc<dyn SchemaAdapterFactory>,
+    partition_index: usize,
+    projection: Arc<[usize]>,
+    batch_size: usize,
+    limit: Option<usize>,
+    predicate: Option<Arc<dyn PhysicalExpr>>,
+    pruning_predicate: Option<Arc<PruningPredicate>>,
+    page_pruning_predicate: Option<Arc<PagePruningAccessPlanFilter>>,
+    // Schema mess:
+    // 1. The client pass in a schema with UTF8 type (disabled string view), as client schema
+    // 2. Our reader will read as string view, so we need to coerce it to string view, as file schema
+    // 3. LiquidCache stores Dict<UInt16, UTF8> as string, so we have a liquid schema.
+    dict_string_schema: DictStringSchema,
+    string_view_schema: StringViewSchema,
+    string_schema: StringSchema,
+    metrics: ExecutionPlanMetricsSet,
+    parquet_file_reader_factory: Arc<CachedMetaReaderFactory>,
+    reorder_filters: bool,
+    liquid_cache: LiquidCacheRef,
+    liquid_cache_mode: LiquidCacheMode,
+    schema_adapter_factory: Arc<dyn SchemaAdapterFactory>,
+}
+
+impl LiquidParquetOpener {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        partition_index: usize,
+        projection: Arc<[usize]>,
+        batch_size: usize,
+        limit: Option<usize>,
+        predicate: Option<Arc<dyn PhysicalExpr>>,
+        pruning_predicate: Option<Arc<PruningPredicate>>,
+        page_pruning_predicate: Option<Arc<PagePruningAccessPlanFilter>>,
+        client_schema: SchemaRef,
+        metrics: ExecutionPlanMetricsSet,
+        liquid_cache: LiquidCacheRef,
+        liquid_cache_mode: LiquidCacheMode,
+        parquet_file_reader_factory: Arc<CachedMetaReaderFactory>,
+        reorder_filters: bool,
+        schema_adapter_factory: Arc<dyn SchemaAdapterFactory>,
+    ) -> Self {
+        let dict_string_schema = DictStringSchema::new(client_schema);
+        let string_view_schema = StringViewSchema::from(&dict_string_schema);
+        let string_schema = StringSchema::from(&dict_string_schema);
+
+        Self {
+            partition_index,
+            projection,
+            batch_size,
+            limit,
+            predicate,
+            pruning_predicate,
+            page_pruning_predicate,
+            dict_string_schema,
+            string_view_schema,
+            string_schema,
+            metrics,
+            liquid_cache,
+            liquid_cache_mode,
+            parquet_file_reader_factory,
+            reorder_filters,
+            schema_adapter_factory,
+        }
+    }
 }
 
 impl FileOpener for LiquidParquetOpener {
@@ -65,7 +112,6 @@ impl FileOpener for LiquidParquetOpener {
         let liquid_cache = self
             .liquid_cache
             .register_or_get_file(file_meta.location().to_string(), self.liquid_cache_mode);
-        let liquid_cache_mode = self.liquid_cache_mode;
 
         let mut reader = self.parquet_file_reader_factory.create_liquid_reader(
             self.partition_index,
@@ -76,14 +122,16 @@ impl FileOpener for LiquidParquetOpener {
 
         let batch_size = self.batch_size;
 
-        let projected_schema = SchemaRef::from(self.table_schema.project(&self.projection)?);
+        let projected_schema = SchemaRef::from(self.dict_string_schema.project(&self.projection)?);
         let schema_adapter = self
             .schema_adapter_factory
-            .create(projected_schema, Arc::clone(&self.table_schema));
+            .create(projected_schema, Arc::clone(&self.dict_string_schema));
         let predicate = self.predicate.clone();
         let pruning_predicate = self.pruning_predicate.clone();
         let page_pruning_predicate = self.page_pruning_predicate.clone();
-        let table_schema = Arc::clone(&self.table_schema);
+        let dict_string_schema = Arc::clone(&self.dict_string_schema);
+        let string_schema = Arc::clone(&self.string_schema);
+        let string_view_schema = Arc::clone(&self.string_view_schema);
         let reorder_predicates = self.reorder_filters;
         let enable_page_index = should_enable_page_index(&self.page_pruning_predicate);
         let limit = self.limit;
@@ -99,34 +147,18 @@ impl FileOpener for LiquidParquetOpener {
                 Arc::strong_count(metadata.metadata()) > 1,
                 "meta data must be cached already"
             );
-            let schema = Arc::clone(metadata.schema());
-            let schema = Arc::new(coerce_binary_to_string(&schema));
-
-            let reader_schema =
-                if matches!(liquid_cache_mode, LiquidCacheMode::InMemoryLiquid { .. }) {
-                    Arc::new(coerce_string_to_view(&schema))
-                } else {
-                    schema.clone()
-                };
-            let output_schema =
-                if matches!(liquid_cache_mode, LiquidCacheMode::InMemoryLiquid { .. }) {
-                    Arc::new(coerce_to_liquid_cache_types(&reader_schema))
-                } else {
-                    schema.clone()
-                };
 
             let options = ArrowReaderOptions::new()
                 .with_page_index(enable_page_index)
-                .with_schema(Arc::clone(&reader_schema));
+                .with_schema(Arc::clone(&string_view_schema));
             let metadata = ArrowReaderMetadata::try_new(Arc::clone(metadata.metadata()), options)?;
 
             metadata_timer.stop();
 
             let mut builder = ParquetRecordBatchStreamBuilder::new_with_metadata(reader, metadata);
 
-            let file_schema = Arc::clone(&output_schema);
-
-            let (_schema_mapping, adapted_projections) = schema_adapter.map_schema(&file_schema)?;
+            let (_schema_mapping, adapted_projections) =
+                schema_adapter.map_schema(&string_view_schema)?;
 
             let mask = ProjectionMask::roots(
                 builder.parquet_schema(),
@@ -137,8 +169,8 @@ impl FileOpener for LiquidParquetOpener {
             let row_filter = predicate.as_ref().and_then(|p| {
                 let row_filter = row_filter::build_row_filter(
                     p,
-                    &file_schema,
-                    &table_schema,
+                    &dict_string_schema,
+                    &string_schema,
                     builder.metadata(),
                     reorder_predicates,
                     &file_metrics,
@@ -172,7 +204,7 @@ impl FileOpener for LiquidParquetOpener {
             // If there is a predicate that can be evaluated against the metadata
             if let Some(predicate) = predicate.as_ref() {
                 row_groups.prune_by_statistics(
-                    &file_schema,
+                    &string_view_schema,
                     builder.parquet_schema(),
                     rg_metadata,
                     predicate,
@@ -182,7 +214,7 @@ impl FileOpener for LiquidParquetOpener {
                 if !row_groups.is_empty() {
                     row_groups
                         .prune_by_bloom_filters(
-                            &file_schema,
+                            &string_view_schema,
                             &mut builder,
                             predicate,
                             &file_metrics,
@@ -200,7 +232,7 @@ impl FileOpener for LiquidParquetOpener {
                 if let Some(p) = page_pruning_predicate {
                     access_plan = p.prune_plan_with_page_index(
                         access_plan,
-                        &file_schema,
+                        &string_view_schema,
                         builder.parquet_schema(),
                         file_metadata.as_ref(),
                         &file_metrics,

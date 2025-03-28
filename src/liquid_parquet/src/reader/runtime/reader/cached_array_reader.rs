@@ -310,15 +310,21 @@ fn instrument_array_reader(
     let mut struct_reader = unsafe { Box::from_raw(raw as *mut StructArrayReader) };
 
     let bridged_reader = StructArrayReaderBridge::from_parquet(&mut struct_reader);
+    let struct_fields = match &bridged_reader.data_type {
+        DataType::Struct(fields) => fields,
+        _ => panic!("The previous data type must be a struct"),
+    };
 
     let children = std::mem::take(&mut bridged_reader.children);
 
     assert_eq!(children.len(), column_ids.len());
+    assert_eq!(struct_fields.len(), column_ids.len());
     let instrumented_readers: Vec<Box<dyn ArrayReader>> = column_ids
         .iter()
         .zip(children)
-        .map(|(column_id, reader)| {
-            let column_cache = liquid_cache.get_column_or_create(*column_id);
+        .zip(struct_fields)
+        .map(|((column_id, reader), field)| {
+            let column_cache = liquid_cache.create_column(*column_id, field.clone());
             let reader = Box::new(CachedArrayReader::new(reader, column_cache));
             reader as _
         })
@@ -454,8 +460,12 @@ mod tests {
             },
         );
         let row_group = file.row_group(0);
-        let reader = set_up_reader_with_cache(row_group.get_column_or_create(0).clone());
-        (reader, row_group.get_column_or_create(0))
+        let reader = set_up_reader_with_cache(
+            row_group
+                .create_column(0, Arc::new(Field::new("test", DataType::Int32, false)))
+                .clone(),
+        );
+        (reader, row_group.get_column(0).unwrap())
     }
 
     fn set_up_reader_with_cache(cache: LiquidCachedColumnRef) -> CachedArrayReader {

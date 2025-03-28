@@ -7,7 +7,7 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use futures::StreamExt;
-use liquid_cache_client::{LiquidCacheBuilder, LiquidCacheClientExec, LiquidCacheTableBuilder};
+use liquid_cache_client::{LiquidCacheBuilder, LiquidCacheClientExec};
 use liquid_cache_common::CacheMode;
 use liquid_cache_common::rpc::{
     ExecutionMetricsRequest, ExecutionMetricsResponse, LiquidCacheActions,
@@ -170,6 +170,7 @@ impl BenchmarkMode {
         &self,
         server_url: &str,
         data_dir: &Path,
+        partitions: Option<usize>,
     ) -> Result<Arc<SessionContext>> {
         let mut session_config = SessionConfig::from_env()?;
         let current_dir = std::env::current_dir()?.to_string_lossy().to_string();
@@ -213,7 +214,13 @@ impl BenchmarkMode {
             .execution
             .parquet
             .pushdown_filters = true;
-        let ctx = Arc::new(SessionContext::new_with_config(session_config));
+        let mut session_config = SessionConfig::from_env()?;
+        if let Some(partitions) = partitions {
+            session_config.options_mut().execution.target_partitions = partitions;
+        }
+        let ctx = LiquidCacheBuilder::new(server_url)
+            .with_cache_mode(mode)
+            .build(session_config)?;
 
         for table_name in tables.iter() {
             let table_url = Url::parse(&format!(
@@ -223,14 +230,11 @@ impl BenchmarkMode {
                 table_name
             ))
             .unwrap();
-            let table = LiquidCacheTableBuilder::new(server_url, table_name, table_url)
-                .with_cache_mode(mode)
-                .build()
+            ctx.register_parquet(*table_name, table_url, Default::default())
                 .await?;
-            ctx.register_table(*table_name, Arc::new(table))?;
         }
 
-        Ok(ctx)
+        Ok(Arc::new(ctx))
     }
 
     pub async fn setup_clickbench_ctx(
