@@ -157,37 +157,12 @@ pub struct LiquidParquetSource {
     liquid_cache: LiquidCacheRef,
     liquid_cache_mode: LiquidCacheMode,
     batch_size: Option<usize>,
-    metadata_size_hint: Option<usize>,
     projected_statistics: Option<Statistics>,
 }
 
 impl LiquidParquetSource {
-    pub(crate) fn new(
-        table_parquet_options: TableParquetOptions,
-        liquid_cache: LiquidCacheRef,
-        liquid_cache_mode: LiquidCacheMode,
-    ) -> Self {
-        Self {
-            table_parquet_options,
-            liquid_cache,
-            liquid_cache_mode,
-            metrics: ExecutionPlanMetricsSet::default(),
-            predicate: None,
-            pruning_predicate: None,
-            page_pruning_predicate: None,
-            batch_size: None,
-            projected_statistics: None,
-            metadata_size_hint: None,
-        }
-    }
-
     fn reorder_filters(&self) -> bool {
         self.table_parquet_options.global.reorder_filters
-    }
-
-    pub(crate) fn with_metadata_size_hint(mut self, metadata_size_hint: usize) -> Self {
-        self.metadata_size_hint = Some(metadata_size_hint);
-        self
     }
 
     fn with_metrics(mut self, metrics: ExecutionPlanMetricsSet) -> Self {
@@ -246,7 +221,6 @@ impl LiquidParquetSource {
             predicate: source.predicate().cloned(),
             pruning_predicate: source.pruning_predicate().cloned(),
             page_pruning_predicate: source.page_pruning_predicate().cloned(),
-            metadata_size_hint: source.table_parquet_options().global.metadata_size_hint,
             projected_statistics: Some(source.statistics().unwrap()),
         }
     }
@@ -277,24 +251,23 @@ impl FileSource for LiquidParquetSource {
         let reader_factory = Arc::new(CachedMetaReaderFactory::new(object_store));
         let schema_adapter = Arc::new(DefaultSchemaAdapterFactory);
 
-        let opener = LiquidParquetOpener {
-            partition_index: partition,
-            projection: Arc::from(projection),
-            batch_size: self
-                .batch_size
+        let opener = LiquidParquetOpener::new(
+            partition,
+            Arc::from(projection),
+            self.batch_size
                 .expect("Batch size must be set before creating LiquidParquetOpener"),
-            limit: base_config.limit,
-            predicate: self.predicate.clone(),
-            pruning_predicate: self.pruning_predicate.clone(),
-            page_pruning_predicate: self.page_pruning_predicate.clone(),
-            table_schema: Arc::clone(&base_config.file_schema),
-            metrics: self.metrics.clone(),
-            parquet_file_reader_factory: reader_factory,
-            reorder_filters: self.reorder_filters(),
-            schema_adapter_factory: schema_adapter,
-            liquid_cache: self.liquid_cache.clone(),
-            liquid_cache_mode: self.liquid_cache_mode,
-        };
+            base_config.limit,
+            self.predicate.clone(),
+            self.pruning_predicate.clone(),
+            self.page_pruning_predicate.clone(),
+            Arc::clone(&base_config.file_schema),
+            self.metrics.clone(),
+            self.liquid_cache.clone(),
+            self.liquid_cache_mode,
+            reader_factory,
+            self.reorder_filters(),
+            schema_adapter,
+        );
 
         Arc::new(opener)
     }

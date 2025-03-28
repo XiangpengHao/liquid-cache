@@ -40,26 +40,6 @@ impl StartableTime {
     }
 }
 
-pub(crate) struct FlightTableMetrics {
-    pub time_creating_client: StartableTime,
-    pub time_getting_stream: StartableTime,
-}
-
-impl FlightTableMetrics {
-    pub(crate) fn new(metrics: &ExecutionPlanMetricsSet, partition: usize) -> Self {
-        Self {
-            time_creating_client: StartableTime {
-                metrics: MetricBuilder::new(metrics).subset_time("time_creating_client", partition),
-                start: None,
-            },
-            time_getting_stream: StartableTime {
-                metrics: MetricBuilder::new(metrics).subset_time("time_getting_stream", partition),
-                start: None,
-            },
-        }
-    }
-}
-
 pub(crate) struct FlightStreamMetrics {
     pub time_processing: StartableTime,
     pub time_reading_total: StartableTime,
