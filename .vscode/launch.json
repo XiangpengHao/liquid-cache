@@ -50,7 +50,7 @@
 				"--file",
 				"benchmark/clickbench/data/hits_0.parquet",
 				"--query",
-				"23"
+				"24"
 			],
 			"cwd": "${workspaceFolder}"
 		},

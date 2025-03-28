@@ -9,6 +9,7 @@ repository = { workspace = true }
 
 [dependencies]
 arrow-flight = { workspace = true }
+arrow-schema = { workspace = true }
 prost = { workspace = true }
 bytes = { workspace = true }
 url = { workspace = true }

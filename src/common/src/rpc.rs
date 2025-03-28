@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use arrow_flight::{
-    Action,
+    Action, Ticket,
     sql::{Any, ProstMessageExt},
 };
 use bytes::Bytes;
@@ -20,6 +20,7 @@ pub enum LiquidCacheActions {
     ResetCache,
     /// Register an object store with the LiquidCache service.
     RegisterObjectStore(RegisterObjectStoreRequest),
+    RegisterPlan(RegisterPlanRequest),
 }
 
 impl From<LiquidCacheActions> for Action {
@@ -39,6 +40,10 @@ impl From<LiquidCacheActions> for Action {
             },
             LiquidCacheActions::RegisterObjectStore(request) => Action {
                 r#type: "RegisterObjectStore".to_string(),
+                body: request.as_any().encode_to_vec().into(),
+            },
+            LiquidCacheActions::RegisterPlan(request) => Action {
+                r#type: "RegisterPlan".to_string(),
                 body: request.as_any().encode_to_vec().into(),
             },
         }
@@ -64,7 +69,37 @@ impl From<Action> for LiquidCacheActions {
                 let request = any.unpack::<RegisterObjectStoreRequest>().unwrap().unwrap();
                 LiquidCacheActions::RegisterObjectStore(request)
             }
+            "RegisterPlan" => {
+                let any = Any::decode(action.body).unwrap();
+                let request = any.unpack::<RegisterPlanRequest>().unwrap().unwrap();
+                LiquidCacheActions::RegisterPlan(request)
+            }
             _ => panic!("Invalid action: {}", action.r#type),
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RegisterPlanRequest {
+    #[prost(bytes, tag = "1")]
+    pub plan: ::prost::alloc::vec::Vec<u8>,
+
+    #[prost(bytes, tag = "2")]
+    pub handle: Bytes,
+
+    #[prost(string, tag = "3")]
+    pub cache_mode: String,
+}
+
+impl ProstMessageExt for RegisterPlanRequest {
+    fn type_url() -> &'static str {
+        "type.googleapis.com/datafusion.example.com.sql.ActionRegisterPlanRequest"
+    }
+
+    fn as_any(&self) -> Any {
+        Any {
+            type_url: RegisterPlanRequest::type_url().to_string(),
+            value: ::prost::Message::encode_to_vec(self).into(),
         }
     }
 }
@@ -142,6 +177,14 @@ pub struct FetchResults {
 
     #[prost(uint32, tag = "2")]
     pub partition: u32,
+}
+
+impl FetchResults {
+    pub fn into_ticket(self) -> Ticket {
+        Ticket {
+            ticket: self.as_any().encode_to_vec().into(),
+        }
+    }
 }
 
 impl ProstMessageExt for FetchResults {
