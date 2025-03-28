@@ -71,22 +71,23 @@ use arrow::compute::kernels;
 use arrow::datatypes::{DataType, Schema};
 use arrow::error::{ArrowError, Result as ArrowResult};
 use arrow::record_batch::RecordBatch;
-use arrow_schema::Field;
+use arrow_schema::{Field, SchemaRef};
 use datafusion::datasource::physical_plan::ParquetFileMetrics;
 use datafusion::logical_expr::{ColumnarValue, Operator};
 use datafusion::physical_expr_common::datum::apply_cmp;
 use datafusion::physical_plan::expressions::{BinaryExpr, LikeExpr};
 use datafusion::physical_plan::metrics;
+use datafusion::prelude::Expr;
 use parquet::arrow::ProjectionMask;
 use parquet::arrow::arrow_reader::{ArrowPredicate, RowFilter};
 use parquet::file::metadata::ParquetMetaData;
 
 use datafusion::common::cast::as_boolean_array;
 use datafusion::common::tree_node::{
-    Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter,
+    Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter, TreeNodeVisitor,
 };
 use datafusion::common::{DataFusionError, Result, ScalarValue, arrow_datafusion_err};
-use datafusion::datasource::schema_adapter::SchemaMapper;
+use datafusion::datasource::schema_adapter::{DefaultSchemaAdapterFactory, SchemaMapper};
 use datafusion::physical_expr::expressions::{Column, Literal};
 use datafusion::physical_expr::utils::reassign_predicate_columns;
 use datafusion::physical_expr::{PhysicalExpr, split_conjunction};
@@ -120,6 +121,8 @@ pub(crate) struct DatafusionArrowPredicate {
     rows_matched: metrics::Count,
     /// how long was spent evaluating this predicate
     time: metrics::Time,
+    /// used to perform type coercion while filtering rows
+    schema_mapper: Arc<dyn SchemaMapper>,
 }
 
 impl DatafusionArrowPredicate {
@@ -153,6 +156,7 @@ impl DatafusionArrowPredicate {
             rows_pruned,
             rows_matched,
             time,
+            schema_mapper: candidate.schema_mapper,
         })
     }
 }
@@ -172,7 +176,10 @@ fn get_string_needle(value: &ScalarValue) -> Option<&str> {
 }
 
 impl LiquidPredicate for DatafusionArrowPredicate {
-    fn evaluate_liquid(&mut self, array: &LiquidArrayRef) -> Result<BooleanArray, ArrowError> {
+    fn evaluate_liquid(
+        &mut self,
+        array: &LiquidArrayRef,
+    ) -> Result<Option<BooleanArray>, ArrowError> {
         if let Some(binary_expr) = self.physical_expr.as_any().downcast_ref::<BinaryExpr>() {
             if let Some(literal) = binary_expr.right().as_any().downcast_ref::<Literal>() {
                 let op = binary_expr.op();
@@ -180,10 +187,10 @@ impl LiquidPredicate for DatafusionArrowPredicate {
                     if let Some(needle) = get_string_needle(literal.value()) {
                         if op == &Operator::Eq {
                             let result = array.compare_equals(needle);
-                            return Ok(result);
+                            return Ok(Some(result));
                         } else if op == &Operator::NotEq {
                             let result = array.compare_not_equals(needle);
-                            return Ok(result);
+                            return Ok(Some(result));
                         }
                     }
 
@@ -206,7 +213,7 @@ impl LiquidPredicate for DatafusionArrowPredicate {
                     };
                     if let Ok(result) = result {
                         let filtered = result.into_array(array.len())?.as_boolean().clone();
-                        return Ok(filtered);
+                        return Ok(Some(filtered));
                     }
                 }
             }
@@ -225,19 +232,12 @@ impl LiquidPredicate for DatafusionArrowPredicate {
                 };
                 if let Ok(result) = result {
                     let filtered = result.into_array(array.len())?.as_boolean().clone();
-                    return Ok(filtered);
+                    return Ok(Some(filtered));
                 }
             }
         }
-        let arrow_array = array.to_arrow_array();
-        let schema = Schema::new(vec![Field::new(
-            "",
-            arrow_array.data_type().clone(),
-            arrow_array.is_nullable(),
-        )]);
-        let record_batch =
-            RecordBatch::try_new(Arc::new(schema), vec![Arc::new(arrow_array)]).unwrap();
-        self.evaluate(record_batch)
+        // Not supported for this data type
+        Ok(None)
     }
 }
 
@@ -251,9 +251,7 @@ impl ArrowPredicate for DatafusionArrowPredicate {
             batch = batch.project(&self.projection).unwrap();
         };
 
-        // we deliberately don't map schema here, because when a schema mismatch occurs,
-        // something deeper is wrong, and we should fix it instead of hiding it.
-        // let batch = self.schema_mapping.map_partial_batch(batch)?;
+        let batch = self.schema_mapper.map_partial_batch(batch)?;
 
         // scoped timer updates on drop
         let mut timer = self.time.timer();
@@ -287,6 +285,11 @@ pub(crate) struct FilterCandidate {
     required_bytes: usize,
     can_use_index: bool,
     projection: Vec<usize>,
+    ///  A `SchemaMapper` used to map batches read from the file schema to
+    /// the filter's projection of the table schema.
+    schema_mapper: Arc<dyn SchemaMapper>,
+    /// The projected table schema that this filter references
+    filter_schema: SchemaRef,
 }
 
 /// Helper to build a `FilterCandidate`.
@@ -356,20 +359,31 @@ impl<'a> FilterCandidateBuilder<'a> {
     /// * `Ok(None)` if the expression cannot be used as an ArrowFilter
     /// * `Err(e)` if an error occurs while building the candidate
     pub fn build(self, metadata: &ParquetMetaData) -> Result<Option<FilterCandidate>> {
-        let Some((required_indices, rewritten_expr)) =
-            pushdown_columns(self.expr, self.file_schema, self.table_schema)?
+        let Some(required_indices_into_table_schema) =
+            pushdown_columns(&self.expr, self.table_schema)?
         else {
             return Ok(None);
         };
 
-        let required_bytes = size_of_columns(&required_indices, metadata)?;
-        let can_use_index = columns_sorted(&required_indices, metadata)?;
+        let projected_table_schema = Arc::new(
+            self.table_schema
+                .project(&required_indices_into_table_schema)?,
+        );
+
+        let (schema_mapper, projection_into_file_schema) =
+            DefaultSchemaAdapterFactory::from_schema(projected_table_schema.clone())
+                .map_schema(self.file_schema)?;
+
+        let required_bytes = size_of_columns(&projection_into_file_schema, metadata)?;
+        let can_use_index = columns_sorted(&projection_into_file_schema, metadata)?;
 
         Ok(Some(FilterCandidate {
-            expr: rewritten_expr,
+            expr: self.expr,
             required_bytes,
             can_use_index,
-            projection: required_indices.into_iter().collect(),
+            projection: projection_into_file_schema,
+            schema_mapper: Arc::clone(&schema_mapper),
+            filter_schema: Arc::clone(&projected_table_schema),
         }))
     }
 }
@@ -384,33 +398,29 @@ struct PushdownChecker<'schema> {
     /// Does the expression reference any columns that are in the table
     /// schema but not in the file schema?
     projected_columns: bool,
-    // the indices of all the columns found within the given expression which exist inside the given
-    // [`file_schema`]
-    required_column_indices: BTreeSet<usize>,
-    file_schema: &'schema Schema,
+    // Indices into the table schema of the columns required to evaluate the expression
+    required_columns: BTreeSet<usize>,
     table_schema: &'schema Schema,
 }
 
 impl<'schema> PushdownChecker<'schema> {
-    fn new(file_schema: &'schema Schema, table_schema: &'schema Schema) -> Self {
+    fn new(table_schema: &'schema Schema) -> Self {
         Self {
             non_primitive_columns: false,
             projected_columns: false,
-            required_column_indices: BTreeSet::default(),
-            file_schema,
+            required_columns: BTreeSet::default(),
             table_schema,
         }
     }
 
     fn check_single_column(&mut self, column_name: &str) -> Option<TreeNodeRecursion> {
-        if let Ok(idx) = self.file_schema.index_of(column_name) {
-            self.required_column_indices.insert(idx);
-
-            if DataType::is_nested(self.file_schema.field(idx).data_type()) {
+        if let Ok(idx) = self.table_schema.index_of(column_name) {
+            self.required_columns.insert(idx);
+            if DataType::is_nested(self.table_schema.field(idx).data_type()) {
                 self.non_primitive_columns = true;
                 return Some(TreeNodeRecursion::Jump);
             }
-        } else if self.table_schema.index_of(column_name).is_err() {
+        } else {
             // If the column does not exist in the (un-projected) table schema then
             // it must be a projected column.
             self.projected_columns = true;
@@ -426,79 +436,41 @@ impl<'schema> PushdownChecker<'schema> {
     }
 }
 
-impl TreeNodeRewriter for PushdownChecker<'_> {
+impl TreeNodeVisitor<'_> for PushdownChecker<'_> {
     type Node = Arc<dyn PhysicalExpr>;
 
-    fn f_down(
-        &mut self,
-        node: Arc<dyn PhysicalExpr>,
-    ) -> Result<Transformed<Arc<dyn PhysicalExpr>>> {
+    fn f_down(&mut self, node: &Self::Node) -> Result<TreeNodeRecursion> {
         if let Some(column) = node.as_any().downcast_ref::<Column>() {
             if let Some(recursion) = self.check_single_column(column.name()) {
-                return Ok(Transformed::new(node, false, recursion));
+                return Ok(recursion);
             }
         }
 
-        Ok(Transformed::no(node))
-    }
-
-    /// After visiting all children, rewrite column references to nulls if
-    /// they are not in the file schema.
-    /// We do this because they won't be relevant if they're not in the file schema, since that's
-    /// the only thing we're dealing with here as this is only used for the parquet pushdown during
-    /// scanning
-    fn f_up(&mut self, expr: Arc<dyn PhysicalExpr>) -> Result<Transformed<Arc<dyn PhysicalExpr>>> {
-        if let Some(column) = expr.as_any().downcast_ref::<Column>() {
-            // if the expression is a column, is it in the file schema?
-            if self.file_schema.field_with_name(column.name()).is_err() {
-                return self
-                    .table_schema
-                    .field_with_name(column.name())
-                    .and_then(|field| {
-                        // Replace the column reference with a NULL (using the type from the table schema)
-                        // e.g. `column = 'foo'` is rewritten be transformed to `NULL = 'foo'`
-                        //
-                        // See comments on `FilterCandidateBuilder` for more information
-                        let null_value = ScalarValue::try_from(field.data_type())?;
-                        Ok(Transformed::yes(Arc::new(Literal::new(null_value)) as _))
-                    })
-                    // If the column is not in the table schema, should throw the error
-                    .map_err(|e| arrow_datafusion_err!(e));
-            }
-        }
-
-        Ok(Transformed::no(expr))
+        Ok(TreeNodeRecursion::Continue)
     }
 }
 
 type ProjectionAndExpr = (BTreeSet<usize>, Arc<dyn PhysicalExpr>);
 
-// Checks if a given expression can be pushed down into `ParquetExec` as opposed to being evaluated
-// post-parquet-scan in a `FilterExec`. If it can be pushed down, this returns returns all the
+// Checks if a given expression can be pushed down into `DataSourceExec` as opposed to being evaluated
+// post-parquet-scan in a `FilterExec`. If it can be pushed down, this returns all the
 // columns in the given expression so that they can be used in the parquet scanning, along with the
 // expression rewritten as defined in [`PushdownChecker::f_up`]
 fn pushdown_columns(
-    expr: Arc<dyn PhysicalExpr>,
-    file_schema: &Schema,
+    expr: &Arc<dyn PhysicalExpr>,
     table_schema: &Schema,
-) -> Result<Option<ProjectionAndExpr>> {
-    let mut checker = PushdownChecker::new(file_schema, table_schema);
-
-    let expr = expr.rewrite(&mut checker).data()?;
-
-    Ok((!checker.prevents_pushdown()).then_some((checker.required_column_indices, expr)))
+) -> Result<Option<Vec<usize>>> {
+    let mut checker = PushdownChecker::new(table_schema);
+    expr.visit(&mut checker)?;
+    Ok((!checker.prevents_pushdown()).then_some(checker.required_columns.into_iter().collect()))
 }
 
 /// creates a PushdownChecker for a single use to check a given column with the given schemes. Used
 /// to check preemptively if a column name would prevent pushdowning.
 /// effectively does the inverse of [`pushdown_columns`] does, but with a single given column
 /// (instead of traversing the entire tree to determine this)
-fn would_column_prevent_pushdown(
-    column_name: &str,
-    file_schema: &Schema,
-    table_schema: &Schema,
-) -> bool {
-    let mut checker = PushdownChecker::new(file_schema, table_schema);
+fn would_column_prevent_pushdown(column_name: &str, table_schema: &Schema) -> bool {
+    let mut checker = PushdownChecker::new(table_schema);
 
     // the return of this is only used for [`PushdownChecker::f_down()`], so we can safely ignore
     // it here. I'm just verifying we know the return type of this so nobody accidentally changes
@@ -513,15 +485,14 @@ fn would_column_prevent_pushdown(
 /// this expression from being predicate pushed down. If any of them would, this returns false.
 /// Otherwise, true.
 pub fn can_expr_be_pushed_down_with_schemas(
-    expr: &datafusion::logical_expr::Expr,
-    file_schema: &Schema,
+    expr: &Expr,
+    _file_schema: &Schema,
     table_schema: &Schema,
 ) -> bool {
     let mut can_be_pushed = true;
     expr.apply(|expr| match expr {
-        datafusion::logical_expr::Expr::Column(column) => {
-            can_be_pushed &=
-                !would_column_prevent_pushdown(column.name(), file_schema, table_schema);
+        Expr::Column(column) => {
+            can_be_pushed &= !would_column_prevent_pushdown(column.name(), table_schema);
             Ok(if can_be_pushed {
                 TreeNodeRecursion::Jump
             } else {
@@ -565,7 +536,7 @@ fn remap_projection(src: &[usize]) -> Vec<usize> {
 ///
 /// This value represents the total amount of IO required to evaluate the
 /// predicate.
-fn size_of_columns(columns: &BTreeSet<usize>, metadata: &ParquetMetaData) -> Result<usize> {
+fn size_of_columns(columns: &[usize], metadata: &ParquetMetaData) -> Result<usize> {
     let mut total_size = 0;
     let row_groups = metadata.row_groups();
     for idx in columns {
@@ -582,7 +553,7 @@ fn size_of_columns(columns: &BTreeSet<usize>, metadata: &ParquetMetaData) -> Res
 ///
 /// Sorted columns may be queried more efficiently in the presence of
 /// a PageIndex.
-fn columns_sorted(_columns: &BTreeSet<usize>, _metadata: &ParquetMetaData) -> Result<bool> {
+fn columns_sorted(_columns: &[usize], _metadata: &ParquetMetaData) -> Result<bool> {
     // TODO How do we know this?
     Ok(false)
 }

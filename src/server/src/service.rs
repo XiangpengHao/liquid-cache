@@ -7,14 +7,12 @@ use datafusion::{
         source::{DataSource, DataSourceExec},
     },
     error::{DataFusionError, Result},
-    execution::{SendableRecordBatchStream, object_store::ObjectStoreUrl, options::ReadOptions},
+    execution::{SendableRecordBatchStream, object_store::ObjectStoreUrl},
     physical_plan::{ExecutionPlan, display::DisplayableExecutionPlan, metrics::MetricValue},
-    prelude::{ParquetReadOptions, SessionContext},
+    prelude::SessionContext,
 };
 use liquid_cache_common::{CacheMode, coerce_to_liquid_cache_types, rpc::ExecutionMetricsResponse};
-use liquid_cache_parquet::{
-    LiquidCache, LiquidCacheMode, LiquidCacheRef, LiquidParquetFileFormat, LiquidParquetSource,
-};
+use liquid_cache_parquet::{LiquidCache, LiquidCacheRef, LiquidParquetSource};
 use log::{debug, info};
 use object_store::ObjectStore;
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
@@ -100,91 +98,6 @@ impl LiquidCacheServiceInner {
         self.default_ctx
             .runtime_env()
             .register_object_store(object_store_url.as_ref(), object_store);
-        Ok(())
-    }
-
-    pub(crate) async fn register_table(
-        &self,
-        url_str: &str,
-        table_name: &str,
-        parquet_mode: CacheMode,
-    ) -> Result<()> {
-        let url =
-            Url::parse(url_str).map_err(|e| DataFusionError::Configuration(format!("{e:?}")))?;
-
-        let mut registered_tables = self.registered_tables.lock().await;
-        if let Some((path, mode)) = registered_tables.get(table_name) {
-            if path.as_str() == url_str && mode == &parquet_mode {
-                info!("table {table_name} already registered at {path}");
-                return Ok(());
-            } else {
-                panic!(
-                    "table {table_name} already registered at {path} but not at {url} or not {parquet_mode}"
-                );
-            }
-        }
-        match parquet_mode {
-            CacheMode::Parquet => {
-                self.default_ctx
-                    .register_parquet(table_name, url.as_str(), Default::default())
-                    .await?;
-            }
-            CacheMode::Liquid => {
-                let mode = LiquidCacheMode::InMemoryLiquid {
-                    transcode_in_background: true,
-                };
-                self.register_liquid_parquet(table_name, url.as_str(), mode)
-                    .await?;
-            }
-            CacheMode::LiquidEagerTranscode => {
-                let mode = LiquidCacheMode::InMemoryLiquid {
-                    transcode_in_background: false,
-                };
-                self.register_liquid_parquet(table_name, url.as_str(), mode)
-                    .await?;
-            }
-            CacheMode::Arrow => {
-                let mode = LiquidCacheMode::InMemoryArrow;
-                self.register_liquid_parquet(table_name, url.as_str(), mode)
-                    .await?;
-            }
-        }
-        info!("registered table {table_name} from {url} as {parquet_mode}");
-        registered_tables.insert(table_name.to_string(), (url_str.to_string(), parquet_mode));
-        Ok(())
-    }
-
-    async fn register_liquid_parquet(
-        &self,
-        table_name: &str,
-        url: &str,
-        liquid_cache_mode: LiquidCacheMode,
-    ) -> Result<()> {
-        let parquet_options = ParquetReadOptions::default();
-        let mut listing_options = parquet_options.to_listing_options(
-            &self.default_ctx.copied_config(),
-            self.default_ctx.copied_table_options(),
-        );
-        let format = listing_options.format;
-        let table_parquet_options = self.default_ctx.state().table_options().parquet.clone();
-        let liquid_parquet = LiquidParquetFileFormat::new(
-            table_parquet_options,
-            format,
-            self.cache.clone(),
-            liquid_cache_mode,
-        );
-        listing_options.format = Arc::new(liquid_parquet);
-
-        self.default_ctx
-            .register_listing_table(
-                table_name,
-                url,
-                listing_options,
-                parquet_options.schema.map(|s| Arc::new(s.to_owned())),
-                None,
-            )
-            .await?;
-
         Ok(())
     }
 
@@ -337,6 +250,7 @@ fn rewrite_data_source_plan(
                         );
                         let mut new_file_source = source.clone();
                         new_file_source.file_source = Arc::new(new_source);
+                        // This coercion is necessary because this schema determines the schema of flight transfer.
                         let coerced_schema =
                             coerce_to_liquid_cache_types(new_file_source.file_schema.as_ref());
                         new_file_source.projection = new_file_source.projection.map(|mut v| {
@@ -365,7 +279,44 @@ fn rewrite_data_source_plan(
 
 #[cfg(test)]
 mod tests {
+    use datafusion::common::tree_node::TreeNodeRecursion;
+
     use super::*;
+
+    #[tokio::test]
+    async fn test_plan_rewrite() {
+        let ctx = SessionContext::new();
+        ctx.register_parquet(
+            "nano_hits",
+            "../../examples/nano_hits.parquet",
+            Default::default(),
+        )
+        .await
+        .unwrap();
+        let df = ctx
+            .sql("SELECT \"URL\" FROM nano_hits WHERE \"URL\" like 'https://%' limit 10")
+            .await
+            .unwrap();
+        let plan = df.create_physical_plan().await.unwrap();
+        let liquid_cache = Arc::new(LiquidCache::new(8192, 1000000, PathBuf::from("test")));
+        let rewritten = rewrite_data_source_plan(plan, &liquid_cache, CacheMode::Liquid);
+
+        rewritten
+            .apply(|node| {
+                if let Some(plan) = node.as_any().downcast_ref::<DataSourceExec>() {
+                    let data_source = plan.data_source();
+                    let any_source = data_source.as_any();
+                    let source = any_source.downcast_ref::<FileScanConfig>().unwrap();
+                    let file_source = source.file_source();
+                    let any_file_source = file_source.as_any();
+                    let _parquet_source = any_file_source
+                        .downcast_ref::<LiquidParquetSource>()
+                        .unwrap();
+                }
+                Ok(TreeNodeRecursion::Continue)
+            })
+            .unwrap();
+    }
 
     #[tokio::test]
     async fn test_register_object_store() {

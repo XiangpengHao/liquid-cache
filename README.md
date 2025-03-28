@@ -8,8 +8,9 @@
 [![Rust CI](https://github.com/XiangpengHao/liquid-cache/actions/workflows/ci.yml/badge.svg)](https://github.com/XiangpengHao/liquid-cache/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/XiangpengHao/liquid-cache/graph/badge.svg?token=yTeQR2lVnd)](https://codecov.io/gh/XiangpengHao/liquid-cache)
 
-LiquidCache is an object store cache designed for [DataFusion](https://github.com/apache/datafusion) based systems. Simply register LiquidCache as the `TableProvider` to enjoy the performance boost. 
-Depending on your usage, LiquidCache can easily achieve 10x lower cost and latency.
+LiquidCache is an object store cache designed for [DataFusion](https://github.com/apache/datafusion) based systems.  
+
+Integrating LiquidCache is as easy as adding an optimizer rule, enabling up to 10x reduction in both cost and latency.
 
 ## Architecture
 
@@ -81,24 +82,8 @@ docker run -p 50051:50051 -v ~/liquid_cache:/cache \
 
 #### 3. Setup client:
 ```rust
-use datafusion::{
-    error::Result,
-    prelude::{SessionConfig, SessionContext},
-};
-use liquid_cache_client::LiquidCacheTableBuilder;
-use std::sync::Arc;
-use url::Url;
-
 #[tokio::main]
 pub async fn main() -> Result<()> {
-    let mut session_config = SessionConfig::from_env()?;
-    session_config
-        .options_mut()
-        .execution
-        .parquet
-        .pushdown_filters = true;
-    let ctx = Arc::new(SessionContext::new_with_config(session_config));
-
     let cache_server = "http://localhost:50051";
     let table_name = "aws_locations";
     let url = Url::parse(
@@ -107,17 +92,23 @@ pub async fn main() -> Result<()> {
     .unwrap();
     let sql = "SELECT COUNT(*) FROM aws_locations WHERE \"countryCode\" = 'US';";
 
-    let table = LiquidCacheTableBuilder::new(cache_server, table_name, url.as_ref())
-        .with_object_store(
-            format!("{}://{}", url.scheme(), url.host_str().unwrap_or_default()),
-            None,
-        )
+    let object_store_url = format!("{}://{}", url.scheme(), url.host_str().unwrap_or_default());
+//=======================LiquidCache=======================
+    let ctx = LiquidCacheBuilder::new(cache_server)
+        .with_object_store(ObjectStoreUrl::parse(object_store_url.as_str())?, None)
+        .with_cache_mode(CacheMode::Liquid)
+        .build(SessionConfig::from_env()?)?;
+//=========================================================
+    let ctx = Arc::new(ctx);
+    let object_store = object_store::http::HttpBuilder::new()
+        .with_url(object_store_url.as_str())
         .build()
+        .unwrap();
+    let object_store_url = ObjectStoreUrl::parse(object_store_url.as_str()).unwrap();
+    ctx.register_object_store(object_store_url.as_ref(), Arc::new(object_store));
+    ctx.register_parquet(table_name, url.as_ref(), Default::default())
         .await?;
-    ctx.register_table(table_name, Arc::new(table))?;
-
-    ctx.sql(sql).await?.show().await?;
-
+    ctx.sql(&sql).await?.show().await?;
     Ok(())
 }
 ```

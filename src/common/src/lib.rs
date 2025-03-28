@@ -1,9 +1,10 @@
 #![cfg_attr(not(doctest), doc = include_str!(concat!("../", std::env!("CARGO_PKG_README"))))]
 
+use std::ops::Deref;
 use std::str::FromStr;
 use std::{fmt::Display, sync::Arc};
 
-use arrow_schema::{DataType, Field, FieldRef, Schema};
+use arrow_schema::{DataType, Field, FieldRef, Schema, SchemaRef};
 pub mod rpc;
 pub mod utils;
 
@@ -123,4 +124,118 @@ pub fn coerce_string_to_view(schema: &Schema) -> Schema {
         })
         .collect();
     Schema::new_with_metadata(transformed_fields, schema.metadata.clone())
+}
+
+/// A schema that where strings are stored as `Utf8View`
+pub struct StringViewSchema {
+    schema: SchemaRef,
+}
+
+impl Deref for StringViewSchema {
+    type Target = SchemaRef;
+
+    fn deref(&self) -> &Self::Target {
+        &self.schema
+    }
+}
+
+impl From<&DictStringSchema> for StringViewSchema {
+    fn from(schema: &DictStringSchema) -> Self {
+        let dict_string_type =
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8));
+        let transformed_fields: Vec<Arc<Field>> = schema
+            .schema
+            .fields
+            .iter()
+            .map(|field| {
+                if field.data_type().equals_datatype(&dict_string_type) {
+                    field_with_new_type(field, DataType::Utf8View)
+                } else {
+                    field.clone()
+                }
+            })
+            .collect();
+        Self {
+            schema: Arc::new(Schema::new_with_metadata(
+                transformed_fields,
+                schema.schema.metadata.clone(),
+            )),
+        }
+    }
+}
+
+/// A schema that where strings are stored as `Dictionary<UInt16, Utf8>`
+pub struct DictStringSchema {
+    schema: SchemaRef,
+}
+
+impl DictStringSchema {
+    /// Create a new `DictStringSchema` from a `SchemaRef`.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the schema contains a `Utf8` or `Utf8View` field.
+    pub fn new(schema: SchemaRef) -> Self {
+        {
+            for field in schema.fields() {
+                assert!(
+                    !field.data_type().equals_datatype(&DataType::Utf8),
+                    "Field {} must not be a Utf8",
+                    field.name()
+                );
+                assert!(
+                    !field.data_type().equals_datatype(&DataType::Utf8View),
+                    "Field {} must not be a Utf8View",
+                    field.name()
+                );
+            }
+        }
+        Self { schema }
+    }
+}
+
+impl Deref for DictStringSchema {
+    type Target = SchemaRef;
+
+    fn deref(&self) -> &Self::Target {
+        &self.schema
+    }
+}
+
+/// A schema that where strings are stored as `Utf8`
+pub struct StringSchema {
+    schema: SchemaRef,
+}
+
+impl Deref for StringSchema {
+    type Target = SchemaRef;
+
+    fn deref(&self) -> &Self::Target {
+        &self.schema
+    }
+}
+
+impl From<&DictStringSchema> for StringSchema {
+    fn from(schema: &DictStringSchema) -> Self {
+        let dict_string_type =
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8));
+        let transformed_fields: Vec<Arc<Field>> = schema
+            .schema
+            .fields
+            .iter()
+            .map(|field| {
+                if field.data_type().equals_datatype(&dict_string_type) {
+                    field_with_new_type(field, DataType::Utf8)
+                } else {
+                    field.clone()
+                }
+            })
+            .collect();
+        Self {
+            schema: Arc::new(Schema::new_with_metadata(
+                transformed_fields,
+                schema.schema.metadata.clone(),
+            )),
+        }
+    }
 }

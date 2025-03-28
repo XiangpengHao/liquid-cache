@@ -6,6 +6,5 @@ mod runtime;
 
 mod utils;
 
-pub use plantime::LiquidParquetFileFormat;
 pub use plantime::LiquidParquetSource;
 pub use runtime::LiquidPredicate;

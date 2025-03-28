@@ -58,6 +58,10 @@ struct CliArgs {
     /// Reset the cache before running a new query
     #[arg(long = "reset-cache", default_value = "false")]
     reset_cache: bool,
+
+    /// Number of partitions to use
+    #[arg(long)]
+    partitions: Option<usize>,
 }
 
 /// One query file can contain multiple queries, separated by `;`
@@ -116,7 +120,7 @@ pub async fn main() -> Result<()> {
 
     let ctx = args
         .bench_mode
-        .setup_tpch_ctx(&args.server, &args.data_dir)
+        .setup_tpch_ctx(&args.server, &args.data_dir, args.partitions)
         .await?;
 
     let mut benchmark_result = BenchmarkResult {
