@@ -1,18 +1,19 @@
 use std::sync::Arc;
 use std::{any::TypeId, mem::size_of};
 
-use arrow::array::types::UInt16Type;
 use arrow::array::ArrowPrimitiveType;
+use arrow::array::types::UInt16Type;
 use arrow::datatypes::{
-    Float32Type, Float64Type, Int16Type, Int32Type, Int64Type, Int8Type, UInt32Type, UInt64Type, UInt8Type
+    Float32Type, Float64Type, Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt32Type,
+    UInt64Type,
 };
 use bytes::Bytes;
 use fsst::Compressor;
 
-use crate::liquid_array::float_array::Exponents;
 use crate::liquid_array::LiquidPrimitiveArray;
 use crate::liquid_array::LiquidPrimitiveType;
 use crate::liquid_array::byte_array::ArrowStringType;
+use crate::liquid_array::float_array::Exponents;
 use crate::liquid_array::raw::{BitPackedArray, FsstArray};
 
 use super::float_array::LiquidFloatType;
@@ -116,7 +117,7 @@ pub fn read_from_bytes(bytes: Bytes, context: &LiquidIPCContext) -> LiquidArrayR
             8 => Arc::new(LiquidFloatArray::<Float32Type>::from_bytes(bytes)),
             9 => Arc::new(LiquidFloatArray::<Float64Type>::from_bytes(bytes)),
             _ => panic!("Unsupported float type"),
-        }
+        },
     }
 }
 
@@ -221,7 +222,9 @@ where
 }
 
 impl<T> LiquidFloatArray<T>
-        where T: LiquidFloatType {
+where
+    T: LiquidFloatType,
+{
     /*
     Serialized LiquidFloatArray Memory Layout:
     +--------------------------------------------------+
@@ -284,7 +287,8 @@ impl<T> LiquidFloatArray<T>
         // Write reference value
         let ref_value_bytes = unsafe {
             std::slice::from_raw_parts(
-                &self.reference_value as *const <T::SignedIntType as ArrowPrimitiveType>::Native as *const u8,
+                &self.reference_value as *const <T::SignedIntType as ArrowPrimitiveType>::Native
+                    as *const u8,
                 size_of::<T::Native>(),
             )
         };
@@ -297,12 +301,10 @@ impl<T> LiquidFloatArray<T>
         }
 
         // TODO(): Check if we can do self.exponent as *const u8
-        let exponent_e_bytes = unsafe {
-            std::slice::from_raw_parts(&self.exponent.e as *const u8, 1)
-        };
-        let exponent_f_bytes = unsafe {
-            std::slice::from_raw_parts(&self.exponent.f as *const u8, 1)
-        };
+        let exponent_e_bytes =
+            unsafe { std::slice::from_raw_parts(&self.exponent.e as *const u8, 1) };
+        let exponent_f_bytes =
+            unsafe { std::slice::from_raw_parts(&self.exponent.f as *const u8, 1) };
         // Write exponents and padding
         result.extend_from_slice(exponent_e_bytes);
         result.extend_from_slice(exponent_f_bytes);
@@ -314,31 +316,28 @@ impl<T> LiquidFloatArray<T>
         let patch_length = self.patch_indices.len() as u64;
 
         let patch_length_bytes = unsafe {
-            std::slice::from_raw_parts(
-                &patch_length as *const u64 as *const u8,
-                size_of::<u64>()
-            )
+            std::slice::from_raw_parts(&patch_length as *const u64 as *const u8, size_of::<u64>())
         };
-    
+
         // Write the patch length
         result.extend_from_slice(patch_length_bytes);
 
         if !self.patch_indices.is_empty() {
             let patch_indices_bytes = unsafe {
                 std::slice::from_raw_parts(
-                    self.patch_indices.as_ptr() as *const u8, 
-                    size_of::<u64>() * self.patch_indices.len()
+                    self.patch_indices.as_ptr() as *const u8,
+                    size_of::<u64>() * self.patch_indices.len(),
                 )
             };
 
             // Write the patch indices
             result.extend_from_slice(patch_indices_bytes);
-            
+
             // Write the patch values
             let patch_values_bytes = unsafe {
                 std::slice::from_raw_parts(
-                    self.patch_values.as_ptr() as *const u8, 
-                    size_of::<T::Native>() * self.patch_indices.len()
+                    self.patch_values.as_ptr() as *const u8,
+                    size_of::<T::Native>() * self.patch_indices.len(),
                 )
             };
             result.extend_from_slice(patch_values_bytes);
@@ -379,26 +378,26 @@ impl<T> LiquidFloatArray<T>
 
         // Get the reference value
         let ref_value_ptr = &bytes[LiquidIPCHeader::size()];
-        let reference_value =
-            unsafe { (ref_value_ptr as *const u8 as *const <T::SignedIntType as ArrowPrimitiveType>::Native).read_unaligned() };
+        let reference_value = unsafe {
+            (ref_value_ptr as *const u8 as *const <T::SignedIntType as ArrowPrimitiveType>::Native)
+                .read_unaligned()
+        };
 
         // Get the exponents
-        let exponents_starting_offset = (LiquidIPCHeader::size() + 
-            size_of::<<T::SignedIntType as ArrowPrimitiveType>::Native>() + 7) & !7;
+        let exponents_starting_offset = (LiquidIPCHeader::size()
+            + size_of::<<T::SignedIntType as ArrowPrimitiveType>::Native>()
+            + 7)
+            & !7;
         let exponents_ptr = &bytes[exponents_starting_offset] as *const u8;
-        let e = unsafe {
-            exponents_ptr.read_unaligned()
-        };
-        let f = unsafe {
-            exponents_ptr.add(1).read_unaligned()
-        };
-        let exp = Exponents {e, f};
-        
+        let e = unsafe { exponents_ptr.read_unaligned() };
+        let f = unsafe { exponents_ptr.add(1).read_unaligned() };
+        let exp = Exponents { e, f };
+
         // Get the patch data
-        let patch_data_ptr = unsafe { exponents_ptr .add(8) } as *const u64;
+        let patch_data_ptr = unsafe { exponents_ptr.add(8) } as *const u64;
         let patch_length = unsafe { patch_data_ptr.read_unaligned() } as usize;
-        let mut patch_indices: Vec<u64> = Vec::with_capacity(patch_length as usize);
-        let mut patch_values: Vec<T::Native> = Vec::with_capacity(patch_length as usize);
+        let mut patch_indices: Vec<u64> = Vec::with_capacity(patch_length);
+        let mut patch_values: Vec<T::Native> = Vec::with_capacity(patch_length);
         let mut bit_packed_ptr = (patch_data_ptr as *const u8).wrapping_add(size_of::<u64>());
         if patch_length > 0 {
             let patch_indices_ptr = bit_packed_ptr as *mut u64;
@@ -407,14 +406,16 @@ impl<T> LiquidFloatArray<T>
             });
             let patch_values_ptr = unsafe { patch_indices_ptr.add(patch_length) } as *mut T::Native;
             patch_values.extend_from_slice(unsafe {
-                std::slice::from_raw_parts(patch_values_ptr as *mut T::Native, patch_length)
+                std::slice::from_raw_parts(patch_values_ptr, patch_length)
             });
-            
-            
-            bit_packed_ptr = bit_packed_ptr.wrapping_add(patch_length * size_of::<u64>() + patch_length * size_of::<T::Native>());
+
+            bit_packed_ptr = bit_packed_ptr.wrapping_add(
+                patch_length * size_of::<u64>() + patch_length * size_of::<T::Native>(),
+            );
         }
 
-        let mut bit_packed_starting_offset = unsafe { bit_packed_ptr.offset_from(&bytes[0] as *const u8) as usize };
+        let mut bit_packed_starting_offset =
+            unsafe { bit_packed_ptr.offset_from(&bytes[0] as *const u8) as usize };
         bit_packed_starting_offset = (bit_packed_starting_offset + 7) & !7;
 
         // Skip ahead to the BitPackedArray data
@@ -426,11 +427,10 @@ impl<T> LiquidFloatArray<T>
             bit_packed,
             patch_indices,
             patch_values,
-            reference_value
+            reference_value,
         }
     }
 }
-
 
 #[repr(C)]
 struct ByteArrayHeader {
@@ -823,7 +823,7 @@ mod tests {
             Some(1.9),
             Some(6.6e4),
             None,
-            Some(9.1e-5)
+            Some(9.1e-5),
         ]);
         let original = LiquidFloatArray::<Float32Type>::from_arrow_array(arr.clone());
         let serialized = Bytes::from(original.to_bytes_inner());
@@ -838,7 +838,7 @@ mod tests {
             Some(1.9),
             Some(6.6e4),
             None,
-            Some(9.1e-5)
+            Some(9.1e-5),
         ]);
         let original = LiquidFloatArray::<Float64Type>::from_arrow_array(arr.clone());
         let serialized = Bytes::from(original.to_bytes_inner());
