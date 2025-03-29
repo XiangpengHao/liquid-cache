@@ -193,11 +193,11 @@ pub type LiquidFloat64Array = LiquidFloatArray<Float64Type>;
 /// An array that stores floats in ALP
 #[derive(Debug, Clone)]
 pub struct LiquidFloatArray<T: LiquidFloatType> {
-    exponent: Exponents,
-    bit_packed: BitPackedArray<T::UnsignedIntType>,
-    patch_indices: Vec<u64>,
-    patch_values: Vec<T::Native>,
-    reference_value: <T::SignedIntType as ArrowPrimitiveType>::Native,
+    pub(crate) exponent: Exponents,
+    pub(crate) bit_packed: BitPackedArray<T::UnsignedIntType>,
+    pub(crate) patch_indices: Vec<u64>,
+    pub(crate) patch_values: Vec<T::Native>,
+    pub(crate) reference_value: <T::SignedIntType as ArrowPrimitiveType>::Native,
 }
 
 impl<T> LiquidFloatArray<T>
@@ -276,7 +276,7 @@ where
     }
 
     fn to_bytes(&self) -> Vec<u8> {
-        todo!()
+        self.to_bytes_inner()
     }
 
     fn filter(&self, selection: &BooleanArray) -> LiquidArrayRef {
@@ -298,8 +298,8 @@ where
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct Exponents {
-    e: u8,
-    f: u8,
+    pub(crate) e: u8,
+    pub(crate) f: u8,
 }
 
 fn encode_arrow_array<T: LiquidFloatType>(
@@ -441,8 +441,11 @@ mod tests {
                 // Convert to Liquid array and back
                 let liquid_array = LiquidFloatArray::<$type>::from_arrow_array(array.clone());
                 let result_array = liquid_array.to_arrow_array();
+                let bytes_array =
+                    LiquidFloatArray::<$type>::from_bytes(liquid_array.to_bytes().into());
 
                 assert_eq!(result_array.as_ref(), &array);
+                assert_eq!(bytes_array.to_arrow_array().as_ref(), &array);
             }
         };
     }
