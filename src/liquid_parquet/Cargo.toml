@@ -39,3 +39,8 @@ rand = "0.9.0"
 name = "bitpacking"
 path = "bench/bitpacking.rs"
 harness = false
+
+[[bench]]
+name = "liquid_float_array"
+harness = false
+path = "bench/liquid_float_array.rs"

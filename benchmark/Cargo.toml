@@ -33,7 +33,6 @@ prost = { workspace = true }
 fsst-rs = "0.5.2"
 parquet = { workspace = true }
 
-
 [[bin]]
 name = "clickbench_client"
 path = "clickbench/clickbench_client.rs"

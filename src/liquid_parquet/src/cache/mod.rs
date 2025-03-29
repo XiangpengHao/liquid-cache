@@ -1,11 +1,13 @@
 use super::liquid_array::{LiquidArrayRef, LiquidByteArray, LiquidPrimitiveArray};
+use crate::liquid_array::LiquidFloatArray;
 use crate::liquid_array::ipc::{self, LiquidIPCContext};
 use crate::{ABLATION_STUDY_MODE, AblationStudyMode, LiquidPredicate};
 use ahash::AHashMap;
 use arrow::array::types::{
-    Int8Type as ArrowInt8Type, Int16Type as ArrowInt16Type, Int32Type as ArrowInt32Type,
-    Int64Type as ArrowInt64Type, UInt8Type as ArrowUInt8Type, UInt16Type as ArrowUInt16Type,
-    UInt32Type as ArrowUInt32Type, UInt64Type as ArrowUInt64Type,
+    Float32Type as ArrowFloat32Type, Float64Type as ArrowFloat64Type, Int8Type as ArrowInt8Type,
+    Int16Type as ArrowInt16Type, Int32Type as ArrowInt32Type, Int64Type as ArrowInt64Type,
+    UInt8Type as ArrowUInt8Type, UInt16Type as ArrowUInt16Type, UInt32Type as ArrowUInt32Type,
+    UInt64Type as ArrowUInt64Type,
 };
 use arrow::array::{Array, ArrayRef, AsArray, BooleanArray, RecordBatch};
 use arrow::buffer::BooleanBuffer;
@@ -551,6 +553,16 @@ impl LiquidCachedColumn {
                 DataType::UInt64 => {
                     Arc::new(LiquidPrimitiveArray::<ArrowUInt64Type>::from_arrow_array(
                         array.as_primitive::<ArrowUInt64Type>().clone(),
+                    ))
+                }
+                DataType::Float32 => {
+                    Arc::new(LiquidFloatArray::<ArrowFloat32Type>::from_arrow_array(
+                        array.as_primitive::<ArrowFloat32Type>().clone(),
+                    ))
+                }
+                DataType::Float64 => {
+                    Arc::new(LiquidFloatArray::<ArrowFloat64Type>::from_arrow_array(
+                        array.as_primitive::<ArrowFloat64Type>().clone(),
                     ))
                 }
                 _ => {
