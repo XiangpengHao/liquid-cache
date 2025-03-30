@@ -1,8 +1,7 @@
-/// 
+///
 /// Acknowledgement:
 /// The ALP compression implemented in this file is based on the Rust implementation available at https://github.com/spiraldb/alp
-/// 
-
+///
 use std::{any::Any, fmt::Debug, ops::Mul, sync::Arc};
 
 use arrow::{
