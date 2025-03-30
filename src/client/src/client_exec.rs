@@ -3,7 +3,9 @@ use std::task::{Context, Poll};
 use std::{any::Any, fmt::Formatter, sync::Arc};
 
 use arrow::array::RecordBatch;
-use arrow_flight::sql::client::FlightSqlServiceClient;
+use arrow_flight::decode::FlightRecordBatchStream;
+use arrow_flight::error::FlightError;
+use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_schema::SchemaRef;
 use datafusion::common::Statistics;
 use datafusion::config::ConfigOptions;
@@ -21,6 +23,8 @@ use datafusion::{
     },
 };
 use datafusion_proto::bytes::physical_plan_to_bytes;
+use fastrace::Span;
+use fastrace::future::FutureExt;
 use futures::{Stream, TryStreamExt, future::BoxFuture, lock::Mutex, ready};
 use liquid_cache_common::CacheMode;
 use liquid_cache_common::rpc::{
@@ -33,7 +37,6 @@ use crate::metrics::FlightStreamMetrics;
 use crate::{flight_channel, to_df_err};
 
 /// The execution plan for the LiquidCache client.
-#[derive(Debug)]
 pub struct LiquidCacheClientExec {
     remote_plan: Arc<dyn ExecutionPlan>,
     cache_server: String,
@@ -41,6 +44,13 @@ pub struct LiquidCacheClientExec {
     cache_mode: CacheMode,
     object_stores: Vec<(ObjectStoreUrl, HashMap<String, String>)>,
     metrics: ExecutionPlanMetricsSet,
+    span: fastrace::Span,
+}
+
+impl std::fmt::Debug for LiquidCacheClientExec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "LiquidCacheClientExec")
+    }
 }
 
 impl LiquidCacheClientExec {
@@ -49,6 +59,7 @@ impl LiquidCacheClientExec {
         cache_server: String,
         cache_mode: CacheMode,
         object_stores: Vec<(ObjectStoreUrl, HashMap<String, String>)>,
+        span: fastrace::Span,
     ) -> Self {
         Self {
             remote_plan,
@@ -57,6 +68,7 @@ impl LiquidCacheClientExec {
             cache_mode,
             object_stores,
             metrics: ExecutionPlanMetricsSet::new(),
+            span,
         }
     }
 
@@ -100,6 +112,7 @@ impl ExecutionPlan for LiquidCacheClientExec {
             cache_mode: self.cache_mode,
             object_stores: self.object_stores.clone(),
             metrics: self.metrics.clone(),
+            span: fastrace::Span::enter_with_local_parent("exec"),
         }))
     }
 
@@ -112,20 +125,22 @@ impl ExecutionPlan for LiquidCacheClientExec {
         let plan = self.remote_plan.clone();
         let lock = self.plan_register_lock.clone();
         let stream_metrics = FlightStreamMetrics::new(&self.metrics, partition);
-        Ok(Box::pin(FlightStream {
-            future_stream: Some(Box::pin(flight_stream(
-                cache_server,
-                plan,
-                lock,
-                partition,
-                self.object_stores.clone(),
-                self.cache_mode,
-            ))),
-            state: FlightStreamState::Init,
-            schema: self.remote_plan.schema().clone(),
-            schema_mapper: None,
-            metrics: stream_metrics,
-        }))
+
+        let poll_span = Span::enter_with_parent("poll_flight_stream", &self.span);
+        let stream = flight_stream(
+            cache_server,
+            plan,
+            lock,
+            partition,
+            self.object_stores.clone(),
+            self.cache_mode,
+        );
+        Ok(Box::pin(FlightStream::new(
+            Some(Box::pin(stream)),
+            self.remote_plan.schema().clone(),
+            stream_metrics,
+            poll_span,
+        )))
     }
 
     fn required_input_distribution(&self) -> Vec<Distribution> {
@@ -184,9 +199,11 @@ async fn flight_stream(
     object_stores: Vec<(ObjectStoreUrl, HashMap<String, String>)>,
     cache_mode: CacheMode,
 ) -> Result<SendableRecordBatchStream> {
-    let channel = flight_channel(server).await?;
+    let channel = flight_channel(server)
+        .in_span(Span::enter_with_local_parent("connect_channel"))
+        .await?;
 
-    let mut client = FlightSqlServiceClient::new(channel);
+    let mut client = FlightServiceClient::new(channel);
     let schema = plan.schema().clone();
 
     // Only one partition needs to register the plan
@@ -203,7 +220,10 @@ async fn flight_stream(
                             options: options.clone(),
                         })
                         .into();
-                    client.do_action(Request::new(action)).await?;
+                    client
+                        .do_action(Request::new(action))
+                        .await
+                        .map_err(to_df_err)?;
                 }
                 // Register plan
                 let plan_bytes = physical_plan_to_bytes(plan)?;
@@ -214,7 +234,10 @@ async fn flight_stream(
                     cache_mode: cache_mode.to_string(),
                 })
                 .into();
-                client.do_action(Request::new(action)).await?;
+                client
+                    .do_action(Request::new(action))
+                    .await
+                    .map_err(to_df_err)?;
                 *maybe_uuid = Some(handle);
                 handle
             }
@@ -226,7 +249,11 @@ async fn flight_stream(
         partition: partition as u32,
     };
     let ticket = fetch_results.into_ticket();
-    let stream = client.do_get(ticket).await?.map_err(to_df_err);
+    let (md, response_stream, _ext) = client.do_get(ticket).await.map_err(to_df_err)?.into_parts();
+    let stream =
+        FlightRecordBatchStream::new_from_flight_data(response_stream.map_err(FlightError::Tonic))
+            .with_headers(md)
+            .map_err(to_df_err);
     Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
 }
 
@@ -242,6 +269,25 @@ struct FlightStream {
     schema: SchemaRef,
     schema_mapper: Option<Arc<dyn SchemaMapper>>,
     metrics: FlightStreamMetrics,
+    span: fastrace::Span,
+}
+
+impl FlightStream {
+    fn new(
+        future_stream: Option<BoxFuture<'static, Result<SendableRecordBatchStream>>>,
+        schema: SchemaRef,
+        metrics: FlightStreamMetrics,
+        span: fastrace::Span,
+    ) -> Self {
+        Self {
+            future_stream,
+            state: FlightStreamState::Init,
+            schema,
+            schema_mapper: None,
+            metrics,
+            span,
+        }
+    }
 }
 
 impl FlightStream {
@@ -276,6 +322,8 @@ impl Stream for FlightStream {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
         self.metrics.time_processing.start();
+        let span = Span::enter_with_parent("flight_stream_poll_next", &self.span);
+        let _guard = span.set_local_parent();
         let result = self.poll_inner(cx);
         match result {
             Poll::Ready(Some(Ok(batch))) => {

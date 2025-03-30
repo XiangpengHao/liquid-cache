@@ -20,21 +20,18 @@
 
 use arrow::ipc::writer::IpcWriteOptions;
 use arrow_flight::{
-    Action, FlightDescriptor, FlightEndpoint, FlightInfo, HandshakeRequest, HandshakeResponse,
-    IpcMessage, SchemaAsIpc, Ticket,
+    Action, HandshakeRequest, HandshakeResponse, Ticket,
     encode::{DictionaryHandling, FlightDataEncoderBuilder},
-    flight_descriptor::DescriptorType,
     flight_service_server::FlightService,
     sql::{
-        Any, CommandGetDbSchemas, CommandPreparedStatementUpdate, CommandStatementQuery,
-        ProstMessageExt, SqlInfo,
+        Any, CommandPreparedStatementUpdate, ProstMessageExt, SqlInfo,
         server::{FlightSqlService, PeekableFlightDataStream},
     },
 };
 use datafusion::{
     error::DataFusionError,
     execution::{SessionStateBuilder, object_store::ObjectStoreUrl},
-    physical_plan::{ExecutionPlan, ExecutionPlanProperties},
+    physical_plan::ExecutionPlan,
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_proto::bytes::physical_plan_from_bytes;
@@ -163,10 +160,6 @@ impl LiquidCacheService {
         Ok(ctx)
     }
 
-    fn get_next_execution_id(&self) -> Uuid {
-        Uuid::new_v4()
-    }
-
     /// Get all registered tables and their cache modes
     pub async fn get_registered_tables(&self) -> HashMap<String, (String, CacheMode)> {
         self.inner.get_registered_tables().await
@@ -192,24 +185,7 @@ impl FlightSqlService for LiquidCacheService {
         unimplemented!("We don't do handshake")
     }
 
-    async fn get_flight_info_schemas(
-        &self,
-        query: CommandGetDbSchemas,
-        _request: Request<FlightDescriptor>,
-    ) -> Result<Response<FlightInfo>, Status> {
-        let table_name = query
-            .db_schema_filter_pattern
-            .ok_or(Status::invalid_argument(
-                "db_schema_filter_pattern is required",
-            ))?;
-        let schema = self.inner.get_table_schema(&table_name).await?;
-
-        let mut info = FlightInfo::new();
-        info.schema = encode_schema_to_ipc_bytes(&schema);
-
-        Ok(Response::new(info))
-    }
-
+    #[fastrace::trace]
     async fn do_get_fallback(
         &self,
         _request: Request<Ticket>,
@@ -252,45 +228,6 @@ impl FlightSqlService for LiquidCacheService {
         Ok(Response::new(Box::pin(stream)))
     }
 
-    async fn get_flight_info_statement(
-        &self,
-        cmd: CommandStatementQuery,
-        _request: Request<FlightDescriptor>,
-    ) -> Result<Response<FlightInfo>, Status> {
-        let user_query = cmd.query.as_str();
-        let handle = self.get_next_execution_id();
-        let physical_plan = self
-            .inner
-            .prepare_and_register_plan(user_query, handle)
-            .await?;
-        let partition_count = physical_plan.output_partitioning().partition_count();
-
-        let schema = physical_plan.schema();
-
-        let flight_desc = FlightDescriptor {
-            r#type: DescriptorType::Cmd.into(),
-            cmd: Default::default(),
-            path: vec![],
-        };
-
-        let mut info = FlightInfo::new().with_descriptor(flight_desc);
-        info.schema = encode_schema_to_ipc_bytes(&schema);
-
-        let handle_bytes: Bytes = handle.into_bytes().to_vec().into();
-        for partition in 0..partition_count {
-            let fetch = FetchResults {
-                handle: handle_bytes.clone(),
-                partition: partition as u32,
-            };
-            let ticket = fetch.into_ticket();
-            let endpoint = FlightEndpoint::new().with_ticket(ticket.clone());
-            info = info.with_endpoint(endpoint);
-        }
-
-        let resp = Response::new(info);
-        Ok(resp)
-    }
-
     async fn do_put_prepared_statement_update(
         &self,
         _handle: CommandPreparedStatementUpdate,
@@ -302,6 +239,7 @@ impl FlightSqlService for LiquidCacheService {
         Ok(-1)
     }
 
+    #[fastrace::trace]
     async fn do_action_fallback(
         &self,
         request: Request<Action>,
@@ -354,13 +292,4 @@ impl FlightSqlService for LiquidCacheService {
 
 fn df_error_to_status(err: datafusion::error::DataFusionError) -> Status {
     Status::internal(format!("{err:?}"))
-}
-
-// TODO: we need to workaround a arrow-flight bug here:
-// https://github.com/apache/arrow-rs/issues/7058
-fn encode_schema_to_ipc_bytes(schema: &arrow_schema::Schema) -> Bytes {
-    let options = IpcWriteOptions::default();
-    let schema_as_ipc = SchemaAsIpc::new(schema, &options);
-    let IpcMessage(schema) = schema_as_ipc.try_into().unwrap();
-    schema
 }

@@ -245,8 +245,6 @@ fn bench(path: &Path, column_id: usize) -> Bencher {
 }
 
 fn main() {
-    env_logger::builder().format_timestamp(None).init();
-
     let matches = Command::new("LiquidParquet Encoding Bench")
         .arg(
             arg!(--file <PATH>)

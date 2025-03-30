@@ -166,6 +166,7 @@ pub enum BenchmarkMode {
 }
 
 impl BenchmarkMode {
+    #[fastrace::trace]
     pub async fn setup_tpch_ctx(
         &self,
         server_url: &str,
@@ -237,6 +238,7 @@ impl BenchmarkMode {
         Ok(Arc::new(ctx))
     }
 
+    #[fastrace::trace]
     pub async fn setup_clickbench_ctx(
         &self,
         server_url: &str,
@@ -290,6 +292,7 @@ impl BenchmarkMode {
         Ok(Arc::new(ctx))
     }
 
+    #[fastrace::trace]
     pub async fn get_execution_metrics(
         &self,
         server_url: &str,
@@ -466,4 +469,42 @@ pub struct IterationResult {
     pub cache_cpu_time: u64,
     pub cache_memory_usage: u64,
     pub starting_timestamp: Duration,
+}
+
+use fastrace_opentelemetry::OpenTelemetryReporter;
+use opentelemetry::InstrumentationScope;
+use opentelemetry::KeyValue;
+use opentelemetry::trace::SpanKind;
+use opentelemetry_otlp::SpanExporter;
+use opentelemetry_otlp::WithExportConfig;
+use opentelemetry_sdk::Resource;
+use std::borrow::Cow;
+
+pub fn setup_observability(service_name: &str, kind: SpanKind) {
+    // Setup logging with logforth
+    logforth::stderr()
+        .dispatch(|d| {
+            d.filter(log::LevelFilter::Info)
+                .append(logforth::append::Stdout::default())
+        })
+        .apply();
+
+    let reporter = OpenTelemetryReporter::new(
+        SpanExporter::builder()
+            .with_tonic()
+            .with_endpoint("http://127.0.0.1:4317".to_string())
+            .with_protocol(opentelemetry_otlp::Protocol::Grpc)
+            .build()
+            .expect("initialize oltp exporter"),
+        kind,
+        Cow::Owned(
+            Resource::builder()
+                .with_attributes([KeyValue::new("service.name", service_name.to_string())])
+                .build(),
+        ),
+        InstrumentationScope::builder(env!("CARGO_PKG_NAME"))
+            .with_version(env!("CARGO_PKG_VERSION"))
+            .build(),
+    );
+    fastrace::set_reporter(reporter, fastrace::collector::Config::default());
 }

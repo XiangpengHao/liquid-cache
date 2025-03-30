@@ -6,12 +6,13 @@ use datafusion::{
     physical_plan::{ExecutionPlan, collect, display::DisplayableExecutionPlan},
     prelude::SessionContext,
 };
+use fastrace::prelude::*;
 use liquid_cache_benchmarks::{
-    BenchmarkMode, BenchmarkResult, IterationResult, QueryResult, utils::assert_batch_eq,
+    BenchmarkMode, BenchmarkResult, IterationResult, QueryResult, setup_observability,
+    utils::assert_batch_eq,
 };
 use log::{debug, info};
 use mimalloc::MiMalloc;
-use owo_colors::OwoColorize;
 use serde::Serialize;
 use std::{fs::File as StdFile, path::Path, sync::Arc};
 use std::{fs::File, path::PathBuf, time::Instant};
@@ -101,20 +102,29 @@ fn check_result_against_answer(
     Ok(())
 }
 
+#[fastrace::trace]
 async fn run_query(
     ctx: &Arc<SessionContext>,
     query: &str,
 ) -> Result<(Vec<RecordBatch>, Arc<dyn ExecutionPlan>)> {
-    let df = ctx.sql(query).await?;
+    let df = ctx
+        .sql(query)
+        .in_span(Span::enter_with_local_parent("plan_logical"))
+        .await?;
     let (state, logical_plan) = df.into_parts();
-    let physical_plan = state.create_physical_plan(&logical_plan).await?;
-    let results = collect(physical_plan.clone(), state.task_ctx()).await?;
+    let physical_plan = state
+        .create_physical_plan(&logical_plan)
+        .in_span(Span::enter_with_local_parent("plan_physical"))
+        .await?;
+    let results = collect(physical_plan.clone(), state.task_ctx())
+        .in_span(Span::enter_with_local_parent("collect"))
+        .await?;
     Ok((results, physical_plan))
 }
 
 #[tokio::main]
 pub async fn main() -> Result<()> {
-    env_logger::builder().format_timestamp(None).init();
+    setup_observability("tpch-client", opentelemetry::trace::SpanKind::Client);
 
     let args = CliArgs::parse();
 
@@ -142,12 +152,10 @@ pub async fn main() -> Result<()> {
     for id in query_ids {
         let query = get_query_by_id(&args.query_dir, id)?;
         let mut query_result = QueryResult::new(id, query.join(";"));
-        for _i in 0..args.iteration {
-            info!(
-                "Running query {}: \n{}",
-                id.magenta(),
-                query.join(";").cyan()
-            );
+        for it in 0..args.iteration {
+            let root = Span::root(format!("tpch-client-{}-{}", id, it), SpanContext::random());
+            let _g = root.set_local_parent();
+            info!("Running query {}: \n{}", id, query.join(";"));
             let now = Instant::now();
             let starting_timestamp = bench_start_time.elapsed();
             let (results, physical_plan) = if id == 15 {
@@ -179,15 +187,15 @@ pub async fn main() -> Result<()> {
 
             debug!(
                 "Physical plan: \n{}",
-                physical_plan_with_metrics.indent(true).magenta()
+                physical_plan_with_metrics.indent(true)
             );
             let result_str = pretty::pretty_format_batches(&results).unwrap();
-            info!("Query result: \n{}", result_str.cyan());
+            info!("Query result: \n{}", result_str);
 
             // Check query answers
             if let Some(answer_dir) = &args.answer_dir {
                 check_result_against_answer(&results, answer_dir, id)?;
-                info!("Query {} passed validation", id.to_string().red());
+                info!("Query {} passed validation", id);
             }
 
             let metrics_response = args
@@ -220,5 +228,6 @@ pub async fn main() -> Result<()> {
         serde_json::to_writer_pretty(output_file, &benchmark_result).unwrap();
     }
 
+    fastrace::flush();
     Ok(())
 }
