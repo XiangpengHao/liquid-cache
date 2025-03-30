@@ -1,9 +1,11 @@
 use std::sync::Arc;
 use std::{any::TypeId, mem::size_of};
 
+use arrow::array::ArrowPrimitiveType;
 use arrow::array::types::UInt16Type;
 use arrow::datatypes::{
-    Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt32Type, UInt64Type,
+    Float32Type, Float64Type, Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt32Type,
+    UInt64Type,
 };
 use bytes::Bytes;
 use fsst::Compressor;
@@ -11,9 +13,11 @@ use fsst::Compressor;
 use crate::liquid_array::LiquidPrimitiveArray;
 use crate::liquid_array::LiquidPrimitiveType;
 use crate::liquid_array::byte_array::ArrowStringType;
+use crate::liquid_array::float_array::Exponents;
 use crate::liquid_array::raw::{BitPackedArray, FsstArray};
 
-use super::{LiquidArrayRef, LiquidByteArray, LiquidDataType};
+use super::float_array::LiquidFloatType;
+use super::{LiquidArrayRef, LiquidByteArray, LiquidDataType, LiquidFloatArray};
 
 const MAGIC: u32 = 0x4C51_4441; // "LQDA" for LiQuid Data Array
 const VERSION: u16 = 1;
@@ -109,6 +113,11 @@ pub fn read_from_bytes(bytes: Bytes, context: &LiquidIPCContext) -> LiquidArrayR
             let compressor = context.compressor.as_ref().expect("Expected a compressor");
             Arc::new(LiquidByteArray::from_bytes(bytes, compressor.clone()))
         }
+        LiquidDataType::Float => match header.physical_type_id {
+            8 => Arc::new(LiquidFloatArray::<Float32Type>::from_bytes(bytes)),
+            9 => Arc::new(LiquidFloatArray::<Float64Type>::from_bytes(bytes)),
+            _ => panic!("Unsupported float type"),
+        },
     }
 }
 
@@ -207,6 +216,217 @@ where
 
         Self {
             bit_packed,
+            reference_value,
+        }
+    }
+}
+
+impl<T> LiquidFloatArray<T>
+where
+    T: LiquidFloatType,
+{
+    /*
+    Serialized LiquidFloatArray Memory Layout:
+    +--------------------------------------------------+
+    | LiquidIPCHeader (16 bytes)                       |
+    +--------------------------------------------------+
+
+    +--------------------------------------------------+
+    | reference_value                                  |
+    | (size_of::<T::SignedIntType::Native> bytes)      |  // The reference value (e.g. minimum value)
+    +--------------------------------------------------+
+    | Padding (to 8-byte alignment)                    |  // Padding to ensure 8-byte alignment
+    +--------------------------------------------------+
+
+    +--------------------------------------------------+
+    | Exponents                                        |
+    +--------------------------------------------------+
+    | e (1 byte)                                       |
+    +--------------------------------------------------+
+    | f (1 byte)                                       |
+    +--------------------------------------------------+
+    | Padding (6 bytes)                                |
+    +--------------------------------------------------+
+
+    +--------------------------------------------------+
+    | Patch Data                                       |
+    +--------------------------------------------------+
+    | patch_length (8 bytes)                           |
+    +--------------------------------------------------+
+    | patch_indices (8 * patch_length btyes)           |
+    +--------------------------------------------------+
+    | patch_values (length *size_of::<T::Native> btyes;|
+    |               8-byte aligned)                    |
+    +--------------------------------------------------+
+    | Padding                                          |
+    +--------------------------------------------------+
+
+    +--------------------------------------------------+
+    | BitPackedArray Data                              |
+    +--------------------------------------------------+
+    | [BitPackedArray Header & Bit-Packed Values]      |  // Written by self.bit_packed.to_bytes()
+    +--------------------------------------------------+
+    */
+    pub(crate) fn to_bytes_inner(&self) -> Vec<u8> {
+        // Determine type ID based on the type
+        let physical_type_id = get_physical_type_id::<T>();
+        let logical_type_id = LiquidDataType::Float as u16;
+        let header = LiquidIPCHeader {
+            magic: MAGIC.to_le_bytes(),
+            version: VERSION,
+            logical_type_id,
+            physical_type_id,
+            __padding: [0; 6],
+        };
+
+        let mut result = Vec::with_capacity(256); // Pre-allocate a reasonable size
+
+        // Write header
+        result.extend_from_slice(&header.to_bytes());
+
+        // Write reference value
+        let ref_value_bytes = unsafe {
+            std::slice::from_raw_parts(
+                &self.reference_value as *const <T::SignedIntType as ArrowPrimitiveType>::Native
+                    as *const u8,
+                size_of::<T::Native>(),
+            )
+        };
+        result.extend_from_slice(ref_value_bytes);
+
+        let exponents_starting_loc = (result.len() + 7) & !7;
+        // Insert padding before exponents start
+        while result.len() < exponents_starting_loc {
+            result.push(0);
+        }
+
+        // TODO(): Check if we can do self.exponent as *const u8
+        let exponent_e_bytes =
+            unsafe { std::slice::from_raw_parts(&self.exponent.e as *const u8, 1) };
+        let exponent_f_bytes =
+            unsafe { std::slice::from_raw_parts(&self.exponent.f as *const u8, 1) };
+        // Write exponents and padding
+        result.extend_from_slice(exponent_e_bytes);
+        result.extend_from_slice(exponent_f_bytes);
+        for _i in 0..6 {
+            result.push(0);
+        }
+
+        // Number of bytes occupied by usize is target-dependent; use u64 instead
+        let patch_length = self.patch_indices.len() as u64;
+
+        let patch_length_bytes = unsafe {
+            std::slice::from_raw_parts(&patch_length as *const u64 as *const u8, size_of::<u64>())
+        };
+
+        // Write the patch length
+        result.extend_from_slice(patch_length_bytes);
+
+        if !self.patch_indices.is_empty() {
+            let patch_indices_bytes = unsafe {
+                std::slice::from_raw_parts(
+                    self.patch_indices.as_ptr() as *const u8,
+                    size_of::<u64>() * self.patch_indices.len(),
+                )
+            };
+
+            // Write the patch indices
+            result.extend_from_slice(patch_indices_bytes);
+
+            // Write the patch values
+            let patch_values_bytes = unsafe {
+                std::slice::from_raw_parts(
+                    self.patch_values.as_ptr() as *const u8,
+                    size_of::<T::Native>() * self.patch_indices.len(),
+                )
+            };
+            result.extend_from_slice(patch_values_bytes);
+        }
+        let padding = ((result.len() + 7) & !7) - result.len();
+
+        // Add padding before writing bit-packed array
+        for _i in 0..padding {
+            result.push(0);
+        }
+
+        // Let BitPackedArray write the rest of the data
+        self.bit_packed.to_bytes(&mut result);
+
+        result
+    }
+
+    /// Deserialize a LiquidFloatArray from bytes, using zero-copy where possible.
+    ///
+    /// This function creates a LiquidFloatArray from a byte buffer that was
+    /// previously created using `to_bytes()`. It attempts to use zero-copy semantics
+    /// by creating views into the original buffer for the data portions.
+    pub fn from_bytes(bytes: Bytes) -> Self {
+        let header = LiquidIPCHeader::from_bytes(&bytes);
+
+        if header.magic != MAGIC.to_le_bytes() {
+            panic!("Invalid magic number");
+        }
+
+        if header.version != VERSION {
+            panic!("Unsupported version");
+        }
+
+        let physical_id = header.physical_type_id;
+        assert_eq!(physical_id, get_physical_type_id::<T>());
+        let logical_id = header.logical_type_id;
+        assert_eq!(logical_id, LiquidDataType::Float as u16);
+
+        // Get the reference value
+        let ref_value_ptr = &bytes[LiquidIPCHeader::size()];
+        let reference_value = unsafe {
+            (ref_value_ptr as *const u8 as *const <T::SignedIntType as ArrowPrimitiveType>::Native)
+                .read_unaligned()
+        };
+
+        // Get the exponents
+        let exponents_starting_offset = (LiquidIPCHeader::size()
+            + size_of::<<T::SignedIntType as ArrowPrimitiveType>::Native>()
+            + 7)
+            & !7;
+        let exponents_ptr = &bytes[exponents_starting_offset] as *const u8;
+        let e = unsafe { exponents_ptr.read_unaligned() };
+        let f = unsafe { exponents_ptr.add(1).read_unaligned() };
+        let exp = Exponents { e, f };
+
+        // Get the patch data
+        let patch_data_ptr = unsafe { exponents_ptr.add(8) } as *const u64;
+        let patch_length = unsafe { patch_data_ptr.read_unaligned() } as usize;
+        let mut patch_indices: Vec<u64> = Vec::with_capacity(patch_length);
+        let mut patch_values: Vec<T::Native> = Vec::with_capacity(patch_length);
+        let mut bit_packed_ptr = (patch_data_ptr as *const u8).wrapping_add(size_of::<u64>());
+        if patch_length > 0 {
+            let patch_indices_ptr = bit_packed_ptr as *mut u64;
+            patch_indices.extend_from_slice(unsafe {
+                std::slice::from_raw_parts(patch_indices_ptr, patch_length)
+            });
+            let patch_values_ptr = unsafe { patch_indices_ptr.add(patch_length) } as *mut T::Native;
+            patch_values.extend_from_slice(unsafe {
+                std::slice::from_raw_parts(patch_values_ptr, patch_length)
+            });
+
+            bit_packed_ptr = bit_packed_ptr.wrapping_add(
+                patch_length * size_of::<u64>() + patch_length * size_of::<T::Native>(),
+            );
+        }
+
+        let mut bit_packed_starting_offset =
+            unsafe { bit_packed_ptr.offset_from(&bytes[0] as *const u8) as usize };
+        bit_packed_starting_offset = (bit_packed_starting_offset + 7) & !7;
+
+        // Skip ahead to the BitPackedArray data
+        let bit_packed_data = bytes.slice(bit_packed_starting_offset..);
+        let bit_packed = BitPackedArray::<T::UnsignedIntType>::from_bytes(bit_packed_data);
+
+        Self {
+            exponent: exp,
+            bit_packed,
+            patch_indices,
+            patch_values,
             reference_value,
         }
     }
@@ -362,7 +582,7 @@ impl LiquidByteArray {
     }
 }
 
-fn get_physical_type_id<T: LiquidPrimitiveType>() -> u16 {
+fn get_physical_type_id<T: ArrowPrimitiveType>() -> u16 {
     match TypeId::of::<T>() {
         id if id == TypeId::of::<arrow::datatypes::Int8Type>() => 0,
         id if id == TypeId::of::<arrow::datatypes::Int16Type>() => 1,
@@ -372,6 +592,8 @@ fn get_physical_type_id<T: LiquidPrimitiveType>() -> u16 {
         id if id == TypeId::of::<arrow::datatypes::UInt16Type>() => 5,
         id if id == TypeId::of::<arrow::datatypes::UInt32Type>() => 6,
         id if id == TypeId::of::<arrow::datatypes::UInt64Type>() => 7,
+        id if id == TypeId::of::<arrow::datatypes::Float32Type>() => 8,
+        id if id == TypeId::of::<arrow::datatypes::Float64Type>() => 9,
         _ => panic!("Unsupported primitive type"),
     }
 }
@@ -592,5 +814,35 @@ mod tests {
             original.original_arrow_type as u8,
             deserialized.original_arrow_type as u8
         );
+    }
+
+    #[test]
+    fn test_float32_array_roundtrip() {
+        let arr = PrimitiveArray::<Float32Type>::from(vec![
+            Some(-1.3e7),
+            Some(1.9),
+            Some(6.6e4),
+            None,
+            Some(9.1e-5),
+        ]);
+        let original = LiquidFloatArray::<Float32Type>::from_arrow_array(arr.clone());
+        let serialized = Bytes::from(original.to_bytes_inner());
+        let deserialized = LiquidFloatArray::<Float32Type>::from_bytes(serialized).to_arrow_array();
+        assert_eq!(deserialized.as_ref(), &arr);
+    }
+
+    #[test]
+    fn test_float64_array_roundtrip() {
+        let arr = PrimitiveArray::<Float64Type>::from(vec![
+            Some(-1.3e7),
+            Some(1.9),
+            Some(6.6e4),
+            None,
+            Some(9.1e-5),
+        ]);
+        let original = LiquidFloatArray::<Float64Type>::from_arrow_array(arr.clone());
+        let serialized = Bytes::from(original.to_bytes_inner());
+        let deserialized = LiquidFloatArray::<Float64Type>::from_bytes(serialized).to_arrow_array();
+        assert_eq!(deserialized.as_ref(), &arr);
     }
 }
