@@ -126,7 +126,7 @@ impl ExecutionPlan for LiquidCacheClientExec {
         let span = context
             .session_config()
             .get_extension::<Span>()
-            .expect("Span extension not found");
+            .unwrap_or_default();
         let exec_span = Span::enter_with_parent("exec_flight_stream", &span);
         let create_stream_span = Span::enter_with_parent("create_flight_stream", &exec_span);
         let stream = flight_stream(
