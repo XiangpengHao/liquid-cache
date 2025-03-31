@@ -4,7 +4,7 @@ use parquet::file::properties::WriterProperties;
 use std::fs::File;
 
 fn main() {
-    let file = File::open("benchmark/data/hits.parquet").unwrap();
+    let file = File::open("benchmark/clickbench/data/hits.parquet").unwrap();
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
 
     let compression_alg = builder.metadata().row_groups()[0].columns()[0].compression();
@@ -19,7 +19,7 @@ fn main() {
         .set_max_row_group_size(8192 * 3)
         .build();
 
-    let file = File::create("benchmark/data/nano_hits.parquet").unwrap();
+    let file = File::create("examples/nano_hits.parquet").unwrap();
 
     let mut writer = ArrowWriter::try_new(file, batch_one.schema(), Some(props)).unwrap();
 
