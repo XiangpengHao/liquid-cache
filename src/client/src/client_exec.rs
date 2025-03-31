@@ -3,7 +3,9 @@ use std::task::{Context, Poll};
 use std::{any::Any, fmt::Formatter, sync::Arc};
 
 use arrow::array::RecordBatch;
-use arrow_flight::sql::client::FlightSqlServiceClient;
+use arrow_flight::decode::FlightRecordBatchStream;
+use arrow_flight::error::FlightError;
+use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_schema::SchemaRef;
 use datafusion::common::Statistics;
 use datafusion::config::ConfigOptions;
@@ -21,6 +23,9 @@ use datafusion::{
     },
 };
 use datafusion_proto::bytes::physical_plan_to_bytes;
+use fastrace::Span;
+use fastrace::future::FutureExt;
+use fastrace::prelude::SpanContext;
 use futures::{Stream, TryStreamExt, future::BoxFuture, lock::Mutex, ready};
 use liquid_cache_common::CacheMode;
 use liquid_cache_common::rpc::{
@@ -33,7 +38,6 @@ use crate::metrics::FlightStreamMetrics;
 use crate::{flight_channel, to_df_err};
 
 /// The execution plan for the LiquidCache client.
-#[derive(Debug)]
 pub struct LiquidCacheClientExec {
     remote_plan: Arc<dyn ExecutionPlan>,
     cache_server: String,
@@ -41,6 +45,12 @@ pub struct LiquidCacheClientExec {
     cache_mode: CacheMode,
     object_stores: Vec<(ObjectStoreUrl, HashMap<String, String>)>,
     metrics: ExecutionPlanMetricsSet,
+}
+
+impl std::fmt::Debug for LiquidCacheClientExec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "LiquidCacheClientExec")
+    }
 }
 
 impl LiquidCacheClientExec {
@@ -106,26 +116,34 @@ impl ExecutionPlan for LiquidCacheClientExec {
     fn execute(
         &self,
         partition: usize,
-        _context: Arc<datafusion::execution::TaskContext>,
+        context: Arc<datafusion::execution::TaskContext>,
     ) -> datafusion::error::Result<datafusion::execution::SendableRecordBatchStream> {
         let cache_server = self.cache_server.clone();
         let plan = self.remote_plan.clone();
         let lock = self.plan_register_lock.clone();
         let stream_metrics = FlightStreamMetrics::new(&self.metrics, partition);
-        Ok(Box::pin(FlightStream {
-            future_stream: Some(Box::pin(flight_stream(
-                cache_server,
-                plan,
-                lock,
-                partition,
-                self.object_stores.clone(),
-                self.cache_mode,
-            ))),
-            state: FlightStreamState::Init,
-            schema: self.remote_plan.schema().clone(),
-            schema_mapper: None,
-            metrics: stream_metrics,
-        }))
+
+        let span = context
+            .session_config()
+            .get_extension::<Span>()
+            .unwrap_or_default();
+        let exec_span = Span::enter_with_parent("exec_flight_stream", &span);
+        let create_stream_span = Span::enter_with_parent("create_flight_stream", &exec_span);
+        let stream = flight_stream(
+            cache_server,
+            plan,
+            lock,
+            partition,
+            self.object_stores.clone(),
+            self.cache_mode,
+        );
+        Ok(Box::pin(FlightStream::new(
+            Some(Box::pin(stream)),
+            self.remote_plan.schema().clone(),
+            stream_metrics,
+            exec_span,
+            create_stream_span,
+        )))
     }
 
     fn required_input_distribution(&self) -> Vec<Distribution> {
@@ -184,13 +202,16 @@ async fn flight_stream(
     object_stores: Vec<(ObjectStoreUrl, HashMap<String, String>)>,
     cache_mode: CacheMode,
 ) -> Result<SendableRecordBatchStream> {
-    let channel = flight_channel(server).await?;
+    let channel = flight_channel(server)
+        .in_span(Span::enter_with_local_parent("connect_channel"))
+        .await?;
 
-    let mut client = FlightSqlServiceClient::new(channel);
+    let mut client = FlightServiceClient::new(channel);
     let schema = plan.schema().clone();
 
     // Only one partition needs to register the plan
     let handle = {
+        let _span = Span::enter_with_local_parent("register_plan");
         let mut maybe_uuid = plan_register_lock.lock().await;
         match maybe_uuid.as_ref() {
             Some(uuid) => *uuid,
@@ -203,7 +224,10 @@ async fn flight_stream(
                             options: options.clone(),
                         })
                         .into();
-                    client.do_action(Request::new(action)).await?;
+                    client
+                        .do_action(Request::new(action))
+                        .await
+                        .map_err(to_df_err)?;
                 }
                 // Register plan
                 let plan_bytes = physical_plan_to_bytes(plan)?;
@@ -214,19 +238,29 @@ async fn flight_stream(
                     cache_mode: cache_mode.to_string(),
                 })
                 .into();
-                client.do_action(Request::new(action)).await?;
+                client
+                    .do_action(Request::new(action))
+                    .await
+                    .map_err(to_df_err)?;
                 *maybe_uuid = Some(handle);
                 handle
             }
         }
     };
 
+    let current = SpanContext::current_local_parent().unwrap_or_else(SpanContext::random);
+
     let fetch_results = FetchResults {
         handle: handle.into_bytes().to_vec().into(),
         partition: partition as u32,
+        traceparent: current.encode_w3c_traceparent(),
     };
     let ticket = fetch_results.into_ticket();
-    let stream = client.do_get(ticket).await?.map_err(to_df_err);
+    let (md, response_stream, _ext) = client.do_get(ticket).await.map_err(to_df_err)?.into_parts();
+    let stream =
+        FlightRecordBatchStream::new_from_flight_data(response_stream.map_err(FlightError::Tonic))
+            .with_headers(md)
+            .map_err(to_df_err);
     Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
 }
 
@@ -242,8 +276,31 @@ struct FlightStream {
     schema: SchemaRef,
     schema_mapper: Option<Arc<dyn SchemaMapper>>,
     metrics: FlightStreamMetrics,
+    poll_stream_span: fastrace::Span,
+    create_stream_span: Option<fastrace::Span>,
 }
 
+impl FlightStream {
+    fn new(
+        future_stream: Option<BoxFuture<'static, Result<SendableRecordBatchStream>>>,
+        schema: SchemaRef,
+        metrics: FlightStreamMetrics,
+        poll_stream_span: fastrace::Span,
+        create_stream_span: fastrace::Span,
+    ) -> Self {
+        Self {
+            future_stream,
+            state: FlightStreamState::Init,
+            schema,
+            schema_mapper: None,
+            metrics,
+            poll_stream_span,
+            create_stream_span: Some(create_stream_span),
+        }
+    }
+}
+
+use futures::StreamExt;
 impl FlightStream {
     fn poll_inner(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<RecordBatch>>> {
         loop {
@@ -254,12 +311,14 @@ impl FlightStream {
                     continue;
                 }
                 FlightStreamState::GetStream(fut) => {
+                    let _guard = self.create_stream_span.as_ref().unwrap().set_local_parent();
                     let stream = ready!(fut.as_mut().poll(cx)).unwrap();
+                    self.create_stream_span.take();
                     self.state = FlightStreamState::Processing(stream);
                     continue;
                 }
                 FlightStreamState::Processing(stream) => {
-                    let result = stream.as_mut().poll_next(cx);
+                    let result = stream.poll_next_unpin(cx);
                     self.metrics.poll_count.add(1);
                     return result;
                 }
@@ -275,6 +334,7 @@ impl Stream for FlightStream {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
+        let _guard = self.poll_stream_span.set_local_parent();
         self.metrics.time_processing.start();
         let result = self.poll_inner(cx);
         match result {

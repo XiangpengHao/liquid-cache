@@ -1,5 +1,12 @@
 use std::sync::Arc;
 
+use crate::{
+    LiquidCacheMode, LiquidCacheRef,
+    reader::{
+        plantime::{row_filter, row_group_filter::RowGroupAccessPlanFilter},
+        runtime::ArrowReaderBuilderBridge,
+    },
+};
 use arrow_schema::{ArrowError, SchemaRef};
 use datafusion::{
     common::exec_err,
@@ -22,14 +29,6 @@ use parquet::arrow::{
     ParquetRecordBatchStreamBuilder, ProjectionMask,
     arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions},
     async_reader::AsyncFileReader,
-};
-
-use crate::{
-    LiquidCacheMode, LiquidCacheRef,
-    reader::{
-        plantime::{row_filter, row_group_filter::RowGroupAccessPlanFilter},
-        runtime::ArrowReaderBuilderBridge,
-    },
 };
 
 use super::source::CachedMetaReaderFactory;

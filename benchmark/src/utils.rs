@@ -7,7 +7,6 @@ use datafusion::arrow::{
     datatypes::DataType,
 };
 use log::warn;
-use owo_colors::OwoColorize;
 
 fn float_eq_helper(left: &dyn Array, right: &dyn Array, tol: f64) -> bool {
     let diff = sub_wrapping(&left, &right).unwrap();
@@ -76,9 +75,9 @@ pub fn assert_batch_eq(expected: &RecordBatch, actual: &RecordBatch) {
         assert!(
             ok,
             "Column {} answer does not match result\nExpected: {:?}\n Actual: {:?}",
-            expected.schema().field(i).name().red(),
-            sorted_expected.red(),
-            sorted_actual.red()
+            expected.schema().field(i).name(),
+            sorted_expected,
+            sorted_actual
         );
     }
 }

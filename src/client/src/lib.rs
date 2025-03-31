@@ -13,6 +13,7 @@ use datafusion::{
     execution::{SessionStateBuilder, object_store::ObjectStoreUrl, runtime_env::RuntimeEnv},
     prelude::*,
 };
+use fastrace_tonic::FastraceClientService;
 use liquid_cache_common::CacheMode;
 pub use optimizer::PushdownOptimizer;
 use tonic::transport::Channel;
@@ -85,6 +86,7 @@ impl LiquidCacheBuilder {
             .execution
             .parquet
             .binary_as_string = true;
+        session_config.options_mut().execution.batch_size = 8192 * 2;
         let session_state = SessionStateBuilder::new()
             .with_config(session_config)
             .with_runtime_env(Arc::new(RuntimeEnv::default()))
@@ -103,11 +105,21 @@ pub(crate) fn to_df_err<E: Error + Send + Sync + 'static>(err: E) -> DataFusionE
     DataFusionError::External(Box::new(err))
 }
 
-pub(crate) async fn flight_channel(source: impl Into<String>) -> Result<Channel> {
+pub(crate) async fn flight_channel(
+    source: impl Into<String>,
+) -> Result<FastraceClientService<Channel>> {
+    use fastrace_tonic::FastraceClientLayer;
+    use tower::ServiceBuilder;
+
     // No tls here, to avoid the overhead of TLS
     // we assume both server and client are running on the trusted network.
     let endpoint = Channel::from_shared(source.into())
         .map_err(to_df_err)?
         .tcp_keepalive(Some(Duration::from_secs(10)));
-    endpoint.connect().await.map_err(to_df_err)
+
+    let channel = endpoint.connect().await.map_err(to_df_err)?;
+    let channel = ServiceBuilder::new()
+        .layer(FastraceClientLayer)
+        .service(channel);
+    Ok(channel)
 }

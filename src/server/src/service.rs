@@ -1,4 +1,3 @@
-use arrow_schema::SchemaRef;
 use dashmap::DashMap;
 use datafusion::{
     common::tree_node::{Transformed, TreeNode},
@@ -17,7 +16,6 @@ use log::{debug, info};
 use object_store::ObjectStore;
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use tokio::sync::Mutex;
-use tonic::Status;
 use url::Url;
 use uuid::Uuid;
 
@@ -99,36 +97,6 @@ impl LiquidCacheServiceInner {
             .runtime_env()
             .register_object_store(object_store_url.as_ref(), object_store);
         Ok(())
-    }
-
-    pub(crate) async fn get_table_schema(&self, table_name: &str) -> Result<SchemaRef, Status> {
-        let schema = self
-            .default_ctx
-            .table_provider(table_name)
-            .await
-            .unwrap()
-            .schema();
-        Ok(schema)
-    }
-
-    pub(crate) async fn prepare_and_register_plan(
-        &self,
-        query: &str,
-        handle: Uuid,
-    ) -> Result<Arc<dyn ExecutionPlan>, Status> {
-        info!("Planning query: {query}");
-        let ctx = self.default_ctx.clone();
-        let plan = ctx.sql(query).await.expect("Error generating plan");
-        let (state, plan) = plan.into_parts();
-        let plan = state.optimize(&plan).expect("Error optimizing plan");
-        let physical_plan = state
-            .create_physical_plan(&plan)
-            .await
-            .expect("Error creating physical plan");
-
-        self.execution_plans.insert(handle, physical_plan.clone());
-
-        Ok(physical_plan)
     }
 
     pub(crate) fn register_plan(

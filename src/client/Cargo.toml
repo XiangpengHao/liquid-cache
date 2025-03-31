@@ -20,9 +20,12 @@ tonic = { workspace = true }
 async-trait = { workspace = true }
 log = { workspace = true }
 prost = { workspace = true }
-owo-colors = { workspace = true }
 uuid = { workspace = true }
 liquid-cache-common = { workspace = true }
+fastrace = { workspace = true }
+fastrace-tonic = { workspace = true }
+fastrace-futures = { workspace = true }
+tower = "0.5.2"
 
 [dev-dependencies]
 tokio = { workspace = true }

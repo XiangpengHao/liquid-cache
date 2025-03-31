@@ -1,6 +1,7 @@
 use arrow_flight::flight_service_server::FlightServiceServer;
 use clap::Parser;
-use liquid_cache_benchmarks::{FlameGraphReport, StatsReport};
+use fastrace_tonic::FastraceServerLayer;
+use liquid_cache_benchmarks::{FlameGraphReport, StatsReport, setup_observability};
 use liquid_cache_server::{LiquidCacheService, admin_server::run_admin_server};
 use log::info;
 use mimalloc::MiMalloc;
@@ -48,7 +49,10 @@ struct CliArgs {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    env_logger::builder().format_timestamp(None).init();
+    setup_observability(
+        "liquid-cache-server",
+        opentelemetry::trace::SpanKind::Server,
+    );
 
     let args = CliArgs::parse();
 
@@ -93,7 +97,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Run both servers concurrently
     tokio::select! {
-        result = Server::builder().add_service(flight).serve(args.address) => {
+        result = Server::builder().layer(FastraceServerLayer).add_service(flight).serve(args.address) => {
             result?;
         },
         result = run_admin_server(args.admin_address, liquid_cache_server) => {
@@ -101,5 +105,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     }
 
+    fastrace::flush();
     Ok(())
 }

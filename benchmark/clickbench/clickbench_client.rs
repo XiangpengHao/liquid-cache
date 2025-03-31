@@ -14,14 +14,15 @@ use datafusion::{
         basic::Compression,
         file::properties::WriterProperties,
     },
-    physical_plan::{collect, display::DisplayableExecutionPlan},
+    physical_plan::display::DisplayableExecutionPlan,
 };
+use fastrace::prelude::*;
 use liquid_cache_benchmarks::{
-    BenchmarkMode, BenchmarkResult, IterationResult, QueryResult, utils::assert_batch_eq,
+    BenchmarkMode, BenchmarkResult, IterationResult, QueryResult, run_query, setup_observability,
+    utils::assert_batch_eq,
 };
 use log::{debug, info};
 use mimalloc::MiMalloc;
-use owo_colors::OwoColorize;
 use serde::Serialize;
 use std::fs::File as StdFile;
 use sysinfo::Networks;
@@ -61,11 +62,7 @@ fn save_result(result: &[RecordBatch], query_id: u32) -> Result<()> {
         writer.write(batch).unwrap();
     }
     writer.close().unwrap();
-    info!(
-        "Query {} result saved to {}",
-        query_id.to_string().red(),
-        file_path.yellow()
-    );
+    info!("Query {} result saved to {}", query_id, file_path);
     Ok(())
 }
 
@@ -82,16 +79,10 @@ fn check_result_against_answer(
         let baseline_exists = format!("{}/Q{}.parquet", answer_dir.display(), query_id);
         match File::open(baseline_exists) {
             Err(_) => {
-                info!(
-                    "Query {} returned no results (matches baseline)",
-                    query_id.to_string().red()
-                );
+                info!("Query {} returned no results (matches baseline)", query_id);
                 return Ok(());
             }
-            Ok(_) => panic!(
-                "Query {} returned no results but baseline exists",
-                query_id.to_string().red()
-            ),
+            Ok(_) => panic!("Query {} returned no results but baseline exists", query_id),
         }
     }
     // Read answers
@@ -112,7 +103,7 @@ fn check_result_against_answer(
     if query.contains("LIMIT") {
         info!(
             "Query {} contains LIMIT, only validating the shape of the result",
-            query_id.to_string().red()
+            query_id
         );
         let (result_num_rows, result_columns) =
             (result_batch.num_rows(), result_batch.columns().len());
@@ -122,11 +113,7 @@ fn check_result_against_answer(
             save_result(results, query_id)?;
             panic!(
                 "Query {} result does not match baseline. Result(num_rows: {}, num_columns: {}), Baseline(num_rows: {}, num_columns: {})",
-                query_id.to_string().red(),
-                result_num_rows,
-                result_columns,
-                baseline_num_rows,
-                baseline_columns,
+                query_id, result_num_rows, result_columns, baseline_num_rows, baseline_columns,
             );
         }
     } else {
@@ -181,7 +168,7 @@ struct CliArgs {
 
 #[tokio::main]
 pub async fn main() -> Result<()> {
-    env_logger::builder().format_timestamp(None).init();
+    setup_observability("clickbench-client", opentelemetry::trace::SpanKind::Client);
 
     let args = CliArgs::parse();
 
@@ -203,15 +190,16 @@ pub async fn main() -> Result<()> {
 
     for (id, query) in queries {
         let mut query_result = QueryResult::new(id, query.clone());
-        for _i in 0..args.iteration {
-            info!("Running query {}: \n{}", id.magenta(), query.cyan());
+        for it in 0..args.iteration {
+            info!("Running query {}: \n{}", id, query);
+            let root = Span::root(
+                format!("clickbench-client-{}-{}", id, it),
+                SpanContext::random(),
+            );
+            let _g = root.set_local_parent();
             let now = Instant::now();
             let starting_timestamp = bench_start_time.elapsed();
-            let df = ctx.sql(&query).await?;
-            let (state, logical_plan) = df.into_parts();
-
-            let physical_plan = state.create_physical_plan(&logical_plan).await?;
-            let results = collect(physical_plan.clone(), state.task_ctx()).await?;
+            let (results, physical_plan) = run_query(&ctx, &query).await?;
             let elapsed = now.elapsed();
             info!("Query execution time: {:?}", elapsed);
 
@@ -226,15 +214,15 @@ pub async fn main() -> Result<()> {
 
             debug!(
                 "Physical plan: \n{}",
-                physical_plan_with_metrics.indent(true).magenta()
+                physical_plan_with_metrics.indent(true)
             );
             let result_str = pretty::pretty_format_batches(&results).unwrap();
-            info!("Query result: \n{}", result_str.cyan());
+            info!("Query result: \n{}", result_str);
 
             // Check query answers
             if let Some(answer_dir) = &args.answer_dir {
                 check_result_against_answer(&results, answer_dir, id, &query)?;
-                info!("Query {} passed validation", id.to_string().red());
+                info!("Query {} passed validation", id);
             }
 
             let metrics_response = bench_mode
@@ -266,5 +254,6 @@ pub async fn main() -> Result<()> {
         serde_json::to_writer_pretty(output_file, &benchmark_result).unwrap();
     }
 
+    fastrace::flush();
     Ok(())
 }

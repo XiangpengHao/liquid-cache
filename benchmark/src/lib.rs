@@ -1,11 +1,16 @@
 use arrow_flight::sql::Any;
 use arrow_flight::{FlightClient, flight_service_client::FlightServiceClient};
+use datafusion::arrow::array::RecordBatch;
 use datafusion::common::tree_node::TreeNode;
+use datafusion::execution::TaskContext;
+use datafusion::physical_plan::collect;
 use datafusion::{error::Result, physical_plan::ExecutionPlan};
 use datafusion::{
     physical_plan::metrics::MetricValue,
     prelude::{SessionConfig, SessionContext},
 };
+use fastrace::Span;
+use fastrace::future::FutureExt as _;
 use futures::StreamExt;
 use liquid_cache_client::{LiquidCacheBuilder, LiquidCacheClientExec};
 use liquid_cache_common::CacheMode;
@@ -166,6 +171,7 @@ pub enum BenchmarkMode {
 }
 
 impl BenchmarkMode {
+    #[fastrace::trace]
     pub async fn setup_tpch_ctx(
         &self,
         server_url: &str,
@@ -237,6 +243,7 @@ impl BenchmarkMode {
         Ok(Arc::new(ctx))
     }
 
+    #[fastrace::trace]
     pub async fn setup_clickbench_ctx(
         &self,
         server_url: &str,
@@ -290,6 +297,7 @@ impl BenchmarkMode {
         Ok(Arc::new(ctx))
     }
 
+    #[fastrace::trace]
     pub async fn get_execution_metrics(
         &self,
         server_url: &str,
@@ -433,6 +441,33 @@ async fn get_flight_client(server_url: &str) -> FlightClient {
     FlightClient::new_from_inner(inner_client)
 }
 
+#[fastrace::trace]
+pub async fn run_query(
+    ctx: &Arc<SessionContext>,
+    query: &str,
+) -> Result<(Vec<RecordBatch>, Arc<dyn ExecutionPlan>)> {
+    let df = ctx
+        .sql(query)
+        .in_span(Span::enter_with_local_parent("logical_plan"))
+        .await?;
+    let (state, logical_plan) = df.into_parts();
+    let physical_plan = state
+        .create_physical_plan(&logical_plan)
+        .in_span(Span::enter_with_local_parent("physical_plan"))
+        .await?;
+
+    let ctx = TaskContext::from(&state);
+    let cfg = ctx
+        .session_config()
+        .clone()
+        .with_extension(Arc::new(Span::enter_with_local_parent(
+            "poll_physical_plan",
+        )));
+    let ctx = ctx.with_session_config(cfg);
+    let results = collect(physical_plan.clone(), Arc::new(ctx)).await?;
+    Ok((results, physical_plan))
+}
+
 #[derive(Serialize)]
 pub struct BenchmarkResult<T: Serialize> {
     pub args: T,
@@ -466,4 +501,42 @@ pub struct IterationResult {
     pub cache_cpu_time: u64,
     pub cache_memory_usage: u64,
     pub starting_timestamp: Duration,
+}
+
+use fastrace_opentelemetry::OpenTelemetryReporter;
+use opentelemetry::InstrumentationScope;
+use opentelemetry::KeyValue;
+use opentelemetry::trace::SpanKind;
+use opentelemetry_otlp::SpanExporter;
+use opentelemetry_otlp::WithExportConfig;
+use opentelemetry_sdk::Resource;
+use std::borrow::Cow;
+
+pub fn setup_observability(service_name: &str, kind: SpanKind) {
+    // Setup logging with logforth
+    logforth::stderr()
+        .dispatch(|d| {
+            d.filter(log::LevelFilter::Info)
+                .append(logforth::append::Stdout::default())
+        })
+        .apply();
+
+    let reporter = OpenTelemetryReporter::new(
+        SpanExporter::builder()
+            .with_tonic()
+            .with_endpoint("http://127.0.0.1:4317".to_string())
+            .with_protocol(opentelemetry_otlp::Protocol::Grpc)
+            .build()
+            .expect("initialize oltp exporter"),
+        kind,
+        Cow::Owned(
+            Resource::builder()
+                .with_attributes([KeyValue::new("service.name", service_name.to_string())])
+                .build(),
+        ),
+        InstrumentationScope::builder(env!("CARGO_PKG_NAME"))
+            .with_version(env!("CARGO_PKG_VERSION"))
+            .build(),
+    );
+    fastrace::set_reporter(reporter, fastrace::collector::Config::default());
 }
