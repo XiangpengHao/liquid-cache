@@ -26,6 +26,4 @@ fastrace = { workspace = true }
 fastrace-tonic = { workspace = true }
 fastrace-futures = { workspace = true }
 tower = "0.5.2"
-
-[dev-dependencies]
 tokio = { workspace = true }

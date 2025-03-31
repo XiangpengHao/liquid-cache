@@ -25,12 +25,13 @@ use datafusion::{
 use datafusion_proto::bytes::physical_plan_to_bytes;
 use fastrace::Span;
 use fastrace::future::FutureExt;
-use fastrace::prelude::SpanContext;
-use futures::{Stream, TryStreamExt, future::BoxFuture, lock::Mutex, ready};
+use fastrace::prelude::*;
+use futures::{Stream, TryStreamExt, future::BoxFuture, ready};
 use liquid_cache_common::CacheMode;
 use liquid_cache_common::rpc::{
     FetchResults, LiquidCacheActions, RegisterObjectStoreRequest, RegisterPlanRequest,
 };
+use tokio::sync::Mutex;
 use tonic::Request;
 use uuid::Uuid;
 
@@ -77,8 +78,16 @@ impl LiquidCacheClientExec {
 }
 
 impl DisplayAs for LiquidCacheClientExec {
-    fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "LiquidCacheClientExec")
+    fn fmt_as(&self, t: DisplayFormatType, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match t {
+            DisplayFormatType::Default | DisplayFormatType::Verbose => {
+                write!(
+                    f,
+                    "LiquidCacheClientExec: server={}, mode={}, object_stores={:?}",
+                    self.cache_server, self.cache_mode, self.object_stores
+                )
+            }
+        }
     }
 }
 
@@ -214,9 +223,13 @@ async fn flight_stream(
         let _span = Span::enter_with_local_parent("register_plan");
         let mut maybe_uuid = plan_register_lock.lock().await;
         match maybe_uuid.as_ref() {
-            Some(uuid) => *uuid,
+            Some(uuid) => {
+                LocalSpan::add_event(Event::new("get_existing_plan"));
+                *uuid
+            }
             None => {
                 // Register object stores
+                LocalSpan::add_event(Event::new("locked_register_plan"));
                 for (url, options) in &object_stores {
                     let action =
                         LiquidCacheActions::RegisterObjectStore(RegisterObjectStoreRequest {
@@ -243,6 +256,7 @@ async fn flight_stream(
                     .await
                     .map_err(to_df_err)?;
                 *maybe_uuid = Some(handle);
+                LocalSpan::add_event(Event::new("unlocked_register_plan"));
                 handle
             }
         }
@@ -257,6 +271,7 @@ async fn flight_stream(
     };
     let ticket = fetch_results.into_ticket();
     let (md, response_stream, _ext) = client.do_get(ticket).await.map_err(to_df_err)?.into_parts();
+    LocalSpan::add_event(Event::new("get_flight_stream"));
     let stream =
         FlightRecordBatchStream::new_from_flight_data(response_stream.map_err(FlightError::Tonic))
             .with_headers(md)
@@ -356,6 +371,7 @@ impl Stream for FlightStream {
                     .bytes_decoded
                     .add(coerced_batch.get_array_memory_size());
                 self.metrics.time_processing.stop();
+                LocalSpan::add_event(Event::new("emit_batch"));
                 Poll::Ready(Some(Ok(coerced_batch)))
             }
             Poll::Ready(None) => {

@@ -5,6 +5,8 @@ use crate::reader::runtime::parquet_bridge::{
 use crate::{LiquidCacheMode, cache::LiquidCachedFileRef};
 use arrow::array::RecordBatch;
 use arrow_schema::{DataType, Fields, Schema, SchemaRef};
+use fastrace::Event;
+use fastrace::local::LocalSpan;
 use futures::{FutureExt, Stream, future::BoxFuture, ready};
 use liquid_cache_common::coerce_from_parquet_reader_to_liquid_types;
 use parquet::{
@@ -341,6 +343,7 @@ impl Stream for LiquidStream {
 
                     let selection = self.selection.as_mut().map(|s| s.split_off(row_count));
 
+                    LocalSpan::add_event(Event::new("LiquidStream::read_row_group"));
                     let fut = reader
                         .read_row_group(
                             row_group_idx,
