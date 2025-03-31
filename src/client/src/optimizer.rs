@@ -40,69 +40,6 @@ impl PushdownOptimizer {
         }
     }
 
-    /// Find the highest pushable node
-    fn find_pushdown_candidate(
-        &self,
-        plan: &Arc<dyn ExecutionPlan>,
-    ) -> Option<Arc<dyn ExecutionPlan>> {
-        // Check if this node is already a LiquidCacheClientExec to avoid redundant wrapping
-        if plan
-            .as_any()
-            .downcast_ref::<LiquidCacheClientExec>()
-            .is_some()
-        {
-            return None;
-        }
-
-        let plan_any = plan.as_any();
-
-        // If we have an AggregateExec (partial, no group by) with a pushable child (direct or through RepartitionExec), push it down
-        if let Some(agg_exec) = plan_any.downcast_ref::<AggregateExec>() {
-            if matches!(agg_exec.mode(), AggregateMode::Partial) && agg_exec.group_expr().is_empty()
-            {
-                let child = agg_exec.input();
-
-                // Check if child is DataSourceExec or RepartitionExec->DataSourceExec
-                if child.as_any().downcast_ref::<DataSourceExec>().is_some() {
-                    return Some(plan.clone());
-                } else if let Some(repart) = child.as_any().downcast_ref::<RepartitionExec>() {
-                    if let Some(repart_child) = repart.children().first() {
-                        if repart_child
-                            .as_any()
-                            .downcast_ref::<DataSourceExec>()
-                            .is_some()
-                        {
-                            return Some(plan.clone());
-                        }
-                    }
-                }
-            }
-        }
-
-        // If we have a RepartitionExec with a DataSourceExec child, push it down
-        if let Some(repart_exec) = plan_any.downcast_ref::<RepartitionExec>() {
-            if let Some(child) = repart_exec.children().first() {
-                if child.as_any().downcast_ref::<DataSourceExec>().is_some() {
-                    return Some(plan.clone());
-                }
-            }
-        }
-
-        // If this is a DataSourceExec, push it down
-        if plan_any.downcast_ref::<DataSourceExec>().is_some() {
-            return Some(plan.clone());
-        }
-
-        // Otherwise, recurse into children looking for pushdown candidates
-        for child in plan.children() {
-            if let Some(candidate) = self.find_pushdown_candidate(child) {
-                return Some(candidate);
-            }
-        }
-
-        None
-    }
-
     /// Apply the optimization by finding nodes to push down and wrapping them
     fn optimize_plan(&self, plan: Arc<dyn ExecutionPlan>) -> Result<Arc<dyn ExecutionPlan>> {
         // If this node is already a LiquidCacheClientExec, return it as is
@@ -115,7 +52,7 @@ impl PushdownOptimizer {
         }
 
         // Find the candidate to push down in this branch of the tree
-        if let Some(candidate) = self.find_pushdown_candidate(&plan) {
+        if let Some(candidate) = find_pushdown_candidate(&plan) {
             // If the current node is the one to be pushed down, wrap it
             if Arc::ptr_eq(&plan, &candidate) {
                 return Ok(Arc::new(LiquidCacheClientExec::new(
@@ -146,6 +83,65 @@ impl PushdownOptimizer {
             Ok(plan)
         }
     }
+}
+
+/// Find the highest pushable node
+fn find_pushdown_candidate(plan: &Arc<dyn ExecutionPlan>) -> Option<Arc<dyn ExecutionPlan>> {
+    // Check if this node is already a LiquidCacheClientExec to avoid redundant wrapping
+    if plan
+        .as_any()
+        .downcast_ref::<LiquidCacheClientExec>()
+        .is_some()
+    {
+        return None;
+    }
+
+    let plan_any = plan.as_any();
+
+    // If we have an AggregateExec (partial, no group by) with a pushable child (direct or through RepartitionExec), push it down
+    if let Some(agg_exec) = plan_any.downcast_ref::<AggregateExec>() {
+        if matches!(agg_exec.mode(), AggregateMode::Partial) && agg_exec.group_expr().is_empty() {
+            let child = agg_exec.input();
+
+            // Check if child is DataSourceExec or RepartitionExec->DataSourceExec
+            if child.as_any().downcast_ref::<DataSourceExec>().is_some() {
+                return Some(plan.clone());
+            } else if let Some(repart) = child.as_any().downcast_ref::<RepartitionExec>() {
+                if let Some(repart_child) = repart.children().first() {
+                    if repart_child
+                        .as_any()
+                        .downcast_ref::<DataSourceExec>()
+                        .is_some()
+                    {
+                        return Some(plan.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    // If we have a RepartitionExec with a DataSourceExec child, push it down
+    if let Some(repart_exec) = plan_any.downcast_ref::<RepartitionExec>() {
+        if let Some(child) = repart_exec.children().first() {
+            if child.as_any().downcast_ref::<DataSourceExec>().is_some() {
+                return Some(plan.clone());
+            }
+        }
+    }
+
+    // If this is a DataSourceExec, push it down
+    if plan_any.downcast_ref::<DataSourceExec>().is_some() {
+        return Some(plan.clone());
+    }
+
+    // Otherwise, recurse into children looking for pushdown candidates
+    for child in plan.children() {
+        if let Some(candidate) = find_pushdown_candidate(child) {
+            return Some(candidate);
+        }
+    }
+
+    None
 }
 
 impl PhysicalOptimizerRule for PushdownOptimizer {
