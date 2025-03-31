@@ -514,12 +514,7 @@ use std::borrow::Cow;
 
 pub fn setup_observability(service_name: &str, kind: SpanKind) {
     // Setup logging with logforth
-    logforth::stderr()
-        .dispatch(|d| {
-            d.filter(log::LevelFilter::Info)
-                .append(logforth::append::Stdout::default())
-        })
-        .apply();
+    logforth::stdout().apply();
 
     let reporter = OpenTelemetryReporter::new(
         SpanExporter::builder()
