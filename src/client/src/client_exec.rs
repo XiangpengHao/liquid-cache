@@ -248,7 +248,7 @@ async fn flight_stream(
         }
     };
 
-    let current = SpanContext::current_local_parent().unwrap();
+    let current = SpanContext::current_local_parent().unwrap_or_else(SpanContext::random);
 
     let fetch_results = FetchResults {
         handle: handle.into_bytes().to_vec().into(),
