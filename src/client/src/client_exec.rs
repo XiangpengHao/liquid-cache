@@ -25,6 +25,7 @@ use datafusion::{
 use datafusion_proto::bytes::physical_plan_to_bytes;
 use fastrace::Span;
 use fastrace::future::FutureExt;
+use fastrace::prelude::SpanContext;
 use futures::{Stream, TryStreamExt, future::BoxFuture, lock::Mutex, ready};
 use liquid_cache_common::CacheMode;
 use liquid_cache_common::rpc::{
@@ -44,7 +45,6 @@ pub struct LiquidCacheClientExec {
     cache_mode: CacheMode,
     object_stores: Vec<(ObjectStoreUrl, HashMap<String, String>)>,
     metrics: ExecutionPlanMetricsSet,
-    span: fastrace::Span,
 }
 
 impl std::fmt::Debug for LiquidCacheClientExec {
@@ -59,7 +59,6 @@ impl LiquidCacheClientExec {
         cache_server: String,
         cache_mode: CacheMode,
         object_stores: Vec<(ObjectStoreUrl, HashMap<String, String>)>,
-        span: fastrace::Span,
     ) -> Self {
         Self {
             remote_plan,
@@ -68,7 +67,6 @@ impl LiquidCacheClientExec {
             cache_mode,
             object_stores,
             metrics: ExecutionPlanMetricsSet::new(),
-            span,
         }
     }
 
@@ -112,21 +110,25 @@ impl ExecutionPlan for LiquidCacheClientExec {
             cache_mode: self.cache_mode,
             object_stores: self.object_stores.clone(),
             metrics: self.metrics.clone(),
-            span: fastrace::Span::enter_with_local_parent("exec"),
         }))
     }
 
     fn execute(
         &self,
         partition: usize,
-        _context: Arc<datafusion::execution::TaskContext>,
+        context: Arc<datafusion::execution::TaskContext>,
     ) -> datafusion::error::Result<datafusion::execution::SendableRecordBatchStream> {
         let cache_server = self.cache_server.clone();
         let plan = self.remote_plan.clone();
         let lock = self.plan_register_lock.clone();
         let stream_metrics = FlightStreamMetrics::new(&self.metrics, partition);
 
-        let poll_span = Span::enter_with_parent("poll_flight_stream", &self.span);
+        let span = context
+            .session_config()
+            .get_extension::<Span>()
+            .expect("Span extension not found");
+        let exec_span = Span::enter_with_parent("exec_flight_stream", &span);
+        let create_stream_span = Span::enter_with_parent("create_flight_stream", &exec_span);
         let stream = flight_stream(
             cache_server,
             plan,
@@ -139,7 +141,8 @@ impl ExecutionPlan for LiquidCacheClientExec {
             Some(Box::pin(stream)),
             self.remote_plan.schema().clone(),
             stream_metrics,
-            poll_span,
+            exec_span,
+            create_stream_span,
         )))
     }
 
@@ -208,6 +211,7 @@ async fn flight_stream(
 
     // Only one partition needs to register the plan
     let handle = {
+        let _span = Span::enter_with_local_parent("register_plan");
         let mut maybe_uuid = plan_register_lock.lock().await;
         match maybe_uuid.as_ref() {
             Some(uuid) => *uuid,
@@ -244,9 +248,12 @@ async fn flight_stream(
         }
     };
 
+    let current = SpanContext::current_local_parent().unwrap();
+
     let fetch_results = FetchResults {
         handle: handle.into_bytes().to_vec().into(),
         partition: partition as u32,
+        traceparent: current.encode_w3c_traceparent(),
     };
     let ticket = fetch_results.into_ticket();
     let (md, response_stream, _ext) = client.do_get(ticket).await.map_err(to_df_err)?.into_parts();
@@ -269,7 +276,8 @@ struct FlightStream {
     schema: SchemaRef,
     schema_mapper: Option<Arc<dyn SchemaMapper>>,
     metrics: FlightStreamMetrics,
-    span: fastrace::Span,
+    poll_stream_span: fastrace::Span,
+    create_stream_span: Option<fastrace::Span>,
 }
 
 impl FlightStream {
@@ -277,7 +285,8 @@ impl FlightStream {
         future_stream: Option<BoxFuture<'static, Result<SendableRecordBatchStream>>>,
         schema: SchemaRef,
         metrics: FlightStreamMetrics,
-        span: fastrace::Span,
+        poll_stream_span: fastrace::Span,
+        create_stream_span: fastrace::Span,
     ) -> Self {
         Self {
             future_stream,
@@ -285,11 +294,13 @@ impl FlightStream {
             schema,
             schema_mapper: None,
             metrics,
-            span,
+            poll_stream_span,
+            create_stream_span: Some(create_stream_span),
         }
     }
 }
 
+use futures::StreamExt;
 impl FlightStream {
     fn poll_inner(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<RecordBatch>>> {
         loop {
@@ -300,12 +311,14 @@ impl FlightStream {
                     continue;
                 }
                 FlightStreamState::GetStream(fut) => {
+                    let _guard = self.create_stream_span.as_ref().unwrap().set_local_parent();
                     let stream = ready!(fut.as_mut().poll(cx)).unwrap();
+                    self.create_stream_span.take();
                     self.state = FlightStreamState::Processing(stream);
                     continue;
                 }
                 FlightStreamState::Processing(stream) => {
-                    let result = stream.as_mut().poll_next(cx);
+                    let result = stream.poll_next_unpin(cx);
                     self.metrics.poll_count.add(1);
                     return result;
                 }
@@ -321,9 +334,8 @@ impl Stream for FlightStream {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
+        let _guard = self.poll_stream_span.set_local_parent();
         self.metrics.time_processing.start();
-        let span = Span::enter_with_parent("flight_stream_poll_next", &self.span);
-        let _guard = span.set_local_parent();
         let result = self.poll_inner(cx);
         match result {
             Poll::Ready(Some(Ok(batch))) => {

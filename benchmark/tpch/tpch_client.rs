@@ -3,19 +3,21 @@ use datafusion::{
     arrow::{array::RecordBatch, util::pretty},
     error::Result,
     parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder,
-    physical_plan::{ExecutionPlan, collect, display::DisplayableExecutionPlan},
-    prelude::SessionContext,
+    physical_plan::display::DisplayableExecutionPlan,
 };
 use fastrace::prelude::*;
 use liquid_cache_benchmarks::{
-    BenchmarkMode, BenchmarkResult, IterationResult, QueryResult, setup_observability,
+    BenchmarkMode, BenchmarkResult, IterationResult, QueryResult, run_query, setup_observability,
     utils::assert_batch_eq,
 };
 use log::{debug, info};
 use mimalloc::MiMalloc;
 use serde::Serialize;
-use std::{fs::File as StdFile, path::Path, sync::Arc};
-use std::{fs::File, path::PathBuf, time::Instant};
+use std::{
+    fs::File,
+    path::{Path, PathBuf},
+    time::Instant,
+};
 use sysinfo::Networks;
 
 #[global_allocator]
@@ -100,26 +102,6 @@ fn check_result_against_answer(
     )?;
     assert_batch_eq(&answer_batch, &result_batch);
     Ok(())
-}
-
-#[fastrace::trace]
-async fn run_query(
-    ctx: &Arc<SessionContext>,
-    query: &str,
-) -> Result<(Vec<RecordBatch>, Arc<dyn ExecutionPlan>)> {
-    let df = ctx
-        .sql(query)
-        .in_span(Span::enter_with_local_parent("plan_logical"))
-        .await?;
-    let (state, logical_plan) = df.into_parts();
-    let physical_plan = state
-        .create_physical_plan(&logical_plan)
-        .in_span(Span::enter_with_local_parent("plan_physical"))
-        .await?;
-    let results = collect(physical_plan.clone(), state.task_ctx())
-        .in_span(Span::enter_with_local_parent("collect"))
-        .await?;
-    Ok((results, physical_plan))
 }
 
 #[tokio::main]
@@ -224,7 +206,7 @@ pub async fn main() -> Result<()> {
     }
 
     if let Some(output_path) = &args.output {
-        let output_file = StdFile::create(output_path)?;
+        let output_file = File::create(output_path)?;
         serde_json::to_writer_pretty(output_file, &benchmark_result).unwrap();
     }
 

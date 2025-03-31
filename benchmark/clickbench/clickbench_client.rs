@@ -14,11 +14,11 @@ use datafusion::{
         basic::Compression,
         file::properties::WriterProperties,
     },
-    physical_plan::{collect, display::DisplayableExecutionPlan},
+    physical_plan::display::DisplayableExecutionPlan,
 };
 use fastrace::prelude::*;
 use liquid_cache_benchmarks::{
-    BenchmarkMode, BenchmarkResult, IterationResult, QueryResult, setup_observability,
+    BenchmarkMode, BenchmarkResult, IterationResult, QueryResult, run_query, setup_observability,
     utils::assert_batch_eq,
 };
 use log::{debug, info};
@@ -199,19 +199,7 @@ pub async fn main() -> Result<()> {
             let _g = root.set_local_parent();
             let now = Instant::now();
             let starting_timestamp = bench_start_time.elapsed();
-            let df = ctx
-                .sql(&query)
-                .in_span(Span::enter_with_local_parent("logical_plan"))
-                .await?;
-            let (state, logical_plan) = df.into_parts();
-
-            let physical_plan = state
-                .create_physical_plan(&logical_plan)
-                .in_span(Span::enter_with_local_parent("physical_plan"))
-                .await?;
-            let results = collect(physical_plan.clone(), state.task_ctx())
-                .in_span(Span::enter_with_local_parent("poll stream"))
-                .await?;
+            let (results, physical_plan) = run_query(&ctx, &query).await?;
             let elapsed = now.elapsed();
             info!("Query execution time: {:?}", elapsed);
 

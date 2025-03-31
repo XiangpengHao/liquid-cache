@@ -173,7 +173,6 @@ impl LiquidBatchReader {
 impl Iterator for LiquidBatchReader {
     type Item = Result<RecordBatch, ArrowError>;
 
-    #[fastrace::trace]
     fn next(&mut self) -> Option<Self::Item> {
         while let Some(selection) = take_next_batch(&mut self.selection, self.batch_size) {
             let filtered_selection = self.build_predicate_filter(selection).unwrap();

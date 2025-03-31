@@ -1,11 +1,16 @@
 use arrow_flight::sql::Any;
 use arrow_flight::{FlightClient, flight_service_client::FlightServiceClient};
+use datafusion::arrow::array::RecordBatch;
 use datafusion::common::tree_node::TreeNode;
+use datafusion::execution::TaskContext;
+use datafusion::physical_plan::collect;
 use datafusion::{error::Result, physical_plan::ExecutionPlan};
 use datafusion::{
     physical_plan::metrics::MetricValue,
     prelude::{SessionConfig, SessionContext},
 };
+use fastrace::Span;
+use fastrace::future::FutureExt as _;
 use futures::StreamExt;
 use liquid_cache_client::{LiquidCacheBuilder, LiquidCacheClientExec};
 use liquid_cache_common::CacheMode;
@@ -434,6 +439,33 @@ async fn get_flight_client(server_url: &str) -> FlightClient {
     let channel = endpoint.connect().await.unwrap();
     let inner_client = FlightServiceClient::new(channel);
     FlightClient::new_from_inner(inner_client)
+}
+
+#[fastrace::trace]
+pub async fn run_query(
+    ctx: &Arc<SessionContext>,
+    query: &str,
+) -> Result<(Vec<RecordBatch>, Arc<dyn ExecutionPlan>)> {
+    let df = ctx
+        .sql(query)
+        .in_span(Span::enter_with_local_parent("logical_plan"))
+        .await?;
+    let (state, logical_plan) = df.into_parts();
+    let physical_plan = state
+        .create_physical_plan(&logical_plan)
+        .in_span(Span::enter_with_local_parent("physical_plan"))
+        .await?;
+
+    let ctx = TaskContext::from(&state);
+    let cfg = ctx
+        .session_config()
+        .clone()
+        .with_extension(Arc::new(Span::enter_with_local_parent(
+            "poll_physical_plan",
+        )));
+    let ctx = ctx.with_session_config(cfg);
+    let results = collect(physical_plan.clone(), Arc::new(ctx)).await?;
+    Ok((results, physical_plan))
 }
 
 #[derive(Serialize)]

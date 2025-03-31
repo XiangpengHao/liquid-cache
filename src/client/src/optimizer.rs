@@ -58,7 +58,6 @@ impl PhysicalOptimizerRule for PushdownOptimizer {
                     self.cache_server.clone(),
                     self.cache_mode,
                     self.object_stores.clone(),
-                    fastrace::Span::enter_with_local_parent("exec_plan"),
                 ))))
             } else {
                 Ok(Transformed::no(plan))

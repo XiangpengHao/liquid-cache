@@ -7,7 +7,6 @@ use std::{fmt::Display, sync::Arc};
 use arrow_schema::{DataType, Field, FieldRef, Schema, SchemaRef};
 pub mod rpc;
 pub mod utils;
-
 /// Specify how LiquidCache should cache the data
 #[derive(Clone, Debug, Default, Copy, PartialEq, Eq)]
 pub enum CacheMode {

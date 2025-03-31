@@ -82,7 +82,7 @@ pub struct RegisterPlanRequest {
 
 impl ProstMessageExt for RegisterPlanRequest {
     fn type_url() -> &'static str {
-        "type.googleapis.com/datafusion.example.com.sql.ActionRegisterPlanRequest"
+        ""
     }
 
     fn as_any(&self) -> Any {
@@ -101,7 +101,7 @@ pub struct ExecutionMetricsRequest {
 
 impl ProstMessageExt for ExecutionMetricsRequest {
     fn type_url() -> &'static str {
-        "type.googleapis.com/datafusion.example.com.sql.ExecutionMetricsRequest"
+        ""
     }
 
     fn as_any(&self) -> Any {
@@ -126,7 +126,7 @@ pub struct RegisterTableRequest {
 
 impl ProstMessageExt for RegisterTableRequest {
     fn type_url() -> &'static str {
-        "type.googleapis.com/datafusion.example.com.sql.ActionRegisterTableRequest"
+        ""
     }
 
     fn as_any(&self) -> Any {
@@ -148,7 +148,7 @@ pub struct RegisterObjectStoreRequest {
 
 impl ProstMessageExt for RegisterObjectStoreRequest {
     fn type_url() -> &'static str {
-        "type.googleapis.com/datafusion.example.com.sql.ActionRegisterObjectStoreRequest"
+        ""
     }
 
     fn as_any(&self) -> Any {
@@ -166,6 +166,9 @@ pub struct FetchResults {
 
     #[prost(uint32, tag = "2")]
     pub partition: u32,
+
+    #[prost(string, tag = "3")]
+    pub traceparent: String,
 }
 
 impl FetchResults {
@@ -178,7 +181,7 @@ impl FetchResults {
 
 impl ProstMessageExt for FetchResults {
     fn type_url() -> &'static str {
-        "type.googleapis.com/datafusion.example.com.sql.FetchResults"
+        ""
     }
 
     fn as_any(&self) -> Any {
@@ -201,7 +204,7 @@ pub struct ExecutionMetricsResponse {
 
 impl ProstMessageExt for ExecutionMetricsResponse {
     fn type_url() -> &'static str {
-        "type.googleapis.com/datafusion.example.com.sql.ActionGetMostRecentExecutionMetricsResponse"
+        ""
     }
 
     fn as_any(&self) -> Any {

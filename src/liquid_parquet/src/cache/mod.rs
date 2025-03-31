@@ -119,15 +119,6 @@ pub struct LiquidCachedColumn {
 
 pub type LiquidCachedColumnRef = Arc<LiquidCachedColumn>;
 
-// fn arrays_to_record_batch(arrays: &[ArrayRef]) -> RecordBatch {
-//     let fields = arrays
-//         .iter()
-//         .map(|array| Field::new("_", array.data_type().clone(), array.is_nullable()))
-//         .collect::<Vec<_>>();
-//     let schema = Arc::new(Schema::new(fields));
-//     RecordBatch::try_new(schema, arrays.to_vec()).unwrap()
-// }
-
 pub enum InsertArrowArrayError {
     CacheFull(ArrayRef),
     AlreadyCached,

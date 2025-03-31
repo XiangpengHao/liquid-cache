@@ -35,6 +35,7 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_proto::bytes::physical_plan_from_bytes;
+use fastrace::prelude::SpanContext;
 use futures::{Stream, TryStreamExt};
 use liquid_cache_common::{
     CacheMode,
@@ -135,6 +136,7 @@ impl LiquidCacheService {
         let options_mut = session_config.options_mut();
         options_mut.execution.parquet.pushdown_filters = true;
         options_mut.execution.parquet.binary_as_string = true;
+        options_mut.execution.batch_size = 8192 * 2;
 
         {
             // view types cause excessive memory usage because they are not gced.
@@ -197,11 +199,13 @@ impl FlightSqlService for LiquidCacheService {
                 message.type_url
             )))?
         }
-
         let fetch_results: FetchResults = message
             .unpack()
             .map_err(|e| Status::internal(format!("{e:?}")))?
             .ok_or_else(|| Status::internal("Expected FetchResults but got None!"))?;
+
+        let span_context = SpanContext::decode_w3c_traceparent(&fetch_results.traceparent).unwrap();
+        let span = fastrace::Span::root("poll_stream", span_context);
 
         let handle = Uuid::from_bytes_ref(fetch_results.handle.as_ref().try_into().unwrap());
         let partition = fetch_results.partition as usize;
@@ -213,6 +217,7 @@ impl FlightSqlService for LiquidCacheService {
             self.inner.batch_size(),
             partition,
             execution_plan,
+            span,
         )
         .map_err(|e| {
             panic!("Error executing plan: {:?}", e);

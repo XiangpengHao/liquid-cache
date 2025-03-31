@@ -1,7 +1,6 @@
 use crate::StatsCollector;
 use arrow::{array::RecordBatch, compute::concat_batches};
 use datafusion::{error::Result, physical_plan::ExecutionPlan};
-use fastrace::Span;
 use futures::{Stream, ready};
 use futures::{StreamExt, stream::BoxStream};
 use std::{
@@ -27,18 +26,17 @@ pub struct FinalStream {
 }
 
 impl FinalStream {
-    #[fastrace::trace]
     pub fn new<S: Stream<Item = Result<RecordBatch>> + Send + 'static>(
         inner: S,
         mut stats_collector: Vec<Arc<dyn StatsCollector>>,
         target_batch_size: usize,
         partition: usize,
         execution_plan: Arc<dyn ExecutionPlan>,
+        span: fastrace::Span,
     ) -> Self {
         for collector in stats_collector.iter_mut() {
             collector.start(partition, &execution_plan);
         }
-        let span = fastrace::Span::enter_with_local_parent("final_stream");
 
         Self {
             inner: inner.boxed(),
@@ -66,8 +64,7 @@ impl Stream for FinalStream {
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = &mut *self;
-        let span = Span::enter_with_parent("final_stream_poll_next", &this.span);
-        let _guard = span.set_local_parent();
+        let _guard = this.span.set_local_parent();
         loop {
             let threshold = (this.target_batch_size * 3) / 4;
             if this.current_buffered_rows > threshold {
