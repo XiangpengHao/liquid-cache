@@ -27,7 +27,7 @@ pub trait LiquidPredicate: ArrowPredicate {
     }
 
     /// Returns the column ids of the predicate.
-    fn predicate_column_ids(&self) -> Vec<usize> {
+    fn predicate_column_ids(&self) -> Vec<u64> {
         let projection = self.projection();
         get_predicate_column_id(projection)
     }

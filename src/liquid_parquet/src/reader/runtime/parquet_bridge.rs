@@ -131,7 +131,7 @@ pub struct ProjectionMask {
     mask: Option<Vec<bool>>,
 }
 
-pub(super) fn get_predicate_column_id(projection: &parquet::arrow::ProjectionMask) -> Vec<usize> {
+pub(super) fn get_predicate_column_id(projection: &parquet::arrow::ProjectionMask) -> Vec<u64> {
     let project_inner: &ProjectionMask = unsafe { std::mem::transmute(projection) };
     project_inner
         .mask
@@ -139,8 +139,8 @@ pub(super) fn get_predicate_column_id(projection: &parquet::arrow::ProjectionMas
         .map(|m| {
             m.iter()
                 .enumerate()
-                .filter_map(|(pos, &x)| if x { Some(pos) } else { None })
-                .collect::<Vec<usize>>()
+                .filter_map(|(pos, &x)| if x { Some(pos as u64) } else { None })
+                .collect::<Vec<u64>>()
         })
         .unwrap_or_default()
 }

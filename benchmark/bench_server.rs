@@ -15,11 +15,11 @@ static GLOBAL: MiMalloc = MiMalloc;
 #[command(name = "ClickBench Benchmark Server")]
 struct CliArgs {
     /// Address to listen on
-    #[arg(long, default_value = "127.0.0.1:50051")]
+    #[arg(long, default_value = "0.0.0.0:50051")]
     address: SocketAddr,
 
     /// HTTP address for admin endpoint
-    #[arg(long = "admin-address", default_value = "127.0.0.1:50052")]
+    #[arg(long = "admin-address", default_value = "0.0.0.0:50052")]
     admin_address: SocketAddr,
 
     /// Number of partitions to use
