@@ -14,7 +14,6 @@ use arrow::buffer::BooleanBuffer;
 use arrow::compute::prep_null_mask_filter;
 use arrow_schema::{ArrowError, DataType, Field, Schema};
 use bytes::Bytes;
-use store::{BudgetAccounting, CacheConfig, CacheStore, EntryID};
 use liquid_cache_common::CacheMode;
 use std::fmt::Display;
 use std::fs::File;
@@ -22,10 +21,11 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
+use store::{BudgetAccounting, CacheConfig, CacheStore, EntryID};
 use tokio::runtime::Runtime;
 
-mod store;
 mod stats;
+mod store;
 
 /// A dedicated Tokio thread pool for background transcoding tasks.
 /// This pool is built with 4 worker threads.
@@ -65,7 +65,7 @@ enum CachedBatch {
 }
 
 impl CachedBatch {
-    fn memory_usage(&self) -> usize {
+    fn memory_usage_bytes(&self) -> usize {
         match self {
             Self::ArrowMemory(array) => array.get_array_memory_size(),
             Self::LiquidMemory(array) => array.get_array_memory_size(),
@@ -100,7 +100,6 @@ pub struct LiquidCachedColumn {
 pub type LiquidCachedColumnRef = Arc<LiquidCachedColumn>;
 
 pub enum InsertArrowArrayError {
-    CacheFull(ArrayRef),
     AlreadyCached,
 }
 
@@ -207,7 +206,7 @@ impl LiquidCachedColumn {
         RecordBatch::try_new(schema, vec![array]).unwrap()
     }
 
-    pub(crate) fn eval_selection_with_predicate(
+    fn eval_selection_with_predicate(
         &self,
         row_id: usize,
         selection: &BooleanBuffer,
@@ -308,27 +307,12 @@ impl LiquidCachedColumn {
         }
     }
 
-    fn insert_as_arrow_array(
-        &self,
-        row_id: usize,
-        array: ArrayRef,
-    ) -> Result<(), InsertArrowArrayError> {
-        let array_size = array.get_array_memory_size();
-        match self.budget().try_reserve_memory(array_size) {
-            Ok(_) => {
-                self.cache_store
-                    .insert(self.entry_id(row_id), CachedBatch::ArrowMemory(array));
-                Ok(())
-            }
-            Err(_) => Err(InsertArrowArrayError::CacheFull(array)),
-        }
+    fn insert_as_arrow_array(&self, row_id: usize, array: ArrayRef) {
+        self.cache_store
+            .insert(self.entry_id(row_id), CachedBatch::ArrowMemory(array));
     }
 
-    fn insert_as_liquid_foreground(
-        self: &Arc<Self>,
-        row_id: usize,
-        array: ArrayRef,
-    ) -> Result<(), InsertArrowArrayError> {
+    fn insert_as_liquid_foreground(self: &Arc<Self>, row_id: usize, array: ArrayRef) {
         let transcoded = match self.transcode_liquid_inner(&array) {
             Ok(transcoded) => transcoded,
             Err(_) => {
@@ -336,7 +320,8 @@ impl LiquidCachedColumn {
                     "unsupported data type {:?}, inserting as arrow array",
                     array.data_type()
                 );
-                return self.insert_as_arrow_array(row_id, array);
+                self.insert_as_arrow_array(row_id, array);
+                return;
             }
         };
 
@@ -344,19 +329,14 @@ impl LiquidCachedColumn {
 
         if self.budget().try_reserve_memory(memory_required).is_err() {
             self.write_to_disk(transcoded, row_id);
-            return Ok(());
+            return;
         }
 
         self.cache_store
             .insert(self.entry_id(row_id), CachedBatch::LiquidMemory(transcoded));
-        Ok(())
     }
 
-    fn insert_as_liquid_background(
-        self: &Arc<Self>,
-        row_id: usize,
-        array: ArrayRef,
-    ) -> Result<(), InsertArrowArrayError> {
+    fn insert_as_liquid_background(self: &Arc<Self>, row_id: usize, array: ArrayRef) {
         let arrow_size = array.get_array_memory_size();
         if self.budget().try_reserve_memory(arrow_size).is_err() {
             let column_arc = Arc::clone(self);
@@ -364,7 +344,6 @@ impl LiquidCachedColumn {
             TRANSCODE_THREAD_POOL.spawn(async move {
                 column_arc.background_transcode_to_disk(array_to_write, row_id);
             });
-            return Err(InsertArrowArrayError::CacheFull(array));
         }
 
         self.cache_store.insert(
@@ -377,10 +356,12 @@ impl LiquidCachedColumn {
         TRANSCODE_THREAD_POOL.spawn(async move {
             column_arc.background_transcode_to_liquid(row_id);
         });
-        Ok(())
     }
 
     /// Insert an arrow array into the cache.
+    /// Note: the value may or may not be cached.
+    /// It's not ok to assume a value is cached.
+    /// It may be cached for a while, and then evicted.
     pub(crate) fn insert_arrow_array(
         self: &Arc<Self>,
         row_id: usize,
@@ -406,7 +387,9 @@ impl LiquidCachedColumn {
         self.inserted_batch_count.fetch_add(1, Ordering::Relaxed);
 
         match &self.cache_mode {
-            LiquidCacheMode::InMemoryArrow => self.insert_as_arrow_array(row_id, array),
+            LiquidCacheMode::InMemoryArrow => {
+                self.insert_as_arrow_array(row_id, array);
+            }
             LiquidCacheMode::OnDiskArrow => {
                 unimplemented!()
             }
@@ -414,12 +397,13 @@ impl LiquidCachedColumn {
                 transcode_in_background,
             } => {
                 if *transcode_in_background {
-                    self.insert_as_liquid_background(row_id, array)
+                    self.insert_as_liquid_background(row_id, array);
                 } else {
-                    self.insert_as_liquid_foreground(row_id, array)
+                    self.insert_as_liquid_foreground(row_id, array);
                 }
             }
         }
+        Ok(())
     }
 
     fn background_transcode_to_disk(self: &Arc<Self>, array: ArrayRef, row_id: usize) {
@@ -452,7 +436,7 @@ impl LiquidCachedColumn {
         if let Some(entry) = entry {
             match &entry {
                 CachedBatch::ArrowMemory(array) => {
-                    let previous_size = entry.memory_usage();
+                    let previous_size = entry.memory_usage_bytes();
                     match self.transcode_liquid_inner(array) {
                         Ok(transcoded) => {
                             let new_size = transcoded.get_array_memory_size();
@@ -926,7 +910,7 @@ mod tests {
         assert!(
             column
                 .insert_arrow_array(2, exact_fit_array.clone())
-                .is_err()
+                .is_ok()
         );
         assert!(!column.is_cached(2));
         assert_eq!(

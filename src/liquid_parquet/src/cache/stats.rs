@@ -140,7 +140,7 @@ impl LiquidCache {
                             CachedBatch::OnDiskLiquid => "OnDiskLiquid",
                         };
 
-                        let memory_size = cached_entry.memory_usage();
+                        let memory_size = cached_entry.memory_usage_bytes();
                         let row_count = match cached_entry {
                             CachedBatch::ArrowMemory(array) => Some(array.len() as u64),
                             CachedBatch::LiquidMemory(array) => Some(array.len() as u64),

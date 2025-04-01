@@ -167,7 +167,13 @@ impl CacheStore {
     }
 
     pub(super) fn insert(&self, entry_id: EntryID, cached_batch: CachedBatch) {
-        self.cached_data.insert(entry_id, cached_batch);
+        if self
+            .budget
+            .try_reserve_memory(cached_batch.memory_usage_bytes())
+            .is_ok()
+        {
+            self.cached_data.insert(entry_id, cached_batch);
+        }
     }
 
     pub(super) fn get(&self, entry_id: &EntryID) -> Option<CachedBatch> {

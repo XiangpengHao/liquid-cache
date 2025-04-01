@@ -17,7 +17,7 @@ use parquet::{
 use super::super::parquet_bridge::{ParquetField, ParquetFieldType};
 use crate::{
     LiquidCacheMode,
-    cache::{InsertArrowArrayError, LiquidCachedColumnRef, LiquidCachedRowGroupRef},
+    cache::{LiquidCachedColumnRef, LiquidCachedRowGroupRef},
     reader::runtime::parquet_bridge::StructArrayReaderBridge,
 };
 
@@ -83,11 +83,8 @@ impl CachedArrayReader {
         }
         let read = self.inner.read_records(self.batch_size())?;
         let array = self.inner.consume_batch()?;
-        if let Err(InsertArrowArrayError::CacheFull(array)) =
-            self.liquid_cache.insert_arrow_array(row_id, array)
-        {
-            self.reader_local_cache.insert(row_id, array);
-        }
+        _ = self.liquid_cache.insert_arrow_array(row_id, array.clone());
+        self.reader_local_cache.insert(row_id, array);
 
         self.inner_row_id += read;
         Ok(())

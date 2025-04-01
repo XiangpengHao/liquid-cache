@@ -10,7 +10,7 @@
 
 LiquidCache is an object store cache designed for [DataFusion](https://github.com/apache/datafusion) based systems.  
 
-Simply adding an optimizer rule to enable LiquidCache, and it can save you up to 10x cost and latency.
+By simply adding an optimizer rule, LiquidCache saves you up to 10x cost and latency.
 
 ## Architecture
 
