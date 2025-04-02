@@ -1,8 +1,12 @@
 use std::{
-    path::PathBuf,
-    sync::atomic::{AtomicUsize, Ordering},
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
+use arrow::array::ArrayRef;
 use dashmap::DashMap;
 use log::warn;
 
@@ -32,6 +36,31 @@ impl EntryID {
                 | (column_id as u64) << 16
                 | row_id as u64,
         }
+    }
+
+    fn row_id(&self) -> u64 {
+        self.val & 0x0000_0000_0000_FFFF
+    }
+
+    fn file_id(&self) -> u64 {
+        self.val >> 48
+    }
+
+    fn row_group_id(&self) -> u64 {
+        (self.val >> 32) & 0x0000_0000_FFFF
+    }
+
+    fn column_id(&self) -> u64 {
+        (self.val >> 16) & 0x0000_0000_FFFF
+    }
+
+    fn on_disk_path(&self, cache_root_dir: &Path) -> PathBuf {
+        let row_id = self.row_id();
+        cache_root_dir
+            .join(format!("file_{}", self.file_id()))
+            .join(format!("row_group_{}", self.row_group_id()))
+            .join(format!("column_{}", self.column_id()))
+            .join(format!("row_{}.bin", row_id))
     }
 }
 
@@ -155,31 +184,93 @@ pub(crate) struct CacheStore {
     cached_data: DashMap<EntryID, CachedBatch>,
     config: CacheConfig,
     budget: BudgetAccounting,
+    advisor: Arc<dyn CacheAdvisor>,
+    background_transcode: bool,
 }
 
-impl CacheStore {
-    pub(super) fn new(config: CacheConfig) -> Self {
+#[derive(Debug)]
+struct NoReplacementCacheAdvisor {
+    budget: BudgetAccounting,
+}
+
+enum CacheAdvice {
+    /// The cache store should insert the batch.
+    InsertToMemory,
+    /// The cache store should insert the batch to disk.
+    InsertToDisk,
+    /// The cache store should evict the batch and consult the advisor again.
+    EvictAndRetry(EntryID),
+}
+
+impl NoReplacementCacheAdvisor {
+    fn new(max_memory_bytes: usize) -> Self {
         Self {
-            cached_data: DashMap::new(),
-            budget: BudgetAccounting::new(config.max_cache_bytes()),
-            config,
+            budget: BudgetAccounting::new(max_memory_bytes),
+        }
+    }
+}
+
+impl CacheAdvisor for NoReplacementCacheAdvisor {
+    fn advice_on(&self, _id: EntryID, batch: &ArrayRef) -> CacheAdvice {
+        let size = batch.get_array_memory_size();
+        if self.budget.try_reserve_memory(size).is_ok() {
+            CacheAdvice::InsertToMemory
+        } else {
+            CacheAdvice::InsertToDisk
         }
     }
 
-    pub(super) fn insert(&self, entry_id: EntryID, cached_batch: CachedBatch) {
-        if self
-            .budget
-            .try_reserve_memory(cached_batch.memory_usage_bytes())
-            .is_ok()
-        {
-            self.cached_data.insert(entry_id, cached_batch);
+    fn inform_read(&self, _id: &EntryID) {}
+}
+
+trait CacheAdvisor: std::fmt::Debug + Sync + Send {
+    /// Returns the advice for the cache store what to do with this batch.
+    fn advice_on(&self, id: EntryID, batch: &ArrayRef) -> CacheAdvice;
+
+    /// Inform the advisor that a batch is being read.
+    fn inform_read(&self, id: &EntryID);
+}
+
+impl CacheStore {
+    pub(super) fn new(config: CacheConfig, background_transcode: bool) -> Self {
+        Self {
+            cached_data: DashMap::new(),
+            budget: BudgetAccounting::new(config.max_cache_bytes()),
+            advisor: Arc::new(NoReplacementCacheAdvisor::new(config.max_cache_bytes())),
+            config,
+            background_transcode,
+        }
+    }
+
+    pub(super) fn insert(&self, entry_id: EntryID, cached_batch: ArrayRef) {
+        let advice = self.advisor.advice_on(entry_id, &cached_batch);
+        match advice {
+            CacheAdvice::InsertToMemory => {
+                if self.background_transcode {
+                    
+                } else {
+                }
+                self.cached_data.insert(entry_id, cached_batch);
+            }
+            CacheAdvice::InsertToDisk => {
+                let path = entry_id.on_disk_path(self.config.cache_root_dir());
+                let transcoded = cached_batch.write_to_file(&path);
+                self.cached_data.insert(entry_id, transcoded);
+            }
+            CacheAdvice::EvictAndRetry(to_evict) => {
+                self.cached_data.remove(&to_evict);
+                self.insert(entry_id, cached_batch);
+            }
         }
     }
 
     pub(super) fn get(&self, entry_id: &EntryID) -> Option<CachedBatch> {
-        self.cached_data
+        let v = self
+            .cached_data
             .get(entry_id)
-            .map(|entry| entry.value().clone())
+            .map(|entry| entry.value().clone());
+        self.advisor.inform_read(entry_id);
+        v
     }
 
     pub(super) fn reset(&self) {
