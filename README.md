@@ -10,7 +10,7 @@
 
 LiquidCache is an object store cache designed for [DataFusion](https://github.com/apache/datafusion) based systems.  
 
-Integrating LiquidCache by simply adding an optimizer rule, it automatically does the rest and saves you up to 10x cost and latency.
+By simply adding an optimizer rule, LiquidCache saves you up to 10x cost and latency.
 
 ## Architecture
 
@@ -32,14 +32,9 @@ effectively reducing both CPU utilization and network data transfer on cache ser
 ## Integrate LiquidCache in 5 Minutes
 Check out the [examples](https://github.com/XiangpengHao/liquid-cache/tree/main/examples) folder for more details. 
 
-#### 1. Include the dependencies:
-In your existing DataFusion project:
-```toml
-[dependencies]
-liquid-cache-client = "0.1.0"
-```
 
-#### 2. Start a Cache Server:
+
+#### 1. Start a Cache Server:
 ```rust
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -69,7 +64,14 @@ docker run -p 50051:50051 -v ~/liquid_cache:/cache \
   --disk-cache-dir /cache
 ```
 
-#### 3. Setup client:
+#### 2. Connect to the cache server:
+Add the following dependency to your existing DataFusion project:
+```toml
+[dependencies]
+liquid-cache-client = "0.1.0"
+```
+
+Then, create a new DataFusion context with LiquidCache:
 ```rust
 #[tokio::main]
 pub async fn main() -> Result<()> {

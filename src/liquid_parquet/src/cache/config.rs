@@ -1,4 +1,7 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::{
+    path::PathBuf,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use log::warn;
 
@@ -8,15 +11,17 @@ pub(crate) struct CacheConfig {
     max_cache_bytes: usize,
     used_memory_bytes: AtomicUsize,
     used_disk_bytes: AtomicUsize,
+    cache_dir: PathBuf,
 }
 
 impl CacheConfig {
-    pub fn new(batch_size: usize, max_cache_bytes: usize) -> Self {
+    pub fn new(batch_size: usize, max_cache_bytes: usize, cache_dir: PathBuf) -> Self {
         Self {
             batch_size,
             max_cache_bytes,
             used_memory_bytes: AtomicUsize::new(0),
             used_disk_bytes: AtomicUsize::new(0),
+            cache_dir,
         }
     }
 

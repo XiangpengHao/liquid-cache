@@ -324,7 +324,7 @@ fn instrument_array_reader(
         .zip(children)
         .zip(struct_fields)
         .map(|((column_id, reader), field)| {
-            let column_cache = liquid_cache.create_column(*column_id, field.clone());
+            let column_cache = liquid_cache.create_column(*column_id as u64, field.clone());
             let reader = Box::new(CachedArrayReader::new(reader, column_cache));
             reader as _
         })

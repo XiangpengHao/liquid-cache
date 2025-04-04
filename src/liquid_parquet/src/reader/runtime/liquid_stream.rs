@@ -102,7 +102,7 @@ impl ReaderFactory {
                     self.fields.as_deref(),
                     p_projection,
                     &row_group,
-                    self.liquid_cache.row_group(row_group_idx).clone(),
+                    self.liquid_cache.row_group(row_group_idx as u64).clone(),
                 )?;
                 filter_readers.push(array_reader);
             }
@@ -143,7 +143,7 @@ impl ReaderFactory {
             .fetch(&self.input, &projection, &selection)
             .await?;
 
-        let cached_row_group = self.liquid_cache.row_group(row_group_idx);
+        let cached_row_group = self.liquid_cache.row_group(row_group_idx as u64);
         let array_reader = build_cached_array_reader(
             self.fields.as_deref(),
             &projection,
