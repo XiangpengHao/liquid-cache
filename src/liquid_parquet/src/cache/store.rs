@@ -4,7 +4,7 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use dashmap::DashMap;
+use dashmap::{DashMap, Entry};
 use log::warn;
 
 use super::CachedBatch;
@@ -148,7 +148,7 @@ impl BudgetAccounting {
 
     /// Try to reserve space in the cache.
     /// Returns true if the space was reserved, false if the cache is full.
-    pub fn try_reserve_memory(&self, request_bytes: usize) -> Result<(), ()> {
+    fn try_reserve_memory(&self, request_bytes: usize) -> Result<(), ()> {
         let used = self.used_memory_bytes.load(Ordering::Relaxed);
         if used + request_bytes > self.max_memory_bytes {
             return Err(());
@@ -167,7 +167,7 @@ impl BudgetAccounting {
 
     /// Adjust the cache size after transcoding.
     /// Returns true if the size was adjusted, false if the cache is full, when new_size is larger than old_size.
-    pub fn try_update_memory_usage_after_transcoding(
+    fn try_update_memory_usage_after_transcoding(
         &self,
         old_size: usize,
         new_size: usize,
@@ -218,6 +218,11 @@ pub(crate) struct CacheStore {
     budget: BudgetAccounting,
 }
 
+#[derive(Debug)]
+pub(crate) enum CacheError {
+    CacheFull,
+}
+
 impl CacheStore {
     pub(super) fn new(batch_size: usize, max_cache_bytes: usize, cache_root_dir: PathBuf) -> Self {
         let config = CacheConfig::new(batch_size, max_cache_bytes, cache_root_dir);
@@ -228,8 +233,30 @@ impl CacheStore {
         }
     }
 
-    pub(super) fn insert(&self, entry_id: CacheEntryID, cached_batch: CachedBatch) {
-        self.cached_data.insert(entry_id, cached_batch);
+    pub(super) fn insert(
+        &self,
+        entry_id: CacheEntryID,
+        cached_batch: CachedBatch,
+    ) -> Result<(), CacheError> {
+        let new_memory_size = cached_batch.memory_usage_bytes();
+
+        match self.cached_data.entry(entry_id) {
+            Entry::Occupied(mut entry) => {
+                let old = entry.get();
+                let old_memory_size = old.memory_usage_bytes();
+                self.budget
+                    .try_update_memory_usage_after_transcoding(old_memory_size, new_memory_size)
+                    .map_err(|_| CacheError::CacheFull)?;
+                entry.insert(cached_batch);
+            }
+            Entry::Vacant(entry) => {
+                self.budget
+                    .try_reserve_memory(new_memory_size)
+                    .map_err(|_| CacheError::CacheFull)?;
+                entry.insert(cached_batch);
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn get(&self, entry_id: &CacheEntryID) -> Option<CachedBatch> {

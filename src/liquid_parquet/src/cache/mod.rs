@@ -311,14 +311,11 @@ impl LiquidCachedColumn {
         batch_id: BatchID,
         array: ArrayRef,
     ) -> Result<(), InsertArrowArrayError> {
-        let array_size = array.get_array_memory_size();
-        self.inserted_batch_count.fetch_add(1, Ordering::Relaxed);
-        match self.budget().try_reserve_memory(array_size) {
-            Ok(_) => {
-                self.cache_store
-                    .insert(self.entry_id(batch_id), CachedBatch::ArrowMemory(array));
-                Ok(())
-            }
+        match self.cache_store.insert(
+            self.entry_id(batch_id),
+            CachedBatch::ArrowMemory(array.clone()),
+        ) {
+            Ok(_) => Ok(()),
             Err(_) => Err(InsertArrowArrayError::CacheFull),
         }
     }
@@ -339,17 +336,15 @@ impl LiquidCachedColumn {
             }
         };
 
-        let memory_required = transcoded.get_array_memory_size();
-
-        if self.budget().try_reserve_memory(memory_required).is_err() {
-            self.write_to_disk(transcoded, batch_id);
-            return Ok(());
-        }
-
-        self.cache_store.insert(
+        match self.cache_store.insert(
             self.entry_id(batch_id),
-            CachedBatch::LiquidMemory(transcoded),
-        );
+            CachedBatch::LiquidMemory(transcoded.clone()),
+        ) {
+            Ok(_) => {}
+            Err(_) => {
+                self.write_to_disk(transcoded, batch_id);
+            }
+        }
 
         Ok(())
     }
@@ -359,25 +354,26 @@ impl LiquidCachedColumn {
         batch_id: BatchID,
         array: ArrayRef,
     ) -> Result<(), InsertArrowArrayError> {
-        let arrow_size = array.get_array_memory_size();
-        if self.budget().try_reserve_memory(arrow_size).is_err() {
-            let column_arc = Arc::clone(self);
-            let array_to_write = array.clone();
-            TRANSCODE_THREAD_POOL.spawn(async move {
-                column_arc.background_transcode_to_disk(array_to_write, batch_id);
-            });
-            return Err(InsertArrowArrayError::CacheFull);
+        match self.cache_store.insert(
+            self.entry_id(batch_id),
+            CachedBatch::ArrowMemory(array.clone()),
+        ) {
+            Ok(_) => {
+                let column_arc = Arc::clone(self);
+                TRANSCODE_THREAD_POOL.spawn(async move {
+                    column_arc.background_transcode_to_liquid(batch_id);
+                });
+                Ok(())
+            }
+            Err(_) => {
+                let column_arc = Arc::clone(self);
+                let array_to_write = array;
+                TRANSCODE_THREAD_POOL.spawn(async move {
+                    column_arc.background_transcode_to_disk(array_to_write, batch_id);
+                });
+                Err(InsertArrowArrayError::CacheFull)
+            }
         }
-
-        self.cache_store
-            .insert(self.entry_id(batch_id), CachedBatch::ArrowMemory(array));
-
-        // Submit a background transcoding task to our dedicated thread pool.
-        let column_arc = Arc::clone(self);
-        TRANSCODE_THREAD_POOL.spawn(async move {
-            column_arc.background_transcode_to_liquid(batch_id);
-        });
-        Ok(())
     }
 
     /// Insert an arrow array into the cache.
@@ -389,6 +385,8 @@ impl LiquidCachedColumn {
         if self.is_cached(batch_id) {
             return Err(InsertArrowArrayError::AlreadyCached);
         }
+
+        self.inserted_batch_count.fetch_add(1, Ordering::Relaxed);
 
         // This is a special case for the Utf8View type, because the rest of the system expects a Dictionary type,
         // But the reader reads as Utf8View types.
@@ -436,8 +434,15 @@ impl LiquidCachedColumn {
         let mut file = File::create(file_path).unwrap();
         file.write_all(&bytes).unwrap();
         self.budget().add_used_disk_bytes(disk_size);
-        self.cache_store
-            .insert(self.entry_id(batch_id), CachedBatch::OnDiskLiquid);
+        match self
+            .cache_store
+            .insert(self.entry_id(batch_id), CachedBatch::OnDiskLiquid)
+        {
+            Ok(_) => {}
+            Err(_) => {
+                log::warn!("failed to insert on disk liquid");
+            }
+        }
     }
 
     /// This method is run in the background. It acquires a write lock on the cache,
@@ -447,21 +452,15 @@ impl LiquidCachedColumn {
         let cached_entry = self.cache_store.get(&self.entry_id(batch_id)).unwrap();
         match &cached_entry {
             CachedBatch::ArrowMemory(array) => {
-                let previous_size = array.get_array_memory_size();
                 match self.transcode_liquid_inner(array) {
                     Ok(transcoded) => {
-                        let new_size = transcoded.get_array_memory_size();
-                        if self
-                            .budget()
-                            .try_update_memory_usage_after_transcoding(previous_size, new_size)
-                            .is_err()
-                        {
-                            return;
-                        }
-                        self.cache_store.insert(
+                        let updated = self.cache_store.insert(
                             self.entry_id(batch_id),
                             CachedBatch::LiquidMemory(transcoded),
                         );
+                        if updated.is_err() {
+                            log::warn!("failed to insert liquid memory");
+                        }
                     }
                     Err(array) => {
                         // if the array data type is not supported yet, we just leave it as is.
