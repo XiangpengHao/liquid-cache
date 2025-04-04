@@ -4,7 +4,7 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use dashmap::DashMap;
+use dashmap::{DashMap, Entry};
 use log::warn;
 
 use super::CachedBatch;
@@ -148,7 +148,7 @@ impl BudgetAccounting {
 
     /// Try to reserve space in the cache.
     /// Returns true if the space was reserved, false if the cache is full.
-    pub fn try_reserve_memory(&self, request_bytes: usize) -> Result<(), ()> {
+    fn try_reserve_memory(&self, request_bytes: usize) -> Result<(), ()> {
         let used = self.used_memory_bytes.load(Ordering::Relaxed);
         if used + request_bytes > self.max_memory_bytes {
             return Err(());
@@ -167,11 +167,7 @@ impl BudgetAccounting {
 
     /// Adjust the cache size after transcoding.
     /// Returns true if the size was adjusted, false if the cache is full, when new_size is larger than old_size.
-    pub fn try_update_memory_usage_after_transcoding(
-        &self,
-        old_size: usize,
-        new_size: usize,
-    ) -> Result<(), ()> {
+    fn try_update_memory_usage(&self, old_size: usize, new_size: usize) -> Result<(), ()> {
         if old_size < new_size {
             let diff = new_size - old_size;
             if diff > 1024 * 1024 {
@@ -202,12 +198,9 @@ impl BudgetAccounting {
         self.used_disk_bytes.fetch_add(bytes, Ordering::Relaxed);
     }
 
-    #[allow(unused)]
-    pub fn update_usage_after_eviction(&self, evicted_size: usize) {
+    pub fn sub_memory_usage(&self, evicted_size: usize) {
         self.used_memory_bytes
             .fetch_sub(evicted_size, Ordering::Relaxed);
-        self.used_disk_bytes
-            .fetch_add(evicted_size, Ordering::Relaxed);
     }
 }
 
@@ -216,6 +209,57 @@ pub(crate) struct CacheStore {
     cached_data: DashMap<CacheEntryID, CachedBatch>,
     config: CacheConfig,
     budget: BudgetAccounting,
+    advisor: Box<dyn CacheAdvisor>,
+}
+
+trait CacheAdvisor: std::fmt::Debug + Send + Sync {
+    /// Give advice on what to do when cache is full.
+    fn advise(
+        &self,
+        entry_id: &CacheEntryID,
+        to_insert: &CachedBatch,
+        cached: &DashMap<CacheEntryID, CachedBatch>,
+    ) -> CacheAdvice;
+}
+
+#[derive(Debug)]
+struct AlwaysWriteToDiskAdvisor;
+
+impl CacheAdvisor for AlwaysWriteToDiskAdvisor {
+    fn advise(
+        &self,
+        _entry_id: &CacheEntryID,
+        _to_insert: &CachedBatch,
+        _cached: &DashMap<CacheEntryID, CachedBatch>,
+    ) -> CacheAdvice {
+        CacheAdvice::InsertToDisk
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug)]
+struct EvictOddAdvisor;
+
+impl CacheAdvisor for EvictOddAdvisor {
+    fn advise(
+        &self,
+        entry_id: &CacheEntryID,
+        _to_insert: &CachedBatch,
+        _cached: &DashMap<CacheEntryID, CachedBatch>,
+    ) -> CacheAdvice {
+        let column_id = entry_id.column_id_inner();
+        if column_id % 2 == 0 {
+            CacheAdvice::EvictAndRetry(*entry_id)
+        } else {
+            CacheAdvice::InsertToDisk
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(super) enum CacheAdvice {
+    EvictAndRetry(CacheEntryID),
+    InsertToDisk,
 }
 
 impl CacheStore {
@@ -225,17 +269,53 @@ impl CacheStore {
             cached_data: DashMap::new(),
             budget: BudgetAccounting::new(config.max_cache_bytes()),
             config,
+            advisor: Box::new(AlwaysWriteToDiskAdvisor),
         }
     }
 
-    pub(super) fn insert(&self, entry_id: CacheEntryID, cached_batch: CachedBatch) {
-        self.cached_data.insert(entry_id, cached_batch);
+    pub(super) fn insert(
+        &self,
+        entry_id: CacheEntryID,
+        cached_batch: CachedBatch,
+    ) -> Result<(), CacheAdvice> {
+        let new_memory_size = cached_batch.memory_usage_bytes();
+
+        match self.cached_data.entry(entry_id) {
+            Entry::Occupied(mut entry) => {
+                let old = entry.get();
+                let old_memory_size = old.memory_usage_bytes();
+                self.budget
+                    .try_update_memory_usage(old_memory_size, new_memory_size)
+                    .map_err(|_| {
+                        self.advisor
+                            .advise(&entry_id, &cached_batch, &self.cached_data)
+                    })?;
+                entry.insert(cached_batch);
+            }
+            Entry::Vacant(entry) => {
+                self.budget
+                    .try_reserve_memory(new_memory_size)
+                    .map_err(|_| {
+                        self.advisor
+                            .advise(&entry_id, &cached_batch, &self.cached_data)
+                    })?;
+                entry.insert(cached_batch);
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn get(&self, entry_id: &CacheEntryID) -> Option<CachedBatch> {
         self.cached_data
             .get(entry_id)
             .map(|entry| entry.value().clone())
+    }
+
+    pub(super) fn remove(&self, entry_id: &CacheEntryID) -> Option<CachedBatch> {
+        let v = self.cached_data.remove(entry_id).map(|(_, batch)| batch)?;
+        let memory_usage = v.memory_usage_bytes();
+        self.budget.sub_memory_usage(memory_usage);
+        Some(v)
     }
 
     pub(super) fn reset(&self) {
@@ -258,7 +338,11 @@ impl CacheStore {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
+    use arrow::array::{ArrayRef, Int32Array};
+    use tempfile::tempdir;
 
     #[test]
     fn test_memory_reservation_and_accounting() {
@@ -280,7 +364,7 @@ mod tests {
         assert_eq!(config.memory_usage_bytes(), 800);
 
         // Test eviction accounting
-        config.update_usage_after_eviction(200);
+        config.sub_memory_usage(200);
         assert_eq!(config.memory_usage_bytes(), 600);
 
         // Reset usage
@@ -297,27 +381,137 @@ mod tests {
         assert_eq!(config.memory_usage_bytes(), 400);
 
         // Update after transcoding - size decrease
-        assert!(
-            config
-                .try_update_memory_usage_after_transcoding(300, 200)
-                .is_ok()
-        );
+        assert!(config.try_update_memory_usage(300, 200).is_ok());
         assert_eq!(config.memory_usage_bytes(), 300); // 400 - (300 - 200)
 
         // Update after transcoding - size increase within limits
-        assert!(
-            config
-                .try_update_memory_usage_after_transcoding(200, 500)
-                .is_ok()
-        );
+        assert!(config.try_update_memory_usage(200, 500).is_ok());
         assert_eq!(config.memory_usage_bytes(), 600); // 300 + (500 - 200)
 
         // Update after transcoding - size increase exceeding limits
-        assert!(
-            config
-                .try_update_memory_usage_after_transcoding(100, 600)
-                .is_err()
-        );
+        assert!(config.try_update_memory_usage(100, 600).is_err());
         assert_eq!(config.memory_usage_bytes(), 600); // Unchanged because update failed
+    }
+
+    #[test]
+    fn test_cache_store_basic_operations() {
+        // Setup test environment
+        let temp_dir = tempdir().unwrap();
+        let cache_dir = temp_dir.path().to_path_buf();
+        let batch_size = 128;
+        let cache_max_bytes = 1000;
+
+        let store = CacheStore::new(batch_size, cache_max_bytes, cache_dir);
+
+        // Create test entry and batch
+        let entry_id = CacheEntryID::new(1, 2, 3, BatchID::from_raw(4));
+        let cached_batch = create_test_cached_batch(200);
+
+        // Test initial state
+        assert!(!store.is_cached(&entry_id));
+        assert_eq!(store.budget().memory_usage_bytes(), 0);
+
+        // Test insert
+        assert!(store.insert(entry_id, cached_batch.clone()).is_ok());
+        assert_eq!(
+            store.budget().memory_usage_bytes(),
+            cached_batch.memory_usage_bytes()
+        );
+        assert!(store.is_cached(&entry_id));
+
+        // Test get
+        let retrieved = store.get(&entry_id).unwrap();
+        assert_eq!(
+            retrieved.memory_usage_bytes(),
+            cached_batch.memory_usage_bytes()
+        );
+
+        // Test remove
+        let removed = store.remove(&entry_id).unwrap();
+        assert_eq!(
+            removed.memory_usage_bytes(),
+            cached_batch.memory_usage_bytes()
+        );
+        assert_eq!(store.budget().memory_usage_bytes(), 0);
+        assert!(!store.is_cached(&entry_id));
+
+        // Test reset
+        assert!(store.insert(entry_id, cached_batch.clone()).is_ok());
+        assert!(store.is_cached(&entry_id));
+        store.reset();
+        assert!(!store.is_cached(&entry_id));
+        assert_eq!(store.budget().memory_usage_bytes(), 0);
+    }
+
+    #[test]
+    fn test_cache_store_memory_management() {
+        // Setup test environment
+        let temp_dir = tempdir().unwrap();
+        let cache_dir = temp_dir.path().to_path_buf();
+        let batch_size = 128;
+        let cache_max_bytes = 600;
+
+        let store = CacheStore::new(batch_size, cache_max_bytes, cache_dir);
+
+        // Create multiple test entries
+        let entry_id1 = CacheEntryID::new(1, 1, 1, BatchID::from_raw(1));
+        let entry_id2 = CacheEntryID::new(2, 2, 2, BatchID::from_raw(2));
+        let entry_id3 = CacheEntryID::new(3, 3, 3, BatchID::from_raw(3));
+
+        let batch1 = create_test_cached_batch(50);
+        let batch2 = create_test_cached_batch(50);
+        let batch3 = create_test_cached_batch(50);
+
+        // Insert entries until we hit the memory limit
+        assert!(store.insert(entry_id1, batch1.clone()).is_ok());
+        assert!(store.insert(entry_id2, batch2.clone()).is_ok());
+        assert_eq!(
+            store.budget().memory_usage_bytes(),
+            batch1.memory_usage_bytes() + batch2.memory_usage_bytes()
+        );
+
+        // This should fail or trigger eviction as we've exceeded the memory limit
+        let result = store.insert(entry_id3, batch3.clone());
+        match result {
+            Ok(_) => {
+                // If we got Ok, then one of the previous entries should have been evicted
+                let is_id1_cached = store.is_cached(&entry_id1);
+                let is_id2_cached = store.is_cached(&entry_id2);
+                let is_id3_cached = store.is_cached(&entry_id3);
+
+                assert!(
+                    is_id3_cached,
+                    "Entry 3 should be cached after successful insert"
+                );
+                assert!(
+                    !(is_id1_cached && is_id2_cached),
+                    "At least one of the previous entries should have been evicted"
+                );
+            }
+            Err(_advice) => {
+                assert_eq!(
+                    store.budget().memory_usage_bytes(),
+                    batch1.memory_usage_bytes() + batch2.memory_usage_bytes()
+                );
+                assert!(store.is_cached(&entry_id1));
+                assert!(store.is_cached(&entry_id2));
+                assert!(!store.is_cached(&entry_id3));
+            }
+        }
+
+        // Test updating an existing entry with a larger size that exceeds the limit
+        if store.is_cached(&entry_id1) {
+            let larger_batch = create_test_cached_batch(400);
+            let result = store.insert(entry_id1, larger_batch);
+            assert!(
+                result.is_err(),
+                "Inserting a larger batch that would exceed the memory limit should fail"
+            );
+        }
+    }
+
+    fn create_test_cached_batch(element_count: usize) -> CachedBatch {
+        let array = Arc::new(Int32Array::from(vec![0; element_count])) as ArrayRef;
+        CachedBatch::ArrowMemory(array)
     }
 }

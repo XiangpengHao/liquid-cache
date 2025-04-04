@@ -1,15 +1,8 @@
-use super::liquid_array::{LiquidArrayRef, LiquidByteArray, LiquidPrimitiveArray};
-use crate::liquid_array::LiquidFloatArray;
+use super::liquid_array::LiquidArrayRef;
 use crate::liquid_array::ipc::{self, LiquidIPCContext};
 use crate::{ABLATION_STUDY_MODE, AblationStudyMode, LiquidPredicate};
 use ahash::AHashMap;
-use arrow::array::types::{
-    Float32Type as ArrowFloat32Type, Float64Type as ArrowFloat64Type, Int8Type as ArrowInt8Type,
-    Int16Type as ArrowInt16Type, Int32Type as ArrowInt32Type, Int64Type as ArrowInt64Type,
-    UInt8Type as ArrowUInt8Type, UInt16Type as ArrowUInt16Type, UInt32Type as ArrowUInt32Type,
-    UInt64Type as ArrowUInt64Type,
-};
-use arrow::array::{Array, ArrayRef, AsArray, BooleanArray, RecordBatch};
+use arrow::array::{Array, ArrayRef, BooleanArray, RecordBatch};
 use arrow::buffer::BooleanBuffer;
 use arrow::compute::prep_null_mask_filter;
 use arrow_schema::{ArrowError, DataType, Field, Schema};
@@ -22,11 +15,13 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 pub(crate) use store::BatchID;
-use store::{BudgetAccounting, CacheEntryID, CacheStore};
+use store::{BudgetAccounting, CacheAdvice, CacheEntryID, CacheStore};
 use tokio::runtime::Runtime;
+use transcode::transcode_liquid_inner;
 
 mod stats;
 mod store;
+mod transcode;
 
 /// A dedicated Tokio thread pool for background transcoding tasks.
 /// This pool is built with 4 worker threads.
@@ -306,52 +301,60 @@ impl LiquidCachedColumn {
         }
     }
 
-    fn insert_as_arrow_array(
-        &self,
-        batch_id: BatchID,
-        array: ArrayRef,
-    ) -> Result<(), InsertArrowArrayError> {
-        let array_size = array.get_array_memory_size();
-        self.inserted_batch_count.fetch_add(1, Ordering::Relaxed);
-        match self.budget().try_reserve_memory(array_size) {
-            Ok(_) => {
-                self.cache_store
-                    .insert(self.entry_id(batch_id), CachedBatch::ArrowMemory(array));
-                Ok(())
-            }
-            Err(_) => Err(InsertArrowArrayError::CacheFull),
-        }
-    }
-
     fn insert_as_liquid_foreground(
         self: &Arc<Self>,
         batch_id: BatchID,
         array: ArrayRef,
     ) -> Result<(), InsertArrowArrayError> {
-        let transcoded = match self.transcode_liquid_inner(&array) {
+        let transcoded = match transcode_liquid_inner(&array, &self.liquid_compressor_states) {
             Ok(transcoded) => transcoded,
             Err(_) => {
                 log::warn!(
                     "unsupported data type {:?}, inserting as arrow array",
                     array.data_type()
                 );
-                return self.insert_as_arrow_array(batch_id, array);
+                self.cache_store
+                    .insert(
+                        self.entry_id(batch_id),
+                        CachedBatch::ArrowMemory(array.clone()),
+                    )
+                    .expect("failed to insert arrow memory");
+                return Ok(());
             }
         };
 
-        let memory_required = transcoded.get_array_memory_size();
-
-        if self.budget().try_reserve_memory(memory_required).is_err() {
-            self.write_to_disk(transcoded, batch_id);
-            return Ok(());
+        match self.cache_store.insert(
+            self.entry_id(batch_id),
+            CachedBatch::LiquidMemory(transcoded.clone()),
+        ) {
+            Ok(_) => {}
+            Err(CacheAdvice::InsertToDisk) => {
+                self.write_to_disk(transcoded, batch_id);
+            }
+            Err(CacheAdvice::EvictAndRetry(to_evict)) => {
+                let Some(removed) = self.cache_store.remove(&to_evict) else {
+                    return self.insert_as_liquid_foreground(batch_id, array);
+                };
+                self.evict_batch(batch_id, removed);
+                return self.insert_as_liquid_foreground(batch_id, array);
+            }
         }
 
-        self.cache_store.insert(
-            self.entry_id(batch_id),
-            CachedBatch::LiquidMemory(transcoded),
-        );
-
         Ok(())
+    }
+
+    fn evict_batch(self: &Arc<Self>, batch_id: BatchID, entry: CachedBatch) {
+        match entry {
+            CachedBatch::ArrowMemory(array) => {
+                self.transcode_and_write_to_disk(array, batch_id);
+            }
+            CachedBatch::LiquidMemory(array) => {
+                self.write_to_disk(array, batch_id);
+            }
+            CachedBatch::OnDiskLiquid => {
+                unreachable!("on disk liquid should not be evicted");
+            }
+        }
     }
 
     fn insert_as_liquid_background(
@@ -359,25 +362,37 @@ impl LiquidCachedColumn {
         batch_id: BatchID,
         array: ArrayRef,
     ) -> Result<(), InsertArrowArrayError> {
-        let arrow_size = array.get_array_memory_size();
-        if self.budget().try_reserve_memory(arrow_size).is_err() {
-            let column_arc = Arc::clone(self);
-            let array_to_write = array.clone();
-            TRANSCODE_THREAD_POOL.spawn(async move {
-                column_arc.background_transcode_to_disk(array_to_write, batch_id);
-            });
-            return Err(InsertArrowArrayError::CacheFull);
+        match self.cache_store.insert(
+            self.entry_id(batch_id),
+            CachedBatch::ArrowMemory(array.clone()),
+        ) {
+            Ok(_) => {
+                let column_arc = Arc::clone(self);
+                TRANSCODE_THREAD_POOL.spawn(async move {
+                    column_arc.transcode_to_liquid(batch_id, array);
+                });
+                Ok(())
+            }
+            Err(CacheAdvice::InsertToDisk) => {
+                let column_arc = Arc::clone(self);
+                let array_to_write = array;
+                TRANSCODE_THREAD_POOL.spawn(async move {
+                    column_arc.transcode_and_write_to_disk(array_to_write, batch_id);
+                });
+                Err(InsertArrowArrayError::CacheFull)
+            }
+            Err(CacheAdvice::EvictAndRetry(to_evict)) => {
+                let column_arc = Arc::clone(self);
+                TRANSCODE_THREAD_POOL.spawn(async move {
+                    let Some(removed) = column_arc.cache_store.remove(&to_evict) else {
+                        return;
+                    };
+                    column_arc.evict_batch(batch_id, removed);
+                    _ = column_arc.insert_as_liquid_background(batch_id, array);
+                });
+                Err(InsertArrowArrayError::CacheFull)
+            }
         }
-
-        self.cache_store
-            .insert(self.entry_id(batch_id), CachedBatch::ArrowMemory(array));
-
-        // Submit a background transcoding task to our dedicated thread pool.
-        let column_arc = Arc::clone(self);
-        TRANSCODE_THREAD_POOL.spawn(async move {
-            column_arc.background_transcode_to_liquid(batch_id);
-        });
-        Ok(())
     }
 
     /// Insert an arrow array into the cache.
@@ -389,6 +404,8 @@ impl LiquidCachedColumn {
         if self.is_cached(batch_id) {
             return Err(InsertArrowArrayError::AlreadyCached);
         }
+
+        self.inserted_batch_count.fetch_add(1, Ordering::Relaxed);
 
         // This is a special case for the Utf8View type, because the rest of the system expects a Dictionary type,
         // But the reader reads as Utf8View types.
@@ -404,7 +421,24 @@ impl LiquidCachedColumn {
         };
 
         match &self.cache_mode {
-            LiquidCacheMode::InMemoryArrow => self.insert_as_arrow_array(batch_id, array),
+            LiquidCacheMode::InMemoryArrow => {
+                let entry_id = self.entry_id(batch_id);
+                match self
+                    .cache_store
+                    .insert(entry_id, CachedBatch::ArrowMemory(array.clone()))
+                {
+                    Ok(_) => Ok(()),
+                    Err(CacheAdvice::InsertToDisk) => {
+                        unreachable!("in memory arrow should not need to write to disk");
+                    }
+                    Err(CacheAdvice::EvictAndRetry(to_evict)) => {
+                        if let Some(removed) = self.cache_store.remove(&to_evict) {
+                            self.evict_batch(batch_id, removed);
+                        }
+                        self.insert_arrow_array(batch_id, array)
+                    }
+                }
+            }
             LiquidCacheMode::OnDiskArrow => {
                 unimplemented!()
             }
@@ -420,9 +454,8 @@ impl LiquidCachedColumn {
         }
     }
 
-    fn background_transcode_to_disk(self: &Arc<Self>, array: ArrayRef, batch_id: BatchID) {
-        let transcoded = self
-            .transcode_liquid_inner(&array)
+    fn transcode_and_write_to_disk(self: &Arc<Self>, array: ArrayRef, batch_id: BatchID) {
+        let transcoded = transcode_liquid_inner(&array, &self.liquid_compressor_states)
             .expect("failed to transcode");
         // Here we have no thing but to panic, because we are in a background thread, and we run out of memory, and we don't support the data type.
 
@@ -437,173 +470,24 @@ impl LiquidCachedColumn {
         file.write_all(&bytes).unwrap();
         self.budget().add_used_disk_bytes(disk_size);
         self.cache_store
-            .insert(self.entry_id(batch_id), CachedBatch::OnDiskLiquid);
+            .insert(self.entry_id(batch_id), CachedBatch::OnDiskLiquid)
+            .expect("failed to insert on disk liquid");
     }
 
-    /// This method is run in the background. It acquires a write lock on the cache,
-    /// checks that the stored value is still an ArrowMemory batch, and then runs the
-    /// expensive transcoding, replacing the entry with a LiquidMemory batch.
-    fn background_transcode_to_liquid(self: &Arc<Self>, batch_id: BatchID) {
-        let cached_entry = self.cache_store.get(&self.entry_id(batch_id)).unwrap();
-        match &cached_entry {
-            CachedBatch::ArrowMemory(array) => {
-                let previous_size = array.get_array_memory_size();
-                match self.transcode_liquid_inner(array) {
-                    Ok(transcoded) => {
-                        let new_size = transcoded.get_array_memory_size();
-                        if self
-                            .budget()
-                            .try_update_memory_usage_after_transcoding(previous_size, new_size)
-                            .is_err()
-                        {
-                            return;
-                        }
-                        self.cache_store.insert(
-                            self.entry_id(batch_id),
-                            CachedBatch::LiquidMemory(transcoded),
-                        );
-                    }
-                    Err(array) => {
-                        // if the array data type is not supported yet, we just leave it as is.
-                        log::warn!("unsupported data type {:?}", array.data_type());
-                    }
+    fn transcode_to_liquid(self: &Arc<Self>, batch_id: BatchID, array: ArrayRef) {
+        match transcode_liquid_inner(&array, &self.liquid_compressor_states) {
+            Ok(transcoded) => {
+                let updated = self.cache_store.insert(
+                    self.entry_id(batch_id),
+                    CachedBatch::LiquidMemory(transcoded),
+                );
+                if updated.is_err() {
+                    log::warn!("failed to insert liquid memory");
                 }
             }
-            CachedBatch::LiquidMemory(_) => {
-                // Already transcoded.
-            }
-            CachedBatch::OnDiskLiquid => {
-                // Not arrow memory, so we don't need to transcode.
-            }
-        }
-    }
-
-    /// This method is used to transcode an arrow array into a liquid array.
-    ///
-    /// Returns the transcoded liquid array if successful, otherwise returns the original arrow array.
-    fn transcode_liquid_inner<'a>(
-        &self,
-        array: &'a ArrayRef,
-    ) -> Result<LiquidArrayRef, &'a ArrayRef> {
-        let data_type = array.data_type();
-        if data_type.is_primitive() {
-            // For primitive types, perform the transcoding.
-            let liquid_array: LiquidArrayRef = match data_type {
-                DataType::Int8 => {
-                    Arc::new(LiquidPrimitiveArray::<ArrowInt8Type>::from_arrow_array(
-                        array.as_primitive::<ArrowInt8Type>().clone(),
-                    ))
-                }
-                DataType::Int16 => {
-                    Arc::new(LiquidPrimitiveArray::<ArrowInt16Type>::from_arrow_array(
-                        array.as_primitive::<ArrowInt16Type>().clone(),
-                    ))
-                }
-                DataType::Int32 => {
-                    Arc::new(LiquidPrimitiveArray::<ArrowInt32Type>::from_arrow_array(
-                        array.as_primitive::<ArrowInt32Type>().clone(),
-                    ))
-                }
-                DataType::Int64 => {
-                    Arc::new(LiquidPrimitiveArray::<ArrowInt64Type>::from_arrow_array(
-                        array.as_primitive::<ArrowInt64Type>().clone(),
-                    ))
-                }
-                DataType::UInt8 => {
-                    Arc::new(LiquidPrimitiveArray::<ArrowUInt8Type>::from_arrow_array(
-                        array.as_primitive::<ArrowUInt8Type>().clone(),
-                    ))
-                }
-                DataType::UInt16 => {
-                    Arc::new(LiquidPrimitiveArray::<ArrowUInt16Type>::from_arrow_array(
-                        array.as_primitive::<ArrowUInt16Type>().clone(),
-                    ))
-                }
-                DataType::UInt32 => {
-                    Arc::new(LiquidPrimitiveArray::<ArrowUInt32Type>::from_arrow_array(
-                        array.as_primitive::<ArrowUInt32Type>().clone(),
-                    ))
-                }
-                DataType::UInt64 => {
-                    Arc::new(LiquidPrimitiveArray::<ArrowUInt64Type>::from_arrow_array(
-                        array.as_primitive::<ArrowUInt64Type>().clone(),
-                    ))
-                }
-                DataType::Float32 => {
-                    Arc::new(LiquidFloatArray::<ArrowFloat32Type>::from_arrow_array(
-                        array.as_primitive::<ArrowFloat32Type>().clone(),
-                    ))
-                }
-                DataType::Float64 => {
-                    Arc::new(LiquidFloatArray::<ArrowFloat64Type>::from_arrow_array(
-                        array.as_primitive::<ArrowFloat64Type>().clone(),
-                    ))
-                }
-                _ => {
-                    // For unsupported primitive types, leave the value unchanged.
-                    log::warn!("unsupported primitive type {:?}", data_type);
-                    return Err(array);
-                }
-            };
-            return Ok(liquid_array);
-        }
-
-        // Handle string/dictionary types.
-        match array.data_type() {
-            DataType::Utf8View => {
-                let compressor = self.fsst_compressor().read().unwrap();
-                if let Some(compressor) = compressor.as_ref() {
-                    let compressed = LiquidByteArray::from_string_view_array(
-                        array.as_string_view(),
-                        compressor.clone(),
-                    );
-                    return Ok(Arc::new(compressed));
-                }
-                drop(compressor);
-                let mut compressors = self.fsst_compressor().write().unwrap();
-                let (compressor, compressed) =
-                    LiquidByteArray::train_from_arrow_view(array.as_string_view());
-                *compressors = Some(compressor);
-                Ok(Arc::new(compressed))
-            }
-            DataType::Utf8 => {
-                let compressor = self.fsst_compressor().read().unwrap();
-                if let Some(compressor) = compressor.as_ref() {
-                    let compressed = LiquidByteArray::from_string_array(
-                        array.as_string::<i32>(),
-                        compressor.clone(),
-                    );
-                    return Ok(Arc::new(compressed));
-                }
-                drop(compressor);
-                let mut compressors = self.fsst_compressor().write().unwrap();
-                let (compressor, compressed) =
-                    LiquidByteArray::train_from_arrow(array.as_string::<i32>());
-                *compressors = Some(compressor);
-                Ok(Arc::new(compressed))
-            }
-            DataType::Dictionary(_, _) => {
-                if let Some(dict_array) = array.as_dictionary_opt::<ArrowUInt16Type>() {
-                    let compressor = self.fsst_compressor().read().unwrap();
-                    if let Some(compressor) = compressor.as_ref() {
-                        let liquid_array = unsafe {
-                            LiquidByteArray::from_unique_dict_array(dict_array, compressor.clone())
-                        };
-                        return Ok(Arc::new(liquid_array));
-                    }
-                    drop(compressor);
-                    let mut compressors = self.fsst_compressor().write().unwrap();
-                    let (compressor, liquid_array) =
-                        LiquidByteArray::train_from_arrow_dict(dict_array);
-                    *compressors = Some(compressor);
-                    return Ok(Arc::new(liquid_array));
-                }
+            Err(array) => {
+                // if the array data type is not supported yet, we just leave it as is.
                 log::warn!("unsupported data type {:?}", array.data_type());
-                Err(array)
-            }
-            _ => {
-                log::warn!("unsupported data type {:?}", array.data_type());
-                Err(array)
             }
         }
     }
@@ -880,66 +764,6 @@ mod tests {
     use super::*;
     use arrow::array::{Array, Int32Array};
 
-    /// Helper function to get the memory size from an Arrow array.
-    /// (Assuming your Arrow arrays implement `get_array_memory_size`.)
-    fn array_mem_size(array: &ArrayRef) -> usize {
-        array.get_array_memory_size()
-    }
-
-    /// Test that verifies the memory accounting logic.
-    #[test]
-    fn test_memory_accounting() {
-        let batch_size = 64;
-        let max_cache_bytes = 4096;
-        let tmp_dir = tempfile::tempdir().unwrap();
-        let cache = LiquidCache::new(batch_size, max_cache_bytes, tmp_dir.path().to_path_buf());
-        let file =
-            cache.register_or_get_file("test_file".to_string(), LiquidCacheMode::InMemoryArrow);
-        let row_group = file.row_group(0);
-        let column =
-            row_group.create_column(0, Arc::new(Field::new("test", DataType::Int32, false)));
-
-        // Test 1: Basic insertion and size tracking
-        let array1 = Arc::new(Int32Array::from(vec![1; 100])) as ArrayRef;
-        let array1_size = array_mem_size(&array1);
-        let batch_id = BatchID::from_raw(0);
-        assert!(column.insert_arrow_array(batch_id, array1.clone()).is_ok());
-        assert!(column.is_cached(batch_id));
-        assert_eq!(column.budget().memory_usage_bytes(), array1_size);
-
-        // Test 2: Multiple insertions within limit
-        let array2 = Arc::new(Int32Array::from(vec![2; 200])) as ArrayRef;
-        let array2_size = array_mem_size(&array2);
-        let batch_id = BatchID::from_raw(1);
-        assert!(column.insert_arrow_array(batch_id, array2.clone()).is_ok());
-        assert!(column.is_cached(batch_id));
-        assert_eq!(
-            column.budget().memory_usage_bytes(),
-            array1_size + array2_size
-        );
-
-        let remaining_space = max_cache_bytes - (array1_size + array2_size);
-        let exact_fit_array = Arc::new(Int32Array::from(vec![3; remaining_space / 4])) as ArrayRef;
-        let batch_id = BatchID::from_raw(2);
-        assert!(
-            column
-                .insert_arrow_array(batch_id, exact_fit_array.clone())
-                .is_err()
-        );
-        assert!(!column.is_cached(batch_id));
-        assert_eq!(
-            column.budget().memory_usage_bytes(),
-            array1_size + array2_size
-        );
-
-        let batch_id = BatchID::from_raw(0);
-        assert!(column.insert_arrow_array(batch_id, array1.clone()).is_err());
-        assert_eq!(
-            column.budget().memory_usage_bytes(),
-            array1_size + array2_size
-        );
-    }
-
     /// Test that verifies background transcoding updates both the stored value type
     /// and the memory accounting.
     #[test]
@@ -1022,7 +846,9 @@ mod tests {
         let cache = LiquidCache::new(batch_size, max_cache_bytes, tmp_dir.path().to_path_buf());
         let file = cache.register_or_get_file(
             "race_condition_test_file".to_string(),
-            LiquidCacheMode::InMemoryArrow,
+            LiquidCacheMode::InMemoryLiquid {
+                transcode_in_background: false,
+            },
         );
         let row_group = file.row_group(0);
         let column =
