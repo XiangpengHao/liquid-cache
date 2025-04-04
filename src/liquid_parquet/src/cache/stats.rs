@@ -1,4 +1,4 @@
-use super::{CachedBatch, LiquidCache};
+use super::{BatchID, CachedBatch, LiquidCache};
 use arrow::array::{ArrayBuilder, RecordBatch, StringBuilder, UInt64Builder};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use parquet::{
@@ -125,12 +125,10 @@ impl LiquidCache {
                 let columns = row_group.columns.read().unwrap();
                 for (column_id, row_mapping) in columns.iter() {
                     let batch_count = row_mapping.inserted_batch_count.load(Ordering::Relaxed);
-                    for batch_id in 0..batch_count {
-                        let row_start_id =
-                            batch_id as usize * self.cache_store.config().batch_size();
-                        let cached_entry = row_mapping
-                            .cache_store
-                            .get(&row_mapping.entry_id(row_start_id));
+                    for batch in 0..batch_count {
+                        let batch_id = BatchID::from_raw(batch);
+                        let cached_entry =
+                            row_mapping.cache_store.get(&row_mapping.entry_id(batch_id));
                         let Some(cached_entry) = cached_entry else {
                             continue;
                         };
@@ -151,7 +149,7 @@ impl LiquidCache {
                             file_path,
                             *row_group_id,
                             *column_id,
-                            row_start_id as u64,
+                            *batch_id as u64 * self.batch_size() as u64,
                             row_count,
                             memory_size as u64,
                             cache_type,
@@ -169,7 +167,7 @@ impl LiquidCache {
 mod tests {
     use std::io::Read;
 
-    use crate::LiquidCacheMode;
+    use crate::{LiquidCacheMode, cache::BatchID};
 
     use super::*;
     use arrow::{
@@ -200,21 +198,17 @@ mod tests {
                 for col in 0..8 {
                     let column = row_group
                         .create_column(col, Arc::new(Field::new("test", DataType::Int32, false)));
-                    for row in 0..8 {
-                        let row_start_id = row * cache.batch_size();
-                        assert!(
-                            column
-                                .insert_arrow_array(row_start_id, array.clone())
-                                .is_ok()
-                        );
+                    for batch in 0..8 {
+                        let batch_id = BatchID::from_raw(batch);
+                        assert!(column.insert_arrow_array(batch_id, array.clone()).is_ok());
                         row_group_id_sum += rg as u64;
                         column_id_sum += col as u64;
-                        row_start_id_sum += row_start_id as u64;
+                        row_start_id_sum += *batch_id as u64 * cache.batch_size() as u64;
                         row_count_sum += array.len() as u64;
                         memory_size_sum += array.get_array_memory_size();
 
-                        if row % 2 == 0 {
-                            _ = column.get_arrow_array_test_only(row_start_id).unwrap();
+                        if batch % 2 == 0 {
+                            _ = column.get_arrow_array_test_only(batch_id).unwrap();
                         }
                     }
                 }

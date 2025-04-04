@@ -19,8 +19,9 @@ use std::fmt::Display;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
+pub(crate) use store::BatchID;
 use store::{BudgetAccounting, CacheEntryID, CacheStore};
 use tokio::runtime::Runtime;
 
@@ -93,13 +94,13 @@ pub struct LiquidCachedColumn {
     column_id: u64,
     row_group_id: u64,
     file_id: u64,
-    inserted_batch_count: AtomicU64,
+    inserted_batch_count: AtomicU16,
 }
 
 pub type LiquidCachedColumnRef = Arc<LiquidCachedColumn>;
 
 pub enum InsertArrowArrayError {
-    CacheFull(ArrayRef),
+    CacheFull,
     AlreadyCached,
 }
 
@@ -128,7 +129,7 @@ impl LiquidCachedColumn {
             column_id,
             row_group_id,
             file_id,
-            inserted_batch_count: AtomicU64::new(0),
+            inserted_batch_count: AtomicU16::new(0),
         }
     }
 
@@ -136,13 +137,11 @@ impl LiquidCachedColumn {
         self.cache_store.budget()
     }
 
-    fn entry_id(&self, row_id: usize) -> CacheEntryID {
-        CacheEntryID::new(
-            self.file_id,
-            self.row_group_id,
-            self.column_id,
-            row_id as u64,
-        )
+    /// row_id must be on a batch boundary.
+    fn entry_id(&self, batch_id: BatchID) -> CacheEntryID {
+        // debug_assert!(row_id % self.cache_store.config().batch_size() == 0);
+        // let batch_id = BatchID::from_row_id(row_id, self.cache_store.config().batch_size());
+        CacheEntryID::new(self.file_id, self.row_group_id, self.column_id, batch_id)
     }
 
     pub(crate) fn cache_mode(&self) -> LiquidCacheMode {
@@ -157,16 +156,16 @@ impl LiquidCachedColumn {
         self.cache_store.config().batch_size()
     }
 
-    pub(crate) fn is_cached(&self, row_id: usize) -> bool {
-        self.cache_store.is_cached(&self.entry_id(row_id))
+    pub(crate) fn is_cached(&self, batch_id: BatchID) -> bool {
+        self.cache_store.is_cached(&self.entry_id(batch_id))
     }
 
     /// Reads a liquid array from disk.
     /// Panics if the file does not exist.
-    fn read_liquid_from_disk(&self, row_id: usize) -> LiquidArrayRef {
+    fn read_liquid_from_disk(&self, batch_id: BatchID) -> LiquidArrayRef {
         // TODO: maybe use async here?
         // But async in tokio is way slower than sync.
-        let path = self.cache_dir.join(format!("row_{}.bin", row_id));
+        let path = self.cache_dir.join(format!("row_{}.bin", *batch_id));
         let mut file = File::open(path).unwrap();
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes).unwrap();
@@ -208,11 +207,11 @@ impl LiquidCachedColumn {
 
     fn eval_selection_with_predicate(
         &self,
-        row_id: usize,
+        batch_id: BatchID,
         selection: &BooleanBuffer,
         predicate: &mut dyn LiquidPredicate,
     ) -> Option<Result<BooleanBuffer, ArrowError>> {
-        let cached_entry = self.cache_store.get(&self.entry_id(row_id))?;
+        let cached_entry = self.cache_store.get(&self.entry_id(batch_id))?;
         match &cached_entry {
             CachedBatch::ArrowMemory(array) => {
                 let boolean_array = BooleanArray::new(selection.clone(), None);
@@ -227,7 +226,7 @@ impl LiquidCachedColumn {
                 Some(Ok(buffer))
             }
             CachedBatch::OnDiskLiquid => {
-                let array = self.read_liquid_from_disk(row_id);
+                let array = self.read_liquid_from_disk(batch_id);
                 let boolean_array = BooleanArray::new(selection.clone(), None);
                 let filtered = array.filter(&boolean_array);
                 let buffer = self.eval_selection_with_predicate_inner(predicate, &filtered);
@@ -266,10 +265,10 @@ impl LiquidCachedColumn {
 
     pub(crate) fn get_arrow_array_with_filter(
         &self,
-        row_id: usize,
+        batch_id: BatchID,
         filter: &BooleanArray,
     ) -> Option<ArrayRef> {
-        let inner_value = self.cache_store.get(&self.entry_id(row_id))?;
+        let inner_value = self.cache_store.get(&self.entry_id(batch_id))?;
         match &inner_value {
             CachedBatch::ArrowMemory(array) => {
                 let filtered = arrow::compute::filter(array, filter).unwrap();
@@ -287,7 +286,7 @@ impl LiquidCachedColumn {
                 }
             },
             CachedBatch::OnDiskLiquid => {
-                let array = self.read_liquid_from_disk(row_id);
+                let array = self.read_liquid_from_disk(batch_id);
                 let filtered = array.filter(filter);
                 Some(filtered.to_best_arrow_array())
             }
@@ -295,13 +294,13 @@ impl LiquidCachedColumn {
     }
 
     #[cfg(test)]
-    pub(crate) fn get_arrow_array_test_only(&self, row_id: usize) -> Option<ArrayRef> {
-        let cached_entry = self.cache_store.get(&self.entry_id(row_id))?;
+    pub(crate) fn get_arrow_array_test_only(&self, batch_id: BatchID) -> Option<ArrayRef> {
+        let cached_entry = self.cache_store.get(&self.entry_id(batch_id))?;
         match cached_entry {
             CachedBatch::ArrowMemory(array) => Some(array),
             CachedBatch::LiquidMemory(array) => Some(array.to_best_arrow_array()),
             CachedBatch::OnDiskLiquid => {
-                let array = self.read_liquid_from_disk(row_id);
+                let array = self.read_liquid_from_disk(batch_id);
                 Some(array.to_best_arrow_array())
             }
         }
@@ -309,7 +308,7 @@ impl LiquidCachedColumn {
 
     fn insert_as_arrow_array(
         &self,
-        row_id: usize,
+        batch_id: BatchID,
         array: ArrayRef,
     ) -> Result<(), InsertArrowArrayError> {
         let array_size = array.get_array_memory_size();
@@ -317,16 +316,16 @@ impl LiquidCachedColumn {
         match self.budget().try_reserve_memory(array_size) {
             Ok(_) => {
                 self.cache_store
-                    .insert(self.entry_id(row_id), CachedBatch::ArrowMemory(array));
+                    .insert(self.entry_id(batch_id), CachedBatch::ArrowMemory(array));
                 Ok(())
             }
-            Err(_) => Err(InsertArrowArrayError::CacheFull(array)),
+            Err(_) => Err(InsertArrowArrayError::CacheFull),
         }
     }
 
     fn insert_as_liquid_foreground(
         self: &Arc<Self>,
-        row_id: usize,
+        batch_id: BatchID,
         array: ArrayRef,
     ) -> Result<(), InsertArrowArrayError> {
         let transcoded = match self.transcode_liquid_inner(&array) {
@@ -336,26 +335,28 @@ impl LiquidCachedColumn {
                     "unsupported data type {:?}, inserting as arrow array",
                     array.data_type()
                 );
-                return self.insert_as_arrow_array(row_id, array);
+                return self.insert_as_arrow_array(batch_id, array);
             }
         };
 
         let memory_required = transcoded.get_array_memory_size();
 
         if self.budget().try_reserve_memory(memory_required).is_err() {
-            self.write_to_disk(transcoded, row_id);
+            self.write_to_disk(transcoded, batch_id);
             return Ok(());
         }
 
-        self.cache_store
-            .insert(self.entry_id(row_id), CachedBatch::LiquidMemory(transcoded));
+        self.cache_store.insert(
+            self.entry_id(batch_id),
+            CachedBatch::LiquidMemory(transcoded),
+        );
 
         Ok(())
     }
 
     fn insert_as_liquid_background(
         self: &Arc<Self>,
-        row_id: usize,
+        batch_id: BatchID,
         array: ArrayRef,
     ) -> Result<(), InsertArrowArrayError> {
         let arrow_size = array.get_array_memory_size();
@@ -363,18 +364,18 @@ impl LiquidCachedColumn {
             let column_arc = Arc::clone(self);
             let array_to_write = array.clone();
             TRANSCODE_THREAD_POOL.spawn(async move {
-                column_arc.background_transcode_to_disk(array_to_write, row_id);
+                column_arc.background_transcode_to_disk(array_to_write, batch_id);
             });
-            return Err(InsertArrowArrayError::CacheFull(array));
+            return Err(InsertArrowArrayError::CacheFull);
         }
 
         self.cache_store
-            .insert(self.entry_id(row_id), CachedBatch::ArrowMemory(array));
+            .insert(self.entry_id(batch_id), CachedBatch::ArrowMemory(array));
 
         // Submit a background transcoding task to our dedicated thread pool.
         let column_arc = Arc::clone(self);
         TRANSCODE_THREAD_POOL.spawn(async move {
-            column_arc.background_transcode_to_liquid(row_id);
+            column_arc.background_transcode_to_liquid(batch_id);
         });
         Ok(())
     }
@@ -382,10 +383,10 @@ impl LiquidCachedColumn {
     /// Insert an arrow array into the cache.
     pub(crate) fn insert_arrow_array(
         self: &Arc<Self>,
-        row_id: usize,
+        batch_id: BatchID,
         array: ArrayRef,
     ) -> Result<(), InsertArrowArrayError> {
-        if self.is_cached(row_id) {
+        if self.is_cached(batch_id) {
             return Err(InsertArrowArrayError::AlreadyCached);
         }
 
@@ -403,7 +404,7 @@ impl LiquidCachedColumn {
         };
 
         match &self.cache_mode {
-            LiquidCacheMode::InMemoryArrow => self.insert_as_arrow_array(row_id, array),
+            LiquidCacheMode::InMemoryArrow => self.insert_as_arrow_array(batch_id, array),
             LiquidCacheMode::OnDiskArrow => {
                 unimplemented!()
             }
@@ -411,39 +412,39 @@ impl LiquidCachedColumn {
                 transcode_in_background,
             } => {
                 if *transcode_in_background {
-                    self.insert_as_liquid_background(row_id, array)
+                    self.insert_as_liquid_background(batch_id, array)
                 } else {
-                    self.insert_as_liquid_foreground(row_id, array)
+                    self.insert_as_liquid_foreground(batch_id, array)
                 }
             }
         }
     }
 
-    fn background_transcode_to_disk(self: &Arc<Self>, array: ArrayRef, row_id: usize) {
+    fn background_transcode_to_disk(self: &Arc<Self>, array: ArrayRef, batch_id: BatchID) {
         let transcoded = self
             .transcode_liquid_inner(&array)
             .expect("failed to transcode");
         // Here we have no thing but to panic, because we are in a background thread, and we run out of memory, and we don't support the data type.
 
-        self.write_to_disk(transcoded, row_id);
+        self.write_to_disk(transcoded, batch_id);
     }
 
-    fn write_to_disk(self: &Arc<Self>, array: LiquidArrayRef, row_id: usize) {
+    fn write_to_disk(self: &Arc<Self>, array: LiquidArrayRef, batch_id: BatchID) {
         let bytes = array.to_bytes();
         let disk_size = bytes.len();
-        let file_path = self.cache_dir.join(format!("row_{}.bin", row_id));
+        let file_path = self.cache_dir.join(format!("row_{}.bin", *batch_id));
         let mut file = File::create(file_path).unwrap();
         file.write_all(&bytes).unwrap();
         self.budget().add_used_disk_bytes(disk_size);
         self.cache_store
-            .insert(self.entry_id(row_id), CachedBatch::OnDiskLiquid);
+            .insert(self.entry_id(batch_id), CachedBatch::OnDiskLiquid);
     }
 
     /// This method is run in the background. It acquires a write lock on the cache,
     /// checks that the stored value is still an ArrowMemory batch, and then runs the
     /// expensive transcoding, replacing the entry with a LiquidMemory batch.
-    fn background_transcode_to_liquid(self: &Arc<Self>, row_id: usize) {
-        let cached_entry = self.cache_store.get(&self.entry_id(row_id)).unwrap();
+    fn background_transcode_to_liquid(self: &Arc<Self>, batch_id: BatchID) {
+        let cached_entry = self.cache_store.get(&self.entry_id(batch_id)).unwrap();
         match &cached_entry {
             CachedBatch::ArrowMemory(array) => {
                 let previous_size = array.get_array_memory_size();
@@ -457,8 +458,10 @@ impl LiquidCachedColumn {
                         {
                             return;
                         }
-                        self.cache_store
-                            .insert(self.entry_id(row_id), CachedBatch::LiquidMemory(transcoded));
+                        self.cache_store.insert(
+                            self.entry_id(batch_id),
+                            CachedBatch::LiquidMemory(transcoded),
+                        );
                     }
                     Err(array) => {
                         // if the array data type is not supported yet, we just leave it as is.
@@ -682,7 +685,7 @@ impl LiquidCachedRowGroup {
 
     pub fn evaluate_selection_with_predicate(
         &self,
-        row_id: usize,
+        batch_id: BatchID,
         selection: &BooleanBuffer,
         predicate: &mut dyn LiquidPredicate,
     ) -> Option<Result<BooleanBuffer, ArrowError>> {
@@ -692,7 +695,7 @@ impl LiquidCachedRowGroup {
             // If we only have one column, we can short-circuit and try to evaluate the predicate on encoded data.
             let column_id = column_ids[0];
             let cache = self.get_column(column_id as u64)?;
-            cache.eval_selection_with_predicate(row_id, selection, predicate)
+            cache.eval_selection_with_predicate(batch_id, selection, predicate)
         } else {
             // Otherwise, we need to first convert the data into arrow arrays.
             let mask = BooleanArray::from(selection.clone());
@@ -700,7 +703,7 @@ impl LiquidCachedRowGroup {
             let mut fields = Vec::new();
             for column_id in column_ids {
                 let column = self.get_column(column_id as u64)?;
-                let array = column.get_arrow_array_with_filter(row_id, &mask)?;
+                let array = column.get_arrow_array_with_filter(batch_id, &mask)?;
                 arrays.push(array);
                 fields.push(column.field.clone());
             }
@@ -899,15 +902,17 @@ mod tests {
         // Test 1: Basic insertion and size tracking
         let array1 = Arc::new(Int32Array::from(vec![1; 100])) as ArrayRef;
         let array1_size = array_mem_size(&array1);
-        assert!(column.insert_arrow_array(0, array1.clone()).is_ok());
-        assert!(column.is_cached(0));
+        let batch_id = BatchID::from_raw(0);
+        assert!(column.insert_arrow_array(batch_id, array1.clone()).is_ok());
+        assert!(column.is_cached(batch_id));
         assert_eq!(column.budget().memory_usage_bytes(), array1_size);
 
         // Test 2: Multiple insertions within limit
         let array2 = Arc::new(Int32Array::from(vec![2; 200])) as ArrayRef;
         let array2_size = array_mem_size(&array2);
-        assert!(column.insert_arrow_array(1, array2.clone()).is_ok());
-        assert!(column.is_cached(1));
+        let batch_id = BatchID::from_raw(1);
+        assert!(column.insert_arrow_array(batch_id, array2.clone()).is_ok());
+        assert!(column.is_cached(batch_id));
         assert_eq!(
             column.budget().memory_usage_bytes(),
             array1_size + array2_size
@@ -915,18 +920,20 @@ mod tests {
 
         let remaining_space = max_cache_bytes - (array1_size + array2_size);
         let exact_fit_array = Arc::new(Int32Array::from(vec![3; remaining_space / 4])) as ArrayRef;
+        let batch_id = BatchID::from_raw(2);
         assert!(
             column
-                .insert_arrow_array(2, exact_fit_array.clone())
+                .insert_arrow_array(batch_id, exact_fit_array.clone())
                 .is_err()
         );
-        assert!(!column.is_cached(2));
+        assert!(!column.is_cached(batch_id));
         assert_eq!(
             column.budget().memory_usage_bytes(),
             array1_size + array2_size
         );
 
-        assert!(column.insert_arrow_array(0, array1.clone()).is_err());
+        let batch_id = BatchID::from_raw(0);
+        assert!(column.insert_arrow_array(batch_id, array1.clone()).is_err());
         assert_eq!(
             column.budget().memory_usage_bytes(),
             array1_size + array2_size
@@ -954,12 +961,17 @@ mod tests {
         let arrow_array = Arc::new(Int32Array::from(vec![10; 100_000])) as ArrayRef;
         let arrow_size = arrow_array.get_array_memory_size();
 
-        assert!(column.insert_arrow_array(0, arrow_array.clone()).is_ok());
+        let batch_id = BatchID::from_raw(0);
+        assert!(
+            column
+                .insert_arrow_array(batch_id, arrow_array.clone())
+                .is_ok()
+        );
 
         let size_before = column.budget().memory_usage_bytes();
         loop {
             // Now check that the entry has been transcoded.
-            let entry = column.cache_store.get(&column.entry_id(0)).unwrap();
+            let entry = column.cache_store.get(&column.entry_id(batch_id)).unwrap();
             match entry {
                 CachedBatch::LiquidMemory(ref liquid) => {
                     // The memory usage after transcoding should be less or equal.
@@ -1030,7 +1042,8 @@ mod tests {
                         (0..100).map(|_| i as i32).collect::<Vec<_>>(),
                     ));
                     barrier.wait();
-                    let _ = column.insert_arrow_array(i, array);
+                    let batch_id = BatchID::from_raw(i as u16);
+                    let _ = column.insert_arrow_array(batch_id, array);
                 })
             })
             .collect();
@@ -1089,9 +1102,10 @@ mod tests {
 
         // Insert the array
         let row_id = 20;
+        let batch_id = BatchID::from_raw(row_id as u16);
         assert!(
             column
-                .insert_arrow_array(row_id, large_array.clone())
+                .insert_arrow_array(batch_id, large_array.clone())
                 .is_ok()
         );
 
@@ -1128,7 +1142,7 @@ mod tests {
 
         // 3. Check that the data is stored as OnDiskLiquid
         {
-            let cached_entry = column.cache_store.get(&column.entry_id(row_id)).unwrap();
+            let cached_entry = column.cache_store.get(&column.entry_id(batch_id)).unwrap();
             match cached_entry {
                 CachedBatch::OnDiskLiquid => {
                     // This is what we expect
@@ -1139,7 +1153,7 @@ mod tests {
 
         // 4. Read the data back and verify its content
         let retrieved_array = column
-            .get_arrow_array_test_only(row_id)
+            .get_arrow_array_test_only(batch_id)
             .expect("Failed to read array");
 
         assert_eq!(&retrieved_array, &large_array);

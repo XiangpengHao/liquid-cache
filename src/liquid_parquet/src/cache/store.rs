@@ -1,4 +1,5 @@
 use std::{
+    ops::Deref,
     path::{Path, PathBuf},
     sync::atomic::{AtomicUsize, Ordering},
 };
@@ -20,14 +21,51 @@ pub(super) struct CacheEntryID {
     val: u64,
 }
 
+/// BatchID is a unique identifier for a batch of rows,
+/// it is row id divided by the batch size.
+///
+// It's very easy to misinterpret this as row id, so we use new type idiom to avoid confusion:
+// https://doc.rust-lang.org/rust-by-example/generics/new_types.html
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
+pub struct BatchID {
+    v: u16,
+}
+
+impl BatchID {
+    /// Creates a new BatchID from a row id and a batch size.
+    /// row id must be on the batch boundary.
+    pub(crate) fn from_row_id(row_id: usize, batch_size: usize) -> Self {
+        debug_assert!(row_id % batch_size == 0);
+        Self {
+            v: (row_id / batch_size) as u16,
+        }
+    }
+
+    pub(crate) fn from_raw(v: u16) -> Self {
+        Self { v }
+    }
+
+    pub(crate) fn inc(&mut self) {
+        debug_assert!(self.v < u16::MAX);
+        self.v += 1;
+    }
+}
+
+impl Deref for BatchID {
+    type Target = u16;
+
+    fn deref(&self) -> &Self::Target {
+        &self.v
+    }
+}
+
 impl CacheEntryID {
-    pub(super) fn new(file_id: u64, row_group_id: u64, column_id: u64, row_id: u64) -> Self {
+    pub(super) fn new(file_id: u64, row_group_id: u64, column_id: u64, batch_id: BatchID) -> Self {
         debug_assert!(file_id <= u16::MAX as u64);
         debug_assert!(row_group_id <= u16::MAX as u64);
         debug_assert!(column_id <= u16::MAX as u64);
-        debug_assert!(row_id <= u16::MAX as u64);
         Self {
-            val: (file_id) << 48 | (row_group_id) << 32 | (column_id) << 16 | row_id,
+            val: (file_id) << 48 | (row_group_id) << 32 | (column_id) << 16 | batch_id.v as u64,
         }
     }
 
