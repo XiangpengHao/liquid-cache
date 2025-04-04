@@ -17,11 +17,11 @@ use bytes::Bytes;
 use liquid_cache_common::CacheMode;
 use std::fmt::Display;
 use std::fs::File;
-use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::io::Read;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
-use store::{BudgetAccounting, CacheConfig, CacheStore, EntryID};
+use store::{BudgetAccounting, CacheConfig, CacheEntryID, CacheStore};
 use tokio::runtime::Runtime;
 
 mod stats;
@@ -59,7 +59,7 @@ impl LiquidCompressorStates {
 /// A cached batch, the value can be cheaply cloned.
 #[derive(Debug, Clone)]
 enum CachedBatch {
-    ArrowMemory((ArrayRef, Arc<LiquidCompressorStates>)),
+    ArrowMemory(ArrayRef),
     LiquidMemory(LiquidArrayRef),
     OnDiskLiquid(usize),
 }
@@ -67,42 +67,20 @@ enum CachedBatch {
 impl CachedBatch {
     fn memory_usage_bytes(&self) -> usize {
         match self {
-            Self::ArrowMemory(array) => array.0.get_array_memory_size(),
+            Self::ArrowMemory(array) => array.get_array_memory_size(),
             Self::LiquidMemory(array) => array.get_array_memory_size(),
             Self::OnDiskLiquid(size) => *size,
         }
     }
 
-    fn transcode_to_liquid(&self) -> Result<CachedBatch, ()> {
+    fn transcode_to_liquid(&self, states: &LiquidCompressorStates) -> Result<CachedBatch, ()> {
         match self {
-            Self::ArrowMemory((array, states)) => {
+            Self::ArrowMemory(array) => {
                 let liquid = transcode_liquid_inner(array, states).map_err(|_| ())?;
                 Ok(CachedBatch::LiquidMemory(liquid))
             }
             Self::LiquidMemory(_) => Ok(self.clone()),
             Self::OnDiskLiquid(_) => Ok(self.clone()),
-        }
-    }
-
-    fn write_to_file(self, path: &Path) -> CachedBatch {
-        match self {
-            Self::ArrowMemory((array, states)) => {
-                let transcoded =
-                    transcode_liquid_inner(&array, &states).expect("failed to transcode");
-                let transcoded = CachedBatch::LiquidMemory(transcoded);
-                transcoded.write_to_file(path)
-            }
-            Self::LiquidMemory(liquid) => {
-                let bytes = liquid.to_bytes();
-                let mut file = File::create(path).unwrap();
-                file.write_all(&bytes).unwrap();
-                CachedBatch::OnDiskLiquid(bytes.len())
-            }
-
-            Self::OnDiskLiquid(size) => {
-                // Already on disk.
-                CachedBatch::OnDiskLiquid(size)
-            }
         }
     }
 }
@@ -181,8 +159,8 @@ impl LiquidCachedColumn {
         self.cache_store.config().batch_size()
     }
 
-    fn entry_id(&self, row_id: usize) -> EntryID {
-        EntryID::new(
+    fn entry_id(&self, row_id: usize) -> CacheEntryID {
+        CacheEntryID::new(
             self.file_id,
             self.row_group_id,
             self.column_id,
@@ -247,7 +225,7 @@ impl LiquidCachedColumn {
     ) -> Option<Result<BooleanBuffer, ArrowError>> {
         let inner_value = self.cache_store.get(&self.entry_id(row_id))?;
         match &inner_value {
-            CachedBatch::ArrowMemory((array, _)) => {
+            CachedBatch::ArrowMemory(array) => {
                 let boolean_array = BooleanArray::new(selection.clone(), None);
                 let selected = arrow::compute::filter(array, &boolean_array).unwrap();
                 let record_batch = self.arrow_array_to_record_batch(selected);
@@ -304,7 +282,7 @@ impl LiquidCachedColumn {
     ) -> Option<ArrayRef> {
         let inner_value = self.cache_store.get(&self.entry_id(row_id))?;
         match &inner_value {
-            CachedBatch::ArrowMemory((array, _)) => {
+            CachedBatch::ArrowMemory(array) => {
                 let filtered = arrow::compute::filter(array, filter).unwrap();
                 Some(filtered)
             }
@@ -331,59 +309,13 @@ impl LiquidCachedColumn {
     pub(crate) fn get_arrow_array_test_only(&self, row_id: usize) -> Option<ArrayRef> {
         let cached_entry = self.cache_store.get(&self.entry_id(row_id))?;
         match cached_entry {
-            CachedBatch::ArrowMemory((array, _)) => Some(array.clone()),
+            CachedBatch::ArrowMemory(array) => Some(array.clone()),
             CachedBatch::LiquidMemory(array) => Some(array.to_best_arrow_array()),
             CachedBatch::OnDiskLiquid(_size) => {
                 let array = self.read_liquid_from_disk(row_id);
                 Some(array.to_best_arrow_array())
             }
         }
-    }
-
-    fn insert_as_arrow_array(&self, row_id: usize, array: ArrayRef) {
-        self.cache_store.insert(
-            self.entry_id(row_id),
-            CachedBatch::ArrowMemory((array, Arc::clone(&self.liquid_compressor_states))),
-        );
-    }
-
-    fn insert_as_liquid_foreground(self: &Arc<Self>, row_id: usize, array: ArrayRef) {
-        let transcoded = match transcode_liquid_inner(&array, &self.liquid_compressor_states) {
-            Ok(transcoded) => transcoded,
-            Err(_) => {
-                log::warn!(
-                    "unsupported data type {:?}, inserting as arrow array",
-                    array.data_type()
-                );
-                self.insert_as_arrow_array(row_id, array);
-                return;
-            }
-        };
-
-        self.cache_store
-            .insert(self.entry_id(row_id), CachedBatch::LiquidMemory(transcoded));
-    }
-
-    fn insert_as_liquid_background(self: &Arc<Self>, row_id: usize, array: ArrayRef) {
-        let arrow_size = array.get_array_memory_size();
-        if self.budget().try_reserve_memory(arrow_size).is_err() {
-            let column_arc = Arc::clone(self);
-            let array_to_write = array.clone();
-            TRANSCODE_THREAD_POOL.spawn(async move {
-                column_arc.background_transcode_to_disk(array_to_write, row_id);
-            });
-        }
-
-        self.cache_store.insert(
-            self.entry_id(row_id),
-            CachedBatch::ArrowMemory((array.clone(), Arc::clone(&self.liquid_compressor_states))),
-        );
-
-        // Submit a background transcoding task to our dedicated thread pool.
-        let column_arc = Arc::clone(self);
-        TRANSCODE_THREAD_POOL.spawn(async move {
-            column_arc.background_transcode_to_liquid(row_id);
-        });
     }
 
     /// Insert an arrow array into the cache.
@@ -414,69 +346,8 @@ impl LiquidCachedColumn {
 
         self.inserted_batch_count.fetch_add(1, Ordering::Relaxed);
 
-        match &self.cache_mode {
-            LiquidCacheMode::InMemoryArrow => {
-                self.insert_as_arrow_array(row_id, array);
-            }
-            LiquidCacheMode::OnDiskArrow => {
-                unimplemented!()
-            }
-            LiquidCacheMode::InMemoryLiquid {
-                transcode_in_background,
-            } => {
-                if *transcode_in_background {
-                    self.insert_as_liquid_background(row_id, array);
-                } else {
-                    self.insert_as_liquid_foreground(row_id, array);
-                }
-            }
-        }
+        self.cache_store.insert(self.entry_id(row_id), array);
         Ok(())
-    }
-
-    fn background_transcode_to_disk(self: &Arc<Self>, array: ArrayRef, row_id: usize) {
-        let transcoded = transcode_liquid_inner(&array, &self.liquid_compressor_states)
-            .expect("failed to transcode");
-        // Here we have no thing but to panic, because we are in a background thread, and we run out of memory, and we don't support the data type.
-
-        self.write_to_disk(transcoded, row_id);
-    }
-
-    fn write_to_disk(self: &Arc<Self>, array: LiquidArrayRef, row_id: usize) {
-        let bytes = array.to_bytes();
-        let disk_size = bytes.len();
-        let file_path = self.cache_dir.join(format!("row_{}.bin", row_id));
-        let mut file = File::create(file_path).unwrap();
-        file.write_all(&bytes).unwrap();
-        self.budget().add_used_disk_bytes(disk_size);
-        self.cache_store
-            .insert(self.entry_id(row_id), CachedBatch::OnDiskLiquid(disk_size));
-        self.budget().add_used_disk_bytes(disk_size);
-    }
-
-    /// This method is run in the background. It acquires a write lock on the cache,
-    /// checks that the stored value is still an ArrowMemory batch, and then runs the
-    /// expensive transcoding, replacing the entry with a LiquidMemory batch.
-    fn background_transcode_to_liquid(self: &Arc<Self>, row_id: usize) {
-        let entry_id = self.entry_id(row_id);
-        let entry = self.cache_store.get(&entry_id);
-        let Some(entry) = entry else {
-            return;
-        };
-
-        let previous_size = entry.memory_usage_bytes();
-        let Ok(transcoded) = entry.transcode_to_liquid() else {
-            return;
-        };
-
-        let new_size = transcoded.memory_usage_bytes();
-        if self
-            .budget()
-            .try_update_memory_usage_after_transcoding(previous_size, new_size)
-            .is_err()
-        {
-            return;
-        }
     }
 }
 
@@ -803,7 +674,7 @@ impl LiquidCache {
         let config = CacheConfig::new(batch_size, max_cache_bytes, cache_dir);
         LiquidCache {
             files: Mutex::new(AHashMap::new()),
-            cache_store: Arc::new(CacheStore::new(config)),
+            cache_store: Arc::new(CacheStore::new(config, true)),
             current_file_id: AtomicU64::new(0),
         }
     }

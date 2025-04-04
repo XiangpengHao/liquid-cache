@@ -1,7 +1,7 @@
 use std::{
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, LazyLock,
         atomic::{AtomicUsize, Ordering},
     },
 };
@@ -9,11 +9,23 @@ use std::{
 use arrow::array::ArrayRef;
 use dashmap::DashMap;
 use log::warn;
+use tokio::runtime::Runtime;
 
-use super::CachedBatch;
+use super::{CachedBatch, LiquidCompressorStates, transcode_liquid_inner};
+
+/// A dedicated Tokio thread pool for background transcoding tasks.
+/// This pool is built with 4 worker threads.
+static TRANSCODE_THREAD_POOL: LazyLock<Runtime> = LazyLock::new(|| {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .thread_name("transcode-worker")
+        .enable_all()
+        .build()
+        .unwrap()
+});
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
-pub(super) struct EntryID {
+pub(super) struct CacheEntryID {
     // This is a unique identifier for a row in a parquet file.
     // It is composed of 8 bytes:
     // - 2 bytes for the file id
@@ -24,7 +36,7 @@ pub(super) struct EntryID {
     val: u64,
 }
 
-impl EntryID {
+impl CacheEntryID {
     pub(super) fn new(file_id: u64, row_group_id: u64, column_id: u64, row_id: u64) -> Self {
         debug_assert!(file_id <= u16::MAX as u64);
         debug_assert!(row_group_id <= u16::MAX as u64);
@@ -38,29 +50,50 @@ impl EntryID {
         }
     }
 
-    fn row_id(&self) -> u64 {
+    fn row_id_inner(&self) -> u64 {
         self.val & 0x0000_0000_0000_FFFF
     }
 
-    fn file_id(&self) -> u64 {
+    fn file_id_inner(&self) -> u64 {
         self.val >> 48
     }
 
-    fn row_group_id(&self) -> u64 {
+    fn row_group_id_inner(&self) -> u64 {
         (self.val >> 32) & 0x0000_0000_FFFF
     }
 
-    fn column_id(&self) -> u64 {
+    fn column_id_inner(&self) -> u64 {
         (self.val >> 16) & 0x0000_0000_FFFF
     }
 
     fn on_disk_path(&self, cache_root_dir: &Path) -> PathBuf {
-        let row_id = self.row_id();
+        let row_id = self.row_id_inner();
         cache_root_dir
-            .join(format!("file_{}", self.file_id()))
-            .join(format!("row_group_{}", self.row_group_id()))
-            .join(format!("column_{}", self.column_id()))
+            .join(format!("file_{}", self.file_id_inner()))
+            .join(format!("row_group_{}", self.row_group_id_inner()))
+            .join(format!("column_{}", self.column_id_inner()))
             .join(format!("row_{}.bin", row_id))
+    }
+
+    fn column_id(&self) -> ColumnID {
+        ColumnID::new(
+            self.file_id_inner(),
+            self.row_group_id_inner(),
+            self.column_id_inner(),
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
+struct ColumnID {
+    val: u64,
+}
+
+impl ColumnID {
+    fn new(file_id: u64, row_group_id: u64, column_id: u64) -> Self {
+        Self {
+            val: (file_id as u64) << 48 | (row_group_id as u64) << 32 | (column_id as u64) << 16,
+        }
     }
 }
 
@@ -181,7 +214,8 @@ impl BudgetAccounting {
 
 #[derive(Debug)]
 pub(crate) struct CacheStore {
-    cached_data: DashMap<EntryID, CachedBatch>,
+    cached_data: DashMap<CacheEntryID, CachedBatch>,
+    compressor_states: DashMap<ColumnID, Arc<LiquidCompressorStates>>,
     config: CacheConfig,
     budget: BudgetAccounting,
     advisor: Arc<dyn CacheAdvisor>,
@@ -199,7 +233,7 @@ enum CacheAdvice {
     /// The cache store should insert the batch to disk.
     InsertToDisk,
     /// The cache store should evict the batch and consult the advisor again.
-    EvictAndRetry(EntryID),
+    EvictAndRetry(CacheEntryID),
 }
 
 impl NoReplacementCacheAdvisor {
@@ -211,7 +245,7 @@ impl NoReplacementCacheAdvisor {
 }
 
 impl CacheAdvisor for NoReplacementCacheAdvisor {
-    fn advice_on(&self, _id: EntryID, batch: &ArrayRef) -> CacheAdvice {
+    fn advice_on(&self, _id: CacheEntryID, batch: &ArrayRef) -> CacheAdvice {
         let size = batch.get_array_memory_size();
         if self.budget.try_reserve_memory(size).is_ok() {
             CacheAdvice::InsertToMemory
@@ -220,21 +254,22 @@ impl CacheAdvisor for NoReplacementCacheAdvisor {
         }
     }
 
-    fn inform_read(&self, _id: &EntryID) {}
+    fn inform_read(&self, _id: &CacheEntryID) {}
 }
 
 trait CacheAdvisor: std::fmt::Debug + Sync + Send {
     /// Returns the advice for the cache store what to do with this batch.
-    fn advice_on(&self, id: EntryID, batch: &ArrayRef) -> CacheAdvice;
+    fn advice_on(&self, id: CacheEntryID, batch: &ArrayRef) -> CacheAdvice;
 
     /// Inform the advisor that a batch is being read.
-    fn inform_read(&self, id: &EntryID);
+    fn inform_read(&self, id: &CacheEntryID);
 }
 
 impl CacheStore {
     pub(super) fn new(config: CacheConfig, background_transcode: bool) -> Self {
         Self {
             cached_data: DashMap::new(),
+            compressor_states: DashMap::new(),
             budget: BudgetAccounting::new(config.max_cache_bytes()),
             advisor: Arc::new(NoReplacementCacheAdvisor::new(config.max_cache_bytes())),
             config,
@@ -242,15 +277,54 @@ impl CacheStore {
         }
     }
 
-    pub(super) fn insert(&self, entry_id: EntryID, cached_batch: ArrayRef) {
+    pub(super) fn insert(self: &Arc<Self>, entry_id: CacheEntryID, cached_batch: ArrayRef) {
         let advice = self.advisor.advice_on(entry_id, &cached_batch);
         match advice {
             CacheAdvice::InsertToMemory => {
                 if self.background_transcode {
-                    
+                    self.cached_data
+                        .insert(entry_id, CachedBatch::ArrowMemory(cached_batch));
+                    let self_clone = self.clone();
+                    TRANSCODE_THREAD_POOL.spawn(async move {
+                        let Some(entry) = self_clone.cached_data.get(&entry_id) else {
+                            return;
+                        };
+                        let states = self_clone
+                            .compressor_states
+                            .entry(entry_id.column_id())
+                            .or_insert_with(|| Arc::new(LiquidCompressorStates::new()))
+                            .clone();
+                        let transcoded = match entry.transcode_to_liquid(&states) {
+                            Ok(transcoded) => transcoded,
+                            Err(_) => {
+                                warn!("Failed to transcode batch, inserting as arrow array");
+                                entry.clone()
+                            }
+                        };
+                        let column_id = entry_id.column_id();
+                        let compressor_states = self
+                            .compressor_states
+                            .entry(column_id)
+                            .or_insert_with(|| Arc::new(LiquidCompressorStates::new()))
+                            .clone();
+                    });
                 } else {
+                    let column_id = entry_id.column_id();
+                    let compressor_states = self
+                        .compressor_states
+                        .entry(column_id)
+                        .or_insert_with(|| Arc::new(LiquidCompressorStates::new()))
+                        .clone();
+                    let transcoded = match transcode_liquid_inner(&cached_batch, &compressor_states)
+                    {
+                        Ok(transcoded) => CachedBatch::LiquidMemory(transcoded),
+                        Err(_) => {
+                            warn!("Failed to transcode batch, inserting as arrow array");
+                            CachedBatch::ArrowMemory(cached_batch)
+                        }
+                    };
+                    self.cached_data.insert(entry_id, transcoded);
                 }
-                self.cached_data.insert(entry_id, cached_batch);
             }
             CacheAdvice::InsertToDisk => {
                 let path = entry_id.on_disk_path(self.config.cache_root_dir());
@@ -264,7 +338,7 @@ impl CacheStore {
         }
     }
 
-    pub(super) fn get(&self, entry_id: &EntryID) -> Option<CachedBatch> {
+    pub(super) fn get(&self, entry_id: &CacheEntryID) -> Option<CachedBatch> {
         let v = self
             .cached_data
             .get(entry_id)
@@ -278,7 +352,7 @@ impl CacheStore {
         self.budget.reset_usage();
     }
 
-    pub(super) fn is_cached(&self, entry_id: &EntryID) -> bool {
+    pub(super) fn is_cached(&self, entry_id: &CacheEntryID) -> bool {
         self.cached_data.contains_key(entry_id)
     }
 
