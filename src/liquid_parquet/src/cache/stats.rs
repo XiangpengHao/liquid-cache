@@ -130,7 +130,7 @@ impl LiquidCache {
                             batch_id as usize * self.cache_store.config().batch_size();
                         let cached_entry = row_mapping
                             .cache_store
-                            .get(&row_mapping.entry_id(row_start_id as usize));
+                            .get(&row_mapping.entry_id(row_start_id));
                         let Some(cached_entry) = cached_entry else {
                             continue;
                         };
@@ -149,8 +149,8 @@ impl LiquidCache {
 
                         writer.append_entry(
                             file_path,
-                            *row_group_id as u64,
-                            *column_id as u64,
+                            *row_group_id,
+                            *column_id,
                             row_start_id as u64,
                             row_count,
                             memory_size as u64,

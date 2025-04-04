@@ -27,10 +27,7 @@ impl CacheEntryID {
         debug_assert!(column_id <= u16::MAX as u64);
         debug_assert!(row_id <= u16::MAX as u64);
         Self {
-            val: (file_id as u64) << 48
-                | (row_group_id as u64) << 32
-                | (column_id as u64) << 16
-                | row_id as u64,
+            val: (file_id) << 48 | (row_group_id) << 32 | (column_id) << 16 | row_id,
         }
     }
 
@@ -198,11 +195,9 @@ impl CacheStore {
     }
 
     pub(super) fn get(&self, entry_id: &CacheEntryID) -> Option<CachedBatch> {
-        let v = self
-            .cached_data
+        self.cached_data
             .get(entry_id)
-            .map(|entry| entry.value().clone());
-        v
+            .map(|entry| entry.value().clone())
     }
 
     pub(super) fn reset(&self) {

@@ -666,7 +666,7 @@ impl LiquidCachedRowGroup {
                     self.cache_mode,
                     field,
                     self.cache_store.clone(),
-                    column_id as u64,
+                    column_id,
                     self.row_group_id,
                     self.file_id,
                 ));
@@ -739,7 +739,7 @@ impl LiquidCachedFile {
             Arc::new(LiquidCachedRowGroup::new(
                 self.cache_mode,
                 self.cache_store.clone(),
-                row_group_id as u64,
+                row_group_id,
                 self.file_id,
             ))
         });
