@@ -1,7 +1,11 @@
 use std::{
+    collections::VecDeque,
     ops::Deref,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use dashmap::{DashMap, Entry};
@@ -167,11 +171,7 @@ impl BudgetAccounting {
 
     /// Adjust the cache size after transcoding.
     /// Returns true if the size was adjusted, false if the cache is full, when new_size is larger than old_size.
-    fn try_update_memory_usage_after_transcoding(
-        &self,
-        old_size: usize,
-        new_size: usize,
-    ) -> Result<(), ()> {
+    fn try_update_memory_usage(&self, old_size: usize, new_size: usize) -> Result<(), ()> {
         if old_size < new_size {
             let diff = new_size - old_size;
             if diff > 1024 * 1024 {
@@ -202,12 +202,9 @@ impl BudgetAccounting {
         self.used_disk_bytes.fetch_add(bytes, Ordering::Relaxed);
     }
 
-    #[allow(unused)]
-    pub fn update_usage_after_eviction(&self, evicted_size: usize) {
+    pub fn sub_memory_usage(&self, evicted_size: usize) {
         self.used_memory_bytes
             .fetch_sub(evicted_size, Ordering::Relaxed);
-        self.used_disk_bytes
-            .fetch_add(evicted_size, Ordering::Relaxed);
     }
 }
 
@@ -216,11 +213,13 @@ pub(crate) struct CacheStore {
     cached_data: DashMap<CacheEntryID, CachedBatch>,
     config: CacheConfig,
     budget: BudgetAccounting,
+    fifo_queue: Mutex<VecDeque<CacheEntryID>>,
 }
 
 #[derive(Debug)]
-pub(crate) enum CacheError {
-    CacheFull,
+pub(super) enum CacheAdvice {
+    EvictAndRetry(CacheEntryID),
+    InsertToDisk,
 }
 
 impl CacheStore {
@@ -230,6 +229,7 @@ impl CacheStore {
             cached_data: DashMap::new(),
             budget: BudgetAccounting::new(config.max_cache_bytes()),
             config,
+            fifo_queue: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -237,7 +237,7 @@ impl CacheStore {
         &self,
         entry_id: CacheEntryID,
         cached_batch: CachedBatch,
-    ) -> Result<(), CacheError> {
+    ) -> Result<(), CacheAdvice> {
         let new_memory_size = cached_batch.memory_usage_bytes();
 
         match self.cached_data.entry(entry_id) {
@@ -245,17 +245,26 @@ impl CacheStore {
                 let old = entry.get();
                 let old_memory_size = old.memory_usage_bytes();
                 self.budget
-                    .try_update_memory_usage_after_transcoding(old_memory_size, new_memory_size)
-                    .map_err(|_| CacheError::CacheFull)?;
+                    .try_update_memory_usage(old_memory_size, new_memory_size)
+                    .map_err(|_| {
+                        let mut fifo_queue = self.fifo_queue.lock().unwrap();
+                        let v = fifo_queue.pop_front();
+                        if let Some(v) = v {
+                            CacheAdvice::EvictAndRetry(v)
+                        } else {
+                            CacheAdvice::InsertToDisk
+                        }
+                    })?;
                 entry.insert(cached_batch);
             }
             Entry::Vacant(entry) => {
                 self.budget
                     .try_reserve_memory(new_memory_size)
-                    .map_err(|_| CacheError::CacheFull)?;
+                    .map_err(|_| CacheAdvice::InsertToDisk)?;
                 entry.insert(cached_batch);
             }
         }
+        self.fifo_queue.lock().unwrap().push_back(entry_id);
         Ok(())
     }
 
@@ -263,6 +272,13 @@ impl CacheStore {
         self.cached_data
             .get(entry_id)
             .map(|entry| entry.value().clone())
+    }
+
+    pub(super) fn remove(&self, entry_id: &CacheEntryID) -> Option<CachedBatch> {
+        let v = self.cached_data.remove(entry_id).map(|(_, batch)| batch)?;
+        let memory_usage = v.memory_usage_bytes();
+        self.budget.sub_memory_usage(memory_usage);
+        Some(v)
     }
 
     pub(super) fn reset(&self) {
@@ -307,7 +323,7 @@ mod tests {
         assert_eq!(config.memory_usage_bytes(), 800);
 
         // Test eviction accounting
-        config.update_usage_after_eviction(200);
+        config.sub_memory_usage(200);
         assert_eq!(config.memory_usage_bytes(), 600);
 
         // Reset usage
@@ -324,27 +340,15 @@ mod tests {
         assert_eq!(config.memory_usage_bytes(), 400);
 
         // Update after transcoding - size decrease
-        assert!(
-            config
-                .try_update_memory_usage_after_transcoding(300, 200)
-                .is_ok()
-        );
+        assert!(config.try_update_memory_usage(300, 200).is_ok());
         assert_eq!(config.memory_usage_bytes(), 300); // 400 - (300 - 200)
 
         // Update after transcoding - size increase within limits
-        assert!(
-            config
-                .try_update_memory_usage_after_transcoding(200, 500)
-                .is_ok()
-        );
+        assert!(config.try_update_memory_usage(200, 500).is_ok());
         assert_eq!(config.memory_usage_bytes(), 600); // 300 + (500 - 200)
 
         // Update after transcoding - size increase exceeding limits
-        assert!(
-            config
-                .try_update_memory_usage_after_transcoding(100, 600)
-                .is_err()
-        );
+        assert!(config.try_update_memory_usage(100, 600).is_err());
         assert_eq!(config.memory_usage_bytes(), 600); // Unchanged because update failed
     }
 }
