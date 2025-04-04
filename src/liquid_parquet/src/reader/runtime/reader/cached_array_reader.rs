@@ -17,7 +17,7 @@ use parquet::{
 use super::super::parquet_bridge::{ParquetField, ParquetFieldType};
 use crate::{
     LiquidCacheMode,
-    cache::{InsertArrowArrayError, LiquidCachedColumnRef, LiquidCachedRowGroupRef},
+    cache::{BatchID, LiquidCachedColumnRef, LiquidCachedRowGroupRef},
     reader::runtime::parquet_bridge::StructArrayReaderBridge,
 };
 
@@ -42,7 +42,7 @@ struct CachedArrayReader {
     inner_row_id: usize,
     selection: VecDeque<RowSelector>,
     liquid_cache: LiquidCachedColumnRef,
-    reader_local_cache: AHashMap<usize, ArrayRef>,
+    reader_local_cache: AHashMap<BatchID, ArrayRef>,
 }
 
 impl CachedArrayReader {
@@ -73,8 +73,9 @@ impl CachedArrayReader {
         self.liquid_cache.batch_size()
     }
 
-    fn fetch_batch(&mut self, row_id: usize) -> Result<(), ParquetError> {
+    fn fetch_batch(&mut self, batch_id: BatchID) -> Result<(), ParquetError> {
         // now we need to read from inner reader, first check if the inner id is up to date.
+        let row_id = *batch_id as usize * self.batch_size();
         if self.inner_row_id < row_id {
             let to_skip = row_id - self.inner_row_id;
             let skipped = self.inner.skip_records(to_skip)?;
@@ -83,18 +84,17 @@ impl CachedArrayReader {
         }
         let read = self.inner.read_records(self.batch_size())?;
         let array = self.inner.consume_batch()?;
-        if let Err(InsertArrowArrayError::CacheFull(array)) =
-            self.liquid_cache.insert_arrow_array(row_id, array)
-        {
-            self.reader_local_cache.insert(row_id, array);
-        }
+        _ = self
+            .liquid_cache
+            .insert_arrow_array(batch_id, array.clone());
+        self.reader_local_cache.insert(batch_id, array);
 
         self.inner_row_id += read;
         Ok(())
     }
 
-    fn is_cached(&self, row_id: usize) -> bool {
-        self.liquid_cache.is_cached(row_id) || self.reader_local_cache.contains_key(&row_id)
+    fn is_cached(&self, batch_id: BatchID) -> bool {
+        self.liquid_cache.is_cached(batch_id) || self.reader_local_cache.contains_key(&batch_id)
     }
 
     fn read_records_inner(&mut self, request_size: usize) -> Result<usize, ParquetError> {
@@ -106,12 +106,15 @@ impl CachedArrayReader {
         let starting_row_id = self.current_row / batch_size * batch_size;
         let ending_row_id = (self.current_row + request_size - 1) / batch_size * batch_size;
 
-        if !self.is_cached(starting_row_id) {
-            self.fetch_batch(starting_row_id)?;
+        let starting_batch_id = BatchID::from_row_id(starting_row_id, batch_size);
+        let ending_batch_id = BatchID::from_row_id(ending_row_id, batch_size);
+
+        if !self.is_cached(starting_batch_id) {
+            self.fetch_batch(starting_batch_id)?;
         }
 
-        if ending_row_id != starting_row_id && !self.is_cached(ending_row_id) {
-            self.fetch_batch(ending_row_id)?;
+        if ending_row_id != starting_row_id && !self.is_cached(ending_batch_id) {
+            self.fetch_batch(ending_batch_id)?;
         }
 
         self.current_row += request_size;
@@ -148,6 +151,7 @@ impl CachedArrayReader {
         for batch_id in start_batch..=end_batch {
             let batch_start = batch_id * batch_size;
             let batch_end = batch_start + batch_size - 1;
+            let batch_id = BatchID::from_raw(batch_id.try_into().unwrap());
 
             // Calculate overlap between selection and this batch
             let overlap_start = start_row.max(batch_start);
@@ -170,14 +174,11 @@ impl CachedArrayReader {
             // Get cached array and apply filter
             let array = match self
                 .liquid_cache
-                .get_arrow_array_with_filter(batch_id * batch_size, &mask_array)
+                .get_arrow_array_with_filter(batch_id, &mask_array)
             {
                 Some(array) => array,
                 None => {
-                    let array = self
-                        .reader_local_cache
-                        .remove(&(batch_id * batch_size))
-                        .unwrap();
+                    let array = self.reader_local_cache.remove(&batch_id).unwrap();
                     arrow::compute::filter(&array, &mask_array).unwrap()
                 }
             };
@@ -324,7 +325,7 @@ fn instrument_array_reader(
         .zip(children)
         .zip(struct_fields)
         .map(|((column_id, reader), field)| {
-            let column_cache = liquid_cache.create_column(*column_id, field.clone());
+            let column_cache = liquid_cache.create_column(*column_id as u64, field.clone());
             let reader = Box::new(CachedArrayReader::new(reader, column_cache));
             reader as _
         })
@@ -496,7 +497,9 @@ mod tests {
             let read1 = reader.read_records(32).unwrap();
             assert_eq!(read1, 32);
             let expected = reader.consume_batch().unwrap();
-            let actual = cache.get_arrow_array_test_only(i).unwrap();
+            let actual = cache
+                .get_arrow_array_test_only(BatchID::from_row_id(i, BATCH_SIZE))
+                .unwrap();
             assert_eq!(&expected, &actual);
             let cache_expected = get_expected_cached_value(i);
             assert_eq!(&cache_expected, &actual);
@@ -513,7 +516,9 @@ mod tests {
 
         let mut cached = vec![];
         for i in (0..96).step_by(32) {
-            let array = cache.get_arrow_array_test_only(i).unwrap();
+            let array = cache
+                .get_arrow_array_test_only(BatchID::from_row_id(i, BATCH_SIZE))
+                .unwrap();
             let expected = get_expected_cached_value(i);
             assert_eq!(&array, &expected);
             cached.push(array);
@@ -643,13 +648,19 @@ mod tests {
     }
 
     fn assert_contains(cache: &LiquidCachedColumnRef, id: usize) {
-        let actual = cache.get_arrow_array_test_only(id).unwrap();
+        let actual = cache
+            .get_arrow_array_test_only(BatchID::from_row_id(id, BATCH_SIZE))
+            .unwrap();
         let expected = get_expected_cached_value(id);
         assert_eq!(&actual, &expected);
     }
 
     fn assert_not_contains(cache: &LiquidCachedColumnRef, id: usize) {
-        assert!(cache.get_arrow_array_test_only(id).is_none());
+        assert!(
+            cache
+                .get_arrow_array_test_only(BatchID::from_row_id(id, BATCH_SIZE))
+                .is_none()
+        );
     }
 
     #[test]

@@ -1,6 +1,5 @@
 use crate::{
-    LiquidCacheMode, LiquidCachedFileRef, LiquidPredicate,
-    cache::{CacheConfig, LiquidCachedFile},
+    LiquidCache, LiquidCacheMode, LiquidCachedFileRef, LiquidPredicate,
     liquid_array::LiquidArrayRef,
     reader::{
         plantime::CachedMetaReaderFactory,
@@ -120,14 +119,14 @@ fn assert_batch_eq(left: &RecordBatch, right: &RecordBatch) {
 }
 
 fn get_test_cached_file(bath_size: usize, cache_dir: PathBuf) -> LiquidCachedFileRef {
-    let liquid_cache = LiquidCachedFile::new(
+    let lq = LiquidCache::new(bath_size, usize::MAX, cache_dir);
+
+    lq.register_or_get_file(
+        "".to_string(),
         LiquidCacheMode::InMemoryLiquid {
             transcode_in_background: false,
         },
-        Arc::new(CacheConfig::new(bath_size, usize::MAX)),
-        cache_dir,
-    );
-    Arc::new(liquid_cache)
+    )
 }
 #[tokio::test]
 async fn basic_stuff() {
@@ -497,19 +496,19 @@ async fn test_reading_with_full_cache() {
     let batch_size = builder.batch_size;
     let tmp_dir = tempfile::tempdir().unwrap();
     // Create a cache with a very small max size to force cache misses
-    let liquid_cache = Arc::new(LiquidCachedFile::new(
+    let lq = LiquidCache::new(batch_size, 1, tmp_dir.path().to_path_buf());
+    let lq_file = lq.register_or_get_file(
+        "".to_string(),
         LiquidCacheMode::InMemoryLiquid {
             transcode_in_background: false,
         },
-        Arc::new(CacheConfig::new(batch_size, 1)),
-        tmp_dir.path().to_path_buf(),
-    ));
+    );
 
     builder.projection = ProjectionMask::roots(
         builder.metadata.file_metadata().schema_descr(),
         column_projections.iter().cloned(),
     );
-    let reader = builder.build(liquid_cache.clone()).unwrap();
+    let reader = builder.build(lq_file.clone()).unwrap();
 
     let batches = reader
         .collect::<Vec<_>>()
@@ -524,5 +523,5 @@ async fn test_reading_with_full_cache() {
     for (i, batch) in batches.iter().enumerate() {
         assert_batch_eq(&baseline_batches[i], batch);
     }
-    assert_eq!(liquid_cache.memory_usage(), 0);
+    assert_eq!(lq.memory_usage_bytes(), 0);
 }

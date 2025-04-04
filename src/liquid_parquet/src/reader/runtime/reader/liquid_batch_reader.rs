@@ -7,7 +7,7 @@ use arrow_schema::{ArrowError, DataType, Schema, SchemaRef};
 use parquet::arrow::array_reader::ArrayReader;
 use parquet::arrow::arrow_reader::{RowSelection, RowSelector};
 
-use crate::cache::LiquidCachedRowGroupRef;
+use crate::cache::{BatchID, LiquidCachedRowGroupRef};
 use crate::reader::runtime::utils::{
     boolean_buffer_and_then, row_selector_to_boolean_buffer, take_next_batch,
 };
@@ -36,7 +36,7 @@ fn read_record_batch_from_parquet<'a>(
 
 pub(crate) struct LiquidBatchReader {
     liquid_cache: LiquidCachedRowGroupRef,
-    current_row_id: usize,
+    current_batch_id: BatchID,
     selection: VecDeque<RowSelector>,
     schema: SchemaRef,
     batch_size: usize,
@@ -61,7 +61,7 @@ impl LiquidBatchReader {
 
         Self {
             liquid_cache,
-            current_row_id: 0,
+            current_batch_id: BatchID::from_raw(0),
             selection: selection.into(),
             schema: Arc::new(schema),
             batch_size,
@@ -103,7 +103,7 @@ impl LiquidBatchReader {
                     }
 
                     let cached_result = self.liquid_cache.evaluate_selection_with_predicate(
-                        self.current_row_id,
+                        self.current_batch_id,
                         &input_selection,
                         predicate.as_mut(),
                     );
@@ -150,7 +150,7 @@ impl LiquidBatchReader {
         &mut self,
         selection: RowSelection,
     ) -> Result<Option<RecordBatch>, ArrowError> {
-        self.current_row_id += self.batch_size;
+        self.current_batch_id.inc();
         if !selection.selects_any() {
             self.projection_reader.skip_records(self.batch_size)?;
             return Ok(None);

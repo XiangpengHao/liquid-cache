@@ -1,4 +1,4 @@
-use super::{CachedBatch, LiquidCache};
+use super::{BatchID, CachedBatch, LiquidCache};
 use arrow::array::{ArrayBuilder, RecordBatch, StringBuilder, UInt64Builder};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use parquet::{
@@ -21,7 +21,6 @@ struct StatsWriter {
     row_count_builder: UInt64Builder,
     memory_size_builder: UInt64Builder,
     cache_type_builder: StringBuilder,
-    hit_count_builder: UInt64Builder,
 }
 
 impl StatsWriter {
@@ -33,7 +32,6 @@ impl StatsWriter {
             Field::new("row_count", DataType::UInt64, true),
             Field::new("memory_size", DataType::UInt64, false),
             Field::new("cache_type", DataType::Utf8, false),
-            Field::new("hit_count", DataType::UInt64, false),
             Field::new("file_path", DataType::Utf8, false),
         ]));
 
@@ -53,7 +51,6 @@ impl StatsWriter {
             row_count_builder: UInt64Builder::new(),
             memory_size_builder: UInt64Builder::new(),
             cache_type_builder: StringBuilder::with_capacity(8192, 8192),
-            hit_count_builder: UInt64Builder::new(),
         })
     }
 
@@ -64,7 +61,6 @@ impl StatsWriter {
         let row_count_array = self.row_count_builder.finish();
         let memory_size_array = self.memory_size_builder.finish();
         let cache_type_array = self.cache_type_builder.finish();
-        let hit_count_array = self.hit_count_builder.finish();
         let file_path_array = self.file_path_builder.finish();
         Ok(RecordBatch::try_new(
             self.schema.clone(),
@@ -75,7 +71,6 @@ impl StatsWriter {
                 Arc::new(row_count_array),
                 Arc::new(memory_size_array),
                 Arc::new(cache_type_array),
-                Arc::new(hit_count_array),
                 Arc::new(file_path_array),
             ],
         )?)
@@ -91,7 +86,6 @@ impl StatsWriter {
         row_count: Option<u64>,
         memory_size: u64,
         cache_type: &str,
-        hit_count: u64,
     ) -> Result<(), ParquetError> {
         self.row_group_id_builder.append_value(row_group_id);
         self.column_id_builder.append_value(column_id);
@@ -99,7 +93,6 @@ impl StatsWriter {
         self.row_count_builder.append_option(row_count);
         self.memory_size_builder.append_value(memory_size);
         self.cache_type_builder.append_value(cache_type);
-        self.hit_count_builder.append_value(hit_count);
         self.file_path_builder.append_value(file_path);
         if self.row_start_id_builder.len() >= 8192 {
             let batch = self.build_batch()?;
@@ -119,22 +112,7 @@ impl StatsWriter {
 impl LiquidCache {
     /// Get the memory usage of the cache in bytes.
     pub fn compute_memory_usage_bytes(&self) -> u64 {
-        let files = self.files.lock().unwrap();
-        let mut memory_consumption = 0;
-        for (_, file_lock) in files.iter() {
-            let row_groups = file_lock.row_groups.lock().unwrap();
-            for (_, row_group) in row_groups.iter() {
-                let columns = row_group.columns.read().unwrap();
-                for (_, column) in columns.iter() {
-                    let cached_entry = column.rows.read().unwrap();
-                    for (_, cached_entry) in cached_entry.iter() {
-                        let cached_entry_v = cached_entry.value();
-                        memory_consumption += cached_entry_v.memory_usage();
-                    }
-                }
-            }
-        }
-        memory_consumption as u64
+        self.cache_store.budget().memory_usage_bytes() as u64
     }
 
     /// Write the stats of the cache to a parquet file.
@@ -146,16 +124,22 @@ impl LiquidCache {
             for (row_group_id, row_group) in row_groups.iter() {
                 let columns = row_group.columns.read().unwrap();
                 for (column_id, row_mapping) in columns.iter() {
-                    for (row_start_id, cached_entry) in row_mapping.rows.read().unwrap().iter() {
-                        let cached_entry_v = cached_entry.value();
-                        let cache_type = match cached_entry_v {
+                    let batch_count = row_mapping.inserted_batch_count.load(Ordering::Relaxed);
+                    for batch in 0..batch_count {
+                        let batch_id = BatchID::from_raw(batch);
+                        let cached_entry =
+                            row_mapping.cache_store.get(&row_mapping.entry_id(batch_id));
+                        let Some(cached_entry) = cached_entry else {
+                            continue;
+                        };
+                        let cache_type = match cached_entry {
                             CachedBatch::ArrowMemory(_) => "InMemory",
                             CachedBatch::LiquidMemory(_) => "LiquidMemory",
                             CachedBatch::OnDiskLiquid => "OnDiskLiquid",
                         };
 
-                        let memory_size = cached_entry_v.memory_usage();
-                        let row_count = match cached_entry_v {
+                        let memory_size = cached_entry.memory_usage_bytes();
+                        let row_count = match cached_entry {
                             CachedBatch::ArrowMemory(array) => Some(array.len() as u64),
                             CachedBatch::LiquidMemory(array) => Some(array.len() as u64),
                             CachedBatch::OnDiskLiquid => None,
@@ -163,13 +147,12 @@ impl LiquidCache {
 
                         writer.append_entry(
                             file_path,
-                            *row_group_id as u64,
-                            *column_id as u64,
-                            *row_start_id as u64,
+                            *row_group_id,
+                            *column_id,
+                            *batch_id as u64 * self.batch_size() as u64,
                             row_count,
                             memory_size as u64,
                             cache_type,
-                            cached_entry.hit_count.load(Ordering::Relaxed) as u64,
                         )?;
                     }
                 }
@@ -184,7 +167,7 @@ impl LiquidCache {
 mod tests {
     use std::io::Read;
 
-    use crate::LiquidCacheMode;
+    use crate::{LiquidCacheMode, cache::BatchID};
 
     use super::*;
     use arrow::{
@@ -207,7 +190,6 @@ mod tests {
         let mut row_start_id_sum = 0;
         let mut row_count_sum = 0;
         let mut memory_size_sum = 0;
-        let mut hit_count_sum = 0;
         for file_no in 0..8 {
             let file_name = format!("test_{file_no}.parquet");
             let file = cache.register_or_get_file(file_name, LiquidCacheMode::InMemoryArrow);
@@ -216,17 +198,17 @@ mod tests {
                 for col in 0..8 {
                     let column = row_group
                         .create_column(col, Arc::new(Field::new("test", DataType::Int32, false)));
-                    for row in 0..8 {
-                        assert!(column.insert_arrow_array(row, array.clone()).is_ok());
+                    for batch in 0..8 {
+                        let batch_id = BatchID::from_raw(batch);
+                        assert!(column.insert_arrow_array(batch_id, array.clone()).is_ok());
                         row_group_id_sum += rg as u64;
                         column_id_sum += col as u64;
-                        row_start_id_sum += row as u64;
+                        row_start_id_sum += *batch_id as u64 * cache.batch_size() as u64;
                         row_count_sum += array.len() as u64;
                         memory_size_sum += array.get_array_memory_size();
 
-                        if row % 2 == 0 {
-                            _ = column.get_arrow_array_test_only(row).unwrap();
-                            hit_count_sum += 1;
+                        if batch % 2 == 0 {
+                            _ = column.get_arrow_array_test_only(batch_id).unwrap();
                         }
                     }
                 }
@@ -259,7 +241,6 @@ mod tests {
         let row_start_id_array = uint64_col!(batch, "row_start_id");
         let row_count_array = uint64_col!(batch, "row_count");
         let memory_size_array = uint64_col!(batch, "memory_size");
-        let hit_count_array = uint64_col!(batch, "hit_count");
 
         assert_eq!(
             row_group_id_array.iter().map(|v| v.unwrap()).sum::<u64>(),
@@ -280,10 +261,6 @@ mod tests {
         assert_eq!(
             memory_size_array.iter().map(|v| v.unwrap()).sum::<u64>(),
             memory_size_sum as u64
-        );
-        assert_eq!(
-            hit_count_array.iter().map(|v| v.unwrap()).sum::<u64>(),
-            hit_count_sum
         );
 
         Ok(())

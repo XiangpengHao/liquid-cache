@@ -200,6 +200,9 @@ pub async fn run_admin_server(
         .allow_origin([
             "http://localhost:8080".parse::<HeaderValue>().unwrap(),
             "http://127.0.0.1:8080".parse::<HeaderValue>().unwrap(),
+            "http://liquid-cache-admin.xiangpeng.systems"
+                .parse::<HeaderValue>()
+                .unwrap(),
         ])
         .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
         .allow_headers([axum::http::header::CONTENT_TYPE]);
