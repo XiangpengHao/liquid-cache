@@ -249,7 +249,7 @@ impl CacheAdvisor for EvictOddAdvisor {
     ) -> CacheAdvice {
         let column_id = entry_id.column_id_inner();
         if column_id % 2 == 0 {
-            CacheAdvice::EvictAndRetry(entry_id.clone())
+            CacheAdvice::EvictAndRetry(*entry_id)
         } else {
             CacheAdvice::InsertToDisk
         }

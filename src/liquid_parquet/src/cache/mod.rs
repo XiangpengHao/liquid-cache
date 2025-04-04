@@ -435,7 +435,7 @@ impl LiquidCachedColumn {
                         if let Some(removed) = self.cache_store.remove(&to_evict) {
                             self.evict_batch(batch_id, removed);
                         }
-                        return self.insert_arrow_array(batch_id, array);
+                        self.insert_arrow_array(batch_id, array)
                     }
                 }
             }
