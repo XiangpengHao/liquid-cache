@@ -134,8 +134,8 @@ pub(super) fn transcode_liquid_inner<'a>(
 mod tests {
     use super::*;
     use arrow::array::{
-        ArrayRef, BooleanArray, DictionaryArray, Float32Array, Float64Array, Int32Array, Int64Array, StringArray,
-        UInt16Array,
+        ArrayRef, BooleanArray, DictionaryArray, Float32Array, Float64Array, Int32Array,
+        Int64Array, StringArray, UInt16Array,
     };
     use arrow::datatypes::UInt16Type;
     use std::sync::RwLock;
@@ -234,10 +234,10 @@ mod tests {
         let values: Vec<bool> = (0..TEST_ARRAY_SIZE).map(|i| i % 2 == 0).collect();
         let array: ArrayRef = Arc::new(BooleanArray::from(values));
         let state = create_compressor_states();
-        
+
         // Try to transcode and expect an error
         let result = transcode_liquid_inner(&array, &state);
-        
+
         // Verify it returns Err with the original array
         assert!(result.is_err());
         if let Err(original) = result {
