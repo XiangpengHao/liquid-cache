@@ -1,15 +1,11 @@
-use super::{BatchID, CachedBatch, LiquidCache};
+use super::{CachedBatch, LiquidCache};
 use arrow::array::{ArrayBuilder, RecordBatch, StringBuilder, UInt64Builder};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use parquet::{
     arrow::ArrowWriter, basic::Compression, errors::ParquetError,
     file::properties::WriterProperties,
 };
-use std::{
-    fs::File,
-    path::Path,
-    sync::{Arc, atomic::Ordering},
-};
+use std::{fs::File, path::Path, sync::Arc};
 
 struct StatsWriter {
     writer: ArrowWriter<File>,
@@ -118,46 +114,34 @@ impl LiquidCache {
     /// Write the stats of the cache to a parquet file.
     pub fn write_stats(&self, parquet_file_path: impl AsRef<Path>) -> Result<(), ParquetError> {
         let mut writer = StatsWriter::new(parquet_file_path)?;
-        let files = self.files.lock().unwrap();
-        for (file_path, file_lock) in files.iter() {
-            let row_groups = file_lock.row_groups.lock().unwrap();
-            for (row_group_id, row_group) in row_groups.iter() {
-                let columns = row_group.columns.read().unwrap();
-                for (column_id, row_mapping) in columns.iter() {
-                    let batch_count = row_mapping.inserted_batch_count.load(Ordering::Relaxed);
-                    for batch in 0..batch_count {
-                        let batch_id = BatchID::from_raw(batch);
-                        let cached_entry =
-                            row_mapping.cache_store.get(&row_mapping.entry_id(batch_id));
-                        let Some(cached_entry) = cached_entry else {
-                            continue;
-                        };
-                        let cache_type = match cached_entry {
-                            CachedBatch::ArrowMemory(_) => "InMemory",
-                            CachedBatch::LiquidMemory(_) => "LiquidMemory",
-                            CachedBatch::OnDiskLiquid => "OnDiskLiquid",
-                        };
-
-                        let memory_size = cached_entry.memory_usage_bytes();
-                        let row_count = match cached_entry {
-                            CachedBatch::ArrowMemory(array) => Some(array.len() as u64),
-                            CachedBatch::LiquidMemory(array) => Some(array.len() as u64),
-                            CachedBatch::OnDiskLiquid => None,
-                        };
-
-                        writer.append_entry(
-                            file_path,
-                            *row_group_id,
-                            *column_id,
-                            *batch_id as u64 * self.batch_size() as u64,
-                            row_count,
-                            memory_size as u64,
-                            cache_type,
-                        )?;
-                    }
-                }
-            }
+        for item in self.cache_store.iter() {
+            let entry_id = item.key();
+            let cached_batch = item.value();
+            let memory_size = cached_batch.memory_usage_bytes();
+            let row_count = match cached_batch {
+                CachedBatch::ArrowMemory(array) => Some(array.len() as u64),
+                CachedBatch::LiquidMemory(array) => Some(array.len() as u64),
+                CachedBatch::OnDiskLiquid => None,
+            };
+            let cache_type = match cached_batch {
+                CachedBatch::ArrowMemory(_) => "InMemory",
+                CachedBatch::LiquidMemory(_) => "LiquidMemory",
+                CachedBatch::OnDiskLiquid => "OnDiskLiquid",
+            };
+            writer.append_entry(
+                entry_id
+                    .on_disk_path(&self.cache_store.config().cache_root_dir())
+                    .to_str()
+                    .unwrap(),
+                entry_id.row_group_id_inner(),
+                entry_id.column_id_inner(),
+                entry_id.row_id_inner() * self.batch_size() as u64,
+                row_count,
+                memory_size as u64,
+                cache_type,
+            )?;
         }
+
         writer.finish()?;
         Ok(())
     }
