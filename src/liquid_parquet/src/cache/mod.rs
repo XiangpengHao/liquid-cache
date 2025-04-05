@@ -10,8 +10,10 @@ use bytes::Bytes;
 use liquid_cache_common::CacheMode;
 use std::fmt::Display;
 use std::fs::File;
+use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 pub(crate) use store::BatchID;
@@ -22,6 +24,25 @@ use transcode::transcode_liquid_inner;
 mod stats;
 mod store;
 mod transcode;
+
+#[cfg(debug_assertions)]
+static LOGGER_FILE: OnceLock<Arc<Mutex<File>>> = OnceLock::new();
+
+#[cfg(debug_assertions)]
+fn get_file_handle() -> Arc<Mutex<File>> {
+    LOGGER_FILE
+        .get_or_init(|| {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open("./cache_trace.csv")
+                .expect("Failed to open log file");
+            file.write(b"file,row_group,col,row,size,type\n");
+            Arc::new(Mutex::new(file))
+        })
+        .clone()
+}
 
 /// A dedicated Tokio thread pool for background transcoding tasks.
 /// This pool is built with 4 worker threads.
@@ -206,6 +227,21 @@ impl LiquidCachedColumn {
         selection: &BooleanBuffer,
         predicate: &mut dyn LiquidPredicate,
     ) -> Option<Result<BooleanBuffer, ArrowError>> {
+        #[cfg(debug_assertions)]
+        {
+            let mut handle = get_file_handle();
+            let mut file = handle.lock().unwrap();
+            writeln!(
+                &mut file,
+                "{},{},{},{},{},predicate",
+                self.file_id,
+                self.row_group_id,
+                self.column_id,
+                *batch_id,
+                self.memory_usage()
+            );
+        }
+
         let cached_entry = self.cache_store.get(&self.entry_id(batch_id))?;
         match &cached_entry {
             CachedBatch::ArrowMemory(array) => {
@@ -263,6 +299,21 @@ impl LiquidCachedColumn {
         batch_id: BatchID,
         filter: &BooleanArray,
     ) -> Option<ArrayRef> {
+        #[cfg(debug_assertions)]
+        {
+            let mut handle = get_file_handle();
+            let mut file = handle.lock().unwrap();
+            writeln!(
+                &mut file,
+                "{},{},{},{},{},filter",
+                self.file_id,
+                self.row_group_id,
+                self.column_id,
+                *batch_id,
+                self.memory_usage()
+            );
+        }
+
         let inner_value = self.cache_store.get(&self.entry_id(batch_id))?;
         match &inner_value {
             CachedBatch::ArrowMemory(array) => {
@@ -490,6 +541,20 @@ impl LiquidCachedColumn {
                 log::warn!("unsupported data type {:?}", array.data_type());
             }
         }
+    }
+
+    fn memory_usage(&self) -> u64 {
+        let mut total_memory = 0;
+        let batch_count = self.inserted_batch_count.load(Ordering::Relaxed);
+
+        for batch in 0..batch_count {
+            let batch_id = BatchID::from_raw(batch);
+            if let Some(cached_entry) = self.cache_store.get(&self.entry_id(batch_id)) {
+                total_memory += cached_entry.memory_usage_bytes() as u64;
+            }
+        }
+
+        total_memory
     }
 }
 
