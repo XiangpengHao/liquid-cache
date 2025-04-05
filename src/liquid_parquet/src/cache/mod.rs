@@ -239,7 +239,8 @@ impl LiquidCachedColumn {
                 self.column_id,
                 *batch_id,
                 self.memory_usage()
-            ).unwrap();
+            )
+            .unwrap();
         }
 
         let cached_entry = self.cache_store.get(&self.entry_id(batch_id))?;
@@ -311,7 +312,8 @@ impl LiquidCachedColumn {
                 self.column_id,
                 *batch_id,
                 self.memory_usage()
-            ).unwrap();
+            )
+            .unwrap();
         }
 
         let inner_value = self.cache_store.get(&self.entry_id(batch_id))?;

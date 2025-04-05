@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use liquid_cache_benchmarks::eviction::eviction_cache::{
-    ClockCache, Cache, FifoCache, LfuCache, LruCache,
+    Cache, ClockCache, FifoCache, LfuCache, LruCache,
 };
 use std::fs::File;
 use std::io::{BufRead, BufReader};
