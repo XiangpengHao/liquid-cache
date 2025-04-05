@@ -4,7 +4,7 @@ pub trait Cache {
     fn result(&self) -> (u64, u64);
 }
 
-pub struct LRU_Cache {
+pub struct LruCache {
     capacity: u64,     // Maximum total size allowed.
     current_size: u64, // Current sum of sizes in the cache.
     // The cache now holds (id, size) with index 0 being the most recently used.
@@ -13,9 +13,9 @@ pub struct LRU_Cache {
     gets: u64,
 }
 
-impl Cache for LRU_Cache {
+impl Cache for LruCache {
     fn new(budget: u64) -> Self {
-        LRU_Cache {
+        LruCache {
             capacity: budget,
             current_size: 0,
             cache: Vec::new(),
@@ -61,7 +61,7 @@ struct ClockEntry {
     ref_bit: bool,
 }
 
-pub struct CLOCK_Cache {
+pub struct ClockCache {
     capacity: u64,     // Maximum total size allowed.
     current_size: u64, // Current sum of sizes in the cache.
     // The clock cache holds ClockEntry items.
@@ -72,9 +72,9 @@ pub struct CLOCK_Cache {
     gets: u64,
 }
 
-impl Cache for CLOCK_Cache {
+impl Cache for ClockCache {
     fn new(budget: u64) -> Self {
-        CLOCK_Cache {
+        ClockCache {
             capacity: budget,
             current_size: 0,
             cache: Vec::new(),
@@ -156,7 +156,7 @@ struct LFUEntry {
     freq: u64,
 }
 
-pub struct LFU_Cache {
+pub struct LfuCache {
     capacity: u64,     // Maximum total size allowed.
     current_size: u64, // Current sum of sizes in the cache.
     // The cache holds LFUEntry items.
@@ -165,9 +165,9 @@ pub struct LFU_Cache {
     gets: u64,
 }
 
-impl Cache for LFU_Cache {
+impl Cache for LfuCache {
     fn new(budget: u64) -> Self {
-        LFU_Cache {
+        LfuCache {
             capacity: budget,
             current_size: 0,
             cache: Vec::new(),
@@ -218,7 +218,7 @@ impl Cache for LFU_Cache {
     }
 }
 
-pub struct FIFO_Cache {
+pub struct FifoCache {
     capacity: u64,     // Maximum total size allowed.
     current_size: u64, // Current sum of sizes in the cache.
     // The cache holds (id, size) pairs.
@@ -228,9 +228,9 @@ pub struct FIFO_Cache {
     gets: u64,
 }
 
-impl Cache for FIFO_Cache {
+impl Cache for FifoCache {
     fn new(budget: u64) -> Self {
-        FIFO_Cache {
+        FifoCache {
             capacity: budget,
             current_size: 0,
             cache: Vec::new(),

@@ -38,7 +38,7 @@ fn get_file_handle() -> Arc<Mutex<File>> {
                 .truncate(true)
                 .open("./cache_trace.csv")
                 .expect("Failed to open log file");
-            file.write(b"file,row_group,col,row,size,type\n");
+            file.write(b"file,row_group,col,row,size,type\n").unwrap();
             Arc::new(Mutex::new(file))
         })
         .clone()
@@ -229,7 +229,7 @@ impl LiquidCachedColumn {
     ) -> Option<Result<BooleanBuffer, ArrowError>> {
         #[cfg(debug_assertions)]
         {
-            let mut handle = get_file_handle();
+            let handle = get_file_handle();
             let mut file = handle.lock().unwrap();
             writeln!(
                 &mut file,
@@ -239,7 +239,7 @@ impl LiquidCachedColumn {
                 self.column_id,
                 *batch_id,
                 self.memory_usage()
-            );
+            ).unwrap();
         }
 
         let cached_entry = self.cache_store.get(&self.entry_id(batch_id))?;
@@ -301,7 +301,7 @@ impl LiquidCachedColumn {
     ) -> Option<ArrayRef> {
         #[cfg(debug_assertions)]
         {
-            let mut handle = get_file_handle();
+            let handle = get_file_handle();
             let mut file = handle.lock().unwrap();
             writeln!(
                 &mut file,
@@ -311,7 +311,7 @@ impl LiquidCachedColumn {
                 self.column_id,
                 *batch_id,
                 self.memory_usage()
-            );
+            ).unwrap();
         }
 
         let inner_value = self.cache_store.get(&self.entry_id(batch_id))?;

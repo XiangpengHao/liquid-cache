@@ -1,8 +1,7 @@
 use std::collections::HashSet;
 
-use datafusion::execution::cache;
 use liquid_cache_benchmarks::eviction::eviction_cache::{
-    CLOCK_Cache, Cache, FIFO_Cache, LFU_Cache, LRU_Cache,
+    ClockCache, Cache, FifoCache, LfuCache, LruCache,
 };
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -26,9 +25,7 @@ fn bench<C: Cache>(total_size: u64, create: impl Fn(u64) -> C, name: String) {
                 let file_id: u16 = fields[0].parse().expect("Failed to parse file_id");
                 let row_group: u16 = fields[1].parse().expect("Failed to parse row_group");
                 let col: u16 = fields[2].parse().expect("Failed to parse col");
-                let row: u64 = fields[3].parse().expect("Failed to parse row");
                 let size: u64 = fields[4].parse().expect("Failed to parse size");
-                let access_type = fields[5].trim();
 
                 let key = pack_u16s(file_id, row_group, col);
 
@@ -59,9 +56,7 @@ fn main() {
             let file_id: u16 = fields[0].parse().expect("Failed to parse file_id");
             let row_group: u16 = fields[1].parse().expect("Failed to parse row_group");
             let col: u16 = fields[2].parse().expect("Failed to parse col");
-            let row: u64 = fields[3].parse().expect("Failed to parse row");
             let size: u64 = fields[4].parse().expect("Failed to parse size");
-            let access_type = fields[5].trim();
 
             let new = cols.insert(pack_u16s(file_id, row_group, col));
             if new {
@@ -73,8 +68,8 @@ fn main() {
 
     println!("Read {} inserts, total size: {}", count, total_size);
 
-    bench(total_size, LRU_Cache::new, "LRU".to_string());
-    bench(total_size, CLOCK_Cache::new, "CLOCK".to_string());
-    bench(total_size, LFU_Cache::new, "LFU".to_string());
-    bench(total_size, FIFO_Cache::new, "FIFO".to_string());
+    bench(total_size, LruCache::new, "LRU".to_string());
+    bench(total_size, ClockCache::new, "CLOCK".to_string());
+    bench(total_size, LfuCache::new, "LFU".to_string());
+    bench(total_size, FifoCache::new, "FIFO".to_string());
 }
