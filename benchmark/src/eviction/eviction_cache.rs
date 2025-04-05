@@ -256,7 +256,7 @@ impl Cache for FifoCache {
 
         // Evict items from the front (oldest) until there is enough room.
         while self.current_size + size > self.capacity {
-            if let Some((_, removed_size)) = self.cache.get(0) {
+            if let Some((_, removed_size)) = self.cache.first() {
                 self.current_size -= *removed_size;
                 self.cache.remove(0);
             } else {

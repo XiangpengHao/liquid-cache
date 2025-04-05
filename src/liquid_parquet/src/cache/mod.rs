@@ -38,7 +38,7 @@ fn get_file_handle() -> Arc<Mutex<File>> {
                 .truncate(true)
                 .open("./cache_trace.csv")
                 .expect("Failed to open log file");
-            file.write(b"file,row_group,col,row,size,type\n").unwrap();
+            _ = file.write(b"file,row_group,col,row,size,type\n").unwrap();
             Arc::new(Mutex::new(file))
         })
         .clone()
