@@ -209,18 +209,45 @@ impl LiquidParquetSource {
     /// Create a new LiquidParquetSource from a ParquetSource
     pub fn from_parquet_source(
         source: ParquetSource,
+        file_schema: Arc<Schema>,
         liquid_cache: LiquidCacheRef,
         liquid_cache_mode: LiquidCacheMode,
     ) -> Self {
+        let predicate = source.predicate().cloned();
+        let page_pruning_predicate = predicate.as_ref().map(|predicate| {
+            Arc::new(PagePruningAccessPlanFilter::new(
+                predicate,
+                Arc::clone(&file_schema),
+            ))
+        });
+
+        let pruning_predicate = if let Some(predicate) = &predicate {
+            match PruningPredicate::try_new(Arc::clone(predicate), Arc::clone(&file_schema)) {
+                Ok(pruning_predicate) => {
+                    if !pruning_predicate.always_true() {
+                        Some(Arc::new(pruning_predicate))
+                    } else {
+                        None
+                    }
+                }
+                Err(e) => {
+                    log::debug!("Could not create pruning predicate for: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         Self {
             table_parquet_options: source.table_parquet_options().clone(),
             batch_size: Some(liquid_cache.batch_size()),
             liquid_cache,
             liquid_cache_mode,
             metrics: source.metrics().clone(),
-            predicate: source.predicate().cloned(),
-            pruning_predicate: source.pruning_predicate().cloned(),
-            page_pruning_predicate: source.page_pruning_predicate().cloned(),
+            predicate,
+            pruning_predicate,
+            page_pruning_predicate,
             projected_statistics: Some(source.statistics().unwrap()),
         }
     }

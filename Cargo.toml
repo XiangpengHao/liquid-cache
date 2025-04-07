@@ -30,11 +30,11 @@ arrow = { version = "54.3.1", default-features = false, features = [
 arrow-flight = { version = "54.3.1", features = ["flight-sql-experimental"] }
 arrow-schema = { version = "54.3.1", features = ["serde"] }
 parquet = { version = "54.3.1", features = ["async", "experimental"] }
-datafusion = { version = "46.0.1" }
-datafusion-proto = { version = "46.0.1" }
+datafusion = { git = "https://github.com/apache/datafusion.git", rev = "4ae0edea8eb7d5ad5df07e22a8fb39aa9fd1e2df" }
+datafusion-proto = { git = "https://github.com/apache/datafusion.git", rev = "4ae0edea8eb7d5ad5df07e22a8fb39aa9fd1e2df" }
 async-trait = "0.1.88"
 futures = { version = "0.3.31", default-features = false, features = ["std"] }
-tokio = { version = "1.44.1", features = ["rt-multi-thread"] }
+tokio = { version = "1.44.2", features = ["rt-multi-thread"] }
 log = "0.4.27"
 tonic = { version = "0.12" }
 url = "2.5.4"

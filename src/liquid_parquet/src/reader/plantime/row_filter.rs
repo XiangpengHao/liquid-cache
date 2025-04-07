@@ -251,7 +251,7 @@ impl ArrowPredicate for DatafusionArrowPredicate {
             batch = batch.project(&self.projection).unwrap();
         };
 
-        let batch = self.schema_mapper.map_partial_batch(batch)?;
+        let batch = self.schema_mapper.map_batch(batch)?;
 
         // scoped timer updates on drop
         let mut timer = self.time.timer();

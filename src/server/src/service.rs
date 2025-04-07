@@ -213,6 +213,7 @@ fn rewrite_data_source_plan(
                     if let Some(file_source) = any_file_source.downcast_ref::<ParquetSource>() {
                         let new_source = LiquidParquetSource::from_parquet_source(
                             file_source.clone(),
+                            source.file_schema.clone(),
                             cache.clone(),
                             cache_mode.into(),
                         );
