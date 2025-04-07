@@ -166,7 +166,7 @@ Check out our [paper](/dev/doc/liquid-cache-vldb.pdf) (under submission to VLDB)
 #### How can I get involved?
 
 We are always looking for contributors! Any feedback or improvements are welcome. Feel free to explore the issue list and contribute to the project.
-If you want to get involved in the research process, feel free to [reach out](https://haoxp.xyz/work-with-me/).
+If you want to get involved in the research process, feel free to [reach out](https://xiangpeng.systems/work-with-me/).
 
 #### Who is behind LiquidCache?
 
