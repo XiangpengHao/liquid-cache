@@ -69,24 +69,23 @@ impl CacheEntryID {
         }
     }
 
-    fn row_id_inner(&self) -> u64 {
+    pub(super) fn row_id_inner(&self) -> u64 {
         self.val & 0x0000_0000_0000_FFFF
     }
 
-    fn file_id_inner(&self) -> u64 {
+    pub(super) fn file_id_inner(&self) -> u64 {
         self.val >> 48
     }
 
-    fn row_group_id_inner(&self) -> u64 {
+    pub(super) fn row_group_id_inner(&self) -> u64 {
         (self.val >> 32) & 0x0000_0000_FFFF
     }
 
-    fn column_id_inner(&self) -> u64 {
+    pub(super) fn column_id_inner(&self) -> u64 {
         (self.val >> 16) & 0x0000_0000_FFFF
     }
 
-    #[allow(unused)]
-    fn on_disk_path(&self, cache_root_dir: &Path) -> PathBuf {
+    pub(super) fn on_disk_path(&self, cache_root_dir: &Path) -> PathBuf {
         let row_id = self.row_id_inner();
         cache_root_dir
             .join(format!("file_{}", self.file_id_inner()))
@@ -329,6 +328,10 @@ impl CacheStore {
 
     pub(super) fn config(&self) -> &CacheConfig {
         &self.config
+    }
+
+    pub(super) fn iter(&self) -> dashmap::iter::Iter<'_, CacheEntryID, CachedBatch> {
+        self.cached_data.iter()
     }
 
     pub(super) fn budget(&self) -> &BudgetAccounting {
