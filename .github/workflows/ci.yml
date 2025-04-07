@@ -68,7 +68,7 @@ jobs:
       - run: sudo apt install llvm-dev -y
       - name: Run address sanitizer
         run: >
-          env RUSTFLAGS="-Z sanitizer=address" cargo test -Zbuild-std --target x86_64-unknown-linux-gnu --tests
+          env RUSTFLAGS="-Z sanitizer=address" cargo test -Zbuild-std --target x86_64-unknown-linux-gnu --tests -p liquid-cache-parquet
 
   clickbench:
     name: ClickBench
