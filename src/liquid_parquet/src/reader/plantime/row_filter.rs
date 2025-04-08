@@ -474,7 +474,7 @@ fn columns_sorted(_columns: &[usize], _metadata: &ParquetMetaData) -> Result<boo
     Ok(false)
 }
 
-/// Build a [`RowFilter`] from the given predicate `Expr` if possible
+/// Build a [`LiquidRowFilter`] from the given predicate `Expr` if possible
 ///
 /// # returns
 /// * `Ok(Some(row_filter))` if the expression can be used as RowFilter
