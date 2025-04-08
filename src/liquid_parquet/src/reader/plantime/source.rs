@@ -214,42 +214,25 @@ impl LiquidParquetSource {
         liquid_cache_mode: LiquidCacheMode,
     ) -> Self {
         let predicate = source.predicate().cloned();
-        let page_pruning_predicate = predicate.as_ref().map(|predicate| {
-            Arc::new(PagePruningAccessPlanFilter::new(
-                predicate,
-                Arc::clone(&file_schema),
-            ))
-        });
+        println!("predicate: {:?}", predicate);
 
-        let pruning_predicate = if let Some(predicate) = &predicate {
-            match PruningPredicate::try_new(Arc::clone(predicate), Arc::clone(&file_schema)) {
-                Ok(pruning_predicate) => {
-                    if !pruning_predicate.always_true() {
-                        Some(Arc::new(pruning_predicate))
-                    } else {
-                        None
-                    }
-                }
-                Err(e) => {
-                    log::debug!("Could not create pruning predicate for: {e}");
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
-        Self {
+        let mut v = Self {
             table_parquet_options: source.table_parquet_options().clone(),
             batch_size: Some(liquid_cache.batch_size()),
             liquid_cache,
             liquid_cache_mode,
             metrics: source.metrics().clone(),
-            predicate,
-            pruning_predicate,
-            page_pruning_predicate,
+            predicate: None,
+            pruning_predicate: None,
+            page_pruning_predicate: None,
             projected_statistics: Some(source.statistics().unwrap()),
+        };
+
+        if let Some(predicate) = predicate {
+            v = v.with_predicate(file_schema, predicate);
         }
+
+        v
     }
 }
 
