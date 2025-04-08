@@ -345,6 +345,10 @@ impl<'a> FilterCandidateBuilder<'a> {
             return Ok(None);
         };
 
+        if required_indices_into_table_schema.is_empty() {
+            return Ok(None);
+        }
+
         let projected_table_schema = Arc::new(
             self.table_schema
                 .project(&required_indices_into_table_schema)?,
@@ -495,7 +499,6 @@ pub fn build_row_filter(
     let rows_pruned = &file_metrics.pushdown_rows_pruned;
     let rows_matched = &file_metrics.pushdown_rows_matched;
     let time = &file_metrics.row_pushdown_eval_time;
-
 
     // Split into conjuncts:
     // `a = 1 AND b = 2 AND c = 3` -> [`a = 1`, `b = 2`, `c = 3`]

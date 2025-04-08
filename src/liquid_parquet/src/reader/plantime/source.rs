@@ -214,7 +214,6 @@ impl LiquidParquetSource {
         liquid_cache_mode: LiquidCacheMode,
     ) -> Self {
         let predicate = source.predicate().cloned();
-        println!("predicate: {:?}", predicate);
 
         let mut v = Self {
             table_parquet_options: source.table_parquet_options().clone(),
