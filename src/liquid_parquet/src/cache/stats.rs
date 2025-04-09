@@ -135,7 +135,7 @@ impl LiquidCache {
                     .unwrap(),
                 entry_id.row_group_id_inner(),
                 entry_id.column_id_inner(),
-                entry_id.row_id_inner() * self.batch_size() as u64,
+                entry_id.batch_id_inner() * self.batch_size() as u64,
                 row_count,
                 memory_size as u64,
                 cache_type,
