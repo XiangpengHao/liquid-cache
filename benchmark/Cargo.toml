@@ -50,7 +50,3 @@ path = "tpch/tpch_client.rs"
 [[bin]]
 name = "bench_server"
 path = "bench_server.rs"
-
-[[bin]]
-name = "test_eviction"
-path = "src/bin/test_eviction.rs"

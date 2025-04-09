@@ -1,8 +1,7 @@
-use std::collections::HashSet;
-
-use liquid_cache_benchmarks::eviction::eviction_cache::{
+use liquid_cache_parquet::eviction::eviction_cache::{
     Cache, ClockCache, FifoCache, LfuCache, LruCache,
 };
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 
