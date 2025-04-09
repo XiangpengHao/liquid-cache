@@ -10,10 +10,8 @@ use bytes::Bytes;
 use liquid_cache_common::CacheMode;
 use std::fmt::Display;
 use std::fs::File;
-use std::fs::OpenOptions;
 use std::io::{Read, Write};
-use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 pub(crate) use store::BatchID;
@@ -23,26 +21,8 @@ use transcode::transcode_liquid_inner;
 
 mod stats;
 mod store;
+mod tracer;
 mod transcode;
-
-#[cfg(debug_assertions)]
-static LOGGER_FILE: OnceLock<Arc<Mutex<File>>> = OnceLock::new();
-
-#[cfg(debug_assertions)]
-fn get_file_handle() -> Arc<Mutex<File>> {
-    LOGGER_FILE
-        .get_or_init(|| {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open("./cache_trace.csv")
-                .expect("Failed to open log file");
-            _ = file.write(b"file,row_group,col,row,size,type\n").unwrap();
-            Arc::new(Mutex::new(file))
-        })
-        .clone()
-}
 
 /// A dedicated Tokio thread pool for background transcoding tasks.
 /// This pool is built with 4 worker threads.
@@ -226,21 +206,6 @@ impl LiquidCachedColumn {
         predicate: &mut dyn LiquidPredicate,
     ) -> Option<Result<BooleanBuffer, ArrowError>> {
         let cached_entry = self.cache_store.get(&self.entry_id(batch_id))?;
-        #[cfg(debug_assertions)]
-        {
-            let handle = get_file_handle();
-            let mut file = handle.lock().unwrap();
-            writeln!(
-                &mut file,
-                "{},{},{},{},{},predicate",
-                self.file_id,
-                self.row_group_id,
-                self.column_id,
-                *batch_id,
-                cached_entry.memory_usage_bytes()
-            )
-            .unwrap();
-        }
         match &cached_entry {
             CachedBatch::ArrowMemory(array) => {
                 let boolean_array = BooleanArray::new(selection.clone(), None);
@@ -298,21 +263,6 @@ impl LiquidCachedColumn {
         filter: &BooleanArray,
     ) -> Option<ArrayRef> {
         let inner_value = self.cache_store.get(&self.entry_id(batch_id))?;
-        #[cfg(debug_assertions)]
-        {
-            let handle = get_file_handle();
-            let mut file = handle.lock().unwrap();
-            writeln!(
-                &mut file,
-                "{},{},{},{},{},filter",
-                self.file_id,
-                self.row_group_id,
-                self.column_id,
-                *batch_id,
-                inner_value.memory_usage_bytes()
-            )
-            .unwrap();
-        }
         match &inner_value {
             CachedBatch::ArrowMemory(array) => {
                 let filtered = arrow::compute::filter(array, filter).unwrap();
@@ -794,6 +744,11 @@ impl LiquidCache {
     /// Get the disk usage of the cache in bytes.
     pub fn disk_usage_bytes(&self) -> usize {
         self.cache_store.budget().disk_usage_bytes()
+    }
+
+    /// Flush the cache trace to a file.
+    pub fn flush_trace(&self, to_file: impl AsRef<Path>) {
+        self.cache_store.tracer().flush(to_file);
     }
 
     /// Reset the cache.
