@@ -110,7 +110,6 @@ pub struct LiquidCachedColumn {
     column_id: u64,
     row_group_id: u64,
     file_id: u64,
-    inserted_batch_count: AtomicU16,
 }
 
 pub type LiquidCachedColumnRef = Arc<LiquidCachedColumn>;
@@ -145,7 +144,6 @@ impl LiquidCachedColumn {
             column_id,
             row_group_id,
             file_id,
-            inserted_batch_count: AtomicU16::new(0),
         }
     }
 
@@ -457,8 +455,6 @@ impl LiquidCachedColumn {
         if self.is_cached(batch_id) {
             return Err(InsertArrowArrayError::AlreadyCached);
         }
-
-        self.inserted_batch_count.fetch_add(1, Ordering::Relaxed);
 
         // This is a special case for the Utf8View type, because the rest of the system expects a Dictionary type,
         // But the reader reads as Utf8View types.
