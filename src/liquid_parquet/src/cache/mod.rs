@@ -14,7 +14,7 @@ use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 pub(crate) use store::BatchID;
 use store::{BudgetAccounting, CacheAdvice, CacheEntryID, CacheStore};
@@ -225,6 +225,7 @@ impl LiquidCachedColumn {
         selection: &BooleanBuffer,
         predicate: &mut dyn LiquidPredicate,
     ) -> Option<Result<BooleanBuffer, ArrowError>> {
+        let cached_entry = self.cache_store.get(&self.entry_id(batch_id))?;
         #[cfg(debug_assertions)]
         {
             let handle = get_file_handle();
@@ -236,12 +237,10 @@ impl LiquidCachedColumn {
                 self.row_group_id,
                 self.column_id,
                 *batch_id,
-                self.memory_usage()
+                cached_entry.memory_usage_bytes()
             )
             .unwrap();
         }
-
-        let cached_entry = self.cache_store.get(&self.entry_id(batch_id))?;
         match &cached_entry {
             CachedBatch::ArrowMemory(array) => {
                 let boolean_array = BooleanArray::new(selection.clone(), None);
@@ -298,6 +297,7 @@ impl LiquidCachedColumn {
         batch_id: BatchID,
         filter: &BooleanArray,
     ) -> Option<ArrayRef> {
+        let inner_value = self.cache_store.get(&self.entry_id(batch_id))?;
         #[cfg(debug_assertions)]
         {
             let handle = get_file_handle();
@@ -309,12 +309,10 @@ impl LiquidCachedColumn {
                 self.row_group_id,
                 self.column_id,
                 *batch_id,
-                self.memory_usage()
+                inner_value.memory_usage_bytes()
             )
             .unwrap();
         }
-
-        let inner_value = self.cache_store.get(&self.entry_id(batch_id))?;
         match &inner_value {
             CachedBatch::ArrowMemory(array) => {
                 let filtered = arrow::compute::filter(array, filter).unwrap();
@@ -539,20 +537,6 @@ impl LiquidCachedColumn {
                 log::warn!("unsupported data type {:?}", array.data_type());
             }
         }
-    }
-
-    fn memory_usage(&self) -> u64 {
-        let mut total_memory = 0;
-        let batch_count = self.inserted_batch_count.load(Ordering::Relaxed);
-
-        for batch in 0..batch_count {
-            let batch_id = BatchID::from_raw(batch);
-            if let Some(cached_entry) = self.cache_store.get(&self.entry_id(batch_id)) {
-                total_memory += cached_entry.memory_usage_bytes() as u64;
-            }
-        }
-
-        total_memory
     }
 }
 
