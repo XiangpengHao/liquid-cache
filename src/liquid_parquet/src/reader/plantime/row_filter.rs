@@ -1,4 +1,3 @@
-#![allow(unused)]
 // Not our code, some of them might be unused.
 
 // Licensed to the Apache Software Foundation (ASF) under one
@@ -66,27 +65,24 @@ use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use arrow::array::{ArrayRef, AsArray, BooleanArray};
+use arrow::array::{AsArray, BooleanArray};
 use arrow::compute::kernels;
 use arrow::datatypes::{DataType, Schema};
 use arrow::error::{ArrowError, Result as ArrowResult};
 use arrow::record_batch::RecordBatch;
-use arrow_schema::{Field, SchemaRef};
+use arrow_schema::SchemaRef;
 use datafusion::datasource::physical_plan::ParquetFileMetrics;
 use datafusion::logical_expr::{ColumnarValue, Operator};
 use datafusion::physical_expr_common::datum::apply_cmp;
 use datafusion::physical_plan::expressions::{BinaryExpr, LikeExpr};
 use datafusion::physical_plan::metrics;
-use datafusion::prelude::Expr;
 use parquet::arrow::ProjectionMask;
-use parquet::arrow::arrow_reader::{ArrowPredicate, RowFilter};
+use parquet::arrow::arrow_reader::ArrowPredicate;
 use parquet::file::metadata::ParquetMetaData;
 
 use datafusion::common::cast::as_boolean_array;
-use datafusion::common::tree_node::{
-    Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter, TreeNodeVisitor,
-};
-use datafusion::common::{DataFusionError, Result, ScalarValue, arrow_datafusion_err};
+use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion, TreeNodeVisitor};
+use datafusion::common::{Result, ScalarValue};
 use datafusion::datasource::schema_adapter::{DefaultSchemaAdapterFactory, SchemaMapper};
 use datafusion::physical_expr::expressions::{Column, Literal};
 use datafusion::physical_expr::utils::reassign_predicate_columns;
@@ -113,8 +109,6 @@ pub(crate) struct DatafusionArrowPredicate {
     /// Path to the columns in the parquet schema required to evaluate the
     /// expression
     projection_mask: ProjectionMask,
-    /// Columns required to evaluate the expression in the arrow schema
-    projection: Vec<usize>,
     /// how many rows were filtered out by this predicate
     rows_pruned: metrics::Count,
     /// how many rows passed this predicate
@@ -129,26 +123,16 @@ impl DatafusionArrowPredicate {
     /// Create a new `DatafusionArrowPredicate` from a `FilterCandidate`
     pub fn try_new(
         candidate: FilterCandidate,
-        schema: &Schema,
         metadata: &ParquetMetaData,
         rows_pruned: metrics::Count,
         rows_matched: metrics::Count,
         time: metrics::Time,
     ) -> Result<Self> {
-        let schema = Arc::new(schema.project(&candidate.projection)?);
-        let physical_expr = reassign_predicate_columns(candidate.expr, &schema, true)?;
-
-        // ArrowPredicate::evaluate is passed columns in the order they appear in the file
-        // If the predicate has multiple columns, we therefore must project the columns based
-        // on the order they appear in the file
-        let projection = match candidate.projection.len() {
-            0 | 1 => vec![],
-            2.. => remap_projection(&candidate.projection),
-        };
+        let projected_schema = Arc::clone(&candidate.filter_schema);
+        let physical_expr = reassign_predicate_columns(candidate.expr, &projected_schema, true)?;
 
         Ok(Self {
             physical_expr,
-            projection,
             projection_mask: ProjectionMask::roots(
                 metadata.file_metadata().schema_descr(),
                 candidate.projection,
@@ -246,12 +230,8 @@ impl ArrowPredicate for DatafusionArrowPredicate {
         &self.projection_mask
     }
 
-    fn evaluate(&mut self, mut batch: RecordBatch) -> ArrowResult<BooleanArray> {
-        if !self.projection.is_empty() {
-            batch = batch.project(&self.projection).unwrap();
-        };
-
-        let batch = self.schema_mapper.map_partial_batch(batch)?;
+    fn evaluate(&mut self, batch: RecordBatch) -> ArrowResult<BooleanArray> {
+        let batch = self.schema_mapper.map_batch(batch)?;
 
         // scoped timer updates on drop
         let mut timer = self.time.timer();
@@ -365,6 +345,10 @@ impl<'a> FilterCandidateBuilder<'a> {
             return Ok(None);
         };
 
+        if required_indices_into_table_schema.is_empty() {
+            return Ok(None);
+        }
+
         let projected_table_schema = Arc::new(
             self.table_schema
                 .project(&required_indices_into_table_schema)?,
@@ -450,8 +434,6 @@ impl TreeNodeVisitor<'_> for PushdownChecker<'_> {
     }
 }
 
-type ProjectionAndExpr = (BTreeSet<usize>, Arc<dyn PhysicalExpr>);
-
 // Checks if a given expression can be pushed down into `DataSourceExec` as opposed to being evaluated
 // post-parquet-scan in a `FilterExec`. If it can be pushed down, this returns all the
 // columns in the given expression so that they can be used in the parquet scanning, along with the
@@ -463,72 +445,6 @@ fn pushdown_columns(
     let mut checker = PushdownChecker::new(table_schema);
     expr.visit(&mut checker)?;
     Ok((!checker.prevents_pushdown()).then_some(checker.required_columns.into_iter().collect()))
-}
-
-/// creates a PushdownChecker for a single use to check a given column with the given schemes. Used
-/// to check preemptively if a column name would prevent pushdowning.
-/// effectively does the inverse of [`pushdown_columns`] does, but with a single given column
-/// (instead of traversing the entire tree to determine this)
-fn would_column_prevent_pushdown(column_name: &str, table_schema: &Schema) -> bool {
-    let mut checker = PushdownChecker::new(table_schema);
-
-    // the return of this is only used for [`PushdownChecker::f_down()`], so we can safely ignore
-    // it here. I'm just verifying we know the return type of this so nobody accidentally changes
-    // the return type of this fn and it gets implicitly ignored here.
-    let _: Option<TreeNodeRecursion> = checker.check_single_column(column_name);
-
-    // and then return a value based on the state of the checker
-    checker.prevents_pushdown()
-}
-
-/// Recurses through expr as a tree, finds all `column`s, and checks if any of them would prevent
-/// this expression from being predicate pushed down. If any of them would, this returns false.
-/// Otherwise, true.
-pub fn can_expr_be_pushed_down_with_schemas(
-    expr: &Expr,
-    _file_schema: &Schema,
-    table_schema: &Schema,
-) -> bool {
-    let mut can_be_pushed = true;
-    expr.apply(|expr| match expr {
-        Expr::Column(column) => {
-            can_be_pushed &= !would_column_prevent_pushdown(column.name(), table_schema);
-            Ok(if can_be_pushed {
-                TreeNodeRecursion::Jump
-            } else {
-                TreeNodeRecursion::Stop
-            })
-        }
-        _ => Ok(TreeNodeRecursion::Continue),
-    })
-    .unwrap(); // we never return an Err, so we can safely unwrap this
-    can_be_pushed
-}
-
-/// Computes the projection required to go from the file's schema order to the projected
-/// order expected by this filter
-///
-/// Effectively this computes the rank of each element in `src`
-fn remap_projection(src: &[usize]) -> Vec<usize> {
-    let len = src.len();
-
-    // Compute the column mapping from projected order to file order
-    // i.e. the indices required to sort projected schema into the file schema
-    //
-    // e.g. projection: [5, 9, 0] -> [2, 0, 1]
-    let mut sorted_indexes: Vec<_> = (0..len).collect();
-    sorted_indexes.sort_unstable_by_key(|x| src[*x]);
-
-    // Compute the mapping from schema order to projected order
-    // i.e. the indices required to sort file schema into the projected schema
-    //
-    // Above we computed the order of the projected schema according to the file
-    // schema, and so we can use this as the comparator
-    //
-    // e.g. sorted_indexes [2, 0, 1] -> [1, 2, 0]
-    let mut projection: Vec<_> = (0..len).collect();
-    projection.sort_unstable_by_key(|x| sorted_indexes[*x]);
-    projection
 }
 
 /// Calculate the total compressed size of all `Column`'s required for
@@ -558,7 +474,7 @@ fn columns_sorted(_columns: &[usize], _metadata: &ParquetMetaData) -> Result<boo
     Ok(false)
 }
 
-/// Build a [`RowFilter`] from the given predicate `Expr` if possible
+/// Build a [`LiquidRowFilter`] from the given predicate `Expr` if possible
 ///
 /// # returns
 /// * `Ok(Some(row_filter))` if the expression can be used as RowFilter
@@ -631,7 +547,6 @@ pub fn build_row_filter(
         .map(|candidate| {
             DatafusionArrowPredicate::try_new(
                 candidate,
-                file_schema,
                 metadata,
                 rows_pruned.clone(),
                 rows_matched.clone(),

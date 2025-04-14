@@ -209,20 +209,29 @@ impl LiquidParquetSource {
     /// Create a new LiquidParquetSource from a ParquetSource
     pub fn from_parquet_source(
         source: ParquetSource,
+        file_schema: Arc<Schema>,
         liquid_cache: LiquidCacheRef,
         liquid_cache_mode: LiquidCacheMode,
     ) -> Self {
-        Self {
+        let predicate = source.predicate().cloned();
+
+        let mut v = Self {
             table_parquet_options: source.table_parquet_options().clone(),
             batch_size: Some(liquid_cache.batch_size()),
             liquid_cache,
             liquid_cache_mode,
             metrics: source.metrics().clone(),
-            predicate: source.predicate().cloned(),
-            pruning_predicate: source.pruning_predicate().cloned(),
-            page_pruning_predicate: source.page_pruning_predicate().cloned(),
+            predicate: None,
+            pruning_predicate: None,
+            page_pruning_predicate: None,
             projected_statistics: Some(source.statistics().unwrap()),
+        };
+
+        if let Some(predicate) = predicate {
+            v = v.with_predicate(file_schema, predicate);
         }
+
+        v
     }
 }
 

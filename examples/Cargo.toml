@@ -22,8 +22,8 @@ tokio = { workspace = true }
 log = { workspace = true }
 arrow-flight = { workspace = true }
 tonic = { workspace = true }
-env_logger = "0.11.7"
+env_logger = "0.11.8"
 url = { workspace = true }
 tempfile = "3.19.1"
-clap = { version = "4.5.34", features = ["derive"] }
+clap = { version = "4.5.35", features = ["derive"] }
 object_store = { workspace = true, features = ["http"] }
