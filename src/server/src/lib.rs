@@ -31,7 +31,6 @@ use arrow_flight::{
 use datafusion::{
     error::DataFusionError,
     execution::{SessionStateBuilder, object_store::ObjectStoreUrl},
-    physical_plan::ExecutionPlan,
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_proto::bytes::physical_plan_from_bytes;
@@ -62,9 +61,9 @@ mod local_cache;
 /// and calls `stop` right after exhausting the stream.
 pub trait StatsCollector: Send + Sync {
     /// Start the stats collector.
-    fn start(&self, partition: usize, plan: &Arc<dyn ExecutionPlan>);
+    fn start(&self);
     /// Stop the stats collector.
-    fn stop(&self, partition: usize, plan: &Arc<dyn ExecutionPlan>);
+    fn stop(&self);
 }
 
 /// The LiquidCache server.
@@ -94,18 +93,18 @@ impl Default for LiquidCacheService {
 }
 
 impl LiquidCacheService {
-    /// Create a new LiquidCacheService with a default SessionContext
+    /// Create a new [LiquidCacheService] with a default [SessionContext]
     /// With no disk cache and unbounded memory usage.
     pub fn try_new() -> Result<Self, DataFusionError> {
         let ctx = Self::context(None)?;
         Ok(Self::new(ctx, None, None))
     }
 
-    /// Create a new LiquidCacheService with a custom SessionContext
+    /// Create a new [LiquidCacheService] with a custom [SessionContext]
     ///
     /// # Arguments
     ///
-    /// * `ctx` - The SessionContext to use
+    /// * `ctx` - The [SessionContext] to use
     /// * `max_cache_bytes` - The maximum number of bytes to cache in memory
     /// * `disk_cache_dir` - The directory to store the disk cache
     pub fn new(
@@ -129,8 +128,8 @@ impl LiquidCacheService {
         self.stats_collector.push(collector);
     }
 
-    /// Create a new SessionContext with good defaults
-    /// This is the recommended way to create a SessionContext for LiquidCache
+    /// Create a new [SessionContext] with good defaults
+    /// This is the recommended way to create a [SessionContext] for LiquidCache
     pub fn context(partitions: Option<usize>) -> Result<SessionContext, DataFusionError> {
         let mut session_config = SessionConfig::from_env()?;
         let options_mut = session_config.options_mut();
@@ -210,13 +209,10 @@ impl FlightSqlService for LiquidCacheService {
         let handle = Uuid::from_bytes_ref(fetch_results.handle.as_ref().try_into().unwrap());
         let partition = fetch_results.partition as usize;
         let stream = self.inner.execute_plan(handle, partition).await;
-        let execution_plan = self.inner.get_plan(handle).unwrap();
         let stream = FinalStream::new(
             stream,
             self.stats_collector.clone(),
             self.inner.batch_size(),
-            partition,
-            execution_plan,
             span,
         )
         .map_err(|e| {

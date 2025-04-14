@@ -7,7 +7,7 @@ use std::{
 use dashmap::{DashMap, Entry};
 use log::warn;
 
-use super::CachedBatch;
+use super::{CachedBatch, tracer::CacheTracer};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub(super) struct CacheEntryID {
@@ -16,7 +16,7 @@ pub(super) struct CacheEntryID {
     // - 2 bytes for the file id
     // - 2 bytes for the row group id
     // - 2 bytes for the column id
-    // - 2 bytes for the row id
+    // - 2 bytes for the batch id
     // The numerical order of val is meaningful: sorted by each of the fields.
     val: u64,
 }
@@ -69,7 +69,7 @@ impl CacheEntryID {
         }
     }
 
-    pub(super) fn row_id_inner(&self) -> u64 {
+    pub(super) fn batch_id_inner(&self) -> u64 {
         self.val & 0x0000_0000_0000_FFFF
     }
 
@@ -86,12 +86,12 @@ impl CacheEntryID {
     }
 
     pub(super) fn on_disk_path(&self, cache_root_dir: &Path) -> PathBuf {
-        let row_id = self.row_id_inner();
+        let batch_id = self.batch_id_inner();
         cache_root_dir
             .join(format!("file_{}", self.file_id_inner()))
             .join(format!("row_group_{}", self.row_group_id_inner()))
             .join(format!("column_{}", self.column_id_inner()))
-            .join(format!("row_{}.bin", row_id))
+            .join(format!("batch_{}.bin", batch_id))
     }
 }
 
@@ -209,6 +209,7 @@ pub(crate) struct CacheStore {
     config: CacheConfig,
     budget: BudgetAccounting,
     advisor: Box<dyn CacheAdvisor>,
+    tracer: CacheTracer,
 }
 
 trait CacheAdvisor: std::fmt::Debug + Send + Sync {
@@ -269,6 +270,7 @@ impl CacheStore {
             budget: BudgetAccounting::new(config.max_cache_bytes()),
             config,
             advisor: Box::new(AlwaysWriteToDiskAdvisor),
+            tracer: CacheTracer::new(),
         }
     }
 
@@ -305,6 +307,8 @@ impl CacheStore {
     }
 
     pub(super) fn get(&self, entry_id: &CacheEntryID) -> Option<CachedBatch> {
+        self.tracer
+            .trace_get(*entry_id, self.budget.memory_usage_bytes());
         self.cached_data
             .get(entry_id)
             .map(|entry| entry.value().clone())
@@ -336,6 +340,10 @@ impl CacheStore {
 
     pub(super) fn budget(&self) -> &BudgetAccounting {
         &self.budget
+    }
+
+    pub(super) fn tracer(&self) -> &CacheTracer {
+        &self.tracer
     }
 }
 

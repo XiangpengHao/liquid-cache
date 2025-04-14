@@ -31,7 +31,7 @@ prost = { workspace = true }
 fsst-rs = "0.5.2"
 parquet = { workspace = true }
 fastrace = { version = "0.7.9", features = ["enable"] }
-logforth = "0.23.1"
+logforth = { version = "0.24.0", features = ["opentelemetry"] }
 fastrace-tonic = { workspace = true }
 fastrace-opentelemetry = "0.10"
 opentelemetry = "0.29.0"

@@ -46,3 +46,9 @@ harness = false
 name = "liquid_float_array"
 harness = false
 path = "bench/liquid_float_array.rs"
+
+
+[[bench]]
+name = "bench_eviction"
+path = "bench/bench_eviction.rs"
+harness = false

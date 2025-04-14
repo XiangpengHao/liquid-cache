@@ -11,7 +11,7 @@ use liquid_cache_common::CacheMode;
 use std::fmt::Display;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 pub(crate) use store::BatchID;
@@ -21,6 +21,7 @@ use transcode::transcode_liquid_inner;
 
 mod stats;
 mod store;
+mod tracer;
 mod transcode;
 
 /// A dedicated Tokio thread pool for background transcoding tasks.
@@ -743,6 +744,21 @@ impl LiquidCache {
     /// Get the disk usage of the cache in bytes.
     pub fn disk_usage_bytes(&self) -> usize {
         self.cache_store.budget().disk_usage_bytes()
+    }
+
+    /// Flush the cache trace to a file.
+    pub fn flush_trace(&self, to_file: impl AsRef<Path>) {
+        self.cache_store.tracer().flush(to_file);
+    }
+
+    /// Enable the cache trace.
+    pub fn enable_trace(&self) {
+        self.cache_store.tracer().enable();
+    }
+
+    /// Disable the cache trace.
+    pub fn disable_trace(&self) {
+        self.cache_store.tracer().disable();
     }
 
     /// Reset the cache.

@@ -1,7 +1,9 @@
 use arrow_flight::flight_service_server::FlightServiceServer;
 use clap::Parser;
 use fastrace_tonic::FastraceServerLayer;
-use liquid_cache_benchmarks::{FlameGraphReport, StatsReport, setup_observability};
+use liquid_cache_benchmarks::{
+    CacheTraceReport, FlameGraphReport, StatsReport, setup_observability,
+};
 use liquid_cache_server::{LiquidCacheService, admin_server::run_admin_server};
 use log::info;
 use mimalloc::MiMalloc;
@@ -45,6 +47,10 @@ struct CliArgs {
     /// Path to disk cache directory
     #[arg(long = "disk-cache-dir")]
     disk_cache_dir: Option<PathBuf>,
+
+    /// Cache trace dir
+    #[arg(long)]
+    cache_trace_dir: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -85,6 +91,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         assert!(stats_dir.is_dir(), "Stats output must be a directory");
         liquid_cache_server.add_stats_collector(Arc::new(StatsReport::new(
             stats_dir.clone(),
+            liquid_cache_server.cache().clone(),
+        )));
+    }
+
+    if let Some(cache_trace_dir) = &args.cache_trace_dir {
+        assert!(
+            cache_trace_dir.is_dir(),
+            "Cache trace output must be a directory"
+        );
+        liquid_cache_server.add_stats_collector(Arc::new(CacheTraceReport::new(
+            cache_trace_dir.clone(),
             liquid_cache_server.cache().clone(),
         )));
     }
