@@ -388,7 +388,7 @@ fn otl_metadata() -> MetadataMap {
 
     map.insert(
         "authorization",
-        format!("Basic cm9vdEBleGFtcGxlLmNvbTpFeUIycDFuSXNicXJLekNI") // This is picked from the Ingestion tab openobserve
+        "Basic cm9vdEBleGFtcGxlLmNvbTpFeUIycDFuSXNicXJLekNI"
             .parse()
             .unwrap(),
     );
