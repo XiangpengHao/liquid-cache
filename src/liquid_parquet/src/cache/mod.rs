@@ -751,6 +751,16 @@ impl LiquidCache {
         self.cache_store.tracer().flush(to_file);
     }
 
+    /// Enable the cache trace.
+    pub fn enable_trace(&self) {
+        self.cache_store.tracer().enable();
+    }
+
+    /// Disable the cache trace.
+    pub fn disable_trace(&self) {
+        self.cache_store.tracer().disable();
+    }
+
     /// Reset the cache.
     pub fn reset(&self) {
         let mut files = self.files.lock().unwrap();

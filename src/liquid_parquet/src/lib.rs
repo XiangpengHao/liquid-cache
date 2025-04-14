@@ -2,7 +2,6 @@
 #![cfg_attr(not(doctest), doc = include_str!(concat!("../", std::env!("CARGO_PKG_README"))))]
 
 mod cache;
-pub mod eviction;
 pub mod liquid_array;
 mod reader;
 pub use cache::{LiquidCache, LiquidCacheMode, LiquidCacheRef, LiquidCachedFileRef};

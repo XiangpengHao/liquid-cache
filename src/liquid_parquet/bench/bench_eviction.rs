@@ -1,6 +1,5 @@
-use liquid_cache_parquet::eviction::eviction_cache::{
-    Cache, ClockCache, FifoCache, LfuCache, LruCache,
-};
+mod eviction_cache;
+use eviction_cache::{Cache, ClockCache, FifoCache, LfuCache, LruCache};
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader};

@@ -1,7 +1,7 @@
 use std::{
     fs::File,
     path::Path,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, atomic::AtomicBool},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -22,6 +22,7 @@ struct TraceEvent {
 }
 
 pub(super) struct CacheTracer {
+    enabled: AtomicBool,
     entries: Mutex<Vec<TraceEvent>>,
 }
 
@@ -34,11 +35,29 @@ impl std::fmt::Debug for CacheTracer {
 impl CacheTracer {
     pub(super) fn new() -> Self {
         Self {
+            enabled: AtomicBool::new(false),
             entries: Mutex::new(Vec::new()),
         }
     }
 
+    pub(super) fn enable(&self) {
+        self.enabled
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub(super) fn disable(&self) {
+        self.enabled
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn enabled(&self) -> bool {
+        self.enabled.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     pub(super) fn trace_get(&self, entry_id: CacheEntryID, cache_memory_bytes: usize) {
+        if !self.enabled() {
+            return;
+        }
         let mut entries = self.entries.lock().unwrap();
         let time_stamp_nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
