@@ -2427,7 +2427,7 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "serde",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2735,8 +2735,7 @@ checksum = "13dc2df351e3202783a1fe0d44375f7295ffb4049267b0f3018346dc122a1d94"
 [[package]]
 name = "logforth"
 version = "0.24.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e7d12336d4771854b6fdbf75bab8257e62d4221d1f9d7187fc254b29aa3bd23b"
+source = "git+https://github.com/XiangpengHao/logforth.git#0db0721e42b0a12338f1b7b4f364f4ec25b41a0e"
 dependencies = [
  "anyhow",
  "env_filter",
