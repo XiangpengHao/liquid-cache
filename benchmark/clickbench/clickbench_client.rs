@@ -18,8 +18,8 @@ use datafusion::{
 };
 use fastrace::prelude::*;
 use liquid_cache_benchmarks::{
-    BenchmarkMode, BenchmarkResult, IterationResult, QueryResult, run_query, setup_observability,
-    utils::assert_batch_eq,
+    BenchmarkResult, CommonBenchmarkArgs, IterationResult, QueryResult, run_query,
+    setup_observability, utils::assert_batch_eq,
 };
 use log::{debug, info};
 use mimalloc::MiMalloc;
@@ -129,53 +129,27 @@ struct CliArgs {
     #[arg(long)]
     query_path: PathBuf,
 
-    /// Query number to run, if not provided, all queries will be run
-    #[arg(long)]
-    query: Option<u32>,
-
     /// Path to the ClickBench file, hit.parquet or directory to partitioned files
     #[arg(long)]
     file: PathBuf,
 
-    /// Server URL
-    #[arg(long, default_value = "http://localhost:50051")]
-    server: String,
-
-    /// Number of times to run each query
-    #[arg(long, default_value = "3")]
-    iteration: u32,
-
-    /// Path to the output JSON file
-    #[arg(long)]
-    output: Option<PathBuf>,
-
-    /// Path to the baseline directory
-    #[arg(long = "answer-dir")]
-    answer_dir: Option<PathBuf>,
-
-    /// Benchmark mode to use
-    #[arg(long = "bench-mode", default_value = "liquid-eager-transcode")]
-    bench_mode: BenchmarkMode,
-
-    /// Reset the cache before running a new query
-    #[arg(long = "reset-cache", default_value = "false")]
-    reset_cache: bool,
-
-    /// Number of partitions to use
-    #[arg(long)]
-    partitions: Option<usize>,
+    #[clap(flatten)]
+    common: CommonBenchmarkArgs,
 }
 
 #[tokio::main]
 pub async fn main() -> Result<()> {
-    setup_observability("clickbench-client", opentelemetry::trace::SpanKind::Client);
-
     let args = CliArgs::parse();
+    setup_observability(
+        "clickbench-client",
+        opentelemetry::trace::SpanKind::Client,
+        args.common.openobserve_auth.as_deref(),
+    );
 
-    let queries = get_query(&args.query_path, args.query)?;
-    let bench_mode = &args.bench_mode;
+    let queries = get_query(&args.query_path, args.common.query)?;
+    let bench_mode = &args.common.bench_mode;
     let ctx = bench_mode
-        .setup_clickbench_ctx(&args.server, &args.file, args.partitions)
+        .setup_clickbench_ctx(&args.common.server, &args.file, args.common.partitions)
         .await?;
 
     let mut benchmark_result = BenchmarkResult {
@@ -190,7 +164,7 @@ pub async fn main() -> Result<()> {
 
     for (id, query) in queries {
         let mut query_result = QueryResult::new(id, query.clone());
-        for it in 0..args.iteration {
+        for it in 0..args.common.iteration {
             info!("Running query {}: \n{}", id, query);
             let root = Span::root(
                 format!("clickbench-client-{}-{}", id, it),
@@ -220,13 +194,13 @@ pub async fn main() -> Result<()> {
             info!("Query result: \n{}", result_str);
 
             // Check query answers
-            if let Some(answer_dir) = &args.answer_dir {
+            if let Some(answer_dir) = &args.common.answer_dir {
                 check_result_against_answer(&results, answer_dir, id, &query)?;
                 info!("Query {} passed validation", id);
             }
 
             let metrics_response = bench_mode
-                .get_execution_metrics(&args.server, &physical_plan)
+                .get_execution_metrics(&args.common.server, &physical_plan)
                 .await;
             info!(
                 "Server processing time: {} ms, cache memory usage: {} bytes, liquid cache usage: {} bytes",
@@ -243,13 +217,13 @@ pub async fn main() -> Result<()> {
                 starting_timestamp,
             });
         }
-        if args.reset_cache {
-            bench_mode.reset_cache(&args.server).await?;
+        if args.common.reset_cache {
+            bench_mode.reset_cache(&args.common.server).await?;
         }
         benchmark_result.results.push(query_result);
     }
 
-    if let Some(output_path) = &args.output {
+    if let Some(output_path) = &args.common.output {
         let output_file = StdFile::create(output_path)?;
         serde_json::to_writer_pretty(output_file, &benchmark_result).unwrap();
     }

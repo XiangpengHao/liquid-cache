@@ -1,5 +1,6 @@
 use arrow_flight::sql::Any;
 use arrow_flight::{FlightClient, flight_service_client::FlightServiceClient};
+use clap::Parser;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::common::tree_node::TreeNode;
 use datafusion::execution::TaskContext;
@@ -20,16 +21,57 @@ use liquid_cache_common::rpc::{
 use object_store::ClientConfigKey;
 use prost::Message;
 use serde::Serialize;
+use std::path::PathBuf;
 use std::time::Duration;
 use std::{fmt::Display, path::Path, str::FromStr, sync::Arc};
-use tonic::metadata::MetadataMap;
 use tonic::transport::Channel;
 use url::Url;
 
+mod observability;
 mod reports;
 pub mod utils;
 
+pub use observability::*;
 pub use reports::*;
+
+#[derive(Parser, Serialize, Clone)]
+pub struct CommonBenchmarkArgs {
+    /// Server URL
+    #[arg(long, default_value = "http://localhost:50051")]
+    pub server: String,
+
+    /// Number of times to run each query
+    #[arg(long, default_value = "3")]
+    pub iteration: u32,
+
+    /// Path to the output JSON file
+    #[arg(long)]
+    pub output: Option<PathBuf>,
+
+    /// Path to the baseline directory
+    #[arg(long = "answer-dir")]
+    pub answer_dir: Option<PathBuf>,
+
+    /// Benchmark mode to use
+    #[arg(long = "bench-mode", default_value = "liquid-eager-transcode")]
+    pub bench_mode: BenchmarkMode,
+
+    /// Reset the cache before running a new query
+    #[arg(long = "reset-cache", default_value = "false")]
+    pub reset_cache: bool,
+
+    /// Number of partitions to use
+    #[arg(long)]
+    pub partitions: Option<usize>,
+
+    /// Query number to run, if not provided, all queries will be run
+    #[arg(long)]
+    pub query: Option<u32>,
+
+    /// Openobserve auth token
+    #[arg(long)]
+    pub openobserve_auth: Option<String>,
+}
 
 #[derive(Clone, Debug, Default, Copy, PartialEq, Eq, Serialize)]
 pub enum BenchmarkMode {
@@ -372,66 +414,4 @@ pub struct IterationResult {
     pub cache_cpu_time: u64,
     pub cache_memory_usage: u64,
     pub starting_timestamp: Duration,
-}
-
-use fastrace_opentelemetry::OpenTelemetryReporter;
-use opentelemetry::InstrumentationScope;
-use opentelemetry::KeyValue;
-use opentelemetry::trace::SpanKind;
-use opentelemetry_otlp::WithExportConfig;
-use opentelemetry_otlp::{SpanExporter, WithTonicConfig};
-use opentelemetry_sdk::Resource;
-use std::borrow::Cow;
-
-fn otl_metadata() -> MetadataMap {
-    let mut map = MetadataMap::with_capacity(3);
-
-    map.insert(
-        "authorization",
-        "Basic cm9vdEBleGFtcGxlLmNvbTpFeUIycDFuSXNicXJLekNI"
-            .parse()
-            .unwrap(),
-    );
-    map.insert("organization", "default".parse().unwrap());
-    map.insert("stream-name", "default".parse().unwrap());
-    map
-}
-
-pub fn setup_observability(service_name: &str, kind: SpanKind) {
-    // Setup logging with logforth
-    logforth::builder()
-        .dispatch(|d| {
-            d.filter(log::LevelFilter::Info)
-                .append(logforth::append::Stdout::default())
-        })
-        // enable after: https://github.com/fast/logforth/issues/125
-        // .dispatch(|d| {
-        //     let otl_appender =
-        //         OpentelemetryLogBuilder::new(service_name, "http://localhost:5081/api/development")
-        //             .protocol(OpentelemetryWireProtocol::Grpc)
-        //             .build()
-        //             .unwrap();
-        //     d.append(otl_appender)
-        // })
-        .apply();
-
-    let reporter = OpenTelemetryReporter::new(
-        SpanExporter::builder()
-            .with_tonic()
-            .with_endpoint("http://localhost:5081/api/development".to_string())
-            .with_metadata(otl_metadata())
-            .with_protocol(opentelemetry_otlp::Protocol::Grpc)
-            .build()
-            .expect("initialize oltp exporter"),
-        kind,
-        Cow::Owned(
-            Resource::builder()
-                .with_attributes([KeyValue::new("service.name", service_name.to_string())])
-                .build(),
-        ),
-        InstrumentationScope::builder(env!("CARGO_PKG_NAME"))
-            .with_version(env!("CARGO_PKG_VERSION"))
-            .build(),
-    );
-    fastrace::set_reporter(reporter, fastrace::collector::Config::default());
 }

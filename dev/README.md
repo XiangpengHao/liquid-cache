@@ -19,21 +19,31 @@ cargo test
 
 LiquidCache exports opentelemetry metrics.
 
-Simply start a jaeger instance:
+First, start a [openobserve](https://openobserve.ai/) instance:
 ```bash
-docker run --rm --name jaeger \
-    -p 16686:16686 \
-    -p 4317:4317 \
-    -p 4318:4318 \
-    -p 5778:5778 \
-    -p 9411:9411 \
-    -p 6831:6831 \
-    -p 6832:6832 \
-    -p 14268:14268 \
-    jaegertracing/jaeger:2.4.0
+docker run -d \
+      --name openobserve \
+      -v $PWD/data:/data \
+      -p 5080:5080 \
+      -p 5081:5081 \
+      -e ZO_ROOT_USER_EMAIL="root@example.com" \
+      -e ZO_ROOT_USER_PASSWORD="Complexpass#123" \
+      public.ecr.aws/zinclabs/openobserve:latest
 ```
 
-Then open http://localhost:16686 to view the traces.
+Then, get the auth token from the instance: http://localhost:5080/web/ingestion/recommended/traces
+
+You will see a token like this:
+```
+cm9vdEBleGFtcGxlLmNvbTpGT01qZ3NRUlNmelNoNzJQ
+```
+
+Then, run the server/client with the auth token:
+```bash
+cargo run --release --bin bench_server -- --openobserve-auth cm9vdEBleGFtcGxlLmNvbTpGT01qZ3NRUlNmelNoNzJQ
+```
+
+Then open http://localhost:5080 to view the traces.
 
 
 ### Deploy a LiquidCache server with Docker

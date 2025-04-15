@@ -87,6 +87,14 @@ cargo run --release --bin bench_server -- --stats-dir benchmark/data/cache_stats
 It will generate a parquet file that contains the cache stats for each query that the server executed.
 You can use [`parquet-viewer`](https://parquet-viewer.xiangpeng.systems) to view the stats in the browser.
 
+### Collect cache trace
+
+To collect cache trace, simply add `--cache-trace-dir benchmark/data/cache_trace` to the server command, for example:
+```bash
+cargo run --release --bin bench_server -- --cache-trace-dir benchmark/data/cache_trace
+```
+It will generate a parquet file that contains the cache trace for each query that the server executed.
+
 
 ### Run encoding benchmarks
 
