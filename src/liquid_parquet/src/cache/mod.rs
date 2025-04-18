@@ -14,16 +14,18 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
-pub(crate) use store::BatchID;
-use store::{CacheEntryID, CacheStore};
+use store::CacheStore;
 use tokio::runtime::Runtime;
 use transcode::transcode_liquid_inner;
+pub(crate) use utils::BatchID;
+use utils::CacheEntryID;
 
 mod budget;
 mod stats;
 mod store;
 mod tracer;
 mod transcode;
+mod utils;
 
 /// A dedicated Tokio thread pool for background transcoding tasks.
 /// This pool is built with 4 worker threads.
