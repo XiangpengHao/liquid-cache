@@ -51,4 +51,8 @@ path = "bench/liquid_float_array.rs"
 [[bench]]
 name = "bench_eviction"
 path = "bench/bench_eviction.rs"
+
+[[bench]]
+name = "fsstarray"
+path = "bench/fsstarray.rs"
 harness = false
