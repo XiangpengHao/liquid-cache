@@ -20,8 +20,7 @@ This means that:
 - LiquidCache returns filtered/aggregated data to DataFusion, significantly reduce network IO.
 
 Cons:
-- LiquidCache is not a transparent caching (consider [Foyer](https://github.com/foyer-rs/foyer) instead), it leverages query semantics to optimize caching. 
-
+- LiquidCache is not a transparent cache (consider [Foyer](https://github.com/foyer-rs/foyer) instead), it leverages query semantics to optimize caching. 
 ## Architecture
 
 Both LiquidCache and DataFusion run on cloud servers within the same region, but are configured differently:
