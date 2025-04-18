@@ -17,7 +17,7 @@ LiquidCache is a radical redesign of caching: it **caches logical data** rather 
 
 This means that:
 - LiquidCache transcodes S3 data (e.g., JSON, CSV, Parquet) into an in-house format -- more compressed, more NVMe friendly, more efficient for DataFusion operations. 
-- LiquidCache returns filtered/aggregated data to DataFusion, significantly reduce network IO.
+- LiquidCache returns filtered/aggregated data to DataFusion, significantly reducing network IO.
 
 Cons:
 - LiquidCache is not a transparent cache (consider [Foyer](https://github.com/foyer-rs/foyer) instead), it leverages query semantics to optimize caching. 
