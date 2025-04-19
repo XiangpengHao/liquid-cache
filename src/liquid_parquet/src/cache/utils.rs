@@ -5,13 +5,20 @@ use std::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub(super) struct ColumnAccessPath {
-    v: u64,
+    file_id: u16,
+    rg_id: u16,
+    row_id: u16,
 }
 
 impl ColumnAccessPath {
     pub(super) fn new(file_id: u64, row_group_id: u64, column_id: u64) -> Self {
+        debug_assert!(file_id <= u16::MAX as u64);
+        debug_assert!(row_group_id <= u16::MAX as u64);
+        debug_assert!(column_id <= u16::MAX as u64);
         Self {
-            v: (file_id << 48) | (row_group_id << 32) | (column_id << 16),
+            file_id: file_id as u16,
+            rg_id: row_group_id as u16,
+            row_id: column_id as u16,
         }
     }
 
@@ -24,15 +31,15 @@ impl ColumnAccessPath {
     }
 
     fn file_id_inner(&self) -> u64 {
-        self.v >> 48
+        self.file_id as u64
     }
 
     fn row_group_id_inner(&self) -> u64 {
-        (self.v >> 32) & 0x0000_0000_0000_FFFF
+        self.rg_id as u64
     }
 
     fn column_id_inner(&self) -> u64 {
-        (self.v >> 16) & 0x0000_0000_0000_FFFF
+        self.row_id as u64
     }
 
     pub(super) fn entry_id(&self, batch_id: BatchID) -> CacheEntryID {
@@ -48,30 +55,31 @@ impl ColumnAccessPath {
 impl From<CacheEntryID> for ColumnAccessPath {
     fn from(value: CacheEntryID) -> Self {
         Self {
-            v: (value.file_id_inner() << 48)
-                | (value.row_group_id_inner() << 32)
-                | (value.column_id_inner() << 16),
+            file_id: value.file_id_inner() as u16,
+            rg_id: value.row_group_id_inner() as u16,
+            row_id: value.column_id_inner() as u16,
         }
     }
 }
 
+#[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
-pub(super) struct CacheEntryID {
+pub struct CacheEntryID {
     // This is a unique identifier for a row in a parquet file.
-    // It is composed of 8 bytes:
-    // - 2 bytes for the file id
-    // - 2 bytes for the row group id
-    // - 2 bytes for the column id
-    // - 2 bytes for the batch id
-    // The numerical order of val is meaningful: sorted by each of the fields.
-    val: u64,
+    field_id: u16,
+    rg_id: u16,
+    row_id: u16,
+    batch_id: BatchID,
 }
+
+const _: () = assert!(std::mem::size_of::<CacheEntryID>() == 8);
 
 /// BatchID is a unique identifier for a batch of rows,
 /// it is row id divided by the batch size.
 ///
 // It's very easy to misinterpret this as row id, so we use new type idiom to avoid confusion:
 // https://doc.rust-lang.org/rust-by-example/generics/new_types.html
+#[repr(C, align(2))]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub struct BatchID {
     v: u16,
@@ -111,24 +119,27 @@ impl CacheEntryID {
         debug_assert!(row_group_id <= u16::MAX as u64);
         debug_assert!(column_id <= u16::MAX as u64);
         Self {
-            val: (file_id) << 48 | (row_group_id) << 32 | (column_id) << 16 | batch_id.v as u64,
+            field_id: file_id as u16,
+            rg_id: row_group_id as u16,
+            row_id: column_id as u16,
+            batch_id,
         }
     }
 
     pub(super) fn batch_id_inner(&self) -> u64 {
-        self.val & 0x0000_0000_0000_FFFF
+        self.batch_id.v as u64
     }
 
     pub(super) fn file_id_inner(&self) -> u64 {
-        self.val >> 48
+        self.field_id as u64
     }
 
     pub(super) fn row_group_id_inner(&self) -> u64 {
-        (self.val >> 32) & 0x0000_0000_FFFF
+        self.rg_id as u64
     }
 
     pub(super) fn column_id_inner(&self) -> u64 {
-        (self.val >> 16) & 0x0000_0000_FFFF
+        self.row_id as u64
     }
 
     pub(super) fn on_disk_path(&self, cache_root_dir: &Path) -> PathBuf {
@@ -168,6 +179,46 @@ impl CacheConfig {
     pub fn cache_root_dir(&self) -> &PathBuf {
         &self.cache_root_dir
     }
+}
+
+// Helper methods
+#[cfg(test)]
+pub(crate) fn create_test_array(size: usize) -> arrow::array::ArrayRef {
+    use std::sync::Arc;
+
+    use arrow::array::{ArrayRef, Int64Array};
+
+    Arc::new(Int64Array::from_iter_values(0..size as i64)) as ArrayRef
+}
+
+#[cfg(test)]
+pub(crate) fn create_cache_store(
+    max_cache_bytes: usize,
+    policy: Box<dyn super::policies::CachePolicy>,
+) -> super::store::CacheStore {
+    use tempfile::tempdir;
+
+    use crate::cache::store::CacheStore;
+
+    let temp_dir = tempdir().unwrap();
+    let batch_size = 128;
+
+    CacheStore::new(batch_size, max_cache_bytes, temp_dir.into_path(), policy)
+}
+
+#[cfg(test)]
+pub(crate) fn create_entry_id(
+    file_id: u64,
+    row_group_id: u64,
+    column_id: u64,
+    batch_id: u16,
+) -> CacheEntryID {
+    CacheEntryID::new(
+        file_id,
+        row_group_id,
+        column_id,
+        crate::cache::BatchID::from_raw(batch_id),
+    )
 }
 
 #[cfg(test)]
@@ -279,9 +330,9 @@ mod tests {
         let entry_id = CacheEntryID::new(1, 2, 3, BatchID::from_raw(4));
         let column_path: ColumnAccessPath = entry_id.into();
 
-        // Reconstruct the expected value based on the bit shifting logic
-        let expected_v = (1u64 << 48) | (2u64 << 32) | (3u64 << 16);
-        assert_eq!(column_path.v, expected_v);
+        assert_eq!(column_path.file_id, 1);
+        assert_eq!(column_path.rg_id, 2);
+        assert_eq!(column_path.row_id, 3);
     }
 
     #[test]
