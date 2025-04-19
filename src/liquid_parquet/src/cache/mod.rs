@@ -86,9 +86,7 @@ impl Display for CachedBatch {
 #[derive(Debug)]
 pub struct LiquidCachedColumn {
     cache_mode: LiquidCacheMode,
-    liquid_compressor_states: Arc<LiquidCompressorStates>,
     cache_store: Arc<CacheStore>,
-    cache_dir: PathBuf,
     field: Arc<Field>,
     column_id: u64,
     row_group_id: u64,
@@ -119,8 +117,6 @@ impl LiquidCachedColumn {
         std::fs::create_dir_all(&cache_dir).expect("Failed to create cache directory");
         Self {
             cache_mode,
-            cache_dir,
-            liquid_compressor_states: Arc::new(LiquidCompressorStates::new()),
             field,
             cache_store,
             column_id,
@@ -131,17 +127,11 @@ impl LiquidCachedColumn {
 
     /// row_id must be on a batch boundary.
     fn entry_id(&self, batch_id: BatchID) -> CacheEntryID {
-        // debug_assert!(row_id % self.cache_store.config().batch_size() == 0);
-        // let batch_id = BatchID::from_row_id(row_id, self.cache_store.config().batch_size());
         CacheEntryID::new(self.file_id, self.row_group_id, self.column_id, batch_id)
     }
 
     pub(crate) fn cache_mode(&self) -> LiquidCacheMode {
         self.cache_mode
-    }
-
-    fn fsst_compressor(&self) -> &RwLock<Option<Arc<fsst::Compressor>>> {
-        &self.liquid_compressor_states.fsst_compressor
     }
 
     pub(crate) fn batch_size(&self) -> usize {
@@ -157,13 +147,14 @@ impl LiquidCachedColumn {
     fn read_liquid_from_disk(&self, batch_id: BatchID) -> LiquidArrayRef {
         // TODO: maybe use async here?
         // But async in tokio is way slower than sync.
-        let path = self.cache_dir.join(format!("row_{}.bin", *batch_id));
+        let entry_id = self.entry_id(batch_id);
+        let path = entry_id.on_disk_path(&self.cache_store.config().cache_root_dir());
+        let compressor = self.cache_store.compressor_states(&entry_id);
+        let compressor = compressor.fsst_compressor.read().unwrap().clone();
         let mut file = File::open(path).unwrap();
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes).unwrap();
         let bytes = Bytes::from(bytes);
-        let context = &self.fsst_compressor().read().unwrap();
-        let compressor = context.as_ref().cloned();
         ipc::read_from_bytes(bytes, &LiquidIPCContext::new(compressor))
     }
 
@@ -303,7 +294,8 @@ impl LiquidCachedColumn {
         batch_id: BatchID,
         array: ArrayRef,
     ) -> Result<(), InsertArrowArrayError> {
-        let transcoded = match transcode_liquid_inner(&array, &self.liquid_compressor_states) {
+        let compressor = self.cache_store.compressor_states(&self.entry_id(batch_id));
+        let transcoded = match transcode_liquid_inner(&array, &compressor) {
             Ok(transcoded) => transcoded,
             Err(_) => {
                 log::warn!(
@@ -385,7 +377,8 @@ impl LiquidCachedColumn {
     }
 
     fn transcode_to_liquid(self: &Arc<Self>, batch_id: BatchID, array: ArrayRef) {
-        match transcode_liquid_inner(&array, &self.liquid_compressor_states) {
+        let compressor = self.cache_store.compressor_states(&self.entry_id(batch_id));
+        match transcode_liquid_inner(&array, &compressor) {
             Ok(transcoded) => {
                 self.cache_store.insert(
                     self.entry_id(batch_id),

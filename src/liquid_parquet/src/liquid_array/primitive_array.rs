@@ -1,6 +1,5 @@
 use std::any::Any;
 use std::fmt::{Debug, Display};
-use std::mem::size_of;
 use std::sync::Arc;
 
 use arrow::array::{
@@ -94,7 +93,7 @@ where
 {
     /// Get the memory size of the Liquid primitive array.
     pub fn get_array_memory_size(&self) -> usize {
-        self.bit_packed.get_array_memory_size() + size_of::<T::Native>()
+        self.bit_packed.get_array_memory_size() + std::mem::size_of::<T::Native>()
     }
 
     /// Get the length of the Liquid primitive array.

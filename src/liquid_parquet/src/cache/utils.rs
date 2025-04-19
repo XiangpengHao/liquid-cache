@@ -104,6 +104,35 @@ impl CacheEntryID {
     }
 }
 
+#[derive(Debug)]
+pub(super) struct CacheConfig {
+    batch_size: usize,
+    max_cache_bytes: usize,
+    cache_root_dir: PathBuf,
+}
+
+impl CacheConfig {
+    pub(super) fn new(batch_size: usize, max_cache_bytes: usize, cache_root_dir: PathBuf) -> Self {
+        Self {
+            batch_size,
+            max_cache_bytes,
+            cache_root_dir,
+        }
+    }
+
+    pub fn batch_size(&self) -> usize {
+        self.batch_size
+    }
+
+    pub fn max_cache_bytes(&self) -> usize {
+        self.max_cache_bytes
+    }
+
+    pub fn cache_root_dir(&self) -> &PathBuf {
+        &self.cache_root_dir
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
