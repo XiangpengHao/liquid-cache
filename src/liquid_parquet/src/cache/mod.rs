@@ -107,7 +107,7 @@ impl LiquidCachedColumn {
         file_id: u64,
     ) -> Self {
         let column_path = ColumnAccessPath::new(file_id, row_group_id, column_id);
-        column_path.initialize_dir(&cache_store.config().cache_root_dir());
+        column_path.initialize_dir(cache_store.config().cache_root_dir());
         Self {
             cache_mode,
             field,
@@ -139,7 +139,7 @@ impl LiquidCachedColumn {
         // TODO: maybe use async here?
         // But async in tokio is way slower than sync.
         let entry_id = self.entry_id(batch_id);
-        let path = entry_id.on_disk_path(&self.cache_store.config().cache_root_dir());
+        let path = entry_id.on_disk_path(self.cache_store.config().cache_root_dir());
         let compressor = self.cache_store.compressor_states(&entry_id);
         let compressor = compressor.fsst_compressor.read().unwrap().clone();
         let mut file = File::open(path).unwrap();

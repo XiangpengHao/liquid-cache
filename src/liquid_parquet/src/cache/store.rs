@@ -139,17 +139,15 @@ impl CacheStore {
                     // The batch is gone, no need to transcode
                     return Some(not_inserted);
                 };
-                match to_transcode_batch {
-                    CachedBatch::ArrowMemory(array) => {
-                        let liquid_array =
-                            transcode_liquid_inner(&array, compressor_states.as_ref())
-                                .expect("Failed to transcode to liquid array");
-                        let liquid_array = CachedBatch::LiquidMemory(liquid_array);
-                        self.insert_inner(to_transcode, liquid_array)
-                            .expect("Failed to insert the transcoded batch");
-                    }
-                    _ => {}
+
+                if let CachedBatch::ArrowMemory(array) = to_transcode_batch {
+                    let liquid_array = transcode_liquid_inner(&array, compressor_states.as_ref())
+                        .expect("Failed to transcode to liquid array");
+                    let liquid_array = CachedBatch::LiquidMemory(liquid_array);
+                    self.insert_inner(to_transcode, liquid_array)
+                        .expect("Failed to insert the transcoded batch");
                 }
+
                 Some(not_inserted)
             }
             CacheAdvice::Evict(to_evict) => {
@@ -180,10 +178,8 @@ impl CacheStore {
                 let compressor_states = self.compressor_states.get_compressor(&to_transcode);
                 let liquid_array = match not_inserted {
                     CachedBatch::ArrowMemory(array) => {
-                        let liquid_array =
-                            transcode_liquid_inner(&array, compressor_states.as_ref())
-                                .expect("Failed to transcode to liquid array");
-                        liquid_array
+                        transcode_liquid_inner(&array, compressor_states.as_ref())
+                            .expect("Failed to transcode to liquid array")
                     }
                     CachedBatch::LiquidMemory(liquid_array) => liquid_array,
                     CachedBatch::OnDiskLiquid => {
@@ -198,7 +194,7 @@ impl CacheStore {
 
     fn write_to_disk(&self, entry_id: &CacheEntryID, liquid_array: &LiquidArrayRef) {
         let bytes = liquid_array.to_bytes();
-        let file_path = entry_id.on_disk_path(&self.config.cache_root_dir());
+        let file_path = entry_id.on_disk_path(self.config.cache_root_dir());
         let mut file = File::create(file_path).unwrap();
         file.write_all(&bytes).unwrap();
         self.insert_inner(*entry_id, CachedBatch::OnDiskLiquid)
