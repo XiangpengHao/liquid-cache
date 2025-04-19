@@ -4,16 +4,53 @@ use std::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
-pub(super) struct ColumnPath {
+pub(super) struct ColumnAccessPath {
     v: u64,
 }
 
-impl From<CacheEntryID> for ColumnPath {
+impl ColumnAccessPath {
+    pub(super) fn new(file_id: u64, row_group_id: u64, column_id: u64) -> Self {
+        Self {
+            v: (file_id << 48) | (row_group_id << 32) | (column_id << 16),
+        }
+    }
+
+    pub(super) fn initialize_dir(&self, cache_root_dir: &Path) {
+        let path = cache_root_dir
+            .join(format!("file_{}", self.file_id_inner()))
+            .join(format!("rg_{}", self.row_group_id_inner()))
+            .join(format!("col_{}", self.column_id_inner()));
+        std::fs::create_dir_all(&path).expect("Failed to create cache directory");
+    }
+
+    fn file_id_inner(&self) -> u64 {
+        self.v >> 48
+    }
+
+    fn row_group_id_inner(&self) -> u64 {
+        (self.v >> 32) & 0x0000_0000_0000_FFFF
+    }
+
+    fn column_id_inner(&self) -> u64 {
+        (self.v >> 16) & 0x0000_0000_0000_FFFF
+    }
+
+    pub(super) fn entry_id(&self, batch_id: BatchID) -> CacheEntryID {
+        CacheEntryID::new(
+            self.file_id_inner(),
+            self.row_group_id_inner(),
+            self.column_id_inner(),
+            batch_id,
+        )
+    }
+}
+
+impl From<CacheEntryID> for ColumnAccessPath {
     fn from(value: CacheEntryID) -> Self {
         Self {
             v: (value.file_id_inner() << 48)
                 | (value.row_group_id_inner() << 32)
-                | value.column_id_inner(),
+                | (value.column_id_inner() << 16),
         }
     }
 }
@@ -98,8 +135,8 @@ impl CacheEntryID {
         let batch_id = self.batch_id_inner();
         cache_root_dir
             .join(format!("file_{}", self.file_id_inner()))
-            .join(format!("row_group_{}", self.row_group_id_inner()))
-            .join(format!("column_{}", self.column_id_inner()))
+            .join(format!("rg_{}", self.row_group_id_inner()))
+            .join(format!("col_{}", self.column_id_inner()))
             .join(format!("batch_{}.bin", batch_id))
     }
 }
@@ -231,8 +268,8 @@ mod tests {
         let entry_id = CacheEntryID::new(1, 2, 3, BatchID::from_raw(4));
         let expected_path = cache_root
             .join("file_1")
-            .join("row_group_2")
-            .join("column_3")
+            .join("rg_2")
+            .join("col_3")
             .join("batch_4.bin");
         assert_eq!(entry_id.on_disk_path(cache_root), expected_path);
     }
@@ -240,10 +277,47 @@ mod tests {
     #[test]
     fn test_column_path_from_cache_entry_id() {
         let entry_id = CacheEntryID::new(1, 2, 3, BatchID::from_raw(4));
-        let column_path: ColumnPath = entry_id.into();
+        let column_path: ColumnAccessPath = entry_id.into();
 
         // Reconstruct the expected value based on the bit shifting logic
-        let expected_v = (1u64 << 48) | (2u64 << 32) | 3u64;
+        let expected_v = (1u64 << 48) | (2u64 << 32) | (3u64 << 16);
         assert_eq!(column_path.v, expected_v);
+    }
+
+    #[test]
+    fn test_column_path_directory_hosts_cache_entry_path() {
+        let temp_dir = tempdir().unwrap();
+        let cache_root = temp_dir.path();
+
+        // Create a column path
+        let file_id = 5u64;
+        let row_group_id = 6u64;
+        let column_id = 7u64;
+        let column_path = ColumnAccessPath::new(file_id, row_group_id, column_id);
+
+        // Initialize the directory
+        column_path.initialize_dir(cache_root);
+
+        // Create a cache entry ID from the column path
+        let batch_id = BatchID::from_raw(8);
+        let entry_id = column_path.entry_id(batch_id);
+
+        // Get the on-disk path
+        let entry_path = entry_id.on_disk_path(cache_root);
+
+        // Verify the parent directory of the entry path exists
+        assert!(entry_path.parent().unwrap().exists());
+
+        // Verify the directory structure matches
+        let expected_dir = cache_root
+            .join(format!("file_{}", file_id))
+            .join(format!("rg_{}", row_group_id))
+            .join(format!("col_{}", column_id));
+
+        assert_eq!(entry_path.parent().unwrap(), &expected_dir);
+
+        // Verify we can create a file at the entry path
+        std::fs::write(&entry_path, b"test data").unwrap();
+        assert!(entry_path.exists());
     }
 }

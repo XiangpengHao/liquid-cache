@@ -18,7 +18,7 @@ use store::CacheStore;
 use tokio::runtime::Runtime;
 use transcode::transcode_liquid_inner;
 pub(crate) use utils::BatchID;
-use utils::CacheEntryID;
+use utils::{CacheEntryID, ColumnAccessPath};
 
 mod budget;
 mod stats;
@@ -88,9 +88,7 @@ pub struct LiquidCachedColumn {
     cache_mode: LiquidCacheMode,
     cache_store: Arc<CacheStore>,
     field: Arc<Field>,
-    column_id: u64,
-    row_group_id: u64,
-    file_id: u64,
+    column_path: ColumnAccessPath,
 }
 
 pub type LiquidCachedColumnRef = Arc<LiquidCachedColumn>;
@@ -108,26 +106,19 @@ impl LiquidCachedColumn {
         row_group_id: u64,
         file_id: u64,
     ) -> Self {
-        let cache_dir = cache_store
-            .config()
-            .cache_root_dir()
-            .join(format!("file_{}", file_id))
-            .join(format!("rg_{}", row_group_id))
-            .join(format!("col_{}", column_id));
-        std::fs::create_dir_all(&cache_dir).expect("Failed to create cache directory");
+        let column_path = ColumnAccessPath::new(file_id, row_group_id, column_id);
+        column_path.initialize_dir(&cache_store.config().cache_root_dir());
         Self {
             cache_mode,
             field,
             cache_store,
-            column_id,
-            row_group_id,
-            file_id,
+            column_path,
         }
     }
 
     /// row_id must be on a batch boundary.
     fn entry_id(&self, batch_id: BatchID) -> CacheEntryID {
-        CacheEntryID::new(self.file_id, self.row_group_id, self.column_id, batch_id)
+        self.column_path.entry_id(batch_id)
     }
 
     pub(crate) fn cache_mode(&self) -> LiquidCacheMode {

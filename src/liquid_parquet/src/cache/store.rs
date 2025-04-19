@@ -7,13 +7,13 @@ use super::{
     budget::BudgetAccounting,
     tracer::CacheTracer,
     transcode_liquid_inner,
-    utils::{CacheConfig, ColumnPath},
+    utils::{CacheConfig, ColumnAccessPath},
 };
 use crate::liquid_array::LiquidArrayRef;
 
 #[derive(Debug)]
 struct CompressorStates {
-    states: DashMap<ColumnPath, Arc<LiquidCompressorStates>>,
+    states: DashMap<ColumnAccessPath, Arc<LiquidCompressorStates>>,
 }
 
 impl CompressorStates {
@@ -24,7 +24,7 @@ impl CompressorStates {
     }
 
     fn get_compressor(&self, entry_id: &CacheEntryID) -> Arc<LiquidCompressorStates> {
-        let column_path = ColumnPath::from(*entry_id);
+        let column_path = ColumnAccessPath::from(*entry_id);
         self.states
             .entry(column_path)
             .or_insert_with(|| Arc::new(LiquidCompressorStates::new()))
@@ -207,7 +207,6 @@ impl CacheStore {
     }
 
     pub(super) fn insert(&self, entry_id: CacheEntryID, cached_batch: CachedBatch) {
-        debug_assert!(cached_batch.memory_usage_bytes() <= self.budget.max_memory_bytes());
         let Err((advice, not_inserted)) = self.insert_inner(entry_id, cached_batch) else {
             return;
         };
@@ -215,6 +214,13 @@ impl CacheStore {
         let Some(not_inserted) = self.apply_advice(advice, not_inserted) else {
             return;
         };
+
+        debug_assert!(
+            not_inserted.memory_usage_bytes() <= self.budget.max_memory_bytes(),
+            "not_inserted bytes = {}, max_memory_bytes = {}",
+            not_inserted.memory_usage_bytes(),
+            self.budget.max_memory_bytes()
+        );
 
         // retry the insert
         self.insert(entry_id, not_inserted);
