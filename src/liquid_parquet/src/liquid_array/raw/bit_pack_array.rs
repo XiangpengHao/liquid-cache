@@ -171,7 +171,7 @@ where
 
     /// Returns the memory size of the bit-packed array.
     pub fn get_array_memory_size(&self) -> usize {
-        self.packed_values.inner().capacity()
+        std::mem::size_of::<Self>() + self.packed_values.inner().capacity()
     }
 
     /*

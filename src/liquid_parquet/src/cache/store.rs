@@ -1,205 +1,34 @@
-use std::{
-    ops::Deref,
-    path::{Path, PathBuf},
-    sync::atomic::{AtomicUsize, Ordering},
+use std::{fs::File, io::Write, path::PathBuf, sync::Arc};
+
+use dashmap::{DashMap, Entry, OccupiedEntry};
+
+use super::{
+    CacheEntryID, CachedBatch, LiquidCompressorStates,
+    budget::BudgetAccounting,
+    tracer::CacheTracer,
+    transcode_liquid_inner,
+    utils::{CacheConfig, ColumnAccessPath},
 };
-
-use dashmap::{DashMap, Entry};
-use log::warn;
-
-use super::{CachedBatch, tracer::CacheTracer};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
-pub(super) struct CacheEntryID {
-    // This is a unique identifier for a row in a parquet file.
-    // It is composed of 8 bytes:
-    // - 2 bytes for the file id
-    // - 2 bytes for the row group id
-    // - 2 bytes for the column id
-    // - 2 bytes for the batch id
-    // The numerical order of val is meaningful: sorted by each of the fields.
-    val: u64,
-}
-
-/// BatchID is a unique identifier for a batch of rows,
-/// it is row id divided by the batch size.
-///
-// It's very easy to misinterpret this as row id, so we use new type idiom to avoid confusion:
-// https://doc.rust-lang.org/rust-by-example/generics/new_types.html
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
-pub struct BatchID {
-    v: u16,
-}
-
-impl BatchID {
-    /// Creates a new BatchID from a row id and a batch size.
-    /// row id must be on the batch boundary.
-    pub(crate) fn from_row_id(row_id: usize, batch_size: usize) -> Self {
-        debug_assert!(row_id % batch_size == 0);
-        Self {
-            v: (row_id / batch_size) as u16,
-        }
-    }
-
-    pub(crate) fn from_raw(v: u16) -> Self {
-        Self { v }
-    }
-
-    pub(crate) fn inc(&mut self) {
-        debug_assert!(self.v < u16::MAX);
-        self.v += 1;
-    }
-}
-
-impl Deref for BatchID {
-    type Target = u16;
-
-    fn deref(&self) -> &Self::Target {
-        &self.v
-    }
-}
-
-impl CacheEntryID {
-    pub(super) fn new(file_id: u64, row_group_id: u64, column_id: u64, batch_id: BatchID) -> Self {
-        debug_assert!(file_id <= u16::MAX as u64);
-        debug_assert!(row_group_id <= u16::MAX as u64);
-        debug_assert!(column_id <= u16::MAX as u64);
-        Self {
-            val: (file_id) << 48 | (row_group_id) << 32 | (column_id) << 16 | batch_id.v as u64,
-        }
-    }
-
-    pub(super) fn batch_id_inner(&self) -> u64 {
-        self.val & 0x0000_0000_0000_FFFF
-    }
-
-    pub(super) fn file_id_inner(&self) -> u64 {
-        self.val >> 48
-    }
-
-    pub(super) fn row_group_id_inner(&self) -> u64 {
-        (self.val >> 32) & 0x0000_0000_FFFF
-    }
-
-    pub(super) fn column_id_inner(&self) -> u64 {
-        (self.val >> 16) & 0x0000_0000_FFFF
-    }
-
-    pub(super) fn on_disk_path(&self, cache_root_dir: &Path) -> PathBuf {
-        let batch_id = self.batch_id_inner();
-        cache_root_dir
-            .join(format!("file_{}", self.file_id_inner()))
-            .join(format!("row_group_{}", self.row_group_id_inner()))
-            .join(format!("column_{}", self.column_id_inner()))
-            .join(format!("batch_{}.bin", batch_id))
-    }
-}
+use crate::liquid_array::LiquidArrayRef;
 
 #[derive(Debug)]
-pub(super) struct CacheConfig {
-    batch_size: usize,
-    max_cache_bytes: usize,
-    cache_root_dir: PathBuf,
+struct CompressorStates {
+    states: DashMap<ColumnAccessPath, Arc<LiquidCompressorStates>>,
 }
 
-impl CacheConfig {
-    fn new(batch_size: usize, max_cache_bytes: usize, cache_root_dir: PathBuf) -> Self {
+impl CompressorStates {
+    fn new() -> Self {
         Self {
-            batch_size,
-            max_cache_bytes,
-            cache_root_dir,
+            states: DashMap::new(),
         }
     }
 
-    pub fn batch_size(&self) -> usize {
-        self.batch_size
-    }
-
-    pub fn max_cache_bytes(&self) -> usize {
-        self.max_cache_bytes
-    }
-
-    pub fn cache_root_dir(&self) -> &PathBuf {
-        &self.cache_root_dir
-    }
-}
-
-#[derive(Debug)]
-pub(super) struct BudgetAccounting {
-    max_memory_bytes: usize,
-    used_memory_bytes: AtomicUsize,
-    used_disk_bytes: AtomicUsize,
-}
-
-impl BudgetAccounting {
-    fn new(max_memory_bytes: usize) -> Self {
-        Self {
-            max_memory_bytes,
-            used_memory_bytes: AtomicUsize::new(0),
-            used_disk_bytes: AtomicUsize::new(0),
-        }
-    }
-
-    fn reset_usage(&self) {
-        self.used_memory_bytes.store(0, Ordering::Relaxed);
-        self.used_disk_bytes.store(0, Ordering::Relaxed);
-    }
-
-    /// Try to reserve space in the cache.
-    /// Returns true if the space was reserved, false if the cache is full.
-    fn try_reserve_memory(&self, request_bytes: usize) -> Result<(), ()> {
-        let used = self.used_memory_bytes.load(Ordering::Relaxed);
-        if used + request_bytes > self.max_memory_bytes {
-            return Err(());
-        }
-
-        match self.used_memory_bytes.compare_exchange(
-            used,
-            used + request_bytes,
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-        ) {
-            Ok(_) => Ok(()),
-            Err(_) => self.try_reserve_memory(request_bytes),
-        }
-    }
-
-    /// Adjust the cache size after transcoding.
-    /// Returns true if the size was adjusted, false if the cache is full, when new_size is larger than old_size.
-    fn try_update_memory_usage(&self, old_size: usize, new_size: usize) -> Result<(), ()> {
-        if old_size < new_size {
-            let diff = new_size - old_size;
-            if diff > 1024 * 1024 {
-                warn!(
-                    "Transcoding increased the size of the array by at least 1MB, previous size: {}, new size: {}, double check this is correct",
-                    old_size, new_size
-                );
-            }
-
-            self.try_reserve_memory(diff)?;
-            Ok(())
-        } else {
-            self.used_memory_bytes
-                .fetch_sub(old_size - new_size, Ordering::Relaxed);
-            Ok(())
-        }
-    }
-
-    pub fn memory_usage_bytes(&self) -> usize {
-        self.used_memory_bytes.load(Ordering::Relaxed)
-    }
-
-    pub fn disk_usage_bytes(&self) -> usize {
-        self.used_disk_bytes.load(Ordering::Relaxed)
-    }
-
-    pub fn add_used_disk_bytes(&self, bytes: usize) {
-        self.used_disk_bytes.fetch_add(bytes, Ordering::Relaxed);
-    }
-
-    pub fn sub_memory_usage(&self, evicted_size: usize) {
-        self.used_memory_bytes
-            .fetch_sub(evicted_size, Ordering::Relaxed);
+    fn get_compressor(&self, entry_id: &CacheEntryID) -> Arc<LiquidCompressorStates> {
+        let column_path = ColumnAccessPath::from(*entry_id);
+        self.states
+            .entry(column_path)
+            .or_insert_with(|| Arc::new(LiquidCompressorStates::new()))
+            .clone()
     }
 }
 
@@ -210,6 +39,7 @@ pub(crate) struct CacheStore {
     budget: BudgetAccounting,
     advisor: Box<dyn CacheAdvisor>,
     tracer: CacheTracer,
+    compressor_states: CompressorStates,
 }
 
 trait CacheAdvisor: std::fmt::Debug + Send + Sync {
@@ -228,38 +58,20 @@ struct AlwaysWriteToDiskAdvisor;
 impl CacheAdvisor for AlwaysWriteToDiskAdvisor {
     fn advise(
         &self,
-        _entry_id: &CacheEntryID,
-        _to_insert: &CachedBatch,
-        _cached: &DashMap<CacheEntryID, CachedBatch>,
-    ) -> CacheAdvice {
-        CacheAdvice::InsertToDisk
-    }
-}
-
-#[allow(dead_code)]
-#[derive(Debug)]
-struct EvictOddAdvisor;
-
-impl CacheAdvisor for EvictOddAdvisor {
-    fn advise(
-        &self,
         entry_id: &CacheEntryID,
         _to_insert: &CachedBatch,
         _cached: &DashMap<CacheEntryID, CachedBatch>,
     ) -> CacheAdvice {
-        let column_id = entry_id.column_id_inner();
-        if column_id % 2 == 0 {
-            CacheAdvice::EvictAndRetry(*entry_id)
-        } else {
-            CacheAdvice::InsertToDisk
-        }
+        CacheAdvice::TranscodeToDisk(*entry_id)
     }
 }
 
+#[allow(unused)]
 #[derive(Debug)]
 pub(super) enum CacheAdvice {
-    EvictAndRetry(CacheEntryID),
-    InsertToDisk,
+    Evict(CacheEntryID),
+    TranscodeToDisk(CacheEntryID),
+    Transcode(CacheEntryID),
 }
 
 impl CacheStore {
@@ -271,39 +83,143 @@ impl CacheStore {
             config,
             advisor: Box::new(AlwaysWriteToDiskAdvisor),
             tracer: CacheTracer::new(),
+            compressor_states: CompressorStates::new(),
         }
     }
 
-    pub(super) fn insert(
+    fn insert_inner(
         &self,
         entry_id: CacheEntryID,
         cached_batch: CachedBatch,
-    ) -> Result<(), CacheAdvice> {
+    ) -> Result<OccupiedEntry<'_, CacheEntryID, CachedBatch>, (CacheAdvice, CachedBatch)> {
         let new_memory_size = cached_batch.memory_usage_bytes();
-
-        match self.cached_data.entry(entry_id) {
+        let entry = self.cached_data.entry(entry_id);
+        let entry = match entry {
             Entry::Occupied(mut entry) => {
                 let old = entry.get();
                 let old_memory_size = old.memory_usage_bytes();
-                self.budget
+
+                if self
+                    .budget
                     .try_update_memory_usage(old_memory_size, new_memory_size)
-                    .map_err(|_| {
-                        self.advisor
-                            .advise(&entry_id, &cached_batch, &self.cached_data)
-                    })?;
+                    .is_err()
+                {
+                    let advice = self
+                        .advisor
+                        .advise(&entry_id, &cached_batch, &self.cached_data);
+                    return Err((advice, cached_batch));
+                }
                 entry.insert(cached_batch);
+                entry
             }
             Entry::Vacant(entry) => {
-                self.budget
-                    .try_reserve_memory(new_memory_size)
-                    .map_err(|_| {
-                        self.advisor
-                            .advise(&entry_id, &cached_batch, &self.cached_data)
-                    })?;
-                entry.insert(cached_batch);
+                if self.budget.try_reserve_memory(new_memory_size).is_err() {
+                    let advice = self
+                        .advisor
+                        .advise(&entry_id, &cached_batch, &self.cached_data);
+                    return Err((advice, cached_batch));
+                }
+                entry.insert_entry(cached_batch)
+            }
+        };
+        Ok(entry)
+    }
+
+    /// Returns Some(CachedBatch) if need to retry the insert.
+    #[must_use]
+    fn apply_advice(&self, advice: CacheAdvice, not_inserted: CachedBatch) -> Option<CachedBatch> {
+        match advice {
+            CacheAdvice::Transcode(to_transcode) => {
+                let compressor_states = self.compressor_states.get_compressor(&to_transcode);
+                let Some(to_transcode_batch) = self
+                    .cached_data
+                    .get(&to_transcode)
+                    .map(|entry| entry.value().clone())
+                else {
+                    // The batch is gone, no need to transcode
+                    return Some(not_inserted);
+                };
+
+                if let CachedBatch::ArrowMemory(array) = to_transcode_batch {
+                    let liquid_array = transcode_liquid_inner(&array, compressor_states.as_ref())
+                        .expect("Failed to transcode to liquid array");
+                    let liquid_array = CachedBatch::LiquidMemory(liquid_array);
+                    self.insert_inner(to_transcode, liquid_array)
+                        .expect("Failed to insert the transcoded batch");
+                }
+
+                Some(not_inserted)
+            }
+            CacheAdvice::Evict(to_evict) => {
+                let compressor_states = self.compressor_states.get_compressor(&to_evict);
+                let Some(to_evict_batch) = self
+                    .cached_data
+                    .get(&to_evict)
+                    .map(|entry| entry.value().clone())
+                else {
+                    return Some(not_inserted);
+                };
+                let liquid_array = match to_evict_batch {
+                    CachedBatch::ArrowMemory(array) => {
+                        transcode_liquid_inner(&array, compressor_states.as_ref())
+                            .expect("Failed to transcode to liquid array")
+                    }
+                    CachedBatch::LiquidMemory(liquid_array) => liquid_array,
+                    CachedBatch::OnDiskLiquid => {
+                        // do nothing, already on disk
+                        return Some(not_inserted);
+                    }
+                };
+                self.write_to_disk(&to_evict, &liquid_array);
+                self.cached_data.insert(to_evict, CachedBatch::OnDiskLiquid);
+                Some(not_inserted)
+            }
+            CacheAdvice::TranscodeToDisk(to_transcode) => {
+                let compressor_states = self.compressor_states.get_compressor(&to_transcode);
+                let liquid_array = match not_inserted {
+                    CachedBatch::ArrowMemory(array) => {
+                        transcode_liquid_inner(&array, compressor_states.as_ref())
+                            .expect("Failed to transcode to liquid array")
+                    }
+                    CachedBatch::LiquidMemory(liquid_array) => liquid_array,
+                    CachedBatch::OnDiskLiquid => {
+                        return None;
+                    }
+                };
+                self.write_to_disk(&to_transcode, &liquid_array);
+                None
             }
         }
-        Ok(())
+    }
+
+    fn write_to_disk(&self, entry_id: &CacheEntryID, liquid_array: &LiquidArrayRef) {
+        let bytes = liquid_array.to_bytes();
+        let file_path = entry_id.on_disk_path(self.config.cache_root_dir());
+        let mut file = File::create(file_path).unwrap();
+        file.write_all(&bytes).unwrap();
+        self.insert_inner(*entry_id, CachedBatch::OnDiskLiquid)
+            .expect("failed to insert on disk liquid");
+        self.budget.add_used_disk_bytes(bytes.len());
+    }
+
+    pub(super) fn insert(&self, entry_id: CacheEntryID, cached_batch: CachedBatch) {
+        let Err((advice, not_inserted)) = self.insert_inner(entry_id, cached_batch) else {
+            return;
+        };
+
+        let Some(not_inserted) = self.apply_advice(advice, not_inserted) else {
+            return;
+        };
+
+        debug_assert!(
+            not_inserted.memory_usage_bytes() <= self.budget.max_memory_bytes(),
+            "not_inserted bytes = {}, max_memory_bytes = {}",
+            not_inserted.memory_usage_bytes(),
+            self.budget.max_memory_bytes()
+        );
+
+        // retry the insert
+        self.insert(entry_id, not_inserted);
     }
 
     pub(super) fn get(&self, entry_id: &CacheEntryID) -> Option<CachedBatch> {
@@ -312,13 +228,6 @@ impl CacheStore {
         self.cached_data
             .get(entry_id)
             .map(|entry| entry.value().clone())
-    }
-
-    pub(super) fn remove(&self, entry_id: &CacheEntryID) -> Option<CachedBatch> {
-        let v = self.cached_data.remove(entry_id).map(|(_, batch)| batch)?;
-        let memory_usage = v.memory_usage_bytes();
-        self.budget.sub_memory_usage(memory_usage);
-        Some(v)
     }
 
     pub(super) fn reset(&self) {
@@ -345,184 +254,200 @@ impl CacheStore {
     pub(super) fn tracer(&self) -> &CacheTracer {
         &self.tracer
     }
+
+    pub(super) fn compressor_states(&self, entry_id: &CacheEntryID) -> Arc<LiquidCompressorStates> {
+        self.compressor_states.get_compressor(entry_id)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use super::*;
-    use arrow::array::{ArrayRef, Int32Array};
+    use arrow::array::{Array, ArrayRef, Int64Array};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::tempdir;
 
-    #[test]
-    fn test_memory_reservation_and_accounting() {
-        let config = BudgetAccounting::new(1000);
-
-        // Check initial state
-        assert_eq!(config.memory_usage_bytes(), 0);
-
-        // Basic reservation
-        assert!(config.try_reserve_memory(500).is_ok());
-        assert_eq!(config.memory_usage_bytes(), 500);
-
-        // Additional reservation within limits
-        assert!(config.try_reserve_memory(300).is_ok());
-        assert_eq!(config.memory_usage_bytes(), 800);
-
-        // Reservation exceeding limit
-        assert!(config.try_reserve_memory(300).is_err());
-        assert_eq!(config.memory_usage_bytes(), 800);
-
-        // Test eviction accounting
-        config.sub_memory_usage(200);
-        assert_eq!(config.memory_usage_bytes(), 600);
-
-        // Reset usage
-        config.reset_usage();
-        assert_eq!(config.memory_usage_bytes(), 0);
+    // Unified advice type for more concise testing
+    #[derive(Debug)]
+    struct TestAdvisor {
+        advice_type: AdviceType,
+        target_id: Option<CacheEntryID>,
+        advice_count: AtomicUsize,
     }
 
-    #[test]
-    fn test_memory_transcoding_accounting() {
-        let config = BudgetAccounting::new(1000);
-
-        // Initial reservation
-        assert!(config.try_reserve_memory(400).is_ok());
-        assert_eq!(config.memory_usage_bytes(), 400);
-
-        // Update after transcoding - size decrease
-        assert!(config.try_update_memory_usage(300, 200).is_ok());
-        assert_eq!(config.memory_usage_bytes(), 300); // 400 - (300 - 200)
-
-        // Update after transcoding - size increase within limits
-        assert!(config.try_update_memory_usage(200, 500).is_ok());
-        assert_eq!(config.memory_usage_bytes(), 600); // 300 + (500 - 200)
-
-        // Update after transcoding - size increase exceeding limits
-        assert!(config.try_update_memory_usage(100, 600).is_err());
-        assert_eq!(config.memory_usage_bytes(), 600); // Unchanged because update failed
+    #[derive(Debug, Clone, Copy)]
+    enum AdviceType {
+        Evict,
+        Transcode,
+        TranscodeToDisk,
     }
 
-    #[test]
-    fn test_cache_store_basic_operations() {
-        // Setup test environment
-        let temp_dir = tempdir().unwrap();
-        let cache_dir = temp_dir.path().to_path_buf();
-        let batch_size = 128;
-        let cache_max_bytes = 1000;
-
-        let store = CacheStore::new(batch_size, cache_max_bytes, cache_dir);
-
-        // Create test entry and batch
-        let entry_id = CacheEntryID::new(1, 2, 3, BatchID::from_raw(4));
-        let cached_batch = create_test_cached_batch(200);
-
-        // Test initial state
-        assert!(!store.is_cached(&entry_id));
-        assert_eq!(store.budget().memory_usage_bytes(), 0);
-
-        // Test insert
-        assert!(store.insert(entry_id, cached_batch.clone()).is_ok());
-        assert_eq!(
-            store.budget().memory_usage_bytes(),
-            cached_batch.memory_usage_bytes()
-        );
-        assert!(store.is_cached(&entry_id));
-
-        // Test get
-        let retrieved = store.get(&entry_id).unwrap();
-        assert_eq!(
-            retrieved.memory_usage_bytes(),
-            cached_batch.memory_usage_bytes()
-        );
-
-        // Test remove
-        let removed = store.remove(&entry_id).unwrap();
-        assert_eq!(
-            removed.memory_usage_bytes(),
-            cached_batch.memory_usage_bytes()
-        );
-        assert_eq!(store.budget().memory_usage_bytes(), 0);
-        assert!(!store.is_cached(&entry_id));
-
-        // Test reset
-        assert!(store.insert(entry_id, cached_batch.clone()).is_ok());
-        assert!(store.is_cached(&entry_id));
-        store.reset();
-        assert!(!store.is_cached(&entry_id));
-        assert_eq!(store.budget().memory_usage_bytes(), 0);
-    }
-
-    #[test]
-    fn test_cache_store_memory_management() {
-        // Setup test environment
-        let temp_dir = tempdir().unwrap();
-        let cache_dir = temp_dir.path().to_path_buf();
-        let batch_size = 128;
-        let cache_max_bytes = 600;
-
-        let store = CacheStore::new(batch_size, cache_max_bytes, cache_dir);
-
-        // Create multiple test entries
-        let entry_id1 = CacheEntryID::new(1, 1, 1, BatchID::from_raw(1));
-        let entry_id2 = CacheEntryID::new(2, 2, 2, BatchID::from_raw(2));
-        let entry_id3 = CacheEntryID::new(3, 3, 3, BatchID::from_raw(3));
-
-        let batch1 = create_test_cached_batch(50);
-        let batch2 = create_test_cached_batch(50);
-        let batch3 = create_test_cached_batch(50);
-
-        // Insert entries until we hit the memory limit
-        assert!(store.insert(entry_id1, batch1.clone()).is_ok());
-        assert!(store.insert(entry_id2, batch2.clone()).is_ok());
-        assert_eq!(
-            store.budget().memory_usage_bytes(),
-            batch1.memory_usage_bytes() + batch2.memory_usage_bytes()
-        );
-
-        // This should fail or trigger eviction as we've exceeded the memory limit
-        let result = store.insert(entry_id3, batch3.clone());
-        match result {
-            Ok(_) => {
-                // If we got Ok, then one of the previous entries should have been evicted
-                let is_id1_cached = store.is_cached(&entry_id1);
-                let is_id2_cached = store.is_cached(&entry_id2);
-                let is_id3_cached = store.is_cached(&entry_id3);
-
-                assert!(
-                    is_id3_cached,
-                    "Entry 3 should be cached after successful insert"
-                );
-                assert!(
-                    !(is_id1_cached && is_id2_cached),
-                    "At least one of the previous entries should have been evicted"
-                );
-            }
-            Err(_advice) => {
-                assert_eq!(
-                    store.budget().memory_usage_bytes(),
-                    batch1.memory_usage_bytes() + batch2.memory_usage_bytes()
-                );
-                assert!(store.is_cached(&entry_id1));
-                assert!(store.is_cached(&entry_id2));
-                assert!(!store.is_cached(&entry_id3));
+    impl TestAdvisor {
+        fn new(advice_type: AdviceType, target_id: Option<CacheEntryID>) -> Self {
+            Self {
+                advice_type,
+                target_id,
+                advice_count: AtomicUsize::new(0),
             }
         }
+    }
 
-        // Test updating an existing entry with a larger size that exceeds the limit
-        if store.is_cached(&entry_id1) {
-            let larger_batch = create_test_cached_batch(400);
-            let result = store.insert(entry_id1, larger_batch);
-            assert!(
-                result.is_err(),
-                "Inserting a larger batch that would exceed the memory limit should fail"
-            );
+    impl CacheAdvisor for TestAdvisor {
+        fn advise(
+            &self,
+            entry_id: &CacheEntryID,
+            _to_insert: &CachedBatch,
+            _cached: &DashMap<CacheEntryID, CachedBatch>,
+        ) -> CacheAdvice {
+            self.advice_count.fetch_add(1, Ordering::SeqCst);
+            match self.advice_type {
+                AdviceType::Evict => {
+                    let id_to_use = self.target_id.unwrap_or(*entry_id);
+                    CacheAdvice::Evict(id_to_use)
+                }
+                AdviceType::Transcode => {
+                    let id_to_use = self.target_id.unwrap_or(*entry_id);
+                    CacheAdvice::Transcode(id_to_use)
+                }
+                AdviceType::TranscodeToDisk => CacheAdvice::TranscodeToDisk(*entry_id),
+            }
+        }
+    }
+
+    // Helper methods
+    fn create_test_array(size: usize) -> ArrayRef {
+        Arc::new(Int64Array::from_iter_values(0..size as i64)) as ArrayRef
+    }
+
+    fn create_cache_store(max_cache_bytes: usize, advisor: Box<dyn CacheAdvisor>) -> CacheStore {
+        let temp_dir = tempdir().unwrap();
+        let batch_size = 128;
+        let config = CacheConfig::new(batch_size, max_cache_bytes, temp_dir.path().to_path_buf());
+
+        CacheStore {
+            cached_data: DashMap::new(),
+            budget: BudgetAccounting::new(config.max_cache_bytes()),
+            config,
+            advisor,
+            tracer: CacheTracer::new(),
+            compressor_states: CompressorStates::new(),
         }
     }
 
-    fn create_test_cached_batch(element_count: usize) -> CachedBatch {
-        let array = Arc::new(Int32Array::from(vec![0; element_count])) as ArrayRef;
-        CachedBatch::ArrowMemory(array)
+    fn create_entry_id(
+        file_id: u64,
+        row_group_id: u64,
+        column_id: u64,
+        batch_id: u16,
+    ) -> CacheEntryID {
+        CacheEntryID::new(
+            file_id,
+            row_group_id,
+            column_id,
+            crate::cache::BatchID::from_raw(batch_id),
+        )
+    }
+
+    #[test]
+    fn test_basic_cache_operations() {
+        // Test basic insert, get, and size tracking in one test
+        let budget_size = 10 * 1024;
+        let store = create_cache_store(budget_size, Box::new(AlwaysWriteToDiskAdvisor));
+
+        // 1. Initial budget should be empty
+        assert_eq!(store.budget.memory_usage_bytes(), 0);
+
+        // 2. Insert and verify first entry
+        let entry_id1 = create_entry_id(1, 1, 1, 1);
+        let array1 = create_test_array(100);
+        let size1 = array1.get_array_memory_size();
+        store.insert(entry_id1, CachedBatch::ArrowMemory(array1.clone()));
+
+        // Verify budget usage and data correctness
+        assert_eq!(store.budget.memory_usage_bytes(), size1);
+        let retrieved1 = store.get(&entry_id1).unwrap();
+        match retrieved1 {
+            CachedBatch::ArrowMemory(arr) => assert_eq!(arr.len(), 100),
+            _ => panic!("Expected ArrowMemory"),
+        }
+
+        let entry_id2 = create_entry_id(2, 2, 2, 2);
+        let array2 = create_test_array(200);
+        let size2 = array2.get_array_memory_size();
+        store.insert(entry_id2, CachedBatch::ArrowMemory(array2));
+
+        assert_eq!(store.budget.memory_usage_bytes(), size1 + size2);
+
+        let array3 = create_test_array(150);
+        let size3 = array3.get_array_memory_size();
+        store.insert(entry_id1, CachedBatch::ArrowMemory(array3));
+
+        assert_eq!(store.budget.memory_usage_bytes(), size3 + size2);
+        assert!(store.get(&create_entry_id(999, 999, 999, 999)).is_none());
+    }
+
+    #[test]
+    fn test_cache_advice_strategies() {
+        // Comprehensive test of all three advice types
+
+        // Create entry IDs we'll use throughout the test
+        let entry_id1 = create_entry_id(1, 1, 1, 1);
+        let entry_id2 = create_entry_id(2, 2, 2, 2);
+        let entry_id3 = create_entry_id(3, 3, 3, 3);
+
+        // 1. Test EVICT advice
+        {
+            let advisor = TestAdvisor::new(AdviceType::Evict, Some(entry_id1));
+            let store = create_cache_store(8000, Box::new(advisor)); // Small budget to force advice
+
+            let on_disk_path = entry_id1.on_disk_path(&store.config.cache_root_dir());
+            std::fs::create_dir_all(on_disk_path.parent().unwrap()).unwrap();
+
+            store.insert(entry_id1, CachedBatch::ArrowMemory(create_test_array(800)));
+            match store.get(&entry_id1).unwrap() {
+                CachedBatch::ArrowMemory(_) => {}
+                other => panic!("Expected ArrowMemory, got {:?}", other),
+            }
+
+            store.insert(entry_id2, CachedBatch::ArrowMemory(create_test_array(800)));
+            match store.get(&entry_id1).unwrap() {
+                CachedBatch::OnDiskLiquid => {}
+                other => panic!("Expected OnDiskLiquid after eviction, got {:?}", other),
+            }
+        }
+
+        // 2. Test TRANSCODE advice
+        {
+            let advisor = TestAdvisor::new(AdviceType::Transcode, Some(entry_id1));
+            let store = create_cache_store(8000, Box::new(advisor)); // Small budget
+
+            store.insert(entry_id1, CachedBatch::ArrowMemory(create_test_array(800)));
+            match store.get(&entry_id1).unwrap() {
+                CachedBatch::ArrowMemory(_) => {}
+                other => panic!("Expected ArrowMemory, got {:?}", other),
+            }
+
+            store.insert(entry_id2, CachedBatch::ArrowMemory(create_test_array(800)));
+            match store.get(&entry_id1).unwrap() {
+                CachedBatch::LiquidMemory(_) => {}
+                other => panic!("Expected LiquidMemory after transcoding, got {:?}", other),
+            }
+        }
+
+        // 3. Test TRANSCODE_TO_DISK advice
+        {
+            let advisor = TestAdvisor::new(AdviceType::TranscodeToDisk, None);
+            let store = create_cache_store(8000, Box::new(advisor)); // Tiny budget to force disk storage
+
+            let on_disk_path = entry_id3.on_disk_path(&store.config.cache_root_dir());
+            std::fs::create_dir_all(on_disk_path.parent().unwrap()).unwrap();
+
+            store.insert(entry_id1, CachedBatch::ArrowMemory(create_test_array(800)));
+            store.insert(entry_id3, CachedBatch::ArrowMemory(create_test_array(800)));
+            match store.get(&entry_id3).unwrap() {
+                CachedBatch::OnDiskLiquid => {}
+                other => panic!("Expected OnDiskLiquid, got {:?}", other),
+            }
+        }
     }
 }
