@@ -43,11 +43,14 @@ pub(crate) struct CacheStore {
     compressor_states: CompressorStates,
 }
 
-#[allow(unused)]
-#[derive(Debug)]
+/// Advice given by the cache policy.
+#[derive(PartialEq, Eq, Debug)]
 pub enum CacheAdvice {
+    /// Evict the entry with the given ID.
     Evict(CacheEntryID),
+    /// Transcode the entry to disk.
     TranscodeToDisk(CacheEntryID),
+    /// Transcode the entry to liquid memory.
     Transcode(CacheEntryID),
 }
 
@@ -321,8 +324,8 @@ mod tests {
         // 2. Insert and verify first entry
         let entry_id1 = create_entry_id(1, 1, 1, 1);
         let array1 = create_test_array(100);
-        let size1 = array1.get_array_memory_size();
-        store.insert(entry_id1, CachedBatch::ArrowMemory(array1.clone()));
+        let size1 = array1.memory_usage_bytes();
+        store.insert(entry_id1, array1);
 
         // Verify budget usage and data correctness
         assert_eq!(store.budget.memory_usage_bytes(), size1);
@@ -334,14 +337,14 @@ mod tests {
 
         let entry_id2 = create_entry_id(2, 2, 2, 2);
         let array2 = create_test_array(200);
-        let size2 = array2.get_array_memory_size();
-        store.insert(entry_id2, CachedBatch::ArrowMemory(array2));
+        let size2 = array2.memory_usage_bytes();
+        store.insert(entry_id2, array2);
 
         assert_eq!(store.budget.memory_usage_bytes(), size1 + size2);
 
         let array3 = create_test_array(150);
-        let size3 = array3.get_array_memory_size();
-        store.insert(entry_id1, CachedBatch::ArrowMemory(array3));
+        let size3 = array3.memory_usage_bytes();
+        store.insert(entry_id1, array3);
 
         assert_eq!(store.budget.memory_usage_bytes(), size3 + size2);
         assert!(store.get(&create_entry_id(999, 999, 999, 999)).is_none());
@@ -364,13 +367,13 @@ mod tests {
             let on_disk_path = entry_id1.on_disk_path(&store.config.cache_root_dir());
             std::fs::create_dir_all(on_disk_path.parent().unwrap()).unwrap();
 
-            store.insert(entry_id1, CachedBatch::ArrowMemory(create_test_array(800)));
+            store.insert(entry_id1, create_test_array(800));
             match store.get(&entry_id1).unwrap() {
                 CachedBatch::ArrowMemory(_) => {}
                 other => panic!("Expected ArrowMemory, got {:?}", other),
             }
 
-            store.insert(entry_id2, CachedBatch::ArrowMemory(create_test_array(800)));
+            store.insert(entry_id2, create_test_array(800));
             match store.get(&entry_id1).unwrap() {
                 CachedBatch::OnDiskLiquid => {}
                 other => panic!("Expected OnDiskLiquid after eviction, got {:?}", other),
@@ -382,13 +385,13 @@ mod tests {
             let advisor = TestPolicy::new(AdviceType::Transcode, Some(entry_id1));
             let store = create_cache_store(8000, Box::new(advisor)); // Small budget
 
-            store.insert(entry_id1, CachedBatch::ArrowMemory(create_test_array(800)));
+            store.insert(entry_id1, create_test_array(800));
             match store.get(&entry_id1).unwrap() {
                 CachedBatch::ArrowMemory(_) => {}
                 other => panic!("Expected ArrowMemory, got {:?}", other),
             }
 
-            store.insert(entry_id2, CachedBatch::ArrowMemory(create_test_array(800)));
+            store.insert(entry_id2, create_test_array(800));
             match store.get(&entry_id1).unwrap() {
                 CachedBatch::LiquidMemory(_) => {}
                 other => panic!("Expected LiquidMemory after transcoding, got {:?}", other),
@@ -403,8 +406,8 @@ mod tests {
             let on_disk_path = entry_id3.on_disk_path(&store.config.cache_root_dir());
             std::fs::create_dir_all(on_disk_path.parent().unwrap()).unwrap();
 
-            store.insert(entry_id1, CachedBatch::ArrowMemory(create_test_array(800)));
-            store.insert(entry_id3, CachedBatch::ArrowMemory(create_test_array(800)));
+            store.insert(entry_id1, create_test_array(800));
+            store.insert(entry_id3, create_test_array(800));
             match store.get(&entry_id3).unwrap() {
                 CachedBatch::OnDiskLiquid => {}
                 other => panic!("Expected OnDiskLiquid, got {:?}", other),
