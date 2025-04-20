@@ -8,19 +8,22 @@ use arrow::compute::prep_null_mask_filter;
 use arrow_schema::{ArrowError, DataType, Field, Schema};
 use bytes::Bytes;
 use liquid_cache_common::CacheMode;
+use policies::LruPolicy;
 use std::fmt::Display;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
-use store::CacheStore;
+use store::{CacheAdvice, CacheStore};
 use tokio::runtime::Runtime;
 use transcode::transcode_liquid_inner;
 pub(crate) use utils::BatchID;
 use utils::{CacheEntryID, ColumnAccessPath};
 
 mod budget;
+/// Module containing cache eviction policies like FIFO
+pub mod policies;
 mod stats;
 mod store;
 mod tracer;
@@ -57,7 +60,7 @@ impl LiquidCompressorStates {
 }
 
 #[derive(Debug, Clone)]
-enum CachedBatch {
+pub enum CachedBatch {
     ArrowMemory(ArrayRef),
     LiquidMemory(LiquidArrayRef),
     OnDiskLiquid,
@@ -586,10 +589,16 @@ impl LiquidCache {
     /// Create a new cache
     pub fn new(batch_size: usize, max_cache_bytes: usize, cache_dir: PathBuf) -> Self {
         assert!(batch_size.is_power_of_two());
+        let fifo_policy = Box::new(LruPolicy::new());
 
         LiquidCache {
             files: Mutex::new(AHashMap::new()),
-            cache_store: Arc::new(CacheStore::new(batch_size, max_cache_bytes, cache_dir)),
+            cache_store: Arc::new(CacheStore::new(
+                batch_size,
+                max_cache_bytes,
+                cache_dir,
+                fifo_policy,
+            )),
             current_file_id: AtomicU64::new(0),
         }
     }
