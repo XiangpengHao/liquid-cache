@@ -64,16 +64,19 @@ fn compressor_benchmark(c: &mut Criterion) {
         group.throughput(Throughput::Bytes(string_byte_size as u64));
 
         // Benchmark the FSST compressor training
-        group.bench_function(format!("train_compressor - str_size: {}", string_byte_size), |b| {
-            b.iter(|| {
-                let input = criterion::black_box(
-                    string_arrays[i]
-                        .iter()
-                        .flat_map(|s| s.map(|a| a.as_bytes())),
-                );
-                FsstArray::train_compressor(input)
-            });
-        });
+        group.bench_function(
+            format!("train_compressor - str_size: {}", string_byte_size),
+            |b| {
+                b.iter(|| {
+                    let input = criterion::black_box(
+                        string_arrays[i]
+                            .iter()
+                            .flat_map(|s| s.map(|a| a.as_bytes())),
+                    );
+                    FsstArray::train_compressor(input)
+                });
+            },
+        );
     }
     group.finish();
 }
@@ -81,10 +84,9 @@ fn compressor_benchmark(c: &mut Criterion) {
 // Benchmark for creating an FSST array from a byte array using a pre-trained compressor
 fn from_byte_array_with_compressor_benchmark(c: &mut Criterion) {
     let string_arrays = create_string_arrays_from_files(FOLDER_PATH);
-    
+
     let mut group = c.benchmark_group(format!("compressor_benchmark"));
     for i in 0..string_arrays.len() {
-
         // Train the FSST compressor
         let compressor = FsstArray::train_compressor(
             string_arrays[i]
@@ -104,7 +106,10 @@ fn from_byte_array_with_compressor_benchmark(c: &mut Criterion) {
 
         // Benchmark the creation of an FSST array from a byte array
         group.bench_function(
-            format!("from_byte_array_with_compressor - str_size: {}", string_byte_size),
+            format!(
+                "from_byte_array_with_compressor - str_size: {}",
+                string_byte_size
+            ),
             |b| {
                 b.iter(|| {
                     criterion::black_box(FsstArray::from_byte_array_with_compressor(
@@ -124,7 +129,6 @@ fn to_arrow_byte_array_benchmark(c: &mut Criterion) {
 
     let mut group = c.benchmark_group(format!("compressor_benchmark"));
     for i in 0..string_arrays.len() {
-
         // Train the FSST compressor
         let compressor = FsstArray::train_compressor(
             string_arrays[i]
