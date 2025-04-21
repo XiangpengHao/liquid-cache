@@ -557,7 +557,10 @@ mod tests {
 
     #[test]
     fn test_compression_f32_f64() {
-        fn run_compression_test<T: LiquidFloatType>(type_name: &str, data_fn: impl Fn(usize) -> T::Native) {
+        fn run_compression_test<T: LiquidFloatType>(
+            type_name: &str,
+            data_fn: impl Fn(usize) -> T::Native,
+        ) {
             let original: Vec<T::Native> = (0..2000).map(data_fn).collect();
             let array = PrimitiveArray::<T>::from_iter_values(original);
             let uncompressed_size = array.get_array_memory_size();
