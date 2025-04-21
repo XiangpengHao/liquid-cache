@@ -207,26 +207,27 @@ fn rewrite_data_source_plan(
             if let Some(plan) = any_plan.downcast_ref::<DataSourceExec>() {
                 let data_source = plan.data_source();
                 let any_source = data_source.as_any();
-                if let Some(source) = any_source.downcast_ref::<FileScanConfig>() {
-                    let file_source = source.file_source();
+                if let Some(file_scan_config) = any_source.downcast_ref::<FileScanConfig>() {
+                    let file_source = file_scan_config.file_source();
                     let any_file_source = file_source.as_any();
                     if let Some(file_source) = any_file_source.downcast_ref::<ParquetSource>() {
                         let new_source = LiquidParquetSource::from_parquet_source(
                             file_source.clone(),
+                            file_scan_config.file_schema.clone(),
                             cache.clone(),
                             cache_mode.into(),
                         );
-                        let mut new_file_source = source.clone();
-                        new_file_source.file_source = Arc::new(new_source);
+                        let mut new_config = file_scan_config.clone();
+                        new_config.file_source = Arc::new(new_source);
                         // This coercion is necessary because this schema determines the schema of flight transfer.
                         let coerced_schema =
-                            coerce_to_liquid_cache_types(new_file_source.file_schema.as_ref());
-                        new_file_source.projection = new_file_source.projection.map(|mut v| {
+                            coerce_to_liquid_cache_types(new_config.file_schema.as_ref());
+                        new_config.projection = new_config.projection.map(|mut v| {
                             v.sort();
                             v
                         });
-                        new_file_source.file_schema = Arc::new(coerced_schema);
-                        let new_file_source: Arc<dyn DataSource> = Arc::new(new_file_source);
+                        new_config.file_schema = Arc::new(coerced_schema);
+                        let new_file_source: Arc<dyn DataSource> = Arc::new(new_config);
                         let new_plan = Arc::new(DataSourceExec::new(new_file_source));
 
                         // data source is at the bottom of the plan tree, so we can stop the recursion

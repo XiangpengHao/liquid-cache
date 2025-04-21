@@ -75,7 +75,7 @@ async fn get_test_reader() -> (LiquidStreamBuilder, File) {
     let file_metadata = file.metadata().unwrap();
     let object_meta = ObjectMeta {
         location: object_store::path::Path::from_filesystem_path(path).unwrap(),
-        size: file_metadata.len() as usize,
+        size: file_metadata.len(),
         last_modified: file_metadata.modified().unwrap().into(),
         e_tag: None,
         version: None,

@@ -4,7 +4,6 @@ use std::{any::Any, fmt::Formatter, sync::Arc};
 
 use arrow::array::RecordBatch;
 use arrow_flight::decode::FlightRecordBatchStream;
-use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_schema::SchemaRef;
 use datafusion::common::Statistics;
@@ -80,7 +79,9 @@ impl LiquidCacheClientExec {
 impl DisplayAs for LiquidCacheClientExec {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut Formatter<'_>) -> std::fmt::Result {
         match t {
-            DisplayFormatType::Default | DisplayFormatType::Verbose => {
+            DisplayFormatType::Default
+            | DisplayFormatType::Verbose
+            | DisplayFormatType::TreeRender => {
                 write!(
                     f,
                     "LiquidCacheClientExec: server={}, mode={}, object_stores={:?}",
@@ -273,7 +274,7 @@ async fn flight_stream(
     let (md, response_stream, _ext) = client.do_get(ticket).await.map_err(to_df_err)?.into_parts();
     LocalSpan::add_event(Event::new("get_flight_stream"));
     let stream =
-        FlightRecordBatchStream::new_from_flight_data(response_stream.map_err(FlightError::Tonic))
+        FlightRecordBatchStream::new_from_flight_data(response_stream.map_err(|e| e.into()))
             .with_headers(md)
             .map_err(to_df_err);
     Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))

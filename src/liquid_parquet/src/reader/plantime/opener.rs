@@ -140,7 +140,7 @@ impl FileOpener for LiquidParquetOpener {
 
             let mut metadata_timer = file_metrics.metadata_load_time.timer();
 
-            let parquet_metadata = reader.get_metadata().await?;
+            let parquet_metadata = reader.get_metadata(Some(&options)).await?;
             let metadata = ArrowReaderMetadata::try_new(parquet_metadata, options)?;
             debug_assert!(
                 Arc::strong_count(metadata.metadata()) > 1,
