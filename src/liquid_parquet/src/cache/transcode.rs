@@ -176,8 +176,6 @@ mod tests {
     }
 
     #[test]
-    // ignore before this: https://github.com/XiangpengHao/liquid-cache/issues/150
-    #[ignore]
     fn test_transcode_float32() {
         let array: ArrayRef = Arc::new(Float32Array::from_iter_values(
             (0..TEST_ARRAY_SIZE).map(|i| i as f32),
@@ -188,8 +186,6 @@ mod tests {
     }
 
     #[test]
-    // ignore before this: https://github.com/XiangpengHao/liquid-cache/issues/150
-    #[ignore]
     fn test_transcode_float64() {
         let array: ArrayRef = Arc::new(Float64Array::from_iter_values(
             (0..TEST_ARRAY_SIZE).map(|i| i as f64),

@@ -34,7 +34,7 @@ mod private {
     impl Sealed for Float64Type {}
 }
 
-const NUM_SAMPLES: usize = 32;
+const NUM_SAMPLES: usize = 1024; // we use FASTLANES to encode array, the sample size needs to be at least 1024 to get a good estimate of the best exponents
 
 /// LiquidFloatType is a sealed trait that represents all the float types supported by Liquid.
 /// Implementors are Float32Type and Float64Type. TODO(): What about Float16Type, decimal types?
@@ -222,8 +222,8 @@ where
     pub fn get_array_memory_size(&self) -> usize {
         self.bit_packed.get_array_memory_size()
             + size_of::<Exponents>()
-            + self.patch_indices.len() * size_of::<u64>()
-            + self.patch_values.len() * size_of::<T::Native>()
+            + self.patch_indices.capacity() * size_of::<u64>()
+            + self.patch_values.capacity() * size_of::<T::Native>()
             + size_of::<<T::SignedIntType as ArrowPrimitiveType>::Native>()
     }
 
@@ -328,14 +328,15 @@ fn encode_arrow_array<T: LiquidFloatType>(
         };
     }
 
-    let mut encoded_values = Vec::from_iter(values.iter().map(|v| {
+    let mut encoded_values = Vec::with_capacity(arrow_array.len());
+    for v in values.iter() {
         let encoded = T::encode_single_unchecked(&v.as_(), exp);
         let decoded = T::decode_single(&encoded, exp);
         // TODO(): Check if this is a bitwise comparison
         let neq = !decoded.eq(&v.as_()) as usize;
         patch_count += neq;
-        encoded
-    }));
+        encoded_values.push(encoded);
+    }
 
     if patch_count > 0 {
         patch_indices.resize_with(patch_count + 1, Default::default);
@@ -375,21 +376,25 @@ fn encode_arrow_array<T: LiquidFloatType>(
         }
     }
 
-    let min = encoded_values
+    let min = *encoded_values
         .iter()
         .min()
         .expect("`encoded_values` shouldn't be all nulls");
-    let max = encoded_values
+    let max = *encoded_values
         .iter()
         .max()
         .expect("`encoded_values` shouldn't be all nulls");
-    let sub: <T::UnsignedIntType as ArrowPrimitiveType>::Native = max.sub_wrapping(*min).as_();
+    let sub: <T::UnsignedIntType as ArrowPrimitiveType>::Native = max.sub_wrapping(min).as_();
 
-    let encoded_output = PrimitiveArray::<<T as LiquidFloatType>::UnsignedIntType>::new(
-        ScalarBuffer::from_iter(encoded_values.iter().map(|v| {
-            let k: <T::UnsignedIntType as ArrowPrimitiveType>::Native = v.sub_wrapping(*min).as_();
+    let unsigned_encoded_values = encoded_values
+        .iter()
+        .map(|v| {
+            let k: <T::UnsignedIntType as ArrowPrimitiveType>::Native = v.sub_wrapping(min).as_();
             k
-        })),
+        })
+        .collect::<Vec<_>>();
+    let encoded_output = PrimitiveArray::<<T as LiquidFloatType>::UnsignedIntType>::new(
+        ScalarBuffer::from(unsigned_encoded_values),
         nulls.cloned(),
     );
 
@@ -401,7 +406,7 @@ fn encode_arrow_array<T: LiquidFloatType>(
         exponent: *exp,
         patch_indices,
         patch_values,
-        reference_value: *min,
+        reference_value: min,
     }
 }
 
@@ -548,5 +553,34 @@ mod tests {
         let result_array = filtered.to_arrow_array();
 
         assert_eq!(result_array.len(), 0);
+    }
+
+    #[test]
+    fn test_compression_f32_f64() {
+        fn run_compression_test<T: LiquidFloatType>(type_name: &str, data_fn: impl Fn(usize) -> T::Native) {
+            let original: Vec<T::Native> = (0..2000).map(data_fn).collect();
+            let array = PrimitiveArray::<T>::from_iter_values(original);
+            let uncompressed_size = array.get_array_memory_size();
+
+            let liquid_array = LiquidFloatArray::<T>::from_arrow_array(array);
+            let compressed_size = liquid_array.get_array_memory_size();
+
+            println!(
+                "Type: {}, uncompressed_size: {}, compressed_size: {}",
+                type_name, uncompressed_size, compressed_size
+            );
+            // Assert that compression actually reduced the size
+            assert!(
+                compressed_size < uncompressed_size,
+                "{} compression failed to reduce size",
+                type_name
+            );
+        }
+
+        // Run for f32
+        run_compression_test::<Float32Type>("f32", |i| i as f32);
+
+        // Run for f64
+        run_compression_test::<Float64Type>("f64", |i| i as f64);
     }
 }
