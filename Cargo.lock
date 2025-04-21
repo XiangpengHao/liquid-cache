@@ -2517,7 +2517,7 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "serde",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2825,14 +2825,16 @@ checksum = "13dc2df351e3202783a1fe0d44375f7295ffb4049267b0f3018346dc122a1d94"
 
 [[package]]
 name = "logforth"
-version = "0.23.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f9b81df91671a0a96902d950498cc69b509291c37f6d49105d5a1b7ddacc727d"
+version = "0.24.0"
+source = "git+https://github.com/XiangpengHao/logforth.git#0db0721e42b0a12338f1b7b4f364f4ec25b41a0e"
 dependencies = [
  "anyhow",
  "env_filter",
  "jiff",
  "log",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
 ]
 
 [[package]]
@@ -3130,6 +3132,7 @@ dependencies = [
  "opentelemetry_sdk",
  "prost",
  "reqwest",
+ "serde_json",
  "thiserror 2.0.12",
  "tokio",
  "tonic",
@@ -3142,9 +3145,12 @@ version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8c40da242381435e18570d5b9d50aca2a4f4f4d8e146231adb4e7768023309b3"
 dependencies = [
+ "base64",
+ "hex",
  "opentelemetry",
  "opentelemetry_sdk",
  "prost",
+ "serde",
  "tonic",
 ]
 
@@ -3163,6 +3169,8 @@ dependencies = [
  "rand 0.9.0",
  "serde_json",
  "thiserror 2.0.12",
+ "tokio",
+ "tokio-stream",
  "tracing",
 ]
 

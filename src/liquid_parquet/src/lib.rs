@@ -4,6 +4,7 @@
 mod cache;
 pub mod liquid_array;
 mod reader;
+pub use cache::policies;
 pub use cache::{LiquidCache, LiquidCacheMode, LiquidCacheRef, LiquidCachedFileRef};
 pub use reader::LiquidParquetSource;
 pub use reader::LiquidPredicate;

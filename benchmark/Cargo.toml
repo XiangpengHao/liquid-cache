@@ -31,13 +31,17 @@ prost = { workspace = true }
 fsst-rs = "0.5.2"
 parquet = { workspace = true }
 fastrace = { version = "0.7.9", features = ["enable"] }
-logforth = "0.23.1"
 fastrace-tonic = { workspace = true }
 fastrace-opentelemetry = "0.10"
 opentelemetry = "0.29.1"
 opentelemetry_sdk = "0.29.0"
 opentelemetry-otlp = { version = "0.29.0", features = ["trace", "grpc-tonic"] }
 tower = "0.5.2"
+
+# Use official logforth after: https://github.com/fast/logforth/issues/125
+logforth = { git = "https://github.com/XiangpengHao/logforth.git", features = [
+	"opentelemetry",
+] }
 
 [[bin]]
 name = "clickbench_client"

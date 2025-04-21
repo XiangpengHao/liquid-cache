@@ -1,5 +1,6 @@
 use arrow_flight::sql::Any;
 use arrow_flight::{FlightClient, flight_service_client::FlightServiceClient};
+use clap::Parser;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::common::tree_node::TreeNode;
 use datafusion::execution::TaskContext;
@@ -17,147 +18,59 @@ use liquid_cache_common::CacheMode;
 use liquid_cache_common::rpc::{
     ExecutionMetricsRequest, ExecutionMetricsResponse, LiquidCacheActions,
 };
-use liquid_cache_parquet::LiquidCacheRef;
-use liquid_cache_server::StatsCollector;
 use object_store::ClientConfigKey;
-use pprof::ProfilerGuard;
 use prost::Message;
 use serde::Serialize;
+use std::path::PathBuf;
 use std::time::Duration;
-use std::{
-    fmt::Display,
-    path::{Path, PathBuf},
-    str::FromStr,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicU32, AtomicUsize},
-    },
-};
+use std::{fmt::Display, path::Path, str::FromStr, sync::Arc};
 use tonic::transport::Channel;
 use url::Url;
 
+mod observability;
+mod reports;
 pub mod utils;
 
-pub struct FlameGraphReport {
-    output_dir: PathBuf,
-    guard: Mutex<Option<ProfilerGuard<'static>>>,
-    running_count: AtomicUsize,
-    flame_graph_id: AtomicU32,
-}
+pub use observability::*;
+pub use reports::*;
 
-impl FlameGraphReport {
-    pub fn new(output: PathBuf) -> Self {
-        Self {
-            output_dir: output,
-            guard: Mutex::new(None),
-            running_count: AtomicUsize::new(0),
-            flame_graph_id: AtomicU32::new(0),
-        }
-    }
-}
+#[derive(Parser, Serialize, Clone)]
+pub struct CommonBenchmarkArgs {
+    /// Server URL
+    #[arg(long, default_value = "http://localhost:50051")]
+    pub server: String,
 
-impl StatsCollector for FlameGraphReport {
-    fn start(&self, _partition: usize, _plan: &Arc<dyn ExecutionPlan>) {
-        self.running_count
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let mut guard = self.guard.lock().unwrap();
-        if guard.is_some() {
-            return;
-        }
-        let old = guard.take();
-        assert!(old.is_none(), "FlameGraphReport is already started");
-        *guard = Some(
-            pprof::ProfilerGuardBuilder::default()
-                .frequency(500)
-                .blocklist(&["libpthread.so.0", "libm.so.6", "libgcc_s.so.1"])
-                .build()
-                .unwrap(),
-        );
-    }
+    /// Number of times to run each query
+    #[arg(long, default_value = "3")]
+    pub iteration: u32,
 
-    fn stop(&self, _partition: usize, _plan: &Arc<dyn ExecutionPlan>) {
-        let previous = self
-            .running_count
-            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-        if previous != 1 {
-            return;
-        }
+    /// Path to the output JSON file
+    #[arg(long)]
+    pub output: Option<PathBuf>,
 
-        let mut lock_guard = self.guard.lock().unwrap();
-        if lock_guard.is_none() {
-            log::warn!("FlameGraphReport is not started");
-            return;
-        }
-        let profiler = lock_guard.take().unwrap();
-        drop(lock_guard);
-        let report = profiler.report().build().unwrap();
-        drop(profiler);
+    /// Path to the baseline directory
+    #[arg(long = "answer-dir")]
+    pub answer_dir: Option<PathBuf>,
 
-        let now = std::time::SystemTime::now();
-        let datetime = now.duration_since(std::time::UNIX_EPOCH).unwrap();
-        let minute = (datetime.as_secs() / 60) % 60;
-        let second = datetime.as_secs() % 60;
-        let flame_graph_id = self
-            .flame_graph_id
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let filename = format!(
-            "flamegraph-id{:02}-{:02}-{:03}.svg",
-            flame_graph_id, minute, second
-        );
-        let filepath = self.output_dir.join(filename);
-        let file = std::fs::File::create(&filepath).unwrap();
-        report.flamegraph(file).unwrap();
-        log::info!("Flamegraph saved to {}", filepath.display());
-    }
-}
+    /// Benchmark mode to use
+    #[arg(long = "bench-mode", default_value = "liquid-eager-transcode")]
+    pub bench_mode: BenchmarkMode,
 
-pub struct StatsReport {
-    output_dir: PathBuf,
-    cache: LiquidCacheRef,
-    running_count: AtomicUsize,
-    stats_id: AtomicU32,
-}
+    /// Reset the cache before running a new query
+    #[arg(long = "reset-cache", default_value = "false")]
+    pub reset_cache: bool,
 
-impl StatsReport {
-    pub fn new(output: PathBuf, cache: LiquidCacheRef) -> Self {
-        Self {
-            output_dir: output,
-            cache,
-            running_count: AtomicUsize::new(0),
-            stats_id: AtomicU32::new(0),
-        }
-    }
-}
+    /// Number of partitions to use
+    #[arg(long)]
+    pub partitions: Option<usize>,
 
-impl StatsCollector for StatsReport {
-    fn start(&self, _partition: usize, _plan: &Arc<dyn ExecutionPlan>) {
-        self.running_count
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    }
+    /// Query number to run, if not provided, all queries will be run
+    #[arg(long)]
+    pub query: Option<u32>,
 
-    fn stop(&self, _partition: usize, _plan: &Arc<dyn ExecutionPlan>) {
-        let previous = self
-            .running_count
-            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-        // We only write stats once, after every thread finishes.
-        if previous != 1 {
-            return;
-        }
-        let now = std::time::SystemTime::now();
-        let datetime = now.duration_since(std::time::UNIX_EPOCH).unwrap();
-        let minute = (datetime.as_secs() / 60) % 60;
-        let second = datetime.as_secs() % 60;
-        let stats_id = self
-            .stats_id
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let filename = format!(
-            "stats-id{:02}-{:02}-{:03}.parquet",
-            stats_id, minute, second
-        );
-        let parquet_file_path = self.output_dir.join(filename);
-        self.cache.write_stats(&parquet_file_path).unwrap();
-        log::info!("Stats saved to {}", parquet_file_path.display());
-    }
+    /// Openobserve auth token
+    #[arg(long)]
+    pub openobserve_auth: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Copy, PartialEq, Eq, Serialize)]
@@ -501,37 +414,4 @@ pub struct IterationResult {
     pub cache_cpu_time: u64,
     pub cache_memory_usage: u64,
     pub starting_timestamp: Duration,
-}
-
-use fastrace_opentelemetry::OpenTelemetryReporter;
-use opentelemetry::InstrumentationScope;
-use opentelemetry::KeyValue;
-use opentelemetry::trace::SpanKind;
-use opentelemetry_otlp::SpanExporter;
-use opentelemetry_otlp::WithExportConfig;
-use opentelemetry_sdk::Resource;
-use std::borrow::Cow;
-
-pub fn setup_observability(service_name: &str, kind: SpanKind) {
-    // Setup logging with logforth
-    logforth::stdout().apply();
-
-    let reporter = OpenTelemetryReporter::new(
-        SpanExporter::builder()
-            .with_tonic()
-            .with_endpoint("http://127.0.0.1:4317".to_string())
-            .with_protocol(opentelemetry_otlp::Protocol::Grpc)
-            .build()
-            .expect("initialize oltp exporter"),
-        kind,
-        Cow::Owned(
-            Resource::builder()
-                .with_attributes([KeyValue::new("service.name", service_name.to_string())])
-                .build(),
-        ),
-        InstrumentationScope::builder(env!("CARGO_PKG_NAME"))
-            .with_version(env!("CARGO_PKG_VERSION"))
-            .build(),
-    );
-    fastrace::set_reporter(reporter, fastrace::collector::Config::default());
 }

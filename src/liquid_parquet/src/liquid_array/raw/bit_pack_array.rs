@@ -171,7 +171,12 @@ where
 
     /// Returns the memory size of the bit-packed array.
     pub fn get_array_memory_size(&self) -> usize {
-        self.packed_values.inner().capacity()
+        std::mem::size_of::<Self>()
+            + self.packed_values.inner().capacity()
+            + self
+                .nulls
+                .as_ref()
+                .map_or(0, |nulls| nulls.buffer().capacity())
     }
 
     /*
@@ -490,5 +495,56 @@ mod tests {
                 assert_eq!(original_primitive.value(i), deserialized_primitive.value(i));
             }
         }
+    }
+
+    #[test]
+    fn test_memory_size_calculation() {
+        use super::*;
+        use arrow::buffer::{Buffer, NullBuffer, ScalarBuffer};
+        use arrow::datatypes::UInt32Type;
+
+        let scalar_buffer = ScalarBuffer::<u32>::new(Buffer::from(vec![0; 1024]), 0, 1024);
+
+        // --- Test without nulls ---
+        let bit_packed_no_nulls = BitPackedArray::<UInt32Type> {
+            packed_values: scalar_buffer.clone(),
+            nulls: None,
+            bit_width: NonZero::new(10).unwrap(),
+            original_len: 1024,
+        };
+
+        let expected_size_no_nulls =
+            size_of::<BitPackedArray<UInt32Type>>() + scalar_buffer.inner().capacity();
+        assert_eq!(
+            bit_packed_no_nulls.get_array_memory_size(),
+            expected_size_no_nulls,
+            "Memory size mismatch without nulls"
+        );
+
+        // --- Test with nulls ---
+        // Create dummy null buffer
+        let null_buffer = NullBuffer::new_null(1024);
+        let nulls = Some(null_buffer);
+
+        let bit_packed_with_nulls = BitPackedArray::<UInt32Type> {
+            packed_values: scalar_buffer.clone(),
+            nulls: nulls.clone(), // Clone the Option<NullBuffer>
+            bit_width: NonZero::new(10).unwrap(),
+            original_len: 1024,
+        };
+
+        // Calculate expected size including null buffer
+        // Note: Arrow's Buffer might allocate slightly more than null_bitmap_len_bytes
+        // We use the actual buffer capacity for a more precise comparison
+        let actual_null_buffer_size = nulls.as_ref().map_or(0, |nb| nb.buffer().capacity());
+        let expected_size_with_nulls = size_of::<BitPackedArray<UInt32Type>>()
+            + scalar_buffer.inner().capacity()
+            + actual_null_buffer_size;
+
+        assert_eq!(
+            bit_packed_with_nulls.get_array_memory_size(),
+            expected_size_with_nulls,
+            "Memory size mismatch with nulls"
+        );
     }
 }

@@ -7,11 +7,21 @@
 [![docs.rs](https://img.shields.io/docsrs/liquid-cache-server?style=flat&label=server-doc)](https://docs.rs/liquid-cache-server/latest/liquid_cache_server/)
 [![Rust CI](https://github.com/XiangpengHao/liquid-cache/actions/workflows/ci.yml/badge.svg)](https://github.com/XiangpengHao/liquid-cache/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/XiangpengHao/liquid-cache/graph/badge.svg?token=yTeQR2lVnd)](https://codecov.io/gh/XiangpengHao/liquid-cache)
+[![Codacy Badge](https://app.codacy.com/project/badge/Grade/1a23a108cd2b4d2b9ffd2c2258599dfa)](https://app.codacy.com/gh/XiangpengHao/liquid-cache/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade)
 
-LiquidCache is an object store cache designed for [DataFusion](https://github.com/apache/datafusion) based systems.  
+LiquidCache is an S3 cache for [DataFusion](https://github.com/apache/datafusion) based systems.  
 
-By simply adding an optimizer rule, LiquidCache saves you up to 10x cost and latency.
+With just one optimizer rule, LiquidCache saves up to 10x cost and latency.
 
+## Features
+LiquidCache is a radical redesign of caching: it **caches logical data** rather than its physical representations.
+
+This means that:
+- LiquidCache transcodes S3 data (e.g., JSON, CSV, Parquet) into an in-house format -- more compressed, more NVMe friendly, more efficient for DataFusion operations. 
+- LiquidCache returns filtered/aggregated data to DataFusion, significantly reducing network IO.
+
+Cons:
+- LiquidCache is not a transparent cache (consider [Foyer](https://github.com/foyer-rs/foyer) instead), it leverages query semantics to optimize caching. 
 ## Architecture
 
 Both LiquidCache and DataFusion run on cloud servers within the same region, but are configured differently:
@@ -22,11 +32,7 @@ Both LiquidCache and DataFusion run on cloud servers within the same region, but
 Multiple DataFusion nodes share the same LiquidCache instance through network connections. 
 Each component can be scaled independently as the workload grows. 
 
-Under the hood, LiquidCache transcodes and caches Parquet data from object storage, and evaluates filters before sending data to DataFusion,
-effectively reducing both CPU utilization and network data transfer on cache servers.
-
 <img src="https://raw.githubusercontent.com/XiangpengHao/liquid-cache/main/dev/doc/arch.png" alt="architecture" width="400"/>
-
 
 
 ## Integrate LiquidCache in 5 Minutes
@@ -75,13 +81,12 @@ Then, create a new DataFusion context with LiquidCache:
 ```rust
 #[tokio::main]
 pub async fn main() -> Result<()> {
-
-//=======================Setup LiquidCache context=======================
+/*==========================LiquidCache============================*/
     let ctx = LiquidCacheBuilder::new(cache_server)
         .with_object_store(ObjectStoreUrl::parse(object_store_url.as_str())?, None)
         .with_cache_mode(CacheMode::Liquid)
         .build(SessionConfig::from_env()?)?;
-//=======================================================================
+/*=================================================================*/
 
     let ctx: Arc<SessionContext> = Arc::new(ctx);
     ctx.register_table(table_name, ...)
