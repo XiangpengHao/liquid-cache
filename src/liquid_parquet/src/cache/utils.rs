@@ -183,12 +183,11 @@ impl CacheConfig {
 
 // Helper methods
 #[cfg(test)]
-pub(crate) fn create_test_array(size: usize) -> arrow::array::ArrayRef {
+pub(crate) fn create_test_array(size: usize) -> super::CachedBatch {
+    use arrow::array::Int64Array;
     use std::sync::Arc;
 
-    use arrow::array::{ArrayRef, Int64Array};
-
-    Arc::new(Int64Array::from_iter_values(0..size as i64)) as ArrayRef
+    super::CachedBatch::ArrowMemory(Arc::new(Int64Array::from_iter_values(0..size as i64)))
 }
 
 #[cfg(test)]
