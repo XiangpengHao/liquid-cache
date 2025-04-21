@@ -23,7 +23,10 @@ use datafusion::{
 use futures::{FutureExt, future::BoxFuture};
 use object_store::{ObjectStore, path::Path};
 use parquet::{
-    arrow::async_reader::{AsyncFileReader, ParquetObjectReader},
+    arrow::{
+        arrow_reader::ArrowReaderOptions,
+        async_reader::{AsyncFileReader, ParquetObjectReader},
+    },
     file::metadata::{ParquetMetaData, ParquetMetaDataReader},
 };
 use std::{
@@ -54,7 +57,7 @@ impl CachedMetaReaderFactory {
     ) -> ParquetMetadataCacheReader {
         let path = file_meta.location().clone();
         let store = Arc::clone(&self.store);
-        let mut inner = ParquetObjectReader::new(store, file_meta.object_meta);
+        let mut inner = ParquetObjectReader::new(store, path.clone());
 
         if let Some(hint) = metadata_size_hint {
             inner = inner.with_footer_size_hint(hint);
@@ -103,20 +106,26 @@ pub struct ParquetMetadataCacheReader {
 impl AsyncFileReader for ParquetMetadataCacheReader {
     fn get_byte_ranges(
         &mut self,
-        ranges: Vec<Range<usize>>,
+        ranges: Vec<Range<u64>>,
     ) -> BoxFuture<'_, parquet::errors::Result<Vec<Bytes>>> {
-        let total = ranges.iter().map(|r| r.end - r.start).sum();
-        self.file_metrics.bytes_scanned.add(total);
+        let total: u64 = ranges.iter().map(|r| r.end - r.start).sum();
+        self.file_metrics.bytes_scanned.add(total as usize);
         self.inner.get_byte_ranges(ranges)
     }
 
-    fn get_bytes(&mut self, range: Range<usize>) -> BoxFuture<'_, parquet::errors::Result<Bytes>> {
-        self.file_metrics.bytes_scanned.add(range.end - range.start);
+    fn get_bytes(&mut self, range: Range<u64>) -> BoxFuture<'_, parquet::errors::Result<Bytes>> {
+        self.file_metrics
+            .bytes_scanned
+            .add((range.end - range.start) as usize);
         self.inner.get_bytes(range)
     }
 
-    fn get_metadata(&mut self) -> BoxFuture<'_, parquet::errors::Result<Arc<ParquetMetaData>>> {
+    fn get_metadata(
+        &mut self,
+        options: Option<&ArrowReaderOptions>,
+    ) -> BoxFuture<'_, parquet::errors::Result<Arc<ParquetMetaData>>> {
         let path = self.path.clone();
+        let options = options.cloned();
         async move {
             // First check with read lock
             {
@@ -131,7 +140,7 @@ impl AsyncFileReader for ParquetMetadataCacheReader {
             match cache.entry(path.clone()) {
                 std::collections::hash_map::Entry::Occupied(entry) => Ok(entry.get().clone()),
                 std::collections::hash_map::Entry::Vacant(entry) => {
-                    let meta = self.inner.get_metadata().await?;
+                    let meta = self.inner.get_metadata(options.as_ref()).await?;
                     let meta = Arc::try_unwrap(meta).unwrap_or_else(|e| e.as_ref().clone());
                     let mut reader = ParquetMetaDataReader::new_with_metadata(meta.clone())
                         .with_page_indexes(true);

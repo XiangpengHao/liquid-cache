@@ -179,7 +179,7 @@ async fn get_system_info_handler(State(_state): State<Arc<AppState>>) -> Json<Sy
         kernel: sysinfo::System::kernel_version().unwrap_or_default(),
         os: sysinfo::System::os_version().unwrap_or_default(),
         host_name: sysinfo::System::host_name().unwrap_or_default(),
-        cpu_cores: sys.physical_core_count().unwrap_or(0),
+        cpu_cores: sysinfo::System::physical_core_count().unwrap_or(0),
     })
 }
 
