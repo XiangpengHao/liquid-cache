@@ -18,6 +18,9 @@ use liquid_cache_common::CacheMode;
 pub use optimizer::PushdownOptimizer;
 use tonic::transport::Channel;
 
+#[cfg(test)]
+mod tests;
+
 /// The builder for LiquidCache client state.
 ///
 /// # Example

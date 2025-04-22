@@ -1,0 +1,176 @@
+---
+source: src/client/src/tests/mod.rs
+expression: displayable.tree_render().to_string()
+---
+┌───────────────────────────┐
+│  SortPreservingMergeExec  │
+│    --------------------   │
+│   revenue DESClimit: 20   │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       SortExec(TopK)      │
+│    --------------------   │
+│         limit: 20         │
+│                           │
+│       revenue@2 DESC      │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       ProjectionExec      │
+│    --------------------   │
+│    c_acctbal: c_acctbal   │
+│    c_address: c_address   │
+│    c_comment: c_comment   │
+│    c_custkey: c_custkey   │
+│       c_name: c_name      │
+│      c_phone: c_phone     │
+│       n_name: n_name      │
+│                           │
+│          revenue:         │
+│        sum(lineitem       │
+│        .l_extendedp       │
+│ rice * Int64(1) - lineitem│
+│        .l_discount)       │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       AggregateExec       │
+│    --------------------   │
+│            aggr           │
+│                           │
+│         group_by:         │
+│     c_custkey, c_name,    │
+│         c_acctbal,        │
+│      c_phone, n_name,     │
+│    c_address, c_comment   │
+│                           │
+│           mode:           │
+│      FinalPartitioned     │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│    CoalesceBatchesExec    │
+│    --------------------   │
+│     target_batch_size:    │
+│           16384           │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│      RepartitionExec      │
+│    --------------------   │
+│ partition_count(in->out): │
+│           8 -> 8          │
+│                           │
+│    partitioning_scheme:   │
+│ Hash([c_custkey@0, c_name │
+│  @1, c_acctbal@2, c_phone │
+│ @3, n_name@4, c_address@5 │
+│     , c_comment@6], 8)    │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       AggregateExec       │
+│    --------------------   │
+│            aggr           │
+│                           │
+│         group_by:         │
+│     c_custkey, c_name,    │
+│         c_acctbal,        │
+│      c_phone, n_name,     │
+│    c_address, c_comment   │
+│                           │
+│       mode: Partial       │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       ProjectionExec      │
+│    --------------------   │
+│    c_acctbal: c_acctbal   │
+│    c_address: c_address   │
+│    c_comment: c_comment   │
+│    c_custkey: c_custkey   │
+│       c_name: c_name      │
+│      c_phone: c_phone     │
+│                           │
+│        l_discount:        │
+│         l_discount        │
+│                           │
+│      l_extendedprice:     │
+│      l_extendedprice      │
+│                           │
+│       n_name: n_name      │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│    CoalesceBatchesExec    │
+│    --------------------   │
+│     target_batch_size:    │
+│           16384           │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│        HashJoinExec       │
+│    --------------------   │
+│            on:            ├──────────────┐
+│(n_nationkey = c_nationkey)│              │
+└─────────────┬─────────────┘              │
+┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+│   LiquidCacheClientExec   ││    CoalesceBatchesExec    │
+│    --------------------   ││    --------------------   │
+│          server:          ││     target_batch_size:    │
+│  http://localhost:50051,  ││           16384           │
+│        mode=liquid,       ││                           │
+│      object_stores=[]     ││                           │
+└─────────────┬─────────────┘└─────────────┬─────────────┘
+┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+│       DataSourceExec      ││        HashJoinExec       │
+│    --------------------   ││    --------------------   │
+│          files: 1         ││            on:            ├───────────────────────────────────────────┐
+│      format: parquet      ││ (o_orderkey = l_orderkey) │                                           │
+└───────────────────────────┘└─────────────┬─────────────┘                                           │
+                             ┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
+                             │   CoalescePartitionsExec  │                             │   LiquidCacheClientExec   │
+                             │                           │                             │    --------------------   │
+                             │                           │                             │          server:          │
+                             │                           │                             │  http://localhost:50051,  │
+                             │                           │                             │        mode=liquid,       │
+                             │                           │                             │      object_stores=[]     │
+                             └─────────────┬─────────────┘                             └─────────────┬─────────────┘
+                             ┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
+                             │    CoalesceBatchesExec    │                             │      RepartitionExec      │
+                             │    --------------------   │                             │    --------------------   │
+                             │     target_batch_size:    │                             │ partition_count(in->out): │
+                             │           16384           │                             │           1 -> 8          │
+                             │                           │                             │                           │
+                             │                           │                             │    partitioning_scheme:   │
+                             │                           │                             │     RoundRobinBatch(8)    │
+                             └─────────────┬─────────────┘                             └─────────────┬─────────────┘
+                             ┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
+                             │        HashJoinExec       │                             │       DataSourceExec      │
+                             │    --------------------   │                             │    --------------------   │
+                             │            on:            │                             │          files: 1         │
+                             │  (c_custkey = o_custkey)  ├──────────────┐              │      format: parquet      │
+                             │                           │              │              │                           │
+                             │                           │              │              │         predicate:        │
+                             │                           │              │              │      l_returnflag = R     │
+                             └─────────────┬─────────────┘              │              └───────────────────────────┘
+                             ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+                             │   LiquidCacheClientExec   ││   LiquidCacheClientExec   │
+                             │    --------------------   ││    --------------------   │
+                             │          server:          ││          server:          │
+                             │  http://localhost:50051,  ││  http://localhost:50051,  │
+                             │        mode=liquid,       ││        mode=liquid,       │
+                             │      object_stores=[]     ││      object_stores=[]     │
+                             └─────────────┬─────────────┘└─────────────┬─────────────┘
+                             ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+                             │       DataSourceExec      ││      RepartitionExec      │
+                             │    --------------------   ││    --------------------   │
+                             │          files: 1         ││ partition_count(in->out): │
+                             │      format: parquet      ││           1 -> 8          │
+                             │                           ││                           │
+                             │                           ││    partitioning_scheme:   │
+                             │                           ││     RoundRobinBatch(8)    │
+                             └───────────────────────────┘└─────────────┬─────────────┘
+                                                          ┌─────────────┴─────────────┐
+                                                          │       DataSourceExec      │
+                                                          │    --------------------   │
+                                                          │          files: 1         │
+                                                          │      format: parquet      │
+                                                          │                           │
+                                                          │         predicate:        │
+                                                          │ o_orderdate >= 1993-10-01 │
+                                                          │   AND o_orderdate < 1994  │
+                                                          │           -01-01          │
+                                                          └───────────────────────────┘

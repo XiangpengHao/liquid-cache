@@ -79,12 +79,17 @@ impl LiquidCacheClientExec {
 impl DisplayAs for LiquidCacheClientExec {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut Formatter<'_>) -> std::fmt::Result {
         match t {
-            DisplayFormatType::Default
-            | DisplayFormatType::Verbose
-            | DisplayFormatType::TreeRender => {
+            DisplayFormatType::Default | DisplayFormatType::Verbose => {
                 write!(
                     f,
                     "LiquidCacheClientExec: server={}, mode={}, object_stores={:?}",
+                    self.cache_server, self.cache_mode, self.object_stores
+                )
+            }
+            DisplayFormatType::TreeRender => {
+                write!(
+                    f,
+                    "server={}, mode={}, object_stores={:?}",
                     self.cache_server, self.cache_mode, self.object_stores
                 )
             }
