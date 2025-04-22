@@ -1,0 +1,127 @@
+---
+source: src/client/src/tests/mod.rs
+expression: displayable.tree_render().to_string()
+---
+┌───────────────────────────┐
+│  SortPreservingMergeExec  │
+│    --------------------   │
+│  cntrycode ASC NULLS LAST │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│          SortExec         │
+│    --------------------   │
+│ cntrycode@0 ASC NULLS LAST│
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       ProjectionExec      │
+│    --------------------   │
+│    cntrycode: cntrycode   │
+│                           │
+│          numcust:         │
+│      count(Int64(1))      │
+│                           │
+│        totacctbal:        │
+│  sum(custsale.c_acctbal)  │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       AggregateExec       │
+│    --------------------   │
+│           aggr:           │
+│   count(1), sum(custsale  │
+│        .c_acctbal)        │
+│                           │
+│    group_by: cntrycode    │
+│                           │
+│           mode:           │
+│      FinalPartitioned     │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│    CoalesceBatchesExec    │
+│    --------------------   │
+│     target_batch_size:    │
+│           16384           │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│      RepartitionExec      │
+│    --------------------   │
+│ partition_count(in->out): │
+│           8 -> 8          │
+│                           │
+│    partitioning_scheme:   │
+│   Hash([cntrycode@0], 8)  │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       AggregateExec       │
+│    --------------------   │
+│           aggr:           │
+│   count(1), sum(custsale  │
+│        .c_acctbal)        │
+│                           │
+│    group_by: cntrycode    │
+│       mode: Partial       │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       ProjectionExec      │
+│    --------------------   │
+│    c_acctbal: c_acctbal   │
+│                           │
+│         cntrycode:        │
+│   substr(c_phone, 1, 2)   │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│     NestedLoopJoinExec    ├──────────────┐
+└─────────────┬─────────────┘              │
+┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+│       AggregateExec       ││      RepartitionExec      │
+│    --------------------   ││    --------------------   │
+│           aggr:           ││ partition_count(in->out): │
+│  avg(customer.c_acctbal)  ││           1 -> 8          │
+│                           ││                           │
+│        mode: Final        ││    partitioning_scheme:   │
+│                           ││     RoundRobinBatch(8)    │
+└─────────────┬─────────────┘└─────────────┬─────────────┘
+┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+│   CoalescePartitionsExec  ││    CoalesceBatchesExec    │
+│                           ││    --------------------   │
+│                           ││     target_batch_size:    │
+│                           ││           16384           │
+└─────────────┬─────────────┘└─────────────┬─────────────┘
+┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+│   LiquidCacheClientExec   ││        HashJoinExec       │
+│    --------------------   ││    --------------------   │
+│          server:          ││    join_type: LeftAnti    │
+│  http://localhost:50051,  ││                           ├──────────────┐
+│        mode=liquid,       ││            on:            │              │
+│      object_stores=[]     ││  (c_custkey = o_custkey)  │              │
+└─────────────┬─────────────┘└─────────────┬─────────────┘              │
+┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+│       AggregateExec       ││   LiquidCacheClientExec   ││   LiquidCacheClientExec   │
+│    --------------------   ││    --------------------   ││    --------------------   │
+│           aggr:           ││          server:          ││          server:          │
+│  avg(customer.c_acctbal)  ││  http://localhost:50051,  ││  http://localhost:50051,  │
+│                           ││        mode=liquid,       ││        mode=liquid,       │
+│       mode: Partial       ││      object_stores=[]     ││      object_stores=[]     │
+└─────────────┬─────────────┘└─────────────┬─────────────┘└─────────────┬─────────────┘
+┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+│      RepartitionExec      ││       DataSourceExec      ││       DataSourceExec      │
+│    --------------------   ││    --------------------   ││    --------------------   │
+│ partition_count(in->out): ││          files: 1         ││          files: 1         │
+│           1 -> 8          ││      format: parquet      ││      format: parquet      │
+│                           ││                           ││                           │
+│    partitioning_scheme:   ││         predicate:        ││                           │
+│     RoundRobinBatch(8)    ││ substr(c_phone, 1, 2) IN  ││                           │
+│                           ││  (13, 31, 23, 29, 30, 18, ││                           │
+│                           ││        17) AND true       ││                           │
+└─────────────┬─────────────┘└───────────────────────────┘└───────────────────────────┘
+┌─────────────┴─────────────┐
+│       DataSourceExec      │
+│    --------------------   │
+│          files: 1         │
+│      format: parquet      │
+│                           │
+│         predicate:        │
+│  c_acctbal > Some(0),15,2 │
+│   AND substr(c_phone, 1,  │
+│   2) IN (13, 31, 23, 29,  │
+│         30, 18, 17)       │
+└───────────────────────────┘
