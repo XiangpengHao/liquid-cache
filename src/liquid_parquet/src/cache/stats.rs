@@ -151,7 +151,7 @@ impl LiquidCache {
 mod tests {
     use std::io::Read;
 
-    use crate::{LiquidCacheMode, cache::BatchID};
+    use crate::cache::BatchID;
 
     use super::*;
     use arrow::{
@@ -159,6 +159,7 @@ mod tests {
         datatypes::UInt64Type,
     };
     use bytes::Bytes;
+    use liquid_cache_common::LiquidCacheMode;
     use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
     use tempfile::NamedTempFile;
 

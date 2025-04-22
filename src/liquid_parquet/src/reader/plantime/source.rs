@@ -1,5 +1,5 @@
 use super::opener::LiquidParquetOpener;
-use crate::{LiquidCacheMode, LiquidCacheRef};
+use crate::cache::LiquidCacheRef;
 use ahash::{HashMap, HashMapExt};
 use arrow_schema::{Schema, SchemaRef};
 use bytes::Bytes;
@@ -21,6 +21,7 @@ use datafusion::{
     },
 };
 use futures::{FutureExt, future::BoxFuture};
+use liquid_cache_common::{CacheSchema, LiquidCacheMode};
 use object_store::{ObjectStore, path::Path};
 use parquet::{
     arrow::{
@@ -269,6 +270,9 @@ impl FileSource for LiquidParquetSource {
         let reader_factory = Arc::new(CachedMetaReaderFactory::new(object_store));
         let schema_adapter = Arc::new(DefaultSchemaAdapterFactory);
 
+        let cache_schema =
+            CacheSchema::new(base_config.file_schema.clone(), &self.liquid_cache_mode);
+
         let opener = LiquidParquetOpener::new(
             partition,
             Arc::from(projection),
@@ -278,7 +282,7 @@ impl FileSource for LiquidParquetSource {
             self.predicate.clone(),
             self.pruning_predicate.clone(),
             self.page_pruning_predicate.clone(),
-            Arc::clone(&base_config.file_schema),
+            cache_schema,
             self.metrics.clone(),
             self.liquid_cache.clone(),
             self.liquid_cache_mode,

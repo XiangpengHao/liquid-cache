@@ -10,7 +10,9 @@ use datafusion::{
     physical_plan::{ExecutionPlan, display::DisplayableExecutionPlan, metrics::MetricValue},
     prelude::SessionContext,
 };
-use liquid_cache_common::{CacheMode, coerce_to_liquid_cache_types, rpc::ExecutionMetricsResponse};
+use liquid_cache_common::{
+    CacheMode, LiquidCacheMode, coerce_to_liquid_cache_types, rpc::ExecutionMetricsResponse,
+};
 use liquid_cache_parquet::{LiquidCache, LiquidCacheRef, LiquidParquetSource};
 use log::{debug, info};
 use object_store::ObjectStore;
@@ -211,17 +213,20 @@ fn rewrite_data_source_plan(
                     let file_source = file_scan_config.file_source();
                     let any_file_source = file_source.as_any();
                     if let Some(file_source) = any_file_source.downcast_ref::<ParquetSource>() {
+                        let liquid_cache_mode: LiquidCacheMode = cache_mode.into();
                         let new_source = LiquidParquetSource::from_parquet_source(
                             file_source.clone(),
                             file_scan_config.file_schema.clone(),
                             cache.clone(),
-                            cache_mode.into(),
+                            liquid_cache_mode,
                         );
                         let mut new_config = file_scan_config.clone();
                         new_config.file_source = Arc::new(new_source);
                         // This coercion is necessary because this schema determines the schema of flight transfer.
-                        let coerced_schema =
-                            coerce_to_liquid_cache_types(new_config.file_schema.as_ref());
+                        let coerced_schema = coerce_to_liquid_cache_types(
+                            new_config.file_schema.as_ref(),
+                            &liquid_cache_mode,
+                        );
                         new_config.projection = new_config.projection.map(|mut v| {
                             v.sort();
                             v

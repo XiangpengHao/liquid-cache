@@ -1,5 +1,6 @@
 use crate::{
-    LiquidCache, LiquidCacheMode, LiquidCachedFileRef, LiquidPredicate,
+    LiquidCachedFileRef, LiquidPredicate,
+    cache::LiquidCache,
     liquid_array::LiquidArrayRef,
     reader::{
         plantime::CachedMetaReaderFactory,
@@ -20,7 +21,7 @@ use arrow_schema::{ArrowError, SchemaRef};
 use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
 use futures::StreamExt;
 use liquid_cache_common::{
-    coerce_binary_to_string, coerce_string_to_view, coerce_to_liquid_cache_types,
+    LiquidCacheMode, coerce_binary_to_string, coerce_string_to_view, coerce_to_liquid_cache_types,
 };
 use object_store::ObjectMeta;
 use parquet::{
@@ -37,11 +38,11 @@ use std::{fs::File, path::PathBuf, sync::Arc};
 
 const TEST_FILE_PATH: &str = "../../examples/nano_hits.parquet";
 
-fn test_output_schema() -> SchemaRef {
+fn test_output_schema(cache_mode: &LiquidCacheMode) -> SchemaRef {
     let file = File::open(TEST_FILE_PATH).unwrap();
     let builder = ArrowReaderMetadata::load(&file, Default::default()).unwrap();
     let schema = builder.schema().clone();
-    Arc::new(coerce_to_liquid_cache_types(schema.as_ref()))
+    Arc::new(coerce_to_liquid_cache_types(schema.as_ref(), cache_mode))
 }
 
 pub fn generate_test_parquet() -> (File, String) {
@@ -118,26 +119,32 @@ fn assert_batch_eq(left: &RecordBatch, right: &RecordBatch) {
     }
 }
 
-fn get_test_cached_file(bath_size: usize, cache_dir: PathBuf) -> LiquidCachedFileRef {
+fn assert_schema_eq(left: &Schema, right: &Schema) {
+    assert_eq!(left.fields().len(), right.fields().len());
+    for (f_l, f_r) in left.fields().iter().zip(right.fields().iter()) {
+        assert_eq!(f_l, f_r);
+    }
+}
+
+fn get_test_cache(
+    bath_size: usize,
+    cache_dir: PathBuf,
+    cache_mode: &LiquidCacheMode,
+) -> LiquidCachedFileRef {
     let lq = LiquidCache::new(bath_size, usize::MAX, cache_dir);
 
-    lq.register_or_get_file(
-        "".to_string(),
-        LiquidCacheMode::InMemoryLiquid {
-            transcode_in_background: false,
-        },
-    )
+    lq.register_or_get_file("".to_string(), *cache_mode)
 }
-#[tokio::test]
-async fn basic_stuff() {
+
+async fn basic_stuff(cache_mode: &LiquidCacheMode) {
     let tmp_dir = tempfile::tempdir().unwrap();
     let (builder, _file) = get_test_reader().await;
     let batch_size = builder.batch_size;
-    let liquid_cache = get_test_cached_file(batch_size, tmp_dir.path().to_path_buf());
+    let liquid_cache = get_test_cache(batch_size, tmp_dir.path().to_path_buf(), cache_mode);
     let reader = builder.build(liquid_cache).unwrap();
 
     let schema = reader.schema();
-    assert_eq!(schema.as_ref(), test_output_schema().as_ref());
+    assert_schema_eq(&schema, test_output_schema(cache_mode).as_ref());
 
     let projection = (0..schema.fields().len()).collect::<Vec<_>>();
 
@@ -155,8 +162,24 @@ async fn basic_stuff() {
     }
 }
 
+const CACHE_MODES: &[LiquidCacheMode] = &[
+    LiquidCacheMode::InMemoryArrow,
+    LiquidCacheMode::InMemoryLiquid {
+        transcode_in_background: false,
+    },
+    LiquidCacheMode::InMemoryLiquid {
+        transcode_in_background: true,
+    },
+];
+
 #[tokio::test]
-async fn test_reading_with_projection() {
+async fn test_basic() {
+    for cache_mode in CACHE_MODES {
+        basic_stuff(cache_mode).await;
+    }
+}
+
+async fn read_with_projection(cache_mode: &LiquidCacheMode) {
     let tmp_dir = tempfile::tempdir().unwrap();
     let column_projections = vec![0, 3, 6, 8];
     let (mut builder, _file) = get_test_reader().await;
@@ -165,7 +188,7 @@ async fn test_reading_with_projection() {
         column_projections.iter().cloned(),
     );
     let batch_size = builder.batch_size;
-    let liquid_cache = get_test_cached_file(batch_size, tmp_dir.path().to_path_buf());
+    let liquid_cache = get_test_cache(batch_size, tmp_dir.path().to_path_buf(), &cache_mode);
     let reader = builder.build(liquid_cache).unwrap();
 
     let batches = reader
@@ -182,12 +205,18 @@ async fn test_reading_with_projection() {
 }
 
 #[tokio::test]
-async fn test_reading_warm() {
+async fn test_read_with_projection() {
+    for cache_mode in CACHE_MODES {
+        read_with_projection(cache_mode).await;
+    }
+}
+
+async fn read_warm(cache_mode: &LiquidCacheMode) {
     let tmp_dir = tempfile::tempdir().unwrap();
     let column_projections = vec![0, 3, 6, 8];
     let (mut builder, _file) = get_test_reader().await;
     let batch_size = builder.batch_size;
-    let liquid_cache = get_test_cached_file(batch_size, tmp_dir.path().to_path_buf());
+    let liquid_cache = get_test_cache(batch_size, tmp_dir.path().to_path_buf(), cache_mode);
     builder.projection = ProjectionMask::roots(
         builder.metadata.file_metadata().schema_descr(),
         column_projections.iter().cloned(),
@@ -212,6 +241,13 @@ async fn test_reading_warm() {
 
     for (i, batch) in batches.iter().enumerate() {
         assert_batch_eq(&baseline_batches[i], batch);
+    }
+}
+
+#[tokio::test]
+async fn test_reading_warm() {
+    for cache_mode in CACHE_MODES {
+        read_warm(cache_mode).await;
     }
 }
 
@@ -304,8 +340,7 @@ enum FilterStrategy {
     NoLargerThan(i64),
 }
 
-#[tokio::test]
-async fn test_reading_with_filter() {
+async fn read_with_filter(cache_mode: &LiquidCacheMode) {
     let projection = vec![0, 3, 5, 6, 8];
     let (mut builder, _file) = get_test_reader().await;
     let batch_size = builder.batch_size;
@@ -329,7 +364,7 @@ async fn test_reading_with_filter() {
     builder.filter = Some(LiquidRowFilter::new(get_filters(&builder.metadata)));
 
     let tmp_dir = tempfile::tempdir().unwrap();
-    let liquid_cache = get_test_cached_file(batch_size, tmp_dir.path().to_path_buf());
+    let liquid_cache = get_test_cache(batch_size, tmp_dir.path().to_path_buf(), cache_mode);
 
     let reader = builder.build(liquid_cache.clone()).unwrap();
 
@@ -387,7 +422,13 @@ async fn test_reading_with_filter() {
 }
 
 #[tokio::test]
-async fn test_reading_with_filter_two_columns() {
+async fn test_reading_with_filter() {
+    for cache_mode in CACHE_MODES {
+        read_with_filter(cache_mode).await;
+    }
+}
+
+async fn reading_with_filter_two_columns(cache_mode: &LiquidCacheMode) {
     let projection = vec![11, 12]; // OS and UserAgent
     let (mut builder, _file) = get_test_reader().await;
     let batch_size = builder.batch_size;
@@ -433,7 +474,7 @@ async fn test_reading_with_filter_two_columns() {
     builder.filter = Some(LiquidRowFilter::new(vec![Box::new(predicate)]));
 
     let tmp_dir = tempfile::tempdir().unwrap();
-    let liquid_cache = get_test_cached_file(batch_size, tmp_dir.path().to_path_buf());
+    let liquid_cache = get_test_cache(batch_size, tmp_dir.path().to_path_buf(), cache_mode);
 
     let reader = builder.build(liquid_cache.clone()).unwrap();
 
@@ -475,6 +516,13 @@ async fn test_reading_with_filter_two_columns() {
     assert_eq!(batches.len(), warm_batches.len());
     for (batch, warm_batch) in batches.iter().zip(warm_batches.iter()) {
         assert_batch_eq(&batch, &warm_batch);
+    }
+}
+
+#[tokio::test]
+async fn test_reading_with_filter_two_columns() {
+    for cache_mode in CACHE_MODES {
+        reading_with_filter_two_columns(cache_mode).await;
     }
 }
 
