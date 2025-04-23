@@ -330,8 +330,8 @@ impl LiquidCachedColumn {
         Ok(())
     }
 
-    /// Insert an arrow array into the cache.
-    pub(crate) fn insert_arrow_array(
+    /// Insert an array into the cache.
+    pub(crate) fn insert(
         self: &Arc<Self>,
         batch_id: BatchID,
         array: ArrayRef,

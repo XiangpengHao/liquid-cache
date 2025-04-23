@@ -158,6 +158,7 @@ impl CacheStore {
                 self.write_to_disk(&to_evict, &liquid_array);
                 self.insert_inner(to_evict, CachedBatch::OnDiskLiquid)
                     .expect("failed to insert on disk liquid");
+                self.policy.notify_evict(&to_evict);
                 Some(not_inserted)
             }
             CacheAdvice::TranscodeToDisk(to_transcode) => {
@@ -173,6 +174,8 @@ impl CacheStore {
                     }
                 };
                 self.write_to_disk(&to_transcode, &liquid_array);
+                self.insert_inner(to_transcode, CachedBatch::OnDiskLiquid)
+                    .expect("failed to insert on disk liquid");
                 None
             }
         }
@@ -183,8 +186,6 @@ impl CacheStore {
         let file_path = entry_id.on_disk_path(self.config.cache_root_dir());
         let mut file = File::create(file_path).unwrap();
         file.write_all(&bytes).unwrap();
-        self.insert_inner(*entry_id, CachedBatch::OnDiskLiquid)
-            .expect("failed to insert on disk liquid");
         self.budget.add_used_disk_bytes(bytes.len());
     }
 
@@ -310,6 +311,8 @@ mod tests {
                 AdviceType::TranscodeToDisk => CacheAdvice::TranscodeToDisk(*entry_id),
             }
         }
+
+        fn notify_evict(&self, _entry_id: &CacheEntryID) {}
     }
 
     #[test]

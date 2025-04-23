@@ -23,6 +23,9 @@ pub trait CachePolicy: std::fmt::Debug + Send + Sync {
 
     /// Notify the cache policy that an entry was accessed.
     fn notify_access(&self, _entry_id: &CacheEntryID) {}
+
+    /// Notify the cache policy that an entry was evicted.
+    fn notify_evict(&self, _entry_id: &CacheEntryID);
 }
 
 /// The policy that implements the FILO (First In, Last Out) algorithm.
@@ -68,6 +71,11 @@ impl CachePolicy for FiloPolicy {
 
         // If no entries to evict, transcode to disk as fallback
         CacheAdvice::TranscodeToDisk(*entry_id)
+    }
+
+    fn notify_evict(&self, entry_id: &CacheEntryID) {
+        let mut queue = self.queue.lock().unwrap();
+        queue.retain(|id| id != entry_id);
     }
 
     fn notify_insert(&self, entry_id: &CacheEntryID) {
@@ -184,6 +192,16 @@ impl CachePolicy for LruPolicy {
         }
         // If not in map, it means it was already evicted or never inserted
         // by this policy instance, so we do nothing.
+    }
+
+    fn notify_evict(&self, entry_id: &CacheEntryID) {
+        let mut state = self.state.lock().unwrap();
+        if let Some(node_ptr) = state.map.remove(entry_id) {
+            unsafe {
+                self.unlink_node(&mut state, node_ptr);
+                drop(Box::from_raw(node_ptr.as_ptr()));
+            }
+        }
     }
 
     fn notify_insert(&self, entry_id: &CacheEntryID) {

@@ -56,6 +56,9 @@ use utils::FinalStream;
 pub mod admin_server;
 mod local_cache;
 
+#[cfg(test)]
+mod tests;
+
 /// A trait to collect stats for the execution plan.
 /// The server calls `start` right before polling the stream,
 /// and calls `stop` right after exhausting the stream.
