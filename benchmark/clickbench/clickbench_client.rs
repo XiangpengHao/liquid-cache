@@ -166,6 +166,9 @@ pub async fn main() -> Result<()> {
         let mut query_result = QueryResult::new(id, query.clone());
         for it in 0..args.common.iteration {
             info!("Running query {}: \n{}", id, query);
+
+            args.common.start_trace().await;
+
             let root = Span::root(
                 format!("clickbench-client-{}-{}", id, it),
                 SpanContext::random(),
@@ -183,9 +186,11 @@ pub async fn main() -> Result<()> {
                 .get("lo0")
                 .or_else(|| networks.get("lo"))
                 .expect("No loopback interface found in networks");
+
+            args.common.stop_trace().await;
+
             let physical_plan_with_metrics =
                 DisplayableExecutionPlan::with_metrics(physical_plan.as_ref());
-
             debug!(
                 "Physical plan: \n{}",
                 physical_plan_with_metrics.indent(true)

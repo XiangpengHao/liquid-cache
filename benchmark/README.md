@@ -91,9 +91,9 @@ You can use [`parquet-viewer`](https://parquet-viewer.xiangpeng.systems) to view
 
 ### Collect cache trace
 
-To collect cache trace, simply add `--cache-trace-dir benchmark/data/cache_trace` to the server command, for example:
+To collect cache trace, simply add `--cache-trace-dir benchmark/data/cache_trace` to the client command, for example:
 ```bash
-cargo run --release --bin bench_server -- --cache-trace-dir benchmark/data/cache_trace
+env RUST_LOG=info cargo run --bin clickbench_client --release -- --query-path benchmark/clickbench/queries/queries.sql --file benchmark/clickbench/data/hits.parquet --query 20 --iteration 2 --partitions 8 --cache-trace-dir benchmark/data/
 ```
 It will generate a parquet file that contains the cache trace for each query that the server executed.
 

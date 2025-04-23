@@ -19,7 +19,7 @@ async fn get_physical_plan(sql: &str, ctx: &SessionContext) -> Arc<dyn Execution
 }
 
 async fn run_sql(sql: &str, mode: CacheMode, cache_size: usize) -> String {
-    let ctx = Arc::new(LiquidCacheService::context(None).unwrap());
+    let ctx = Arc::new(LiquidCacheService::context().unwrap());
     ctx.register_parquet("hits", TEST_FILE, Default::default())
         .await
         .unwrap();

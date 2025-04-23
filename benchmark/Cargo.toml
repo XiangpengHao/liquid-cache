@@ -42,6 +42,7 @@ tower = "0.5.2"
 logforth = { git = "https://github.com/XiangpengHao/logforth.git", features = [
 	"opentelemetry",
 ] }
+reqwest = { version = "0.12.15", default-features = false }
 
 [[bin]]
 name = "clickbench_client"
