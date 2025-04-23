@@ -76,9 +76,7 @@ impl CachedArrayReader {
         }
         let read = self.inner.read_records(self.batch_size())?;
         let array = self.inner.consume_batch()?;
-        _ = self
-            .liquid_cache
-            .insert(batch_id, array.clone());
+        _ = self.liquid_cache.insert(batch_id, array.clone());
         self.reader_local_cache.insert(batch_id, array);
 
         self.inner_row_id += read;

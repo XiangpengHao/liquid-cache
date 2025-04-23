@@ -55,3 +55,7 @@ fastrace-tonic = "0.1"
 
 [profile.dev.package]
 insta.opt-level = 3
+
+# [patch.crates-io]
+# datafusion = { path = "../datafusion/datafusion/core" }
+# datafusion-proto = { path = "../datafusion/datafusion/proto" }
