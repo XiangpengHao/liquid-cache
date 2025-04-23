@@ -3,7 +3,11 @@
 //! This server is used to manage the liquid cache server
 
 use axum::http::{HeaderValue, Method};
-use axum::{Json, Router, extract::{State, Query}, routing::get};
+use axum::{
+    Json, Router,
+    extract::{Query, State},
+    routing::get,
+};
 use liquid_cache_common::CacheMode;
 use log::info;
 use serde::Serialize;
@@ -201,11 +205,11 @@ async fn start_trace_handler(State(state): State<Arc<AppState>>) -> Json<ApiResp
 
 async fn stop_trace_handler(
     Query(params): Query<TraceParams>,
-    State(state): State<Arc<AppState>>
+    State(state): State<Arc<AppState>>,
 ) -> Json<ApiResponse> {
     info!("Stopping cache trace collection...");
     let save_path = Path::new(&params.path);
-    
+
     match save_trace_to_file(save_path, &state) {
         Ok(_) => Json(ApiResponse {
             message: format!(
@@ -233,12 +237,12 @@ fn save_trace_to_file(save_dir: &Path, state: &AppState) -> Result<(), Box<dyn s
         "cache-trace-id{:02}-{:02}-{:03}.parquet",
         trace_id, minute, second
     );
-    
+
     // Ensure directory exists
     if !save_dir.exists() {
         fs::create_dir_all(save_dir)?;
     }
-    
+
     let file_path = save_dir.join(filename);
     state.liquid_cache.cache().disable_trace();
     state.liquid_cache.cache().flush_trace(&file_path);
