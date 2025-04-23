@@ -151,7 +151,7 @@ impl LiquidCache {
 mod tests {
     use std::io::Read;
 
-    use crate::{LiquidCacheMode, cache::BatchID};
+    use crate::cache::BatchID;
 
     use super::*;
     use arrow::{
@@ -159,6 +159,7 @@ mod tests {
         datatypes::UInt64Type,
     };
     use bytes::Bytes;
+    use liquid_cache_common::LiquidCacheMode;
     use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
     use tempfile::NamedTempFile;
 
@@ -184,7 +185,7 @@ mod tests {
                         .create_column(col, Arc::new(Field::new("test", DataType::Int32, false)));
                     for batch in 0..8 {
                         let batch_id = BatchID::from_raw(batch);
-                        assert!(column.insert_arrow_array(batch_id, array.clone()).is_ok());
+                        assert!(column.insert(batch_id, array.clone()).is_ok());
                         row_group_id_sum += rg as u64;
                         column_id_sum += col as u64;
                         row_start_id_sum += *batch_id as u64 * cache.batch_size() as u64;

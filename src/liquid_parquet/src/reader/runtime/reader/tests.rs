@@ -1,47 +1,42 @@
 use crate::{
-    LiquidCache, LiquidCacheMode, LiquidCachedFileRef, LiquidPredicate,
+    LiquidCachedFileRef, LiquidPredicate,
+    cache::LiquidCache,
     liquid_array::LiquidArrayRef,
     reader::{
         plantime::CachedMetaReaderFactory,
-        runtime::{ArrowReaderBuilderBridge, LiquidRowFilter, liquid_stream::LiquidStreamBuilder},
+        runtime::{
+            ArrowReaderBuilderBridge, LiquidRowFilter,
+            liquid_stream::{LiquidStream, LiquidStreamBuilder},
+        },
     },
 };
 use arrow::{
-    array::{AsArray, BooleanArray, BooleanBuilder},
-    buffer::BooleanBuffer,
-    compute::filter,
-    datatypes::{
-        DataType, Field, Int8Type, Int16Type, Int32Type, Int64Type, Schema, UInt8Type, UInt16Type,
-        UInt32Type, UInt64Type,
-    },
+    array::{AsArray, BooleanArray},
+    datatypes::{Int16Type, Schema},
     record_batch::RecordBatch,
 };
 use arrow_schema::{ArrowError, SchemaRef};
 use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
 use futures::StreamExt;
 use liquid_cache_common::{
-    coerce_binary_to_string, coerce_string_to_view, coerce_to_liquid_cache_types,
+    LiquidCacheMode, coerce_binary_to_string, coerce_string_to_view, coerce_to_liquid_cache_types,
 };
 use object_store::ObjectMeta;
-use parquet::{
-    arrow::{
-        ParquetRecordBatchStreamBuilder, ProjectionMask,
-        arrow_reader::{
-            ArrowPredicate, ArrowReaderMetadata, ArrowReaderOptions,
-            ParquetRecordBatchReaderBuilder,
-        },
+use parquet::arrow::{
+    ParquetRecordBatchStreamBuilder, ProjectionMask,
+    arrow_reader::{
+        ArrowPredicate, ArrowReaderMetadata, ArrowReaderOptions, ParquetRecordBatchReaderBuilder,
     },
-    file::metadata::ParquetMetaData,
 };
 use std::{fs::File, path::PathBuf, sync::Arc};
 
 const TEST_FILE_PATH: &str = "../../examples/nano_hits.parquet";
 
-fn test_output_schema() -> SchemaRef {
+fn test_output_schema(cache_mode: &LiquidCacheMode) -> SchemaRef {
     let file = File::open(TEST_FILE_PATH).unwrap();
     let builder = ArrowReaderMetadata::load(&file, Default::default()).unwrap();
     let schema = builder.schema().clone();
-    Arc::new(coerce_to_liquid_cache_types(schema.as_ref()))
+    Arc::new(coerce_to_liquid_cache_types(schema.as_ref(), cache_mode))
 }
 
 pub fn generate_test_parquet() -> (File, String) {
@@ -67,6 +62,8 @@ fn get_baseline_record_batch(batch_size: usize, projection: &[usize]) -> Vec<Rec
         .map(|batch| batch.unwrap())
         .collect()
 }
+
+const BATCH_SIZE: usize = 8192;
 
 async fn get_test_reader() -> (LiquidStreamBuilder, File) {
     let (file, path) = generate_test_parquet();
@@ -97,14 +94,17 @@ async fn get_test_reader() -> (LiquidStreamBuilder, File) {
     let metadata = ArrowReaderMetadata::try_new(Arc::clone(metadata.metadata()), options).unwrap();
 
     let builder = ParquetRecordBatchStreamBuilder::new_with_metadata(async_reader, metadata)
-        .with_batch_size(8192);
+        .with_batch_size(BATCH_SIZE);
 
     let liquid_builder =
         unsafe { ArrowReaderBuilderBridge::from_parquet(builder).into_liquid_builder() };
 
     let metadata = &liquid_builder.metadata;
     assert_eq!(metadata.num_row_groups(), 2);
-    assert_eq!(metadata.file_metadata().num_rows(), 8192 * 3 + 10);
+    assert_eq!(
+        metadata.file_metadata().num_rows(),
+        BATCH_SIZE as i64 * 3 + 10
+    );
     (liquid_builder, file)
 }
 
@@ -118,26 +118,32 @@ fn assert_batch_eq(left: &RecordBatch, right: &RecordBatch) {
     }
 }
 
-fn get_test_cached_file(bath_size: usize, cache_dir: PathBuf) -> LiquidCachedFileRef {
+fn assert_schema_eq(left: &Schema, right: &Schema) {
+    assert_eq!(left.fields().len(), right.fields().len());
+    for (f_l, f_r) in left.fields().iter().zip(right.fields().iter()) {
+        assert_eq!(f_l, f_r);
+    }
+}
+
+fn get_test_cache(
+    bath_size: usize,
+    cache_dir: PathBuf,
+    cache_mode: &LiquidCacheMode,
+) -> LiquidCachedFileRef {
     let lq = LiquidCache::new(bath_size, usize::MAX, cache_dir);
 
-    lq.register_or_get_file(
-        "".to_string(),
-        LiquidCacheMode::InMemoryLiquid {
-            transcode_in_background: false,
-        },
-    )
+    lq.register_or_get_file("".to_string(), *cache_mode)
 }
-#[tokio::test]
-async fn basic_stuff() {
+
+async fn basic_stuff(cache_mode: &LiquidCacheMode) {
     let tmp_dir = tempfile::tempdir().unwrap();
     let (builder, _file) = get_test_reader().await;
     let batch_size = builder.batch_size;
-    let liquid_cache = get_test_cached_file(batch_size, tmp_dir.path().to_path_buf());
+    let liquid_cache = get_test_cache(batch_size, tmp_dir.path().to_path_buf(), cache_mode);
     let reader = builder.build(liquid_cache).unwrap();
 
     let schema = reader.schema();
-    assert_eq!(schema.as_ref(), test_output_schema().as_ref());
+    assert_schema_eq(&schema, test_output_schema(cache_mode).as_ref());
 
     let projection = (0..schema.fields().len()).collect::<Vec<_>>();
 
@@ -155,8 +161,24 @@ async fn basic_stuff() {
     }
 }
 
+const CACHE_MODES: &[LiquidCacheMode] = &[
+    LiquidCacheMode::InMemoryArrow,
+    LiquidCacheMode::InMemoryLiquid {
+        transcode_in_background: false,
+    },
+    LiquidCacheMode::InMemoryLiquid {
+        transcode_in_background: true,
+    },
+];
+
 #[tokio::test]
-async fn test_reading_with_projection() {
+async fn test_basic() {
+    for cache_mode in CACHE_MODES {
+        basic_stuff(cache_mode).await;
+    }
+}
+
+async fn read_with_projection(cache_mode: &LiquidCacheMode) {
     let tmp_dir = tempfile::tempdir().unwrap();
     let column_projections = vec![0, 3, 6, 8];
     let (mut builder, _file) = get_test_reader().await;
@@ -165,7 +187,7 @@ async fn test_reading_with_projection() {
         column_projections.iter().cloned(),
     );
     let batch_size = builder.batch_size;
-    let liquid_cache = get_test_cached_file(batch_size, tmp_dir.path().to_path_buf());
+    let liquid_cache = get_test_cache(batch_size, tmp_dir.path().to_path_buf(), &cache_mode);
     let reader = builder.build(liquid_cache).unwrap();
 
     let batches = reader
@@ -182,12 +204,18 @@ async fn test_reading_with_projection() {
 }
 
 #[tokio::test]
-async fn test_reading_warm() {
+async fn test_read_with_projection() {
+    for cache_mode in CACHE_MODES {
+        read_with_projection(cache_mode).await;
+    }
+}
+
+async fn read_warm(cache_mode: &LiquidCacheMode) {
     let tmp_dir = tempfile::tempdir().unwrap();
     let column_projections = vec![0, 3, 6, 8];
     let (mut builder, _file) = get_test_reader().await;
     let batch_size = builder.batch_size;
-    let liquid_cache = get_test_cached_file(batch_size, tmp_dir.path().to_path_buf());
+    let liquid_cache = get_test_cache(batch_size, tmp_dir.path().to_path_buf(), cache_mode);
     builder.projection = ProjectionMask::roots(
         builder.metadata.file_metadata().schema_descr(),
         column_projections.iter().cloned(),
@@ -215,82 +243,33 @@ async fn test_reading_warm() {
     }
 }
 
-struct TestPredicate {
-    projection_mask: ProjectionMask,
-    strategy: FilterStrategy,
-}
-
-impl TestPredicate {
-    fn new(parquet_meta: &ParquetMetaData, column_id: usize, strategy: FilterStrategy) -> Self {
-        Self {
-            projection_mask: ProjectionMask::roots(
-                parquet_meta.file_metadata().schema_descr(),
-                [column_id],
-            ),
-            strategy,
-        }
+#[tokio::test]
+async fn test_reading_warm() {
+    for cache_mode in CACHE_MODES {
+        read_warm(cache_mode).await;
     }
 }
 
-impl LiquidPredicate for TestPredicate {
+struct TwoColumnsPredicate {
+    projection_mask: ProjectionMask,
+}
+
+impl LiquidPredicate for TwoColumnsPredicate {
     fn evaluate_liquid(
         &mut self,
-        array: &LiquidArrayRef,
+        _array: &LiquidArrayRef,
     ) -> Result<Option<BooleanArray>, ArrowError> {
-        let batch = array.to_arrow_array();
-
-        let schema = Schema::new(vec![Field::new(
-            "_",
-            batch.data_type().clone(),
-            batch.is_nullable(),
-        )]);
-        let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(batch)]).unwrap();
-        let v = self.evaluate(batch)?;
-        Ok(Some(v))
+        unimplemented!()
     }
 }
 
-impl ArrowPredicate for TestPredicate {
+impl ArrowPredicate for TwoColumnsPredicate {
     fn evaluate(&mut self, batch: RecordBatch) -> Result<BooleanArray, ArrowError> {
-        assert_eq!(batch.num_columns(), 1);
-        let column = batch.column(0);
-
-        let mut builder = BooleanBuilder::new();
-
-        // A helper macro to reduce code duplication:
-        macro_rules! filter_values {
-            ($ARRAY:ty, $CAST:ty) => {{
-                let typed = column.as_primitive::<$CAST>();
-                for v in typed {
-                    match v {
-                        Some(v) => {
-                            let v = v as i64;
-                            let keep = match self.strategy {
-                                FilterStrategy::NoOdd => v % 2 == 0,
-                                FilterStrategy::NoSmallerThan(min) => v >= min,
-                                FilterStrategy::NoLargerThan(max) => v <= max,
-                            };
-                            builder.append_value(keep);
-                        }
-                        None => builder.append_null(),
-                    }
-                }
-            }};
-        }
-
-        match column.data_type() {
-            DataType::Int8 => filter_values!(Int8Array, Int8Type),
-            DataType::Int16 => filter_values!(Int16Array, Int16Type),
-            DataType::Int32 => filter_values!(Int32Array, Int32Type),
-            DataType::Int64 => filter_values!(Int64Array, Int64Type),
-            DataType::UInt8 => filter_values!(UInt8Array, UInt8Type),
-            DataType::UInt16 => filter_values!(UInt16Array, UInt16Type),
-            DataType::UInt32 => filter_values!(UInt32Array, UInt32Type),
-            DataType::UInt64 => filter_values!(UInt64Array, UInt64Type),
-            _ => panic!("not supported {:?}", column.data_type()),
-        }
-
-        Ok(builder.finish())
+        assert_eq!(batch.num_columns(), 2);
+        let column1 = batch.column(0);
+        let column2 = batch.column(1);
+        let mask = arrow::compute::kernels::cmp::gt(column1, column2).unwrap();
+        Ok(mask)
     }
 
     fn projection(&self) -> &ProjectionMask {
@@ -298,144 +277,27 @@ impl ArrowPredicate for TestPredicate {
     }
 }
 
-enum FilterStrategy {
-    NoOdd,
-    NoSmallerThan(i64),
-    NoLargerThan(i64),
-}
-
-#[tokio::test]
-async fn test_reading_with_filter() {
-    let projection = vec![0, 3, 5, 6, 8];
-    let (mut builder, _file) = get_test_reader().await;
-    let batch_size = builder.batch_size;
-
-    builder.projection = ProjectionMask::roots(
-        builder.metadata.file_metadata().schema_descr(),
-        projection.iter().cloned(),
-    );
-
-    fn get_filters(metadata: &ParquetMetaData) -> Vec<Box<dyn LiquidPredicate>> {
-        let filter1 = TestPredicate::new(metadata, 0, FilterStrategy::NoOdd);
-        let filter2 = TestPredicate::new(metadata, 5, FilterStrategy::NoSmallerThan(10_000));
-        let filter3 = TestPredicate::new(metadata, 6, FilterStrategy::NoLargerThan(20_000));
-        let filters = vec![
-            Box::new(filter1) as Box<dyn LiquidPredicate>,
-            Box::new(filter2),
-            Box::new(filter3),
-        ];
-        filters
-    }
-    builder.filter = Some(LiquidRowFilter::new(get_filters(&builder.metadata)));
-
-    let tmp_dir = tempfile::tempdir().unwrap();
-    let liquid_cache = get_test_cached_file(batch_size, tmp_dir.path().to_path_buf());
-
-    let reader = builder.build(liquid_cache.clone()).unwrap();
-
-    let batches = reader
-        .collect::<Vec<_>>()
-        .await
-        .into_iter()
-        .map(|batch| batch.unwrap())
-        .collect::<Vec<_>>();
-    let baseline_batches = get_baseline_record_batch(batch_size, &projection);
-
-    for (i, batch) in batches.iter().enumerate() {
-        let expected: &RecordBatch = &baseline_batches[i];
-
-        let col_i64 = expected.column(0).as_primitive::<Int64Type>();
-        let mask1 = BooleanBuffer::from_iter(
-            col_i64
-                .iter()
-                .map(|val| val.map(|v| v % 2 == 0).unwrap_or(false)),
-        );
-
-        // 1373872581 is the average value of that column
-        let col_i32 = expected.column(4).as_primitive::<Int32Type>();
-        let mask2 = BooleanBuffer::from_iter(
-            col_i32
-                .iter()
-                .map(|val| val.map(|v| v <= 1373872581).unwrap_or(false)),
-        );
-
-        let combined_mask = &mask1 & &mask2;
-
-        let expected = filter_record_batch(&expected, combined_mask);
-
-        assert_batch_eq(&expected, batch);
-    }
-
-    // now run again with the same cache
+async fn get_projected_reader(projection: &[usize], cache: LiquidCachedFileRef) -> LiquidStream {
     let (mut builder, _file) = get_test_reader().await;
     builder.projection = ProjectionMask::roots(
         builder.metadata.file_metadata().schema_descr(),
         projection.iter().cloned(),
     );
-    builder.filter = Some(LiquidRowFilter::new(get_filters(&builder.metadata)));
-    let reader = builder.build(liquid_cache.clone()).unwrap();
-    let warm_batches = reader
-        .collect::<Vec<_>>()
-        .await
-        .into_iter()
-        .map(|batch| batch.unwrap())
-        .collect::<Vec<_>>();
-    assert_eq!(batches.len(), warm_batches.len());
-    for (batch, warm_batch) in batches.iter().zip(warm_batches.iter()) {
-        assert_batch_eq(&batch, &warm_batch);
-    }
-}
-
-#[tokio::test]
-async fn test_reading_with_filter_two_columns() {
-    let projection = vec![11, 12]; // OS and UserAgent
-    let (mut builder, _file) = get_test_reader().await;
-    let batch_size = builder.batch_size;
-
-    builder.projection = ProjectionMask::roots(
-        builder.metadata.file_metadata().schema_descr(),
-        projection.iter().cloned(),
-    );
-
-    struct TwoColumnsPredicate {
-        projection_mask: ProjectionMask,
-    }
-
-    impl LiquidPredicate for TwoColumnsPredicate {
-        fn evaluate_liquid(
-            &mut self,
-            _array: &LiquidArrayRef,
-        ) -> Result<Option<BooleanArray>, ArrowError> {
-            unimplemented!()
-        }
-    }
-
-    impl ArrowPredicate for TwoColumnsPredicate {
-        fn evaluate(&mut self, batch: RecordBatch) -> Result<BooleanArray, ArrowError> {
-            assert_eq!(batch.num_columns(), 2);
-            let column1 = batch.column(0);
-            let column2 = batch.column(1);
-            let mask = arrow::compute::kernels::cmp::gt(column1, column2).unwrap();
-            Ok(mask)
-        }
-
-        fn projection(&self) -> &ProjectionMask {
-            &self.projection_mask
-        }
-    }
     let predicate = TwoColumnsPredicate {
         projection_mask: ProjectionMask::roots(
             builder.metadata.file_metadata().schema_descr(),
             projection.iter().cloned(),
         ),
     };
-
     builder.filter = Some(LiquidRowFilter::new(vec![Box::new(predicate)]));
+    builder.build(cache).unwrap()
+}
 
+async fn reading_with_filter_two_columns(cache_mode: &LiquidCacheMode) {
+    let projection = vec![11, 12]; // OS and UserAgent
     let tmp_dir = tempfile::tempdir().unwrap();
-    let liquid_cache = get_test_cached_file(batch_size, tmp_dir.path().to_path_buf());
-
-    let reader = builder.build(liquid_cache.clone()).unwrap();
+    let liquid_cache = get_test_cache(BATCH_SIZE, tmp_dir.path().to_path_buf(), cache_mode);
+    let reader = get_projected_reader(&projection, liquid_cache.clone()).await;
 
     let batches = reader
         .collect::<Vec<_>>()
@@ -453,19 +315,7 @@ async fn test_reading_with_filter_two_columns() {
     }
 
     // now run again with the same cache
-    let (mut builder, _file) = get_test_reader().await;
-    builder.projection = ProjectionMask::roots(
-        builder.metadata.file_metadata().schema_descr(),
-        projection.iter().cloned(),
-    );
-    let predicate = TwoColumnsPredicate {
-        projection_mask: ProjectionMask::roots(
-            builder.metadata.file_metadata().schema_descr(),
-            projection.iter().cloned(),
-        ),
-    };
-    builder.filter = Some(LiquidRowFilter::new(vec![Box::new(predicate)]));
-    let reader = builder.build(liquid_cache.clone()).unwrap();
+    let reader = get_projected_reader(&projection, liquid_cache).await;
     let warm_batches = reader
         .collect::<Vec<_>>()
         .await
@@ -478,15 +328,11 @@ async fn test_reading_with_filter_two_columns() {
     }
 }
 
-fn filter_record_batch(batch: &RecordBatch, mask: BooleanBuffer) -> RecordBatch {
-    let mask = BooleanArray::new(mask, None);
-    let filtered_columns = batch
-        .columns()
-        .iter()
-        .map(|col| filter(col, &mask).unwrap())
-        .collect::<Vec<_>>();
-
-    RecordBatch::try_new(batch.schema(), filtered_columns).unwrap()
+#[tokio::test]
+async fn test_reading_with_filter_two_columns() {
+    for cache_mode in CACHE_MODES {
+        reading_with_filter_two_columns(cache_mode).await;
+    }
 }
 
 #[tokio::test]

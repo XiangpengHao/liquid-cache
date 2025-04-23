@@ -7,7 +7,9 @@ use arrow::buffer::BooleanBuffer;
 use arrow::compute::prep_null_mask_filter;
 use arrow_schema::{ArrowError, DataType, Field, Schema};
 use bytes::Bytes;
-use liquid_cache_common::CacheMode;
+use liquid_cache_common::{
+    LiquidCacheMode, cast_from_parquet_to_liquid_type, coerce_from_parquet_to_liquid_type,
+};
 use policies::LruPolicy;
 use std::fmt::Display;
 use std::fs::File;
@@ -328,8 +330,8 @@ impl LiquidCachedColumn {
         Ok(())
     }
 
-    /// Insert an arrow array into the cache.
-    pub(crate) fn insert_arrow_array(
+    /// Insert an array into the cache.
+    pub(crate) fn insert(
         self: &Arc<Self>,
         batch_id: BatchID,
         array: ArrayRef,
@@ -338,18 +340,9 @@ impl LiquidCachedColumn {
             return Err(InsertArrowArrayError::AlreadyCached);
         }
 
-        // This is a special case for the Utf8View type, because the rest of the system expects a Dictionary type,
-        // But the reader reads as Utf8View types.
-        // So to be consistent, we cast to a Dictionary type here.
-        let array = if array.data_type() == &DataType::Utf8View {
-            arrow::compute::kernels::cast(
-                &array,
-                &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            )
-            .unwrap()
-        } else {
-            array
-        };
+        // This is a special case for the Utf8View type, because parquet read string as Utf8View.
+        // But the reader reads as Dictionary or Utf8 type, depending on the cache mode.
+        let array = cast_from_parquet_to_liquid_type(array, &self.cache_mode);
 
         match &self.cache_mode {
             LiquidCacheMode::InMemoryArrow => {
@@ -425,10 +418,9 @@ impl LiquidCachedRowGroup {
         let field = match field.data_type() {
             DataType::Utf8View => {
                 let field: Field = Field::clone(&field);
-                Arc::new(field.with_data_type(DataType::Dictionary(
-                    Box::new(DataType::UInt16),
-                    Box::new(DataType::Utf8),
-                )))
+                let new_data_type =
+                    coerce_from_parquet_to_liquid_type(field.data_type(), &self.cache_mode);
+                Arc::new(field.with_data_type(new_data_type))
             }
             DataType::Utf8 | DataType::LargeUtf8 => unreachable!(),
             _ => field,
@@ -557,33 +549,6 @@ pub struct LiquidCache {
 
 /// A reference to the main cache structure.
 pub type LiquidCacheRef = Arc<LiquidCache>;
-
-/// The mode of the cache.
-#[derive(Debug, Copy, Clone)]
-pub enum LiquidCacheMode {
-    /// The baseline that reads the arrays as is.
-    InMemoryArrow,
-    /// The baseline that reads the arrays as is, but transcode the data into liquid arrays in the background.
-    InMemoryLiquid {
-        /// Whether to transcode the data into liquid arrays in the background.
-        transcode_in_background: bool,
-    },
-}
-
-impl From<CacheMode> for LiquidCacheMode {
-    fn from(value: CacheMode) -> Self {
-        match value {
-            CacheMode::Liquid => LiquidCacheMode::InMemoryLiquid {
-                transcode_in_background: true,
-            },
-            CacheMode::Arrow => LiquidCacheMode::InMemoryArrow,
-            CacheMode::LiquidEagerTranscode => LiquidCacheMode::InMemoryLiquid {
-                transcode_in_background: false,
-            },
-            CacheMode::Parquet => unreachable!(),
-        }
-    }
-}
 
 impl LiquidCache {
     /// Create a new cache

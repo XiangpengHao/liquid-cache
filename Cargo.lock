@@ -2502,7 +2502,6 @@ dependencies = [
  "linked-hash-map",
  "once_cell",
  "pin-project",
- "serde",
  "similar",
 ]
 
@@ -2799,6 +2798,7 @@ dependencies = [
 name = "liquid-cache-common"
 version = "0.1.3"
 dependencies = [
+ "arrow",
  "arrow-flight",
  "arrow-schema",
  "bytes",
@@ -2855,6 +2855,7 @@ dependencies = [
  "fastrace",
  "fastrace-futures",
  "futures",
+ "insta",
  "liquid-cache-client",
  "liquid-cache-common",
  "liquid-cache-parquet",

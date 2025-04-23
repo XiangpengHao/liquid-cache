@@ -6,6 +6,7 @@ use arrow::{
     buffer::BooleanBuffer,
 };
 use arrow_schema::{DataType, Field, Fields};
+use liquid_cache_common::coerce_from_parquet_to_liquid_type;
 use parquet::{
     arrow::{
         array_reader::{ArrayReader, StructArrayReader},
@@ -16,7 +17,6 @@ use parquet::{
 
 use super::super::parquet_bridge::{ParquetField, ParquetFieldType};
 use crate::{
-    LiquidCacheMode,
     cache::{BatchID, LiquidCachedColumnRef, LiquidCachedRowGroupRef},
     reader::runtime::parquet_bridge::StructArrayReaderBridge,
 };
@@ -48,15 +48,7 @@ struct CachedArrayReader {
 impl CachedArrayReader {
     fn new(inner: Box<dyn ArrayReader>, liquid_cache: LiquidCachedColumnRef) -> Self {
         let inner_type = inner.get_data_type();
-        let data_type = if inner_type.equals_datatype(&DataType::Utf8View)
-            && matches!(
-                liquid_cache.cache_mode(),
-                LiquidCacheMode::InMemoryLiquid { .. }
-            ) {
-            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8))
-        } else {
-            inner_type.clone()
-        };
+        let data_type = coerce_from_parquet_to_liquid_type(inner_type, &liquid_cache.cache_mode());
 
         Self {
             inner,
@@ -84,9 +76,7 @@ impl CachedArrayReader {
         }
         let read = self.inner.read_records(self.batch_size())?;
         let array = self.inner.consume_batch()?;
-        _ = self
-            .liquid_cache
-            .insert_arrow_array(batch_id, array.clone());
+        _ = self.liquid_cache.insert(batch_id, array.clone());
         self.reader_local_cache.insert(batch_id, array);
 
         self.inner_row_id += read;
@@ -385,8 +375,9 @@ mod tests {
     use std::sync::Arc;
 
     use arrow::array::Int32Array;
+    use liquid_cache_common::LiquidCacheMode;
 
-    use crate::{LiquidCacheMode, cache::LiquidCache};
+    use crate::cache::LiquidCache;
 
     use super::*;
 

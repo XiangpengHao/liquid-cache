@@ -44,3 +44,4 @@ fastrace-futures = { workspace = true }
 
 [dev-dependencies]
 liquid-cache-client = { workspace = true }
+insta = { version = "1.42.2" }
