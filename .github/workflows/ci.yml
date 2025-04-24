@@ -8,8 +8,6 @@ on:
     branches:
       - '*'
 
-timeout-minutes: 60
-
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
