@@ -2760,6 +2760,7 @@ dependencies = [
  "parquet",
  "pprof",
  "prost",
+ "reqwest",
  "serde",
  "serde_json",
  "sysinfo",

@@ -18,6 +18,7 @@ use liquid_cache_common::CacheMode;
 use liquid_cache_common::rpc::{
     ExecutionMetricsRequest, ExecutionMetricsResponse, LiquidCacheActions,
 };
+use log::info;
 use object_store::ClientConfigKey;
 use prost::Message;
 use serde::Serialize;
@@ -39,6 +40,10 @@ pub struct CommonBenchmarkArgs {
     /// Server URL
     #[arg(long, default_value = "http://localhost:50051")]
     pub server: String,
+
+    /// Admin server URL
+    #[arg(long, default_value = "http://localhost:50052")]
+    pub admin_server: String,
 
     /// Number of times to run each query
     #[arg(long, default_value = "3")]
@@ -71,6 +76,42 @@ pub struct CommonBenchmarkArgs {
     /// Openobserve auth token
     #[arg(long)]
     pub openobserve_auth: Option<String>,
+
+    /// Path to save the cache trace
+    #[arg(long = "cache-trace-dir")]
+    pub cache_trace_dir: Option<PathBuf>,
+}
+
+impl CommonBenchmarkArgs {
+    pub async fn start_trace(&self) {
+        if self.cache_trace_dir.is_some() {
+            let client = reqwest::Client::new();
+            let response = client
+                .get(format!("{}/start_trace", self.admin_server))
+                .send()
+                .await
+                .unwrap();
+            if response.status().is_success() {
+                info!("Cache trace collection started");
+            }
+        }
+    }
+
+    pub async fn stop_trace(&self) {
+        if let Some(cache_trace_dir) = &self.cache_trace_dir {
+            let response = reqwest::Client::new()
+                .get(format!(
+                    "{}/stop_trace?path={}",
+                    self.admin_server,
+                    cache_trace_dir.display()
+                ))
+                .send()
+                .await
+                .unwrap();
+            let response_body = response.text().await.unwrap();
+            info!("Cache trace collection stopped: {}", response_body);
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Copy, PartialEq, Eq, Serialize)]

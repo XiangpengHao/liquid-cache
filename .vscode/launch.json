@@ -22,8 +22,8 @@
 				"RUST_LOG": "info"
 			},
 			"args": [
-				"--partitions",
-				"1"
+				"--cache-trace-dir",
+				"benchmark/data"
 			],
 			"cwd": "${workspaceFolder}",
 		},

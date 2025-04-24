@@ -112,6 +112,7 @@ pub async fn main() -> Result<()> {
         for it in 0..args.common.iteration {
             let root = Span::root(format!("tpch-client-{}-{}", id, it), SpanContext::random());
             let _g = root.set_local_parent();
+            args.common.start_trace().await;
             info!("Running query {}: \n{}", id, query.join(";"));
             let now = Instant::now();
             let starting_timestamp = bench_start_time.elapsed();
@@ -139,9 +140,11 @@ pub async fn main() -> Result<()> {
                 .get("lo0")
                 .or_else(|| networks.get("lo"))
                 .expect("No loopback interface found in networks");
+
+            args.common.stop_trace().await;
+
             let physical_plan_with_metrics =
                 DisplayableExecutionPlan::with_metrics(physical_plan.as_ref());
-
             debug!(
                 "Physical plan: \n{}",
                 physical_plan_with_metrics.indent(true)

@@ -99,7 +99,7 @@ impl LiquidCacheService {
     /// Create a new [LiquidCacheService] with a default [SessionContext]
     /// With no disk cache and unbounded memory usage.
     pub fn try_new() -> Result<Self, DataFusionError> {
-        let ctx = Self::context(None)?;
+        let ctx = Self::context()?;
         Ok(Self::new(ctx, None, None))
     }
 
@@ -133,7 +133,7 @@ impl LiquidCacheService {
 
     /// Create a new [SessionContext] with good defaults
     /// This is the recommended way to create a [SessionContext] for LiquidCache
-    pub fn context(partitions: Option<usize>) -> Result<SessionContext, DataFusionError> {
+    pub fn context() -> Result<SessionContext, DataFusionError> {
         let mut session_config = SessionConfig::from_env()?;
         let options_mut = session_config.options_mut();
         options_mut.execution.parquet.pushdown_filters = true;
@@ -145,10 +145,6 @@ impl LiquidCacheService {
             // For Arrow memory mode, we need to read as UTF-8
             // For Liquid cache, we have our own way of handling string columns
             options_mut.execution.parquet.schema_force_view_types = false;
-        }
-
-        if let Some(partitions) = partitions {
-            options_mut.execution.target_partitions = partitions;
         }
 
         let object_store_url = ObjectStoreUrl::parse("file://").unwrap();
