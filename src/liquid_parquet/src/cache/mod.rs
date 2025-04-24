@@ -1,5 +1,9 @@
 use super::liquid_array::LiquidArrayRef;
 use crate::liquid_array::ipc::{self, LiquidIPCContext};
+use crate::sync::{
+    Mutex, RwLock,
+    atomic::{AtomicU64, Ordering},
+};
 use crate::{ABLATION_STUDY_MODE, AblationStudyMode, LiquidPredicate};
 use ahash::AHashMap;
 use arrow::array::{Array, ArrayRef, BooleanArray, RecordBatch};
@@ -15,8 +19,7 @@ use std::fmt::Display;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, RwLock};
+use std::sync::{Arc, LazyLock};
 use store::{CacheAdvice, CacheStore};
 use tokio::runtime::Runtime;
 use transcode::transcode_liquid_inner;

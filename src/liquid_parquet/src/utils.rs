@@ -88,6 +88,29 @@ fn byte_array_to_dict_array<'a, T: ByteArrayType, I: ArrayAccessor<Item = &'a T:
     CheckedDictionaryArray { val: dict }
 }
 
+#[cfg(all(feature = "shuttle", test))]
+pub(crate) fn shuttle_test(test: impl Fn() + Send + Sync + 'static) {
+    tracing_subscriber::fmt()
+        .with_ansi(true)
+        .with_thread_names(false)
+        .with_target(false)
+        .init();
+
+    let mut runner = shuttle::PortfolioRunner::new(true, Default::default());
+
+    let available_cores = std::thread::available_parallelism().unwrap().get().min(4);
+
+    for _i in 0..available_cores {
+        runner.add(shuttle::scheduler::PctScheduler::new(10, 1_000));
+    }
+    runner.run(test);
+}
+
+pub(crate) fn yield_now_if_shuttle() {
+    #[cfg(feature = "shuttle")]
+    shuttle::thread::yield_now();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

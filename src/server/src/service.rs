@@ -1,4 +1,3 @@
-use dashmap::DashMap;
 use datafusion::{
     common::tree_node::{Transformed, TreeNode},
     datasource::{
@@ -16,6 +15,7 @@ use liquid_cache_common::{
 use liquid_cache_parquet::{LiquidCache, LiquidCacheRef, LiquidParquetSource};
 use log::{debug, info};
 use object_store::ObjectStore;
+use std::sync::RwLock;
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use tokio::sync::Mutex;
 use url::Url;
@@ -24,7 +24,7 @@ use uuid::Uuid;
 use crate::local_cache::LocalCache;
 
 pub(crate) struct LiquidCacheServiceInner {
-    execution_plans: Arc<DashMap<Uuid, Arc<dyn ExecutionPlan>>>,
+    execution_plans: Arc<RwLock<HashMap<Uuid, Arc<dyn ExecutionPlan>>>>,
     registered_tables: Mutex<HashMap<String, (String, CacheMode)>>, // table name -> (path, cached file)
     default_ctx: Arc<SessionContext>,
     cache: LiquidCacheRef,
@@ -109,10 +109,10 @@ impl LiquidCacheServiceInner {
     ) {
         match cache_mode {
             CacheMode::Parquet => {
-                self.execution_plans.insert(handle, plan);
+                self.execution_plans.write().unwrap().insert(handle, plan);
             }
             _ => {
-                self.execution_plans.insert(
+                self.execution_plans.write().unwrap().insert(
                     handle,
                     rewrite_data_source_plan(plan, &self.cache, cache_mode),
                 );
@@ -121,8 +121,8 @@ impl LiquidCacheServiceInner {
     }
 
     pub(crate) fn get_plan(&self, handle: &Uuid) -> Option<Arc<dyn ExecutionPlan>> {
-        let plan = self.execution_plans.get(handle)?;
-        Some(plan.clone())
+        let plan = self.execution_plans.read().unwrap().get(handle)?.clone();
+        Some(plan)
     }
 
     pub(crate) async fn execute_plan(
@@ -130,7 +130,13 @@ impl LiquidCacheServiceInner {
         handle: &Uuid,
         partition: usize,
     ) -> SendableRecordBatchStream {
-        let plan = self.execution_plans.get(handle).unwrap();
+        let plan = self
+            .execution_plans
+            .read()
+            .unwrap()
+            .get(handle)
+            .unwrap()
+            .clone();
         let displayable = DisplayableExecutionPlan::new(plan.as_ref());
         debug!("physical plan:\n{}", displayable.indent(false));
         let ctx = self.default_ctx.clone();

@@ -1,11 +1,12 @@
 use super::{CachedBatch, LiquidCache};
+use crate::sync::Arc;
 use arrow::array::{ArrayBuilder, RecordBatch, StringBuilder, UInt64Builder};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use parquet::{
     arrow::ArrowWriter, basic::Compression, errors::ParquetError,
     file::properties::WriterProperties,
 };
-use std::{fs::File, path::Path, sync::Arc};
+use std::{fs::File, path::Path};
 
 struct StatsWriter {
     writer: ArrowWriter<File>,
@@ -114,9 +115,7 @@ impl LiquidCache {
     /// Write the stats of the cache to a parquet file.
     pub fn write_stats(&self, parquet_file_path: impl AsRef<Path>) -> Result<(), ParquetError> {
         let mut writer = StatsWriter::new(parquet_file_path)?;
-        for item in self.cache_store.iter() {
-            let entry_id = item.key();
-            let cached_batch = item.value();
+        for (entry_id, cached_batch) in self.cache_store.cached_data().iter() {
             let memory_size = cached_batch.memory_usage_bytes();
             let row_count = match cached_batch {
                 CachedBatch::ArrowMemory(array) => Some(array.len() as u64),

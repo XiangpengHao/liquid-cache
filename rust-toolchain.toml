@@ -2,4 +2,4 @@
 # I really don't want to use nightly, but we have to, until:
 # https://github.com/spiraldb/fastlanes/issues/45 is fixed.
 channel = "nightly-2025-03-30"
-components = ["rustfmt", "clippy", "rust-src"]
+components = ["rustfmt", "clippy", "rust-src", "miri"]

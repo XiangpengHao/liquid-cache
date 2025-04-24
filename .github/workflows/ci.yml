@@ -8,6 +8,8 @@ on:
     branches:
       - '*'
 
+timeout-minutes: 60
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -55,6 +57,20 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }} 
           files: codecov.json
           fail_ci_if_error: true
+  
+  shuttle_test:
+    name: Shuttle Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2025-03-30
+      - uses: Swatinem/rust-cache@v2
+      - name: Run shuttle test
+        run: |
+          cd src/liquid_parquet
+          cargo test --features "shuttle" --release -- --test-threads=1
 
   address_san:
     name: Address Sanitizer

@@ -1,7 +1,7 @@
+use crate::sync::{Arc, Mutex, atomic::AtomicBool};
 use std::{
     fs::File,
     path::Path,
-    sync::{Arc, Mutex, atomic::AtomicBool},
     time::{SystemTime, UNIX_EPOCH},
 };
 

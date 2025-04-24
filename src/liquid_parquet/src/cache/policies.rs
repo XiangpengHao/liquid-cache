@@ -1,22 +1,15 @@
+use crate::sync::Mutex;
 use std::{
     collections::{HashMap, VecDeque},
     ptr::NonNull,
-    sync::Mutex,
 };
-
-use dashmap::DashMap;
 
 use super::{CacheAdvice, CacheEntryID, CachedBatch};
 
 /// The cache policy that guides the replacement of LiquidCache
 pub trait CachePolicy: std::fmt::Debug + Send + Sync {
     /// Give advice on what to do when cache is full.
-    fn advise(
-        &self,
-        entry_id: &CacheEntryID,
-        to_insert: &CachedBatch,
-        cached: &DashMap<CacheEntryID, CachedBatch>,
-    ) -> CacheAdvice;
+    fn advise(&self, entry_id: &CacheEntryID, to_insert: &CachedBatch) -> CacheAdvice;
 
     /// Notify the cache policy that an entry was inserted.
     fn notify_insert(&self, _entry_id: &CacheEntryID) {}
@@ -55,21 +48,10 @@ impl FiloPolicy {
 }
 
 impl CachePolicy for FiloPolicy {
-    fn advise(
-        &self,
-        entry_id: &CacheEntryID,
-        _to_insert: &CachedBatch,
-        cached: &DashMap<CacheEntryID, CachedBatch>,
-    ) -> CacheAdvice {
-        // Get the newest entry from the front of the queue
+    fn advise(&self, entry_id: &CacheEntryID, _to_insert: &CachedBatch) -> CacheAdvice {
         if let Some(newest_entry) = self.get_newest_entry() {
-            // Only evict if the entry still exists in the cache
-            if cached.contains_key(&newest_entry) && newest_entry != *entry_id {
-                return CacheAdvice::Evict(newest_entry);
-            }
+            return CacheAdvice::Evict(newest_entry);
         }
-
-        // If no entries to evict, transcode to disk as fallback
         CacheAdvice::TranscodeToDisk(*entry_id)
     }
 
@@ -161,37 +143,26 @@ unsafe impl Send for LruPolicy {}
 unsafe impl Sync for LruPolicy {}
 
 impl CachePolicy for LruPolicy {
-    fn advise(
-        &self,
-        entry_id: &CacheEntryID,
-        _to_insert: &CachedBatch,
-        _cached: &DashMap<CacheEntryID, CachedBatch>, // Note: `cached` isn't strictly needed now
-    ) -> CacheAdvice {
+    fn advise(&self, entry_id: &CacheEntryID, _to_insert: &CachedBatch) -> CacheAdvice {
         let state = self.state.lock().unwrap();
-        // Advise evicting the tail (least recently used)
         if let Some(tail_ptr) = state.tail {
             let tail_entry_id = unsafe { tail_ptr.as_ref().entry_id };
-            // Don't advise evicting the entry we are currently trying to insert
             if tail_entry_id != *entry_id {
-                // IMPORTANT: The actual removal and deallocation happens in `notify_evict`
                 return CacheAdvice::Evict(tail_entry_id);
             }
         }
-        // Fallback if the list is empty or only contains the current entry_id
         CacheAdvice::TranscodeToDisk(*entry_id)
     }
 
     fn notify_access(&self, entry_id: &CacheEntryID) {
         let mut state = self.state.lock().unwrap();
         if let Some(node_ptr) = state.map.get(entry_id).copied() {
-            // Entry exists, move it to the front
             unsafe {
                 self.unlink_node(&mut state, node_ptr);
                 self.push_front(&mut state, node_ptr);
             }
         }
         // If not in map, it means it was already evicted or never inserted
-        // by this policy instance, so we do nothing.
     }
 
     fn notify_evict(&self, entry_id: &CacheEntryID) {
@@ -227,7 +198,6 @@ impl CachePolicy for LruPolicy {
             None => panic!("Failed to allocate memory for LRU node"), // Or handle allocation failure more gracefully
         };
 
-        // Insert into map and push to front of list
         state.map.insert(*entry_id, node_ptr);
         unsafe {
             self.push_front(&mut state, node_ptr);
@@ -235,18 +205,14 @@ impl CachePolicy for LruPolicy {
     }
 }
 
-// Implement Drop to clean up remaining nodes
 impl Drop for LruPolicy {
     fn drop(&mut self) {
         let mut state = self.state.lock().unwrap();
-        // Deallocate all nodes remaining in the map
         for (_, node_ptr) in state.map.drain() {
             unsafe {
-                // We just need to deallocate, no need to unlink as the list structure is being dropped
                 drop(Box::from_raw(node_ptr.as_ptr()));
             }
         }
-        // Clear head and tail just in case (though map.drain should cover all nodes)
         state.head = None;
         state.tail = None;
     }
@@ -256,9 +222,6 @@ impl Drop for LruPolicy {
 mod test {
     use crate::cache::utils::{create_cache_store, create_entry_id, create_test_array};
     use crate::policies::CachePolicy;
-    use dashmap::DashMap;
-    use rand::SeedableRng;
-    use rand::rngs::StdRng;
 
     use super::super::{CacheAdvice, CacheEntryID, CachedBatch};
     use super::{FiloPolicy, LruPolicy};
@@ -275,16 +238,14 @@ mod test {
         trigger_entry: CacheEntryID,
     ) {
         let dummy_batch = create_test_array(1);
-        let dummy_cache = DashMap::new(); // Advise doesn't use this heavily now
-        let advice = policy.advise(&trigger_entry, &dummy_batch, &dummy_cache);
+        let advice = policy.advise(&trigger_entry, &dummy_batch);
         assert_eq!(advice, CacheAdvice::Evict(expect_evict));
     }
 
     // Helper to assert transcode advice
     fn assert_transcode_advice(policy: &LruPolicy, trigger_entry: CacheEntryID) {
         let dummy_batch = create_test_array(1);
-        let dummy_cache = DashMap::new(); // Advise doesn't use this heavily now
-        let advice = policy.advise(&trigger_entry, &dummy_batch, &dummy_cache);
+        let advice = policy.advise(&trigger_entry, &dummy_batch);
         assert_eq!(advice, CacheAdvice::TranscodeToDisk(trigger_entry));
     }
 
@@ -464,38 +425,5 @@ mod test {
             None => {} // This is also acceptable if fully evicted
             other => panic!("Expected OnDiskLiquid or None, got {:?}", other),
         }
-    }
-
-    #[test]
-    fn test_lru_policy_multithreaded_invariants() {
-        use rand::Rng;
-        use std::thread;
-
-        let policy = LruPolicy::new();
-        let num_threads = 4;
-        let num_ops_per_thread = 2000; // Increased ops for more contention
-        let num_entries = 10usize;
-
-        for i in 0..num_entries {
-            policy.notify_insert(&entry(i as u64));
-        }
-
-        let entries: Vec<CacheEntryID> = (1..=num_entries).map(|i| entry(i as u64)).collect();
-
-        thread::scope(|s| {
-            for i in 0..num_threads {
-                let policy_ref = &policy;
-                let entries_ref = &entries;
-                s.spawn(move || {
-                    let mut rng: StdRng = SeedableRng::seed_from_u64(i as u64);
-
-                    for _ in 0..num_ops_per_thread {
-                        let entry_idx = rng.random_range(0..num_entries);
-                        let entry_id = entries_ref[entry_idx];
-                        policy_ref.notify_access(&entry_id);
-                    }
-                });
-            }
-        });
     }
 }
