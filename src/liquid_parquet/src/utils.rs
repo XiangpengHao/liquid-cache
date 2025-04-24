@@ -107,7 +107,7 @@ pub(crate) fn shuttle_test(test: impl Fn() + Send + Sync + 'static) {
 }
 
 pub(crate) fn yield_now_if_shuttle() {
-    #[cfg(feature = "shuttle")]
+    #[cfg(all(feature = "shuttle", test))]
     shuttle::thread::yield_now();
 }
 
