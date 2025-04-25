@@ -1,0 +1,10 @@
+disallowed-methods = []
+
+disallowed-types = [
+	{ path = "dashmap::DashMap", reason = "DashMap can easily lead to deadlocks, use RwLock<HashMap> with shuttle tests instead" },
+]
+
+# Lowering the threshold to help prevent stack overflows (default is 16384)
+# See: https://rust-lang.github.io/rust-clippy/master/index.html#/large_futures
+future-size-threshold = 10000
+too-many-lines-threshold = 50

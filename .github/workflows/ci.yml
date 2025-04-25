@@ -29,7 +29,7 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Check documentation
-        run: cargo doc --no-deps --document-private-items --all-features
+        run: cargo doc --no-deps --document-private-items
         env:
           RUSTDOCFLAGS: -D warnings
 
@@ -48,13 +48,27 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
       - name: Generate code coverage
-        run: cargo llvm-cov --all-features --workspace --codecov --output-path codecov.json
+        run: cargo llvm-cov --workspace --codecov --output-path codecov.json
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }} 
           files: codecov.json
           fail_ci_if_error: true
+  
+  shuttle_test:
+    name: Shuttle Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2025-03-30
+      - uses: Swatinem/rust-cache@v2
+      - name: Run shuttle test
+        run: |
+          cd src/liquid_parquet
+          cargo test --features "shuttle" --release -- --test-threads=1 shuttle 
 
   address_san:
     name: Address Sanitizer

@@ -133,12 +133,12 @@ pub(super) fn transcode_liquid_inner<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sync::RwLock;
     use arrow::array::{
         ArrayRef, BooleanArray, DictionaryArray, Float32Array, Float64Array, Int32Array,
         Int64Array, StringArray, UInt16Array,
     };
     use arrow::datatypes::UInt16Type;
-    use std::sync::RwLock;
 
     const TEST_ARRAY_SIZE: usize = 8192;
 
