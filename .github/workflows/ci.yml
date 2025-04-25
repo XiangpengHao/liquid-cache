@@ -68,7 +68,7 @@ jobs:
       - name: Run shuttle test
         run: |
           cd src/liquid_parquet
-          cargo test --features "shuttle" --release -- --test-threads=1
+          cargo test --features "shuttle" --release -- --test-threads=1 shuttle 
 
   address_san:
     name: Address Sanitizer
