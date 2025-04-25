@@ -224,7 +224,9 @@ mod test {
     use crate::policies::CachePolicy;
 
     use super::super::{CacheAdvice, CacheEntryID, CachedBatch};
-    use super::{FiloPolicy, LruPolicy};
+    use super::{FiloPolicy, LruInternalState, LruPolicy};
+    use crate::sync::{Arc, Barrier, thread};
+    use std::sync::atomic::Ordering;
 
     // Helper to create entry IDs for tests
     fn entry(id: u64) -> CacheEntryID {
@@ -275,16 +277,9 @@ mod test {
         policy.notify_insert(&e2);
         policy.notify_insert(&e3);
 
-        // Access e1, making it the most recent
         policy.notify_access(&e1);
-
-        // Now e2 should be the oldest
         assert_evict_advice(&policy, e2, entry(4));
-
-        // Access e2
         policy.notify_access(&e2);
-
-        // Now e3 should be the oldest
         assert_evict_advice(&policy, e3, entry(4));
     }
 
@@ -299,17 +294,13 @@ mod test {
         policy.notify_insert(&e2);
         policy.notify_insert(&e3);
 
-        // Re-insert e1 (should act like access)
         policy.notify_insert(&e1);
-
-        // Now e2 should be the oldest
         assert_evict_advice(&policy, e2, entry(4));
     }
 
     #[test]
     fn test_lru_policy_advise_empty() {
         let policy = LruPolicy::new();
-        // Should advise transcode if empty
         assert_transcode_advice(&policy, entry(1));
     }
 
@@ -319,7 +310,6 @@ mod test {
         let e1 = entry(1);
         policy.notify_insert(&e1);
 
-        // Should advise transcode if the only candidate is the item being inserted
         assert_transcode_advice(&policy, e1);
     }
 
@@ -330,7 +320,6 @@ mod test {
         policy.notify_insert(&e1);
         let e2 = entry(2);
 
-        // If only one other item exists, it should be evicted
         assert_evict_advice(&policy, e1, e2);
     }
 
@@ -343,47 +332,180 @@ mod test {
         policy.notify_insert(&e1);
         policy.notify_insert(&e2);
 
-        // Access an entry not in the policy; should not panic or change order
         policy.notify_access(&entry(99));
 
-        // e1 should still be the oldest
         assert_evict_advice(&policy, e1, entry(3));
     }
 
-    // --- Keep existing tests for FiloPolicy and integration tests below ---
-    // Existing test test_lru_policy is now more of an integration test for CacheStore + LruPolicy
+    impl LruInternalState {
+        fn check_integrity(&self) {
+            let map_count = self.map.len();
+            let forward_count = count_nodes_in_list(&self);
+            let backward_count = count_nodes_reverse(&self);
+
+            assert_eq!(map_count, forward_count);
+            assert_eq!(map_count, backward_count);
+        }
+    }
+
+    /// Count nodes in the linked list by traversing from head to tail
+    fn count_nodes_in_list(state: &super::LruInternalState) -> usize {
+        let mut count = 0;
+        let mut current = state.head;
+
+        while let Some(node_ptr) = current {
+            count += 1;
+            current = unsafe { node_ptr.as_ref().next };
+        }
+
+        count
+    }
+
+    /// Count nodes in the linked list by traversing from tail to head
+    fn count_nodes_reverse(state: &super::LruInternalState) -> usize {
+        let mut count = 0;
+        let mut current = state.tail;
+
+        while let Some(node_ptr) = current {
+            count += 1;
+            current = unsafe { node_ptr.as_ref().prev };
+        }
+
+        count
+    }
+
+    #[test]
+    fn test_lru_policy_invariants() {
+        let policy = LruPolicy::new();
+
+        for i in 0..10 {
+            policy.notify_insert(&entry(i));
+        }
+        policy.notify_access(&entry(2));
+        policy.notify_access(&entry(5));
+        policy.notify_evict(&entry(0));
+        policy.notify_evict(&entry(1));
+
+        let state = policy.state.lock().unwrap();
+        state.check_integrity();
+
+        let map_count = state.map.len();
+        assert_eq!(map_count, 8);
+        assert!(!state.map.contains_key(&entry(0)));
+        assert!(!state.map.contains_key(&entry(1)));
+        assert!(state.map.contains_key(&entry(2)));
+
+        let head_id = unsafe { state.head.unwrap().as_ref().entry_id };
+        assert_eq!(head_id, entry(5));
+    }
+
+    #[test]
+    fn test_concurrent_lru_operations() {
+        concurrent_lru_operations();
+    }
+
+    #[cfg(feature = "shuttle")]
+    #[test]
+    fn shuttle_lru_operations() {
+        crate::utils::shuttle_test(concurrent_lru_operations);
+    }
+
+    fn concurrent_lru_operations() {
+        let policy = Arc::new(LruPolicy::new());
+        let num_threads = 4;
+        let operations_per_thread = 100;
+
+        let total_inserts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let total_evictions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        let barrier = Arc::new(Barrier::new(num_threads));
+
+        let mut handles = vec![];
+        for thread_id in 0..num_threads {
+            let policy_clone = policy.clone();
+            let total_inserts_clone = total_inserts.clone();
+            let total_evictions_clone = total_evictions.clone();
+            let barrier_clone = barrier.clone();
+
+            let handle = thread::spawn(move || {
+                barrier_clone.wait();
+
+                for i in 0..operations_per_thread {
+                    let op_type = i % 3; // 0: insert, 1: access, 2: evict
+                    let entry_id = entry((thread_id * operations_per_thread + i) as u64);
+
+                    match op_type {
+                        0 => {
+                            policy_clone.notify_insert(&entry_id);
+                            total_inserts_clone.fetch_add(1, Ordering::SeqCst);
+                        }
+                        1 => {
+                            // Every thread also accesses entries created by other threads
+                            if i > 10 {
+                                let other_thread = (thread_id + 1) % num_threads;
+                                let other_id =
+                                    entry((other_thread * operations_per_thread + i - 10) as u64);
+                                policy_clone.notify_access(&other_id);
+                            }
+                            policy_clone.notify_access(&entry_id);
+                        }
+                        2 => {
+                            if i > 20 {
+                                // Evict some earlier entries we created
+                                let to_evict =
+                                    entry((thread_id * operations_per_thread + i - 20) as u64);
+                                policy_clone.notify_evict(&to_evict);
+                                total_evictions_clone.fetch_add(1, Ordering::SeqCst);
+                            }
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+            });
+
+            handles.push(handle);
+        }
+
+        // Wait for all threads to complete
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let inserts = total_inserts.load(Ordering::SeqCst);
+        let evictions = total_evictions.load(Ordering::SeqCst);
+        let expected_count = inserts - evictions;
+
+        let state = policy.state.lock().unwrap();
+        state.check_integrity();
+
+        let map_count = state.map.len();
+        assert_eq!(map_count, expected_count);
+    }
+
     #[test]
     fn test_lru_integration() {
-        // Renamed from test_lru_policy
         let advisor = LruPolicy::new();
         let store = create_cache_store(3000, Box::new(advisor));
 
-        // Create three entries
         let entry_id1 = create_entry_id(1, 1, 1, 1);
         let entry_id2 = create_entry_id(1, 1, 1, 2);
         let entry_id3 = create_entry_id(1, 1, 1, 3);
 
-        // Make sure on-disk paths exist
         let on_disk_path = entry_id1.on_disk_path(&store.config().cache_root_dir());
         std::fs::create_dir_all(on_disk_path.parent().unwrap()).unwrap();
 
-        // Insert entries in order: 1, 2, 3
         store.insert(entry_id1, create_test_array(100));
         store.insert(entry_id2, create_test_array(100));
         store.insert(entry_id3, create_test_array(100));
 
-        // Access entry 1 to move it to front
         store.get(&entry_id1);
 
-        // Insert a fourth entry to force eviction
         let entry_id4 = create_entry_id(4, 4, 4, 4);
         store.insert(entry_id4, create_test_array(100));
 
-        // Entry 2 should be evicted (it's now the oldest since entry 1 was moved to front)
         assert!(store.get(&entry_id1).is_some());
         assert!(store.get(&entry_id3).is_some());
 
-        // Entry 2 should now be on disk (or possibly evicted entirely)
         match store.get(&entry_id2) {
             Some(CachedBatch::OnDiskLiquid) => {}
             None => {} // This is also acceptable if fully evicted
@@ -396,30 +518,24 @@ mod test {
         let advisor = FiloPolicy::new();
         let store = create_cache_store(3000, Box::new(advisor));
 
-        // Create three entries
         let entry_id1 = create_entry_id(1, 1, 1, 1);
         let entry_id2 = create_entry_id(1, 1, 1, 2);
         let entry_id3 = create_entry_id(1, 1, 1, 3);
 
-        // Make sure on-disk paths exist
         let on_disk_path = entry_id1.on_disk_path(&store.config().cache_root_dir());
         std::fs::create_dir_all(on_disk_path.parent().unwrap()).unwrap();
 
-        // Insert entries in order: 1, 2, 3
         store.insert(entry_id1, create_test_array(100));
         store.insert(entry_id2, create_test_array(100));
         store.insert(entry_id3, create_test_array(100));
 
-        // Insert a fourth entry to force eviction
         let entry_id4 = create_entry_id(4, 4, 4, 4);
         store.insert(entry_id4, create_test_array(100));
 
-        // Entry 3 should be evicted (it's the newest before entry 4)
         assert!(store.get(&entry_id1).is_some());
         assert!(store.get(&entry_id2).is_some());
         assert!(store.get(&entry_id4).is_some());
 
-        // Entry 3 should now be on disk (or possibly evicted entirely)
         match store.get(&entry_id3) {
             Some(CachedBatch::OnDiskLiquid) => {}
             None => {} // This is also acceptable if fully evicted
