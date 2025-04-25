@@ -90,11 +90,11 @@ fn byte_array_to_dict_array<'a, T: ByteArrayType, I: ArrayAccessor<Item = &'a T:
 
 #[cfg(all(feature = "shuttle", test))]
 pub(crate) fn shuttle_test(test: impl Fn() + Send + Sync + 'static) {
-    tracing_subscriber::fmt()
+    _ = tracing_subscriber::fmt()
         .with_ansi(true)
         .with_thread_names(false)
         .with_target(false)
-        .init();
+        .try_init();
 
     let mut runner = shuttle::PortfolioRunner::new(true, Default::default());
 
