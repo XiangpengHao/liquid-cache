@@ -44,7 +44,7 @@ impl LocalCache {
     /// Get the path for a specific chunk of a file
     fn get_chunk_path(&self, path: &Path, chunk_index: u64) -> PathBuf {
         let cache_dir = self.get_cache_dir_for_path(path);
-        cache_dir.join(format!("chunk_{}.bin", chunk_index))
+        cache_dir.join(format!("chunk_{chunk_index}.bin"))
     }
 
     /// Calculate which chunks are needed for a given range

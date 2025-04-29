@@ -53,8 +53,7 @@ impl BudgetAccounting {
             let diff = new_size - old_size;
             if diff > 1024 * 1024 {
                 warn!(
-                    "Transcoding increased the size of the array by at least 1MB, previous size: {}, new size: {}, double check this is correct",
-                    old_size, new_size
+                    "Transcoding increased the size of the array by at least 1MB, previous size: {old_size}, new size: {new_size}, double check this is correct"
                 );
             }
 

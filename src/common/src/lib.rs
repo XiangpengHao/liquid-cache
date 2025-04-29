@@ -48,8 +48,7 @@ impl FromStr for CacheMode {
             "arrow" => CacheMode::Arrow,
             _ => {
                 return Err(format!(
-                    "Invalid cache mode: {}, must be one of: parquet, liquid, liquid_eager_transcode, arrow",
-                    s
+                    "Invalid cache mode: {s}, must be one of: parquet, liquid, liquid_eager_transcode, arrow"
                 ));
             }
         })

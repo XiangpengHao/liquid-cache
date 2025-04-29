@@ -87,7 +87,7 @@ impl From<u16> for ArrowStringType {
             3 => ArrowStringType::Dict16Utf8,
             4 => ArrowStringType::Binary,
             5 => ArrowStringType::BinaryView,
-            _ => panic!("Invalid arrow string type: {}", value),
+            _ => panic!("Invalid arrow string type: {value}"),
         }
     }
 }
@@ -131,10 +131,10 @@ impl ArrowStringType {
                 {
                     ArrowStringType::Dict16Utf8
                 } else {
-                    panic!("Unsupported arrow type: {:?}", ty)
+                    panic!("Unsupported arrow type: {ty:?}")
                 }
             }
-            _ => panic!("Unsupported arrow type: {:?}", ty),
+            _ => panic!("Unsupported arrow type: {ty:?}"),
         }
     }
 }

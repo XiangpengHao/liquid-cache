@@ -215,7 +215,7 @@ impl FlightSqlService for LiquidCacheService {
             span,
         )
         .map_err(|e| {
-            panic!("Error executing plan: {:?}", e);
+            panic!("Error executing plan: {e:?}");
         });
 
         let ipc_options = IpcWriteOptions::default();

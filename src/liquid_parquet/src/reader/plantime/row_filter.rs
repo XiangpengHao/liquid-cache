@@ -193,7 +193,7 @@ impl LiquidPredicate for DatafusionArrowPredicate {
                         Operator::ILikeMatch => apply_cmp(&lhs, &rhs, arrow::compute::ilike),
                         Operator::NotLikeMatch => apply_cmp(&lhs, &rhs, arrow::compute::nlike),
                         Operator::NotILikeMatch => apply_cmp(&lhs, &rhs, arrow::compute::nilike),
-                        _ => panic!("unsupported operator: {:?}", op),
+                        _ => panic!("unsupported operator: {op:?}"),
                     };
                     if let Ok(result) = result {
                         let filtered = result.into_array(array.len())?.as_boolean().clone();

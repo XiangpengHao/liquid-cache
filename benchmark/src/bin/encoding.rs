@@ -58,7 +58,7 @@ impl Bencher {
                 }
             }
         }
-        log::info!("Parquet column size: {}", parquet_column_size);
+        log::info!("Parquet column size: {parquet_column_size}");
 
         Self {
             column_id,
@@ -283,7 +283,7 @@ fn main() {
     let mut results = Vec::new();
     for _ in 0..*iterations {
         let bencher = bench(path, *column);
-        log::info!("Bencher: {:?}", bencher);
+        log::info!("Bencher: {bencher:?}");
         results.push(bencher);
     }
     let file = File::create(output).unwrap();

@@ -221,8 +221,7 @@ impl LiquidStreamBuilder {
             Some(row_groups) => {
                 if let Some(col) = row_groups.iter().find(|x| **x >= num_row_groups) {
                     return Err(ParquetError::ArrowError(format!(
-                        "row group {} out of bounds 0..{}",
-                        col, num_row_groups
+                        "row group {col} out of bounds 0..{num_row_groups}"
                     )));
                 }
                 row_groups.into()
@@ -321,7 +320,7 @@ impl Stream for LiquidStream {
                         return Poll::Ready(Some(Ok(batch)));
                     }
                     Some(Err(e)) => {
-                        panic!("Decoding next batch error: {:?}", e);
+                        panic!("Decoding next batch error: {e:?}");
                     }
                     None => {
                         // this is ugly, but works for now.
@@ -365,7 +364,7 @@ impl Stream for LiquidStream {
                         }
                     }
                     Err(e) => {
-                        panic!("Reading next batch error: {:?}", e);
+                        panic!("Reading next batch error: {e:?}");
                     }
                 },
             }

@@ -386,7 +386,7 @@ impl Stream for FlightStream {
                 Poll::Ready(None)
             }
             Poll::Ready(Some(Err(e))) => {
-                panic!("Error in flight stream: {:?}", e);
+                panic!("Error in flight stream: {e:?}");
             }
             Poll::Pending => {
                 self.metrics.time_processing.stop();

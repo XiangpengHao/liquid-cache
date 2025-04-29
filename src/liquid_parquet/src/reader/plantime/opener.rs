@@ -178,10 +178,7 @@ impl FileOpener for LiquidParquetOpener {
                     Ok(Some(filter)) => Some(filter),
                     Ok(None) => None,
                     Err(e) => {
-                        debug!(
-                            "Ignoring error building row filter for '{:?}': {}",
-                            predicate, e
-                        );
+                        debug!("Ignoring error building row filter for '{predicate:?}': {e:?}");
                         None
                     }
                 }

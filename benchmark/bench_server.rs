@@ -63,7 +63,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // This will stop the server if any thread panics.
         // But will prevent debugger to break on panic.
         std::panic::set_hook(Box::new(|info| {
-            eprintln!("Some thread panicked: {:?}", info);
+            eprintln!("Some thread panicked: {info:?}");
             std::process::exit(1);
         }));
     }
