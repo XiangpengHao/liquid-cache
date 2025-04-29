@@ -71,10 +71,7 @@ impl StatsCollector for FlameGraphReport {
         let flame_graph_id = self
             .flame_graph_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let filename = format!(
-            "flamegraph-id{:02}-{:02}-{:03}.svg",
-            flame_graph_id, minute, second
-        );
+        let filename = format!("flamegraph-id{flame_graph_id:02}-{minute:02}-{second:03}.svg");
         let filepath = self.output_dir.join(filename);
         let file = std::fs::File::create(&filepath).unwrap();
         report.flamegraph(file).unwrap();
@@ -121,10 +118,7 @@ impl StatsCollector for StatsReport {
         let stats_id = self
             .stats_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let filename = format!(
-            "stats-id{:02}-{:02}-{:03}.parquet",
-            stats_id, minute, second
-        );
+        let filename = format!("stats-id{stats_id:02}-{minute:02}-{second:03}.parquet");
         let parquet_file_path = self.output_dir.join(filename);
         self.cache.write_stats(&parquet_file_path).unwrap();
         log::info!("Stats saved to {}", parquet_file_path.display());

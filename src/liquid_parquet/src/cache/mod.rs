@@ -402,8 +402,8 @@ impl LiquidCachedRowGroup {
         let cache_dir = cache_store
             .config()
             .cache_root_dir()
-            .join(format!("file_{}", file_id))
-            .join(format!("rg_{}", row_group_id));
+            .join(format!("file_{file_id}"))
+            .join(format!("rg_{row_group_id}"));
         std::fs::create_dir_all(&cache_dir).expect("Failed to create cache directory");
         Self {
             cache_mode,

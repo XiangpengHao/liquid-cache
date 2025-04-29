@@ -36,7 +36,7 @@ impl From<u16> for LiquidDataType {
             0 => LiquidDataType::ByteArray,
             1 => LiquidDataType::Integer,
             2 => LiquidDataType::Float,
-            _ => panic!("Invalid liquid data type: {}", value),
+            _ => panic!("Invalid liquid data type: {value}"),
         }
     }
 }

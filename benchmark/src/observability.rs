@@ -13,7 +13,7 @@ use tonic::metadata::MetadataMap;
 
 fn otl_metadata(auth: &str) -> MetadataMap {
     let mut map = MetadataMap::with_capacity(3);
-    map.insert("authorization", format!("Basic {}", auth).parse().unwrap());
+    map.insert("authorization", format!("Basic {auth}").parse().unwrap());
     map.insert("organization", "default".parse().unwrap());
     map.insert("stream-name", "default".parse().unwrap());
     map

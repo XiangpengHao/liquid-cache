@@ -219,7 +219,7 @@ async fn stop_trace_handler(
             status: "success".to_string(),
         }),
         Err(e) => Json(ApiResponse {
-            message: format!("Failed to save trace: {}", e),
+            message: format!("Failed to save trace: {e}"),
             status: "error".to_string(),
         }),
     }
@@ -233,10 +233,7 @@ fn save_trace_to_file(save_dir: &Path, state: &AppState) -> Result<(), Box<dyn s
     let trace_id = state
         .trace_id
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let filename = format!(
-        "cache-trace-id{:02}-{:02}-{:03}.parquet",
-        trace_id, minute, second
-    );
+    let filename = format!("cache-trace-id{trace_id:02}-{minute:02}-{second:03}.parquet",);
 
     // Ensure directory exists
     if !save_dir.exists() {

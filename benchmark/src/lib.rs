@@ -109,7 +109,7 @@ impl CommonBenchmarkArgs {
                 .await
                 .unwrap();
             let response_body = response.text().await.unwrap();
-            info!("Cache trace collection stopped: {}", response_body);
+            info!("Cache trace collection stopped: {response_body}");
         }
     }
 }
@@ -227,7 +227,7 @@ impl BenchmarkMode {
 
                 ctx.register_parquet(
                     "hits",
-                    format!("{}/hits.parquet", server_url),
+                    format!("{server_url}/hits.parquet"),
                     Default::default(),
                 )
                 .await?;
@@ -383,7 +383,7 @@ impl FromStr for BenchmarkMode {
             "arrow-pushdown" => BenchmarkMode::ArrowPushdown,
             "liquid-cache" => BenchmarkMode::LiquidCache,
             "liquid-eager-transcode" => BenchmarkMode::LiquidEagerTranscode,
-            _ => return Err(format!("Invalid benchmark mode: {}", s)),
+            _ => return Err(format!("Invalid benchmark mode: {s}")),
         })
     }
 }

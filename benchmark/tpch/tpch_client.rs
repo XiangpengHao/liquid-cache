@@ -110,7 +110,7 @@ pub async fn main() -> Result<()> {
         let query = get_query_by_id(&args.query_dir, id)?;
         let mut query_result = QueryResult::new(id, query.join(";"));
         for it in 0..args.common.iteration {
-            let root = Span::root(format!("tpch-client-{}-{}", id, it), SpanContext::random());
+            let root = Span::root(format!("tpch-client-{id}-{it}"), SpanContext::random());
             let _g = root.set_local_parent();
             args.common.start_trace().await;
             info!("Running query {}: \n{}", id, query.join(";"));
@@ -132,7 +132,7 @@ pub async fn main() -> Result<()> {
                 run_query(&ctx, &query[0]).await?
             };
             let elapsed = now.elapsed();
-            info!("Query execution time: {:?}", elapsed);
+            info!("Query execution time: {elapsed:?}");
 
             networks.refresh(true);
             // for mac its lo0 and for linux its lo.
@@ -150,12 +150,12 @@ pub async fn main() -> Result<()> {
                 physical_plan_with_metrics.indent(true)
             );
             let result_str = pretty::pretty_format_batches(&results).unwrap();
-            info!("Query result: \n{}", result_str);
+            info!("Query result: \n{result_str}");
 
             // Check query answers
             if let Some(answer_dir) = &args.common.answer_dir {
                 check_result_against_answer(&results, answer_dir, id)?;
-                info!("Query {} passed validation", id);
+                info!("Query {id} passed validation");
             }
 
             let metrics_response = args

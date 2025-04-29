@@ -52,7 +52,7 @@ fn get_query(
 }
 
 fn save_result(result: &[RecordBatch], query_id: u32) -> Result<()> {
-    let file_path = format!("benchmark/data/results/Q{}.parquet", query_id);
+    let file_path = format!("benchmark/data/results/Q{query_id}.parquet");
     let file = File::create(&file_path)?;
     let props = WriterProperties::builder()
         .set_compression(Compression::SNAPPY)
@@ -62,7 +62,7 @@ fn save_result(result: &[RecordBatch], query_id: u32) -> Result<()> {
         writer.write(batch).unwrap();
     }
     writer.close().unwrap();
-    info!("Query {} result saved to {}", query_id, file_path);
+    info!("Query {query_id} result saved to {file_path}");
     Ok(())
 }
 
@@ -79,10 +79,10 @@ fn check_result_against_answer(
         let baseline_exists = format!("{}/Q{}.parquet", answer_dir.display(), query_id);
         match File::open(baseline_exists) {
             Err(_) => {
-                info!("Query {} returned no results (matches baseline)", query_id);
+                info!("Query {query_id} returned no results (matches baseline)");
                 return Ok(());
             }
-            Ok(_) => panic!("Query {} returned no results but baseline exists", query_id),
+            Ok(_) => panic!("Query {query_id} returned no results but baseline exists"),
         }
     }
     // Read answers
@@ -101,10 +101,7 @@ fn check_result_against_answer(
         &baseline_batches,
     )?;
     if query.contains("LIMIT") {
-        info!(
-            "Query {} contains LIMIT, only validating the shape of the result",
-            query_id
-        );
+        info!("Query {query_id} contains LIMIT, only validating the shape of the result");
         let (result_num_rows, result_columns) =
             (result_batch.num_rows(), result_batch.columns().len());
         let (baseline_num_rows, baseline_columns) =
@@ -112,8 +109,7 @@ fn check_result_against_answer(
         if result_num_rows != baseline_num_rows || result_columns != baseline_columns {
             save_result(results, query_id)?;
             panic!(
-                "Query {} result does not match baseline. Result(num_rows: {}, num_columns: {}), Baseline(num_rows: {}, num_columns: {})",
-                query_id, result_num_rows, result_columns, baseline_num_rows, baseline_columns,
+                "Query {query_id} result does not match baseline. Result(num_rows: {result_num_rows}, num_columns: {result_columns}), Baseline(num_rows: {baseline_num_rows}, num_columns: {baseline_columns})"
             );
         }
     } else {
@@ -165,12 +161,12 @@ pub async fn main() -> Result<()> {
     for (id, query) in queries {
         let mut query_result = QueryResult::new(id, query.clone());
         for it in 0..args.common.iteration {
-            info!("Running query {}: \n{}", id, query);
+            info!("Running query {id}: \n{query}");
 
             args.common.start_trace().await;
 
             let root = Span::root(
-                format!("clickbench-client-{}-{}", id, it),
+                format!("clickbench-client-{id}-{it}"),
                 SpanContext::random(),
             );
             let _g = root.set_local_parent();
@@ -178,7 +174,7 @@ pub async fn main() -> Result<()> {
             let starting_timestamp = bench_start_time.elapsed();
             let (results, physical_plan) = run_query(&ctx, &query).await?;
             let elapsed = now.elapsed();
-            info!("Query execution time: {:?}", elapsed);
+            info!("Query execution time: {elapsed:?}");
 
             networks.refresh(true);
             // for mac its lo0 and for linux its lo.
@@ -196,12 +192,12 @@ pub async fn main() -> Result<()> {
                 physical_plan_with_metrics.indent(true)
             );
             let result_str = pretty::pretty_format_batches(&results).unwrap();
-            info!("Query result: \n{}", result_str);
+            info!("Query result: \n{result_str}");
 
             // Check query answers
             if let Some(answer_dir) = &args.common.answer_dir {
                 check_result_against_answer(&results, answer_dir, id, &query)?;
-                info!("Query {} passed validation", id);
+                info!("Query {id} passed validation");
             }
 
             let metrics_response = bench_mode

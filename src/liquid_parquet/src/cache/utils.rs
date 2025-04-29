@@ -148,7 +148,7 @@ impl CacheEntryID {
             .join(format!("file_{}", self.file_id_inner()))
             .join(format!("rg_{}", self.row_group_id_inner()))
             .join(format!("col_{}", self.column_id_inner()))
-            .join(format!("batch_{}.bin", batch_id))
+            .join(format!("batch_{batch_id}.bin"))
     }
 }
 

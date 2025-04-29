@@ -221,7 +221,7 @@ async fn flight_stream(
         .in_span(Span::enter_with_local_parent("connect_channel"))
         .await?;
 
-    let mut client = FlightServiceClient::new(channel);
+    let mut client = FlightServiceClient::new(channel).max_decoding_message_size(1024 * 1024 * 8);
     let schema = plan.schema().clone();
 
     // Only one partition needs to register the plan
@@ -386,7 +386,7 @@ impl Stream for FlightStream {
                 Poll::Ready(None)
             }
             Poll::Ready(Some(Err(e))) => {
-                panic!("Error in flight stream: {:?}", e);
+                panic!("Error in flight stream: {e:?}");
             }
             Poll::Pending => {
                 self.metrics.time_processing.stop();

@@ -64,7 +64,7 @@ pub(super) fn transcode_liquid_inner<'a>(
             )),
             _ => {
                 // For unsupported primitive types, leave the value unchanged.
-                log::warn!("unsupported primitive type {:?}", data_type);
+                log::warn!("unsupported primitive type {data_type:?}");
                 return Err(array);
             }
         };
