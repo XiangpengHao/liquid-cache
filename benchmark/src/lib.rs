@@ -331,7 +331,8 @@ impl BenchmarkMode {
                                 Some(m.clone())
                             }
                         });
-                metric.expect("No metrics found")
+                // If the query plan does not scan any data, the metrics will be empty
+                metric.unwrap_or_else(ExecutionMetricsResponse::zero)
             }
         }
     }

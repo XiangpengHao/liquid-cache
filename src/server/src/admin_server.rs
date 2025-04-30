@@ -258,8 +258,9 @@ async fn get_execution_metrics_handler(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ExecutionMetricsParams>,
 ) -> Json<Option<ExecutionMetricsResponse>> {
-    info!("Getting execution metrics...");
-    let uuid = Uuid::parse_str(&params.plan_id).unwrap();
+    let Ok(uuid) = Uuid::parse_str(&params.plan_id) else {
+        return Json(None);
+    };
     let metrics = state.liquid_cache.inner().get_metrics(&uuid);
     Json(metrics)
 }
