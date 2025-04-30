@@ -115,7 +115,7 @@ impl LiquidCache {
     /// Write the stats of the cache to a parquet file.
     pub fn write_stats(&self, parquet_file_path: impl AsRef<Path>) -> Result<(), ParquetError> {
         let mut writer = StatsWriter::new(parquet_file_path)?;
-        for (entry_id, cached_batch) in self.cache_store.cached_data().iter() {
+        self.cache_store.for_each_entry(|entry_id, cached_batch| {
             let memory_size = cached_batch.memory_usage_bytes();
             let row_count = match cached_batch {
                 CachedBatch::ArrowMemory(array) => Some(array.len() as u64),
@@ -127,19 +127,21 @@ impl LiquidCache {
                 CachedBatch::LiquidMemory(_) => "LiquidMemory",
                 CachedBatch::OnDiskLiquid => "OnDiskLiquid",
             };
-            writer.append_entry(
-                entry_id
-                    .on_disk_path(self.cache_store.config().cache_root_dir())
-                    .to_str()
-                    .unwrap(),
-                entry_id.row_group_id_inner(),
-                entry_id.column_id_inner(),
-                entry_id.batch_id_inner() * self.batch_size() as u64,
-                row_count,
-                memory_size as u64,
-                cache_type,
-            )?;
-        }
+            writer
+                .append_entry(
+                    entry_id
+                        .on_disk_path(self.cache_store.config().cache_root_dir())
+                        .to_str()
+                        .unwrap(),
+                    entry_id.row_group_id_inner(),
+                    entry_id.column_id_inner(),
+                    entry_id.batch_id_inner() * self.batch_size() as u64,
+                    row_count,
+                    memory_size as u64,
+                    cache_type,
+                )
+                .unwrap();
+        });
 
         writer.finish()?;
         Ok(())

@@ -72,6 +72,12 @@ pub struct CacheEntryID {
     batch_id: BatchID,
 }
 
+impl CacheEntryID {
+    pub fn row_group_id(&self) -> u16 {
+        self.rg_id
+    }
+}
+
 const _: () = assert!(std::mem::size_of::<CacheEntryID>() == 8);
 
 /// BatchID is a unique identifier for a batch of rows,

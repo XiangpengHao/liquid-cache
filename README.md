@@ -16,9 +16,8 @@
 
 </div>
 
-LiquidCache is an S3 cache for [DataFusion](https://github.com/apache/datafusion) based systems.  
-
-With just one optimizer rule, LiquidCache saves up to 10x cost and latency.
+LiquidCache is a pushdown cache for S3.
+Projections, filters, and aggregations are pushed down to cache server before sending data to [DataFusion](https://github.com/apache/datafusion).
 
 ## Features
 LiquidCache is a radical redesign of caching: it **caches logical data** rather than its physical representations.
