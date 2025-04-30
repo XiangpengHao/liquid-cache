@@ -24,7 +24,7 @@ use arrow_flight::{
     encode::{DictionaryHandling, FlightDataEncoderBuilder},
     flight_service_server::FlightService,
     sql::{
-        Any, CommandPreparedStatementUpdate, ProstMessageExt, SqlInfo,
+        Any, CommandPreparedStatementUpdate, SqlInfo,
         server::{FlightSqlService, PeekableFlightDataStream},
     },
 };
@@ -42,7 +42,6 @@ use liquid_cache_common::{
 };
 use liquid_cache_parquet::LiquidCacheRef;
 use log::info;
-use prost::Message;
 use prost::bytes::Bytes;
 use service::LiquidCacheServiceInner;
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
@@ -169,6 +168,10 @@ impl LiquidCacheService {
     pub fn get_parquet_cache_dir(&self) -> &PathBuf {
         self.inner.get_parquet_cache_dir()
     }
+
+    pub(crate) fn inner(&self) -> &LiquidCacheServiceInner {
+        &self.inner
+    }
 }
 
 #[tonic::async_trait]
@@ -251,22 +254,6 @@ impl FlightSqlService for LiquidCacheService {
                     .register_object_store(&Url::parse(&cmd.url).unwrap(), cmd.options)
                     .await
                     .map_err(df_error_to_status)?;
-
-                let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
-                    body: Bytes::default(),
-                })]);
-                return Ok(Response::new(Box::pin(output)));
-            }
-            LiquidCacheActions::ExecutionMetrics(cmd) => {
-                let execution_id = Uuid::parse_str(&cmd.handle).unwrap();
-                let response = self.inner.get_metrics(&execution_id).unwrap();
-                let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
-                    body: response.as_any().encode_to_vec().into(),
-                })]);
-                return Ok(Response::new(Box::pin(output)));
-            }
-            LiquidCacheActions::ResetCache => {
-                self.inner.cache().reset();
 
                 let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
                     body: Bytes::default(),

@@ -12,26 +12,15 @@ use prost::Message;
 
 /// The actions that can be performed on the LiquidCache service.
 pub enum LiquidCacheActions {
-    /// Get the most recent execution metrics from the LiquidCache service.
-    ExecutionMetrics(ExecutionMetricsRequest),
-    /// Reset the cache.
-    ResetCache,
     /// Register an object store with the LiquidCache service.
     RegisterObjectStore(RegisterObjectStoreRequest),
+    /// Register a plan with the LiquidCache service.
     RegisterPlan(RegisterPlanRequest),
 }
 
 impl From<LiquidCacheActions> for Action {
     fn from(action: LiquidCacheActions) -> Self {
         match action {
-            LiquidCacheActions::ExecutionMetrics(request) => Action {
-                r#type: "ExecutionMetrics".to_string(),
-                body: request.as_any().encode_to_vec().into(),
-            },
-            LiquidCacheActions::ResetCache => Action {
-                r#type: "ResetCache".to_string(),
-                body: Bytes::new(),
-            },
             LiquidCacheActions::RegisterObjectStore(request) => Action {
                 r#type: "RegisterObjectStore".to_string(),
                 body: request.as_any().encode_to_vec().into(),
@@ -47,12 +36,6 @@ impl From<LiquidCacheActions> for Action {
 impl From<Action> for LiquidCacheActions {
     fn from(action: Action) -> Self {
         match action.r#type.as_str() {
-            "ExecutionMetrics" => {
-                let any = Any::decode(action.body).unwrap();
-                let request = any.unpack::<ExecutionMetricsRequest>().unwrap().unwrap();
-                LiquidCacheActions::ExecutionMetrics(request)
-            }
-            "ResetCache" => LiquidCacheActions::ResetCache,
             "RegisterObjectStore" => {
                 let any = Any::decode(action.body).unwrap();
                 let request = any.unpack::<RegisterObjectStoreRequest>().unwrap().unwrap();
@@ -192,25 +175,9 @@ impl ProstMessageExt for FetchResults {
     }
 }
 
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ExecutionMetricsResponse {
-    #[prost(uint64, tag = "1")]
     pub pushdown_eval_time: u64,
-    #[prost(uint64, tag = "2")]
     pub cache_memory_usage: u64,
-    #[prost(uint64, tag = "3")]
     pub liquid_cache_usage: u64,
-}
-
-impl ProstMessageExt for ExecutionMetricsResponse {
-    fn type_url() -> &'static str {
-        ""
-    }
-
-    fn as_any(&self) -> Any {
-        Any {
-            type_url: Self::type_url().to_string(),
-            value: ::prost::Message::encode_to_vec(self).into(),
-        }
-    }
 }

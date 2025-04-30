@@ -2833,6 +2833,7 @@ dependencies = [
  "arrow-schema",
  "bytes",
  "prost",
+ "serde",
  "tempfile",
  "url",
 ]

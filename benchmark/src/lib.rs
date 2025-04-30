@@ -1,5 +1,3 @@
-use arrow_flight::sql::Any;
-use arrow_flight::{FlightClient, flight_service_client::FlightServiceClient};
 use clap::Parser;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::common::tree_node::TreeNode;
@@ -12,20 +10,15 @@ use datafusion::{
 };
 use fastrace::Span;
 use fastrace::future::FutureExt as _;
-use futures::StreamExt;
 use liquid_cache_client::{LiquidCacheBuilder, LiquidCacheClientExec};
 use liquid_cache_common::CacheMode;
-use liquid_cache_common::rpc::{
-    ExecutionMetricsRequest, ExecutionMetricsResponse, LiquidCacheActions,
-};
+use liquid_cache_common::rpc::ExecutionMetricsResponse;
 use log::info;
 use object_store::ClientConfigKey;
-use prost::Message;
 use serde::Serialize;
 use std::path::PathBuf;
 use std::time::Duration;
 use std::{fmt::Display, path::Path, str::FromStr, sync::Arc};
-use tonic::transport::Channel;
 use url::Url;
 
 mod observability;
@@ -254,7 +247,7 @@ impl BenchmarkMode {
     #[fastrace::trace]
     pub async fn get_execution_metrics(
         &self,
-        server_url: &str,
+        admin_url: &str,
         execution_plan: &Arc<dyn ExecutionPlan>,
     ) -> ExecutionMetricsResponse {
         match self {
@@ -312,17 +305,16 @@ impl BenchmarkMode {
                         Ok(datafusion::common::tree_node::TreeNodeRecursion::Continue)
                     })
                     .unwrap();
-                let mut flight_client = get_flight_client(server_url).await;
                 let mut metrics = Vec::new();
                 for handle in handles {
-                    let action = LiquidCacheActions::ExecutionMetrics(ExecutionMetricsRequest {
-                        handle: handle.get_plan_uuid().await.unwrap().to_string(),
-                    })
-                    .into();
-                    let mut result_stream = flight_client.do_action(action).await.unwrap();
-                    let result = result_stream.next().await.unwrap().unwrap();
-                    let any = Any::decode(&*result).unwrap();
-                    metrics.push(any.unpack::<ExecutionMetricsResponse>().unwrap().unwrap());
+                    let plan_id = handle.get_plan_uuid().await.unwrap();
+                    let response = reqwest::Client::new()
+                        .get(format!("{admin_url}/execution_metrics?plan_id={plan_id}"))
+                        .send()
+                        .await
+                        .unwrap();
+                    let v = response.json::<ExecutionMetricsResponse>().await.unwrap();
+                    metrics.push(v);
                 }
                 let metric =
                     metrics
@@ -339,20 +331,25 @@ impl BenchmarkMode {
                                 Some(m.clone())
                             }
                         });
-                metric.unwrap_or_default()
+                metric.expect("No metrics found")
             }
         }
     }
 
-    pub async fn reset_cache(&self, server_url: &str) -> Result<()> {
+    pub async fn reset_cache(&self, admin_url: &str) -> Result<()> {
         if self == &BenchmarkMode::ParquetFileserver {
             // File server relies on OS page cache, so we don't need to reset it
             return Ok(());
         }
-        let mut flight_client = get_flight_client(server_url).await;
-        let action = LiquidCacheActions::ResetCache.into();
-        let mut result_stream = flight_client.do_action(action).await.unwrap();
-        let _result = result_stream.next().await.unwrap().unwrap();
+        let client = reqwest::Client::new();
+        client
+            .post(format!("{admin_url}/reset_cache"))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
         Ok(())
     }
 }
@@ -386,13 +383,6 @@ impl FromStr for BenchmarkMode {
             _ => return Err(format!("Invalid benchmark mode: {s}")),
         })
     }
-}
-
-async fn get_flight_client(server_url: &str) -> FlightClient {
-    let endpoint = Channel::from_shared(server_url.to_string()).unwrap();
-    let channel = endpoint.connect().await.unwrap();
-    let inner_client = FlightServiceClient::new(channel);
-    FlightClient::new_from_inner(inner_client)
 }
 
 #[fastrace::trace]
