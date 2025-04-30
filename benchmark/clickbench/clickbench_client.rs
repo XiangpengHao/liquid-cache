@@ -192,7 +192,7 @@ pub async fn main() -> Result<()> {
                 physical_plan_with_metrics.indent(true)
             );
             let result_str = pretty::pretty_format_batches(&results).unwrap();
-            info!("Query result: \n{result_str}");
+            debug!("Query result: \n{result_str}");
 
             // Check query answers
             if let Some(answer_dir) = &args.common.answer_dir {
