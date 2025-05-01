@@ -22,11 +22,9 @@ use std::{fmt::Display, path::Path, str::FromStr, sync::Arc};
 use url::Url;
 
 mod observability;
-mod reports;
 pub mod utils;
 
 pub use observability::*;
-pub use reports::*;
 
 #[derive(Parser, Serialize, Clone)]
 pub struct CommonBenchmarkArgs {
@@ -77,6 +75,10 @@ pub struct CommonBenchmarkArgs {
     /// Path to save the cache stats
     #[arg(long = "cache-stats-dir")]
     pub cache_stats_dir: Option<PathBuf>,
+
+    /// Path to save the flamegraph
+    #[arg(long = "flamegraph-dir")]
+    pub flamegraph_dir: Option<PathBuf>,
 }
 
 impl CommonBenchmarkArgs {
@@ -107,6 +109,34 @@ impl CommonBenchmarkArgs {
                 .unwrap();
             let response_body = response.text().await.unwrap();
             info!("Cache trace collection stopped: {response_body}");
+        }
+    }
+
+    pub async fn start_flamegraph(&self) {
+        if self.flamegraph_dir.is_some() {
+            let response = reqwest::Client::new()
+                .get(format!("{}/start_flamegraph", self.admin_server))
+                .send()
+                .await
+                .unwrap();
+            let response_body = response.text().await.unwrap();
+            info!("Flamegraph collection started: {response_body}");
+        }
+    }
+
+    pub async fn stop_flamegraph(&self) {
+        if let Some(flamegraph_dir) = &self.flamegraph_dir {
+            let response = reqwest::Client::new()
+                .get(format!(
+                    "{}/stop_flamegraph?output_dir={}",
+                    self.admin_server,
+                    flamegraph_dir.display()
+                ))
+                .send()
+                .await
+                .unwrap();
+            let response_body = response.text().await.unwrap();
+            info!("Flamegraph collection stopped: {response_body}");
         }
     }
 

@@ -52,21 +52,12 @@ use uuid::Uuid;
 mod service;
 mod utils;
 use utils::FinalStream;
-pub mod admin_server;
+mod admin_server;
 mod local_cache;
+pub use admin_server::run_admin_server;
 
 #[cfg(test)]
 mod tests;
-
-/// A trait to collect stats for the execution plan.
-/// The server calls `start` right before polling the stream,
-/// and calls `stop` right after exhausting the stream.
-pub trait StatsCollector: Send + Sync {
-    /// Start the stats collector.
-    fn start(&self);
-    /// Stop the stats collector.
-    fn stop(&self);
-}
 
 /// The LiquidCache server.
 ///
@@ -85,7 +76,6 @@ pub trait StatsCollector: Send + Sync {
 /// ```
 pub struct LiquidCacheService {
     inner: LiquidCacheServiceInner,
-    stats_collector: Vec<Arc<dyn StatsCollector>>,
 }
 
 impl Default for LiquidCacheService {
@@ -116,18 +106,12 @@ impl LiquidCacheService {
     ) -> Self {
         Self {
             inner: LiquidCacheServiceInner::new(Arc::new(ctx), max_cache_bytes, disk_cache_dir),
-            stats_collector: vec![],
         }
     }
 
     /// Get a reference to the cache
     pub fn cache(&self) -> &LiquidCacheRef {
         self.inner.cache()
-    }
-
-    /// Add a stats collector to the service
-    pub fn add_stats_collector(&mut self, collector: Arc<dyn StatsCollector>) {
-        self.stats_collector.push(collector);
     }
 
     /// Create a new [SessionContext] with good defaults
@@ -211,13 +195,7 @@ impl FlightSqlService for LiquidCacheService {
         let handle = Uuid::from_bytes_ref(fetch_results.handle.as_ref().try_into().unwrap());
         let partition = fetch_results.partition as usize;
         let stream = self.inner.execute_plan(handle, partition).await;
-        let stream = FinalStream::new(
-            stream,
-            self.stats_collector.clone(),
-            self.inner.batch_size(),
-            span,
-        )
-        .map_err(|e| {
+        let stream = FinalStream::new(stream, self.inner.batch_size(), span).map_err(|e| {
             panic!("Error executing plan: {e:?}");
         });
 

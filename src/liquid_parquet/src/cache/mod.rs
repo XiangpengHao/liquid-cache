@@ -79,6 +79,14 @@ impl CachedBatch {
             Self::OnDiskLiquid => 0,
         }
     }
+
+    fn reference_count(&self) -> usize {
+        match self {
+            Self::ArrowMemory(array) => Arc::strong_count(array),
+            Self::LiquidMemory(array) => Arc::strong_count(array),
+            Self::OnDiskLiquid => 0,
+        }
+    }
 }
 
 impl Display for CachedBatch {
