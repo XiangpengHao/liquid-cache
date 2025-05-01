@@ -68,7 +68,7 @@ fn bench<C: Cache>(create: impl Fn(u64) -> C, name: String, args: &Args) {
         .collect::<Result<Vec<_>, _>>()
         .expect("Failed to read rows");
     let total_rows = rows.len();
-    println!("Total rows: {}", total_rows);
+    println!("Total rows: {total_rows}");
 
     let mut cache_size = total_rows;
 
@@ -93,7 +93,7 @@ fn bench<C: Cache>(create: impl Fn(u64) -> C, name: String, args: &Args) {
         }
 
         let (hits, total) = cache.result();
-        println!("{},{},{},{}", name, cache_size, hits, total);
+        println!("{name},{cache_size},{hits},{total}");
 
         cache_size /= 10;
     }
