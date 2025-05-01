@@ -14,8 +14,9 @@ pub use byte_array::LiquidByteArray;
 use float_array::LiquidFloatType;
 pub use float_array::{LiquidFloat32Array, LiquidFloat64Array, LiquidFloatArray};
 pub use primitive_array::{
-    LiquidI8Array, LiquidI16Array, LiquidI32Array, LiquidI64Array, LiquidPrimitiveArray,
-    LiquidPrimitiveType, LiquidU8Array, LiquidU16Array, LiquidU32Array, LiquidU64Array,
+    LiquidDate32Array, LiquidDate64Array, LiquidI8Array, LiquidI16Array, LiquidI32Array,
+    LiquidI64Array, LiquidPrimitiveArray, LiquidPrimitiveType, LiquidU8Array, LiquidU16Array,
+    LiquidU32Array, LiquidU64Array,
 };
 
 /// Liquid data type is only logical type

@@ -6,7 +6,8 @@ use arrow::array::{
     ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType, BooleanArray, PrimitiveArray,
     cast::AsArray,
     types::{
-        Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt16Type, UInt32Type, UInt64Type,
+        Date32Type, Date64Type, Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt16Type,
+        UInt32Type, UInt64Type,
     },
 };
 use arrow::buffer::ScalarBuffer;
@@ -60,7 +61,9 @@ impl_has_unsigned_type! {
     UInt32Type => UInt32Type,
     UInt64Type => UInt64Type,
     UInt16Type => UInt16Type,
-    UInt8Type => UInt8Type
+    UInt8Type => UInt8Type,
+    Date64Type => UInt64Type,
+    Date32Type => UInt32Type
 }
 
 /// Liquid's unsigned 8-bit integer array.
@@ -79,6 +82,10 @@ pub type LiquidI16Array = LiquidPrimitiveArray<Int16Type>;
 pub type LiquidI32Array = LiquidPrimitiveArray<Int32Type>;
 /// Liquid's signed 64-bit integer array.
 pub type LiquidI64Array = LiquidPrimitiveArray<Int64Type>;
+/// Liquid's 32-bit date array.
+pub type LiquidDate32Array = LiquidPrimitiveArray<Date32Type>;
+/// Liquid's 64-bit date array.
+pub type LiquidDate64Array = LiquidPrimitiveArray<Date64Type>;
 
 /// Liquid's primitive array
 #[derive(Debug, Clone)]
@@ -331,6 +338,18 @@ mod tests {
             None,
             Some(4611686018427387904)
         ]
+    );
+
+    test_roundtrip!(
+        test_date32_roundtrip,
+        Date32Type,
+        vec![Some(-365), Some(0), Some(365), None, Some(18262)]
+    );
+
+    test_roundtrip!(
+        test_date64_roundtrip,
+        Date64Type,
+        vec![Some(-365), Some(0), Some(365), None, Some(18262)]
     );
 
     // Edge cases
