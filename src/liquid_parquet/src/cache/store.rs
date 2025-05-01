@@ -35,9 +35,9 @@ impl CompressorStates {
     }
 }
 
-/// 8 way partitioning, to reduce the contention on the lock
-/// The partition key is the last 3 bits of the row group id
-const PARTITION_COUNT: usize = 8;
+/// 64 way partitioning, to reduce the contention on the lock
+/// The partition key is the last 6 bits of the row group id
+const PARTITION_COUNT: usize = 64;
 
 #[derive(Debug)]
 struct PartitionedHashStore {

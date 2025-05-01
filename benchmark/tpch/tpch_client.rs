@@ -132,8 +132,6 @@ pub async fn main() -> Result<()> {
                 run_query(&ctx, &query[0]).await?
             };
             let elapsed = now.elapsed();
-            info!("Query execution time: {elapsed:?}");
-
             networks.refresh(true);
             // for mac its lo0 and for linux its lo.
             let network_info = networks
@@ -158,25 +156,24 @@ pub async fn main() -> Result<()> {
                 info!("Query {id} passed validation");
             }
 
+            args.common.get_cache_stats().await;
+
             let metrics_response = args
                 .common
                 .bench_mode
                 .get_execution_metrics(&args.common.admin_server, &physical_plan)
                 .await;
-            info!(
-                "Server processing time: {} ms, cache memory usage: {} bytes, liquid cache usage: {} bytes",
-                metrics_response.pushdown_eval_time,
-                metrics_response.cache_memory_usage,
-                metrics_response.liquid_cache_usage
-            );
 
-            query_result.add(IterationResult {
+            let result = IterationResult {
                 network_traffic: network_info.received(),
                 time_millis: elapsed.as_millis() as u64,
                 cache_cpu_time: metrics_response.pushdown_eval_time,
                 cache_memory_usage: metrics_response.cache_memory_usage,
+                liquid_cache_usage: metrics_response.liquid_cache_usage,
                 starting_timestamp,
-            });
+            };
+            result.log();
+            query_result.add(result);
         }
         if args.common.reset_cache {
             args.common

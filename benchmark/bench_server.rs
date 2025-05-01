@@ -1,7 +1,7 @@
 use arrow_flight::flight_service_server::FlightServiceServer;
 use clap::Parser;
 use fastrace_tonic::FastraceServerLayer;
-use liquid_cache_benchmarks::{FlameGraphReport, StatsReport, setup_observability};
+use liquid_cache_benchmarks::{FlameGraphReport, setup_observability};
 use liquid_cache_server::{LiquidCacheService, admin_server::run_admin_server};
 use log::info;
 use mimalloc::MiMalloc;
@@ -29,10 +29,6 @@ struct CliArgs {
     /// Path to output flamegraph directory
     #[arg(long = "flamegraph-dir")]
     flamegraph_dir: Option<PathBuf>,
-
-    /// Path to output cache internal stats directory
-    #[arg(long = "stats-dir")]
-    stats_dir: Option<PathBuf>,
 
     /// Maximum cache size in MB
     #[arg(long = "max-cache-mb")]
@@ -79,14 +75,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         liquid_cache_server
             .add_stats_collector(Arc::new(FlameGraphReport::new(flamegraph_dir.clone())));
-    }
-
-    if let Some(stats_dir) = &args.stats_dir {
-        assert!(stats_dir.is_dir(), "Stats output must be a directory");
-        liquid_cache_server.add_stats_collector(Arc::new(StatsReport::new(
-            stats_dir.clone(),
-            liquid_cache_server.cache().clone(),
-        )));
     }
 
     let liquid_cache_server = Arc::new(liquid_cache_server);
