@@ -60,7 +60,7 @@ impl InMemoryRowGroup<'_> {
         if let Some(offset_index) = self.offset_index {
             // If we have a `RowSelection` and an `OffsetIndex` then only fetch pages required for the
             // `RowSelection`
-            let mut page_start_offsets: Vec<Vec<usize>> = vec![];
+            let mut page_start_offsets: Vec<Vec<u64>> = vec![];
 
             let fetch_ranges = self
                 .column_chunks
@@ -77,7 +77,7 @@ impl InMemoryRowGroup<'_> {
                     let (start, _len) = chunk_meta.byte_range();
                     match offset_index[idx].page_locations.first() {
                         Some(first) if first.offset as u64 != start => {
-                            ranges.push(start as usize..first.offset as usize);
+                            ranges.push(start..first.offset as u64);
                         }
                         _ => (),
                     }
@@ -119,7 +119,7 @@ impl InMemoryRowGroup<'_> {
                 let (start, length) = self.metadata.column(idx).byte_range();
                 *chunk = Some(Arc::new(ColumnChunkData::Lazy {
                     reader: input.clone(),
-                    offset: start as usize,
+                    offset: start,
                     length: length as usize,
                     data: Arc::new(Mutex::new(None)),
                 }));
@@ -193,11 +193,11 @@ pub(super) enum ColumnChunkData {
         length: usize,
         /// Set of data pages included in this sparse chunk. Each element is a tuple
         /// of (page offset, page data)
-        data: Vec<(usize, Bytes)>,
+        data: Vec<(u64, Bytes)>,
     },
     Lazy {
         reader: ClonableAsyncFileReader,
-        offset: usize,
+        offset: u64,
         length: usize,
         data: Arc<Mutex<Option<Bytes>>>,
     },
@@ -207,7 +207,7 @@ impl ColumnChunkData {
     fn get(&self, start: u64) -> Result<Bytes, parquet::errors::ParquetError> {
         match &self {
             ColumnChunkData::Sparse { data, .. } => data
-                .binary_search_by_key(&start, |(offset, _)| *offset as u64)
+                .binary_search_by_key(&start, |(offset, _)| *offset)
                 .map(|idx| data[idx].1.clone())
                 .map_err(|_| {
                     ParquetError::General(format!(
@@ -225,7 +225,7 @@ impl ColumnChunkData {
                     handle.block_on(async {
                         let mut data = data.lock().await;
                         if data.is_none() {
-                            let range = *offset..(*offset + *length);
+                            let range = *offset..(*offset + *length as u64);
                             let mut locked_reader = reader.0.lock().await;
                             let bytes = locked_reader.get_bytes(range).await.unwrap();
                             *data = Some(bytes);
@@ -234,7 +234,7 @@ impl ColumnChunkData {
                     })
                 });
 
-                let start = start as usize - *offset;
+                let start = start as usize - *offset as usize;
                 Ok(bytes.slice(start..))
             }
         }

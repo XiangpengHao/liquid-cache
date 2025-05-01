@@ -64,7 +64,7 @@ pub(super) fn transcode_liquid_inner<'a>(
             )),
             _ => {
                 // For unsupported primitive types, leave the value unchanged.
-                log::warn!("unsupported primitive type {:?}", data_type);
+                log::warn!("unsupported primitive type {data_type:?}");
                 return Err(array);
             }
         };
@@ -133,12 +133,12 @@ pub(super) fn transcode_liquid_inner<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sync::RwLock;
     use arrow::array::{
         ArrayRef, BooleanArray, DictionaryArray, Float32Array, Float64Array, Int32Array,
         Int64Array, StringArray, UInt16Array,
     };
     use arrow::datatypes::UInt16Type;
-    use std::sync::RwLock;
 
     const TEST_ARRAY_SIZE: usize = 8192;
 
@@ -176,8 +176,6 @@ mod tests {
     }
 
     #[test]
-    // ignore before this: https://github.com/XiangpengHao/liquid-cache/issues/150
-    #[ignore]
     fn test_transcode_float32() {
         let array: ArrayRef = Arc::new(Float32Array::from_iter_values(
             (0..TEST_ARRAY_SIZE).map(|i| i as f32),
@@ -188,8 +186,6 @@ mod tests {
     }
 
     #[test]
-    // ignore before this: https://github.com/XiangpengHao/liquid-cache/issues/150
-    #[ignore]
     fn test_transcode_float64() {
         let array: ArrayRef = Arc::new(Float64Array::from_iter_values(
             (0..TEST_ARRAY_SIZE).map(|i| i as f64),

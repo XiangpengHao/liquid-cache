@@ -76,7 +76,7 @@ impl Stream for FinalStream {
                     this.buffered_batches.push(batch);
                 }
                 Some(Err(e)) => {
-                    panic!("Poll next batch error: {:?}", e);
+                    panic!("Poll next batch error: {e:?}");
                 }
                 None => {
                     if this.buffered_batches.is_empty() {

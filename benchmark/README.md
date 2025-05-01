@@ -54,6 +54,8 @@ cd benchmark/tpch
 uvx --from duckdb python tpch_gen.py --scale 0.01
 ```
 
+In NixOS, you want to set `env LD_LIBRARY_PATH=$NIX_LD_LIBRARY_PATH`
+
 ### Run server (same as ClickBench)
 
 ```bash
@@ -86,6 +88,14 @@ cargo run --release --bin bench_server -- --stats-dir benchmark/data/cache_stats
 ```
 It will generate a parquet file that contains the cache stats for each query that the server executed.
 You can use [`parquet-viewer`](https://parquet-viewer.xiangpeng.systems) to view the stats in the browser.
+
+### Collect cache trace
+
+To collect cache trace, simply add `--cache-trace-dir benchmark/data/cache_trace` to the client command, for example:
+```bash
+env RUST_LOG=info cargo run --bin clickbench_client --release -- --query-path benchmark/clickbench/queries/queries.sql --file benchmark/clickbench/data/hits.parquet --query 20 --iteration 2 --partitions 8 --cache-trace-dir benchmark/data/
+```
+It will generate a parquet file that contains the cache trace for each query that the server executed.
 
 
 ### Run encoding benchmarks

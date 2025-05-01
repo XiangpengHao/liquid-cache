@@ -1,0 +1,85 @@
+---
+source: src/client/src/tests/mod.rs
+expression: displayable.tree_render().to_string()
+---
+┌───────────────────────────┐
+│       ProjectionExec      │
+│    --------------------   │
+│       promo_revenue:      │
+│  100 * CAST(sum(CASE WHEN │
+│   part.p_type LIKE Utf8(  │
+│  "PROMO%") THEN lineitem  │
+│     .l_extendedprice *    │
+│     Int64(1) - lineitem   │
+│ .l_discount ELSE Int64(0) │
+│   END) AS Float64) / CAST │
+│       (sum(lineitem       │
+│      .l_extendedpric      │
+│  e * Int64(1) - lineitem  │
+│      .l_discount) AS      │
+│          Float64)         │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       AggregateExec       │
+│    --------------------   │
+│          aggr: ,          │
+│        mode: Final        │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│   CoalescePartitionsExec  │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       AggregateExec       │
+│    --------------------   │
+│          aggr: ,          │
+│       mode: Partial       │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       ProjectionExec      │
+│    --------------------   │
+│      __common_expr_1:     │
+│ l_extendedprice * (Some(1)│
+│    ,20,0 - l_discount)    │
+│                           │
+│       p_type: p_type      │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│    CoalesceBatchesExec    │
+│    --------------------   │
+│     target_batch_size:    │
+│           16384           │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│        HashJoinExec       │
+│    --------------------   │
+│            on:            ├──────────────┐
+│  (p_partkey = l_partkey)  │              │
+└─────────────┬─────────────┘              │
+┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+│   LiquidCacheClientExec   ││   LiquidCacheClientExec   │
+│    --------------------   ││    --------------------   │
+│          server:          ││          server:          │
+│  http://localhost:50051,  ││  http://localhost:50051,  │
+│        mode=liquid,       ││        mode=liquid,       │
+│      object_stores=[]     ││      object_stores=[]     │
+└─────────────┬─────────────┘└─────────────┬─────────────┘
+┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+│       DataSourceExec      ││      RepartitionExec      │
+│    --------------------   ││    --------------------   │
+│          files: 1         ││ partition_count(in->out): │
+│      format: parquet      ││           1 -> 8          │
+│                           ││                           │
+│                           ││    partitioning_scheme:   │
+│                           ││     RoundRobinBatch(8)    │
+└───────────────────────────┘└─────────────┬─────────────┘
+                             ┌─────────────┴─────────────┐
+                             │       DataSourceExec      │
+                             │    --------------------   │
+                             │          files: 1         │
+                             │      format: parquet      │
+                             │                           │
+                             │         predicate:        │
+                             │  l_shipdate >= 1995-09-01 │
+                             │    AND l_shipdate < 1995  │
+                             │           -10-01          │
+                             └───────────────────────────┘

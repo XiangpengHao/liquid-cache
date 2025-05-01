@@ -17,7 +17,7 @@ use object_store::{
 };
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
-const CACHE_BLOCK_SIZE: usize = 1024 * 1024 * 4; // 4MB
+const CACHE_BLOCK_SIZE: u64 = 1024 * 1024 * 4; // 4MB
 
 #[derive(Debug, Clone)]
 pub struct LocalCache {
@@ -42,13 +42,13 @@ impl LocalCache {
     }
 
     /// Get the path for a specific chunk of a file
-    fn get_chunk_path(&self, path: &Path, chunk_index: usize) -> PathBuf {
+    fn get_chunk_path(&self, path: &Path, chunk_index: u64) -> PathBuf {
         let cache_dir = self.get_cache_dir_for_path(path);
-        cache_dir.join(format!("chunk_{}.bin", chunk_index))
+        cache_dir.join(format!("chunk_{chunk_index}.bin"))
     }
 
     /// Calculate which chunks are needed for a given range
-    fn chunks_for_range(&self, range: &Range<usize>) -> RangeInclusive<usize> {
+    fn chunks_for_range(&self, range: &Range<u64>) -> RangeInclusive<u64> {
         let start_chunk = range.start / CACHE_BLOCK_SIZE;
         let end_chunk = (range.end - 1) / CACHE_BLOCK_SIZE; // -1 because end is exclusive
         start_chunk..=end_chunk
@@ -58,7 +58,7 @@ impl LocalCache {
     async fn read_from_cached_chunk(
         &self,
         chunk_path: PathBuf,
-        offset: usize,
+        offset: u64,
         len: usize,
     ) -> Result<Bytes> {
         let mut file = tokio::fs::File::open(chunk_path)
@@ -69,7 +69,7 @@ impl LocalCache {
             })?;
 
         let mut buffer = vec![0u8; len];
-        file.seek(tokio::io::SeekFrom::Start(offset as u64))
+        file.seek(tokio::io::SeekFrom::Start(offset))
             .await
             .map_err(|e| Error::Generic {
                 store: "LocalCache",
@@ -87,7 +87,7 @@ impl LocalCache {
     }
 
     /// Save a chunk to the cache
-    async fn save_chunk(&self, path: &Path, chunk_index: usize, data: Bytes) -> Result<()> {
+    async fn save_chunk(&self, path: &Path, chunk_index: u64, data: Bytes) -> Result<()> {
         let cache_dir = self.get_cache_dir_for_path(path);
         if !cache_dir.exists() {
             fs::create_dir_all(&cache_dir).map_err(|e| Error::Generic {
@@ -122,7 +122,7 @@ impl LocalCache {
     fn get_range_from_cache_stream(
         &self,
         location: &Path,
-        range: &Range<usize>,
+        range: &Range<u64>,
     ) -> impl Stream<Item = Result<Bytes>> + Send + 'static {
         let this = self.clone();
         let location = location.clone();
@@ -142,7 +142,7 @@ impl LocalCache {
                     let length = overlap_end - overlap_start;
 
                     yield this
-                        .read_from_cached_chunk(chunk_path, offset_in_chunk, length)
+                        .read_from_cached_chunk(chunk_path, offset_in_chunk, length as usize)
                         .await;
                 }
             }
@@ -158,7 +158,7 @@ impl Display for LocalCache {
 
 #[async_trait]
 impl ObjectStore for LocalCache {
-    fn list(&self, prefix: Option<&Path>) -> BoxStream<'_, Result<ObjectMeta>> {
+    fn list(&self, prefix: Option<&Path>) -> BoxStream<'static, Result<ObjectMeta>> {
         self.inner.list(prefix)
     }
 
@@ -264,8 +264,8 @@ mod tests {
     use tempfile::tempdir;
 
     // Helper function to create a test file of specified size in the in-memory store
-    async fn create_test_file(store: &InMemory, path: &str, size: usize) -> Result<()> {
-        let data = vec![0u8; size];
+    async fn create_test_file(store: &InMemory, path: &str, size: u64) -> Result<()> {
+        let data = vec![0u8; size as usize];
         // Fill the data with a pattern: index % 256
         // This makes it easy to verify ranges
         let data: Vec<u8> = data
@@ -280,13 +280,13 @@ mod tests {
     }
 
     // Helper function to read a range from the store and verify it
-    async fn verify_range(store: &dyn ObjectStore, path: &str, range: Range<usize>) -> Result<()> {
+    async fn verify_range(store: &dyn ObjectStore, path: &str, range: Range<u64>) -> Result<()> {
         let path = Path::from(path);
         let result = store.get_range(&path, range.clone()).await?;
 
         // Verify that the returned data matches the expected pattern
         for (i, byte) in result.iter().enumerate() {
-            let expected = ((range.start + i) % 256) as u8;
+            let expected = ((range.start + i as u64) % 256) as u8;
             assert_eq!(*byte, expected, "Mismatch at position {}", i);
         }
 
@@ -415,7 +415,7 @@ mod tests {
         verify_range(&cache, file_path, 0..file_size).await?;
 
         // Modify the original file in the inner store to verify we're reading from cache
-        let modified_data = vec![255u8; file_size];
+        let modified_data = vec![255u8; file_size as usize];
         let path = Path::from(file_path);
         inner.put(&path, Bytes::from(modified_data).into()).await?;
 
@@ -453,7 +453,7 @@ mod tests {
         // Verify the content matches expected pattern
         let start = file_size - 1024 * 1024;
         for (i, byte) in data.iter().enumerate() {
-            let expected = ((start + i) % 256) as u8;
+            let expected = ((start + i as u64) % 256) as u8;
             assert_eq!(*byte, expected, "Mismatch at position {}", i);
         }
 
@@ -483,7 +483,7 @@ mod tests {
         }
 
         // Modify the data in the inner store to verify the second cache uses cached data
-        let modified_data = vec![255u8; file_size];
+        let modified_data = vec![255u8; file_size as usize];
         let path = Path::from(file_path);
         inner.put(&path, Bytes::from(modified_data).into()).await?;
 

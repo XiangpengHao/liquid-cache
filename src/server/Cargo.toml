@@ -20,7 +20,6 @@ prost = { workspace = true }
 tonic = { workspace = true }
 tokio = { workspace = true }
 url = { workspace = true }
-dashmap = { workspace = true }
 liquid-cache-parquet = { workspace = true }
 object_store = { workspace = true, features = ["aws", "http"] }
 liquid-cache-common = { workspace = true }
@@ -31,7 +30,7 @@ tempfile = { workspace = true }
 axum = "0.8.3"
 serde = { workspace = true }
 tower-http = { version = "0.6.2", features = ["cors"] }
-sysinfo = { version = "0.33.1", default-features = false, features = [
+sysinfo = { version = "0.34.2", default-features = false, features = [
 	"component",
 	"disk",
 	"network",
@@ -44,3 +43,4 @@ fastrace-futures = { workspace = true }
 
 [dev-dependencies]
 liquid-cache-client = { workspace = true }
+insta = { version = "1.42.2" }

@@ -1,8 +1,8 @@
+use crate::cache::LiquidCachedFileRef;
 use crate::reader::plantime::ParquetMetadataCacheReader;
 use crate::reader::runtime::parquet_bridge::{
     ParquetField, limit_row_selection, offset_row_selection,
 };
-use crate::{LiquidCacheMode, cache::LiquidCachedFileRef};
 use arrow::array::RecordBatch;
 use arrow_schema::{DataType, Fields, Schema, SchemaRef};
 use fastrace::Event;
@@ -221,8 +221,7 @@ impl LiquidStreamBuilder {
             Some(row_groups) => {
                 if let Some(col) = row_groups.iter().find(|x| **x >= num_row_groups) {
                     return Err(ParquetError::ArrowError(format!(
-                        "row group {} out of bounds 0..{}",
-                        col, num_row_groups
+                        "row group {col} out of bounds 0..{num_row_groups}"
                     )));
                 }
                 row_groups.into()
@@ -255,11 +254,10 @@ impl LiquidStreamBuilder {
             _ => unreachable!("Must be Struct for root type"),
         };
         let schema = Arc::new(Schema::new(projected_fields));
-        let schema = if matches!(liquid_cache_mode, LiquidCacheMode::InMemoryLiquid { .. }) {
-            Arc::new(coerce_from_parquet_reader_to_liquid_types(&schema))
-        } else {
-            schema
-        };
+        let schema = Arc::new(coerce_from_parquet_reader_to_liquid_types(
+            &schema,
+            &liquid_cache_mode,
+        ));
         Ok(LiquidStream {
             metadata: self.metadata,
             schema,
@@ -322,7 +320,7 @@ impl Stream for LiquidStream {
                         return Poll::Ready(Some(Ok(batch)));
                     }
                     Some(Err(e)) => {
-                        panic!("Decoding next batch error: {:?}", e);
+                        panic!("Decoding next batch error: {e:?}");
                     }
                     None => {
                         // this is ugly, but works for now.
@@ -366,7 +364,7 @@ impl Stream for LiquidStream {
                         }
                     }
                     Err(e) => {
-                        panic!("Reading next batch error: {:?}", e);
+                        panic!("Reading next batch error: {e:?}");
                     }
                 },
             }

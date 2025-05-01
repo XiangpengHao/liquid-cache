@@ -4,7 +4,6 @@ use std::{any::Any, fmt::Formatter, sync::Arc};
 
 use arrow::array::RecordBatch;
 use arrow_flight::decode::FlightRecordBatchStream;
-use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_schema::SchemaRef;
 use datafusion::common::Statistics;
@@ -84,6 +83,13 @@ impl DisplayAs for LiquidCacheClientExec {
                 write!(
                     f,
                     "LiquidCacheClientExec: server={}, mode={}, object_stores={:?}",
+                    self.cache_server, self.cache_mode, self.object_stores
+                )
+            }
+            DisplayFormatType::TreeRender => {
+                write!(
+                    f,
+                    "server={}, mode={}, object_stores={:?}",
                     self.cache_server, self.cache_mode, self.object_stores
                 )
             }
@@ -215,7 +221,7 @@ async fn flight_stream(
         .in_span(Span::enter_with_local_parent("connect_channel"))
         .await?;
 
-    let mut client = FlightServiceClient::new(channel);
+    let mut client = FlightServiceClient::new(channel).max_decoding_message_size(1024 * 1024 * 8);
     let schema = plan.schema().clone();
 
     // Only one partition needs to register the plan
@@ -273,7 +279,7 @@ async fn flight_stream(
     let (md, response_stream, _ext) = client.do_get(ticket).await.map_err(to_df_err)?.into_parts();
     LocalSpan::add_event(Event::new("get_flight_stream"));
     let stream =
-        FlightRecordBatchStream::new_from_flight_data(response_stream.map_err(FlightError::Tonic))
+        FlightRecordBatchStream::new_from_flight_data(response_stream.map_err(|e| e.into()))
             .with_headers(md)
             .map_err(to_df_err);
     Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
@@ -380,7 +386,7 @@ impl Stream for FlightStream {
                 Poll::Ready(None)
             }
             Poll::Ready(Some(Err(e))) => {
-                panic!("Error in flight stream: {:?}", e);
+                panic!("Error in flight stream: {e:?}");
             }
             Poll::Pending => {
                 self.metrics.time_processing.stop();

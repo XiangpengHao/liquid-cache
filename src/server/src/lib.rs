@@ -24,7 +24,7 @@ use arrow_flight::{
     encode::{DictionaryHandling, FlightDataEncoderBuilder},
     flight_service_server::FlightService,
     sql::{
-        Any, CommandPreparedStatementUpdate, ProstMessageExt, SqlInfo,
+        Any, CommandPreparedStatementUpdate, SqlInfo,
         server::{FlightSqlService, PeekableFlightDataStream},
     },
 };
@@ -42,7 +42,6 @@ use liquid_cache_common::{
 };
 use liquid_cache_parquet::LiquidCacheRef;
 use log::info;
-use prost::Message;
 use prost::bytes::Bytes;
 use service::LiquidCacheServiceInner;
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
@@ -55,6 +54,9 @@ mod utils;
 use utils::FinalStream;
 pub mod admin_server;
 mod local_cache;
+
+#[cfg(test)]
+mod tests;
 
 /// A trait to collect stats for the execution plan.
 /// The server calls `start` right before polling the stream,
@@ -96,7 +98,7 @@ impl LiquidCacheService {
     /// Create a new [LiquidCacheService] with a default [SessionContext]
     /// With no disk cache and unbounded memory usage.
     pub fn try_new() -> Result<Self, DataFusionError> {
-        let ctx = Self::context(None)?;
+        let ctx = Self::context()?;
         Ok(Self::new(ctx, None, None))
     }
 
@@ -130,7 +132,7 @@ impl LiquidCacheService {
 
     /// Create a new [SessionContext] with good defaults
     /// This is the recommended way to create a [SessionContext] for LiquidCache
-    pub fn context(partitions: Option<usize>) -> Result<SessionContext, DataFusionError> {
+    pub fn context() -> Result<SessionContext, DataFusionError> {
         let mut session_config = SessionConfig::from_env()?;
         let options_mut = session_config.options_mut();
         options_mut.execution.parquet.pushdown_filters = true;
@@ -142,10 +144,6 @@ impl LiquidCacheService {
             // For Arrow memory mode, we need to read as UTF-8
             // For Liquid cache, we have our own way of handling string columns
             options_mut.execution.parquet.schema_force_view_types = false;
-        }
-
-        if let Some(partitions) = partitions {
-            options_mut.execution.target_partitions = partitions;
         }
 
         let object_store_url = ObjectStoreUrl::parse("file://").unwrap();
@@ -169,6 +167,10 @@ impl LiquidCacheService {
     /// Get the parquet cache directory
     pub fn get_parquet_cache_dir(&self) -> &PathBuf {
         self.inner.get_parquet_cache_dir()
+    }
+
+    pub(crate) fn inner(&self) -> &LiquidCacheServiceInner {
+        &self.inner
     }
 }
 
@@ -216,7 +218,7 @@ impl FlightSqlService for LiquidCacheService {
             span,
         )
         .map_err(|e| {
-            panic!("Error executing plan: {:?}", e);
+            panic!("Error executing plan: {e:?}");
         });
 
         let ipc_options = IpcWriteOptions::default();
@@ -252,22 +254,6 @@ impl FlightSqlService for LiquidCacheService {
                     .register_object_store(&Url::parse(&cmd.url).unwrap(), cmd.options)
                     .await
                     .map_err(df_error_to_status)?;
-
-                let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
-                    body: Bytes::default(),
-                })]);
-                return Ok(Response::new(Box::pin(output)));
-            }
-            LiquidCacheActions::ExecutionMetrics(cmd) => {
-                let execution_id = Uuid::parse_str(&cmd.handle).unwrap();
-                let response = self.inner.get_metrics(&execution_id).unwrap();
-                let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
-                    body: response.as_any().encode_to_vec().into(),
-                })]);
-                return Ok(Response::new(Box::pin(output)));
-            }
-            LiquidCacheActions::ResetCache => {
-                self.inner.cache().reset();
 
                 let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
                     body: Bytes::default(),

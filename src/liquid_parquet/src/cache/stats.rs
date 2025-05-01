@@ -1,11 +1,12 @@
 use super::{CachedBatch, LiquidCache};
+use crate::sync::Arc;
 use arrow::array::{ArrayBuilder, RecordBatch, StringBuilder, UInt64Builder};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use parquet::{
     arrow::ArrowWriter, basic::Compression, errors::ParquetError,
     file::properties::WriterProperties,
 };
-use std::{fs::File, path::Path, sync::Arc};
+use std::{fs::File, path::Path};
 
 struct StatsWriter {
     writer: ArrowWriter<File>,
@@ -114,9 +115,7 @@ impl LiquidCache {
     /// Write the stats of the cache to a parquet file.
     pub fn write_stats(&self, parquet_file_path: impl AsRef<Path>) -> Result<(), ParquetError> {
         let mut writer = StatsWriter::new(parquet_file_path)?;
-        for item in self.cache_store.iter() {
-            let entry_id = item.key();
-            let cached_batch = item.value();
+        self.cache_store.for_each_entry(|entry_id, cached_batch| {
             let memory_size = cached_batch.memory_usage_bytes();
             let row_count = match cached_batch {
                 CachedBatch::ArrowMemory(array) => Some(array.len() as u64),
@@ -128,19 +127,21 @@ impl LiquidCache {
                 CachedBatch::LiquidMemory(_) => "LiquidMemory",
                 CachedBatch::OnDiskLiquid => "OnDiskLiquid",
             };
-            writer.append_entry(
-                entry_id
-                    .on_disk_path(self.cache_store.config().cache_root_dir())
-                    .to_str()
-                    .unwrap(),
-                entry_id.row_group_id_inner(),
-                entry_id.column_id_inner(),
-                entry_id.batch_id_inner() * self.batch_size() as u64,
-                row_count,
-                memory_size as u64,
-                cache_type,
-            )?;
-        }
+            writer
+                .append_entry(
+                    entry_id
+                        .on_disk_path(self.cache_store.config().cache_root_dir())
+                        .to_str()
+                        .unwrap(),
+                    entry_id.row_group_id_inner(),
+                    entry_id.column_id_inner(),
+                    entry_id.batch_id_inner() * self.batch_size() as u64,
+                    row_count,
+                    memory_size as u64,
+                    cache_type,
+                )
+                .unwrap();
+        });
 
         writer.finish()?;
         Ok(())
@@ -151,7 +152,7 @@ impl LiquidCache {
 mod tests {
     use std::io::Read;
 
-    use crate::{LiquidCacheMode, cache::BatchID};
+    use crate::cache::BatchID;
 
     use super::*;
     use arrow::{
@@ -159,6 +160,7 @@ mod tests {
         datatypes::UInt64Type,
     };
     use bytes::Bytes;
+    use liquid_cache_common::LiquidCacheMode;
     use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
     use tempfile::NamedTempFile;
 
@@ -184,7 +186,7 @@ mod tests {
                         .create_column(col, Arc::new(Field::new("test", DataType::Int32, false)));
                     for batch in 0..8 {
                         let batch_id = BatchID::from_raw(batch);
-                        assert!(column.insert_arrow_array(batch_id, array.clone()).is_ok());
+                        assert!(column.insert(batch_id, array.clone()).is_ok());
                         row_group_id_sum += rg as u64;
                         column_id_sum += col as u64;
                         row_start_id_sum += *batch_id as u64 * cache.batch_size() as u64;

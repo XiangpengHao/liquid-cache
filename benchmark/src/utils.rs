@@ -23,7 +23,7 @@ fn float_eq_helper(left: &dyn Array, right: &dyn Array, tol: f64) -> bool {
     let scale = scale.as_primitive_opt::<Float64Type>().unwrap();
     for d in scale.iter().flatten() {
         if d.abs() > tol {
-            warn!("scale: {:?}", scale);
+            warn!("scale: {scale:?}");
             return false;
         }
     }

@@ -87,7 +87,7 @@ impl From<u16> for ArrowStringType {
             3 => ArrowStringType::Dict16Utf8,
             4 => ArrowStringType::Binary,
             5 => ArrowStringType::BinaryView,
-            _ => panic!("Invalid arrow string type: {}", value),
+            _ => panic!("Invalid arrow string type: {value}"),
         }
     }
 }
@@ -131,10 +131,10 @@ impl ArrowStringType {
                 {
                     ArrowStringType::Dict16Utf8
                 } else {
-                    panic!("Unsupported arrow type: {:?}", ty)
+                    panic!("Unsupported arrow type: {ty:?}")
                 }
             }
-            _ => panic!("Unsupported arrow type: {:?}", ty),
+            _ => panic!("Unsupported arrow type: {ty:?}"),
         }
     }
 }
@@ -319,7 +319,7 @@ impl LiquidByteArray {
 
     /// Convert the LiquidStringArray to arrow's DictionaryArray.
     pub fn to_dict_arrow(&self) -> DictionaryArray<UInt16Type> {
-        if self.keys.len() < 1024 {
+        if self.keys.len() < 2048 {
             // a heuristic to selective decompress.
             self.to_dict_arrow_decompress_keyed()
         } else {

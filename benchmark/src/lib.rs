@@ -1,5 +1,4 @@
-use arrow_flight::sql::Any;
-use arrow_flight::{FlightClient, flight_service_client::FlightServiceClient};
+use clap::Parser;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::common::tree_node::TreeNode;
 use datafusion::execution::TaskContext;
@@ -11,25 +10,102 @@ use datafusion::{
 };
 use fastrace::Span;
 use fastrace::future::FutureExt as _;
-use futures::StreamExt;
 use liquid_cache_client::{LiquidCacheBuilder, LiquidCacheClientExec};
 use liquid_cache_common::CacheMode;
-use liquid_cache_common::rpc::{
-    ExecutionMetricsRequest, ExecutionMetricsResponse, LiquidCacheActions,
-};
+use liquid_cache_common::rpc::ExecutionMetricsResponse;
+use log::info;
 use object_store::ClientConfigKey;
-use prost::Message;
 use serde::Serialize;
+use std::path::PathBuf;
 use std::time::Duration;
 use std::{fmt::Display, path::Path, str::FromStr, sync::Arc};
-use tonic::metadata::MetadataMap;
-use tonic::transport::Channel;
 use url::Url;
 
+mod observability;
 mod reports;
 pub mod utils;
 
+pub use observability::*;
 pub use reports::*;
+
+#[derive(Parser, Serialize, Clone)]
+pub struct CommonBenchmarkArgs {
+    /// Server URL
+    #[arg(long, default_value = "http://localhost:50051")]
+    pub server: String,
+
+    /// Admin server URL
+    #[arg(long, default_value = "http://localhost:50052")]
+    pub admin_server: String,
+
+    /// Number of times to run each query
+    #[arg(long, default_value = "3")]
+    pub iteration: u32,
+
+    /// Path to the output JSON file
+    #[arg(long)]
+    pub output: Option<PathBuf>,
+
+    /// Path to the baseline directory
+    #[arg(long = "answer-dir")]
+    pub answer_dir: Option<PathBuf>,
+
+    /// Benchmark mode to use
+    #[arg(long = "bench-mode", default_value = "liquid-eager-transcode")]
+    pub bench_mode: BenchmarkMode,
+
+    /// Reset the cache before running a new query
+    #[arg(long = "reset-cache", default_value = "false")]
+    pub reset_cache: bool,
+
+    /// Number of partitions to use
+    #[arg(long)]
+    pub partitions: Option<usize>,
+
+    /// Query number to run, if not provided, all queries will be run
+    #[arg(long)]
+    pub query: Option<u32>,
+
+    /// Openobserve auth token
+    #[arg(long)]
+    pub openobserve_auth: Option<String>,
+
+    /// Path to save the cache trace
+    #[arg(long = "cache-trace-dir")]
+    pub cache_trace_dir: Option<PathBuf>,
+}
+
+impl CommonBenchmarkArgs {
+    pub async fn start_trace(&self) {
+        if self.cache_trace_dir.is_some() {
+            let client = reqwest::Client::new();
+            let response = client
+                .get(format!("{}/start_trace", self.admin_server))
+                .send()
+                .await
+                .unwrap();
+            if response.status().is_success() {
+                info!("Cache trace collection started");
+            }
+        }
+    }
+
+    pub async fn stop_trace(&self) {
+        if let Some(cache_trace_dir) = &self.cache_trace_dir {
+            let response = reqwest::Client::new()
+                .get(format!(
+                    "{}/stop_trace?path={}",
+                    self.admin_server,
+                    cache_trace_dir.display()
+                ))
+                .send()
+                .await
+                .unwrap();
+            let response_body = response.text().await.unwrap();
+            info!("Cache trace collection stopped: {response_body}");
+        }
+    }
+}
 
 #[derive(Clone, Debug, Default, Copy, PartialEq, Eq, Serialize)]
 pub enum BenchmarkMode {
@@ -144,7 +220,7 @@ impl BenchmarkMode {
 
                 ctx.register_parquet(
                     "hits",
-                    format!("{}/hits.parquet", server_url),
+                    format!("{server_url}/hits.parquet"),
                     Default::default(),
                 )
                 .await?;
@@ -171,7 +247,7 @@ impl BenchmarkMode {
     #[fastrace::trace]
     pub async fn get_execution_metrics(
         &self,
-        server_url: &str,
+        admin_url: &str,
         execution_plan: &Arc<dyn ExecutionPlan>,
     ) -> ExecutionMetricsResponse {
         match self {
@@ -229,17 +305,16 @@ impl BenchmarkMode {
                         Ok(datafusion::common::tree_node::TreeNodeRecursion::Continue)
                     })
                     .unwrap();
-                let mut flight_client = get_flight_client(server_url).await;
                 let mut metrics = Vec::new();
                 for handle in handles {
-                    let action = LiquidCacheActions::ExecutionMetrics(ExecutionMetricsRequest {
-                        handle: handle.get_plan_uuid().await.unwrap().to_string(),
-                    })
-                    .into();
-                    let mut result_stream = flight_client.do_action(action).await.unwrap();
-                    let result = result_stream.next().await.unwrap().unwrap();
-                    let any = Any::decode(&*result).unwrap();
-                    metrics.push(any.unpack::<ExecutionMetricsResponse>().unwrap().unwrap());
+                    let plan_id = handle.get_plan_uuid().await.unwrap();
+                    let response = reqwest::Client::new()
+                        .get(format!("{admin_url}/execution_metrics?plan_id={plan_id}"))
+                        .send()
+                        .await
+                        .unwrap();
+                    let v = response.json::<ExecutionMetricsResponse>().await.unwrap();
+                    metrics.push(v);
                 }
                 let metric =
                     metrics
@@ -256,20 +331,26 @@ impl BenchmarkMode {
                                 Some(m.clone())
                             }
                         });
-                metric.unwrap_or_default()
+                // If the query plan does not scan any data, the metrics will be empty
+                metric.unwrap_or_else(ExecutionMetricsResponse::zero)
             }
         }
     }
 
-    pub async fn reset_cache(&self, server_url: &str) -> Result<()> {
+    pub async fn reset_cache(&self, admin_url: &str) -> Result<()> {
         if self == &BenchmarkMode::ParquetFileserver {
             // File server relies on OS page cache, so we don't need to reset it
             return Ok(());
         }
-        let mut flight_client = get_flight_client(server_url).await;
-        let action = LiquidCacheActions::ResetCache.into();
-        let mut result_stream = flight_client.do_action(action).await.unwrap();
-        let _result = result_stream.next().await.unwrap().unwrap();
+        let client = reqwest::Client::new();
+        client
+            .post(format!("{admin_url}/reset_cache"))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
         Ok(())
     }
 }
@@ -300,16 +381,9 @@ impl FromStr for BenchmarkMode {
             "arrow-pushdown" => BenchmarkMode::ArrowPushdown,
             "liquid-cache" => BenchmarkMode::LiquidCache,
             "liquid-eager-transcode" => BenchmarkMode::LiquidEagerTranscode,
-            _ => return Err(format!("Invalid benchmark mode: {}", s)),
+            _ => return Err(format!("Invalid benchmark mode: {s}")),
         })
     }
-}
-
-async fn get_flight_client(server_url: &str) -> FlightClient {
-    let endpoint = Channel::from_shared(server_url.to_string()).unwrap();
-    let channel = endpoint.connect().await.unwrap();
-    let inner_client = FlightServiceClient::new(channel);
-    FlightClient::new_from_inner(inner_client)
 }
 
 #[fastrace::trace]
@@ -372,66 +446,4 @@ pub struct IterationResult {
     pub cache_cpu_time: u64,
     pub cache_memory_usage: u64,
     pub starting_timestamp: Duration,
-}
-
-use fastrace_opentelemetry::OpenTelemetryReporter;
-use opentelemetry::InstrumentationScope;
-use opentelemetry::KeyValue;
-use opentelemetry::trace::SpanKind;
-use opentelemetry_otlp::WithExportConfig;
-use opentelemetry_otlp::{SpanExporter, WithTonicConfig};
-use opentelemetry_sdk::Resource;
-use std::borrow::Cow;
-
-fn otl_metadata() -> MetadataMap {
-    let mut map = MetadataMap::with_capacity(3);
-
-    map.insert(
-        "authorization",
-        "Basic cm9vdEBleGFtcGxlLmNvbTpFeUIycDFuSXNicXJLekNI"
-            .parse()
-            .unwrap(),
-    );
-    map.insert("organization", "default".parse().unwrap());
-    map.insert("stream-name", "default".parse().unwrap());
-    map
-}
-
-pub fn setup_observability(service_name: &str, kind: SpanKind) {
-    // Setup logging with logforth
-    logforth::builder()
-        .dispatch(|d| {
-            d.filter(log::LevelFilter::Info)
-                .append(logforth::append::Stdout::default())
-        })
-        // enable after: https://github.com/fast/logforth/issues/125
-        // .dispatch(|d| {
-        //     let otl_appender =
-        //         OpentelemetryLogBuilder::new(service_name, "http://localhost:5081/api/development")
-        //             .protocol(OpentelemetryWireProtocol::Grpc)
-        //             .build()
-        //             .unwrap();
-        //     d.append(otl_appender)
-        // })
-        .apply();
-
-    let reporter = OpenTelemetryReporter::new(
-        SpanExporter::builder()
-            .with_tonic()
-            .with_endpoint("http://localhost:5081/api/development".to_string())
-            .with_metadata(otl_metadata())
-            .with_protocol(opentelemetry_otlp::Protocol::Grpc)
-            .build()
-            .expect("initialize oltp exporter"),
-        kind,
-        Cow::Owned(
-            Resource::builder()
-                .with_attributes([KeyValue::new("service.name", service_name.to_string())])
-                .build(),
-        ),
-        InstrumentationScope::builder(env!("CARGO_PKG_NAME"))
-            .with_version(env!("CARGO_PKG_VERSION"))
-            .build(),
-    );
-    fastrace::set_reporter(reporter, fastrace::collector::Config::default());
 }

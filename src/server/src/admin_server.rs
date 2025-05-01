@@ -3,12 +3,19 @@
 //! This server is used to manage the liquid cache server
 
 use axum::http::{HeaderValue, Method};
-use axum::{Json, Router, extract::State, routing::get};
+use axum::{
+    Json, Router,
+    extract::{Query, State},
+    routing::get,
+};
 use liquid_cache_common::CacheMode;
+use liquid_cache_common::rpc::ExecutionMetricsResponse;
 use log::info;
 use serde::Serialize;
+use std::sync::atomic::AtomicU32;
 use std::{collections::HashMap, fs, net::SocketAddr, path::Path, sync::Arc};
 use tower_http::cors::CorsLayer;
+use uuid::Uuid;
 
 use crate::LiquidCacheService;
 
@@ -47,6 +54,16 @@ struct CacheInfo {
     disk_usage_bytes: u64,
 }
 
+#[derive(serde::Deserialize)]
+struct TraceParams {
+    path: String,
+}
+
+#[derive(serde::Deserialize)]
+struct ExecutionMetricsParams {
+    plan_id: String,
+}
+
 async fn shutdown_handler() -> Json<ApiResponse> {
     info!("Shutdown request received, shutting down server...");
 
@@ -81,6 +98,7 @@ fn get_registered_tables_inner(tables: HashMap<String, (String, CacheMode)>) -> 
         })
         .collect()
 }
+
 async fn get_registered_tables_handler(State(state): State<Arc<AppState>>) -> Json<TablesResponse> {
     info!("Listing registered tables...");
     let tables = state.liquid_cache.get_registered_tables().await;
@@ -179,12 +197,77 @@ async fn get_system_info_handler(State(_state): State<Arc<AppState>>) -> Json<Sy
         kernel: sysinfo::System::kernel_version().unwrap_or_default(),
         os: sysinfo::System::os_version().unwrap_or_default(),
         host_name: sysinfo::System::host_name().unwrap_or_default(),
-        cpu_cores: sys.physical_core_count().unwrap_or(0),
+        cpu_cores: sysinfo::System::physical_core_count().unwrap_or(0),
     })
+}
+
+async fn start_trace_handler(State(state): State<Arc<AppState>>) -> Json<ApiResponse> {
+    info!("Starting cache trace collection...");
+    state.liquid_cache.cache().enable_trace();
+
+    Json(ApiResponse {
+        message: "Cache trace collection started".to_string(),
+        status: "success".to_string(),
+    })
+}
+
+async fn stop_trace_handler(
+    Query(params): Query<TraceParams>,
+    State(state): State<Arc<AppState>>,
+) -> Json<ApiResponse> {
+    info!("Stopping cache trace collection...");
+    let save_path = Path::new(&params.path);
+
+    match save_trace_to_file(save_path, &state) {
+        Ok(_) => Json(ApiResponse {
+            message: format!(
+                "Cache trace collection stopped, saved to {}",
+                save_path.display()
+            ),
+            status: "success".to_string(),
+        }),
+        Err(e) => Json(ApiResponse {
+            message: format!("Failed to save trace: {e}"),
+            status: "error".to_string(),
+        }),
+    }
+}
+
+fn save_trace_to_file(save_dir: &Path, state: &AppState) -> Result<(), Box<dyn std::error::Error>> {
+    let now = std::time::SystemTime::now();
+    let datetime = now.duration_since(std::time::UNIX_EPOCH).unwrap();
+    let minute = (datetime.as_secs() / 60) % 60;
+    let second = datetime.as_secs() % 60;
+    let trace_id = state
+        .trace_id
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let filename = format!("cache-trace-id{trace_id:02}-{minute:02}-{second:03}.parquet",);
+
+    // Ensure directory exists
+    if !save_dir.exists() {
+        fs::create_dir_all(save_dir)?;
+    }
+
+    let file_path = save_dir.join(filename);
+    state.liquid_cache.cache().disable_trace();
+    state.liquid_cache.cache().flush_trace(&file_path);
+    Ok(())
+}
+
+async fn get_execution_metrics_handler(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ExecutionMetricsParams>,
+) -> Json<Option<ExecutionMetricsResponse>> {
+    let Ok(uuid) = Uuid::parse_str(&params.plan_id) else {
+        return Json(None);
+    };
+    let metrics = state.liquid_cache.inner().get_metrics(&uuid);
+    Json(metrics)
 }
 
 struct AppState {
     liquid_cache: Arc<LiquidCacheService>,
+    trace_id: AtomicU32,
 }
 
 /// Run the admin server
@@ -192,7 +275,10 @@ pub async fn run_admin_server(
     addr: SocketAddr,
     liquid_cache: Arc<LiquidCacheService>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let state = Arc::new(AppState { liquid_cache });
+    let state = Arc::new(AppState {
+        liquid_cache,
+        trace_id: AtomicU32::new(0),
+    });
 
     // Create a CORS layer that allows all localhost origins
     let cors = CorsLayer::new()
@@ -214,6 +300,9 @@ pub async fn run_admin_server(
         .route("/parquet_cache_usage", get(get_parquet_cache_usage_handler))
         .route("/cache_info", get(get_cache_info_handler))
         .route("/system_info", get(get_system_info_handler))
+        .route("/start_trace", get(start_trace_handler))
+        .route("/stop_trace", get(stop_trace_handler))
+        .route("/execution_metrics", get(get_execution_metrics_handler))
         .with_state(state)
         .layer(cors);
 

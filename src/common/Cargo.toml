@@ -10,9 +10,11 @@ repository = { workspace = true }
 [dependencies]
 arrow-flight = { workspace = true }
 arrow-schema = { workspace = true }
+arrow = { workspace = true }
 prost = { workspace = true }
 bytes = { workspace = true }
 url = { workspace = true }
+serde = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
