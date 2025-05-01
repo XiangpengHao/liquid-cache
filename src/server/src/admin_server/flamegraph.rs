@@ -1,5 +1,5 @@
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Mutex, atomic::AtomicU32},
 };
 
@@ -31,7 +31,7 @@ impl FlameGraph {
         );
     }
 
-    pub fn stop(&self, output_dir: &PathBuf) -> PathBuf {
+    pub fn stop(&self, output_dir: &Path) -> PathBuf {
         let mut guard = self.guard.lock().unwrap();
         let old = guard.take();
         assert!(old.is_some(), "FlameGraph is not started");

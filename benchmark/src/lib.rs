@@ -113,7 +113,7 @@ impl CommonBenchmarkArgs {
     }
 
     pub async fn start_flamegraph(&self) {
-        if let Some(_) = &self.flamegraph_dir {
+        if self.flamegraph_dir.is_some() {
             let response = reqwest::Client::new()
                 .get(format!("{}/start_flamegraph", self.admin_server))
                 .send()
