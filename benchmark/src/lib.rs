@@ -73,6 +73,10 @@ pub struct CommonBenchmarkArgs {
     /// Path to save the cache trace
     #[arg(long = "cache-trace-dir")]
     pub cache_trace_dir: Option<PathBuf>,
+
+    /// Path to save the cache stats
+    #[arg(long = "cache-stats-dir")]
+    pub cache_stats_dir: Option<PathBuf>,
 }
 
 impl CommonBenchmarkArgs {
@@ -103,6 +107,22 @@ impl CommonBenchmarkArgs {
                 .unwrap();
             let response_body = response.text().await.unwrap();
             info!("Cache trace collection stopped: {response_body}");
+        }
+    }
+
+    pub async fn get_cache_stats(&self) {
+        if let Some(cache_stats_dir) = &self.cache_stats_dir {
+            let response = reqwest::Client::new()
+                .get(format!(
+                    "{}/cache_stats?path={}",
+                    self.admin_server,
+                    cache_stats_dir.display()
+                ))
+                .send()
+                .await
+                .unwrap();
+            let response_body = response.text().await.unwrap();
+            info!("Cache stats: {response_body}");
         }
     }
 }
@@ -445,5 +465,19 @@ pub struct IterationResult {
     pub time_millis: u64,
     pub cache_cpu_time: u64,
     pub cache_memory_usage: u64,
+    pub liquid_cache_usage: u64,
     pub starting_timestamp: Duration,
+}
+
+impl IterationResult {
+    pub fn log(&self) {
+        info!(
+            "Query: {} ms, network: {} bytes, cache cpu time: {} ms, cache memory: {} bytes, liquid cache memory: {} bytes",
+            self.time_millis,
+            self.network_traffic,
+            self.cache_cpu_time,
+            self.cache_memory_usage,
+            self.liquid_cache_usage
+        );
+    }
 }

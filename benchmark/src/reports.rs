@@ -1,4 +1,3 @@
-use liquid_cache_parquet::LiquidCacheRef;
 use liquid_cache_server::StatsCollector;
 use pprof::ProfilerGuard;
 use std::{
@@ -76,51 +75,5 @@ impl StatsCollector for FlameGraphReport {
         let file = std::fs::File::create(&filepath).unwrap();
         report.flamegraph(file).unwrap();
         log::info!("Flamegraph saved to {}", filepath.display());
-    }
-}
-
-pub struct StatsReport {
-    output_dir: PathBuf,
-    cache: LiquidCacheRef,
-    running_count: AtomicUsize,
-    stats_id: AtomicU32,
-}
-
-impl StatsReport {
-    pub fn new(output: PathBuf, cache: LiquidCacheRef) -> Self {
-        Self {
-            output_dir: output,
-            cache,
-            running_count: AtomicUsize::new(0),
-            stats_id: AtomicU32::new(0),
-        }
-    }
-}
-
-impl StatsCollector for StatsReport {
-    fn start(&self) {
-        self.running_count
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    fn stop(&self) {
-        let previous = self
-            .running_count
-            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-        // We only write stats once, after every thread finishes.
-        if previous != 1 {
-            return;
-        }
-        let now = std::time::SystemTime::now();
-        let datetime = now.duration_since(std::time::UNIX_EPOCH).unwrap();
-        let minute = (datetime.as_secs() / 60) % 60;
-        let second = datetime.as_secs() % 60;
-        let stats_id = self
-            .stats_id
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let filename = format!("stats-id{stats_id:02}-{minute:02}-{second:03}.parquet");
-        let parquet_file_path = self.output_dir.join(filename);
-        self.cache.write_stats(&parquet_file_path).unwrap();
-        log::info!("Stats saved to {}", parquet_file_path.display());
     }
 }
