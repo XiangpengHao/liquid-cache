@@ -161,7 +161,7 @@ pub async fn main() -> Result<()> {
             let metrics_response = args
                 .common
                 .bench_mode
-                .get_execution_metrics(&args.common.server, &physical_plan)
+                .get_execution_metrics(&args.common.admin_server, &physical_plan)
                 .await;
             info!(
                 "Server processing time: {} ms, cache memory usage: {} bytes, liquid cache usage: {} bytes",
@@ -181,7 +181,7 @@ pub async fn main() -> Result<()> {
         if args.common.reset_cache {
             args.common
                 .bench_mode
-                .reset_cache(&args.common.server)
+                .reset_cache(&args.common.admin_server)
                 .await?;
         }
         benchmark_result.results.push(query_result);

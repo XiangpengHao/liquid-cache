@@ -9,11 +9,13 @@ use axum::{
     routing::get,
 };
 use liquid_cache_common::CacheMode;
+use liquid_cache_common::rpc::ExecutionMetricsResponse;
 use log::info;
 use serde::Serialize;
 use std::sync::atomic::AtomicU32;
 use std::{collections::HashMap, fs, net::SocketAddr, path::Path, sync::Arc};
 use tower_http::cors::CorsLayer;
+use uuid::Uuid;
 
 use crate::LiquidCacheService;
 
@@ -57,6 +59,11 @@ struct TraceParams {
     path: String,
 }
 
+#[derive(serde::Deserialize)]
+struct ExecutionMetricsParams {
+    plan_id: String,
+}
+
 async fn shutdown_handler() -> Json<ApiResponse> {
     info!("Shutdown request received, shutting down server...");
 
@@ -91,6 +98,7 @@ fn get_registered_tables_inner(tables: HashMap<String, (String, CacheMode)>) -> 
         })
         .collect()
 }
+
 async fn get_registered_tables_handler(State(state): State<Arc<AppState>>) -> Json<TablesResponse> {
     info!("Listing registered tables...");
     let tables = state.liquid_cache.get_registered_tables().await;
@@ -246,6 +254,17 @@ fn save_trace_to_file(save_dir: &Path, state: &AppState) -> Result<(), Box<dyn s
     Ok(())
 }
 
+async fn get_execution_metrics_handler(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ExecutionMetricsParams>,
+) -> Json<Option<ExecutionMetricsResponse>> {
+    let Ok(uuid) = Uuid::parse_str(&params.plan_id) else {
+        return Json(None);
+    };
+    let metrics = state.liquid_cache.inner().get_metrics(&uuid);
+    Json(metrics)
+}
+
 struct AppState {
     liquid_cache: Arc<LiquidCacheService>,
     trace_id: AtomicU32,
@@ -283,6 +302,7 @@ pub async fn run_admin_server(
         .route("/system_info", get(get_system_info_handler))
         .route("/start_trace", get(start_trace_handler))
         .route("/stop_trace", get(stop_trace_handler))
+        .route("/execution_metrics", get(get_execution_metrics_handler))
         .with_state(state)
         .layer(cors);
 
