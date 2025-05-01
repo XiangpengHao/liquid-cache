@@ -1,8 +1,8 @@
 use arrow_flight::flight_service_server::FlightServiceServer;
 use clap::Parser;
 use fastrace_tonic::FastraceServerLayer;
-use liquid_cache_benchmarks::{FlameGraphReport, setup_observability};
-use liquid_cache_server::{LiquidCacheService, admin_server::run_admin_server};
+use liquid_cache_benchmarks::setup_observability;
+use liquid_cache_server::{LiquidCacheService, run_admin_server};
 use log::info;
 use mimalloc::MiMalloc;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
@@ -25,10 +25,6 @@ struct CliArgs {
     /// Abort the server if any thread panics
     #[arg(long = "abort-on-panic")]
     abort_on_panic: bool,
-
-    /// Path to output flamegraph directory
-    #[arg(long = "flamegraph-dir")]
-    flamegraph_dir: Option<PathBuf>,
 
     /// Maximum cache size in MB
     #[arg(long = "max-cache-mb")]
@@ -65,17 +61,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let ctx = LiquidCacheService::context()?;
-    let mut liquid_cache_server =
+    let liquid_cache_server =
         LiquidCacheService::new(ctx, max_cache_bytes, args.disk_cache_dir.clone());
-
-    if let Some(flamegraph_dir) = &args.flamegraph_dir {
-        assert!(
-            flamegraph_dir.is_dir(),
-            "Flamegraph output must be a directory"
-        );
-        liquid_cache_server
-            .add_stats_collector(Arc::new(FlameGraphReport::new(flamegraph_dir.clone())));
-    }
 
     let liquid_cache_server = Arc::new(liquid_cache_server);
     let flight = FlightServiceServer::from_arc(liquid_cache_server.clone());

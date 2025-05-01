@@ -40,6 +40,7 @@ sysinfo = { version = "0.34.2", default-features = false, features = [
 uuid = { workspace = true }
 fastrace = { workspace = true }
 fastrace-futures = { workspace = true }
+pprof = { version = "0.14.0", features = ["flamegraph"] }
 
 [dev-dependencies]
 liquid-cache-client = { workspace = true }

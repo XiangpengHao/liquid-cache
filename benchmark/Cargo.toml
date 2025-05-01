@@ -19,7 +19,6 @@ tonic = { workspace = true }
 clap = { version = "4.5.35", features = ["derive"] }
 url = { workspace = true }
 mimalloc = "0.1.46"
-pprof = { version = "0.14.0", features = ["flamegraph"] }
 serde_json.workspace = true
 serde.workspace = true
 sysinfo = { version = "0.34.2", default-features = false, features = [
