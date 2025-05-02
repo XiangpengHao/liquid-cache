@@ -140,7 +140,7 @@ impl LiquidFixedLenByteArray {
         )
     }
 
-    /// Train a new fixed length byte array from a [Decimal128Array].
+    /// Train a new fixed length byte array from a decimal array.
     pub fn train_from_decimal_array<T: DecimalType>(
         array: &PrimitiveArray<T>,
     ) -> (Arc<Compressor>, Self) {
