@@ -594,7 +594,9 @@ fn get_physical_type_id<T: ArrowPrimitiveType>() -> u16 {
         id if id == TypeId::of::<arrow::datatypes::UInt64Type>() => 7,
         id if id == TypeId::of::<arrow::datatypes::Float32Type>() => 8,
         id if id == TypeId::of::<arrow::datatypes::Float64Type>() => 9,
-        _ => panic!("Unsupported primitive type"),
+        id if id == TypeId::of::<arrow::datatypes::Date32Type>() => 10,
+        id if id == TypeId::of::<arrow::datatypes::Date64Type>() => 11,
+        _ => panic!("Unsupported primitive type: {}", T::DATA_TYPE),
     }
 }
 
