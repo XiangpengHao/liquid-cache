@@ -12,7 +12,7 @@ use fsst::Compressor;
 
 use crate::liquid_array::LiquidPrimitiveArray;
 use crate::liquid_array::LiquidPrimitiveType;
-use crate::liquid_array::byte_array::ArrowStringType;
+use crate::liquid_array::byte_array::ArrowByteType;
 use crate::liquid_array::float_array::Exponents;
 use crate::liquid_array::raw::{BitPackedArray, FsstArray};
 
@@ -118,6 +118,9 @@ pub fn read_from_bytes(bytes: Bytes, context: &LiquidIPCContext) -> LiquidArrayR
             9 => Arc::new(LiquidFloatArray::<Float64Type>::from_bytes(bytes)),
             _ => panic!("Unsupported float type"),
         },
+        LiquidDataType::FixedLenByteArray => {
+            todo!()
+        }
     }
 }
 
@@ -546,7 +549,7 @@ impl LiquidByteArray {
         let byte_array_header =
             ByteArrayHeader::from_bytes(&bytes[LiquidIPCHeader::size()..header_size]);
 
-        let original_arrow_type = ArrowStringType::from(header.physical_type_id);
+        let original_arrow_type = ArrowByteType::from(header.physical_type_id);
 
         let keys_size = byte_array_header.key_size as usize;
         let values_size = byte_array_header.value_size as usize;

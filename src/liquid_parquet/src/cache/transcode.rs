@@ -5,7 +5,8 @@ use arrow::array::{ArrayRef, AsArray};
 use arrow_schema::DataType;
 
 use crate::liquid_array::{
-    LiquidArrayRef, LiquidByteArray, LiquidFloatArray, LiquidPrimitiveArray,
+    LiquidArrayRef, LiquidByteArray, LiquidFixedLenByteArray, LiquidFloatArray,
+    LiquidPrimitiveArray,
 };
 
 use super::LiquidCompressorStates;
@@ -57,6 +58,40 @@ pub(super) fn transcode_liquid_inner<'a>(
             DataType::Float64 => Arc::new(LiquidFloatArray::<Float64Type>::from_arrow_array(
                 array.as_primitive::<Float64Type>().clone(),
             )),
+            DataType::Decimal128(_, _) => {
+                let compressor = state.fsst_compressor.read().unwrap();
+                if let Some(compressor) = compressor.as_ref() {
+                    let compressed = LiquidFixedLenByteArray::from_decimal_array(
+                        array.as_primitive::<Decimal128Type>(),
+                        compressor.clone(),
+                    );
+                    return Ok(Arc::new(compressed));
+                }
+                drop(compressor);
+                let mut compressors = state.fsst_compressor.write().unwrap();
+                let (compressor, liquid_array) = LiquidFixedLenByteArray::train_from_decimal_array(
+                    array.as_primitive::<Decimal128Type>(),
+                );
+                *compressors = Some(compressor);
+                return Ok(Arc::new(liquid_array));
+            }
+            DataType::Decimal256(_, _) => {
+                let compressor = state.fsst_compressor.read().unwrap();
+                if let Some(compressor) = compressor.as_ref() {
+                    let compressed = LiquidFixedLenByteArray::from_decimal_array(
+                        array.as_primitive::<Decimal256Type>(),
+                        compressor.clone(),
+                    );
+                    return Ok(Arc::new(compressed));
+                }
+                drop(compressor);
+                let mut compressors = state.fsst_compressor.write().unwrap();
+                let (compressor, liquid_array) = LiquidFixedLenByteArray::train_from_decimal_array(
+                    array.as_primitive::<Decimal256Type>(),
+                );
+                *compressors = Some(compressor);
+                return Ok(Arc::new(liquid_array));
+            }
             _ => {
                 // For unsupported primitive types, leave the value unchanged.
                 log::warn!("unsupported primitive type {data_type:?}");
