@@ -111,7 +111,7 @@ impl FsstArray {
         // we can directly use the null buffer in the compressed array.
         let len = self.compressed.len();
         let null_buffer = self.compressed.nulls().cloned();
-        let mut value_buffer: Vec<u8> = Vec::with_capacity(len * value_width);
+        let mut value_buffer: Vec<u8> = Vec::with_capacity(len * value_width + 8);
 
         let decompressor = self.compressor.decompressor();
 
