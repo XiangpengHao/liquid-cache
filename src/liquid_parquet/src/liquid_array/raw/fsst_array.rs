@@ -1,15 +1,17 @@
 use arrow::{
     array::{
-        Array, ArrayDataBuilder, BinaryArray, BufferBuilder, GenericByteArray, StringArray,
-        builder::BinaryBuilder,
+        Array, ArrayData, ArrayDataBuilder, BinaryArray, BufferBuilder, Decimal128Array,
+        Decimal256Array, GenericByteArray, StringArray, builder::BinaryBuilder,
     },
     buffer::{BooleanBuffer, Buffer, NullBuffer},
-    datatypes::{ArrowNativeType, ByteArrayType, Utf8Type},
+    datatypes::{ByteArrayType, Utf8Type},
 };
 use bytes;
 use fsst::{Compressor, Decompressor};
 use std::mem::MaybeUninit;
 use std::sync::Arc;
+
+use crate::liquid_array::fix_len_byte_array::ArrowFixedLenByteArrayType;
 
 /// A wrapper around a FsstArray that provides a reference to the compressor.
 #[derive(Clone)]
@@ -46,48 +48,130 @@ impl FsstArray {
         fsst::Compressor::train(&strings)
     }
 
-    /// Creates a new FsstArray from a GenericByteArray, a compressor, and an uncompressed length.
-    pub fn from_byte_array_with_compressor<T: ByteArrayType>(
-        input: &GenericByteArray<T>,
+    fn from_iter(
+        input: impl Iterator<Item = Option<impl AsRef<[u8]>>>,
         compressor: Arc<Compressor>,
+        compress_buffer: &mut Vec<u8>,
     ) -> Self {
-        let default_offset = T::Offset::default();
-        let data_capacity = input.offsets().last().unwrap_or(&default_offset);
-        let item_capacity = input.len();
-
-        let mut compress_buffer = Vec::with_capacity(2 * 1024 * 1024);
-        let mut builder = BinaryBuilder::with_capacity(item_capacity, data_capacity.as_usize());
-        let mut total_len = 0;
-
-        for s in input.iter() {
-            match s {
-                Some(s) => {
-                    let bytes: &[u8] = s.as_ref();
-                    total_len += bytes.len();
+        let mut builder = BinaryBuilder::new();
+        let mut uncompressed_len = 0;
+        for v in input {
+            match v {
+                Some(bytes) => {
+                    let bytes = bytes.as_ref();
+                    uncompressed_len += bytes.len();
                     unsafe {
-                        compressor.compress_into(bytes, &mut compress_buffer);
+                        compressor.compress_into(bytes, compress_buffer);
                     }
-                    builder.append_value(&compress_buffer);
+                    builder.append_value(&mut *compress_buffer);
                 }
                 None => {
                     builder.append_null();
                 }
             }
         }
-
         let compressed = builder.finish();
         let compressed = {
-            let (offsets, values, nulls) = compressed.into_parts();
-            let mut shrunk_values = Vec::with_capacity(values.len());
-            shrunk_values.extend_from_slice(&values);
-            unsafe { GenericByteArray::new_unchecked(offsets, shrunk_values.into(), nulls) }
+            let (mut offsets, mut values, nulls) = compressed.into_parts();
+            values.shrink_to_fit();
+            offsets.shrink_to_fit();
+            unsafe { GenericByteArray::new_unchecked(offsets, values, nulls) }
         };
 
         FsstArray {
             compressor,
             compressed,
-            uncompressed_len: total_len,
+            uncompressed_len,
         }
+    }
+
+    /// Creates a new FsstArray from a [Decimal128Array] and a [Compressor]
+    pub fn from_decimal128_array_with_compressor(
+        array: &Decimal128Array,
+        compressor: Arc<Compressor>,
+    ) -> Self {
+        let iter = array.iter().map(|v| v.map(|v| v.to_le_bytes()));
+        let mut compress_buffer = Vec::with_capacity(64);
+        Self::from_iter(iter, compressor, &mut compress_buffer)
+    }
+
+    /// Creates a new FsstArray from a [Decimal256Array] and a [Compressor]
+    pub fn from_decimal256_array_with_compressor(
+        array: &Decimal256Array,
+        compressor: Arc<Compressor>,
+    ) -> Self {
+        let iter = array.iter().map(|v| v.map(|v| v.to_le_bytes()));
+        let mut compress_buffer = Vec::with_capacity(128);
+        Self::from_iter(iter, compressor, &mut compress_buffer)
+    }
+
+    // Fixed length binary has different memory layout than variable length binary,
+    // specifically, the null values do not consume space in variable length binary, but they do in fixed length binary.
+    fn decompress_as_fixed_size_binary(&self, value_width: usize) -> (Vec<u8>, Option<NullBuffer>) {
+        // we can directly use the null buffer in the compressed array.
+        let len = self.compressed.len();
+        let null_buffer = self.compressed.nulls().cloned();
+        let mut value_buffer: Vec<u8> = Vec::with_capacity(len * value_width + 8);
+
+        let decompressor = self.compressor.decompressor();
+
+        for v in self.compressed.iter() {
+            match v {
+                Some(v) => {
+                    let slice = unsafe {
+                        std::slice::from_raw_parts_mut(
+                            value_buffer.as_mut_ptr().add(value_buffer.len())
+                                as *mut MaybeUninit<u8>,
+                            value_buffer.capacity(), // we don't care about the capacity here
+                        )
+                    };
+                    let len = decompressor.decompress_into(v, slice);
+                    debug_assert!(len == value_width);
+                    let new_len = value_buffer.len() + len;
+                    debug_assert!(new_len <= value_buffer.capacity());
+                    unsafe {
+                        value_buffer.set_len(new_len);
+                    }
+                }
+                None => unsafe {
+                    value_buffer.set_len(value_buffer.len() + value_width);
+                },
+            }
+        }
+        (value_buffer, null_buffer)
+    }
+
+    fn to_decimal_array_inner(&self, data_type: &ArrowFixedLenByteArrayType) -> ArrayData {
+        let value_width = data_type.value_width();
+        let (value_buffer, null_buffer) = self.decompress_as_fixed_size_binary(value_width);
+        let value_buffer = Buffer::from(value_buffer);
+        let array_builder = ArrayDataBuilder::new(data_type.into())
+            .len(self.compressed.len())
+            .add_buffer(value_buffer)
+            .nulls(null_buffer);
+        unsafe { array_builder.build_unchecked() }
+    }
+
+    /// Converts the FsstArray to a Decimal128Array.
+    pub fn to_decimal128_array(&self, data_type: &ArrowFixedLenByteArrayType) -> Decimal128Array {
+        let array_data = self.to_decimal_array_inner(data_type);
+        Decimal128Array::from(array_data)
+    }
+
+    /// Converts the FsstArray to a Decimal256Array.
+    pub fn to_decimal256_array(&self, data_type: &ArrowFixedLenByteArrayType) -> Decimal256Array {
+        let array_data = self.to_decimal_array_inner(data_type);
+        Decimal256Array::from(array_data)
+    }
+
+    /// Creates a new FsstArray from a GenericByteArray and a compressor
+    pub fn from_byte_array_with_compressor<T: ByteArrayType>(
+        input: &GenericByteArray<T>,
+        compressor: Arc<Compressor>,
+    ) -> Self {
+        let iter = input.iter();
+        let mut compress_buffer = Vec::with_capacity(2 * 1024 * 1024);
+        Self::from_iter(iter, compressor, &mut compress_buffer)
     }
 
     /// Returns the memory size of the FsstArray.
@@ -353,11 +437,15 @@ impl From<&FsstArray> for StringArray {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow::array::Decimal128Builder;
+    use arrow::array::Decimal256Builder;
     use arrow::array::StringBuilder;
+    use arrow::datatypes::i256;
+    use arrow_schema::DataType;
+    use paste::paste;
 
     #[test]
     fn test_liquid_string_roundtrip() {
-        // Create test data with mix of strings and nulls
         let mut builder = StringBuilder::new();
         for i in 0..5000 {
             if i % 100 == 0 {
@@ -381,7 +469,6 @@ mod tests {
         let original = builder.finish();
 
         println!("original len: {}", original.get_array_memory_size());
-        // Convert to EtcString and back
         let compressor =
             FsstArray::train_compressor(original.iter().flat_map(|s| s.map(|s| s.as_bytes())));
         let etc = FsstArray::from_byte_array_with_compressor(&original, Arc::new(compressor));
@@ -389,10 +476,8 @@ mod tests {
 
         let roundtrip = StringArray::from(&etc);
 
-        // Verify length is preserved
         assert_eq!(original.len(), roundtrip.len());
 
-        // Verify each value matches
         for (orig, round) in original.iter().zip(roundtrip.iter()) {
             assert_eq!(orig, round);
         }
@@ -411,31 +496,96 @@ mod tests {
         }
         let original = builder.finish();
 
-        // Create FsstArray
         let compressor =
             FsstArray::train_compressor(original.iter().flat_map(|s| s.map(|s| s.as_bytes())));
         let compressor_arc = Arc::new(compressor);
         let original_fsst =
             FsstArray::from_byte_array_with_compressor(&original, compressor_arc.clone());
 
-        // Serialize to bytes
         let mut buffer = Vec::new();
         original_fsst.to_bytes(&mut buffer);
 
-        // Deserialize from bytes
         let bytes = bytes::Bytes::from(buffer);
         let deserialized = FsstArray::from_bytes(bytes, compressor_arc);
 
-        // Convert both to StringArray for comparison
         let original_strings = StringArray::from(&original_fsst);
         let deserialized_strings = StringArray::from(&deserialized);
-
-        // Verify length is preserved
         assert_eq!(original_strings.len(), deserialized_strings.len());
 
-        // Verify each value matches
         for (orig, deser) in original_strings.iter().zip(deserialized_strings.iter()) {
             assert_eq!(orig, deser);
         }
     }
+
+    #[test]
+    fn test_decimal_compression() {
+        let mut builder = Decimal128Builder::new().with_data_type(DataType::Decimal128(10, 2));
+        for i in 0..4096 {
+            builder.append_value(i128::from_le_bytes([(i % 16) as u8; 16]));
+        }
+        let original = builder.finish();
+        let original_size = original.get_array_memory_size();
+
+        let values = original
+            .iter()
+            .filter_map(|v| v.map(|v| v.to_le_bytes()))
+            .collect::<Vec<_>>();
+        let compressor = FsstArray::train_compressor(values.iter().map(|b| b.as_slice()));
+        let compressor_arc = Arc::new(compressor);
+
+        let fsst_array =
+            FsstArray::from_decimal128_array_with_compressor(&original, compressor_arc);
+        let compressed_size = fsst_array.get_array_memory_size();
+        println!(
+            "original size: {}, compressed size: {}",
+            original_size, compressed_size
+        );
+        assert!(compressed_size < original_size);
+    }
+
+    macro_rules! test_decimal_array_roundtrip {
+        ($width:literal) => {
+            paste! {
+                #[test]
+                fn [<test_decimal $width _array_roundtrip>]() {
+                    let data_type = DataType::[<Decimal $width>](10, 2);
+                    let mut builder = [<Decimal $width Builder>]::new().with_data_type(data_type.clone());
+
+                    for i in 0..4096{
+                        if i % 100 == 0 {
+                            builder.append_null();
+                        } else {
+                            builder.append_value([<i $width>]::from(i * 100 + 45));
+                        }
+                    }
+                    let original = builder.finish();
+                    let original_size = original.get_array_memory_size();
+
+                    let values = original
+                        .iter()
+                        .filter_map(|v| v.map(|v| v.to_le_bytes()))
+                        .collect::<Vec<_>>();
+                    let compressor = FsstArray::train_compressor(values.iter().map(|b| b.as_slice()));
+                    let compressor_arc = Arc::new(compressor);
+
+                    let fsst_array =
+                        FsstArray::[<from_decimal $width _array_with_compressor>](&original, compressor_arc);
+
+                    let compressed_size = fsst_array.get_array_memory_size();
+                    println!("original size: {}, compressed size: {}", original_size, compressed_size);
+
+                    let roundtrip =
+                        fsst_array.[<to_decimal $width _array>](&ArrowFixedLenByteArrayType::from(&data_type));
+
+                    assert_eq!(original.len(), roundtrip.len());
+                    for (orig, round) in original.iter().zip(roundtrip.iter()) {
+                        assert_eq!(orig, round);
+                    }
+                }
+            }
+        };
+    }
+
+    test_decimal_array_roundtrip!(128);
+    test_decimal_array_roundtrip!(256);
 }

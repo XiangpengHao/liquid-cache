@@ -2859,6 +2859,7 @@ dependencies = [
  "num-traits",
  "object_store",
  "parquet",
+ "paste",
  "rand 0.9.1",
  "serde",
  "shuttle",

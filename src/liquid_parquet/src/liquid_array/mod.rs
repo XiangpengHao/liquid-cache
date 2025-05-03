@@ -2,6 +2,7 @@
 //! You should not use this module directly.
 //! Instead, use `liquid_cache_server` or `liquid_cache_client` to interact with LiquidCache.
 mod byte_array;
+mod fix_len_byte_array;
 mod float_array;
 pub(crate) mod ipc;
 mod primitive_array;
@@ -11,6 +12,7 @@ use std::{any::Any, num::NonZero, sync::Arc};
 
 use arrow::array::{ArrayRef, BooleanArray};
 pub use byte_array::LiquidByteArray;
+pub use fix_len_byte_array::LiquidFixedLenByteArray;
 use float_array::LiquidFloatType;
 pub use float_array::{LiquidFloat32Array, LiquidFloat64Array, LiquidFloatArray};
 pub use primitive_array::{
@@ -29,6 +31,8 @@ pub enum LiquidDataType {
     Integer = 1,
     /// A float.
     Float = 2,
+    /// A fixed length byte array.
+    FixedLenByteArray = 3,
 }
 
 impl From<u16> for LiquidDataType {
@@ -37,6 +41,7 @@ impl From<u16> for LiquidDataType {
             0 => LiquidDataType::ByteArray,
             1 => LiquidDataType::Integer,
             2 => LiquidDataType::Float,
+            3 => LiquidDataType::FixedLenByteArray,
             _ => panic!("Invalid liquid data type: {value}"),
         }
     }
