@@ -7,6 +7,7 @@ mod float_array;
 pub(crate) mod ipc;
 mod primitive_array;
 pub mod raw;
+pub(crate) mod utils;
 
 use std::{any::Any, num::NonZero, sync::Arc};
 

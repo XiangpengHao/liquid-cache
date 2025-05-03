@@ -13,11 +13,14 @@ use fsst::Compressor;
 use crate::liquid_array::LiquidPrimitiveArray;
 use crate::liquid_array::LiquidPrimitiveType;
 use crate::liquid_array::byte_array::ArrowByteType;
+use crate::liquid_array::fix_len_byte_array::ArrowFixedLenByteArrayType;
 use crate::liquid_array::float_array::Exponents;
 use crate::liquid_array::raw::{BitPackedArray, FsstArray};
 
 use super::float_array::LiquidFloatType;
-use super::{LiquidArrayRef, LiquidByteArray, LiquidDataType, LiquidFloatArray};
+use super::{
+    LiquidArrayRef, LiquidByteArray, LiquidDataType, LiquidFixedLenByteArray, LiquidFloatArray,
+};
 
 const MAGIC: u32 = 0x4C51_4441; // "LQDA" for LiQuid Data Array
 const VERSION: u16 = 1;
@@ -74,6 +77,14 @@ impl LiquidIPCHeader {
         let version = u16::from_le_bytes(bytes[4..6].try_into().unwrap());
         let logical_type_id = u16::from_le_bytes(bytes[6..8].try_into().unwrap());
         let physical_type_id = u16::from_le_bytes(bytes[8..10].try_into().unwrap());
+
+        if magic != MAGIC.to_le_bytes() {
+            panic!("Invalid magic number");
+        }
+        if version != VERSION {
+            panic!("Unsupported version");
+        }
+
         Self {
             magic,
             version,
@@ -195,14 +206,6 @@ where
     pub fn from_bytes(bytes: Bytes) -> Self {
         let header = LiquidIPCHeader::from_bytes(&bytes);
 
-        if header.magic != MAGIC.to_le_bytes() {
-            panic!("Invalid magic number");
-        }
-
-        if header.version != VERSION {
-            panic!("Unsupported version");
-        }
-
         let physical_id = header.physical_type_id;
         assert_eq!(physical_id, get_physical_type_id::<T>());
         let logical_id = header.logical_type_id;
@@ -260,8 +263,6 @@ where
     +--------------------------------------------------+
     | patch_values (length *size_of::<T::Native> btyes;|
     |               8-byte aligned)                    |
-    +--------------------------------------------------+
-    | Padding                                          |
     +--------------------------------------------------+
 
     +--------------------------------------------------+
@@ -365,14 +366,6 @@ where
     /// by creating views into the original buffer for the data portions.
     pub fn from_bytes(bytes: Bytes) -> Self {
         let header = LiquidIPCHeader::from_bytes(&bytes);
-
-        if header.magic != MAGIC.to_le_bytes() {
-            panic!("Invalid magic number");
-        }
-
-        if header.version != VERSION {
-            panic!("Unsupported version");
-        }
 
         let physical_id = header.physical_type_id;
         assert_eq!(physical_id, get_physical_type_id::<T>());
@@ -538,14 +531,6 @@ impl LiquidByteArray {
         let header_size = LiquidIPCHeader::size() + ByteArrayHeader::size();
         let header = LiquidIPCHeader::from_bytes(&bytes);
 
-        if header.magic != MAGIC.to_le_bytes() {
-            panic!("Invalid magic number");
-        }
-
-        if header.version != VERSION {
-            panic!("Unsupported version");
-        }
-
         let byte_array_header =
             ByteArrayHeader::from_bytes(&bytes[LiquidIPCHeader::size()..header_size]);
 
@@ -585,6 +570,189 @@ impl LiquidByteArray {
     }
 }
 
+// Header structure for fixed-length byte arrays - contains additional type metadata
+#[repr(C)]
+struct FixedLenByteArrayHeader {
+    key_size: u32,
+    value_size: u32,
+    arrow_type: u8, // 0 for Decimal128, 1 for Decimal256
+    precision: u8,
+    scale: i8,
+    __padding: u8,
+}
+
+impl FixedLenByteArrayHeader {
+    const fn size() -> usize {
+        12 // 4 + 4 + 1 + 1 + 1 + 1
+    }
+
+    fn to_bytes(&self) -> [u8; Self::size()] {
+        let mut bytes = [0; Self::size()];
+        bytes[0..4].copy_from_slice(&self.key_size.to_le_bytes());
+        bytes[4..8].copy_from_slice(&self.value_size.to_le_bytes());
+        bytes[8] = self.arrow_type;
+        bytes[9] = self.precision;
+        bytes[10] = self.scale as u8;
+        bytes
+    }
+
+    fn from_bytes(bytes: &[u8]) -> Self {
+        if bytes.len() < Self::size() {
+            panic!(
+                "value too small for FixedLenByteArrayHeader, expected at least {} bytes, got {}",
+                Self::size(),
+                bytes.len()
+            );
+        }
+        let key_size = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+        let value_size = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+        let arrow_type = bytes[8];
+        let precision = bytes[9];
+        let scale = bytes[10] as i8;
+        Self {
+            key_size,
+            value_size,
+            arrow_type,
+            precision,
+            scale,
+            __padding: 0,
+        }
+    }
+}
+
+impl LiquidFixedLenByteArray {
+    /*
+    Serialized LiquidFixedLenByteArray Memory Layout:
+
+    +--------------------------------------------------+
+    | LiquidIPCHeader (16 bytes)                       |
+    +--------------------------------------------------+
+    | FixedLenByteArrayHeader (12 bytes)               |  // Contains key_size, value_size, and type info
+    +--------------------------------------------------+
+    | BitPackedArray Data (keys)                       |
+    +--------------------------------------------------+
+    | [BitPackedArray Header & Bit-Packed Key Values]  |  // Written by self.keys.to_bytes()
+    +--------------------------------------------------+
+    | Padding (to 8-byte alignment)                    |  // Padding to ensure 8-byte alignment
+    +--------------------------------------------------+
+    | FsstArray Data (values)                          |
+    +--------------------------------------------------+
+    | [FsstArray Data]                                 |  // Written by self.values.to_bytes()
+    +--------------------------------------------------+
+    */
+    pub(crate) fn to_bytes_inner(&self) -> Vec<u8> {
+        // Create a buffer for the final output data, starting with the header
+        let header_size = LiquidIPCHeader::size() + FixedLenByteArrayHeader::size();
+        let mut result = Vec::with_capacity(header_size + 1024); // Pre-allocate a reasonable size
+
+        result.resize(header_size, 0);
+
+        // Serialize the BitPackedArray (keys)
+        let keys_start = result.len();
+        self.keys().to_bytes(&mut result);
+        let keys_size = result.len() - keys_start;
+
+        // Add padding to ensure FsstArray starts at an 8-byte aligned position
+        while result.len() % 8 != 0 {
+            result.push(0);
+        }
+
+        // Serialize the FsstArray (values)
+        let values_start = result.len();
+        self.values().to_bytes(&mut result);
+        let values_size = result.len() - values_start;
+
+        // Go back and fill in the header
+        let ipc_header = LiquidIPCHeader {
+            magic: MAGIC.to_le_bytes(),
+            version: VERSION,
+            logical_type_id: LiquidDataType::FixedLenByteArray as u16,
+            physical_type_id: 0, // Not used for FixedLenByteArray, type info is stored in the specialized header
+            __padding: [0; 6],
+        };
+        let header = &mut result[0..header_size];
+        header[0..LiquidIPCHeader::size()].copy_from_slice(&ipc_header.to_bytes());
+
+        // Map the ArrowFixedLenByteArrayType to our header
+        let (arrow_type, precision, scale) = match self.arrow_type() {
+            ArrowFixedLenByteArrayType::Decimal128(p, s) => (0, *p, *s),
+            ArrowFixedLenByteArrayType::Decimal256(p, s) => (1, *p, *s),
+        };
+
+        let fixed_len_byte_array_header = FixedLenByteArrayHeader {
+            key_size: keys_size as u32,
+            value_size: values_size as u32,
+            arrow_type,
+            precision,
+            scale,
+            __padding: 0,
+        };
+        header[LiquidIPCHeader::size()..header_size]
+            .copy_from_slice(&fixed_len_byte_array_header.to_bytes());
+
+        result
+    }
+
+    /// Deserialize a LiquidFixedLenByteArray from bytes, using zero-copy where possible.
+    pub fn from_bytes(bytes: Bytes, compressor: Arc<Compressor>) -> Self {
+        let header_size = LiquidIPCHeader::size() + FixedLenByteArrayHeader::size();
+        let header = LiquidIPCHeader::from_bytes(&bytes);
+
+        // Verify the logical type
+        assert_eq!(
+            header.logical_type_id,
+            LiquidDataType::FixedLenByteArray as u16
+        );
+
+        let fixed_len_header =
+            FixedLenByteArrayHeader::from_bytes(&bytes[LiquidIPCHeader::size()..header_size]);
+
+        // Parse arrow type based on the header
+        let arrow_type = match fixed_len_header.arrow_type {
+            0 => ArrowFixedLenByteArrayType::Decimal128(
+                fixed_len_header.precision,
+                fixed_len_header.scale,
+            ),
+            1 => ArrowFixedLenByteArrayType::Decimal256(
+                fixed_len_header.precision,
+                fixed_len_header.scale,
+            ),
+            _ => panic!(
+                "Unsupported arrow type code: {}",
+                fixed_len_header.arrow_type
+            ),
+        };
+
+        // Calculate offsets
+        let keys_size = fixed_len_header.key_size as usize;
+        let values_size = fixed_len_header.value_size as usize;
+
+        let keys_start = header_size;
+        let keys_end = keys_start + keys_size;
+
+        if keys_end > bytes.len() {
+            panic!("Keys data extends beyond input buffer");
+        }
+
+        // Ensure values data starts at 8-byte aligned position
+        let values_start = (keys_end + 7) & !7; // Round up to next 8-byte boundary
+        let values_end = values_start + values_size;
+
+        if values_end > bytes.len() {
+            panic!("Values data extends beyond input buffer");
+        }
+
+        // Extract and deserialize components
+        let keys_data = bytes.slice(keys_start..keys_end);
+        let keys = BitPackedArray::<UInt16Type>::from_bytes(keys_data);
+
+        let values_data = bytes.slice(values_start..values_end);
+        let values = FsstArray::from_bytes(values_data, compressor);
+
+        Self::from_parts(arrow_type, keys, values)
+    }
+}
+
 fn get_physical_type_id<T: ArrowPrimitiveType>() -> u16 {
     match TypeId::of::<T>() {
         id if id == TypeId::of::<arrow::datatypes::Int8Type>() => 0,
@@ -607,10 +775,11 @@ fn get_physical_type_id<T: ArrowPrimitiveType>() -> u16 {
 mod tests {
     use arrow::{
         array::{PrimitiveArray, StringArray},
-        datatypes::Int32Type,
+        datatypes::{Decimal128Type, Decimal256Type, DecimalType, Int32Type},
     };
+    use arrow_schema::DataType;
 
-    use crate::liquid_array::LiquidArray;
+    use crate::liquid_array::{LiquidArray, utils::gen_test_decimal_array};
 
     use super::*;
 
@@ -849,5 +1018,27 @@ mod tests {
         let serialized = Bytes::from(original.to_bytes_inner());
         let deserialized = LiquidFloatArray::<Float64Type>::from_bytes(serialized).to_arrow_array();
         assert_eq!(deserialized.as_ref(), &arr);
+    }
+
+    fn test_decimal_roundtrip<T: DecimalType>(data_type: DataType) {
+        let original_array = gen_test_decimal_array::<T>(data_type);
+        let (compressor, liquid_array) =
+            LiquidFixedLenByteArray::train_from_decimal_array(&original_array);
+
+        let bytes = liquid_array.to_bytes_inner();
+        let bytes = Bytes::from(bytes);
+        let deserialized = LiquidFixedLenByteArray::from_bytes(bytes, compressor);
+        let deserialized_arrow = deserialized.to_arrow_array();
+        assert_eq!(deserialized_arrow.as_ref(), &original_array);
+    }
+
+    #[test]
+    fn test_decimal128_array_roundtrip() {
+        test_decimal_roundtrip::<Decimal128Type>(DataType::Decimal128(10, 2));
+    }
+
+    #[test]
+    fn test_decimal256_array_roundtrip() {
+        test_decimal_roundtrip::<Decimal256Type>(DataType::Decimal256(38, 6));
     }
 }
