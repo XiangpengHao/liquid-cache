@@ -139,7 +139,3 @@ jobs:
           
           cargo publish -p liquid-cache-server
           sleep 30
-          
-          # Publish any remaining workspace crates
-          cargo publish -p benchmark || echo "Skipping benchmark publishing"
-          cargo publish -p examples || echo "Skipping examples publishing"
