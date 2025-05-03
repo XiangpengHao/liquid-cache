@@ -118,7 +118,7 @@ impl LiquidArray for LiquidFixedLenByteArray {
     }
 
     fn to_bytes(&self) -> Vec<u8> {
-        unimplemented!()
+        self.to_bytes_inner()
     }
 
     fn data_type(&self) -> LiquidDataType {
@@ -177,41 +177,41 @@ impl LiquidFixedLenByteArray {
             values: fsst_values,
         }
     }
+
+    pub(crate) fn from_parts(
+        arrow_type: ArrowFixedLenByteArrayType,
+        keys: BitPackedArray<UInt16Type>,
+        values: FsstArray,
+    ) -> Self {
+        Self {
+            arrow_type,
+            keys,
+            values,
+        }
+    }
+
+    pub(super) fn values(&self) -> &FsstArray {
+        &self.values
+    }
+
+    pub(super) fn keys(&self) -> &BitPackedArray<UInt16Type> {
+        &self.keys
+    }
+
+    pub(super) fn arrow_type(&self) -> &ArrowFixedLenByteArrayType {
+        &self.arrow_type
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::liquid_array::utils::gen_test_decimal_array;
+
     use super::*;
-    use arrow::array::Int64Builder;
     use arrow_schema::DataType;
 
-    fn gen_test_array<T: DecimalType>(data_type: DataType) -> PrimitiveArray<T> {
-        let mut builder = Int64Builder::new();
-        for i in 0..4096i64 {
-            if i % 97 == 0 {
-                builder.append_null();
-            } else {
-                let value = if i % 5 == 0 {
-                    i * 1000 + 123
-                } else if i % 3 == 0 {
-                    42
-                } else if i % 7 == 0 {
-                    i * 1_000_000 + 456789
-                } else {
-                    i * 100 + 42
-                };
-                builder.append_value(value as i64);
-            }
-        }
-        let array = builder.finish();
-        cast(&array, &data_type)
-            .unwrap()
-            .as_primitive::<T>()
-            .clone()
-    }
-
     fn test_decimal_roundtrip<T: DecimalType>(data_type: DataType) {
-        let original_array = gen_test_array::<T>(data_type);
+        let original_array = gen_test_decimal_array::<T>(data_type);
         let (_compressor, liquid_array) =
             LiquidFixedLenByteArray::train_from_decimal_array(&original_array);
 
@@ -239,7 +239,7 @@ mod tests {
     }
 
     fn test_decimal_filter_operation<T: DecimalType>(data_type: DataType) {
-        let original_array = gen_test_array::<T>(data_type);
+        let original_array = gen_test_decimal_array::<T>(data_type);
         let (_compressor, liquid_array) =
             LiquidFixedLenByteArray::train_from_decimal_array(&original_array);
 
