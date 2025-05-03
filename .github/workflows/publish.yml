@@ -1,0 +1,141 @@
+name: Publish Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_bump:
+        description: 'Version bump type'
+        required: true
+        default: 'patch'
+        type: 'choice'
+        options:
+          - patch
+          - minor
+          - major
+      custom_version:
+        description: 'Custom version (optional, overrides version_bump if provided)'
+        required: false
+        type: 'string'
+
+jobs:
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2025-04-29
+
+      - name: Install cargo-release
+        run: cargo install cargo-release
+
+      - name: Configure Git
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+
+      - name: Create Release Branch
+        id: create_branch
+        run: |
+          RELEASE_BRANCH="release/$(date +'%Y%m%d')"
+          git checkout -b $RELEASE_BRANCH
+          echo "branch_name=$RELEASE_BRANCH" >> $GITHUB_OUTPUT
+
+      - name: Execute Release
+        id: release
+        run: |
+          # Determine version bump level
+          LEVEL="${{ github.event.inputs.version_bump }}"
+          CUSTOM_VERSION="${{ github.event.inputs.custom_version }}"
+          
+          if [ -n "$CUSTOM_VERSION" ]; then
+            # Use custom version
+            cargo release "$CUSTOM_VERSION" --execute --no-confirm --no-push --no-tag --no-publish
+            echo "new_version=$CUSTOM_VERSION" >> $GITHUB_OUTPUT
+          else
+            # Use version bump type
+            cargo release $LEVEL --execute --no-confirm --no-push --no-tag --no-publish
+            # Get the new version
+            NEW_VERSION=$(grep -m 1 'version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+            echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Pull Request
+        id: create_pr
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: ${{ steps.create_branch.outputs.branch_name }}
+          base: main
+          title: "Release v${{ steps.release.outputs.new_version }}"
+          body: |
+            This PR prepares release v${{ steps.release.outputs.new_version }}.
+            
+            After merging, a GitHub release will be created and Docker images will be published.
+          commit-message: "chore: prepare release v${{ steps.release.outputs.new_version }}"
+          labels: release
+          delete-branch: true
+
+      - name: Output PR URL
+        run: echo "Pull request created at ${{ steps.create_pr.outputs.pull-request-url }}"
+
+  publish:
+    needs: release
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.merged == true || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2025-04-29
+
+      - name: Get Version
+        id: get_version
+        run: |
+          VERSION=$(grep -m 1 'version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: v${{ steps.get_version.outputs.version }}
+          name: Release v${{ steps.get_version.outputs.version }}
+          generateReleaseNotes: true
+          draft: false
+          prerelease: false
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish crates
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          # Publish in dependency order
+          cargo publish -p liquid-cache-common
+          sleep 30  # Wait for the registry to update
+          
+          cargo publish -p liquid-cache-parquet
+          sleep 30
+          
+          cargo publish -p liquid-cache-client
+          sleep 30
+          
+          cargo publish -p liquid-cache-server
+          sleep 30
