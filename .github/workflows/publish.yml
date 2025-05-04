@@ -18,8 +18,8 @@ on:
         type: 'string'
 
 jobs:
-  release:
-    name: Create Release
+  release-and-publish:
+    name: Release and Publish
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -68,58 +68,6 @@ jobs:
             echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
           fi
 
-      - name: Create Pull Request
-        id: create_pr
-        uses: peter-evans/create-pull-request@v7
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          branch: ${{ steps.branch-name.outputs.release_branch }}
-          title: "Release v${{ steps.release.outputs.new_version }}"
-          body: |
-            This PR prepares release v${{ steps.release.outputs.new_version }}.
-            
-            After merging, a GitHub release will be created and Docker images will be published.
-          commit-message: "chore: prepare release v${{ steps.release.outputs.new_version }}"
-          labels: release
-          delete-branch: true
-
-      - name: Output PR URL
-        run: echo "Pull request created at ${{ steps.create_pr.outputs.pull-request-url }}"
-
-  publish:
-    needs: release
-    runs-on: ubuntu-latest
-    if: github.event.pull_request.merged == true || github.event_name == 'workflow_dispatch'
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout main
-        uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 0
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly-2025-04-29
-
-      - name: Get Version
-        id: get_version
-        run: |
-          VERSION=$(grep -m 1 'version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-
-      - name: Create GitHub Release
-        uses: ncipollo/release-action@v1
-        with:
-          tag: v${{ steps.get_version.outputs.version }}
-          name: Release v${{ steps.get_version.outputs.version }}
-          generateReleaseNotes: true
-          draft: false
-          prerelease: false
-          token: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Publish crates
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
@@ -136,3 +84,30 @@ jobs:
           
           cargo publish -p liquid-cache-server
           sleep 30
+
+      - name: Create GitHub Release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: v${{ steps.release.outputs.new_version }}
+          name: Release v${{ steps.release.outputs.new_version }}
+          generateReleaseNotes: true
+          draft: false
+          prerelease: false
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create Pull Request
+        id: create_pr
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: ${{ steps.branch-name.outputs.release_branch }}
+          title: "Release v${{ steps.release.outputs.new_version }}"
+          body: |
+            This PR prepares release v${{ steps.release.outputs.new_version }}.
+            
+            **IMPORTANT**: This PR MUST be merged as the crates have already been published to crates.io with this version.
+          commit-message: "chore: prepare release v${{ steps.release.outputs.new_version }}"
+          delete-branch: true
+
+      - name: Output PR URL
+        run: echo "Pull request created at ${{ steps.create_pr.outputs.pull-request-url }}"
