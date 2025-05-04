@@ -44,13 +44,6 @@ jobs:
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
 
-      - name: Create Release Branch
-        id: create_branch
-        run: |
-          RELEASE_BRANCH="release/$(date +'%Y%m%d')"
-          git checkout -b $RELEASE_BRANCH
-          echo "branch_name=$RELEASE_BRANCH" >> $GITHUB_OUTPUT
-
       - name: Execute Release
         id: release
         run: |
@@ -72,11 +65,10 @@ jobs:
 
       - name: Create Pull Request
         id: create_pr
-        uses: peter-evans/create-pull-request@v6
+        uses: peter-evans/create-pull-request@v7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          branch: ${{ steps.create_branch.outputs.branch_name }}
-          base: main
+          branch: release/$(date +'%Y%m%d')
           title: "Release v${{ steps.release.outputs.new_version }}"
           body: |
             This PR prepares release v${{ steps.release.outputs.new_version }}.
