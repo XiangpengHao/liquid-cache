@@ -80,7 +80,6 @@ jobs:
             
             After merging, a GitHub release will be created and Docker images will be published.
           commit-message: "chore: prepare release v${{ steps.release.outputs.new_version }}"
-          labels: release
           delete-branch: true
 
       - name: Output PR URL
