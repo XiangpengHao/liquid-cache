@@ -5,7 +5,7 @@ use datafusion::{
     physical_plan::{ExecutionPlan, collect},
     prelude::SessionContext,
 };
-use liquid_cache_common::CacheMode;
+use liquid_cache_common::{CacheMode, LiquidCacheMode};
 use uuid::Uuid;
 
 use crate::{LiquidCacheService, LiquidCacheServiceInner};
@@ -23,8 +23,12 @@ async fn run_sql(sql: &str, mode: CacheMode, cache_size: usize) -> String {
     ctx.register_parquet("hits", TEST_FILE, Default::default())
         .await
         .unwrap();
-    let service = LiquidCacheServiceInner::new(ctx.clone(), Some(cache_size), None);
-
+    let service = LiquidCacheServiceInner::new(
+        ctx.clone(),
+        Some(cache_size),
+        None,
+        LiquidCacheMode::from(mode),
+    );
     async fn get_result(service: &LiquidCacheServiceInner, sql: &str, mode: CacheMode) -> String {
         let handle = Uuid::new_v4();
         let ctx = service.get_ctx();
@@ -68,6 +72,13 @@ async fn test_url() {
 
     let lazy = run_sql(sql, CacheMode::Liquid, 573960).await;
     assert_eq!(eager, lazy);
+}
+
+#[tokio::test]
+async fn test_url_small_cache() {
+    let sql = r#"select "URL" from hits where "URL" like '%tours%' order by "URL" desc"#;
+    let arrow = run_sql(sql, CacheMode::Arrow, 10).await;
+    insta::assert_snapshot!(arrow);
 }
 
 #[tokio::test]

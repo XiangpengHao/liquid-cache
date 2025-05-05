@@ -2,6 +2,7 @@ use std::{collections::hash_map::Entry, fs::File, io::Write, path::PathBuf};
 
 use crate::sync::{Arc, RwLock};
 use ahash::AHashMap;
+use liquid_cache_common::LiquidCacheMode;
 
 use super::{
     CacheEntryID, CachedBatch, LiquidCompressorStates,
@@ -110,6 +111,8 @@ pub enum CacheAdvice {
     TranscodeToDisk(CacheEntryID),
     /// Transcode the entry to liquid memory.
     Transcode(CacheEntryID),
+    /// Discard the entry,  do not cache.
+    Discard,
 }
 
 impl CacheStore {
@@ -117,9 +120,10 @@ impl CacheStore {
         batch_size: usize,
         max_cache_bytes: usize,
         cache_root_dir: PathBuf,
+        cache_mode: LiquidCacheMode,
         policy: Box<dyn CachePolicy>,
     ) -> Self {
-        let config = CacheConfig::new(batch_size, max_cache_bytes, cache_root_dir);
+        let config = CacheConfig::new(batch_size, max_cache_bytes, cache_root_dir, cache_mode);
         Self {
             cached_data: PartitionedHashStore::new(),
             budget: BudgetAccounting::new(config.max_cache_bytes()),
@@ -148,7 +152,7 @@ impl CacheStore {
                     .is_err()
                 {
                     drop(cached_data_lock);
-                    let advice = self.policy.advise(&entry_id, &cached_batch);
+                    let advice = self.policy.advise(&entry_id, self.config.cache_mode());
                     return Err((advice, cached_batch));
                 }
                 entry.insert(cached_batch);
@@ -156,7 +160,7 @@ impl CacheStore {
             Entry::Vacant(entry) => {
                 if self.budget.try_reserve_memory(new_memory_size).is_err() {
                     drop(cached_data_lock);
-                    let advice = self.policy.advise(&entry_id, &cached_batch);
+                    let advice = self.policy.advise(&entry_id, self.config.cache_mode());
                     return Err((advice, cached_batch));
                 }
                 entry.insert_entry(cached_batch);
@@ -225,6 +229,7 @@ impl CacheStore {
                     .expect("failed to insert on disk liquid");
                 None
             }
+            CacheAdvice::Discard => None,
         }
     }
 
@@ -324,6 +329,7 @@ mod tests {
         thread,
     };
     use arrow::array::Array;
+    use liquid_cache_common::LiquidCacheMode;
 
     mod partitioned_hash_store_tests {
         use super::*;
@@ -442,7 +448,7 @@ mod tests {
     }
 
     impl CachePolicy for TestPolicy {
-        fn advise(&self, entry_id: &CacheEntryID, _to_insert: &CachedBatch) -> CacheAdvice {
+        fn advise(&self, entry_id: &CacheEntryID, _cache_mode: &LiquidCacheMode) -> CacheAdvice {
             self.advice_count.fetch_add(1, Ordering::SeqCst);
             match self.advice_type {
                 AdviceType::Evict => {

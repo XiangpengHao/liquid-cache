@@ -143,10 +143,7 @@ pub async fn main() -> Result<()> {
     );
 
     let queries = get_query(&args.query_path, args.common.query)?;
-    let bench_mode = &args.common.bench_mode;
-    let ctx = bench_mode
-        .setup_clickbench_ctx(&args.common.server, &args.file, args.common.partitions)
-        .await?;
+    let ctx = args.common.setup_clickbench_ctx(&args.file).await?;
 
     let mut benchmark_result = BenchmarkResult {
         args: args.clone(),
@@ -203,9 +200,7 @@ pub async fn main() -> Result<()> {
 
             args.common.get_cache_stats().await;
 
-            let metrics_response = bench_mode
-                .get_execution_metrics(&args.common.admin_server, &physical_plan)
-                .await;
+            let metrics_response = args.common.get_execution_metrics(&physical_plan).await;
 
             let result = IterationResult {
                 network_traffic: network_info.received(),
@@ -219,7 +214,7 @@ pub async fn main() -> Result<()> {
             query_result.add(result);
         }
         if args.common.reset_cache {
-            bench_mode.reset_cache(&args.common.admin_server).await?;
+            args.common.reset_cache().await?;
         }
         benchmark_result.results.push(query_result);
     }

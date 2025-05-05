@@ -1,15 +1,17 @@
+use liquid_cache_common::LiquidCacheMode;
+
 use crate::sync::Mutex;
 use std::{
     collections::{HashMap, VecDeque},
     ptr::NonNull,
 };
 
-use super::{CacheAdvice, CacheEntryID, CachedBatch};
+use super::{CacheAdvice, CacheEntryID};
 
 /// The cache policy that guides the replacement of LiquidCache
 pub trait CachePolicy: std::fmt::Debug + Send + Sync {
     /// Give advice on what to do when cache is full.
-    fn advise(&self, entry_id: &CacheEntryID, to_insert: &CachedBatch) -> CacheAdvice;
+    fn advise(&self, entry_id: &CacheEntryID, cache_mode: &LiquidCacheMode) -> CacheAdvice;
 
     /// Notify the cache policy that an entry was inserted.
     fn notify_insert(&self, _entry_id: &CacheEntryID) {}
@@ -48,7 +50,7 @@ impl FiloPolicy {
 }
 
 impl CachePolicy for FiloPolicy {
-    fn advise(&self, entry_id: &CacheEntryID, _to_insert: &CachedBatch) -> CacheAdvice {
+    fn advise(&self, entry_id: &CacheEntryID, _cache_mode: &LiquidCacheMode) -> CacheAdvice {
         if let Some(newest_entry) = self.get_newest_entry() {
             return CacheAdvice::Evict(newest_entry);
         }
@@ -143,7 +145,7 @@ unsafe impl Send for LruPolicy {}
 unsafe impl Sync for LruPolicy {}
 
 impl CachePolicy for LruPolicy {
-    fn advise(&self, entry_id: &CacheEntryID, _to_insert: &CachedBatch) -> CacheAdvice {
+    fn advise(&self, entry_id: &CacheEntryID, _cache_mode: &LiquidCacheMode) -> CacheAdvice {
         let state = self.state.lock().unwrap();
         if let Some(tail_ptr) = state.tail {
             let tail_entry_id = unsafe { tail_ptr.as_ref().entry_id };
@@ -218,8 +220,22 @@ impl Drop for LruPolicy {
     }
 }
 
+/// The policy that discards entries when the cache is full.
+#[derive(Debug, Default)]
+pub struct DiscardPolicy;
+
+impl CachePolicy for DiscardPolicy {
+    fn advise(&self, _entry_id: &CacheEntryID, _cache_mode: &LiquidCacheMode) -> CacheAdvice {
+        CacheAdvice::Discard
+    }
+
+    fn notify_evict(&self, _entry_id: &CacheEntryID) {}
+}
+
 #[cfg(test)]
 mod test {
+    use liquid_cache_common::LiquidCacheMode;
+
     use crate::cache::utils::{create_cache_store, create_entry_id, create_test_array};
     use crate::policies::CachePolicy;
 
@@ -239,15 +255,13 @@ mod test {
         expect_evict: CacheEntryID,
         trigger_entry: CacheEntryID,
     ) {
-        let dummy_batch = create_test_array(1);
-        let advice = policy.advise(&trigger_entry, &dummy_batch);
+        let advice = policy.advise(&trigger_entry, &LiquidCacheMode::InMemoryArrow);
         assert_eq!(advice, CacheAdvice::Evict(expect_evict));
     }
 
     // Helper to assert transcode advice
     fn assert_transcode_advice(policy: &LruPolicy, trigger_entry: CacheEntryID) {
-        let dummy_batch = create_test_array(1);
-        let advice = policy.advise(&trigger_entry, &dummy_batch);
+        let advice = policy.advise(&trigger_entry, &LiquidCacheMode::InMemoryArrow);
         assert_eq!(advice, CacheAdvice::TranscodeToDisk(trigger_entry));
     }
 

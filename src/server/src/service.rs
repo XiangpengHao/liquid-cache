@@ -36,6 +36,7 @@ impl LiquidCacheServiceInner {
         default_ctx: Arc<SessionContext>,
         max_cache_bytes: Option<usize>,
         disk_cache_dir: Option<PathBuf>,
+        cache_mode: LiquidCacheMode,
     ) -> Self {
         let batch_size = default_ctx.state().config().batch_size();
 
@@ -48,6 +49,7 @@ impl LiquidCacheServiceInner {
             batch_size,
             max_cache_bytes.unwrap_or(usize::MAX),
             liquid_cache_dir,
+            cache_mode,
         ));
 
         Self {
@@ -278,7 +280,12 @@ mod tests {
             .await
             .unwrap();
         let plan = df.create_physical_plan().await.unwrap();
-        let liquid_cache = Arc::new(LiquidCache::new(8192, 1000000, PathBuf::from("test")));
+        let liquid_cache = Arc::new(LiquidCache::new(
+            8192,
+            1000000,
+            PathBuf::from("test"),
+            LiquidCacheMode::InMemoryArrow,
+        ));
         let rewritten = rewrite_data_source_plan(plan, &liquid_cache, CacheMode::Liquid);
 
         rewritten
@@ -300,7 +307,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_register_object_store() {
-        let server = LiquidCacheServiceInner::new(Arc::new(SessionContext::new()), None, None);
+        let server = LiquidCacheServiceInner::new(
+            Arc::new(SessionContext::new()),
+            None,
+            None,
+            LiquidCacheMode::InMemoryArrow,
+        );
         let url = Url::parse("file:///").unwrap();
         server
             .register_object_store(&url, HashMap::new())

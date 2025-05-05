@@ -37,7 +37,7 @@ use datafusion_proto::bytes::physical_plan_from_bytes;
 use fastrace::prelude::SpanContext;
 use futures::{Stream, TryStreamExt};
 use liquid_cache_common::{
-    CacheMode,
+    CacheMode, LiquidCacheMode,
     rpc::{FetchResults, LiquidCacheActions},
 };
 use liquid_cache_parquet::LiquidCacheRef;
@@ -89,7 +89,14 @@ impl LiquidCacheService {
     /// With no disk cache and unbounded memory usage.
     pub fn try_new() -> Result<Self, DataFusionError> {
         let ctx = Self::context()?;
-        Ok(Self::new(ctx, None, None))
+        Ok(Self::new(
+            ctx,
+            None,
+            None,
+            LiquidCacheMode::InMemoryLiquid {
+                transcode_in_background: true,
+            },
+        ))
     }
 
     /// Create a new [LiquidCacheService] with a custom [SessionContext]
@@ -99,13 +106,20 @@ impl LiquidCacheService {
     /// * `ctx` - The [SessionContext] to use
     /// * `max_cache_bytes` - The maximum number of bytes to cache in memory
     /// * `disk_cache_dir` - The directory to store the disk cache
+    /// * `cache_mode` - The [LiquidCacheMode] to use
     pub fn new(
         ctx: SessionContext,
         max_cache_bytes: Option<usize>,
         disk_cache_dir: Option<PathBuf>,
+        cache_mode: LiquidCacheMode,
     ) -> Self {
         Self {
-            inner: LiquidCacheServiceInner::new(Arc::new(ctx), max_cache_bytes, disk_cache_dir),
+            inner: LiquidCacheServiceInner::new(
+                Arc::new(ctx),
+                max_cache_bytes,
+                disk_cache_dir,
+                cache_mode,
+            ),
         }
     }
 
