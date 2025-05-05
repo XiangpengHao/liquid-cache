@@ -6,7 +6,7 @@ use arrow::{
     buffer::BooleanBuffer,
 };
 use arrow_schema::{DataType, Field, Fields};
-use liquid_cache_common::coerce_from_parquet_to_liquid_type;
+use liquid_cache_common::{cast_from_parquet_to_liquid_type, coerce_from_parquet_to_liquid_type};
 use parquet::{
     arrow::{
         array_reader::{ArrayReader, StructArrayReader},
@@ -48,7 +48,7 @@ struct CachedArrayReader {
 impl CachedArrayReader {
     fn new(inner: Box<dyn ArrayReader>, liquid_cache: LiquidCachedColumnRef) -> Self {
         let inner_type = inner.get_data_type();
-        let data_type = coerce_from_parquet_to_liquid_type(inner_type, &liquid_cache.cache_mode());
+        let data_type = coerce_from_parquet_to_liquid_type(inner_type, liquid_cache.cache_mode());
 
         Self {
             inner,
@@ -76,6 +76,11 @@ impl CachedArrayReader {
         }
         let read = self.inner.read_records(self.batch_size())?;
         let array = self.inner.consume_batch()?;
+
+        // This is a special case for the Utf8View type, because parquet read string as Utf8View.
+        // But the reader reads as Dictionary or Utf8 type, depending on the cache mode.
+        let array = cast_from_parquet_to_liquid_type(array, self.liquid_cache.cache_mode());
+
         _ = self.liquid_cache.insert(batch_id, array.clone());
         self.reader_local_cache.insert(batch_id, array);
 
@@ -444,13 +449,11 @@ mod tests {
             BATCH_SIZE,
             usize::MAX,
             tmp_dir.path().to_path_buf(),
-        ));
-        let file = liquid_cache.register_or_get_file(
-            "test".to_string(),
             LiquidCacheMode::InMemoryLiquid {
                 transcode_in_background: false,
             },
-        );
+        ));
+        let file = liquid_cache.register_or_get_file("test".to_string());
         let row_group = file.row_group(0);
         let reader = set_up_reader_with_cache(
             row_group

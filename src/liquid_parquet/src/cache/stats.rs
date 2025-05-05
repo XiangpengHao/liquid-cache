@@ -176,7 +176,12 @@ mod tests {
     #[test]
     fn test_stats_writer() -> Result<(), ParquetError> {
         let tmp_dir = tempfile::tempdir().unwrap();
-        let cache = LiquidCache::new(1024, usize::MAX, tmp_dir.path().to_path_buf());
+        let cache = LiquidCache::new(
+            1024,
+            usize::MAX,
+            tmp_dir.path().to_path_buf(),
+            LiquidCacheMode::InMemoryArrow,
+        );
         let array = Arc::new(arrow::array::Int32Array::from(vec![1, 2, 3]));
         let num_rows = 8 * 8 * 8 * 8;
 
@@ -187,7 +192,7 @@ mod tests {
         let mut memory_size_sum = 0;
         for file_no in 0..8 {
             let file_name = format!("test_{file_no}.parquet");
-            let file = cache.register_or_get_file(file_name, LiquidCacheMode::InMemoryArrow);
+            let file = cache.register_or_get_file(file_name);
             for rg in 0..8 {
                 let row_group = file.row_group(rg);
                 for col in 0..8 {

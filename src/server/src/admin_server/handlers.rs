@@ -166,6 +166,8 @@ pub(crate) struct SystemInfo {
     os: String,
     host_name: String,
     cpu_cores: usize,
+    server_resident_memory_bytes: u64,
+    server_virtual_memory_bytes: u64,
 }
 
 pub(crate) async fn get_system_info_handler(
@@ -174,6 +176,10 @@ pub(crate) async fn get_system_info_handler(
     info!("Getting system info...");
     let mut sys = sysinfo::System::new_all();
     sys.refresh_all();
+    let current_pid = sysinfo::get_current_pid().unwrap();
+    let process = sys.process(current_pid).unwrap();
+    let resident_memory = process.memory();
+    let virtual_memory = process.virtual_memory();
     Json(SystemInfo {
         total_memory_bytes: sys.total_memory(),
         used_memory_bytes: sys.used_memory(),
@@ -183,6 +189,8 @@ pub(crate) async fn get_system_info_handler(
         os: sysinfo::System::os_version().unwrap_or_default(),
         host_name: sysinfo::System::host_name().unwrap_or_default(),
         cpu_cores: sysinfo::System::physical_core_count().unwrap_or(0),
+        server_resident_memory_bytes: resident_memory,
+        server_virtual_memory_bytes: virtual_memory,
     })
 }
 

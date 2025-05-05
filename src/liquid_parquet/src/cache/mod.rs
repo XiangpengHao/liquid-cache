@@ -11,10 +11,7 @@ use arrow::buffer::BooleanBuffer;
 use arrow::compute::prep_null_mask_filter;
 use arrow_schema::{ArrowError, DataType, Field, Schema};
 use bytes::Bytes;
-use liquid_cache_common::{
-    LiquidCacheMode, cast_from_parquet_to_liquid_type, coerce_from_parquet_to_liquid_type,
-};
-use policies::LruPolicy;
+use liquid_cache_common::{LiquidCacheMode, coerce_from_parquet_to_liquid_type};
 use std::fmt::Display;
 use std::fs::File;
 use std::io::Read;
@@ -101,7 +98,6 @@ impl Display for CachedBatch {
 
 #[derive(Debug)]
 pub struct LiquidCachedColumn {
-    cache_mode: LiquidCacheMode,
     cache_store: Arc<CacheStore>,
     field: Arc<Field>,
     column_path: ColumnAccessPath,
@@ -115,7 +111,6 @@ pub enum InsertArrowArrayError {
 
 impl LiquidCachedColumn {
     fn new(
-        cache_mode: LiquidCacheMode,
         field: Arc<Field>,
         cache_store: Arc<CacheStore>,
         column_id: u64,
@@ -125,7 +120,6 @@ impl LiquidCachedColumn {
         let column_path = ColumnAccessPath::new(file_id, row_group_id, column_id);
         column_path.initialize_dir(cache_store.config().cache_root_dir());
         Self {
-            cache_mode,
             field,
             cache_store,
             column_path,
@@ -137,8 +131,8 @@ impl LiquidCachedColumn {
         self.column_path.entry_id(batch_id)
     }
 
-    pub(crate) fn cache_mode(&self) -> LiquidCacheMode {
-        self.cache_mode
+    pub(crate) fn cache_mode(&self) -> &LiquidCacheMode {
+        self.cache_store.config().cache_mode()
     }
 
     pub(crate) fn batch_size(&self) -> usize {
@@ -351,11 +345,7 @@ impl LiquidCachedColumn {
             return Err(InsertArrowArrayError::AlreadyCached);
         }
 
-        // This is a special case for the Utf8View type, because parquet read string as Utf8View.
-        // But the reader reads as Dictionary or Utf8 type, depending on the cache mode.
-        let array = cast_from_parquet_to_liquid_type(array, &self.cache_mode);
-
-        match &self.cache_mode {
+        match self.cache_mode() {
             LiquidCacheMode::InMemoryArrow => {
                 let entry_id = self.entry_id(batch_id);
                 self.cache_store
@@ -393,7 +383,6 @@ impl LiquidCachedColumn {
 
 #[derive(Debug)]
 pub struct LiquidCachedRowGroup {
-    cache_mode: LiquidCacheMode,
     columns: RwLock<AHashMap<u64, Arc<LiquidCachedColumn>>>,
     cache_store: Arc<CacheStore>,
     row_group_id: u64,
@@ -401,12 +390,7 @@ pub struct LiquidCachedRowGroup {
 }
 
 impl LiquidCachedRowGroup {
-    fn new(
-        cache_mode: LiquidCacheMode,
-        cache_store: Arc<CacheStore>,
-        row_group_id: u64,
-        file_id: u64,
-    ) -> Self {
+    fn new(cache_store: Arc<CacheStore>, row_group_id: u64, file_id: u64) -> Self {
         let cache_dir = cache_store
             .config()
             .cache_root_dir()
@@ -414,7 +398,6 @@ impl LiquidCachedRowGroup {
             .join(format!("rg_{row_group_id}"));
         std::fs::create_dir_all(&cache_dir).expect("Failed to create cache directory");
         Self {
-            cache_mode,
             columns: RwLock::new(AHashMap::new()),
             cache_store,
             row_group_id,
@@ -429,8 +412,10 @@ impl LiquidCachedRowGroup {
         let field = match field.data_type() {
             DataType::Utf8View => {
                 let field: Field = Field::clone(&field);
-                let new_data_type =
-                    coerce_from_parquet_to_liquid_type(field.data_type(), &self.cache_mode);
+                let new_data_type = coerce_from_parquet_to_liquid_type(
+                    field.data_type(),
+                    self.cache_store.config().cache_mode(),
+                );
                 Arc::new(field.with_data_type(new_data_type))
             }
             DataType::Utf8 | DataType::LargeUtf8 => unreachable!(),
@@ -447,7 +432,6 @@ impl LiquidCachedRowGroup {
             }
             Entry::Vacant(entry) => {
                 let column = Arc::new(LiquidCachedColumn::new(
-                    self.cache_mode,
                     field,
                     self.cache_store.clone(),
                     column_id,
@@ -502,15 +486,13 @@ pub type LiquidCachedRowGroupRef = Arc<LiquidCachedRowGroup>;
 #[derive(Debug)]
 pub struct LiquidCachedFile {
     row_groups: Mutex<AHashMap<u64, Arc<LiquidCachedRowGroup>>>,
-    cache_mode: LiquidCacheMode,
     cache_store: Arc<CacheStore>,
     file_id: u64,
 }
 
 impl LiquidCachedFile {
-    fn new(cache_mode: LiquidCacheMode, cache_store: Arc<CacheStore>, file_id: u64) -> Self {
+    fn new(cache_store: Arc<CacheStore>, file_id: u64) -> Self {
         Self {
-            cache_mode,
             row_groups: Mutex::new(AHashMap::new()),
             cache_store,
             file_id,
@@ -521,7 +503,6 @@ impl LiquidCachedFile {
         let mut row_groups = self.row_groups.lock().unwrap();
         let row_group = row_groups.entry(row_group_id).or_insert_with(|| {
             Arc::new(LiquidCachedRowGroup::new(
-                self.cache_mode,
                 self.cache_store.clone(),
                 row_group_id,
                 self.file_id,
@@ -534,8 +515,8 @@ impl LiquidCachedFile {
         self.cache_store.reset();
     }
 
-    pub fn cache_mode(&self) -> LiquidCacheMode {
-        self.cache_mode
+    pub fn cache_mode(&self) -> &LiquidCacheMode {
+        self.cache_store.config().cache_mode()
     }
 
     #[cfg(test)]
@@ -563,9 +544,14 @@ pub type LiquidCacheRef = Arc<LiquidCache>;
 
 impl LiquidCache {
     /// Create a new cache
-    pub fn new(batch_size: usize, max_cache_bytes: usize, cache_dir: PathBuf) -> Self {
+    pub fn new(
+        batch_size: usize,
+        max_cache_bytes: usize,
+        cache_dir: PathBuf,
+        cache_mode: LiquidCacheMode,
+    ) -> Self {
         assert!(batch_size.is_power_of_two());
-        let fifo_policy = Box::new(LruPolicy::new());
+        let cache_policy = Box::new(policies::DiscardPolicy);
 
         LiquidCache {
             files: Mutex::new(AHashMap::new()),
@@ -573,26 +559,19 @@ impl LiquidCache {
                 batch_size,
                 max_cache_bytes,
                 cache_dir,
-                fifo_policy,
+                cache_mode,
+                cache_policy,
             )),
             current_file_id: AtomicU64::new(0),
         }
     }
 
     /// Register a file in the cache.
-    pub fn register_or_get_file(
-        &self,
-        file_path: String,
-        cache_mode: LiquidCacheMode,
-    ) -> LiquidCachedFileRef {
+    pub fn register_or_get_file(&self, file_path: String) -> LiquidCachedFileRef {
         let mut files = self.files.lock().unwrap();
         let value = files.entry(file_path.clone()).or_insert_with(|| {
             let file_id = self.current_file_id.fetch_add(1, Ordering::Relaxed);
-            Arc::new(LiquidCachedFile::new(
-                cache_mode,
-                self.cache_store.clone(),
-                file_id,
-            ))
+            Arc::new(LiquidCachedFile::new(self.cache_store.clone(), file_id))
         });
         value.clone()
     }
