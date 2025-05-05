@@ -72,6 +72,34 @@ pub struct CacheEntryID {
     batch_id: BatchID,
 }
 
+impl From<CacheEntryID> for usize {
+    fn from(id: CacheEntryID) -> Self {
+        unsafe { std::mem::transmute(id) }
+    }
+}
+
+impl From<usize> for CacheEntryID {
+    fn from(value: usize) -> Self {
+        debug_assert_eq!(std::mem::size_of::<Self>(), std::mem::size_of::<usize>());
+        debug_assert_eq!(std::mem::align_of::<Self>(), std::mem::align_of::<usize>());
+        unsafe { std::mem::transmute(value) }
+    }
+}
+
+impl From<&CacheEntryID> for usize {
+    fn from(id: &CacheEntryID) -> Self {
+        unsafe { std::mem::transmute(id) }
+    }
+}
+
+impl From<&usize> for CacheEntryID {
+    fn from(value: &usize) -> Self {
+        debug_assert_eq!(std::mem::size_of::<Self>(), std::mem::size_of::<usize>());
+        debug_assert_eq!(std::mem::align_of::<Self>(), std::mem::align_of::<usize>());
+        unsafe { std::mem::transmute(value) }
+    }
+}
+
 impl CacheEntryID {
     pub fn row_group_id(&self) -> u16 {
         self.rg_id

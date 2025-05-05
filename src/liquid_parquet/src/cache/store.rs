@@ -1,8 +1,10 @@
 use std::{collections::hash_map::Entry, fs::File, io::Write, path::PathBuf};
+use std::fmt::{Debug, Formatter};
+use congee::Congee;
 
 use crate::sync::{Arc, RwLock};
 use ahash::AHashMap;
-
+use congee::epoch::Guard;
 use super::{
     CacheEntryID, CachedBatch, LiquidCompressorStates,
     budget::BudgetAccounting,
@@ -35,65 +37,62 @@ impl CompressorStates {
     }
 }
 
-/// 64 way partitioning, to reduce the contention on the lock
-/// The partition key is the last 6 bits of the row group id
-const PARTITION_COUNT: usize = 64;
-
-#[derive(Debug)]
-struct PartitionedHashStore {
-    partitions: [RwLock<AHashMap<CacheEntryID, CachedBatch>>; PARTITION_COUNT],
+struct ArtStore {
+    art: Congee<CacheEntryID, CachedBatch>,
+    id_list: Vec<usize>,
+    guard: Guard,
 }
 
-impl PartitionedHashStore {
+impl Debug for ArtStore {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Ok(())
+    }
+}
+
+// TODO: Replace PartitionedHashStore to use congee instead
+
+impl ArtStore {
     fn new() -> Self {
-        assert!(PARTITION_COUNT.is_power_of_two());
+        let art: Congee<CacheEntryID, CachedBatch> = Congee::default();
+        let guard = art.pin();
         Self {
-            partitions: std::array::from_fn(|_| RwLock::new(AHashMap::new())),
+            art,
+            id_list: Vec::new(),
+            guard
         }
     }
 
-    fn partition_index(&self, entry_id: &CacheEntryID) -> usize {
-        entry_id.row_group_id() as usize & (PARTITION_COUNT - 1)
+    fn get_store(&self) -> Arc<&Congee<CacheEntryID, CachedBatch>> {
+        Arc::new(&self.art)
     }
 
     fn get(&self, entry_id: &CacheEntryID) -> Option<CachedBatch> {
-        let partition_index = self.partition_index(entry_id);
-        let partition = &self.partitions[partition_index].read().unwrap();
-        partition.get(entry_id).cloned()
-    }
-
-    fn get_partition(
-        &self,
-        entry_id: &CacheEntryID,
-    ) -> &RwLock<AHashMap<CacheEntryID, CachedBatch>> {
-        let partition_index = self.partition_index(entry_id);
-        &self.partitions[partition_index]
+        self.art.get(entry_id, &self.guard)
     }
 
     fn is_cached(&self, entry_id: &CacheEntryID) -> bool {
-        let partition_index = self.partition_index(entry_id);
-        let partition = &self.partitions[partition_index].read().unwrap();
-        partition.contains_key(entry_id)
+        self.art.get(entry_id, &self.guard).is_some()
     }
 
-    fn reset(&self) {
-        for partition in self.partitions.iter() {
-            partition.write().unwrap().clear();
-        }
+    fn insert(&mut self, entry_id: &CacheEntryID, batch: CachedBatch) {
+        self.id_list.push(usize::from(entry_id));
+        self.art.insert(*entry_id, batch, &self.guard).expect("Insertion failed");
+    }
+
+    fn reset(&mut self) {
+        self.art = Congee::default();
     }
 
     fn for_each(&self, mut f: impl FnMut(&CacheEntryID, &CachedBatch)) {
-        for partition in self.partitions.iter() {
-            for (entry_id, cached_batch) in partition.read().unwrap().iter() {
-                f(entry_id, cached_batch);
-            }
+        for id in self.id_list.iter() {
+            f(&CacheEntryID::from(id), &self.art.get(&CacheEntryID::from(id), &self.guard).unwrap());
         }
     }
 }
 
 #[derive(Debug)]
 pub(crate) struct CacheStore {
-    cached_data: PartitionedHashStore,
+    cached_data: ArtStore,
     config: CacheConfig,
     budget: BudgetAccounting,
     policy: Box<dyn CachePolicy>,
@@ -121,7 +120,7 @@ impl CacheStore {
     ) -> Self {
         let config = CacheConfig::new(batch_size, max_cache_bytes, cache_root_dir);
         Self {
-            cached_data: PartitionedHashStore::new(),
+            cached_data: ArtStore::new(),
             budget: BudgetAccounting::new(config.max_cache_bytes()),
             config,
             policy,
@@ -136,32 +135,22 @@ impl CacheStore {
         cached_batch: CachedBatch,
     ) -> Result<(), (CacheAdvice, CachedBatch)> {
         let new_memory_size = cached_batch.memory_usage_bytes();
-        let mut cached_data_lock = self.cached_data.get_partition(&entry_id).write().unwrap();
-        let entry = cached_data_lock.entry(entry_id);
-        match entry {
-            Entry::Occupied(mut entry) => {
-                let old = entry.get();
-                let old_memory_size = old.memory_usage_bytes();
-                if self
-                    .budget
-                    .try_update_memory_usage(old_memory_size, new_memory_size)
-                    .is_err()
-                {
-                    drop(cached_data_lock);
-                    let advice = self.policy.advise(&entry_id, &cached_batch);
-                    return Err((advice, cached_batch));
-                }
-                entry.insert(cached_batch);
+        let c_data = self.cached_data.get_store();
+        if let Some(entry) = self.cached_data.get(&entry_id) {
+            let old_memory_size = entry.memory_usage_bytes();
+            if self.budget.try_update_memory_usage(old_memory_size, new_memory_size).is_err() {
+                let advice = self.policy.advise(&entry_id, &cached_batch);
+                return Err((advice, cached_batch));
             }
-            Entry::Vacant(entry) => {
-                if self.budget.try_reserve_memory(new_memory_size).is_err() {
-                    drop(cached_data_lock);
-                    let advice = self.policy.advise(&entry_id, &cached_batch);
-                    return Err((advice, cached_batch));
-                }
-                entry.insert_entry(cached_batch);
+            c_data.insert(entry_id, cached_batch, &self.cached_data.guard).expect("Insertion failed");
+        } else {
+            if self.budget.try_reserve_memory(new_memory_size).is_err() {
+                let advice = self.policy.advise(&entry_id, &cached_batch);
+                return Err((advice, cached_batch));
             }
-        };
+            c_data.insert(entry_id, cached_batch, &self.cached_data.guard).expect("Insertion failed");
+        }
+
         Ok(())
     }
 
@@ -285,7 +274,7 @@ impl CacheStore {
         self.cached_data.for_each(&mut f);
     }
 
-    pub(super) fn reset(&self) {
+    pub(super) fn reset(&mut self) {
         self.cached_data.reset();
         self.budget.reset_usage();
     }
@@ -330,7 +319,7 @@ mod tests {
 
         #[test]
         fn test_partition_index() {
-            let store = PartitionedHashStore::new();
+            let store = ArtStore::new();
 
             // Test different row group IDs map to expected partitions
             for i in 0..16 {
@@ -353,7 +342,7 @@ mod tests {
 
         #[test]
         fn test_get_and_is_cached() {
-            let store = PartitionedHashStore::new();
+            let store = ArtStore::new();
             let entry_id1 = create_entry_id(1, 1, 1, 1);
             let entry_id2 = create_entry_id(2, 2, 2, 2);
             let array1 = create_test_array(100);
@@ -381,20 +370,20 @@ mod tests {
 
         #[test]
         fn test_get_partition() {
-            let store = PartitionedHashStore::new();
+            let store = ArtStore::new();
 
             // Verify that we get the same partition for the same entry ID
             let entry_id = create_entry_id(1, 1, 5, 1);
             let partition_idx = store.partition_index(&entry_id);
             let partition_ptr = store.get_partition(&entry_id) as *const _;
-            let expected_ptr = &store.partitions[partition_idx] as *const _;
+            let expected_ptr = &store.art[partition_idx] as *const _;
 
             assert_eq!(partition_ptr, expected_ptr);
         }
 
         #[test]
         fn test_reset() {
-            let store = PartitionedHashStore::new();
+            let store = ArtStore::new();
             for i in 0..PARTITION_COUNT {
                 let entry_id = create_entry_id(1, i as u64, 1, 1);
                 let array = create_test_array(100);
@@ -574,9 +563,9 @@ mod tests {
         crate::utils::shuttle_test(concurrent_cache_operations);
     }
 
-    impl PartitionedHashStore {
+    impl ArtStore {
         fn len(&self) -> usize {
-            self.partitions
+            self.art
                 .iter()
                 .map(|p| p.read().unwrap().len())
                 .sum()

@@ -89,6 +89,20 @@ impl CachedBatch {
     }
 }
 
+impl From<CachedBatch> for usize {
+    fn from(value: CachedBatch) -> Self {
+        let v = Box::new(value);
+        Box::into_raw(v) as usize
+    }
+}
+
+impl From<usize> for CachedBatch {
+    fn from(ptr: usize) -> Self {
+        assert_eq!(std::mem::size_of::<Self>(), std::mem::size_of::<usize>());
+        unsafe { *Box::from_raw(ptr as *mut CachedBatch) }
+    }
+}
+
 impl Display for CachedBatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
