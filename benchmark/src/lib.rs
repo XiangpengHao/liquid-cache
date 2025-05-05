@@ -28,11 +28,11 @@ pub use observability::*;
 
 #[derive(Parser, Serialize, Clone)]
 pub struct CommonBenchmarkArgs {
-    /// Server URL
+    /// LiquidCache server URL
     #[arg(long, default_value = "http://localhost:50051")]
     pub server: String,
 
-    /// Admin server URL
+    /// LiquidCache admin server URL
     #[arg(long, default_value = "http://localhost:50052")]
     pub admin_server: String,
 
@@ -40,11 +40,11 @@ pub struct CommonBenchmarkArgs {
     #[arg(long, default_value = "3")]
     pub iteration: u32,
 
-    /// Path to the output JSON file
+    /// Path to the output JSON file to save the benchmark results
     #[arg(long)]
     pub output: Option<PathBuf>,
 
-    /// Path to the baseline directory
+    /// Path to the answer directory
     #[arg(long = "answer-dir")]
     pub answer_dir: Option<PathBuf>,
 
@@ -56,7 +56,10 @@ pub struct CommonBenchmarkArgs {
     #[arg(long = "reset-cache", default_value = "false")]
     pub reset_cache: bool,
 
-    /// Number of partitions to use
+    /// Number of partitions to use,
+    /// impacts LiquidCache **server's** number of threads to use
+    /// Checkout datafusion partition docs for more details:
+    /// <https://datafusion.apache.org/user-guide/configs.html#:~:text=datafusion.execution.target_partitions>
     #[arg(long)]
     pub partitions: Option<usize>,
 
@@ -69,14 +72,17 @@ pub struct CommonBenchmarkArgs {
     pub openobserve_auth: Option<String>,
 
     /// Path to save the cache trace
+    /// It tells the **server** to collect the cache trace.
     #[arg(long = "cache-trace-dir")]
     pub cache_trace_dir: Option<PathBuf>,
 
     /// Path to save the cache stats
+    /// It tells the **server** to collect the cache stats.
     #[arg(long = "cache-stats-dir")]
     pub cache_stats_dir: Option<PathBuf>,
 
     /// Path to save the flamegraph
+    /// It tells the **server** to collect the flamegraph execution.
     #[arg(long = "flamegraph-dir")]
     pub flamegraph_dir: Option<PathBuf>,
 }
