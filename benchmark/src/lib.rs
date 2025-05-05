@@ -59,7 +59,7 @@ pub struct CommonBenchmarkArgs {
     /// Number of partitions to use,
     /// impacts LiquidCache **server's** number of threads to use
     /// Checkout datafusion partition docs for more details:
-    /// https://datafusion.apache.org/user-guide/configs.html#:~:text=datafusion.execution.target_partitions
+    /// <https://datafusion.apache.org/user-guide/configs.html#:~:text=datafusion.execution.target_partitions>
     #[arg(long)]
     pub partitions: Option<usize>,
 
