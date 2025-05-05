@@ -67,6 +67,14 @@ pub enum LiquidCacheMode {
     },
 }
 
+impl Default for LiquidCacheMode {
+    fn default() -> Self {
+        Self::InMemoryLiquid {
+            transcode_in_background: true,
+        }
+    }
+}
+
 impl LiquidCacheMode {
     fn string_type(&self) -> DataType {
         match self {

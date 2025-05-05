@@ -68,7 +68,7 @@ mod tests;
 /// use datafusion::prelude::SessionContext;
 /// use liquid_cache_server::LiquidCacheService;
 /// use tonic::transport::Server;
-/// let liquid_cache = LiquidCacheService::new(SessionContext::new(), None, None);
+/// let liquid_cache = LiquidCacheService::new(SessionContext::new(), None, None, Default::default());
 /// let flight = FlightServiceServer::new(liquid_cache);
 /// Server::builder()
 ///     .add_service(flight)

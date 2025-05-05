@@ -47,76 +47,61 @@ async fn run_sql(sql: &str, mode: CacheMode, cache_size: usize) -> String {
     first_iter
 }
 
+async fn test_runner(sql: &str, reference: &str) {
+    let modes = [
+        CacheMode::LiquidEagerTranscode,
+        CacheMode::Arrow,
+        CacheMode::Liquid,
+    ];
+
+    // 573960 is the first batch size of URL
+    let sizes = [10, 573960, usize::MAX];
+
+    for mode in modes {
+        for size in sizes {
+            let result = run_sql(sql, mode, size).await;
+            assert_eq!(result, reference);
+        }
+    }
+}
+
 #[tokio::test]
 async fn test_url_prefix() {
     let sql = r#"select COUNT(*) from hits where "URL" like 'https://%'"#;
-    let eager = run_sql(sql, CacheMode::LiquidEagerTranscode, 573960).await;
-    insta::assert_snapshot!(eager);
-
-    let arrow = run_sql(sql, CacheMode::Arrow, usize::MAX).await;
-    assert_eq!(eager, arrow);
-
-    let lazy = run_sql(sql, CacheMode::Liquid, 573960).await;
-    assert_eq!(eager, lazy);
+    let reference = run_sql(sql, CacheMode::LiquidEagerTranscode, 573960).await;
+    insta::assert_snapshot!(reference);
+    test_runner(sql, &reference).await;
 }
 
 #[tokio::test]
 async fn test_url() {
     let sql = r#"select "URL" from hits where "URL" like '%tours%' order by "URL" desc"#;
-    // 573960 is the first batch size of URL
-    let eager = run_sql(sql, CacheMode::LiquidEagerTranscode, 573960).await;
-    insta::assert_snapshot!(eager);
-
-    let arrow = run_sql(sql, CacheMode::Arrow, usize::MAX).await;
-    assert_eq!(eager, arrow);
-
-    let lazy = run_sql(sql, CacheMode::Liquid, 573960).await;
-    assert_eq!(eager, lazy);
-}
-
-#[tokio::test]
-async fn test_url_small_cache() {
-    let sql = r#"select "URL" from hits where "URL" like '%tours%' order by "URL" desc"#;
-    let arrow = run_sql(sql, CacheMode::Arrow, 10).await;
-    insta::assert_snapshot!(arrow);
+    let reference = run_sql(sql, CacheMode::LiquidEagerTranscode, 573960).await;
+    insta::assert_snapshot!(reference);
+    test_runner(sql, &reference).await;
 }
 
 #[tokio::test]
 async fn test_os() {
     let sql = r#"select "OS" from hits where "URL" like '%tours%' order by "OS" desc"#;
-    let eager = run_sql(sql, CacheMode::LiquidEagerTranscode, 573960).await;
-    insta::assert_snapshot!(eager);
-
-    let arrow = run_sql(sql, CacheMode::Arrow, usize::MAX).await;
-    assert_eq!(eager, arrow);
-
-    let lazy = run_sql(sql, CacheMode::Liquid, 573960).await;
-    assert_eq!(eager, lazy);
+    let reference = run_sql(sql, CacheMode::LiquidEagerTranscode, 573960).await;
+    insta::assert_snapshot!(reference);
+    test_runner(sql, &reference).await;
 }
 
 #[tokio::test]
 async fn test_referer() {
     let sql = r#"select "Referer" from hits where "Referer" <> '' AND "URL" like '%tours%' order by "Referer" desc"#;
-    let eager = run_sql(sql, CacheMode::LiquidEagerTranscode, 573960).await;
-    insta::assert_snapshot!(eager);
-
-    let arrow = run_sql(sql, CacheMode::Arrow, usize::MAX).await;
-    assert_eq!(eager, arrow);
-
-    let lazy = run_sql(sql, CacheMode::Liquid, 573960).await;
-    assert_eq!(eager, lazy);
+    let reference = run_sql(sql, CacheMode::LiquidEagerTranscode, 573960).await;
+    insta::assert_snapshot!(reference);
+    test_runner(sql, &reference).await;
 }
 
 #[tokio::test]
 #[ignore = "Wait for https://github.com/apache/datafusion/pull/15827 to be merged"]
 async fn test_min_max() {
     let sql = r#"select min("Referer"), max("Referer") from hits where "Referer" <> '' AND "URL" like '%tours%'"#;
-    let eager = run_sql(sql, CacheMode::LiquidEagerTranscode, 573960).await;
-    insta::assert_snapshot!(eager);
-
-    let arrow = run_sql(sql, CacheMode::Arrow, usize::MAX).await;
-    assert_eq!(eager, arrow);
-
-    let lazy = run_sql(sql, CacheMode::Liquid, 573960).await;
-    assert_eq!(eager, lazy);
+    let reference = run_sql(sql, CacheMode::LiquidEagerTranscode, 573960).await;
+    insta::assert_snapshot!(reference);
+    test_runner(sql, &reference).await;
 }

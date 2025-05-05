@@ -244,16 +244,6 @@ impl CacheStore {
     pub(super) fn insert(&self, entry_id: CacheEntryID, mut batch_to_cache: CachedBatch) {
         let mut loop_count = 0;
         loop {
-            if batch_to_cache.memory_usage_bytes() > self.budget.max_memory_bytes() {
-                let advice = CacheAdvice::TranscodeToDisk(entry_id);
-                let not_inserted = self.apply_advice(advice, batch_to_cache);
-                assert!(
-                    not_inserted.is_none(),
-                    "If batch is too big, it should be transcoded to disk"
-                );
-                return;
-            }
-
             let Err((advice, not_inserted)) = self.insert_inner(entry_id, batch_to_cache) else {
                 self.policy.notify_insert(&entry_id);
                 return;

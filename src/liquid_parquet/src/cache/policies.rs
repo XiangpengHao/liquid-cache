@@ -50,11 +50,11 @@ impl FiloPolicy {
 }
 
 impl CachePolicy for FiloPolicy {
-    fn advise(&self, entry_id: &CacheEntryID, _cache_mode: &LiquidCacheMode) -> CacheAdvice {
+    fn advise(&self, entry_id: &CacheEntryID, cache_mode: &LiquidCacheMode) -> CacheAdvice {
         if let Some(newest_entry) = self.get_newest_entry() {
             return CacheAdvice::Evict(newest_entry);
         }
-        CacheAdvice::TranscodeToDisk(*entry_id)
+        fallback_advice(entry_id, cache_mode)
     }
 
     fn notify_evict(&self, entry_id: &CacheEntryID) {
@@ -145,15 +145,13 @@ unsafe impl Send for LruPolicy {}
 unsafe impl Sync for LruPolicy {}
 
 impl CachePolicy for LruPolicy {
-    fn advise(&self, entry_id: &CacheEntryID, _cache_mode: &LiquidCacheMode) -> CacheAdvice {
+    fn advise(&self, entry_id: &CacheEntryID, cache_mode: &LiquidCacheMode) -> CacheAdvice {
         let state = self.state.lock().unwrap();
         if let Some(tail_ptr) = state.tail {
             let tail_entry_id = unsafe { tail_ptr.as_ref().entry_id };
-            if tail_entry_id != *entry_id {
-                return CacheAdvice::Evict(tail_entry_id);
-            }
+            return CacheAdvice::Evict(tail_entry_id);
         }
-        CacheAdvice::TranscodeToDisk(*entry_id)
+        fallback_advice(entry_id, cache_mode)
     }
 
     fn notify_access(&self, entry_id: &CacheEntryID) {
@@ -232,6 +230,13 @@ impl CachePolicy for DiscardPolicy {
     fn notify_evict(&self, _entry_id: &CacheEntryID) {}
 }
 
+fn fallback_advice(entry_id: &CacheEntryID, cache_mode: &LiquidCacheMode) -> CacheAdvice {
+    match cache_mode {
+        LiquidCacheMode::InMemoryArrow => CacheAdvice::Discard,
+        _ => CacheAdvice::TranscodeToDisk(*entry_id),
+    }
+}
+
 #[cfg(test)]
 mod test {
     use liquid_cache_common::LiquidCacheMode;
@@ -259,10 +264,9 @@ mod test {
         assert_eq!(advice, CacheAdvice::Evict(expect_evict));
     }
 
-    // Helper to assert transcode advice
-    fn assert_transcode_advice(policy: &LruPolicy, trigger_entry: CacheEntryID) {
+    fn assert_discard_advice(policy: &LruPolicy, trigger_entry: CacheEntryID) {
         let advice = policy.advise(&trigger_entry, &LiquidCacheMode::InMemoryArrow);
-        assert_eq!(advice, CacheAdvice::TranscodeToDisk(trigger_entry));
+        assert_eq!(advice, CacheAdvice::Discard);
     }
 
     #[test]
@@ -315,7 +319,7 @@ mod test {
     #[test]
     fn test_lru_policy_advise_empty() {
         let policy = LruPolicy::new();
-        assert_transcode_advice(&policy, entry(1));
+        assert_discard_advice(&policy, entry(1));
     }
 
     #[test]
@@ -324,7 +328,7 @@ mod test {
         let e1 = entry(1);
         policy.notify_insert(&e1);
 
-        assert_transcode_advice(&policy, e1);
+        assert_evict_advice(&policy, e1, entry(1));
     }
 
     #[test]
