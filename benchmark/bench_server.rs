@@ -2,6 +2,7 @@ use arrow_flight::flight_service_server::FlightServiceServer;
 use clap::Parser;
 use fastrace_tonic::FastraceServerLayer;
 use liquid_cache_benchmarks::setup_observability;
+use liquid_cache_common::CacheMode;
 use liquid_cache_server::{LiquidCacheService, run_admin_server};
 use log::info;
 use mimalloc::MiMalloc;
@@ -34,6 +35,10 @@ struct CliArgs {
     #[arg(long = "disk-cache-dir")]
     disk_cache_dir: Option<PathBuf>,
 
+    /// Cache mode
+    #[arg(long = "cache-mode", default_value = "liquid-eager-transcode")]
+    cache_mode: CacheMode,
+
     /// Openobserve auth token
     #[arg(long)]
     openobserve_auth: Option<String>,
@@ -61,8 +66,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let ctx = LiquidCacheService::context()?;
-    let liquid_cache_server =
-        LiquidCacheService::new(ctx, max_cache_bytes, args.disk_cache_dir.clone());
+    let liquid_cache_server = LiquidCacheService::new(
+        ctx,
+        max_cache_bytes,
+        args.disk_cache_dir.clone(),
+        args.cache_mode,
+    );
 
     let liquid_cache_server = Arc::new(liquid_cache_server);
     let flight = FlightServiceServer::from_arc(liquid_cache_server.clone());

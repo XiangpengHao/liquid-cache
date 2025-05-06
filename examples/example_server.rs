@@ -17,6 +17,7 @@
 
 use arrow_flight::flight_service_server::FlightServiceServer;
 use datafusion::prelude::SessionContext;
+use liquid_cache_common::CacheMode;
 use liquid_cache_server::LiquidCacheService;
 use tonic::transport::Server;
 
@@ -26,6 +27,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         SessionContext::new(),
         Some(1024 * 1024 * 1024),               // max memory cache size 1GB
         Some(tempfile::tempdir()?.into_path()), // disk cache dir
+        CacheMode::LiquidEagerTranscode,
     );
 
     let flight = FlightServiceServer::new(liquid_cache);

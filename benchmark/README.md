@@ -39,7 +39,7 @@ cargo run --release --bin clickbench_client -- --query-path benchmark/clickbench
 #### Advanced
 
 ```bash
-env RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS='-C target-cpu=native' cargo run --release --bin bench_server
+env RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS='-C target-cpu=native' cargo run --release --bin bench_server -- --cache-mode liquid_eager_transcode
 env RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS='-C target-cpu=native' cargo run --release --bin clickbench_client -- --query-path benchmark/clickbench/queries/queries.sql --file benchmark/clickbench/data/hits.parquet --query 42
 ```
 
@@ -59,13 +59,13 @@ In NixOS, you want to set `env LD_LIBRARY_PATH=$NIX_LD_LIBRARY_PATH`
 ### Run server (same as ClickBench)
 
 ```bash
-cargo run --release --bin bench_server
+cargo run --release --bin bench_server -- --cache-mode liquid_eager_transcode
 ```
 
 ### Run client
 
 ```bash
-env RUST_LOG=info,clickbench_client=debug RUSTFLAGS='-C target-cpu=native' cargo run --release --bin tpch_client -- --query-dir benchmark/tpch/queries/ --data-dir benchmark/tpch/data/sf0.1  --iteration 3 --bench-mode liquid-eager-transcode --answer-dir benchmark/tpch/answers/sf0.1
+env RUST_LOG=info,clickbench_client=debug RUSTFLAGS='-C target-cpu=native' cargo run --release --bin tpch_client -- --query-dir benchmark/tpch/queries/ --data-dir benchmark/tpch/data/sf0.1  --iteration 3 --answer-dir benchmark/tpch/answers/sf0.1
 ```
 
 

@@ -58,9 +58,6 @@ pub struct RegisterPlanRequest {
 
     #[prost(bytes, tag = "2")]
     pub handle: Bytes,
-
-    #[prost(string, tag = "3")]
-    pub cache_mode: String,
 }
 
 impl ProstMessageExt for RegisterPlanRequest {

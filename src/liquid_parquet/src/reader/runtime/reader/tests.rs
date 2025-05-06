@@ -130,9 +130,9 @@ fn get_test_cache(
     cache_dir: PathBuf,
     cache_mode: &LiquidCacheMode,
 ) -> LiquidCachedFileRef {
-    let lq = LiquidCache::new(bath_size, usize::MAX, cache_dir);
+    let lq = LiquidCache::new(bath_size, usize::MAX, cache_dir, *cache_mode);
 
-    lq.register_or_get_file("".to_string(), *cache_mode)
+    lq.register_or_get_file("".to_string())
 }
 
 async fn basic_stuff(cache_mode: &LiquidCacheMode) {
@@ -342,13 +342,15 @@ async fn test_reading_with_full_cache() {
     let batch_size = builder.batch_size;
     let tmp_dir = tempfile::tempdir().unwrap();
     // Create a cache with a very small max size to force cache misses
-    let lq = LiquidCache::new(batch_size, 1, tmp_dir.path().to_path_buf());
-    let lq_file = lq.register_or_get_file(
-        "".to_string(),
+    let lq = LiquidCache::new(
+        batch_size,
+        1,
+        tmp_dir.path().to_path_buf(),
         LiquidCacheMode::InMemoryLiquid {
             transcode_in_background: false,
         },
     );
+    let lq_file = lq.register_or_get_file("".to_string());
 
     builder.projection = ProjectionMask::roots(
         builder.metadata.file_metadata().schema_descr(),

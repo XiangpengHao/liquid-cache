@@ -57,10 +57,6 @@ pub async fn run_admin_server(
         .route("/shutdown", get(handlers::shutdown_handler))
         .route("/reset_cache", get(handlers::reset_cache_handler))
         .route(
-            "/registered_tables",
-            get(handlers::get_registered_tables_handler),
-        )
-        .route(
             "/parquet_cache_usage",
             get(handlers::get_parquet_cache_usage_handler),
         )

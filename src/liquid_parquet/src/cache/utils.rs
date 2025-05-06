@@ -3,6 +3,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use liquid_cache_common::LiquidCacheMode;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub(super) struct ColumnAccessPath {
     file_id: u16,
@@ -191,14 +193,21 @@ pub(super) struct CacheConfig {
     batch_size: usize,
     max_cache_bytes: usize,
     cache_root_dir: PathBuf,
+    cache_mode: LiquidCacheMode,
 }
 
 impl CacheConfig {
-    pub(super) fn new(batch_size: usize, max_cache_bytes: usize, cache_root_dir: PathBuf) -> Self {
+    pub(super) fn new(
+        batch_size: usize,
+        max_cache_bytes: usize,
+        cache_root_dir: PathBuf,
+        cache_mode: LiquidCacheMode,
+    ) -> Self {
         Self {
             batch_size,
             max_cache_bytes,
             cache_root_dir,
+            cache_mode,
         }
     }
 
@@ -212,6 +221,10 @@ impl CacheConfig {
 
     pub fn cache_root_dir(&self) -> &PathBuf {
         &self.cache_root_dir
+    }
+
+    pub fn cache_mode(&self) -> &LiquidCacheMode {
+        &self.cache_mode
     }
 }
 
@@ -236,7 +249,15 @@ pub(crate) fn create_cache_store(
     let temp_dir = tempdir().unwrap();
     let batch_size = 128;
 
-    CacheStore::new(batch_size, max_cache_bytes, temp_dir.into_path(), policy)
+    CacheStore::new(
+        batch_size,
+        max_cache_bytes,
+        temp_dir.into_path(),
+        LiquidCacheMode::InMemoryLiquid {
+            transcode_in_background: false,
+        },
+        policy,
+    )
 }
 
 #[cfg(test)]

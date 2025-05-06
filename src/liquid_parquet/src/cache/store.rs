@@ -3,16 +3,17 @@ use std::fmt::{Debug, Formatter};
 use std::{fs::File, io::Write, path::PathBuf};
 
 use super::{
+    CacheEntryID, CachedBatch, LiquidCompressorStates,
     budget::BudgetAccounting,
     policies::CachePolicy,
     tracer::CacheTracer,
     transcode_liquid_inner,
     utils::{CacheConfig, ColumnAccessPath},
-    CacheEntryID, CachedBatch, LiquidCompressorStates,
 };
 use crate::liquid_array::LiquidArrayRef;
 use crate::sync::{Arc, RwLock};
 use ahash::AHashMap;
+use liquid_cache_common::LiquidCacheMode;
 
 #[derive(Debug)]
 struct CompressorStates {
@@ -109,6 +110,8 @@ pub enum CacheAdvice {
     TranscodeToDisk(CacheEntryID),
     /// Transcode the entry to liquid memory.
     Transcode(CacheEntryID),
+    /// Discard the entry,  do not cache.
+    Discard,
 }
 
 impl CacheStore {
@@ -116,9 +119,10 @@ impl CacheStore {
         batch_size: usize,
         max_cache_bytes: usize,
         cache_root_dir: PathBuf,
+        cache_mode: LiquidCacheMode,
         policy: Box<dyn CachePolicy>,
     ) -> Self {
-        let config = CacheConfig::new(batch_size, max_cache_bytes, cache_root_dir);
+        let config = CacheConfig::new(batch_size, max_cache_bytes, cache_root_dir, cache_mode);
         Self {
             cached_data: ArtStore::new(),
             budget: BudgetAccounting::new(config.max_cache_bytes()),
@@ -142,13 +146,13 @@ impl CacheStore {
                 .try_update_memory_usage(old_memory_size, new_memory_size)
                 .is_err()
             {
-                let advice = self.policy.advise(&entry_id, &cached_batch);
+                let advice = self.policy.advise(&entry_id, self.config.cache_mode());
                 return Err((advice, cached_batch));
             }
             self.cached_data.insert(&entry_id, cached_batch);
         } else {
             if self.budget.try_reserve_memory(new_memory_size).is_err() {
-                let advice = self.policy.advise(&entry_id, &cached_batch);
+                let advice = self.policy.advise(&entry_id, self.config.cache_mode());
                 return Err((advice, cached_batch));
             }
             self.cached_data.insert(&entry_id, cached_batch);
@@ -217,6 +221,7 @@ impl CacheStore {
                     .expect("failed to insert on disk liquid");
                 None
             }
+            CacheAdvice::Discard => None,
         }
     }
 
@@ -231,16 +236,6 @@ impl CacheStore {
     pub(super) fn insert(&self, entry_id: CacheEntryID, mut batch_to_cache: CachedBatch) {
         let mut loop_count = 0;
         loop {
-            if batch_to_cache.memory_usage_bytes() > self.budget.max_memory_bytes() {
-                let advice = CacheAdvice::TranscodeToDisk(entry_id);
-                let not_inserted = self.apply_advice(advice, batch_to_cache);
-                assert!(
-                    not_inserted.is_none(),
-                    "If batch is too big, it should be transcoded to disk"
-                );
-                return;
-            }
-
             let Err((advice, not_inserted)) = self.insert_inner(entry_id, batch_to_cache) else {
                 self.policy.notify_insert(&entry_id);
                 return;
@@ -309,6 +304,7 @@ mod tests {
         policies::{CachePolicy, LruPolicy},
         utils::{create_cache_store, create_entry_id, create_test_array},
     };
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
     use crate::sync::{
@@ -316,6 +312,7 @@ mod tests {
         thread,
     };
     use arrow::array::Array;
+    use liquid_cache_common::LiquidCacheMode;
 
     mod partitioned_hash_store_tests {
         use super::*;
@@ -390,7 +387,7 @@ mod tests {
     }
 
     impl CachePolicy for TestPolicy {
-        fn advise(&self, entry_id: &CacheEntryID, _to_insert: &CachedBatch) -> CacheAdvice {
+        fn advise(&self, entry_id: &CacheEntryID, _cache_mode: &LiquidCacheMode) -> CacheAdvice {
             self.advice_count.fetch_add(1, Ordering::SeqCst);
             match self.advice_type {
                 AdviceType::Evict => {

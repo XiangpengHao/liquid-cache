@@ -22,8 +22,10 @@
 				"RUST_LOG": "info"
 			},
 			"args": [
-				"--cache-trace-dir",
-				"benchmark/data"
+				"--max-cache-mb",
+				"1000",
+				"--cache-mode",
+				"arrow"
 			],
 			"cwd": "${workspaceFolder}",
 		},

@@ -44,8 +44,8 @@ use liquid_cache_parquet::LiquidCacheRef;
 use log::info;
 use prost::bytes::Bytes;
 use service::LiquidCacheServiceInner;
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
-use std::{pin::Pin, str::FromStr};
+use std::pin::Pin;
+use std::{path::PathBuf, sync::Arc};
 use tonic::{Request, Response, Status, Streaming};
 use url::Url;
 use uuid::Uuid;
@@ -68,7 +68,7 @@ mod tests;
 /// use datafusion::prelude::SessionContext;
 /// use liquid_cache_server::LiquidCacheService;
 /// use tonic::transport::Server;
-/// let liquid_cache = LiquidCacheService::new(SessionContext::new(), None, None);
+/// let liquid_cache = LiquidCacheService::new(SessionContext::new(), None, None, Default::default());
 /// let flight = FlightServiceServer::new(liquid_cache);
 /// Server::builder()
 ///     .add_service(flight)
@@ -89,7 +89,7 @@ impl LiquidCacheService {
     /// With no disk cache and unbounded memory usage.
     pub fn try_new() -> Result<Self, DataFusionError> {
         let ctx = Self::context()?;
-        Ok(Self::new(ctx, None, None))
+        Ok(Self::new(ctx, None, None, CacheMode::LiquidEagerTranscode))
     }
 
     /// Create a new [LiquidCacheService] with a custom [SessionContext]
@@ -99,18 +99,25 @@ impl LiquidCacheService {
     /// * `ctx` - The [SessionContext] to use
     /// * `max_cache_bytes` - The maximum number of bytes to cache in memory
     /// * `disk_cache_dir` - The directory to store the disk cache
+    /// * `cache_mode` - The [CacheMode] to use
     pub fn new(
         ctx: SessionContext,
         max_cache_bytes: Option<usize>,
         disk_cache_dir: Option<PathBuf>,
+        cache_mode: CacheMode,
     ) -> Self {
         Self {
-            inner: LiquidCacheServiceInner::new(Arc::new(ctx), max_cache_bytes, disk_cache_dir),
+            inner: LiquidCacheServiceInner::new(
+                Arc::new(ctx),
+                max_cache_bytes,
+                disk_cache_dir,
+                cache_mode,
+            ),
         }
     }
 
     /// Get a reference to the cache
-    pub fn cache(&self) -> &LiquidCacheRef {
+    pub fn cache(&self) -> &Option<LiquidCacheRef> {
         self.inner.cache()
     }
 
@@ -141,11 +148,6 @@ impl LiquidCacheService {
 
         let ctx = SessionContext::new_with_state(state);
         Ok(ctx)
-    }
-
-    /// Get all registered tables and their cache modes
-    pub async fn get_registered_tables(&self) -> HashMap<String, (String, CacheMode)> {
-        self.inner.get_registered_tables().await
     }
 
     /// Get the parquet cache directory
@@ -242,8 +244,7 @@ impl FlightSqlService for LiquidCacheService {
                 let plan = cmd.plan;
                 let plan = physical_plan_from_bytes(&plan, self.inner.get_ctx()).unwrap();
                 let handle = Uuid::from_bytes_ref(cmd.handle.as_ref().try_into().unwrap());
-                let cache_mode = CacheMode::from_str(&cmd.cache_mode).unwrap();
-                self.inner.register_plan(*handle, plan, cache_mode);
+                self.inner.register_plan(*handle, plan);
                 let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
                     body: Bytes::default(),
                 })]);

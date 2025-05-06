@@ -233,7 +233,7 @@ impl LiquidStreamBuilder {
             .batch_size
             .min(self.metadata.file_metadata().num_rows() as usize);
 
-        let liquid_cache_mode = liquid_cache.cache_mode();
+        let liquid_cache_mode = *liquid_cache.cache_mode();
         let reader = ReaderFactory {
             input: self.input,
             filter: self.filter,

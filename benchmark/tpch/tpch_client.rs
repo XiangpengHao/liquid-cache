@@ -84,11 +84,7 @@ pub async fn main() -> Result<()> {
         args.common.openobserve_auth.as_deref(),
     );
 
-    let ctx = args
-        .common
-        .bench_mode
-        .setup_tpch_ctx(&args.common.server, &args.data_dir, args.common.partitions)
-        .await?;
+    let ctx = args.common.setup_tpch_ctx(&args.data_dir).await?;
 
     let mut benchmark_result = BenchmarkResult {
         args: args.clone(),
@@ -150,7 +146,7 @@ pub async fn main() -> Result<()> {
                 physical_plan_with_metrics.indent(true)
             );
             let result_str = pretty::pretty_format_batches(&results).unwrap();
-            info!("Query result: \n{result_str}");
+            debug!("Query result: \n{result_str}");
 
             // Check query answers
             if let Some(answer_dir) = &args.common.answer_dir {
@@ -160,11 +156,7 @@ pub async fn main() -> Result<()> {
 
             args.common.get_cache_stats().await;
 
-            let metrics_response = args
-                .common
-                .bench_mode
-                .get_execution_metrics(&args.common.admin_server, &physical_plan)
-                .await;
+            let metrics_response = args.common.get_execution_metrics(&physical_plan).await;
 
             let result = IterationResult {
                 network_traffic: network_info.received(),
@@ -178,10 +170,7 @@ pub async fn main() -> Result<()> {
             query_result.add(result);
         }
         if args.common.reset_cache {
-            args.common
-                .bench_mode
-                .reset_cache(&args.common.admin_server)
-                .await?;
+            args.common.reset_cache().await?;
         }
         benchmark_result.results.push(query_result);
     }
