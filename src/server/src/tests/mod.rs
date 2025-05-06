@@ -5,7 +5,7 @@ use datafusion::{
     physical_plan::{ExecutionPlan, collect},
     prelude::SessionContext,
 };
-use liquid_cache_common::{CacheMode, LiquidCacheMode};
+use liquid_cache_common::CacheMode;
 use uuid::Uuid;
 
 use crate::{LiquidCacheService, LiquidCacheServiceInner};
@@ -23,24 +23,19 @@ async fn run_sql(sql: &str, mode: CacheMode, cache_size: usize) -> String {
     ctx.register_parquet("hits", TEST_FILE, Default::default())
         .await
         .unwrap();
-    let service = LiquidCacheServiceInner::new(
-        ctx.clone(),
-        Some(cache_size),
-        None,
-        LiquidCacheMode::from(mode),
-    );
-    async fn get_result(service: &LiquidCacheServiceInner, sql: &str, mode: CacheMode) -> String {
+    let service = LiquidCacheServiceInner::new(ctx.clone(), Some(cache_size), None, mode);
+    async fn get_result(service: &LiquidCacheServiceInner, sql: &str) -> String {
         let handle = Uuid::new_v4();
         let ctx = service.get_ctx();
         let plan = get_physical_plan(sql, &ctx).await;
-        service.register_plan(handle, plan, mode);
+        service.register_plan(handle, plan);
         let plan = service.get_plan(&handle).unwrap();
         let batches = collect(plan, ctx.task_ctx()).await.unwrap();
         pretty_format_batches(&batches).unwrap().to_string()
     }
 
-    let first_iter = get_result(&service, sql, mode).await;
-    let second_iter = get_result(&service, sql, mode).await;
+    let first_iter = get_result(&service, sql).await;
+    let second_iter = get_result(&service, sql).await;
 
     assert_eq!(first_iter, second_iter);
 
