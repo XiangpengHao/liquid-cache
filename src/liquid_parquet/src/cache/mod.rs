@@ -98,8 +98,13 @@ impl From<CachedBatch> for usize {
 
 impl From<usize> for CachedBatch {
     fn from(ptr: usize) -> Self {
-        assert_eq!(std::mem::size_of::<Self>(), std::mem::size_of::<usize>());
-        unsafe { *Box::from_raw(ptr as *mut CachedBatch) }
+        unsafe {
+            let raw_ptr = ptr as *mut CachedBatch;
+            let boxed = Box::from_raw(raw_ptr);
+
+            // TODO: does this leave a dangling pointer???
+            *boxed
+        }
     }
 }
 
@@ -110,6 +115,21 @@ impl Display for CachedBatch {
             Self::LiquidMemory(_) => write!(f, "LiquidMemory"),
             Self::OnDiskLiquid => write!(f, "OnDiskLiquid"),
         }
+    }
+}
+
+mod cached_batch_tests {
+    use super::*;
+    use arrow::array::Int32Array;
+    #[test]
+    fn cached_batch_cast() {
+        let array = Arc::new(Int32Array::from(vec![Some(1), None, Some(3)]));
+        let cached_batch: CachedBatch = CachedBatch::ArrowMemory(array);
+        let ref_count_1 = cached_batch.reference_count();
+        let batch_as_usize = usize::from(cached_batch);
+        let back_to_cached_batch = CachedBatch::from(batch_as_usize);
+        let ref_count = back_to_cached_batch.reference_count();
+        assert_eq!(ref_count_1, ref_count);
     }
 }
 
