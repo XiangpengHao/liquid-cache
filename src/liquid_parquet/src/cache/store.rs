@@ -3,12 +3,12 @@ use std::fmt::{Debug, Formatter};
 use std::{fs::File, io::Write, path::PathBuf};
 
 use super::{
-    CacheEntryID, CachedBatch, LiquidCompressorStates,
     budget::BudgetAccounting,
     policies::CachePolicy,
     tracer::CacheTracer,
     transcode_liquid_inner,
     utils::{CacheConfig, ColumnAccessPath},
+    CacheEntryID, CachedBatch, LiquidCompressorStates,
 };
 use crate::liquid_array::LiquidArrayRef;
 use crate::sync::{Arc, RwLock};
@@ -524,7 +524,7 @@ mod tests {
 
     impl ArtStore {
         fn len(&self) -> usize {
-            0
+            self.art.keys().len()
         }
     }
 

@@ -50,7 +50,7 @@ uuid = { version = "1.16.0", features = ["v4"] }
 fastrace = "0.7"
 fastrace-futures = "0.7"
 fastrace-tonic = "0.1"
-congee = { path = "/Users/devan/Documents/OSS/congee" }
+congee = { path = "/home/devan/Documents/OSS/congee" }
 
 
 [profile.dev.package]

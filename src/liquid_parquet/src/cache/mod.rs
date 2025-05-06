@@ -1,10 +1,10 @@
 use super::liquid_array::LiquidArrayRef;
 use crate::liquid_array::ipc::{self, LiquidIPCContext};
 use crate::sync::{
-    Mutex, RwLock,
     atomic::{AtomicU64, Ordering},
+    Mutex, RwLock,
 };
-use crate::{ABLATION_STUDY_MODE, AblationStudyMode, LiquidPredicate};
+use crate::{AblationStudyMode, LiquidPredicate, ABLATION_STUDY_MODE};
 use ahash::AHashMap;
 use arrow::array::{Array, ArrayRef, BooleanArray, RecordBatch};
 use arrow::buffer::BooleanBuffer;
@@ -12,7 +12,7 @@ use arrow::compute::prep_null_mask_filter;
 use arrow_schema::{ArrowError, DataType, Field, Schema};
 use bytes::Bytes;
 use liquid_cache_common::{
-    LiquidCacheMode, cast_from_parquet_to_liquid_type, coerce_from_parquet_to_liquid_type,
+    cast_from_parquet_to_liquid_type, coerce_from_parquet_to_liquid_type, LiquidCacheMode,
 };
 use policies::LruPolicy;
 use std::fmt::Display;
@@ -100,10 +100,7 @@ impl From<usize> for CachedBatch {
     fn from(ptr: usize) -> Self {
         unsafe {
             let raw_ptr = ptr as *mut CachedBatch;
-            let boxed = Box::from_raw(raw_ptr);
-
-            // TODO: does this leave a dangling pointer???
-            *boxed
+            Box::leak(Box::from_raw(raw_ptr)).clone()
         }
     }
 }
@@ -118,6 +115,7 @@ impl Display for CachedBatch {
     }
 }
 
+#[cfg(test)]
 mod cached_batch_tests {
     use super::*;
     use arrow::array::Int32Array;
