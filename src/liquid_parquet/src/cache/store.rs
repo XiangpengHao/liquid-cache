@@ -1,19 +1,18 @@
-use std::{collections::hash_map::Entry, fs::File, io::Write, path::PathBuf};
-use std::fmt::{Debug, Formatter};
 use congee::Congee;
+use std::fmt::{Debug, Formatter};
+use std::{fs::File, io::Write, path::PathBuf};
 
-use crate::sync::{Arc, RwLock};
-use ahash::AHashMap;
-use congee::epoch::Guard;
 use super::{
-    CacheEntryID, CachedBatch, LiquidCompressorStates,
     budget::BudgetAccounting,
     policies::CachePolicy,
     tracer::CacheTracer,
     transcode_liquid_inner,
     utils::{CacheConfig, ColumnAccessPath},
+    CacheEntryID, CachedBatch, LiquidCompressorStates,
 };
 use crate::liquid_array::LiquidArrayRef;
+use crate::sync::{Arc, RwLock};
+use ahash::AHashMap;
 
 #[derive(Debug)]
 struct CompressorStates {
@@ -39,12 +38,10 @@ impl CompressorStates {
 
 struct ArtStore {
     art: Congee<CacheEntryID, CachedBatch>,
-    id_list: Vec<usize>,
-    guard: Guard,
 }
 
 impl Debug for ArtStore {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, _f: &mut Formatter<'_>) -> std::fmt::Result {
         Ok(())
     }
 }
@@ -54,29 +51,24 @@ impl Debug for ArtStore {
 impl ArtStore {
     fn new() -> Self {
         let art: Congee<CacheEntryID, CachedBatch> = Congee::default();
-        let guard = art.pin();
-        Self {
-            art,
-            id_list: Vec::new(),
-            guard
-        }
-    }
-
-    fn get_store(&self) -> Arc<&Congee<CacheEntryID, CachedBatch>> {
-        Arc::new(&self.art)
+        Self { art }
     }
 
     fn get(&self, entry_id: &CacheEntryID) -> Option<CachedBatch> {
-        self.art.get(entry_id, &self.guard)
+        let guard = self.art.pin();
+        self.art.get(entry_id, &guard)
     }
 
     fn is_cached(&self, entry_id: &CacheEntryID) -> bool {
-        self.art.get(entry_id, &self.guard).is_some()
+        let guard = self.art.pin();
+        self.art.get(entry_id, &guard).is_some()
     }
 
-    fn insert(&mut self, entry_id: &CacheEntryID, batch: CachedBatch) {
-        self.id_list.push(usize::from(entry_id));
-        self.art.insert(*entry_id, batch, &self.guard).expect("Insertion failed");
+    fn insert(&self, entry_id: &CacheEntryID, batch: CachedBatch) {
+        let guard = self.art.pin();
+        self.art
+            .insert(*entry_id, batch, &guard)
+            .expect("Insertion failed");
     }
 
     fn reset(&mut self) {
@@ -84,8 +76,15 @@ impl ArtStore {
     }
 
     fn for_each(&self, mut f: impl FnMut(&CacheEntryID, &CachedBatch)) {
+        let guard = self.art.pin();
         for id in self.id_list.iter() {
-            f(&CacheEntryID::from(id), &self.art.get(&CacheEntryID::from(id), &self.guard).unwrap());
+            f(
+                &CacheEntryID::from(id),
+                &self
+                    .art
+                    .get(&CacheEntryID::from(id), &guard)
+                    .expect("Failed to get value from ART"),
+            );
         }
     }
 }
@@ -130,25 +129,28 @@ impl CacheStore {
     }
 
     fn insert_inner(
-        &self,
+        &mut self,
         entry_id: CacheEntryID,
         cached_batch: CachedBatch,
     ) -> Result<(), (CacheAdvice, CachedBatch)> {
         let new_memory_size = cached_batch.memory_usage_bytes();
-        let c_data = self.cached_data.get_store();
         if let Some(entry) = self.cached_data.get(&entry_id) {
             let old_memory_size = entry.memory_usage_bytes();
-            if self.budget.try_update_memory_usage(old_memory_size, new_memory_size).is_err() {
+            if self
+                .budget
+                .try_update_memory_usage(old_memory_size, new_memory_size)
+                .is_err()
+            {
                 let advice = self.policy.advise(&entry_id, &cached_batch);
                 return Err((advice, cached_batch));
             }
-            c_data.insert(entry_id, cached_batch, &self.cached_data.guard).expect("Insertion failed");
+            self.cached_data.insert(&entry_id, cached_batch);
         } else {
             if self.budget.try_reserve_memory(new_memory_size).is_err() {
                 let advice = self.policy.advise(&entry_id, &cached_batch);
                 return Err((advice, cached_batch));
             }
-            c_data.insert(entry_id, cached_batch, &self.cached_data.guard).expect("Insertion failed");
+            self.cached_data.insert(&entry_id, cached_batch);
         }
 
         Ok(())
@@ -156,7 +158,11 @@ impl CacheStore {
 
     /// Returns Some(CachedBatch) if need to retry the insert.
     #[must_use]
-    fn apply_advice(&self, advice: CacheAdvice, not_inserted: CachedBatch) -> Option<CachedBatch> {
+    fn apply_advice(
+        &mut self,
+        advice: CacheAdvice,
+        not_inserted: CachedBatch,
+    ) -> Option<CachedBatch> {
         match advice {
             CacheAdvice::Transcode(to_transcode) => {
                 let compressor_states = self.compressor_states.get_compressor(&to_transcode);
@@ -225,7 +231,7 @@ impl CacheStore {
         self.budget.add_used_disk_bytes(bytes.len());
     }
 
-    pub(super) fn insert(&self, entry_id: CacheEntryID, mut batch_to_cache: CachedBatch) {
+    pub(super) fn insert(&mut self, entry_id: CacheEntryID, mut batch_to_cache: CachedBatch) {
         let mut loop_count = 0;
         loop {
             if batch_to_cache.memory_usage_bytes() > self.budget.max_memory_bytes() {
@@ -318,31 +324,8 @@ mod tests {
         use super::*;
 
         #[test]
-        fn test_partition_index() {
-            let store = ArtStore::new();
-
-            // Test different row group IDs map to expected partitions
-            for i in 0..16 {
-                let entry_id = create_entry_id(1, i as u64, 1, 1);
-                assert_eq!(
-                    store.partition_index(&entry_id),
-                    (i as usize) & (PARTITION_COUNT - 1)
-                );
-            }
-
-            // Verify that row_group_id % PARTITION_COUNT == partition_index
-            for i in 0..100 {
-                let entry_id = create_entry_id(1, i as u64, 1, 1);
-                assert_eq!(
-                    store.partition_index(&entry_id),
-                    (i as usize) % PARTITION_COUNT
-                );
-            }
-        }
-
-        #[test]
         fn test_get_and_is_cached() {
-            let store = ArtStore::new();
+            let mut store = ArtStore::new();
             let entry_id1 = create_entry_id(1, 1, 1, 1);
             let entry_id2 = create_entry_id(2, 2, 2, 2);
             let array1 = create_test_array(100);
@@ -354,8 +337,7 @@ mod tests {
 
             // Insert an entry and verify it's cached
             {
-                let mut partition = store.get_partition(&entry_id1).write().unwrap();
-                partition.insert(entry_id1, array1.clone());
+                store.insert(&entry_id1, array1.clone());
             }
 
             assert!(store.is_cached(&entry_id1));
@@ -369,39 +351,19 @@ mod tests {
         }
 
         #[test]
-        fn test_get_partition() {
-            let store = ArtStore::new();
-
-            // Verify that we get the same partition for the same entry ID
-            let entry_id = create_entry_id(1, 1, 5, 1);
-            let partition_idx = store.partition_index(&entry_id);
-            let partition_ptr = store.get_partition(&entry_id) as *const _;
-            let expected_ptr = &store.art[partition_idx] as *const _;
-
-            assert_eq!(partition_ptr, expected_ptr);
-        }
-
-        #[test]
         fn test_reset() {
-            let store = ArtStore::new();
-            for i in 0..PARTITION_COUNT {
-                let entry_id = create_entry_id(1, i as u64, 1, 1);
-                let array = create_test_array(100);
+            let mut store = ArtStore::new();
+            let entry_id = create_entry_id(1, 1 as u64, 1, 1);
+            let array = create_test_array(100);
 
-                let mut partition = store.get_partition(&entry_id).write().unwrap();
-                partition.insert(entry_id, array.clone());
-            }
+            store.insert(&entry_id, array.clone());
 
-            for i in 0..PARTITION_COUNT {
-                let entry_id = create_entry_id(1, i as u64, 1, 1);
-                assert!(store.is_cached(&entry_id));
-            }
+            let entry_id = create_entry_id(1, 1 as u64, 1, 1);
+            assert!(store.is_cached(&entry_id));
 
             store.reset();
-            for i in 0..PARTITION_COUNT {
-                let entry_id = create_entry_id(1, i as u64, 1, 1);
-                assert!(!store.is_cached(&entry_id));
-            }
+            let entry_id = create_entry_id(1, 1 as u64, 1, 1);
+            assert!(!store.is_cached(&entry_id));
         }
     }
 
@@ -453,7 +415,7 @@ mod tests {
     fn test_basic_cache_operations() {
         // Test basic insert, get, and size tracking in one test
         let budget_size = 10 * 1024;
-        let store = create_cache_store(budget_size, Box::new(LruPolicy::new()));
+        let mut store = create_cache_store(budget_size, Box::new(LruPolicy::new()));
 
         // 1. Initial budget should be empty
         assert_eq!(store.budget.memory_usage_bytes(), 0);
@@ -499,7 +461,7 @@ mod tests {
         // 1. Test EVICT advice
         {
             let advisor = TestPolicy::new(AdviceType::Evict, Some(entry_id1));
-            let store = create_cache_store(8000, Box::new(advisor)); // Small budget to force advice
+            let mut store = create_cache_store(8000, Box::new(advisor)); // Small budget to force advice
 
             let on_disk_path = entry_id1.on_disk_path(&store.config.cache_root_dir());
             std::fs::create_dir_all(on_disk_path.parent().unwrap()).unwrap();
@@ -520,7 +482,7 @@ mod tests {
         // 2. Test TRANSCODE advice
         {
             let advisor = TestPolicy::new(AdviceType::Transcode, Some(entry_id1));
-            let store = create_cache_store(8000, Box::new(advisor)); // Small budget
+            let mut store = create_cache_store(8000, Box::new(advisor)); // Small budget
 
             store.insert(entry_id1, create_test_array(800));
             match store.get(&entry_id1).unwrap() {
@@ -538,7 +500,7 @@ mod tests {
         // 3. Test TRANSCODE_TO_DISK advice
         {
             let advisor = TestPolicy::new(AdviceType::TranscodeToDisk, None);
-            let store = create_cache_store(8000, Box::new(advisor)); // Tiny budget to force disk storage
+            let mut store = create_cache_store(8000, Box::new(advisor)); // Tiny budget to force disk storage
 
             let on_disk_path = entry_id3.on_disk_path(&store.config.cache_root_dir());
             std::fs::create_dir_all(on_disk_path.parent().unwrap()).unwrap();
@@ -565,10 +527,7 @@ mod tests {
 
     impl ArtStore {
         fn len(&self) -> usize {
-            self.art
-                .iter()
-                .map(|p| p.read().unwrap().len())
-                .sum()
+            0
         }
     }
 
@@ -577,7 +536,7 @@ mod tests {
         let ops_per_thread = 50;
 
         let budget_size = num_threads * ops_per_thread * 100 * 8 / 2;
-        let store = Arc::new(create_cache_store(budget_size, Box::new(LruPolicy::new())));
+        let mut store = Arc::new(create_cache_store(budget_size, Box::new(LruPolicy::new())));
         let entry_id = create_entry_id(1, 1, 1, 1);
         let on_disk_path = entry_id.on_disk_path(&store.config().cache_root_dir());
         std::fs::create_dir_all(on_disk_path.parent().unwrap()).unwrap();

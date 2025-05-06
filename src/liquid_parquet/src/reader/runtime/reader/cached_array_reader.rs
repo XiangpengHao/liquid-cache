@@ -2,7 +2,7 @@ use std::{any::Any, collections::VecDeque};
 
 use ahash::AHashMap;
 use arrow::{
-    array::{ArrayRef, BooleanArray, BooleanBufferBuilder, new_empty_array},
+    array::{new_empty_array, ArrayRef, BooleanArray, BooleanBufferBuilder},
     buffer::BooleanBuffer,
 };
 use arrow_schema::{DataType, Field, Fields};
@@ -647,11 +647,9 @@ mod tests {
     }
 
     fn assert_not_contains(cache: &LiquidCachedColumnRef, id: usize) {
-        assert!(
-            cache
-                .get_arrow_array_test_only(BatchID::from_row_id(id, BATCH_SIZE))
-                .is_none()
-        );
+        assert!(cache
+            .get_arrow_array_test_only(BatchID::from_row_id(id, BATCH_SIZE))
+            .is_none());
     }
 
     #[test]
