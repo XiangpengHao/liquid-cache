@@ -99,7 +99,7 @@ impl LiquidCacheService {
     /// * `ctx` - The [SessionContext] to use
     /// * `max_cache_bytes` - The maximum number of bytes to cache in memory
     /// * `disk_cache_dir` - The directory to store the disk cache
-    /// * `cache_mode` - The [LiquidCacheMode] to use
+    /// * `cache_mode` - The [CacheMode] to use
     pub fn new(
         ctx: SessionContext,
         max_cache_bytes: Option<usize>,
