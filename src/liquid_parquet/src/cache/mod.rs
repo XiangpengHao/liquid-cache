@@ -1,9 +1,6 @@
 use super::liquid_array::LiquidArrayRef;
 use crate::liquid_array::ipc::{self, LiquidIPCContext};
-use crate::sync::{
-    Mutex, RwLock,
-    atomic::{AtomicU64, Ordering},
-};
+use crate::sync::{Mutex, RwLock};
 use crate::{ABLATION_STUDY_MODE, AblationStudyMode, LiquidPredicate};
 use ahash::AHashMap;
 use arrow::array::{Array, ArrayRef, BooleanArray, RecordBatch};
@@ -11,10 +8,7 @@ use arrow::buffer::BooleanBuffer;
 use arrow::compute::prep_null_mask_filter;
 use arrow_schema::{ArrowError, DataType, Field, Schema};
 use bytes::Bytes;
-use liquid_cache_common::{
-    LiquidCacheMode, cast_from_parquet_to_liquid_type, coerce_from_parquet_to_liquid_type,
-};
-use policies::LruPolicy;
+use liquid_cache_common::{LiquidCacheMode, coerce_from_parquet_to_liquid_type};
 use std::fmt::Display;
 use std::fs::File;
 use std::io::Read;
