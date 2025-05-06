@@ -150,7 +150,6 @@ impl ExecutionPlan for LiquidCacheClientExec {
             lock,
             partition,
             self.object_stores.clone(),
-            self.cache_mode,
         );
         Ok(Box::pin(FlightStream::new(
             Some(Box::pin(stream)),
@@ -215,7 +214,6 @@ async fn flight_stream(
     plan_register_lock: Arc<Mutex<Option<Uuid>>>,
     partition: usize,
     object_stores: Vec<(ObjectStoreUrl, HashMap<String, String>)>,
-    cache_mode: CacheMode,
 ) -> Result<SendableRecordBatchStream> {
     let channel = flight_channel(server)
         .in_span(Span::enter_with_local_parent("connect_channel"))
@@ -254,7 +252,6 @@ async fn flight_stream(
                 let action = LiquidCacheActions::RegisterPlan(RegisterPlanRequest {
                     plan: plan_bytes.to_vec(),
                     handle: handle.into_bytes().to_vec().into(),
-                    cache_mode: cache_mode.to_string(),
                 })
                 .into();
                 client

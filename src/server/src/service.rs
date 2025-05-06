@@ -9,15 +9,12 @@ use datafusion::{
     physical_plan::{ExecutionPlan, display::DisplayableExecutionPlan, metrics::MetricValue},
     prelude::SessionContext,
 };
-use liquid_cache_common::{
-    CacheMode, LiquidCacheMode, coerce_to_liquid_cache_types, rpc::ExecutionMetricsResponse,
-};
+use liquid_cache_common::{CacheMode, coerce_to_liquid_cache_types, rpc::ExecutionMetricsResponse};
 use liquid_cache_parquet::{LiquidCache, LiquidCacheRef, LiquidParquetSource};
 use log::{debug, info};
 use object_store::ObjectStore;
 use std::sync::RwLock;
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
-use tokio::sync::Mutex;
 use url::Url;
 use uuid::Uuid;
 
@@ -25,9 +22,8 @@ use crate::local_cache::LocalCache;
 
 pub(crate) struct LiquidCacheServiceInner {
     execution_plans: Arc<RwLock<HashMap<Uuid, Arc<dyn ExecutionPlan>>>>,
-    registered_tables: Mutex<HashMap<String, (String, CacheMode)>>, // table name -> (path, cached file)
     default_ctx: Arc<SessionContext>,
-    cache: LiquidCacheRef,
+    liquid_cache: Option<LiquidCacheRef>,
     parquet_cache_dir: PathBuf,
 }
 
@@ -36,7 +32,7 @@ impl LiquidCacheServiceInner {
         default_ctx: Arc<SessionContext>,
         max_cache_bytes: Option<usize>,
         disk_cache_dir: Option<PathBuf>,
-        cache_mode: LiquidCacheMode,
+        cache_mode: CacheMode,
     ) -> Self {
         let batch_size = default_ctx.state().config().batch_size();
 
@@ -45,24 +41,27 @@ impl LiquidCacheServiceInner {
 
         let parquet_cache_dir = disk_cache_dir.join("parquet");
         let liquid_cache_dir = disk_cache_dir.join("liquid");
-        let liquid_cache = Arc::new(LiquidCache::new(
-            batch_size,
-            max_cache_bytes.unwrap_or(usize::MAX),
-            liquid_cache_dir,
-            cache_mode,
-        ));
+
+        let liquid_cache = match cache_mode {
+            CacheMode::Parquet => None,
+            _ => Some(Arc::new(LiquidCache::new(
+                batch_size,
+                max_cache_bytes.unwrap_or(usize::MAX),
+                liquid_cache_dir,
+                cache_mode.into(),
+            ))),
+        };
 
         Self {
             execution_plans: Default::default(),
-            registered_tables: Default::default(),
             default_ctx,
-            cache: liquid_cache,
+            liquid_cache,
             parquet_cache_dir,
         }
     }
 
-    pub(crate) fn cache(&self) -> &LiquidCacheRef {
-        &self.cache
+    pub(crate) fn cache(&self) -> &Option<LiquidCacheRef> {
+        &self.liquid_cache
     }
 
     pub(crate) async fn register_object_store(
@@ -103,21 +102,16 @@ impl LiquidCacheServiceInner {
         Ok(())
     }
 
-    pub(crate) fn register_plan(
-        &self,
-        handle: Uuid,
-        plan: Arc<dyn ExecutionPlan>,
-        cache_mode: CacheMode,
-    ) {
-        match cache_mode {
-            CacheMode::Parquet => {
-                self.execution_plans.write().unwrap().insert(handle, plan);
+    pub(crate) fn register_plan(&self, handle: Uuid, plan: Arc<dyn ExecutionPlan>) {
+        match self.cache() {
+            Some(cache) => {
+                self.execution_plans
+                    .write()
+                    .unwrap()
+                    .insert(handle, rewrite_data_source_plan(plan, cache));
             }
-            _ => {
-                self.execution_plans.write().unwrap().insert(
-                    handle,
-                    rewrite_data_source_plan(plan, &self.cache, cache_mode),
-                );
+            None => {
+                self.execution_plans.write().unwrap().insert(handle, plan);
             }
         }
     }
@@ -181,7 +175,11 @@ impl LiquidCacheServiceInner {
                 }
             }
         }
-        let liquid_cache_usage = self.cache().compute_memory_usage_bytes();
+        let liquid_cache_usage = self
+            .cache()
+            .as_ref()
+            .map(|cache| cache.compute_memory_usage_bytes())
+            .unwrap_or(0);
         let cache_memory_usage = liquid_cache_usage + bytes_scanned as u64;
 
         let response = ExecutionMetricsResponse {
@@ -190,11 +188,6 @@ impl LiquidCacheServiceInner {
             liquid_cache_usage,
         };
         Some(response)
-    }
-
-    pub(crate) async fn get_registered_tables(&self) -> HashMap<String, (String, CacheMode)> {
-        let tables = self.registered_tables.lock().await;
-        tables.clone()
     }
 
     pub(crate) fn get_parquet_cache_dir(&self) -> &PathBuf {
@@ -209,8 +202,8 @@ impl LiquidCacheServiceInner {
 fn rewrite_data_source_plan(
     plan: Arc<dyn ExecutionPlan>,
     cache: &LiquidCacheRef,
-    cache_mode: CacheMode,
 ) -> Arc<dyn ExecutionPlan> {
+    let cache_mode = cache.cache_mode();
     let rewritten = plan
         .transform_up(|node| {
             let any_plan = node.as_any();
@@ -221,19 +214,18 @@ fn rewrite_data_source_plan(
                     let file_source = file_scan_config.file_source();
                     let any_file_source = file_source.as_any();
                     if let Some(file_source) = any_file_source.downcast_ref::<ParquetSource>() {
-                        let liquid_cache_mode: LiquidCacheMode = cache_mode.into();
                         let new_source = LiquidParquetSource::from_parquet_source(
                             file_source.clone(),
                             file_scan_config.file_schema.clone(),
                             cache.clone(),
-                            liquid_cache_mode,
+                            *cache_mode,
                         );
                         let mut new_config = file_scan_config.clone();
                         new_config.file_source = Arc::new(new_source);
                         // This coercion is necessary because this schema determines the schema of flight transfer.
                         let coerced_schema = coerce_to_liquid_cache_types(
                             new_config.file_schema.as_ref(),
-                            &liquid_cache_mode,
+                            cache_mode,
                         );
                         new_config.projection = new_config.projection.map(|mut v| {
                             v.sort();
@@ -262,31 +254,19 @@ fn rewrite_data_source_plan(
 #[cfg(test)]
 mod tests {
     use datafusion::common::tree_node::TreeNodeRecursion;
+    use liquid_cache_common::LiquidCacheMode;
 
     use super::*;
 
-    #[tokio::test]
-    async fn test_plan_rewrite() {
-        let ctx = SessionContext::new();
-        ctx.register_parquet(
-            "nano_hits",
-            "../../examples/nano_hits.parquet",
-            Default::default(),
-        )
-        .await
-        .unwrap();
-        let df = ctx
-            .sql("SELECT \"URL\" FROM nano_hits WHERE \"URL\" like 'https://%' limit 10")
-            .await
-            .unwrap();
-        let plan = df.create_physical_plan().await.unwrap();
+    fn rewrite_plan_inner(plan: Arc<dyn ExecutionPlan>, cache_mode: &LiquidCacheMode) {
+        let expected_schema = coerce_to_liquid_cache_types(&plan.schema(), cache_mode);
         let liquid_cache = Arc::new(LiquidCache::new(
             8192,
             1000000,
             PathBuf::from("test"),
-            LiquidCacheMode::InMemoryArrow,
+            *cache_mode,
         ));
-        let rewritten = rewrite_data_source_plan(plan, &liquid_cache, CacheMode::Liquid);
+        let rewritten = rewrite_data_source_plan(plan, &liquid_cache);
 
         rewritten
             .apply(|node| {
@@ -299,10 +279,42 @@ mod tests {
                     let _parquet_source = any_file_source
                         .downcast_ref::<LiquidParquetSource>()
                         .unwrap();
+                    let schema = source.file_schema.as_ref();
+                    assert_eq!(schema, &expected_schema);
                 }
                 Ok(TreeNodeRecursion::Continue)
             })
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_plan_rewrite() {
+        let ctx = SessionContext::new();
+        ctx.register_parquet(
+            "nano_hits",
+            "../../examples/nano_hits.parquet",
+            Default::default(),
+        )
+        .await
+        .unwrap();
+        let df = ctx
+            .sql("SELECT * FROM nano_hits WHERE \"URL\" like 'https://%' limit 10")
+            .await
+            .unwrap();
+        let plan = df.create_physical_plan().await.unwrap();
+        rewrite_plan_inner(plan.clone(), &LiquidCacheMode::InMemoryArrow);
+        rewrite_plan_inner(
+            plan.clone(),
+            &LiquidCacheMode::InMemoryLiquid {
+                transcode_in_background: false,
+            },
+        );
+        rewrite_plan_inner(
+            plan.clone(),
+            &LiquidCacheMode::InMemoryLiquid {
+                transcode_in_background: true,
+            },
+        );
     }
 
     #[tokio::test]
@@ -311,7 +323,7 @@ mod tests {
             Arc::new(SessionContext::new()),
             None,
             None,
-            LiquidCacheMode::InMemoryArrow,
+            CacheMode::LiquidEagerTranscode,
         );
         let url = Url::parse("file:///").unwrap();
         server

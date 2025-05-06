@@ -2,7 +2,7 @@ use arrow_flight::flight_service_server::FlightServiceServer;
 use clap::Parser;
 use fastrace_tonic::FastraceServerLayer;
 use liquid_cache_benchmarks::setup_observability;
-use liquid_cache_common::{CacheMode, LiquidCacheMode};
+use liquid_cache_common::CacheMode;
 use liquid_cache_server::{LiquidCacheService, run_admin_server};
 use log::info;
 use mimalloc::MiMalloc;
@@ -70,7 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ctx,
         max_cache_bytes,
         args.disk_cache_dir.clone(),
-        LiquidCacheMode::from(args.cache_mode),
+        args.cache_mode,
     );
 
     let liquid_cache_server = Arc::new(liquid_cache_server);

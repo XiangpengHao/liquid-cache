@@ -625,4 +625,9 @@ impl LiquidCache {
         }
         self.cache_store.reset();
     }
+
+    /// Get the cache mode of the cache.
+    pub fn cache_mode(&self) -> &LiquidCacheMode {
+        self.cache_store.config().cache_mode()
+    }
 }
