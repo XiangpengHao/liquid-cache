@@ -327,8 +327,8 @@ mod tests {
         policies::{CachePolicy, LruPolicy},
         utils::{create_cache_store, create_entry_id, create_test_array},
     };
+    use crate::sync::thread;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::thread;
 
     use arrow::array::Array;
     use liquid_cache_common::LiquidCacheMode;
