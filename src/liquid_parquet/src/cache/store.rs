@@ -81,10 +81,10 @@ impl ArtStore {
         let guard = self.art.pin();
         for id in self.art.keys().into_iter() {
             f(
-                &CacheEntryID::from(id),
+                &id,
                 &self
                     .art
-                    .get(&CacheEntryID::from(id), &guard)
+                    .get(&id, &guard)
                     .expect("Failed to get value from ART"),
             );
         }
@@ -300,17 +300,14 @@ impl CacheStore {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::cache::{
         policies::{CachePolicy, LruPolicy},
         utils::{create_cache_store, create_entry_id, create_test_array},
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::thread;
 
-    use super::*;
-    use crate::sync::{
-        atomic::{AtomicUsize, Ordering},
-        thread,
-    };
     use arrow::array::Array;
     use liquid_cache_common::LiquidCacheMode;
 
