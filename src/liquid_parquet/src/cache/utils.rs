@@ -90,7 +90,7 @@ impl From<usize> for CacheEntryID {
 
 impl From<&CacheEntryID> for usize {
     fn from(id: &CacheEntryID) -> Self {
-        unsafe { std::mem::transmute(id) }
+        unsafe { std::mem::transmute(*id) }
     }
 }
 

@@ -2,6 +2,7 @@ use congee::Congee;
 use std::fmt::{Debug, Formatter};
 use std::{fs::File, io::Write, path::PathBuf};
 
+use super::CachedBatchRef;
 use super::{
     CacheEntryID, CachedBatch, LiquidCompressorStates,
     budget::BudgetAccounting,
@@ -38,7 +39,7 @@ impl CompressorStates {
 }
 
 struct ArtStore {
-    art: Congee<CacheEntryID, CachedBatch>,
+    art: Congee<CacheEntryID, CachedBatchRef>,
 }
 
 impl Debug for ArtStore {
@@ -49,13 +50,21 @@ impl Debug for ArtStore {
 
 impl ArtStore {
     fn new() -> Self {
-        let art: Congee<CacheEntryID, CachedBatch> = Congee::default();
+        let art: Congee<CacheEntryID, CachedBatchRef> =
+            Congee::new_with_drainer(congee::DefaultAllocator {}, |_k, v: CachedBatchRef| {
+                let owned = unsafe { Arc::from_raw(Arc::as_ptr(&v.inner)) };
+                assert_eq!(Arc::strong_count(&v.inner), 2);
+                drop(owned);
+                assert_eq!(Arc::strong_count(&v.inner), 1);
+                drop(v);
+            });
         Self { art }
     }
 
     fn get(&self, entry_id: &CacheEntryID) -> Option<CachedBatch> {
         let guard = self.art.pin();
-        self.art.get(entry_id, &guard)
+        let batch = self.art.get(entry_id, &guard)?;
+        Some(batch.into_inner())
     }
 
     fn is_cached(&self, entry_id: &CacheEntryID) -> bool {
@@ -65,16 +74,29 @@ impl ArtStore {
 
     fn insert(&self, entry_id: &CacheEntryID, batch: CachedBatch) {
         let guard = self.art.pin();
-        self.art
-            .insert(*entry_id, batch, &guard)
+        let previous = self
+            .art
+            .insert(*entry_id, CachedBatchRef::new(batch), &guard)
             .expect("Insertion failed");
+        if let Some(previous) = previous {
+            let owned = unsafe { Arc::from_raw(Arc::as_ptr(&previous.inner)) };
+            assert_eq!(Arc::strong_count(&previous.inner), 2);
+            drop(owned);
+            assert_eq!(Arc::strong_count(&previous.inner), 1);
+            drop(previous);
+        }
     }
 
     fn reset(&self) {
         let guard = self.art.pin();
         self.art.keys().into_iter().for_each(|k| {
-            self.art.remove(&k, &guard);
-        })
+            let v = self.art.remove(&k, &guard).unwrap();
+            let owned = unsafe { Arc::from_raw(Arc::as_ptr(&v.inner)) };
+            assert_eq!(Arc::strong_count(&v.inner), 2);
+            drop(owned);
+            assert_eq!(Arc::strong_count(&v.inner), 1);
+            drop(v);
+        });
     }
 
     fn for_each(&self, mut f: impl FnMut(&CacheEntryID, &CachedBatch)) {

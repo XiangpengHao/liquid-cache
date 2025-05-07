@@ -84,19 +84,50 @@ impl CachedBatch {
     }
 }
 
-impl From<CachedBatch> for usize {
-    fn from(value: CachedBatch) -> Self {
-        let v = Box::new(value);
-        Box::into_raw(v) as usize
+#[derive(Clone)]
+pub(crate) struct CachedBatchRef {
+    pub(crate) inner: Arc<CachedBatch>,
+}
+
+impl CachedBatchRef {
+    pub(crate) fn new(inner: CachedBatch) -> Self {
+        let inner = Arc::new(inner);
+        Self { inner }
+    }
+
+    pub(crate) fn into_inner(self) -> CachedBatch {
+        CachedBatch::clone(self.inner.as_ref())
     }
 }
 
-impl From<usize> for CachedBatch {
+impl std::ops::Deref for CachedBatchRef {
+    type Target = CachedBatch;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl From<CachedBatchRef> for usize {
+    fn from(value: CachedBatchRef) -> Self {
+        // Safety:
+        // into_raw will get the inner pointer, and won't decrease the reference count.
+        // meaning that we still hold the ownership.
+        let ptr = Arc::into_raw(value.inner);
+        ptr as usize
+    }
+}
+
+impl From<usize> for CachedBatchRef {
     fn from(ptr: usize) -> Self {
-        unsafe {
-            let raw_ptr = ptr as *mut CachedBatch;
-            Box::leak(Box::from_raw(raw_ptr)).clone()
-        }
+        let raw_ptr = ptr as *mut CachedBatch;
+        // Safety: get the original pointer.
+        let inner = unsafe { Arc::from_raw(raw_ptr) };
+        // Safety: create a copy.
+        let rt = inner.clone();
+        // Safety: don't drop the original pointer, as congee owns it.
+        _ = Arc::into_raw(inner);
+        CachedBatchRef { inner: rt }
     }
 }
 
@@ -117,12 +148,21 @@ mod cached_batch_tests {
     #[test]
     fn cached_batch_cast() {
         let array = Arc::new(Int32Array::from(vec![Some(1), None, Some(3)]));
-        let cached_batch: CachedBatch = CachedBatch::ArrowMemory(array);
-        let mem_size_1 = cached_batch.memory_usage_bytes();
+        let cached_batch: CachedBatchRef = CachedBatchRef::new(CachedBatch::ArrowMemory(array));
+        let cached_batch_2 = cached_batch.clone();
+        assert_eq!(Arc::strong_count(&cached_batch_2.inner), 2);
+
         let batch_as_usize = usize::from(cached_batch);
-        let back_to_cached_batch = CachedBatch::from(batch_as_usize);
-        let mem_size_2 = back_to_cached_batch.memory_usage_bytes();
-        assert_eq!(mem_size_1, mem_size_2);
+        assert_eq!(Arc::strong_count(&cached_batch_2.inner), 2);
+
+        let back_to_cached_batch = CachedBatchRef::from(batch_as_usize);
+        assert_eq!(Arc::strong_count(&back_to_cached_batch.inner), 3);
+
+        drop(back_to_cached_batch);
+        let owned = unsafe { Arc::from_raw(Arc::as_ptr(&cached_batch_2.inner)) };
+        drop(cached_batch_2);
+        assert_eq!(Arc::strong_count(&owned), 1);
+        drop(owned);
     }
 }
 
