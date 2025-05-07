@@ -118,11 +118,11 @@ mod cached_batch_tests {
     fn cached_batch_cast() {
         let array = Arc::new(Int32Array::from(vec![Some(1), None, Some(3)]));
         let cached_batch: CachedBatch = CachedBatch::ArrowMemory(array);
-        let ref_count_1 = cached_batch.reference_count();
+        let mem_size_1 = cached_batch.memory_usage_bytes();
         let batch_as_usize = usize::from(cached_batch);
         let back_to_cached_batch = CachedBatch::from(batch_as_usize);
-        let ref_count = back_to_cached_batch.reference_count();
-        assert_eq!(ref_count_1, ref_count);
+        let mem_size_2 = back_to_cached_batch.memory_usage_bytes();
+        assert_eq!(mem_size_1, mem_size_2);
     }
 }
 
