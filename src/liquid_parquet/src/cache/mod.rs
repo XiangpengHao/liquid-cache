@@ -13,6 +13,7 @@ use std::fmt::Display;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::ptr::with_exposed_provenance;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use store::{CacheAdvice, CacheStore};
@@ -114,13 +115,13 @@ impl From<CachedBatchRef> for usize {
         // into_raw will get the inner pointer, and won't decrease the reference count.
         // meaning that we still hold the ownership.
         let ptr = Arc::into_raw(value.inner);
-        ptr as usize
+        ptr.expose_provenance()
     }
 }
 
 impl From<usize> for CachedBatchRef {
     fn from(ptr: usize) -> Self {
-        let raw_ptr = ptr as *mut CachedBatch;
+        let raw_ptr: *const CachedBatch = with_exposed_provenance(ptr);
         // Safety: get the original pointer.
         let inner = unsafe { Arc::from_raw(raw_ptr) };
         // Safety: create a copy.
