@@ -13,7 +13,6 @@ use std::fmt::Display;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::ptr::with_exposed_provenance;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use store::{CacheAdvice, CacheStore};
@@ -85,53 +84,6 @@ impl CachedBatch {
     }
 }
 
-#[derive(Clone)]
-pub(crate) struct CachedBatchRef {
-    pub(crate) inner: Arc<CachedBatch>,
-}
-
-impl CachedBatchRef {
-    pub(crate) fn new(inner: CachedBatch) -> Self {
-        let inner = Arc::new(inner);
-        Self { inner }
-    }
-
-    pub(crate) fn into_inner(self) -> CachedBatch {
-        CachedBatch::clone(self.inner.as_ref())
-    }
-}
-
-impl std::ops::Deref for CachedBatchRef {
-    type Target = CachedBatch;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
-
-impl From<CachedBatchRef> for usize {
-    fn from(value: CachedBatchRef) -> Self {
-        // Safety:
-        // into_raw will get the inner pointer, and won't decrease the reference count.
-        // meaning that we still hold the ownership.
-        let ptr = Arc::into_raw(value.inner);
-        ptr.expose_provenance()
-    }
-}
-
-impl From<usize> for CachedBatchRef {
-    fn from(ptr: usize) -> Self {
-        let raw_ptr: *const CachedBatch = with_exposed_provenance(ptr);
-        // Safety: get the original pointer.
-        let inner = unsafe { Arc::from_raw(raw_ptr) };
-        // Safety: create a copy.
-        let rt = inner.clone();
-        // Safety: don't drop the original pointer, as congee owns it.
-        _ = Arc::into_raw(inner);
-        CachedBatchRef { inner: rt }
-    }
-}
-
 impl Display for CachedBatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -139,31 +91,6 @@ impl Display for CachedBatch {
             Self::LiquidMemory(_) => write!(f, "LiquidMemory"),
             Self::OnDiskLiquid => write!(f, "OnDiskLiquid"),
         }
-    }
-}
-
-#[cfg(test)]
-mod cached_batch_tests {
-    use super::*;
-    use arrow::array::Int32Array;
-    #[test]
-    fn cached_batch_cast() {
-        let array = Arc::new(Int32Array::from(vec![Some(1), None, Some(3)]));
-        let cached_batch: CachedBatchRef = CachedBatchRef::new(CachedBatch::ArrowMemory(array));
-        let cached_batch_2 = cached_batch.clone();
-        assert_eq!(Arc::strong_count(&cached_batch_2.inner), 2);
-
-        let batch_as_usize = usize::from(cached_batch);
-        assert_eq!(Arc::strong_count(&cached_batch_2.inner), 2);
-
-        let back_to_cached_batch = CachedBatchRef::from(batch_as_usize);
-        assert_eq!(Arc::strong_count(&back_to_cached_batch.inner), 3);
-
-        drop(back_to_cached_batch);
-        let owned = unsafe { Arc::from_raw(Arc::as_ptr(&cached_batch_2.inner)) };
-        drop(cached_batch_2);
-        assert_eq!(Arc::strong_count(&owned), 1);
-        drop(owned);
     }
 }
 

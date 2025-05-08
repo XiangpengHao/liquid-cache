@@ -1,8 +1,7 @@
-use congee::Congee;
+use congee::CongeeArc;
 use std::fmt::{Debug, Formatter};
 use std::{fs::File, io::Write, path::PathBuf};
 
-use super::CachedBatchRef;
 use super::{
     CacheEntryID, CachedBatch, LiquidCompressorStates,
     budget::BudgetAccounting,
@@ -39,7 +38,7 @@ impl CompressorStates {
 }
 
 struct ArtStore {
-    art: Congee<CacheEntryID, CachedBatchRef>,
+    art: CongeeArc<CacheEntryID, CachedBatch>,
 }
 
 impl Debug for ArtStore {
@@ -50,52 +49,33 @@ impl Debug for ArtStore {
 
 impl ArtStore {
     fn new() -> Self {
-        let art: Congee<CacheEntryID, CachedBatchRef> =
-            Congee::new_with_drainer(congee::DefaultAllocator {}, |_k, v: CachedBatchRef| {
-                let owned = unsafe { Arc::from_raw(Arc::as_ptr(&v.inner)) };
-                assert_eq!(Arc::strong_count(&v.inner), 2);
-                drop(owned);
-                assert_eq!(Arc::strong_count(&v.inner), 1);
-                drop(v);
-            });
+        let art: CongeeArc<CacheEntryID, CachedBatch> = CongeeArc::new();
         Self { art }
     }
 
     fn get(&self, entry_id: &CacheEntryID) -> Option<CachedBatch> {
         let guard = self.art.pin();
-        let batch = self.art.get(entry_id, &guard)?;
-        Some(batch.into_inner())
+        let batch = self.art.get(*entry_id, &guard)?;
+        Some(CachedBatch::clone(&batch))
     }
 
     fn is_cached(&self, entry_id: &CacheEntryID) -> bool {
         let guard = self.art.pin();
-        self.art.get(entry_id, &guard).is_some()
+        self.art.get(*entry_id, &guard).is_some()
     }
 
     fn insert(&self, entry_id: &CacheEntryID, batch: CachedBatch) {
         let guard = self.art.pin();
-        let previous = self
+        _ = self
             .art
-            .insert(*entry_id, CachedBatchRef::new(batch), &guard)
+            .insert(*entry_id, Arc::new(batch), &guard)
             .expect("Insertion failed");
-        if let Some(previous) = previous {
-            let owned = unsafe { Arc::from_raw(Arc::as_ptr(&previous.inner)) };
-            assert_eq!(Arc::strong_count(&previous.inner), 2);
-            drop(owned);
-            assert_eq!(Arc::strong_count(&previous.inner), 1);
-            drop(previous);
-        }
     }
 
     fn reset(&self) {
         let guard = self.art.pin();
         self.art.keys().into_iter().for_each(|k| {
-            let v = self.art.remove(&k, &guard).unwrap();
-            let owned = unsafe { Arc::from_raw(Arc::as_ptr(&v.inner)) };
-            assert_eq!(Arc::strong_count(&v.inner), 2);
-            drop(owned);
-            assert_eq!(Arc::strong_count(&v.inner), 1);
-            drop(v);
+            _ = self.art.remove(k, &guard).unwrap();
         });
     }
 
@@ -106,7 +86,7 @@ impl ArtStore {
                 &id,
                 &self
                     .art
-                    .get(&id, &guard)
+                    .get(id, &guard)
                     .expect("Failed to get value from ART"),
             );
         }
