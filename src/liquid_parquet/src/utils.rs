@@ -1,11 +1,15 @@
+use std::num::NonZero;
+
 use arrow::{
     array::{
         ArrayAccessor, ArrayIter, DictionaryArray, GenericByteArray, GenericByteDictionaryBuilder,
-        StringViewArray,
+        PrimitiveArray, PrimitiveDictionaryBuilder, StringViewArray,
     },
-    datatypes::{BinaryType, ByteArrayType, UInt16Type, Utf8Type},
+    datatypes::{BinaryType, ByteArrayType, DecimalType, UInt16Type, Utf8Type},
 };
 use arrow_schema::DataType;
+
+use crate::liquid_array::get_bit_width;
 
 /// A wrapper around `DictionaryArray<UInt16Type>` that ensures the values are unique.
 /// This is because we leverage the fact that the values are unique in the dictionary to short cut the
@@ -28,6 +32,10 @@ impl CheckedDictionaryArray {
     pub fn from_string_view_array(array: &StringViewArray) -> Self {
         let iter = array.iter();
         byte_array_to_dict_array::<Utf8Type, _>(iter)
+    }
+
+    pub fn from_decimal_array<T: DecimalType>(array: &PrimitiveArray<T>) -> Self {
+        decimal_array_to_dict_array(array)
     }
 
     /// # Safety
@@ -54,6 +62,13 @@ impl CheckedDictionaryArray {
     pub fn as_ref(&self) -> &DictionaryArray<UInt16Type> {
         &self.val
     }
+
+    pub fn bit_width_for_key(&self) -> NonZero<u8> {
+        let distinct_count = self.as_ref().values().len();
+        let max_bit_width = get_bit_width(distinct_count as u64);
+        debug_assert!(2u64.pow(max_bit_width.get() as u32) >= distinct_count as u64);
+        max_bit_width
+    }
 }
 
 fn gc_dictionary_array(array: &DictionaryArray<UInt16Type>) -> CheckedDictionaryArray {
@@ -71,6 +86,19 @@ fn gc_dictionary_array(array: &DictionaryArray<UInt16Type>) -> CheckedDictionary
     } else {
         unreachable!("Unsupported dictionary type: {:?}", value_type);
     }
+}
+
+fn decimal_array_to_dict_array<T: DecimalType>(
+    array: &PrimitiveArray<T>,
+) -> CheckedDictionaryArray {
+    let iter = array.iter();
+    let mut builder =
+        PrimitiveDictionaryBuilder::<UInt16Type, T>::with_capacity(array.len(), array.len());
+    for s in iter {
+        builder.append_option(s);
+    }
+    let dict = builder.finish();
+    CheckedDictionaryArray { val: dict }
 }
 
 fn byte_array_to_dict_array<'a, T: ByteArrayType, I: ArrayAccessor<Item = &'a T::Native>>(

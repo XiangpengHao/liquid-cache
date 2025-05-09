@@ -18,6 +18,7 @@ struct StatsWriter {
     row_count_builder: UInt64Builder,
     memory_size_builder: UInt64Builder,
     cache_type_builder: StringBuilder,
+    reference_count_builder: UInt64Builder,
 }
 
 impl StatsWriter {
@@ -30,6 +31,7 @@ impl StatsWriter {
             Field::new("memory_size", DataType::UInt64, false),
             Field::new("cache_type", DataType::Utf8, false),
             Field::new("file_path", DataType::Utf8, false),
+            Field::new("reference_count", DataType::UInt64, false),
         ]));
 
         let file = File::create(file_path)?;
@@ -48,6 +50,7 @@ impl StatsWriter {
             row_count_builder: UInt64Builder::new(),
             memory_size_builder: UInt64Builder::new(),
             cache_type_builder: StringBuilder::with_capacity(8192, 8192),
+            reference_count_builder: UInt64Builder::new(),
         })
     }
 
@@ -59,6 +62,7 @@ impl StatsWriter {
         let memory_size_array = self.memory_size_builder.finish();
         let cache_type_array = self.cache_type_builder.finish();
         let file_path_array = self.file_path_builder.finish();
+        let reference_count_array = self.reference_count_builder.finish();
         Ok(RecordBatch::try_new(
             self.schema.clone(),
             vec![
@@ -69,6 +73,7 @@ impl StatsWriter {
                 Arc::new(memory_size_array),
                 Arc::new(cache_type_array),
                 Arc::new(file_path_array),
+                Arc::new(reference_count_array),
             ],
         )?)
     }
@@ -83,6 +88,7 @@ impl StatsWriter {
         row_count: Option<u64>,
         memory_size: u64,
         cache_type: &str,
+        reference_count: u64,
     ) -> Result<(), ParquetError> {
         self.row_group_id_builder.append_value(row_group_id);
         self.column_id_builder.append_value(column_id);
@@ -90,6 +96,7 @@ impl StatsWriter {
         self.row_count_builder.append_option(row_count);
         self.memory_size_builder.append_value(memory_size);
         self.cache_type_builder.append_value(cache_type);
+        self.reference_count_builder.append_value(reference_count);
         self.file_path_builder.append_value(file_path);
         if self.row_start_id_builder.len() >= 8192 {
             let batch = self.build_batch()?;
@@ -127,6 +134,7 @@ impl LiquidCache {
                 CachedBatch::LiquidMemory(_) => "LiquidMemory",
                 CachedBatch::OnDiskLiquid => "OnDiskLiquid",
             };
+            let reference_count = cached_batch.reference_count();
             writer
                 .append_entry(
                     entry_id
@@ -139,6 +147,7 @@ impl LiquidCache {
                     row_count,
                     memory_size as u64,
                     cache_type,
+                    reference_count as u64,
                 )
                 .unwrap();
         });
@@ -167,7 +176,12 @@ mod tests {
     #[test]
     fn test_stats_writer() -> Result<(), ParquetError> {
         let tmp_dir = tempfile::tempdir().unwrap();
-        let cache = LiquidCache::new(1024, usize::MAX, tmp_dir.path().to_path_buf());
+        let cache = LiquidCache::new(
+            1024,
+            usize::MAX,
+            tmp_dir.path().to_path_buf(),
+            LiquidCacheMode::InMemoryArrow,
+        );
         let array = Arc::new(arrow::array::Int32Array::from(vec![1, 2, 3]));
         let num_rows = 8 * 8 * 8 * 8;
 
@@ -178,7 +192,7 @@ mod tests {
         let mut memory_size_sum = 0;
         for file_no in 0..8 {
             let file_name = format!("test_{file_no}.parquet");
-            let file = cache.register_or_get_file(file_name, LiquidCacheMode::InMemoryArrow);
+            let file = cache.register_or_get_file(file_name);
             for rg in 0..8 {
                 let row_group = file.row_group(rg);
                 for col in 0..8 {

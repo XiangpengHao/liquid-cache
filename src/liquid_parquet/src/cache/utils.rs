@@ -3,6 +3,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use liquid_cache_common::LiquidCacheMode;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub(super) struct ColumnAccessPath {
     file_id: u16,
@@ -70,6 +72,34 @@ pub struct CacheEntryID {
     rg_id: u16,
     row_id: u16,
     batch_id: BatchID,
+}
+
+impl From<CacheEntryID> for usize {
+    fn from(id: CacheEntryID) -> Self {
+        unsafe { std::mem::transmute(id) }
+    }
+}
+
+impl From<usize> for CacheEntryID {
+    fn from(value: usize) -> Self {
+        debug_assert_eq!(std::mem::size_of::<Self>(), std::mem::size_of::<usize>());
+        debug_assert_eq!(std::mem::align_of::<Self>(), std::mem::align_of::<usize>());
+        unsafe { std::mem::transmute(value) }
+    }
+}
+
+impl From<&CacheEntryID> for usize {
+    fn from(id: &CacheEntryID) -> Self {
+        unsafe { std::mem::transmute(*id) }
+    }
+}
+
+impl From<&usize> for CacheEntryID {
+    fn from(value: &usize) -> Self {
+        debug_assert_eq!(std::mem::size_of::<Self>(), std::mem::size_of::<usize>());
+        debug_assert_eq!(std::mem::align_of::<Self>(), std::mem::align_of::<usize>());
+        unsafe { std::mem::transmute(value) }
+    }
 }
 
 impl CacheEntryID {
@@ -163,14 +193,21 @@ pub(super) struct CacheConfig {
     batch_size: usize,
     max_cache_bytes: usize,
     cache_root_dir: PathBuf,
+    cache_mode: LiquidCacheMode,
 }
 
 impl CacheConfig {
-    pub(super) fn new(batch_size: usize, max_cache_bytes: usize, cache_root_dir: PathBuf) -> Self {
+    pub(super) fn new(
+        batch_size: usize,
+        max_cache_bytes: usize,
+        cache_root_dir: PathBuf,
+        cache_mode: LiquidCacheMode,
+    ) -> Self {
         Self {
             batch_size,
             max_cache_bytes,
             cache_root_dir,
+            cache_mode,
         }
     }
 
@@ -184,6 +221,10 @@ impl CacheConfig {
 
     pub fn cache_root_dir(&self) -> &PathBuf {
         &self.cache_root_dir
+    }
+
+    pub fn cache_mode(&self) -> &LiquidCacheMode {
+        &self.cache_mode
     }
 }
 
@@ -208,7 +249,15 @@ pub(crate) fn create_cache_store(
     let temp_dir = tempdir().unwrap();
     let batch_size = 128;
 
-    CacheStore::new(batch_size, max_cache_bytes, temp_dir.into_path(), policy)
+    CacheStore::new(
+        batch_size,
+        max_cache_bytes,
+        temp_dir.into_path(),
+        LiquidCacheMode::InMemoryLiquid {
+            transcode_in_background: false,
+        },
+        policy,
+    )
 }
 
 #[cfg(test)]

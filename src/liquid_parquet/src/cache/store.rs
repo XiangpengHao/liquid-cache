@@ -1,7 +1,6 @@
-use std::{collections::hash_map::Entry, fs::File, io::Write, path::PathBuf};
-
-use crate::sync::{Arc, RwLock};
-use ahash::AHashMap;
+use congee::CongeeArc;
+use std::fmt::{Debug, Formatter};
+use std::{fs::File, io::Write, path::PathBuf};
 
 use super::{
     CacheEntryID, CachedBatch, LiquidCompressorStates,
@@ -12,6 +11,9 @@ use super::{
     utils::{CacheConfig, ColumnAccessPath},
 };
 use crate::liquid_array::LiquidArrayRef;
+use crate::sync::{Arc, RwLock};
+use ahash::AHashMap;
+use liquid_cache_common::LiquidCacheMode;
 
 #[derive(Debug)]
 struct CompressorStates {
@@ -35,65 +37,65 @@ impl CompressorStates {
     }
 }
 
-/// 8 way partitioning, to reduce the contention on the lock
-/// The partition key is the last 3 bits of the row group id
-const PARTITION_COUNT: usize = 8;
-
-#[derive(Debug)]
-struct PartitionedHashStore {
-    partitions: [RwLock<AHashMap<CacheEntryID, CachedBatch>>; PARTITION_COUNT],
+struct ArtStore {
+    art: CongeeArc<CacheEntryID, CachedBatch>,
 }
 
-impl PartitionedHashStore {
-    fn new() -> Self {
-        assert!(PARTITION_COUNT.is_power_of_two());
-        Self {
-            partitions: std::array::from_fn(|_| RwLock::new(AHashMap::new())),
-        }
+impl Debug for ArtStore {
+    fn fmt(&self, _f: &mut Formatter<'_>) -> std::fmt::Result {
+        Ok(())
     }
+}
 
-    fn partition_index(&self, entry_id: &CacheEntryID) -> usize {
-        entry_id.row_group_id() as usize & (PARTITION_COUNT - 1)
+impl ArtStore {
+    fn new() -> Self {
+        let art: CongeeArc<CacheEntryID, CachedBatch> = CongeeArc::new();
+        Self { art }
     }
 
     fn get(&self, entry_id: &CacheEntryID) -> Option<CachedBatch> {
-        let partition_index = self.partition_index(entry_id);
-        let partition = &self.partitions[partition_index].read().unwrap();
-        partition.get(entry_id).cloned()
-    }
-
-    fn get_partition(
-        &self,
-        entry_id: &CacheEntryID,
-    ) -> &RwLock<AHashMap<CacheEntryID, CachedBatch>> {
-        let partition_index = self.partition_index(entry_id);
-        &self.partitions[partition_index]
+        let guard = self.art.pin();
+        let batch = self.art.get(*entry_id, &guard)?;
+        Some(CachedBatch::clone(&batch))
     }
 
     fn is_cached(&self, entry_id: &CacheEntryID) -> bool {
-        let partition_index = self.partition_index(entry_id);
-        let partition = &self.partitions[partition_index].read().unwrap();
-        partition.contains_key(entry_id)
+        let guard = self.art.pin();
+        self.art.get(*entry_id, &guard).is_some()
+    }
+
+    fn insert(&self, entry_id: &CacheEntryID, batch: CachedBatch) {
+        let guard = self.art.pin();
+        _ = self
+            .art
+            .insert(*entry_id, Arc::new(batch), &guard)
+            .expect("Insertion failed");
     }
 
     fn reset(&self) {
-        for partition in self.partitions.iter() {
-            partition.write().unwrap().clear();
-        }
+        let guard = self.art.pin();
+        self.art.keys().into_iter().for_each(|k| {
+            _ = self.art.remove(k, &guard).unwrap();
+        });
     }
 
     fn for_each(&self, mut f: impl FnMut(&CacheEntryID, &CachedBatch)) {
-        for partition in self.partitions.iter() {
-            for (entry_id, cached_batch) in partition.read().unwrap().iter() {
-                f(entry_id, cached_batch);
-            }
+        let guard = self.art.pin();
+        for id in self.art.keys().into_iter() {
+            f(
+                &id,
+                &self
+                    .art
+                    .get(id, &guard)
+                    .expect("Failed to get value from ART"),
+            );
         }
     }
 }
 
 #[derive(Debug)]
 pub(crate) struct CacheStore {
-    cached_data: PartitionedHashStore,
+    cached_data: ArtStore,
     config: CacheConfig,
     budget: BudgetAccounting,
     policy: Box<dyn CachePolicy>,
@@ -110,6 +112,8 @@ pub enum CacheAdvice {
     TranscodeToDisk(CacheEntryID),
     /// Transcode the entry to liquid memory.
     Transcode(CacheEntryID),
+    /// Discard the entry,  do not cache.
+    Discard,
 }
 
 impl CacheStore {
@@ -117,11 +121,12 @@ impl CacheStore {
         batch_size: usize,
         max_cache_bytes: usize,
         cache_root_dir: PathBuf,
+        cache_mode: LiquidCacheMode,
         policy: Box<dyn CachePolicy>,
     ) -> Self {
-        let config = CacheConfig::new(batch_size, max_cache_bytes, cache_root_dir);
+        let config = CacheConfig::new(batch_size, max_cache_bytes, cache_root_dir, cache_mode);
         Self {
-            cached_data: PartitionedHashStore::new(),
+            cached_data: ArtStore::new(),
             budget: BudgetAccounting::new(config.max_cache_bytes()),
             config,
             policy,
@@ -136,32 +141,25 @@ impl CacheStore {
         cached_batch: CachedBatch,
     ) -> Result<(), (CacheAdvice, CachedBatch)> {
         let new_memory_size = cached_batch.memory_usage_bytes();
-        let mut cached_data_lock = self.cached_data.get_partition(&entry_id).write().unwrap();
-        let entry = cached_data_lock.entry(entry_id);
-        match entry {
-            Entry::Occupied(mut entry) => {
-                let old = entry.get();
-                let old_memory_size = old.memory_usage_bytes();
-                if self
-                    .budget
-                    .try_update_memory_usage(old_memory_size, new_memory_size)
-                    .is_err()
-                {
-                    drop(cached_data_lock);
-                    let advice = self.policy.advise(&entry_id, &cached_batch);
-                    return Err((advice, cached_batch));
-                }
-                entry.insert(cached_batch);
+        if let Some(entry) = self.cached_data.get(&entry_id) {
+            let old_memory_size = entry.memory_usage_bytes();
+            if self
+                .budget
+                .try_update_memory_usage(old_memory_size, new_memory_size)
+                .is_err()
+            {
+                let advice = self.policy.advise(&entry_id, self.config.cache_mode());
+                return Err((advice, cached_batch));
             }
-            Entry::Vacant(entry) => {
-                if self.budget.try_reserve_memory(new_memory_size).is_err() {
-                    drop(cached_data_lock);
-                    let advice = self.policy.advise(&entry_id, &cached_batch);
-                    return Err((advice, cached_batch));
-                }
-                entry.insert_entry(cached_batch);
+            self.cached_data.insert(&entry_id, cached_batch);
+        } else {
+            if self.budget.try_reserve_memory(new_memory_size).is_err() {
+                let advice = self.policy.advise(&entry_id, self.config.cache_mode());
+                return Err((advice, cached_batch));
             }
-        };
+            self.cached_data.insert(&entry_id, cached_batch);
+        }
+
         Ok(())
     }
 
@@ -225,6 +223,7 @@ impl CacheStore {
                     .expect("failed to insert on disk liquid");
                 None
             }
+            CacheAdvice::Discard => None,
         }
     }
 
@@ -239,16 +238,6 @@ impl CacheStore {
     pub(super) fn insert(&self, entry_id: CacheEntryID, mut batch_to_cache: CachedBatch) {
         let mut loop_count = 0;
         loop {
-            if batch_to_cache.memory_usage_bytes() > self.budget.max_memory_bytes() {
-                let advice = CacheAdvice::TranscodeToDisk(entry_id);
-                let not_inserted = self.apply_advice(advice, batch_to_cache);
-                assert!(
-                    not_inserted.is_none(),
-                    "If batch is too big, it should be transcoded to disk"
-                );
-                return;
-            }
-
             let Err((advice, not_inserted)) = self.insert_inner(entry_id, batch_to_cache) else {
                 self.policy.notify_insert(&entry_id);
                 return;
@@ -313,47 +302,23 @@ impl CacheStore {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::cache::{
         policies::{CachePolicy, LruPolicy},
         utils::{create_cache_store, create_entry_id, create_test_array},
     };
+    use crate::sync::thread;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use super::*;
-    use crate::sync::{
-        atomic::{AtomicUsize, Ordering},
-        thread,
-    };
     use arrow::array::Array;
+    use liquid_cache_common::LiquidCacheMode;
 
     mod partitioned_hash_store_tests {
         use super::*;
 
         #[test]
-        fn test_partition_index() {
-            let store = PartitionedHashStore::new();
-
-            // Test different row group IDs map to expected partitions
-            for i in 0..16 {
-                let entry_id = create_entry_id(1, i as u64, 1, 1);
-                assert_eq!(
-                    store.partition_index(&entry_id),
-                    (i as usize) & (PARTITION_COUNT - 1)
-                );
-            }
-
-            // Verify that row_group_id % PARTITION_COUNT == partition_index
-            for i in 0..100 {
-                let entry_id = create_entry_id(1, i as u64, 1, 1);
-                assert_eq!(
-                    store.partition_index(&entry_id),
-                    (i as usize) % PARTITION_COUNT
-                );
-            }
-        }
-
-        #[test]
         fn test_get_and_is_cached() {
-            let store = PartitionedHashStore::new();
+            let store = ArtStore::new();
             let entry_id1 = create_entry_id(1, 1, 1, 1);
             let entry_id2 = create_entry_id(2, 2, 2, 2);
             let array1 = create_test_array(100);
@@ -365,8 +330,7 @@ mod tests {
 
             // Insert an entry and verify it's cached
             {
-                let mut partition = store.get_partition(&entry_id1).write().unwrap();
-                partition.insert(entry_id1, array1.clone());
+                store.insert(&entry_id1, array1.clone());
             }
 
             assert!(store.is_cached(&entry_id1));
@@ -380,39 +344,19 @@ mod tests {
         }
 
         #[test]
-        fn test_get_partition() {
-            let store = PartitionedHashStore::new();
-
-            // Verify that we get the same partition for the same entry ID
-            let entry_id = create_entry_id(1, 1, 5, 1);
-            let partition_idx = store.partition_index(&entry_id);
-            let partition_ptr = store.get_partition(&entry_id) as *const _;
-            let expected_ptr = &store.partitions[partition_idx] as *const _;
-
-            assert_eq!(partition_ptr, expected_ptr);
-        }
-
-        #[test]
         fn test_reset() {
-            let store = PartitionedHashStore::new();
-            for i in 0..PARTITION_COUNT {
-                let entry_id = create_entry_id(1, i as u64, 1, 1);
-                let array = create_test_array(100);
+            let store = ArtStore::new();
+            let entry_id = create_entry_id(1, 1 as u64, 1, 1);
+            let array = create_test_array(100);
 
-                let mut partition = store.get_partition(&entry_id).write().unwrap();
-                partition.insert(entry_id, array.clone());
-            }
+            store.insert(&entry_id, array.clone());
 
-            for i in 0..PARTITION_COUNT {
-                let entry_id = create_entry_id(1, i as u64, 1, 1);
-                assert!(store.is_cached(&entry_id));
-            }
+            let entry_id = create_entry_id(1, 1 as u64, 1, 1);
+            assert!(store.is_cached(&entry_id));
 
             store.reset();
-            for i in 0..PARTITION_COUNT {
-                let entry_id = create_entry_id(1, i as u64, 1, 1);
-                assert!(!store.is_cached(&entry_id));
-            }
+            let entry_id = create_entry_id(1, 1 as u64, 1, 1);
+            assert!(!store.is_cached(&entry_id));
         }
     }
 
@@ -442,7 +386,7 @@ mod tests {
     }
 
     impl CachePolicy for TestPolicy {
-        fn advise(&self, entry_id: &CacheEntryID, _to_insert: &CachedBatch) -> CacheAdvice {
+        fn advise(&self, entry_id: &CacheEntryID, _cache_mode: &LiquidCacheMode) -> CacheAdvice {
             self.advice_count.fetch_add(1, Ordering::SeqCst);
             match self.advice_type {
                 AdviceType::Evict => {
@@ -574,12 +518,9 @@ mod tests {
         crate::utils::shuttle_test(concurrent_cache_operations);
     }
 
-    impl PartitionedHashStore {
+    impl ArtStore {
         fn len(&self) -> usize {
-            self.partitions
-                .iter()
-                .map(|p| p.read().unwrap().len())
-                .sum()
+            self.art.keys().len()
         }
     }
 

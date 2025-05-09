@@ -143,10 +143,7 @@ pub async fn main() -> Result<()> {
     );
 
     let queries = get_query(&args.query_path, args.common.query)?;
-    let bench_mode = &args.common.bench_mode;
-    let ctx = bench_mode
-        .setup_clickbench_ctx(&args.common.server, &args.file, args.common.partitions)
-        .await?;
+    let ctx = args.common.setup_clickbench_ctx(&args.file).await?;
 
     let mut benchmark_result = BenchmarkResult {
         args: args.clone(),
@@ -164,6 +161,7 @@ pub async fn main() -> Result<()> {
             info!("Running query {id}: \n{query}");
 
             args.common.start_trace().await;
+            args.common.start_flamegraph().await;
 
             let root = Span::root(
                 format!("clickbench-client-{id}-{it}"),
@@ -174,7 +172,6 @@ pub async fn main() -> Result<()> {
             let starting_timestamp = bench_start_time.elapsed();
             let (results, physical_plan) = run_query(&ctx, &query).await?;
             let elapsed = now.elapsed();
-            info!("Query execution time: {elapsed:?}");
 
             networks.refresh(true);
             // for mac its lo0 and for linux its lo.
@@ -183,6 +180,7 @@ pub async fn main() -> Result<()> {
                 .or_else(|| networks.get("lo"))
                 .expect("No loopback interface found in networks");
 
+            args.common.stop_flamegraph().await;
             args.common.stop_trace().await;
 
             let physical_plan_with_metrics =
@@ -200,26 +198,23 @@ pub async fn main() -> Result<()> {
                 info!("Query {id} passed validation");
             }
 
-            let metrics_response = bench_mode
-                .get_execution_metrics(&args.common.admin_server, &physical_plan)
-                .await;
-            info!(
-                "Server processing time: {} ms, cache memory usage: {} bytes, liquid cache usage: {} bytes",
-                metrics_response.pushdown_eval_time,
-                metrics_response.cache_memory_usage,
-                metrics_response.liquid_cache_usage
-            );
+            args.common.get_cache_stats().await;
 
-            query_result.add(IterationResult {
+            let metrics_response = args.common.get_execution_metrics(&physical_plan).await;
+
+            let result = IterationResult {
                 network_traffic: network_info.received(),
                 time_millis: elapsed.as_millis() as u64,
                 cache_cpu_time: metrics_response.pushdown_eval_time,
                 cache_memory_usage: metrics_response.cache_memory_usage,
+                liquid_cache_usage: metrics_response.liquid_cache_usage,
                 starting_timestamp,
-            });
+            };
+            result.log();
+            query_result.add(result);
         }
         if args.common.reset_cache {
-            bench_mode.reset_cache(&args.common.admin_server).await?;
+            args.common.reset_cache().await?;
         }
         benchmark_result.results.push(query_result);
     }

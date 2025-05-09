@@ -84,11 +84,7 @@ pub async fn main() -> Result<()> {
         args.common.openobserve_auth.as_deref(),
     );
 
-    let ctx = args
-        .common
-        .bench_mode
-        .setup_tpch_ctx(&args.common.server, &args.data_dir, args.common.partitions)
-        .await?;
+    let ctx = args.common.setup_tpch_ctx(&args.data_dir).await?;
 
     let mut benchmark_result = BenchmarkResult {
         args: args.clone(),
@@ -113,6 +109,7 @@ pub async fn main() -> Result<()> {
             let root = Span::root(format!("tpch-client-{id}-{it}"), SpanContext::random());
             let _g = root.set_local_parent();
             args.common.start_trace().await;
+            args.common.start_flamegraph().await;
             info!("Running query {}: \n{}", id, query.join(";"));
             let now = Instant::now();
             let starting_timestamp = bench_start_time.elapsed();
@@ -132,8 +129,6 @@ pub async fn main() -> Result<()> {
                 run_query(&ctx, &query[0]).await?
             };
             let elapsed = now.elapsed();
-            info!("Query execution time: {elapsed:?}");
-
             networks.refresh(true);
             // for mac its lo0 and for linux its lo.
             let network_info = networks
@@ -141,6 +136,7 @@ pub async fn main() -> Result<()> {
                 .or_else(|| networks.get("lo"))
                 .expect("No loopback interface found in networks");
 
+            args.common.stop_flamegraph().await;
             args.common.stop_trace().await;
 
             let physical_plan_with_metrics =
@@ -150,7 +146,7 @@ pub async fn main() -> Result<()> {
                 physical_plan_with_metrics.indent(true)
             );
             let result_str = pretty::pretty_format_batches(&results).unwrap();
-            info!("Query result: \n{result_str}");
+            debug!("Query result: \n{result_str}");
 
             // Check query answers
             if let Some(answer_dir) = &args.common.answer_dir {
@@ -158,31 +154,23 @@ pub async fn main() -> Result<()> {
                 info!("Query {id} passed validation");
             }
 
-            let metrics_response = args
-                .common
-                .bench_mode
-                .get_execution_metrics(&args.common.admin_server, &physical_plan)
-                .await;
-            info!(
-                "Server processing time: {} ms, cache memory usage: {} bytes, liquid cache usage: {} bytes",
-                metrics_response.pushdown_eval_time,
-                metrics_response.cache_memory_usage,
-                metrics_response.liquid_cache_usage
-            );
+            args.common.get_cache_stats().await;
 
-            query_result.add(IterationResult {
+            let metrics_response = args.common.get_execution_metrics(&physical_plan).await;
+
+            let result = IterationResult {
                 network_traffic: network_info.received(),
                 time_millis: elapsed.as_millis() as u64,
                 cache_cpu_time: metrics_response.pushdown_eval_time,
                 cache_memory_usage: metrics_response.cache_memory_usage,
+                liquid_cache_usage: metrics_response.liquid_cache_usage,
                 starting_timestamp,
-            });
+            };
+            result.log();
+            query_result.add(result);
         }
         if args.common.reset_cache {
-            args.common
-                .bench_mode
-                .reset_cache(&args.common.admin_server)
-                .await?;
+            args.common.reset_cache().await?;
         }
         benchmark_result.results.push(query_result);
     }

@@ -70,10 +70,6 @@ impl BudgetAccounting {
         self.used_memory_bytes.load(Ordering::Relaxed)
     }
 
-    pub fn max_memory_bytes(&self) -> usize {
-        self.max_memory_bytes
-    }
-
     pub fn disk_usage_bytes(&self) -> usize {
         self.used_disk_bytes.load(Ordering::Relaxed)
     }

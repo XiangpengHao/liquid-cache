@@ -1,70 +1,21 @@
-//! Admin server for the liquid cache server
-//!
-//! This server is used to manage the liquid cache server
-
-use axum::http::{HeaderValue, Method};
-use axum::{
-    Json, Router,
-    extract::{Query, State},
-    routing::get,
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::Arc,
 };
-use liquid_cache_common::CacheMode;
+
+use axum::{
+    Json,
+    extract::{Query, State},
+};
 use liquid_cache_common::rpc::ExecutionMetricsResponse;
 use log::info;
 use serde::Serialize;
-use std::sync::atomic::AtomicU32;
-use std::{collections::HashMap, fs, net::SocketAddr, path::Path, sync::Arc};
-use tower_http::cors::CorsLayer;
 use uuid::Uuid;
 
-use crate::LiquidCacheService;
+use super::{ApiResponse, AppState};
 
-#[derive(Serialize)]
-struct ApiResponse {
-    message: String,
-    status: String,
-}
-
-#[derive(Serialize)]
-struct TableInfo {
-    name: String,
-    path: String,
-    cache_mode: String,
-}
-
-#[derive(Serialize)]
-struct TablesResponse {
-    tables: Vec<TableInfo>,
-    status: String,
-}
-
-#[derive(Serialize)]
-struct ParquetCacheUsage {
-    directory: String,
-    file_count: usize,
-    total_size_bytes: u64,
-    status: String,
-}
-
-#[derive(Serialize)]
-struct CacheInfo {
-    batch_size: usize,
-    max_cache_bytes: u64, // here we need to be u64 because wasm is 32 bit usize.
-    memory_usage_bytes: u64,
-    disk_usage_bytes: u64,
-}
-
-#[derive(serde::Deserialize)]
-struct TraceParams {
-    path: String,
-}
-
-#[derive(serde::Deserialize)]
-struct ExecutionMetricsParams {
-    plan_id: String,
-}
-
-async fn shutdown_handler() -> Json<ApiResponse> {
+pub(crate) async fn shutdown_handler() -> Json<ApiResponse> {
     info!("Shutdown request received, shutting down server...");
 
     tokio::spawn(async {
@@ -78,9 +29,11 @@ async fn shutdown_handler() -> Json<ApiResponse> {
     })
 }
 
-async fn reset_cache_handler(State(state): State<Arc<AppState>>) -> Json<ApiResponse> {
+pub(crate) async fn reset_cache_handler(State(state): State<Arc<AppState>>) -> Json<ApiResponse> {
     info!("Resetting cache...");
-    state.liquid_cache.cache().reset();
+    if let Some(cache) = state.liquid_cache.cache() {
+        cache.reset();
+    }
 
     Json(ApiResponse {
         message: "Cache reset successfully".to_string(),
@@ -88,25 +41,12 @@ async fn reset_cache_handler(State(state): State<Arc<AppState>>) -> Json<ApiResp
     })
 }
 
-fn get_registered_tables_inner(tables: HashMap<String, (String, CacheMode)>) -> Vec<TableInfo> {
-    tables
-        .into_iter()
-        .map(|(name, (path, mode))| TableInfo {
-            name,
-            path,
-            cache_mode: mode.to_string(),
-        })
-        .collect()
-}
-
-async fn get_registered_tables_handler(State(state): State<Arc<AppState>>) -> Json<TablesResponse> {
-    info!("Listing registered tables...");
-    let tables = state.liquid_cache.get_registered_tables().await;
-    let table_infos = get_registered_tables_inner(tables);
-    Json(TablesResponse {
-        tables: table_infos,
-        status: "success".to_string(),
-    })
+#[derive(Serialize)]
+pub(crate) struct ParquetCacheUsage {
+    directory: String,
+    file_count: usize,
+    total_size_bytes: u64,
+    status: String,
 }
 
 fn get_parquet_cache_usage_inner(cache_dir: &Path) -> ParquetCacheUsage {
@@ -150,7 +90,7 @@ fn get_parquet_cache_usage_inner(cache_dir: &Path) -> ParquetCacheUsage {
     }
 }
 
-async fn get_parquet_cache_usage_handler(
+pub(crate) async fn get_parquet_cache_usage_handler(
     State(state): State<Arc<AppState>>,
 ) -> Json<ParquetCacheUsage> {
     info!("Getting parquet cache usage...");
@@ -159,12 +99,28 @@ async fn get_parquet_cache_usage_handler(
     Json(usage)
 }
 
-async fn get_cache_info_handler(State(state): State<Arc<AppState>>) -> Json<CacheInfo> {
+#[derive(Serialize)]
+pub(crate) struct CacheInfo {
+    batch_size: usize,
+    max_cache_bytes: u64,
+    memory_usage_bytes: u64,
+    disk_usage_bytes: u64,
+}
+
+pub(crate) async fn get_cache_info_handler(State(state): State<Arc<AppState>>) -> Json<CacheInfo> {
     info!("Getting cache info...");
-    let batch_size = state.liquid_cache.cache().batch_size();
-    let max_cache_bytes = state.liquid_cache.cache().max_cache_bytes() as u64;
-    let memory_usage_bytes = state.liquid_cache.cache().memory_usage_bytes() as u64;
-    let disk_usage_bytes = state.liquid_cache.cache().disk_usage_bytes() as u64;
+    let Some(cache) = state.liquid_cache.cache() else {
+        return Json(CacheInfo {
+            batch_size: 0,
+            max_cache_bytes: 0,
+            memory_usage_bytes: 0,
+            disk_usage_bytes: 0,
+        });
+    };
+    let batch_size = cache.batch_size();
+    let max_cache_bytes = cache.max_cache_bytes() as u64;
+    let memory_usage_bytes = cache.memory_usage_bytes() as u64;
+    let disk_usage_bytes = cache.disk_usage_bytes() as u64;
     Json(CacheInfo {
         batch_size,
         max_cache_bytes,
@@ -174,7 +130,7 @@ async fn get_cache_info_handler(State(state): State<Arc<AppState>>) -> Json<Cach
 }
 
 #[derive(Serialize)]
-struct SystemInfo {
+pub(crate) struct SystemInfo {
     total_memory_bytes: u64,
     used_memory_bytes: u64,
     available_memory_bytes: u64,
@@ -183,12 +139,20 @@ struct SystemInfo {
     os: String,
     host_name: String,
     cpu_cores: usize,
+    server_resident_memory_bytes: u64,
+    server_virtual_memory_bytes: u64,
 }
 
-async fn get_system_info_handler(State(_state): State<Arc<AppState>>) -> Json<SystemInfo> {
+pub(crate) async fn get_system_info_handler(
+    State(_state): State<Arc<AppState>>,
+) -> Json<SystemInfo> {
     info!("Getting system info...");
     let mut sys = sysinfo::System::new_all();
     sys.refresh_all();
+    let current_pid = sysinfo::get_current_pid().unwrap();
+    let process = sys.process(current_pid).unwrap();
+    let resident_memory = process.memory();
+    let virtual_memory = process.virtual_memory();
     Json(SystemInfo {
         total_memory_bytes: sys.total_memory(),
         used_memory_bytes: sys.used_memory(),
@@ -198,12 +162,31 @@ async fn get_system_info_handler(State(_state): State<Arc<AppState>>) -> Json<Sy
         os: sysinfo::System::os_version().unwrap_or_default(),
         host_name: sysinfo::System::host_name().unwrap_or_default(),
         cpu_cores: sysinfo::System::physical_core_count().unwrap_or(0),
+        server_resident_memory_bytes: resident_memory,
+        server_virtual_memory_bytes: virtual_memory,
     })
 }
 
-async fn start_trace_handler(State(state): State<Arc<AppState>>) -> Json<ApiResponse> {
+#[derive(serde::Deserialize)]
+pub(crate) struct TraceParams {
+    path: String,
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct ExecutionMetricsParams {
+    plan_id: String,
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct CacheStatsParams {
+    path: String,
+}
+
+pub(crate) async fn start_trace_handler(State(state): State<Arc<AppState>>) -> Json<ApiResponse> {
     info!("Starting cache trace collection...");
-    state.liquid_cache.cache().enable_trace();
+    if let Some(cache) = state.liquid_cache.cache() {
+        cache.enable_trace();
+    }
 
     Json(ApiResponse {
         message: "Cache trace collection started".to_string(),
@@ -211,7 +194,7 @@ async fn start_trace_handler(State(state): State<Arc<AppState>>) -> Json<ApiResp
     })
 }
 
-async fn stop_trace_handler(
+pub(crate) async fn stop_trace_handler(
     Query(params): Query<TraceParams>,
     State(state): State<Arc<AppState>>,
 ) -> Json<ApiResponse> {
@@ -233,7 +216,10 @@ async fn stop_trace_handler(
     }
 }
 
-fn save_trace_to_file(save_dir: &Path, state: &AppState) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn save_trace_to_file(
+    save_dir: &Path,
+    state: &AppState,
+) -> Result<(), Box<dyn std::error::Error>> {
     let now = std::time::SystemTime::now();
     let datetime = now.duration_since(std::time::UNIX_EPOCH).unwrap();
     let minute = (datetime.as_secs() / 60) % 60;
@@ -249,12 +235,14 @@ fn save_trace_to_file(save_dir: &Path, state: &AppState) -> Result<(), Box<dyn s
     }
 
     let file_path = save_dir.join(filename);
-    state.liquid_cache.cache().disable_trace();
-    state.liquid_cache.cache().flush_trace(&file_path);
+    if let Some(cache) = state.liquid_cache.cache() {
+        cache.disable_trace();
+        cache.flush_trace(&file_path);
+    }
     Ok(())
 }
 
-async fn get_execution_metrics_handler(
+pub(crate) async fn get_execution_metrics_handler(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ExecutionMetricsParams>,
 ) -> Json<Option<ExecutionMetricsResponse>> {
@@ -265,96 +253,91 @@ async fn get_execution_metrics_handler(
     Json(metrics)
 }
 
-struct AppState {
-    liquid_cache: Arc<LiquidCacheService>,
-    trace_id: AtomicU32,
+pub(crate) fn get_cache_stats_inner(
+    cache: &liquid_cache_parquet::LiquidCacheRef,
+    save_dir: impl AsRef<Path>,
+    state: &AppState,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let now = std::time::SystemTime::now();
+    let datetime = now.duration_since(std::time::UNIX_EPOCH).unwrap();
+    let minute = (datetime.as_secs() / 60) % 60;
+    let second = datetime.as_secs() % 60;
+    let trace_id = state
+        .stats_id
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let filename = format!("cache-stats-id{trace_id:02}-{minute:02}-{second:03}.parquet",);
+    let file_path = save_dir.as_ref().join(filename);
+    cache.write_stats(&file_path)?;
+    Ok(file_path)
 }
 
-/// Run the admin server
-pub async fn run_admin_server(
-    addr: SocketAddr,
-    liquid_cache: Arc<LiquidCacheService>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let state = Arc::new(AppState {
-        liquid_cache,
-        trace_id: AtomicU32::new(0),
-    });
+pub(crate) async fn get_cache_stats_handler(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<CacheStatsParams>,
+) -> Json<ApiResponse> {
+    let Some(cache) = state.liquid_cache.cache() else {
+        return Json(ApiResponse {
+            message: "Cache not enabled".to_string(),
+            status: "error".to_string(),
+        });
+    };
+    match get_cache_stats_inner(cache, &params.path, &state) {
+        Ok(file_path) => {
+            info!("Cache stats saved to {}", file_path.display());
+            Json(ApiResponse {
+                message: format!("Cache stats saved to {}", file_path.display()),
+                status: "success".to_string(),
+            })
+        }
+        Err(e) => Json(ApiResponse {
+            message: format!("Failed to get cache stats: {e}"),
+            status: "error".to_string(),
+        }),
+    }
+}
 
-    // Create a CORS layer that allows all localhost origins
-    let cors = CorsLayer::new()
-        // Allow all localhost origins (http and https)
-        .allow_origin([
-            "http://localhost:8080".parse::<HeaderValue>().unwrap(),
-            "http://127.0.0.1:8080".parse::<HeaderValue>().unwrap(),
-            "http://liquid-cache-admin.xiangpeng.systems"
-                .parse::<HeaderValue>()
-                .unwrap(),
-        ])
-        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
-        .allow_headers([axum::http::header::CONTENT_TYPE]);
+pub(crate) async fn start_flamegraph_handler(
+    State(state): State<Arc<AppState>>,
+) -> Json<ApiResponse> {
+    info!("Starting flamegraph collection...");
+    state.flamegraph.start();
+    Json(ApiResponse {
+        message: "Flamegraph collection started".to_string(),
+        status: "success".to_string(),
+    })
+}
 
-    let app = Router::new()
-        .route("/shutdown", get(shutdown_handler))
-        .route("/reset_cache", get(reset_cache_handler))
-        .route("/get_registered_tables", get(get_registered_tables_handler))
-        .route("/parquet_cache_usage", get(get_parquet_cache_usage_handler))
-        .route("/cache_info", get(get_cache_info_handler))
-        .route("/system_info", get(get_system_info_handler))
-        .route("/start_trace", get(start_trace_handler))
-        .route("/stop_trace", get(stop_trace_handler))
-        .route("/execution_metrics", get(get_execution_metrics_handler))
-        .with_state(state)
-        .layer(cors);
+#[derive(serde::Deserialize)]
+pub(crate) struct FlameGraphParams {
+    output_dir: String,
+}
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
-
-    Ok(())
+pub(crate) async fn stop_flamegraph_handler(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<FlameGraphParams>,
+) -> Json<ApiResponse> {
+    let output_dir = PathBuf::from(&params.output_dir);
+    let filepath = state.flamegraph.stop(&output_dir);
+    info!(
+        "Flamegraph collection stopped, saved to {}",
+        filepath.display()
+    );
+    Json(ApiResponse {
+        message: format!(
+            "Flamegraph collection stopped, saved to {}",
+            filepath.display()
+        ),
+        status: "success".to_string(),
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use std::collections::HashMap;
-    use std::io::Write;
-    use std::path::PathBuf;
+    use std::{io::Write, path::PathBuf};
+
     use tempfile::tempdir;
 
-    #[test]
-    fn test_get_registered_tables_inner() {
-        let mut tables = HashMap::new();
-        tables.insert(
-            "table1".to_string(),
-            ("s3://bucket/path1".to_string(), CacheMode::Parquet),
-        );
-        tables.insert(
-            "table2".to_string(),
-            ("s3://bucket/path2".to_string(), CacheMode::Liquid),
-        );
-        tables.insert(
-            "table3".to_string(),
-            ("s3://bucket/path3".to_string(), CacheMode::Arrow),
-        );
-
-        let result = get_registered_tables_inner(tables);
-
-        assert_eq!(result.len(), 3);
-
-        let mut sorted_result = result;
-        sorted_result.sort_by(|a, b| a.name.cmp(&b.name));
-
-        assert_eq!(sorted_result[0].name, "table1");
-        assert_eq!(sorted_result[0].path, "s3://bucket/path1");
-        assert_eq!(sorted_result[0].cache_mode, "parquet");
-
-        assert_eq!(sorted_result[1].name, "table2");
-        assert_eq!(sorted_result[1].path, "s3://bucket/path2");
-        assert_eq!(sorted_result[1].cache_mode, "liquid");
-
-        assert_eq!(sorted_result[2].name, "table3");
-        assert_eq!(sorted_result[2].path, "s3://bucket/path3");
-        assert_eq!(sorted_result[2].cache_mode, "arrow");
-    }
+    use super::*;
 
     #[test]
     fn test_get_parquet_cache_usage_inner() {

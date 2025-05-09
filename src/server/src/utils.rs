@@ -1,22 +1,18 @@
-use crate::StatsCollector;
 use arrow::{array::RecordBatch, compute::concat_batches};
 use datafusion::error::Result;
 use futures::{Stream, ready};
 use futures::{StreamExt, stream::BoxStream};
 use std::{
     pin::Pin,
-    sync::Arc,
     task::{Context, Poll},
 };
 
 /// A stream that finalizes the record batches.
 /// It currently do two things:
 /// 1. Gc the record batches, especially for arrays after filtering.
-/// 2. Collect stats for the execution plan.
-/// 3. Merge small batches into a large one.
+/// 2. Merge small batches into a large one.
 pub struct FinalStream {
     inner: BoxStream<'static, Result<RecordBatch>>,
-    stats_collector: Vec<Arc<dyn StatsCollector>>,
     target_batch_size: usize,
     buffered_batches: Vec<RecordBatch>,
     current_buffered_rows: usize,
@@ -26,29 +22,15 @@ pub struct FinalStream {
 impl FinalStream {
     pub fn new<S: Stream<Item = Result<RecordBatch>> + Send + 'static>(
         inner: S,
-        mut stats_collector: Vec<Arc<dyn StatsCollector>>,
         target_batch_size: usize,
         span: fastrace::Span,
     ) -> Self {
-        for collector in stats_collector.iter_mut() {
-            collector.start();
-        }
-
         Self {
             inner: inner.boxed(),
-            stats_collector,
             target_batch_size,
             buffered_batches: Vec::new(),
             current_buffered_rows: 0,
             span,
-        }
-    }
-}
-
-impl Drop for FinalStream {
-    fn drop(&mut self) {
-        for collector in self.stats_collector.iter_mut() {
-            collector.stop();
         }
     }
 }

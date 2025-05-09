@@ -1,16 +1,12 @@
 use std::sync::Arc;
 
-use arrow::array::types::{
-    Float32Type as ArrowFloat32Type, Float64Type as ArrowFloat64Type, Int8Type as ArrowInt8Type,
-    Int16Type as ArrowInt16Type, Int32Type as ArrowInt32Type, Int64Type as ArrowInt64Type,
-    UInt8Type as ArrowUInt8Type, UInt16Type as ArrowUInt16Type, UInt32Type as ArrowUInt32Type,
-    UInt64Type as ArrowUInt64Type,
-};
+use arrow::array::types::*;
 use arrow::array::{ArrayRef, AsArray};
 use arrow_schema::DataType;
 
 use crate::liquid_array::{
-    LiquidArrayRef, LiquidByteArray, LiquidFloatArray, LiquidPrimitiveArray,
+    LiquidArrayRef, LiquidByteArray, LiquidFixedLenByteArray, LiquidFloatArray,
+    LiquidPrimitiveArray,
 };
 
 use super::LiquidCompressorStates;
@@ -26,42 +22,76 @@ pub(super) fn transcode_liquid_inner<'a>(
     if data_type.is_primitive() {
         // For primitive types, perform the transcoding.
         let liquid_array: LiquidArrayRef = match data_type {
-            DataType::Int8 => Arc::new(LiquidPrimitiveArray::<ArrowInt8Type>::from_arrow_array(
-                array.as_primitive::<ArrowInt8Type>().clone(),
+            DataType::Int8 => Arc::new(LiquidPrimitiveArray::<Int8Type>::from_arrow_array(
+                array.as_primitive::<Int8Type>().clone(),
             )),
-            DataType::Int16 => Arc::new(LiquidPrimitiveArray::<ArrowInt16Type>::from_arrow_array(
-                array.as_primitive::<ArrowInt16Type>().clone(),
+            DataType::Int16 => Arc::new(LiquidPrimitiveArray::<Int16Type>::from_arrow_array(
+                array.as_primitive::<Int16Type>().clone(),
             )),
-            DataType::Int32 => Arc::new(LiquidPrimitiveArray::<ArrowInt32Type>::from_arrow_array(
-                array.as_primitive::<ArrowInt32Type>().clone(),
+            DataType::Int32 => Arc::new(LiquidPrimitiveArray::<Int32Type>::from_arrow_array(
+                array.as_primitive::<Int32Type>().clone(),
             )),
-            DataType::Int64 => Arc::new(LiquidPrimitiveArray::<ArrowInt64Type>::from_arrow_array(
-                array.as_primitive::<ArrowInt64Type>().clone(),
+            DataType::Int64 => Arc::new(LiquidPrimitiveArray::<Int64Type>::from_arrow_array(
+                array.as_primitive::<Int64Type>().clone(),
             )),
-            DataType::UInt8 => Arc::new(LiquidPrimitiveArray::<ArrowUInt8Type>::from_arrow_array(
-                array.as_primitive::<ArrowUInt8Type>().clone(),
+            DataType::UInt8 => Arc::new(LiquidPrimitiveArray::<UInt8Type>::from_arrow_array(
+                array.as_primitive::<UInt8Type>().clone(),
             )),
-            DataType::UInt16 => {
-                Arc::new(LiquidPrimitiveArray::<ArrowUInt16Type>::from_arrow_array(
-                    array.as_primitive::<ArrowUInt16Type>().clone(),
-                ))
+            DataType::UInt16 => Arc::new(LiquidPrimitiveArray::<UInt16Type>::from_arrow_array(
+                array.as_primitive::<UInt16Type>().clone(),
+            )),
+            DataType::UInt32 => Arc::new(LiquidPrimitiveArray::<UInt32Type>::from_arrow_array(
+                array.as_primitive::<UInt32Type>().clone(),
+            )),
+            DataType::UInt64 => Arc::new(LiquidPrimitiveArray::<UInt64Type>::from_arrow_array(
+                array.as_primitive::<UInt64Type>().clone(),
+            )),
+            DataType::Date32 => Arc::new(LiquidPrimitiveArray::<Date32Type>::from_arrow_array(
+                array.as_primitive::<Date32Type>().clone(),
+            )),
+            DataType::Date64 => Arc::new(LiquidPrimitiveArray::<Date64Type>::from_arrow_array(
+                array.as_primitive::<Date64Type>().clone(),
+            )),
+            DataType::Float32 => Arc::new(LiquidFloatArray::<Float32Type>::from_arrow_array(
+                array.as_primitive::<Float32Type>().clone(),
+            )),
+            DataType::Float64 => Arc::new(LiquidFloatArray::<Float64Type>::from_arrow_array(
+                array.as_primitive::<Float64Type>().clone(),
+            )),
+            DataType::Decimal128(_, _) => {
+                let compressor = state.fsst_compressor.read().unwrap();
+                if let Some(compressor) = compressor.as_ref() {
+                    let compressed = LiquidFixedLenByteArray::from_decimal_array(
+                        array.as_primitive::<Decimal128Type>(),
+                        compressor.clone(),
+                    );
+                    return Ok(Arc::new(compressed));
+                }
+                drop(compressor);
+                let mut compressors = state.fsst_compressor.write().unwrap();
+                let (compressor, liquid_array) = LiquidFixedLenByteArray::train_from_decimal_array(
+                    array.as_primitive::<Decimal128Type>(),
+                );
+                *compressors = Some(compressor);
+                return Ok(Arc::new(liquid_array));
             }
-            DataType::UInt32 => {
-                Arc::new(LiquidPrimitiveArray::<ArrowUInt32Type>::from_arrow_array(
-                    array.as_primitive::<ArrowUInt32Type>().clone(),
-                ))
+            DataType::Decimal256(_, _) => {
+                let compressor = state.fsst_compressor.read().unwrap();
+                if let Some(compressor) = compressor.as_ref() {
+                    let compressed = LiquidFixedLenByteArray::from_decimal_array(
+                        array.as_primitive::<Decimal256Type>(),
+                        compressor.clone(),
+                    );
+                    return Ok(Arc::new(compressed));
+                }
+                drop(compressor);
+                let mut compressors = state.fsst_compressor.write().unwrap();
+                let (compressor, liquid_array) = LiquidFixedLenByteArray::train_from_decimal_array(
+                    array.as_primitive::<Decimal256Type>(),
+                );
+                *compressors = Some(compressor);
+                return Ok(Arc::new(liquid_array));
             }
-            DataType::UInt64 => {
-                Arc::new(LiquidPrimitiveArray::<ArrowUInt64Type>::from_arrow_array(
-                    array.as_primitive::<ArrowUInt64Type>().clone(),
-                ))
-            }
-            DataType::Float32 => Arc::new(LiquidFloatArray::<ArrowFloat32Type>::from_arrow_array(
-                array.as_primitive::<ArrowFloat32Type>().clone(),
-            )),
-            DataType::Float64 => Arc::new(LiquidFloatArray::<ArrowFloat64Type>::from_arrow_array(
-                array.as_primitive::<ArrowFloat64Type>().clone(),
-            )),
             _ => {
                 // For unsupported primitive types, leave the value unchanged.
                 log::warn!("unsupported primitive type {data_type:?}");
@@ -106,7 +136,7 @@ pub(super) fn transcode_liquid_inner<'a>(
             Ok(Arc::new(compressed))
         }
         DataType::Dictionary(_, _) => {
-            if let Some(dict_array) = array.as_dictionary_opt::<ArrowUInt16Type>() {
+            if let Some(dict_array) = array.as_dictionary_opt::<UInt16Type>() {
                 let compressor = state.fsst_compressor.read().unwrap();
                 if let Some(compressor) = compressor.as_ref() {
                     let liquid_array = unsafe {
