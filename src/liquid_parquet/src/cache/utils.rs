@@ -280,7 +280,6 @@ mod tests {
         assert_eq!(batch_id.v, 2);
     }
 
-
     #[test]
     fn test_batch_id_from_raw() {
         let batch_id = BatchID::from_raw(5);
