@@ -1,12 +1,10 @@
 use crate::sync::{Arc, Mutex, atomic::AtomicBool};
 use std::{
-    fs::File,
-    path::Path,
-    time::{SystemTime, UNIX_EPOCH},
+    fmt::Display, fs::File, path::Path, time::{SystemTime, UNIX_EPOCH}
 };
 
 use arrow::{
-    array::{ArrayRef, RecordBatch, UInt64Array},
+    array::{ArrayRef, RecordBatch, StringArray, UInt64Array, UInt8Array},
     datatypes::{DataType, Field, Schema},
 };
 use parquet::{
@@ -19,7 +17,44 @@ struct TraceEvent {
     entry_id: CacheEntryID,
     cache_memory_bytes: usize,
     time_stamp_nanos: u128,
+    reason: CacheAccessReason,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+/// Reasons for accessing the cache (for tracing)
+pub enum CacheAccessReason {
+    /// Access for predicate evaluation
+    Predicate = 0,
+    /// Access for filtering data
+    Filter = 1,
+    /// Access for testing purposes
+    Testing = 2,
+}
+
+impl From<u8> for CacheAccessReason {
+    fn from(value: u8) -> Self {
+        match value {
+            0 => CacheAccessReason::Predicate,
+            1 => CacheAccessReason::Filter,
+            2 => CacheAccessReason::Testing,
+            _ => panic!("Invalid CacheAccessReason value: {}", value),
+        }
+    }
+}
+impl Into<u8> for CacheAccessReason {
+    fn into(self) -> u8 {
+        self as u8
+    }
+}
+
+
+impl Display for CacheAccessReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
 
 pub(super) struct CacheTracer {
     enabled: AtomicBool,
@@ -54,7 +89,7 @@ impl CacheTracer {
         self.enabled.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    pub(super) fn trace_get(&self, entry_id: CacheEntryID, cache_memory_bytes: usize) {
+    pub(super) fn trace_get(&self, entry_id: CacheEntryID, cache_memory_bytes: usize, reason: CacheAccessReason) {
         if !self.enabled() {
             return;
         }
@@ -67,6 +102,7 @@ impl CacheTracer {
             entry_id,
             cache_memory_bytes,
             time_stamp_nanos,
+            reason,
         });
     }
 
@@ -83,6 +119,7 @@ impl CacheTracer {
             Field::new("batch_id", DataType::UInt64, false),
             Field::new("cache_memory_bytes", DataType::UInt64, false),
             Field::new("time_stamp_nanos", DataType::UInt64, false),
+            Field::new("reason", DataType::UInt8, false),
         ]));
 
         let num_rows = entries.len();
@@ -92,7 +129,7 @@ impl CacheTracer {
         let mut batch_ids = Vec::with_capacity(num_rows);
         let mut cache_memory_bytes_vec = Vec::with_capacity(num_rows);
         let mut time_stamp_nanos_vec = Vec::with_capacity(num_rows);
-
+        let mut reason_vec: Vec<u8> = Vec::with_capacity(num_rows);
         for event in entries.iter() {
             file_ids.push(event.entry_id.file_id_inner());
             row_group_ids.push(event.entry_id.row_group_id_inner());
@@ -100,6 +137,10 @@ impl CacheTracer {
             batch_ids.push(event.entry_id.batch_id_inner()); // Assuming batch_id_inner exists or add it
             cache_memory_bytes_vec.push(event.cache_memory_bytes as u64);
             time_stamp_nanos_vec.push(event.time_stamp_nanos as u64);
+            if event.reason == CacheAccessReason::Testing {
+                panic!("Testing traces shouldn't be traced");
+            }
+            reason_vec.push(event.reason as u8);
         }
 
         let batch = RecordBatch::try_new(
@@ -111,6 +152,7 @@ impl CacheTracer {
                 Arc::new(UInt64Array::from(batch_ids)) as ArrayRef,
                 Arc::new(UInt64Array::from(cache_memory_bytes_vec)) as ArrayRef,
                 Arc::new(UInt64Array::from(time_stamp_nanos_vec)) as ArrayRef,
+                Arc::new(UInt8Array::from(reason_vec)) as ArrayRef,
             ],
         )
         .expect("Failed to create record batch");
@@ -157,16 +199,16 @@ mod tests {
 
         // Should not record when disabled
         let entry_id = CacheEntryID::new(1, 2, 3, BatchID::from_raw(4));
-        tracer.trace_get(entry_id, 1000);
+        tracer.trace_get(entry_id, 1000, CacheAccessReason::Testing);
         assert!(tracer.entries.lock().unwrap().is_empty());
 
         // Should record when enabled
         tracer.enable();
-        tracer.trace_get(entry_id, 1000);
+        tracer.trace_get(entry_id, 1000, CacheAccessReason::Testing);
         assert_eq!(tracer.entries.lock().unwrap().len(), 1);
 
         // Multiple events
-        tracer.trace_get(entry_id, 2000);
+        tracer.trace_get(entry_id, 2000, CacheAccessReason::Testing);
         assert_eq!(tracer.entries.lock().unwrap().len(), 2);
 
         // Check entry data
@@ -201,8 +243,8 @@ mod tests {
         let entry_id1 = CacheEntryID::new(1, 2, 3, BatchID::from_raw(4));
         let entry_id2 = CacheEntryID::new(5, 6, 7, BatchID::from_raw(8));
 
-        tracer.trace_get(entry_id1, 1000);
-        tracer.trace_get(entry_id2, 2000);
+        tracer.trace_get(entry_id1, 1000, CacheAccessReason::Testing);
+        tracer.trace_get(entry_id2, 2000, CacheAccessReason::Testing);
 
         // Flush to file
         tracer.flush(&file_path);
@@ -283,11 +325,11 @@ mod tests {
         tracer.enable();
 
         // Add first batch of entries
-        tracer.trace_get(CacheEntryID::new(1, 2, 3, BatchID::from_raw(4)), 1000);
+        tracer.trace_get(CacheEntryID::new(1, 2, 3, BatchID::from_raw(4)), 1000, CacheAccessReason::Testing);
         tracer.flush(&file_path1);
 
         // Add second batch of entries
-        tracer.trace_get(CacheEntryID::new(5, 6, 7, BatchID::from_raw(8)), 2000);
+        tracer.trace_get(CacheEntryID::new(5, 6, 7, BatchID::from_raw(8)), 2000, CacheAccessReason::Testing);
         tracer.flush(&file_path2);
 
         // Verify both files exist

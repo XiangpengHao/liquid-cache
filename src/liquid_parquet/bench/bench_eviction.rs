@@ -7,6 +7,8 @@ use parquet::record::RowAccessor;
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::PathBuf;
+use liquid_cache_parquet::cache::tracer::CacheAccessReason;
+
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -129,6 +131,10 @@ fn access_patterns(args: &Args) {
         //    row.get_ulong(4).expect("Failed to get cache_memory_bytes");
         let time_stamp_nanos: u64 = row.get_ulong(5).expect("Failed to get time_stamp_nanos");
 
+        let reason: u8 = row.get_ubyte(6).expect("Failed to get reason");
+        let reason: CacheAccessReason = reason.into();
+        println!("reason: {:?}", reason);
+
         let key = pack_u16s(file_id, row_group_id, column_id, batch_id);
 
         if let Some(val) = lifetime_map.get_mut(&key) {
@@ -187,10 +193,10 @@ fn main() {
     let args = Args::parse();
     // Run bench tests for each cache type.
 
-    bench(LruCache::new, "LRU".to_string(), &args);
+    /*bench(LruCache::new, "LRU".to_string(), &args);
     bench(ClockCache::new, "CLOCK".to_string(), &args);
     bench(LfuCache::new, "LFU".to_string(), &args);
-    bench(FifoCache::new, "FIFO".to_string(), &args);
+    bench(FifoCache::new, "FIFO".to_string(), &args);*/
 
     access_patterns(&args);
 }

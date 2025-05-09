@@ -241,6 +241,7 @@ fn fallback_advice(entry_id: &CacheEntryID, cache_mode: &LiquidCacheMode) -> Cac
 mod test {
     use liquid_cache_common::LiquidCacheMode;
 
+    use crate::cache::tracer::CacheAccessReason;
     use crate::cache::utils::{create_cache_store, create_entry_id, create_test_array};
     use crate::policies::CachePolicy;
 
@@ -516,15 +517,15 @@ mod test {
         store.insert(entry_id2, create_test_array(100));
         store.insert(entry_id3, create_test_array(100));
 
-        store.get(&entry_id1);
+        store.get(&entry_id1, CacheAccessReason::Testing);
 
         let entry_id4 = create_entry_id(4, 4, 4, 4);
         store.insert(entry_id4, create_test_array(100));
 
-        assert!(store.get(&entry_id1).is_some());
-        assert!(store.get(&entry_id3).is_some());
+        assert!(store.get(&entry_id1, CacheAccessReason::Testing).is_some());
+        assert!(store.get(&entry_id3, CacheAccessReason::Testing).is_some());
 
-        match store.get(&entry_id2) {
+        match store.get(&entry_id2, CacheAccessReason::Testing) {
             Some(CachedBatch::OnDiskLiquid) => {}
             None => {} // This is also acceptable if fully evicted
             other => panic!("Expected OnDiskLiquid or None, got {:?}", other),
@@ -550,11 +551,11 @@ mod test {
         let entry_id4 = create_entry_id(4, 4, 4, 4);
         store.insert(entry_id4, create_test_array(100));
 
-        assert!(store.get(&entry_id1).is_some());
-        assert!(store.get(&entry_id2).is_some());
-        assert!(store.get(&entry_id4).is_some());
+        assert!(store.get(&entry_id1, CacheAccessReason::Testing).is_some());
+        assert!(store.get(&entry_id2, CacheAccessReason::Testing).is_some());
+        assert!(store.get(&entry_id4, CacheAccessReason::Testing).is_some());
 
-        match store.get(&entry_id3) {
+        match store.get(&entry_id3, CacheAccessReason::Testing) {
             Some(CachedBatch::OnDiskLiquid) => {}
             None => {} // This is also acceptable if fully evicted
             other => panic!("Expected OnDiskLiquid or None, got {:?}", other),

@@ -2,6 +2,7 @@ use congee::CongeeArc;
 use std::fmt::{Debug, Formatter};
 use std::{fs::File, io::Write, path::PathBuf};
 
+use super::tracer::CacheAccessReason;
 use super::{
     CacheEntryID, CachedBatch, LiquidCompressorStates,
     budget::BudgetAccounting,
@@ -257,9 +258,9 @@ impl CacheStore {
         }
     }
 
-    pub(super) fn get(&self, entry_id: &CacheEntryID) -> Option<CachedBatch> {
+    pub(super) fn get(&self, entry_id: &CacheEntryID, reason: CacheAccessReason) -> Option<CachedBatch> {
         self.tracer
-            .trace_get(*entry_id, self.budget.memory_usage_bytes());
+            .trace_get(*entry_id, self.budget.memory_usage_bytes(), reason);
 
         // Notify the advisor that this entry was accessed
         self.policy.notify_access(entry_id);
@@ -421,7 +422,7 @@ mod tests {
 
         // Verify budget usage and data correctness
         assert_eq!(store.budget.memory_usage_bytes(), size1);
-        let retrieved1 = store.get(&entry_id1).unwrap();
+        let retrieved1 = store.get(&entry_id1, CacheAccessReason::Testing).unwrap();
         match retrieved1 {
             CachedBatch::ArrowMemory(arr) => assert_eq!(arr.len(), 100),
             _ => panic!("Expected ArrowMemory"),
@@ -439,7 +440,7 @@ mod tests {
         store.insert(entry_id1, array3);
 
         assert_eq!(store.budget.memory_usage_bytes(), size3 + size2);
-        assert!(store.get(&create_entry_id(999, 999, 999, 999)).is_none());
+        assert!(store.get(&create_entry_id(999, 999, 999, 999), CacheAccessReason::Testing).is_none());
     }
 
     #[test]
@@ -460,13 +461,13 @@ mod tests {
             std::fs::create_dir_all(on_disk_path.parent().unwrap()).unwrap();
 
             store.insert(entry_id1, create_test_array(800));
-            match store.get(&entry_id1).unwrap() {
+            match store.get(&entry_id1, CacheAccessReason::Testing).unwrap() {
                 CachedBatch::ArrowMemory(_) => {}
                 other => panic!("Expected ArrowMemory, got {:?}", other),
             }
 
             store.insert(entry_id2, create_test_array(800));
-            match store.get(&entry_id1).unwrap() {
+            match store.get(&entry_id1, CacheAccessReason::Testing).unwrap() {
                 CachedBatch::OnDiskLiquid => {}
                 other => panic!("Expected OnDiskLiquid after eviction, got {:?}", other),
             }
@@ -478,13 +479,13 @@ mod tests {
             let store = create_cache_store(8000, Box::new(advisor)); // Small budget
 
             store.insert(entry_id1, create_test_array(800));
-            match store.get(&entry_id1).unwrap() {
+            match store.get(&entry_id1, CacheAccessReason::Testing).unwrap() {
                 CachedBatch::ArrowMemory(_) => {}
                 other => panic!("Expected ArrowMemory, got {:?}", other),
             }
 
             store.insert(entry_id2, create_test_array(800));
-            match store.get(&entry_id1).unwrap() {
+            match store.get(&entry_id1, CacheAccessReason::Testing).unwrap() {
                 CachedBatch::LiquidMemory(_) => {}
                 other => panic!("Expected LiquidMemory after transcoding, got {:?}", other),
             }
@@ -500,7 +501,7 @@ mod tests {
 
             store.insert(entry_id1, create_test_array(800));
             store.insert(entry_id3, create_test_array(800));
-            match store.get(&entry_id3).unwrap() {
+            match store.get(&entry_id3, CacheAccessReason::Testing).unwrap() {
                 CachedBatch::OnDiskLiquid => {}
                 other => panic!("Expected OnDiskLiquid, got {:?}", other),
             }
@@ -555,7 +556,7 @@ mod tests {
             for i in 0..ops_per_thread {
                 let unique_id = thread_id * ops_per_thread + i;
                 let entry_id = create_entry_id(1, 1, 1, unique_id as u16);
-                assert!(store.get(&entry_id).is_some());
+                assert!(store.get(&entry_id, CacheAccessReason::Testing).is_some());
             }
         }
 

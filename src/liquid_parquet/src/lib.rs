@@ -1,7 +1,7 @@
 #![warn(missing_docs)]
 #![cfg_attr(not(doctest), doc = include_str!(concat!("../", std::env!("CARGO_PKG_README"))))]
 
-mod cache;
+pub mod cache;
 pub mod liquid_array;
 mod reader;
 mod sync;
