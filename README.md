@@ -16,8 +16,8 @@
 
 </div>
 
-LiquidCache is a pushdown cache for S3.
-Projections, filters, and aggregations are pushed down to cache server before sending data to [DataFusion](https://github.com/apache/datafusion).
+LiquidCache is a pushdown cache for S3 --
+projections, filters, and aggregations are evaluated at the cache server before returning data to query engines (e.g., [DataFusion](https://github.com/apache/datafusion)).
 
 ## Features
 LiquidCache is a radical redesign of caching: it **caches logical data** rather than its physical representations.
