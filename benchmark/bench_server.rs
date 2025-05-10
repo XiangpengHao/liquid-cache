@@ -36,7 +36,7 @@ struct CliArgs {
     disk_cache_dir: Option<PathBuf>,
 
     /// Cache mode
-    #[arg(long = "cache-mode", default_value = "liquid-eager-transcode")]
+    #[arg(long = "cache-mode", default_value = "liquid_eager_transcode")]
     cache_mode: CacheMode,
 
     /// Openobserve auth token
