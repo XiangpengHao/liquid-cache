@@ -296,29 +296,26 @@ pub(crate) async fn get_cache_stats_handler(
     }
 }
 
-pub(crate) async fn get_io_stats_handler(
+pub(crate) async fn start_task_stats_handler(
     State(state): State<Arc<AppState>>,
     Query(params): Query<CacheStatsParams>,
 ) -> Json<ApiResponse> {
-    let Some(cache) = state.liquid_cache.cache() else {
-        return Json(ApiResponse {
-            message: "Cache not enabled".to_string(),
-            status: "error".to_string(),
-        });
-    };
-    match get_cache_stats_inner(cache, &params.path, &state) {
-        Ok(file_path) => {
-            info!("Cache stats saved to {}", file_path.display());
-            Json(ApiResponse {
-                message: format!("Cache stats saved to {}", file_path.display()),
-                status: "success".to_string(),
-            })
-        }
-        Err(e) => Json(ApiResponse {
-            message: format!("Failed to get cache stats: {e}"),
-            status: "error".to_string(),
-        }),
-    }
+    state.task_monitor.run_collector().await;
+    Json(ApiResponse {
+        message: "Task monitor started".to_string(),
+        status: "success".to_string(),
+    })
+}
+
+pub(crate) async fn stop_task_stats_handler(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<CacheStatsParams>,
+) -> Json<ApiResponse> {
+    state.task_monitor.stop_collector().await;
+    Json(ApiResponse {
+        message: "Task monitor started".to_string(),
+        status: "success".to_string(),
+    })
 }
 
 pub(crate) async fn start_flamegraph_handler(

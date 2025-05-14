@@ -2902,6 +2902,7 @@ dependencies = [
  "liquid-cache-common",
  "liquid-cache-parquet",
  "log",
+ "metrics",
  "object_store",
  "pprof",
  "prost",
@@ -2909,6 +2910,7 @@ dependencies = [
  "sysinfo",
  "tempfile",
  "tokio",
+ "tokio-metrics",
  "tonic",
  "tower-http",
  "url",
@@ -3006,6 +3008,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fd3f7eed9d3848f8b98834af67102b720745c4ec028fcd0aa0239277e7de374f"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "metrics"
+version = "0.24.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25dea7ac8057892855ec285c440160265225438c3c45072613c25a4b26e98ef5"
+dependencies = [
+ "ahash",
+ "portable-atomic",
 ]
 
 [[package]]

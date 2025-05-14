@@ -19,6 +19,8 @@ log = { workspace = true }
 prost = { workspace = true }
 tonic = { workspace = true }
 tokio = { workspace = true }
+tokio-metrics = { workspace = true }
+metrics = { workspace = true }
 url = { workspace = true }
 liquid-cache-parquet = { workspace = true }
 object_store = { workspace = true, features = ["aws", "http"] }

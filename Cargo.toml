@@ -35,6 +35,8 @@ datafusion-proto = { version = "47.0.0" }
 async-trait = "0.1.88"
 futures = { version = "0.3.31", default-features = false, features = ["std"] }
 tokio = { version = "1.44.2", features = ["rt-multi-thread"] }
+tokio-metrics = "0.4.2"
+metrics = "0.24.2"
 log = "0.4.27"
 tonic = { version = "0.12" }
 url = "2.5.4"
@@ -59,3 +61,8 @@ insta.opt-level = 3
 [patch.crates-io]
 # datafusion = { path = "../datafusion/datafusion/core" }
 # datafusion-proto = { path = "../datafusion/datafusion/proto" }
+
+[build]
+# Requirement for tokio runtime metrics
+rustflags = ["--cfg", "tokio_unstable"]
+rustdocflags = ["--cfg", "tokio_unstable"]
