@@ -25,6 +25,7 @@ use log::{debug, info};
 use mimalloc::MiMalloc;
 use serde::Serialize;
 use std::fs::File as StdFile;
+use std::time::Duration;
 use sysinfo::Networks;
 
 #[global_allocator]
@@ -169,6 +170,7 @@ pub async fn main() -> Result<()> {
             );
             let _g = root.set_local_parent();
             let now = Instant::now();
+
             let starting_timestamp = bench_start_time.elapsed();
             let (results, physical_plan) = run_query(&ctx, &query).await?;
             let elapsed = now.elapsed();
@@ -208,6 +210,8 @@ pub async fn main() -> Result<()> {
                 cache_cpu_time: metrics_response.pushdown_eval_time,
                 cache_memory_usage: metrics_response.cache_memory_usage,
                 liquid_cache_usage: metrics_response.liquid_cache_usage,
+                threads_num: 0,
+                io_usage: 0,
                 starting_timestamp,
             };
             result.log();

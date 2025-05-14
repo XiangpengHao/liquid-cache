@@ -164,6 +164,8 @@ pub async fn main() -> Result<()> {
                 cache_cpu_time: metrics_response.pushdown_eval_time,
                 cache_memory_usage: metrics_response.cache_memory_usage,
                 liquid_cache_usage: metrics_response.liquid_cache_usage,
+                threads_num: 0,
+                io_usage: 0,
                 starting_timestamp,
             };
             result.log();

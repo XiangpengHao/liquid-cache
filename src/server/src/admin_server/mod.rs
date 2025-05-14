@@ -71,6 +71,7 @@ pub async fn run_admin_server(
         .route("/cache_stats", get(handlers::get_cache_stats_handler))
         .route("/start_flamegraph", get(handlers::start_flamegraph_handler))
         .route("/stop_flamegraph", get(handlers::stop_flamegraph_handler))
+        .route("/io_stats", get(handlers::get_io_stats_handler))
         .with_state(state)
         .layer(cors);
 
