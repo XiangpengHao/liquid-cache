@@ -9,6 +9,7 @@ use arrow::compute::prep_null_mask_filter;
 use arrow_schema::{ArrowError, DataType, Field, Schema};
 use bytes::Bytes;
 use liquid_cache_common::{LiquidCacheMode, coerce_from_parquet_to_liquid_type};
+use num_traits::AsPrimitive;
 use std::fmt::Display;
 use std::fs::File;
 use std::io::Read;
@@ -17,6 +18,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use store::{CacheAdvice, CacheStore};
 use tokio::runtime::Runtime;
+use tokio_uring::buf::fixed::FixedBufRegistry;
 use transcode::transcode_liquid_inner;
 pub(crate) use utils::BatchID;
 use utils::{CacheEntryID, ColumnAccessPath};
@@ -40,6 +42,24 @@ static TRANSCODE_THREAD_POOL: LazyLock<Runtime> = LazyLock::new(|| {
         .build()
         .unwrap()
 });
+
+static IO_URING_THREAD_POOL: LazyLock<Runtime> = LazyLock::new(|| {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(8)
+        .thread_name("io-uring-worker")
+        .enable_all()
+        .build()
+        .unwrap()
+});
+
+enum FileIOMode {
+    BlockingIoUring,
+    Default,
+    ThreadPoolIoUring,
+    TokioAsync
+}
+
+static FILE_IO_MODE: FileIOMode = FileIOMode::Default;
 
 struct LiquidCompressorStates {
     fsst_compressor: RwLock<Option<Arc<fsst::Compressor>>>,
@@ -157,6 +177,103 @@ impl LiquidCachedColumn {
         ipc::read_from_bytes(bytes, &LiquidIPCContext::new(compressor))
     }
 
+    fn read_liquid_from_disk_async(&self, batch_id: BatchID) -> LiquidArrayRef {
+        let path = self.cache_dir.join(format!("row_{}.bin", *batch_id));
+        let bytes = tokio::task::block_in_place(|| {
+            let handle = tokio::runtime::Handle::current();
+            handle.block_on(async move {
+                tokio::fs::read(&path).await.expect("tokio::fs::read failed")
+            })
+        }
+        );
+        let bytes = Bytes::from(bytes);
+        ipc::read_from_bytes(bytes, &LiquidIPCContext::new(compressor))
+    }
+
+    fn read_liquid_from_disk_uring(&self, batch_id: BatchID) -> LiquidArrayRef {
+        let path = self.cache_dir.join(format!("row_{}.bin", *batch_id));
+        
+        let bytes = tokio_uring::start(async {
+            let mut bytes = Vec::<u8>::new();
+            let registry = FixedBufRegistry::new(std::iter::repeat(vec![0; 4096]).take(1));
+            registry.register();
+            let file = tokio_uring::fs::File::create(path).await.unwrap();
+            let mut pos = 0;
+
+            loop {
+                let buf = registry.check_out(0).unwrap();
+                let (res, buf) = file.read_fixed_at(buf, pos).await;
+                if res.is_err() || *(res.as_ref().unwrap()) == 0 {
+                    break;
+                }
+                pos += <usize as AsPrimitive<u64>>::as_(*res.as_ref().unwrap());
+                bytes.extend_from_slice(&buf[..res.unwrap()]);
+            }
+            file.close().await;
+            bytes
+        });
+        let bytes = Bytes::from(bytes);
+        ipc::read_from_bytes(bytes, &LiquidIPCContext::new(compressor))
+    }
+
+    fn read_liquid_from_disk_async(&self, batch_id: BatchID) -> LiquidArrayRef {
+        let path = self.cache_dir.join(format!("row_{}.bin", *batch_id));
+        let bytes = tokio::task::block_in_place(|| {
+            let handle = tokio::runtime::Handle::current();
+            handle.block_on(async move {
+                tokio::fs::read(&path).await.expect("tokio::fs::read failed")
+            })
+        }
+        );
+        let bytes = Bytes::from(bytes);
+        let context = &self.fsst_compressor().read().unwrap();
+        let compressor = context.as_ref().cloned();
+        ipc::read_from_bytes(bytes, &LiquidIPCContext::new(compressor))
+    }
+
+    fn read_liquid_from_disk_uring(&self, batch_id: BatchID) -> LiquidArrayRef {
+        let path = self.cache_dir.join(format!("row_{}.bin", *batch_id));
+        
+        let bytes = tokio_uring::start(async {
+            let mut bytes = Vec::<u8>::new();
+            let registry = FixedBufRegistry::new(std::iter::repeat(vec![0; 4096]).take(1));
+            registry.register();
+            let file = tokio_uring::fs::File::create(path).await.unwrap();
+            let mut pos = 0;
+
+            loop {
+                let buf = registry.check_out(0).unwrap();
+                let (res, buf) = file.read_fixed_at(buf, pos).await;
+                if res.is_err() || *(res.as_ref().unwrap()) == 0 {
+                    break;
+                }
+                pos += <usize as AsPrimitive<u64>>::as_(*res.as_ref().unwrap());
+                bytes.extend_from_slice(&buf[..res.unwrap()]);
+            }
+            file.close().await;
+            bytes
+        });
+        let bytes = Bytes::from(bytes);
+        let context = &self.fsst_compressor().read().unwrap();
+        let compressor = context.as_ref().cloned();
+        ipc::read_from_bytes(bytes, &LiquidIPCContext::new(compressor))
+    }
+
+    fn read_liquid_from_disk_threadpool_uring(&self, batch_id: BatchID) -> LiquidArrayRef {
+        // tokio::task::block_in_place(|| {
+        //     let handle = tokio::runtime::Handle::current();
+        //     handle.block_on( async move {
+        //         let fut = IO_URING_THREAD_POOL.block_on(async move {
+        //             self.read_liquid_from_disk_uring(batch_id)
+        //         });
+        //         return fut.await.expect("Read liquid from disk using io_uring failed");
+        //     })
+        // })
+        IO_URING_THREAD_POOL.block_on(async move {
+            self.read_liquid_from_disk_uring(batch_id)
+        })
+    }
+
     /// Evaluates a predicate on a liquid array.
     /// It optimistically tries to evaluate on liquid array, and if that fails,
     /// it falls back to evaluating on an arrow array.
@@ -208,7 +325,16 @@ impl LiquidCachedColumn {
                 Some(Ok(buffer))
             }
             CachedBatch::OnDiskLiquid => {
-                let array = self.read_liquid_from_disk(batch_id);
+                let array = match FILE_IO_MODE {
+                    FileIOMode::Default => {
+                                        self.read_liquid_from_disk(batch_id)
+                                    },
+                    FileIOMode::TokioAsync => {
+                                        self.read_liquid_from_disk_async(batch_id)
+                                    },
+                    FileIOMode::BlockingIoUring => self.read_liquid_from_disk_uring(batch_id),
+                    FileIOMode::ThreadPoolIoUring => self.read_liquid_from_disk_threadpool_uring(batch_id),
+                };
                 let boolean_array = BooleanArray::new(selection.clone(), None);
                 let filtered = array.filter(&boolean_array);
                 let buffer = self.eval_selection_with_predicate_inner(predicate, &filtered);
@@ -268,7 +394,16 @@ impl LiquidCachedColumn {
                 }
             },
             CachedBatch::OnDiskLiquid => {
-                let array = self.read_liquid_from_disk(batch_id);
+                let array = match FILE_IO_MODE {
+                    FileIOMode::Default => {
+                                        self.read_liquid_from_disk(batch_id)
+                                    },
+                    FileIOMode::TokioAsync => {
+                                        self.read_liquid_from_disk_async(batch_id)
+                                    },
+                    FileIOMode::BlockingIoUring => self.read_liquid_from_disk_uring(batch_id),
+                    FileIOMode::ThreadPoolIoUring => self.read_liquid_from_disk_threadpool_uring(batch_id),
+                };
                 let filtered = array.filter(filter);
                 Some(filtered.to_best_arrow_array())
             }
@@ -317,6 +452,29 @@ impl LiquidCachedColumn {
         Ok(())
     }
 
+    fn evict_batch(self: &Arc<Self>, batch_id: BatchID, entry: CachedBatch) {
+        match entry {
+            CachedBatch::ArrowMemory(array) => {
+                self.transcode_and_write_to_disk(array, batch_id);
+            }
+            CachedBatch::LiquidMemory(array) => {
+                match FILE_IO_MODE {
+                    FileIOMode::Default => {
+                        self.write_to_disk(array, batch_id);
+                    },
+                    FileIOMode::TokioAsync => {
+                        self.write_to_disk_async(array, batch_id);
+                    },
+                    FileIOMode::BlockingIoUring => self.write_to_disk_blocking_uring(array, batch_id),
+                    FileIOMode::ThreadPoolIoUring => self.write_to_disk_threadpool_uring(array, batch_id)
+                }
+            }
+            CachedBatch::OnDiskLiquid => {
+                unreachable!("on disk liquid should not be evicted");
+            }
+        }
+    }
+
     fn insert_as_liquid_background(
         self: &Arc<Self>,
         batch_id: BatchID,
@@ -360,6 +518,77 @@ impl LiquidCachedColumn {
                 }
             }
         }
+    }
+
+    fn transcode_and_write_to_disk(self: &Arc<Self>, array: ArrayRef, batch_id: BatchID) {
+        let transcoded = transcode_liquid_inner(&array, &self.liquid_compressor_states)
+            .expect("failed to transcode");
+        // Here we have no thing but to panic, because we are in a background thread, and we run out of memory, and we don't support the data type.
+
+        match FILE_IO_MODE {
+            FileIOMode::Default => {
+                self.write_to_disk(transcoded, batch_id);
+            },
+            FileIOMode::TokioAsync => {
+                self.write_to_disk_async(transcoded, batch_id);
+            },
+            FileIOMode::BlockingIoUring => self.write_to_disk_blocking_uring(transcoded, batch_id),
+            FileIOMode::ThreadPoolIoUring => self.write_to_disk_threadpool_uring(transcoded, batch_id)
+        }
+    }
+
+    fn write_to_disk(self: &Arc<Self>, array: LiquidArrayRef, batch_id: BatchID) {
+        let bytes = array.to_bytes();
+        let disk_size = bytes.len();
+        let file_path = self.cache_dir.join(format!("row_{}.bin", *batch_id));
+        let mut file = File::create(file_path).unwrap();
+        file.write_all(&bytes).unwrap();
+        self.budget().add_used_disk_bytes(disk_size);
+        self.cache_store
+            .insert(self.entry_id(batch_id), CachedBatch::OnDiskLiquid)
+            .expect("failed to insert on disk liquid");
+    }
+
+    fn write_to_disk_async(self: &Arc<Self>, array: LiquidArrayRef, batch_id: BatchID) {
+        let bytes = array.to_bytes();
+        let disk_size = bytes.len();
+        let file_path = self.cache_dir.join(format!("row_{}.bin", *batch_id));
+        tokio::task::block_in_place(|| {
+            let handle = tokio::runtime::Handle::current();
+            handle.block_on( async {
+                tokio::fs::write(file_path, bytes).await.expect("Failed to write to disk");
+            })
+        });        
+        self.budget().add_used_disk_bytes(disk_size);
+        self.cache_store
+            .insert(self.entry_id(batch_id), CachedBatch::OnDiskLiquid)
+            .expect("failed to insert on disk liquid");
+    }
+
+    fn write_to_disk_blocking_uring(self: &Arc<Self>, array: LiquidArrayRef, batch_id: BatchID) {
+        tokio_uring::start(async {
+            let bytes = array.to_bytes();
+            let disk_size = bytes.len();
+            let file_path = self.cache_dir.join(format!("row_{}.bin", *batch_id));
+            let file = tokio_uring::fs::File::create(file_path).await;
+            if let Ok(file) = file {
+                file.write_all_at(bytes, 0).await;
+                self.budget().add_used_disk_bytes(disk_size);
+                self.cache_store
+                    .insert(self.entry_id(batch_id), CachedBatch::OnDiskLiquid)
+                    .expect("failed to insert on disk liquid");
+                file.close().await;
+                
+            } else {
+                panic!("Failed to create file with tokio-uring");
+            }
+        });
+    }
+
+    fn write_to_disk_threadpool_uring(self: &Arc<Self>, array: LiquidArrayRef, batch_id: BatchID) {
+        IO_URING_THREAD_POOL.block_on(async move {
+            self.write_to_disk_blocking_uring(array, batch_id);
+        })
     }
 
     fn transcode_to_liquid(self: &Arc<Self>, batch_id: BatchID, array: ArrayRef) {
