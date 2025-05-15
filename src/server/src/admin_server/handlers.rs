@@ -8,11 +8,12 @@ use axum::{
     Json,
     extract::{Query, State},
 };
+use axum::handler::Handler;
 use liquid_cache_common::rpc::ExecutionMetricsResponse;
 use log::info;
 use serde::Serialize;
 use uuid::Uuid;
-
+use crate::admin_server::task_monitor::LiquidTaskMetricsResponse;
 use super::{ApiResponse, AppState};
 
 pub(crate) async fn shutdown_handler() -> Json<ApiResponse> {
@@ -298,7 +299,6 @@ pub(crate) async fn get_cache_stats_handler(
 
 pub(crate) async fn start_task_stats_handler(
     State(state): State<Arc<AppState>>,
-    Query(params): Query<CacheStatsParams>,
 ) -> Json<ApiResponse> {
     state.task_monitor.run_collector().await;
     Json(ApiResponse {
@@ -309,13 +309,11 @@ pub(crate) async fn start_task_stats_handler(
 
 pub(crate) async fn stop_task_stats_handler(
     State(state): State<Arc<AppState>>,
-    Query(params): Query<CacheStatsParams>,
-) -> Json<ApiResponse> {
+) -> Json<LiquidTaskMetricsResponse> {
     state.task_monitor.stop_collector().await;
-    Json(ApiResponse {
-        message: "Task monitor started".to_string(),
-        status: "success".to_string(),
-    })
+    let metrics_response = state.task_monitor.get_metrics().await;
+    state.task_monitor.reset_counters();
+    Json(metrics_response)
 }
 
 pub(crate) async fn start_flamegraph_handler(

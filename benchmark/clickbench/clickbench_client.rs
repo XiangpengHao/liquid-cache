@@ -185,7 +185,6 @@ pub async fn main() -> Result<()> {
 
             args.common.stop_flamegraph().await;
             args.common.stop_trace().await;
-            args.common.stop_task_stats().await;
 
             let physical_plan_with_metrics =
                 DisplayableExecutionPlan::with_metrics(physical_plan.as_ref());
@@ -203,6 +202,7 @@ pub async fn main() -> Result<()> {
             }
 
             args.common.get_cache_stats().await;
+            args.common.stop_task_stats().await;
 
             let metrics_response = args.common.get_execution_metrics(&physical_plan).await;
 
