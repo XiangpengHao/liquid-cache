@@ -9,14 +9,16 @@ use arrow::compute::prep_null_mask_filter;
 use arrow_schema::{ArrowError, DataType, Field, Schema};
 use bytes::Bytes;
 use liquid_cache_common::{LiquidCacheMode, coerce_from_parquet_to_liquid_type};
+use num_traits::AsPrimitive;
 use std::fmt::Display;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
-use store::{CacheAdvice, CacheStore};
+use store::{CacheAdvice, CacheStore, FileIOMode, FILE_IO_MODE, IO_URING_THREAD_POOL};
 use tokio::runtime::Runtime;
+use tokio_uring::buf::fixed::FixedBufRegistry;
 use transcode::transcode_liquid_inner;
 pub(crate) use utils::BatchID;
 use utils::{CacheEntryID, ColumnAccessPath};
@@ -157,6 +159,66 @@ impl LiquidCachedColumn {
         ipc::read_from_bytes(bytes, &LiquidIPCContext::new(compressor))
     }
 
+    fn read_liquid_from_disk_async(&self, batch_id: BatchID) -> LiquidArrayRef {
+        let entry_id = self.entry_id(batch_id);
+        let path = entry_id.on_disk_path(self.cache_store.config().cache_root_dir());
+        let compressor = self.cache_store.compressor_states(&entry_id);
+        let compressor = compressor.fsst_compressor.read().unwrap().clone();
+        let bytes = tokio::task::block_in_place(|| {
+            let handle = tokio::runtime::Handle::current();
+            handle.block_on(async move {
+                tokio::fs::read(&path).await.expect("tokio::fs::read failed")
+            })
+        }
+        );
+        let bytes = Bytes::from(bytes);
+        ipc::read_from_bytes(bytes, &LiquidIPCContext::new(compressor))
+    }
+
+    fn read_liquid_from_disk_uring(&self, batch_id: BatchID) -> LiquidArrayRef {
+        let entry_id = self.entry_id(batch_id);
+        let path = entry_id.on_disk_path(self.cache_store.config().cache_root_dir());
+        let compressor = self.cache_store.compressor_states(&entry_id);
+        let compressor = compressor.fsst_compressor.read().unwrap().clone();
+        
+        let bytes = tokio_uring::start(async {
+            let mut bytes = Vec::<u8>::new();
+            let registry = FixedBufRegistry::new(std::iter::repeat(vec![0; 4096]).take(1));
+            registry.register();
+            let file = tokio_uring::fs::File::create(path).await.unwrap();
+            let mut pos = 0;
+
+            loop {
+                let buf = registry.check_out(0).unwrap();
+                let (res, buf) = file.read_fixed_at(buf, pos).await;
+                if res.is_err() || *(res.as_ref().unwrap()) == 0 {
+                    break;
+                }
+                pos += <usize as AsPrimitive<u64>>::as_(*res.as_ref().unwrap());
+                bytes.extend_from_slice(&buf[..res.unwrap()]);
+            }
+            file.close().await;
+            bytes
+        });
+        let bytes = Bytes::from(bytes);
+        ipc::read_from_bytes(bytes, &LiquidIPCContext::new(compressor))
+    }
+
+    fn read_liquid_from_disk_threadpool_uring(&self, batch_id: BatchID) -> LiquidArrayRef {
+        // tokio::task::block_in_place(|| {
+        //     let handle = tokio::runtime::Handle::current();
+        //     handle.block_on( async move {
+        //         let fut = IO_URING_THREAD_POOL.block_on(async move {
+        //             self.read_liquid_from_disk_uring(batch_id)
+        //         });
+        //         return fut.await.expect("Read liquid from disk using io_uring failed");
+        //     })
+        // })
+        IO_URING_THREAD_POOL.block_on(async move {
+            self.read_liquid_from_disk_uring(batch_id)
+        })
+    }
+
     /// Evaluates a predicate on a liquid array.
     /// It optimistically tries to evaluate on liquid array, and if that fails,
     /// it falls back to evaluating on an arrow array.
@@ -208,7 +270,16 @@ impl LiquidCachedColumn {
                 Some(Ok(buffer))
             }
             CachedBatch::OnDiskLiquid => {
-                let array = self.read_liquid_from_disk(batch_id);
+                let array = match FILE_IO_MODE {
+                    FileIOMode::Default => {
+                                        self.read_liquid_from_disk(batch_id)
+                                    },
+                    FileIOMode::TokioAsync => {
+                                        self.read_liquid_from_disk_async(batch_id)
+                                    },
+                    FileIOMode::BlockingIoUring => self.read_liquid_from_disk_uring(batch_id),
+                    FileIOMode::ThreadPoolIoUring => self.read_liquid_from_disk_threadpool_uring(batch_id),
+                };
                 let boolean_array = BooleanArray::new(selection.clone(), None);
                 let filtered = array.filter(&boolean_array);
                 let buffer = self.eval_selection_with_predicate_inner(predicate, &filtered);
@@ -268,7 +339,16 @@ impl LiquidCachedColumn {
                 }
             },
             CachedBatch::OnDiskLiquid => {
-                let array = self.read_liquid_from_disk(batch_id);
+                let array = match FILE_IO_MODE {
+                    FileIOMode::Default => {
+                                        self.read_liquid_from_disk(batch_id)
+                                    },
+                    FileIOMode::TokioAsync => {
+                                        self.read_liquid_from_disk_async(batch_id)
+                                    },
+                    FileIOMode::BlockingIoUring => self.read_liquid_from_disk_uring(batch_id),
+                    FileIOMode::ThreadPoolIoUring => self.read_liquid_from_disk_threadpool_uring(batch_id),
+                };
                 let filtered = array.filter(filter);
                 Some(filtered.to_best_arrow_array())
             }

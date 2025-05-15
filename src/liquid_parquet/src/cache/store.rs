@@ -1,5 +1,6 @@
 use congee::CongeeArc;
 use std::fmt::{Debug, Formatter};
+use std::sync::LazyLock;
 use std::{fs::File, io::Write, path::PathBuf};
 
 use super::{
@@ -14,6 +15,25 @@ use crate::liquid_array::LiquidArrayRef;
 use crate::sync::{Arc, RwLock};
 use ahash::AHashMap;
 use liquid_cache_common::LiquidCacheMode;
+use tokio::runtime::Runtime;
+
+pub(crate) static IO_URING_THREAD_POOL: LazyLock<Runtime> = LazyLock::new(|| {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(8)
+        .thread_name("io-uring-worker")
+        .enable_all()
+        .build()
+        .unwrap()
+});
+
+pub(crate) enum FileIOMode {
+    BlockingIoUring,
+    Default,
+    ThreadPoolIoUring,
+    TokioAsync
+}
+
+pub(crate) static FILE_IO_MODE: FileIOMode = FileIOMode::Default;
 
 #[derive(Debug)]
 struct CompressorStates {
@@ -200,7 +220,18 @@ impl CacheStore {
                         return Some(not_inserted);
                     }
                 };
-                self.write_to_disk(&to_evict, &liquid_array);
+
+                match FILE_IO_MODE {
+                    FileIOMode::Default => {
+                                        self.write_to_disk(&to_evict, &liquid_array)
+                                    },
+                    FileIOMode::TokioAsync => {
+                                        self.write_to_disk_async(&to_evict, &liquid_array)
+                                    },
+                    FileIOMode::BlockingIoUring => self.write_to_disk_blocking_uring(&to_evict, &liquid_array),
+                    FileIOMode::ThreadPoolIoUring => self.write_to_disk_threadpool_uring(&to_evict, &liquid_array),
+                };
+
                 self.insert_inner(to_evict, CachedBatch::OnDiskLiquid)
                     .expect("failed to insert on disk liquid");
                 self.policy.notify_evict(&to_evict);
@@ -218,7 +249,16 @@ impl CacheStore {
                         return None;
                     }
                 };
-                self.write_to_disk(&to_transcode, &liquid_array);
+                match FILE_IO_MODE {
+                    FileIOMode::Default => {
+                                        self.write_to_disk(&to_transcode, &liquid_array)
+                                    },
+                    FileIOMode::TokioAsync => {
+                                        self.write_to_disk_async(&to_transcode, &liquid_array)
+                                    },
+                    FileIOMode::BlockingIoUring => self.write_to_disk_blocking_uring(&to_transcode, &liquid_array),
+                    FileIOMode::ThreadPoolIoUring => self.write_to_disk_threadpool_uring(&to_transcode, &liquid_array),
+                };
                 self.insert_inner(to_transcode, CachedBatch::OnDiskLiquid)
                     .expect("failed to insert on disk liquid");
                 None
@@ -233,6 +273,42 @@ impl CacheStore {
         let mut file = File::create(file_path).unwrap();
         file.write_all(&bytes).unwrap();
         self.budget.add_used_disk_bytes(bytes.len());
+    }
+
+    fn write_to_disk_async(&self, entry_id: &CacheEntryID, liquid_array: &LiquidArrayRef) {
+        let bytes = liquid_array.to_bytes();
+        let file_path = entry_id.on_disk_path(self.config.cache_root_dir());
+        let disk_size = bytes.len();
+        tokio::task::block_in_place(|| {
+            let handle = tokio::runtime::Handle::current();
+            handle.block_on( async {
+                tokio::fs::write(file_path, bytes).await.expect("Failed to write to disk");
+            })
+        });        
+        self.budget.add_used_disk_bytes(disk_size);
+    }
+
+    fn write_to_disk_blocking_uring(&self, entry_id: &CacheEntryID, liquid_array: &LiquidArrayRef) {
+        tokio_uring::start(async {
+            let bytes = liquid_array.to_bytes();
+            let file_path = entry_id.on_disk_path(self.config.cache_root_dir());
+            let disk_size = bytes.len();
+            let file = tokio_uring::fs::File::create(file_path).await;
+            if let Ok(file) = file {
+                file.write_all_at(bytes, 0).await;
+                self.budget.add_used_disk_bytes(disk_size);
+                file.close().await;
+                
+            } else {
+                panic!("Failed to create file with tokio-uring");
+            }
+        });
+    }
+
+    fn write_to_disk_threadpool_uring(&self, entry_id: &CacheEntryID, liquid_array: &LiquidArrayRef) {
+        IO_URING_THREAD_POOL.block_on(async move {
+            self.write_to_disk_blocking_uring(entry_id, liquid_array);
+        })
     }
 
     pub(super) fn insert(&self, entry_id: CacheEntryID, mut batch_to_cache: CachedBatch) {
