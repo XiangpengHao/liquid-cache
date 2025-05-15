@@ -51,6 +51,7 @@ fastrace = "0.7"
 fastrace-futures = "0.7"
 fastrace-tonic = "0.1"
 congee = "0.4.0"
+tokio-uring = "0.5"
 
 
 [profile.dev.package]
@@ -59,5 +60,3 @@ insta.opt-level = 3
 [patch.crates-io]
 # datafusion = { path = "../datafusion/datafusion/core" }
 # datafusion-proto = { path = "../datafusion/datafusion/proto" }
-
-tokio-uring = "0.5"
