@@ -512,8 +512,6 @@ pub struct IterationResult {
     pub cache_cpu_time: u64,
     pub cache_memory_usage: u64,
     pub liquid_cache_usage: u64,
-    pub threads_num: usize,
-    pub io_usage: u64,
     pub starting_timestamp: Duration,
 }
 

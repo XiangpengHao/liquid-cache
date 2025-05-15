@@ -14,7 +14,8 @@ pub(crate) struct LiquidTaskMetrics {
     total_tasks_n: AtomicU64,
     total_slow_poll_n: AtomicU64,
     total_poll_n: AtomicU64,
-    mean_poll_duration_n: AtomicU64,
+    mean_poll_duration_ms: AtomicU64,
+    mean_idle_duration_ms: AtomicU64,
 }
 
 #[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -22,7 +23,8 @@ pub struct LiquidTaskMetricsResponse {
     pub total_tasks_n: u64,
     pub total_slow_poll_n: u64,
     pub total_poll_n: u64,
-    pub mean_poll_duration_n: u64,
+    pub mean_poll_duration_ms: u64,
+    pub mean_idle_duration_ms: u64,
 }
 
 impl LiquidTaskMonitor {
@@ -33,7 +35,8 @@ impl LiquidTaskMonitor {
             total_tasks_n: AtomicU64::new(0),
             total_slow_poll_n: AtomicU64::new(0),
             total_poll_n: AtomicU64::new(0),
-            mean_poll_duration_n: AtomicU64::new(0),
+            mean_poll_duration_ms: AtomicU64::new(0),
+            mean_idle_duration_ms: AtomicU64::new(0),
         };
 
         Self {
@@ -85,8 +88,8 @@ impl LiquidTaskMonitor {
                 );
                 update_high_mark(&liquid_task_metrics.total_poll_n, metrics.total_poll_count);
                 update_high_mark(
-                    &liquid_task_metrics.mean_poll_duration_n,
-                    metrics.mean_poll_duration().as_millis() as u64,
+                    &liquid_task_metrics.mean_idle_duration_ms,
+                    metrics.mean_idle_duration().as_millis() as u64,
                 );
 
                 _ = tokio::time::sleep(tokio::time::Duration::from_millis(500));
@@ -102,6 +105,10 @@ impl LiquidTaskMonitor {
                 update_high_mark(
                     &liquid_task_metrics_rt.total_tasks_n,
                     metrics.live_tasks_count as u64,
+                );
+                update_high_mark(
+                    &liquid_task_metrics_rt.mean_poll_duration_ms,
+                    metrics.mean_poll_duration.as_millis() as u64,
                 );
 
                 _ = tokio::time::sleep(tokio::time::Duration::from_millis(500));
@@ -127,9 +134,13 @@ impl LiquidTaskMonitor {
                 .liquid_task_metrics
                 .total_poll_n
                 .load(Ordering::Acquire),
-            mean_poll_duration_n: self
+            mean_poll_duration_ms: self
                 .liquid_task_metrics
-                .mean_poll_duration_n
+                .mean_poll_duration_ms
+                .load(Ordering::Acquire),
+            mean_idle_duration_ms: self
+                .liquid_task_metrics
+                .mean_idle_duration_ms
                 .load(Ordering::Acquire),
         }
     }
