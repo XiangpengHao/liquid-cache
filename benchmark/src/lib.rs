@@ -146,6 +146,26 @@ impl CommonBenchmarkArgs {
         }
     }
 
+    pub async fn start_task_stats(&self) {
+        let response = reqwest::Client::new()
+            .get(format!("{}/start_task_stats", self.admin_server))
+            .send()
+            .await
+            .unwrap();
+        let response_body = response.text().await.unwrap();
+        info!("Tokio tasks collection started: {response_body}");
+    }
+
+    pub async fn stop_task_stats(&self) {
+        let response = reqwest::Client::new()
+            .get(format!("{}/stop_task_stats", self.admin_server))
+            .send()
+            .await
+            .unwrap();
+        let response_body = response.text().await.unwrap();
+        info!("Tokio tasks collection stopped: {response_body}");
+    }
+
     pub async fn get_cache_stats(&self) {
         if let Some(cache_stats_dir) = &self.cache_stats_dir {
             let response = reqwest::Client::new()
