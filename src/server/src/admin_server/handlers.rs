@@ -4,17 +4,17 @@ use std::{
     sync::Arc,
 };
 
+use super::{ApiResponse, AppState};
+use crate::admin_server::task_monitor::LiquidTaskMetricsResponse;
+use axum::handler::Handler;
 use axum::{
     Json,
     extract::{Query, State},
 };
-use axum::handler::Handler;
 use liquid_cache_common::rpc::ExecutionMetricsResponse;
 use log::info;
 use serde::Serialize;
 use uuid::Uuid;
-use crate::admin_server::task_monitor::LiquidTaskMetricsResponse;
-use super::{ApiResponse, AppState};
 
 pub(crate) async fn shutdown_handler() -> Json<ApiResponse> {
     info!("Shutdown request received, shutting down server...");

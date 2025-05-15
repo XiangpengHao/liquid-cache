@@ -4,11 +4,6 @@ description = "LiquidCache Benchmarks"
 edition = { workspace = true }
 publish = false
 
-[build]
-# Requirement for tokio runtime metrics
-rustflags = ["--cfg", "tokio_unstable"]
-rustdocflags = ["--cfg", "tokio_unstable"]
-
 [dependencies]
 tokio-metrics = "0.4.2"
 liquid-cache-server = { workspace = true }
