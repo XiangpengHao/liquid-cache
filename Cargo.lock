@@ -3079,6 +3079,7 @@ dependencies = [
  "arrow-schema",
  "async-trait",
  "bytes",
+ "chrono",
  "clap",
  "congee",
  "criterion",

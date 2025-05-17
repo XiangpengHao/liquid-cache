@@ -365,3 +365,22 @@ impl ClientSchema {
         }
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum CacheAccessReason {
+    Predicate = 0,
+    Filter = 1,
+    Testing = 2,
+}
+
+impl From<u8> for CacheAccessReason {
+    fn from(value: u8) -> Self {
+        match value {
+            0 => CacheAccessReason::Predicate,
+            1 => CacheAccessReason::Filter,
+            2 => CacheAccessReason::Testing,
+            _ => panic!("Invalid CacheAccessReason value: {value}"),
+        }
+    }
+}

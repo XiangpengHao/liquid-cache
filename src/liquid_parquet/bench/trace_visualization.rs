@@ -1,5 +1,5 @@
 use clap::Parser;
-use liquid_cache_parquet::cache::tracer::CacheAccessReason;
+use liquid_cache_common::CacheAccessReason;
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use parquet::record::RowAccessor;
 use plotters::prelude::*;
@@ -55,6 +55,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     plot_access_histogram(&counts_by_reason, "access_histogram.png")?;
     println!("Wrote histogram to access_histogram.png");
+
     Ok(())
 }
 
@@ -96,7 +97,7 @@ fn plot_access_histogram(
     let reasons: Vec<_> = binned.keys().cloned().collect();
     let palette: Vec<ShapeStyle> = (0..reasons.len())
         .map(|i| ShapeStyle {
-            color: Palette99::pick(i).to_rgba().into(),
+            color: Palette99::pick(i).to_rgba(),
             filled: true,
             stroke_width: 0,
         })
@@ -126,13 +127,13 @@ fn plot_access_histogram(
     // Track running offsets per bin
     let mut offsets: HashMap<u32, u32> = HashMap::new();
     for (idx, reason) in reasons.iter().enumerate() {
-        let style = &palette[idx];
+        let style: &ShapeStyle = &palette[idx];
         for (&bin, &count) in &binned[reason] {
             let y0 = *offsets.get(&bin).unwrap_or(&0);
             let y1 = y0 + count;
             chart.draw_series(std::iter::once(Rectangle::new(
                 [(bin, y0), (bin + 1, y1)],
-                style.clone(),
+                *style,
             )))?;
             offsets.insert(bin, y1);
         }
@@ -141,8 +142,8 @@ fn plot_access_histogram(
     // Add a legend
     chart
         .configure_series_labels()
-        .border_style(&BLACK)
-        .background_style(&WHITE.mix(0.8))
+        .border_style(BLACK)
+        .background_style(WHITE.mix(0.8))
         .position(SeriesLabelPosition::UpperRight)
         .draw()?;
 

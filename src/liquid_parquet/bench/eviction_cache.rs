@@ -1,3 +1,4 @@
+#![allow(unused)]
 pub trait Cache {
     fn new(budget: u64) -> Self;
     fn get(&mut self, id: u64, size: u64);

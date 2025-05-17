@@ -1,14 +1,11 @@
-mod eviction_cache;
 use clap::Parser;
-use eviction_cache::{Cache, ClockCache, FifoCache, LfuCache, LruCache};
 use itertools::Itertools;
+use liquid_cache_common::CacheAccessReason;
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use parquet::record::RowAccessor;
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::PathBuf;
-use liquid_cache_parquet::cache::tracer::CacheAccessReason;
-
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -58,49 +55,6 @@ fn pack_u16s(a: u16, b: u16, c: u16, d: u16) -> u64 {
     ((a as u64) << 48) | ((b as u64) << 32) | ((c as u64) << 16) | (d as u64)
 }
 
-fn bench<C: Cache>(create: impl Fn(u64) -> C, name: String, args: &Args) {
-    let file = File::open(args.trace_path.clone()).expect("Failed to open parquet file");
-    let parquet_reader = SerializedFileReader::new(file).expect("Failed to create parquet reader");
-    let row_iter = parquet_reader
-        .get_row_iter(None)
-        .expect("Failed to get row iterator");
-
-    // Read all rows into memory
-    let rows: Vec<_> = row_iter
-        .collect::<Result<Vec<_>, _>>()
-        .expect("Failed to read rows");
-    let total_rows = rows.len();
-    println!("Total rows: {total_rows}");
-
-    let mut cache_size = total_rows;
-
-    while cache_size > 0 {
-        let mut cache = create(cache_size as u64);
-
-        for row in &rows {
-            // Retrieve the required fields by index:
-            // 0: file_id, 1: row_group, 2: col, and 4: size.
-            let file_id: u16 = row.get_ulong(0).expect("Failed to get file_id") as u16;
-            let row_group_id: u16 = row.get_ulong(1).expect("Failed to get row_group_id") as u16;
-            let column_id: u16 = row.get_ulong(2).expect("Failed to get column_id") as u16;
-            let batch_id: u16 = row.get_ulong(3).expect("Failed to get batch_id") as u16;
-
-            let cache_memory_bytes: u16 =
-                row.get_ulong(4).expect("Failed to get cache_memory_bytes") as u16;
-            //let time_stamp_nanos: u16 =
-            //    row.get_ulong(5).expect("Failed to get time_stamp_nanos") as u16;
-
-            let key = pack_u16s(file_id, row_group_id, column_id, batch_id);
-            cache.get(key, cache_memory_bytes as u64);
-        }
-
-        let (hits, total) = cache.result();
-        println!("{name},{cache_size},{hits},{total}");
-
-        cache_size /= 10;
-    }
-}
-
 fn access_patterns(args: &Args) {
     let file = File::open(args.trace_path.clone()).expect("Failed to open parquet file");
     let parquet_reader = SerializedFileReader::new(file).expect("Failed to create parquet reader");
@@ -133,7 +87,7 @@ fn access_patterns(args: &Args) {
 
         let reason: u8 = row.get_ubyte(6).expect("Failed to get reason");
         let reason: CacheAccessReason = reason.into();
-        println!("reason: {:?}", reason);
+        println!("reason: {reason:?}");
 
         let key = pack_u16s(file_id, row_group_id, column_id, batch_id);
 

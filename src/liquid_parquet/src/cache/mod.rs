@@ -9,7 +9,6 @@ use arrow::compute::prep_null_mask_filter;
 use arrow_schema::{ArrowError, DataType, Field, Schema};
 use bytes::Bytes;
 use liquid_cache_common::{LiquidCacheMode, coerce_from_parquet_to_liquid_type};
-use tracer::CacheAccessReason;
 use std::fmt::Display;
 use std::fs::File;
 use std::io::Read;
@@ -18,6 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use store::{CacheAdvice, CacheStore};
 use tokio::runtime::Runtime;
+use tracer::CacheAccessReason;
 use transcode::transcode_liquid_inner;
 pub(crate) use utils::BatchID;
 use utils::{CacheEntryID, ColumnAccessPath};
@@ -27,7 +27,7 @@ mod budget;
 pub mod policies;
 mod stats;
 mod store;
-pub mod tracer;
+pub(crate) mod tracer;
 mod transcode;
 mod utils;
 
@@ -61,7 +61,7 @@ impl LiquidCompressorStates {
 }
 
 #[derive(Debug, Clone)]
-pub enum CachedBatch {
+pub(crate) enum CachedBatch {
     ArrowMemory(ArrayRef),
     LiquidMemory(LiquidArrayRef),
     OnDiskLiquid,
@@ -194,8 +194,10 @@ impl LiquidCachedColumn {
         selection: &BooleanBuffer,
         predicate: &mut dyn LiquidPredicate,
     ) -> Option<Result<BooleanBuffer, ArrowError>> {
-        // TODO predicate trace 
-        let cached_entry = self.cache_store.get(&self.entry_id(batch_id), CacheAccessReason::Predicate)?;
+        // TODO predicate trace
+        let cached_entry = self
+            .cache_store
+            .get(&self.entry_id(batch_id), CacheAccessReason::Predicate)?;
         match &cached_entry {
             CachedBatch::ArrowMemory(array) => {
                 let boolean_array = BooleanArray::new(selection.clone(), None);
@@ -253,7 +255,9 @@ impl LiquidCachedColumn {
         filter: &BooleanArray,
     ) -> Option<ArrayRef> {
         // TODO: filter trace
-        let inner_value = self.cache_store.get(&self.entry_id(batch_id), CacheAccessReason::Filter)?;
+        let inner_value = self
+            .cache_store
+            .get(&self.entry_id(batch_id), CacheAccessReason::Filter)?;
         match &inner_value {
             CachedBatch::ArrowMemory(array) => {
                 let filtered = arrow::compute::filter(array, filter).unwrap();
@@ -280,7 +284,9 @@ impl LiquidCachedColumn {
 
     #[cfg(test)]
     pub(crate) fn get_arrow_array_test_only(&self, batch_id: BatchID) -> Option<ArrayRef> {
-        let cached_entry = self.cache_store.get(&self.entry_id(batch_id), CacheAccessReason::Testing)?;
+        let cached_entry = self
+            .cache_store
+            .get(&self.entry_id(batch_id), CacheAccessReason::Testing)?;
         match cached_entry {
             CachedBatch::ArrowMemory(array) => Some(array),
             CachedBatch::LiquidMemory(array) => Some(array.to_best_arrow_array()),

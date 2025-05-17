@@ -1,10 +1,13 @@
 use crate::sync::{Arc, Mutex, atomic::AtomicBool};
 use std::{
-    fmt::Display, fs::File, path::Path, time::{SystemTime, UNIX_EPOCH}
+    fmt::Display,
+    fs::File,
+    path::Path,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use arrow::{
-    array::{ArrayRef, RecordBatch, StringArray, UInt64Array, UInt8Array},
+    array::{ArrayRef, RecordBatch, UInt8Array, UInt64Array},
     datatypes::{DataType, Field, Schema},
 };
 use parquet::{
@@ -23,7 +26,7 @@ struct TraceEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 /// Reasons for accessing the cache (for tracing)
-pub enum CacheAccessReason {
+pub(crate) enum CacheAccessReason {
     /// Access for predicate evaluation
     Predicate = 0,
     /// Access for filtering data
@@ -38,23 +41,22 @@ impl From<u8> for CacheAccessReason {
             0 => CacheAccessReason::Predicate,
             1 => CacheAccessReason::Filter,
             2 => CacheAccessReason::Testing,
-            _ => panic!("Invalid CacheAccessReason value: {}", value),
+            _ => panic!("Invalid CacheAccessReason value: {value}"),
         }
     }
 }
-impl Into<u8> for CacheAccessReason {
-    fn into(self) -> u8 {
-        self as u8
+
+impl From<CacheAccessReason> for u8 {
+    fn from(value: CacheAccessReason) -> Self {
+        value as u8
     }
 }
-
 
 impl Display for CacheAccessReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
+        write!(f, "{self:?}")
     }
 }
-
 
 pub(super) struct CacheTracer {
     enabled: AtomicBool,
@@ -89,7 +91,12 @@ impl CacheTracer {
         self.enabled.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    pub(super) fn trace_get(&self, entry_id: CacheEntryID, cache_memory_bytes: usize, reason: CacheAccessReason) {
+    pub(super) fn trace_get(
+        &self,
+        entry_id: CacheEntryID,
+        cache_memory_bytes: usize,
+        reason: CacheAccessReason,
+    ) {
         if !self.enabled() {
             return;
         }
@@ -325,11 +332,19 @@ mod tests {
         tracer.enable();
 
         // Add first batch of entries
-        tracer.trace_get(CacheEntryID::new(1, 2, 3, BatchID::from_raw(4)), 1000, CacheAccessReason::Testing);
+        tracer.trace_get(
+            CacheEntryID::new(1, 2, 3, BatchID::from_raw(4)),
+            1000,
+            CacheAccessReason::Testing,
+        );
         tracer.flush(&file_path1);
 
         // Add second batch of entries
-        tracer.trace_get(CacheEntryID::new(5, 6, 7, BatchID::from_raw(8)), 2000, CacheAccessReason::Testing);
+        tracer.trace_get(
+            CacheEntryID::new(5, 6, 7, BatchID::from_raw(8)),
+            2000,
+            CacheAccessReason::Testing,
+        );
         tracer.flush(&file_path2);
 
         // Verify both files exist

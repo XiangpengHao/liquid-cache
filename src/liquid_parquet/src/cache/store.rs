@@ -258,7 +258,11 @@ impl CacheStore {
         }
     }
 
-    pub(super) fn get(&self, entry_id: &CacheEntryID, reason: CacheAccessReason) -> Option<CachedBatch> {
+    pub(super) fn get(
+        &self,
+        entry_id: &CacheEntryID,
+        reason: CacheAccessReason,
+    ) -> Option<CachedBatch> {
         self.tracer
             .trace_get(*entry_id, self.budget.memory_usage_bytes(), reason);
 
@@ -440,7 +444,14 @@ mod tests {
         store.insert(entry_id1, array3);
 
         assert_eq!(store.budget.memory_usage_bytes(), size3 + size2);
-        assert!(store.get(&create_entry_id(999, 999, 999, 999), CacheAccessReason::Testing).is_none());
+        assert!(
+            store
+                .get(
+                    &create_entry_id(999, 999, 999, 999),
+                    CacheAccessReason::Testing
+                )
+                .is_none()
+        );
     }
 
     #[test]
