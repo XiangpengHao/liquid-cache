@@ -469,31 +469,21 @@ impl FsstArray {
         })?;
 
         // Create the file
-        let file = File::create(file_path).map_err(|e| {
-            Error::new(
-                ErrorKind::Other,
-                format!("Failed to create file {}: {}", file_path, e),
-            )
-        })?;
+        let file = File::create(file_path)
+            .map_err(|e| Error::other(format!("Failed to create file {file_path}: {e}")))?;
 
         let mut buffer = BufWriter::new(file);
 
         // Write the length of the symbol table.
-        buffer.write_all(symbols_len.as_bytes()).map_err(|e| {
-            Error::new(
-                ErrorKind::Other,
-                format!("Failed to write symbol length: {}", e),
-            )
-        })?;
+        buffer
+            .write_all(symbols_len.as_bytes())
+            .map_err(|e| Error::other(format!("Failed to write symbol length: {e}")))?;
 
         // Write the lengths of each symbol
         for symbol_length in symbols_lengths {
-            buffer.write_all(&symbol_length.as_bytes()).map_err(|e| {
-                Error::new(
-                    ErrorKind::Other,
-                    format!("Failed to write symbols lengths: {}", e),
-                )
-            })?;
+            buffer
+                .write_all(symbol_length.as_bytes())
+                .map_err(|e| Error::other(format!("Failed to write symbols lengths: {e}")))?;
         }
 
         // Write the symbols
@@ -512,15 +502,13 @@ impl FsstArray {
             // Write the symbol as a u64
             buffer
                 .write_all(&symbol_as_u64.to_le_bytes())
-                .map_err(|e| {
-                    Error::new(ErrorKind::Other, format!("Failed to write symbol: {}", e))
-                })?;
+                .map_err(|e| Error::other(format!("Failed to write symbol: {e}")))?;
         }
 
         // Flush the buffer to disk
         buffer
             .flush()
-            .map_err(|e| Error::new(ErrorKind::Other, format!("Failed to flush buffer: {}", e)))?;
+            .map_err(|e| Error::other(format!("Failed to flush buffer: {e}")))?;
 
         Ok(())
     }
@@ -529,21 +517,13 @@ impl FsstArray {
     /// Uses the same format as the one saved by `save_symbol_table()`.
     pub fn load_symbol_table(file_path: &str) -> Result<Compressor> {
         // Open and read the file
-        let mut file = File::open(file_path).map_err(|e| {
-            Error::new(
-                ErrorKind::Other,
-                format!("Failed to open file {}: {}", file_path, e),
-            )
-        })?;
+        let mut file = File::open(file_path)
+            .map_err(|e| Error::other(format!("Failed to open file {file_path}: {e}")))?;
 
         // Read the whole file
         let mut buffer = Vec::new();
-        file.read_to_end(&mut buffer).map_err(|e| {
-            Error::new(
-                ErrorKind::Other,
-                format!("Failed to read file {}: {}", file_path, e),
-            )
-        })?;
+        file.read_to_end(&mut buffer)
+            .map_err(|e| Error::other(format!("Failed to read file {file_path}: {e}")))?;
 
         // Validate the buffer length
         if buffer.is_empty() {
@@ -551,12 +531,7 @@ impl FsstArray {
         }
 
         // Read the length of the symbol table
-        let symbols_len = usize::try_from(buffer[0]).map_err(|_| {
-            Error::new(
-                ErrorKind::InvalidData,
-                "Invalid symbol table length in the file",
-            )
-        })?;
+        let symbols_len = usize::from(buffer[0]);
 
         // Validate we have enough data for the symbol lengths
         if buffer.len() < 1 + symbols_len {
@@ -579,14 +554,13 @@ impl FsstArray {
             ));
         }
 
-        let symbols_bytes_slice =
-            &buffer[symbols_start..symbols_start + symbols_len * SYMBOL_SIZE_BYTES];
+        let symbols_bytes_slice = &buffer[symbols_start..symbols_end];
 
         let mut loaded_symbols: Vec<Symbol> = Vec::with_capacity(symbols_len);
 
         // Loop over the byte slice in chunks and build Symbols
         for chunk in symbols_bytes_slice.chunks_exact(SYMBOL_SIZE_BYTES) {
-            // chunk is &[u8] of length 8
+            // chunk is &[u8] of length `SYMBOL_SIZE_BYTES`
             let symbol_bytes: [u8; SYMBOL_SIZE_BYTES] = chunk
                 .try_into()
                 .expect("Chunk should be {SYMBOL_SIZE_BYTES} bytes");
@@ -608,7 +582,7 @@ impl FsstArray {
         // Call rebuild_from and handle panics
         let compressor =
             std::panic::catch_unwind(|| Compressor::rebuild_from(loaded_symbols, symbols_lengths))
-                .map_err(|_| Error::new(ErrorKind::Other, "Compressor::rebuild_from panicked"))?;
+                .map_err(|_| Error::other("Compressor::rebuild_from panicked"))?;
 
         Ok(compressor)
     }
