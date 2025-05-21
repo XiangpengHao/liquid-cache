@@ -25,6 +25,7 @@ use log::{debug, info};
 use mimalloc::MiMalloc;
 use serde::Serialize;
 use std::fs::File as StdFile;
+use std::time::Duration;
 use sysinfo::Networks;
 
 #[global_allocator]
@@ -161,6 +162,7 @@ pub async fn main() -> Result<()> {
             info!("Running query {id}: \n{query}");
 
             args.common.start_trace().await;
+            args.common.start_task_stats().await;
             args.common.start_flamegraph().await;
 
             let root = Span::root(
@@ -169,6 +171,7 @@ pub async fn main() -> Result<()> {
             );
             let _g = root.set_local_parent();
             let now = Instant::now();
+
             let starting_timestamp = bench_start_time.elapsed();
             let (results, physical_plan) = run_query(&ctx, &query).await?;
             let elapsed = now.elapsed();
@@ -199,6 +202,7 @@ pub async fn main() -> Result<()> {
             }
 
             args.common.get_cache_stats().await;
+            args.common.stop_task_stats().await;
 
             let metrics_response = args.common.get_execution_metrics(&physical_plan).await;
 
