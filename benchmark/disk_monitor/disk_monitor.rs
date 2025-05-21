@@ -16,8 +16,10 @@ fn main() {
             }
         };
         let disk_usage = process.disk_usage();
-        println!("Total written bytes: {}", disk_usage.written_bytes);
-        println!("Total read bytes: {}", disk_usage.read_bytes);
+        if disk_usage.written_bytes > 0 || disk_usage.read_bytes > 0 {
+            println!("Total written bytes: {}", disk_usage.written_bytes);
+            println!("Total read bytes: {}", disk_usage.read_bytes);
+        }
         thread::sleep(Duration::from_secs(1));
     }
 }
