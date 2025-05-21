@@ -246,7 +246,7 @@ pub(crate) fn create_cache_store(
     CacheStore::new(
         batch_size,
         max_cache_bytes,
-        temp_dir.into_path(),
+        temp_dir.keep(),
         LiquidCacheMode::InMemoryLiquid {
             transcode_in_background: false,
         },

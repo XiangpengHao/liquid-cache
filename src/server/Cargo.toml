@@ -45,3 +45,4 @@ pprof = { version = "0.14.0", features = ["flamegraph"] }
 [dev-dependencies]
 liquid-cache-client = { workspace = true }
 insta = { version = "1.43.1" }
+parquet = { workspace = true }
