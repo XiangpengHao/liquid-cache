@@ -61,7 +61,7 @@ async fn test_runner(sql: &str, reference: &str) {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_url_prefix() {
     let sql = r#"select COUNT(*) from hits where "URL" like 'https://%'"#;
     let reference = run_sql(sql, CacheMode::LiquidEagerTranscode, 573960, TEST_FILE).await;
@@ -69,7 +69,7 @@ async fn test_url_prefix() {
     test_runner(sql, &reference).await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_url() {
     let sql = r#"select "URL" from hits where "URL" like '%tours%' order by "URL" desc"#;
     let reference = run_sql(sql, CacheMode::LiquidEagerTranscode, 573960, TEST_FILE).await;
@@ -77,7 +77,7 @@ async fn test_url() {
     test_runner(sql, &reference).await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_os() {
     let sql = r#"select "OS" from hits where "URL" like '%tours%' order by "OS" desc"#;
     let reference = run_sql(sql, CacheMode::LiquidEagerTranscode, 573960, TEST_FILE).await;
@@ -85,7 +85,7 @@ async fn test_os() {
     test_runner(sql, &reference).await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_referer() {
     let sql = r#"select "Referer" from hits where "Referer" <> '' AND "URL" like '%tours%' order by "Referer" desc"#;
     let reference = run_sql(sql, CacheMode::LiquidEagerTranscode, 573960, TEST_FILE).await;
@@ -93,7 +93,7 @@ async fn test_referer() {
     test_runner(sql, &reference).await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "Wait for https://github.com/apache/datafusion/pull/15827 to be merged"]
 async fn test_min_max() {
     let sql = r#"select min("Referer"), max("Referer") from hits where "Referer" <> '' AND "URL" like '%tours%'"#;
