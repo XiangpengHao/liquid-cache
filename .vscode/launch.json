@@ -21,12 +21,7 @@
 			"env": {
 				"RUST_LOG": "info"
 			},
-			"args": [
-				"--max-cache-mb",
-				"1000",
-				"--cache-mode",
-				"arrow"
-			],
+			"args": [],
 			"cwd": "${workspaceFolder}",
 		},
 		{

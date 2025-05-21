@@ -2871,6 +2871,7 @@ dependencies = [
  "liquid-cache-parquet",
  "log",
  "object_store",
+ "parquet",
  "pprof",
  "prost",
  "serde",
