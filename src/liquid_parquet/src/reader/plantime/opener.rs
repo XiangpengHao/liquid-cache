@@ -221,16 +221,17 @@ impl FileOpener for LiquidParquetOpener {
             // page index pruning: if all data on individual pages can
             // be ruled using page metadata, rows from other columns
             // with that range can be skipped as well
-            if enable_page_index && !access_plan.is_empty() {
-                if let Some(p) = page_pruning_predicate {
-                    access_plan = p.prune_plan_with_page_index(
-                        access_plan,
-                        &parquet_schema,
-                        builder.parquet_schema(),
-                        file_metadata.as_ref(),
-                        &file_metrics,
-                    );
-                }
+            if enable_page_index
+                && !access_plan.is_empty()
+                && let Some(p) = page_pruning_predicate
+            {
+                access_plan = p.prune_plan_with_page_index(
+                    access_plan,
+                    &parquet_schema,
+                    builder.parquet_schema(),
+                    file_metadata.as_ref(),
+                    &file_metrics,
+                );
             }
 
             let row_group_indexes = access_plan.row_group_indexes();

@@ -36,8 +36,7 @@ impl LiquidCacheServiceInner {
     ) -> Self {
         let batch_size = default_ctx.state().config().batch_size();
 
-        let disk_cache_dir =
-            disk_cache_dir.unwrap_or_else(|| tempfile::tempdir().unwrap().into_path());
+        let disk_cache_dir = disk_cache_dir.unwrap_or_else(|| tempfile::tempdir().unwrap().keep());
 
         let parquet_cache_dir = disk_cache_dir.join("parquet");
         let liquid_cache_dir = disk_cache_dir.join("liquid");
@@ -165,14 +164,14 @@ impl LiquidCacheServiceInner {
         let mut time_elapsed_processing_millis = 0;
         let mut bytes_scanned = 0;
         for metric in metrics.iter() {
-            if let MetricValue::Time { name, time } = metric.value() {
-                if name == "time_elapsed_processing" {
-                    time_elapsed_processing_millis = time.value() / 1_000_000;
-                }
-            } else if let MetricValue::Count { name, count } = metric.value() {
-                if name == "bytes_scanned" {
-                    bytes_scanned = count.value();
-                }
+            if let MetricValue::Time { name, time } = metric.value()
+                && name == "time_elapsed_processing"
+            {
+                time_elapsed_processing_millis = time.value() / 1_000_000;
+            } else if let MetricValue::Count { name, count } = metric.value()
+                && name == "bytes_scanned"
+            {
+                bytes_scanned = count.value();
             }
         }
         let liquid_cache_usage = self
