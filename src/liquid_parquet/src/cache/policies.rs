@@ -1,22 +1,17 @@
+use liquid_cache_common::LiquidCacheMode;
+
+use crate::sync::Mutex;
 use std::{
     collections::{HashMap, VecDeque},
     ptr::NonNull,
-    sync::Mutex,
 };
 
-use dashmap::DashMap;
-
-use super::{CacheAdvice, CacheEntryID, CachedBatch};
+use super::{CacheAdvice, CacheEntryID};
 
 /// The cache policy that guides the replacement of LiquidCache
 pub trait CachePolicy: std::fmt::Debug + Send + Sync {
     /// Give advice on what to do when cache is full.
-    fn advise(
-        &self,
-        entry_id: &CacheEntryID,
-        to_insert: &CachedBatch,
-        cached: &DashMap<CacheEntryID, CachedBatch>,
-    ) -> CacheAdvice;
+    fn advise(&self, entry_id: &CacheEntryID, cache_mode: &LiquidCacheMode) -> CacheAdvice;
 
     /// Notify the cache policy that an entry was inserted.
     fn notify_insert(&self, _entry_id: &CacheEntryID) {}
@@ -55,22 +50,11 @@ impl FiloPolicy {
 }
 
 impl CachePolicy for FiloPolicy {
-    fn advise(
-        &self,
-        entry_id: &CacheEntryID,
-        _to_insert: &CachedBatch,
-        cached: &DashMap<CacheEntryID, CachedBatch>,
-    ) -> CacheAdvice {
-        // Get the newest entry from the front of the queue
+    fn advise(&self, entry_id: &CacheEntryID, cache_mode: &LiquidCacheMode) -> CacheAdvice {
         if let Some(newest_entry) = self.get_newest_entry() {
-            // Only evict if the entry still exists in the cache
-            if cached.contains_key(&newest_entry) && newest_entry != *entry_id {
-                return CacheAdvice::Evict(newest_entry);
-            }
+            return CacheAdvice::Evict(newest_entry);
         }
-
-        // If no entries to evict, transcode to disk as fallback
-        CacheAdvice::TranscodeToDisk(*entry_id)
+        fallback_advice(entry_id, cache_mode)
     }
 
     fn notify_evict(&self, entry_id: &CacheEntryID) {
@@ -161,37 +145,24 @@ unsafe impl Send for LruPolicy {}
 unsafe impl Sync for LruPolicy {}
 
 impl CachePolicy for LruPolicy {
-    fn advise(
-        &self,
-        entry_id: &CacheEntryID,
-        _to_insert: &CachedBatch,
-        _cached: &DashMap<CacheEntryID, CachedBatch>, // Note: `cached` isn't strictly needed now
-    ) -> CacheAdvice {
+    fn advise(&self, entry_id: &CacheEntryID, cache_mode: &LiquidCacheMode) -> CacheAdvice {
         let state = self.state.lock().unwrap();
-        // Advise evicting the tail (least recently used)
         if let Some(tail_ptr) = state.tail {
             let tail_entry_id = unsafe { tail_ptr.as_ref().entry_id };
-            // Don't advise evicting the entry we are currently trying to insert
-            if tail_entry_id != *entry_id {
-                // IMPORTANT: The actual removal and deallocation happens in `notify_evict`
-                return CacheAdvice::Evict(tail_entry_id);
-            }
+            return CacheAdvice::Evict(tail_entry_id);
         }
-        // Fallback if the list is empty or only contains the current entry_id
-        CacheAdvice::TranscodeToDisk(*entry_id)
+        fallback_advice(entry_id, cache_mode)
     }
 
     fn notify_access(&self, entry_id: &CacheEntryID) {
         let mut state = self.state.lock().unwrap();
         if let Some(node_ptr) = state.map.get(entry_id).copied() {
-            // Entry exists, move it to the front
             unsafe {
                 self.unlink_node(&mut state, node_ptr);
                 self.push_front(&mut state, node_ptr);
             }
         }
         // If not in map, it means it was already evicted or never inserted
-        // by this policy instance, so we do nothing.
     }
 
     fn notify_evict(&self, entry_id: &CacheEntryID) {
@@ -227,7 +198,6 @@ impl CachePolicy for LruPolicy {
             None => panic!("Failed to allocate memory for LRU node"), // Or handle allocation failure more gracefully
         };
 
-        // Insert into map and push to front of list
         state.map.insert(*entry_id, node_ptr);
         unsafe {
             self.push_front(&mut state, node_ptr);
@@ -235,33 +205,49 @@ impl CachePolicy for LruPolicy {
     }
 }
 
-// Implement Drop to clean up remaining nodes
 impl Drop for LruPolicy {
     fn drop(&mut self) {
         let mut state = self.state.lock().unwrap();
-        // Deallocate all nodes remaining in the map
         for (_, node_ptr) in state.map.drain() {
             unsafe {
-                // We just need to deallocate, no need to unlink as the list structure is being dropped
                 drop(Box::from_raw(node_ptr.as_ptr()));
             }
         }
-        // Clear head and tail just in case (though map.drain should cover all nodes)
         state.head = None;
         state.tail = None;
     }
 }
 
+/// The policy that discards entries when the cache is full.
+#[derive(Debug, Default)]
+pub struct DiscardPolicy;
+
+impl CachePolicy for DiscardPolicy {
+    fn advise(&self, _entry_id: &CacheEntryID, _cache_mode: &LiquidCacheMode) -> CacheAdvice {
+        CacheAdvice::Discard
+    }
+
+    fn notify_evict(&self, _entry_id: &CacheEntryID) {}
+}
+
+fn fallback_advice(entry_id: &CacheEntryID, cache_mode: &LiquidCacheMode) -> CacheAdvice {
+    match cache_mode {
+        LiquidCacheMode::InMemoryArrow => CacheAdvice::Discard,
+        _ => CacheAdvice::TranscodeToDisk(*entry_id),
+    }
+}
+
 #[cfg(test)]
 mod test {
+    use liquid_cache_common::LiquidCacheMode;
+
     use crate::cache::utils::{create_cache_store, create_entry_id, create_test_array};
     use crate::policies::CachePolicy;
-    use dashmap::DashMap;
-    use rand::SeedableRng;
-    use rand::rngs::StdRng;
 
     use super::super::{CacheAdvice, CacheEntryID, CachedBatch};
-    use super::{FiloPolicy, LruPolicy};
+    use super::{FiloPolicy, LruInternalState, LruPolicy};
+    use crate::sync::{Arc, Barrier, thread};
+    use std::sync::atomic::Ordering;
 
     // Helper to create entry IDs for tests
     fn entry(id: u64) -> CacheEntryID {
@@ -274,18 +260,13 @@ mod test {
         expect_evict: CacheEntryID,
         trigger_entry: CacheEntryID,
     ) {
-        let dummy_batch = create_test_array(1);
-        let dummy_cache = DashMap::new(); // Advise doesn't use this heavily now
-        let advice = policy.advise(&trigger_entry, &dummy_batch, &dummy_cache);
+        let advice = policy.advise(&trigger_entry, &LiquidCacheMode::InMemoryArrow);
         assert_eq!(advice, CacheAdvice::Evict(expect_evict));
     }
 
-    // Helper to assert transcode advice
-    fn assert_transcode_advice(policy: &LruPolicy, trigger_entry: CacheEntryID) {
-        let dummy_batch = create_test_array(1);
-        let dummy_cache = DashMap::new(); // Advise doesn't use this heavily now
-        let advice = policy.advise(&trigger_entry, &dummy_batch, &dummy_cache);
-        assert_eq!(advice, CacheAdvice::TranscodeToDisk(trigger_entry));
+    fn assert_discard_advice(policy: &LruPolicy, trigger_entry: CacheEntryID) {
+        let advice = policy.advise(&trigger_entry, &LiquidCacheMode::InMemoryArrow);
+        assert_eq!(advice, CacheAdvice::Discard);
     }
 
     #[test]
@@ -314,16 +295,9 @@ mod test {
         policy.notify_insert(&e2);
         policy.notify_insert(&e3);
 
-        // Access e1, making it the most recent
         policy.notify_access(&e1);
-
-        // Now e2 should be the oldest
         assert_evict_advice(&policy, e2, entry(4));
-
-        // Access e2
         policy.notify_access(&e2);
-
-        // Now e3 should be the oldest
         assert_evict_advice(&policy, e3, entry(4));
     }
 
@@ -338,18 +312,14 @@ mod test {
         policy.notify_insert(&e2);
         policy.notify_insert(&e3);
 
-        // Re-insert e1 (should act like access)
         policy.notify_insert(&e1);
-
-        // Now e2 should be the oldest
         assert_evict_advice(&policy, e2, entry(4));
     }
 
     #[test]
     fn test_lru_policy_advise_empty() {
         let policy = LruPolicy::new();
-        // Should advise transcode if empty
-        assert_transcode_advice(&policy, entry(1));
+        assert_discard_advice(&policy, entry(1));
     }
 
     #[test]
@@ -358,8 +328,7 @@ mod test {
         let e1 = entry(1);
         policy.notify_insert(&e1);
 
-        // Should advise transcode if the only candidate is the item being inserted
-        assert_transcode_advice(&policy, e1);
+        assert_evict_advice(&policy, e1, entry(1));
     }
 
     #[test]
@@ -369,7 +338,6 @@ mod test {
         policy.notify_insert(&e1);
         let e2 = entry(2);
 
-        // If only one other item exists, it should be evicted
         assert_evict_advice(&policy, e1, e2);
     }
 
@@ -382,47 +350,180 @@ mod test {
         policy.notify_insert(&e1);
         policy.notify_insert(&e2);
 
-        // Access an entry not in the policy; should not panic or change order
         policy.notify_access(&entry(99));
 
-        // e1 should still be the oldest
         assert_evict_advice(&policy, e1, entry(3));
     }
 
-    // --- Keep existing tests for FiloPolicy and integration tests below ---
-    // Existing test test_lru_policy is now more of an integration test for CacheStore + LruPolicy
+    impl LruInternalState {
+        fn check_integrity(&self) {
+            let map_count = self.map.len();
+            let forward_count = count_nodes_in_list(&self);
+            let backward_count = count_nodes_reverse(&self);
+
+            assert_eq!(map_count, forward_count);
+            assert_eq!(map_count, backward_count);
+        }
+    }
+
+    /// Count nodes in the linked list by traversing from head to tail
+    fn count_nodes_in_list(state: &super::LruInternalState) -> usize {
+        let mut count = 0;
+        let mut current = state.head;
+
+        while let Some(node_ptr) = current {
+            count += 1;
+            current = unsafe { node_ptr.as_ref().next };
+        }
+
+        count
+    }
+
+    /// Count nodes in the linked list by traversing from tail to head
+    fn count_nodes_reverse(state: &super::LruInternalState) -> usize {
+        let mut count = 0;
+        let mut current = state.tail;
+
+        while let Some(node_ptr) = current {
+            count += 1;
+            current = unsafe { node_ptr.as_ref().prev };
+        }
+
+        count
+    }
+
+    #[test]
+    fn test_lru_policy_invariants() {
+        let policy = LruPolicy::new();
+
+        for i in 0..10 {
+            policy.notify_insert(&entry(i));
+        }
+        policy.notify_access(&entry(2));
+        policy.notify_access(&entry(5));
+        policy.notify_evict(&entry(0));
+        policy.notify_evict(&entry(1));
+
+        let state = policy.state.lock().unwrap();
+        state.check_integrity();
+
+        let map_count = state.map.len();
+        assert_eq!(map_count, 8);
+        assert!(!state.map.contains_key(&entry(0)));
+        assert!(!state.map.contains_key(&entry(1)));
+        assert!(state.map.contains_key(&entry(2)));
+
+        let head_id = unsafe { state.head.unwrap().as_ref().entry_id };
+        assert_eq!(head_id, entry(5));
+    }
+
+    #[test]
+    fn test_concurrent_lru_operations() {
+        concurrent_lru_operations();
+    }
+
+    #[cfg(feature = "shuttle")]
+    #[test]
+    fn shuttle_lru_operations() {
+        crate::utils::shuttle_test(concurrent_lru_operations);
+    }
+
+    fn concurrent_lru_operations() {
+        let policy = Arc::new(LruPolicy::new());
+        let num_threads = 4;
+        let operations_per_thread = 100;
+
+        let total_inserts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let total_evictions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        let barrier = Arc::new(Barrier::new(num_threads));
+
+        let mut handles = vec![];
+        for thread_id in 0..num_threads {
+            let policy_clone = policy.clone();
+            let total_inserts_clone = total_inserts.clone();
+            let total_evictions_clone = total_evictions.clone();
+            let barrier_clone = barrier.clone();
+
+            let handle = thread::spawn(move || {
+                barrier_clone.wait();
+
+                for i in 0..operations_per_thread {
+                    let op_type = i % 3; // 0: insert, 1: access, 2: evict
+                    let entry_id = entry((thread_id * operations_per_thread + i) as u64);
+
+                    match op_type {
+                        0 => {
+                            policy_clone.notify_insert(&entry_id);
+                            total_inserts_clone.fetch_add(1, Ordering::SeqCst);
+                        }
+                        1 => {
+                            // Every thread also accesses entries created by other threads
+                            if i > 10 {
+                                let other_thread = (thread_id + 1) % num_threads;
+                                let other_id =
+                                    entry((other_thread * operations_per_thread + i - 10) as u64);
+                                policy_clone.notify_access(&other_id);
+                            }
+                            policy_clone.notify_access(&entry_id);
+                        }
+                        2 => {
+                            if i > 20 {
+                                // Evict some earlier entries we created
+                                let to_evict =
+                                    entry((thread_id * operations_per_thread + i - 20) as u64);
+                                policy_clone.notify_evict(&to_evict);
+                                total_evictions_clone.fetch_add(1, Ordering::SeqCst);
+                            }
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+            });
+
+            handles.push(handle);
+        }
+
+        // Wait for all threads to complete
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let inserts = total_inserts.load(Ordering::SeqCst);
+        let evictions = total_evictions.load(Ordering::SeqCst);
+        let expected_count = inserts - evictions;
+
+        let state = policy.state.lock().unwrap();
+        state.check_integrity();
+
+        let map_count = state.map.len();
+        assert_eq!(map_count, expected_count);
+    }
+
     #[test]
     fn test_lru_integration() {
-        // Renamed from test_lru_policy
         let advisor = LruPolicy::new();
         let store = create_cache_store(3000, Box::new(advisor));
 
-        // Create three entries
         let entry_id1 = create_entry_id(1, 1, 1, 1);
         let entry_id2 = create_entry_id(1, 1, 1, 2);
         let entry_id3 = create_entry_id(1, 1, 1, 3);
 
-        // Make sure on-disk paths exist
         let on_disk_path = entry_id1.on_disk_path(&store.config().cache_root_dir());
         std::fs::create_dir_all(on_disk_path.parent().unwrap()).unwrap();
 
-        // Insert entries in order: 1, 2, 3
         store.insert(entry_id1, create_test_array(100));
         store.insert(entry_id2, create_test_array(100));
         store.insert(entry_id3, create_test_array(100));
 
-        // Access entry 1 to move it to front
         store.get(&entry_id1);
 
-        // Insert a fourth entry to force eviction
         let entry_id4 = create_entry_id(4, 4, 4, 4);
         store.insert(entry_id4, create_test_array(100));
 
-        // Entry 2 should be evicted (it's now the oldest since entry 1 was moved to front)
         assert!(store.get(&entry_id1).is_some());
         assert!(store.get(&entry_id3).is_some());
 
-        // Entry 2 should now be on disk (or possibly evicted entirely)
         match store.get(&entry_id2) {
             Some(CachedBatch::OnDiskLiquid) => {}
             None => {} // This is also acceptable if fully evicted
@@ -435,67 +536,28 @@ mod test {
         let advisor = FiloPolicy::new();
         let store = create_cache_store(3000, Box::new(advisor));
 
-        // Create three entries
         let entry_id1 = create_entry_id(1, 1, 1, 1);
         let entry_id2 = create_entry_id(1, 1, 1, 2);
         let entry_id3 = create_entry_id(1, 1, 1, 3);
 
-        // Make sure on-disk paths exist
         let on_disk_path = entry_id1.on_disk_path(&store.config().cache_root_dir());
         std::fs::create_dir_all(on_disk_path.parent().unwrap()).unwrap();
 
-        // Insert entries in order: 1, 2, 3
         store.insert(entry_id1, create_test_array(100));
         store.insert(entry_id2, create_test_array(100));
         store.insert(entry_id3, create_test_array(100));
 
-        // Insert a fourth entry to force eviction
         let entry_id4 = create_entry_id(4, 4, 4, 4);
         store.insert(entry_id4, create_test_array(100));
 
-        // Entry 3 should be evicted (it's the newest before entry 4)
         assert!(store.get(&entry_id1).is_some());
         assert!(store.get(&entry_id2).is_some());
         assert!(store.get(&entry_id4).is_some());
 
-        // Entry 3 should now be on disk (or possibly evicted entirely)
         match store.get(&entry_id3) {
             Some(CachedBatch::OnDiskLiquid) => {}
             None => {} // This is also acceptable if fully evicted
             other => panic!("Expected OnDiskLiquid or None, got {:?}", other),
         }
-    }
-
-    #[test]
-    fn test_lru_policy_multithreaded_invariants() {
-        use rand::Rng;
-        use std::thread;
-
-        let policy = LruPolicy::new();
-        let num_threads = 4;
-        let num_ops_per_thread = 2000; // Increased ops for more contention
-        let num_entries = 10usize;
-
-        for i in 0..num_entries {
-            policy.notify_insert(&entry(i as u64));
-        }
-
-        let entries: Vec<CacheEntryID> = (1..=num_entries).map(|i| entry(i as u64)).collect();
-
-        thread::scope(|s| {
-            for i in 0..num_threads {
-                let policy_ref = &policy;
-                let entries_ref = &entries;
-                s.spawn(move || {
-                    let mut rng: StdRng = SeedableRng::seed_from_u64(i as u64);
-
-                    for _ in 0..num_ops_per_thread {
-                        let entry_idx = rng.random_range(0..num_entries);
-                        let entry_id = entries_ref[entry_idx];
-                        policy_ref.notify_access(&entry_id);
-                    }
-                });
-            }
-        });
     }
 }

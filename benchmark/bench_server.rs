@@ -1,10 +1,9 @@
 use arrow_flight::flight_service_server::FlightServiceServer;
 use clap::Parser;
 use fastrace_tonic::FastraceServerLayer;
-use liquid_cache_benchmarks::{
-    CacheTraceReport, FlameGraphReport, StatsReport, setup_observability,
-};
-use liquid_cache_server::{LiquidCacheService, admin_server::run_admin_server};
+use liquid_cache_benchmarks::setup_observability;
+use liquid_cache_common::CacheMode;
+use liquid_cache_server::{LiquidCacheService, run_admin_server};
 use log::info;
 use mimalloc::MiMalloc;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
@@ -24,21 +23,9 @@ struct CliArgs {
     #[arg(long = "admin-address", default_value = "127.0.0.1:50052")]
     admin_address: SocketAddr,
 
-    /// Number of partitions to use
-    #[arg(long)]
-    partitions: Option<usize>,
-
     /// Abort the server if any thread panics
     #[arg(long = "abort-on-panic")]
     abort_on_panic: bool,
-
-    /// Path to output flamegraph directory
-    #[arg(long = "flamegraph-dir")]
-    flamegraph_dir: Option<PathBuf>,
-
-    /// Path to output cache internal stats directory
-    #[arg(long = "stats-dir")]
-    stats_dir: Option<PathBuf>,
 
     /// Maximum cache size in MB
     #[arg(long = "max-cache-mb")]
@@ -48,9 +35,9 @@ struct CliArgs {
     #[arg(long = "disk-cache-dir")]
     disk_cache_dir: Option<PathBuf>,
 
-    /// Cache trace dir
-    #[arg(long)]
-    cache_trace_dir: Option<PathBuf>,
+    /// Cache mode
+    #[arg(long = "cache-mode", default_value = "liquid_eager_transcode")]
+    cache_mode: CacheMode,
 
     /// Openobserve auth token
     #[arg(long)]
@@ -73,42 +60,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // This will stop the server if any thread panics.
         // But will prevent debugger to break on panic.
         std::panic::set_hook(Box::new(|info| {
-            eprintln!("Some thread panicked: {:?}", info);
+            eprintln!("Some thread panicked: {info:?}");
             std::process::exit(1);
         }));
     }
 
-    let ctx = LiquidCacheService::context(args.partitions)?;
-    let mut liquid_cache_server =
-        LiquidCacheService::new(ctx, max_cache_bytes, args.disk_cache_dir.clone());
-
-    if let Some(flamegraph_dir) = &args.flamegraph_dir {
-        assert!(
-            flamegraph_dir.is_dir(),
-            "Flamegraph output must be a directory"
-        );
-        liquid_cache_server
-            .add_stats_collector(Arc::new(FlameGraphReport::new(flamegraph_dir.clone())));
-    }
-
-    if let Some(stats_dir) = &args.stats_dir {
-        assert!(stats_dir.is_dir(), "Stats output must be a directory");
-        liquid_cache_server.add_stats_collector(Arc::new(StatsReport::new(
-            stats_dir.clone(),
-            liquid_cache_server.cache().clone(),
-        )));
-    }
-
-    if let Some(cache_trace_dir) = &args.cache_trace_dir {
-        assert!(
-            cache_trace_dir.is_dir(),
-            "Cache trace output must be a directory"
-        );
-        liquid_cache_server.add_stats_collector(Arc::new(CacheTraceReport::new(
-            cache_trace_dir.clone(),
-            liquid_cache_server.cache().clone(),
-        )));
-    }
+    let ctx = LiquidCacheService::context()?;
+    let liquid_cache_server = LiquidCacheService::new(
+        ctx,
+        max_cache_bytes,
+        args.disk_cache_dir.clone(),
+        args.cache_mode,
+    );
 
     let liquid_cache_server = Arc::new(liquid_cache_server);
     let flight = FlightServiceServer::from_arc(liquid_cache_server.clone());

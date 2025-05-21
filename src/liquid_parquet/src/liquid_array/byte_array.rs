@@ -14,7 +14,7 @@ use std::mem::MaybeUninit;
 use std::sync::Arc;
 
 use super::{LiquidArray, LiquidArrayRef, LiquidDataType};
-use crate::liquid_array::{get_bit_width, raw::BitPackedArray, raw::FsstArray};
+use crate::liquid_array::{raw::BitPackedArray, raw::FsstArray};
 use crate::utils::CheckedDictionaryArray;
 
 impl LiquidArray for LiquidByteArray {
@@ -69,7 +69,7 @@ impl LiquidArray for LiquidByteArray {
 
 #[derive(Debug, Clone, Copy)]
 #[repr(u16)]
-pub(crate) enum ArrowStringType {
+pub(crate) enum ArrowByteType {
     Utf8 = 0,
     Utf8View = 1,
     Dict16Binary = 2, // DictionaryArray<UInt16Type>
@@ -78,63 +78,63 @@ pub(crate) enum ArrowStringType {
     BinaryView = 5,
 }
 
-impl From<u16> for ArrowStringType {
+impl From<u16> for ArrowByteType {
     fn from(value: u16) -> Self {
         match value {
-            0 => ArrowStringType::Utf8,
-            1 => ArrowStringType::Utf8View,
-            2 => ArrowStringType::Dict16Binary,
-            3 => ArrowStringType::Dict16Utf8,
-            4 => ArrowStringType::Binary,
-            5 => ArrowStringType::BinaryView,
-            _ => panic!("Invalid arrow string type: {}", value),
+            0 => ArrowByteType::Utf8,
+            1 => ArrowByteType::Utf8View,
+            2 => ArrowByteType::Dict16Binary,
+            3 => ArrowByteType::Dict16Utf8,
+            4 => ArrowByteType::Binary,
+            5 => ArrowByteType::BinaryView,
+            _ => panic!("Invalid arrow byte type: {value}"),
         }
     }
 }
 
-impl ArrowStringType {
+impl ArrowByteType {
     pub fn to_arrow_type(self) -> DataType {
         match self {
-            ArrowStringType::Utf8 => DataType::Utf8,
-            ArrowStringType::Utf8View => DataType::Utf8View,
-            ArrowStringType::Dict16Binary => {
+            ArrowByteType::Utf8 => DataType::Utf8,
+            ArrowByteType::Utf8View => DataType::Utf8View,
+            ArrowByteType::Dict16Binary => {
                 DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Binary))
             }
-            ArrowStringType::Dict16Utf8 => {
+            ArrowByteType::Dict16Utf8 => {
                 DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8))
             }
-            ArrowStringType::Binary => DataType::Binary,
-            ArrowStringType::BinaryView => DataType::BinaryView,
+            ArrowByteType::Binary => DataType::Binary,
+            ArrowByteType::BinaryView => DataType::BinaryView,
         }
     }
 
     fn is_string(&self) -> bool {
         matches!(
             self,
-            ArrowStringType::Utf8 | ArrowStringType::Utf8View | ArrowStringType::Dict16Utf8
+            ArrowByteType::Utf8 | ArrowByteType::Utf8View | ArrowByteType::Dict16Utf8
         )
     }
 
     pub fn from_arrow_type(ty: &DataType) -> Self {
         match ty {
-            DataType::Utf8 => ArrowStringType::Utf8,
-            DataType::Utf8View => ArrowStringType::Utf8View,
-            DataType::Binary => ArrowStringType::Binary,
-            DataType::BinaryView => ArrowStringType::BinaryView,
+            DataType::Utf8 => ArrowByteType::Utf8,
+            DataType::Utf8View => ArrowByteType::Utf8View,
+            DataType::Binary => ArrowByteType::Binary,
+            DataType::BinaryView => ArrowByteType::BinaryView,
             DataType::Dictionary(_, _) => {
                 if ty
                     == &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Binary))
                 {
-                    ArrowStringType::Dict16Binary
+                    ArrowByteType::Dict16Binary
                 } else if ty
                     == &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8))
                 {
-                    ArrowStringType::Dict16Utf8
+                    ArrowByteType::Dict16Utf8
                 } else {
-                    panic!("Unsupported arrow type: {:?}", ty)
+                    panic!("Unsupported arrow type: {ty:?}")
                 }
             }
-            _ => panic!("Unsupported arrow type: {:?}", ty),
+            _ => panic!("Unsupported arrow type: {ty:?}"),
         }
     }
 }
@@ -146,14 +146,14 @@ pub struct LiquidByteArray {
     /// TODO: we need to specify that the values in the FsstArray must be unique, this enables us some optimizations.
     pub(crate) values: FsstArray,
     /// Used to convert back to the original arrow type.
-    pub(crate) original_arrow_type: ArrowStringType,
+    pub(crate) original_arrow_type: ArrowByteType,
 }
 
 impl LiquidByteArray {
-    /// Create a LiquidByteArray from an Arrow StringViewArray.
+    /// Create a LiquidByteArray from an Arrow [StringViewArray].
     pub fn from_string_view_array(array: &StringViewArray, compressor: Arc<Compressor>) -> Self {
         let dict = CheckedDictionaryArray::from_string_view_array(array);
-        Self::from_dict_array_inner(dict, compressor, ArrowStringType::Utf8View)
+        Self::from_dict_array_inner(dict, compressor, ArrowByteType::Utf8View)
     }
 
     /// Train a compressor from an iterator of byte arrays.
@@ -172,7 +172,7 @@ impl LiquidByteArray {
         Arc::new(FsstArray::train_compressor(strings))
     }
 
-    /// Create a LiquidByteArray from an Arrow StringArray.
+    /// Create a LiquidByteArray from an Arrow [StringArray].
     pub fn from_string_array(array: &StringArray, compressor: Arc<Compressor>) -> Self {
         Self::from_byte_array(array, compressor)
     }
@@ -186,7 +186,7 @@ impl LiquidByteArray {
         Self::from_dict_array_inner(
             dict,
             compressor,
-            ArrowStringType::from_arrow_type(&T::DATA_TYPE),
+            ArrowByteType::from_arrow_type(&T::DATA_TYPE),
         )
     }
 
@@ -196,7 +196,7 @@ impl LiquidByteArray {
         let compressor = Self::train_compressor(dict.as_ref().values().as_string::<i32>().iter());
         (
             compressor.clone(),
-            Self::from_dict_array_inner(dict, compressor, ArrowStringType::Utf8View),
+            Self::from_dict_array_inner(dict, compressor, ArrowByteType::Utf8View),
         )
     }
 
@@ -217,7 +217,7 @@ impl LiquidByteArray {
             Self::from_dict_array_inner(
                 dict,
                 compressor,
-                ArrowStringType::from_arrow_type(&T::DATA_TYPE),
+                ArrowByteType::from_arrow_type(&T::DATA_TYPE),
             ),
         )
     }
@@ -233,7 +233,7 @@ impl LiquidByteArray {
                 Self::from_dict_array_inner(
                     CheckedDictionaryArray::new_checked(array),
                     compressor,
-                    ArrowStringType::Dict16Utf8,
+                    ArrowByteType::Dict16Utf8,
                 ),
             )
         } else if array.values().data_type() == &DataType::Binary {
@@ -244,7 +244,7 @@ impl LiquidByteArray {
                 Self::from_dict_array_inner(
                     CheckedDictionaryArray::new_checked(array),
                     compressor,
-                    ArrowStringType::Dict16Binary,
+                    ArrowByteType::Dict16Binary,
                 ),
             )
         } else {
@@ -256,15 +256,12 @@ impl LiquidByteArray {
     fn from_dict_array_inner(
         array: CheckedDictionaryArray,
         compressor: Arc<Compressor>,
-        arrow_type: ArrowStringType,
+        arrow_type: ArrowByteType,
     ) -> Self {
+        let bit_width_for_key = array.bit_width_for_key();
         let (keys, values) = array.into_inner().into_parts();
 
-        let distinct_count = values.len();
-        let max_bit_width = get_bit_width(distinct_count as u64);
-        debug_assert!(2u64.pow(max_bit_width.get() as u32) >= distinct_count as u64);
-
-        let bit_packed_array = BitPackedArray::from_primitive(keys, max_bit_width);
+        let bit_packed_array = BitPackedArray::from_primitive(keys, bit_width_for_key);
 
         let fsst_values = if let Some(values) = values.as_string_opt::<i32>() {
             FsstArray::from_byte_array_with_compressor(values, compressor)
@@ -292,7 +289,7 @@ impl LiquidByteArray {
         Self::from_dict_array_inner(
             unsafe { CheckedDictionaryArray::new_unchecked_i_know_what_i_am_doing(array) },
             compressor,
-            ArrowStringType::Dict16Utf8,
+            ArrowByteType::Dict16Utf8,
         )
     }
 
@@ -303,10 +300,10 @@ impl LiquidByteArray {
     ) -> Self {
         if array.downcast_dict::<StringArray>().is_some() {
             let dict = CheckedDictionaryArray::new_checked(array);
-            Self::from_dict_array_inner(dict, compressor, ArrowStringType::Dict16Utf8)
+            Self::from_dict_array_inner(dict, compressor, ArrowByteType::Dict16Utf8)
         } else if array.downcast_dict::<BinaryArray>().is_some() {
             let dict = CheckedDictionaryArray::new_checked(array);
-            Self::from_dict_array_inner(dict, compressor, ArrowStringType::Dict16Binary)
+            Self::from_dict_array_inner(dict, compressor, ArrowByteType::Dict16Binary)
         } else {
             panic!("Unsupported dictionary type: {:?}", array.data_type())
         }
@@ -319,7 +316,7 @@ impl LiquidByteArray {
 
     /// Convert the LiquidStringArray to arrow's DictionaryArray.
     pub fn to_dict_arrow(&self) -> DictionaryArray<UInt16Type> {
-        if self.keys.len() < 1024 {
+        if self.keys.len() < 2048 {
             // a heuristic to selective decompress.
             self.to_dict_arrow_decompress_keyed()
         } else {
@@ -774,7 +771,7 @@ mod tests {
         let etc = LiquidByteArray {
             keys: BitPackedArray::from_primitive(input_keys.clone(), NonZero::new(3).unwrap()),
             values: FsstArray::from_byte_array_with_compressor(&input_array, compressor),
-            original_arrow_type: ArrowStringType::Dict16Utf8,
+            original_arrow_type: ArrowByteType::Dict16Utf8,
         };
 
         let dict = etc.to_dict_arrow_decompress_keyed();
@@ -802,7 +799,7 @@ mod tests {
         let etc = LiquidByteArray {
             keys: BitPackedArray::from_primitive(input_keys.clone(), NonZero::new(2).unwrap()),
             values: FsstArray::from_byte_array_with_compressor(&input_array, compressor),
-            original_arrow_type: ArrowStringType::Dict16Utf8,
+            original_arrow_type: ArrowByteType::Dict16Utf8,
         };
 
         let dict = etc.to_dict_arrow_decompress_keyed();

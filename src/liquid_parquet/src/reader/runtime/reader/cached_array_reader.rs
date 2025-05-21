@@ -6,7 +6,7 @@ use arrow::{
     buffer::BooleanBuffer,
 };
 use arrow_schema::{DataType, Field, Fields};
-use liquid_cache_common::coerce_from_parquet_to_liquid_type;
+use liquid_cache_common::{cast_from_parquet_to_liquid_type, coerce_from_parquet_to_liquid_type};
 use parquet::{
     arrow::{
         array_reader::{ArrayReader, StructArrayReader},
@@ -43,12 +43,13 @@ struct CachedArrayReader {
     selection: VecDeque<RowSelector>,
     liquid_cache: LiquidCachedColumnRef,
     reader_local_cache: AHashMap<BatchID, ArrayRef>,
+    next_batch_to_check_cached: u16,
 }
 
 impl CachedArrayReader {
     fn new(inner: Box<dyn ArrayReader>, liquid_cache: LiquidCachedColumnRef) -> Self {
         let inner_type = inner.get_data_type();
-        let data_type = coerce_from_parquet_to_liquid_type(inner_type, &liquid_cache.cache_mode());
+        let data_type = coerce_from_parquet_to_liquid_type(inner_type, liquid_cache.cache_mode());
 
         Self {
             inner,
@@ -58,6 +59,7 @@ impl CachedArrayReader {
             selection: VecDeque::new(),
             liquid_cache,
             reader_local_cache: AHashMap::new(),
+            next_batch_to_check_cached: 0,
         }
     }
 
@@ -76,6 +78,11 @@ impl CachedArrayReader {
         }
         let read = self.inner.read_records(self.batch_size())?;
         let array = self.inner.consume_batch()?;
+
+        // This is a special case for the Utf8View type, because parquet read string as Utf8View.
+        // But the reader reads as Dictionary or Utf8 type, depending on the cache mode.
+        let array = cast_from_parquet_to_liquid_type(array, self.liquid_cache.cache_mode());
+
         _ = self.liquid_cache.insert(batch_id, array.clone());
         self.reader_local_cache.insert(batch_id, array);
 
@@ -84,7 +91,17 @@ impl CachedArrayReader {
     }
 
     fn is_cached(&self, batch_id: BatchID) -> bool {
-        self.liquid_cache.is_cached(batch_id) || self.reader_local_cache.contains_key(&batch_id)
+        self.reader_local_cache.contains_key(&batch_id) || self.liquid_cache.is_cached(batch_id)
+    }
+
+    fn ensure_cached(&mut self, batch_id: BatchID) -> Result<(), ParquetError> {
+        if *batch_id >= self.next_batch_to_check_cached {
+            if !self.is_cached(batch_id) {
+                self.fetch_batch(batch_id)?;
+            }
+            self.next_batch_to_check_cached = *batch_id + 1;
+        }
+        Ok(())
     }
 
     fn read_records_inner(&mut self, request_size: usize) -> Result<usize, ParquetError> {
@@ -93,19 +110,11 @@ impl CachedArrayReader {
 
         self.selection.push_back(RowSelector::select(request_size));
 
-        let starting_row_id = self.current_row / batch_size * batch_size;
-        let ending_row_id = (self.current_row + request_size - 1) / batch_size * batch_size;
+        let starting_batch = BatchID::from_row_id(self.current_row, batch_size);
+        let ending_batch = BatchID::from_row_id(self.current_row + request_size - 1, batch_size);
 
-        let starting_batch_id = BatchID::from_row_id(starting_row_id, batch_size);
-        let ending_batch_id = BatchID::from_row_id(ending_row_id, batch_size);
-
-        if !self.is_cached(starting_batch_id) {
-            self.fetch_batch(starting_batch_id)?;
-        }
-
-        if ending_row_id != starting_row_id && !self.is_cached(ending_batch_id) {
-            self.fetch_batch(ending_batch_id)?;
-        }
+        self.ensure_cached(starting_batch)?;
+        self.ensure_cached(ending_batch)?;
 
         self.current_row += request_size;
         Ok(request_size)
@@ -444,13 +453,11 @@ mod tests {
             BATCH_SIZE,
             usize::MAX,
             tmp_dir.path().to_path_buf(),
-        ));
-        let file = liquid_cache.register_or_get_file(
-            "test".to_string(),
             LiquidCacheMode::InMemoryLiquid {
                 transcode_in_background: false,
             },
-        );
+        ));
+        let file = liquid_cache.register_or_get_file("test".to_string());
         let row_group = file.row_group(0);
         let reader = set_up_reader_with_cache(
             row_group
@@ -694,5 +701,39 @@ mod tests {
         assert_contains(&cache, 0);
         assert_not_contains(&cache, 32);
         assert_contains(&cache, 64);
+    }
+
+    #[test]
+    fn test_ensure_cached_behavior() {
+        let (mut reader, _cache) = set_up_reader(); // BATCH_SIZE is 32
+
+        assert_eq!(reader.inner().read_cnt, 0);
+        assert_eq!(reader.next_batch_to_check_cached, 0);
+
+        reader.read_records_inner(10).unwrap();
+        assert_eq!(reader.inner().read_cnt, 1, "Fetch for batch 0");
+        assert_eq!(reader.current_row, 10);
+        assert_eq!(reader.next_batch_to_check_cached, 1);
+
+        reader.read_records_inner(10).unwrap();
+        assert_eq!(reader.inner().read_cnt, 1, "No new fetch, still in batch 0");
+        assert_eq!(reader.current_row, 20);
+        assert_eq!(reader.next_batch_to_check_cached, 1); // Remains 1
+
+        reader.read_records_inner(20).unwrap(); // Reads 12 from batch 0, 8 from batch 1
+        assert_eq!(reader.inner().read_cnt, 2, "Fetch for batch 1");
+        assert_eq!(reader.current_row, 40);
+        assert_eq!(reader.next_batch_to_check_cached, 2);
+
+        reader.consume_batch_inner().unwrap();
+
+        reader.read_records_inner(10).unwrap();
+        assert_eq!(
+            reader.inner().read_cnt,
+            2,
+            "No new fetch, still in batch 1 (already checked)"
+        );
+        assert_eq!(reader.current_row, 50);
+        assert_eq!(reader.next_batch_to_check_cached, 2); // Remains 2
     }
 }

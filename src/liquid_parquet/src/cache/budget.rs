@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
+use crate::sync::atomic::{AtomicUsize, Ordering};
 
 use log::warn;
 
@@ -53,8 +53,7 @@ impl BudgetAccounting {
             let diff = new_size - old_size;
             if diff > 1024 * 1024 {
                 warn!(
-                    "Transcoding increased the size of the array by at least 1MB, previous size: {}, new size: {}, double check this is correct",
-                    old_size, new_size
+                    "Transcoding increased the size of the array by at least 1MB, previous size: {old_size}, new size: {new_size}, double check this is correct"
                 );
             }
 
@@ -71,10 +70,6 @@ impl BudgetAccounting {
         self.used_memory_bytes.load(Ordering::Relaxed)
     }
 
-    pub fn max_memory_bytes(&self) -> usize {
-        self.max_memory_bytes
-    }
-
     pub fn disk_usage_bytes(&self) -> usize {
         self.used_disk_bytes.load(Ordering::Relaxed)
     }
@@ -87,6 +82,7 @@ impl BudgetAccounting {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sync::{Arc, Barrier, thread};
 
     #[test]
     fn test_memory_reservation_and_accounting() {
@@ -108,19 +104,73 @@ mod tests {
     }
 
     #[test]
-    fn test_memory_transcoding_accounting() {
-        let config = BudgetAccounting::new(1000);
+    fn test_concurrent_memory_operations() {
+        test_concurrent_memory_budget();
+    }
 
-        assert!(config.try_reserve_memory(400).is_ok());
-        assert_eq!(config.memory_usage_bytes(), 400);
+    #[cfg(feature = "shuttle")]
+    #[test]
+    fn shuttle_memory_budget_operations() {
+        crate::utils::shuttle_test(test_concurrent_memory_budget);
+    }
 
-        assert!(config.try_update_memory_usage(300, 200).is_ok());
-        assert_eq!(config.memory_usage_bytes(), 300); // 400 - (300 - 200)
+    fn test_concurrent_memory_budget() {
+        let num_threads = 3;
+        let max_memory = 10000;
+        let operations_per_thread = 100;
 
-        assert!(config.try_update_memory_usage(200, 500).is_ok());
-        assert_eq!(config.memory_usage_bytes(), 600); // 300 + (500 - 200)
+        let budget = Arc::new(BudgetAccounting::new(max_memory));
+        let barrier = Arc::new(Barrier::new(num_threads));
 
-        assert!(config.try_update_memory_usage(100, 600).is_err());
-        assert_eq!(config.memory_usage_bytes(), 600); // Unchanged because update failed
+        let mut thread_handles = vec![];
+
+        for _ in 0..num_threads {
+            let budget_clone = budget.clone();
+            let barrier_clone = barrier.clone();
+
+            let handle = thread::spawn(move || {
+                let mut successful_reservations = Vec::new();
+
+                barrier_clone.wait();
+
+                for i in 0..operations_per_thread {
+                    let reserve_size = 10 + (i % 20) * 5; // 10 to 105 bytes
+                    if budget_clone.try_reserve_memory(reserve_size).is_ok() {
+                        successful_reservations.push(reserve_size);
+                    }
+
+                    if i % 5 == 0 && !successful_reservations.is_empty() {
+                        let idx = i % successful_reservations.len();
+                        let old_size = successful_reservations[idx];
+                        let new_size = if i % 2 == 0 {
+                            old_size + 5 // Grow
+                        } else {
+                            old_size.saturating_sub(5) // Shrink
+                        };
+
+                        if budget_clone
+                            .try_update_memory_usage(old_size, new_size)
+                            .is_ok()
+                        {
+                            successful_reservations[idx] = new_size;
+                        }
+                    }
+                }
+                successful_reservations
+            });
+
+            thread_handles.push(handle);
+        }
+
+        let mut expected_memory_usage = 0;
+        for handle in thread_handles {
+            let reservations = handle.join().unwrap();
+            for size in reservations {
+                expected_memory_usage += size;
+            }
+        }
+
+        assert_eq!(budget.memory_usage_bytes(), expected_memory_usage);
+        assert!(budget.memory_usage_bytes() <= max_memory);
     }
 }

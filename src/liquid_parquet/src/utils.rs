@@ -1,11 +1,15 @@
+use std::num::NonZero;
+
 use arrow::{
     array::{
         ArrayAccessor, ArrayIter, DictionaryArray, GenericByteArray, GenericByteDictionaryBuilder,
-        StringViewArray,
+        PrimitiveArray, PrimitiveDictionaryBuilder, StringViewArray,
     },
-    datatypes::{BinaryType, ByteArrayType, UInt16Type, Utf8Type},
+    datatypes::{BinaryType, ByteArrayType, DecimalType, UInt16Type, Utf8Type},
 };
 use arrow_schema::DataType;
+
+use crate::liquid_array::get_bit_width;
 
 /// A wrapper around `DictionaryArray<UInt16Type>` that ensures the values are unique.
 /// This is because we leverage the fact that the values are unique in the dictionary to short cut the
@@ -28,6 +32,10 @@ impl CheckedDictionaryArray {
     pub fn from_string_view_array(array: &StringViewArray) -> Self {
         let iter = array.iter();
         byte_array_to_dict_array::<Utf8Type, _>(iter)
+    }
+
+    pub fn from_decimal_array<T: DecimalType>(array: &PrimitiveArray<T>) -> Self {
+        decimal_array_to_dict_array(array)
     }
 
     /// # Safety
@@ -54,6 +62,13 @@ impl CheckedDictionaryArray {
     pub fn as_ref(&self) -> &DictionaryArray<UInt16Type> {
         &self.val
     }
+
+    pub fn bit_width_for_key(&self) -> NonZero<u8> {
+        let distinct_count = self.as_ref().values().len();
+        let max_bit_width = get_bit_width(distinct_count as u64);
+        debug_assert!(2u64.pow(max_bit_width.get() as u32) >= distinct_count as u64);
+        max_bit_width
+    }
 }
 
 fn gc_dictionary_array(array: &DictionaryArray<UInt16Type>) -> CheckedDictionaryArray {
@@ -73,6 +88,19 @@ fn gc_dictionary_array(array: &DictionaryArray<UInt16Type>) -> CheckedDictionary
     }
 }
 
+fn decimal_array_to_dict_array<T: DecimalType>(
+    array: &PrimitiveArray<T>,
+) -> CheckedDictionaryArray {
+    let iter = array.iter();
+    let mut builder =
+        PrimitiveDictionaryBuilder::<UInt16Type, T>::with_capacity(array.len(), array.len());
+    for s in iter {
+        builder.append_option(s);
+    }
+    let dict = builder.finish();
+    CheckedDictionaryArray { val: dict }
+}
+
 fn byte_array_to_dict_array<'a, T: ByteArrayType, I: ArrayAccessor<Item = &'a T::Native>>(
     input: ArrayIter<I>,
 ) -> CheckedDictionaryArray {
@@ -86,6 +114,29 @@ fn byte_array_to_dict_array<'a, T: ByteArrayType, I: ArrayAccessor<Item = &'a T:
     }
     let dict = builder.finish();
     CheckedDictionaryArray { val: dict }
+}
+
+#[cfg(all(feature = "shuttle", test))]
+pub(crate) fn shuttle_test(test: impl Fn() + Send + Sync + 'static) {
+    _ = tracing_subscriber::fmt()
+        .with_ansi(true)
+        .with_thread_names(false)
+        .with_target(false)
+        .try_init();
+
+    let mut runner = shuttle::PortfolioRunner::new(true, Default::default());
+
+    let available_cores = std::thread::available_parallelism().unwrap().get().min(4);
+
+    for _i in 0..available_cores {
+        runner.add(shuttle::scheduler::PctScheduler::new(10, 1_000));
+    }
+    runner.run(test);
+}
+
+pub(crate) fn yield_now_if_shuttle() {
+    #[cfg(all(feature = "shuttle", test))]
+    shuttle::thread::yield_now();
 }
 
 #[cfg(test)]

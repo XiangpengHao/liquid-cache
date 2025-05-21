@@ -3,6 +3,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use liquid_cache_common::LiquidCacheMode;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub(super) struct ColumnAccessPath {
     file_id: u16,
@@ -62,14 +64,43 @@ impl From<CacheEntryID> for ColumnAccessPath {
     }
 }
 
+/// This is a unique identifier for a row in a parquet file.
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub struct CacheEntryID {
-    // This is a unique identifier for a row in a parquet file.
-    field_id: u16,
+    file_id: u16,
     rg_id: u16,
     row_id: u16,
     batch_id: BatchID,
+}
+
+const _: () = assert!(std::mem::size_of::<CacheEntryID>() == 8);
+const _: () = assert!(std::mem::align_of::<CacheEntryID>() == 8);
+
+impl From<CacheEntryID> for usize {
+    fn from(id: CacheEntryID) -> Self {
+        (id.file_id as usize) << 48
+            | (id.rg_id as usize) << 32
+            | (id.row_id as usize) << 16
+            | (id.batch_id.v as usize)
+    }
+}
+
+impl From<usize> for CacheEntryID {
+    fn from(value: usize) -> Self {
+        Self {
+            file_id: (value >> 48) as u16,
+            rg_id: ((value >> 32) & 0xFFFF) as u16,
+            row_id: ((value >> 16) & 0xFFFF) as u16,
+            batch_id: BatchID::from_raw((value & 0xFFFF) as u16),
+        }
+    }
+}
+
+impl CacheEntryID {
+    pub fn row_group_id(&self) -> u16 {
+        self.rg_id
+    }
 }
 
 const _: () = assert!(std::mem::size_of::<CacheEntryID>() == 8);
@@ -87,9 +118,8 @@ pub struct BatchID {
 
 impl BatchID {
     /// Creates a new BatchID from a row id and a batch size.
-    /// row id must be on the batch boundary.
+    /// The row id is at the boundary of the batch.
     pub(crate) fn from_row_id(row_id: usize, batch_size: usize) -> Self {
-        debug_assert!(row_id % batch_size == 0);
         Self {
             v: (row_id / batch_size) as u16,
         }
@@ -119,7 +149,7 @@ impl CacheEntryID {
         debug_assert!(row_group_id <= u16::MAX as u64);
         debug_assert!(column_id <= u16::MAX as u64);
         Self {
-            field_id: file_id as u16,
+            file_id: file_id as u16,
             rg_id: row_group_id as u16,
             row_id: column_id as u16,
             batch_id,
@@ -131,7 +161,7 @@ impl CacheEntryID {
     }
 
     pub(super) fn file_id_inner(&self) -> u64 {
-        self.field_id as u64
+        self.file_id as u64
     }
 
     pub(super) fn row_group_id_inner(&self) -> u64 {
@@ -148,7 +178,7 @@ impl CacheEntryID {
             .join(format!("file_{}", self.file_id_inner()))
             .join(format!("rg_{}", self.row_group_id_inner()))
             .join(format!("col_{}", self.column_id_inner()))
-            .join(format!("batch_{}.bin", batch_id))
+            .join(format!("batch_{batch_id}.bin"))
     }
 }
 
@@ -157,14 +187,21 @@ pub(super) struct CacheConfig {
     batch_size: usize,
     max_cache_bytes: usize,
     cache_root_dir: PathBuf,
+    cache_mode: LiquidCacheMode,
 }
 
 impl CacheConfig {
-    pub(super) fn new(batch_size: usize, max_cache_bytes: usize, cache_root_dir: PathBuf) -> Self {
+    pub(super) fn new(
+        batch_size: usize,
+        max_cache_bytes: usize,
+        cache_root_dir: PathBuf,
+        cache_mode: LiquidCacheMode,
+    ) -> Self {
         Self {
             batch_size,
             max_cache_bytes,
             cache_root_dir,
+            cache_mode,
         }
     }
 
@@ -178,6 +215,10 @@ impl CacheConfig {
 
     pub fn cache_root_dir(&self) -> &PathBuf {
         &self.cache_root_dir
+    }
+
+    pub fn cache_mode(&self) -> &LiquidCacheMode {
+        &self.cache_mode
     }
 }
 
@@ -202,7 +243,15 @@ pub(crate) fn create_cache_store(
     let temp_dir = tempdir().unwrap();
     let batch_size = 128;
 
-    CacheStore::new(batch_size, max_cache_bytes, temp_dir.into_path(), policy)
+    CacheStore::new(
+        batch_size,
+        max_cache_bytes,
+        temp_dir.into_path(),
+        LiquidCacheMode::InMemoryLiquid {
+            transcode_in_background: false,
+        },
+        policy,
+    )
 }
 
 #[cfg(test)]
@@ -229,13 +278,6 @@ mod tests {
     fn test_batch_id_from_row_id() {
         let batch_id = BatchID::from_row_id(256, 128);
         assert_eq!(batch_id.v, 2);
-    }
-
-    #[test]
-    #[should_panic]
-    fn test_batch_id_from_row_id_panic() {
-        // Should panic because row_id is not a multiple of batch_size
-        BatchID::from_row_id(100, 128);
     }
 
     #[test]

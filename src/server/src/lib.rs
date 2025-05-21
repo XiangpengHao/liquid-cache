@@ -24,7 +24,7 @@ use arrow_flight::{
     encode::{DictionaryHandling, FlightDataEncoderBuilder},
     flight_service_server::FlightService,
     sql::{
-        Any, CommandPreparedStatementUpdate, ProstMessageExt, SqlInfo,
+        Any, CommandPreparedStatementUpdate, SqlInfo,
         server::{FlightSqlService, PeekableFlightDataStream},
     },
 };
@@ -42,32 +42,22 @@ use liquid_cache_common::{
 };
 use liquid_cache_parquet::LiquidCacheRef;
 use log::info;
-use prost::Message;
 use prost::bytes::Bytes;
 use service::LiquidCacheServiceInner;
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
-use std::{pin::Pin, str::FromStr};
+use std::pin::Pin;
+use std::{path::PathBuf, sync::Arc};
 use tonic::{Request, Response, Status, Streaming};
 use url::Url;
 use uuid::Uuid;
 mod service;
 mod utils;
 use utils::FinalStream;
-pub mod admin_server;
+mod admin_server;
 mod local_cache;
+pub use admin_server::run_admin_server;
 
 #[cfg(test)]
 mod tests;
-
-/// A trait to collect stats for the execution plan.
-/// The server calls `start` right before polling the stream,
-/// and calls `stop` right after exhausting the stream.
-pub trait StatsCollector: Send + Sync {
-    /// Start the stats collector.
-    fn start(&self);
-    /// Stop the stats collector.
-    fn stop(&self);
-}
 
 /// The LiquidCache server.
 ///
@@ -78,7 +68,7 @@ pub trait StatsCollector: Send + Sync {
 /// use datafusion::prelude::SessionContext;
 /// use liquid_cache_server::LiquidCacheService;
 /// use tonic::transport::Server;
-/// let liquid_cache = LiquidCacheService::new(SessionContext::new(), None, None);
+/// let liquid_cache = LiquidCacheService::new(SessionContext::new(), None, None, Default::default());
 /// let flight = FlightServiceServer::new(liquid_cache);
 /// Server::builder()
 ///     .add_service(flight)
@@ -86,7 +76,6 @@ pub trait StatsCollector: Send + Sync {
 /// ```
 pub struct LiquidCacheService {
     inner: LiquidCacheServiceInner,
-    stats_collector: Vec<Arc<dyn StatsCollector>>,
 }
 
 impl Default for LiquidCacheService {
@@ -99,8 +88,8 @@ impl LiquidCacheService {
     /// Create a new [LiquidCacheService] with a default [SessionContext]
     /// With no disk cache and unbounded memory usage.
     pub fn try_new() -> Result<Self, DataFusionError> {
-        let ctx = Self::context(None)?;
-        Ok(Self::new(ctx, None, None))
+        let ctx = Self::context()?;
+        Ok(Self::new(ctx, None, None, CacheMode::LiquidEagerTranscode))
     }
 
     /// Create a new [LiquidCacheService] with a custom [SessionContext]
@@ -110,30 +99,31 @@ impl LiquidCacheService {
     /// * `ctx` - The [SessionContext] to use
     /// * `max_cache_bytes` - The maximum number of bytes to cache in memory
     /// * `disk_cache_dir` - The directory to store the disk cache
+    /// * `cache_mode` - The [CacheMode] to use
     pub fn new(
         ctx: SessionContext,
         max_cache_bytes: Option<usize>,
         disk_cache_dir: Option<PathBuf>,
+        cache_mode: CacheMode,
     ) -> Self {
         Self {
-            inner: LiquidCacheServiceInner::new(Arc::new(ctx), max_cache_bytes, disk_cache_dir),
-            stats_collector: vec![],
+            inner: LiquidCacheServiceInner::new(
+                Arc::new(ctx),
+                max_cache_bytes,
+                disk_cache_dir,
+                cache_mode,
+            ),
         }
     }
 
     /// Get a reference to the cache
-    pub fn cache(&self) -> &LiquidCacheRef {
+    pub fn cache(&self) -> &Option<LiquidCacheRef> {
         self.inner.cache()
-    }
-
-    /// Add a stats collector to the service
-    pub fn add_stats_collector(&mut self, collector: Arc<dyn StatsCollector>) {
-        self.stats_collector.push(collector);
     }
 
     /// Create a new [SessionContext] with good defaults
     /// This is the recommended way to create a [SessionContext] for LiquidCache
-    pub fn context(partitions: Option<usize>) -> Result<SessionContext, DataFusionError> {
+    pub fn context() -> Result<SessionContext, DataFusionError> {
         let mut session_config = SessionConfig::from_env()?;
         let options_mut = session_config.options_mut();
         options_mut.execution.parquet.pushdown_filters = true;
@@ -145,10 +135,6 @@ impl LiquidCacheService {
             // For Arrow memory mode, we need to read as UTF-8
             // For Liquid cache, we have our own way of handling string columns
             options_mut.execution.parquet.schema_force_view_types = false;
-        }
-
-        if let Some(partitions) = partitions {
-            options_mut.execution.target_partitions = partitions;
         }
 
         let object_store_url = ObjectStoreUrl::parse("file://").unwrap();
@@ -164,14 +150,13 @@ impl LiquidCacheService {
         Ok(ctx)
     }
 
-    /// Get all registered tables and their cache modes
-    pub async fn get_registered_tables(&self) -> HashMap<String, (String, CacheMode)> {
-        self.inner.get_registered_tables().await
-    }
-
     /// Get the parquet cache directory
     pub fn get_parquet_cache_dir(&self) -> &PathBuf {
         self.inner.get_parquet_cache_dir()
+    }
+
+    pub(crate) fn inner(&self) -> &LiquidCacheServiceInner {
+        &self.inner
     }
 }
 
@@ -212,14 +197,8 @@ impl FlightSqlService for LiquidCacheService {
         let handle = Uuid::from_bytes_ref(fetch_results.handle.as_ref().try_into().unwrap());
         let partition = fetch_results.partition as usize;
         let stream = self.inner.execute_plan(handle, partition).await;
-        let stream = FinalStream::new(
-            stream,
-            self.stats_collector.clone(),
-            self.inner.batch_size(),
-            span,
-        )
-        .map_err(|e| {
-            panic!("Error executing plan: {:?}", e);
+        let stream = FinalStream::new(stream, self.inner.batch_size(), span).map_err(|e| {
+            panic!("Error executing plan: {e:?}");
         });
 
         let ipc_options = IpcWriteOptions::default();
@@ -261,28 +240,11 @@ impl FlightSqlService for LiquidCacheService {
                 })]);
                 return Ok(Response::new(Box::pin(output)));
             }
-            LiquidCacheActions::ExecutionMetrics(cmd) => {
-                let execution_id = Uuid::parse_str(&cmd.handle).unwrap();
-                let response = self.inner.get_metrics(&execution_id).unwrap();
-                let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
-                    body: response.as_any().encode_to_vec().into(),
-                })]);
-                return Ok(Response::new(Box::pin(output)));
-            }
-            LiquidCacheActions::ResetCache => {
-                self.inner.cache().reset();
-
-                let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
-                    body: Bytes::default(),
-                })]);
-                return Ok(Response::new(Box::pin(output)));
-            }
             LiquidCacheActions::RegisterPlan(cmd) => {
                 let plan = cmd.plan;
                 let plan = physical_plan_from_bytes(&plan, self.inner.get_ctx()).unwrap();
                 let handle = Uuid::from_bytes_ref(cmd.handle.as_ref().try_into().unwrap());
-                let cache_mode = CacheMode::from_str(&cmd.cache_mode).unwrap();
-                self.inner.register_plan(*handle, plan, cache_mode);
+                self.inner.register_plan(*handle, plan);
                 let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
                     body: Bytes::default(),
                 })]);

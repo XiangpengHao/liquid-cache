@@ -52,7 +52,7 @@ fn get_query(
 }
 
 fn save_result(result: &[RecordBatch], query_id: u32) -> Result<()> {
-    let file_path = format!("benchmark/data/results/Q{}.parquet", query_id);
+    let file_path = format!("benchmark/data/results/Q{query_id}.parquet");
     let file = File::create(&file_path)?;
     let props = WriterProperties::builder()
         .set_compression(Compression::SNAPPY)
@@ -62,7 +62,7 @@ fn save_result(result: &[RecordBatch], query_id: u32) -> Result<()> {
         writer.write(batch).unwrap();
     }
     writer.close().unwrap();
-    info!("Query {} result saved to {}", query_id, file_path);
+    info!("Query {query_id} result saved to {file_path}");
     Ok(())
 }
 
@@ -79,10 +79,10 @@ fn check_result_against_answer(
         let baseline_exists = format!("{}/Q{}.parquet", answer_dir.display(), query_id);
         match File::open(baseline_exists) {
             Err(_) => {
-                info!("Query {} returned no results (matches baseline)", query_id);
+                info!("Query {query_id} returned no results (matches baseline)");
                 return Ok(());
             }
-            Ok(_) => panic!("Query {} returned no results but baseline exists", query_id),
+            Ok(_) => panic!("Query {query_id} returned no results but baseline exists"),
         }
     }
     // Read answers
@@ -101,10 +101,7 @@ fn check_result_against_answer(
         &baseline_batches,
     )?;
     if query.contains("LIMIT") {
-        info!(
-            "Query {} contains LIMIT, only validating the shape of the result",
-            query_id
-        );
+        info!("Query {query_id} contains LIMIT, only validating the shape of the result");
         let (result_num_rows, result_columns) =
             (result_batch.num_rows(), result_batch.columns().len());
         let (baseline_num_rows, baseline_columns) =
@@ -112,8 +109,7 @@ fn check_result_against_answer(
         if result_num_rows != baseline_num_rows || result_columns != baseline_columns {
             save_result(results, query_id)?;
             panic!(
-                "Query {} result does not match baseline. Result(num_rows: {}, num_columns: {}), Baseline(num_rows: {}, num_columns: {})",
-                query_id, result_num_rows, result_columns, baseline_num_rows, baseline_columns,
+                "Query {query_id} result does not match baseline. Result(num_rows: {result_num_rows}, num_columns: {result_columns}), Baseline(num_rows: {baseline_num_rows}, num_columns: {baseline_columns})"
             );
         }
     } else {
@@ -147,10 +143,7 @@ pub async fn main() -> Result<()> {
     );
 
     let queries = get_query(&args.query_path, args.common.query)?;
-    let bench_mode = &args.common.bench_mode;
-    let ctx = bench_mode
-        .setup_clickbench_ctx(&args.common.server, &args.file, args.common.partitions)
-        .await?;
+    let ctx = args.common.setup_clickbench_ctx(&args.file).await?;
 
     let mut benchmark_result = BenchmarkResult {
         args: args.clone(),
@@ -165,9 +158,13 @@ pub async fn main() -> Result<()> {
     for (id, query) in queries {
         let mut query_result = QueryResult::new(id, query.clone());
         for it in 0..args.common.iteration {
-            info!("Running query {}: \n{}", id, query);
+            info!("Running query {id}: \n{query}");
+
+            args.common.start_trace().await;
+            args.common.start_flamegraph().await;
+
             let root = Span::root(
-                format!("clickbench-client-{}-{}", id, it),
+                format!("clickbench-client-{id}-{it}"),
                 SpanContext::random(),
             );
             let _g = root.set_local_parent();
@@ -175,7 +172,6 @@ pub async fn main() -> Result<()> {
             let starting_timestamp = bench_start_time.elapsed();
             let (results, physical_plan) = run_query(&ctx, &query).await?;
             let elapsed = now.elapsed();
-            info!("Query execution time: {:?}", elapsed);
 
             networks.refresh(true);
             // for mac its lo0 and for linux its lo.
@@ -183,42 +179,42 @@ pub async fn main() -> Result<()> {
                 .get("lo0")
                 .or_else(|| networks.get("lo"))
                 .expect("No loopback interface found in networks");
+
+            args.common.stop_flamegraph().await;
+            args.common.stop_trace().await;
+
             let physical_plan_with_metrics =
                 DisplayableExecutionPlan::with_metrics(physical_plan.as_ref());
-
             debug!(
                 "Physical plan: \n{}",
                 physical_plan_with_metrics.indent(true)
             );
             let result_str = pretty::pretty_format_batches(&results).unwrap();
-            info!("Query result: \n{}", result_str);
+            debug!("Query result: \n{result_str}");
 
             // Check query answers
             if let Some(answer_dir) = &args.common.answer_dir {
                 check_result_against_answer(&results, answer_dir, id, &query)?;
-                info!("Query {} passed validation", id);
+                info!("Query {id} passed validation");
             }
 
-            let metrics_response = bench_mode
-                .get_execution_metrics(&args.common.server, &physical_plan)
-                .await;
-            info!(
-                "Server processing time: {} ms, cache memory usage: {} bytes, liquid cache usage: {} bytes",
-                metrics_response.pushdown_eval_time,
-                metrics_response.cache_memory_usage,
-                metrics_response.liquid_cache_usage
-            );
+            args.common.get_cache_stats().await;
 
-            query_result.add(IterationResult {
+            let metrics_response = args.common.get_execution_metrics(&physical_plan).await;
+
+            let result = IterationResult {
                 network_traffic: network_info.received(),
                 time_millis: elapsed.as_millis() as u64,
                 cache_cpu_time: metrics_response.pushdown_eval_time,
                 cache_memory_usage: metrics_response.cache_memory_usage,
+                liquid_cache_usage: metrics_response.liquid_cache_usage,
                 starting_timestamp,
-            });
+            };
+            result.log();
+            query_result.add(result);
         }
         if args.common.reset_cache {
-            bench_mode.reset_cache(&args.common.server).await?;
+            args.common.reset_cache().await?;
         }
         benchmark_result.results.push(query_result);
     }

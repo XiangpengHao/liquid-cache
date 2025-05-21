@@ -1,5 +1,3 @@
-use arrow_flight::sql::Any;
-use arrow_flight::{FlightClient, flight_service_client::FlightServiceClient};
 use clap::Parser;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::common::tree_node::TreeNode;
@@ -12,43 +10,41 @@ use datafusion::{
 };
 use fastrace::Span;
 use fastrace::future::FutureExt as _;
-use futures::StreamExt;
 use liquid_cache_client::{LiquidCacheBuilder, LiquidCacheClientExec};
 use liquid_cache_common::CacheMode;
-use liquid_cache_common::rpc::{
-    ExecutionMetricsRequest, ExecutionMetricsResponse, LiquidCacheActions,
-};
+use liquid_cache_common::rpc::ExecutionMetricsResponse;
+use log::info;
 use object_store::ClientConfigKey;
-use prost::Message;
 use serde::Serialize;
 use std::path::PathBuf;
 use std::time::Duration;
 use std::{fmt::Display, path::Path, str::FromStr, sync::Arc};
-use tonic::transport::Channel;
 use url::Url;
 
 mod observability;
-mod reports;
 pub mod utils;
 
 pub use observability::*;
-pub use reports::*;
 
 #[derive(Parser, Serialize, Clone)]
 pub struct CommonBenchmarkArgs {
-    /// Server URL
+    /// LiquidCache server URL
     #[arg(long, default_value = "http://localhost:50051")]
     pub server: String,
+
+    /// LiquidCache admin server URL
+    #[arg(long, default_value = "http://localhost:50052")]
+    pub admin_server: String,
 
     /// Number of times to run each query
     #[arg(long, default_value = "3")]
     pub iteration: u32,
 
-    /// Path to the output JSON file
+    /// Path to the output JSON file to save the benchmark results
     #[arg(long)]
     pub output: Option<PathBuf>,
 
-    /// Path to the baseline directory
+    /// Path to the answer directory
     #[arg(long = "answer-dir")]
     pub answer_dir: Option<PathBuf>,
 
@@ -60,7 +56,10 @@ pub struct CommonBenchmarkArgs {
     #[arg(long = "reset-cache", default_value = "false")]
     pub reset_cache: bool,
 
-    /// Number of partitions to use
+    /// Number of partitions to use,
+    /// impacts LiquidCache **server's** number of threads to use
+    /// Checkout datafusion partition docs for more details:
+    /// <https://datafusion.apache.org/user-guide/configs.html#:~:text=datafusion.execution.target_partitions>
     #[arg(long)]
     pub partitions: Option<usize>,
 
@@ -71,26 +70,100 @@ pub struct CommonBenchmarkArgs {
     /// Openobserve auth token
     #[arg(long)]
     pub openobserve_auth: Option<String>,
+
+    /// Path to save the cache trace
+    /// It tells the **server** to collect the cache trace.
+    #[arg(long = "cache-trace-dir")]
+    pub cache_trace_dir: Option<PathBuf>,
+
+    /// Path to save the cache stats
+    /// It tells the **server** to collect the cache stats.
+    #[arg(long = "cache-stats-dir")]
+    pub cache_stats_dir: Option<PathBuf>,
+
+    /// Path to save the flamegraph
+    /// It tells the **server** to collect the flamegraph execution.
+    #[arg(long = "flamegraph-dir")]
+    pub flamegraph_dir: Option<PathBuf>,
 }
 
-#[derive(Clone, Debug, Default, Copy, PartialEq, Eq, Serialize)]
-pub enum BenchmarkMode {
-    ParquetFileserver,
-    ParquetPushdown,
-    ArrowPushdown,
-    LiquidCache,
-    #[default]
-    LiquidEagerTranscode,
-}
+impl CommonBenchmarkArgs {
+    pub async fn start_trace(&self) {
+        if self.cache_trace_dir.is_some() {
+            let client = reqwest::Client::new();
+            let response = client
+                .get(format!("{}/start_trace", self.admin_server))
+                .send()
+                .await
+                .unwrap();
+            if response.status().is_success() {
+                info!("Cache trace collection started");
+            }
+        }
+    }
 
-impl BenchmarkMode {
+    pub async fn stop_trace(&self) {
+        if let Some(cache_trace_dir) = &self.cache_trace_dir {
+            let response = reqwest::Client::new()
+                .get(format!(
+                    "{}/stop_trace?path={}",
+                    self.admin_server,
+                    cache_trace_dir.display()
+                ))
+                .send()
+                .await
+                .unwrap();
+            let response_body = response.text().await.unwrap();
+            info!("Cache trace collection stopped: {response_body}");
+        }
+    }
+
+    pub async fn start_flamegraph(&self) {
+        if self.flamegraph_dir.is_some() {
+            let response = reqwest::Client::new()
+                .get(format!("{}/start_flamegraph", self.admin_server))
+                .send()
+                .await
+                .unwrap();
+            let response_body = response.text().await.unwrap();
+            info!("Flamegraph collection started: {response_body}");
+        }
+    }
+
+    pub async fn stop_flamegraph(&self) {
+        if let Some(flamegraph_dir) = &self.flamegraph_dir {
+            let response = reqwest::Client::new()
+                .get(format!(
+                    "{}/stop_flamegraph?output_dir={}",
+                    self.admin_server,
+                    flamegraph_dir.display()
+                ))
+                .send()
+                .await
+                .unwrap();
+            let response_body = response.text().await.unwrap();
+            info!("Flamegraph collection stopped: {response_body}");
+        }
+    }
+
+    pub async fn get_cache_stats(&self) {
+        if let Some(cache_stats_dir) = &self.cache_stats_dir {
+            let response = reqwest::Client::new()
+                .get(format!(
+                    "{}/cache_stats?path={}",
+                    self.admin_server,
+                    cache_stats_dir.display()
+                ))
+                .send()
+                .await
+                .unwrap();
+            let response_body = response.text().await.unwrap();
+            info!("Cache stats: {response_body}");
+        }
+    }
+
     #[fastrace::trace]
-    pub async fn setup_tpch_ctx(
-        &self,
-        server_url: &str,
-        data_dir: &Path,
-        partitions: Option<usize>,
-    ) -> Result<Arc<SessionContext>> {
+    pub async fn setup_tpch_ctx(&self, data_dir: &Path) -> Result<Arc<SessionContext>> {
         let mut session_config = SessionConfig::from_env()?;
         let current_dir = std::env::current_dir()?.to_string_lossy().to_string();
 
@@ -98,10 +171,10 @@ impl BenchmarkMode {
             "customer", "lineitem", "nation", "orders", "part", "partsupp", "region", "supplier",
         ];
 
-        let mode = match self {
+        let mode = match self.bench_mode {
             BenchmarkMode::ParquetFileserver => {
                 let ctx = Arc::new(SessionContext::new_with_config(session_config));
-                let base_url = Url::parse(server_url).unwrap();
+                let base_url = Url::parse(&self.server).unwrap();
 
                 let object_store = object_store::http::HttpBuilder::new()
                     .with_url(base_url.clone())
@@ -134,10 +207,10 @@ impl BenchmarkMode {
             .parquet
             .pushdown_filters = true;
         let mut session_config = SessionConfig::from_env()?;
-        if let Some(partitions) = partitions {
+        if let Some(partitions) = self.partitions {
             session_config.options_mut().execution.target_partitions = partitions;
         }
-        let ctx = LiquidCacheBuilder::new(server_url)
+        let ctx = LiquidCacheBuilder::new(&self.server)
             .with_cache_mode(mode)
             .build(session_config)?;
 
@@ -157,25 +230,20 @@ impl BenchmarkMode {
     }
 
     #[fastrace::trace]
-    pub async fn setup_clickbench_ctx(
-        &self,
-        server_url: &str,
-        data_url: &Path,
-        partitions: Option<usize>,
-    ) -> Result<Arc<SessionContext>> {
+    pub async fn setup_clickbench_ctx(&self, data_url: &Path) -> Result<Arc<SessionContext>> {
         let table_name = "hits";
         let current_dir = std::env::current_dir()?.to_string_lossy().to_string();
         let table_url =
             Url::parse(&format!("file://{}/{}", current_dir, data_url.display())).unwrap();
 
-        let mode = match self {
+        let mode = match self.bench_mode {
             BenchmarkMode::ParquetFileserver => {
                 let mut session_config = SessionConfig::from_env()?;
-                if let Some(partitions) = partitions {
+                if let Some(partitions) = self.partitions {
                     session_config.options_mut().execution.target_partitions = partitions;
                 }
                 let ctx = Arc::new(SessionContext::new_with_config(session_config));
-                let base_url = Url::parse(server_url).unwrap();
+                let base_url = Url::parse(&self.server).unwrap();
 
                 let object_store = object_store::http::HttpBuilder::new()
                     .with_url(base_url.clone())
@@ -186,7 +254,7 @@ impl BenchmarkMode {
 
                 ctx.register_parquet(
                     "hits",
-                    format!("{}/hits.parquet", server_url),
+                    format!("{}/hits.parquet", self.server),
                     Default::default(),
                 )
                 .await?;
@@ -198,10 +266,10 @@ impl BenchmarkMode {
             BenchmarkMode::LiquidEagerTranscode => CacheMode::LiquidEagerTranscode,
         };
         let mut session_config = SessionConfig::from_env()?;
-        if let Some(partitions) = partitions {
+        if let Some(partitions) = self.partitions {
             session_config.options_mut().execution.target_partitions = partitions;
         }
-        let ctx = LiquidCacheBuilder::new(server_url)
+        let ctx = LiquidCacheBuilder::new(&self.server)
             .with_cache_mode(mode)
             .build(session_config)?;
 
@@ -213,10 +281,9 @@ impl BenchmarkMode {
     #[fastrace::trace]
     pub async fn get_execution_metrics(
         &self,
-        server_url: &str,
         execution_plan: &Arc<dyn ExecutionPlan>,
     ) -> ExecutionMetricsResponse {
-        match self {
+        match self.bench_mode {
             BenchmarkMode::ParquetFileserver => {
                 // for parquet fileserver, the memory usage is the bytes scanned.
                 // It's not easy to get the memory usage as it is cached in the kernel's page cache.
@@ -271,17 +338,19 @@ impl BenchmarkMode {
                         Ok(datafusion::common::tree_node::TreeNodeRecursion::Continue)
                     })
                     .unwrap();
-                let mut flight_client = get_flight_client(server_url).await;
                 let mut metrics = Vec::new();
                 for handle in handles {
-                    let action = LiquidCacheActions::ExecutionMetrics(ExecutionMetricsRequest {
-                        handle: handle.get_plan_uuid().await.unwrap().to_string(),
-                    })
-                    .into();
-                    let mut result_stream = flight_client.do_action(action).await.unwrap();
-                    let result = result_stream.next().await.unwrap().unwrap();
-                    let any = Any::decode(&*result).unwrap();
-                    metrics.push(any.unpack::<ExecutionMetricsResponse>().unwrap().unwrap());
+                    let plan_id = handle.get_plan_uuid().await.unwrap();
+                    let response = reqwest::Client::new()
+                        .get(format!(
+                            "{}/execution_metrics?plan_id={plan_id}",
+                            self.admin_server
+                        ))
+                        .send()
+                        .await
+                        .unwrap();
+                    let v = response.json::<ExecutionMetricsResponse>().await.unwrap();
+                    metrics.push(v);
                 }
                 let metric =
                     metrics
@@ -298,22 +367,38 @@ impl BenchmarkMode {
                                 Some(m.clone())
                             }
                         });
-                metric.unwrap_or_default()
+                // If the query plan does not scan any data, the metrics will be empty
+                metric.unwrap_or_else(ExecutionMetricsResponse::zero)
             }
         }
     }
 
-    pub async fn reset_cache(&self, server_url: &str) -> Result<()> {
-        if self == &BenchmarkMode::ParquetFileserver {
+    pub async fn reset_cache(&self) -> Result<()> {
+        if self.bench_mode == BenchmarkMode::ParquetFileserver {
             // File server relies on OS page cache, so we don't need to reset it
             return Ok(());
         }
-        let mut flight_client = get_flight_client(server_url).await;
-        let action = LiquidCacheActions::ResetCache.into();
-        let mut result_stream = flight_client.do_action(action).await.unwrap();
-        let _result = result_stream.next().await.unwrap().unwrap();
+        let client = reqwest::Client::new();
+        client
+            .post(format!("{}/reset_cache", self.admin_server))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
         Ok(())
     }
+}
+
+#[derive(Clone, Debug, Default, Copy, PartialEq, Eq, Serialize)]
+pub enum BenchmarkMode {
+    ParquetFileserver,
+    ParquetPushdown,
+    ArrowPushdown,
+    LiquidCache,
+    #[default]
+    LiquidEagerTranscode,
 }
 
 impl Display for BenchmarkMode {
@@ -342,16 +427,9 @@ impl FromStr for BenchmarkMode {
             "arrow-pushdown" => BenchmarkMode::ArrowPushdown,
             "liquid-cache" => BenchmarkMode::LiquidCache,
             "liquid-eager-transcode" => BenchmarkMode::LiquidEagerTranscode,
-            _ => return Err(format!("Invalid benchmark mode: {}", s)),
+            _ => return Err(format!("Invalid benchmark mode: {s}")),
         })
     }
-}
-
-async fn get_flight_client(server_url: &str) -> FlightClient {
-    let endpoint = Channel::from_shared(server_url.to_string()).unwrap();
-    let channel = endpoint.connect().await.unwrap();
-    let inner_client = FlightServiceClient::new(channel);
-    FlightClient::new_from_inner(inner_client)
 }
 
 #[fastrace::trace]
@@ -413,5 +491,19 @@ pub struct IterationResult {
     pub time_millis: u64,
     pub cache_cpu_time: u64,
     pub cache_memory_usage: u64,
+    pub liquid_cache_usage: u64,
     pub starting_timestamp: Duration,
+}
+
+impl IterationResult {
+    pub fn log(&self) {
+        info!(
+            "Query: {} ms, network: {} bytes, cache cpu time: {} ms, cache memory: {} bytes, liquid cache memory: {} bytes",
+            self.time_millis,
+            self.network_traffic,
+            self.cache_cpu_time,
+            self.cache_memory_usage,
+            self.liquid_cache_usage
+        );
+    }
 }

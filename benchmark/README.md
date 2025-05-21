@@ -39,7 +39,7 @@ cargo run --release --bin clickbench_client -- --query-path benchmark/clickbench
 #### Advanced
 
 ```bash
-env RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS='-C target-cpu=native' cargo run --release --bin bench_server
+env RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS='-C target-cpu=native' cargo run --release --bin bench_server -- --cache-mode liquid_eager_transcode
 env RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS='-C target-cpu=native' cargo run --release --bin clickbench_client -- --query-path benchmark/clickbench/queries/queries.sql --file benchmark/clickbench/data/hits.parquet --query 42
 ```
 
@@ -59,13 +59,13 @@ In NixOS, you want to set `env LD_LIBRARY_PATH=$NIX_LD_LIBRARY_PATH`
 ### Run server (same as ClickBench)
 
 ```bash
-cargo run --release --bin bench_server
+cargo run --release --bin bench_server -- --cache-mode liquid_eager_transcode
 ```
 
 ### Run client
 
 ```bash
-env RUST_LOG=info,clickbench_client=debug RUSTFLAGS='-C target-cpu=native' cargo run --release --bin tpch_client -- --query-dir benchmark/tpch/queries/ --data-dir benchmark/tpch/data/sf0.1  --iteration 3 --bench-mode liquid-eager-transcode --answer-dir benchmark/tpch/answers/sf0.1
+env RUST_LOG=info,clickbench_client=debug RUSTFLAGS='-C target-cpu=native' cargo run --release --bin tpch_client -- --query-dir benchmark/tpch/queries/ --data-dir benchmark/tpch/data/sf0.1  --iteration 3 --answer-dir benchmark/tpch/answers/sf0.1
 ```
 
 
@@ -91,9 +91,9 @@ You can use [`parquet-viewer`](https://parquet-viewer.xiangpeng.systems) to view
 
 ### Collect cache trace
 
-To collect cache trace, simply add `--cache-trace-dir benchmark/data/cache_trace` to the server command, for example:
+To collect cache trace, simply add `--cache-trace-dir benchmark/data/cache_trace` to the client command, for example:
 ```bash
-cargo run --release --bin bench_server -- --cache-trace-dir benchmark/data/cache_trace
+env RUST_LOG=info cargo run --bin clickbench_client --release -- --query-path benchmark/clickbench/queries/queries.sql --file benchmark/clickbench/data/hits.parquet --query 20 --iteration 2 --partitions 8 --cache-trace-dir benchmark/data/
 ```
 It will generate a parquet file that contains the cache trace for each query that the server executed.
 

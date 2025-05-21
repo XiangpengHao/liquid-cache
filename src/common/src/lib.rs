@@ -48,8 +48,7 @@ impl FromStr for CacheMode {
             "arrow" => CacheMode::Arrow,
             _ => {
                 return Err(format!(
-                    "Invalid cache mode: {}, must be one of: parquet, liquid, liquid_eager_transcode, arrow",
-                    s
+                    "Invalid cache mode: {s}, must be one of: parquet, liquid, liquid_eager_transcode, arrow"
                 ));
             }
         })
@@ -66,6 +65,14 @@ pub enum LiquidCacheMode {
         /// Whether to transcode the data into liquid arrays in the background.
         transcode_in_background: bool,
     },
+}
+
+impl Default for LiquidCacheMode {
+    fn default() -> Self {
+        Self::InMemoryLiquid {
+            transcode_in_background: true,
+        }
+    }
 }
 
 impl LiquidCacheMode {

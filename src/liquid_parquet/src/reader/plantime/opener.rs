@@ -52,7 +52,6 @@ pub struct LiquidParquetOpener {
     parquet_file_reader_factory: Arc<CachedMetaReaderFactory>,
     reorder_filters: bool,
     liquid_cache: LiquidCacheRef,
-    liquid_cache_mode: LiquidCacheMode,
     schema_adapter_factory: Arc<dyn SchemaAdapterFactory>,
 }
 
@@ -90,7 +89,6 @@ impl LiquidParquetOpener {
             client_schema,
             metrics,
             liquid_cache,
-            liquid_cache_mode,
             parquet_file_reader_factory,
             reorder_filters,
             schema_adapter_factory,
@@ -109,7 +107,7 @@ impl FileOpener for LiquidParquetOpener {
 
         let liquid_cache = self
             .liquid_cache
-            .register_or_get_file(file_meta.location().to_string(), self.liquid_cache_mode);
+            .register_or_get_file(file_meta.location().to_string());
 
         let mut reader = self.parquet_file_reader_factory.create_liquid_reader(
             self.partition_index,
@@ -178,10 +176,7 @@ impl FileOpener for LiquidParquetOpener {
                     Ok(Some(filter)) => Some(filter),
                     Ok(None) => None,
                     Err(e) => {
-                        debug!(
-                            "Ignoring error building row filter for '{:?}': {}",
-                            predicate, e
-                        );
+                        debug!("Ignoring error building row filter for '{predicate:?}': {e:?}");
                         None
                     }
                 }

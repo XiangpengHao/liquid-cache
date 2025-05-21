@@ -22,8 +22,10 @@
 				"RUST_LOG": "info"
 			},
 			"args": [
-				"--partitions",
-				"1"
+				"--max-cache-mb",
+				"1000",
+				"--cache-mode",
+				"arrow"
 			],
 			"cwd": "${workspaceFolder}",
 		},
