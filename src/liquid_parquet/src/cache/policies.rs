@@ -230,6 +230,18 @@ impl CachePolicy for DiscardPolicy {
     fn notify_evict(&self, _entry_id: &CacheEntryID) {}
 }
 
+/// The policy that always transocdes to disk when the cache is full. Used for testing purposes
+#[derive(Debug, Default)]
+pub struct TranscodePolicy;
+
+impl CachePolicy for TranscodePolicy {
+    fn advise(&self, entry_id: &CacheEntryID, _cache_mode: &LiquidCacheMode) -> CacheAdvice {
+        CacheAdvice::TranscodeToDisk(*entry_id)
+    }
+
+    fn notify_evict(&self, _entry_id: &CacheEntryID) {}
+}
+
 fn fallback_advice(entry_id: &CacheEntryID, cache_mode: &LiquidCacheMode) -> CacheAdvice {
     match cache_mode {
         LiquidCacheMode::InMemoryArrow => CacheAdvice::Discard,
