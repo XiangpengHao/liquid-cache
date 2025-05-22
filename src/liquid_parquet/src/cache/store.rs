@@ -251,8 +251,8 @@ impl CacheStore {
             crate::utils::yield_now_if_shuttle();
 
             loop_count += 1;
-            if loop_count > 10 {
-                log::warn!("Cache store insert looped 10 times");
+            if loop_count > 20 {
+                log::warn!("Cache store insert looped 20 times");
             }
         }
     }

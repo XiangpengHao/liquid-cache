@@ -549,7 +549,7 @@ impl LiquidCache {
         cache_mode: LiquidCacheMode,
     ) -> Self {
         assert!(batch_size.is_power_of_two());
-        let cache_policy = Box::new(policies::DiscardPolicy);
+        let cache_policy = Box::new(policies::LruPolicy::new());
 
         LiquidCache {
             files: Mutex::new(AHashMap::new()),
