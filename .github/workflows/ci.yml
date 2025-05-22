@@ -32,6 +32,7 @@ jobs:
         run: cargo doc --no-deps --document-private-items
         env:
           RUSTDOCFLAGS: -D warnings
+          RUSTFLAGS: --cfg tokio_unstable
 
       - name: Run clippy
         run: cargo clippy -- -D warnings
@@ -51,6 +52,8 @@ jobs:
         run: cargo llvm-cov --workspace --codecov --output-path codecov.json
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
+        env:
+          RUSTFLAGS: --cfg tokio_unstable
         with:
           token: ${{ secrets.CODECOV_TOKEN }} 
           files: codecov.json
@@ -119,6 +122,8 @@ jobs:
           cat server.log || echo "No server log found"
           curl http://localhost:50052/shutdown
           cargo llvm-cov report --codecov --output-path codecov_clickbench.json
+        env:
+          RUSTFLAGS: --cfg tokio_unstable
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
         with:
@@ -156,6 +161,8 @@ jobs:
           cat server.log || echo "No server log found"
           curl http://localhost:50052/shutdown
           cargo llvm-cov report --codecov --output-path codecov_tpch.json
+        env:
+          RUSTFLAGS: --cfg tokio_unstable
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
         with:
@@ -170,6 +177,8 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
       fail-fast: false
+    env:
+      RUSTFLAGS: --cfg tokio_unstable
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
