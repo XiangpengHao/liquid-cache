@@ -21,7 +21,7 @@ url = { workspace = true }
 mimalloc = "0.1.46"
 serde_json.workspace = true
 serde.workspace = true
-sysinfo = { version = "0.34.2", default-features = false, features = [
+sysinfo = { version = "0.35.1", default-features = false, features = [
 	"network",
 ] }
 object_store = { workspace = true, features = ["http"] }

@@ -29,6 +29,7 @@
               pkg-config
               eza
               fd
+              llvmPackages.bintools
               (rust-bin.fromRustupToolchainFile (./rust-toolchain.toml))
             ];
           };
