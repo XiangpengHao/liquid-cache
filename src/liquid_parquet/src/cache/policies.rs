@@ -18,9 +18,6 @@ pub trait CachePolicy: std::fmt::Debug + Send + Sync {
 
     /// Notify the cache policy that an entry was accessed.
     fn notify_access(&self, _entry_id: &CacheEntryID) {}
-
-    /// Notify the cache policy that an entry was evicted.
-    fn notify_evict(&self, _entry_id: &CacheEntryID);
 }
 
 /// The policy that implements the FILO (First In, Last Out) algorithm.
@@ -55,11 +52,6 @@ impl CachePolicy for FiloPolicy {
             return CacheAdvice::Evict(newest_entry);
         }
         fallback_advice(entry_id, cache_mode)
-    }
-
-    fn notify_evict(&self, entry_id: &CacheEntryID) {
-        let mut queue = self.queue.lock().unwrap();
-        queue.retain(|id| id != entry_id);
     }
 
     fn notify_insert(&self, entry_id: &CacheEntryID) {
@@ -173,10 +165,6 @@ impl CachePolicy for LruPolicy {
         // If not in map, it means it was already evicted or never inserted
     }
 
-    fn notify_evict(&self, _entry_id: &CacheEntryID) {
-        // Do nothing
-    }
-
     fn notify_insert(&self, entry_id: &CacheEntryID) {
         let mut state = self.state.lock().unwrap();
 
@@ -228,8 +216,6 @@ impl CachePolicy for DiscardPolicy {
     fn advise(&self, _entry_id: &CacheEntryID, _cache_mode: &LiquidCacheMode) -> CacheAdvice {
         CacheAdvice::Discard
     }
-
-    fn notify_evict(&self, _entry_id: &CacheEntryID) {}
 }
 
 fn fallback_advice(entry_id: &CacheEntryID, cache_mode: &LiquidCacheMode) -> CacheAdvice {
@@ -403,8 +389,8 @@ mod test {
         }
         policy.notify_access(&entry(2));
         policy.notify_access(&entry(5));
-        policy.notify_evict(&entry(0));
-        policy.notify_evict(&entry(1));
+        policy.advise(&entry(0), &LiquidCacheMode::InMemoryArrow);
+        policy.advise(&entry(1), &LiquidCacheMode::InMemoryArrow);
 
         let state = policy.state.lock().unwrap();
         state.check_integrity();
@@ -449,7 +435,6 @@ mod test {
                 if let CacheAdvice::Evict(entry_id) = advice {
                     let mut entries = advised_entries_clone.lock().unwrap();
                     entries.push(entry_id);
-                    policy_clone.notify_evict(&entry_id);
                 }
             });
 
@@ -533,7 +518,7 @@ mod test {
                                 // Evict some earlier entries we created
                                 let to_evict =
                                     entry((thread_id * operations_per_thread + i - 20) as u64);
-                                policy_clone.notify_evict(&to_evict);
+                                policy_clone.advise(&to_evict, &LiquidCacheMode::InMemoryArrow);
                                 total_evictions_clone.fetch_add(1, Ordering::SeqCst);
                             }
                         }
