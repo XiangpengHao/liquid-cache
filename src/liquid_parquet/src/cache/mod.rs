@@ -210,18 +210,16 @@ impl LiquidCachedColumn {
         ipc::read_from_bytes(bytes, &LiquidIPCContext::new(compressor))
     }
 
-    fn read_liquid_from_disk_threadpool_uring(&self, batch_id: BatchID) -> LiquidArrayRef {
-        // tokio::task::block_in_place(|| {
-        //     let handle = tokio::runtime::Handle::current();
-        //     handle.block_on( async move {
-        //         let fut = IO_URING_THREAD_POOL.block_on(async move {
-        //             self.read_liquid_from_disk_uring(batch_id)
-        //         });
-        //         return fut.await.expect("Read liquid from disk using io_uring failed");
-        //     })
-        // })
-        IO_URING_THREAD_POOL.block_on(async move {
-            self.read_liquid_from_disk_uring(batch_id)
+    fn read_liquid_from_disk_threadpool_uring(self: &Arc<Self>, batch_id: BatchID) -> LiquidArrayRef {
+        tokio::task::block_in_place(|| {
+            let handle = IO_URING_THREAD_POOL.handle();
+            let column_arc = Arc::clone(self);
+            handle.block_on( async move {
+                let fut = IO_URING_THREAD_POOL.spawn(async move {
+                    column_arc.read_liquid_from_disk_uring(batch_id)
+                });
+                return fut.await.expect("Read liquid from disk using io_uring failed");
+            })
         })
     }
 
@@ -256,7 +254,7 @@ impl LiquidCachedColumn {
     }
 
     fn eval_selection_with_predicate(
-        &self,
+        self: &Arc<Self>,
         batch_id: BatchID,
         selection: &BooleanBuffer,
         predicate: &mut dyn LiquidPredicate,
@@ -323,7 +321,7 @@ impl LiquidCachedColumn {
     }
 
     pub(crate) fn get_arrow_array_with_filter(
-        &self,
+        self: &Arc<Self>,
         batch_id: BatchID,
         filter: &BooleanArray,
     ) -> Option<ArrayRef> {
