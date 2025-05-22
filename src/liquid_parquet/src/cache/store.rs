@@ -33,7 +33,7 @@ pub(crate) enum FileIOMode {
     TokioAsync
 }
 
-pub(crate) static FILE_IO_MODE: FileIOMode = FileIOMode::Default;
+pub(crate) static FILE_IO_MODE: FileIOMode = FileIOMode::BlockingIoUring;
 
 #[derive(Debug)]
 struct CompressorStates {
@@ -289,20 +289,24 @@ impl CacheStore {
     }
 
     fn write_to_disk_blocking_uring(&self, entry_id: &CacheEntryID, liquid_array: &LiquidArrayRef) {
-        tokio_uring::start(async {
+        tokio::task::block_in_place(|| {
+            tokio_uring::start(async {
             let bytes = liquid_array.to_bytes();
             let file_path = entry_id.on_disk_path(self.config.cache_root_dir());
             let disk_size = bytes.len();
             let file = tokio_uring::fs::File::create(file_path).await;
             if let Ok(file) = file {
-                file.write_all_at(bytes, 0).await;
+                let (res, _) = file.write_all_at(bytes, 0).await;
+                if res.is_err() {
+                    log::error!("Failed to write to file: {}", res.err().unwrap());
+                }
                 self.budget.add_used_disk_bytes(disk_size);
-                file.close().await;
+                file.close().await.expect("Failed to close file");
                 
             } else {
                 panic!("Failed to create file with tokio-uring");
             }
-        });
+        })});
     }
 
     fn write_to_disk_threadpool_uring(&self, entry_id: &CacheEntryID, liquid_array: &LiquidArrayRef) {
