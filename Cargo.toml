@@ -50,7 +50,7 @@ uuid = { version = "1.16.0", features = ["v4"] }
 fastrace = "0.7"
 fastrace-futures = "0.7"
 fastrace-tonic = "0.1"
-congee = "0.4.0"
+congee = "0.4.1"
 
 
 [profile.dev.package]
