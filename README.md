@@ -54,13 +54,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         SessionContext::new(),
         Some(1024 * 1024 * 1024),               // max memory cache size 1GB
         Some(tempfile::tempdir()?.into_path()), // disk cache dir
-    );
+    )?;
 
     let flight = FlightServiceServer::new(liquid_cache);
 
     Server::builder()
         .add_service(flight)
-        .serve("0.0.0.0:50051".parse()?)
+        .serve("0.0.0.0:15214".parse()?)
         .await?;
 
     Ok(())
@@ -69,10 +69,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 Or use our pre-built docker image:
 ```bash
-docker run -p 50051:50051 -v ~/liquid_cache:/cache \
+docker run -p 15214:15214 -v ~/liquid_cache:/cache \
   ghcr.io/xiangpenghao/liquid-cache/liquid-cache-server:latest \
   /app/bench_server \
-  --address 0.0.0.0:50051 \
+  --address 0.0.0.0:15214 \
   --disk-cache-dir /cache
 ```
 
@@ -104,12 +104,12 @@ pub async fn main() -> Result<()> {
 
 ## Community server
 
-We run a community server for LiquidCache at <https://hex.tail0766e4.ts.net:50051> (hosted on Xiangpeng's NAS, use at your own risk).
+We run a community server for LiquidCache at <https://hex.tail0766e4.ts.net:15214> (hosted on Xiangpeng's NAS, use at your own risk).
 
 You can try it out by running:
 ```bash
 cargo run --bin example_client --release -- \
-    --cache-server https://hex.tail0766e4.ts.net:50051 \
+    --cache-server https://hex.tail0766e4.ts.net:15214 \
     --file "https://huggingface.co/datasets/HuggingFaceFW/fineweb/resolve/main/data/CC-MAIN-2024-51/000_00042.parquet" \
     --query "SELECT COUNT(*) FROM \"000_00042\" WHERE \"token_count\" < 100"
 ```

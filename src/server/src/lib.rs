@@ -72,11 +72,11 @@ mod tests;
 /// use datafusion::prelude::SessionContext;
 /// use liquid_cache_server::LiquidCacheService;
 /// use tonic::transport::Server;
-/// let liquid_cache = LiquidCacheService::new(SessionContext::new(), None, None, Default::default());
+/// let liquid_cache = LiquidCacheService::new(SessionContext::new(), None, None, Default::default()).unwrap();
 /// let flight = FlightServiceServer::new(liquid_cache);
 /// Server::builder()
 ///     .add_service(flight)
-///     .serve("0.0.0.0:50051".parse().unwrap());
+///     .serve("0.0.0.0:15214".parse().unwrap());
 /// ```
 pub struct LiquidCacheService {
     inner: LiquidCacheServiceInner,
