@@ -140,7 +140,7 @@ cargo run --bin bench_server --release
 #### 3. Run a ClickBench Client
 In a different terminal, run the ClickBench client:
 ```bash
-cargo run --bin clickbench_client --release -- --query-path benchmark/clickbench/queries.sql --file examples/nano_hits.parquet
+cargo run --bin clickbench_client --release -- --query-path benchmark/clickbench/queries/queries.sql --file examples/nano_hits.parquet --output benchmark/data/results/nano_hits.json
 ```
 (Note: replace `nano_hits.parquet` with the [real ClickBench dataset](https://github.com/ClickHouse/ClickBench) for full benchmarking)
 
