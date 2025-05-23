@@ -28,7 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(1024 * 1024 * 1024),          // max memory cache size 1GB
         Some(tempfile::tempdir()?.keep()), // disk cache dir
         CacheMode::LiquidEagerTranscode,
-    );
+    )?;
 
     let flight = FlightServiceServer::new(liquid_cache);
 

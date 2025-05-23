@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 use arrow::util::pretty::pretty_format_batches;
 use datafusion::{
@@ -24,7 +24,12 @@ async fn run_sql(sql: &str, mode: CacheMode, cache_size_bytes: usize, file_path:
     ctx.register_parquet("hits", file_path, Default::default())
         .await
         .unwrap();
-    let service = LiquidCacheServiceInner::new(ctx.clone(), Some(cache_size_bytes), None, mode);
+    let service = LiquidCacheServiceInner::new(
+        ctx.clone(),
+        Some(cache_size_bytes),
+        PathBuf::from("test"),
+        mode,
+    );
     async fn get_result(service: &LiquidCacheServiceInner, sql: &str) -> String {
         let handle = Uuid::new_v4();
         let ctx = service.get_ctx();
