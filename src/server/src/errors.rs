@@ -40,9 +40,9 @@ pub fn anyhow_to_status(err: anyhow::Error) -> Status {
             }
             _ => Status::internal(error_with_context),
         }
-    } else if err.downcast_ref::<url::ParseError>().is_some() {
-        Status::invalid_argument(error_with_context)
-    } else if err.downcast_ref::<uuid::Error>().is_some() {
+    } else if err.downcast_ref::<url::ParseError>().is_some()
+        || err.downcast_ref::<uuid::Error>().is_some()
+    {
         Status::invalid_argument(error_with_context)
     } else if err.downcast_ref::<object_store::Error>().is_some() {
         Status::internal(error_with_context)

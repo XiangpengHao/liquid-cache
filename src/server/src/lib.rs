@@ -93,7 +93,7 @@ impl LiquidCacheService {
     /// With no disk cache and unbounded memory usage.
     pub fn try_new() -> anyhow::Result<Self> {
         let ctx = Self::context()?;
-        Ok(Self::new(ctx, None, None, CacheMode::LiquidEagerTranscode)?)
+        Self::new(ctx, None, None, CacheMode::LiquidEagerTranscode)
     }
 
     /// Create a new [LiquidCacheService] with a custom [SessionContext]
@@ -216,7 +216,7 @@ impl LiquidCacheService {
                 let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
                     body: Bytes::default(),
                 })]);
-                return Ok(Response::new(Box::pin(output)));
+                Ok(Response::new(Box::pin(output)))
             }
             LiquidCacheActions::RegisterPlan(cmd) => {
                 let plan = cmd.plan;
@@ -226,7 +226,7 @@ impl LiquidCacheService {
                 let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
                     body: Bytes::default(),
                 })]);
-                return Ok(Response::new(Box::pin(output)));
+                Ok(Response::new(Box::pin(output)))
             }
         }
     }
