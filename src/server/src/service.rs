@@ -1,10 +1,10 @@
+use anyhow::Result;
 use datafusion::{
     common::tree_node::{Transformed, TreeNode},
     datasource::{
         physical_plan::{FileScanConfig, ParquetSource},
         source::{DataSource, DataSourceExec},
     },
-    error::{DataFusionError, Result},
     execution::{SendableRecordBatchStream, object_store::ObjectStoreUrl},
     physical_plan::{ExecutionPlan, display::DisplayableExecutionPlan, metrics::MetricValue},
     prelude::SessionContext,
@@ -31,12 +31,10 @@ impl LiquidCacheServiceInner {
     pub fn new(
         default_ctx: Arc<SessionContext>,
         max_cache_bytes: Option<usize>,
-        disk_cache_dir: Option<PathBuf>,
+        disk_cache_dir: PathBuf,
         cache_mode: CacheMode,
     ) -> Self {
         let batch_size = default_ctx.state().config().batch_size();
-
-        let disk_cache_dir = disk_cache_dir.unwrap_or_else(|| tempfile::tempdir().unwrap().keep());
 
         let parquet_cache_dir = disk_cache_dir.join("parquet");
         let liquid_cache_dir = disk_cache_dir.join("liquid");
@@ -70,10 +68,10 @@ impl LiquidCacheServiceInner {
     ) -> Result<()> {
         let (object_store, path) = object_store::parse_url_opts(url, options)?;
         if path.as_ref() != "" {
-            return Err(DataFusionError::Configuration(format!(
+            return Err(anyhow::anyhow!(
                 "object store url should not be a full path, got {}",
                 path.as_ref()
-            )));
+            ));
         }
         let object_store_url = ObjectStoreUrl::parse(url.as_str())?;
         let existing = self
@@ -124,19 +122,19 @@ impl LiquidCacheServiceInner {
         &self,
         handle: &Uuid,
         partition: usize,
-    ) -> SendableRecordBatchStream {
+    ) -> Result<SendableRecordBatchStream> {
         let plan = self
             .execution_plans
             .read()
             .unwrap()
             .get(handle)
-            .unwrap()
+            .ok_or_else(|| anyhow::anyhow!("Plan not found"))?
             .clone();
         let displayable = DisplayableExecutionPlan::new(plan.as_ref());
         debug!("physical plan:\n{}", displayable.indent(false));
         let ctx = self.default_ctx.clone();
 
-        plan.execute(partition, ctx.task_ctx()).unwrap()
+        Ok(plan.execute(partition, ctx.task_ctx())?)
     }
 
     pub(crate) fn batch_size(&self) -> usize {
@@ -155,8 +153,7 @@ impl LiquidCacheServiceInner {
             &maybe_leaf
         };
         let metrics = plan
-            .metrics()
-            .unwrap()
+            .metrics()?
             .aggregate_by_name()
             .sorted_for_display()
             .timestamps_removed();
@@ -321,7 +318,7 @@ mod tests {
         let server = LiquidCacheServiceInner::new(
             Arc::new(SessionContext::new()),
             None,
-            None,
+            PathBuf::from("test"),
             CacheMode::LiquidEagerTranscode,
         );
         let url = Url::parse("file:///").unwrap();

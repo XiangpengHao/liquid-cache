@@ -2859,6 +2859,7 @@ dependencies = [
 name = "liquid-cache-server"
 version = "0.1.4"
 dependencies = [
+ "anyhow",
  "arrow",
  "arrow-flight",
  "arrow-schema",
