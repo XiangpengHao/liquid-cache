@@ -2882,6 +2882,7 @@ dependencies = [
  "pprof",
  "prost",
  "serde",
+ "serde_json",
  "sysinfo",
  "tempfile",
  "tokio",

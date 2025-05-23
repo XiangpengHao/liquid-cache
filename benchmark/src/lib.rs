@@ -29,11 +29,11 @@ pub use observability::*;
 #[derive(Parser, Serialize, Clone)]
 pub struct CommonBenchmarkArgs {
     /// LiquidCache server URL
-    #[arg(long, default_value = "http://localhost:50051")]
+    #[arg(long, default_value = "http://localhost:15214")]
     pub server: String,
 
     /// LiquidCache admin server URL
-    #[arg(long, default_value = "http://localhost:50052")]
+    #[arg(long, default_value = "http://localhost:53703")]
     pub admin_server: String,
 
     /// Number of times to run each query

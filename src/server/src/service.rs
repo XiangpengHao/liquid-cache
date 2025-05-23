@@ -14,14 +14,29 @@ use liquid_cache_parquet::{LiquidCache, LiquidCacheRef, LiquidParquetSource};
 use log::{debug, info};
 use object_store::ObjectStore;
 use std::sync::RwLock;
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, path::PathBuf, sync::Arc, time::SystemTime};
 use url::Url;
 use uuid::Uuid;
 
 use crate::local_cache::LocalCache;
 
+#[derive(Clone)]
+pub(crate) struct ExecutionPlanEntry {
+    pub plan: Arc<dyn ExecutionPlan>,
+    pub created_at: SystemTime,
+}
+
+impl ExecutionPlanEntry {
+    pub fn new(plan: Arc<dyn ExecutionPlan>) -> Self {
+        Self {
+            plan,
+            created_at: SystemTime::now(),
+        }
+    }
+}
+
 pub(crate) struct LiquidCacheServiceInner {
-    execution_plans: Arc<RwLock<HashMap<Uuid, Arc<dyn ExecutionPlan>>>>,
+    execution_plans: Arc<RwLock<HashMap<Uuid, ExecutionPlanEntry>>>,
     default_ctx: Arc<SessionContext>,
     liquid_cache: Option<LiquidCacheRef>,
     parquet_cache_dir: PathBuf,
@@ -102,20 +117,18 @@ impl LiquidCacheServiceInner {
     pub(crate) fn register_plan(&self, handle: Uuid, plan: Arc<dyn ExecutionPlan>) {
         match self.cache() {
             Some(cache) => {
+                self.execution_plans.write().unwrap().insert(
+                    handle,
+                    ExecutionPlanEntry::new(rewrite_data_source_plan(plan, cache)),
+                );
+            }
+            None => {
                 self.execution_plans
                     .write()
                     .unwrap()
-                    .insert(handle, rewrite_data_source_plan(plan, cache));
-            }
-            None => {
-                self.execution_plans.write().unwrap().insert(handle, plan);
+                    .insert(handle, ExecutionPlanEntry::new(plan));
             }
         }
-    }
-
-    pub(crate) fn get_plan(&self, handle: &Uuid) -> Option<Arc<dyn ExecutionPlan>> {
-        let plan = self.execution_plans.read().unwrap().get(handle)?.clone();
-        Some(plan)
     }
 
     pub(crate) async fn execute_plan(
@@ -129,6 +142,7 @@ impl LiquidCacheServiceInner {
             .unwrap()
             .get(handle)
             .ok_or_else(|| anyhow::anyhow!("Plan not found"))?
+            .plan
             .clone();
         let displayable = DisplayableExecutionPlan::new(plan.as_ref());
         debug!("physical plan:\n{}", displayable.indent(false));
@@ -142,7 +156,13 @@ impl LiquidCacheServiceInner {
     }
 
     pub(crate) fn get_metrics(&self, plan_id: &Uuid) -> Option<ExecutionMetricsResponse> {
-        let maybe_leaf = self.get_plan(plan_id)?;
+        let maybe_leaf = self
+            .execution_plans
+            .read()
+            .unwrap()
+            .get(plan_id)?
+            .plan
+            .clone();
 
         let displayable = DisplayableExecutionPlan::with_metrics(maybe_leaf.as_ref());
         debug!("physical plan:\n{}", displayable.indent(true));
@@ -192,6 +212,19 @@ impl LiquidCacheServiceInner {
 
     pub(crate) fn get_ctx(&self) -> &Arc<SessionContext> {
         &self.default_ctx
+    }
+
+    #[cfg(test)]
+    pub(crate) fn get_plan(&self, id: &Uuid) -> Option<Arc<dyn ExecutionPlan>> {
+        self.execution_plans
+            .read()
+            .unwrap()
+            .get(id)
+            .map(|entry| entry.plan.clone())
+    }
+
+    pub(crate) fn get_execution_plans(&self) -> HashMap<Uuid, ExecutionPlanEntry> {
+        self.execution_plans.read().unwrap().clone()
     }
 }
 
