@@ -201,23 +201,28 @@ impl LiquidPredicate for DatafusionArrowPredicate {
                     }
                 }
             }
-        } else if let Some(like_expr) = self.physical_expr.as_any().downcast_ref::<LikeExpr>() {
-            if let Some(literal) = like_expr.pattern().as_any().downcast_ref::<Literal>() {
-                let arrow_dict = array.as_string().to_dict_arrow();
+        } else if let Some(like_expr) = self.physical_expr.as_any().downcast_ref::<LikeExpr>()
+            && like_expr
+                .pattern()
+                .as_any()
+                .downcast_ref::<Literal>()
+                .is_some()
+            && let Some(literal) = like_expr.pattern().as_any().downcast_ref::<Literal>()
+        {
+            let arrow_dict = array.as_string().to_dict_arrow();
 
-                let lhs = ColumnarValue::Array(Arc::new(arrow_dict));
-                let rhs = ColumnarValue::Scalar(literal.value().clone());
+            let lhs = ColumnarValue::Array(Arc::new(arrow_dict));
+            let rhs = ColumnarValue::Scalar(literal.value().clone());
 
-                let result = match (like_expr.negated(), like_expr.case_insensitive()) {
-                    (false, false) => apply_cmp(&lhs, &rhs, arrow::compute::like),
-                    (true, false) => apply_cmp(&lhs, &rhs, arrow::compute::nlike),
-                    (false, true) => apply_cmp(&lhs, &rhs, arrow::compute::ilike),
-                    (true, true) => apply_cmp(&lhs, &rhs, arrow::compute::nilike),
-                };
-                if let Ok(result) = result {
-                    let filtered = result.into_array(array.len())?.as_boolean().clone();
-                    return Ok(Some(filtered));
-                }
+            let result = match (like_expr.negated(), like_expr.case_insensitive()) {
+                (false, false) => apply_cmp(&lhs, &rhs, arrow::compute::like),
+                (true, false) => apply_cmp(&lhs, &rhs, arrow::compute::nlike),
+                (false, true) => apply_cmp(&lhs, &rhs, arrow::compute::ilike),
+                (true, true) => apply_cmp(&lhs, &rhs, arrow::compute::nilike),
+            };
+            if let Ok(result) = result {
+                let filtered = result.into_array(array.len())?.as_boolean().clone();
+                return Ok(Some(filtered));
             }
         }
         // Not supported for this data type
@@ -424,10 +429,10 @@ impl TreeNodeVisitor<'_> for PushdownChecker<'_> {
     type Node = Arc<dyn PhysicalExpr>;
 
     fn f_down(&mut self, node: &Self::Node) -> Result<TreeNodeRecursion> {
-        if let Some(column) = node.as_any().downcast_ref::<Column>() {
-            if let Some(recursion) = self.check_single_column(column.name()) {
-                return Ok(recursion);
-            }
+        if let Some(column) = node.as_any().downcast_ref::<Column>()
+            && let Some(recursion) = self.check_single_column(column.name())
+        {
+            return Ok(recursion);
         }
 
         Ok(TreeNodeRecursion::Continue)

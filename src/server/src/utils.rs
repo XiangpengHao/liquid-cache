@@ -44,31 +44,28 @@ impl Stream for FinalStream {
         loop {
             let threshold = (this.target_batch_size * 3) / 4;
             if this.current_buffered_rows > threshold {
-                let batches = std::mem::take(&mut this.buffered_batches);
                 this.current_buffered_rows = 0;
+                let batches = std::mem::take(&mut this.buffered_batches);
                 let schema = batches[0].schema();
-                let result = concat_batches(&schema, batches.iter()).unwrap();
-                return Poll::Ready(Some(Ok(result)));
+                let result = concat_batches(&schema, batches.iter());
+                return Poll::Ready(Some(Ok(result?)));
             }
 
-            match ready!(this.inner.poll_next_unpin(cx)) {
-                Some(Ok(batch)) => {
+            match ready!(this.inner.poll_next_unpin(cx)).transpose()? {
+                Some(batch) => {
                     let num_rows = batch.num_rows();
                     this.current_buffered_rows += num_rows;
                     this.buffered_batches.push(batch);
-                }
-                Some(Err(e)) => {
-                    panic!("Poll next batch error: {e:?}");
                 }
                 None => {
                     if this.buffered_batches.is_empty() {
                         return Poll::Ready(None);
                     }
-                    let batches = std::mem::take(&mut this.buffered_batches);
                     this.current_buffered_rows = 0;
+                    let batches = std::mem::take(&mut this.buffered_batches);
                     let schema = batches[0].schema();
-                    let result = concat_batches(&schema, batches.iter()).unwrap();
-                    return Poll::Ready(Some(Ok(result)));
+                    let result = concat_batches(&schema, batches.iter());
+                    return Poll::Ready(Some(Ok(result?)));
                 }
             }
         }

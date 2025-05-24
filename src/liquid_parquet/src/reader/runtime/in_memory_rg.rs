@@ -2,11 +2,7 @@ use std::sync::Arc;
 
 use bytes::{Buf, Bytes};
 use parquet::{
-    arrow::{
-        ProjectionMask,
-        arrow_reader::{RowGroups, RowSelection},
-        async_reader::AsyncFileReader,
-    },
+    arrow::{ProjectionMask, arrow_reader::RowGroups, async_reader::AsyncFileReader},
     column::page::{PageIterator, PageReader},
     errors::ParquetError,
     file::{
@@ -55,75 +51,19 @@ impl InMemoryRowGroup<'_> {
         &mut self,
         input: &ClonableAsyncFileReader,
         projection: &ProjectionMask,
-        selection: &RowSelection,
     ) -> Result<(), parquet::errors::ParquetError> {
-        if let Some(offset_index) = self.offset_index {
-            // If we have a `RowSelection` and an `OffsetIndex` then only fetch pages required for the
-            // `RowSelection`
-            let mut page_start_offsets: Vec<Vec<u64>> = vec![];
-
-            let fetch_ranges = self
-                .column_chunks
-                .iter()
-                .zip(self.metadata.columns())
-                .enumerate()
-                .filter(|&(idx, (chunk, _chunk_meta))| {
-                    chunk.is_none() && projection.leaf_included(idx)
-                })
-                .flat_map(|(idx, (_chunk, chunk_meta))| {
-                    // If the first page does not start at the beginning of the column,
-                    // then we need to also fetch a dictionary page.
-                    let mut ranges = vec![];
-                    let (start, _len) = chunk_meta.byte_range();
-                    match offset_index[idx].page_locations.first() {
-                        Some(first) if first.offset as u64 != start => {
-                            ranges.push(start..first.offset as u64);
-                        }
-                        _ => (),
-                    }
-
-                    ranges.extend(selection.scan_ranges(&offset_index[idx].page_locations));
-                    page_start_offsets.push(ranges.iter().map(|range| range.start).collect());
-
-                    ranges
-                })
-                .collect();
-
-            let mut reader = input.0.lock().await;
-            let mut chunk_data = reader.get_byte_ranges(fetch_ranges).await?.into_iter();
-            let mut page_start_offsets = page_start_offsets.into_iter();
-
-            for (idx, chunk) in self.column_chunks.iter_mut().enumerate() {
-                if chunk.is_some() || !projection.leaf_included(idx) {
-                    continue;
-                }
-
-                if let Some(offsets) = page_start_offsets.next() {
-                    let mut chunks = Vec::with_capacity(offsets.len());
-                    for _ in 0..offsets.len() {
-                        chunks.push(chunk_data.next().unwrap());
-                    }
-
-                    *chunk = Some(Arc::new(ColumnChunkData::Sparse {
-                        length: self.metadata.column(idx).byte_range().1 as usize,
-                        data: offsets.into_iter().zip(chunks.into_iter()).collect(),
-                    }))
-                }
+        for (idx, chunk) in self.column_chunks.iter_mut().enumerate() {
+            if chunk.is_some() || !projection.leaf_included(idx) {
+                continue;
             }
-        } else {
-            for (idx, chunk) in self.column_chunks.iter_mut().enumerate() {
-                if chunk.is_some() || !projection.leaf_included(idx) {
-                    continue;
-                }
 
-                let (start, length) = self.metadata.column(idx).byte_range();
-                *chunk = Some(Arc::new(ColumnChunkData::Lazy {
-                    reader: input.clone(),
-                    offset: start,
-                    length: length as usize,
-                    data: Arc::new(Mutex::new(None)),
-                }));
-            }
+            let (start, length) = self.metadata.column(idx).byte_range();
+            *chunk = Some(Arc::new(ColumnChunkData::Lazy {
+                reader: input.clone(),
+                offset: start,
+                length: length as usize,
+                data: Arc::new(Mutex::new(None)),
+            }));
         }
 
         Ok(())
@@ -188,13 +128,6 @@ impl RowGroups for InMemoryRowGroup<'_> {
 #[derive(Clone)]
 pub(super) enum ColumnChunkData {
     /// Column chunk data representing only a subset of data pages
-    Sparse {
-        /// Length of the full column chunk
-        length: usize,
-        /// Set of data pages included in this sparse chunk. Each element is a tuple
-        /// of (page offset, page data)
-        data: Vec<(u64, Bytes)>,
-    },
     Lazy {
         reader: ClonableAsyncFileReader,
         offset: u64,
@@ -206,14 +139,6 @@ pub(super) enum ColumnChunkData {
 impl ColumnChunkData {
     fn get(&self, start: u64) -> Result<Bytes, parquet::errors::ParquetError> {
         match &self {
-            ColumnChunkData::Sparse { data, .. } => data
-                .binary_search_by_key(&start, |(offset, _)| *offset)
-                .map(|idx| data[idx].1.clone())
-                .map_err(|_| {
-                    ParquetError::General(format!(
-                        "Invalid offset in sparse column chunk data: {start}"
-                    ))
-                }),
             ColumnChunkData::Lazy {
                 reader,
                 offset,
@@ -244,7 +169,6 @@ impl ColumnChunkData {
 impl Length for ColumnChunkData {
     fn len(&self) -> u64 {
         match &self {
-            ColumnChunkData::Sparse { length, .. } => *length as u64,
             ColumnChunkData::Lazy { length, .. } => *length as u64,
         }
     }

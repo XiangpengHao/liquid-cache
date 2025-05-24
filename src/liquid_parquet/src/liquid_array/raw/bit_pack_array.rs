@@ -126,10 +126,10 @@ where
     /// Converts the bit-packed array to a primitive array.
     pub fn to_primitive(&self) -> PrimitiveArray<T> {
         // Special case for all nulls, don't unpack
-        if let Some(nulls) = self.nulls() {
-            if nulls.null_count() == self.original_len {
-                return PrimitiveArray::<T>::new_null(self.original_len);
-            }
+        if let Some(nulls) = self.nulls()
+            && nulls.null_count() == self.original_len
+        {
+            return PrimitiveArray::<T>::new_null(self.original_len);
         }
         let bit_width = self.bit_width.get() as usize;
         let packed = self.packed_values.as_ref();

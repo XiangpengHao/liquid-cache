@@ -23,9 +23,7 @@
 			},
 			"args": [
 				"--max-cache-mb",
-				"1000",
-				"--cache-mode",
-				"arrow"
+				"10"
 			],
 			"cwd": "${workspaceFolder}",
 		},

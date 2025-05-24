@@ -7,7 +7,9 @@ use arrow::{
     datatypes::{ByteArrayType, Utf8Type},
 };
 use bytes;
-use fsst::{Compressor, Decompressor};
+use fsst::{Compressor, Decompressor, Symbol};
+use std::io::Result;
+use std::io::{Error, ErrorKind};
 use std::mem::MaybeUninit;
 use std::sync::Arc;
 
@@ -27,6 +29,8 @@ impl std::fmt::Debug for FsstArray {
         write!(f, "FsstArray")
     }
 }
+
+const SYMBOL_SIZE_BYTES: usize = std::mem::size_of::<Symbol>();
 
 impl FsstArray {
     /// Creates a new FsstArray from a BinaryArray, a compressor, and an uncompressed length.
@@ -426,6 +430,144 @@ impl FsstArray {
             uncompressed_len,
         }
     }
+
+    /// Saves symbol table from the compressor to a buffer. The format of the saved buffer is:
+    /// 1. The first byte is the length of the symbol table as a u8.
+    /// 2. The next bytes are the lengths of each symbol as u8.
+    /// 3. The next bytes are the symbols as u64.
+    pub fn save_symbol_table(compressor: Arc<Compressor>, buffer: &mut Vec<u8>) -> Result<()> {
+        let symbols = compressor.symbol_table();
+        let symbols_lengths = compressor.symbol_lengths();
+
+        // Validate symbol table and lengths match
+        if symbols.len() != symbols_lengths.len() {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                format!(
+                    "Symbol table length ({}) does not match lengths array ({})",
+                    symbols.len(),
+                    symbols_lengths.len()
+                ),
+            ));
+        }
+
+        let symbols_len = u8::try_from(symbols.len()).map_err(|_| {
+            Error::new(
+                ErrorKind::InvalidData,
+                format!(
+                    "Symbol table too large: {} symbols (max 255)",
+                    symbols.len()
+                ),
+            )
+        })?;
+
+        // Validate symbol lengths
+        for (i, &len) in symbols_lengths.iter().enumerate() {
+            if len == 0 {
+                return Err(Error::new(
+                    ErrorKind::InvalidData,
+                    format!("Symbol at index {i} has zero length"),
+                ));
+            }
+        }
+
+        // Write the length of the symbol table.
+        buffer.extend_from_slice(&[symbols_len]);
+
+        // Write the lengths of each symbol
+        for symbol_length in symbols_lengths {
+            buffer.extend_from_slice(&[*symbol_length]);
+        }
+
+        // Write the symbols
+        for symbol in symbols {
+            // SAFETY: Using unsafe block because the FSST library doesn't expose
+            // a public method to get the u64 representation of a Symbol.
+            // We assume that Symbol is represented as a u64 and that
+            // the memory layout is stable.
+            let symbol_as_u64: u64 = unsafe {
+                let ptr: *const Symbol = symbol;
+                let u64_ptr: *const u64 = ptr.cast();
+                *u64_ptr
+            };
+
+            // Write the symbol as a u64
+            buffer.extend_from_slice(&symbol_as_u64.to_le_bytes());
+        }
+
+        Ok(())
+    }
+
+    /// Loads the symbol table from bytes and rebuilds the compressor.
+    /// Uses the same format as the one saved by `save_symbol_table()`.
+    pub fn load_symbol_table(data: bytes::Bytes) -> Result<Compressor> {
+        // Validate the buffer length
+        if data.is_empty() {
+            return Err(Error::new(ErrorKind::InvalidData, "Data is empty"));
+        }
+
+        // Read the length of the symbol table
+        let symbols_len = usize::from(data[0]);
+
+        // Validate symbol table size is reasonable
+        if symbols_len == 0 || symbols_len > 255 {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                format!("Invalid symbol table size: {symbols_len} (must be between 1 and 255)"),
+            ));
+        }
+
+        // Validate we have enough data for the symbol lengths
+        if data.len() < 1 + symbols_len {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                "Data is malformed: insufficient data for symbol lengths",
+            ));
+        }
+
+        // Read the lengths of each symbol
+        let symbols_lengths = &data[1..1 + symbols_len];
+
+        let symbols_start = 1 + symbols_len;
+        let symbols_end = symbols_start + symbols_len * SYMBOL_SIZE_BYTES;
+
+        if data.len() < symbols_end {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                "Data is malformed: insufficient data for symbols",
+            ));
+        }
+
+        let symbols_bytes_slice = &data[symbols_start..symbols_end];
+
+        let mut loaded_symbols: Vec<Symbol> = Vec::with_capacity(symbols_len);
+
+        // Loop over the byte slice in chunks and build Symbols
+        for chunk in symbols_bytes_slice.chunks_exact(SYMBOL_SIZE_BYTES) {
+            // chunk is &[u8] of length `SYMBOL_SIZE_BYTES`
+            let symbol_bytes: [u8; SYMBOL_SIZE_BYTES] = chunk
+                .try_into()
+                .expect("Chunk should be {SYMBOL_SIZE_BYTES} bytes");
+            loaded_symbols.push(Symbol::from_slice(&symbol_bytes));
+        }
+
+        // Check if we read the expected number of symbols
+        if loaded_symbols.len() != symbols_len {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                format!(
+                    "Data is malformed: read {} symbols, expected {}",
+                    loaded_symbols.len(),
+                    symbols_len
+                ),
+            ));
+        }
+
+        // Call rebuild_from and handle panics
+        let compressor = Compressor::rebuild_from(loaded_symbols, symbols_lengths);
+
+        Ok(compressor)
+    }
 }
 
 impl From<&FsstArray> for StringArray {
@@ -541,6 +683,78 @@ mod tests {
             original_size, compressed_size
         );
         assert!(compressed_size < original_size);
+    }
+
+    #[test]
+    fn test_save_and_load_symbol_table() {
+        // Create test data with mix of strings and nulls
+        let mut builder = StringBuilder::new();
+        for i in 0..5000 {
+            if i % 100 == 0 {
+                builder.append_null();
+            } else {
+                match i % 5 {
+                    0 => builder.append_value(&format!("hello world {}", i)),
+                    1 => builder.append_value(&format!("🦀 rust is awesome {}", i)),
+                    2 => builder.append_value(&format!(
+                        "testing string compression with a longer string to test efficiency {}",
+                        i
+                    )),
+                    3 => builder.append_value(&format!(
+                        "The quick brown fox jumps over the lazy dog {}",
+                        i
+                    )),
+                    _ => builder.append_value(&format!("Lorem ipsum dolor sit amet {}", i)),
+                }
+            }
+        }
+
+        let original = builder.finish();
+
+        // Train the compressor and create the initial FsstArray
+        let original_compressor =
+            FsstArray::train_compressor(original.iter().flat_map(|s| s.map(|s| s.as_bytes())));
+        let original_compressor_arc = Arc::new(original_compressor.clone());
+        let original_fsst =
+            FsstArray::from_byte_array_with_compressor(&original, original_compressor_arc.clone());
+
+        // Serialize the original FsstArray to bytes
+        let mut original_fsst_bytes = Vec::new();
+        original_fsst.to_bytes(&mut original_fsst_bytes);
+
+        // Save the symbol table to a buffer
+        let mut buffer = Vec::new();
+        FsstArray::save_symbol_table(original_compressor_arc.clone(), &mut buffer)
+            .expect("Failed to save symbol table");
+
+        // Load the symbol table directly from the buffer
+        let bytes = bytes::Bytes::from(buffer);
+        let reloaded_compressor =
+            FsstArray::load_symbol_table(bytes).expect("Failed to load symbol table");
+        let reloaded_fsst = FsstArray::from_byte_array_with_compressor(
+            &original,
+            Arc::new(reloaded_compressor.clone()),
+        );
+
+        // Serialize the reloaded FsstArray to bytes
+        let mut reloaded_fsst_bytes = Vec::new();
+        reloaded_fsst.to_bytes(&mut reloaded_fsst_bytes);
+
+        // Verify the results
+        assert_eq!(
+            original_compressor.symbol_table().len(),
+            reloaded_compressor.symbol_table().len(),
+            "Symbol table length mismatch"
+        );
+        assert_eq!(
+            original_compressor.symbol_lengths(),
+            reloaded_compressor.symbol_lengths(),
+            "Symbol lengths mismatch"
+        );
+        assert_eq!(
+            original_fsst_bytes, reloaded_fsst_bytes,
+            "Serialized FsstArray mismatch"
+        );
     }
 
     macro_rules! test_decimal_array_roundtrip {

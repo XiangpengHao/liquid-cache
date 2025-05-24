@@ -94,9 +94,7 @@ impl ReaderFactory {
                 }
 
                 let p_projection = predicate.projection();
-                row_group
-                    .fetch(&self.input, p_projection, &selection)
-                    .await?;
+                row_group.fetch(&self.input, p_projection).await?;
 
                 let array_reader = build_cached_array_reader(
                     self.fields.as_deref(),
@@ -139,9 +137,7 @@ impl ReaderFactory {
             *limit -= rows_after;
         }
 
-        row_group
-            .fetch(&self.input, &projection, &selection)
-            .await?;
+        row_group.fetch(&self.input, &projection).await?;
 
         let cached_row_group = self.liquid_cache.row_group(row_group_idx as u64);
         let array_reader = build_cached_array_reader(

@@ -1,0 +1,9 @@
+---
+source: src/server/src/tests/cases.rs
+expression: result
+---
++----+
+| id |
++----+
+| 0  |
++----+

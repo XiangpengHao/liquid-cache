@@ -310,10 +310,10 @@ impl CommonBenchmarkArgs {
                 let mut bytes_scanned = 0;
 
                 for metric in metrics.iter() {
-                    if let MetricValue::Count { name, count } = metric.value() {
-                        if name == "bytes_scanned" {
-                            bytes_scanned = count.value();
-                        }
+                    if let MetricValue::Count { name, count } = metric.value()
+                        && name == "bytes_scanned"
+                    {
+                        bytes_scanned = count.value();
                     }
                 }
 

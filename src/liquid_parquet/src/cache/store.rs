@@ -235,7 +235,6 @@ impl CacheStore {
 
                 self.insert_inner(to_evict, CachedBatch::OnDiskLiquid)
                     .expect("failed to insert on disk liquid");
-                self.policy.notify_evict(&to_evict);
                 Some(not_inserted)
             }
             CacheAdvice::TranscodeToDisk(to_transcode) => {
@@ -339,8 +338,8 @@ impl CacheStore {
             crate::utils::yield_now_if_shuttle();
 
             loop_count += 1;
-            if loop_count > 10 {
-                log::warn!("Cache store insert looped 10 times");
+            if loop_count > 20 {
+                log::warn!("Cache store insert looped 20 times");
             }
         }
     }
@@ -488,8 +487,6 @@ mod tests {
                 AdviceType::TranscodeToDisk => CacheAdvice::TranscodeToDisk(*entry_id),
             }
         }
-
-        fn notify_evict(&self, _entry_id: &CacheEntryID) {}
     }
 
     #[test]
