@@ -16,11 +16,11 @@ static GLOBAL: MiMalloc = MiMalloc;
 #[command(name = "ClickBench Benchmark Server")]
 struct CliArgs {
     /// Address to listen on
-    #[arg(long, default_value = "127.0.0.1:50051")]
+    #[arg(long, default_value = "127.0.0.1:15214")]
     address: SocketAddr,
 
     /// HTTP address for admin endpoint
-    #[arg(long = "admin-address", default_value = "127.0.0.1:50052")]
+    #[arg(long = "admin-address", default_value = "127.0.0.1:53703")]
     admin_address: SocketAddr,
 
     /// Abort the server if any thread panics
@@ -78,6 +78,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("LiquidCache server listening on {}", args.address);
     info!("Admin server listening on {}", args.admin_address);
+    info!(
+        "Dashboard: https://liquid-cache-admin.xiangpeng.systems/?host=http://{}",
+        args.admin_address
+    );
 
     // Run both servers concurrently
     tokio::select! {

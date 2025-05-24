@@ -44,9 +44,9 @@ pub async fn run_admin_server(
     let cors = CorsLayer::new()
         // Allow all localhost origins (http and https)
         .allow_origin([
-            "http://localhost:8080".parse::<HeaderValue>().unwrap(),
-            "http://127.0.0.1:8080".parse::<HeaderValue>().unwrap(),
-            "http://liquid-cache-admin.xiangpeng.systems"
+            "http://localhost:3000".parse::<HeaderValue>().unwrap(),
+            "http://127.0.0.1:3000".parse::<HeaderValue>().unwrap(),
+            "https://liquid-cache-admin.xiangpeng.systems"
                 .parse::<HeaderValue>()
                 .unwrap(),
         ])
@@ -68,6 +68,7 @@ pub async fn run_admin_server(
             "/execution_metrics",
             get(handlers::get_execution_metrics_handler),
         )
+        .route("/execution_plans", get(handlers::get_execution_plans))
         .route("/cache_stats", get(handlers::get_cache_stats_handler))
         .route("/start_flamegraph", get(handlers::start_flamegraph_handler))
         .route("/stop_flamegraph", get(handlers::stop_flamegraph_handler))

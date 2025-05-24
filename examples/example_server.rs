@@ -34,7 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Server::builder()
         .add_service(flight)
-        .serve("0.0.0.0:50051".parse()?)
+        .serve("0.0.0.0:15214".parse()?)
         .await?;
 
     Ok(())

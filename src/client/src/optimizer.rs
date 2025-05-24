@@ -189,7 +189,7 @@ mod tests {
             .with_config(config)
             .with_default_features()
             .with_physical_optimizer_rule(Arc::new(PushdownOptimizer::new(
-                "localhost:50051".to_string(),
+                "localhost:15214".to_string(),
                 CacheMode::Liquid,
                 vec![],
             )));
@@ -272,7 +272,7 @@ mod tests {
     // Apply the PushdownOptimizer to a plan and get the result as a string for comparison
     fn apply_optimizer(plan: Arc<dyn ExecutionPlan>) -> String {
         let optimizer =
-            PushdownOptimizer::new("localhost:50051".to_string(), CacheMode::Liquid, vec![]);
+            PushdownOptimizer::new("localhost:15214".to_string(), CacheMode::Liquid, vec![]);
 
         let optimized = optimizer.optimize(plan, &ConfigOptions::default()).unwrap();
         let display_plan = DisplayableExecutionPlan::new(optimized.as_ref());

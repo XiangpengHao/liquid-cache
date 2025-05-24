@@ -8,6 +8,7 @@ use axum::{
     Json,
     extract::{Query, State},
 };
+use datafusion::{common::stats::Precision, physical_plan::ExecutionPlan};
 use liquid_cache_common::rpc::ExecutionMetricsResponse;
 use log::info;
 use serde::Serialize;
@@ -305,6 +306,131 @@ pub(crate) async fn start_flamegraph_handler(
         message: "Flamegraph collection started".to_string(),
         status: "success".to_string(),
     })
+}
+
+fn plan_to_json(plan: Arc<dyn ExecutionPlan>) -> String {
+    let mut json_object = serde_json::Map::new();
+    json_object.insert(
+        "name".to_string(),
+        serde_json::Value::String(plan.name().to_string()),
+    );
+    json_object.insert(
+        "schema".to_string(),
+        serde_json::Value::Array(
+            plan.schema()
+                .fields()
+                .iter()
+                .map(|field| {
+                    let mut field_object = serde_json::Map::new();
+                    field_object.insert(
+                        "name".to_string(),
+                        serde_json::Value::String(field.name().to_string()),
+                    );
+                    field_object.insert(
+                        "data_type".to_string(),
+                        serde_json::Value::String(field.data_type().to_string()),
+                    );
+                    serde_json::Value::Object(field_object)
+                })
+                .collect(),
+        ),
+    );
+    let statistics = plan.statistics().unwrap();
+    let mut statistics_object = serde_json::Map::new();
+    statistics_object.insert(
+        "num_rows".to_string(),
+        serde_json::Value::String(statistics.num_rows.to_string()),
+    );
+    statistics_object.insert(
+        "total_byte_size".to_string(),
+        serde_json::Value::String(statistics.total_byte_size.to_string()),
+    );
+    let mut column_statistics = Vec::new();
+    for (i, cs) in statistics.column_statistics.iter().enumerate() {
+        let mut column_statistic_object = serde_json::Map::new();
+        column_statistic_object.insert(
+            "name".to_string(),
+            serde_json::Value::String(format!("col_{i}")),
+        );
+        if cs.null_count != Precision::Absent {
+            column_statistic_object.insert(
+                "null".to_string(),
+                serde_json::Value::String(cs.null_count.to_string()),
+            );
+        }
+        if cs.max_value != Precision::Absent {
+            column_statistic_object.insert(
+                "max".to_string(),
+                serde_json::Value::String(cs.max_value.to_string()),
+            );
+        }
+        if cs.min_value != Precision::Absent {
+            column_statistic_object.insert(
+                "min".to_string(),
+                serde_json::Value::String(cs.min_value.to_string()),
+            );
+        }
+        if cs.sum_value != Precision::Absent {
+            column_statistic_object.insert(
+                "sum".to_string(),
+                serde_json::Value::String(cs.sum_value.to_string()),
+            );
+        }
+        if cs.distinct_count != Precision::Absent {
+            column_statistic_object.insert(
+                "distinct".to_string(),
+                serde_json::Value::String(cs.distinct_count.to_string()),
+            );
+        }
+        column_statistics.push(serde_json::Value::Object(column_statistic_object));
+    }
+    statistics_object.insert(
+        "columns".to_string(),
+        serde_json::Value::Array(column_statistics),
+    );
+    json_object.insert(
+        "statistics".to_string(),
+        serde_json::Value::Object(statistics_object),
+    );
+
+    let metrics = plan.metrics().unwrap().aggregate_by_name();
+    let mut metric_object = serde_json::Map::new();
+    for metric in metrics.iter() {
+        metric_object.insert(
+            metric.value().name().to_string(),
+            serde_json::Value::String(metric.value().to_string()),
+        );
+    }
+    json_object.insert(
+        "metrics".to_string(),
+        serde_json::Value::Object(metric_object),
+    );
+
+    for child in plan.children() {
+        json_object.insert(
+            "children".to_string(),
+            serde_json::Value::Array(vec![serde_json::Value::String(plan_to_json(child.clone()))]),
+        );
+    }
+
+    serde_json::to_string(&json_object).unwrap()
+}
+
+pub(crate) async fn get_execution_plans(
+    State(state): State<Arc<AppState>>,
+) -> Json<Vec<(String, String, u64)>> {
+    let plans = state.liquid_cache.inner().get_execution_plans();
+    let mut serialized = Vec::new();
+    for (id, plan) in plans {
+        let json_plan = plan_to_json(plan.plan.clone());
+        let created_at = plan
+            .created_at
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        serialized.push((id.to_string(), json_plan, created_at));
+    }
+    Json(serialized)
 }
 
 #[derive(serde::Deserialize)]
