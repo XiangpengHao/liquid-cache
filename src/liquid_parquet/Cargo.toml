@@ -29,6 +29,7 @@ zerocopy = { version = "0.8.25", features = ["derive"] }
 liquid-cache-common = { workspace = true }
 fastrace = { workspace = true }
 fastrace-futures = { workspace = true }
+tokio-uring = "0.5"
 congee = { workspace = true }
 
 [dev-dependencies]
