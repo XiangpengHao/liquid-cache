@@ -170,7 +170,7 @@ pub async fn main() -> Result<()> {
             let _g = root.set_local_parent();
             let now = Instant::now();
             let starting_timestamp = bench_start_time.elapsed();
-            let (results, physical_plan) = run_query(&ctx, &query).await?;
+            let (results, physical_plan, plan_uuid) = run_query(&ctx, &query).await?;
             let elapsed = now.elapsed();
 
             networks.refresh(true);
@@ -180,7 +180,7 @@ pub async fn main() -> Result<()> {
                 .or_else(|| networks.get("lo"))
                 .expect("No loopback interface found in networks");
 
-            args.common.stop_flamegraph().await;
+            args.common.stop_flamegraph(&plan_uuid).await;
             args.common.stop_trace().await;
 
             let physical_plan_with_metrics =

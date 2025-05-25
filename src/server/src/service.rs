@@ -24,6 +24,7 @@ use crate::local_cache::LocalCache;
 pub(crate) struct ExecutionPlanEntry {
     pub plan: Arc<dyn ExecutionPlan>,
     pub created_at: SystemTime,
+    pub flamegraph_svg: Option<String>,
 }
 
 impl ExecutionPlanEntry {
@@ -31,7 +32,12 @@ impl ExecutionPlanEntry {
         Self {
             plan,
             created_at: SystemTime::now(),
+            flamegraph_svg: None,
         }
+    }
+
+    pub fn set_flamegraph_svg(&mut self, svg_content: String) {
+        self.flamegraph_svg = Some(svg_content);
     }
 }
 
@@ -225,6 +231,15 @@ impl LiquidCacheServiceInner {
 
     pub(crate) fn get_execution_plans(&self) -> HashMap<Uuid, ExecutionPlanEntry> {
         self.execution_plans.read().unwrap().clone()
+    }
+
+    pub(crate) fn set_flamegraph_svg(&self, plan_id: &Uuid, svg_content: String) -> bool {
+        if let Some(entry) = self.execution_plans.write().unwrap().get_mut(plan_id) {
+            entry.set_flamegraph_svg(svg_content);
+            true
+        } else {
+            false
+        }
     }
 }
 

@@ -55,7 +55,7 @@ fn compressor_benchmark(c: &mut Criterion) {
             format!("train_compressor - chunk_size: {}", chunk_size),
             |b| {
                 b.iter(|| {
-                    let input = criterion::black_box(
+                    let input = std::hint::black_box(
                         string_array.iter().flat_map(|s| s.map(|a| a.as_bytes())),
                     );
                     FsstArray::train_compressor(input)
@@ -93,7 +93,7 @@ fn from_byte_array_with_compressor_benchmark(c: &mut Criterion) {
         // Benchmark the creation of an FSST array from a byte array
         group.bench_function(format!("compress - chunk_size: {}", chunk_size), |b| {
             b.iter(|| {
-                criterion::black_box(FsstArray::from_byte_array_with_compressor(
+                std::hint::black_box(FsstArray::from_byte_array_with_compressor(
                     &string_array,
                     Arc::new(compressor.clone()),
                 ))
@@ -124,7 +124,7 @@ fn to_arrow_byte_array_benchmark(c: &mut Criterion) {
 
         // Benchmark the conversion of FSST array to Arrow byte array
         group.bench_function(format!("decompress - chunk_size: {}", chunk_size), |b| {
-            b.iter(|| criterion::black_box(fsst_values.to_arrow_byte_array::<Utf8Type>()));
+            b.iter(|| std::hint::black_box(fsst_values.to_arrow_byte_array::<Utf8Type>()));
         });
     }
     group.finish();
