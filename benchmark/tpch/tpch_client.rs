@@ -138,7 +138,9 @@ pub async fn main() -> Result<()> {
                 .or_else(|| networks.get("lo"))
                 .expect("No loopback interface found in networks");
 
-            args.common.stop_flamegraph(&plan_uuid).await;
+            if let Some(plan_uuid) = plan_uuid {
+                args.common.stop_flamegraph(&plan_uuid).await;
+            }
             args.common.stop_trace().await;
 
             let physical_plan_with_metrics =

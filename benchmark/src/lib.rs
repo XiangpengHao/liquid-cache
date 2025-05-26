@@ -85,7 +85,7 @@ pub struct CommonBenchmarkArgs {
     /// Profile the execution with flamegraph
     /// It tells the **server** to collect the flamegraph execution.
     /// It saves the flamegraph to the admin dashboard, usually:
-    /// https://liquid-cache-admin.xiangpeng.systems/?host=http://localhost:53703
+    /// <https://liquid-cache-admin.xiangpeng.systems/?host=http://localhost:53703>
     #[arg(long)]
     pub flamegraph: bool,
 }
@@ -438,7 +438,7 @@ impl FromStr for BenchmarkMode {
 pub async fn run_query(
     ctx: &Arc<SessionContext>,
     query: &str,
-) -> Result<(Vec<RecordBatch>, Arc<dyn ExecutionPlan>, Uuid)> {
+) -> Result<(Vec<RecordBatch>, Arc<dyn ExecutionPlan>, Option<Uuid>)> {
     let df = ctx
         .sql(query)
         .in_span(Span::enter_with_local_parent("logical_plan"))
@@ -458,7 +458,7 @@ pub async fn run_query(
         )));
     let ctx = ctx.with_session_config(cfg);
     let results = collect(physical_plan.clone(), Arc::new(ctx)).await?;
-    let plan_uuid = utils::get_plan_uuid(&physical_plan).await.unwrap();
+    let plan_uuid = utils::get_plan_uuid(&physical_plan).await;
     Ok((results, physical_plan, plan_uuid))
 }
 
