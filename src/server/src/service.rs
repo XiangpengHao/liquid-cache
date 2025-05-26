@@ -24,7 +24,7 @@ use crate::{ExecutionStats, local_cache::LocalCache};
 pub(crate) struct ExecutionPlanEntry {
     pub plan: Arc<dyn ExecutionPlan>,
     pub created_at: SystemTime,
-    pub post_execution_stats: Option<ExecutionStats>,
+    pub execution_stats: Option<ExecutionStats>,
 }
 
 impl ExecutionPlanEntry {
@@ -32,12 +32,12 @@ impl ExecutionPlanEntry {
         Self {
             plan,
             created_at: SystemTime::now(),
-            post_execution_stats: None,
+            execution_stats: None,
         }
     }
 
-    pub fn set_post_execution_stats(&mut self, post_execution_stats: ExecutionStats) {
-        self.post_execution_stats = Some(post_execution_stats);
+    pub fn set_execution_stats(&mut self, execution_stats: ExecutionStats) {
+        self.execution_stats = Some(execution_stats);
     }
 }
 
@@ -233,13 +233,13 @@ impl LiquidCacheServiceInner {
         self.execution_plans.read().unwrap().clone()
     }
 
-    pub(crate) fn set_post_execution_stats(
+    pub(crate) fn set_execution_stats(
         &self,
         plan_id: &Uuid,
         post_execution_stats: ExecutionStats,
     ) -> bool {
         if let Some(entry) = self.execution_plans.write().unwrap().get_mut(plan_id) {
-            entry.set_post_execution_stats(post_execution_stats);
+            entry.set_execution_stats(post_execution_stats);
             true
         } else {
             false

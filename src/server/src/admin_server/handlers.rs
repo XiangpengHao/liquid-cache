@@ -437,10 +437,10 @@ pub(crate) async fn get_execution_plans(
                     .into(),
             ),
         );
-        if let Some(post_execution_stats) = plan.post_execution_stats {
+        if let Some(execution_stats) = plan.execution_stats {
             json_object.insert(
                 "stats".to_string(),
-                serde_json::Value::String(serde_json::to_string(&post_execution_stats).unwrap()),
+                serde_json::Value::String(serde_json::to_string(&execution_stats).unwrap()),
             );
         }
 
@@ -473,7 +473,7 @@ fn set_execution_stats_inner(state: &AppState, params: &ExecutionStats) -> anyho
     let success = state
         .liquid_cache
         .inner()
-        .set_post_execution_stats(&plan_id, params.clone());
+        .set_execution_stats(&plan_id, params.clone());
     if !success {
         return Err(anyhow::anyhow!(
             "Failed to set display name for execution plan {plan_id}"

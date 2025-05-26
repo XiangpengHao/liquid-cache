@@ -38,6 +38,8 @@ pub struct ExecutionStats {
     pub flamegraph_svg: Option<String>,
     /// Network traffic bytes for the execution plan
     pub network_traffic_bytes: u64,
+    /// Execution time in milliseconds
+    pub execution_time_ms: u64,
 }
 
 pub(crate) struct AppState {
