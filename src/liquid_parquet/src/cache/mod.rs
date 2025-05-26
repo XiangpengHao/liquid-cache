@@ -20,6 +20,7 @@ use tokio::runtime::Runtime;
 use transcode::transcode_liquid_inner;
 pub(crate) use utils::BatchID;
 use utils::{CacheEntryID, ColumnAccessPath};
+use crate::policies::CachePolicy;
 
 mod budget;
 /// Module containing cache eviction policies like FIFO
@@ -547,9 +548,9 @@ impl LiquidCache {
         max_cache_bytes: usize,
         cache_dir: PathBuf,
         cache_mode: LiquidCacheMode,
+        cache_policy: Box<dyn CachePolicy>
     ) -> Self {
         assert!(batch_size.is_power_of_two());
-        let cache_policy = Box::new(policies::DiscardPolicy);
 
         LiquidCache {
             files: Mutex::new(AHashMap::new()),

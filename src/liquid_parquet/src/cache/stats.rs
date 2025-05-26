@@ -169,9 +169,11 @@ mod tests {
         datatypes::UInt64Type,
     };
     use bytes::Bytes;
-    use liquid_cache_common::LiquidCacheMode;
+    use liquid_cache_common::{CacheEvictionStrategy, LiquidCacheMode};
     use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
     use tempfile::NamedTempFile;
+    use crate::cache::store::CacheAdvice::Discard;
+    use crate::policies::DiscardPolicy;
 
     #[test]
     fn test_stats_writer() -> Result<(), ParquetError> {
@@ -181,6 +183,7 @@ mod tests {
             usize::MAX,
             tmp_dir.path().to_path_buf(),
             LiquidCacheMode::InMemoryArrow,
+            Box::new(DiscardPolicy::default())
         );
         let array = Arc::new(arrow::array::Int32Array::from(vec![1, 2, 3]));
         let num_rows = 8 * 8 * 8 * 8;

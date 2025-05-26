@@ -9,7 +9,7 @@ use datafusion::{
     physical_plan::{ExecutionPlan, display::DisplayableExecutionPlan, metrics::MetricValue},
     prelude::SessionContext,
 };
-use liquid_cache_common::{CacheMode, coerce_to_liquid_cache_types, rpc::ExecutionMetricsResponse};
+use liquid_cache_common::{CacheMode, coerce_to_liquid_cache_types, rpc::ExecutionMetricsResponse, CacheEvictionStrategy};
 use liquid_cache_parquet::{LiquidCache, LiquidCacheRef, LiquidParquetSource};
 use log::{debug, info};
 use object_store::ObjectStore;
@@ -17,7 +17,7 @@ use std::sync::RwLock;
 use std::{collections::HashMap, path::PathBuf, sync::Arc, time::SystemTime};
 use url::Url;
 use uuid::Uuid;
-
+use liquid_cache_parquet::policies::{CachePolicy, DiscardPolicy, FiloPolicy, LruPolicy};
 use crate::{ExecutionStats, local_cache::LocalCache};
 
 #[derive(Clone)]
@@ -48,17 +48,25 @@ pub(crate) struct LiquidCacheServiceInner {
     parquet_cache_dir: PathBuf,
 }
 
+
 impl LiquidCacheServiceInner {
     pub fn new(
         default_ctx: Arc<SessionContext>,
         max_cache_bytes: Option<usize>,
         disk_cache_dir: PathBuf,
         cache_mode: CacheMode,
+        case_eviction_policy: CacheEvictionStrategy
     ) -> Self {
         let batch_size = default_ctx.state().config().batch_size();
 
         let parquet_cache_dir = disk_cache_dir.join("parquet");
         let liquid_cache_dir = disk_cache_dir.join("liquid");
+
+        let cache_policy: Box<dyn CachePolicy> = match case_eviction_policy {
+            CacheEvictionStrategy::Lru => Box::new(LruPolicy::new()) ,
+            CacheEvictionStrategy::Discard => Box::new(DiscardPolicy::default()),
+            CacheEvictionStrategy::Filo => Box::new(FiloPolicy::new())
+        };
 
         let liquid_cache = match cache_mode {
             CacheMode::Parquet => None,
@@ -67,6 +75,7 @@ impl LiquidCacheServiceInner {
                 max_cache_bytes.unwrap_or(usize::MAX),
                 liquid_cache_dir,
                 cache_mode.into(),
+                cache_policy
             ))),
         };
 
@@ -302,6 +311,7 @@ fn rewrite_data_source_plan(
 #[cfg(test)]
 mod tests {
     use datafusion::common::tree_node::TreeNodeRecursion;
+    use liquid_cache_common::CacheEvictionStrategy::Discard;
     use liquid_cache_common::LiquidCacheMode;
 
     use super::*;
@@ -313,6 +323,7 @@ mod tests {
             1000000,
             PathBuf::from("test"),
             *cache_mode,
+            Box::new(DiscardPolicy::default())
         ));
         let rewritten = rewrite_data_source_plan(plan, &liquid_cache);
 
@@ -372,6 +383,7 @@ mod tests {
             None,
             PathBuf::from("test"),
             CacheMode::LiquidEagerTranscode,
+            Discard
         );
         let url = Url::parse("file:///").unwrap();
         server
