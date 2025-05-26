@@ -4,28 +4,30 @@ use datafusion::common::tree_node::TreeNode;
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::collect;
 use datafusion::{error::Result, physical_plan::ExecutionPlan};
-use datafusion::{
-    physical_plan::metrics::MetricValue,
-    prelude::{SessionConfig, SessionContext},
-};
+use datafusion::{physical_plan::metrics::MetricValue, prelude::SessionContext};
 use fastrace::Span;
 use fastrace::future::FutureExt as _;
-use liquid_cache_client::{LiquidCacheBuilder, LiquidCacheClientExec};
-use liquid_cache_common::CacheMode;
+use liquid_cache_client::LiquidCacheClientExec;
 use liquid_cache_common::rpc::ExecutionMetricsResponse;
+use liquid_cache_server::{ApiResponse, ExecutionStats};
 use log::info;
-use object_store::ClientConfigKey;
 use serde::Serialize;
 use std::path::PathBuf;
 use std::time::Duration;
-use std::{fmt::Display, path::Path, str::FromStr, sync::Arc};
-use url::Url;
+use std::{fmt::Display, str::FromStr, sync::Arc};
 use uuid::Uuid;
 
 mod observability;
+pub mod runner;
 pub mod utils;
 
 pub use observability::*;
+pub use runner::*;
+
+pub struct Query {
+    pub id: u32,
+    pub sql: String,
+}
 
 #[derive(Parser, Serialize, Clone)]
 pub struct CommonBenchmarkArgs {
@@ -133,7 +135,7 @@ impl CommonBenchmarkArgs {
         }
     }
 
-    pub async fn stop_flamegraph(&self, plan_uuid: &Uuid) {
+    pub async fn stop_flamegraph(&self, plan_uuid: &Uuid) -> Option<String> {
         if self.flamegraph {
             let response = reqwest::Client::new()
                 .get(format!(
@@ -143,8 +145,16 @@ impl CommonBenchmarkArgs {
                 .send()
                 .await
                 .unwrap();
-            let _response_body = response.text().await.unwrap();
-            info!("Flamegraph saved to admin dashboard");
+            let response_body = response.json::<ApiResponse>().await.unwrap();
+            if response_body.status == "success" {
+                info!("Flamegraph saved to admin dashboard");
+                Some(response_body.message)
+            } else {
+                info!("Failed to save flamegraph to admin dashboard");
+                None
+            }
+        } else {
+            None
         }
     }
 
@@ -162,122 +172,6 @@ impl CommonBenchmarkArgs {
             let response_body = response.text().await.unwrap();
             info!("Cache stats: {response_body}");
         }
-    }
-
-    #[fastrace::trace]
-    pub async fn setup_tpch_ctx(&self, data_dir: &Path) -> Result<Arc<SessionContext>> {
-        let mut session_config = SessionConfig::from_env()?;
-        let current_dir = std::env::current_dir()?.to_string_lossy().to_string();
-
-        let tables = [
-            "customer", "lineitem", "nation", "orders", "part", "partsupp", "region", "supplier",
-        ];
-
-        let mode = match self.bench_mode {
-            BenchmarkMode::ParquetFileserver => {
-                let ctx = Arc::new(SessionContext::new_with_config(session_config));
-                let base_url = Url::parse(&self.server).unwrap();
-
-                let object_store = object_store::http::HttpBuilder::new()
-                    .with_url(base_url.clone())
-                    .with_config(ClientConfigKey::AllowHttp, "true")
-                    .build()
-                    .unwrap();
-                ctx.register_object_store(&base_url, Arc::new(object_store));
-
-                for table_name in tables.iter() {
-                    let table_path = Url::parse(&format!(
-                        "file://{}/{}/{}.parquet",
-                        current_dir,
-                        data_dir.display(),
-                        table_name
-                    ))
-                    .unwrap();
-                    ctx.register_parquet(*table_name, table_path, Default::default())
-                        .await?;
-                }
-                return Ok(ctx);
-            }
-            BenchmarkMode::ParquetPushdown => CacheMode::Parquet,
-            BenchmarkMode::ArrowPushdown => CacheMode::Arrow,
-            BenchmarkMode::LiquidCache => CacheMode::Liquid,
-            BenchmarkMode::LiquidEagerTranscode => CacheMode::LiquidEagerTranscode,
-        };
-        session_config
-            .options_mut()
-            .execution
-            .parquet
-            .pushdown_filters = true;
-        let mut session_config = SessionConfig::from_env()?;
-        if let Some(partitions) = self.partitions {
-            session_config.options_mut().execution.target_partitions = partitions;
-        }
-        let ctx = LiquidCacheBuilder::new(&self.server)
-            .with_cache_mode(mode)
-            .build(session_config)?;
-
-        for table_name in tables.iter() {
-            let table_url = Url::parse(&format!(
-                "file://{}/{}/{}.parquet",
-                current_dir,
-                data_dir.display(),
-                table_name
-            ))
-            .unwrap();
-            ctx.register_parquet(*table_name, table_url, Default::default())
-                .await?;
-        }
-
-        Ok(Arc::new(ctx))
-    }
-
-    #[fastrace::trace]
-    pub async fn setup_clickbench_ctx(&self, data_url: &Path) -> Result<Arc<SessionContext>> {
-        let table_name = "hits";
-        let current_dir = std::env::current_dir()?.to_string_lossy().to_string();
-        let table_url =
-            Url::parse(&format!("file://{}/{}", current_dir, data_url.display())).unwrap();
-
-        let mode = match self.bench_mode {
-            BenchmarkMode::ParquetFileserver => {
-                let mut session_config = SessionConfig::from_env()?;
-                if let Some(partitions) = self.partitions {
-                    session_config.options_mut().execution.target_partitions = partitions;
-                }
-                let ctx = Arc::new(SessionContext::new_with_config(session_config));
-                let base_url = Url::parse(&self.server).unwrap();
-
-                let object_store = object_store::http::HttpBuilder::new()
-                    .with_url(base_url.clone())
-                    .with_config(ClientConfigKey::AllowHttp, "true")
-                    .build()
-                    .unwrap();
-                ctx.register_object_store(&base_url, Arc::new(object_store));
-
-                ctx.register_parquet(
-                    "hits",
-                    format!("{}/hits.parquet", self.server),
-                    Default::default(),
-                )
-                .await?;
-                return Ok(ctx);
-            }
-            BenchmarkMode::ParquetPushdown => CacheMode::Parquet,
-            BenchmarkMode::ArrowPushdown => CacheMode::Arrow,
-            BenchmarkMode::LiquidCache => CacheMode::Liquid,
-            BenchmarkMode::LiquidEagerTranscode => CacheMode::LiquidEagerTranscode,
-        };
-        let mut session_config = SessionConfig::from_env()?;
-        if let Some(partitions) = self.partitions {
-            session_config.options_mut().execution.target_partitions = partitions;
-        }
-        let ctx = LiquidCacheBuilder::new(&self.server)
-            .with_cache_mode(mode)
-            .build(session_config)?;
-
-        ctx.register_parquet(table_name, table_url, Default::default())
-            .await?;
-        Ok(Arc::new(ctx))
     }
 
     #[fastrace::trace]
@@ -342,7 +236,7 @@ impl CommonBenchmarkArgs {
                     .unwrap();
                 let mut metrics = Vec::new();
                 for handle in handles {
-                    let plan_id = handle.get_plan_uuid().await.unwrap();
+                    let plan_id = handle.get_uuid();
                     let response = reqwest::Client::new()
                         .get(format!(
                             "{}/execution_metrics?plan_id={plan_id}",
@@ -390,6 +284,30 @@ impl CommonBenchmarkArgs {
             .await
             .unwrap();
         Ok(())
+    }
+
+    pub async fn set_execution_stats(
+        &self,
+        plan_uuid: &Uuid,
+        flamegraph: Option<String>,
+        display_name: String,
+        network_traffic_bytes: u64,
+        execution_time_ms: u64,
+    ) {
+        let params = ExecutionStats {
+            plan_id: plan_uuid.to_string(),
+            display_name,
+            flamegraph_svg: flamegraph,
+            network_traffic_bytes,
+            execution_time_ms,
+        };
+        let client = reqwest::Client::new();
+        client
+            .post(format!("{}/set_execution_stats", self.admin_server))
+            .json(&params)
+            .send()
+            .await
+            .unwrap();
     }
 }
 
@@ -458,7 +376,7 @@ pub async fn run_query(
         )));
     let ctx = ctx.with_session_config(cfg);
     let results = collect(physical_plan.clone(), Arc::new(ctx)).await?;
-    let plan_uuid = utils::get_plan_uuid(&physical_plan).await;
+    let plan_uuid = utils::get_plan_uuid(&physical_plan);
     Ok((results, physical_plan, plan_uuid))
 }
 
@@ -488,6 +406,7 @@ impl QueryResult {
         self.iteration_results.push(iteration_result);
     }
 }
+
 #[derive(Serialize)]
 pub struct IterationResult {
     pub network_traffic: u64,

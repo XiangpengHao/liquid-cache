@@ -26,11 +26,11 @@ impl FlameGraph {
         );
     }
 
-    pub fn stop_to_string(&self) -> Result<String, Box<dyn std::error::Error>> {
+    pub fn stop_to_string(&self) -> anyhow::Result<String> {
         let mut guard = self.guard.lock().unwrap();
         let old = guard.take();
         if old.is_none() {
-            return Err("FlameGraph is not started".into());
+            return Err(anyhow::anyhow!("FlameGraph is not started"));
         }
         let profiler = old.unwrap();
         drop(guard);

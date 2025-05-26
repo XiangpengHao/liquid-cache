@@ -14,7 +14,7 @@ use log::info;
 use serde::Serialize;
 use uuid::Uuid;
 
-use super::{ApiResponse, AppState};
+use super::{ApiResponse, AppState, ExecutionStats};
 
 pub(crate) async fn shutdown_handler() -> Json<ApiResponse> {
     info!("Shutdown request received, shutting down server...");
@@ -437,10 +437,10 @@ pub(crate) async fn get_execution_plans(
                     .into(),
             ),
         );
-        if let Some(flamegraph_svg) = plan.flamegraph_svg {
+        if let Some(execution_stats) = plan.execution_stats {
             json_object.insert(
-                "flamegraph_svg".to_string(),
-                serde_json::Value::String(flamegraph_svg),
+                "stats".to_string(),
+                serde_json::Value::String(serde_json::to_string(&execution_stats).unwrap()),
             );
         }
 
@@ -451,56 +451,50 @@ pub(crate) async fn get_execution_plans(
     Json(serialized)
 }
 
-#[derive(serde::Deserialize)]
-pub(crate) struct FlameGraphParams {
-    plan_id: String,
-}
-
 pub(crate) async fn stop_flamegraph_handler(
     State(state): State<Arc<AppState>>,
-    Query(params): Query<FlameGraphParams>,
 ) -> Json<ApiResponse> {
-    // Parse the plan_id
-    let plan_id = match uuid::Uuid::parse_str(&params.plan_id) {
-        Ok(id) => id,
-        Err(_) => {
-            return Json(ApiResponse {
-                message: format!("Invalid UUID format for plan_id: {}", params.plan_id),
-                status: "error".to_string(),
-            });
-        }
+    let svg_content = if let Ok(svg_content) = state.flamegraph.stop_to_string() {
+        svg_content
+    } else {
+        return Json(ApiResponse {
+            message: "Flamegraph not generated".to_string(),
+            status: "error".to_string(),
+        });
     };
+    Json(ApiResponse {
+        message: svg_content,
+        status: "success".to_string(),
+    })
+}
 
-    // Stop the flamegraph and generate SVG in memory
-    let svg_content = match state.flamegraph.stop_to_string() {
-        Ok(svg) => svg,
-        Err(e) => {
-            return Json(ApiResponse {
-                message: format!("Failed to generate flamegraph: {e}"),
-                status: "error".to_string(),
-            });
-        }
-    };
-
-    // Store the flamegraph in the execution plan entry
+fn set_execution_stats_inner(state: &AppState, params: &ExecutionStats) -> anyhow::Result<()> {
+    let plan_id = Uuid::parse_str(&params.plan_id)?;
     let success = state
         .liquid_cache
         .inner()
-        .set_flamegraph_svg(&plan_id, svg_content);
+        .set_execution_stats(&plan_id, params.clone());
+    if !success {
+        return Err(anyhow::anyhow!(
+            "Failed to set display name for execution plan {plan_id}"
+        ));
+    }
+    Ok(())
+}
 
-    if success {
-        info!("Flamegraph generated and associated with execution plan {plan_id}");
-        Json(ApiResponse {
-            message: format!("Flamegraph generated and associated with execution plan {plan_id}",),
+pub(crate) async fn set_execution_stats_handler(
+    State(state): State<Arc<AppState>>,
+    Json(params): Json<ExecutionStats>,
+) -> Json<ApiResponse> {
+    match set_execution_stats_inner(&state, &params) {
+        Ok(_) => Json(ApiResponse {
+            message: format!("Execution stats set for execution plan {}", params.plan_id),
             status: "success".to_string(),
-        })
-    } else {
-        Json(ApiResponse {
-            message: format!(
-                "Failed to associate flamegraph with execution plan {plan_id}: plan not found",
-            ),
+        }),
+        Err(e) => Json(ApiResponse {
+            message: format!("Failed to set display name: {e}"),
             status: "error".to_string(),
-        })
+        }),
     }
 }
 
