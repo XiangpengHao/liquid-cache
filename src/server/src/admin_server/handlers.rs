@@ -418,43 +418,90 @@ fn plan_to_json(plan: Arc<dyn ExecutionPlan>) -> String {
 
 pub(crate) async fn get_execution_plans(
     State(state): State<Arc<AppState>>,
-) -> Json<Vec<(String, String, u64)>> {
+) -> Json<Vec<(String, String)>> {
     let plans = state.liquid_cache.inner().get_execution_plans();
     let mut serialized = Vec::new();
     for (id, plan) in plans {
         let json_plan = plan_to_json(plan.plan.clone());
-        let created_at = plan
-            .created_at
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        serialized.push((id.to_string(), json_plan, created_at));
+        let mut json_object = serde_json::Map::new();
+
+        json_object.insert("plan".to_string(), serde_json::Value::String(json_plan));
+        json_object.insert("id".to_string(), serde_json::Value::String(id.to_string()));
+        json_object.insert(
+            "created_at".to_string(),
+            serde_json::Value::Number(
+                plan.created_at
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+                    .into(),
+            ),
+        );
+        if let Some(flamegraph_svg) = plan.flamegraph_svg {
+            json_object.insert(
+                "flamegraph_svg".to_string(),
+                serde_json::Value::String(flamegraph_svg),
+            );
+        }
+
+        let serialized_plan = serde_json::to_string(&json_object).unwrap();
+
+        serialized.push((id.to_string(), serialized_plan));
     }
     Json(serialized)
 }
 
 #[derive(serde::Deserialize)]
 pub(crate) struct FlameGraphParams {
-    output_dir: String,
+    plan_id: String,
 }
 
 pub(crate) async fn stop_flamegraph_handler(
     State(state): State<Arc<AppState>>,
     Query(params): Query<FlameGraphParams>,
 ) -> Json<ApiResponse> {
-    let output_dir = PathBuf::from(&params.output_dir);
-    let filepath = state.flamegraph.stop(&output_dir);
-    info!(
-        "Flamegraph collection stopped, saved to {}",
-        filepath.display()
-    );
-    Json(ApiResponse {
-        message: format!(
-            "Flamegraph collection stopped, saved to {}",
-            filepath.display()
-        ),
-        status: "success".to_string(),
-    })
+    // Parse the plan_id
+    let plan_id = match uuid::Uuid::parse_str(&params.plan_id) {
+        Ok(id) => id,
+        Err(_) => {
+            return Json(ApiResponse {
+                message: format!("Invalid UUID format for plan_id: {}", params.plan_id),
+                status: "error".to_string(),
+            });
+        }
+    };
+
+    // Stop the flamegraph and generate SVG in memory
+    let svg_content = match state.flamegraph.stop_to_string() {
+        Ok(svg) => svg,
+        Err(e) => {
+            return Json(ApiResponse {
+                message: format!("Failed to generate flamegraph: {e}"),
+                status: "error".to_string(),
+            });
+        }
+    };
+
+    // Store the flamegraph in the execution plan entry
+    let success = state
+        .liquid_cache
+        .inner()
+        .set_flamegraph_svg(&plan_id, svg_content);
+
+    if success {
+        info!("Flamegraph generated and associated with execution plan {plan_id}");
+        Json(ApiResponse {
+            message: format!("Flamegraph generated and associated with execution plan {plan_id}",),
+            status: "success".to_string(),
+        })
+    } else {
+        Json(ApiResponse {
+            message: format!(
+                "Failed to associate flamegraph with execution plan {plan_id}: plan not found",
+            ),
+            status: "error".to_string(),
+        })
+    }
 }
 
 #[cfg(test)]

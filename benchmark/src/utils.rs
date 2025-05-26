@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use datafusion::arrow;
 use datafusion::arrow::array::Array;
 use datafusion::arrow::compute::kernels::numeric::{div, sub_wrapping};
@@ -6,7 +8,28 @@ use datafusion::arrow::{
     array::{AsArray, RecordBatch},
     datatypes::DataType,
 };
+use datafusion::physical_plan::ExecutionPlan;
+use liquid_cache_client::LiquidCacheClientExec;
 use log::warn;
+use std::future::Future;
+use std::pin::Pin;
+use uuid::Uuid;
+
+pub(crate) fn get_plan_uuid(
+    plan: &Arc<dyn ExecutionPlan>,
+) -> Pin<Box<dyn Future<Output = Option<Uuid>> + '_>> {
+    Box::pin(async move {
+        if let Some(plan) = plan.as_any().downcast_ref::<LiquidCacheClientExec>() {
+            return plan.get_plan_uuid().await;
+        }
+        for c in plan.children() {
+            if let Some(uuid) = get_plan_uuid(c).await {
+                return Some(uuid);
+            }
+        }
+        None
+    })
+}
 
 fn float_eq_helper(left: &dyn Array, right: &dyn Array, tol: f64) -> bool {
     let diff = sub_wrapping(&left, &right).unwrap();

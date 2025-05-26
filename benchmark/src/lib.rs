@@ -20,6 +20,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 use std::{fmt::Display, path::Path, str::FromStr, sync::Arc};
 use url::Url;
+use uuid::Uuid;
 
 mod observability;
 pub mod utils;
@@ -81,10 +82,12 @@ pub struct CommonBenchmarkArgs {
     #[arg(long = "cache-stats-dir")]
     pub cache_stats_dir: Option<PathBuf>,
 
-    /// Path to save the flamegraph
+    /// Profile the execution with flamegraph
     /// It tells the **server** to collect the flamegraph execution.
-    #[arg(long = "flamegraph-dir")]
-    pub flamegraph_dir: Option<PathBuf>,
+    /// It saves the flamegraph to the admin dashboard, usually:
+    /// <https://liquid-cache-admin.xiangpeng.systems/?host=http://localhost:53703>
+    #[arg(long)]
+    pub flamegraph: bool,
 }
 
 impl CommonBenchmarkArgs {
@@ -119,7 +122,7 @@ impl CommonBenchmarkArgs {
     }
 
     pub async fn start_flamegraph(&self) {
-        if self.flamegraph_dir.is_some() {
+        if self.flamegraph {
             let response = reqwest::Client::new()
                 .get(format!("{}/start_flamegraph", self.admin_server))
                 .send()
@@ -130,19 +133,18 @@ impl CommonBenchmarkArgs {
         }
     }
 
-    pub async fn stop_flamegraph(&self) {
-        if let Some(flamegraph_dir) = &self.flamegraph_dir {
+    pub async fn stop_flamegraph(&self, plan_uuid: &Uuid) {
+        if self.flamegraph {
             let response = reqwest::Client::new()
                 .get(format!(
-                    "{}/stop_flamegraph?output_dir={}",
-                    self.admin_server,
-                    flamegraph_dir.display()
+                    "{}/stop_flamegraph?plan_id={}",
+                    self.admin_server, plan_uuid
                 ))
                 .send()
                 .await
                 .unwrap();
-            let response_body = response.text().await.unwrap();
-            info!("Flamegraph collection stopped: {response_body}");
+            let _response_body = response.text().await.unwrap();
+            info!("Flamegraph saved to admin dashboard");
         }
     }
 
@@ -436,7 +438,7 @@ impl FromStr for BenchmarkMode {
 pub async fn run_query(
     ctx: &Arc<SessionContext>,
     query: &str,
-) -> Result<(Vec<RecordBatch>, Arc<dyn ExecutionPlan>)> {
+) -> Result<(Vec<RecordBatch>, Arc<dyn ExecutionPlan>, Option<Uuid>)> {
     let df = ctx
         .sql(query)
         .in_span(Span::enter_with_local_parent("logical_plan"))
@@ -456,7 +458,8 @@ pub async fn run_query(
         )));
     let ctx = ctx.with_session_config(cfg);
     let results = collect(physical_plan.clone(), Arc::new(ctx)).await?;
-    Ok((results, physical_plan))
+    let plan_uuid = utils::get_plan_uuid(&physical_plan).await;
+    Ok((results, physical_plan, plan_uuid))
 }
 
 #[derive(Serialize)]

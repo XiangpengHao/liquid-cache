@@ -113,18 +113,20 @@ pub async fn main() -> Result<()> {
             info!("Running query {}: \n{}", id, query.join(";"));
             let now = Instant::now();
             let starting_timestamp = bench_start_time.elapsed();
-            let (results, physical_plan) = if id == 15 {
+            let (results, physical_plan, plan_uuid) = if id == 15 {
                 // Q15 has three queries, the second one is the one we want to test
                 let mut results = Vec::new();
                 let mut physical_plan = None;
+                let mut plan_uuid = None;
                 for (i, q) in query.iter().enumerate() {
-                    let (result, plan) = run_query(&ctx, q).await?;
+                    let (result, plan, uuid) = run_query(&ctx, q).await?;
                     if i == 1 {
                         physical_plan = Some(plan);
                         results = result;
+                        plan_uuid = Some(uuid);
                     }
                 }
-                (results, physical_plan.unwrap())
+                (results, physical_plan.unwrap(), plan_uuid.unwrap())
             } else {
                 run_query(&ctx, &query[0]).await?
             };
@@ -136,7 +138,9 @@ pub async fn main() -> Result<()> {
                 .or_else(|| networks.get("lo"))
                 .expect("No loopback interface found in networks");
 
-            args.common.stop_flamegraph().await;
+            if let Some(plan_uuid) = plan_uuid {
+                args.common.stop_flamegraph(&plan_uuid).await;
+            }
             args.common.stop_trace().await;
 
             let physical_plan_with_metrics =
