@@ -138,9 +138,11 @@ pub async fn main() -> Result<()> {
                 .or_else(|| networks.get("lo"))
                 .expect("No loopback interface found in networks");
 
-            if let Some(plan_uuid) = plan_uuid {
-                args.common.stop_flamegraph(&plan_uuid).await;
-            }
+            let flamegraph = if let Some(plan_uuid) = plan_uuid {
+                args.common.stop_flamegraph(&plan_uuid).await
+            } else {
+                None
+            };
             args.common.stop_trace().await;
 
             let physical_plan_with_metrics =
@@ -159,11 +161,23 @@ pub async fn main() -> Result<()> {
             }
 
             args.common.get_cache_stats().await;
+            let network_traffic = network_info.received();
 
             let metrics_response = args.common.get_execution_metrics(&physical_plan).await;
 
+            if let Some(plan_uuid) = plan_uuid {
+                args.common
+                    .set_execution_stats(
+                        &plan_uuid,
+                        flamegraph,
+                        format!("TPCH-Q{id}"),
+                        network_traffic,
+                    )
+                    .await;
+            }
+
             let result = IterationResult {
-                network_traffic: network_info.received(),
+                network_traffic,
                 time_millis: elapsed.as_millis() as u64,
                 cache_cpu_time: metrics_response.pushdown_eval_time,
                 cache_memory_usage: metrics_response.cache_memory_usage,
