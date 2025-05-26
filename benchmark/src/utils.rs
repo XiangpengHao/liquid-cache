@@ -8,27 +8,22 @@ use datafusion::arrow::{
     array::{AsArray, RecordBatch},
     datatypes::DataType,
 };
+use datafusion::common::tree_node::TreeNode;
 use datafusion::physical_plan::ExecutionPlan;
 use liquid_cache_client::LiquidCacheClientExec;
 use log::warn;
-use std::future::Future;
-use std::pin::Pin;
 use uuid::Uuid;
 
-pub(crate) fn get_plan_uuid(
-    plan: &Arc<dyn ExecutionPlan>,
-) -> Pin<Box<dyn Future<Output = Option<Uuid>> + '_>> {
-    Box::pin(async move {
+pub(crate) fn get_plan_uuid(plan: &Arc<dyn ExecutionPlan>) -> Option<Uuid> {
+    let mut uuid = None;
+    plan.apply(|plan| {
         if let Some(plan) = plan.as_any().downcast_ref::<LiquidCacheClientExec>() {
-            return plan.get_plan_uuid().await;
+            uuid = Some(plan.get_uuid());
         }
-        for c in plan.children() {
-            if let Some(uuid) = get_plan_uuid(c).await {
-                return Some(uuid);
-            }
-        }
-        None
+        Ok(datafusion::common::tree_node::TreeNodeRecursion::Continue)
     })
+    .unwrap();
+    uuid
 }
 
 fn float_eq_helper(left: &dyn Array, right: &dyn Array, tol: f64) -> bool {

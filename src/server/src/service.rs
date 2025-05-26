@@ -18,13 +18,13 @@ use std::{collections::HashMap, path::PathBuf, sync::Arc, time::SystemTime};
 use url::Url;
 use uuid::Uuid;
 
-use crate::local_cache::LocalCache;
+use crate::{ExecutionStats, local_cache::LocalCache};
 
 #[derive(Clone)]
 pub(crate) struct ExecutionPlanEntry {
     pub plan: Arc<dyn ExecutionPlan>,
     pub created_at: SystemTime,
-    pub flamegraph_svg: Option<String>,
+    pub post_execution_stats: Option<ExecutionStats>,
 }
 
 impl ExecutionPlanEntry {
@@ -32,12 +32,12 @@ impl ExecutionPlanEntry {
         Self {
             plan,
             created_at: SystemTime::now(),
-            flamegraph_svg: None,
+            post_execution_stats: None,
         }
     }
 
-    pub fn set_flamegraph_svg(&mut self, svg_content: String) {
-        self.flamegraph_svg = Some(svg_content);
+    pub fn set_post_execution_stats(&mut self, post_execution_stats: ExecutionStats) {
+        self.post_execution_stats = Some(post_execution_stats);
     }
 }
 
@@ -233,9 +233,13 @@ impl LiquidCacheServiceInner {
         self.execution_plans.read().unwrap().clone()
     }
 
-    pub(crate) fn set_flamegraph_svg(&self, plan_id: &Uuid, svg_content: String) -> bool {
+    pub(crate) fn set_post_execution_stats(
+        &self,
+        plan_id: &Uuid,
+        post_execution_stats: ExecutionStats,
+    ) -> bool {
         if let Some(entry) = self.execution_plans.write().unwrap().get_mut(plan_id) {
-            entry.set_flamegraph_svg(svg_content);
+            entry.set_post_execution_stats(post_execution_stats);
             true
         } else {
             false

@@ -13,6 +13,7 @@ use fastrace::future::FutureExt as _;
 use liquid_cache_client::{LiquidCacheBuilder, LiquidCacheClientExec};
 use liquid_cache_common::CacheMode;
 use liquid_cache_common::rpc::ExecutionMetricsResponse;
+use liquid_cache_server::{ApiResponse, ExecutionStats};
 use log::info;
 use object_store::ClientConfigKey;
 use serde::Serialize;
@@ -133,7 +134,7 @@ impl CommonBenchmarkArgs {
         }
     }
 
-    pub async fn stop_flamegraph(&self, plan_uuid: &Uuid) {
+    pub async fn stop_flamegraph(&self, plan_uuid: &Uuid) -> Option<String> {
         if self.flamegraph {
             let response = reqwest::Client::new()
                 .get(format!(
@@ -143,8 +144,16 @@ impl CommonBenchmarkArgs {
                 .send()
                 .await
                 .unwrap();
-            let _response_body = response.text().await.unwrap();
-            info!("Flamegraph saved to admin dashboard");
+            let response_body = response.json::<ApiResponse>().await.unwrap();
+            if response_body.status == "success" {
+                info!("Flamegraph saved to admin dashboard");
+                Some(response_body.message)
+            } else {
+                info!("Failed to save flamegraph to admin dashboard");
+                None
+            }
+        } else {
+            None
         }
     }
 
@@ -342,7 +351,7 @@ impl CommonBenchmarkArgs {
                     .unwrap();
                 let mut metrics = Vec::new();
                 for handle in handles {
-                    let plan_id = handle.get_plan_uuid().await.unwrap();
+                    let plan_id = handle.get_uuid();
                     let response = reqwest::Client::new()
                         .get(format!(
                             "{}/execution_metrics?plan_id={plan_id}",
@@ -390,6 +399,28 @@ impl CommonBenchmarkArgs {
             .await
             .unwrap();
         Ok(())
+    }
+
+    pub async fn set_execution_stats(
+        &self,
+        plan_uuid: &Uuid,
+        flamegraph: Option<String>,
+        display_name: String,
+        network_traffic_bytes: u64,
+    ) {
+        let params = ExecutionStats {
+            plan_id: plan_uuid.to_string(),
+            display_name,
+            flamegraph_svg: flamegraph,
+            network_traffic_bytes,
+        };
+        let client = reqwest::Client::new();
+        client
+            .post(format!("{}/set_execution_stats", self.admin_server))
+            .json(&params)
+            .send()
+            .await
+            .unwrap();
     }
 }
 
@@ -458,7 +489,7 @@ pub async fn run_query(
         )));
     let ctx = ctx.with_session_config(cfg);
     let results = collect(physical_plan.clone(), Arc::new(ctx)).await?;
-    let plan_uuid = utils::get_plan_uuid(&physical_plan).await;
+    let plan_uuid = utils::get_plan_uuid(&physical_plan);
     Ok((results, physical_plan, plan_uuid))
 }
 
@@ -488,6 +519,7 @@ impl QueryResult {
         self.iteration_results.push(iteration_result);
     }
 }
+
 #[derive(Serialize)]
 pub struct IterationResult {
     pub network_traffic: u64,
