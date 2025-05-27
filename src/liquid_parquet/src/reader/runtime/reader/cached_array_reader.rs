@@ -387,9 +387,9 @@ mod tests {
     use liquid_cache_common::CacheEvictionStrategy::Discard;
     use liquid_cache_common::LiquidCacheMode;
 
+    use super::*;
     use crate::cache::LiquidCache;
     use crate::policies::DiscardPolicy;
-    use super::*;
 
     struct MockArrayReader {
         rows: Vec<i32>,
@@ -457,7 +457,7 @@ mod tests {
             LiquidCacheMode::InMemoryLiquid {
                 transcode_in_background: false,
             },
-            Box::new(DiscardPolicy::default())
+            Box::new(DiscardPolicy::default()),
         ));
         let file = liquid_cache.register_or_get_file("test".to_string());
         let row_group = file.row_group(0);

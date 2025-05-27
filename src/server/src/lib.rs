@@ -36,7 +36,10 @@ use datafusion::{
 use datafusion_proto::bytes::physical_plan_from_bytes;
 use fastrace::prelude::SpanContext;
 use futures::{Stream, TryStreamExt};
-use liquid_cache_common::{CacheMode, rpc::{FetchResults, LiquidCacheActions}, CacheEvictionStrategy};
+use liquid_cache_common::{
+    CacheEvictionStrategy, CacheMode,
+    rpc::{FetchResults, LiquidCacheActions},
+};
 use liquid_cache_parquet::LiquidCacheRef;
 use log::info;
 use prost::bytes::Bytes;
@@ -56,7 +59,6 @@ pub use admin_server::{ApiResponse, ExecutionStats, run_admin_server};
 pub use errors::{
     LiquidCacheErrorExt, LiquidCacheResult, anyhow_to_status, df_error_to_status_with_trace,
 };
-use liquid_cache_parquet::policies::CachePolicy;
 
 #[cfg(test)]
 mod tests;
@@ -92,7 +94,13 @@ impl LiquidCacheService {
     /// With no disk cache and unbounded memory usage.
     pub fn try_new() -> anyhow::Result<Self> {
         let ctx = Self::context()?;
-        Self::new(ctx, None, None, CacheMode::LiquidEagerTranscode, CacheEvictionStrategy::Discard)
+        Self::new(
+            ctx,
+            None,
+            None,
+            CacheMode::LiquidEagerTranscode,
+            CacheEvictionStrategy::Discard,
+        )
     }
 
     /// Create a new [LiquidCacheService] with a custom [SessionContext]
@@ -108,7 +116,7 @@ impl LiquidCacheService {
         max_cache_bytes: Option<usize>,
         disk_cache_dir: Option<PathBuf>,
         cache_mode: CacheMode,
-        cache_policy: CacheEvictionStrategy
+        cache_policy: CacheEvictionStrategy,
     ) -> anyhow::Result<Self> {
         let disk_cache_dir = match disk_cache_dir {
             Some(dir) => dir,
@@ -120,7 +128,7 @@ impl LiquidCacheService {
                 max_cache_bytes,
                 disk_cache_dir,
                 cache_mode,
-                cache_policy
+                cache_policy,
             ),
         })
     }

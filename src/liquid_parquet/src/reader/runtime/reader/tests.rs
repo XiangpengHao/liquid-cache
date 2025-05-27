@@ -1,3 +1,4 @@
+use crate::policies::DiscardPolicy;
 use crate::{
     LiquidCachedFileRef, LiquidPredicate,
     cache::LiquidCache,
@@ -29,7 +30,6 @@ use parquet::arrow::{
     },
 };
 use std::{fs::File, path::PathBuf, sync::Arc};
-use crate::policies::DiscardPolicy;
 
 const TEST_FILE_PATH: &str = "../../examples/nano_hits.parquet";
 
@@ -131,7 +131,13 @@ fn get_test_cache(
     cache_dir: PathBuf,
     cache_mode: &LiquidCacheMode,
 ) -> LiquidCachedFileRef {
-    let lq = LiquidCache::new(bath_size, usize::MAX, cache_dir, *cache_mode, Box::new(DiscardPolicy::default()));
+    let lq = LiquidCache::new(
+        bath_size,
+        usize::MAX,
+        cache_dir,
+        *cache_mode,
+        Box::new(DiscardPolicy::default()),
+    );
 
     lq.register_or_get_file("".to_string())
 }
@@ -350,7 +356,7 @@ async fn test_reading_with_full_cache() {
         LiquidCacheMode::InMemoryLiquid {
             transcode_in_background: false,
         },
-        Box::new(DiscardPolicy::default())
+        Box::new(DiscardPolicy::default()),
     );
     let lq_file = lq.register_or_get_file("".to_string());
 
