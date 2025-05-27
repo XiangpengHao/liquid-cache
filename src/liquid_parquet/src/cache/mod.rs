@@ -1,5 +1,6 @@
 use super::liquid_array::LiquidArrayRef;
 use crate::liquid_array::ipc::{self, LiquidIPCContext};
+use crate::policies::CachePolicy;
 use crate::sync::{Mutex, RwLock};
 use crate::{ABLATION_STUDY_MODE, AblationStudyMode, LiquidPredicate};
 use ahash::AHashMap;
@@ -547,9 +548,9 @@ impl LiquidCache {
         max_cache_bytes: usize,
         cache_dir: PathBuf,
         cache_mode: LiquidCacheMode,
+        cache_policy: Box<dyn CachePolicy>,
     ) -> Self {
         assert!(batch_size.is_power_of_two());
-        let cache_policy = Box::new(policies::DiscardPolicy);
 
         LiquidCache {
             files: Mutex::new(AHashMap::new()),

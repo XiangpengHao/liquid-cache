@@ -37,7 +37,7 @@ use datafusion_proto::bytes::physical_plan_from_bytes;
 use fastrace::prelude::SpanContext;
 use futures::{Stream, TryStreamExt};
 use liquid_cache_common::{
-    CacheMode,
+    CacheEvictionStrategy, CacheMode,
     rpc::{FetchResults, LiquidCacheActions},
 };
 use liquid_cache_parquet::LiquidCacheRef;
@@ -72,7 +72,8 @@ mod tests;
 /// use datafusion::prelude::SessionContext;
 /// use liquid_cache_server::LiquidCacheService;
 /// use tonic::transport::Server;
-/// let liquid_cache = LiquidCacheService::new(SessionContext::new(), None, None, Default::default()).unwrap();
+/// use liquid_cache_common::CacheEvictionStrategy::Discard;
+/// let liquid_cache = LiquidCacheService::new(SessionContext::new(), None, None, Default::default(), Discard).unwrap();
 /// let flight = FlightServiceServer::new(liquid_cache);
 /// Server::builder()
 ///     .add_service(flight)
@@ -93,7 +94,13 @@ impl LiquidCacheService {
     /// With no disk cache and unbounded memory usage.
     pub fn try_new() -> anyhow::Result<Self> {
         let ctx = Self::context()?;
-        Self::new(ctx, None, None, CacheMode::LiquidEagerTranscode)
+        Self::new(
+            ctx,
+            None,
+            None,
+            CacheMode::LiquidEagerTranscode,
+            CacheEvictionStrategy::Discard,
+        )
     }
 
     /// Create a new [LiquidCacheService] with a custom [SessionContext]
@@ -109,6 +116,7 @@ impl LiquidCacheService {
         max_cache_bytes: Option<usize>,
         disk_cache_dir: Option<PathBuf>,
         cache_mode: CacheMode,
+        cache_policy: CacheEvictionStrategy,
     ) -> anyhow::Result<Self> {
         let disk_cache_dir = match disk_cache_dir {
             Some(dir) => dir,
@@ -120,6 +128,7 @@ impl LiquidCacheService {
                 max_cache_bytes,
                 disk_cache_dir,
                 cache_mode,
+                cache_policy,
             ),
         })
     }

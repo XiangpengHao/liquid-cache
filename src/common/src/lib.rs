@@ -22,6 +22,14 @@ pub enum CacheMode {
     Arrow,
 }
 
+/// Specify which eviction logic the cache should use
+/// See [`LiquidCacheMode`](https://docs.rs/liquid-cache-parquet/latest/liquid_cache_parquet/policies/index.html)
+pub enum CacheEvictionStrategy {
+    Discard,
+    Filo,
+    Lru,
+}
+
 impl Display for CacheMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
