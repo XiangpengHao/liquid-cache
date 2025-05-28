@@ -197,7 +197,7 @@ impl Benchmark for ClickBenchBenchmark {
     ) -> Result<(
         Vec<RecordBatch>,
         Arc<dyn datafusion::physical_plan::ExecutionPlan>,
-        Option<Uuid>,
+        Vec<Uuid>,
     )> {
         run_query(ctx, &query.sql).await
     }

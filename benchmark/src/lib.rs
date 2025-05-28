@@ -135,13 +135,10 @@ impl CommonBenchmarkArgs {
         }
     }
 
-    pub async fn stop_flamegraph(&self, plan_uuid: &Uuid) -> Option<String> {
+    pub async fn stop_flamegraph(&self) -> Option<String> {
         if self.flamegraph {
             let response = reqwest::Client::new()
-                .get(format!(
-                    "{}/stop_flamegraph?plan_id={}",
-                    self.admin_server, plan_uuid
-                ))
+                .get(format!("{}/stop_flamegraph", self.admin_server))
                 .send()
                 .await
                 .unwrap();
@@ -288,18 +285,20 @@ impl CommonBenchmarkArgs {
 
     pub async fn set_execution_stats(
         &self,
-        plan_uuid: &Uuid,
+        plan_uuid: Vec<Uuid>,
         flamegraph: Option<String>,
         display_name: String,
         network_traffic_bytes: u64,
         execution_time_ms: u64,
+        user_sql: String,
     ) {
         let params = ExecutionStats {
-            plan_id: plan_uuid.to_string(),
+            plan_ids: plan_uuid.iter().map(|uuid| uuid.to_string()).collect(),
             display_name,
             flamegraph_svg: flamegraph,
             network_traffic_bytes,
             execution_time_ms,
+            user_sql,
         };
         let client = reqwest::Client::new();
         client
@@ -356,7 +355,7 @@ impl FromStr for BenchmarkMode {
 pub async fn run_query(
     ctx: &Arc<SessionContext>,
     query: &str,
-) -> Result<(Vec<RecordBatch>, Arc<dyn ExecutionPlan>, Option<Uuid>)> {
+) -> Result<(Vec<RecordBatch>, Arc<dyn ExecutionPlan>, Vec<Uuid>)> {
     let df = ctx
         .sql(query)
         .in_span(Span::enter_with_local_parent("logical_plan"))
@@ -376,8 +375,8 @@ pub async fn run_query(
         )));
     let ctx = ctx.with_session_config(cfg);
     let results = collect(physical_plan.clone(), Arc::new(ctx)).await?;
-    let plan_uuid = utils::get_plan_uuid(&physical_plan);
-    Ok((results, physical_plan, plan_uuid))
+    let plan_uuids = utils::get_plan_uuids(&physical_plan);
+    Ok((results, physical_plan, plan_uuids))
 }
 
 #[derive(Serialize)]

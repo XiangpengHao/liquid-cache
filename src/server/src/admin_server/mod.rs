@@ -8,39 +8,15 @@ use axum::{
     routing::{get, post},
 };
 use flamegraph::FlameGraph;
-use serde::{Deserialize, Serialize};
 use std::sync::atomic::AtomicU32;
 use std::{net::SocketAddr, sync::Arc};
 use tower_http::cors::CorsLayer;
 
 mod flamegraph;
 mod handlers;
+pub(crate) mod models;
 
 use crate::LiquidCacheService;
-
-/// Response for the admin server
-#[derive(Serialize, Deserialize)]
-pub struct ApiResponse {
-    /// Message for the response
-    pub message: String,
-    /// Status for the response
-    pub status: String,
-}
-
-/// Parameters for the set_execution_stats endpoint
-#[derive(Deserialize, Serialize, Clone)]
-pub struct ExecutionStats {
-    /// Plan ID for the execution plan
-    pub plan_id: String,
-    /// Display name for the execution plan
-    pub display_name: String,
-    /// Flamegraph SVG for the execution plan
-    pub flamegraph_svg: Option<String>,
-    /// Network traffic bytes for the execution plan
-    pub network_traffic_bytes: u64,
-    /// Execution time in milliseconds
-    pub execution_time_ms: u64,
-}
 
 pub(crate) struct AppState {
     liquid_cache: Arc<LiquidCacheService>,
@@ -89,13 +65,13 @@ pub async fn run_admin_server(
             "/execution_metrics",
             get(handlers::get_execution_metrics_handler),
         )
-        .route("/execution_plans", get(handlers::get_execution_plans))
+        .route("/execution_plans", get(handlers::get_execution_stats))
         .route("/cache_stats", get(handlers::get_cache_stats_handler))
         .route("/start_flamegraph", get(handlers::start_flamegraph_handler))
         .route("/stop_flamegraph", get(handlers::stop_flamegraph_handler))
         .route(
             "/set_execution_stats",
-            post(handlers::set_execution_stats_handler),
+            post(handlers::add_execution_stats_handler),
         )
         .with_state(state)
         .layer(cors);

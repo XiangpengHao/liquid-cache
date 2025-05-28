@@ -7,7 +7,6 @@ use datafusion::{
 };
 use liquid_cache_common::CacheEvictionStrategy::Discard;
 use liquid_cache_common::CacheMode;
-use liquid_cache_parquet::policies::DiscardPolicy;
 use uuid::Uuid;
 
 mod cases;
@@ -40,7 +39,7 @@ async fn run_sql(sql: &str, mode: CacheMode, cache_size_bytes: usize, file_path:
         let plan = get_physical_plan(sql, &ctx).await;
         service.register_plan(handle, plan);
         let plan = service.get_plan(&handle).unwrap();
-        let batches = collect(plan, ctx.task_ctx()).await.unwrap();
+        let batches = collect(plan.plan, ctx.task_ctx()).await.unwrap();
         pretty_format_batches(&batches).unwrap().to_string()
     }
 
