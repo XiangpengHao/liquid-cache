@@ -12,7 +12,6 @@ use flamegraph::FlameGraph;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::AtomicU32;
 use std::{net::SocketAddr, sync::Arc};
-use tokio_metrics::TaskMonitor;
 use tower_http::cors::CorsLayer;
 
 mod flamegraph;
