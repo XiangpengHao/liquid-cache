@@ -1,4 +1,3 @@
-use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio_metrics::{RuntimeMonitor, TaskMonitor};

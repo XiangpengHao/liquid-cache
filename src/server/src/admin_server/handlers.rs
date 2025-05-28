@@ -5,7 +5,6 @@ use std::{
 };
 
 use crate::admin_server::task_monitor::LiquidTaskMetricsResponse;
-use axum::handler::Handler;
 use axum::{
     Json,
     extract::{Query, State},

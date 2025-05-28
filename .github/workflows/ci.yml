@@ -24,7 +24,6 @@ jobs:
           toolchain: nightly-2025-04-29
 
       - uses: Swatinem/rust-cache@v2
-      
       - name: Check formatting
         run: cargo fmt --all -- --check
 
@@ -36,10 +35,14 @@ jobs:
 
       - name: Run clippy
         run: cargo clippy -- -D warnings
+        env:
+          RUSTFLAGS: --cfg tokio_unstable
 
   unit_test:
     name: Unit Test
     runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: --cfg tokio_unstable
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -55,7 +58,7 @@ jobs:
         env:
           RUSTFLAGS: --cfg tokio_unstable
         with:
-          token: ${{ secrets.CODECOV_TOKEN }} 
+          token: ${{ secrets.CODECOV_TOKEN }}
           files: codecov.json
           fail_ci_if_error: true
   
@@ -175,7 +178,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ ubuntu-latest, macos-latest ]
       fail-fast: false
     env:
       RUSTFLAGS: --cfg tokio_unstable
