@@ -37,7 +37,7 @@ use datafusion_proto::bytes::physical_plan_from_bytes;
 use fastrace::prelude::SpanContext;
 use futures::{Stream, TryStreamExt};
 use liquid_cache_common::{
-    CacheMode,
+    CacheEvictionStrategy, CacheMode,
     rpc::{FetchResults, LiquidCacheActions},
 };
 use liquid_cache_parquet::LiquidCacheRef;
@@ -53,8 +53,12 @@ mod service;
 mod utils;
 use utils::FinalStream;
 mod admin_server;
+mod errors;
 mod local_cache;
-pub use admin_server::run_admin_server;
+pub use admin_server::{ApiResponse, ExecutionStats, run_admin_server};
+pub use errors::{
+    LiquidCacheErrorExt, LiquidCacheResult, anyhow_to_status, df_error_to_status_with_trace,
+};
 
 #[cfg(test)]
 mod tests;
@@ -68,11 +72,12 @@ mod tests;
 /// use datafusion::prelude::SessionContext;
 /// use liquid_cache_server::LiquidCacheService;
 /// use tonic::transport::Server;
-/// let liquid_cache = LiquidCacheService::new(SessionContext::new(), None, None, Default::default());
+/// use liquid_cache_common::CacheEvictionStrategy::Discard;
+/// let liquid_cache = LiquidCacheService::new(SessionContext::new(), None, None, Default::default(), Discard).unwrap();
 /// let flight = FlightServiceServer::new(liquid_cache);
 /// Server::builder()
 ///     .add_service(flight)
-///     .serve("0.0.0.0:50051".parse().unwrap());
+///     .serve("0.0.0.0:15214".parse().unwrap());
 /// ```
 pub struct LiquidCacheService {
     inner: LiquidCacheServiceInner,
@@ -87,9 +92,15 @@ impl Default for LiquidCacheService {
 impl LiquidCacheService {
     /// Create a new [LiquidCacheService] with a default [SessionContext]
     /// With no disk cache and unbounded memory usage.
-    pub fn try_new() -> Result<Self, DataFusionError> {
+    pub fn try_new() -> anyhow::Result<Self> {
         let ctx = Self::context()?;
-        Ok(Self::new(ctx, None, None, CacheMode::LiquidEagerTranscode))
+        Self::new(
+            ctx,
+            None,
+            None,
+            CacheMode::LiquidEagerTranscode,
+            CacheEvictionStrategy::Discard,
+        )
     }
 
     /// Create a new [LiquidCacheService] with a custom [SessionContext]
@@ -105,15 +116,21 @@ impl LiquidCacheService {
         max_cache_bytes: Option<usize>,
         disk_cache_dir: Option<PathBuf>,
         cache_mode: CacheMode,
-    ) -> Self {
-        Self {
+        cache_policy: CacheEvictionStrategy,
+    ) -> anyhow::Result<Self> {
+        let disk_cache_dir = match disk_cache_dir {
+            Some(dir) => dir,
+            None => tempfile::tempdir()?.keep(),
+        };
+        Ok(Self {
             inner: LiquidCacheServiceInner::new(
                 Arc::new(ctx),
                 max_cache_bytes,
                 disk_cache_dir,
                 cache_mode,
+                cache_policy,
             ),
-        }
+        })
     }
 
     /// Get a reference to the cache
@@ -137,7 +154,7 @@ impl LiquidCacheService {
             options_mut.execution.parquet.schema_force_view_types = false;
         }
 
-        let object_store_url = ObjectStoreUrl::parse("file://").unwrap();
+        let object_store_url = ObjectStoreUrl::parse("file://")?;
         let object_store = object_store::local::LocalFileSystem::new();
 
         let state = SessionStateBuilder::new()
@@ -157,6 +174,70 @@ impl LiquidCacheService {
 
     pub(crate) fn inner(&self) -> &LiquidCacheServiceInner {
         &self.inner
+    }
+
+    async fn do_get_fallback_inner(
+        &self,
+        message: Any,
+    ) -> anyhow::Result<Response<<Self as FlightService>::DoGetStream>> {
+        if !message.is::<FetchResults>() {
+            return Err(anyhow::anyhow!(
+                "do_get: The defined request is invalid: {}",
+                message.type_url
+            ));
+        }
+
+        let fetch_results: FetchResults = message
+            .unpack()?
+            .ok_or_else(|| anyhow::anyhow!("Expected FetchResults but got None!"))?;
+
+        let span_context = SpanContext::decode_w3c_traceparent(&fetch_results.traceparent)
+            .ok_or_else(|| anyhow::anyhow!("Failed to decode traceparent"))?;
+        let span = fastrace::Span::root("poll_stream", span_context);
+
+        let handle = Uuid::from_bytes_ref(fetch_results.handle.as_ref().try_into()?);
+        let partition = fetch_results.partition as usize;
+        let stream = self.inner.execute_plan(handle, partition).await?;
+        let stream = FinalStream::new(stream, self.inner.batch_size(), span).map_err(|e| {
+            let status = anyhow_to_status(anyhow::Error::from(e).context("Error executing plan"));
+            arrow_flight::error::FlightError::Tonic(Box::new(status))
+        });
+
+        let ipc_options = IpcWriteOptions::default();
+        let stream = FlightDataEncoderBuilder::new()
+            .with_options(ipc_options)
+            .with_dictionary_handling(DictionaryHandling::Resend)
+            .build(stream)
+            .map_err(Status::from);
+
+        Ok(Response::new(Box::pin(stream)))
+    }
+
+    async fn do_action_inner(
+        &self,
+        action: LiquidCacheActions,
+    ) -> anyhow::Result<Response<<Self as FlightService>::DoActionStream>> {
+        match action {
+            LiquidCacheActions::RegisterObjectStore(cmd) => {
+                let url = Url::parse(&cmd.url)?;
+                self.inner.register_object_store(&url, cmd.options).await?;
+
+                let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
+                    body: Bytes::default(),
+                })]);
+                Ok(Response::new(Box::pin(output)))
+            }
+            LiquidCacheActions::RegisterPlan(cmd) => {
+                let plan = cmd.plan;
+                let plan = physical_plan_from_bytes(&plan, self.inner.get_ctx())?;
+                let handle = Uuid::from_bytes_ref(cmd.handle.as_ref().try_into()?);
+                self.inner.register_plan(*handle, plan);
+                let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
+                    body: Bytes::default(),
+                })]);
+                Ok(Response::new(Box::pin(output)))
+            }
+        }
     }
 }
 
@@ -180,35 +261,9 @@ impl FlightSqlService for LiquidCacheService {
         _request: Request<Ticket>,
         message: Any,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
-        if !message.is::<FetchResults>() {
-            Err(Status::unimplemented(format!(
-                "do_get: The defined request is invalid: {}",
-                message.type_url
-            )))?
-        }
-        let fetch_results: FetchResults = message
-            .unpack()
-            .map_err(|e| Status::internal(format!("{e:?}")))?
-            .ok_or_else(|| Status::internal("Expected FetchResults but got None!"))?;
-
-        let span_context = SpanContext::decode_w3c_traceparent(&fetch_results.traceparent).unwrap();
-        let span = fastrace::Span::root("poll_stream", span_context);
-
-        let handle = Uuid::from_bytes_ref(fetch_results.handle.as_ref().try_into().unwrap());
-        let partition = fetch_results.partition as usize;
-        let stream = self.inner.execute_plan(handle, partition).await;
-        let stream = FinalStream::new(stream, self.inner.batch_size(), span).map_err(|e| {
-            panic!("Error executing plan: {e:?}");
-        });
-
-        let ipc_options = IpcWriteOptions::default();
-        let stream = FlightDataEncoderBuilder::new()
-            .with_options(ipc_options)
-            .with_dictionary_handling(DictionaryHandling::Resend)
-            .build(stream)
-            .map_err(Status::from);
-
-        Ok(Response::new(Box::pin(stream)))
+        self.do_get_fallback_inner(message)
+            .await
+            .map_err(anyhow_to_status)
     }
 
     async fn do_put_prepared_statement_update(
@@ -228,34 +283,8 @@ impl FlightSqlService for LiquidCacheService {
         request: Request<Action>,
     ) -> Result<Response<<Self as FlightService>::DoActionStream>, Status> {
         let action = LiquidCacheActions::from(request.into_inner());
-        match action {
-            LiquidCacheActions::RegisterObjectStore(cmd) => {
-                self.inner
-                    .register_object_store(&Url::parse(&cmd.url).unwrap(), cmd.options)
-                    .await
-                    .map_err(df_error_to_status)?;
-
-                let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
-                    body: Bytes::default(),
-                })]);
-                return Ok(Response::new(Box::pin(output)));
-            }
-            LiquidCacheActions::RegisterPlan(cmd) => {
-                let plan = cmd.plan;
-                let plan = physical_plan_from_bytes(&plan, self.inner.get_ctx()).unwrap();
-                let handle = Uuid::from_bytes_ref(cmd.handle.as_ref().try_into().unwrap());
-                self.inner.register_plan(*handle, plan);
-                let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
-                    body: Bytes::default(),
-                })]);
-                return Ok(Response::new(Box::pin(output)));
-            }
-        }
+        self.do_action_inner(action).await.map_err(anyhow_to_status)
     }
 
     async fn register_sql_info(&self, _id: i32, _result: &SqlInfo) {}
-}
-
-fn df_error_to_status(err: datafusion::error::DataFusionError) -> Status {
-    Status::internal(format!("{err:?}"))
 }

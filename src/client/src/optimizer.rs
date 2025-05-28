@@ -99,34 +99,32 @@ fn find_pushdown_candidate(plan: &Arc<dyn ExecutionPlan>) -> Option<Arc<dyn Exec
     let plan_any = plan.as_any();
 
     // If we have an AggregateExec (partial, no group by) with a pushable child (direct or through RepartitionExec), push it down
-    if let Some(agg_exec) = plan_any.downcast_ref::<AggregateExec>() {
-        if matches!(agg_exec.mode(), AggregateMode::Partial) && agg_exec.group_expr().is_empty() {
-            let child = agg_exec.input();
+    if let Some(agg_exec) = plan_any.downcast_ref::<AggregateExec>()
+        && matches!(agg_exec.mode(), AggregateMode::Partial)
+        && agg_exec.group_expr().is_empty()
+    {
+        let child = agg_exec.input();
 
-            // Check if child is DataSourceExec or RepartitionExec->DataSourceExec
-            if child.as_any().downcast_ref::<DataSourceExec>().is_some() {
-                return Some(plan.clone());
-            } else if let Some(repart) = child.as_any().downcast_ref::<RepartitionExec>() {
-                if let Some(repart_child) = repart.children().first() {
-                    if repart_child
-                        .as_any()
-                        .downcast_ref::<DataSourceExec>()
-                        .is_some()
-                    {
-                        return Some(plan.clone());
-                    }
-                }
-            }
+        // Check if child is DataSourceExec or RepartitionExec->DataSourceExec
+        if child.as_any().downcast_ref::<DataSourceExec>().is_some() {
+            return Some(plan.clone());
+        } else if let Some(repart) = child.as_any().downcast_ref::<RepartitionExec>()
+            && let Some(repart_child) = repart.children().first()
+            && repart_child
+                .as_any()
+                .downcast_ref::<DataSourceExec>()
+                .is_some()
+        {
+            return Some(plan.clone());
         }
     }
 
     // If we have a RepartitionExec with a DataSourceExec child, push it down
-    if let Some(repart_exec) = plan_any.downcast_ref::<RepartitionExec>() {
-        if let Some(child) = repart_exec.children().first() {
-            if child.as_any().downcast_ref::<DataSourceExec>().is_some() {
-                return Some(plan.clone());
-            }
-        }
+    if let Some(repart_exec) = plan_any.downcast_ref::<RepartitionExec>()
+        && let Some(child) = repart_exec.children().first()
+        && child.as_any().downcast_ref::<DataSourceExec>().is_some()
+    {
+        return Some(plan.clone());
     }
 
     // If this is a DataSourceExec, push it down
@@ -191,7 +189,7 @@ mod tests {
             .with_config(config)
             .with_default_features()
             .with_physical_optimizer_rule(Arc::new(PushdownOptimizer::new(
-                "localhost:50051".to_string(),
+                "localhost:15214".to_string(),
                 CacheMode::Liquid,
                 vec![],
             )));
@@ -274,7 +272,7 @@ mod tests {
     // Apply the PushdownOptimizer to a plan and get the result as a string for comparison
     fn apply_optimizer(plan: Arc<dyn ExecutionPlan>) -> String {
         let optimizer =
-            PushdownOptimizer::new("localhost:50051".to_string(), CacheMode::Liquid, vec![]);
+            PushdownOptimizer::new("localhost:15214".to_string(), CacheMode::Liquid, vec![]);
 
         let optimized = optimizer.optimize(plan, &ConfigOptions::default()).unwrap();
         let display_plan = DisplayableExecutionPlan::new(optimized.as_ref());

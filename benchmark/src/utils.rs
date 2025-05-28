@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use datafusion::arrow;
 use datafusion::arrow::array::Array;
 use datafusion::arrow::compute::kernels::numeric::{div, sub_wrapping};
@@ -6,7 +8,23 @@ use datafusion::arrow::{
     array::{AsArray, RecordBatch},
     datatypes::DataType,
 };
+use datafusion::common::tree_node::TreeNode;
+use datafusion::physical_plan::ExecutionPlan;
+use liquid_cache_client::LiquidCacheClientExec;
 use log::warn;
+use uuid::Uuid;
+
+pub(crate) fn get_plan_uuid(plan: &Arc<dyn ExecutionPlan>) -> Option<Uuid> {
+    let mut uuid = None;
+    plan.apply(|plan| {
+        if let Some(plan) = plan.as_any().downcast_ref::<LiquidCacheClientExec>() {
+            uuid = Some(plan.get_uuid());
+        }
+        Ok(datafusion::common::tree_node::TreeNodeRecursion::Continue)
+    })
+    .unwrap();
+    uuid
+}
 
 fn float_eq_helper(left: &dyn Array, right: &dyn Array, tol: f64) -> bool {
     let diff = sub_wrapping(&left, &right).unwrap();

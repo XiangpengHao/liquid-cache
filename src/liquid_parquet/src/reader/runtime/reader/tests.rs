@@ -1,3 +1,4 @@
+use crate::policies::DiscardPolicy;
 use crate::{
     LiquidCachedFileRef, LiquidPredicate,
     cache::LiquidCache,
@@ -130,7 +131,13 @@ fn get_test_cache(
     cache_dir: PathBuf,
     cache_mode: &LiquidCacheMode,
 ) -> LiquidCachedFileRef {
-    let lq = LiquidCache::new(bath_size, usize::MAX, cache_dir, *cache_mode);
+    let lq = LiquidCache::new(
+        bath_size,
+        usize::MAX,
+        cache_dir,
+        *cache_mode,
+        Box::new(DiscardPolicy::default()),
+    );
 
     lq.register_or_get_file("".to_string())
 }
@@ -171,7 +178,7 @@ const CACHE_MODES: &[LiquidCacheMode] = &[
     },
 ];
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_basic() {
     for cache_mode in CACHE_MODES {
         basic_stuff(cache_mode).await;
@@ -203,7 +210,7 @@ async fn read_with_projection(cache_mode: &LiquidCacheMode) {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_read_with_projection() {
     for cache_mode in CACHE_MODES {
         read_with_projection(cache_mode).await;
@@ -243,7 +250,7 @@ async fn read_warm(cache_mode: &LiquidCacheMode) {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_reading_warm() {
     for cache_mode in CACHE_MODES {
         read_warm(cache_mode).await;
@@ -328,14 +335,14 @@ async fn reading_with_filter_two_columns(cache_mode: &LiquidCacheMode) {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_reading_with_filter_two_columns() {
     for cache_mode in CACHE_MODES {
         reading_with_filter_two_columns(cache_mode).await;
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_reading_with_full_cache() {
     let column_projections = vec![0, 3, 6, 8];
     let (mut builder, _file) = get_test_reader().await;
@@ -349,6 +356,7 @@ async fn test_reading_with_full_cache() {
         LiquidCacheMode::InMemoryLiquid {
             transcode_in_background: false,
         },
+        Box::new(DiscardPolicy::default()),
     );
     let lq_file = lq.register_or_get_file("".to_string());
 

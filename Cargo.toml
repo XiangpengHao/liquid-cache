@@ -10,12 +10,12 @@ description = "10x lower latency for cloud-native DataFusion"
 
 [workspace]
 members = [
-	"benchmark",
-	"src/server",
-	"src/client",
-	"src/liquid_parquet",
-	"src/common",
-	"examples",
+    "benchmark",
+    "src/server",
+    "src/client",
+    "src/liquid_parquet",
+    "src/common",
+    "examples",
 ]
 resolver = "3"
 
@@ -24,34 +24,34 @@ liquid-cache-server = { path = "src/server", version = "0.1.4" }
 liquid-cache-client = { path = "src/client", version = "0.1.4" }
 liquid-cache-parquet = { path = "src/liquid_parquet", version = "0.1.4" }
 liquid-cache-common = { path = "src/common", version = "0.1.4" }
-arrow = { version = "55.0.0", default-features = false, features = [
-	"prettyprint",
+arrow = { version = "55.1.0", default-features = false, features = [
+    "prettyprint",
 ] }
-arrow-flight = { version = "55.0.0", features = ["flight-sql-experimental"] }
-arrow-schema = { version = "55.0.0", features = ["serde"] }
-parquet = { version = "55.0.0", features = ["async", "experimental"] }
+arrow-flight = { version = "55.1.0", features = ["flight-sql-experimental"] }
+arrow-schema = { version = "55.1.0", features = ["serde"] }
+parquet = { version = "55.1.0", features = ["async", "experimental"] }
 datafusion = { version = "47.0.0" }
 datafusion-proto = { version = "47.0.0" }
 async-trait = "0.1.88"
 futures = { version = "0.3.31", default-features = false, features = ["std"] }
-tokio = { version = "1.44.2", features = ["rt-multi-thread"] }
+tokio = { version = "1.45.0", features = ["rt-multi-thread"] }
 tokio-metrics = { version = "0.4.2", features = ["rt"] }
 log = "0.4.27"
 tonic = { version = "0.12" }
 url = "2.5.4"
 itertools = "0.14.0"
 bytes = { version = "1.10.1", default-features = false }
-ahash = "0.8.11"
+ahash = "0.8.12"
 prost = "0.13.5"
-object_store = { version = "0.12.0", default-features = false }
+object_store = { version = "0.12.1", default-features = false }
 serde = { version = "1.0", default-features = false, features = ["derive"] }
 serde_json = { version = "1.0", default-features = false, features = ["std"] }
-tempfile = "3.19.1"
+tempfile = "3.20.0"
 uuid = { version = "1.16.0", features = ["v4"] }
 fastrace = "0.7"
 fastrace-futures = "0.7"
 fastrace-tonic = "0.1"
-congee = "0.4.0"
+congee = "0.4.1"
 
 
 [profile.dev.package]

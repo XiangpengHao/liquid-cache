@@ -18,9 +18,6 @@ pub trait CachePolicy: std::fmt::Debug + Send + Sync {
 
     /// Notify the cache policy that an entry was accessed.
     fn notify_access(&self, _entry_id: &CacheEntryID) {}
-
-    /// Notify the cache policy that an entry was evicted.
-    fn notify_evict(&self, _entry_id: &CacheEntryID);
 }
 
 /// The policy that implements the FILO (First In, Last Out) algorithm.
@@ -55,11 +52,6 @@ impl CachePolicy for FiloPolicy {
             return CacheAdvice::Evict(newest_entry);
         }
         fallback_advice(entry_id, cache_mode)
-    }
-
-    fn notify_evict(&self, entry_id: &CacheEntryID) {
-        let mut queue = self.queue.lock().unwrap();
-        queue.retain(|id| id != entry_id);
     }
 
     fn notify_insert(&self, entry_id: &CacheEntryID) {
@@ -146,9 +138,17 @@ unsafe impl Sync for LruPolicy {}
 
 impl CachePolicy for LruPolicy {
     fn advise(&self, entry_id: &CacheEntryID, cache_mode: &LiquidCacheMode) -> CacheAdvice {
-        let state = self.state.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
         if let Some(tail_ptr) = state.tail {
             let tail_entry_id = unsafe { tail_ptr.as_ref().entry_id };
+            let node_ptr = state
+                .map
+                .remove(&tail_entry_id)
+                .expect("tail node not found");
+            unsafe {
+                self.unlink_node(&mut state, node_ptr);
+                drop(Box::from_raw(node_ptr.as_ptr()));
+            }
             return CacheAdvice::Evict(tail_entry_id);
         }
         fallback_advice(entry_id, cache_mode)
@@ -163,16 +163,6 @@ impl CachePolicy for LruPolicy {
             }
         }
         // If not in map, it means it was already evicted or never inserted
-    }
-
-    fn notify_evict(&self, entry_id: &CacheEntryID) {
-        let mut state = self.state.lock().unwrap();
-        if let Some(node_ptr) = state.map.remove(entry_id) {
-            unsafe {
-                self.unlink_node(&mut state, node_ptr);
-                drop(Box::from_raw(node_ptr.as_ptr()));
-            }
-        }
     }
 
     fn notify_insert(&self, entry_id: &CacheEntryID) {
@@ -226,8 +216,6 @@ impl CachePolicy for DiscardPolicy {
     fn advise(&self, _entry_id: &CacheEntryID, _cache_mode: &LiquidCacheMode) -> CacheAdvice {
         CacheAdvice::Discard
     }
-
-    fn notify_evict(&self, _entry_id: &CacheEntryID) {}
 }
 
 fn fallback_advice(entry_id: &CacheEntryID, cache_mode: &LiquidCacheMode) -> CacheAdvice {
@@ -245,7 +233,7 @@ mod test {
     use crate::policies::CachePolicy;
 
     use super::super::{CacheAdvice, CacheEntryID, CachedBatch};
-    use super::{FiloPolicy, LruInternalState, LruPolicy};
+    use super::{DiscardPolicy, FiloPolicy, LruInternalState, LruPolicy};
     use crate::sync::{Arc, Barrier, thread};
     use std::sync::atomic::Ordering;
 
@@ -401,8 +389,8 @@ mod test {
         }
         policy.notify_access(&entry(2));
         policy.notify_access(&entry(5));
-        policy.notify_evict(&entry(0));
-        policy.notify_evict(&entry(1));
+        policy.advise(&entry(0), &LiquidCacheMode::InMemoryArrow);
+        policy.advise(&entry(1), &LiquidCacheMode::InMemoryArrow);
 
         let state = policy.state.lock().unwrap();
         state.check_integrity();
@@ -426,6 +414,64 @@ mod test {
     #[test]
     fn shuttle_lru_operations() {
         crate::utils::shuttle_test(concurrent_lru_operations);
+    }
+
+    fn concurrent_invariant_advice_once(policy: Arc<dyn CachePolicy>) {
+        let num_threads = 4;
+
+        for i in 0..100 {
+            policy.notify_insert(&entry(i));
+        }
+
+        let advised_entries = Arc::new(crate::sync::Mutex::new(Vec::new()));
+
+        let mut handles = Vec::new();
+        for _ in 0..num_threads {
+            let policy_clone = policy.clone();
+            let advised_entries_clone = advised_entries.clone();
+
+            let handle = thread::spawn(move || {
+                let advice = policy_clone.advise(&entry(999), &LiquidCacheMode::InMemoryArrow);
+                if let CacheAdvice::Evict(entry_id) = advice {
+                    let mut entries = advised_entries_clone.lock().unwrap();
+                    entries.push(entry_id);
+                }
+            });
+
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let entries = advised_entries.lock().unwrap();
+        let mut unique_entries = entries.clone();
+        unique_entries.sort();
+        unique_entries.dedup();
+
+        // If there are duplicates, entries.len() will be greater than unique_entries.len()
+        assert_eq!(
+            entries.len(),
+            unique_entries.len(),
+            "Some entries were advised for eviction multiple times: {:?}",
+            entries
+        );
+    }
+
+    #[test]
+    fn test_concurrent_invariant_advice_once() {
+        concurrent_invariant_advice_once(Arc::new(LruPolicy::new()));
+
+        concurrent_invariant_advice_once(Arc::new(DiscardPolicy));
+
+        concurrent_invariant_advice_once(Arc::new(FiloPolicy::new()));
+    }
+
+    #[cfg(feature = "shuttle")]
+    #[test]
+    fn shuttle_concurrent_invariant_advice_once() {
+        crate::utils::shuttle_test(test_concurrent_invariant_advice_once);
     }
 
     fn concurrent_lru_operations() {
@@ -472,7 +518,7 @@ mod test {
                                 // Evict some earlier entries we created
                                 let to_evict =
                                     entry((thread_id * operations_per_thread + i - 20) as u64);
-                                policy_clone.notify_evict(&to_evict);
+                                policy_clone.advise(&to_evict, &LiquidCacheMode::InMemoryArrow);
                                 total_evictions_clone.fetch_add(1, Ordering::SeqCst);
                             }
                         }

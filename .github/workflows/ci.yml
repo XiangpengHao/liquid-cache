@@ -114,13 +114,13 @@ jobs:
           env RUST_LOG=info cargo run --bin clickbench_client -- --query-path benchmark/clickbench/queries/queries.sql --file examples/nano_hits.parquet
           echo "=== Server logs ==="
           cat server.log || echo "No server log found"
-          curl http://localhost:50052/shutdown
+          curl http://localhost:53703/shutdown
           env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic --cache-mode liquid_eager_transcode &> server.log &
           sleep 2  # Wait for server to start up
           env RUST_LOG=info cargo run --bin clickbench_client -- --query-path benchmark/clickbench/queries/queries.sql --file benchmark/data/hits_0.parquet --answer-dir benchmark/clickbench/answers/clickbench_0
           echo "=== Server logs (partition 0) ==="
           cat server.log || echo "No server log found"
-          curl http://localhost:50052/shutdown
+            curl http://localhost:53703/shutdown
           cargo llvm-cov report --codecov --output-path codecov_clickbench.json
         env:
           RUSTFLAGS: --cfg tokio_unstable
@@ -159,7 +159,7 @@ jobs:
           env RUST_LOG=info cargo run --bin tpch_client -- --query-dir benchmark/tpch/queries --answer-dir benchmark/tpch/answers/sf0.1 --data-dir benchmark/tpch/data/sf0.1
           echo "=== Server logs ==="
           cat server.log || echo "No server log found"
-          curl http://localhost:50052/shutdown
+          curl http://localhost:53703/shutdown
           cargo llvm-cov report --codecov --output-path codecov_tpch.json
         env:
           RUSTFLAGS: --cfg tokio_unstable
