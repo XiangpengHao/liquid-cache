@@ -187,23 +187,23 @@ impl Benchmark for TpchBenchmark {
     ) -> Result<(
         Vec<RecordBatch>,
         Arc<dyn datafusion::physical_plan::ExecutionPlan>,
-        Option<Uuid>,
+        Vec<Uuid>,
     )> {
         if query.id == 15 {
             // Q15 has three queries, the second one is the one we want to test
             let queries: Vec<&str> = query.sql.split(';').collect();
             let mut results = Vec::new();
             let mut physical_plan = None;
-            let mut plan_uuid = None;
+            let mut plan_uuids = Vec::new();
             for (i, q) in queries.iter().enumerate() {
                 let (result, plan, uuid) = run_query(ctx, q).await?;
                 if i == 1 {
                     physical_plan = Some(plan);
                     results = result;
-                    plan_uuid = uuid;
+                    plan_uuids = uuid;
                 }
             }
-            Ok((results, physical_plan.unwrap(), plan_uuid))
+            Ok((results, physical_plan.unwrap(), plan_uuids))
         } else {
             run_query(ctx, &query.sql).await
         }

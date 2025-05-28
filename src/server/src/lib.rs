@@ -55,7 +55,7 @@ use utils::FinalStream;
 mod admin_server;
 mod errors;
 mod local_cache;
-pub use admin_server::{ApiResponse, ExecutionStats, run_admin_server};
+pub use admin_server::{models::*, run_admin_server};
 pub use errors::{
     LiquidCacheErrorExt, LiquidCacheResult, anyhow_to_status, df_error_to_status_with_trace,
 };
