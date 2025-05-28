@@ -42,7 +42,6 @@ impl LiquidTaskMonitor {
         Self {
             rt_monitor,
             monitor: TaskMonitor::new(),
-            // TODO: Use channel or CancellationToken from tokio-utils (https://docs.rs/tokio-util/latest/tokio_util/sync/struct.CancellationToken.html)
             cancellation_token: Arc::new(AtomicBool::new(false)),
             liquid_task_metrics: Arc::new(liquid_task_metrics),
         }
