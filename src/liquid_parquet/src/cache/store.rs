@@ -1,5 +1,6 @@
 use congee::CongeeArc;
 use std::fmt::{Debug, Formatter};
+use std::sync::LazyLock;
 use std::{fs::File, io::Write, path::PathBuf};
 
 use super::{
@@ -14,6 +15,26 @@ use crate::liquid_array::LiquidArrayRef;
 use crate::sync::{Arc, RwLock};
 use ahash::AHashMap;
 use liquid_cache_common::LiquidCacheMode;
+use tokio::runtime::Runtime;
+
+pub(crate) static IO_URING_THREAD_POOL: LazyLock<Runtime> = LazyLock::new(|| {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(8)
+        .thread_name("io-uring-worker")
+        .enable_all()
+        .build()
+        .unwrap()
+});
+
+#[allow(dead_code)]
+pub(crate) enum FileIOMode {
+    BlockingIoUring,
+    Default,
+    ThreadPoolIoUring,
+    TokioAsync
+}
+
+pub(crate) static FILE_IO_MODE: FileIOMode = FileIOMode::ThreadPoolIoUring;
 
 #[derive(Debug)]
 struct CompressorStates {
@@ -165,7 +186,7 @@ impl CacheStore {
 
     /// Returns Some(CachedBatch) if need to retry the insert.
     #[must_use]
-    fn apply_advice(&self, advice: CacheAdvice, not_inserted: CachedBatch) -> Option<CachedBatch> {
+    fn apply_advice(self: &Arc<Self>, advice: CacheAdvice, not_inserted: CachedBatch) -> Option<CachedBatch> {
         match advice {
             CacheAdvice::Transcode(to_transcode) => {
                 let compressor_states = self.compressor_states.get_compressor(&to_transcode);
@@ -200,7 +221,18 @@ impl CacheStore {
                         return Some(not_inserted);
                     }
                 };
-                self.write_to_disk(&to_evict, &liquid_array);
+
+                match FILE_IO_MODE {
+                    FileIOMode::Default => {
+                                        self.write_to_disk(&to_evict, &liquid_array)
+                                    },
+                    FileIOMode::TokioAsync => {
+                                        self.write_to_disk_async(&to_evict, &liquid_array)
+                                    },
+                    FileIOMode::BlockingIoUring => self.write_to_disk_blocking_uring(&to_evict, &liquid_array),
+                    FileIOMode::ThreadPoolIoUring => self.write_to_disk_threadpool_uring(to_evict, liquid_array),
+                };
+
                 self.insert_inner(to_evict, CachedBatch::OnDiskLiquid)
                     .expect("failed to insert on disk liquid");
                 Some(not_inserted)
@@ -217,7 +249,16 @@ impl CacheStore {
                         return None;
                     }
                 };
-                self.write_to_disk(&to_transcode, &liquid_array);
+                match FILE_IO_MODE {
+                    FileIOMode::Default => {
+                                        self.write_to_disk(&to_transcode, &liquid_array)
+                                    },
+                    FileIOMode::TokioAsync => {
+                                        self.write_to_disk_async(&to_transcode, &liquid_array)
+                                    },
+                    FileIOMode::BlockingIoUring => self.write_to_disk_blocking_uring(&to_transcode, &liquid_array),
+                    FileIOMode::ThreadPoolIoUring => self.write_to_disk_threadpool_uring(to_transcode, liquid_array),
+                };
                 self.insert_inner(to_transcode, CachedBatch::OnDiskLiquid)
                     .expect("failed to insert on disk liquid");
                 None
@@ -234,7 +275,54 @@ impl CacheStore {
         self.budget.add_used_disk_bytes(bytes.len());
     }
 
-    pub(super) fn insert(&self, entry_id: CacheEntryID, mut batch_to_cache: CachedBatch) {
+    fn write_to_disk_async(&self, entry_id: &CacheEntryID, liquid_array: &LiquidArrayRef) {
+        let bytes = liquid_array.to_bytes();
+        let file_path = entry_id.on_disk_path(self.config.cache_root_dir());
+        let disk_size = bytes.len();
+        tokio::task::block_in_place(|| {
+            let handle = tokio::runtime::Handle::current();
+            handle.block_on( async {
+                tokio::fs::write(file_path, bytes).await.expect("Failed to write to disk");
+            })
+        });        
+        self.budget.add_used_disk_bytes(disk_size);
+    }
+
+    fn write_to_disk_blocking_uring(&self, entry_id: &CacheEntryID, liquid_array: &LiquidArrayRef) {
+        let bytes = liquid_array.to_bytes();
+        let file_path = entry_id.on_disk_path(self.config.cache_root_dir());
+        let disk_size = bytes.len();
+            
+        tokio::task::block_in_place(|| {
+            tokio_uring::start(async {
+                let file = tokio_uring::fs::File::create(file_path).await;
+                if let Ok(file) = file {
+                    let (res, _) = file.write_all_at(bytes, 0).await;
+                    if res.is_err() {
+                        log::error!("Failed to write to file: {}", res.err().unwrap());
+                    }
+                    self.budget.add_used_disk_bytes(disk_size);
+                    file.close().await.expect("Failed to close file");
+                    
+                } else {
+                    panic!("Failed to create file with tokio-uring");
+                }
+        })});
+    }
+
+    fn write_to_disk_threadpool_uring(self: &Arc<Self>, entry_id: CacheEntryID, liquid_array: LiquidArrayRef) {
+        tokio::task::block_in_place(|| 
+            {
+                let handle = IO_URING_THREAD_POOL.handle();
+                let store_arc = Arc::clone(self);
+                handle.block_on(async move {
+                    store_arc.write_to_disk_blocking_uring(&entry_id, &liquid_array)
+                });
+            }
+        );
+    }
+
+    pub(super) fn insert(self: &Arc<Self>, entry_id: CacheEntryID, mut batch_to_cache: CachedBatch) {
         let mut loop_count = 0;
         loop {
             let Err((advice, not_inserted)) = self.insert_inner(entry_id, batch_to_cache) else {
@@ -405,7 +493,7 @@ mod tests {
     fn test_basic_cache_operations() {
         // Test basic insert, get, and size tracking in one test
         let budget_size = 10 * 1024;
-        let store = create_cache_store(budget_size, Box::new(LruPolicy::new()));
+        let store = Arc::new(create_cache_store(budget_size, Box::new(LruPolicy::new())));
 
         // 1. Initial budget should be empty
         assert_eq!(store.budget.memory_usage_bytes(), 0);
@@ -451,7 +539,7 @@ mod tests {
         // 1. Test EVICT advice
         {
             let advisor = TestPolicy::new(AdviceType::Evict, Some(entry_id1));
-            let store = create_cache_store(8000, Box::new(advisor)); // Small budget to force advice
+            let store = Arc::new(create_cache_store(8000, Box::new(advisor))); // Small budget to force advice
 
             let on_disk_path = entry_id1.on_disk_path(&store.config.cache_root_dir());
             std::fs::create_dir_all(on_disk_path.parent().unwrap()).unwrap();
@@ -472,7 +560,7 @@ mod tests {
         // 2. Test TRANSCODE advice
         {
             let advisor = TestPolicy::new(AdviceType::Transcode, Some(entry_id1));
-            let store = create_cache_store(8000, Box::new(advisor)); // Small budget
+            let store = Arc::new(create_cache_store(8000, Box::new(advisor))); // Small budget
 
             store.insert(entry_id1, create_test_array(800));
             match store.get(&entry_id1).unwrap() {
@@ -490,7 +578,7 @@ mod tests {
         // 3. Test TRANSCODE_TO_DISK advice
         {
             let advisor = TestPolicy::new(AdviceType::TranscodeToDisk, None);
-            let store = create_cache_store(8000, Box::new(advisor)); // Tiny budget to force disk storage
+            let store = Arc::new(create_cache_store(8000, Box::new(advisor))); // Tiny budget to force disk storage
 
             let on_disk_path = entry_id3.on_disk_path(&store.config.cache_root_dir());
             std::fs::create_dir_all(on_disk_path.parent().unwrap()).unwrap();
