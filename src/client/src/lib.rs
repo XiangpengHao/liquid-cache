@@ -27,7 +27,7 @@ mod tests;
 ///
 /// ```ignore
 /// use liquid_cache_client::LiquidCacheBuilder;
-/// let ctx = LiquidCacheBuilder::new("localhost:50051")
+/// let ctx = LiquidCacheBuilder::new("localhost:15214")
 ///     .with_object_store("s3://my_bucket", None)
 ///     .with_cache_mode(CacheMode::Liquid)
 ///     .build(SessionConfig::from_env().unwrap())

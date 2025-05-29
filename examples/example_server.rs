@@ -17,7 +17,7 @@
 
 use arrow_flight::flight_service_server::FlightServiceServer;
 use datafusion::prelude::SessionContext;
-use liquid_cache_common::CacheMode;
+use liquid_cache_common::{CacheEvictionStrategy, CacheMode};
 use liquid_cache_server::LiquidCacheService;
 use tonic::transport::Server;
 
@@ -28,13 +28,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(1024 * 1024 * 1024),          // max memory cache size 1GB
         Some(tempfile::tempdir()?.keep()), // disk cache dir
         CacheMode::LiquidEagerTranscode,
+        CacheEvictionStrategy::Discard,
     )?;
 
     let flight = FlightServiceServer::new(liquid_cache);
 
     Server::builder()
         .add_service(flight)
-        .serve("0.0.0.0:50051".parse()?)
+        .serve("0.0.0.0:15214".parse()?)
         .await?;
 
     Ok(())

@@ -49,7 +49,7 @@ fn from_primitive_benchmark(c: &mut Criterion) {
             ));
             group.bench_function(format!("size_{}", array_size), |b| {
                 b.iter(|| {
-                    criterion::black_box(BitPackedArray::from_primitive(array.clone(), bit_width))
+                    std::hint::black_box(BitPackedArray::from_primitive(array.clone(), bit_width))
                 })
             });
             group.finish();
@@ -80,7 +80,7 @@ fn to_primitive_benchmark(c: &mut Criterion) {
                 (array_size * std::mem::size_of::<u32>()) as u64,
             ));
             group.bench_function(format!("size_{}", array_size), |b| {
-                b.iter(|| criterion::black_box(bit_packed.to_primitive()))
+                b.iter(|| std::hint::black_box(bit_packed.to_primitive()))
             });
             group.finish();
         }

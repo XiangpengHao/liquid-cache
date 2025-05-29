@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll};
+use std::time::Duration;
 use std::{any::Any, fmt::Formatter, sync::Arc};
 
 use arrow::array::RecordBatch;
@@ -30,21 +32,28 @@ use liquid_cache_common::CacheMode;
 use liquid_cache_common::rpc::{
     FetchResults, LiquidCacheActions, RegisterObjectStoreRequest, RegisterPlanRequest,
 };
-use tokio::sync::Mutex;
 use tonic::Request;
 use uuid::Uuid;
 
 use crate::metrics::FlightStreamMetrics;
 use crate::{flight_channel, to_df_err};
 
+#[repr(usize)]
+enum PlanRegisterState {
+    NotRegistered = 0,
+    InProgress = 1,
+    Registered = 2,
+}
+
 /// The execution plan for the LiquidCache client.
 pub struct LiquidCacheClientExec {
     remote_plan: Arc<dyn ExecutionPlan>,
     cache_server: String,
-    plan_register_lock: Arc<Mutex<Option<Uuid>>>,
     cache_mode: CacheMode,
     object_stores: Vec<(ObjectStoreUrl, HashMap<String, String>)>,
     metrics: ExecutionPlanMetricsSet,
+    uuid: Uuid,
+    plan_registered: Arc<AtomicUsize>,
 }
 
 impl std::fmt::Debug for LiquidCacheClientExec {
@@ -60,19 +69,21 @@ impl LiquidCacheClientExec {
         cache_mode: CacheMode,
         object_stores: Vec<(ObjectStoreUrl, HashMap<String, String>)>,
     ) -> Self {
+        let uuid = Uuid::new_v4();
         Self {
             remote_plan,
             cache_server,
-            plan_register_lock: Arc::new(Mutex::new(None)),
+            plan_registered: Arc::new(AtomicUsize::new(PlanRegisterState::NotRegistered as usize)),
             cache_mode,
             object_stores,
+            uuid,
             metrics: ExecutionPlanMetricsSet::new(),
         }
     }
 
     /// Get the UUID of the plan.
-    pub async fn get_plan_uuid(&self) -> Option<Uuid> {
-        *self.plan_register_lock.lock().await
+    pub fn get_uuid(&self) -> Uuid {
+        self.uuid
     }
 }
 
@@ -121,10 +132,11 @@ impl ExecutionPlan for LiquidCacheClientExec {
         Ok(Arc::new(Self {
             remote_plan: children.first().unwrap().clone(),
             cache_server: self.cache_server.clone(),
-            plan_register_lock: self.plan_register_lock.clone(),
+            plan_registered: self.plan_registered.clone(),
             cache_mode: self.cache_mode,
             object_stores: self.object_stores.clone(),
             metrics: self.metrics.clone(),
+            uuid: self.uuid,
         }))
     }
 
@@ -135,7 +147,7 @@ impl ExecutionPlan for LiquidCacheClientExec {
     ) -> datafusion::error::Result<datafusion::execution::SendableRecordBatchStream> {
         let cache_server = self.cache_server.clone();
         let plan = self.remote_plan.clone();
-        let lock = self.plan_register_lock.clone();
+        let lock = self.plan_registered.clone();
         let stream_metrics = FlightStreamMetrics::new(&self.metrics, partition);
 
         let span = context
@@ -148,6 +160,7 @@ impl ExecutionPlan for LiquidCacheClientExec {
             cache_server,
             plan,
             lock,
+            self.uuid,
             partition,
             self.object_stores.clone(),
         );
@@ -211,7 +224,8 @@ impl ExecutionPlan for LiquidCacheClientExec {
 async fn flight_stream(
     server: String,
     plan: Arc<dyn ExecutionPlan>,
-    plan_register_lock: Arc<Mutex<Option<Uuid>>>,
+    plan_registered: Arc<AtomicUsize>,
+    handle: Uuid,
     partition: usize,
     object_stores: Vec<(ObjectStoreUrl, HashMap<String, String>)>,
 ) -> Result<SendableRecordBatchStream> {
@@ -222,46 +236,47 @@ async fn flight_stream(
     let mut client = FlightServiceClient::new(channel).max_decoding_message_size(1024 * 1024 * 8);
     let schema = plan.schema().clone();
 
-    // Only one partition needs to register the plan
-    let handle = {
-        let _span = Span::enter_with_local_parent("register_plan");
-        let mut maybe_uuid = plan_register_lock.lock().await;
-        match maybe_uuid.as_ref() {
-            Some(uuid) => {
-                LocalSpan::add_event(Event::new("get_existing_plan"));
-                *uuid
-            }
-            None => {
-                // Register object stores
-                LocalSpan::add_event(Event::new("locked_register_plan"));
-                for (url, options) in &object_stores {
-                    let action =
-                        LiquidCacheActions::RegisterObjectStore(RegisterObjectStoreRequest {
-                            url: url.to_string(),
-                            options: options.clone(),
-                        })
-                        .into();
-                    client
-                        .do_action(Request::new(action))
-                        .await
-                        .map_err(to_df_err)?;
-                }
-                // Register plan
-                let plan_bytes = physical_plan_to_bytes(plan)?;
-                let handle = Uuid::new_v4();
-                let action = LiquidCacheActions::RegisterPlan(RegisterPlanRequest {
-                    plan: plan_bytes.to_vec(),
-                    handle: handle.into_bytes().to_vec().into(),
+    match plan_registered.compare_exchange(
+        PlanRegisterState::NotRegistered as usize,
+        PlanRegisterState::InProgress as usize,
+        Ordering::AcqRel,
+        Ordering::Relaxed,
+    ) {
+        Ok(_) => {
+            LocalSpan::add_event(Event::new("register_plan"));
+
+            for (url, options) in &object_stores {
+                let action = LiquidCacheActions::RegisterObjectStore(RegisterObjectStoreRequest {
+                    url: url.to_string(),
+                    options: options.clone(),
                 })
                 .into();
                 client
                     .do_action(Request::new(action))
                     .await
                     .map_err(to_df_err)?;
-                *maybe_uuid = Some(handle);
-                LocalSpan::add_event(Event::new("unlocked_register_plan"));
-                handle
             }
+            // Register plan
+            let plan_bytes = physical_plan_to_bytes(plan)?;
+            let action = LiquidCacheActions::RegisterPlan(RegisterPlanRequest {
+                plan: plan_bytes.to_vec(),
+                handle: handle.into_bytes().to_vec().into(),
+            })
+            .into();
+            client
+                .do_action(Request::new(action))
+                .await
+                .map_err(to_df_err)?;
+            plan_registered.store(PlanRegisterState::Registered as usize, Ordering::Release);
+            LocalSpan::add_event(Event::new("register_plan_done"));
+        }
+        Err(_e) => {
+            LocalSpan::add_event(Event::new("getting_existing_plan"));
+            while plan_registered.load(Ordering::Acquire) != PlanRegisterState::Registered as usize
+            {
+                tokio::time::sleep(Duration::from_micros(100)).await;
+            }
+            LocalSpan::add_event(Event::new("got_existing_plan"));
         }
     };
 

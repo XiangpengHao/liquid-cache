@@ -384,11 +384,12 @@ mod tests {
     use std::sync::Arc;
 
     use arrow::array::Int32Array;
+    use liquid_cache_common::CacheEvictionStrategy::Discard;
     use liquid_cache_common::LiquidCacheMode;
 
-    use crate::cache::LiquidCache;
-
     use super::*;
+    use crate::cache::LiquidCache;
+    use crate::policies::DiscardPolicy;
 
     struct MockArrayReader {
         rows: Vec<i32>,
@@ -456,6 +457,7 @@ mod tests {
             LiquidCacheMode::InMemoryLiquid {
                 transcode_in_background: false,
             },
+            Box::new(DiscardPolicy::default()),
         ));
         let file = liquid_cache.register_or_get_file("test".to_string());
         let row_group = file.row_group(0);

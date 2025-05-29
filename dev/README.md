@@ -49,7 +49,7 @@ Then open http://localhost:5080 to view the traces.
 ### Deploy a LiquidCache server with Docker
 
 ```bash
-docker run -p 50051:50051 -p 50052:50052 ghcr.io/xiangpenghao/liquid-cache/liquid-cache-server:latest
+docker run -p 15214:15214 -p 53793:53793 ghcr.io/xiangpenghao/liquid-cache/liquid-cache-server:latest
 ```
 
 ### Git hooks

@@ -1,3 +1,4 @@
+use crate::{ExecutionStats, local_cache::LocalCache};
 use anyhow::Result;
 use datafusion::{
     common::tree_node::{Transformed, TreeNode},
@@ -9,19 +10,36 @@ use datafusion::{
     physical_plan::{ExecutionPlan, display::DisplayableExecutionPlan, metrics::MetricValue},
     prelude::SessionContext,
 };
-use liquid_cache_common::{CacheMode, coerce_to_liquid_cache_types, rpc::ExecutionMetricsResponse};
+use liquid_cache_common::{
+    CacheEvictionStrategy, CacheMode, coerce_to_liquid_cache_types, rpc::ExecutionMetricsResponse,
+};
+use liquid_cache_parquet::policies::{CachePolicy, DiscardPolicy, FiloPolicy, LruPolicy};
 use liquid_cache_parquet::{LiquidCache, LiquidCacheRef, LiquidParquetSource};
 use log::{debug, info};
 use object_store::ObjectStore;
 use std::sync::RwLock;
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, path::PathBuf, sync::Arc, time::SystemTime};
 use url::Url;
 use uuid::Uuid;
 
-use crate::local_cache::LocalCache;
+#[derive(Clone)]
+pub(crate) struct ExecutionPlanEntry {
+    pub plan: Arc<dyn ExecutionPlan>,
+    pub created_at: SystemTime,
+}
+
+impl ExecutionPlanEntry {
+    pub fn new(plan: Arc<dyn ExecutionPlan>) -> Self {
+        Self {
+            plan,
+            created_at: SystemTime::now(),
+        }
+    }
+}
 
 pub(crate) struct LiquidCacheServiceInner {
-    execution_plans: Arc<RwLock<HashMap<Uuid, Arc<dyn ExecutionPlan>>>>,
+    execution_plans: RwLock<HashMap<Uuid, ExecutionPlanEntry>>,
+    execution_stats: RwLock<Vec<ExecutionStats>>,
     default_ctx: Arc<SessionContext>,
     liquid_cache: Option<LiquidCacheRef>,
     parquet_cache_dir: PathBuf,
@@ -33,11 +51,18 @@ impl LiquidCacheServiceInner {
         max_cache_bytes: Option<usize>,
         disk_cache_dir: PathBuf,
         cache_mode: CacheMode,
+        case_eviction_policy: CacheEvictionStrategy,
     ) -> Self {
         let batch_size = default_ctx.state().config().batch_size();
 
         let parquet_cache_dir = disk_cache_dir.join("parquet");
         let liquid_cache_dir = disk_cache_dir.join("liquid");
+
+        let cache_policy: Box<dyn CachePolicy> = match case_eviction_policy {
+            CacheEvictionStrategy::Lru => Box::new(LruPolicy::new()),
+            CacheEvictionStrategy::Discard => Box::new(DiscardPolicy),
+            CacheEvictionStrategy::Filo => Box::new(FiloPolicy::new()),
+        };
 
         let liquid_cache = match cache_mode {
             CacheMode::Parquet => None,
@@ -46,11 +71,13 @@ impl LiquidCacheServiceInner {
                 max_cache_bytes.unwrap_or(usize::MAX),
                 liquid_cache_dir,
                 cache_mode.into(),
+                cache_policy,
             ))),
         };
 
         Self {
             execution_plans: Default::default(),
+            execution_stats: Default::default(),
             default_ctx,
             liquid_cache,
             parquet_cache_dir,
@@ -102,20 +129,18 @@ impl LiquidCacheServiceInner {
     pub(crate) fn register_plan(&self, handle: Uuid, plan: Arc<dyn ExecutionPlan>) {
         match self.cache() {
             Some(cache) => {
+                self.execution_plans.write().unwrap().insert(
+                    handle,
+                    ExecutionPlanEntry::new(rewrite_data_source_plan(plan, cache)),
+                );
+            }
+            None => {
                 self.execution_plans
                     .write()
                     .unwrap()
-                    .insert(handle, rewrite_data_source_plan(plan, cache));
-            }
-            None => {
-                self.execution_plans.write().unwrap().insert(handle, plan);
+                    .insert(handle, ExecutionPlanEntry::new(plan));
             }
         }
-    }
-
-    pub(crate) fn get_plan(&self, handle: &Uuid) -> Option<Arc<dyn ExecutionPlan>> {
-        let plan = self.execution_plans.read().unwrap().get(handle)?.clone();
-        Some(plan)
     }
 
     pub(crate) async fn execute_plan(
@@ -129,6 +154,7 @@ impl LiquidCacheServiceInner {
             .unwrap()
             .get(handle)
             .ok_or_else(|| anyhow::anyhow!("Plan not found"))?
+            .plan
             .clone();
         let displayable = DisplayableExecutionPlan::new(plan.as_ref());
         debug!("physical plan:\n{}", displayable.indent(false));
@@ -142,7 +168,13 @@ impl LiquidCacheServiceInner {
     }
 
     pub(crate) fn get_metrics(&self, plan_id: &Uuid) -> Option<ExecutionMetricsResponse> {
-        let maybe_leaf = self.get_plan(plan_id)?;
+        let maybe_leaf = self
+            .execution_plans
+            .read()
+            .unwrap()
+            .get(plan_id)?
+            .plan
+            .clone();
 
         let displayable = DisplayableExecutionPlan::with_metrics(maybe_leaf.as_ref());
         debug!("physical plan:\n{}", displayable.indent(true));
@@ -192,6 +224,18 @@ impl LiquidCacheServiceInner {
 
     pub(crate) fn get_ctx(&self) -> &Arc<SessionContext> {
         &self.default_ctx
+    }
+
+    pub(crate) fn get_plan(&self, id: &Uuid) -> Option<ExecutionPlanEntry> {
+        self.execution_plans.read().unwrap().get(id).cloned()
+    }
+
+    pub(crate) fn get_execution_stats(&self) -> Vec<ExecutionStats> {
+        self.execution_stats.read().unwrap().clone()
+    }
+
+    pub(crate) fn add_execution_stats(&self, execution_stats: ExecutionStats) {
+        self.execution_stats.write().unwrap().push(execution_stats);
     }
 }
 
@@ -250,6 +294,7 @@ fn rewrite_data_source_plan(
 #[cfg(test)]
 mod tests {
     use datafusion::common::tree_node::TreeNodeRecursion;
+    use liquid_cache_common::CacheEvictionStrategy::Discard;
     use liquid_cache_common::LiquidCacheMode;
 
     use super::*;
@@ -261,6 +306,7 @@ mod tests {
             1000000,
             PathBuf::from("test"),
             *cache_mode,
+            Box::new(DiscardPolicy::default()),
         ));
         let rewritten = rewrite_data_source_plan(plan, &liquid_cache);
 
@@ -320,6 +366,7 @@ mod tests {
             None,
             PathBuf::from("test"),
             CacheMode::LiquidEagerTranscode,
+            Discard,
         );
         let url = Url::parse("file:///").unwrap();
         server

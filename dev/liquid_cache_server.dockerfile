@@ -13,8 +13,8 @@ WORKDIR /app
 
 COPY ./target/release/bench_server /app/bench_server
 
-EXPOSE 50051
-EXPOSE 50052
+EXPOSE 15214
+EXPOSE 53793
 
 # Run the server when the container starts
-CMD ["/app/bench_server", "--address", "0.0.0.0:50051", "--admin-address", "0.0.0.0:50052"]
+CMD ["/app/bench_server", "--address", "0.0.0.0:15214", "--admin-address", "0.0.0.0:53793"]

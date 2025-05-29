@@ -5,8 +5,10 @@ use datafusion::{
     physical_plan::{ExecutionPlan, collect},
     prelude::SessionContext,
 };
+use liquid_cache_common::CacheEvictionStrategy::Discard;
 use liquid_cache_common::CacheMode;
 use uuid::Uuid;
+
 mod cases;
 
 use crate::{LiquidCacheService, LiquidCacheServiceInner};
@@ -29,6 +31,7 @@ async fn run_sql(sql: &str, mode: CacheMode, cache_size_bytes: usize, file_path:
         Some(cache_size_bytes),
         PathBuf::from("test"),
         mode,
+        Discard,
     );
     async fn get_result(service: &LiquidCacheServiceInner, sql: &str) -> String {
         let handle = Uuid::new_v4();
@@ -36,7 +39,7 @@ async fn run_sql(sql: &str, mode: CacheMode, cache_size_bytes: usize, file_path:
         let plan = get_physical_plan(sql, &ctx).await;
         service.register_plan(handle, plan);
         let plan = service.get_plan(&handle).unwrap();
-        let batches = collect(plan, ctx.task_ctx()).await.unwrap();
+        let batches = collect(plan.plan, ctx.task_ctx()).await.unwrap();
         pretty_format_batches(&batches).unwrap().to_string()
     }
 

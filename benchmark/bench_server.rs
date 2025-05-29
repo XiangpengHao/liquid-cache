@@ -2,7 +2,7 @@ use arrow_flight::flight_service_server::FlightServiceServer;
 use clap::Parser;
 use fastrace_tonic::FastraceServerLayer;
 use liquid_cache_benchmarks::setup_observability;
-use liquid_cache_common::CacheMode;
+use liquid_cache_common::{CacheEvictionStrategy, CacheMode};
 use liquid_cache_server::{LiquidCacheService, run_admin_server};
 use log::info;
 use mimalloc::MiMalloc;
@@ -16,11 +16,11 @@ static GLOBAL: MiMalloc = MiMalloc;
 #[command(name = "ClickBench Benchmark Server")]
 struct CliArgs {
     /// Address to listen on
-    #[arg(long, default_value = "127.0.0.1:50051")]
+    #[arg(long, default_value = "127.0.0.1:15214")]
     address: SocketAddr,
 
     /// HTTP address for admin endpoint
-    #[arg(long = "admin-address", default_value = "127.0.0.1:50052")]
+    #[arg(long = "admin-address", default_value = "127.0.0.1:53703")]
     admin_address: SocketAddr,
 
     /// Abort the server if any thread panics
@@ -71,6 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_cache_bytes,
         args.disk_cache_dir.clone(),
         args.cache_mode,
+        CacheEvictionStrategy::Discard,
     )?;
 
     let liquid_cache_server = Arc::new(liquid_cache_server);
@@ -78,6 +79,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("LiquidCache server listening on {}", args.address);
     info!("Admin server listening on {}", args.admin_address);
+    info!(
+        "Dashboard: https://liquid-cache-admin.xiangpeng.systems/?host=http://{}",
+        args.admin_address
+    );
 
     // Run both servers concurrently
     tokio::select! {

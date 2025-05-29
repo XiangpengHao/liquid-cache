@@ -3,23 +3,20 @@
 //! This server is used to manage the liquid cache server
 
 use axum::http::{HeaderValue, Method};
-use axum::{Router, routing::get};
+use axum::{
+    Router,
+    routing::{get, post},
+};
 use flamegraph::FlameGraph;
-use serde::Serialize;
 use std::sync::atomic::AtomicU32;
 use std::{net::SocketAddr, sync::Arc};
 use tower_http::cors::CorsLayer;
 
 mod flamegraph;
 mod handlers;
+pub(crate) mod models;
 
 use crate::LiquidCacheService;
-
-#[derive(Serialize)]
-pub(crate) struct ApiResponse {
-    message: String,
-    status: String,
-}
 
 pub(crate) struct AppState {
     liquid_cache: Arc<LiquidCacheService>,
@@ -44,9 +41,9 @@ pub async fn run_admin_server(
     let cors = CorsLayer::new()
         // Allow all localhost origins (http and https)
         .allow_origin([
-            "http://localhost:8080".parse::<HeaderValue>().unwrap(),
-            "http://127.0.0.1:8080".parse::<HeaderValue>().unwrap(),
-            "http://liquid-cache-admin.xiangpeng.systems"
+            "http://localhost:3000".parse::<HeaderValue>().unwrap(),
+            "http://127.0.0.1:3000".parse::<HeaderValue>().unwrap(),
+            "https://liquid-cache-admin.xiangpeng.systems"
                 .parse::<HeaderValue>()
                 .unwrap(),
         ])
@@ -68,9 +65,14 @@ pub async fn run_admin_server(
             "/execution_metrics",
             get(handlers::get_execution_metrics_handler),
         )
+        .route("/execution_plans", get(handlers::get_execution_stats))
         .route("/cache_stats", get(handlers::get_cache_stats_handler))
         .route("/start_flamegraph", get(handlers::start_flamegraph_handler))
         .route("/stop_flamegraph", get(handlers::stop_flamegraph_handler))
+        .route(
+            "/set_execution_stats",
+            post(handlers::add_execution_stats_handler),
+        )
         .with_state(state)
         .layer(cors);
 

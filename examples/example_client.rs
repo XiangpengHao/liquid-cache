@@ -41,7 +41,7 @@ struct CliArgs {
     file: String,
 
     /// Server URL
-    #[arg(long, default_value = "http://localhost:50051")]
+    #[arg(long, default_value = "http://localhost:15214")]
     cache_server: String,
 }
 

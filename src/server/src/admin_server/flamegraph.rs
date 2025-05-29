@@ -1,19 +1,14 @@
-use std::{
-    path::{Path, PathBuf},
-    sync::{Mutex, atomic::AtomicU32},
-};
+use std::sync::Mutex;
 
 use pprof::ProfilerGuard;
 
 pub(super) struct FlameGraph {
-    id: AtomicU32,
     guard: Mutex<Option<ProfilerGuard<'static>>>,
 }
 
 impl FlameGraph {
     pub fn new() -> Self {
         Self {
-            id: AtomicU32::new(0),
             guard: Mutex::new(None),
         }
     }
@@ -31,23 +26,18 @@ impl FlameGraph {
         );
     }
 
-    pub fn stop(&self, output_dir: &Path) -> PathBuf {
+    pub fn stop_to_string(&self) -> anyhow::Result<String> {
         let mut guard = self.guard.lock().unwrap();
         let old = guard.take();
-        assert!(old.is_some(), "FlameGraph is not started");
+        if old.is_none() {
+            return Err(anyhow::anyhow!("FlameGraph is not started"));
+        }
         let profiler = old.unwrap();
         drop(guard);
 
-        let report = profiler.report().build().unwrap();
-        let now = std::time::SystemTime::now();
-        let datetime = now.duration_since(std::time::UNIX_EPOCH).unwrap();
-        let minute = (datetime.as_secs() / 60) % 60;
-        let second = datetime.as_secs() % 60;
-        let id = self.id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let filename = format!("flamegraph-id{id:02}-{minute:02}-{second:03}.svg",);
-        let filepath = output_dir.join(filename);
-        let file = std::fs::File::create(&filepath).unwrap();
-        report.flamegraph(file).unwrap();
-        filepath
+        let report = profiler.report().build()?;
+        let mut svg_data = Vec::new();
+        report.flamegraph(&mut svg_data)?;
+        Ok(String::from_utf8(svg_data)?)
     }
 }
