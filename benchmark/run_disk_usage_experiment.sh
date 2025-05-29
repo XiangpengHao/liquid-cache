@@ -17,9 +17,9 @@ NUM_PARTITIONS=$1
 # Create log directory if it doesn't exist
 mkdir -p log
 
-if [ -d tmp ]; then
-    rm -rf tmp/*
-fi
+# if [ -d tmp ]; then
+#     rm -rf tmp/*
+# fi
 
 if [ -d log ]; then
     rm -rf log/*
@@ -48,7 +48,7 @@ env RUST_LOG=info cargo run --release --bin clickbench_client \
     --file clickbench/data/hits.parquet \
     --query 20 \
     --partitions $NUM_PARTITIONS \
-    --iteration 5 > log/client.log 2>&1
+    --iteration 5 --flamegraph-dir=flamegraph/ > log/client.log 2>&1
 
 echo "Killing bench_server (PID $CARGO_PID)..."
 # Kill the server process

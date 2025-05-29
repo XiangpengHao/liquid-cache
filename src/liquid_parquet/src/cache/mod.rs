@@ -194,15 +194,18 @@ impl LiquidCachedColumn {
                 loop {
                     let buf = registry.check_out(0).unwrap();
                     let (res, buf) = file.read_fixed_at(buf, pos).await;
-                    if res.is_err() || *(res.as_ref().unwrap()) == 0 {
+                    if res.is_err() {
                         log::error!("Failed to read from disk using io_uring: {}", res.err().unwrap());
+                        break;
+                    }
+                    if *(res.as_ref().unwrap()) == 0 {
+                        // No more bytes to read
                         break;
                     }
                     pos += <usize as AsPrimitive<u64>>::as_(*res.as_ref().unwrap());
                     bytes.extend_from_slice(&buf[..res.unwrap()]);
                 }
                 file.close().await.expect("Failed to close file after reading");
-                log::info!("Read {} bytes from disk using io_uring", bytes.len());
                 bytes
             })
         });
