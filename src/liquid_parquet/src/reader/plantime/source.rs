@@ -243,6 +243,11 @@ impl LiquidParquetSource {
 
         v
     }
+
+    /// Get the predicate for the LiquidParquetSource
+    pub fn predicate(&self) -> Option<Arc<dyn PhysicalExpr>> {
+        self.predicate.clone()
+    }
 }
 
 impl FileSource for LiquidParquetSource {

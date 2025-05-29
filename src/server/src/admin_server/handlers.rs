@@ -8,8 +8,17 @@ use axum::{
     Json,
     extract::{Query, State},
 };
-use datafusion::{common::stats::Precision, physical_plan::ExecutionPlan};
+use datafusion::{
+    catalog::memory::DataSourceExec,
+    common::{
+        stats::Precision,
+        tree_node::{TreeNode, TreeNodeRecursion},
+    },
+    datasource::physical_plan::FileScanConfig,
+    physical_plan::ExecutionPlan,
+};
 use liquid_cache_common::rpc::ExecutionMetricsResponse;
+use liquid_cache_parquet::LiquidParquetSource;
 use log::info;
 use serde::Serialize;
 use uuid::Uuid;
@@ -396,6 +405,33 @@ impl From<&Arc<dyn ExecutionPlan>> for ExecutionPlanWithStats {
     }
 }
 
+fn get_liquid_exec_info(plan: &Arc<dyn ExecutionPlan>) -> Option<String> {
+    let mut rv = None;
+    plan.apply(|node| {
+        let Some(data_source) = node.as_any().downcast_ref::<DataSourceExec>() else {
+            return Ok(TreeNodeRecursion::Continue);
+        };
+        let file_scan_config = data_source
+            .data_source()
+            .as_any()
+            .downcast_ref::<FileScanConfig>()
+            .expect("FileScanConfig not found");
+        let Some(liquid_source) = file_scan_config
+            .file_source()
+            .as_any()
+            .downcast_ref::<LiquidParquetSource>()
+        else {
+            return Ok(TreeNodeRecursion::Continue);
+        };
+        let predicate = liquid_source.predicate();
+
+        rv = predicate.map(|v| v.to_string());
+        Ok(TreeNodeRecursion::Stop)
+    })
+    .unwrap();
+    rv
+}
+
 pub(crate) async fn get_execution_stats(
     State(state): State<Arc<AppState>>,
 ) -> Json<Vec<ExecutionStatsWithPlan>> {
@@ -419,6 +455,7 @@ pub(crate) async fn get_execution_stats(
                     .unwrap()
                     .as_secs(),
                 plan: model_plan,
+                predicate: get_liquid_exec_info(&plan.plan),
             };
             plans.push(plan_info);
         }
