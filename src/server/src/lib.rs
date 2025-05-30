@@ -59,6 +59,8 @@ pub use admin_server::{models::*, run_admin_server};
 pub use errors::{
     LiquidCacheErrorExt, LiquidCacheResult, anyhow_to_status, df_error_to_status_with_trace,
 };
+use object_store::path::Path;
+use object_store::{GetOptions, GetRange};
 
 #[cfg(test)]
 mod tests;
@@ -237,6 +239,43 @@ impl LiquidCacheService {
                 })]);
                 Ok(Response::new(Box::pin(output)))
             }
+            LiquidCacheActions::PrefetchFromObjectStore(cmd) => {
+                // Parse the object store URL (e.g., s3://bucket)
+                let url = Url::parse(&cmd.url)?;
+
+                // Register the object store if not already registered
+                self.inner
+                    .register_object_store(&url, cmd.store_options)
+                    .await?;
+
+                // Get the local cache wrapper for this object store
+                let local_cache = self.inner.get_object_store(&url)?;
+
+                // Parse the path to the object within the store (e.g., path/to/file.parquet)
+                let path = Path::from(cmd.location);
+
+                // Create a range for the specific chunk we want to prefetch, if specified
+                let get_options = if cmd.range_start.is_some() && cmd.range_end.is_some() {
+                    let chunk_range =
+                        GetRange::Bounded(cmd.range_start.unwrap()..cmd.range_end.unwrap());
+                    GetOptions {
+                        range: Some(chunk_range),
+                        ..GetOptions::default()
+                    }
+                } else {
+                    GetOptions::default()
+                };
+
+                // Call the underlying object store to get the data and cache it
+                // The LocalCache wrapper will handle caching the fetched data
+                local_cache.get_opts(&path, get_options).await?;
+
+                // Return empty response to indicate successful prefetch
+                let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
+                    body: Bytes::default(),
+                })]);
+                Ok(Response::new(Box::pin(output)))
+            }
         }
     }
 }
@@ -287,4 +326,111 @@ impl FlightSqlService for LiquidCacheService {
     }
 
     async fn register_sql_info(&self, _id: i32, _result: &SqlInfo) {}
+}
+
+#[cfg(test)]
+mod server_actions_tests {
+    use super::*;
+    use LiquidCacheService;
+    use liquid_cache_common::rpc::PrefetchFromObjectStoreRequest;
+    use std::collections::HashMap;
+
+    #[tokio::test]
+    async fn test_prefetch_from_object_store() {
+        let service = LiquidCacheService::default();
+
+        // Test with local file system
+        let url = Url::parse("file:///").unwrap();
+
+        // Get the current directory and append the file path
+        let current_dir = std::env::current_dir().unwrap();
+        let location = format!(
+            "{}/src/tests/testdata/prefetch_data.parquet",
+            current_dir.display()
+        );
+
+        let request = PrefetchFromObjectStoreRequest {
+            url: url.to_string(),
+            store_options: HashMap::new(),
+            location: location.to_string(),
+            range_start: None,
+            range_end: None,
+        };
+
+        let action = LiquidCacheActions::PrefetchFromObjectStore(request);
+        let result = service.do_action_inner(action).await.unwrap();
+
+        let mut stream = result.into_inner();
+        let result = stream.try_next().await.unwrap().unwrap();
+        assert!(result.body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_prefetch_from_object_store_with_range() {
+        let service = LiquidCacheService::default();
+
+        // Test with local file system
+        let url = Url::parse("file:///").unwrap();
+
+        // Get the current directory and append the file path
+        let current_dir = std::env::current_dir().unwrap();
+        let location = format!(
+            "{}/src/tests/testdata/prefetch_data.parquet",
+            current_dir.display()
+        );
+
+        // range from 1mb to 10mb
+        let range_start = 1024 * 1024;
+        let range_end = 10 * 1024 * 1024;
+
+        let request = PrefetchFromObjectStoreRequest {
+            url: url.to_string(),
+            store_options: HashMap::new(),
+            location: location.to_string(),
+            range_start: Some(range_start),
+            range_end: Some(range_end),
+        };
+
+        let action = LiquidCacheActions::PrefetchFromObjectStore(request);
+        let result = service.do_action_inner(action).await.unwrap();
+
+        let mut stream = result.into_inner();
+        let result = stream.try_next().await.unwrap().unwrap();
+        assert!(result.body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_prefetch_invalid_object_store() {
+        let service = LiquidCacheService::default();
+
+        let request = PrefetchFromObjectStoreRequest {
+            url: "invalid://url".to_string(),
+            store_options: HashMap::new(),
+            location: "test.parquet".to_string(),
+            range_start: Some(0),
+            range_end: Some(1024),
+        };
+
+        let action = LiquidCacheActions::PrefetchFromObjectStore(request);
+        let result = service.do_action_inner(action).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_prefetch_invalid_location() {
+        let service = LiquidCacheService::default();
+
+        let url = Url::parse("file:///").unwrap();
+        let request = PrefetchFromObjectStoreRequest {
+            url: url.to_string(),
+            store_options: HashMap::new(),
+            location: "non_existent_file.parquet".to_string(),
+            range_start: Some(0),
+            range_end: Some(1024),
+        };
+
+        let action = LiquidCacheActions::PrefetchFromObjectStore(request);
+        let result = service.do_action_inner(action).await;
+        assert!(result.is_err());
+    }
 }
