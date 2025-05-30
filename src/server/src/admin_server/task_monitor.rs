@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Duration;
 use tokio_metrics::{RuntimeMonitor, TaskMonitor};
 
 pub(crate) struct LiquidTaskMonitor {
@@ -47,69 +48,52 @@ impl LiquidTaskMonitor {
     }
 
     pub async fn run_collector(&self) {
-        let monitor_interval = self.monitor.intervals();
-        let rt_monitor_interval = self.rt_monitor.intervals();
-
-        let cancellation_token_mon = self.cancellation_token.clone();
-        let cancellation_token_rt = self.cancellation_token.clone();
-        let liquid_task_metrics = self.liquid_task_metrics.clone();
-        let liquid_task_metrics_rt = self.liquid_task_metrics.clone();
+        let mut monitor_interval = self.monitor.intervals();
+        let mut rt_monitor_interval = self.rt_monitor.intervals();
+        let liquid_metrics = self.liquid_task_metrics.clone();
+        let cancellation_token = self.cancellation_token.clone();
 
         fn update_high_mark(counter: &AtomicU64, new_value: u64) {
-            let mut curr = counter.load(Ordering::Relaxed);
-            loop {
-                if new_value <= curr {
-                    break;
-                }
-
-                match counter.compare_exchange(
-                    curr,
-                    new_value,
-                    Ordering::Relaxed,
-                    Ordering::Relaxed,
-                ) {
-                    Ok(_) => break,
-                    Err(actual) => curr = actual,
-                }
+            let current = counter.load(Ordering::Acquire);
+            if new_value <= current {
+                return;
             }
+
+            counter.fetch_max(new_value, Ordering::AcqRel);
         }
 
         tokio::spawn(async move {
-            for metrics in monitor_interval {
-                if cancellation_token_mon.load(Ordering::Acquire) {
+            let mut interval = tokio::time::interval(Duration::from_millis(10));
+
+            loop {
+                if cancellation_token.load(Ordering::Acquire) {
                     return;
                 }
 
-                update_high_mark(
-                    &liquid_task_metrics.total_slow_poll_n,
-                    metrics.total_slow_poll_count,
-                );
-                update_high_mark(&liquid_task_metrics.total_poll_n, metrics.total_poll_count);
-                update_high_mark(
-                    &liquid_task_metrics.mean_idle_duration_ms,
-                    metrics.mean_idle_duration().as_millis() as u64,
-                );
-
-                _ = tokio::time::sleep(tokio::time::Duration::from_millis(500));
-            }
-        });
-
-        tokio::spawn(async move {
-            for metrics in rt_monitor_interval {
-                if cancellation_token_rt.load(Ordering::Acquire) {
-                    return;
+                if let Some(metrics) = monitor_interval.next() {
+                    update_high_mark(
+                        &liquid_metrics.total_slow_poll_n,
+                        metrics.total_slow_poll_count,
+                    );
+                    update_high_mark(&liquid_metrics.total_poll_n, metrics.total_poll_count);
+                    update_high_mark(
+                        &liquid_metrics.mean_poll_duration_ms,
+                        metrics.mean_idle_duration().as_millis() as u64,
+                    );
                 }
 
-                update_high_mark(
-                    &liquid_task_metrics_rt.total_tasks_n,
-                    metrics.live_tasks_count as u64,
-                );
-                update_high_mark(
-                    &liquid_task_metrics_rt.mean_poll_duration_ms,
-                    metrics.mean_poll_duration.as_millis() as u64,
-                );
+                if let Some(metrics) = rt_monitor_interval.next() {
+                    update_high_mark(
+                        &liquid_metrics.total_tasks_n,
+                        metrics.live_tasks_count as u64,
+                    );
+                    update_high_mark(
+                        &liquid_metrics.mean_poll_duration_ms,
+                        metrics.mean_poll_duration.as_millis() as u64,
+                    );
+                }
 
-                _ = tokio::time::sleep(tokio::time::Duration::from_millis(500));
+                interval.tick().await;
             }
         });
     }

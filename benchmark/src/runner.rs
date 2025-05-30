@@ -128,7 +128,7 @@ impl BenchmarkRunner {
 
         common.start_trace().await;
         common.start_flamegraph().await;
-        // common.start_task_stats().await;
+        common.start_task_stats().await;
 
         let root = Span::root(
             format!("{}-{}-{}", benchmark.benchmark_name(), query.id, iteration),
@@ -148,7 +148,7 @@ impl BenchmarkRunner {
             .or_else(|| networks.get("lo"))
             .expect("No loopback interface found in networks");
 
-        // common.stop_task_stats().await;
+        common.stop_task_stats().await;
         let flamegraph = if let Some(plan_uuid) = plan_uuid {
             common.stop_flamegraph(&plan_uuid).await
         } else {
