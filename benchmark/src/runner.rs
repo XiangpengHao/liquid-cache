@@ -42,7 +42,7 @@ pub trait Benchmark: Serialize + Clone {
     ) -> Result<(
         Vec<RecordBatch>,
         Arc<dyn datafusion::physical_plan::ExecutionPlan>,
-        Option<Uuid>,
+        Vec<Uuid>,
     )>;
 
     /// Get the benchmark name for tracing
@@ -149,8 +149,8 @@ impl BenchmarkRunner {
             .expect("No loopback interface found in networks");
 
         common.stop_task_stats().await;
-        let flamegraph = if let Some(plan_uuid) = plan_uuid {
-            common.stop_flamegraph(&plan_uuid).await
+        let flamegraph = if !plan_uuid.is_empty() {
+            common.stop_flamegraph().await
         } else {
             None
         };
@@ -170,14 +170,15 @@ impl BenchmarkRunner {
         common.get_cache_stats().await;
         let network_traffic = network_info.received();
 
-        if let Some(plan_uuid) = plan_uuid {
+        if !plan_uuid.is_empty() {
             common
                 .set_execution_stats(
-                    &plan_uuid,
+                    plan_uuid,
                     flamegraph,
                     format!("{}-q{}-{}", benchmark.benchmark_name(), query.id, iteration),
                     network_traffic,
                     elapsed.as_millis() as u64,
+                    query.sql.clone(),
                 )
                 .await;
         }

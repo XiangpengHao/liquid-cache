@@ -9,13 +9,30 @@ use axum::{
     Json,
     extract::{Query, State},
 };
-use datafusion::{common::stats::Precision, physical_plan::ExecutionPlan};
+use datafusion::{
+    catalog::memory::DataSourceExec,
+    common::{
+        stats::Precision,
+        tree_node::{TreeNode, TreeNodeRecursion},
+    },
+    datasource::physical_plan::FileScanConfig,
+    physical_plan::ExecutionPlan,
+};
 use liquid_cache_common::rpc::ExecutionMetricsResponse;
+use liquid_cache_parquet::LiquidParquetSource;
 use log::info;
 use serde::Serialize;
 use uuid::Uuid;
 
-use super::{ApiResponse, AppState, ExecutionStats};
+use crate::{
+    ColumnStatistics, ExecutionPlanWithStats, ExecutionStatsWithPlan, MetricValues, PlanInfo,
+    SchemaField, Statistics,
+};
+
+use super::{
+    AppState,
+    models::{ApiResponse, ExecutionStats},
+};
 
 pub(crate) async fn shutdown_handler() -> Json<ApiResponse> {
     info!("Shutdown request received, shutting down server...");
@@ -328,147 +345,147 @@ pub(crate) async fn start_flamegraph_handler(
     })
 }
 
-fn plan_to_json(plan: Arc<dyn ExecutionPlan>) -> String {
-    let mut json_object = serde_json::Map::new();
-    json_object.insert(
-        "name".to_string(),
-        serde_json::Value::String(plan.name().to_string()),
-    );
-    json_object.insert(
-        "schema".to_string(),
-        serde_json::Value::Array(
-            plan.schema()
+impl From<&Arc<dyn ExecutionPlan>> for ExecutionPlanWithStats {
+    fn from(plan: &Arc<dyn ExecutionPlan>) -> Self {
+        let metrics = plan.metrics().unwrap().aggregate_by_name();
+        let mut metric_values = Vec::new();
+        for metric in metrics.iter() {
+            metric_values.push(MetricValues {
+                name: metric.value().name().to_string(),
+                value: metric.value().to_string(),
+            });
+        }
+
+        let mut column_statistics = Vec::new();
+        for (i, cs) in plan
+            .statistics()
+            .unwrap()
+            .column_statistics
+            .iter()
+            .enumerate()
+        {
+            let min = if cs.min_value != Precision::Absent {
+                Some(cs.min_value.to_string())
+            } else {
+                None
+            };
+            let max = if cs.max_value != Precision::Absent {
+                Some(cs.max_value.to_string())
+            } else {
+                None
+            };
+            let sum = if cs.sum_value != Precision::Absent {
+                Some(cs.sum_value.to_string())
+            } else {
+                None
+            };
+            let distinct = if cs.distinct_count != Precision::Absent {
+                Some(cs.distinct_count.to_string())
+            } else {
+                None
+            };
+            let null = if cs.null_count != Precision::Absent {
+                Some(cs.null_count.to_string())
+            } else {
+                None
+            };
+            column_statistics.push(ColumnStatistics {
+                name: format!("col_{i}"),
+                null,
+                min,
+                max,
+                sum,
+                distinct_count: distinct,
+            });
+        }
+
+        ExecutionPlanWithStats {
+            name: plan.name().to_string(),
+            schema: plan
+                .schema()
                 .fields()
                 .iter()
-                .map(|field| {
-                    let mut field_object = serde_json::Map::new();
-                    field_object.insert(
-                        "name".to_string(),
-                        serde_json::Value::String(field.name().to_string()),
-                    );
-                    field_object.insert(
-                        "data_type".to_string(),
-                        serde_json::Value::String(field.data_type().to_string()),
-                    );
-                    serde_json::Value::Object(field_object)
+                .map(|field| SchemaField {
+                    name: field.name().to_string(),
+                    data_type: field.data_type().to_string(),
                 })
                 .collect(),
-        ),
-    );
-    let statistics = plan.statistics().unwrap();
-    let mut statistics_object = serde_json::Map::new();
-    statistics_object.insert(
-        "num_rows".to_string(),
-        serde_json::Value::String(statistics.num_rows.to_string()),
-    );
-    statistics_object.insert(
-        "total_byte_size".to_string(),
-        serde_json::Value::String(statistics.total_byte_size.to_string()),
-    );
-    let mut column_statistics = Vec::new();
-    for (i, cs) in statistics.column_statistics.iter().enumerate() {
-        let mut column_statistic_object = serde_json::Map::new();
-        column_statistic_object.insert(
-            "name".to_string(),
-            serde_json::Value::String(format!("col_{i}")),
-        );
-        if cs.null_count != Precision::Absent {
-            column_statistic_object.insert(
-                "null".to_string(),
-                serde_json::Value::String(cs.null_count.to_string()),
-            );
+            statistics: Statistics {
+                num_rows: plan.statistics().unwrap().num_rows.to_string(),
+                total_byte_size: plan.statistics().unwrap().total_byte_size.to_string(),
+                column_statistics,
+            },
+            metrics: metric_values,
+            children: plan
+                .children()
+                .iter()
+                .map(|child| (*child).into())
+                .collect(),
         }
-        if cs.max_value != Precision::Absent {
-            column_statistic_object.insert(
-                "max".to_string(),
-                serde_json::Value::String(cs.max_value.to_string()),
-            );
-        }
-        if cs.min_value != Precision::Absent {
-            column_statistic_object.insert(
-                "min".to_string(),
-                serde_json::Value::String(cs.min_value.to_string()),
-            );
-        }
-        if cs.sum_value != Precision::Absent {
-            column_statistic_object.insert(
-                "sum".to_string(),
-                serde_json::Value::String(cs.sum_value.to_string()),
-            );
-        }
-        if cs.distinct_count != Precision::Absent {
-            column_statistic_object.insert(
-                "distinct".to_string(),
-                serde_json::Value::String(cs.distinct_count.to_string()),
-            );
-        }
-        column_statistics.push(serde_json::Value::Object(column_statistic_object));
     }
-    statistics_object.insert(
-        "columns".to_string(),
-        serde_json::Value::Array(column_statistics),
-    );
-    json_object.insert(
-        "statistics".to_string(),
-        serde_json::Value::Object(statistics_object),
-    );
-
-    let metrics = plan.metrics().unwrap().aggregate_by_name();
-    let mut metric_object = serde_json::Map::new();
-    for metric in metrics.iter() {
-        metric_object.insert(
-            metric.value().name().to_string(),
-            serde_json::Value::String(metric.value().to_string()),
-        );
-    }
-    json_object.insert(
-        "metrics".to_string(),
-        serde_json::Value::Object(metric_object),
-    );
-
-    for child in plan.children() {
-        json_object.insert(
-            "children".to_string(),
-            serde_json::Value::Array(vec![serde_json::Value::String(plan_to_json(child.clone()))]),
-        );
-    }
-
-    serde_json::to_string(&json_object).unwrap()
 }
 
-pub(crate) async fn get_execution_plans(
-    State(state): State<Arc<AppState>>,
-) -> Json<Vec<(String, String)>> {
-    let plans = state.liquid_cache.inner().get_execution_plans();
-    let mut serialized = Vec::new();
-    for (id, plan) in plans {
-        let json_plan = plan_to_json(plan.plan.clone());
-        let mut json_object = serde_json::Map::new();
+fn get_liquid_exec_info(plan: &Arc<dyn ExecutionPlan>) -> Option<String> {
+    let mut rv = None;
+    plan.apply(|node| {
+        let Some(data_source) = node.as_any().downcast_ref::<DataSourceExec>() else {
+            return Ok(TreeNodeRecursion::Continue);
+        };
+        let file_scan_config = data_source
+            .data_source()
+            .as_any()
+            .downcast_ref::<FileScanConfig>()
+            .expect("FileScanConfig not found");
+        let Some(liquid_source) = file_scan_config
+            .file_source()
+            .as_any()
+            .downcast_ref::<LiquidParquetSource>()
+        else {
+            return Ok(TreeNodeRecursion::Continue);
+        };
+        let predicate = liquid_source.predicate();
 
-        json_object.insert("plan".to_string(), serde_json::Value::String(json_plan));
-        json_object.insert("id".to_string(), serde_json::Value::String(id.to_string()));
-        json_object.insert(
-            "created_at".to_string(),
-            serde_json::Value::Number(
-                plan.created_at
+        rv = predicate.map(|v| v.to_string());
+        Ok(TreeNodeRecursion::Stop)
+    })
+    .unwrap();
+    rv
+}
+
+pub(crate) async fn get_execution_stats(
+    State(state): State<Arc<AppState>>,
+) -> Json<Vec<ExecutionStatsWithPlan>> {
+    let execution_stats = state.liquid_cache.inner().get_execution_stats();
+    let mut rv = Vec::new();
+    for execution_stat in execution_stats {
+        let mut plans = Vec::new();
+        for plan_id in execution_stat.plan_ids.iter() {
+            let uuid = Uuid::parse_str(plan_id).expect("Invalid plan ID");
+            let plan = state
+                .liquid_cache
+                .inner()
+                .get_plan(&uuid)
+                .expect("Plan not found");
+            let model_plan = ExecutionPlanWithStats::from(&plan.plan);
+            let plan_info = PlanInfo {
+                id: plan_id.to_string(),
+                created_at: plan
+                    .created_at
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap()
-                    .as_secs()
-                    .into(),
-            ),
-        );
-        if let Some(execution_stats) = plan.execution_stats {
-            json_object.insert(
-                "stats".to_string(),
-                serde_json::Value::String(serde_json::to_string(&execution_stats).unwrap()),
-            );
+                    .as_secs(),
+                plan: model_plan,
+                predicate: get_liquid_exec_info(&plan.plan),
+            };
+            plans.push(plan_info);
         }
-
-        let serialized_plan = serde_json::to_string(&json_object).unwrap();
-
-        serialized.push((id.to_string(), serialized_plan));
+        let execution_stats_with_plan = ExecutionStatsWithPlan {
+            execution_stats: execution_stat,
+            plans,
+        };
+        rv.push(execution_stats_with_plan);
     }
-    Json(serialized)
+    Json(rv)
 }
 
 pub(crate) async fn stop_flamegraph_handler(
@@ -488,34 +505,19 @@ pub(crate) async fn stop_flamegraph_handler(
     })
 }
 
-fn set_execution_stats_inner(state: &AppState, params: &ExecutionStats) -> anyhow::Result<()> {
-    let plan_id = Uuid::parse_str(&params.plan_id)?;
-    let success = state
-        .liquid_cache
-        .inner()
-        .set_execution_stats(&plan_id, params.clone());
-    if !success {
-        return Err(anyhow::anyhow!(
-            "Failed to set display name for execution plan {plan_id}"
-        ));
-    }
-    Ok(())
-}
-
-pub(crate) async fn set_execution_stats_handler(
+pub(crate) async fn add_execution_stats_handler(
     State(state): State<Arc<AppState>>,
     Json(params): Json<ExecutionStats>,
 ) -> Json<ApiResponse> {
-    match set_execution_stats_inner(&state, &params) {
-        Ok(_) => Json(ApiResponse {
-            message: format!("Execution stats set for execution plan {}", params.plan_id),
-            status: "success".to_string(),
-        }),
-        Err(e) => Json(ApiResponse {
-            message: format!("Failed to set display name: {e}"),
-            status: "error".to_string(),
-        }),
-    }
+    let message = format!(
+        "Execution stats added for execution {}",
+        params.display_name
+    );
+    state.liquid_cache.inner().add_execution_stats(params);
+    Json(ApiResponse {
+        message,
+        status: "success".to_string(),
+    })
 }
 
 #[cfg(test)]

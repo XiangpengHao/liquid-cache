@@ -26,7 +26,6 @@ use uuid::Uuid;
 pub(crate) struct ExecutionPlanEntry {
     pub plan: Arc<dyn ExecutionPlan>,
     pub created_at: SystemTime,
-    pub execution_stats: Option<ExecutionStats>,
 }
 
 impl ExecutionPlanEntry {
@@ -34,17 +33,13 @@ impl ExecutionPlanEntry {
         Self {
             plan,
             created_at: SystemTime::now(),
-            execution_stats: None,
         }
-    }
-
-    pub fn set_execution_stats(&mut self, execution_stats: ExecutionStats) {
-        self.execution_stats = Some(execution_stats);
     }
 }
 
 pub(crate) struct LiquidCacheServiceInner {
-    execution_plans: Arc<RwLock<HashMap<Uuid, ExecutionPlanEntry>>>,
+    execution_plans: RwLock<HashMap<Uuid, ExecutionPlanEntry>>,
+    execution_stats: RwLock<Vec<ExecutionStats>>,
     default_ctx: Arc<SessionContext>,
     liquid_cache: Option<LiquidCacheRef>,
     parquet_cache_dir: PathBuf,
@@ -82,6 +77,7 @@ impl LiquidCacheServiceInner {
 
         Self {
             execution_plans: Default::default(),
+            execution_stats: Default::default(),
             default_ctx,
             liquid_cache,
             parquet_cache_dir,
@@ -230,30 +226,16 @@ impl LiquidCacheServiceInner {
         &self.default_ctx
     }
 
-    #[cfg(test)]
-    pub(crate) fn get_plan(&self, id: &Uuid) -> Option<Arc<dyn ExecutionPlan>> {
-        self.execution_plans
-            .read()
-            .unwrap()
-            .get(id)
-            .map(|entry| entry.plan.clone())
+    pub(crate) fn get_plan(&self, id: &Uuid) -> Option<ExecutionPlanEntry> {
+        self.execution_plans.read().unwrap().get(id).cloned()
     }
 
-    pub(crate) fn get_execution_plans(&self) -> HashMap<Uuid, ExecutionPlanEntry> {
-        self.execution_plans.read().unwrap().clone()
+    pub(crate) fn get_execution_stats(&self) -> Vec<ExecutionStats> {
+        self.execution_stats.read().unwrap().clone()
     }
 
-    pub(crate) fn set_execution_stats(
-        &self,
-        plan_id: &Uuid,
-        post_execution_stats: ExecutionStats,
-    ) -> bool {
-        if let Some(entry) = self.execution_plans.write().unwrap().get_mut(plan_id) {
-            entry.set_execution_stats(post_execution_stats);
-            true
-        } else {
-            false
-        }
+    pub(crate) fn add_execution_stats(&self, execution_stats: ExecutionStats) {
+        self.execution_stats.write().unwrap().push(execution_stats);
     }
 }
 

@@ -14,16 +14,16 @@ use liquid_cache_client::LiquidCacheClientExec;
 use log::warn;
 use uuid::Uuid;
 
-pub(crate) fn get_plan_uuid(plan: &Arc<dyn ExecutionPlan>) -> Option<Uuid> {
-    let mut uuid = None;
+pub(crate) fn get_plan_uuids(plan: &Arc<dyn ExecutionPlan>) -> Vec<Uuid> {
+    let mut uuids = Vec::new();
     plan.apply(|plan| {
         if let Some(plan) = plan.as_any().downcast_ref::<LiquidCacheClientExec>() {
-            uuid = Some(plan.get_uuid());
+            uuids.push(plan.get_uuid());
         }
         Ok(datafusion::common::tree_node::TreeNodeRecursion::Continue)
     })
     .unwrap();
-    uuid
+    uuids
 }
 
 fn float_eq_helper(left: &dyn Array, right: &dyn Array, tol: f64) -> bool {
