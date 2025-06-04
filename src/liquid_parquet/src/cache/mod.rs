@@ -9,11 +9,13 @@ use arrow::buffer::BooleanBuffer;
 use arrow::compute::prep_null_mask_filter;
 use arrow_schema::{ArrowError, DataType, Field, Schema};
 use bytes::Bytes;
+use file_io::INST;
 use liquid_cache_common::{LiquidCacheMode, coerce_from_parquet_to_liquid_type};
-use num_traits::AsPrimitive;
 use std::fmt::Display;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::Read;
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
@@ -32,6 +34,7 @@ mod store;
 mod tracer;
 mod transcode;
 mod utils;
+mod file_io;
 
 /// A dedicated Tokio thread pool for background transcoding tasks.
 /// This pool is built with 4 worker threads.
@@ -181,35 +184,44 @@ impl LiquidCachedColumn {
         let path = entry_id.on_disk_path(self.cache_store.config().cache_root_dir());
         let compressor = self.cache_store.compressor_states(&entry_id);
         let compressor = compressor.fsst_compressor.read().unwrap().clone();
-        
-        let bytes = tokio::task::block_in_place(|| {
-            tokio_uring::start(async {
-                let mut bytes = Vec::<u8>::new();
-                let registry = FixedBufRegistry::new(std::iter::repeat(vec![0; 4096]).take(1));
-                if registry.register().is_err() {
-                    log::error!("IO_uring registration failed");
-                }
-                let file = tokio_uring::fs::File::open(path).await.unwrap();
-                let mut pos = 0;
 
-                loop {
-                    let buf = registry.check_out(0).unwrap();
-                    let (res, buf) = file.read_fixed_at(buf, pos).await;
-                    if res.is_err() {
-                        log::error!("Failed to read from disk using io_uring: {}", res.err().unwrap());
-                        break;
-                    }
-                    if *(res.as_ref().unwrap()) == 0 {
-                        // No more bytes to read
-                        break;
-                    }
-                    pos += <usize as AsPrimitive<u64>>::as_(*res.as_ref().unwrap());
-                    bytes.extend_from_slice(&buf[..res.unwrap()]);
-                }
-                file.close().await.expect("Failed to close file after reading");
-                bytes
+        let bytes = tokio::task::block_in_place(|| {
+            INST.with(|ring| {
+                let file = OpenOptions::new().read(true).custom_flags(libc::O_DIRECT).open(path).unwrap();
+                let file_size = file.metadata().unwrap().len();
+                ring.borrow_mut().register_fd(file.as_raw_fd());
+                ring.borrow_mut().read_blocking(file.as_raw_fd(), file_size as usize)
             })
         });
+        
+        // let bytes = tokio::task::block_in_place(|| {
+        //     tokio_uring::start(async {
+        //         let mut bytes = Vec::<u8>::new();
+        //         let registry = FixedBufRegistry::new(std::iter::repeat(vec![0; 4096]).take(1));
+        //         if registry.register().is_err() {
+        //             log::error!("IO_uring registration failed");
+        //         }
+        //         let file = tokio_uring::fs::File::open(path).await.unwrap();
+        //         let mut pos = 0;
+
+        //         loop {
+        //             let buf = registry.check_out(0).unwrap();
+        //             let (res, buf) = file.read_fixed_at(buf, pos).await;
+        //             if res.is_err() {
+        //                 log::error!("Failed to read from disk using io_uring: {}", res.err().unwrap());
+        //                 break;
+        //             }
+        //             if *(res.as_ref().unwrap()) == 0 {
+        //                 // No more bytes to read
+        //                 break;
+        //             }
+        //             pos += <usize as AsPrimitive<u64>>::as_(*res.as_ref().unwrap());
+        //             bytes.extend_from_slice(&buf[..res.unwrap()]);
+        //         }
+        //         file.close().await.expect("Failed to close file after reading");
+        //         bytes
+        //     })
+        // });
         let bytes = Bytes::from(bytes);
         ipc::read_from_bytes(bytes, &LiquidIPCContext::new(compressor))
     }
