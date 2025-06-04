@@ -198,13 +198,15 @@ pub fn boolean_buffer_and_then(left: &BooleanBuffer, right: &BooleanBuffer) -> B
         return right.clone();
     }
 
-    // Fast path for BMI2 support
-    if cfg!(target_arch = "x86_64") && is_x86_feature_detected!("bmi2") {
-        unsafe { boolean_buffer_and_then_bmi2(left, right) }
-    } else {
-        // Fallback to the original implementation
-        boolean_buffer_and_then_fallback(left, right)
+    // Fast path for BMI2 support on x86_64
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("bmi2") {
+            return unsafe { boolean_buffer_and_then_bmi2(left, right) };
+        }
     }
+
+    boolean_buffer_and_then_fallback(left, right)
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -305,12 +307,6 @@ unsafe fn boolean_buffer_and_then_bmi2(
     }
 
     BooleanBuffer::new(out.into(), 0, bit_len)
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-pub fn boolean_buffer_and_then_bmi2(left: &BooleanBuffer, right: &BooleanBuffer) -> BooleanBuffer {
-    // Fallback to original implementation on non-x86_64 platforms
-    boolean_buffer_and_then_fallback(left, right)
 }
 
 pub(super) fn row_selector_to_boolean_buffer(selection: &[RowSelector]) -> BooleanBuffer {
