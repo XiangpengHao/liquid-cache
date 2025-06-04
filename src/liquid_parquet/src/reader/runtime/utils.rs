@@ -1,9 +1,5 @@
 use std::collections::VecDeque;
 
-use arrow::{
-    array::BooleanBufferBuilder,
-    buffer::{BooleanBuffer, MutableBuffer},
-};
 use parquet::arrow::arrow_reader::{RowSelection, RowSelector};
 
 /// Consolidate the selection to the batch granularity
@@ -88,62 +84,6 @@ pub(super) fn take_next_batch(
         return None;
     }
     Some(rt)
-}
-
-/// Combines this [`BooleanBuffer`] with another using logical AND on the selected bits.
-///
-/// Unlike intersection, the `other` [`BooleanBuffer`] must have exactly as many **set bits** as `self`,
-/// i.e., self.count_set_bits() == other.len().
-///
-/// This method will keep only the bits in `self` that are also set in `other`
-/// at the positions corresponding to `self`'s set bits.
-/// For example:
-/// left:   NNYYYNNYYNYN
-/// right:    YNY  NY N
-/// result: NNYNYNNNYNNN
-pub(super) fn boolean_buffer_and_then(
-    left: &BooleanBuffer,
-    right: &BooleanBuffer,
-) -> BooleanBuffer {
-    debug_assert_eq!(
-        left.count_set_bits(),
-        right.len(),
-        "the right selection must have the same number of set bits as the left selection"
-    );
-
-    if left.len() == right.len() {
-        debug_assert_eq!(left.count_set_bits(), left.len());
-        return right.clone();
-    }
-
-    let mut buffer = MutableBuffer::from_len_zeroed(left.values().len());
-    buffer.copy_from_slice(left.values());
-    let mut builder = BooleanBufferBuilder::new_from_buffer(buffer, left.len());
-
-    let mut other_bits = right.iter();
-
-    for bit_idx in left.set_indices() {
-        let predicate = other_bits
-            .next()
-            .expect("Mismatch in set bits between self and other");
-        if !predicate {
-            builder.set_bit(bit_idx, false);
-        }
-    }
-
-    builder.finish()
-}
-
-pub(super) fn row_selector_to_boolean_buffer(selection: &[RowSelector]) -> BooleanBuffer {
-    let mut buffer = BooleanBufferBuilder::new(8192);
-    for selector in selection.iter() {
-        if selector.skip {
-            buffer.append_n(selector.row_count, false);
-        } else {
-            buffer.append_n(selector.row_count, true);
-        }
-    }
-    buffer.finish()
 }
 
 #[cfg(test)]

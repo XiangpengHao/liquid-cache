@@ -10,6 +10,7 @@ pub use cache::{LiquidCache, LiquidCacheRef, LiquidCachedFileRef};
 pub use reader::LiquidParquetSource;
 pub use reader::LiquidPredicate;
 pub(crate) mod utils;
+pub use utils::boolean_buffer_and_then;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd)]
 #[allow(unused)]

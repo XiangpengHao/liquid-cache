@@ -298,10 +298,6 @@ impl LiquidCachedColumn {
         let transcoded = match transcode_liquid_inner(&array, &compressor) {
             Ok(transcoded) => transcoded,
             Err(_) => {
-                log::warn!(
-                    "unsupported data type {:?}, inserting as arrow array",
-                    array.data_type()
-                );
                 self.cache_store.insert(
                     self.entry_id(batch_id),
                     CachedBatch::ArrowMemory(array.clone()),
@@ -372,9 +368,8 @@ impl LiquidCachedColumn {
                     CachedBatch::LiquidMemory(transcoded),
                 );
             }
-            Err(array) => {
+            Err(_array) => {
                 // if the array data type is not supported yet, we just leave it as is.
-                log::warn!("unsupported data type {:?}", array.data_type());
             }
         }
     }

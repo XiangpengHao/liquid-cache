@@ -75,11 +75,9 @@
 				"--query-dir",
 				"benchmark/tpch/queries",
 				"--data-dir",
-				"benchmark/tpch/data/sf0.01",
+				"benchmark/tpch/data/sf100.0",
 				"--query",
-				"15",
-				"--answer-dir",
-				"benchmark/tpch/answers/sf0.01"
+				"6",
 			],
 			"cwd": "${workspaceFolder}"
 		}
