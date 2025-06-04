@@ -340,18 +340,18 @@ mod server_actions_tests {
     async fn create_test_file(file_path: &str, size_mb: usize) -> anyhow::Result<()> {
         let mut file = File::create(file_path).await?;
         let size_bytes = size_mb * 1024 * 1024;
-        
+
         let chunk_size = 64 * 1024;
         let chunk_data = vec![0u8; chunk_size];
         let mut written = 0;
-        
+
         while written < size_bytes {
             let remaining = size_bytes - written;
             let write_size = std::cmp::min(chunk_size, remaining);
             file.write_all(&chunk_data[..write_size]).await?;
             written += write_size;
         }
-        
+
         file.flush().await?;
         Ok(())
     }
