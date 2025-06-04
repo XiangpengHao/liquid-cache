@@ -164,14 +164,13 @@ mod tests {
     use crate::cache::BatchID;
 
     use super::*;
-    use crate::cache::store::CacheAdvice::Discard;
     use crate::policies::DiscardPolicy;
     use arrow::{
         array::{Array, AsArray},
         datatypes::UInt64Type,
     };
     use bytes::Bytes;
-    use liquid_cache_common::{CacheEvictionStrategy, LiquidCacheMode};
+    use liquid_cache_common::LiquidCacheMode;
     use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
     use tempfile::NamedTempFile;
 

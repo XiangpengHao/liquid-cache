@@ -384,7 +384,6 @@ mod tests {
     use std::sync::Arc;
 
     use arrow::array::Int32Array;
-    use liquid_cache_common::CacheEvictionStrategy::Discard;
     use liquid_cache_common::LiquidCacheMode;
 
     use super::*;
