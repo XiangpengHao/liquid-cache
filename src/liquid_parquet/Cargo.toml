@@ -53,6 +53,10 @@ name = "liquid_float_array"
 harness = false
 path = "bench/liquid_float_array.rs"
 
+[[bench]]
+name = "boolean_and_then"
+harness = false
+path = "bench/boolean_and_then.rs"
 
 [[bench]]
 name = "bench_eviction"
