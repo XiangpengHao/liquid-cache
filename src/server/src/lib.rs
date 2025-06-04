@@ -334,25 +334,47 @@ mod server_actions_tests {
     use LiquidCacheService;
     use liquid_cache_common::rpc::PrefetchFromObjectStoreRequest;
     use std::collections::HashMap;
+    use tokio::fs::File;
+    use tokio::io::AsyncWriteExt;
+
+    async fn create_test_file(file_path: &str, size_mb: usize) -> anyhow::Result<()> {
+        let mut file = File::create(file_path).await?;
+        let size_bytes = size_mb * 1024 * 1024;
+        
+        let chunk_size = 64 * 1024;
+        let chunk_data = vec![0u8; chunk_size];
+        let mut written = 0;
+        
+        while written < size_bytes {
+            let remaining = size_bytes - written;
+            let write_size = std::cmp::min(chunk_size, remaining);
+            file.write_all(&chunk_data[..write_size]).await?;
+            written += write_size;
+        }
+        
+        file.flush().await?;
+        Ok(())
+    }
 
     #[tokio::test]
     async fn test_prefetch_from_object_store() {
         let service = LiquidCacheService::default();
 
+        // Create temporary test file
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("test_prefetch_data.bin");
+        let file_path_str = file_path.to_string_lossy().to_string();
+
+        // Generate 16MB test file
+        create_test_file(&file_path_str, 16).await.unwrap();
+
         // Test with local file system
         let url = Url::parse("file:///").unwrap();
-
-        // Get the current directory and append the file path
-        let current_dir = std::env::current_dir().unwrap();
-        let location = format!(
-            "{}/src/tests/testdata/prefetch_data.parquet",
-            current_dir.display()
-        );
 
         let request = PrefetchFromObjectStoreRequest {
             url: url.to_string(),
             store_options: HashMap::new(),
-            location: location.to_string(),
+            location: file_path_str.clone(),
             range_start: None,
             range_end: None,
         };
@@ -363,21 +385,24 @@ mod server_actions_tests {
         let mut stream = result.into_inner();
         let result = stream.try_next().await.unwrap().unwrap();
         assert!(result.body.is_empty());
+
+        // Cleanup is handled by tempdir drop
     }
 
     #[tokio::test]
     async fn test_prefetch_from_object_store_with_range() {
         let service = LiquidCacheService::default();
 
+        // Create temporary test file
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("test_prefetch_data_range.bin");
+        let file_path_str = file_path.to_string_lossy().to_string();
+
+        // Generate 16MB test file
+        create_test_file(&file_path_str, 16).await.unwrap();
+
         // Test with local file system
         let url = Url::parse("file:///").unwrap();
-
-        // Get the current directory and append the file path
-        let current_dir = std::env::current_dir().unwrap();
-        let location = format!(
-            "{}/src/tests/testdata/prefetch_data.parquet",
-            current_dir.display()
-        );
 
         // range from 1mb to 10mb
         let range_start = 1024 * 1024;
@@ -386,7 +411,7 @@ mod server_actions_tests {
         let request = PrefetchFromObjectStoreRequest {
             url: url.to_string(),
             store_options: HashMap::new(),
-            location: location.to_string(),
+            location: file_path_str.clone(),
             range_start: Some(range_start),
             range_end: Some(range_end),
         };
@@ -397,6 +422,8 @@ mod server_actions_tests {
         let mut stream = result.into_inner();
         let result = stream.try_next().await.unwrap().unwrap();
         assert!(result.body.is_empty());
+
+        // Cleanup is handled by tempdir drop
     }
 
     #[tokio::test]
