@@ -126,6 +126,28 @@ impl LiquidCacheServiceInner {
         Ok(())
     }
 
+    /// Get a registered object store by its URL
+    pub(crate) fn get_object_store(&self, url: &Url) -> Result<Arc<dyn ObjectStore>> {
+        let (_, path) = object_store::parse_url(url)?;
+        if path.as_ref() != "" {
+            return Err(anyhow::anyhow!(
+                "object store url should not be a full path, got {}",
+                path.as_ref()
+            ));
+        }
+
+        let object_store_url = ObjectStoreUrl::parse(url.as_str())?;
+        let existing = self
+            .default_ctx
+            .runtime_env()
+            .object_store(&object_store_url);
+
+        match existing {
+            Ok(store) => Ok(store),
+            Err(_) => Err(anyhow::anyhow!("Object store {url} not registered")),
+        }
+    }
+
     pub(crate) fn register_plan(&self, handle: Uuid, plan: Arc<dyn ExecutionPlan>) {
         match self.cache() {
             Some(cache) => {
