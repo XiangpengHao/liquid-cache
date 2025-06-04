@@ -8,9 +8,8 @@ use parquet::arrow::array_reader::ArrayReader;
 use parquet::arrow::arrow_reader::{RowSelection, RowSelector};
 
 use crate::cache::{BatchID, LiquidCachedRowGroupRef};
-use crate::reader::runtime::utils::{
-    boolean_buffer_and_then, row_selector_to_boolean_buffer, take_next_batch,
-};
+use crate::reader::runtime::utils::take_next_batch;
+use crate::utils::{boolean_buffer_and_then, row_selector_to_boolean_buffer};
 use crate::{ABLATION_STUDY_MODE, AblationStudyMode};
 
 use super::LiquidRowFilter;
