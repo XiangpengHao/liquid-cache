@@ -1,12 +1,18 @@
 use std::{any::Any, sync::Arc};
 
+use ahash::HashMap;
 use arrow::{
-    array::{Array, ArrayRef, AsArray, BooleanArray, DictionaryArray, PrimitiveArray},
+    array::{
+        Array, ArrayRef, AsArray, BooleanArray, BooleanBufferBuilder, DictionaryArray,
+        PrimitiveArray, UInt16Array,
+    },
+    buffer::Buffer,
     compute::kernels::cast,
     datatypes::{Decimal128Type, Decimal256Type, DecimalType, UInt16Type},
 };
 use arrow_schema::DataType;
 use fsst::Compressor;
+use std::mem::MaybeUninit;
 
 use crate::utils::CheckedDictionaryArray;
 
@@ -79,21 +85,12 @@ impl LiquidArray for LiquidFixedLenByteArray {
     }
 
     fn to_arrow_array(&self) -> ArrayRef {
-        match self.arrow_type {
-            ArrowFixedLenByteArrayType::Decimal128(precision, scale) => {
-                let array = self.values.to_decimal128_array(&self.arrow_type);
-                let keys = self.keys.to_primitive();
-                let dict =
-                    unsafe { DictionaryArray::<UInt16Type>::new_unchecked(keys, Arc::new(array)) };
-                cast(&dict, &DataType::Decimal128(precision, scale)).unwrap()
-            }
-            ArrowFixedLenByteArrayType::Decimal256(precision, scale) => {
-                let array = self.values.to_decimal256_array(&self.arrow_type);
-                let keys = self.keys.to_primitive();
-                let dict =
-                    unsafe { DictionaryArray::<UInt16Type>::new_unchecked(keys, Arc::new(array)) };
-                cast(&dict, &DataType::Decimal256(precision, scale)).unwrap()
-            }
+        if self.keys.len() < 2048 || self.keys.len() < self.values.compressed.len() {
+            // Use keyed decompression for smaller arrays
+            self.to_arrow_array_decompress_keyed()
+        } else {
+            // Use full decompression for larger arrays
+            self.to_arrow_array_decompress_all()
         }
     }
 
@@ -175,6 +172,118 @@ impl LiquidFixedLenByteArray {
             arrow_type,
             keys: bit_packed_array,
             values: fsst_values,
+        }
+    }
+
+    /// Convert to arrow array by decompressing all values
+    fn to_arrow_array_decompress_all(&self) -> ArrayRef {
+        match self.arrow_type {
+            ArrowFixedLenByteArrayType::Decimal128(precision, scale) => {
+                let array = self.values.to_decimal128_array(&self.arrow_type);
+                let keys = self.keys.to_primitive();
+                let dict =
+                    unsafe { DictionaryArray::<UInt16Type>::new_unchecked(keys, Arc::new(array)) };
+                cast(&dict, &DataType::Decimal128(precision, scale)).unwrap()
+            }
+            ArrowFixedLenByteArrayType::Decimal256(precision, scale) => {
+                let array = self.values.to_decimal256_array(&self.arrow_type);
+                let keys = self.keys.to_primitive();
+                let dict =
+                    unsafe { DictionaryArray::<UInt16Type>::new_unchecked(keys, Arc::new(array)) };
+                cast(&dict, &DataType::Decimal256(precision, scale)).unwrap()
+            }
+        }
+    }
+
+    /// Convert to arrow array by only decompressing values referenced by keys
+    fn to_arrow_array_decompress_keyed(&self) -> ArrayRef {
+        let primitive_key = self.keys.to_primitive();
+        let mut hit_mask = BooleanBufferBuilder::new(self.values.compressed.len());
+        hit_mask.advance(self.values.compressed.len());
+        for v in primitive_key.iter().flatten() {
+            hit_mask.set_bit(v as usize, true);
+        }
+        let hit_mask = hit_mask.finish();
+        let selected_cnt = hit_mask.count_set_bits();
+
+        let mut key_map =
+            HashMap::with_capacity_and_hasher(selected_cnt, ahash::RandomState::new());
+        let mut offset = 0;
+        for (i, select) in hit_mask.iter().enumerate() {
+            if select {
+                key_map.insert(i, offset);
+                offset += 1;
+            }
+        }
+        let new_keys = UInt16Array::from_iter(
+            primitive_key
+                .iter()
+                .map(|v| v.map(|v| key_map[&(v as usize)])),
+        );
+
+        let decompressed_values = self.decompress_keyed_values(&hit_mask);
+        let dict =
+            unsafe { DictionaryArray::<UInt16Type>::new_unchecked(new_keys, decompressed_values) };
+
+        match self.arrow_type {
+            ArrowFixedLenByteArrayType::Decimal128(precision, scale) => {
+                cast(&dict, &DataType::Decimal128(precision, scale)).unwrap()
+            }
+            ArrowFixedLenByteArrayType::Decimal256(precision, scale) => {
+                cast(&dict, &DataType::Decimal256(precision, scale)).unwrap()
+            }
+        }
+    }
+
+    /// Decompress only the values that are selected by the hit mask
+    fn decompress_keyed_values(&self, hit_mask: &arrow::buffer::BooleanBuffer) -> ArrayRef {
+        let value_width = self.arrow_type.value_width();
+        let selected_cnt = hit_mask.count_set_bits();
+        let decompressor = self.values.compressor().decompressor();
+
+        let mut value_buffer: Vec<u8> = Vec::with_capacity(selected_cnt * value_width + 8);
+        let mut dst = value_buffer.as_mut_ptr();
+
+        assert_eq!(hit_mask.len(), self.values.compressed.len());
+        for i in 0..hit_mask.len() {
+            if unsafe { hit_mask.value_unchecked(i) } {
+                let v = unsafe { self.values.compressed.value_unchecked(i) };
+                let slice = unsafe {
+                    std::slice::from_raw_parts_mut(dst as *mut MaybeUninit<u8>, value_width + 8)
+                };
+                let len = decompressor.decompress_into(v, slice);
+                debug_assert!(len == value_width);
+                unsafe {
+                    dst = dst.add(value_width);
+                }
+            }
+        }
+
+        unsafe {
+            value_buffer.set_len(dst as usize - value_buffer.as_ptr() as usize);
+        }
+        value_buffer.shrink_to_fit();
+        let value_buffer = Buffer::from(value_buffer);
+
+        match self.arrow_type {
+            ArrowFixedLenByteArrayType::Decimal128(precision, scale) => {
+                let array_data =
+                    arrow::array::ArrayDataBuilder::new(DataType::Decimal128(precision, scale))
+                        .len(selected_cnt)
+                        .add_buffer(value_buffer)
+                        .build()
+                        .unwrap();
+                Arc::new(arrow::array::Decimal128Array::from(array_data))
+            }
+            ArrowFixedLenByteArrayType::Decimal256(precision, scale) => {
+                let array_data =
+                    arrow::array::ArrayDataBuilder::new(DataType::Decimal256(precision, scale))
+                        .len(selected_cnt)
+                        .add_buffer(value_buffer)
+                        .build()
+                        .unwrap();
+                Arc::new(arrow::array::Decimal256Array::from(array_data))
+            }
         }
     }
 
@@ -271,5 +380,75 @@ mod tests {
     #[test]
     fn test_decimal256_filter_operation() {
         test_decimal_filter_operation::<Decimal256Type>(DataType::Decimal256(38, 4));
+    }
+
+    #[test]
+    fn test_keyed_decompression_optimization() {
+        // Create a larger decimal array to test the optimization logic
+        let mut builder = arrow::array::Decimal128Builder::new();
+
+        // Create 10 distinct values
+        for i in 0..10 {
+            builder.append_value(i as i128 * 1000);
+        }
+        let distinct_values = builder.finish().with_precision_and_scale(15, 3).unwrap();
+
+        let (_compressor, mut liquid_array) =
+            LiquidFixedLenByteArray::train_from_decimal_array(&distinct_values);
+
+        // Create a small keys array that only references a few values
+        // This should trigger the keyed decompression path (keys.len() < 2048)
+        let small_keys = UInt16Array::from(vec![0, 2, 4, 2, 0]); // Only references indices 0, 2, 4
+        liquid_array.keys =
+            BitPackedArray::from_primitive(small_keys, std::num::NonZero::new(3).unwrap());
+
+        // Test both decompress_all and decompress_keyed should give the same result
+        let result_all = liquid_array.to_arrow_array_decompress_all();
+        let result_keyed = liquid_array.to_arrow_array_decompress_keyed();
+
+        // Both should be equal
+        assert_eq!(
+            result_all.as_primitive::<Decimal128Type>().values(),
+            result_keyed.as_primitive::<Decimal128Type>().values()
+        );
+
+        // Verify the actual values are correct
+        let expected_values = vec![0, 2000, 4000, 2000, 0]; // i * 1000 for i in [0, 2, 4, 2, 0]
+        let actual_values: Vec<i128> = result_keyed
+            .as_primitive::<Decimal128Type>()
+            .values()
+            .iter()
+            .copied()
+            .collect();
+        assert_eq!(expected_values, actual_values);
+    }
+
+    #[test]
+    fn test_large_array_uses_full_decompression() {
+        // Test that large arrays (>= 2048) use full decompression
+        let distinct_values = gen_test_decimal_array::<Decimal128Type>(DataType::Decimal128(15, 3));
+        let (_compressor, mut liquid_array) =
+            LiquidFixedLenByteArray::train_from_decimal_array(&distinct_values);
+
+        // Create a large keys array
+        let large_keys: Vec<u16> = (0..3000)
+            .map(|i| (i % distinct_values.len()) as u16)
+            .collect();
+        let large_keys = UInt16Array::from(large_keys);
+        liquid_array.keys = BitPackedArray::from_primitive(
+            large_keys,
+            std::num::NonZero::new(4).unwrap(), // Adjust bit width as needed
+        );
+
+        // This should use the full decompression path since keys.len() >= 2048
+        let result = liquid_array.to_arrow_array();
+        assert_eq!(result.len(), 3000);
+
+        // Verify the result is valid by checking it matches decompress_all
+        let result_all = liquid_array.to_arrow_array_decompress_all();
+        assert_eq!(
+            result.as_primitive::<Decimal128Type>().values(),
+            result_all.as_primitive::<Decimal128Type>().values()
+        );
     }
 }
