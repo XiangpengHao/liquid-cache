@@ -1,14 +1,6 @@
 use bytes::Bytes;
 use io_uring::types::Fixed;
-/**
- * Blocking io uring:
- * - Add a thread local io_uring instance
- * - Pre-register buffers for submission (these should also be thread-local)
- * - Submit the reads/writes
- * - Poll the completion queue
- */
 use io_uring::{self, opcode};
-use libc::{c_void, iovec};
 use num_traits::AsPrimitive;
 use std::alloc::Layout;
 use std::cell::RefCell;
@@ -17,7 +9,6 @@ use std::usize;
 
 pub struct IoUringInstance {
     inner: io_uring::IoUring,
-    registered_buffers: Vec<iovec>,
     #[allow(unused)]
     registered_files: Vec<RawFd>,
 }
@@ -34,40 +25,40 @@ impl IoUringInstance {
         let ring = builder
             .build(Self::NUM_ENTRIES)
             .expect("Failed to build IoUring instance");
-        let buffers = Self::register_buffers(&ring);
+        // let buffers = Self::register_buffers(&ring);
         let registered_files = vec![-1];
         ring.submitter()
             .register_files(registered_files.as_slice())
             .expect("Failed to create file registry");
         IoUringInstance {
             inner: ring,
-            registered_buffers: buffers,
+            // registered_buffers: buffers,
             registered_files: registered_files,
         }
     }
 
-    fn register_buffers(ring: &io_uring::IoUring) -> Vec<iovec> {
-        let layout = Layout::from_size_align(
-            (Self::NUM_ENTRIES as usize) * Self::CHUNK_SIZE,
-            Self::BUFFER_ALIGNMENT,
-        )
-        .expect("Failed to create memory layout for pre-registered buffers");
-        let mut vectors = Vec::<iovec>::new();
-        unsafe {
-            let ptr = std::alloc::alloc(layout);
-            for pos in 0..Self::NUM_ENTRIES {
-                let iov = iovec {
-                    iov_base: (ptr.wrapping_add((pos as usize) * Self::CHUNK_SIZE)) as *mut c_void,
-                    iov_len: Self::CHUNK_SIZE,
-                };
-                vectors.push(iov);
-            }
-            ring.submitter()
-                .register_buffers(vectors.as_slice())
-                .expect("Failed to pre-register buffers");
-        }
-        vectors
-    }
+    // fn register_buffers(ring: &io_uring::IoUring) -> Vec<iovec> {
+    //     let layout = Layout::from_size_align(
+    //         (Self::NUM_ENTRIES as usize) * Self::CHUNK_SIZE,
+    //         Self::BUFFER_ALIGNMENT,
+    //     )
+    //     .expect("Failed to create memory layout for pre-registered buffers");
+    //     let mut vectors = Vec::<iovec>::new();
+    //     unsafe {
+    //         let ptr = std::alloc::alloc(layout);
+    //         for pos in 0..Self::NUM_ENTRIES {
+    //             let iov = iovec {
+    //                 iov_base: (ptr.wrapping_add((pos as usize) * Self::CHUNK_SIZE)) as *mut c_void,
+    //                 iov_len: Self::CHUNK_SIZE,
+    //             };
+    //             vectors.push(iov);
+    //         }
+    //         ring.submitter()
+    //             .register_buffers(vectors.as_slice())
+    //             .expect("Failed to pre-register buffers");
+    //     }
+    //     vectors
+    // }
 
     #[inline]
     pub(crate) fn register_fd(self: &mut Self, fd: RawFd) {
@@ -81,44 +72,43 @@ impl IoUringInstance {
         self.register_fd(fd);
         // TODO(): How to handle overflow???
         let num_chunks = (nbytes + Self::CHUNK_SIZE - 1) / Self::CHUNK_SIZE;
-        assert!(num_chunks < Self::NUM_ENTRIES as usize, "More chunks than sqe entries");
+        assert!(
+            num_chunks < Self::NUM_ENTRIES as usize,
+            "More chunks than sqe entries"
+        );
+
+        let layout = Layout::from_size_align(nbytes, Self::BUFFER_ALIGNMENT)
+            .expect("Failed to create memory layout for disk read result");
+        let base_ptr = unsafe { std::alloc::alloc(layout) };
+
         #[allow(unused_mut)]
         let mut inner_mut = &mut self.inner;
         {
             #[allow(unused_mut)]
             let mut sq = &mut (inner_mut.submission());
+            let mut buf_ptr = base_ptr;
             for i in 0..num_chunks {
-                let read_op = opcode::ReadFixed::new(
+                let read_op = opcode::Read::new(
                     Fixed(0),
-                    self.registered_buffers[i].iov_base as *mut u8,
-                    Self::CHUNK_SIZE as _,  // Logically, this should be the remaining number of bytes, but that fails...
-                    i.as_(),
+                    buf_ptr,
+                    Self::CHUNK_SIZE as _, // Logically, this should be the remaining number of bytes, but that fails...
                 );
-                
+
                 let sqe = read_op
                     .offset((i * Self::CHUNK_SIZE).as_())
                     .build()
                     .user_data(i.as_());
-                /*
-                 * TODO(): Assess the following:
-                 * - Do we need to set IOSQE_FIXED_FILE?
-                 * - Do we need to sync the sq in between?
-                 */
+                // TODO(): Assess if we need to sync the sq in between?
                 unsafe {
                     sq.push(&sqe)
                         .expect("Failed to push to submission queue during read");
+                    buf_ptr = buf_ptr.add(Self::CHUNK_SIZE);
                 }
             }
             sq.sync();
         }
         // Since we are using kernel thread for polling, this might or might not result in a syscall. It will internally check if the kernel thread needs to be woken up
         inner_mut.submit_and_wait(0 /* polled io */).unwrap();
-        let layout = Layout::from_size_align(nbytes, 64)
-            .expect("Failed to create memory layout for disk read result");
-        let ptr = unsafe { std::alloc::alloc(layout) };
-        // TODO(): Ask if we should pad the vector to 64 bytes
-        #[allow(unused_mut)]
-        let mut result = unsafe { Vec::from_raw_parts(ptr as *mut u8, nbytes, nbytes) };
 
         #[allow(unused_mut)]
         let mut cq = &mut inner_mut.completion();
@@ -137,15 +127,15 @@ impl IoUringInstance {
                         cqe.result() == (chunk_end - chunk_start) as i32,
                         "Read cqe result error: {err}"
                     );
-                    let result_slice = &mut result[chunk_start..chunk_end];
-                    let iovec = self.registered_buffers[chunk_idx];
-                    let fixed_buf_slice = unsafe {
-                        std::slice::from_raw_parts(
-                            iovec.iov_base as *const u8,
-                            chunk_end - chunk_start,
-                        )
-                    };
-                    result_slice.copy_from_slice(fixed_buf_slice);
+                    // let result_slice = &mut result[chunk_start..chunk_end];
+                    // let iovec = self.registered_buffers[chunk_idx];
+                    // let fixed_buf_slice = unsafe {
+                    //     std::slice::from_raw_parts(
+                    //         iovec.iov_base as *const u8,
+                    //         chunk_end - chunk_start,
+                    //     )
+                    // };
+                    // result_slice.copy_from_slice(fixed_buf_slice);
                     num_completions_recvd += 1;
                     if num_completions_recvd == num_chunks {
                         break;
@@ -156,7 +146,8 @@ impl IoUringInstance {
                 }
             }
         }
-        Bytes::from(result)
+        // TODO(): Discuss if we should pad the vector to 64 bytes
+        Bytes::from(unsafe { Vec::from_raw_parts(base_ptr as *mut u8, nbytes, nbytes) })
     }
 }
 
