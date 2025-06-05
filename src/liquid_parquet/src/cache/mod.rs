@@ -21,7 +21,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use store::{CacheAdvice, CacheStore, FileIOMode, FILE_IO_MODE, IO_URING_THREAD_POOL};
 use tokio::runtime::Runtime;
-use tokio_uring::buf::fixed::FixedBufRegistry;
 use transcode::transcode_liquid_inner;
 pub(crate) use utils::BatchID;
 use utils::{CacheEntryID, ColumnAccessPath};
@@ -189,7 +188,6 @@ impl LiquidCachedColumn {
             INST.with(|ring| {
                 let file = OpenOptions::new().read(true).custom_flags(libc::O_DIRECT).open(path).unwrap();
                 let file_size = file.metadata().unwrap().len();
-                ring.borrow_mut().register_fd(file.as_raw_fd());
                 ring.borrow_mut().read_blocking(file.as_raw_fd(), file_size as usize)
             })
         });

@@ -13,6 +13,7 @@ use num_traits::AsPrimitive;
 use std::alloc::Layout;
 use std::cell::RefCell;
 use std::os::fd::RawFd;
+use std::usize;
 
 pub struct IoUringInstance {
     inner: io_uring::IoUring,
@@ -22,9 +23,9 @@ pub struct IoUringInstance {
 }
 
 impl IoUringInstance {
-    const NUM_ENTRIES: u32 = 256;
-    const CHUNK_SIZE: usize = 4096;
-    const BUFFER_ALIGNMENT: usize = 512;
+    const NUM_ENTRIES: u32 = 512;
+    const CHUNK_SIZE: usize = 8192;
+    const BUFFER_ALIGNMENT: usize = 4096;
 
     pub fn new() -> IoUringInstance {
         let mut builder = io_uring::IoUring::builder();
@@ -34,7 +35,7 @@ impl IoUringInstance {
             .build(Self::NUM_ENTRIES)
             .expect("Failed to build IoUring instance");
         let buffers = Self::register_buffers(&ring);
-        let registered_files = Vec::<RawFd>::new();
+        let registered_files = vec![-1];
         ring.submitter()
             .register_files(registered_files.as_slice())
             .expect("Failed to create file registry");
@@ -69,7 +70,7 @@ impl IoUringInstance {
     }
 
     #[inline]
-    pub(crate) fn register_fd(self: &Self, fd: RawFd) {
+    pub(crate) fn register_fd(self: &mut Self, fd: RawFd) {
         self.inner
             .submitter()
             .register_files_update(0, &[fd])
@@ -77,8 +78,10 @@ impl IoUringInstance {
     }
 
     pub(crate) fn read_blocking(self: &mut Self, fd: RawFd, nbytes: usize) -> Bytes {
+        self.register_fd(fd);
         // TODO(): How to handle overflow???
         let num_chunks = (nbytes + Self::CHUNK_SIZE - 1) / Self::CHUNK_SIZE;
+        assert!(num_chunks < Self::NUM_ENTRIES as usize, "More chunks than sqe entries");
         #[allow(unused_mut)]
         let mut inner_mut = &mut self.inner;
         {
@@ -86,11 +89,12 @@ impl IoUringInstance {
             let mut sq = &mut (inner_mut.submission());
             for i in 0..num_chunks {
                 let read_op = opcode::ReadFixed::new(
-                    Fixed(fd.as_()),
-                    self.registered_buffers.as_mut_ptr() as *mut u8,
-                    Self::CHUNK_SIZE.as_(),
+                    Fixed(0),
+                    self.registered_buffers[i].iov_base as *mut u8,
+                    Self::CHUNK_SIZE as _,  // Logically, this should be the remaining number of bytes, but that fails...
                     i.as_(),
                 );
+                
                 let sqe = read_op
                     .offset((i * Self::CHUNK_SIZE).as_())
                     .build()
@@ -101,7 +105,8 @@ impl IoUringInstance {
                  * - Do we need to sync the sq in between?
                  */
                 unsafe {
-                    sq.push(&sqe).expect("Failed to push to submission queue during read");
+                    sq.push(&sqe)
+                        .expect("Failed to push to submission queue during read");
                 }
             }
             sq.sync();
@@ -125,11 +130,21 @@ impl IoUringInstance {
                     // TODO(): Process cqe.result
                     let chunk_idx = cqe.user_data() as usize;
                     let chunk_start = chunk_idx as usize * Self::CHUNK_SIZE;
-                    let chunk_end = nbytes.min((chunk_idx as usize + 1) * Self::CHUNK_SIZE);
+                    let chunk_end = nbytes.min(chunk_start + Self::CHUNK_SIZE);
+                    let errno = -cqe.result();
+                    let err = std::io::Error::from_raw_os_error(errno);
+                    assert!(
+                        cqe.result() == (chunk_end - chunk_start) as i32,
+                        "Read cqe result error: {err}"
+                    );
                     let result_slice = &mut result[chunk_start..chunk_end];
                     let iovec = self.registered_buffers[chunk_idx];
-                    let fixed_buf_slice =
-                        unsafe { std::slice::from_raw_parts(iovec.iov_base as * const u8, iovec.iov_len) };
+                    let fixed_buf_slice = unsafe {
+                        std::slice::from_raw_parts(
+                            iovec.iov_base as *const u8,
+                            chunk_end - chunk_start,
+                        )
+                    };
                     result_slice.copy_from_slice(fixed_buf_slice);
                     num_completions_recvd += 1;
                     if num_completions_recvd == num_chunks {

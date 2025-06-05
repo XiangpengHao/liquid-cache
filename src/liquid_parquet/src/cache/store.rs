@@ -34,7 +34,7 @@ pub(crate) enum FileIOMode {
     TokioAsync
 }
 
-pub(crate) static FILE_IO_MODE: FileIOMode = FileIOMode::ThreadPoolIoUring;
+pub(crate) static FILE_IO_MODE: FileIOMode = FileIOMode::BlockingIoUring;
 
 #[derive(Debug)]
 struct CompressorStates {
