@@ -316,7 +316,7 @@ impl LiquidByteArray {
 
     /// Convert the LiquidStringArray to arrow's DictionaryArray.
     pub fn to_dict_arrow(&self) -> DictionaryArray<UInt16Type> {
-        if self.keys.len() < 2048 {
+        if self.keys.len() < 2048 || self.keys.len() < self.values.compressed.len() {
             // a heuristic to selective decompress.
             self.to_dict_arrow_decompress_keyed()
         } else {
