@@ -1,13 +1,13 @@
 use clap::Parser;
 use datafusion::arrow::array::RecordBatch;
-use datafusion::common::tree_node::TreeNode;
+use datafusion::catalog::memory::DataSourceExec;
+use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::collect;
 use datafusion::{error::Result, physical_plan::ExecutionPlan};
 use datafusion::{physical_plan::metrics::MetricValue, prelude::SessionContext};
 use fastrace::Span;
 use fastrace::future::FutureExt as _;
-use liquid_cache_client::LiquidCacheClientExec;
 use liquid_cache_common::rpc::ExecutionMetricsResponse;
 use liquid_cache_server::{ApiResponse, ExecutionStats};
 use log::info;
@@ -181,11 +181,30 @@ impl CommonBenchmarkArgs {
                 // for parquet fileserver, the memory usage is the bytes scanned.
                 // It's not easy to get the memory usage as it is cached in the kernel's page cache.
                 // So the bytes scanned is the minimum cache memory usage, actual usage is slightly higher.
-                let mut plan = execution_plan;
-                while let Some(child) = plan.children().first() {
-                    plan = child;
-                }
-                if plan.name() != "ParquetExec" {
+
+                // Collect metrics from all DataSourceExec nodes using TreeNode traversal
+                let mut total_bytes_scanned = 0;
+                let _ = execution_plan.apply(|plan| {
+                    if plan.as_any().downcast_ref::<DataSourceExec>().is_some() {
+                        let metrics = plan
+                            .metrics()
+                            .unwrap()
+                            .aggregate_by_name()
+                            .sorted_for_display()
+                            .timestamps_removed();
+
+                        for metric in metrics.iter() {
+                            if let MetricValue::Count { name, count } = metric.value()
+                                && name == "bytes_scanned"
+                            {
+                                total_bytes_scanned += count.value();
+                            }
+                        }
+                    }
+                    Ok(TreeNodeRecursion::Continue)
+                });
+
+                if total_bytes_scanned == 0 {
                     // the scan is completely pruned, so the memory usage is 0
                     return ExecutionMetricsResponse {
                         pushdown_eval_time: 0,
@@ -193,26 +212,10 @@ impl CommonBenchmarkArgs {
                         liquid_cache_usage: 0,
                     };
                 }
-                let metrics = plan
-                    .metrics()
-                    .unwrap()
-                    .aggregate_by_name()
-                    .sorted_for_display()
-                    .timestamps_removed();
-
-                let mut bytes_scanned = 0;
-
-                for metric in metrics.iter() {
-                    if let MetricValue::Count { name, count } = metric.value()
-                        && name == "bytes_scanned"
-                    {
-                        bytes_scanned = count.value();
-                    }
-                }
 
                 ExecutionMetricsResponse {
                     pushdown_eval_time: 0,
-                    cache_memory_usage: bytes_scanned as u64,
+                    cache_memory_usage: total_bytes_scanned as u64,
                     liquid_cache_usage: 0,
                 }
             }
@@ -220,23 +223,12 @@ impl CommonBenchmarkArgs {
             | BenchmarkMode::ArrowPushdown
             | BenchmarkMode::LiquidCache
             | BenchmarkMode::LiquidEagerTranscode => {
-                let mut handles = Vec::new();
-                execution_plan
-                    .apply(|plan| {
-                        let any_plan = plan.as_any();
-                        if let Some(flight_exec) = any_plan.downcast_ref::<LiquidCacheClientExec>()
-                        {
-                            handles.push(flight_exec);
-                        }
-                        Ok(datafusion::common::tree_node::TreeNodeRecursion::Continue)
-                    })
-                    .unwrap();
+                let uuids = utils::get_plan_uuids(execution_plan);
                 let mut metrics = Vec::new();
-                for handle in handles {
-                    let plan_id = handle.get_uuid();
+                for uuid in uuids {
                     let response = reqwest::Client::new()
                         .get(format!(
-                            "{}/execution_metrics?plan_id={plan_id}",
+                            "{}/execution_metrics?plan_id={uuid}",
                             self.admin_server
                         ))
                         .send()
@@ -253,8 +245,10 @@ impl CommonBenchmarkArgs {
                                 Some(ExecutionMetricsResponse {
                                     pushdown_eval_time: acc.pushdown_eval_time
                                         + m.pushdown_eval_time,
-                                    cache_memory_usage: acc.cache_memory_usage,
-                                    liquid_cache_usage: acc.liquid_cache_usage,
+                                    cache_memory_usage: acc.cache_memory_usage
+                                        + m.cache_memory_usage,
+                                    liquid_cache_usage: acc.liquid_cache_usage
+                                        + m.liquid_cache_usage,
                                 })
                             } else {
                                 Some(m.clone())
@@ -273,7 +267,7 @@ impl CommonBenchmarkArgs {
         }
         let client = reqwest::Client::new();
         client
-            .post(format!("{}/reset_cache", self.admin_server))
+            .get(format!("{}/reset_cache", self.admin_server))
             .send()
             .await
             .unwrap()

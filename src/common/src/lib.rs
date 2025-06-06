@@ -20,6 +20,8 @@ pub enum CacheMode {
     LiquidEagerTranscode,
     /// Cache Arrow, transcode happens in background
     Arrow,
+    /// Static file server mode
+    StaticFileServer,
 }
 
 /// Specify which eviction logic the cache should use
@@ -40,6 +42,7 @@ impl Display for CacheMode {
                 CacheMode::Liquid => "liquid",
                 CacheMode::LiquidEagerTranscode => "liquid_eager_transcode",
                 CacheMode::Arrow => "arrow",
+                CacheMode::StaticFileServer => "static_file_server",
             }
         )
     }
@@ -54,9 +57,10 @@ impl FromStr for CacheMode {
             "liquid" => CacheMode::Liquid,
             "liquid_eager_transcode" => CacheMode::LiquidEagerTranscode,
             "arrow" => CacheMode::Arrow,
+            "static_file_server" => CacheMode::StaticFileServer,
             _ => {
                 return Err(format!(
-                    "Invalid cache mode: {s}, must be one of: parquet, liquid, liquid_eager_transcode, arrow"
+                    "Invalid cache mode: {s}, must be one of: parquet, liquid, liquid_eager_transcode, arrow, static_file_server"
                 ));
             }
         })
@@ -105,6 +109,7 @@ impl From<CacheMode> for LiquidCacheMode {
                 transcode_in_background: false,
             },
             CacheMode::Parquet => unreachable!(),
+            CacheMode::StaticFileServer => unreachable!(),
         }
     }
 }
