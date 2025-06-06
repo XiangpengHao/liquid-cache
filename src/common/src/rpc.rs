@@ -224,7 +224,7 @@ impl ProstMessageExt for FetchResults {
     }
 }
 
-#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize, Debug)]
 pub struct ExecutionMetricsResponse {
     pub pushdown_eval_time: u64,
     pub cache_memory_usage: u64,

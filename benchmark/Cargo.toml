@@ -39,6 +39,8 @@ tower = "0.5.2"
 logforth = { version = "0.25.0", features = ["opentelemetry"] }
 reqwest = { version = "0.12.15", default-features = false, features = ["json"] }
 uuid = { version = "1.13.0", features = ["v4"] }
+axum = "0.8"
+tower-http = { version = "0.6", features = ["fs"] }
 
 [[bin]]
 name = "clickbench_client"

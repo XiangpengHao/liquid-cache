@@ -1,7 +1,7 @@
 use crate::{ExecutionStats, local_cache::LocalCache};
 use anyhow::Result;
 use datafusion::{
-    common::tree_node::{Transformed, TreeNode},
+    common::tree_node::{Transformed, TreeNode, TreeNodeRecursion},
     datasource::{
         physical_plan::{FileScanConfig, ParquetSource},
         source::{DataSource, DataSourceExec},
@@ -190,7 +190,7 @@ impl LiquidCacheServiceInner {
     }
 
     pub(crate) fn get_metrics(&self, plan_id: &Uuid) -> Option<ExecutionMetricsResponse> {
-        let maybe_leaf = self
+        let plan = self
             .execution_plans
             .read()
             .unwrap()
@@ -198,33 +198,36 @@ impl LiquidCacheServiceInner {
             .plan
             .clone();
 
-        let displayable = DisplayableExecutionPlan::with_metrics(maybe_leaf.as_ref());
-        debug!("physical plan:\n{}", displayable.indent(true));
-
-        let plan = if let Some(plan) = maybe_leaf.children().first() {
-            *plan
-        } else {
-            &maybe_leaf
-        };
-        let metrics = plan
-            .metrics()?
-            .aggregate_by_name()
-            .sorted_for_display()
-            .timestamps_removed();
-
+        // Traverse the plan tree to find all DataSourceExec nodes and collect their metrics
         let mut time_elapsed_processing_millis = 0;
         let mut bytes_scanned = 0;
-        for metric in metrics.iter() {
-            if let MetricValue::Time { name, time } = metric.value()
-                && name == "time_elapsed_processing"
+
+        plan.apply(|node| {
+            let any_plan = node.as_any();
+            if let Some(data_source_exec) = any_plan.downcast_ref::<DataSourceExec>()
+                && let Some(metrics) = data_source_exec.metrics()
             {
-                time_elapsed_processing_millis = time.value() / 1_000_000;
-            } else if let MetricValue::Count { name, count } = metric.value()
-                && name == "bytes_scanned"
-            {
-                bytes_scanned = count.value();
+                let aggregated_metrics = metrics
+                    .aggregate_by_name()
+                    .sorted_for_display()
+                    .timestamps_removed();
+
+                for metric in aggregated_metrics.iter() {
+                    if let MetricValue::Time { name, time } = metric.value()
+                        && name == "time_elapsed_processing"
+                    {
+                        time_elapsed_processing_millis += time.value() / 1_000_000;
+                    } else if let MetricValue::Count { name, count } = metric.value()
+                        && name == "bytes_scanned"
+                    {
+                        bytes_scanned += count.value();
+                    }
+                }
             }
-        }
+            Ok(TreeNodeRecursion::Continue)
+        })
+        .ok()?;
+
         let liquid_cache_usage = self
             .cache()
             .as_ref()
@@ -298,11 +301,7 @@ fn rewrite_data_source_plan(
                         let new_plan = Arc::new(DataSourceExec::new(new_file_source));
 
                         // data source is at the bottom of the plan tree, so we can stop the recursion
-                        return Ok(Transformed::new(
-                            new_plan,
-                            true,
-                            datafusion::common::tree_node::TreeNodeRecursion::Stop,
-                        ));
+                        return Ok(Transformed::new(new_plan, true, TreeNodeRecursion::Stop));
                     }
                 }
                 return Ok(Transformed::no(node));
