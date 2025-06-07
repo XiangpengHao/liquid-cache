@@ -12,6 +12,11 @@ pub use reader::LiquidPredicate;
 pub(crate) mod utils;
 pub use utils::boolean_buffer_and_then;
 
+mod inprocess;
+pub use inprocess::LiquidCacheInProcessBuilder;
+
+pub use liquid_cache_common as common;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd)]
 #[allow(unused)]
 enum AblationStudyMode {

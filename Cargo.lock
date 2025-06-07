@@ -1821,6 +1821,7 @@ dependencies = [
  "futures",
  "liquid-cache-client",
  "liquid-cache-common",
+ "liquid-cache-parquet",
  "liquid-cache-server",
  "log",
  "object_store",
