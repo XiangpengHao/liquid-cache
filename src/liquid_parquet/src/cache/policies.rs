@@ -220,7 +220,7 @@ impl CachePolicy for DiscardPolicy {
 
 fn fallback_advice(entry_id: &CacheEntryID, cache_mode: &LiquidCacheMode) -> CacheAdvice {
     match cache_mode {
-        LiquidCacheMode::InMemoryArrow => CacheAdvice::Discard,
+        LiquidCacheMode::Arrow => CacheAdvice::Discard,
         _ => CacheAdvice::TranscodeToDisk(*entry_id),
     }
 }
@@ -248,12 +248,12 @@ mod test {
         expect_evict: CacheEntryID,
         trigger_entry: CacheEntryID,
     ) {
-        let advice = policy.advise(&trigger_entry, &LiquidCacheMode::InMemoryArrow);
+        let advice = policy.advise(&trigger_entry, &LiquidCacheMode::Arrow);
         assert_eq!(advice, CacheAdvice::Evict(expect_evict));
     }
 
     fn assert_discard_advice(policy: &LruPolicy, trigger_entry: CacheEntryID) {
-        let advice = policy.advise(&trigger_entry, &LiquidCacheMode::InMemoryArrow);
+        let advice = policy.advise(&trigger_entry, &LiquidCacheMode::Arrow);
         assert_eq!(advice, CacheAdvice::Discard);
     }
 
@@ -389,8 +389,8 @@ mod test {
         }
         policy.notify_access(&entry(2));
         policy.notify_access(&entry(5));
-        policy.advise(&entry(0), &LiquidCacheMode::InMemoryArrow);
-        policy.advise(&entry(1), &LiquidCacheMode::InMemoryArrow);
+        policy.advise(&entry(0), &LiquidCacheMode::Arrow);
+        policy.advise(&entry(1), &LiquidCacheMode::Arrow);
 
         let state = policy.state.lock().unwrap();
         state.check_integrity();
@@ -431,7 +431,7 @@ mod test {
             let advised_entries_clone = advised_entries.clone();
 
             let handle = thread::spawn(move || {
-                let advice = policy_clone.advise(&entry(999), &LiquidCacheMode::InMemoryArrow);
+                let advice = policy_clone.advise(&entry(999), &LiquidCacheMode::Arrow);
                 if let CacheAdvice::Evict(entry_id) = advice {
                     let mut entries = advised_entries_clone.lock().unwrap();
                     entries.push(entry_id);
@@ -518,7 +518,7 @@ mod test {
                                 // Evict some earlier entries we created
                                 let to_evict =
                                     entry((thread_id * operations_per_thread + i - 20) as u64);
-                                policy_clone.advise(&to_evict, &LiquidCacheMode::InMemoryArrow);
+                                policy_clone.advise(&to_evict, &LiquidCacheMode::Arrow);
                                 total_evictions_clone.fetch_add(1, Ordering::SeqCst);
                             }
                         }

@@ -1,0 +1,40 @@
+---
+source: src/liquid_parquet/src/tests/mod.rs
+expression: "format!(\"plan: \\n{}\\nvalues: \\n{}\", plan, reference)"
+---
+plan: 
+┌───────────────────────────┐
+│          SortExec         │
+│    --------------------   │
+│         OS@0 DESC         │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│  InProcessLiquidCacheExec │
+│    --------------------   │
+│    InProcessLiquidCache   │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       DataSourceExec      │
+│    --------------------   │
+│          files: 1         │
+│                           │
+│          format:          │
+│       liquid_parquet      │
+└───────────────────────────┘
+
+values: 
++----+
+| OS |
++----+
+| 44 |
+| 44 |
+| 44 |
+| 44 |
+| 44 |
+| 2  |
+| 2  |
+| 2  |
+| 2  |
+| 2  |
+| 2  |
++----+

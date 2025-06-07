@@ -38,6 +38,7 @@ rand = "0.9.1"
 shuttle = "0.8.0"
 tracing-subscriber = "0.3.19"
 paste = "1.0.15"
+insta = { version = "1.43.1" }
 
 [features]
 shuttle = []

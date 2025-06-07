@@ -181,7 +181,7 @@ mod tests {
             1024,
             usize::MAX,
             tmp_dir.path().to_path_buf(),
-            LiquidCacheMode::InMemoryArrow,
+            LiquidCacheMode::Arrow,
             Box::new(DiscardPolicy::default()),
         );
         let array = Arc::new(arrow::array::Int32Array::from(vec![1, 2, 3]));

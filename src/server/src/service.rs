@@ -365,16 +365,16 @@ mod tests {
             .await
             .unwrap();
         let plan = df.create_physical_plan().await.unwrap();
-        rewrite_plan_inner(plan.clone(), &LiquidCacheMode::InMemoryArrow);
+        rewrite_plan_inner(plan.clone(), &LiquidCacheMode::Arrow);
         rewrite_plan_inner(
             plan.clone(),
-            &LiquidCacheMode::InMemoryLiquid {
+            &LiquidCacheMode::Liquid {
                 transcode_in_background: false,
             },
         );
         rewrite_plan_inner(
             plan.clone(),
-            &LiquidCacheMode::InMemoryLiquid {
+            &LiquidCacheMode::Liquid {
                 transcode_in_background: true,
             },
         );

@@ -341,13 +341,13 @@ impl LiquidCachedColumn {
         }
 
         match self.cache_mode() {
-            LiquidCacheMode::InMemoryArrow => {
+            LiquidCacheMode::Arrow => {
                 let entry_id = self.entry_id(batch_id);
                 self.cache_store
                     .insert(entry_id, CachedBatch::ArrowMemory(array.clone()));
                 Ok(())
             }
-            LiquidCacheMode::InMemoryLiquid {
+            LiquidCacheMode::Liquid {
                 transcode_in_background,
             } => {
                 if *transcode_in_background {

@@ -169,11 +169,11 @@ async fn basic_stuff(cache_mode: &LiquidCacheMode) {
 }
 
 const CACHE_MODES: &[LiquidCacheMode] = &[
-    LiquidCacheMode::InMemoryArrow,
-    LiquidCacheMode::InMemoryLiquid {
+    LiquidCacheMode::Arrow,
+    LiquidCacheMode::Liquid {
         transcode_in_background: false,
     },
-    LiquidCacheMode::InMemoryLiquid {
+    LiquidCacheMode::Liquid {
         transcode_in_background: true,
     },
 ];
@@ -353,7 +353,7 @@ async fn test_reading_with_full_cache() {
         batch_size,
         1,
         tmp_dir.path().to_path_buf(),
-        LiquidCacheMode::InMemoryLiquid {
+        LiquidCacheMode::Liquid {
             transcode_in_background: false,
         },
         Box::new(DiscardPolicy::default()),
