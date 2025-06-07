@@ -49,7 +49,7 @@ use crate::{LiquidCache, LiquidCacheRef, LiquidParquetSource};
 ///     let ctx = LiquidCacheInProcessBuilder::new()
 ///         .with_max_cache_bytes(1024 * 1024 * 1024) // 1GB
 ///         .with_cache_dir(temp_dir.path().to_path_buf())
-///         .with_cache_mode(LiquidCacheMode::InMemoryLiquid { transcode_in_background: false })
+///         .with_cache_mode(LiquidCacheMode::Liquid { transcode_in_background: false })
 ///         .with_cache_strategy(CacheEvictionStrategy::Discard)
 ///         .build(SessionConfig::new())?;
 ///
@@ -165,7 +165,7 @@ impl LiquidCacheInProcessBuilder {
 
 /// Execution plan that wraps a DataSourceExec with liquid cache and handles schema adaptation
 #[derive(Debug)]
-pub struct InProcessLiquidCacheExec {
+struct InProcessLiquidCacheExec {
     /// The wrapped execution plan (DataSourceExec with LiquidParquetSource)
     wrapped_plan: Arc<dyn ExecutionPlan>,
     /// The original schema that parent nodes expect
@@ -178,7 +178,7 @@ pub struct InProcessLiquidCacheExec {
 
 impl InProcessLiquidCacheExec {
     /// Create a new InProcessLiquidCacheExec
-    pub fn new(wrapped_plan: Arc<dyn ExecutionPlan>, original_schema: SchemaRef) -> Self {
+    fn new(wrapped_plan: Arc<dyn ExecutionPlan>, original_schema: SchemaRef) -> Self {
         use datafusion::physical_expr::EquivalenceProperties;
 
         // Create equivalence properties with the original schema
@@ -356,13 +356,13 @@ impl RecordBatchStream for SchemaAdaptingStream {
 /// This optimizer rewrites DataSourceExec nodes that read Parquet files
 /// to use LiquidParquetSource instead of the default ParquetSource
 #[derive(Debug)]
-pub struct InProcessOptimizer {
+struct InProcessOptimizer {
     cache: LiquidCacheRef,
 }
 
 impl InProcessOptimizer {
     /// Create an optimizer with an existing cache instance
-    pub fn with_cache(cache: LiquidCacheRef) -> Self {
+    fn with_cache(cache: LiquidCacheRef) -> Self {
         Self { cache }
     }
 
@@ -447,205 +447,5 @@ impl PhysicalOptimizerRule for InProcessOptimizer {
 
     fn schema_check(&self) -> bool {
         true
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::Arc;
-    use tempfile::TempDir;
-
-    use arrow::util::pretty::pretty_format_batches;
-    use datafusion::{
-        physical_plan::{ExecutionPlan, collect},
-        prelude::{ParquetReadOptions, SessionConfig, SessionContext},
-    };
-    use liquid_cache_common::LiquidCacheMode;
-
-    const TEST_FILE: &str = "../../examples/nano_hits.parquet";
-
-    #[test]
-    fn test_builder_pattern() {
-        let temp_dir = TempDir::new().unwrap();
-        let _builder = LiquidCacheInProcessBuilder::new()
-            .with_batch_size(4096)
-            .with_max_cache_bytes(512 * 1024 * 1024)
-            .with_cache_dir(temp_dir.path().to_path_buf())
-            .with_cache_strategy(CacheEvictionStrategy::Lru);
-
-        // Test that we can build a SessionContext
-        let session_config = SessionConfig::new();
-        let ctx = _builder.build(session_config).unwrap();
-        assert!(ctx.state().physical_optimizers().len() > 0);
-    }
-
-    #[test]
-    fn test_session_context_creation() {
-        let temp_dir = TempDir::new().unwrap();
-        let builder =
-            LiquidCacheInProcessBuilder::new().with_cache_dir(temp_dir.path().to_path_buf());
-
-        let session_config = SessionConfig::new();
-        let ctx = builder.build(session_config).unwrap();
-
-        // Verify that the session context has been created successfully
-        assert!(ctx.state().physical_optimizers().len() > 0);
-    }
-
-    async fn create_session_context_with_liquid_cache(
-        cache_mode: LiquidCacheMode,
-        cache_size_bytes: usize,
-    ) -> Result<SessionContext> {
-        let temp_dir = TempDir::new().unwrap();
-
-        let ctx = LiquidCacheInProcessBuilder::new()
-            .with_max_cache_bytes(cache_size_bytes)
-            .with_cache_dir(temp_dir.path().to_path_buf())
-            .with_cache_mode(cache_mode)
-            .with_cache_strategy(CacheEvictionStrategy::Discard)
-            .build(SessionConfig::new())?;
-
-        // Register the test parquet file
-        ctx.register_parquet("hits", TEST_FILE, ParquetReadOptions::default())
-            .await
-            .unwrap();
-
-        Ok(ctx)
-    }
-
-    async fn get_physical_plan(sql: &str, ctx: &SessionContext) -> Arc<dyn ExecutionPlan> {
-        let df = ctx.sql(sql).await.unwrap();
-        let (state, plan) = df.into_parts();
-        state.create_physical_plan(&plan).await.unwrap()
-    }
-
-    async fn run_sql_with_cache(
-        sql: &str,
-        cache_mode: LiquidCacheMode,
-        cache_size_bytes: usize,
-    ) -> String {
-        let ctx = create_session_context_with_liquid_cache(cache_mode, cache_size_bytes)
-            .await
-            .unwrap();
-
-        async fn get_result(ctx: &SessionContext, sql: &str) -> String {
-            let plan = get_physical_plan(sql, ctx).await;
-            let batches = collect(plan, ctx.task_ctx()).await.unwrap();
-            pretty_format_batches(&batches).unwrap().to_string()
-        }
-
-        // Run the query twice to test caching behavior
-        let first_run = get_result(&ctx, sql).await;
-        let second_run = get_result(&ctx, sql).await;
-
-        // Results should be identical
-        assert_eq!(first_run, second_run);
-
-        first_run
-    }
-
-    async fn test_runner(sql: &str, reference: &str) {
-        let cache_modes = [
-            LiquidCacheMode::Arrow,
-            LiquidCacheMode::Liquid {
-                transcode_in_background: false,
-            },
-            LiquidCacheMode::Liquid {
-                transcode_in_background: true,
-            },
-        ];
-
-        // Test different cache sizes: small, medium, and unlimited
-        let cache_sizes = [10 * 1024, 1024 * 1024, usize::MAX]; // 10KB, 1MB, unlimited
-
-        for cache_mode in cache_modes {
-            for cache_size in cache_sizes {
-                let result = run_sql_with_cache(sql, cache_mode, cache_size).await;
-                assert_eq!(
-                    result, reference,
-                    "Results differ for cache_mode: {:?}, cache_size: {}",
-                    cache_mode, cache_size
-                );
-            }
-        }
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_url_prefix_filtering() {
-        let sql = r#"select COUNT(*) from hits where "URL" like 'https://%'"#;
-        let reference = run_sql_with_cache(
-            sql,
-            LiquidCacheMode::Liquid {
-                transcode_in_background: false,
-            },
-            1024 * 1024,
-        )
-        .await;
-
-        // Test across different cache configurations
-        test_runner(sql, &reference).await;
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_url_selection_and_ordering() {
-        let sql = r#"select "URL" from hits where "URL" like '%tours%' order by "URL" desc"#;
-        let reference = run_sql_with_cache(
-            sql,
-            LiquidCacheMode::Liquid {
-                transcode_in_background: false,
-            },
-            1024 * 1024,
-        )
-        .await;
-
-        test_runner(sql, &reference).await;
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_os_selection() {
-        let sql = r#"select "OS" from hits where "URL" like '%tours%' order by "OS" desc"#;
-        let reference = run_sql_with_cache(
-            sql,
-            LiquidCacheMode::Liquid {
-                transcode_in_background: false,
-            },
-            1024 * 1024,
-        )
-        .await;
-
-        test_runner(sql, &reference).await;
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_referer_filtering() {
-        let sql = r#"select "Referer" from hits where "Referer" <> '' AND "URL" like '%tours%' order by "Referer" desc"#;
-        let reference = run_sql_with_cache(
-            sql,
-            LiquidCacheMode::Liquid {
-                transcode_in_background: false,
-            },
-            1024 * 1024,
-        )
-        .await;
-
-        test_runner(sql, &reference).await;
-    }
-
-    #[tokio::test]
-    async fn test_session_context_with_cache_stats() {
-        let temp_dir = TempDir::new().unwrap();
-
-        let session_config = SessionConfig::new();
-        let _ctx = LiquidCacheInProcessBuilder::new()
-            .with_cache_dir(temp_dir.path().to_path_buf())
-            .with_max_cache_bytes(1024 * 1024) // 1MB cache
-            .build(session_config)
-            .unwrap();
-
-        // Verify that the session context was created successfully
-        // In a real scenario, we would access cache stats through the session context
-        // but for this test, we just verify the builder works
-        assert!(true);
     }
 }

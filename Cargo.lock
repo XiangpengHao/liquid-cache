@@ -2848,6 +2848,7 @@ dependencies = [
  "fastrace-futures",
  "fsst-rs",
  "futures",
+ "insta",
  "itertools 0.14.0",
  "liquid-cache-common",
  "log",

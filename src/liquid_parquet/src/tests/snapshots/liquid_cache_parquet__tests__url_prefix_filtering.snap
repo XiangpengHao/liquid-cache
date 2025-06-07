@@ -1,0 +1,55 @@
+---
+source: src/liquid_parquet/src/tests/mod.rs
+expression: "format!(\"plan: \\n{}\\nvalues: \\n{}\", plan, reference)"
+---
+plan: 
+┌───────────────────────────┐
+│       ProjectionExec      │
+│    --------------------   │
+│         count(*):         │
+│      count(Int64(1))      │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       AggregateExec       │
+│    --------------------   │
+│       aggr: count(1)      │
+│        mode: Final        │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│   CoalescePartitionsExec  │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       AggregateExec       │
+│    --------------------   │
+│       aggr: count(1)      │
+│       mode: Partial       │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│      RepartitionExec      │
+│    --------------------   │
+│ partition_count(in->out): │
+│          1 -> 24          │
+│                           │
+│    partitioning_scheme:   │
+│    RoundRobinBatch(24)    │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│  InProcessLiquidCacheExec │
+│    --------------------   │
+│    InProcessLiquidCache   │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       DataSourceExec      │
+│    --------------------   │
+│          files: 1         │
+│                           │
+│          format:          │
+│       liquid_parquet      │
+└───────────────────────────┘
+
+values: 
++----------+
+| count(*) |
++----------+
+| 23113    |
++----------+
