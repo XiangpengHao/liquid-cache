@@ -61,7 +61,7 @@ impl IoUringInstance {
     // }
 
     #[inline]
-    pub(crate) fn register_fd(self: &mut Self, fd: RawFd) {
+    fn register_fd(self: &mut Self, fd: RawFd) {
         self.inner
             .submitter()
             .register_files_update(0, &[fd])
@@ -117,7 +117,6 @@ impl IoUringInstance {
             cq.sync();
             match cq.next() {
                 Some(cqe) => {
-                    // TODO(): Process cqe.result
                     let chunk_idx = cqe.user_data() as usize;
                     let chunk_start = chunk_idx as usize * Self::CHUNK_SIZE;
                     let chunk_end = nbytes.min(chunk_start + Self::CHUNK_SIZE);
@@ -148,6 +147,70 @@ impl IoUringInstance {
         }
         // TODO(): Discuss if we should pad the vector to 64 bytes
         Bytes::from(unsafe { Vec::from_raw_parts(base_ptr as *mut u8, nbytes, nbytes) })
+    }
+
+    pub(crate) fn write_blocking(self: &mut Self, fd: RawFd, buffer: &Vec<u8>) {
+        self.register_fd(fd);
+        let nbytes = buffer.len();
+        let num_chunks = (nbytes + Self::CHUNK_SIZE - 1) / Self::CHUNK_SIZE;
+        assert!(
+            num_chunks < Self::NUM_ENTRIES as usize,
+            "More chunks than sqe entries"
+        );
+
+        let base_ptr = buffer.as_ptr();
+        #[allow(unused_mut)]
+        let mut inner_mut = &mut self.inner;
+        {
+            #[allow(unused_mut)]
+            let mut sq = &mut (inner_mut.submission());
+            let mut buf_ptr = base_ptr;
+            for i in 0..num_chunks {
+                // Same issue as read above...
+                let write_op = opcode::Write::new(
+                    Fixed(0),
+                    buf_ptr,
+                    Self::CHUNK_SIZE as u32,
+                );
+
+                let sqe = write_op
+                    .offset((i * Self::CHUNK_SIZE).as_())
+                    .build()
+                    .user_data(i.as_());
+                unsafe {
+                    sq.push(&sqe)
+                        .expect("Failed to push to submission queue during write");
+                    buf_ptr = buf_ptr.add(Self::CHUNK_SIZE);
+                }
+            }
+            sq.sync();
+        }
+        // Since we are using kernel thread for polling, this might or might not result in a syscall. It will internally check if the kernel thread needs to be woken up
+        inner_mut.submit_and_wait(0 /* polled io */).unwrap();
+
+        #[allow(unused_mut)]
+        let mut cq = &mut inner_mut.completion();
+        let mut num_completions_recvd = 0;
+        loop {
+            cq.sync();
+            match cq.next() {
+                Some(cqe) => {
+                    let errno = -cqe.result();
+                    let err = std::io::Error::from_raw_os_error(errno);
+                    assert!(
+                        cqe.result() == Self::CHUNK_SIZE as i32,
+                        "Write cqe result error: {err}"
+                    );
+                    num_completions_recvd += 1;
+                    if num_completions_recvd == num_chunks {
+                        break;
+                    }
+                }
+                None => {
+                    continue;
+                }
+            }
+        };
     }
 }
 

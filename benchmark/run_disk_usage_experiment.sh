@@ -14,9 +14,9 @@ fi
 
 NUM_PARTITIONS=$1
 
-# Create log directory if it doesn't exist
+# Create log and cache directory if it doesn't exist
 mkdir -p log
-
+mkdir -p tmp
 # if [ -d tmp ]; then
 #     rm -rf tmp/*
 # fi

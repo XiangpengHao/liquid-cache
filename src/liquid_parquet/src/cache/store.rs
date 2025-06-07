@@ -1,5 +1,8 @@
 use congee::CongeeArc;
 use std::fmt::{Debug, Formatter};
+use std::fs::OpenOptions;
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::OpenOptionsExt;
 use std::sync::LazyLock;
 use std::{fs::File, io::Write, path::PathBuf};
 
@@ -11,6 +14,7 @@ use super::{
     transcode_liquid_inner,
     utils::{CacheConfig, ColumnAccessPath},
 };
+use crate::cache::file_io::INST;
 use crate::liquid_array::LiquidArrayRef;
 use crate::sync::{Arc, RwLock};
 use ahash::AHashMap;
@@ -290,24 +294,14 @@ impl CacheStore {
 
     fn write_to_disk_blocking_uring(&self, entry_id: &CacheEntryID, liquid_array: &LiquidArrayRef) {
         let bytes = liquid_array.to_bytes();
-        let file_path = entry_id.on_disk_path(self.config.cache_root_dir());
-        let disk_size = bytes.len();
-            
+        let path = entry_id.on_disk_path(self.config.cache_root_dir());
+
         tokio::task::block_in_place(|| {
-            tokio_uring::start(async {
-                let file = tokio_uring::fs::File::create(file_path).await;
-                if let Ok(file) = file {
-                    let (res, _) = file.write_all_at(bytes, 0).await;
-                    if res.is_err() {
-                        log::error!("Failed to write to file: {}", res.err().unwrap());
-                    }
-                    self.budget.add_used_disk_bytes(disk_size);
-                    file.close().await.expect("Failed to close file");
-                    
-                } else {
-                    panic!("Failed to create file with tokio-uring");
-                }
-        })});
+            INST.with(|ring| {
+                let file = OpenOptions::new().create(true).write(true).custom_flags(libc::O_DIRECT).open(path).unwrap();
+                ring.borrow_mut().write_blocking(file.as_raw_fd(), &bytes);
+            })
+        })
     }
 
     fn write_to_disk_threadpool_uring(self: &Arc<Self>, entry_id: CacheEntryID, liquid_array: LiquidArrayRef) {
