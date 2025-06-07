@@ -28,10 +28,10 @@ plan:
 │      RepartitionExec      │
 │    --------------------   │
 │ partition_count(in->out): │
-│          1 -> 24          │
+│           1 -> 4          │
 │                           │
 │    partitioning_scheme:   │
-│    RoundRobinBatch(24)    │
+│     RoundRobinBatch(4)    │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
 │  InProcessLiquidCacheExec │

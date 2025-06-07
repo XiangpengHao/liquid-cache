@@ -19,12 +19,14 @@ async fn create_session_context_with_liquid_cache(
 ) -> Result<SessionContext> {
     let temp_dir = TempDir::new().unwrap();
 
+    let mut config = SessionConfig::new();
+    config.options_mut().execution.target_partitions = 4;
     let ctx = LiquidCacheInProcessBuilder::new()
         .with_max_cache_bytes(cache_size_bytes)
         .with_cache_dir(temp_dir.path().to_path_buf())
         .with_cache_mode(cache_mode)
         .with_cache_strategy(CacheEvictionStrategy::Discard)
-        .build(SessionConfig::new())?;
+        .build(config)?;
 
     // Register the test parquet file
     ctx.register_parquet("hits", TEST_FILE, ParquetReadOptions::default())
