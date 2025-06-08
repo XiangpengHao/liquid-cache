@@ -416,11 +416,10 @@ impl InProcessOptimizer {
                                 original_schema,
                             ));
 
-                            // Stop recursion since we've rewritten the data source
                             return Ok(Transformed::new(
                                 adapter_plan,
                                 true,
-                                TreeNodeRecursion::Stop,
+                                TreeNodeRecursion::Continue,
                             ));
                         }
                     }

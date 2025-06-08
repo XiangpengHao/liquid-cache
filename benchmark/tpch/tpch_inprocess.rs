@@ -5,7 +5,7 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::metrics::MetricValue;
 use datafusion::prelude::SessionConfig;
 use datafusion::{arrow::array::RecordBatch, error::Result, prelude::SessionContext};
-use liquid_cache_benchmarks::{Query, run_query, tpch};
+use liquid_cache_benchmarks::{Query, run_query, setup_observability, tpch};
 use liquid_cache_common::{CacheEvictionStrategy, LiquidCacheMode};
 use liquid_cache_parquet::{LiquidCacheInProcessBuilder, LiquidCacheRef};
 use log::info;
@@ -85,8 +85,8 @@ struct TpchInProcessBenchmark {
     pub query: Option<u32>,
 
     /// Maximum cache size in bytes
-    #[arg(long, default_value = "1073741824")] // 1GB default
-    pub max_cache_bytes: usize,
+    #[arg(long = "max-cache-mb")]
+    pub max_cache_mb: Option<usize>,
 }
 
 #[derive(Serialize)]
@@ -149,12 +149,16 @@ impl TpchInProcessBenchmark {
         if let Some(partitions) = self.partitions {
             session_config.options_mut().execution.target_partitions = partitions;
         }
+        let cache_size = self
+            .max_cache_mb
+            .map(|size| size * 1024 * 1024)
+            .unwrap_or(usize::MAX);
 
         let (ctx, cache): (SessionContext, Option<LiquidCacheRef>) = match self.bench_mode {
             BenchmarkMode::Parquet => (SessionContext::new_with_config(session_config), None),
             BenchmarkMode::Arrow => {
                 let v = LiquidCacheInProcessBuilder::new()
-                    .with_max_cache_bytes(self.max_cache_bytes)
+                    .with_max_cache_bytes(cache_size)
                     .with_cache_mode(LiquidCacheMode::Arrow)
                     .with_cache_strategy(CacheEvictionStrategy::Discard)
                     .build(session_config)?;
@@ -162,7 +166,7 @@ impl TpchInProcessBenchmark {
             }
             BenchmarkMode::Liquid => {
                 let v = LiquidCacheInProcessBuilder::new()
-                    .with_max_cache_bytes(self.max_cache_bytes)
+                    .with_max_cache_bytes(cache_size)
                     .with_cache_mode(LiquidCacheMode::Liquid {
                         transcode_in_background: true,
                     })
@@ -172,7 +176,7 @@ impl TpchInProcessBenchmark {
             }
             BenchmarkMode::LiquidEagerTranscode => {
                 let v = LiquidCacheInProcessBuilder::new()
-                    .with_max_cache_bytes(self.max_cache_bytes)
+                    .with_max_cache_bytes(cache_size)
                     .with_cache_mode(LiquidCacheMode::Liquid {
                         transcode_in_background: false,
                     })
@@ -243,25 +247,27 @@ impl TpchInProcessBenchmark {
             cache.memory_usage_bytes()
         } else {
             let mut total_bytes_scanned = 0;
-            let _ = execution_plan.apply(|plan| {
-                if plan.as_any().downcast_ref::<DataSourceExec>().is_some() {
-                    let metrics = plan
-                        .metrics()
-                        .unwrap()
-                        .aggregate_by_name()
-                        .sorted_for_display()
-                        .timestamps_removed();
+            let _ = execution_plan
+                .apply(|plan| {
+                    if plan.as_any().downcast_ref::<DataSourceExec>().is_some() {
+                        let metrics = plan
+                            .metrics()
+                            .unwrap()
+                            .aggregate_by_name()
+                            .sorted_for_display()
+                            .timestamps_removed();
 
-                    for metric in metrics.iter() {
-                        if let MetricValue::Count { name, count } = metric.value()
-                            && name == "bytes_scanned"
-                        {
-                            total_bytes_scanned += count.value();
+                        for metric in metrics.iter() {
+                            if let MetricValue::Count { name, count } = metric.value()
+                                && name == "bytes_scanned"
+                            {
+                                total_bytes_scanned += count.value();
+                            }
                         }
                     }
-                }
-                Ok(TreeNodeRecursion::Continue)
-            });
+                    Ok(TreeNodeRecursion::Continue)
+                })
+                .unwrap();
             total_bytes_scanned
         };
 
@@ -324,6 +330,11 @@ impl TpchInProcessBenchmark {
 
 #[tokio::main]
 pub async fn main() -> Result<()> {
+    setup_observability(
+        "tpch-inprocess",
+        opentelemetry::trace::SpanKind::Client,
+        None,
+    );
     let benchmark = TpchInProcessBenchmark::parse();
     benchmark.run().await?;
     Ok(())
