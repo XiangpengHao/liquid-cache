@@ -124,7 +124,8 @@ impl LiquidCacheInProcessBuilder {
     }
 
     /// Build a SessionContext with liquid cache configured
-    pub fn build(self, mut config: SessionConfig) -> Result<SessionContext> {
+    /// Returns the SessionContext and the liquid cache reference
+    pub fn build(self, mut config: SessionConfig) -> Result<(SessionContext, LiquidCacheRef)> {
         config.options_mut().execution.parquet.pushdown_filters = true;
         config
             .options_mut()
@@ -150,7 +151,7 @@ impl LiquidCacheInProcessBuilder {
         let cache_ref = Arc::new(cache);
 
         // Create the optimizer
-        let optimizer = InProcessOptimizer::with_cache(cache_ref);
+        let optimizer = InProcessOptimizer::with_cache(cache_ref.clone());
 
         // Build the session state with the optimizer
         let state = datafusion::execution::SessionStateBuilder::new()
@@ -159,7 +160,7 @@ impl LiquidCacheInProcessBuilder {
             .with_physical_optimizer_rule(Arc::new(optimizer))
             .build();
 
-        Ok(SessionContext::new_with_state(state))
+        Ok((SessionContext::new_with_state(state), cache_ref))
     }
 }
 

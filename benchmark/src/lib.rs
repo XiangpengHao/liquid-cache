@@ -19,6 +19,7 @@ use uuid::Uuid;
 
 mod observability;
 pub mod runner;
+pub mod tpch;
 pub mod utils;
 
 pub use observability::*;
