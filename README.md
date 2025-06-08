@@ -29,6 +29,7 @@ This means that:
 
 Cons:
 - LiquidCache is not a transparent cache (consider [Foyer](https://github.com/foyer-rs/foyer) instead), it leverages query semantics to optimize caching. 
+
 ## Architecture
 
 Both LiquidCache and DataFusion run on cloud servers within the same region, but are configured differently:
@@ -42,12 +43,11 @@ Each component can be scaled independently as the workload grows.
 <img src="https://raw.githubusercontent.com/XiangpengHao/liquid-cache/main/dev/doc/arch.png" alt="architecture" width="400"/>
 
 
-## Integrate LiquidCache in 5 Minutes
+## Start a LiquidCache Server in 5 Minutes
 Check out the [examples](https://github.com/XiangpengHao/liquid-cache/tree/main/examples) folder for more details. 
 
 
-
-#### 1. Start a Cache Server:
+#### 1. Create a Cache Server:
 ```rust
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -66,15 +66,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
-```
-
-Or use our pre-built docker image:
-```bash
-docker run -p 15214:15214 -v ~/liquid_cache:/cache \
-  ghcr.io/xiangpenghao/liquid-cache/liquid-cache-server:latest \
-  /app/bench_server \
-  --address 0.0.0.0:15214 \
-  --disk-cache-dir /cache
 ```
 
 #### 2. Connect to the cache server:
@@ -103,25 +94,38 @@ pub async fn main() -> Result<()> {
 }
 ```
 
-## Community server
+## In-process mode 
 
-We run a community server for LiquidCache at <https://hex.tail0766e4.ts.net:15214> (hosted on Xiangpeng's NAS, use at your own risk).
+If you are uncomfortable with a dedicated server, LiquidCache also provides an in-process mode.
 
-You can try it out by running:
-```bash
-cargo run --bin example_client --release -- \
-    --cache-server https://hex.tail0766e4.ts.net:15214 \
-    --file "https://huggingface.co/datasets/HuggingFaceFW/fineweb/resolve/main/data/CC-MAIN-2024-51/000_00042.parquet" \
-    --query "SELECT COUNT(*) FROM \"000_00042\" WHERE \"token_count\" < 100"
-```
+```rust
+use datafusion::prelude::SessionConfig;
+use liquid_cache_parquet::{
+    LiquidCacheInProcessBuilder,
+    common::{CacheEvictionStrategy, LiquidCacheMode},
+};
+use tempfile::TempDir;
 
-Expected output (within a second):
-```
-+----------+
-| count(*) |
-+----------+
-| 44805    |
-+----------+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = TempDir::new().unwrap();
+
+    let ctx = LiquidCacheInProcessBuilder::new()
+        .with_max_cache_bytes(1024 * 1024 * 1024) // 1GB
+        .with_cache_dir(temp_dir.path().to_path_buf())
+        .with_cache_mode(LiquidCacheMode::Liquid {
+            transcode_in_background: true,
+        })
+        .with_cache_strategy(CacheEvictionStrategy::Discard)
+        .build(SessionConfig::new())?;
+
+    ctx.register_parquet("hits", "examples/nano_hits.parquet", Default::default())
+        .await?;
+
+    ctx.sql("SELECT COUNT(*) FROM hits").await?.show().await?;
+    Ok(())
+}
+
 ```
 
 

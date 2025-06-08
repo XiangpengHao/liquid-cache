@@ -26,9 +26,14 @@ pub enum CacheMode {
 
 /// Specify which eviction logic the cache should use
 /// See [`LiquidCacheMode`](https://docs.rs/liquid-cache-parquet/latest/liquid_cache_parquet/policies/index.html)
+#[derive(Clone, Debug, Default, Copy, PartialEq, Eq)]
 pub enum CacheEvictionStrategy {
+    /// Don't cache new data.
+    #[default]
     Discard,
+    /// First In Last Out
     Filo,
+    /// Least Recently Used
     Lru,
 }
 
@@ -71,9 +76,9 @@ impl FromStr for CacheMode {
 #[derive(Debug, Copy, Clone)]
 pub enum LiquidCacheMode {
     /// The baseline that reads the arrays as is.
-    InMemoryArrow,
+    Arrow,
     /// The baseline that reads the arrays as is, but transcode the data into liquid arrays in the background.
-    InMemoryLiquid {
+    Liquid {
         /// Whether to transcode the data into liquid arrays in the background.
         transcode_in_background: bool,
     },
@@ -81,7 +86,7 @@ pub enum LiquidCacheMode {
 
 impl Default for LiquidCacheMode {
     fn default() -> Self {
-        Self::InMemoryLiquid {
+        Self::Liquid {
             transcode_in_background: true,
         }
     }
@@ -90,8 +95,8 @@ impl Default for LiquidCacheMode {
 impl LiquidCacheMode {
     fn string_type(&self) -> DataType {
         match self {
-            LiquidCacheMode::InMemoryArrow => DataType::Utf8,
-            LiquidCacheMode::InMemoryLiquid { .. } => {
+            LiquidCacheMode::Arrow => DataType::Utf8,
+            LiquidCacheMode::Liquid { .. } => {
                 DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8))
             }
         }
@@ -101,11 +106,11 @@ impl LiquidCacheMode {
 impl From<CacheMode> for LiquidCacheMode {
     fn from(value: CacheMode) -> Self {
         match value {
-            CacheMode::Liquid => LiquidCacheMode::InMemoryLiquid {
+            CacheMode::Liquid => LiquidCacheMode::Liquid {
                 transcode_in_background: true,
             },
-            CacheMode::Arrow => LiquidCacheMode::InMemoryArrow,
-            CacheMode::LiquidEagerTranscode => LiquidCacheMode::InMemoryLiquid {
+            CacheMode::Arrow => LiquidCacheMode::Arrow,
+            CacheMode::LiquidEagerTranscode => LiquidCacheMode::Liquid {
                 transcode_in_background: false,
             },
             CacheMode::Parquet => unreachable!(),
@@ -122,8 +127,8 @@ fn field_with_new_type(field: &FieldRef, new_type: DataType) -> FieldRef {
 
 pub fn coerce_string_to_liquid_type(data_type: &DataType, mode: &LiquidCacheMode) -> DataType {
     match mode {
-        LiquidCacheMode::InMemoryArrow => data_type.clone(),
-        LiquidCacheMode::InMemoryLiquid { .. } => match data_type {
+        LiquidCacheMode::Arrow => data_type.clone(),
+        LiquidCacheMode::Liquid { .. } => match data_type {
             DataType::Utf8
             | DataType::LargeUtf8
             | DataType::Utf8View
@@ -140,8 +145,8 @@ pub fn coerce_string_to_liquid_type(data_type: &DataType, mode: &LiquidCacheMode
 pub fn coerce_to_liquid_cache_types(schema: &Schema, mode: &LiquidCacheMode) -> Schema {
     match mode {
         // if in memory arrow, we cache as utf8 not dict or utf8view
-        LiquidCacheMode::InMemoryArrow => schema.clone(),
-        LiquidCacheMode::InMemoryLiquid { .. } => {
+        LiquidCacheMode::Arrow => schema.clone(),
+        LiquidCacheMode::Liquid { .. } => {
             let transformed_fields: Vec<Arc<Field>> = schema
                 .fields
                 .iter()
@@ -162,14 +167,14 @@ pub fn coerce_from_parquet_to_liquid_type(
     cache_mode: &LiquidCacheMode,
 ) -> DataType {
     match cache_mode {
-        LiquidCacheMode::InMemoryArrow => {
+        LiquidCacheMode::Arrow => {
             if data_type.equals_datatype(&DataType::Utf8View) {
                 DataType::Utf8
             } else {
                 data_type.clone()
             }
         }
-        LiquidCacheMode::InMemoryLiquid { .. } => {
+        LiquidCacheMode::Liquid { .. } => {
             if data_type.equals_datatype(&DataType::Utf8View) {
                 DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8))
             } else {
@@ -181,14 +186,14 @@ pub fn coerce_from_parquet_to_liquid_type(
 
 pub fn cast_from_parquet_to_liquid_type(array: ArrayRef, cache_mode: &LiquidCacheMode) -> ArrayRef {
     match cache_mode {
-        LiquidCacheMode::InMemoryArrow => {
+        LiquidCacheMode::Arrow => {
             if array.data_type() == &DataType::Utf8View {
                 arrow::compute::kernels::cast(&array, &DataType::Utf8).unwrap()
             } else {
                 array
             }
         }
-        LiquidCacheMode::InMemoryLiquid { .. } => {
+        LiquidCacheMode::Liquid { .. } => {
             if array.data_type() == &DataType::Utf8View {
                 arrow::compute::kernels::cast(
                     &array,
@@ -297,7 +302,7 @@ impl CacheSchema {
         {
             for field in schema.fields() {
                 match mode {
-                    LiquidCacheMode::InMemoryArrow => {
+                    LiquidCacheMode::Arrow => {
                         // cache schema is always utf8
                         assert!(
                             !field.data_type().equals_datatype(&DataType::Utf8View),
@@ -313,7 +318,7 @@ impl CacheSchema {
                             field.name()
                         );
                     }
-                    LiquidCacheMode::InMemoryLiquid { .. } => {
+                    LiquidCacheMode::Liquid { .. } => {
                         // cache schema is always dict string
                         assert!(
                             !field.data_type().equals_datatype(&DataType::Utf8),

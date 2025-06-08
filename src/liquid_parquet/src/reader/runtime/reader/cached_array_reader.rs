@@ -453,7 +453,7 @@ mod tests {
             BATCH_SIZE,
             usize::MAX,
             tmp_dir.path().to_path_buf(),
-            LiquidCacheMode::InMemoryLiquid {
+            LiquidCacheMode::Liquid {
                 transcode_in_background: false,
             },
             Box::new(DiscardPolicy::default()),
