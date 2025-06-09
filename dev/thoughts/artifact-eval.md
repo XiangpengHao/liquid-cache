@@ -32,6 +32,6 @@ env RUST_LOG=info,clickbench_client=debug RUST_BACKTRACE=1 RUSTFLAGS='-C target-
 
 ### Start server with limited memory
 ```bash
-systemd-run --scope -p MemoryMax=16G ./target/release/bench_server --address 127.0.0.1:5001 --max-
+echo 1 | sudo tee /proc/sys/vm/drop_caches && systemd-run --scope -p MemoryMax=16G ./target/release/bench_server --address 127.0.0.1:5001 --max-
 cache-mb 12288
 ```
