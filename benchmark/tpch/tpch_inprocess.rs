@@ -262,27 +262,30 @@ impl TpchInProcessBenchmark {
         let elapsed = now.elapsed();
 
         // Stop flamegraph profiling and write to file if enabled
-        if let Some(profiler) = profiler_guard {
-            if let Some(flamegraph_dir) = &self.flamegraph_dir {
-                let report = profiler.report().build().unwrap();
-                let mut svg_data = Vec::new();
-                report.flamegraph(&mut svg_data).unwrap();
-                create_dir_all(flamegraph_dir)?;
-                
-                // Get current time for filename prefix
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap();
-                let secs = now.as_secs();
-                let hour = (secs / 3600) % 24;
-                let minute = (secs / 60) % 60;
-                let second = secs % 60;
-                
-                let filename = format!("{:02}h{:02}m{:02}s_q{}_i{}.svg", hour, minute, second, query.id, iteration);
-                let filepath = flamegraph_dir.join(filename);
-                std::fs::write(&filepath, svg_data).unwrap();
-                info!("Flamegraph written to: {}", filepath.display());
-            }
+        if let Some(profiler) = profiler_guard
+            && let Some(flamegraph_dir) = &self.flamegraph_dir
+        {
+            let report = profiler.report().build().unwrap();
+            let mut svg_data = Vec::new();
+            report.flamegraph(&mut svg_data).unwrap();
+            create_dir_all(flamegraph_dir)?;
+
+            // Get current time for filename prefix
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap();
+            let secs = now.as_secs();
+            let hour = (secs / 3600) % 24;
+            let minute = (secs / 60) % 60;
+            let second = secs % 60;
+
+            let filename = format!(
+                "{:02}h{:02}m{:02}s_q{}_i{}.svg",
+                hour, minute, second, query.id, iteration
+            );
+            let filepath = flamegraph_dir.join(filename);
+            std::fs::write(&filepath, svg_data).unwrap();
+            info!("Flamegraph written to: {}", filepath.display());
         }
 
         let cache_memory_usage = if let Some(cache) = cache {
