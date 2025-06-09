@@ -201,7 +201,7 @@ impl CacheEntryID {
     ) -> Result<usize, std::io::Error> {
         let path = self.on_disk_path(cache_root_dir);
         let bytes = array.to_bytes();
-        let mut file = File::create(path)?;
+        let mut file = File::create(&path)?;
         file.write_all(&bytes)?;
         Ok(bytes.len())
     }

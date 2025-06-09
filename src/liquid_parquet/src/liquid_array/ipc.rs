@@ -4,7 +4,7 @@ use std::{any::TypeId, mem::size_of};
 use arrow::array::ArrowPrimitiveType;
 use arrow::array::types::UInt16Type;
 use arrow::datatypes::{
-    Float32Type, Float64Type, Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt32Type,
+    Date32Type, Date64Type, Float32Type, Float64Type, Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt32Type,
     UInt64Type,
 };
 use bytes::Bytes;
@@ -118,7 +118,9 @@ pub fn read_from_bytes(bytes: Bytes, context: &LiquidIPCContext) -> LiquidArrayR
             5 => Arc::new(LiquidPrimitiveArray::<UInt16Type>::from_bytes(bytes)),
             6 => Arc::new(LiquidPrimitiveArray::<UInt32Type>::from_bytes(bytes)),
             7 => Arc::new(LiquidPrimitiveArray::<UInt64Type>::from_bytes(bytes)),
-            _ => panic!("Unsupported physical type"),
+            10 => Arc::new(LiquidPrimitiveArray::<Date32Type>::from_bytes(bytes)),
+            11 => Arc::new(LiquidPrimitiveArray::<Date64Type>::from_bytes(bytes)),
+            v => panic!("Unsupported integer physical type: {}", v),
         },
         LiquidDataType::ByteArray => {
             let compressor = context.compressor.as_ref().expect("Expected a compressor");
@@ -127,7 +129,7 @@ pub fn read_from_bytes(bytes: Bytes, context: &LiquidIPCContext) -> LiquidArrayR
         LiquidDataType::Float => match header.physical_type_id {
             8 => Arc::new(LiquidFloatArray::<Float32Type>::from_bytes(bytes)),
             9 => Arc::new(LiquidFloatArray::<Float64Type>::from_bytes(bytes)),
-            _ => panic!("Unsupported float type"),
+            v => panic!("Unsupported float physical type: {}", v),
         },
         LiquidDataType::FixedLenByteArray => {
             let compressor = context.compressor.as_ref().expect("Expected a compressor");
@@ -958,6 +960,25 @@ mod tests {
         let deserialized = LiquidPrimitiveArray::<UInt64Type>::from_bytes(bytes);
         let result = deserialized.to_arrow_array();
         assert_eq!(result.as_ref(), &array);
+    }
+
+    #[test]
+    fn test_date_types_ipc_roundtrip() {
+        // Test Date32Type
+        let date32_array = PrimitiveArray::<Date32Type>::from(vec![Some(18628), None, Some(0)]);
+        let liquid_array = LiquidPrimitiveArray::<Date32Type>::from_arrow_array(date32_array.clone());
+        let bytes = Bytes::from(liquid_array.to_bytes());
+        let context = LiquidIPCContext::new(None);
+        let deserialized = read_from_bytes(bytes, &context);
+        assert_eq!(deserialized.to_arrow_array().as_ref(), &date32_array);
+
+        // Test Date64Type
+        let date64_array = PrimitiveArray::<Date64Type>::from(vec![Some(1609459200000), None, Some(0)]);
+        let liquid_array = LiquidPrimitiveArray::<Date64Type>::from_arrow_array(date64_array.clone());
+        let bytes = Bytes::from(liquid_array.to_bytes());
+        let context = LiquidIPCContext::new(None);
+        let deserialized = read_from_bytes(bytes, &context);
+        assert_eq!(deserialized.to_arrow_array().as_ref(), &date64_array);
     }
 
     #[test]

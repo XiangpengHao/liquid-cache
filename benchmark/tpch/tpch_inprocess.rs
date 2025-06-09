@@ -156,13 +156,17 @@ impl TpchInProcessBenchmark {
         if let Some(partitions) = self.partitions {
             session_config.options_mut().execution.target_partitions = partitions;
         }
+        session_config.options_mut().execution.batch_size = 8192 * 2;
         let cache_size = self
             .max_cache_mb
             .map(|size| size * 1024 * 1024)
             .unwrap_or(usize::MAX);
 
         let cache_dir = std::env::current_dir()?.join("benchmark/tpch/data/cache");
-        create_dir_all(&cache_dir)?;
+        if cache_dir.exists() {
+            std::fs::remove_dir_all(&cache_dir)?;
+        }
+        std::fs::create_dir_all(&cache_dir)?;
         let (ctx, cache): (SessionContext, Option<LiquidCacheRef>) = match self.bench_mode {
             BenchmarkMode::Parquet => (SessionContext::new_with_config(session_config), None),
             BenchmarkMode::Arrow => {
@@ -274,22 +278,11 @@ impl TpchInProcessBenchmark {
 
         disk_info.refresh(true);
         let disk_read: u64 = disk_info.iter().map(|disk| disk.usage().read_bytes).sum();
-        let total_read: u64 = disk_info
-            .iter()
-            .map(|disk| disk.usage().total_read_bytes)
-            .sum();
-        let total_written: u64 = disk_info
-            .iter()
-            .map(|disk| disk.usage().total_written_bytes)
-            .sum();
+
         let disk_written: u64 = disk_info
             .iter()
             .map(|disk| disk.usage().written_bytes)
             .sum();
-        println!(
-            "read: {}, written: {}, total_read: {}, total_written: {}",
-            disk_read, disk_written, total_read, total_written
-        );
 
         // Stop flamegraph profiling and write to file if enabled
         if let Some(profiler) = profiler_guard
