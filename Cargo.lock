@@ -2756,6 +2756,7 @@ checksum = "cd945864f07fe9f5371a27ad7b52a172b4b499999f1d97574c9fa68373937e12"
 name = "liquid-cache-benchmarks"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "arrow-flight",
  "async-trait",
  "axum 0.8.4",
@@ -2779,11 +2780,13 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "parquet",
+ "pprof",
  "prost",
  "reqwest",
  "serde",
  "serde_json",
  "sysinfo",
+ "tempfile",
  "tokio",
  "tonic",
  "tower 0.5.2",

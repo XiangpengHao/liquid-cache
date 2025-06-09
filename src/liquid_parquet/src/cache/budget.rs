@@ -24,7 +24,7 @@ impl BudgetAccounting {
     }
 
     /// Try to reserve space in the cache.
-    /// Returns true if the space was reserved, false if the cache is full.
+    /// Returns ok if the space was reserved, err if the cache is full.
     pub(super) fn try_reserve_memory(&self, request_bytes: usize) -> Result<(), ()> {
         let used = self.used_memory_bytes.load(Ordering::Relaxed);
         if used + request_bytes > self.max_memory_bytes {

@@ -80,6 +80,37 @@
 				"6",
 			],
 			"cwd": "${workspaceFolder}"
-		}
+		},
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "tpch_inprocess",
+			"cargo": {
+				"args": [
+					"build",
+					"--bin=tpch_inprocess",
+				],
+				"filter": {
+					"name": "tpch_inprocess",
+					"kind": "bin"
+				}
+			},
+			"env": {
+				"RUST_LOG": "info"
+			},
+			"args": [
+				"--query-dir",
+				"benchmark/tpch/queries",
+				"--data-dir",
+				"benchmark/tpch/data/sf100.0",
+				"--query",
+				"12",
+				"--partitions",
+				"10",
+				"--max-cache-mb",
+				"1024"
+			],
+			"cwd": "${workspaceFolder}"
+		},
 	]
 }

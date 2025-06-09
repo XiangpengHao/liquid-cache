@@ -103,6 +103,38 @@ pub(crate) struct CacheStore {
     compressor_states: CompressorStates,
 }
 
+pub(super) struct MemoryReservation<'a> {
+    reserved_bytes: usize,
+    memory_budget: &'a BudgetAccounting,
+    data: Option<CachedBatch>,
+}
+
+impl<'a> MemoryReservation<'a> {
+    /// Try to fill the reservation with data.
+    /// Returns ok if the data was filled, err if the memory budget is exceeded.
+    pub(super) fn try_fill_data(&mut self, data: CachedBatch) -> Result<(), ()> {
+        let new_memory_size = data.memory_usage_bytes();
+        self.memory_budget
+            .try_update_memory_usage(self.reserved_bytes, new_memory_size)?;
+        self.data = Some(data);
+        Ok(())
+    }
+
+    fn into_inner(mut self) -> CachedBatch {
+        let data = self.data.take();
+        std::mem::forget(self);
+        data.expect("Data was not filled")
+    }
+}
+
+impl<'a> Drop for MemoryReservation<'a> {
+    fn drop(&mut self) {
+        self.memory_budget
+            .try_update_memory_usage(self.reserved_bytes, 0)
+            .expect("Failed to release memory reservation");
+    }
+}
+
 /// Advice given by the cache policy.
 #[derive(PartialEq, Eq, Debug)]
 pub enum CacheAdvice {
@@ -133,6 +165,25 @@ impl CacheStore {
             tracer: CacheTracer::new(),
             compressor_states: CompressorStates::new(),
         }
+    }
+
+    /// Reserve memory in the cache.
+    /// Returns ok if the space was reserved, err if the cache is full.
+    pub(super) fn reserve_memory(&self, size: usize) -> Result<MemoryReservation, ()> {
+        self.budget
+            .try_reserve_memory(size)
+            .map(|_| MemoryReservation {
+                reserved_bytes: size,
+                memory_budget: &self.budget,
+                data: None,
+            })
+    }
+
+    /// Insert a batch into the cache, but reserve the memory first.
+    /// This is useful for cases where the memory usage is known in advance,
+    /// and we want to avoid the overhead of checking the memory usage after the fact.
+    pub(super) fn insert_reserved(&self, entry_id: CacheEntryID, reservation: MemoryReservation) {
+        self.cached_data.insert(&entry_id, reservation.into_inner());
     }
 
     fn insert_inner(

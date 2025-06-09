@@ -41,6 +41,9 @@ reqwest = { version = "0.12.15", default-features = false, features = ["json"] }
 uuid = { version = "1.13.0", features = ["v4"] }
 axum = "0.8"
 tower-http = { version = "0.6", features = ["fs"] }
+tempfile = { workspace = true }
+pprof = { version = "0.14.0", features = ["flamegraph"] }
+anyhow = "1.0"
 
 [[bin]]
 name = "clickbench_client"
@@ -49,6 +52,10 @@ path = "clickbench/clickbench_client.rs"
 [[bin]]
 name = "tpch_client"
 path = "tpch/tpch_client.rs"
+
+[[bin]]
+name = "tpch_inprocess"
+path = "tpch/tpch_inprocess.rs"
 
 [[bin]]
 name = "bench_server"
