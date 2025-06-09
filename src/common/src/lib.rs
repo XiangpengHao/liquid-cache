@@ -35,6 +35,8 @@ pub enum CacheEvictionStrategy {
     Filo,
     /// Least Recently Used
     Lru,
+    /// Write to disk when the cache is full.
+    ToDisk,
 }
 
 impl Display for CacheMode {

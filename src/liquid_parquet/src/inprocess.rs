@@ -46,7 +46,7 @@ use crate::{LiquidCache, LiquidCacheRef, LiquidParquetSource};
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     let temp_dir = TempDir::new().unwrap();
 ///
-///     let ctx = LiquidCacheInProcessBuilder::new()
+///     let (ctx, _) = LiquidCacheInProcessBuilder::new()
 ///         .with_max_cache_bytes(1024 * 1024 * 1024) // 1GB
 ///         .with_cache_dir(temp_dir.path().to_path_buf())
 ///         .with_cache_mode(LiquidCacheMode::Liquid { transcode_in_background: false })
@@ -140,6 +140,7 @@ impl LiquidCacheInProcessBuilder {
             CacheEvictionStrategy::Discard => Box::new(crate::policies::DiscardPolicy),
             CacheEvictionStrategy::Lru => Box::new(crate::policies::LruPolicy::new()),
             CacheEvictionStrategy::Filo => Box::new(crate::policies::FiloPolicy::new()),
+            CacheEvictionStrategy::ToDisk => Box::new(crate::policies::ToDiskPolicy::new()),
         };
         let cache = LiquidCache::new(
             self.batch_size,

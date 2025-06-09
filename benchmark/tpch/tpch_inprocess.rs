@@ -164,7 +164,7 @@ impl TpchInProcessBenchmark {
                 let v = LiquidCacheInProcessBuilder::new()
                     .with_max_cache_bytes(cache_size)
                     .with_cache_mode(LiquidCacheMode::Arrow)
-                    .with_cache_strategy(CacheEvictionStrategy::Discard)
+                    .with_cache_strategy(CacheEvictionStrategy::ToDisk)
                     .build(session_config)?;
                 (v.0, Some(v.1))
             }
@@ -174,7 +174,7 @@ impl TpchInProcessBenchmark {
                     .with_cache_mode(LiquidCacheMode::Liquid {
                         transcode_in_background: true,
                     })
-                    .with_cache_strategy(CacheEvictionStrategy::Discard)
+                    .with_cache_strategy(CacheEvictionStrategy::ToDisk)
                     .build(session_config)?;
                 (v.0, Some(v.1))
             }
@@ -184,7 +184,7 @@ impl TpchInProcessBenchmark {
                     .with_cache_mode(LiquidCacheMode::Liquid {
                         transcode_in_background: false,
                     })
-                    .with_cache_strategy(CacheEvictionStrategy::Discard)
+                    .with_cache_strategy(CacheEvictionStrategy::ToDisk)
                     .build(session_config)?;
                 (v.0, Some(v.1))
             }

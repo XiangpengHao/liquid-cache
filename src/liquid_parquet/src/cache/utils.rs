@@ -1,9 +1,13 @@
 use std::{
+    fs::File,
+    io::Write,
     ops::Deref,
     path::{Path, PathBuf},
 };
 
 use liquid_cache_common::LiquidCacheMode;
+
+use crate::liquid_array::LiquidArrayRef;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub(super) struct ColumnAccessPath {
@@ -180,6 +184,68 @@ impl CacheEntryID {
             .join(format!("col_{}", self.column_id_inner()))
             .join(format!("batch_{batch_id}.bin"))
     }
+
+    pub(super) fn on_disk_arrow_path(&self, cache_root_dir: &Path) -> PathBuf {
+        let batch_id = self.batch_id_inner();
+        cache_root_dir
+            .join(format!("file_{}", self.file_id_inner()))
+            .join(format!("rg_{}", self.row_group_id_inner()))
+            .join(format!("col_{}", self.column_id_inner()))
+            .join(format!("batch_{batch_id}.arrow"))
+    }
+
+    pub(super) fn on_disk_liquid_path(
+        &self,
+        cache_root_dir: &Path,
+        array: &LiquidArrayRef,
+    ) -> Result<usize, std::io::Error> {
+        let batch_id = self.batch_id_inner();
+        let path = cache_root_dir
+            .join(format!("file_{}", self.file_id_inner()))
+            .join(format!("rg_{}", self.row_group_id_inner()))
+            .join(format!("col_{}", self.column_id_inner()))
+            .join(format!("batch_{batch_id}.liquid"));
+        let bytes = array.to_bytes();
+        let mut file = File::create(path)?;
+        file.write_all(&bytes)?;
+        Ok(bytes.len())
+    }
+
+    /// Write an arrow array to disk in IPC format.
+    pub(super) fn write_arrow_to_disk(
+        &self,
+        cache_root_dir: &Path,
+        array: &arrow::array::ArrayRef,
+    ) -> Result<usize, std::io::Error> {
+        use arrow::array::RecordBatch;
+        use arrow::ipc::writer::StreamWriter;
+        use std::fs::File;
+        use std::io::BufWriter;
+
+        let file_path = self.on_disk_arrow_path(cache_root_dir);
+
+        // Ensure parent directory exists
+        if let Some(parent) = file_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let file = File::create(file_path)?;
+        let buf_writer = BufWriter::new(file);
+
+        // Create a record batch with the single array
+        // We need to create a dummy field since we don't have the original field here
+        let field =
+            arrow_schema::Field::new("column", array.data_type().clone(), array.null_count() > 0);
+        let schema = std::sync::Arc::new(arrow_schema::Schema::new(vec![field]));
+        let batch = RecordBatch::try_new(schema.clone(), vec![array.clone()]).unwrap();
+
+        let mut stream_writer = StreamWriter::try_new(buf_writer, &schema).unwrap();
+        stream_writer.write(&batch).unwrap();
+        stream_writer.finish().unwrap();
+
+        // Return approximate size for disk usage tracking
+        Ok(array.get_array_memory_size())
+    }
 }
 
 #[derive(Debug)]
@@ -228,7 +294,7 @@ pub(crate) fn create_test_array(size: usize) -> super::CachedBatch {
     use arrow::array::Int64Array;
     use std::sync::Arc;
 
-    super::CachedBatch::ArrowMemory(Arc::new(Int64Array::from_iter_values(0..size as i64)))
+    super::CachedBatch::MemoryArrow(Arc::new(Int64Array::from_iter_values(0..size as i64)))
 }
 
 #[cfg(test)]

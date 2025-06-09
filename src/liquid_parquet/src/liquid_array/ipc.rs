@@ -130,7 +130,11 @@ pub fn read_from_bytes(bytes: Bytes, context: &LiquidIPCContext) -> LiquidArrayR
             _ => panic!("Unsupported float type"),
         },
         LiquidDataType::FixedLenByteArray => {
-            todo!()
+            let compressor = context.compressor.as_ref().expect("Expected a compressor");
+            Arc::new(LiquidFixedLenByteArray::from_bytes(
+                bytes,
+                compressor.clone(),
+            ))
         }
     }
 }
@@ -775,7 +779,7 @@ fn get_physical_type_id<T: ArrowPrimitiveType>() -> u16 {
 mod tests {
     use arrow::{
         array::{PrimitiveArray, StringArray},
-        datatypes::{Decimal128Type, Decimal256Type, DecimalType, Int32Type},
+        datatypes::{Decimal128Type, Decimal256Type, DecimalType, Int32Type, i256},
     };
     use arrow_schema::DataType;
 
@@ -1040,5 +1044,89 @@ mod tests {
     #[test]
     fn test_decimal256_array_roundtrip() {
         test_decimal_roundtrip::<Decimal256Type>(DataType::Decimal256(38, 6));
+    }
+
+    #[test]
+    fn test_fixed_len_byte_array_ipc_roundtrip() {
+        // Test both Decimal128 and Decimal256 through the full IPC pipeline
+
+        let decimal128_array =
+            gen_test_decimal_array::<Decimal128Type>(DataType::Decimal128(15, 3));
+        let (compressor, liquid_array) =
+            LiquidFixedLenByteArray::train_from_decimal_array(&decimal128_array);
+
+        let bytes = liquid_array.to_bytes();
+        let bytes = Bytes::from(bytes);
+
+        let context = LiquidIPCContext::new(Some(compressor.clone()));
+        let deserialized_ref = read_from_bytes(bytes, &context);
+        assert!(matches!(
+            deserialized_ref.data_type(),
+            LiquidDataType::FixedLenByteArray
+        ));
+        let result_arrow = deserialized_ref.to_arrow_array();
+        assert_eq!(result_arrow.as_ref(), &decimal128_array);
+
+        // Test Decimal256
+        let decimal256_array =
+            gen_test_decimal_array::<Decimal256Type>(DataType::Decimal256(38, 6));
+        let (compressor, liquid_array) =
+            LiquidFixedLenByteArray::train_from_decimal_array(&decimal256_array);
+
+        let bytes = liquid_array.to_bytes();
+        let bytes = Bytes::from(bytes);
+
+        let context = LiquidIPCContext::new(Some(compressor.clone()));
+        let deserialized_ref = read_from_bytes(bytes, &context);
+
+        assert!(matches!(
+            deserialized_ref.data_type(),
+            LiquidDataType::FixedLenByteArray
+        ));
+
+        let result_arrow = deserialized_ref.to_arrow_array();
+        assert_eq!(result_arrow.as_ref(), &decimal256_array);
+    }
+
+    #[test]
+    fn test_fixed_len_byte_array_ipc_edge_cases() {
+        // Test edge cases with FixedLenByteArray IPC
+
+        let mut builder = arrow::array::Decimal128Builder::new();
+        builder.append_value(123456789_i128);
+        builder.append_null();
+        builder.append_value(-987654321_i128);
+        builder.append_null();
+        builder.append_value(0_i128);
+        let array_with_nulls = builder.finish().with_precision_and_scale(15, 3).unwrap();
+
+        let (compressor, liquid_array) =
+            LiquidFixedLenByteArray::train_from_decimal_array(&array_with_nulls);
+
+        let bytes = liquid_array.to_bytes();
+        let bytes = Bytes::from(bytes);
+
+        let context = LiquidIPCContext::new(Some(compressor));
+        let deserialized_ref = read_from_bytes(bytes, &context);
+        let result_arrow = deserialized_ref.to_arrow_array();
+
+        assert_eq!(result_arrow.as_ref(), &array_with_nulls);
+
+        // Test with single value
+        let mut builder = arrow::array::Decimal256Builder::new();
+        builder.append_value(i256::from_i128(42_i128));
+        let single_value_array = builder.finish().with_precision_and_scale(38, 6).unwrap();
+
+        let (compressor, liquid_array) =
+            LiquidFixedLenByteArray::train_from_decimal_array(&single_value_array);
+
+        let bytes = liquid_array.to_bytes();
+        let bytes = Bytes::from(bytes);
+
+        let context = LiquidIPCContext::new(Some(compressor));
+        let deserialized_ref = read_from_bytes(bytes, &context);
+        let result_arrow = deserialized_ref.to_arrow_array();
+
+        assert_eq!(result_arrow.as_ref(), &single_value_array);
     }
 }

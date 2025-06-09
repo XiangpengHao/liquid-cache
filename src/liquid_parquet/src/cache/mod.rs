@@ -7,12 +7,13 @@ use ahash::AHashMap;
 use arrow::array::{Array, ArrayRef, BooleanArray, RecordBatch};
 use arrow::buffer::BooleanBuffer;
 use arrow::compute::prep_null_mask_filter;
+use arrow::ipc::reader::StreamReader;
 use arrow_schema::{ArrowError, DataType, Field, Schema};
 use bytes::Bytes;
 use liquid_cache_common::{LiquidCacheMode, coerce_from_parquet_to_liquid_type};
 use std::fmt::Display;
 use std::fs::File;
-use std::io::Read;
+use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
@@ -62,25 +63,28 @@ impl LiquidCompressorStates {
 
 #[derive(Debug, Clone)]
 pub enum CachedBatch {
-    ArrowMemory(ArrayRef),
-    LiquidMemory(LiquidArrayRef),
-    OnDiskLiquid,
+    MemoryArrow(ArrayRef),
+    MemoryLiquid(LiquidArrayRef),
+    DiskLiquid,
+    DiskArrow,
 }
 
 impl CachedBatch {
     fn memory_usage_bytes(&self) -> usize {
         match self {
-            Self::ArrowMemory(array) => array.get_array_memory_size(),
-            Self::LiquidMemory(array) => array.get_array_memory_size(),
-            Self::OnDiskLiquid => 0,
+            Self::MemoryArrow(array) => array.get_array_memory_size(),
+            Self::MemoryLiquid(array) => array.get_array_memory_size(),
+            Self::DiskLiquid => 0,
+            Self::DiskArrow => 0,
         }
     }
 
     fn reference_count(&self) -> usize {
         match self {
-            Self::ArrowMemory(array) => Arc::strong_count(array),
-            Self::LiquidMemory(array) => Arc::strong_count(array),
-            Self::OnDiskLiquid => 0,
+            Self::MemoryArrow(array) => Arc::strong_count(array),
+            Self::MemoryLiquid(array) => Arc::strong_count(array),
+            Self::DiskLiquid => 0,
+            Self::DiskArrow => 0,
         }
     }
 }
@@ -88,9 +92,10 @@ impl CachedBatch {
 impl Display for CachedBatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::ArrowMemory(_) => write!(f, "ArrowMemory"),
-            Self::LiquidMemory(_) => write!(f, "LiquidMemory"),
-            Self::OnDiskLiquid => write!(f, "OnDiskLiquid"),
+            Self::MemoryArrow(_) => write!(f, "MemoryArrow"),
+            Self::MemoryLiquid(_) => write!(f, "MemoryLiquid"),
+            Self::DiskLiquid => write!(f, "DiskLiquid"),
+            Self::DiskArrow => write!(f, "DiskArrow"),
         }
     }
 }
@@ -106,7 +111,6 @@ pub type LiquidCachedColumnRef = Arc<LiquidCachedColumn>;
 
 pub enum InsertArrowArrayError {
     AlreadyCached,
-    MemoryBudgetExceeded,
 }
 
 impl LiquidCachedColumn {
@@ -159,6 +163,22 @@ impl LiquidCachedColumn {
         ipc::read_from_bytes(bytes, &LiquidIPCContext::new(compressor))
     }
 
+    /// Reads an arrow array from disk in IPC format.
+    /// Panics if the file does not exist.
+    fn read_arrow_from_disk(&self, batch_id: BatchID) -> ArrayRef {
+        let entry_id = self.entry_id(batch_id);
+        let path = entry_id.on_disk_arrow_path(self.cache_store.config().cache_root_dir());
+        let file = File::open(path).unwrap();
+        let buf_reader = BufReader::new(file);
+        let mut stream_reader = StreamReader::try_new(buf_reader, None).unwrap();
+
+        // Read the first (and only) batch from the stream
+        let batch = stream_reader.next().unwrap().unwrap();
+
+        // Extract the array from the batch (assuming single column)
+        batch.column(0).clone()
+    }
+
     /// Evaluates a predicate on a liquid array.
     /// It optimistically tries to evaluate on liquid array, and if that fails,
     /// it falls back to evaluating on an arrow array.
@@ -197,7 +217,7 @@ impl LiquidCachedColumn {
     ) -> Option<Result<BooleanBuffer, ArrowError>> {
         let cached_entry = self.cache_store.get(&self.entry_id(batch_id))?;
         match &cached_entry {
-            CachedBatch::ArrowMemory(array) => {
+            CachedBatch::MemoryArrow(array) => {
                 let boolean_array = BooleanArray::new(selection.clone(), None);
                 let selected = arrow::compute::filter(array, &boolean_array).unwrap();
                 let record_batch = self.arrow_array_to_record_batch(selected);
@@ -209,14 +229,27 @@ impl LiquidCachedColumn {
                 let (buffer, _) = predicate_filter.into_parts();
                 Some(Ok(buffer))
             }
-            CachedBatch::OnDiskLiquid => {
+            CachedBatch::DiskLiquid => {
                 let array = self.read_liquid_from_disk(batch_id);
                 let boolean_array = BooleanArray::new(selection.clone(), None);
                 let filtered = array.filter(&boolean_array);
                 let buffer = self.eval_selection_with_predicate_inner(predicate, &filtered);
                 Some(Ok(buffer))
             }
-            CachedBatch::LiquidMemory(array) => match ABLATION_STUDY_MODE {
+            CachedBatch::DiskArrow => {
+                let array = self.read_arrow_from_disk(batch_id);
+                let boolean_array = BooleanArray::new(selection.clone(), None);
+                let selected = arrow::compute::filter(&array, &boolean_array).unwrap();
+                let record_batch = self.arrow_array_to_record_batch(selected);
+                let boolean_array = predicate.evaluate(record_batch).unwrap();
+                let predicate_filter = match boolean_array.null_count() {
+                    0 => boolean_array,
+                    _ => prep_null_mask_filter(&boolean_array),
+                };
+                let (buffer, _) = predicate_filter.into_parts();
+                Some(Ok(buffer))
+            }
+            CachedBatch::MemoryLiquid(array) => match ABLATION_STUDY_MODE {
                 AblationStudyMode::FullDecoding => {
                     let boolean_array = BooleanArray::new(selection.clone(), None);
                     let arrow = array.to_arrow_array();
@@ -254,11 +287,11 @@ impl LiquidCachedColumn {
     ) -> Option<ArrayRef> {
         let inner_value = self.cache_store.get(&self.entry_id(batch_id))?;
         match &inner_value {
-            CachedBatch::ArrowMemory(array) => {
+            CachedBatch::MemoryArrow(array) => {
                 let filtered = arrow::compute::filter(array, filter).unwrap();
                 Some(filtered)
             }
-            CachedBatch::LiquidMemory(array) => match ABLATION_STUDY_MODE {
+            CachedBatch::MemoryLiquid(array) => match ABLATION_STUDY_MODE {
                 AblationStudyMode::FullDecoding => {
                     let arrow = array.to_arrow_array();
                     let filtered = arrow::compute::filter(&arrow, filter).unwrap();
@@ -269,10 +302,15 @@ impl LiquidCachedColumn {
                     Some(filtered.to_best_arrow_array())
                 }
             },
-            CachedBatch::OnDiskLiquid => {
+            CachedBatch::DiskLiquid => {
                 let array = self.read_liquid_from_disk(batch_id);
                 let filtered = array.filter(filter);
                 Some(filtered.to_best_arrow_array())
+            }
+            CachedBatch::DiskArrow => {
+                let array = self.read_arrow_from_disk(batch_id);
+                let filtered = arrow::compute::filter(&array, filter).unwrap();
+                Some(filtered)
             }
         }
     }
@@ -281,11 +319,15 @@ impl LiquidCachedColumn {
     pub(crate) fn get_arrow_array_test_only(&self, batch_id: BatchID) -> Option<ArrayRef> {
         let cached_entry = self.cache_store.get(&self.entry_id(batch_id))?;
         match cached_entry {
-            CachedBatch::ArrowMemory(array) => Some(array),
-            CachedBatch::LiquidMemory(array) => Some(array.to_best_arrow_array()),
-            CachedBatch::OnDiskLiquid => {
+            CachedBatch::MemoryArrow(array) => Some(array),
+            CachedBatch::MemoryLiquid(array) => Some(array.to_best_arrow_array()),
+            CachedBatch::DiskLiquid => {
                 let array = self.read_liquid_from_disk(batch_id);
                 Some(array.to_best_arrow_array())
+            }
+            CachedBatch::DiskArrow => {
+                let array = self.read_arrow_from_disk(batch_id);
+                Some(array)
             }
         }
     }
@@ -296,21 +338,13 @@ impl LiquidCachedColumn {
         array: ArrayRef,
     ) -> Result<(), InsertArrowArrayError> {
         let compressor = self.cache_store.compressor_states(&self.entry_id(batch_id));
-        let mut reservation = self
-            .cache_store
-            .reserve_memory(array.get_array_memory_size())
-            .map_err(|_| InsertArrowArrayError::MemoryBudgetExceeded)?;
 
         let transcoded = match transcode_liquid_inner(&array, &compressor) {
-            Ok(transcoded) => CachedBatch::LiquidMemory(transcoded),
-            Err(_) => CachedBatch::ArrowMemory(array.clone()),
+            Ok(transcoded) => CachedBatch::MemoryLiquid(transcoded),
+            Err(_) => CachedBatch::MemoryArrow(array.clone()),
         };
 
-        reservation
-            .try_fill_data(transcoded)
-            .map_err(|_| InsertArrowArrayError::MemoryBudgetExceeded)?;
-        self.cache_store
-            .insert_reserved(self.entry_id(batch_id), reservation);
+        self.cache_store.insert(self.entry_id(batch_id), transcoded);
 
         Ok(())
     }
@@ -322,7 +356,7 @@ impl LiquidCachedColumn {
     ) -> Result<(), InsertArrowArrayError> {
         self.cache_store.insert(
             self.entry_id(batch_id),
-            CachedBatch::ArrowMemory(array.clone()),
+            CachedBatch::MemoryArrow(array.clone()),
         );
         let column_arc = Arc::clone(self);
         TRANSCODE_THREAD_POOL.spawn(async move {
@@ -345,7 +379,7 @@ impl LiquidCachedColumn {
             LiquidCacheMode::Arrow => {
                 let entry_id = self.entry_id(batch_id);
                 self.cache_store
-                    .insert(entry_id, CachedBatch::ArrowMemory(array.clone()));
+                    .insert(entry_id, CachedBatch::MemoryArrow(array.clone()));
                 Ok(())
             }
             LiquidCacheMode::Liquid {
@@ -366,7 +400,7 @@ impl LiquidCachedColumn {
             Ok(transcoded) => {
                 self.cache_store.insert(
                     self.entry_id(batch_id),
-                    CachedBatch::LiquidMemory(transcoded),
+                    CachedBatch::MemoryLiquid(transcoded),
                 );
             }
             Err(_array) => {

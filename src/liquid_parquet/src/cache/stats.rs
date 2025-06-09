@@ -125,14 +125,16 @@ impl LiquidCache {
         self.cache_store.for_each_entry(|entry_id, cached_batch| {
             let memory_size = cached_batch.memory_usage_bytes();
             let row_count = match cached_batch {
-                CachedBatch::ArrowMemory(array) => Some(array.len() as u64),
-                CachedBatch::LiquidMemory(array) => Some(array.len() as u64),
-                CachedBatch::OnDiskLiquid => None,
+                CachedBatch::MemoryArrow(array) => Some(array.len() as u64),
+                CachedBatch::MemoryLiquid(array) => Some(array.len() as u64),
+                CachedBatch::DiskLiquid => None,
+                CachedBatch::DiskArrow => None, // We'd need to read it to get the count
             };
             let cache_type = match cached_batch {
-                CachedBatch::ArrowMemory(_) => "InMemory",
-                CachedBatch::LiquidMemory(_) => "LiquidMemory",
-                CachedBatch::OnDiskLiquid => "OnDiskLiquid",
+                CachedBatch::MemoryArrow(_) => "InMemory",
+                CachedBatch::MemoryLiquid(_) => "LiquidMemory",
+                CachedBatch::DiskLiquid => "OnDiskLiquid",
+                CachedBatch::DiskArrow => "OnDiskArrow",
             };
             let reference_count = cached_batch.reference_count();
             writer
