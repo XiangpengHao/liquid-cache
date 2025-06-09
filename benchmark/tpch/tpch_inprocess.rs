@@ -17,6 +17,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+use sysinfo::Disks;
 use url::Url;
 
 #[global_allocator]
@@ -125,13 +126,15 @@ pub struct IterationResult {
     pub time_millis: u64,
     pub cache_memory_usage: u64,
     pub starting_timestamp: Duration,
+    pub bytes_read: u64,
+    pub bytes_written: u64,
 }
 
 impl IterationResult {
     pub fn log(&self) {
         info!(
-            "Query: {} ms, cache memory: {} bytes",
-            self.time_millis, self.cache_memory_usage,
+            "Query: {} ms, cache memory: {} bytes, disk I/O: read {} bytes, written {} bytes",
+            self.time_millis, self.cache_memory_usage, self.bytes_read, self.bytes_written,
         );
     }
 }
@@ -158,12 +161,15 @@ impl TpchInProcessBenchmark {
             .map(|size| size * 1024 * 1024)
             .unwrap_or(usize::MAX);
 
+        let cache_dir = std::env::current_dir()?.join("benchmark/tpch/data/cache");
+        create_dir_all(&cache_dir)?;
         let (ctx, cache): (SessionContext, Option<LiquidCacheRef>) = match self.bench_mode {
             BenchmarkMode::Parquet => (SessionContext::new_with_config(session_config), None),
             BenchmarkMode::Arrow => {
                 let v = LiquidCacheInProcessBuilder::new()
                     .with_max_cache_bytes(cache_size)
                     .with_cache_mode(LiquidCacheMode::Arrow)
+                    .with_cache_dir(cache_dir)
                     .with_cache_strategy(CacheEvictionStrategy::ToDisk)
                     .build(session_config)?;
                 (v.0, Some(v.1))
@@ -174,6 +180,7 @@ impl TpchInProcessBenchmark {
                     .with_cache_mode(LiquidCacheMode::Liquid {
                         transcode_in_background: true,
                     })
+                    .with_cache_dir(cache_dir)
                     .with_cache_strategy(CacheEvictionStrategy::ToDisk)
                     .build(session_config)?;
                 (v.0, Some(v.1))
@@ -184,6 +191,7 @@ impl TpchInProcessBenchmark {
                     .with_cache_mode(LiquidCacheMode::Liquid {
                         transcode_in_background: false,
                     })
+                    .with_cache_dir(cache_dir)
                     .with_cache_strategy(CacheEvictionStrategy::ToDisk)
                     .build(session_config)?;
                 (v.0, Some(v.1))
@@ -255,11 +263,33 @@ impl TpchInProcessBenchmark {
             None
         };
 
+        // Capture disk I/O metrics before query execution
+        let mut disk_info = Disks::new_with_refreshed_list();
+
         let now = Instant::now();
         let starting_timestamp = bench_start_time.elapsed();
 
         let (_results, execution_plan) = self.execute_query(ctx, query).await?;
         let elapsed = now.elapsed();
+
+        disk_info.refresh(true);
+        let disk_read: u64 = disk_info.iter().map(|disk| disk.usage().read_bytes).sum();
+        let total_read: u64 = disk_info
+            .iter()
+            .map(|disk| disk.usage().total_read_bytes)
+            .sum();
+        let total_written: u64 = disk_info
+            .iter()
+            .map(|disk| disk.usage().total_written_bytes)
+            .sum();
+        let disk_written: u64 = disk_info
+            .iter()
+            .map(|disk| disk.usage().written_bytes)
+            .sum();
+        println!(
+            "read: {}, written: {}, total_read: {}, total_written: {}",
+            disk_read, disk_written, total_read, total_written
+        );
 
         // Stop flamegraph profiling and write to file if enabled
         if let Some(profiler) = profiler_guard
@@ -320,6 +350,8 @@ impl TpchInProcessBenchmark {
             time_millis: elapsed.as_millis() as u64,
             cache_memory_usage: cache_memory_usage as u64,
             starting_timestamp,
+            bytes_read: disk_read,
+            bytes_written: disk_written,
         };
 
         result.log();

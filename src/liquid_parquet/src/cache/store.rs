@@ -256,7 +256,7 @@ impl CacheStore {
 
     fn write_liquid_to_disk(&self, entry_id: &CacheEntryID, liquid_array: &LiquidArrayRef) {
         let disk_usage = entry_id
-            .on_disk_liquid_path(self.config.cache_root_dir(), liquid_array)
+            .write_liquid_to_disk(self.config.cache_root_dir(), liquid_array)
             .expect("failed to write liquid to disk");
         self.budget.add_used_disk_bytes(disk_usage);
     }

@@ -182,7 +182,7 @@ impl CacheEntryID {
             .join(format!("file_{}", self.file_id_inner()))
             .join(format!("rg_{}", self.row_group_id_inner()))
             .join(format!("col_{}", self.column_id_inner()))
-            .join(format!("batch_{batch_id}.bin"))
+            .join(format!("batch_{batch_id}.liquid"))
     }
 
     pub(super) fn on_disk_arrow_path(&self, cache_root_dir: &Path) -> PathBuf {
@@ -194,17 +194,12 @@ impl CacheEntryID {
             .join(format!("batch_{batch_id}.arrow"))
     }
 
-    pub(super) fn on_disk_liquid_path(
+    pub(super) fn write_liquid_to_disk(
         &self,
         cache_root_dir: &Path,
         array: &LiquidArrayRef,
     ) -> Result<usize, std::io::Error> {
-        let batch_id = self.batch_id_inner();
-        let path = cache_root_dir
-            .join(format!("file_{}", self.file_id_inner()))
-            .join(format!("rg_{}", self.row_group_id_inner()))
-            .join(format!("col_{}", self.column_id_inner()))
-            .join(format!("batch_{batch_id}.liquid"));
+        let path = self.on_disk_path(cache_root_dir);
         let bytes = array.to_bytes();
         let mut file = File::create(path)?;
         file.write_all(&bytes)?;
