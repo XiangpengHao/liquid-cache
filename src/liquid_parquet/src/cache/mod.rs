@@ -106,6 +106,7 @@ pub type LiquidCachedColumnRef = Arc<LiquidCachedColumn>;
 
 pub enum InsertArrowArrayError {
     AlreadyCached,
+    MemoryBudgetExceeded,
 }
 
 impl LiquidCachedColumn {
@@ -295,21 +296,21 @@ impl LiquidCachedColumn {
         array: ArrayRef,
     ) -> Result<(), InsertArrowArrayError> {
         let compressor = self.cache_store.compressor_states(&self.entry_id(batch_id));
+        let mut reservation = self
+            .cache_store
+            .reserve_memory(array.get_array_memory_size())
+            .map_err(|_| InsertArrowArrayError::MemoryBudgetExceeded)?;
+
         let transcoded = match transcode_liquid_inner(&array, &compressor) {
-            Ok(transcoded) => transcoded,
-            Err(_) => {
-                self.cache_store.insert(
-                    self.entry_id(batch_id),
-                    CachedBatch::ArrowMemory(array.clone()),
-                );
-                return Ok(());
-            }
+            Ok(transcoded) => CachedBatch::LiquidMemory(transcoded),
+            Err(_) => CachedBatch::ArrowMemory(array.clone()),
         };
 
-        self.cache_store.insert(
-            self.entry_id(batch_id),
-            CachedBatch::LiquidMemory(transcoded.clone()),
-        );
+        reservation
+            .try_fill_data(transcoded)
+            .map_err(|_| InsertArrowArrayError::MemoryBudgetExceeded)?;
+        self.cache_store
+            .insert_reserved(self.entry_id(batch_id), reservation);
 
         Ok(())
     }

@@ -104,7 +104,11 @@
 				"--data-dir",
 				"benchmark/tpch/data/sf100.0",
 				"--query",
-				"6",
+				"12",
+				"--partitions",
+				"10",
+				"--max-cache-mb",
+				"1024"
 			],
 			"cwd": "${workspaceFolder}"
 		},

@@ -12,7 +12,7 @@ use log::info;
 use mimalloc::MiMalloc;
 use serde::Serialize;
 use std::{
-    fs::File,
+    fs::{File, create_dir_all},
     path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
@@ -87,6 +87,10 @@ struct TpchInProcessBenchmark {
     /// Maximum cache size in bytes
     #[arg(long = "max-cache-mb")]
     pub max_cache_mb: Option<usize>,
+
+    /// Directory to write flamegraph SVG files to
+    #[arg(long)]
+    pub flamegraph_dir: Option<PathBuf>,
 }
 
 #[derive(Serialize)]
@@ -234,14 +238,52 @@ impl TpchInProcessBenchmark {
         query: &Query,
         bench_start_time: Instant,
         cache: Option<LiquidCacheRef>,
+        iteration: u32,
     ) -> Result<IterationResult> {
         info!("Running query {}: \n{}", query.id, query.sql);
+
+        // Start flamegraph profiling if enabled
+        let profiler_guard = if self.flamegraph_dir.is_some() {
+            Some(
+                pprof::ProfilerGuardBuilder::default()
+                    .frequency(500)
+                    .blocklist(&["libpthread.so.0", "libm.so.6", "libgcc_s.so.1"])
+                    .build()
+                    .unwrap(),
+            )
+        } else {
+            None
+        };
 
         let now = Instant::now();
         let starting_timestamp = bench_start_time.elapsed();
 
         let (_results, execution_plan) = self.execute_query(ctx, query).await?;
         let elapsed = now.elapsed();
+
+        // Stop flamegraph profiling and write to file if enabled
+        if let Some(profiler) = profiler_guard {
+            if let Some(flamegraph_dir) = &self.flamegraph_dir {
+                let report = profiler.report().build().unwrap();
+                let mut svg_data = Vec::new();
+                report.flamegraph(&mut svg_data).unwrap();
+                create_dir_all(flamegraph_dir)?;
+                
+                // Get current time for filename prefix
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap();
+                let secs = now.as_secs();
+                let hour = (secs / 3600) % 24;
+                let minute = (secs / 60) % 60;
+                let second = secs % 60;
+                
+                let filename = format!("{:02}h{:02}m{:02}s_q{}_i{}.svg", hour, minute, second, query.id, iteration);
+                let filepath = flamegraph_dir.join(filename);
+                std::fs::write(&filepath, svg_data).unwrap();
+                info!("Flamegraph written to: {}", filepath.display());
+            }
+        }
 
         let cache_memory_usage = if let Some(cache) = cache {
             cache.memory_usage_bytes()
@@ -302,9 +344,9 @@ impl TpchInProcessBenchmark {
         for query in queries {
             let mut query_result = QueryResult::new(query.id, query.sql.clone());
 
-            for _it in 0..self.iteration {
+            for it in 0..self.iteration {
                 let iteration_result = self
-                    .run_single_iteration(&ctx, &query, bench_start_time, cache.clone())
+                    .run_single_iteration(&ctx, &query, bench_start_time, cache.clone(), it + 1)
                     .await?;
 
                 query_result.add(iteration_result);
