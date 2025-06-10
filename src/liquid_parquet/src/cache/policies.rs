@@ -218,6 +218,24 @@ impl CachePolicy for DiscardPolicy {
     }
 }
 
+/// The policy that writes entries to disk when the cache is full.
+/// This preserves the original format of the data (Arrow stays Arrow, Liquid stays Liquid).
+#[derive(Debug, Default)]
+pub struct ToDiskPolicy;
+
+impl ToDiskPolicy {
+    /// Create a new [ToDiskPolicy].
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl CachePolicy for ToDiskPolicy {
+    fn advise(&self, entry_id: &CacheEntryID, _cache_mode: &LiquidCacheMode) -> CacheAdvice {
+        CacheAdvice::ToDisk(*entry_id)
+    }
+}
+
 fn fallback_advice(entry_id: &CacheEntryID, cache_mode: &LiquidCacheMode) -> CacheAdvice {
     match cache_mode {
         LiquidCacheMode::Arrow => CacheAdvice::Discard,
@@ -233,7 +251,7 @@ mod test {
     use crate::policies::CachePolicy;
 
     use super::super::{CacheAdvice, CacheEntryID, CachedBatch};
-    use super::{DiscardPolicy, FiloPolicy, LruInternalState, LruPolicy};
+    use super::{DiscardPolicy, FiloPolicy, LruInternalState, LruPolicy, ToDiskPolicy};
     use crate::sync::{Arc, Barrier, thread};
     use std::sync::atomic::Ordering;
 
@@ -466,6 +484,8 @@ mod test {
         concurrent_invariant_advice_once(Arc::new(DiscardPolicy));
 
         concurrent_invariant_advice_once(Arc::new(FiloPolicy::new()));
+
+        concurrent_invariant_advice_once(Arc::new(ToDiskPolicy::new()));
     }
 
     #[cfg(feature = "shuttle")]
@@ -571,7 +591,7 @@ mod test {
         assert!(store.get(&entry_id3).is_some());
 
         match store.get(&entry_id2) {
-            Some(CachedBatch::OnDiskLiquid) => {}
+            Some(CachedBatch::DiskLiquid) => {}
             None => {} // This is also acceptable if fully evicted
             other => panic!("Expected OnDiskLiquid or None, got {:?}", other),
         }
@@ -601,9 +621,55 @@ mod test {
         assert!(store.get(&entry_id4).is_some());
 
         match store.get(&entry_id3) {
-            Some(CachedBatch::OnDiskLiquid) => {}
+            Some(CachedBatch::DiskLiquid) => {}
             None => {} // This is also acceptable if fully evicted
             other => panic!("Expected OnDiskLiquid or None, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_to_disk_policy() {
+        let advisor = ToDiskPolicy::new();
+        let store = create_cache_store(3000, Box::new(advisor)); // Small budget to force disk storage
+
+        let entry_id1 = create_entry_id(1, 1, 1, 1);
+        let entry_id2 = create_entry_id(1, 1, 1, 2);
+
+        let on_disk_liquid_path = entry_id1.on_disk_path(&store.config().cache_root_dir());
+        let on_disk_arrow_path = entry_id1.on_disk_arrow_path(&store.config().cache_root_dir());
+        std::fs::create_dir_all(on_disk_liquid_path.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(on_disk_arrow_path.parent().unwrap()).unwrap();
+
+        store.insert(entry_id1, create_test_array(100));
+        assert!(matches!(
+            store.get(&entry_id1).unwrap(),
+            CachedBatch::MemoryArrow(_)
+        ));
+
+        store.insert(entry_id2, create_test_array(2000)); // Large enough to exceed budget
+
+        assert!(matches!(
+            store.get(&entry_id2).unwrap(),
+            CachedBatch::DiskArrow
+        ));
+
+        assert!(store.get(&entry_id1).is_some());
+    }
+
+    #[test]
+    fn test_to_disk_policy_advice() {
+        let policy = ToDiskPolicy::new();
+        let entry_id = entry(42);
+
+        let advice = policy.advise(&entry_id, &LiquidCacheMode::Arrow);
+        assert_eq!(advice, CacheAdvice::ToDisk(entry_id));
+
+        let advice = policy.advise(
+            &entry_id,
+            &LiquidCacheMode::Liquid {
+                transcode_in_background: false,
+            },
+        );
+        assert_eq!(advice, CacheAdvice::ToDisk(entry_id));
     }
 }

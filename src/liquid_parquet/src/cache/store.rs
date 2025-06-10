@@ -1,6 +1,6 @@
 use congee::CongeeArc;
 use std::fmt::{Debug, Formatter};
-use std::{fs::File, io::Write, path::PathBuf};
+use std::path::PathBuf;
 
 use super::{
     CacheEntryID, CachedBatch, LiquidCompressorStates,
@@ -103,38 +103,6 @@ pub(crate) struct CacheStore {
     compressor_states: CompressorStates,
 }
 
-pub(super) struct MemoryReservation<'a> {
-    reserved_bytes: usize,
-    memory_budget: &'a BudgetAccounting,
-    data: Option<CachedBatch>,
-}
-
-impl<'a> MemoryReservation<'a> {
-    /// Try to fill the reservation with data.
-    /// Returns ok if the data was filled, err if the memory budget is exceeded.
-    pub(super) fn try_fill_data(&mut self, data: CachedBatch) -> Result<(), ()> {
-        let new_memory_size = data.memory_usage_bytes();
-        self.memory_budget
-            .try_update_memory_usage(self.reserved_bytes, new_memory_size)?;
-        self.data = Some(data);
-        Ok(())
-    }
-
-    fn into_inner(mut self) -> CachedBatch {
-        let data = self.data.take();
-        std::mem::forget(self);
-        data.expect("Data was not filled")
-    }
-}
-
-impl<'a> Drop for MemoryReservation<'a> {
-    fn drop(&mut self) {
-        self.memory_budget
-            .try_update_memory_usage(self.reserved_bytes, 0)
-            .expect("Failed to release memory reservation");
-    }
-}
-
 /// Advice given by the cache policy.
 #[derive(PartialEq, Eq, Debug)]
 pub enum CacheAdvice {
@@ -144,6 +112,8 @@ pub enum CacheAdvice {
     TranscodeToDisk(CacheEntryID),
     /// Transcode the entry to liquid memory.
     Transcode(CacheEntryID),
+    /// Write the entry to disk as-is (preserve format).
+    ToDisk(CacheEntryID),
     /// Discard the entry,  do not cache.
     Discard,
 }
@@ -165,25 +135,6 @@ impl CacheStore {
             tracer: CacheTracer::new(),
             compressor_states: CompressorStates::new(),
         }
-    }
-
-    /// Reserve memory in the cache.
-    /// Returns ok if the space was reserved, err if the cache is full.
-    pub(super) fn reserve_memory(&self, size: usize) -> Result<MemoryReservation, ()> {
-        self.budget
-            .try_reserve_memory(size)
-            .map(|_| MemoryReservation {
-                reserved_bytes: size,
-                memory_budget: &self.budget,
-                data: None,
-            })
-    }
-
-    /// Insert a batch into the cache, but reserve the memory first.
-    /// This is useful for cases where the memory usage is known in advance,
-    /// and we want to avoid the overhead of checking the memory usage after the fact.
-    pub(super) fn insert_reserved(&self, entry_id: CacheEntryID, reservation: MemoryReservation) {
-        self.cached_data.insert(&entry_id, reservation.into_inner());
     }
 
     fn insert_inner(
@@ -225,10 +176,10 @@ impl CacheStore {
                     return Some(not_inserted);
                 };
 
-                if let CachedBatch::ArrowMemory(array) = to_transcode_batch {
+                if let CachedBatch::MemoryArrow(array) = to_transcode_batch {
                     let liquid_array = transcode_liquid_inner(&array, compressor_states.as_ref())
                         .expect("Failed to transcode to liquid array");
-                    let liquid_array = CachedBatch::LiquidMemory(liquid_array);
+                    let liquid_array = CachedBatch::MemoryLiquid(liquid_array);
                     self.insert_inner(to_transcode, liquid_array)
                         .expect("Failed to insert the transcoded batch");
                 }
@@ -241,48 +192,80 @@ impl CacheStore {
                     return Some(not_inserted);
                 };
                 let liquid_array = match to_evict_batch {
-                    CachedBatch::ArrowMemory(array) => {
+                    CachedBatch::MemoryArrow(array) => {
                         transcode_liquid_inner(&array, compressor_states.as_ref())
                             .expect("Failed to transcode to liquid array")
                     }
-                    CachedBatch::LiquidMemory(liquid_array) => liquid_array,
-                    CachedBatch::OnDiskLiquid => {
+                    CachedBatch::MemoryLiquid(liquid_array) => liquid_array,
+                    CachedBatch::DiskLiquid => {
+                        // do nothing, already on disk
+                        return Some(not_inserted);
+                    }
+                    CachedBatch::DiskArrow => {
                         // do nothing, already on disk
                         return Some(not_inserted);
                     }
                 };
-                self.write_to_disk(&to_evict, &liquid_array);
-                self.insert_inner(to_evict, CachedBatch::OnDiskLiquid)
+                self.write_liquid_to_disk(&to_evict, &liquid_array);
+                self.insert_inner(to_evict, CachedBatch::DiskLiquid)
                     .expect("failed to insert on disk liquid");
                 Some(not_inserted)
             }
             CacheAdvice::TranscodeToDisk(to_transcode) => {
                 let compressor_states = self.compressor_states.get_compressor(&to_transcode);
                 let liquid_array = match not_inserted {
-                    CachedBatch::ArrowMemory(array) => {
+                    CachedBatch::MemoryArrow(array) => {
                         transcode_liquid_inner(&array, compressor_states.as_ref())
                             .expect("Failed to transcode to liquid array")
                     }
-                    CachedBatch::LiquidMemory(liquid_array) => liquid_array,
-                    CachedBatch::OnDiskLiquid => {
+                    CachedBatch::MemoryLiquid(liquid_array) => liquid_array,
+                    CachedBatch::DiskLiquid => {
+                        return None;
+                    }
+                    CachedBatch::DiskArrow => {
                         return None;
                     }
                 };
-                self.write_to_disk(&to_transcode, &liquid_array);
-                self.insert_inner(to_transcode, CachedBatch::OnDiskLiquid)
+                self.write_liquid_to_disk(&to_transcode, &liquid_array);
+                self.insert_inner(to_transcode, CachedBatch::DiskLiquid)
                     .expect("failed to insert on disk liquid");
+                None
+            }
+            CacheAdvice::ToDisk(to_disk) => {
+                match not_inserted {
+                    CachedBatch::MemoryArrow(array) => {
+                        self.write_arrow_to_disk(&to_disk, &array);
+                        self.insert_inner(to_disk, CachedBatch::DiskArrow)
+                            .expect("failed to insert on disk arrow");
+                    }
+                    CachedBatch::MemoryLiquid(liquid_array) => {
+                        self.write_liquid_to_disk(&to_disk, &liquid_array);
+                        self.insert_inner(to_disk, CachedBatch::DiskLiquid)
+                            .expect("failed to insert on disk liquid");
+                    }
+                    CachedBatch::DiskLiquid | CachedBatch::DiskArrow => {
+                        // Already on disk, nothing to do
+                        return None;
+                    }
+                }
                 None
             }
             CacheAdvice::Discard => None,
         }
     }
 
-    fn write_to_disk(&self, entry_id: &CacheEntryID, liquid_array: &LiquidArrayRef) {
-        let bytes = liquid_array.to_bytes();
-        let file_path = entry_id.on_disk_path(self.config.cache_root_dir());
-        let mut file = File::create(file_path).unwrap();
-        file.write_all(&bytes).unwrap();
-        self.budget.add_used_disk_bytes(bytes.len());
+    fn write_liquid_to_disk(&self, entry_id: &CacheEntryID, liquid_array: &LiquidArrayRef) {
+        let disk_usage = entry_id
+            .write_liquid_to_disk(self.config.cache_root_dir(), liquid_array)
+            .expect("failed to write liquid to disk");
+        self.budget.add_used_disk_bytes(disk_usage);
+    }
+
+    fn write_arrow_to_disk(&self, entry_id: &CacheEntryID, array: &arrow::array::ArrayRef) {
+        let disk_usage = entry_id
+            .write_arrow_to_disk(self.config.cache_root_dir(), array)
+            .expect("failed to write arrow to disk");
+        self.budget.add_used_disk_bytes(disk_usage);
     }
 
     pub(super) fn insert(&self, entry_id: CacheEntryID, mut batch_to_cache: CachedBatch) {
@@ -388,7 +371,7 @@ mod tests {
 
             // Get should return the cached value
             match store.get(&entry_id1) {
-                Some(CachedBatch::ArrowMemory(arr)) => assert_eq!(arr.len(), 100),
+                Some(CachedBatch::MemoryArrow(arr)) => assert_eq!(arr.len(), 100),
                 _ => panic!("Expected ArrowMemory batch"),
             }
         }
@@ -423,6 +406,7 @@ mod tests {
         Evict,
         Transcode,
         TranscodeToDisk,
+        ToDisk,
     }
 
     impl TestPolicy {
@@ -448,6 +432,7 @@ mod tests {
                     CacheAdvice::Transcode(id_to_use)
                 }
                 AdviceType::TranscodeToDisk => CacheAdvice::TranscodeToDisk(*entry_id),
+                AdviceType::ToDisk => CacheAdvice::ToDisk(*entry_id),
             }
         }
     }
@@ -471,7 +456,7 @@ mod tests {
         assert_eq!(store.budget.memory_usage_bytes(), size1);
         let retrieved1 = store.get(&entry_id1).unwrap();
         match retrieved1 {
-            CachedBatch::ArrowMemory(arr) => assert_eq!(arr.len(), 100),
+            CachedBatch::MemoryArrow(arr) => assert_eq!(arr.len(), 100),
             _ => panic!("Expected ArrowMemory"),
         }
 
@@ -509,13 +494,13 @@ mod tests {
 
             store.insert(entry_id1, create_test_array(800));
             match store.get(&entry_id1).unwrap() {
-                CachedBatch::ArrowMemory(_) => {}
+                CachedBatch::MemoryArrow(_) => {}
                 other => panic!("Expected ArrowMemory, got {:?}", other),
             }
 
             store.insert(entry_id2, create_test_array(800));
             match store.get(&entry_id1).unwrap() {
-                CachedBatch::OnDiskLiquid => {}
+                CachedBatch::DiskLiquid => {}
                 other => panic!("Expected OnDiskLiquid after eviction, got {:?}", other),
             }
         }
@@ -527,13 +512,13 @@ mod tests {
 
             store.insert(entry_id1, create_test_array(800));
             match store.get(&entry_id1).unwrap() {
-                CachedBatch::ArrowMemory(_) => {}
+                CachedBatch::MemoryArrow(_) => {}
                 other => panic!("Expected ArrowMemory, got {:?}", other),
             }
 
             store.insert(entry_id2, create_test_array(800));
             match store.get(&entry_id1).unwrap() {
-                CachedBatch::LiquidMemory(_) => {}
+                CachedBatch::MemoryLiquid(_) => {}
                 other => panic!("Expected LiquidMemory after transcoding, got {:?}", other),
             }
         }
@@ -549,8 +534,26 @@ mod tests {
             store.insert(entry_id1, create_test_array(800));
             store.insert(entry_id3, create_test_array(800));
             match store.get(&entry_id3).unwrap() {
-                CachedBatch::OnDiskLiquid => {}
+                CachedBatch::DiskLiquid => {}
                 other => panic!("Expected OnDiskLiquid, got {:?}", other),
+            }
+        }
+
+        // 4. Test TO_DISK advice - preserve format as-is
+        {
+            let advisor = TestPolicy::new(AdviceType::ToDisk, None);
+            let store = create_cache_store(8000, Box::new(advisor)); // Small budget to force disk storage
+
+            let on_disk_arrow_path = entry_id1.on_disk_arrow_path(&store.config.cache_root_dir());
+            std::fs::create_dir_all(on_disk_arrow_path.parent().unwrap()).unwrap();
+
+            // Insert arrow data - should be written as DiskArrow (preserving format)
+            store.insert(entry_id1, create_test_array(800));
+            store.insert(entry_id2, create_test_array(800)); // This should trigger ToDisk advice
+
+            match store.get(&entry_id2).unwrap() {
+                CachedBatch::DiskArrow => {}
+                other => panic!("Expected DiskArrow after ToDisk advice, got {:?}", other),
             }
         }
     }

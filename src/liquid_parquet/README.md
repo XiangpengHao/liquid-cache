@@ -6,7 +6,7 @@ Learn more about LiquidCache in the [README](https://github.com/XiangpengHao/liq
 
 ## Usage
 
-```rust
+```rust,ignore
 use datafusion::prelude::SessionConfig;
 use liquid_cache_parquet::{
     LiquidCacheInProcessBuilder,
@@ -18,7 +18,7 @@ use tempfile::TempDir;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new().unwrap();
 
-    let ctx = LiquidCacheInProcessBuilder::new()
+    let (ctx, _) = LiquidCacheInProcessBuilder::new()
         .with_max_cache_bytes(1024 * 1024 * 1024) // 1GB
         .with_cache_dir(temp_dir.path().to_path_buf())
         .with_cache_mode(LiquidCacheMode::Liquid {

@@ -4,8 +4,8 @@ use std::{any::TypeId, mem::size_of};
 use arrow::array::ArrowPrimitiveType;
 use arrow::array::types::UInt16Type;
 use arrow::datatypes::{
-    Float32Type, Float64Type, Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt32Type,
-    UInt64Type,
+    Date32Type, Date64Type, Float32Type, Float64Type, Int8Type, Int16Type, Int32Type, Int64Type,
+    UInt8Type, UInt32Type, UInt64Type,
 };
 use bytes::Bytes;
 use fsst::Compressor;
@@ -118,7 +118,9 @@ pub fn read_from_bytes(bytes: Bytes, context: &LiquidIPCContext) -> LiquidArrayR
             5 => Arc::new(LiquidPrimitiveArray::<UInt16Type>::from_bytes(bytes)),
             6 => Arc::new(LiquidPrimitiveArray::<UInt32Type>::from_bytes(bytes)),
             7 => Arc::new(LiquidPrimitiveArray::<UInt64Type>::from_bytes(bytes)),
-            _ => panic!("Unsupported physical type"),
+            10 => Arc::new(LiquidPrimitiveArray::<Date32Type>::from_bytes(bytes)),
+            11 => Arc::new(LiquidPrimitiveArray::<Date64Type>::from_bytes(bytes)),
+            v => panic!("Unsupported integer physical type: {v}"),
         },
         LiquidDataType::ByteArray => {
             let compressor = context.compressor.as_ref().expect("Expected a compressor");
@@ -127,10 +129,14 @@ pub fn read_from_bytes(bytes: Bytes, context: &LiquidIPCContext) -> LiquidArrayR
         LiquidDataType::Float => match header.physical_type_id {
             8 => Arc::new(LiquidFloatArray::<Float32Type>::from_bytes(bytes)),
             9 => Arc::new(LiquidFloatArray::<Float64Type>::from_bytes(bytes)),
-            _ => panic!("Unsupported float type"),
+            v => panic!("Unsupported float physical type: {v}"),
         },
         LiquidDataType::FixedLenByteArray => {
-            todo!()
+            let compressor = context.compressor.as_ref().expect("Expected a compressor");
+            Arc::new(LiquidFixedLenByteArray::from_bytes(
+                bytes,
+                compressor.clone(),
+            ))
         }
     }
 }
@@ -775,7 +781,7 @@ fn get_physical_type_id<T: ArrowPrimitiveType>() -> u16 {
 mod tests {
     use arrow::{
         array::{PrimitiveArray, StringArray},
-        datatypes::{Decimal128Type, Decimal256Type, DecimalType, Int32Type},
+        datatypes::{Decimal128Type, Decimal256Type, DecimalType, Int32Type, i256},
     };
     use arrow_schema::DataType;
 
@@ -957,6 +963,28 @@ mod tests {
     }
 
     #[test]
+    fn test_date_types_ipc_roundtrip() {
+        // Test Date32Type
+        let date32_array = PrimitiveArray::<Date32Type>::from(vec![Some(18628), None, Some(0)]);
+        let liquid_array =
+            LiquidPrimitiveArray::<Date32Type>::from_arrow_array(date32_array.clone());
+        let bytes = Bytes::from(liquid_array.to_bytes());
+        let context = LiquidIPCContext::new(None);
+        let deserialized = read_from_bytes(bytes, &context);
+        assert_eq!(deserialized.to_arrow_array().as_ref(), &date32_array);
+
+        // Test Date64Type
+        let date64_array =
+            PrimitiveArray::<Date64Type>::from(vec![Some(1609459200000), None, Some(0)]);
+        let liquid_array =
+            LiquidPrimitiveArray::<Date64Type>::from_arrow_array(date64_array.clone());
+        let bytes = Bytes::from(liquid_array.to_bytes());
+        let context = LiquidIPCContext::new(None);
+        let deserialized = read_from_bytes(bytes, &context);
+        assert_eq!(deserialized.to_arrow_array().as_ref(), &date64_array);
+    }
+
+    #[test]
     fn test_byte_array_roundtrip() {
         let string_array = StringArray::from(vec![
             Some("hello"),
@@ -1040,5 +1068,89 @@ mod tests {
     #[test]
     fn test_decimal256_array_roundtrip() {
         test_decimal_roundtrip::<Decimal256Type>(DataType::Decimal256(38, 6));
+    }
+
+    #[test]
+    fn test_fixed_len_byte_array_ipc_roundtrip() {
+        // Test both Decimal128 and Decimal256 through the full IPC pipeline
+
+        let decimal128_array =
+            gen_test_decimal_array::<Decimal128Type>(DataType::Decimal128(15, 3));
+        let (compressor, liquid_array) =
+            LiquidFixedLenByteArray::train_from_decimal_array(&decimal128_array);
+
+        let bytes = liquid_array.to_bytes();
+        let bytes = Bytes::from(bytes);
+
+        let context = LiquidIPCContext::new(Some(compressor.clone()));
+        let deserialized_ref = read_from_bytes(bytes, &context);
+        assert!(matches!(
+            deserialized_ref.data_type(),
+            LiquidDataType::FixedLenByteArray
+        ));
+        let result_arrow = deserialized_ref.to_arrow_array();
+        assert_eq!(result_arrow.as_ref(), &decimal128_array);
+
+        // Test Decimal256
+        let decimal256_array =
+            gen_test_decimal_array::<Decimal256Type>(DataType::Decimal256(38, 6));
+        let (compressor, liquid_array) =
+            LiquidFixedLenByteArray::train_from_decimal_array(&decimal256_array);
+
+        let bytes = liquid_array.to_bytes();
+        let bytes = Bytes::from(bytes);
+
+        let context = LiquidIPCContext::new(Some(compressor.clone()));
+        let deserialized_ref = read_from_bytes(bytes, &context);
+
+        assert!(matches!(
+            deserialized_ref.data_type(),
+            LiquidDataType::FixedLenByteArray
+        ));
+
+        let result_arrow = deserialized_ref.to_arrow_array();
+        assert_eq!(result_arrow.as_ref(), &decimal256_array);
+    }
+
+    #[test]
+    fn test_fixed_len_byte_array_ipc_edge_cases() {
+        // Test edge cases with FixedLenByteArray IPC
+
+        let mut builder = arrow::array::Decimal128Builder::new();
+        builder.append_value(123456789_i128);
+        builder.append_null();
+        builder.append_value(-987654321_i128);
+        builder.append_null();
+        builder.append_value(0_i128);
+        let array_with_nulls = builder.finish().with_precision_and_scale(15, 3).unwrap();
+
+        let (compressor, liquid_array) =
+            LiquidFixedLenByteArray::train_from_decimal_array(&array_with_nulls);
+
+        let bytes = liquid_array.to_bytes();
+        let bytes = Bytes::from(bytes);
+
+        let context = LiquidIPCContext::new(Some(compressor));
+        let deserialized_ref = read_from_bytes(bytes, &context);
+        let result_arrow = deserialized_ref.to_arrow_array();
+
+        assert_eq!(result_arrow.as_ref(), &array_with_nulls);
+
+        // Test with single value
+        let mut builder = arrow::array::Decimal256Builder::new();
+        builder.append_value(i256::from_i128(42_i128));
+        let single_value_array = builder.finish().with_precision_and_scale(38, 6).unwrap();
+
+        let (compressor, liquid_array) =
+            LiquidFixedLenByteArray::train_from_decimal_array(&single_value_array);
+
+        let bytes = liquid_array.to_bytes();
+        let bytes = Bytes::from(bytes);
+
+        let context = LiquidIPCContext::new(Some(compressor));
+        let deserialized_ref = read_from_bytes(bytes, &context);
+        let result_arrow = deserialized_ref.to_arrow_array();
+
+        assert_eq!(result_arrow.as_ref(), &single_value_array);
     }
 }

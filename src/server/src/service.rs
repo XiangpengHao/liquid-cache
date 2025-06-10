@@ -13,7 +13,9 @@ use datafusion::{
 use liquid_cache_common::{
     CacheEvictionStrategy, CacheMode, coerce_to_liquid_cache_types, rpc::ExecutionMetricsResponse,
 };
-use liquid_cache_parquet::policies::{CachePolicy, DiscardPolicy, FiloPolicy, LruPolicy};
+use liquid_cache_parquet::policies::{
+    CachePolicy, DiscardPolicy, FiloPolicy, LruPolicy, ToDiskPolicy,
+};
 use liquid_cache_parquet::{LiquidCache, LiquidCacheRef, LiquidParquetSource};
 use log::{debug, info};
 use object_store::ObjectStore;
@@ -62,6 +64,7 @@ impl LiquidCacheServiceInner {
             CacheEvictionStrategy::Lru => Box::new(LruPolicy::new()),
             CacheEvictionStrategy::Discard => Box::new(DiscardPolicy),
             CacheEvictionStrategy::Filo => Box::new(FiloPolicy::new()),
+            CacheEvictionStrategy::ToDisk => Box::new(ToDiskPolicy::new()),
         };
 
         let liquid_cache = match cache_mode {

@@ -23,6 +23,7 @@ serde_json.workspace = true
 serde.workspace = true
 sysinfo = { version = "0.35.1", default-features = false, features = [
 	"network",
+	"disk",
 ] }
 object_store = { workspace = true, features = ["http"] }
 bytes = { workspace = true }
