@@ -423,7 +423,7 @@ mod tests {
             .join("file_1")
             .join("rg_2")
             .join("col_3")
-            .join("batch_4.bin");
+            .join("batch_4.liquid");
         assert_eq!(entry_id.on_disk_path(cache_root), expected_path);
     }
 
