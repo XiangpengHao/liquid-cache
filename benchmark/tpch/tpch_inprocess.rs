@@ -216,7 +216,7 @@ impl TpchInProcessBenchmark {
                         self.data_dir.display(),
                         table_name
                     );
-                    ctx.register_orc(*table_name, &table_path, OrcReadOptions::default())
+                    ctx.register_orc(table_name, &table_path, OrcReadOptions::default())
                         .await?;
                 }
                 _ => {
