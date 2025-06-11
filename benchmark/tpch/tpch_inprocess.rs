@@ -5,6 +5,7 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::metrics::MetricValue;
 use datafusion::prelude::SessionConfig;
 use datafusion::{arrow::array::RecordBatch, error::Result, prelude::SessionContext};
+use datafusion_orc::{OrcReadOptions, SessionContextOrcExt};
 use liquid_cache_benchmarks::{Query, run_query, setup_observability, tpch};
 use liquid_cache_common::{CacheEvictionStrategy, LiquidCacheMode};
 use liquid_cache_parquet::{LiquidCacheInProcessBuilder, LiquidCacheRef};
@@ -23,6 +24,8 @@ use url::Url;
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
+const RELEVANT_QUERIES: &[u32] = &[4, 6, 11, 12, 14, 15, 16, 20];
+
 #[derive(Clone, Debug, Default, Copy, PartialEq, Eq, Serialize)]
 enum BenchmarkMode {
     Parquet,
@@ -30,6 +33,7 @@ enum BenchmarkMode {
     #[default]
     Liquid,
     LiquidEagerTranscode,
+    Orc,
 }
 
 impl std::str::FromStr for BenchmarkMode {
@@ -41,9 +45,10 @@ impl std::str::FromStr for BenchmarkMode {
             "arrow" => BenchmarkMode::Arrow,
             "liquid" => BenchmarkMode::Liquid,
             "liquid-eager-transcode" => BenchmarkMode::LiquidEagerTranscode,
+            "orc" => BenchmarkMode::Orc,
             _ => {
                 return Err(format!(
-                    "Invalid in-process benchmark mode: {s}, must be one of: parquet, arrow, liquid, liquid-eager-transcode"
+                    "Invalid in-process benchmark mode: {s}, must be one of: parquet, arrow, liquid, liquid-eager-transcode, orc"
                 ));
             }
         })
@@ -200,17 +205,32 @@ impl TpchInProcessBenchmark {
                     .build(session_config)?;
                 (v.0, Some(v.1))
             }
+            BenchmarkMode::Orc => (SessionContext::new_with_config(session_config), None),
         };
         for table_name in tables.iter() {
-            let table_path = Url::parse(&format!(
-                "file://{}/{}/{}.parquet",
-                current_dir,
-                self.data_dir.display(),
-                table_name
-            ))
-            .unwrap();
-            ctx.register_parquet(*table_name, table_path, Default::default())
-                .await?;
+            match self.bench_mode {
+                BenchmarkMode::Orc => {
+                    let table_path = format!(
+                        "file://{}/{}/{}.orc",
+                        current_dir,
+                        self.data_dir.display(),
+                        table_name
+                    );
+                    ctx.register_orc(*table_name, &table_path, OrcReadOptions::default())
+                        .await?;
+                }
+                _ => {
+                    let table_path = Url::parse(&format!(
+                        "file://{}/{}/{}.parquet",
+                        current_dir,
+                        self.data_dir.display(),
+                        table_name
+                    ))
+                    .unwrap();
+                    ctx.register_parquet(*table_name, table_path, Default::default())
+                        .await?;
+                }
+            }
         }
 
         Ok((Arc::new(ctx), cache))
@@ -358,6 +378,9 @@ impl TpchInProcessBenchmark {
             vec![queries.into_iter().find(|q| q.id == query).unwrap()]
         } else {
             queries
+                .into_iter()
+                .filter(|q| RELEVANT_QUERIES.contains(&q.id))
+                .collect()
         };
 
         let mut benchmark_result = BenchmarkResult {
