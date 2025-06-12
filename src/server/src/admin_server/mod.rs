@@ -14,8 +14,10 @@ use tower_http::cors::CorsLayer;
 
 mod flamegraph;
 mod handlers;
+mod disk_monitor;
 pub(crate) mod models;
 
+use disk_monitor::DiskMonitor;
 use crate::LiquidCacheService;
 
 pub(crate) struct AppState {
@@ -23,6 +25,7 @@ pub(crate) struct AppState {
     trace_id: AtomicU32,
     stats_id: AtomicU32,
     flamegraph: Arc<FlameGraph>,
+    disk_monitor: Arc<DiskMonitor>,
 }
 
 /// Run the admin server
@@ -35,6 +38,7 @@ pub async fn run_admin_server(
         trace_id: AtomicU32::new(0),
         stats_id: AtomicU32::new(0),
         flamegraph: Arc::new(FlameGraph::new()),
+        disk_monitor: Arc::new(DiskMonitor::new()),
     });
 
     // Create a CORS layer that allows all localhost origins
@@ -73,6 +77,8 @@ pub async fn run_admin_server(
             "/set_execution_stats",
             post(handlers::add_execution_stats_handler),
         )
+        .route("/start_disk_usage_monitor", get(handlers::start_disk_usage_monitor_handler))
+        .route("/stop_disk_usage_monitor", get(handlers::stop_disk_usage_monitor_handler))
         .with_state(state)
         .layer(cors);
 

@@ -31,29 +31,30 @@ echo "Starting bench_server..."
 # Launch server and log output
 env RUST_LOG=info RUST_BACKTRACE=full cargo run --release --bin bench_server \
     -- --max-cache-mb=10 --disk-cache-dir=tmp > $log_dir/server.log 2>&1 &
-CARGO_PID=$!
+SERVER_PID=$!
 
 sleep 20
 
 echo "Starting disk_monitor..."
 # Launch monitor and log output (with partition suffix)
-cargo run --release --bin disk_monitor -- $CARGO_PID 200 > $log_dir/disk_monitor_${NUM_PARTITIONS}.log &
-DISK_MONITOR_PID=$!
+# cargo run --release --bin disk_monitor -- $SERVER_PID 200 > $log_dir/disk_monitor_${NUM_PARTITIONS}.log &
+# DISK_MONITOR_PID=$!
 
 echo "Running clickbench_client..."
 # Run client and log output
-env RUST_LOG=info cargo run --release --bin clickbench_client \
+env RUST_LOG=info RUST_BACKTRACE=full cargo run --release --bin clickbench_client \
     -- --query-path clickbench/queries/queries.sql \
     --file clickbench/data/hits.parquet \
     --query 20 \
     --partitions $NUM_PARTITIONS \
-    --iteration 5 --flamegraph > $log_dir/client.log 2>&1
+    --iteration 5 \
+    --disk-usage-histogram-dir disk_usage > $log_dir/client.log 2>&1
 
-echo "Killing bench_server (PID $CARGO_PID)..."
+echo "Killing bench_server (PID $SERVER_PID)..."
 # Kill the server process
-kill $CARGO_PID
-wait $CARGO_PID 2>/dev/null
+kill $SERVER_PID
+wait $SERVER_PID 2>/dev/null
 
-wait $DISK_MONITOR_PID 2>/dev/null
+# wait $DISK_MONITOR_PID 2>/dev/null
 
-tail -n 1 $log_dir/disk_monitor_${NUM_PARTITIONS}.log
+# tail -n 1 $log_dir/disk_monitor_${NUM_PARTITIONS}.log

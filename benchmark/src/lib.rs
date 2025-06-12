@@ -90,6 +90,9 @@ pub struct CommonBenchmarkArgs {
     /// <https://liquid-cache-admin.xiangpeng.systems/?host=http://localhost:53703>
     #[arg(long)]
     pub flamegraph: bool,
+
+    #[arg(long = "disk-usage-histogram-dir")]
+    pub disk_usage_histogram_dir: Option<PathBuf>,
 }
 
 impl CommonBenchmarkArgs {
@@ -152,6 +155,42 @@ impl CommonBenchmarkArgs {
             }
         } else {
             None
+        }
+    }
+
+    pub async fn start_disk_usage_monitor(&self) {
+        if self.disk_usage_histogram_dir.is_some() {
+            let client = reqwest::Client::new();
+            let response = client
+                .get(format!(
+                    "{}/start_disk_usage_monitor?path={}",
+                    self.admin_server,
+                    self.disk_usage_histogram_dir
+                        .as_ref()
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                ))
+                .send()
+                .await
+                .unwrap();
+            if response.status().is_success() {
+                info!("Disk usage monitoring started");
+            }
+        }
+    }
+
+    pub async fn stop_disk_usage_monitor(&self) {
+        if self.disk_usage_histogram_dir.is_some() {
+            let client = reqwest::Client::new();
+            let response = client
+                .get(format!("{}/stop_disk_usage_monitor", self.admin_server))
+                .send()
+                .await
+                .unwrap();
+            if response.status().is_success() {
+                info!("Disk usage monitoring stopped");
+            }
         }
     }
 
