@@ -69,7 +69,7 @@ impl LocalCache {
     }
 
     /// Check if a cached chunk is ready to be read (file exists, since rename is atomic)
-    fn is_chunk_ready(&self, chunk_path: &PathBuf) -> bool {
+    fn is_chunk_ready(&self, chunk_path: &std::path::Path) -> bool {
         chunk_path.exists()
     }
 

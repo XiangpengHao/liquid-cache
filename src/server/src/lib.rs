@@ -124,7 +124,7 @@ impl LiquidCacheService {
             Some(dir) => dir,
             None => {
                 let dir = tempfile::tempdir()?.keep();
-                info!("Using temporary directory for disk cache: {:?}", dir);
+                info!("Using temporary directory for disk cache: {dir:?}");
                 dir
             }
         };

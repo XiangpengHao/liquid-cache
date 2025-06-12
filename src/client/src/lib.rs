@@ -15,7 +15,6 @@ use datafusion::{
 };
 use fastrace_tonic::FastraceClientService;
 use liquid_cache_common::CacheMode;
-use object_store;
 pub use optimizer::PushdownOptimizer;
 use tonic::transport::Channel;
 

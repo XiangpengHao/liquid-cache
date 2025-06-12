@@ -151,7 +151,7 @@ fn create_s3_options_from_env(bucket_name: &str) -> Option<HashMap<String, Strin
         std::env::var("AWS_ENDPOINT_URL").or_else(|_| std::env::var("AWS_ENDPOINT"))
     {
         s3_options.insert("endpoint".to_string(), endpoint.clone());
-        info!("Using custom S3 endpoint: {}", endpoint);
+        info!("Using custom S3 endpoint: {endpoint}");
 
         // For custom endpoints, often we need to allow HTTP
         if endpoint.starts_with("http://") {
@@ -163,7 +163,7 @@ fn create_s3_options_from_env(bucket_name: &str) -> Option<HashMap<String, Strin
     // Check if this is an S3 Express One Zone bucket
     if is_s3_express_bucket(bucket_name) {
         s3_options.insert("s3_express".to_string(), "true".to_string());
-        info!("Detected S3 Express One Zone bucket: {}", bucket_name);
+        info!("Detected S3 Express One Zone bucket: {bucket_name}");
     }
 
     // Allow manual override via environment variable
@@ -252,7 +252,7 @@ impl Benchmark for ClickBenchBenchmark {
             }
 
             // Extract bucket from S3 URL for object store registration
-            let bucket_url = format!("s3://{}/", bucket_name);
+            let bucket_url = format!("s3://{bucket_name}/");
             let object_store_url =
                 datafusion::execution::object_store::ObjectStoreUrl::parse(&bucket_url)?;
 
