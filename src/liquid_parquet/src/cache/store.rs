@@ -15,20 +15,12 @@ use super::{
     utils::{CacheConfig, ColumnAccessPath},
 };
 use crate::cache::file_io::INST;
+use crate::cache::threadpool_uring::{FileIoOp, IoTask, IO_URING_THREAD_POOL_INST};
 use crate::liquid_array::LiquidArrayRef;
 use crate::sync::{Arc, RwLock};
 use ahash::AHashMap;
 use liquid_cache_common::LiquidCacheMode;
 use tokio::runtime::Runtime;
-
-pub(crate) static IO_URING_THREAD_POOL: LazyLock<Runtime> = LazyLock::new(|| {
-    tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(8)
-        .thread_name("io-uring-worker")
-        .enable_all()
-        .build()
-        .unwrap()
-});
 
 #[allow(dead_code)]
 pub(crate) enum FileIOMode {
@@ -190,7 +182,7 @@ impl CacheStore {
 
     /// Returns Some(CachedBatch) if need to retry the insert.
     #[must_use]
-    fn apply_advice(self: &Arc<Self>, advice: CacheAdvice, not_inserted: CachedBatch) -> Option<CachedBatch> {
+    async fn apply_advice(self: &Arc<Self>, advice: CacheAdvice, not_inserted: CachedBatch) -> Option<CachedBatch> {
         match advice {
             CacheAdvice::Transcode(to_transcode) => {
                 let compressor_states = self.compressor_states.get_compressor(&to_transcode);
@@ -234,7 +226,7 @@ impl CacheStore {
                                         self.write_to_disk_async(&to_evict, &liquid_array)
                                     },
                     FileIOMode::BlockingIoUring => self.write_to_disk_blocking_uring(&to_evict, &liquid_array),
-                    FileIOMode::ThreadPoolIoUring => self.write_to_disk_threadpool_uring(to_evict, liquid_array),
+                    FileIOMode::ThreadPoolIoUring => self.write_to_disk_threadpool_uring(to_evict, liquid_array).await,
                 };
 
                 self.insert_inner(to_evict, CachedBatch::OnDiskLiquid)
@@ -261,7 +253,7 @@ impl CacheStore {
                                         self.write_to_disk_async(&to_transcode, &liquid_array)
                                     },
                     FileIOMode::BlockingIoUring => self.write_to_disk_blocking_uring(&to_transcode, &liquid_array),
-                    FileIOMode::ThreadPoolIoUring => self.write_to_disk_threadpool_uring(to_transcode, liquid_array),
+                    FileIOMode::ThreadPoolIoUring => self.write_to_disk_threadpool_uring(to_transcode, liquid_array).await,
                 };
                 self.insert_inner(to_transcode, CachedBatch::OnDiskLiquid)
                     .expect("failed to insert on disk liquid");
@@ -304,19 +296,15 @@ impl CacheStore {
         })
     }
 
-    fn write_to_disk_threadpool_uring(self: &Arc<Self>, entry_id: CacheEntryID, liquid_array: LiquidArrayRef) {
-        tokio::task::block_in_place(|| 
-            {
-                let handle = IO_URING_THREAD_POOL.handle();
-                let store_arc = Arc::clone(self);
-                handle.block_on(async move {
-                    store_arc.write_to_disk_blocking_uring(&entry_id, &liquid_array)
-                });
-            }
-        );
+    async fn write_to_disk_threadpool_uring(self: &Arc<Self>, entry_id: CacheEntryID, liquid_array: LiquidArrayRef) {
+        let mut bytes = liquid_array.to_bytes();
+        let path = entry_id.on_disk_path(self.config.cache_root_dir());
+        let file = OpenOptions::new().create(true).write(true).custom_flags(libc::O_DIRECT).open(path).unwrap();
+        let task = Arc::new(IoTask::new(FileIoOp::FileWrite, bytes.as_mut_ptr(), bytes.len(), file.as_raw_fd()));
+        IO_URING_THREAD_POOL_INST.submit_task(task).await;
     }
 
-    pub(super) fn insert(self: &Arc<Self>, entry_id: CacheEntryID, mut batch_to_cache: CachedBatch) {
+    pub(super) async fn insert(self: &Arc<Self>, entry_id: CacheEntryID, mut batch_to_cache: CachedBatch) {
         let mut loop_count = 0;
         loop {
             let Err((advice, not_inserted)) = self.insert_inner(entry_id, batch_to_cache) else {
@@ -324,7 +312,7 @@ impl CacheStore {
                 return;
             };
 
-            let Some(not_inserted) = self.apply_advice(advice, not_inserted) else {
+            let Some(not_inserted) = self.apply_advice(advice, not_inserted).await else {
                 return;
             };
 

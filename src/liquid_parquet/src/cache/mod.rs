@@ -1,4 +1,5 @@
 use super::liquid_array::LiquidArrayRef;
+use crate::cache::threadpool_uring::{FileIoOp, IoTask, IoUringThreadpool, IO_URING_THREAD_POOL_INST};
 use crate::liquid_array::ipc::{self, LiquidIPCContext};
 use crate::policies::CachePolicy;
 use crate::sync::{Mutex, RwLock};
@@ -11,6 +12,7 @@ use arrow_schema::{ArrowError, DataType, Field, Schema};
 use bytes::Bytes;
 use file_io::INST;
 use liquid_cache_common::{LiquidCacheMode, coerce_from_parquet_to_liquid_type};
+use std::alloc::Layout;
 use std::fmt::Display;
 use std::fs::{File, OpenOptions};
 use std::io::Read;
@@ -19,7 +21,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
-use store::{CacheAdvice, CacheStore, FileIOMode, FILE_IO_MODE, IO_URING_THREAD_POOL};
+use store::{CacheAdvice, CacheStore, FileIOMode, FILE_IO_MODE};
 use tokio::runtime::Runtime;
 use transcode::transcode_liquid_inner;
 pub(crate) use utils::BatchID;
@@ -34,6 +36,7 @@ mod tracer;
 mod transcode;
 mod utils;
 mod file_io;
+mod threadpool_uring;
 
 /// A dedicated Tokio thread pool for background transcoding tasks.
 /// This pool is built with 4 worker threads.
@@ -195,17 +198,24 @@ impl LiquidCachedColumn {
         ipc::read_from_bytes(bytes, &LiquidIPCContext::new(compressor))
     }
 
-    fn read_liquid_from_disk_threadpool_uring(self: &Arc<Self>, batch_id: BatchID) -> LiquidArrayRef {
-        tokio::task::block_in_place(|| {
-            let handle = IO_URING_THREAD_POOL.handle();
-            let column_arc = Arc::clone(self);
-            handle.block_on( async move {
-                let fut = IO_URING_THREAD_POOL.spawn(async move {
-                    column_arc.read_liquid_from_disk_uring(batch_id)
-                });
-                return fut.await.expect("Read liquid from disk using io_uring failed");
-            })
-        })
+    async fn read_liquid_from_disk_threadpool_uring(self: &Arc<Self>, batch_id: BatchID) -> LiquidArrayRef {
+        let entry_id = self.entry_id(batch_id);
+        let path = entry_id.on_disk_path(self.cache_store.config().cache_root_dir());
+        let compressor = self.cache_store.compressor_states(&entry_id);
+        let compressor = compressor.fsst_compressor.read().unwrap().clone();
+
+        let file = OpenOptions::new().read(true).custom_flags(libc::O_DIRECT).open(path).unwrap();
+        let num_bytes = file.metadata().unwrap().len() as usize;
+
+        let layout = Layout::from_size_align(num_bytes as usize, IoUringThreadpool::BUFFER_ALIGNMENT)
+            .expect("Failed to create memory layout for disk read result");
+        let base_ptr = unsafe { std::alloc::alloc(layout) };
+        let task = Arc::new(IoTask::new(FileIoOp::FileRead, base_ptr, num_bytes, file.as_raw_fd()));
+        IO_URING_THREAD_POOL_INST.submit_task(task).await;
+        let buf = unsafe {
+            std::slice::from_raw_parts(base_ptr, num_bytes)
+        };
+        ipc::read_from_bytes(buf.into(), &LiquidIPCContext::new(compressor)) 
     }
 
     /// Evaluates a predicate on a liquid array.
@@ -238,7 +248,7 @@ impl LiquidCachedColumn {
         RecordBatch::try_new(schema, vec![array]).unwrap()
     }
 
-    fn eval_selection_with_predicate(
+    async fn eval_selection_with_predicate(
         self: &Arc<Self>,
         batch_id: BatchID,
         selection: &BooleanBuffer,
@@ -267,7 +277,7 @@ impl LiquidCachedColumn {
                                         self.read_liquid_from_disk_async(batch_id)
                                     },
                     FileIOMode::BlockingIoUring => self.read_liquid_from_disk_uring(batch_id),
-                    FileIOMode::ThreadPoolIoUring => self.read_liquid_from_disk_threadpool_uring(batch_id),
+                    FileIOMode::ThreadPoolIoUring => self.read_liquid_from_disk_threadpool_uring(batch_id).await,
                 };
                 let boolean_array = BooleanArray::new(selection.clone(), None);
                 let filtered = array.filter(&boolean_array);
@@ -305,7 +315,7 @@ impl LiquidCachedColumn {
         }
     }
 
-    pub(crate) fn get_arrow_array_with_filter(
+    pub(crate) async fn get_arrow_array_with_filter(
         self: &Arc<Self>,
         batch_id: BatchID,
         filter: &BooleanArray,
@@ -336,7 +346,7 @@ impl LiquidCachedColumn {
                                         self.read_liquid_from_disk_async(batch_id)
                                     },
                     FileIOMode::BlockingIoUring => self.read_liquid_from_disk_uring(batch_id),
-                    FileIOMode::ThreadPoolIoUring => self.read_liquid_from_disk_threadpool_uring(batch_id),
+                    FileIOMode::ThreadPoolIoUring => self.read_liquid_from_disk_threadpool_uring(batch_id).await,
                 };
                 let filtered = array.filter(filter);
                 Some(filtered.to_best_arrow_array())
@@ -515,7 +525,7 @@ impl LiquidCachedRowGroup {
         self.columns.read().unwrap().get(&column_id).cloned()
     }
 
-    pub fn evaluate_selection_with_predicate(
+    pub async fn evaluate_selection_with_predicate(
         &self,
         batch_id: BatchID,
         selection: &BooleanBuffer,
@@ -527,7 +537,7 @@ impl LiquidCachedRowGroup {
             // If we only have one column, we can short-circuit and try to evaluate the predicate on encoded data.
             let column_id = column_ids[0];
             let cache = self.get_column(column_id as u64)?;
-            cache.eval_selection_with_predicate(batch_id, selection, predicate)
+            cache.eval_selection_with_predicate(batch_id, selection, predicate).await
         } else {
             // Otherwise, we need to first convert the data into arrow arrays.
             let mask = BooleanArray::from(selection.clone());
@@ -535,7 +545,7 @@ impl LiquidCachedRowGroup {
             let mut fields = Vec::new();
             for column_id in column_ids {
                 let column = self.get_column(column_id as u64)?;
-                let array = column.get_arrow_array_with_filter(batch_id, &mask)?;
+                let array = column.get_arrow_array_with_filter(batch_id, &mask).await?;
                 arrays.push(array);
                 fields.push(column.field.clone());
             }

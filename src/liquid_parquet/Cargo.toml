@@ -33,6 +33,8 @@ tokio-uring = "0.5"
 congee = { workspace = true }
 io-uring = "0.6.4"
 libc = "0.2.172"
+crossbeam = { version = "0.8.4", features = ["crossbeam-channel"] }
+crossbeam-channel = "0.5.15"
 
 [dev-dependencies]
 tempfile = "3.20.0"
