@@ -122,7 +122,11 @@ impl LiquidCacheService {
     ) -> anyhow::Result<Self> {
         let disk_cache_dir = match disk_cache_dir {
             Some(dir) => dir,
-            None => tempfile::tempdir()?.keep(),
+            None => {
+                let dir = tempfile::tempdir()?.keep();
+                info!("Using temporary directory for disk cache: {:?}", dir);
+                dir
+            }
         };
         Ok(Self {
             inner: LiquidCacheServiceInner::new(

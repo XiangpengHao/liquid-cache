@@ -27,6 +27,7 @@ fastrace-tonic = { workspace = true }
 fastrace-futures = { workspace = true }
 tower = "0.5.2"
 tokio = { workspace = true }
+object_store = { workspace = true }
 
 [dev-dependencies]
 insta = { version = "1.43.1" }

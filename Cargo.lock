@@ -2851,6 +2851,7 @@ dependencies = [
  "insta",
  "liquid-cache-common",
  "log",
+ "object_store",
  "prost",
  "serde",
  "tokio",
