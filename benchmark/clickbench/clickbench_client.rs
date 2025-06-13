@@ -112,7 +112,7 @@ pub struct ClickBenchBenchmark {
     /// Path to the ClickBench file, hit.parquet or directory to partitioned files
     /// This can be a local path (file:///path/to/file.parquet) or an S3 URL (s3://bucket/path/to/file.parquet)
     ///
-    /// S3 Express One Zone buckets are automatically detected by their naming pattern (ending with --<zone>--x-s3)
+    /// S3 Express One Zone buckets are automatically detected by their naming pattern (ending with --zone--x-s3)
     /// and will be configured appropriately. You can also manually enable S3 Express via the AWS_S3_EXPRESS=true
     /// environment variable.
     ///
@@ -126,7 +126,7 @@ pub struct ClickBenchBenchmark {
 }
 
 /// Check if a bucket name indicates an S3 Express One Zone bucket
-/// S3 Express buckets have names ending with --<zone>--x-s3
+/// S3 Express buckets have names ending with --zone--x-s3
 fn is_s3_express_bucket(bucket_name: &str) -> bool {
     bucket_name.ends_with("--x-s3") && bucket_name.contains("--")
 }
