@@ -27,8 +27,15 @@ mod tests;
 ///
 /// ```ignore
 /// use liquid_cache_client::LiquidCacheBuilder;
+/// use std::collections::HashMap;
+///
+/// let mut s3_options = HashMap::new();
+/// s3_options.insert("access_key_id".to_string(), "your-access-key".to_string());
+/// s3_options.insert("secret_access_key".to_string(), "your-secret-key".to_string());
+/// s3_options.insert("region".to_string(), "us-east-1".to_string());
+///
 /// let ctx = LiquidCacheBuilder::new("localhost:15214")
-///     .with_object_store("s3://my_bucket", None)
+///     .with_object_store("s3://my_bucket", Some(s3_options))
 ///     .with_cache_mode(CacheMode::Liquid)
 ///     .build(SessionConfig::from_env().unwrap())
 ///     .unwrap();
@@ -55,6 +62,7 @@ impl LiquidCacheBuilder {
     }
 
     /// Add an object store to the builder.
+    /// Checkout <https://docs.rs/object_store/latest/object_store/fn.parse_url_opts.html> for available options.
     pub fn with_object_store(
         mut self,
         url: ObjectStoreUrl,
@@ -90,9 +98,20 @@ impl LiquidCacheBuilder {
             .parquet
             .binary_as_string = true;
         session_config.options_mut().execution.batch_size = 8192 * 2;
+
+        let runtime_env = Arc::new(RuntimeEnv::default());
+
+        // Register object stores
+        for (object_store_url, options) in &self.object_stores {
+            let (object_store, _path) =
+                object_store::parse_url_opts(object_store_url.as_ref(), options.clone())
+                    .map_err(|e| DataFusionError::External(Box::new(e)))?;
+            runtime_env.register_object_store(object_store_url.as_ref(), Arc::new(object_store));
+        }
+
         let session_state = SessionStateBuilder::new()
             .with_config(session_config)
-            .with_runtime_env(Arc::new(RuntimeEnv::default()))
+            .with_runtime_env(runtime_env)
             .with_default_features()
             .with_physical_optimizer_rule(Arc::new(PushdownOptimizer::new(
                 self.cache_server.clone(),

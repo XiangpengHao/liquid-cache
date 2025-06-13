@@ -18,6 +18,7 @@ use mimalloc::MiMalloc;
 use object_store::ClientConfigKey;
 use serde::Serialize;
 use std::{
+    collections::HashMap,
     fs::File,
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
@@ -109,11 +110,71 @@ pub struct ClickBenchBenchmark {
     pub query_path: PathBuf,
 
     /// Path to the ClickBench file, hit.parquet or directory to partitioned files
+    /// This can be a local path (file:///path/to/file.parquet) or an S3 URL (s3://bucket/path/to/file.parquet)
+    ///
+    /// S3 Express One Zone buckets are automatically detected by their naming pattern (ending with --zone--x-s3)
+    /// and will be configured appropriately. You can also manually enable S3 Express via the AWS_S3_EXPRESS=true
+    /// environment variable.
+    ///
+    /// Custom S3 endpoints (e.g., LocalStack, MinIO) can be configured using AWS_ENDPOINT_URL or AWS_ENDPOINT
+    /// environment variables. HTTP endpoints are automatically allowed when detected.
     #[arg(long)]
     pub file: PathBuf,
 
     #[clap(flatten)]
     pub common: CommonBenchmarkArgs,
+}
+
+/// Check if a bucket name indicates an S3 Express One Zone bucket
+/// S3 Express buckets have names ending with --zone--x-s3
+fn is_s3_express_bucket(bucket_name: &str) -> bool {
+    bucket_name.ends_with("--x-s3") && bucket_name.contains("--")
+}
+
+/// Create S3 options from environment variables, with S3 Express detection and custom endpoint support
+fn create_s3_options_from_env(bucket_name: &str) -> Option<HashMap<String, String>> {
+    let mut s3_options = HashMap::new();
+
+    // Get credentials from environment variables (standard AWS approach)
+    let access_key_id = std::env::var("AWS_ACCESS_KEY_ID").ok()?;
+    let secret_access_key = std::env::var("AWS_SECRET_ACCESS_KEY").ok()?;
+    let region = std::env::var("AWS_REGION")
+        .or_else(|_| std::env::var("AWS_DEFAULT_REGION"))
+        .ok()?;
+
+    s3_options.insert("access_key_id".to_string(), access_key_id);
+    s3_options.insert("secret_access_key".to_string(), secret_access_key);
+    s3_options.insert("region".to_string(), region);
+
+    // Check for custom endpoint (for LocalStack, MinIO, etc.)
+    if let Ok(endpoint) =
+        std::env::var("AWS_ENDPOINT_URL").or_else(|_| std::env::var("AWS_ENDPOINT"))
+    {
+        s3_options.insert("endpoint".to_string(), endpoint.clone());
+        info!("Using custom S3 endpoint: {endpoint}");
+
+        // For custom endpoints, often we need to allow HTTP
+        if endpoint.starts_with("http://") {
+            s3_options.insert("allow_http".to_string(), "true".to_string());
+            info!("Allowing HTTP connections for custom endpoint");
+        }
+    }
+
+    // Check if this is an S3 Express One Zone bucket
+    if is_s3_express_bucket(bucket_name) {
+        s3_options.insert("s3_express".to_string(), "true".to_string());
+        info!("Detected S3 Express One Zone bucket: {bucket_name}");
+    }
+
+    // Allow manual override via environment variable
+    if let Ok(s3_express) = std::env::var("AWS_S3_EXPRESS") {
+        s3_options.insert("s3_express".to_string(), s3_express.clone());
+        if s3_express == "true" {
+            info!("S3 Express manually enabled via AWS_S3_EXPRESS environment variable");
+        }
+    }
+
+    Some(s3_options)
 }
 
 impl Benchmark for ClickBenchBenchmark {
@@ -130,9 +191,16 @@ impl Benchmark for ClickBenchBenchmark {
     #[fastrace::trace]
     async fn setup_context(&self) -> Result<Arc<SessionContext>> {
         let table_name = "hits";
-        let current_dir = std::env::current_dir()?.to_string_lossy().to_string();
-        let table_url =
-            Url::parse(&format!("file://{}/{}", current_dir, self.file.display())).unwrap();
+
+        // Determine if this is an S3 URL or local file path
+        let table_url = if self.file.to_string_lossy().starts_with("s3://") {
+            Url::parse(&self.file.to_string_lossy())
+                .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?
+        } else {
+            let current_dir = std::env::current_dir()?.to_string_lossy().to_string();
+            Url::parse(&format!("file://{}/{}", current_dir, self.file.display()))
+                .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?
+        };
 
         let mode = match self.common.bench_mode {
             BenchmarkMode::ParquetFileserver => {
@@ -163,14 +231,36 @@ impl Benchmark for ClickBenchBenchmark {
             BenchmarkMode::LiquidCache => CacheMode::Liquid,
             BenchmarkMode::LiquidEagerTranscode => CacheMode::LiquidEagerTranscode,
         };
+
         let mut session_config = SessionConfig::from_env()?;
         if let Some(partitions) = self.common.partitions {
             session_config.options_mut().execution.target_partitions = partitions;
         }
-        let ctx = LiquidCacheBuilder::new(&self.common.server)
-            .with_cache_mode(mode)
-            .build(session_config)?;
 
+        // Prepare S3 credentials if this is an S3 URL
+        let mut liquid_cache_builder =
+            LiquidCacheBuilder::new(&self.common.server).with_cache_mode(mode);
+
+        if table_url.scheme() == "s3" {
+            // Extract bucket name for S3 Express detection
+            let bucket_name = table_url.host_str().unwrap_or_default();
+
+            // Prepare S3 object store configuration from environment variables with S3 Express detection
+            let s3_options = create_s3_options_from_env(bucket_name);
+            if s3_options.is_none() {
+                log::warn!("No S3 credentials found!");
+            }
+
+            // Extract bucket from S3 URL for object store registration
+            let bucket_url = format!("s3://{bucket_name}/");
+            let object_store_url =
+                datafusion::execution::object_store::ObjectStoreUrl::parse(&bucket_url)?;
+
+            liquid_cache_builder =
+                liquid_cache_builder.with_object_store(object_store_url, s3_options);
+        }
+
+        let ctx = liquid_cache_builder.build(session_config)?;
         ctx.register_parquet(table_name, table_url, Default::default())
             .await?;
         Ok(Arc::new(ctx))
