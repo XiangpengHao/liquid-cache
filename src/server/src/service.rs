@@ -1,22 +1,17 @@
 use crate::{ExecutionStats, local_cache::LocalCache};
 use anyhow::Result;
 use datafusion::{
-    common::tree_node::{Transformed, TreeNode, TreeNodeRecursion},
-    datasource::{
-        physical_plan::{FileScanConfig, ParquetSource},
-        source::{DataSource, DataSourceExec},
-    },
+    common::tree_node::{TreeNode, TreeNodeRecursion},
+    datasource::source::DataSourceExec,
     execution::{SendableRecordBatchStream, object_store::ObjectStoreUrl},
     physical_plan::{ExecutionPlan, display::DisplayableExecutionPlan, metrics::MetricValue},
     prelude::SessionContext,
 };
-use liquid_cache_common::{
-    CacheEvictionStrategy, CacheMode, coerce_to_liquid_cache_types, rpc::ExecutionMetricsResponse,
-};
-use liquid_cache_parquet::policies::{
+use liquid_cache_common::{CacheEvictionStrategy, CacheMode, rpc::ExecutionMetricsResponse};
+use liquid_cache_parquet::{policies::{
     CachePolicy, DiscardPolicy, FiloPolicy, LruPolicy, ToDiskPolicy,
-};
-use liquid_cache_parquet::{LiquidCache, LiquidCacheRef, LiquidParquetSource};
+}, rewrite_data_source_plan};
+use liquid_cache_parquet::{LiquidCache, LiquidCacheRef};
 use log::{debug, info};
 use object_store::ObjectStore;
 use std::sync::RwLock;
@@ -267,122 +262,10 @@ impl LiquidCacheServiceInner {
     }
 }
 
-fn rewrite_data_source_plan(
-    plan: Arc<dyn ExecutionPlan>,
-    cache: &LiquidCacheRef,
-) -> Arc<dyn ExecutionPlan> {
-    let cache_mode = cache.cache_mode();
-    let rewritten = plan
-        .transform_up(|node| {
-            let any_plan = node.as_any();
-            if let Some(plan) = any_plan.downcast_ref::<DataSourceExec>() {
-                let data_source = plan.data_source();
-                let any_source = data_source.as_any();
-                if let Some(file_scan_config) = any_source.downcast_ref::<FileScanConfig>() {
-                    let file_source = file_scan_config.file_source();
-                    let any_file_source = file_source.as_any();
-                    if let Some(file_source) = any_file_source.downcast_ref::<ParquetSource>() {
-                        let new_source = LiquidParquetSource::from_parquet_source(
-                            file_source.clone(),
-                            file_scan_config.file_schema.clone(),
-                            cache.clone(),
-                            *cache_mode,
-                        );
-                        let mut new_config = file_scan_config.clone();
-                        new_config.file_source = Arc::new(new_source);
-                        // This coercion is necessary because this schema determines the schema of flight transfer.
-                        let coerced_schema = coerce_to_liquid_cache_types(
-                            new_config.file_schema.as_ref(),
-                            cache_mode,
-                        );
-                        new_config.projection = new_config.projection.map(|mut v| {
-                            v.sort();
-                            v
-                        });
-                        new_config.file_schema = Arc::new(coerced_schema);
-                        let new_file_source: Arc<dyn DataSource> = Arc::new(new_config);
-                        let new_plan = Arc::new(DataSourceExec::new(new_file_source));
-
-                        // data source is at the bottom of the plan tree, so we can stop the recursion
-                        return Ok(Transformed::new(new_plan, true, TreeNodeRecursion::Stop));
-                    }
-                }
-                return Ok(Transformed::no(node));
-            }
-            Ok(Transformed::no(node))
-        })
-        .unwrap();
-    rewritten.data
-}
-
 #[cfg(test)]
 mod tests {
-    use datafusion::common::tree_node::TreeNodeRecursion;
-    use liquid_cache_common::CacheEvictionStrategy::Discard;
-    use liquid_cache_common::LiquidCacheMode;
-
     use super::*;
-
-    fn rewrite_plan_inner(plan: Arc<dyn ExecutionPlan>, cache_mode: &LiquidCacheMode) {
-        let expected_schema = coerce_to_liquid_cache_types(&plan.schema(), cache_mode);
-        let liquid_cache = Arc::new(LiquidCache::new(
-            8192,
-            1000000,
-            PathBuf::from("test"),
-            *cache_mode,
-            Box::new(DiscardPolicy::default()),
-        ));
-        let rewritten = rewrite_data_source_plan(plan, &liquid_cache);
-
-        rewritten
-            .apply(|node| {
-                if let Some(plan) = node.as_any().downcast_ref::<DataSourceExec>() {
-                    let data_source = plan.data_source();
-                    let any_source = data_source.as_any();
-                    let source = any_source.downcast_ref::<FileScanConfig>().unwrap();
-                    let file_source = source.file_source();
-                    let any_file_source = file_source.as_any();
-                    let _parquet_source = any_file_source
-                        .downcast_ref::<LiquidParquetSource>()
-                        .unwrap();
-                    let schema = source.file_schema.as_ref();
-                    assert_eq!(schema, &expected_schema);
-                }
-                Ok(TreeNodeRecursion::Continue)
-            })
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_plan_rewrite() {
-        let ctx = SessionContext::new();
-        ctx.register_parquet(
-            "nano_hits",
-            "../../examples/nano_hits.parquet",
-            Default::default(),
-        )
-        .await
-        .unwrap();
-        let df = ctx
-            .sql("SELECT * FROM nano_hits WHERE \"URL\" like 'https://%' limit 10")
-            .await
-            .unwrap();
-        let plan = df.create_physical_plan().await.unwrap();
-        rewrite_plan_inner(plan.clone(), &LiquidCacheMode::Arrow);
-        rewrite_plan_inner(
-            plan.clone(),
-            &LiquidCacheMode::Liquid {
-                transcode_in_background: false,
-            },
-        );
-        rewrite_plan_inner(
-            plan.clone(),
-            &LiquidCacheMode::Liquid {
-                transcode_in_background: true,
-            },
-        );
-    }
-
+    use liquid_cache_common::CacheEvictionStrategy::Discard;
     #[tokio::test]
     async fn test_register_object_store() {
         let server = LiquidCacheServiceInner::new(

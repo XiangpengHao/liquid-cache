@@ -10,7 +10,7 @@ pub use cache::{LiquidCache, LiquidCacheRef, LiquidCachedFileRef};
 pub use reader::LiquidParquetSource;
 pub use reader::LiquidPredicate;
 pub(crate) mod utils;
-pub use utils::boolean_buffer_and_then;
+pub use utils::{boolean_buffer_and_then, rewrite_data_source_plan};
 mod inprocess;
 #[cfg(test)]
 mod tests;

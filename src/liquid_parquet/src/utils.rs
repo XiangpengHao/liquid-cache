@@ -1,4 +1,4 @@
-use std::num::NonZero;
+use std::{num::NonZero, sync::Arc};
 
 use arrow::{
     array::{
@@ -9,9 +9,10 @@ use arrow::{
     datatypes::{BinaryType, ByteArrayType, DecimalType, UInt16Type, Utf8Type},
 };
 use arrow_schema::DataType;
+use datafusion::{catalog::memory::DataSourceExec, common::tree_node::{Transformed, TreeNode, TreeNodeRecursion}, datasource::{physical_plan::ParquetSource, source::DataSource}, physical_plan::ExecutionPlan};
 use parquet::arrow::arrow_reader::RowSelector;
 
-use crate::liquid_array::get_bit_width;
+use crate::{liquid_array::get_bit_width, LiquidCacheRef, LiquidParquetSource};
 
 /// A wrapper around `DictionaryArray<UInt16Type>` that ensures the values are unique.
 /// This is because we leverage the fact that the values are unique in the dictionary to short cut the
@@ -321,11 +322,54 @@ pub(super) fn row_selector_to_boolean_buffer(selection: &[RowSelector]) -> Boole
     buffer.finish()
 }
 
+/// Rewrite the data source plan to use liquid cache.
+pub fn rewrite_data_source_plan(
+    plan: Arc<dyn ExecutionPlan>,
+    cache: &LiquidCacheRef,
+) -> Arc<dyn ExecutionPlan> {
+    let cache_mode = cache.cache_mode();
+    let rewritten = plan
+        .transform_up(|node| {
+            let any_plan = node.as_any();
+            if let Some(data_source_exec) = any_plan.downcast_ref::<DataSourceExec>() {
+                if let Some((file_scan_config, parquet_source)) =
+                    data_source_exec.downcast_to_file_source::<ParquetSource>()
+                {
+                    let new_source = LiquidParquetSource::from_parquet_source(
+                        parquet_source.clone(),
+                        file_scan_config.file_schema.clone(),
+                        cache.clone(),
+                        *cache_mode,
+                    );
+                    let mut new_config = file_scan_config.clone();
+                    new_config.file_source = Arc::new(new_source);
+                    let new_file_source: Arc<dyn DataSource> = Arc::new(new_config);
+                    let new_plan = Arc::new(DataSourceExec::new(new_file_source));
+
+                    return Ok(Transformed::new(
+                        new_plan,
+                        true,
+                        TreeNodeRecursion::Continue,
+                    ));
+                }
+
+                return Ok(Transformed::no(node));
+            }
+            Ok(Transformed::no(node))
+        })
+        .unwrap();
+    rewritten.data
+}
+
 #[cfg(test)]
 mod tests {
+    use crate::{policies::DiscardPolicy, LiquidCache};
+
     use super::*;
     use arrow::array::{BinaryArray, DictionaryArray};
-    use std::sync::Arc;
+    use datafusion::{datasource::physical_plan::FileScanConfig, prelude::SessionContext};
+    use liquid_cache_common::LiquidCacheMode;
+    use std::{path::PathBuf, sync::Arc};
 
     fn create_test_dictionary(values: Vec<&[u8]>) -> DictionaryArray<UInt16Type> {
         let binary_array = BinaryArray::from_iter_values(values);
@@ -466,5 +510,65 @@ mod tests {
             assert_eq!(result_bmi2_empty.value(i), false);
             assert_eq!(result_orig_empty.value(i), false);
         }
+    }
+
+    fn rewrite_plan_inner(plan: Arc<dyn ExecutionPlan>, cache_mode: &LiquidCacheMode) {
+        let expected_schema = plan.schema();
+        let liquid_cache = Arc::new(LiquidCache::new(
+            8192,
+            1000000,
+            PathBuf::from("test"),
+            *cache_mode,
+            Box::new(DiscardPolicy::default()),
+        ));
+        let rewritten = rewrite_data_source_plan(plan, &liquid_cache);
+
+        rewritten
+            .apply(|node| {
+                if let Some(plan) = node.as_any().downcast_ref::<DataSourceExec>() {
+                    let data_source = plan.data_source();
+                    let any_source = data_source.as_any();
+                    let source = any_source.downcast_ref::<FileScanConfig>().unwrap();
+                    let file_source = source.file_source();
+                    let any_file_source = file_source.as_any();
+                    let _parquet_source = any_file_source
+                        .downcast_ref::<LiquidParquetSource>()
+                        .unwrap();
+                    let schema = source.file_schema.as_ref();
+                    assert_eq!(schema, expected_schema.as_ref());
+                }
+                Ok(TreeNodeRecursion::Continue)
+            })
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_plan_rewrite() {
+        let ctx = SessionContext::new();
+        ctx.register_parquet(
+            "nano_hits",
+            "../../examples/nano_hits.parquet",
+            Default::default(),
+        )
+        .await
+        .unwrap();
+        let df = ctx
+            .sql("SELECT * FROM nano_hits WHERE \"URL\" like 'https://%' limit 10")
+            .await
+            .unwrap();
+        let plan = df.create_physical_plan().await.unwrap();
+        rewrite_plan_inner(plan.clone(), &LiquidCacheMode::Arrow);
+        rewrite_plan_inner(
+            plan.clone(),
+            &LiquidCacheMode::Liquid {
+                transcode_in_background: false,
+            },
+        );
+        rewrite_plan_inner(
+            plan.clone(),
+            &LiquidCacheMode::Liquid {
+                transcode_in_background: true,
+            },
+        );
     }
 }
