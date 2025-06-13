@@ -593,11 +593,17 @@ mod tests {
         // First get
         let _ = store.get_opts(&path, GetOptions::default()).await.unwrap();
         let count = store.get_access_count(&path).unwrap();
-        assert_eq!(count, 1, "Access count should be 1 after one get, got {count}");
+        assert_eq!(
+            count, 1,
+            "Access count should be 1 after one get, got {count}"
+        );
 
         // Second get
         let _ = store.get_opts(&path, GetOptions::default()).await.unwrap();
         let count = store.get_access_count(&path).unwrap();
-        assert_eq!(count, 2, "Access count should be 2 after two gets, got {count}");
+        assert_eq!(
+            count, 2,
+            "Access count should be 2 after two gets, got {count}"
+        );
     }
 }
