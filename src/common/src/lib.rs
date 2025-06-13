@@ -300,7 +300,7 @@ impl CacheSchema {
     /// # Panics
     ///
     /// This function will panic if the schema contains a `Utf8` or `Utf8View` field.
-    pub fn new(schema: SchemaRef, mode: &LiquidCacheMode) -> Self {
+    pub fn new_checked(schema: SchemaRef, mode: &LiquidCacheMode) -> Self {
         {
             for field in schema.fields() {
                 match mode {
@@ -338,6 +338,28 @@ impl CacheSchema {
         }
         Self { schema }
     }
+
+    pub fn from(downstream_full_schema: SchemaRef, mode: &LiquidCacheMode) -> Self {
+        let transformed_fields: Vec<Arc<Field>> = downstream_full_schema
+            .fields
+            .iter()
+            .map(|field| {
+                let data_type = field.data_type();
+                match data_type {
+                    DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => {
+                        field_with_new_type(field, mode.string_type())
+                    }
+                    _ => field.clone(),
+                }
+            })
+            .collect();
+        Self {
+            schema: Arc::new(Schema::new_with_metadata(
+                transformed_fields,
+                downstream_full_schema.metadata.clone(),
+            )),
+        }
+    }
 }
 
 impl Deref for CacheSchema {
@@ -345,43 +367,5 @@ impl Deref for CacheSchema {
 
     fn deref(&self) -> &Self::Target {
         &self.schema
-    }
-}
-
-/// A schema that where strings are stored as `Utf8`
-pub struct ClientSchema {
-    schema: SchemaRef,
-}
-
-impl Deref for ClientSchema {
-    type Target = SchemaRef;
-
-    fn deref(&self) -> &Self::Target {
-        &self.schema
-    }
-}
-
-impl ClientSchema {
-    pub fn from(schema: &CacheSchema, mode: &LiquidCacheMode) -> Self {
-        let cached_type = mode.string_type();
-
-        let transformed_fields: Vec<Arc<Field>> = schema
-            .schema
-            .fields
-            .iter()
-            .map(|field| {
-                if field.data_type().equals_datatype(&cached_type) {
-                    field_with_new_type(field, DataType::Utf8)
-                } else {
-                    field.clone()
-                }
-            })
-            .collect();
-        Self {
-            schema: Arc::new(Schema::new_with_metadata(
-                transformed_fields,
-                schema.schema.metadata.clone(),
-            )),
-        }
     }
 }
