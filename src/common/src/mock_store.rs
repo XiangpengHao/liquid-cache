@@ -10,6 +10,7 @@ use object_store::{
 use parking_lot::RwLock;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// In-memory storage for testing purposes.
 ///
@@ -88,6 +89,7 @@ struct Entry {
     last_modified: DateTime<Utc>,
     attributes: Attributes,
     e_tag: usize,
+    access_count: Arc<AtomicUsize>,
 }
 
 impl Entry {
@@ -102,6 +104,7 @@ impl Entry {
             last_modified,
             e_tag,
             attributes,
+            access_count: Arc::new(AtomicUsize::new(0)),
         }
     }
 }
@@ -185,6 +188,15 @@ impl MockStore {
         Self { storage }
     }
 
+    /// Get the access count for a specific file.
+    pub fn get_access_count(&self, location: &Path) -> Option<usize> {
+        self.storage
+            .read()
+            .map
+            .get(location)
+            .map(|entry| entry.access_count.load(Ordering::SeqCst))
+    }
+
     fn entry(&self, location: &Path) -> Result<Entry> {
         let storage = self.storage.read();
         let value =
@@ -227,6 +239,10 @@ impl ObjectStore for MockStore {
 
     async fn get_opts(&self, location: &Path, options: GetOptions) -> Result<GetResult> {
         let entry = self.entry(location)?;
+
+        // Atomically increment the count. This is a fast, lock-free operation.
+        entry.access_count.fetch_add(1, Ordering::SeqCst);
+
         let e_tag = entry.e_tag.to_string();
 
         let meta = ObjectMeta {
@@ -564,5 +580,24 @@ mod tests {
             10,
             "Forked store should not be affected by changes to the original"
         );
+    }
+
+    #[tokio::test]
+    async fn test_access_count() {
+        let store = setup_test_store().await;
+        let path = Path::from("3.parquet");
+
+        let count = store.get_access_count(&path).unwrap();
+        assert_eq!(count, 0, "Initial access count should be 0, got {count}");
+
+        // First get
+        let _ = store.get_opts(&path, GetOptions::default()).await.unwrap();
+        let count = store.get_access_count(&path).unwrap();
+        assert_eq!(count, 1, "Access count should be 1 after one get, got {count}");
+
+        // Second get
+        let _ = store.get_opts(&path, GetOptions::default()).await.unwrap();
+        let count = store.get_access_count(&path).unwrap();
+        assert_eq!(count, 2, "Access count should be 2 after two gets, got {count}");
     }
 }
