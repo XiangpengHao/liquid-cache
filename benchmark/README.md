@@ -56,6 +56,14 @@ uvx --from duckdb python tpch_gen.py --scale 0.01
 
 In NixOS, you want to set `env LD_LIBRARY_PATH=$NIX_LD_LIBRARY_PATH`
 
+#### Convert to ORC (optional)
+
+```bash
+uvx --from pyarrow python benchmark/tpch/parquet_to_orc.py --input-dir benchmark/tpch/data/sf100.0 --output benchmark/tpch/data/orc_100.0
+```
+
+
+
 ### Run server (same as ClickBench)
 
 ```bash
