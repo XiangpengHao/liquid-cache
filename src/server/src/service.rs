@@ -8,10 +8,11 @@ use datafusion::{
     prelude::SessionContext,
 };
 use liquid_cache_common::{CacheEvictionStrategy, CacheMode, rpc::ExecutionMetricsResponse};
-use liquid_cache_parquet::{policies::{
-    CachePolicy, DiscardPolicy, FiloPolicy, LruPolicy, ToDiskPolicy,
-}, rewrite_data_source_plan};
 use liquid_cache_parquet::{LiquidCache, LiquidCacheRef};
+use liquid_cache_parquet::{
+    policies::{CachePolicy, DiscardPolicy, FiloPolicy, LruPolicy, ToDiskPolicy},
+    rewrite_data_source_plan,
+};
 use log::{debug, info};
 use object_store::ObjectStore;
 use std::sync::RwLock;
