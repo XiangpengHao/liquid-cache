@@ -13,7 +13,7 @@ use crate::liquid_array::LiquidArrayRef;
 pub(super) struct ColumnAccessPath {
     file_id: u16,
     rg_id: u16,
-    row_id: u16,
+    col_id: u16,
 }
 
 impl ColumnAccessPath {
@@ -24,7 +24,7 @@ impl ColumnAccessPath {
         Self {
             file_id: file_id as u16,
             rg_id: row_group_id as u16,
-            row_id: column_id as u16,
+            col_id: column_id as u16,
         }
     }
 
@@ -45,7 +45,7 @@ impl ColumnAccessPath {
     }
 
     fn column_id_inner(&self) -> u64 {
-        self.row_id as u64
+        self.col_id as u64
     }
 
     pub(super) fn entry_id(&self, batch_id: BatchID) -> CacheEntryID {
@@ -63,7 +63,7 @@ impl From<CacheEntryID> for ColumnAccessPath {
         Self {
             file_id: value.file_id_inner() as u16,
             rg_id: value.row_group_id_inner() as u16,
-            row_id: value.column_id_inner() as u16,
+            col_id: value.column_id_inner() as u16,
         }
     }
 }
@@ -434,7 +434,7 @@ mod tests {
 
         assert_eq!(column_path.file_id, 1);
         assert_eq!(column_path.rg_id, 2);
-        assert_eq!(column_path.row_id, 3);
+        assert_eq!(column_path.col_id, 3);
     }
 
     #[test]
