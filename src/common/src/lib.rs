@@ -253,39 +253,30 @@ pub fn coerce_string_to_view(schema: &Schema) -> Schema {
 }
 
 /// A schema that where strings are stored as `Utf8View`
-pub struct ParquetSchema {
-    schema: SchemaRef,
-}
+pub struct ParquetReaderSchema {}
 
-impl Deref for ParquetSchema {
-    type Target = SchemaRef;
-
-    fn deref(&self) -> &Self::Target {
-        &self.schema
-    }
-}
-
-impl ParquetSchema {
-    pub fn from(schema: &CacheSchema, mode: &LiquidCacheMode) -> Self {
-        let cached_type = mode.string_type();
+impl ParquetReaderSchema {
+    pub fn from(schema: &Schema) -> SchemaRef {
         let transformed_fields: Vec<Arc<Field>> = schema
-            .schema
             .fields
             .iter()
             .map(|field| {
-                if field.data_type().equals_datatype(&cached_type) {
-                    field_with_new_type(field, DataType::Utf8View)
-                } else {
-                    field.clone()
+                let data_type = field.data_type();
+                match data_type {
+                    DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => {
+                        field_with_new_type(field, DataType::Utf8View)
+                    }
+                    DataType::Binary | DataType::LargeBinary | DataType::BinaryView => {
+                        field_with_new_type(field, DataType::BinaryView)
+                    }
+                    _ => field.clone(),
                 }
             })
             .collect();
-        Self {
-            schema: Arc::new(Schema::new_with_metadata(
-                transformed_fields,
-                schema.schema.metadata.clone(),
-            )),
-        }
+        Arc::new(Schema::new_with_metadata(
+            transformed_fields,
+            schema.metadata.clone(),
+        ))
     }
 }
 
