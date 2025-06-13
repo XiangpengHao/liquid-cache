@@ -331,6 +331,42 @@ impl CacheStore {
     pub(super) fn compressor_states(&self, entry_id: &CacheEntryID) -> Arc<LiquidCompressorStates> {
         self.compressor_states.get_compressor(entry_id)
     }
+    
+    pub(super) fn flush_all_to_disk(&self) {
+        // Collect all entries that need to be flushed to disk
+        let mut entries_to_flush = Vec::new();
+        
+        self.for_each_entry(|entry_id, batch| {
+            match batch {
+                CachedBatch::MemoryArrow(_) | CachedBatch::MemoryLiquid(_) => {
+                    entries_to_flush.push((*entry_id, batch.clone()));
+                }
+                CachedBatch::DiskArrow | CachedBatch::DiskLiquid => {
+                    // Already on disk, skip
+                }
+            }
+        });
+        
+        // Now flush each entry to disk
+        for (entry_id, batch) in entries_to_flush {
+            match batch {
+                CachedBatch::MemoryArrow(array) => {
+                    self.write_arrow_to_disk(&entry_id, &array);
+                    self.insert_inner(entry_id, CachedBatch::DiskArrow)
+                        .expect("failed to insert disk arrow entry");
+                }
+                CachedBatch::MemoryLiquid(liquid_array) => {
+                    self.write_liquid_to_disk(&entry_id, &liquid_array);
+                    self.insert_inner(entry_id, CachedBatch::DiskLiquid)
+                        .expect("failed to insert disk liquid entry");
+                }
+                CachedBatch::DiskArrow | CachedBatch::DiskLiquid => {
+                    // Should not happen since we filtered these out above
+                    unreachable!("Unexpected disk batch in flush operation");
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

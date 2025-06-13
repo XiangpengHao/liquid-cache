@@ -424,11 +424,14 @@ impl FsstArray {
             panic!("Offsets buffer extends beyond input buffer");
         }
 
-        if values_offset == 0 || values_len == 0 {
-            panic!("Values buffer is required");
+        // The values buffer may legitimately be empty (for example, when the array consists
+        // entirely of nulls or only contains empty strings). Therefore we should only
+        // validate the offset, but we must not require `values_len` to be non-zero.
+        if values_offset == 0 {
+            panic!("Values buffer is required, values_offset: {values_offset}");
         }
         if values_offset + values_len > bytes.len() {
-            panic!("Values buffer extends beyond input buffer");
+            panic!("Values buffer extends beyond input buffer, values_offset: {values_offset}, values_len: {values_len}");
         }
 
         // Create the nulls buffer if present
@@ -837,4 +840,31 @@ mod tests {
 
     test_decimal_array_roundtrip!(128);
     test_decimal_array_roundtrip!(256);
+
+    #[test]
+    fn test_all_null_values_roundtrip() {
+        let mut builder = StringBuilder::new();
+        for _ in 0..128 {
+            builder.append_null();
+        }
+        let original = builder.finish();
+
+        let compressor = FsstArray::train_compressor(std::iter::once("dummy".as_bytes()));
+        let compressor_arc = Arc::new(compressor);
+
+        let fsst_array =
+            FsstArray::from_byte_array_with_compressor(&original, compressor_arc.clone());
+
+        let mut buffer = Vec::new();
+        fsst_array.to_bytes(&mut buffer);
+
+        let bytes = bytes::Bytes::from(buffer);
+        let deserialized = FsstArray::from_bytes(bytes, compressor_arc);
+
+        let roundtrip = StringArray::from(&deserialized);
+        assert_eq!(roundtrip.len(), original.len());
+        for i in 0..roundtrip.len() {
+            assert!(roundtrip.is_null(i));
+        }
+    }
 }
