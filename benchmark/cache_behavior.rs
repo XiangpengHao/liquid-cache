@@ -37,7 +37,7 @@ impl QueryResult {
 
 async fn prepare_test_data(benchmark_file: &str) -> Result<(), Box<dyn std::error::Error>> {
     if Path::new(benchmark_file).exists() {
-        println!("Benchmark file already exists: {}", benchmark_file);
+        println!("Benchmark file already exists: {benchmark_file}");
         return Ok(());
     }
 
@@ -54,7 +54,7 @@ async fn prepare_test_data(benchmark_file: &str) -> Result<(), Box<dyn std::erro
         .position(|field| field.name() == "Title")
         .ok_or("Title column not found in hits.parquet")?;
 
-    println!("Found Title column at index: {}", title_column_index);
+    println!("Found Title column at index: {title_column_index}");
 
     // Create projection mask to only read the Title column
     let projection = ProjectionMask::roots(
@@ -62,7 +62,7 @@ async fn prepare_test_data(benchmark_file: &str) -> Result<(), Box<dyn std::erro
         [title_column_index],
     );
 
-    let mut reader = builder
+    let reader = builder
         .with_projection(projection)
         .with_batch_size(8192)
         .build()?;
@@ -83,7 +83,7 @@ async fn prepare_test_data(benchmark_file: &str) -> Result<(), Box<dyn std::erro
 
     // Process batches and duplicate Title column as A and B
     let mut total_rows = 0;
-    while let Some(batch) = reader.next() {
+    for batch in reader {
         let batch = batch?;
         let title_array = batch.column(0);
 
@@ -98,10 +98,7 @@ async fn prepare_test_data(benchmark_file: &str) -> Result<(), Box<dyn std::erro
     }
 
     writer.close()?;
-    println!(
-        "Created benchmark file with {} rows: {}",
-        total_rows, benchmark_file
-    );
+    println!("Created benchmark file with {total_rows} rows: {benchmark_file}");
     Ok(())
 }
 
@@ -136,7 +133,7 @@ async fn drop_os_page_cache() -> Result<(), Box<dyn std::error::Error>> {
         println!("Successfully dropped OS page cache");
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        println!("Warning: Failed to drop OS page cache: {}", stderr);
+        println!("Warning: Failed to drop OS page cache: {stderr}");
         println!("You may need to run this manually: echo 1 | sudo tee /proc/sys/vm/drop_caches");
     }
 
@@ -258,7 +255,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match run_cache_behavior_benchmark().await {
         Ok(()) => println!("\nBenchmark completed successfully!"),
         Err(e) => {
-            eprintln!("Benchmark failed: {}", e);
+            eprintln!("Benchmark failed: {e}");
             std::process::exit(1);
         }
     }

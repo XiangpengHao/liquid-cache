@@ -431,7 +431,9 @@ impl FsstArray {
             panic!("Values buffer is required, values_offset: {values_offset}");
         }
         if values_offset + values_len > bytes.len() {
-            panic!("Values buffer extends beyond input buffer, values_offset: {values_offset}, values_len: {values_len}");
+            panic!(
+                "Values buffer extends beyond input buffer, values_offset: {values_offset}, values_len: {values_len}"
+            );
         }
 
         // Create the nulls buffer if present

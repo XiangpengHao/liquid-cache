@@ -331,11 +331,11 @@ impl CacheStore {
     pub(super) fn compressor_states(&self, entry_id: &CacheEntryID) -> Arc<LiquidCompressorStates> {
         self.compressor_states.get_compressor(entry_id)
     }
-    
+
     pub(super) fn flush_all_to_disk(&self) {
         // Collect all entries that need to be flushed to disk
         let mut entries_to_flush = Vec::new();
-        
+
         self.for_each_entry(|entry_id, batch| {
             match batch {
                 CachedBatch::MemoryArrow(_) | CachedBatch::MemoryLiquid(_) => {
@@ -346,7 +346,7 @@ impl CacheStore {
                 }
             }
         });
-        
+
         // Now flush each entry to disk
         for (entry_id, batch) in entries_to_flush {
             match batch {
