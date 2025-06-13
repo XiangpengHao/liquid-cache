@@ -655,6 +655,17 @@ impl LiquidCache {
         self.cache_store.reset();
     }
 
+    /// Flush all memory-based entries to disk while preserving their format.
+    /// Arrow entries become DiskArrow, Liquid entries become DiskLiquid.
+    /// Entries already on disk are left unchanged.
+    ///
+    /// This is for admin use only.
+    /// This has no guarantees that some new entry will not be inserted in the meantime, or some entries are promoted to memory again.
+    /// You mostly want to use this when no one else is using the cache.
+    pub fn flush_data(&self) {
+        self.cache_store.flush_all_to_disk();
+    }
+
     /// Get the cache mode of the cache.
     pub fn cache_mode(&self) -> &LiquidCacheMode {
         self.cache_store.config().cache_mode()
