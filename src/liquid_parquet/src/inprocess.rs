@@ -183,6 +183,7 @@ impl PhysicalOptimizerRule for InProcessOptimizer {
 
 #[cfg(test)]
 mod tests {
+    use arrow_schema::{DataType, Field, Schema};
     use datafusion::datasource::{
         file_format::parquet::ParquetFormat,
         listing::{ListingOptions, ListingTableUrl},
@@ -201,6 +202,33 @@ mod tests {
             .await?;
 
         ctx.sql("SELECT * FROM hits where \"URL\" like '%google%'")
+            .await?
+            .show()
+            .await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_provide_schema() -> Result<()> {
+        let (ctx, _) = LiquidCacheInProcessBuilder::new().build(SessionConfig::new())?;
+
+        let file_format = ParquetFormat::default().with_enable_pruning(true);
+        let listing_options =
+            ListingOptions::new(Arc::new(file_format)).with_file_extension(".parquet");
+
+        let table_path = ListingTableUrl::parse("../../examples/nano_hits.parquet")?;
+        let schema = Schema::new(vec![Field::new("WatchID", DataType::Int64, false)]);
+
+        ctx.register_listing_table(
+            "hits",
+            &table_path,
+            listing_options.clone(),
+            Some(Arc::new(schema)),
+            None,
+        )
+        .await?;
+
+        ctx.sql("SELECT \"WatchID\" FROM hits limit 1")
             .await?
             .show()
             .await?;
