@@ -188,13 +188,28 @@ impl MockStore {
         Self { storage }
     }
 
-    /// Get the access count for a specific file.
+    /// Get the access count(no. of calls to `get_opts`) for a specific file
     pub fn get_access_count(&self, location: &Path) -> Option<usize> {
         self.storage
             .read()
             .map
             .get(location)
             .map(|entry| entry.access_count.load(Ordering::SeqCst))
+    }
+
+    /// Get the number of objects stored in the store
+    pub fn get_file_count(&self) -> usize {
+        self.storage.read().map.len()
+    }
+
+    /// Get the total size of all objects in the store
+    pub fn get_store_size(&self) -> usize {
+        self.storage
+            .read()
+            .map
+            .values()
+            .map(|entry| entry.data.len())
+            .sum()
     }
 
     fn entry(&self, location: &Path) -> Result<Entry> {
@@ -604,6 +619,38 @@ mod tests {
         assert_eq!(
             count, 2,
             "Access count should be 2 after two gets, got {count}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_store_metrics() {
+        let store = setup_test_store().await;
+
+        // Initial state from setup_test_store
+        assert_eq!(store.get_file_count(), 10);
+        assert_eq!(store.get_store_size(), 10 * 1024 * 10);
+
+        // Add a new file
+        let new_path = Path::from("new_file.parquet");
+        let new_data = Bytes::from_static(b"some new data");
+        let new_data_len = new_data.len();
+        store
+            .put_opts(&new_path, PutPayload::from(new_data), PutOptions::default())
+            .await
+            .unwrap();
+
+        assert_eq!(store.get_file_count(), 11);
+        assert_eq!(store.get_store_size(), 10 * 1024 * 10 + new_data_len);
+
+        // Delete one of the original files
+        let path_to_delete = Path::from("5.parquet");
+        store.delete(&path_to_delete).await.unwrap();
+
+        assert_eq!(store.get_file_count(), 10);
+        assert_eq!(
+            store.get_store_size(),
+            9 * 1024 * 10 + new_data_len,
+            "Store size should be reduced by the size of the deleted file"
         );
     }
 }
