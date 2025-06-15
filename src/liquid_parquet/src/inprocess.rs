@@ -53,7 +53,7 @@ pub struct LiquidCacheInProcessBuilder {
     max_cache_bytes: usize,
     /// Directory for disk cache
     cache_dir: PathBuf,
-    /// Cache mode (InMemoryArrow or InMemoryLiquid)
+    /// Cache mode (`LiquidCacheMode::Arrow` or `LiquidCacheMode::Liquid`)
     cache_mode: LiquidCacheMode,
     /// Cache eviction strategy
     cache_strategy: CacheEvictionStrategy,
