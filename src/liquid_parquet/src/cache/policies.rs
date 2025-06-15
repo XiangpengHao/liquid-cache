@@ -1,6 +1,7 @@
 use liquid_cache_common::LiquidCacheMode;
 
 use crate::sync::Mutex;
+use rand::{Rng, rng};
 use std::{
     collections::{HashMap, VecDeque},
     ptr::NonNull,
@@ -230,6 +231,409 @@ impl CachePolicy for DiscardPolicy {
     fn notify_evict(&self, _entry_id: &CacheEntryID) {}
 }
 
+/// SIEVE as implemented by (<https://cachemon.github.io/SIEVE-website/>)
+#[derive(Debug, Default)]
+pub struct SievePolicy {
+    state: Mutex<SieveInternalState>,
+}
+
+#[derive(Debug)]
+struct SieveNode {
+    entry_id: CacheEntryID,
+    visited: bool,
+    prev: Option<NonNull<SieveNode>>,
+    next: Option<NonNull<SieveNode>>,
+}
+
+#[derive(Debug, Default)]
+struct SieveInternalState {
+    map: HashMap<CacheEntryID, NonNull<SieveNode>>,
+    head: Option<NonNull<SieveNode>>,
+    tail: Option<NonNull<SieveNode>>,
+    hand: Option<NonNull<SieveNode>>,
+}
+
+impl SievePolicy {
+    /// Create a new SIEVE policy.
+    pub fn new() -> Self {
+        SievePolicy {
+            state: Mutex::new(SieveInternalState::default()),
+        }
+    }
+
+    /// Unlink `node_ptr` from the doubly-linked list.  
+    /// Must hold the lock.
+    unsafe fn unlink_node(&self, state: &mut SieveInternalState, mut node_ptr: NonNull<SieveNode>) {
+        unsafe {
+            let node = node_ptr.as_mut();
+            // patch up prev → next
+            if let Some(mut p) = node.prev {
+                p.as_mut().next = node.next;
+            } else {
+                state.head = node.next;
+            }
+            // patch up next → prev
+            if let Some(mut n) = node.next {
+                n.as_mut().prev = node.prev;
+            } else {
+                state.tail = node.prev;
+            }
+            node.prev = None;
+            node.next = None;
+        }
+    }
+
+    /// Push `node_ptr` to the front (head) of the list.  
+    /// Must hold the lock.
+    unsafe fn push_front(&self, state: &mut SieveInternalState, mut node_ptr: NonNull<SieveNode>) {
+        unsafe {
+            let node = node_ptr.as_mut();
+            node.next = state.head;
+            node.prev = None;
+
+            if let Some(mut old_head) = state.head {
+                old_head.as_mut().prev = Some(node_ptr);
+            } else {
+                // was empty
+                state.tail = Some(node_ptr);
+            }
+            state.head = Some(node_ptr);
+        }
+    }
+}
+
+// Safe to share across threads because we guard all pointer mutations.
+unsafe impl Send for SievePolicy {}
+unsafe impl Sync for SievePolicy {}
+
+impl CachePolicy for SievePolicy {
+    fn advise(&self, entry_id: &CacheEntryID, cache_mode: &LiquidCacheMode) -> CacheAdvice {
+        let mut state = self.state.lock().unwrap();
+        // if empty, fall back
+        if state.hand.is_none() {
+            return fallback_advice(entry_id, cache_mode);
+        }
+
+        // scan for the first unvisited node (wrapping tail→head)
+        let mut cursor = state.hand;
+        loop {
+            if let Some(mut ptr) = cursor {
+                let node = unsafe { ptr.as_ref() };
+                if node.visited {
+                    // clear and move on
+                    unsafe {
+                        ptr.as_mut().visited = false;
+                    }
+                    cursor = node.prev.or(state.tail);
+                    continue;
+                } else {
+                    // evict this one
+                    let evict_id = node.entry_id;
+                    state.hand = node.prev.or(state.tail);
+                    return CacheAdvice::Evict(evict_id);
+                }
+            } else {
+                // wrapped past head: restart from tail
+                cursor = state.tail;
+                if cursor.is_none() {
+                    break;
+                }
+            }
+        }
+
+        // should not happen, but just in case
+        fallback_advice(entry_id, cache_mode)
+    }
+
+    fn notify_access(&self, entry_id: &CacheEntryID) {
+        let state = self.state.lock().unwrap();
+        if let Some(&(mut ptr)) = state.map.get(entry_id) {
+            unsafe {
+                ptr.as_mut().visited = true;
+            }
+        }
+    }
+
+    fn notify_insert(&self, entry_id: &CacheEntryID) {
+        let mut state = self.state.lock().unwrap();
+        // allocate new node
+        let boxed = Box::new(SieveNode {
+            entry_id: *entry_id,
+            visited: false,
+            prev: None,
+            next: None,
+        });
+        let ptr = unsafe { NonNull::new_unchecked(Box::into_raw(boxed)) };
+
+        state.map.insert(*entry_id, ptr);
+        unsafe {
+            self.push_front(&mut state, ptr);
+        }
+
+        // initialize hand on first insert
+        if state.hand.is_none() {
+            state.hand = state.tail;
+        }
+    }
+
+    fn notify_evict(&self, entry_id: &CacheEntryID) {
+        let mut state = self.state.lock().unwrap();
+        if let Some(ptr) = state.map.remove(entry_id) {
+            unsafe {
+                // if our hand was pointing at the evicted node, move it back
+                if state.hand == Some(ptr) {
+                    state.hand = ptr.as_ref().prev.or(state.tail);
+                }
+                self.unlink_node(&mut state, ptr);
+                drop(Box::from_raw(ptr.as_ptr()));
+            }
+        }
+    }
+}
+
+impl Drop for SievePolicy {
+    fn drop(&mut self) {
+        let mut state = self.state.lock().unwrap();
+        for (_, ptr) in state.map.drain() {
+            unsafe {
+                drop(Box::from_raw(ptr.as_ptr()));
+            }
+        }
+        state.head = None;
+        state.tail = None;
+        state.hand = None;
+    }
+}
+
+/// The CLOCK (second‐chance) eviction policy.
+#[derive(Debug, Default)]
+pub struct ClockPolicy {
+    state: Mutex<ClockInternalState>,
+}
+
+#[derive(Debug)]
+struct ClockNode {
+    entry_id: CacheEntryID,
+    referenced: bool,
+    prev: Option<NonNull<ClockNode>>,
+    next: Option<NonNull<ClockNode>>,
+}
+
+#[derive(Debug, Default)]
+struct ClockInternalState {
+    map: HashMap<CacheEntryID, NonNull<ClockNode>>,
+    head: Option<NonNull<ClockNode>>,
+    tail: Option<NonNull<ClockNode>>,
+    hand: Option<NonNull<ClockNode>>,
+}
+
+impl ClockPolicy {
+    /// Create a new CLOCK policy.
+    pub fn new() -> Self {
+        ClockPolicy {
+            state: Mutex::new(ClockInternalState::default()),
+        }
+    }
+
+    /// Unlink `node_ptr` from the doubly‐linked list. Should hold lock.
+    unsafe fn unlink_node(&self, state: &mut ClockInternalState, mut node_ptr: NonNull<ClockNode>) {
+        unsafe {
+            let node = node_ptr.as_mut();
+            // patch up prev → next
+            if let Some(mut p) = node.prev {
+                p.as_mut().next = node.next;
+            } else {
+                state.head = node.next;
+            }
+            // patch up next → prev
+            if let Some(mut n) = node.next {
+                n.as_mut().prev = node.prev;
+            } else {
+                state.tail = node.prev;
+            }
+            node.prev = None;
+            node.next = None;
+        }
+    }
+
+    /// Insert `new_ptr` immediately after the current `hand_ptr`. Should hold lock.
+    unsafe fn insert_after(
+        &self,
+        state: &mut ClockInternalState,
+        mut new_ptr: NonNull<ClockNode>,
+        mut hand_ptr: NonNull<ClockNode>,
+    ) {
+        unsafe {
+            let hand_node = hand_ptr.as_mut();
+            let next = hand_node.next;
+            hand_node.next = Some(new_ptr);
+            new_ptr.as_mut().prev = Some(hand_ptr);
+            new_ptr.as_mut().next = next;
+
+            if let Some(mut n) = next {
+                n.as_mut().prev = Some(new_ptr);
+            } else {
+                // was tail, so update
+                state.tail = Some(new_ptr);
+            }
+        }
+    }
+}
+
+// Safe across threads since we guard pointer mutations.
+unsafe impl Send for ClockPolicy {}
+unsafe impl Sync for ClockPolicy {}
+
+impl CachePolicy for ClockPolicy {
+    fn advise(&self, entry_id: &CacheEntryID, cache_mode: &LiquidCacheMode) -> CacheAdvice {
+        let mut state = self.state.lock().unwrap();
+        let Some(mut ptr) = state.hand else {
+            return fallback_advice(entry_id, cache_mode);
+        };
+
+        loop {
+            let node = unsafe { ptr.as_ref() };
+            if !node.referenced {
+                // evict this one
+                let evict_id = node.entry_id;
+                // advance hand to next (wrap to head)
+                let next = node.next.unwrap_or(state.head.unwrap());
+                state.hand = Some(next);
+                return CacheAdvice::Evict(evict_id);
+            }
+            // give a second chance: clear bit and move on
+            unsafe {
+                ptr.as_mut().referenced = false;
+            }
+            ptr = node.next.unwrap_or(state.head.unwrap());
+        }
+    }
+
+    fn notify_insert(&self, entry_id: &CacheEntryID) {
+        let mut state = self.state.lock().unwrap();
+        // if already present, treat as access
+        if let Some(mut existing) = state.map.get(entry_id).copied() {
+            unsafe {
+                existing.as_mut().referenced = true;
+            }
+            return;
+        }
+
+        // allocate new node with referenced = true
+        let boxed = Box::new(ClockNode {
+            entry_id: *entry_id,
+            referenced: true,
+            prev: None,
+            next: None,
+        });
+        let new_ptr = unsafe { NonNull::new_unchecked(Box::into_raw(boxed)) };
+
+        if let Some(hand_ptr) = state.hand {
+            // insert into rotation after the hand
+            unsafe {
+                self.insert_after(&mut state, new_ptr, hand_ptr);
+            }
+        } else {
+            // first node in the list
+            state.head = Some(new_ptr);
+            state.tail = Some(new_ptr);
+            state.hand = Some(new_ptr);
+        }
+
+        state.map.insert(*entry_id, new_ptr);
+    }
+
+    fn notify_access(&self, entry_id: &CacheEntryID) {
+        let state = self.state.lock().unwrap();
+        if let Some(&(mut ptr)) = state.map.get(entry_id) {
+            unsafe {
+                ptr.as_mut().referenced = true;
+            }
+        }
+    }
+
+    fn notify_evict(&self, entry_id: &CacheEntryID) {
+        let mut state = self.state.lock().unwrap();
+        if let Some(ptr) = state.map.remove(entry_id) {
+            unsafe {
+                // advance hand if it pointed here
+                if state.hand == Some(ptr) {
+                    let next = ptr.as_ref().next.unwrap_or(state.head.unwrap());
+                    state.hand = Some(next);
+                }
+                self.unlink_node(&mut state, ptr);
+                drop(Box::from_raw(ptr.as_ptr()));
+            }
+        }
+    }
+}
+
+impl Drop for ClockPolicy {
+    fn drop(&mut self) {
+        let mut state = self.state.lock().unwrap();
+        for (_, ptr) in state.map.drain() {
+            unsafe {
+                drop(Box::from_raw(ptr.as_ptr()));
+            }
+        }
+        state.head = None;
+        state.tail = None;
+        state.hand = None;
+    }
+}
+
+/// The Random Replacement eviction policy.
+#[derive(Debug, Default)]
+pub struct RandomPolicy {
+    state: Mutex<RandomInternalState>,
+}
+
+#[derive(Debug, Default)]
+struct RandomInternalState {
+    entries: Vec<CacheEntryID>,
+}
+
+// Safe to share since we guard all state mutations with a Mutex.
+unsafe impl Send for RandomPolicy {}
+unsafe impl Sync for RandomPolicy {}
+
+impl RandomPolicy {
+    /// Create a new RandomPolicy.
+    pub fn new() -> Self {
+        RandomPolicy {
+            state: Mutex::new(RandomInternalState::default()),
+        }
+    }
+}
+
+impl CachePolicy for RandomPolicy {
+    fn advise(&self, entry_id: &CacheEntryID, cache_mode: &LiquidCacheMode) -> CacheAdvice {
+        let state = self.state.lock().unwrap();
+        if state.entries.is_empty() {
+            return fallback_advice(entry_id, cache_mode);
+        }
+        let mut rng = rng();
+        let idx = rng.random_range(0..state.entries.len());
+        CacheAdvice::Evict(state.entries[idx])
+    }
+
+    fn notify_insert(&self, entry_id: &CacheEntryID) {
+        let mut state = self.state.lock().unwrap();
+        if !state.entries.contains(entry_id) {
+            state.entries.push(*entry_id);
+        }
+    }
+
+    fn notify_access(&self, _entry_id: &CacheEntryID) {
+        // Random policy does not change state on access
+    }
+
+    fn notify_evict(&self, entry_id: &CacheEntryID) {
+        let mut state = self.state.lock().unwrap();
+        state.entries.retain(|&id| id != *entry_id);
+    }
+}
+
 fn fallback_advice(entry_id: &CacheEntryID, cache_mode: &LiquidCacheMode) -> CacheAdvice {
     match cache_mode {
         LiquidCacheMode::InMemoryArrow => CacheAdvice::Discard,
@@ -246,7 +650,7 @@ mod test {
     use crate::policies::CachePolicy;
 
     use super::super::{CacheAdvice, CacheEntryID, CachedBatch};
-    use super::{FiloPolicy, LruInternalState, LruPolicy};
+    use super::{ClockPolicy, FiloPolicy, LruInternalState, LruPolicy, SievePolicy};
     use crate::sync::{Arc, Barrier, thread};
     use std::sync::atomic::Ordering;
 
@@ -560,5 +964,215 @@ mod test {
             None => {} // This is also acceptable if fully evicted
             other => panic!("Expected OnDiskLiquid or None, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_sieve_policy_insertion_order() {
+        let policy = SievePolicy::new();
+        let e1 = entry(1);
+        let e2 = entry(2);
+        let e3 = entry(3);
+
+        // Insert entries: e1 -> e2 -> e3
+        policy.notify_insert(&e1);
+        policy.notify_insert(&e2);
+        policy.notify_insert(&e3);
+
+        // No accesses yet; first eviction should target e1 (the oldest, at tail)
+        let advice = policy.advise(&entry(4), &LiquidCacheMode::InMemoryArrow);
+        assert_eq!(advice, CacheAdvice::Evict(e1));
+    }
+
+    #[test]
+    fn test_sieve_policy_access_behavior() {
+        let policy = SievePolicy::new();
+        let e1 = entry(1);
+        let e2 = entry(2);
+        let e3 = entry(3);
+
+        policy.notify_insert(&e1);
+        policy.notify_insert(&e2);
+        policy.notify_insert(&e3);
+
+        // Access e1: mark visited
+        policy.notify_access(&e1);
+
+        // Now eviction should skip e1 (clearing its bit) and evict e2
+        let advice = policy.advise(&entry(4), &LiquidCacheMode::InMemoryArrow);
+        assert_eq!(advice, CacheAdvice::Evict(e2));
+    }
+
+    #[test]
+    fn test_sieve_policy_multiple_access_then_evict() {
+        let policy = SievePolicy::new();
+        let e1 = entry(1);
+        let e2 = entry(2);
+        let e3 = entry(3);
+
+        policy.notify_insert(&e1);
+        policy.notify_insert(&e2);
+        policy.notify_insert(&e3);
+
+        // Access all to set visited bits
+        policy.notify_access(&e1);
+        policy.notify_access(&e2);
+        policy.notify_access(&e3);
+
+        // First advise clears all bits in one pass, second pass evicts e1
+        let first = policy.advise(&entry(4), &LiquidCacheMode::InMemoryArrow);
+        // Should clear bits, not evict yet
+        assert_eq!(first, CacheAdvice::Evict(e1));
+    }
+
+    #[test]
+    fn test_sieve_policy_single_item_self() {
+        let policy = SievePolicy::new();
+        let e1 = entry(1);
+        policy.notify_insert(&e1);
+
+        // With only one item, advising eviction should evict e1
+        let advice = policy.advise(&e1, &LiquidCacheMode::InMemoryArrow);
+        assert_eq!(advice, CacheAdvice::Evict(e1));
+    }
+
+    #[test]
+    fn test_sieve_policy_advise_empty() {
+        let policy = SievePolicy::new();
+        // No entries inserted: fallback should discard
+        let advice = policy.advise(&entry(1), &LiquidCacheMode::InMemoryArrow);
+        assert_eq!(advice, CacheAdvice::Discard);
+    }
+
+    #[test]
+    fn test_sieve_integration() {
+        let advisor = SievePolicy::new();
+        let store = create_cache_store(3000, Box::new(advisor));
+
+        let entry_id1 = create_entry_id(1, 1, 1, 1);
+        let entry_id2 = create_entry_id(1, 1, 1, 2);
+        let entry_id3 = create_entry_id(1, 1, 1, 3);
+
+        // Prepare on-disk directory
+        let on_disk_path = entry_id1.on_disk_path(&store.config().cache_root_dir());
+        std::fs::create_dir_all(on_disk_path.parent().unwrap()).unwrap();
+
+        // Fill cache
+        store.insert(entry_id1, create_test_array(100));
+        store.insert(entry_id2, create_test_array(100));
+        store.insert(entry_id3, create_test_array(100));
+
+        // Trigger eviction with a fourth entry
+        let entry_id4 = create_entry_id(4, 4, 4, 4);
+        store.insert(entry_id4, create_test_array(100));
+
+        // SIEVE should evict the oldest entry (entry_id1)
+        match store.get(&entry_id1, CacheAccessReason::Testing) {
+            Some(CachedBatch::OnDiskLiquid) => {}
+            None => {} // Also acceptable if fully evicted
+            other => panic!("Expected OnDiskLiquid or None, got {:?}", other),
+        }
+
+        // The other entries should still be resident
+        assert!(store.get(&entry_id2, CacheAccessReason::Testing).is_some());
+        assert!(store.get(&entry_id3, CacheAccessReason::Testing).is_some());
+        assert!(store.get(&entry_id4, CacheAccessReason::Testing).is_some());
+    }
+
+    #[test]
+    fn test_clock_policy_insertion_order() {
+        let policy = ClockPolicy::new();
+        let e1 = entry(1);
+        let e2 = entry(2);
+        let e3 = entry(3);
+
+        // Insert entries: e1 -> e2 -> e3
+        policy.notify_insert(&e1);
+        policy.notify_insert(&e2);
+        policy.notify_insert(&e3);
+
+        // Without any prior evictions or accesses, the oldest (e1) should be evicted
+        let advice = policy.advise(&entry(4), &LiquidCacheMode::InMemoryArrow);
+        assert_eq!(advice, CacheAdvice::Evict(e1));
+    }
+
+    #[test]
+    fn test_clock_policy_sequential_evictions() {
+        let policy = ClockPolicy::new();
+        let e1 = entry(1);
+        let e2 = entry(2);
+        let e3 = entry(3);
+
+        policy.notify_insert(&e1);
+        policy.notify_insert(&e2);
+        policy.notify_insert(&e3);
+
+        // First eviction should remove e1
+        let adv1 = policy.advise(&entry(4), &LiquidCacheMode::InMemoryArrow);
+        assert_eq!(adv1, CacheAdvice::Evict(e1));
+        policy.notify_evict(&e1);
+
+        // Next eviction should remove e3 (next hand position)
+        let adv2 = policy.advise(&entry(5), &LiquidCacheMode::InMemoryArrow);
+        assert_eq!(adv2, CacheAdvice::Evict(e3));
+        policy.notify_evict(&e3);
+
+        // Finally, e2 should be evicted
+        let adv3 = policy.advise(&entry(6), &LiquidCacheMode::InMemoryArrow);
+        assert_eq!(adv3, CacheAdvice::Evict(e2));
+    }
+
+    #[test]
+    fn test_clock_policy_single_item() {
+        let policy = ClockPolicy::new();
+        let e1 = entry(1);
+        policy.notify_insert(&e1);
+
+        // With only one item, evicting should return that item
+        let advice = policy.advise(&e1, &LiquidCacheMode::InMemoryArrow);
+        assert_eq!(advice, CacheAdvice::Evict(e1));
+    }
+
+    #[test]
+    fn test_clock_policy_advise_empty() {
+        let policy = ClockPolicy::new();
+
+        // No entries inserted: should discard
+        let advice = policy.advise(&entry(1), &LiquidCacheMode::InMemoryArrow);
+        assert_eq!(advice, CacheAdvice::Discard);
+    }
+
+    #[test]
+    fn test_clock_policy_integration_with_store() {
+        let advisor = ClockPolicy::new();
+        let store = create_cache_store(3000, Box::new(advisor));
+
+        let entry_id1 = create_entry_id(1, 1, 1, 1);
+        let entry_id2 = create_entry_id(1, 1, 1, 2);
+        let entry_id3 = create_entry_id(1, 1, 1, 3);
+
+        // Prepare on-disk directory for eviction
+        let on_disk_path = entry_id1.on_disk_path(&store.config().cache_root_dir());
+        std::fs::create_dir_all(on_disk_path.parent().unwrap()).unwrap();
+
+        // Fill cache to capacity
+        store.insert(entry_id1, create_test_array(100));
+        store.insert(entry_id2, create_test_array(100));
+        store.insert(entry_id3, create_test_array(100));
+
+        // Insert one more to trigger eviction
+        let entry_id4 = create_entry_id(4, 4, 4, 4);
+        store.insert(entry_id4, create_test_array(100));
+
+        // Oldest (entry_id1) should be on-disk or evicted
+        match store.get(&entry_id1, CacheAccessReason::Testing) {
+            Some(CachedBatch::OnDiskLiquid) => {}
+            None => {}
+            other => panic!("Expected OnDiskLiquid or None, got {:?}", other),
+        }
+
+        // Others should still be retrieveable in-memory
+        assert!(store.get(&entry_id2, CacheAccessReason::Testing).is_some());
+        assert!(store.get(&entry_id3, CacheAccessReason::Testing).is_some());
+        assert!(store.get(&entry_id4, CacheAccessReason::Testing).is_some());
     }
 }

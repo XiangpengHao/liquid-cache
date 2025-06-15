@@ -20,16 +20,17 @@ use tokio::runtime::Runtime;
 use tracer::CacheAccessReason;
 use transcode::transcode_liquid_inner;
 pub(crate) use utils::BatchID;
-use utils::{CacheEntryID, ColumnAccessPath};
+pub use utils::CacheEntryID;
+use utils::ColumnAccessPath;
 
 mod budget;
 /// Module containing cache eviction policies like FIFO
 pub mod policies;
 mod stats;
-mod store;
+pub mod store;
 pub(crate) mod tracer;
 mod transcode;
-mod utils;
+pub mod utils;
 
 /// A dedicated Tokio thread pool for background transcoding tasks.
 /// This pool is built with 4 worker threads.
