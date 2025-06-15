@@ -1,8 +1,13 @@
+use arrow_schema::{DataType, Field, Schema};
 use std::sync::Arc;
 use tempfile::TempDir;
 
 use arrow::util::pretty::pretty_format_batches;
 use datafusion::{
+    datasource::{
+        file_format::parquet::ParquetFormat,
+        listing::{ListingOptions, ListingTableUrl},
+    },
     error::Result,
     physical_plan::{ExecutionPlan, collect, display::DisplayableExecutionPlan},
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
@@ -162,4 +167,64 @@ async fn test_referer_filtering() {
     insta::assert_snapshot!(format!("plan: \n{}\nvalues: \n{}", plan, reference));
 
     test_runner(sql, &reference).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_provide_schema_with_filter() {
+    let sql = r#"select "WatchID", "OS", "EventTime" from hits order by "WatchID" desc limit 10"#;
+
+    let (reference, plan) = run_sql_with_cache(
+        sql,
+        LiquidCacheMode::Liquid {
+            transcode_in_background: false,
+        },
+        1024 * 1024,
+    )
+    .await;
+
+    insta::assert_snapshot!(format!("plan: \n{}\nvalues: \n{}", plan, reference));
+
+    let (ctx, _) = LiquidCacheInProcessBuilder::new()
+        .with_cache_mode(LiquidCacheMode::Liquid {
+            transcode_in_background: true,
+        })
+        .build(SessionConfig::new())
+        .unwrap();
+
+    let file_format = ParquetFormat::default().with_enable_pruning(true);
+    let listing_options =
+        ListingOptions::new(Arc::new(file_format)).with_file_extension(".parquet");
+
+    let table_path = ListingTableUrl::parse("../../examples/nano_hits.parquet").unwrap();
+    let schema = Schema::new(vec![
+        Field::new("WatchID", DataType::Int64, true),
+        Field::new("OS", DataType::Int16, true),
+        Field::new("EventTime", DataType::Int64, true),
+    ]);
+
+    ctx.register_listing_table(
+        "hits",
+        &table_path,
+        listing_options.clone(),
+        Some(Arc::new(schema)),
+        None,
+    )
+    .await
+    .unwrap();
+
+    let results =  ctx.sql(
+        "SELECT \"WatchID\", \"OS\", \"EventTime\" FROM hits order by \"WatchID\" desc limit 10",
+    )
+    .await
+    .unwrap()
+    .collect()
+    .await
+    .unwrap();
+
+    let formatted_results = pretty_format_batches(&results).unwrap().to_string();
+    if formatted_results != reference {
+        println!("formatted_results: \n{}", formatted_results);
+        println!("reference: \n{}", reference);
+    }
+    assert_eq!(formatted_results, reference);
 }

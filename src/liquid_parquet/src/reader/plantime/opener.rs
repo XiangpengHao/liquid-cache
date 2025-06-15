@@ -159,7 +159,8 @@ impl FileOpener for LiquidParquetOpener {
                 reader_metadata,
             );
 
-            let (schema_mapping, adapted_projections) = schema_adapter.map_schema(&cache_schema)?;
+            let (schema_mapping, adapted_projections) =
+                schema_adapter.map_schema(&physical_file_schema)?;
 
             let mask = ProjectionMask::roots(
                 builder.parquet_schema(),
