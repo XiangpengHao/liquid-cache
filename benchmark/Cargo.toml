@@ -66,3 +66,7 @@ path = "bench_server.rs"
 [[bin]]
 name = "cache_behavior"
 path = "cache_behavior.rs"
+
+[[bin]]
+name = "in_process"
+path = "in_process.rs"

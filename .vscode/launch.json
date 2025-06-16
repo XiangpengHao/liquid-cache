@@ -112,5 +112,28 @@
 			],
 			"cwd": "${workspaceFolder}"
 		},
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "inprocess",
+			"cargo": {
+				"args": [
+					"build",
+					"--bin=in_process",
+				],
+				"filter": {
+					"name": "in_process",
+					"kind": "bin"
+				}
+			},
+			"env": {
+				"RUST_LOG": "info"
+			},
+			"args": [
+				"--manifest",
+				"benchmark/data/openobserve.json",
+			],
+			"cwd": "${workspaceFolder}"
+		},
 	]
 }

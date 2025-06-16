@@ -409,17 +409,22 @@ pub struct IterationResult {
     pub cache_memory_usage: u64,
     pub liquid_cache_usage: u64,
     pub starting_timestamp: Duration,
+    pub disk_bytes_read: u64,
+    pub disk_bytes_written: u64,
 }
 
-impl IterationResult {
-    pub fn log(&self) {
-        info!(
-            "Query: {} ms, network: {} bytes, cache cpu time: {} ms, cache memory: {} bytes, liquid cache memory: {} bytes",
+impl Display for IterationResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Query time: {} ms\n network: {} bytes\n cache cpu time: {} ms\n cache memory: {} bytes, liquid cache memory: {} bytes\n disk read: {} bytes, disk written: {} bytes",
             self.time_millis,
             self.network_traffic,
             self.cache_cpu_time,
             self.cache_memory_usage,
-            self.liquid_cache_usage
-        );
+            self.liquid_cache_usage,
+            self.disk_bytes_read,
+            self.disk_bytes_written,
+        )
     }
 }
