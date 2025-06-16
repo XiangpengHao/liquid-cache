@@ -5,6 +5,7 @@ use std::{fmt::Display, sync::Arc};
 
 use arrow::array::ArrayRef;
 use arrow_schema::{DataType, Field, FieldRef, Schema, SchemaRef};
+pub mod mock_store;
 pub mod rpc;
 pub mod utils;
 /// Specify how LiquidCache should cache the data
