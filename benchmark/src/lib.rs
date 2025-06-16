@@ -21,9 +21,11 @@ mod observability;
 pub mod runner;
 pub mod tpch;
 pub mod utils;
+pub mod inprocess;
 
 pub use observability::*;
 pub use runner::*;
+pub use inprocess::*;
 
 pub struct Query {
     pub id: u32,
