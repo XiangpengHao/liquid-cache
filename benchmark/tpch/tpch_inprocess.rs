@@ -1,59 +1,17 @@
+use anyhow::Result;
 use clap::Parser;
-use datafusion::catalog::memory::DataSourceExec;
-use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
-use datafusion::physical_plan::ExecutionPlan;
-use datafusion::physical_plan::metrics::MetricValue;
-use datafusion::prelude::SessionConfig;
-use datafusion::{arrow::array::RecordBatch, error::Result, prelude::SessionContext};
-use datafusion_orc::{OrcReadOptions, SessionContextOrcExt};
-use liquid_cache_benchmarks::{Query, run_query, setup_observability, tpch};
-use liquid_cache_common::{CacheEvictionStrategy, LiquidCacheMode};
-use liquid_cache_parquet::{LiquidCacheInProcessBuilder, LiquidCacheRef};
-use log::info;
+use liquid_cache_benchmarks::{
+    BenchmarkManifest, InProcessBenchmarkMode, InProcessBenchmarkRunner, setup_observability, tpch,
+};
 use mimalloc::MiMalloc;
 use serde::Serialize;
-use std::{
-    fs::{File, create_dir_all},
-    path::PathBuf,
-    sync::Arc,
-    time::{Duration, Instant},
-};
-use sysinfo::Disks;
+use std::{collections::HashMap, path::PathBuf};
 use url::Url;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
 const RELEVANT_QUERIES: &[u32] = &[4, 6, 11, 12, 14, 15, 16, 20];
-
-#[derive(Clone, Debug, Default, Copy, PartialEq, Eq, Serialize)]
-enum BenchmarkMode {
-    Parquet,
-    Arrow,
-    #[default]
-    Liquid,
-    LiquidEagerTranscode,
-    Orc,
-}
-
-impl std::str::FromStr for BenchmarkMode {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(match s {
-            "parquet" => BenchmarkMode::Parquet,
-            "arrow" => BenchmarkMode::Arrow,
-            "liquid" => BenchmarkMode::Liquid,
-            "liquid-eager-transcode" => BenchmarkMode::LiquidEagerTranscode,
-            "orc" => BenchmarkMode::Orc,
-            _ => {
-                return Err(format!(
-                    "Invalid in-process benchmark mode: {s}, must be one of: parquet, arrow, liquid, liquid-eager-transcode, orc"
-                ));
-            }
-        })
-    }
-}
 
 #[derive(Parser, Serialize, Clone)]
 #[command(name = "TPCH In-Process Benchmark")]
@@ -68,7 +26,7 @@ struct TpchInProcessBenchmark {
 
     /// Benchmark mode to use
     #[arg(long = "bench-mode", default_value = "liquid-eager-transcode")]
-    pub bench_mode: BenchmarkMode,
+    pub bench_mode: InProcessBenchmarkMode,
 
     /// Number of times to run each query
     #[arg(long, default_value = "3")]
@@ -99,325 +57,94 @@ struct TpchInProcessBenchmark {
     pub flamegraph_dir: Option<PathBuf>,
 }
 
-#[derive(Serialize)]
-pub struct BenchmarkResult {
-    args: TpchInProcessBenchmark,
-    results: Vec<QueryResult>,
-}
-
-#[derive(Serialize)]
-pub struct QueryResult {
-    id: u32,
-    query: String,
-    iteration_results: Vec<IterationResult>,
-}
-
-impl QueryResult {
-    pub fn new(id: u32, query: String) -> Self {
-        Self {
-            id,
-            query,
-            iteration_results: Vec::new(),
-        }
-    }
-
-    pub fn add(&mut self, iteration_result: IterationResult) {
-        self.iteration_results.push(iteration_result);
-    }
-}
-
-#[derive(Serialize)]
-pub struct IterationResult {
-    pub time_millis: u64,
-    pub cache_memory_usage: u64,
-    pub starting_timestamp: Duration,
-    pub bytes_read: u64,
-    pub bytes_written: u64,
-}
-
-impl IterationResult {
-    pub fn log(&self) {
-        info!(
-            "Query: {} ms, cache memory: {} bytes, disk I/O: read {} bytes, written {} bytes",
-            self.time_millis, self.cache_memory_usage, self.bytes_read, self.bytes_written,
-        );
-    }
-}
-
 impl TpchInProcessBenchmark {
-    async fn setup_context(&self) -> Result<(Arc<SessionContext>, Option<LiquidCacheRef>)> {
-        let mut session_config = SessionConfig::from_env()?;
+    fn generate_manifest(&self) -> Result<BenchmarkManifest> {
         let current_dir = std::env::current_dir()?.to_string_lossy().to_string();
-
         let tables = [
             "customer", "lineitem", "nation", "orders", "part", "partsupp", "region", "supplier",
         ];
 
-        session_config
-            .options_mut()
-            .execution
-            .parquet
-            .pushdown_filters = true;
-        if let Some(partitions) = self.partitions {
-            session_config.options_mut().execution.target_partitions = partitions;
-        }
-        session_config.options_mut().execution.batch_size = 8192 * 2;
-        let cache_size = self
-            .max_cache_mb
-            .map(|size| size * 1024 * 1024)
-            .unwrap_or(usize::MAX);
+        let mut manifest = BenchmarkManifest::new("TPC-H In-Process Benchmark".to_string())
+            .with_description("TPC-H benchmark using in-process liquid cache".to_string());
 
-        let cache_dir = std::env::current_dir()?.join("benchmark/tpch/data/cache");
-        if cache_dir.exists() {
-            std::fs::remove_dir_all(&cache_dir)?;
-        }
-        std::fs::create_dir_all(&cache_dir)?;
-        let (ctx, cache): (SessionContext, Option<LiquidCacheRef>) = match self.bench_mode {
-            BenchmarkMode::Parquet => (SessionContext::new_with_config(session_config), None),
-            BenchmarkMode::Arrow => {
-                let v = LiquidCacheInProcessBuilder::new()
-                    .with_max_cache_bytes(cache_size)
-                    .with_cache_mode(LiquidCacheMode::Arrow)
-                    .with_cache_dir(cache_dir)
-                    .with_cache_strategy(CacheEvictionStrategy::ToDisk)
-                    .build(session_config)?;
-                (v.0, Some(v.1))
-            }
-            BenchmarkMode::Liquid => {
-                let v = LiquidCacheInProcessBuilder::new()
-                    .with_max_cache_bytes(cache_size)
-                    .with_cache_mode(LiquidCacheMode::Liquid {
-                        transcode_in_background: true,
-                    })
-                    .with_cache_dir(cache_dir)
-                    .with_cache_strategy(CacheEvictionStrategy::ToDisk)
-                    .build(session_config)?;
-                (v.0, Some(v.1))
-            }
-            BenchmarkMode::LiquidEagerTranscode => {
-                let v = LiquidCacheInProcessBuilder::new()
-                    .with_max_cache_bytes(cache_size)
-                    .with_cache_mode(LiquidCacheMode::Liquid {
-                        transcode_in_background: false,
-                    })
-                    .with_cache_dir(cache_dir)
-                    .with_cache_strategy(CacheEvictionStrategy::ToDisk)
-                    .build(session_config)?;
-                (v.0, Some(v.1))
-            }
-            BenchmarkMode::Orc => (SessionContext::new_with_config(session_config), None),
-        };
+        // Add tables based on benchmark mode
         for table_name in tables.iter() {
-            match self.bench_mode {
-                BenchmarkMode::Orc => {
-                    let table_path = format!(
-                        "file://{}/{}/{}.orc",
-                        current_dir,
-                        self.data_dir.display(),
-                        table_name
-                    );
-                    ctx.register_orc(table_name, &table_path, OrcReadOptions::default())
-                        .await?;
-                }
-                _ => {
-                    let table_path = Url::parse(&format!(
-                        "file://{}/{}/{}.parquet",
-                        current_dir,
-                        self.data_dir.display(),
-                        table_name
-                    ))
-                    .unwrap();
-                    ctx.register_parquet(*table_name, table_path, Default::default())
-                        .await?;
-                }
-            }
+            let table_path = if self.bench_mode == InProcessBenchmarkMode::Orc {
+                format!(
+                    "file://{}/{}/{}.orc",
+                    current_dir,
+                    self.data_dir.display(),
+                    table_name
+                )
+            } else {
+                Url::parse(&format!(
+                    "file://{}/{}/{}.parquet",
+                    current_dir,
+                    self.data_dir.display(),
+                    table_name
+                ))?
+                .to_string()
+            };
+            manifest = manifest.add_table(table_name.to_string(), table_path);
         }
 
-        Ok((Arc::new(ctx), cache))
-    }
+        // Load queries from TPC-H directory
+        let queries = tpch::get_all_queries(&self.query_dir)?;
 
-    async fn get_queries(&self) -> Result<Vec<Query>> {
-        tpch::get_all_queries(&self.query_dir)
-    }
-
-    async fn execute_query(
-        &self,
-        ctx: &Arc<SessionContext>,
-        query: &Query,
-    ) -> Result<(Vec<RecordBatch>, Arc<dyn ExecutionPlan>)> {
-        if query.id == 15 {
-            // Q15 has three queries, the second one is the one we want to test
-            let queries: Vec<&str> = query.sql.split(';').collect();
-            let mut results = Vec::new();
-            let mut plan = None;
-            for (i, q) in queries.iter().enumerate() {
-                let (result, p, _) = run_query(ctx, q).await?;
-                if i == 1 {
-                    results = result;
-                    plan = Some(p);
-                }
-            }
-            Ok((results, plan.unwrap()))
+        // Filter to relevant queries if no specific query is requested
+        let query_filter: Vec<u32> = if let Some(query) = self.query {
+            vec![query]
         } else {
-            let (results, plan, _) = run_query(ctx, &query.sql).await?;
-            Ok((results, plan))
+            RELEVANT_QUERIES.to_vec()
+        };
+
+        for query in queries {
+            if query_filter.contains(&query.id) {
+                // For TPC-H, we add the query SQL directly as inline SQL
+                manifest = manifest.add_query(query.sql);
+            }
         }
+
+        // Add special handling for Q15
+        if query_filter.contains(&15) {
+            let mut special_handling = HashMap::new();
+            special_handling.insert(15, "tpch_q15".to_string());
+            manifest = manifest.with_special_query_handling(special_handling);
+        }
+
+        Ok(manifest)
     }
 
-    async fn run_single_iteration(
-        &self,
-        ctx: &Arc<SessionContext>,
-        query: &Query,
-        bench_start_time: Instant,
-        cache: Option<LiquidCacheRef>,
-        iteration: u32,
-    ) -> Result<IterationResult> {
-        info!("Running query {}: \n{}", query.id, query.sql);
+    pub async fn run(self) -> Result<()> {
+        let manifest = self.generate_manifest()?;
 
-        // Start flamegraph profiling if enabled
-        let profiler_guard = if self.flamegraph_dir.is_some() {
-            Some(
-                pprof::ProfilerGuardBuilder::default()
-                    .frequency(500)
-                    .blocklist(&["libpthread.so.0", "libm.so.6", "libgcc_s.so.1"])
-                    .build()
-                    .unwrap(),
-            )
+        // Convert query number to query index for the runner
+        let query_filter = if let Some(query_num) = self.query {
+            // Find the index of the requested query in the relevant queries
+            RELEVANT_QUERIES.iter().position(|&q| q == query_num)
         } else {
             None
         };
 
-        // Capture disk I/O metrics before query execution
-        let mut disk_info = Disks::new_with_refreshed_list();
+        let bench_mode = self.bench_mode;
+        let iteration = self.iteration;
+        let reset_cache = self.reset_cache;
+        let partitions = self.partitions;
+        let max_cache_mb = self.max_cache_mb;
+        let flamegraph_dir = self.flamegraph_dir.clone();
+        let output = self.output.clone();
 
-        let now = Instant::now();
-        let starting_timestamp = bench_start_time.elapsed();
+        let runner = InProcessBenchmarkRunner::new()
+            .with_bench_mode(bench_mode)
+            .with_iteration(iteration)
+            .with_reset_cache(reset_cache)
+            .with_partitions(partitions)
+            .with_max_cache_mb(max_cache_mb)
+            .with_flamegraph_dir(flamegraph_dir)
+            .with_query_filter(query_filter);
 
-        let (_results, execution_plan) = self.execute_query(ctx, query).await?;
-        let elapsed = now.elapsed();
-
-        disk_info.refresh(true);
-        let disk_read: u64 = disk_info.iter().map(|disk| disk.usage().read_bytes).sum();
-
-        let disk_written: u64 = disk_info
-            .iter()
-            .map(|disk| disk.usage().written_bytes)
-            .sum();
-
-        // Stop flamegraph profiling and write to file if enabled
-        if let Some(profiler) = profiler_guard
-            && let Some(flamegraph_dir) = &self.flamegraph_dir
-        {
-            let report = profiler.report().build().unwrap();
-            let mut svg_data = Vec::new();
-            report.flamegraph(&mut svg_data).unwrap();
-            create_dir_all(flamegraph_dir)?;
-
-            // Get current time for filename prefix
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap();
-            let secs = now.as_secs();
-            let hour = (secs / 3600) % 24;
-            let minute = (secs / 60) % 60;
-            let second = secs % 60;
-
-            let filename = format!(
-                "{:02}h{:02}m{:02}s_q{}_i{}.svg",
-                hour, minute, second, query.id, iteration
-            );
-            let filepath = flamegraph_dir.join(filename);
-            std::fs::write(&filepath, svg_data).unwrap();
-            info!("Flamegraph written to: {}", filepath.display());
-        }
-
-        let cache_memory_usage = if let Some(cache) = cache {
-            cache.memory_usage_bytes()
-        } else {
-            let mut total_bytes_scanned = 0;
-            let _ = execution_plan
-                .apply(|plan| {
-                    if plan.as_any().downcast_ref::<DataSourceExec>().is_some() {
-                        let metrics = plan
-                            .metrics()
-                            .unwrap()
-                            .aggregate_by_name()
-                            .sorted_for_display()
-                            .timestamps_removed();
-
-                        for metric in metrics.iter() {
-                            if let MetricValue::Count { name, count } = metric.value()
-                                && name == "bytes_scanned"
-                            {
-                                total_bytes_scanned += count.value();
-                            }
-                        }
-                    }
-                    Ok(TreeNodeRecursion::Continue)
-                })
-                .unwrap();
-            total_bytes_scanned
-        };
-
-        let result = IterationResult {
-            time_millis: elapsed.as_millis() as u64,
-            cache_memory_usage: cache_memory_usage as u64,
-            starting_timestamp,
-            bytes_read: disk_read,
-            bytes_written: disk_written,
-        };
-
-        result.log();
-        Ok(result)
-    }
-
-    pub async fn run(self) -> Result<BenchmarkResult> {
-        let (ctx, cache) = self.setup_context().await?;
-        let queries = self.get_queries().await?;
-        let queries = if let Some(query) = self.query {
-            vec![queries.into_iter().find(|q| q.id == query).unwrap()]
-        } else {
-            queries
-                .into_iter()
-                .filter(|q| RELEVANT_QUERIES.contains(&q.id))
-                .collect()
-        };
-
-        let mut benchmark_result = BenchmarkResult {
-            args: self.clone(),
-            results: Vec::new(),
-        };
-
-        std::fs::create_dir_all("benchmark/data/results")?;
-
-        let bench_start_time = Instant::now();
-
-        for query in queries {
-            let mut query_result = QueryResult::new(query.id, query.sql.clone());
-
-            for it in 0..self.iteration {
-                let iteration_result = self
-                    .run_single_iteration(&ctx, &query, bench_start_time, cache.clone(), it + 1)
-                    .await?;
-
-                query_result.add(iteration_result);
-            }
-
-            if self.reset_cache
-                && let Some(cache) = &cache
-            {
-                cache.reset();
-            }
-
-            benchmark_result.results.push(query_result);
-        }
-
-        if let Some(output_path) = &self.output {
-            let output_file = File::create(output_path)?;
-            serde_json::to_writer_pretty(output_file, &benchmark_result).unwrap();
-        }
-
-        Ok(benchmark_result)
+        runner.run(manifest, self, output).await?;
+        Ok(())
     }
 }
 

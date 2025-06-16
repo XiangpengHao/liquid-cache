@@ -11,7 +11,7 @@ use fastrace::prelude::*;
 use log::{debug, info};
 use serde::Serialize;
 use std::{fs::File, sync::Arc, time::Instant};
-use sysinfo::Networks;
+use sysinfo::{Disks, Networks};
 use uuid::Uuid;
 
 /// Trait that benchmarks must implement
@@ -76,9 +76,8 @@ impl BenchmarkRunner {
             results: Vec::new(),
         };
 
-        std::fs::create_dir_all("benchmark/data/results")?;
-
         let mut networks = Networks::new_with_refreshed_list();
+        let mut disk = Disks::new_with_refreshed_list();
         let bench_start_time = Instant::now();
 
         for query in queries {
@@ -91,6 +90,7 @@ impl BenchmarkRunner {
                     &query,
                     it,
                     &mut networks,
+                    &mut disk,
                     bench_start_time,
                 )
                 .await?;
@@ -120,6 +120,7 @@ impl BenchmarkRunner {
         query: &Query,
         iteration: u32,
         networks: &mut Networks,
+        disk: &mut Disks,
         bench_start_time: Instant,
     ) -> Result<IterationResult> {
         let common = benchmark.common_args();
@@ -146,6 +147,9 @@ impl BenchmarkRunner {
             .get("lo0")
             .or_else(|| networks.get("lo"))
             .expect("No loopback interface found in networks");
+        disk.refresh(true);
+        let disk_read: u64 = disk.iter().map(|disk| disk.usage().read_bytes).sum();
+        let disk_written: u64 = disk.iter().map(|disk| disk.usage().written_bytes).sum();
 
         let flamegraph = if !plan_uuid.is_empty() {
             common.stop_flamegraph().await
@@ -190,9 +194,11 @@ impl BenchmarkRunner {
             cache_memory_usage: metrics_response.cache_memory_usage,
             liquid_cache_usage: metrics_response.liquid_cache_usage,
             starting_timestamp,
+            disk_bytes_read: disk_read,
+            disk_bytes_written: disk_written,
         };
 
-        result.log();
+        info!("\n{result}");
         Ok(result)
     }
 }
