@@ -16,6 +16,10 @@ on:
         description: 'Custom version (optional, overrides version_bump if provided)'
         required: false
         type: 'string'
+      release_notes:
+        description: 'Additional notes for the GitHub release'
+        required: false
+        type: 'string'
 
 jobs:
   release-and-publish:
@@ -35,6 +39,8 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2025-04-29
+
+      - uses: Swatinem/rust-cache@v2
 
       - name: Install cargo-release
         run: cargo install cargo-release
@@ -91,9 +97,34 @@ jobs:
           tag: v${{ steps.release.outputs.new_version }}
           name: Release v${{ steps.release.outputs.new_version }}
           generateReleaseNotes: true
+          body: ${{ github.event.inputs.release_notes }}
           draft: false
           prerelease: false
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build binary
+        run: cargo build --release --bin bench_server
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set lower case owner name
+        run: |
+          echo "OWNER_LC=${OWNER,,}" >> ${GITHUB_ENV}
+        env:
+          OWNER: '${{ github.repository_owner }}'
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/${{ env.OWNER_LC }}/liquid-cache/liquid-cache-server:latest,ghcr.io/${{ env.OWNER_LC }}/liquid-cache/liquid-cache-server:v${{ steps.release.outputs.new_version }}
+          file: dev/liquid_cache_server.dockerfile
 
       - name: Create Pull Request
         id: create_pr
