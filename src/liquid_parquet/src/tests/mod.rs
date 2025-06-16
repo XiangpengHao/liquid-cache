@@ -171,7 +171,7 @@ async fn test_referer_filtering() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_provide_schema_with_filter() {
-    let sql = r#"select "WatchID", "OS", "EventTime" from hits order by "WatchID" desc limit 10"#;
+    let sql = r#"select "WatchID", "OS", "EventTime" from hits where "OS" <> 2 order by "WatchID" desc limit 10"#;
 
     let (reference, plan) = run_sql_with_cache(
         sql,
@@ -186,7 +186,7 @@ async fn test_provide_schema_with_filter() {
 
     let (ctx, _) = LiquidCacheInProcessBuilder::new()
         .with_cache_mode(LiquidCacheMode::Liquid {
-            transcode_in_background: true,
+            transcode_in_background: false,
         })
         .build(SessionConfig::new())
         .unwrap();
@@ -198,8 +198,8 @@ async fn test_provide_schema_with_filter() {
     let table_path = ListingTableUrl::parse("../../examples/nano_hits.parquet").unwrap();
     let schema = Schema::new(vec![
         Field::new("WatchID", DataType::Int64, true),
-        Field::new("OS", DataType::Int16, true),
         Field::new("EventTime", DataType::Int64, true),
+        Field::new("OS", DataType::Int16, true),
     ]);
 
     ctx.register_listing_table(
@@ -212,14 +212,7 @@ async fn test_provide_schema_with_filter() {
     .await
     .unwrap();
 
-    let results =  ctx.sql(
-        "SELECT \"WatchID\", \"OS\", \"EventTime\" FROM hits order by \"WatchID\" desc limit 10",
-    )
-    .await
-    .unwrap()
-    .collect()
-    .await
-    .unwrap();
+    let results = ctx.sql(sql).await.unwrap().collect().await.unwrap();
 
     let formatted_results = pretty_format_batches(&results).unwrap().to_string();
     if formatted_results != reference {

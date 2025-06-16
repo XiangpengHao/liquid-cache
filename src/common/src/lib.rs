@@ -1,6 +1,5 @@
 #![cfg_attr(not(doctest), doc = include_str!(concat!("../", std::env!("CARGO_PKG_README"))))]
 
-use std::ops::Deref;
 use std::str::FromStr;
 use std::{fmt::Display, sync::Arc};
 
@@ -90,17 +89,6 @@ impl Default for LiquidCacheMode {
     fn default() -> Self {
         Self::Liquid {
             transcode_in_background: true,
-        }
-    }
-}
-
-impl LiquidCacheMode {
-    fn string_type(&self) -> DataType {
-        match self {
-            LiquidCacheMode::Arrow => DataType::Utf8,
-            LiquidCacheMode::Liquid { .. } => {
-                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8))
-            }
         }
     }
 }
@@ -277,86 +265,5 @@ impl ParquetReaderSchema {
             transformed_fields,
             schema.metadata.clone(),
         ))
-    }
-}
-
-/// A schema that where strings are stored as `Dictionary<UInt16, Utf8>`
-pub struct CacheSchema {
-    schema: SchemaRef,
-}
-
-impl CacheSchema {
-    /// Create a new `DictStringSchema` from a `SchemaRef`.
-    ///
-    /// # Panics
-    ///
-    /// This function will panic if the schema contains a `Utf8` or `Utf8View` field.
-    pub fn new_checked(schema: SchemaRef, mode: &LiquidCacheMode) -> Self {
-        {
-            for field in schema.fields() {
-                match mode {
-                    LiquidCacheMode::Arrow => {
-                        // cache schema is always utf8
-                        assert!(
-                            !field.data_type().equals_datatype(&DataType::Utf8View),
-                            "Field {} must not be a Utf8View",
-                            field.name()
-                        );
-                        assert!(
-                            !field.data_type().equals_datatype(&DataType::Dictionary(
-                                Box::new(DataType::UInt16),
-                                Box::new(DataType::Utf8)
-                            )),
-                            "Field {} must not be a Dict<UInt16, Utf8>",
-                            field.name()
-                        );
-                    }
-                    LiquidCacheMode::Liquid { .. } => {
-                        // cache schema is always dict string
-                        assert!(
-                            !field.data_type().equals_datatype(&DataType::Utf8),
-                            "Field {} must not be a Utf8",
-                            field.name()
-                        );
-                        assert!(
-                            !field.data_type().equals_datatype(&DataType::Utf8View),
-                            "Field {} must not be a Utf8View",
-                            field.name()
-                        );
-                    }
-                }
-            }
-        }
-        Self { schema }
-    }
-
-    pub fn from(downstream_full_schema: SchemaRef, mode: &LiquidCacheMode) -> Self {
-        let transformed_fields: Vec<Arc<Field>> = downstream_full_schema
-            .fields
-            .iter()
-            .map(|field| {
-                let data_type = field.data_type();
-                match data_type {
-                    DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => {
-                        field_with_new_type(field, mode.string_type())
-                    }
-                    _ => field.clone(),
-                }
-            })
-            .collect();
-        Self {
-            schema: Arc::new(Schema::new_with_metadata(
-                transformed_fields,
-                downstream_full_schema.metadata.clone(),
-            )),
-        }
-    }
-}
-
-impl Deref for CacheSchema {
-    type Target = SchemaRef;
-
-    fn deref(&self) -> &Self::Target {
-        &self.schema
     }
 }
