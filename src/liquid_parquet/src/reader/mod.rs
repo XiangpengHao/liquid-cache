@@ -6,5 +6,6 @@ mod runtime;
 
 mod utils;
 
+pub(crate) use plantime::LiquidPredicate;
 pub use plantime::LiquidParquetSource;
-pub use runtime::LiquidPredicate;
+pub(crate) use runtime::extract_two_column_or;

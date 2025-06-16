@@ -1,8 +1,10 @@
 use super::liquid_array::LiquidArrayRef;
 use crate::liquid_array::ipc::{self, LiquidIPCContext};
 use crate::policies::CachePolicy;
+use crate::reader::{LiquidPredicate, extract_two_column_or};
 use crate::sync::{Mutex, RwLock};
-use crate::{ABLATION_STUDY_MODE, AblationStudyMode, LiquidPredicate};
+use crate::utils::boolean_buffer_or;
+use crate::{ABLATION_STUDY_MODE, AblationStudyMode};
 use ahash::AHashMap;
 use arrow::array::{Array, ArrayRef, BooleanArray, RecordBatch};
 use arrow::buffer::BooleanBuffer;
@@ -11,6 +13,7 @@ use arrow::ipc::reader::StreamReader;
 use arrow_schema::{ArrowError, DataType, Field, Schema};
 use bytes::Bytes;
 use liquid_cache_common::{LiquidCacheMode, coerce_from_parquet_to_liquid_type};
+use parquet::arrow::arrow_reader::ArrowPredicate;
 use std::fmt::Display;
 use std::fs::File;
 use std::io::{BufReader, Read};
@@ -184,7 +187,7 @@ impl LiquidCachedColumn {
     /// it falls back to evaluating on an arrow array.
     fn eval_selection_with_predicate_inner(
         &self,
-        predicate: &mut dyn LiquidPredicate,
+        predicate: &mut LiquidPredicate,
         array: &LiquidArrayRef,
     ) -> BooleanBuffer {
         match predicate.evaluate_liquid(array).unwrap() {
@@ -213,7 +216,7 @@ impl LiquidCachedColumn {
         &self,
         batch_id: BatchID,
         selection: &BooleanBuffer,
-        predicate: &mut dyn LiquidPredicate,
+        predicate: &mut LiquidPredicate,
     ) -> Option<Result<BooleanBuffer, ArrowError>> {
         let cached_entry = self.cache_store.get(&self.entry_id(batch_id))?;
         match &cached_entry {
@@ -481,7 +484,7 @@ impl LiquidCachedRowGroup {
         &self,
         batch_id: BatchID,
         selection: &BooleanBuffer,
-        predicate: &mut dyn LiquidPredicate,
+        predicate: &mut LiquidPredicate,
     ) -> Option<Result<BooleanBuffer, ArrowError>> {
         let column_ids = predicate.predicate_column_ids();
 
@@ -489,24 +492,39 @@ impl LiquidCachedRowGroup {
             // If we only have one column, we can short-circuit and try to evaluate the predicate on encoded data.
             let column_id = column_ids[0];
             let cache = self.get_column(column_id as u64)?;
-            cache.eval_selection_with_predicate(batch_id, selection, predicate)
-        } else {
-            // Otherwise, we need to first convert the data into arrow arrays.
-            let mask = BooleanArray::from(selection.clone());
-            let mut arrays = Vec::new();
-            let mut fields = Vec::new();
-            for column_id in column_ids {
-                let column = self.get_column(column_id as u64)?;
-                let array = column.get_arrow_array_with_filter(batch_id, &mask)?;
-                arrays.push(array);
-                fields.push(column.field.clone());
+            return cache.eval_selection_with_predicate(batch_id, selection, predicate);
+        } else if column_ids.len() == 2 {
+            if let Some(((left_idx, left_expr), (right_idx, right_expr))) =
+                extract_two_column_or(predicate.physical_expr_physical_column_index())
+            {
+                let left_col = self.get_column(left_idx as u64)?;
+                let right_col = self.get_column(right_idx as u64)?;
+                let mut left_pred = predicate.make_new_with_expression(&left_expr);
+                let mut right_pred = predicate.make_new_with_expression(&right_expr);
+                if let (Some(Ok(left_buf)), Some(Ok(right_buf))) = (
+                    left_col.eval_selection_with_predicate(batch_id, selection, &mut left_pred),
+                    right_col.eval_selection_with_predicate(batch_id, selection, &mut right_pred),
+                ) {
+                    let combined = boolean_buffer_or(&left_buf, &right_buf);
+                    return Some(Ok(combined));
+                }
             }
-            let schema = Arc::new(Schema::new(fields));
-            let record_batch = RecordBatch::try_new(schema, arrays).unwrap();
-            let boolean_array = predicate.evaluate(record_batch).unwrap();
-            let (buffer, _) = boolean_array.into_parts();
-            Some(Ok(buffer))
         }
+        // Otherwise, we need to first convert the data into arrow arrays.
+        let mask = BooleanArray::from(selection.clone());
+        let mut arrays = Vec::new();
+        let mut fields = Vec::new();
+        for column_id in column_ids {
+            let column = self.get_column(column_id as u64)?;
+            let array = column.get_arrow_array_with_filter(batch_id, &mask)?;
+            arrays.push(array);
+            fields.push(column.field.clone());
+        }
+        let schema = Arc::new(Schema::new(fields));
+        let record_batch = RecordBatch::try_new(schema, arrays).unwrap();
+        let boolean_array = predicate.evaluate(record_batch).unwrap();
+        let (buffer, _) = boolean_array.into_parts();
+        Some(Ok(buffer))
     }
 }
 

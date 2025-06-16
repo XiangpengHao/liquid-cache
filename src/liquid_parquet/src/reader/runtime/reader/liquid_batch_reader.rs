@@ -5,7 +5,7 @@ use arrow::array::{Array, AsArray, BooleanArray, RecordBatch, RecordBatchReader}
 use arrow::compute::prep_null_mask_filter;
 use arrow_schema::{ArrowError, DataType, Schema, SchemaRef};
 use parquet::arrow::array_reader::ArrayReader;
-use parquet::arrow::arrow_reader::{RowSelection, RowSelector};
+use parquet::arrow::arrow_reader::{ArrowPredicate, RowSelection, RowSelector};
 
 use crate::cache::{BatchID, LiquidCachedRowGroupRef};
 use crate::reader::runtime::utils::take_next_batch;

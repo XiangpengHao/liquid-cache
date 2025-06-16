@@ -131,7 +131,7 @@ pub struct ProjectionMask {
     mask: Option<Vec<bool>>,
 }
 
-pub(super) fn get_predicate_column_id(projection: &parquet::arrow::ProjectionMask) -> Vec<usize> {
+pub(crate) fn get_predicate_column_id(projection: &parquet::arrow::ProjectionMask) -> Vec<usize> {
     let project_inner: &ProjectionMask = unsafe { std::mem::transmute(projection) };
     project_inner
         .mask

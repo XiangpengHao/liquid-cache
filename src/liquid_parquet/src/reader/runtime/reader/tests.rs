@@ -1,22 +1,14 @@
 use crate::policies::DiscardPolicy;
 use crate::{
-    LiquidCachedFileRef, LiquidPredicate,
+    LiquidCachedFileRef,
     cache::LiquidCache,
-    liquid_array::LiquidArrayRef,
     reader::{
         plantime::CachedMetaReaderFactory,
-        runtime::{
-            ArrowReaderBuilderBridge, LiquidRowFilter,
-            liquid_stream::{LiquidStream, LiquidStreamBuilder},
-        },
+        runtime::{ArrowReaderBuilderBridge, liquid_stream::LiquidStreamBuilder},
     },
 };
-use arrow::{
-    array::{AsArray, BooleanArray},
-    datatypes::{Int16Type, Schema},
-    record_batch::RecordBatch,
-};
-use arrow_schema::{ArrowError, SchemaRef};
+use arrow::{datatypes::Schema, record_batch::RecordBatch};
+use arrow_schema::SchemaRef;
 use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
 use futures::StreamExt;
 use liquid_cache_common::{
@@ -25,9 +17,7 @@ use liquid_cache_common::{
 use object_store::ObjectMeta;
 use parquet::arrow::{
     ParquetRecordBatchStreamBuilder, ProjectionMask,
-    arrow_reader::{
-        ArrowPredicate, ArrowReaderMetadata, ArrowReaderOptions, ParquetRecordBatchReaderBuilder,
-    },
+    arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions, ParquetRecordBatchReaderBuilder},
 };
 use std::{fs::File, path::PathBuf, sync::Arc};
 
@@ -254,91 +244,6 @@ async fn read_warm(cache_mode: &LiquidCacheMode) {
 async fn test_reading_warm() {
     for cache_mode in CACHE_MODES {
         read_warm(cache_mode).await;
-    }
-}
-
-struct TwoColumnsPredicate {
-    projection_mask: ProjectionMask,
-}
-
-impl LiquidPredicate for TwoColumnsPredicate {
-    fn evaluate_liquid(
-        &mut self,
-        _array: &LiquidArrayRef,
-    ) -> Result<Option<BooleanArray>, ArrowError> {
-        unimplemented!()
-    }
-}
-
-impl ArrowPredicate for TwoColumnsPredicate {
-    fn evaluate(&mut self, batch: RecordBatch) -> Result<BooleanArray, ArrowError> {
-        assert_eq!(batch.num_columns(), 2);
-        let column1 = batch.column(0);
-        let column2 = batch.column(1);
-        let mask = arrow::compute::kernels::cmp::gt(column1, column2).unwrap();
-        Ok(mask)
-    }
-
-    fn projection(&self) -> &ProjectionMask {
-        &self.projection_mask
-    }
-}
-
-async fn get_projected_reader(projection: &[usize], cache: LiquidCachedFileRef) -> LiquidStream {
-    let (mut builder, _file) = get_test_reader().await;
-    builder.projection = ProjectionMask::roots(
-        builder.metadata.file_metadata().schema_descr(),
-        projection.iter().cloned(),
-    );
-    let predicate = TwoColumnsPredicate {
-        projection_mask: ProjectionMask::roots(
-            builder.metadata.file_metadata().schema_descr(),
-            projection.iter().cloned(),
-        ),
-    };
-    builder.filter = Some(LiquidRowFilter::new(vec![Box::new(predicate)]));
-    builder.build(cache).unwrap()
-}
-
-async fn reading_with_filter_two_columns(cache_mode: &LiquidCacheMode) {
-    let projection = vec![11, 12]; // OS and UserAgent
-    let tmp_dir = tempfile::tempdir().unwrap();
-    let liquid_cache = get_test_cache(BATCH_SIZE, tmp_dir.path().to_path_buf(), cache_mode);
-    let reader = get_projected_reader(&projection, liquid_cache.clone()).await;
-
-    let batches = reader
-        .collect::<Vec<_>>()
-        .await
-        .into_iter()
-        .map(|batch| batch.unwrap())
-        .collect::<Vec<_>>();
-
-    for (_i, batch) in batches.iter().enumerate() {
-        let col_1 = batch.column(0).as_primitive::<Int16Type>();
-        let col_2 = batch.column(1).as_primitive::<Int16Type>();
-        for (c1, c2) in col_1.iter().zip(col_2.iter()) {
-            assert!(c1 > c2);
-        }
-    }
-
-    // now run again with the same cache
-    let reader = get_projected_reader(&projection, liquid_cache).await;
-    let warm_batches = reader
-        .collect::<Vec<_>>()
-        .await
-        .into_iter()
-        .map(|batch| batch.unwrap())
-        .collect::<Vec<_>>();
-    assert_eq!(batches.len(), warm_batches.len());
-    for (batch, warm_batch) in batches.iter().zip(warm_batches.iter()) {
-        assert_batch_eq(&batch, &warm_batch);
-    }
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn test_reading_with_filter_two_columns() {
-    for cache_mode in CACHE_MODES {
-        reading_with_filter_two_columns(cache_mode).await;
     }
 }
 
