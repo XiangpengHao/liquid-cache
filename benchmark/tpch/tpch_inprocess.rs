@@ -1,15 +1,12 @@
+use anyhow::Result;
 use clap::Parser;
 use liquid_cache_benchmarks::{
-    setup_observability, tpch, BenchmarkManifest, InProcessBenchmarkMode, InProcessBenchmarkRunner,
+    BenchmarkManifest, InProcessBenchmarkMode, InProcessBenchmarkRunner, setup_observability, tpch,
 };
 use mimalloc::MiMalloc;
 use serde::Serialize;
-use std::{
-    collections::HashMap,
-    path::PathBuf,
-};
+use std::{collections::HashMap, path::PathBuf};
 use url::Url;
-use anyhow::Result;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -85,14 +82,15 @@ impl TpchInProcessBenchmark {
                     current_dir,
                     self.data_dir.display(),
                     table_name
-                ))?.to_string()
+                ))?
+                .to_string()
             };
             manifest = manifest.add_table(table_name.to_string(), table_path);
         }
 
         // Load queries from TPC-H directory
         let queries = tpch::get_all_queries(&self.query_dir)?;
-        
+
         // Filter to relevant queries if no specific query is requested
         let query_filter: Vec<u32> = if let Some(query) = self.query {
             vec![query]
@@ -119,7 +117,7 @@ impl TpchInProcessBenchmark {
 
     pub async fn run(self) -> Result<()> {
         let manifest = self.generate_manifest()?;
-        
+
         // Convert query number to query index for the runner
         let query_filter = if let Some(query_num) = self.query {
             // Find the index of the requested query in the relevant queries
@@ -135,7 +133,7 @@ impl TpchInProcessBenchmark {
         let max_cache_mb = self.max_cache_mb;
         let flamegraph_dir = self.flamegraph_dir.clone();
         let output = self.output.clone();
-        
+
         let runner = InProcessBenchmarkRunner::new()
             .with_bench_mode(bench_mode)
             .with_iteration(iteration)

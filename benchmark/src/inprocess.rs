@@ -124,6 +124,12 @@ pub struct InProcessBenchmarkRunner {
     pub query_filter: Option<usize>,
 }
 
+impl Default for InProcessBenchmarkRunner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InProcessBenchmarkRunner {
     pub fn new() -> Self {
         Self {
@@ -254,12 +260,11 @@ impl InProcessBenchmarkRunner {
                 use datafusion_orc::{OrcReadOptions, SessionContextOrcExt};
 
                 let ctx = SessionContext::new_with_config(session_config);
-                // Register ORC tables
                 for (table_name, table_path) in &manifest.tables {
                     if table_path.ends_with(".orc") {
                         ctx.register_orc(table_name, table_path, OrcReadOptions::default())
                             .await?;
-                        info!("Registered ORC table '{}' from {}", table_name, table_path);
+                        info!("Registered ORC table '{table_name}' from {table_path}");
                     }
                 }
                 (ctx, None)
@@ -283,7 +288,7 @@ impl InProcessBenchmarkRunner {
             if !table_path_str.ends_with(".orc") {
                 ctx.register_parquet(table_name, table_path_str, Default::default())
                     .await?;
-                info!("Registered table '{}' from {}", table_name, table_path_str);
+                info!("Registered table '{table_name}' from {table_path_str}");
             }
         }
 
@@ -295,13 +300,11 @@ impl InProcessBenchmarkRunner {
 
         for (index, query_str) in manifest.queries.iter().enumerate() {
             let sql = if Self::is_file_path(query_str) {
-                // Treat as file path
                 let sql = std::fs::read_to_string(query_str)?;
-                info!("Loaded query {} from file: {}", index, query_str);
+                info!("Loaded query {index} from file: {query_str}");
                 sql
             } else {
-                // Treat as inline SQL
-                info!("Loaded query {} from inline SQL", index);
+                info!("Loaded query {index} from inline SQL");
                 query_str.clone()
             };
 
@@ -324,23 +327,23 @@ impl InProcessBenchmarkRunner {
         Arc<dyn datafusion::physical_plan::ExecutionPlan>,
     )> {
         // Check for special query handling
-        if let Some(special_handling) = &manifest.special_query_handling {
-            if let Some(handling_type) = special_handling.get(&query.id) {
-                if handling_type == "tpch_q15" && query.id == 15 {
-                    // Q15 has three queries, the second one is the one we want to test
-                    let queries: Vec<&str> = query.sql.split(';').collect();
-                    let mut results = Vec::new();
-                    let mut plan = None;
-                    for (i, q) in queries.iter().enumerate() {
-                        let (result, p, _) = run_query(ctx, q).await?;
-                        if i == 1 {
-                            results = result;
-                            plan = Some(p);
-                        }
-                    }
-                    return Ok((results, plan.unwrap()));
+        if let Some(special_handling) = &manifest.special_query_handling
+            && let Some(handling_type) = special_handling.get(&query.id)
+            && handling_type == "tpch_q15"
+            && query.id == 15
+        {
+            // Q15 has three queries, the second one is the one we want to test
+            let queries: Vec<&str> = query.sql.split(';').collect();
+            let mut results = Vec::new();
+            let mut plan = None;
+            for (i, q) in queries.iter().enumerate() {
+                let (result, p, _) = run_query(ctx, q).await?;
+                if i == 1 {
+                    results = result;
+                    plan = Some(p);
                 }
             }
+            return Ok((results, plan.unwrap()));
         }
 
         let (results, plan, _) = run_query(ctx, &query.sql).await?;
@@ -365,10 +368,8 @@ impl InProcessBenchmarkRunner {
             let minute = (secs / 60) % 60;
             let second = secs % 60;
 
-            let filename = format!(
-                "{:02}h{:02}m{:02}s_q{}_i{}.svg",
-                hour, minute, second, query_id, iteration
-            );
+            let filename =
+                format!("{hour:02}h{minute:02}m{second:02}s_q{query_id:02}_i{iteration:02}.svg");
             let filepath = flamegraph_dir.join(filename);
             std::fs::write(&filepath, svg_data)?;
             info!("Flamegraph written to: {}", filepath.display());

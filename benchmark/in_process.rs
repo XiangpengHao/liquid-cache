@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 use liquid_cache_benchmarks::{
-    setup_observability, BenchmarkManifest, InProcessBenchmarkMode, InProcessBenchmarkRunner,
+    BenchmarkManifest, InProcessBenchmarkMode, InProcessBenchmarkRunner, setup_observability,
 };
 use mimalloc::MiMalloc;
 use serde::Serialize;
@@ -54,7 +54,7 @@ impl InProcessBenchmark {
     pub async fn run(self) -> Result<()> {
         let manifest = BenchmarkManifest::load_from_file(&self.manifest)?;
         let output = self.output.clone();
-        
+
         let runner = InProcessBenchmarkRunner::new()
             .with_bench_mode(self.bench_mode)
             .with_iteration(self.iteration)
