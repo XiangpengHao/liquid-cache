@@ -1,7 +1,7 @@
 use super::liquid_array::LiquidArrayRef;
 use crate::liquid_array::ipc::{self, LiquidIPCContext};
 use crate::policies::CachePolicy;
-use crate::reader::{LiquidPredicate, extract_two_column_or};
+use crate::reader::{LiquidPredicate, extract_multi_column_or, try_evaluate_predicate};
 use crate::sync::{Mutex, RwLock};
 use crate::utils::boolean_buffer_or;
 use crate::{ABLATION_STUDY_MODE, AblationStudyMode};
@@ -493,20 +493,49 @@ impl LiquidCachedRowGroup {
             let column_id = column_ids[0];
             let cache = self.get_column(column_id as u64)?;
             return cache.eval_selection_with_predicate(batch_id, selection, predicate);
-        } else if column_ids.len() == 2 {
-            if let Some(((left_idx, left_expr), (right_idx, right_expr))) =
-                extract_two_column_or(predicate.physical_expr_physical_column_index())
+        } else if column_ids.len() >= 2 {
+            // Try to extract multiple column-literal expressions from OR structure
+            if let Some(column_exprs) =
+                extract_multi_column_or(predicate.physical_expr_physical_column_index())
             {
-                let left_col = self.get_column(left_idx as u64)?;
-                let right_col = self.get_column(right_idx as u64)?;
-                let mut left_pred = predicate.make_new_with_expression(&left_expr);
-                let mut right_pred = predicate.make_new_with_expression(&right_expr);
-                if let (Some(Ok(left_buf)), Some(Ok(right_buf))) = (
-                    left_col.eval_selection_with_predicate(batch_id, selection, &mut left_pred),
-                    right_col.eval_selection_with_predicate(batch_id, selection, &mut right_pred),
-                ) {
-                    let combined = boolean_buffer_or(&left_buf, &right_buf);
-                    return Some(Ok(combined));
+                let mut combined_buffer = None;
+
+                for (col_idx, expr) in column_exprs {
+                    let column = self.get_column(col_idx as u64)?;
+                    let entry = self.cache_store.get(&column.entry_id(batch_id))?;
+                    let filtered = match entry {
+                        CachedBatch::MemoryLiquid(array) => {
+                            let boolean_array = BooleanArray::new(selection.clone(), None);
+                            array.filter(&boolean_array)
+                        }
+                        CachedBatch::DiskLiquid => {
+                            let array = column.read_liquid_from_disk(batch_id);
+                            let boolean_array = BooleanArray::new(selection.clone(), None);
+                            array.filter(&boolean_array)
+                        }
+
+                        _ => {
+                            combined_buffer = None;
+                            break;
+                        }
+                    };
+                    let buffer = if let Ok(Some(buffer)) = try_evaluate_predicate(&expr, &filtered)
+                    {
+                        buffer
+                    } else {
+                        combined_buffer = None;
+                        break;
+                    };
+                    let buffer = buffer.into_parts().0;
+
+                    combined_buffer = Some(match combined_buffer {
+                        None => buffer,
+                        Some(existing) => boolean_buffer_or(&existing, &buffer),
+                    });
+                }
+
+                if let Some(result) = combined_buffer {
+                    return Some(Ok(result));
                 }
             }
         }

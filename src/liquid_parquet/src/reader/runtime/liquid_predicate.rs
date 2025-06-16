@@ -94,19 +94,40 @@ pub(crate) fn try_evaluate_predicate(
     Ok(None)
 }
 
-pub(crate) fn extract_two_column_or(
+/// Extract multiple column-literal expressions from a nested OR structure.
+/// Returns a vector of (column_index, expression) pairs if all leaf expressions
+/// are column-literal expressions connected by OR operators.
+pub(crate) fn extract_multi_column_or(
     expr: &Arc<dyn PhysicalExpr>,
-) -> Option<(
-    (usize, Arc<dyn PhysicalExpr>),
-    (usize, Arc<dyn PhysicalExpr>),
-)> {
-    let binary = expr.as_any().downcast_ref::<BinaryExpr>()?;
-    if binary.op() != &Operator::Or {
-        return None;
+) -> Option<Vec<(usize, Arc<dyn PhysicalExpr>)>> {
+    let mut result = Vec::new();
+
+    fn collect_or_expressions(
+        expr: &Arc<dyn PhysicalExpr>,
+        result: &mut Vec<(usize, Arc<dyn PhysicalExpr>)>,
+    ) -> bool {
+        if let Some(binary) = expr.as_any().downcast_ref::<BinaryExpr>()
+            && binary.op() == &Operator::Or
+        {
+            // Recursively collect from left and right
+            return collect_or_expressions(binary.left(), result)
+                && collect_or_expressions(binary.right(), result);
+        }
+
+        // Try to extract column-literal from this expression
+        if let Some(column_literal) = extract_column_literal(expr) {
+            result.push(column_literal);
+            true
+        } else {
+            false
+        }
     }
-    let left = extract_column_literal(binary.left())?;
-    let right = extract_column_literal(binary.right())?;
-    Some((left, right))
+
+    if collect_or_expressions(expr, &mut result) && result.len() >= 2 {
+        Some(result)
+    } else {
+        None
+    }
 }
 
 fn extract_column_literal(expr: &Arc<dyn PhysicalExpr>) -> Option<(usize, Arc<dyn PhysicalExpr>)> {
@@ -117,17 +138,16 @@ fn extract_column_literal(expr: &Arc<dyn PhysicalExpr>) -> Option<(usize, Arc<dy
             let column = binary.left().as_any().downcast_ref::<Column>().unwrap();
             return Some((column.index(), Arc::clone(expr)));
         }
-    } else if let Some(like_expr) = expr.as_any().downcast_ref::<LikeExpr>() {
-        if like_expr
+    } else if let Some(like_expr) = expr.as_any().downcast_ref::<LikeExpr>()
+        && like_expr
             .pattern()
             .as_any()
             .downcast_ref::<Literal>()
             .is_some()
-            && like_expr.expr().as_any().downcast_ref::<Column>().is_some()
-        {
-            let column = like_expr.expr().as_any().downcast_ref::<Column>().unwrap();
-            return Some((column.index(), Arc::clone(expr)));
-        }
+        && like_expr.expr().as_any().downcast_ref::<Column>().is_some()
+    {
+        let column = like_expr.expr().as_any().downcast_ref::<Column>().unwrap();
+        return Some((column.index(), Arc::clone(expr)));
     }
     None
 }

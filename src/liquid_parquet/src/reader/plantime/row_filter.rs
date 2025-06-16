@@ -147,18 +147,6 @@ impl LiquidPredicate {
         &self.physical_expr_physical_column_index
     }
 
-    pub fn make_new_with_expression(&self, expression: &Arc<dyn PhysicalExpr>) -> Self {
-        Self {
-            physical_expr: Arc::clone(expression),
-            physical_expr_physical_column_index: Arc::clone(expression),
-            projection_mask: self.projection_mask.clone(),
-            rows_pruned: self.rows_pruned.clone(),
-            rows_matched: self.rows_matched.clone(),
-            time: self.time.clone(),
-            schema_mapper: Arc::clone(&self.schema_mapper),
-        }
-    }
-
     pub fn evaluate_liquid(
         &mut self,
         array: &LiquidArrayRef,
@@ -514,7 +502,6 @@ pub fn build_row_filter(
                 rows_matched.clone(),
                 time.clone(),
             )
-            .map(|pred| Box::new(pred) as _)
         })
         .collect::<Result<Vec<_>, _>>()
         .map(|filters| Some(LiquidRowFilter::new(filters)))

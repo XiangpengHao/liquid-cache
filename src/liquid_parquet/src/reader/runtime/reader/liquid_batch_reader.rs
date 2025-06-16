@@ -104,7 +104,7 @@ impl LiquidBatchReader {
                     let cached_result = self.liquid_cache.evaluate_selection_with_predicate(
                         self.current_batch_id,
                         &input_selection,
-                        predicate.as_mut(),
+                        predicate,
                     );
 
                     let boolean_mask = if let Some(result) = cached_result {
