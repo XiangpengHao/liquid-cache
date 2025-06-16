@@ -7,9 +7,9 @@ use object_store::{
     ObjectMeta, ObjectStore, PutMode, PutMultipartOpts, PutOptions, PutPayload, PutResult, Result,
     path::Path,
 };
-use parking_lot::RwLock;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::sync::RwLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// In-memory storage for testing purposes.
@@ -161,7 +161,7 @@ impl MockStore {
     pub fn new_with_files(file_count: usize, file_size: usize) -> Self {
         let store = Self::new();
         {
-            let mut storage = store.storage.write();
+            let mut storage = store.storage.write().unwrap();
             let data = vec![0u8; file_size];
 
             // Fill the data with a pattern: index % 256
@@ -183,7 +183,7 @@ impl MockStore {
     /// Creates a fork of the store, with the current content copied into the
     /// new store.
     pub fn fork(&self) -> Self {
-        let storage = self.storage.read();
+        let storage = self.storage.read().unwrap();
         let storage = Arc::new(RwLock::new(storage.clone()));
         Self { storage }
     }
@@ -192,6 +192,7 @@ impl MockStore {
     pub fn get_access_count(&self, location: &Path) -> Option<usize> {
         self.storage
             .read()
+            .unwrap()
             .map
             .get(location)
             .map(|entry| entry.access_count.load(Ordering::SeqCst))
@@ -199,13 +200,14 @@ impl MockStore {
 
     /// Get the number of objects stored in the store
     pub fn get_file_count(&self) -> usize {
-        self.storage.read().map.len()
+        self.storage.read().unwrap().map.len()
     }
 
     /// Get the total size of all objects in the store
     pub fn get_store_size(&self) -> usize {
         self.storage
             .read()
+            .unwrap()
             .map
             .values()
             .map(|entry| entry.data.len())
@@ -213,7 +215,7 @@ impl MockStore {
     }
 
     fn entry(&self, location: &Path) -> Result<Entry> {
-        let storage = self.storage.read();
+        let storage = self.storage.read().unwrap();
         let value =
             storage
                 .map
@@ -235,7 +237,7 @@ impl ObjectStore for MockStore {
         payload: PutPayload,
         opts: PutOptions,
     ) -> Result<PutResult> {
-        let mut storage = self.storage.write();
+        let mut storage = self.storage.write().unwrap();
         let etag = storage.next_etag;
         let entry = Entry::new(payload.into(), Utc::now(), etag, opts.attributes);
 
@@ -307,7 +309,7 @@ impl ObjectStore for MockStore {
     }
 
     async fn delete(&self, location: &Path) -> Result<()> {
-        self.storage.write().map.remove(location);
+        self.storage.write().unwrap().map.remove(location);
         Ok(())
     }
 
@@ -315,7 +317,7 @@ impl ObjectStore for MockStore {
         let root = Path::default();
         let prefix = prefix.unwrap_or(&root);
 
-        let storage = self.storage.read();
+        let storage = self.storage.read().unwrap();
         let values: Vec<_> = storage
             .map
             .range((prefix)..)
@@ -349,7 +351,7 @@ impl ObjectStore for MockStore {
         // Only objects in this base level should be returned in the
         // response. Otherwise, we just collect the common prefixes.
         let mut objects = vec![];
-        for (k, v) in self.storage.read().map.range((prefix)..) {
+        for (k, v) in self.storage.read().unwrap().map.range((prefix)..) {
             if !k.as_ref().starts_with(prefix.as_ref()) {
                 break;
             }
