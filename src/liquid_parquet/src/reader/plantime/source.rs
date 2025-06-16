@@ -21,7 +21,6 @@ use datafusion::{
     },
 };
 use futures::{FutureExt, future::BoxFuture};
-use liquid_cache_common::LiquidCacheMode;
 use object_store::{ObjectStore, path::Path};
 use parquet::{
     arrow::{
@@ -165,7 +164,6 @@ pub struct LiquidParquetSource {
     page_pruning_predicate: Option<Arc<PagePruningAccessPlanFilter>>,
     table_parquet_options: TableParquetOptions,
     liquid_cache: LiquidCacheRef,
-    liquid_cache_mode: LiquidCacheMode,
     batch_size: Option<usize>,
     projected_statistics: Option<Statistics>,
 }
@@ -224,7 +222,6 @@ impl LiquidParquetSource {
         source: ParquetSource,
         downstream_full_schema: Arc<Schema>,
         liquid_cache: LiquidCacheRef,
-        liquid_cache_mode: LiquidCacheMode,
     ) -> Self {
         let predicate = source.predicate().cloned();
 
@@ -232,7 +229,6 @@ impl LiquidParquetSource {
             table_parquet_options: source.table_parquet_options().clone(),
             batch_size: Some(liquid_cache.batch_size()),
             liquid_cache,
-            liquid_cache_mode,
             metrics: source.metrics().clone(),
             predicate: None,
             pruning_predicate: None,
@@ -290,7 +286,6 @@ impl FileSource for LiquidParquetSource {
             base_config.file_schema.clone(),
             self.metrics.clone(),
             self.liquid_cache.clone(),
-            self.liquid_cache_mode,
             reader_factory,
             self.reorder_filters(),
             schema_adapter,

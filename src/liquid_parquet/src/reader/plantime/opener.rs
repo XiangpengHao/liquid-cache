@@ -23,7 +23,7 @@ use datafusion::{
 };
 use futures::StreamExt;
 use futures::TryStreamExt;
-use liquid_cache_common::{CacheSchema, LiquidCacheMode, ParquetReaderSchema};
+use liquid_cache_common::ParquetReaderSchema;
 use log::debug;
 use parquet::arrow::{
     ParquetRecordBatchStreamBuilder, ProjectionMask,
@@ -40,7 +40,6 @@ pub struct LiquidParquetOpener {
     predicate: Option<Arc<dyn PhysicalExpr>>,
     pruning_predicate: Option<Arc<PruningPredicate>>,
     page_pruning_predicate: Option<Arc<PagePruningAccessPlanFilter>>,
-    cache_schema: CacheSchema,
     downstream_full_schema: SchemaRef,
     metrics: ExecutionPlanMetricsSet,
     parquet_file_reader_factory: Arc<CachedMetaReaderFactory>,
@@ -62,13 +61,10 @@ impl LiquidParquetOpener {
         downstream_full_schema: SchemaRef,
         metrics: ExecutionPlanMetricsSet,
         liquid_cache: LiquidCacheRef,
-        liquid_cache_mode: LiquidCacheMode,
         parquet_file_reader_factory: Arc<CachedMetaReaderFactory>,
         reorder_filters: bool,
         schema_adapter_factory: Arc<dyn SchemaAdapterFactory>,
     ) -> Self {
-        let cache_schema = CacheSchema::from(downstream_full_schema.clone(), &liquid_cache_mode);
-
         Self {
             partition_index,
             projection,
@@ -77,7 +73,6 @@ impl LiquidParquetOpener {
             predicate,
             pruning_predicate,
             page_pruning_predicate,
-            cache_schema,
             downstream_full_schema,
             metrics,
             liquid_cache,
@@ -118,7 +113,6 @@ impl FileOpener for LiquidParquetOpener {
         let predicate = self.predicate.clone();
         let pruning_predicate = self.pruning_predicate.clone();
         let page_pruning_predicate = self.page_pruning_predicate.clone();
-        let cache_schema = Arc::clone(&self.cache_schema);
         let downstream_full_schema = Arc::clone(&self.downstream_full_schema);
         let reorder_predicates = self.reorder_filters;
         let enable_page_index = should_enable_page_index(&self.page_pruning_predicate);
@@ -171,7 +165,7 @@ impl FileOpener for LiquidParquetOpener {
             let row_filter = predicate.as_ref().and_then(|p| {
                 let row_filter = row_filter::build_row_filter(
                     p,
-                    &cache_schema,
+                    &physical_file_schema,
                     &downstream_full_schema,
                     builder.metadata(),
                     reorder_predicates,
