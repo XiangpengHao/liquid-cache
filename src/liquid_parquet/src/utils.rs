@@ -332,7 +332,6 @@ pub fn rewrite_data_source_plan(
     plan: Arc<dyn ExecutionPlan>,
     cache: &LiquidCacheRef,
 ) -> Arc<dyn ExecutionPlan> {
-    let cache_mode = cache.cache_mode();
     let rewritten = plan
         .transform_up(|node| {
             let any_plan = node.as_any();
@@ -344,7 +343,6 @@ pub fn rewrite_data_source_plan(
                         parquet_source.clone(),
                         file_scan_config.file_schema.clone(),
                         cache.clone(),
-                        *cache_mode,
                     );
                     let mut new_config = file_scan_config.clone();
                     new_config.file_source = Arc::new(new_source);
