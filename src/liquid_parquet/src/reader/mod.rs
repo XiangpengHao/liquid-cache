@@ -9,3 +9,6 @@ mod utils;
 pub use plantime::LiquidParquetSource;
 pub(crate) use plantime::LiquidPredicate;
 pub(crate) use runtime::{extract_multi_column_or, try_evaluate_predicate};
+
+#[cfg(test)]
+pub(crate) use plantime::FilterCandidateBuilder;
