@@ -718,3 +718,279 @@ impl LiquidCache {
         self.cache_store.config().cache_mode()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cache::{BatchID, LiquidCache, LiquidCachedRowGroupRef};
+    use crate::policies::DiscardPolicy;
+    use crate::reader::FilterCandidateBuilder;
+    use arrow::array::Int32Array;
+    use arrow::buffer::BooleanBuffer;
+    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::record_batch::RecordBatch;
+    use datafusion::common::ScalarValue;
+    use datafusion::datasource::schema_adapter::DefaultSchemaAdapterFactory;
+    use datafusion::logical_expr::Operator;
+    use datafusion::physical_expr::PhysicalExpr;
+    use datafusion::physical_expr::expressions::{BinaryExpr, Literal};
+    use datafusion::physical_plan::expressions::Column;
+    use datafusion::physical_plan::metrics;
+    use liquid_cache_common::LiquidCacheMode;
+    use parquet::arrow::ArrowWriter;
+    use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
+    use std::sync::Arc;
+
+    fn setup_cache(batch_size: usize) -> LiquidCachedRowGroupRef {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let cache = LiquidCache::new(
+            batch_size,
+            usize::MAX,
+            tmp_dir.path().to_path_buf(),
+            LiquidCacheMode::Liquid {
+                transcode_in_background: false,
+            },
+            Box::new(DiscardPolicy::default()),
+        );
+        let file = cache.register_or_get_file("test".to_string());
+        file.row_group(0)
+    }
+
+    #[test]
+    fn evaluate_or_on_cached_columns() {
+        let batch_size = 4;
+        let row_group = setup_cache(batch_size);
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int32, false),
+            Field::new("b", DataType::Int32, false),
+        ]));
+
+        let col_a = row_group.create_column(0, Arc::new(Field::new("a", DataType::Int32, false)));
+        let col_b = row_group.create_column(1, Arc::new(Field::new("b", DataType::Int32, false)));
+
+        let batch_id = BatchID::from_row_id(0, batch_size);
+
+        let array_a = Arc::new(Int32Array::from(vec![1, 2, 3, 4]));
+        let array_b = Arc::new(Int32Array::from(vec![10, 20, 30, 40]));
+
+        assert!(col_a.insert(batch_id, array_a.clone()).is_ok());
+        assert!(col_b.insert(batch_id, array_b.clone()).is_ok());
+
+        // build parquet metadata for predicate construction
+        let tmp_meta = tempfile::NamedTempFile::new().unwrap();
+        let mut writer =
+            ArrowWriter::try_new(tmp_meta.reopen().unwrap(), Arc::clone(&schema), None).unwrap();
+        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![array_a, array_b]).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        let file_reader = std::fs::File::open(tmp_meta.path()).unwrap();
+        let metadata = ArrowReaderMetadata::load(&file_reader, ArrowReaderOptions::new()).unwrap();
+
+        // expression a = 3 OR b = 20
+        let expr_a: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("a", 0)),
+            Operator::Eq,
+            Arc::new(Literal::new(ScalarValue::Int32(Some(3)))),
+        ));
+        let expr_b: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("b", 1)),
+            Operator::Eq,
+            Arc::new(Literal::new(ScalarValue::Int32(Some(20)))),
+        ));
+        let expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(expr_a, Operator::Or, expr_b));
+
+        let adapter_factory = Arc::new(DefaultSchemaAdapterFactory);
+        let builder = FilterCandidateBuilder::new(
+            expr,
+            Arc::clone(&schema),
+            Arc::clone(&schema),
+            adapter_factory,
+        );
+        let candidate = builder.build(metadata.metadata()).unwrap().unwrap();
+        let mut predicate = LiquidPredicate::try_new(
+            candidate,
+            metadata.metadata(),
+            metrics::Count::new(),
+            metrics::Count::new(),
+            metrics::Time::new(),
+        )
+        .unwrap();
+
+        let selection = BooleanBuffer::new_set(batch_size);
+        let result = row_group
+            .evaluate_selection_with_predicate(batch_id, &selection, &mut predicate)
+            .unwrap()
+            .unwrap();
+
+        let expected = BooleanBuffer::collect_bool(batch_size, |i| i == 1 || i == 2);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn evaluate_three_column_or() {
+        let batch_size = 8;
+        let row_group = setup_cache(batch_size);
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int32, false),
+            Field::new("b", DataType::Int32, false),
+            Field::new("c", DataType::Int32, false),
+        ]));
+
+        let col_a = row_group.create_column(0, Arc::new(Field::new("a", DataType::Int32, false)));
+        let col_b = row_group.create_column(1, Arc::new(Field::new("b", DataType::Int32, false)));
+        let col_c = row_group.create_column(2, Arc::new(Field::new("c", DataType::Int32, false)));
+
+        let batch_id = BatchID::from_row_id(0, batch_size);
+
+        let array_a = Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5, 6, 7, 8]));
+        let array_b = Arc::new(Int32Array::from(vec![10, 20, 30, 40, 50, 60, 70, 80]));
+        let array_c = Arc::new(Int32Array::from(vec![
+            100, 200, 300, 400, 500, 600, 700, 800,
+        ]));
+
+        assert!(col_a.insert(batch_id, array_a.clone()).is_ok());
+        assert!(col_b.insert(batch_id, array_b.clone()).is_ok());
+        assert!(col_c.insert(batch_id, array_c.clone()).is_ok());
+
+        // build parquet metadata for predicate construction
+        let tmp_meta = tempfile::NamedTempFile::new().unwrap();
+        let mut writer =
+            ArrowWriter::try_new(tmp_meta.reopen().unwrap(), Arc::clone(&schema), None).unwrap();
+        let batch =
+            RecordBatch::try_new(Arc::clone(&schema), vec![array_a, array_b, array_c]).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        let file_reader = std::fs::File::open(tmp_meta.path()).unwrap();
+        let metadata = ArrowReaderMetadata::load(&file_reader, ArrowReaderOptions::new()).unwrap();
+
+        // expression: a = 2 OR b = 40 OR c = 600
+        let expr_a: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("a", 0)),
+            Operator::Eq,
+            Arc::new(Literal::new(ScalarValue::Int32(Some(2)))),
+        ));
+        let expr_b: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("b", 1)),
+            Operator::Eq,
+            Arc::new(Literal::new(ScalarValue::Int32(Some(40)))),
+        ));
+        let expr_c: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("c", 2)),
+            Operator::Eq,
+            Arc::new(Literal::new(ScalarValue::Int32(Some(600)))),
+        ));
+
+        // Build nested OR: (a = 2 OR b = 40) OR c = 600
+        let expr_ab = Arc::new(BinaryExpr::new(expr_a, Operator::Or, expr_b));
+        let expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(expr_ab, Operator::Or, expr_c));
+
+        let adapter_factory = Arc::new(DefaultSchemaAdapterFactory);
+        let builder = FilterCandidateBuilder::new(
+            expr,
+            Arc::clone(&schema),
+            Arc::clone(&schema),
+            adapter_factory,
+        );
+        let candidate = builder.build(metadata.metadata()).unwrap().unwrap();
+        let mut predicate = LiquidPredicate::try_new(
+            candidate,
+            metadata.metadata(),
+            metrics::Count::new(),
+            metrics::Count::new(),
+            metrics::Time::new(),
+        )
+        .unwrap();
+
+        let selection = BooleanBuffer::new_set(batch_size);
+        let result = row_group
+            .evaluate_selection_with_predicate(batch_id, &selection, &mut predicate)
+            .unwrap()
+            .unwrap();
+
+        // Expected: row 1 (a=2), row 3 (b=40), row 5 (c=600) -> indices 1, 3, 5
+        let expected = BooleanBuffer::collect_bool(batch_size, |i| i == 1 || i == 3 || i == 5);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn evaluate_string_column_or() {
+        let batch_size = 8;
+        let row_group = setup_cache(batch_size);
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("name", DataType::Utf8View, false),
+            Field::new("city", DataType::Utf8View, false),
+        ]));
+
+        let col_name =
+            row_group.create_column(0, Arc::new(Field::new("name", DataType::Utf8View, false)));
+        let col_city =
+            row_group.create_column(1, Arc::new(Field::new("city", DataType::Utf8View, false)));
+
+        let batch_id = BatchID::from_row_id(0, batch_size);
+
+        let array_name = Arc::new(arrow::array::StringViewArray::from(vec![
+            "Alice", "Bob", "Charlie", "David", "Eve", "Frank", "Grace", "Henry",
+        ]));
+        let array_city = Arc::new(arrow::array::StringViewArray::from(vec![
+            "New York", "London", "Paris", "Tokyo", "Berlin", "Sydney", "Madrid", "Rome",
+        ]));
+
+        assert!(col_name.insert(batch_id, array_name.clone()).is_ok());
+        assert!(col_city.insert(batch_id, array_city.clone()).is_ok());
+
+        // build parquet metadata for predicate construction
+        let tmp_meta = tempfile::NamedTempFile::new().unwrap();
+        let mut writer =
+            ArrowWriter::try_new(tmp_meta.reopen().unwrap(), Arc::clone(&schema), None).unwrap();
+        let batch =
+            RecordBatch::try_new(Arc::clone(&schema), vec![array_name, array_city]).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        let file_reader = std::fs::File::open(tmp_meta.path()).unwrap();
+        let metadata = ArrowReaderMetadata::load(&file_reader, ArrowReaderOptions::new()).unwrap();
+
+        // expression: name = "Bob" OR city = "Tokyo"
+        let expr_name: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("name", 0)),
+            Operator::Eq,
+            Arc::new(Literal::new(ScalarValue::Utf8(Some("Bob".to_string())))),
+        ));
+        let expr_city: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("city", 1)),
+            Operator::Eq,
+            Arc::new(Literal::new(ScalarValue::Utf8(Some("Tokyo".to_string())))),
+        ));
+        let expr: Arc<dyn PhysicalExpr> =
+            Arc::new(BinaryExpr::new(expr_name, Operator::Or, expr_city));
+
+        let adapter_factory = Arc::new(DefaultSchemaAdapterFactory);
+        let builder = FilterCandidateBuilder::new(
+            expr,
+            Arc::clone(&schema),
+            Arc::clone(&schema),
+            adapter_factory,
+        );
+        let candidate = builder.build(metadata.metadata()).unwrap().unwrap();
+        let mut predicate = LiquidPredicate::try_new(
+            candidate,
+            metadata.metadata(),
+            metrics::Count::new(),
+            metrics::Count::new(),
+            metrics::Time::new(),
+        )
+        .unwrap();
+
+        let selection = BooleanBuffer::new_set(batch_size);
+        let result = row_group
+            .evaluate_selection_with_predicate(batch_id, &selection, &mut predicate)
+            .unwrap()
+            .unwrap();
+
+        // Expected: row 1 (name="Bob"), row 3 (city="Tokyo") -> indices 1, 3
+        let expected = BooleanBuffer::collect_bool(batch_size, |i| i == 1 || i == 3);
+        assert_eq!(result, expected);
+    }
+}
