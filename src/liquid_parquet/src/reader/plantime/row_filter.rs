@@ -244,7 +244,7 @@ pub(crate) struct FilterCandidate {
 /// When evaluating the predicate as a filter on the parquet file, the predicate
 /// must be rewritten to `NULL = 'foo'` as the `address` column will be filled
 /// in with `NULL` values during the rest of the evaluation.
-struct FilterCandidateBuilder {
+pub(crate) struct FilterCandidateBuilder {
     expr: Arc<dyn PhysicalExpr>,
     /// The schema of this parquet file.
     /// Columns may have different types from the table schema and there may be
