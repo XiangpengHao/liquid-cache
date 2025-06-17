@@ -8,7 +8,6 @@ mod sync;
 pub use cache::policies;
 pub use cache::{LiquidCache, LiquidCacheRef, LiquidCachedFileRef};
 pub use reader::LiquidParquetSource;
-pub use reader::LiquidPredicate;
 pub(crate) mod utils;
 pub use utils::{boolean_buffer_and_then, rewrite_data_source_plan};
 mod inprocess;

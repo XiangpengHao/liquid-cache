@@ -117,6 +117,7 @@ impl FileOpener for LiquidParquetOpener {
         let reorder_predicates = self.reorder_filters;
         let enable_page_index = should_enable_page_index(&self.page_pruning_predicate);
         let limit = self.limit;
+        let schema_adapter_factory = Arc::clone(&self.schema_adapter_factory);
 
         Ok(Box::pin(async move {
             let mut options = ArrowReaderOptions::new().with_page_index(enable_page_index);
@@ -170,6 +171,7 @@ impl FileOpener for LiquidParquetOpener {
                     builder.metadata(),
                     reorder_predicates,
                     &file_metrics,
+                    &schema_adapter_factory,
                 );
 
                 match row_filter {

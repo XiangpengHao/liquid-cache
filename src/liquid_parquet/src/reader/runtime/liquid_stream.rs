@@ -9,6 +9,7 @@ use fastrace::Event;
 use fastrace::local::LocalSpan;
 use futures::{FutureExt, Stream, future::BoxFuture, ready};
 use liquid_cache_common::coerce_from_parquet_reader_to_liquid_types;
+use parquet::arrow::arrow_reader::ArrowPredicate;
 use parquet::{
     arrow::{
         ProjectionMask,

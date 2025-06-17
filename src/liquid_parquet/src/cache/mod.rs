@@ -1,8 +1,10 @@
 use super::liquid_array::LiquidArrayRef;
 use crate::liquid_array::ipc::{self, LiquidIPCContext};
 use crate::policies::CachePolicy;
+use crate::reader::{LiquidPredicate, extract_multi_column_or, try_evaluate_predicate};
 use crate::sync::{Mutex, RwLock};
-use crate::{ABLATION_STUDY_MODE, AblationStudyMode, LiquidPredicate};
+use crate::utils::boolean_buffer_or;
+use crate::{ABLATION_STUDY_MODE, AblationStudyMode};
 use ahash::AHashMap;
 use arrow::array::{Array, ArrayRef, BooleanArray, RecordBatch};
 use arrow::buffer::BooleanBuffer;
@@ -11,6 +13,7 @@ use arrow::ipc::reader::StreamReader;
 use arrow_schema::{ArrowError, DataType, Field, Schema};
 use bytes::Bytes;
 use liquid_cache_common::{LiquidCacheMode, coerce_from_parquet_to_liquid_type};
+use parquet::arrow::arrow_reader::ArrowPredicate;
 use std::fmt::Display;
 use std::fs::File;
 use std::io::{BufReader, Read};
@@ -184,7 +187,7 @@ impl LiquidCachedColumn {
     /// it falls back to evaluating on an arrow array.
     fn eval_selection_with_predicate_inner(
         &self,
-        predicate: &mut dyn LiquidPredicate,
+        predicate: &mut LiquidPredicate,
         array: &LiquidArrayRef,
     ) -> BooleanBuffer {
         match predicate.evaluate_liquid(array).unwrap() {
@@ -213,7 +216,7 @@ impl LiquidCachedColumn {
         &self,
         batch_id: BatchID,
         selection: &BooleanBuffer,
-        predicate: &mut dyn LiquidPredicate,
+        predicate: &mut LiquidPredicate,
     ) -> Option<Result<BooleanBuffer, ArrowError>> {
         let cached_entry = self.cache_store.get(&self.entry_id(batch_id))?;
         match &cached_entry {
@@ -481,7 +484,7 @@ impl LiquidCachedRowGroup {
         &self,
         batch_id: BatchID,
         selection: &BooleanBuffer,
-        predicate: &mut dyn LiquidPredicate,
+        predicate: &mut LiquidPredicate,
     ) -> Option<Result<BooleanBuffer, ArrowError>> {
         let column_ids = predicate.predicate_column_ids();
 
@@ -489,24 +492,68 @@ impl LiquidCachedRowGroup {
             // If we only have one column, we can short-circuit and try to evaluate the predicate on encoded data.
             let column_id = column_ids[0];
             let cache = self.get_column(column_id as u64)?;
-            cache.eval_selection_with_predicate(batch_id, selection, predicate)
-        } else {
-            // Otherwise, we need to first convert the data into arrow arrays.
-            let mask = BooleanArray::from(selection.clone());
-            let mut arrays = Vec::new();
-            let mut fields = Vec::new();
-            for column_id in column_ids {
-                let column = self.get_column(column_id as u64)?;
-                let array = column.get_arrow_array_with_filter(batch_id, &mask)?;
-                arrays.push(array);
-                fields.push(column.field.clone());
+            return cache.eval_selection_with_predicate(batch_id, selection, predicate);
+        } else if column_ids.len() >= 2 {
+            // Try to extract multiple column-literal expressions from OR structure
+            if let Some(column_exprs) =
+                extract_multi_column_or(predicate.physical_expr_physical_column_index())
+            {
+                let mut combined_buffer = None;
+
+                for (col_idx, expr) in column_exprs {
+                    let column = self.get_column(col_idx as u64)?;
+                    let entry = self.cache_store.get(&column.entry_id(batch_id))?;
+                    let filtered = match entry {
+                        CachedBatch::MemoryLiquid(array) => {
+                            let boolean_array = BooleanArray::new(selection.clone(), None);
+                            array.filter(&boolean_array)
+                        }
+                        CachedBatch::DiskLiquid => {
+                            let array = column.read_liquid_from_disk(batch_id);
+                            let boolean_array = BooleanArray::new(selection.clone(), None);
+                            array.filter(&boolean_array)
+                        }
+
+                        _ => {
+                            combined_buffer = None;
+                            break;
+                        }
+                    };
+                    let buffer = if let Ok(Some(buffer)) = try_evaluate_predicate(&expr, &filtered)
+                    {
+                        buffer
+                    } else {
+                        combined_buffer = None;
+                        break;
+                    };
+                    let buffer = buffer.into_parts().0;
+
+                    combined_buffer = Some(match combined_buffer {
+                        None => buffer,
+                        Some(existing) => boolean_buffer_or(&existing, &buffer),
+                    });
+                }
+
+                if let Some(result) = combined_buffer {
+                    return Some(Ok(result));
+                }
             }
-            let schema = Arc::new(Schema::new(fields));
-            let record_batch = RecordBatch::try_new(schema, arrays).unwrap();
-            let boolean_array = predicate.evaluate(record_batch).unwrap();
-            let (buffer, _) = boolean_array.into_parts();
-            Some(Ok(buffer))
         }
+        // Otherwise, we need to first convert the data into arrow arrays.
+        let mask = BooleanArray::from(selection.clone());
+        let mut arrays = Vec::new();
+        let mut fields = Vec::new();
+        for column_id in column_ids {
+            let column = self.get_column(column_id as u64)?;
+            let array = column.get_arrow_array_with_filter(batch_id, &mask)?;
+            arrays.push(array);
+            fields.push(column.field.clone());
+        }
+        let schema = Arc::new(Schema::new(fields));
+        let record_batch = RecordBatch::try_new(schema, arrays).unwrap();
+        let boolean_array = predicate.evaluate(record_batch).unwrap();
+        let (buffer, _) = boolean_array.into_parts();
+        Some(Ok(buffer))
     }
 }
 
