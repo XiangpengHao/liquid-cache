@@ -300,6 +300,7 @@ impl ObjectStore for LocalCache {
 mod tests {
     use super::*;
     use bytes::Bytes;
+    use liquid_cache_common::mock_store::MockStore;
     use object_store::memory::InMemory;
     use std::ops::Range;
     use tempfile::tempdir;
@@ -565,6 +566,84 @@ mod tests {
         // Additional verification - check if a specific range is read correctly
         let mid_range = file_size / 2;
         verify_range(&second_cache, file_path, mid_range..mid_range + 1024).await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_object_store_metrics() -> Result<()> {
+        let inner = Arc::new(MockStore::new_with_files(
+            1,
+            (CACHE_BLOCK_SIZE * 3) as usize,
+        ));
+        let temp_dir = tempdir().unwrap();
+        let cache = LocalCache::new(inner.clone(), temp_dir.path().to_path_buf());
+
+        let path = Path::from("0.parquet");
+        let start = CACHE_BLOCK_SIZE / 2;
+        let end = CACHE_BLOCK_SIZE + CACHE_BLOCK_SIZE / 2;
+
+        verify_range(&cache, path.as_ref(), start..end).await?;
+
+        let ranges = inner.get_access_ranges(&path).unwrap();
+        assert_eq!(ranges.len(), 2);
+        assert_eq!(ranges[0], 0..CACHE_BLOCK_SIZE);
+        assert_eq!(ranges[1], CACHE_BLOCK_SIZE..CACHE_BLOCK_SIZE * 2);
+
+        // second request should hit cache and not increase range count
+        verify_range(&cache, path.as_ref(), start + 1024..end - 1024).await?;
+        let ranges_after = inner.get_access_ranges(&path).unwrap();
+        assert_eq!(ranges_after.len(), 2);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_cross_chunk_metrics() -> Result<()> {
+        let inner = Arc::new(MockStore::new_with_files(
+            1,
+            (CACHE_BLOCK_SIZE * 3) as usize,
+        ));
+        let temp_dir = tempdir().unwrap();
+        let cache = LocalCache::new(inner.clone(), temp_dir.path().to_path_buf());
+
+        let path = Path::from("0.parquet");
+        let start = CACHE_BLOCK_SIZE - 1024;
+        let end = CACHE_BLOCK_SIZE * 2 + 1024;
+
+        verify_range(&cache, path.as_ref(), start..end).await?;
+
+        let ranges = inner.get_access_ranges(&path).unwrap();
+        assert_eq!(ranges.len(), 3);
+        assert_eq!(ranges[0], 0..CACHE_BLOCK_SIZE);
+        assert_eq!(ranges[1], CACHE_BLOCK_SIZE..CACHE_BLOCK_SIZE * 2);
+        assert_eq!(ranges[2], CACHE_BLOCK_SIZE * 2..CACHE_BLOCK_SIZE * 3);
+
+        // subsequent overlapping request should not hit object store again
+        verify_range(&cache, path.as_ref(), start + 512..end - 512).await?;
+        let ranges_after = inner.get_access_ranges(&path).unwrap();
+        assert_eq!(ranges_after.len(), 3);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_cache_hit_metrics() -> Result<()> {
+        let inner = Arc::new(MockStore::new_with_files(
+            1,
+            (CACHE_BLOCK_SIZE * 2) as usize,
+        ));
+        let temp_dir = tempdir().unwrap();
+        let cache = LocalCache::new(inner.clone(), temp_dir.path().to_path_buf());
+
+        let path = Path::from("0.parquet");
+
+        verify_range(&cache, path.as_ref(), 0..CACHE_BLOCK_SIZE).await?;
+        assert_eq!(inner.get_access_ranges(&path).unwrap().len(), 1);
+
+        // second read should come from cache
+        verify_range(&cache, path.as_ref(), 0..CACHE_BLOCK_SIZE).await?;
+        assert_eq!(inner.get_access_ranges(&path).unwrap().len(), 1);
 
         Ok(())
     }

@@ -8,7 +8,9 @@ use object_store::{
     path::Path,
 };
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Range;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -90,6 +92,7 @@ struct Entry {
     attributes: Attributes,
     e_tag: usize,
     access_count: Arc<AtomicUsize>,
+    access_ranges: Arc<Mutex<Vec<Range<u64>>>>,
 }
 
 impl Entry {
@@ -105,6 +108,7 @@ impl Entry {
             e_tag,
             attributes,
             access_count: Arc::new(AtomicUsize::new(0)),
+            access_ranges: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
@@ -198,6 +202,16 @@ impl MockStore {
             .map(|entry| entry.access_count.load(Ordering::SeqCst))
     }
 
+    /// Get a list of ranges that have been requested via `get_opts`
+    pub fn get_access_ranges(&self, location: &Path) -> Option<Vec<Range<u64>>> {
+        self.storage
+            .read()
+            .unwrap()
+            .map
+            .get(location)
+            .map(|entry| entry.access_ranges.lock().unwrap().clone())
+    }
+
     /// Get the number of objects stored in the store
     pub fn get_file_count(&self) -> usize {
         self.storage.read().unwrap().map.len()
@@ -286,6 +300,7 @@ impl ObjectStore for MockStore {
             }
             None => (0..entry.data.len() as u64, entry.data),
         };
+        entry.access_ranges.lock().unwrap().push(range.clone());
         let stream = futures::stream::once(futures::future::ready(Ok(data)));
 
         Ok(GetResult {
