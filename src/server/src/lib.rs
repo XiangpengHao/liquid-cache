@@ -464,4 +464,70 @@ mod server_actions_tests {
         let result = service.do_action_inner(action).await;
         assert!(result.is_err());
     }
+
+    #[tokio::test]
+    async fn test_prefetch_with_mock_store_metrics() {
+        use crate::local_cache::LocalCache;
+        use datafusion::execution::object_store::ObjectStoreUrl;
+        use liquid_cache_common::mock_store::MockStore;
+        use liquid_cache_common::utils::sanitize_object_store_url_for_dirname;
+
+        const BLOCK_SIZE: u64 = 1024 * 1024 * 4;
+
+        let service = LiquidCacheService::default();
+
+        let url = Url::parse("s3://mock").unwrap();
+
+        let inner = Arc::new(MockStore::new_with_files(1, (BLOCK_SIZE * 3) as usize));
+
+        let cache_dir = service
+            .get_parquet_cache_dir()
+            .join(sanitize_object_store_url_for_dirname(&url));
+        let local_cache = LocalCache::new(inner.clone(), cache_dir);
+
+        let object_store_url = ObjectStoreUrl::parse(url.as_str()).unwrap();
+        service
+            .inner()
+            .get_ctx()
+            .runtime_env()
+            .register_object_store(object_store_url.as_ref(), Arc::new(local_cache));
+
+        let start = BLOCK_SIZE / 2;
+        let end = BLOCK_SIZE + start;
+
+        let request = PrefetchFromObjectStoreRequest {
+            url: url.to_string(),
+            store_options: HashMap::new(),
+            location: "0.parquet".to_string(),
+            range_start: Some(start),
+            range_end: Some(end),
+        };
+
+        let action = LiquidCacheActions::PrefetchFromObjectStore(request);
+        let result = service.do_action_inner(action).await.unwrap();
+        let mut stream = result.into_inner();
+        let _ = stream.try_next().await.unwrap().unwrap();
+
+        let path = Path::from("0.parquet");
+        let ranges = inner.get_access_ranges(&path).unwrap();
+        assert_eq!(ranges.len(), 2);
+        assert_eq!(ranges[0], 0..BLOCK_SIZE);
+        assert_eq!(ranges[1], BLOCK_SIZE..BLOCK_SIZE * 2);
+
+        let request2 = PrefetchFromObjectStoreRequest {
+            url: url.to_string(),
+            store_options: HashMap::new(),
+            location: "0.parquet".to_string(),
+            range_start: Some(start + 1024),
+            range_end: Some(end - 1024),
+        };
+
+        let action = LiquidCacheActions::PrefetchFromObjectStore(request2);
+        let result = service.do_action_inner(action).await.unwrap();
+        let mut stream = result.into_inner();
+        let _ = stream.try_next().await.unwrap().unwrap();
+
+        let ranges_after = inner.get_access_ranges(&path).unwrap();
+        assert_eq!(ranges_after.len(), 2);
+    }
 }
