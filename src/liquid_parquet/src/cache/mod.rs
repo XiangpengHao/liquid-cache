@@ -1,5 +1,5 @@
 use super::liquid_array::LiquidArrayRef;
-use crate::cache::threadpool_uring::{FileIoOp, IoTask, IoUringThreadpool, IO_URING_THREAD_POOL_INST};
+use crate::cache::threadpool_uring::{FileIoOp, IoTask, IoUringThreadpool, UringFuture};
 use crate::liquid_array::ipc::{self, LiquidIPCContext};
 use crate::policies::CachePolicy;
 use crate::sync::{Mutex, RwLock};
@@ -205,7 +205,10 @@ impl LiquidCachedColumn {
             .expect("Failed to create memory layout for disk read result");
         let base_ptr = unsafe { std::alloc::alloc(layout) };
         let task = Arc::new(IoTask::new(FileIoOp::FileRead, base_ptr, num_bytes, file.as_raw_fd()));
-        IO_URING_THREAD_POOL_INST.submit_task(task).await;
+        // UringFuture will be responsible for submitting and driving the future to completion
+        let uring_fut = UringFuture::new(task);
+        uring_fut.await;
+
         let buf = unsafe {
             std::slice::from_raw_parts(base_ptr, num_bytes)
         };

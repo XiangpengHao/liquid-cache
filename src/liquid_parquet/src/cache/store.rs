@@ -14,7 +14,7 @@ use super::{
     utils::{CacheConfig, ColumnAccessPath},
 };
 use crate::cache::file_io::INST;
-use crate::cache::threadpool_uring::{FileIoOp, IoTask, IO_URING_THREAD_POOL_INST};
+use crate::cache::threadpool_uring::{FileIoOp, IoTask, UringFuture};
 use crate::liquid_array::LiquidArrayRef;
 use crate::sync::{Arc, RwLock};
 use ahash::AHashMap;
@@ -294,7 +294,9 @@ impl CacheStore {
         let path = entry_id.on_disk_path(self.config.cache_root_dir());
         let file = OpenOptions::new().create(true).write(true).custom_flags(libc::O_DIRECT).open(path).unwrap();
         let task = Arc::new(IoTask::new(FileIoOp::FileWrite, bytes.as_mut_ptr(), bytes.len(), file.as_raw_fd()));
-        IO_URING_THREAD_POOL_INST.submit_task(task).await;
+        // UringFuture will be responsible for submitting and driving the future to completion
+        let uring_fut = UringFuture::new(task);
+        uring_fut.await;
     }
 
     pub(super) async fn insert(self: &Self, entry_id: CacheEntryID, mut batch_to_cache: CachedBatch) {

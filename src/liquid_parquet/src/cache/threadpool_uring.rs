@@ -1,4 +1,4 @@
-use std::{os::fd::RawFd, pin::Pin, sync::{atomic::Ordering, Arc, LazyLock}, task::{Context, Poll}, thread};
+use std::{os::fd::RawFd, pin::Pin, sync::{atomic::Ordering, Arc, LazyLock, Mutex}, task::{Context, Poll, Waker}, thread};
 
 use std::sync::atomic::AtomicBool;
 use io_uring::{cqueue, opcode, squeue, IoUring};
@@ -14,12 +14,18 @@ pub struct IoTask {
     base_ptr: *mut u8,
     num_bytes: usize,
     fd: RawFd,
-    completed: AtomicBool
+    completed: AtomicBool,
+    waker: Mutex<Option<*const Waker>>,
 }
 
 impl IoTask {
-    pub fn new(op: FileIoOp, base_ptr: *mut u8, num_bytes: usize, fd: RawFd) -> IoTask {
-        return IoTask {op, base_ptr, num_bytes, fd, completed: AtomicBool::new(false)}
+    pub(crate) fn new(op: FileIoOp, base_ptr: *mut u8, num_bytes: usize, fd: RawFd) -> IoTask {
+        return IoTask {op, base_ptr, num_bytes, fd, completed: AtomicBool::new(false), waker: Mutex::<Option<*const Waker>>::new(None)}
+    }
+
+    pub(crate) fn set_waker(self: &Self, waker: *const Waker) {
+        let mut guard = self.waker.lock().unwrap();
+        *guard = Some(waker);
     }
 }
 
@@ -73,10 +79,13 @@ impl IoUringThreadpool {
         }
     }
 
-    pub(crate) async fn submit_task(self: &Self, task: Arc<IoTask>) -> UringFuture {
+    pub(crate) fn submit_task(self: &Self, task: Arc<IoTask>) {
         self.sender.send(task.clone()).expect("Failed to submit task through channel");
-        UringFuture {
-            task: task,
+    }
+
+    fn drop(self: &mut Self) {
+        while let Some(worker) = self.workers.pop() {
+            let _ = worker.join();
         }
     }
 }
@@ -195,12 +204,15 @@ impl UringWorker {
                         cqe.result() == Self::CHUNK_SIZE as i32,
                         "Read cqe result error: {err}"
                     );
-                    let opcode = (cqe.user_data()>>48) as u16;
-                    let remaining = &mut self.completions_array[opcode as usize];
+                    let opcode = (cqe.user_data()>>48) as usize;
+                    let remaining = &mut self.completions_array[opcode];
                     *remaining -= 1;
                     if *remaining == 0 {
-                        // TODO(): Should we call the waker here??
-                        self.tasks[opcode as usize].as_ref().unwrap().completed.store(true, Ordering::Relaxed);
+                        self.tasks[opcode].as_ref().unwrap().completed.store(true, Ordering::Relaxed);
+                        let guard = self.tasks[opcode].as_ref().unwrap().waker.lock().unwrap();
+                        if let Some(waker) = *guard {
+                            unsafe { (*waker).wake_by_ref(); }
+                        }
                     }
                 }
                 None => {
@@ -211,23 +223,42 @@ impl UringWorker {
     }
 }
 
+enum UringState {
+    Initialized,
+    Submitted,
+}
+
 pub struct UringFuture {
     task: Arc<IoTask>,
+    state: UringState,
+}
+
+impl UringFuture {
+    pub fn new(task: Arc<IoTask>) -> UringFuture {
+        return UringFuture { task: task, state: UringState::Initialized }
+    }
 }
 
 impl Future for UringFuture {
     type Output = ();
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-        use std::sync::atomic::Ordering;
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
         loop {
-            match self.task.completed.load(Ordering::Relaxed) {
-                false => {
-                    return Poll::Pending;
+            match self.state {
+                UringState::Initialized => {
+                    IO_URING_THREAD_POOL_INST.submit_task(self.task.clone());
+                    self.task.set_waker(std::ptr::from_ref(cx.waker()));
+                    self.state = UringState::Submitted;
                 },
-                true => {
-                    cx.waker().wake_by_ref();
-                    return Poll::Ready(());
+                UringState::Submitted => {
+                    match self.task.completed.load(Ordering::Relaxed) {
+                        false => {
+                            return Poll::Pending;
+                        },
+                        true => {
+                            return Poll::Ready(());
+                        }
+                    }
                 }
             }
         }
