@@ -165,18 +165,12 @@ impl LiquidCachedColumn {
         ipc::read_from_bytes(bytes, &LiquidIPCContext::new(compressor))
     }
 
-    fn read_liquid_from_disk_async(&self, batch_id: BatchID) -> LiquidArrayRef {
+    async fn read_liquid_from_disk_async(&self, batch_id: BatchID) -> LiquidArrayRef {
         let entry_id = self.entry_id(batch_id);
         let path = entry_id.on_disk_path(self.cache_store.config().cache_root_dir());
         let compressor = self.cache_store.compressor_states(&entry_id);
         let compressor = compressor.fsst_compressor.read().unwrap().clone();
-        let bytes = tokio::task::block_in_place(|| {
-            let handle = tokio::runtime::Handle::current();
-            handle.block_on(async move {
-                tokio::fs::read(&path).await.expect("tokio::fs::read failed")
-            })
-        }
-        );
+        let bytes = tokio::fs::read(&path).await.expect("tokio::fs::read failed");
         let bytes = Bytes::from(bytes);
         ipc::read_from_bytes(bytes, &LiquidIPCContext::new(compressor))
     }
@@ -274,7 +268,7 @@ impl LiquidCachedColumn {
                                         self.read_liquid_from_disk(batch_id)
                                     },
                     FileIOMode::TokioAsync => {
-                                        self.read_liquid_from_disk_async(batch_id)
+                                        self.read_liquid_from_disk_async(batch_id).await
                                     },
                     FileIOMode::BlockingIoUring => self.read_liquid_from_disk_uring(batch_id),
                     FileIOMode::ThreadPoolIoUring => self.read_liquid_from_disk_threadpool_uring(batch_id).await,
@@ -343,7 +337,7 @@ impl LiquidCachedColumn {
                                         self.read_liquid_from_disk(batch_id)
                                     },
                     FileIOMode::TokioAsync => {
-                                        self.read_liquid_from_disk_async(batch_id)
+                                        self.read_liquid_from_disk_async(batch_id).await
                                     },
                     FileIOMode::BlockingIoUring => self.read_liquid_from_disk_uring(batch_id),
                     FileIOMode::ThreadPoolIoUring => self.read_liquid_from_disk_threadpool_uring(batch_id).await,
@@ -367,7 +361,7 @@ impl LiquidCachedColumn {
         }
     }
 
-    fn insert_as_liquid_foreground(
+    async fn insert_as_liquid_foreground(
         self: &Arc<Self>,
         batch_id: BatchID,
         array: ArrayRef,
@@ -383,7 +377,7 @@ impl LiquidCachedColumn {
                 self.cache_store.insert(
                     self.entry_id(batch_id),
                     CachedBatch::ArrowMemory(array.clone()),
-                );
+                ).await;
                 return Ok(());
             }
         };
@@ -391,12 +385,12 @@ impl LiquidCachedColumn {
         self.cache_store.insert(
             self.entry_id(batch_id),
             CachedBatch::LiquidMemory(transcoded.clone()),
-        );
+        ).await;
 
         Ok(())
     }
 
-    fn insert_as_liquid_background(
+    async fn insert_as_liquid_background(
         self: &Arc<Self>,
         batch_id: BatchID,
         array: ArrayRef,
@@ -404,16 +398,16 @@ impl LiquidCachedColumn {
         self.cache_store.insert(
             self.entry_id(batch_id),
             CachedBatch::ArrowMemory(array.clone()),
-        );
+        ).await;
         let column_arc = Arc::clone(self);
         TRANSCODE_THREAD_POOL.spawn(async move {
-            column_arc.transcode_to_liquid(batch_id, array);
+            column_arc.transcode_to_liquid(batch_id, array).await;
         });
         Ok(())
     }
 
     /// Insert an array into the cache.
-    pub(crate) fn insert(
+    pub(crate) async fn insert(
         self: &Arc<Self>,
         batch_id: BatchID,
         array: ArrayRef,
@@ -426,29 +420,29 @@ impl LiquidCachedColumn {
             LiquidCacheMode::InMemoryArrow => {
                 let entry_id = self.entry_id(batch_id);
                 self.cache_store
-                    .insert(entry_id, CachedBatch::ArrowMemory(array.clone()));
+                    .insert(entry_id, CachedBatch::ArrowMemory(array.clone())).await;
                 Ok(())
             }
             LiquidCacheMode::InMemoryLiquid {
                 transcode_in_background,
             } => {
                 if *transcode_in_background {
-                    self.insert_as_liquid_background(batch_id, array)
+                    self.insert_as_liquid_background(batch_id, array).await
                 } else {
-                    self.insert_as_liquid_foreground(batch_id, array)
+                    self.insert_as_liquid_foreground(batch_id, array).await
                 }
             }
         }
     }
 
-    fn transcode_to_liquid(self: &Arc<Self>, batch_id: BatchID, array: ArrayRef) {
+    async fn transcode_to_liquid(self: &Arc<Self>, batch_id: BatchID, array: ArrayRef) {
         let compressor = self.cache_store.compressor_states(&self.entry_id(batch_id));
         match transcode_liquid_inner(&array, &compressor) {
             Ok(transcoded) => {
                 self.cache_store.insert(
                     self.entry_id(batch_id),
                     CachedBatch::LiquidMemory(transcoded),
-                );
+                ).await;
             }
             Err(array) => {
                 // if the array data type is not supported yet, we just leave it as is.

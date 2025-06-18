@@ -236,8 +236,13 @@ impl ArrayReader for CachedArrayReader {
         Ok(read)
     }
 
-    async fn consume_batch(&mut self) -> Result<ArrayRef, ParquetError> {
-        let array = self.consume_batch_inner().await?;
+    fn consume_batch(&mut self) -> Result<ArrayRef, ParquetError> {
+        let array = tokio::task::block_in_place(|| {
+            let handle = tokio::runtime::Handle::current();
+            handle.block_on( async {
+                self.consume_batch_inner().await.unwrap()
+            })
+        });
         debug_assert_eq!(&self.data_type, array.data_type());
         Ok(array)
     }

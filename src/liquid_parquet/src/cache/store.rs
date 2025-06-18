@@ -3,7 +3,6 @@ use std::fmt::{Debug, Formatter};
 use std::fs::OpenOptions;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
-use std::sync::LazyLock;
 use std::{fs::File, io::Write, path::PathBuf};
 
 use super::{
@@ -20,7 +19,6 @@ use crate::liquid_array::LiquidArrayRef;
 use crate::sync::{Arc, RwLock};
 use ahash::AHashMap;
 use liquid_cache_common::LiquidCacheMode;
-use tokio::runtime::Runtime;
 
 #[allow(dead_code)]
 pub(crate) enum FileIOMode {
@@ -30,7 +28,7 @@ pub(crate) enum FileIOMode {
     TokioAsync
 }
 
-pub(crate) static FILE_IO_MODE: FileIOMode = FileIOMode::BlockingIoUring;
+pub(crate) static FILE_IO_MODE: FileIOMode = FileIOMode::ThreadPoolIoUring;
 
 #[derive(Debug)]
 struct CompressorStates {
@@ -182,7 +180,7 @@ impl CacheStore {
 
     /// Returns Some(CachedBatch) if need to retry the insert.
     #[must_use]
-    async fn apply_advice(self: &Arc<Self>, advice: CacheAdvice, not_inserted: CachedBatch) -> Option<CachedBatch> {
+    async fn apply_advice(self: &Self, advice: CacheAdvice, not_inserted: CachedBatch) -> Option<CachedBatch> {
         match advice {
             CacheAdvice::Transcode(to_transcode) => {
                 let compressor_states = self.compressor_states.get_compressor(&to_transcode);
@@ -223,7 +221,7 @@ impl CacheStore {
                                         self.write_to_disk(&to_evict, &liquid_array)
                                     },
                     FileIOMode::TokioAsync => {
-                                        self.write_to_disk_async(&to_evict, &liquid_array)
+                                        self.write_to_disk_async(&to_evict, &liquid_array).await
                                     },
                     FileIOMode::BlockingIoUring => self.write_to_disk_blocking_uring(&to_evict, &liquid_array),
                     FileIOMode::ThreadPoolIoUring => self.write_to_disk_threadpool_uring(to_evict, liquid_array).await,
@@ -250,7 +248,7 @@ impl CacheStore {
                                         self.write_to_disk(&to_transcode, &liquid_array)
                                     },
                     FileIOMode::TokioAsync => {
-                                        self.write_to_disk_async(&to_transcode, &liquid_array)
+                                        self.write_to_disk_async(&to_transcode, &liquid_array).await
                                     },
                     FileIOMode::BlockingIoUring => self.write_to_disk_blocking_uring(&to_transcode, &liquid_array),
                     FileIOMode::ThreadPoolIoUring => self.write_to_disk_threadpool_uring(to_transcode, liquid_array).await,
@@ -271,16 +269,11 @@ impl CacheStore {
         self.budget.add_used_disk_bytes(bytes.len());
     }
 
-    fn write_to_disk_async(&self, entry_id: &CacheEntryID, liquid_array: &LiquidArrayRef) {
+    async fn write_to_disk_async(&self, entry_id: &CacheEntryID, liquid_array: &LiquidArrayRef) {
         let bytes = liquid_array.to_bytes();
         let file_path = entry_id.on_disk_path(self.config.cache_root_dir());
         let disk_size = bytes.len();
-        tokio::task::block_in_place(|| {
-            let handle = tokio::runtime::Handle::current();
-            handle.block_on( async {
-                tokio::fs::write(file_path, bytes).await.expect("Failed to write to disk");
-            })
-        });        
+        tokio::fs::write(file_path, bytes).await.expect("Failed to write to disk");
         self.budget.add_used_disk_bytes(disk_size);
     }
 
@@ -296,7 +289,7 @@ impl CacheStore {
         })
     }
 
-    async fn write_to_disk_threadpool_uring(self: &Arc<Self>, entry_id: CacheEntryID, liquid_array: LiquidArrayRef) {
+    async fn write_to_disk_threadpool_uring(self: &Self, entry_id: CacheEntryID, liquid_array: LiquidArrayRef) {
         let mut bytes = liquid_array.to_bytes();
         let path = entry_id.on_disk_path(self.config.cache_root_dir());
         let file = OpenOptions::new().create(true).write(true).custom_flags(libc::O_DIRECT).open(path).unwrap();
@@ -304,7 +297,7 @@ impl CacheStore {
         IO_URING_THREAD_POOL_INST.submit_task(task).await;
     }
 
-    pub(super) async fn insert(self: &Arc<Self>, entry_id: CacheEntryID, mut batch_to_cache: CachedBatch) {
+    pub(super) async fn insert(self: &Self, entry_id: CacheEntryID, mut batch_to_cache: CachedBatch) {
         let mut loop_count = 0;
         loop {
             let Err((advice, not_inserted)) = self.insert_inner(entry_id, batch_to_cache) else {

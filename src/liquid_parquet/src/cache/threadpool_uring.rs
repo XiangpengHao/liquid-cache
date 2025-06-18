@@ -1,4 +1,4 @@
-use std::{os::fd::{self, RawFd}, pin::Pin, sync::{atomic::Ordering, Arc, LazyLock}, task::{Context, Poll}, thread};
+use std::{os::fd::RawFd, pin::Pin, sync::{atomic::Ordering, Arc, LazyLock}, task::{Context, Poll}, thread};
 
 use std::sync::atomic::AtomicBool;
 use io_uring::{cqueue, opcode, squeue, IoUring};
@@ -38,7 +38,6 @@ pub(crate) static IO_URING_THREAD_POOL_INST: LazyLock<IoUringThreadpool> = LazyL
 
 impl IoUringThreadpool {
     const NUM_ENTRIES: u32 = 512;
-    const CHUNK_SIZE: usize = 8192;
     pub const BUFFER_ALIGNMENT: usize = 4096;
 
     fn new(num_workers: u32) -> IoUringThreadpool {
@@ -75,7 +74,7 @@ impl IoUringThreadpool {
     }
 
     pub(crate) async fn submit_task(self: &Self, task: Arc<IoTask>) -> UringFuture {
-        self.sender.send(task.clone());
+        self.sender.send(task.clone()).expect("Failed to submit task through channel");
         UringFuture {
             task: task,
         }
@@ -92,7 +91,6 @@ struct UringWorker {
 }
 
 impl UringWorker {
-    const NUM_ENTRIES: u32 = 512;
     const CHUNK_SIZE: usize = 8192;
 
     fn new(channel: crossbeam_channel::Receiver<Arc<IoTask>>, ring: io_uring::IoUring) -> UringWorker {
@@ -122,7 +120,7 @@ impl UringWorker {
                 };
                 self.tasks[self.op_counter as usize] = Some(task);
                 self.completions_array[self.op_counter as usize] = num_chunks;
-                self.op_counter.wrapping_add(1);                
+                self.op_counter = self.op_counter.wrapping_add(1);                
             }
 
             self.poll_completions();
@@ -213,7 +211,7 @@ impl UringWorker {
     }
 }
 
-struct UringFuture {
+pub struct UringFuture {
     task: Arc<IoTask>,
 }
 
