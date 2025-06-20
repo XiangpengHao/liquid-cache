@@ -2874,7 +2874,6 @@ dependencies = [
  "chrono",
  "futures",
  "object_store",
- "parking_lot",
  "prost",
  "serde",
  "tempfile",
