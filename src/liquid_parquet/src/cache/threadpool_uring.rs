@@ -35,15 +35,16 @@ unsafe impl Sync for IoTask {}
 pub struct IoUringThreadpool {
     sender: crossbeam_channel::Sender<Arc<IoTask>>,
     workers: Vec<thread::JoinHandle<()>>,
-    // enabled: Atomic<bool>,
 }
 
 unsafe impl Sync for IoUringThreadpool {}
 
-pub(crate) static IO_URING_THREAD_POOL_INST: LazyLock<IoUringThreadpool> = LazyLock::new(|| IoUringThreadpool::new(4));
+pub(crate) static IO_URING_THREAD_POOL_INST: LazyLock<IoUringThreadpool> = LazyLock::new(|| IoUringThreadpool::new(5));
+
+static ENABLED: AtomicBool = AtomicBool::new(true);
 
 impl IoUringThreadpool {
-    const NUM_ENTRIES: u32 = 512;
+    const NUM_ENTRIES: u32 = 4096;
     pub const BUFFER_ALIGNMENT: usize = 4096;
 
     fn new(num_workers: u32) -> IoUringThreadpool {
@@ -54,7 +55,6 @@ impl IoUringThreadpool {
         
         let (sender, receiver) = crossbeam_channel::unbounded::<Arc<IoTask>>();
         let mut workers = Vec::<thread::JoinHandle<()>>::new();
-        let enabled = AtomicBool::new(false);
 
         for i in 0..num_workers as usize {
             let ring = builder
@@ -64,7 +64,6 @@ impl IoUringThreadpool {
                 builder.setup_attach_wq(ring.as_raw_fd());
             }
             let receiver_clone = receiver.clone();
-            // let enabled_ref = &enabled;
             let worker = thread::spawn(move || {
                 let mut uring_worker = UringWorker::new(receiver_clone, ring);
                 uring_worker.thread_loop();
@@ -75,7 +74,6 @@ impl IoUringThreadpool {
         IoUringThreadpool {
             sender: sender,
             workers: workers,
-            // enabled: enabled,
         }
     }
 
@@ -83,7 +81,11 @@ impl IoUringThreadpool {
         self.sender.send(task.clone()).expect("Failed to submit task through channel");
     }
 
+}
+
+impl Drop for IoUringThreadpool {
     fn drop(self: &mut Self) {
+        ENABLED.store(false, Ordering::Relaxed);
         while let Some(worker) = self.workers.pop() {
             let _ = worker.join();
         }
@@ -113,7 +115,9 @@ impl UringWorker {
 
     fn thread_loop(self: &mut Self) {
         loop {
-            // TODO(): Check enabled
+            if !ENABLED.load(Ordering::Relaxed) {
+                break;
+            }
             // Consume tasks from channel and submit them to the ring
             loop {
                 let res = self.channel.try_recv();
@@ -246,6 +250,7 @@ impl Future for UringFuture {
         loop {
             match self.state {
                 UringState::Initialized => {
+                    // Measure the io latency
                     IO_URING_THREAD_POOL_INST.submit_task(self.task.clone());
                     self.task.set_waker(std::ptr::from_ref(cx.waker()));
                     self.state = UringState::Submitted;

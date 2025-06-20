@@ -17,12 +17,15 @@ NUM_PARTITIONS=$1
 # Create log and cache directory if it doesn't exist
 mkdir -p log
 mkdir -p tmp
+mkdir -p disk_usage_stats
+
 # if [ -d tmp ]; then
 #     rm -rf tmp/*
 # fi
 
 log_dir=log/$(date +"%Y-%m-%d_%H-%M")
 mkdir -p $log_dir
+ln -sfn $log_dir latest
 
 echo "Compiling all binaries..."
 cargo build --release
@@ -35,11 +38,6 @@ SERVER_PID=$!
 
 sleep 20
 
-echo "Starting disk_monitor..."
-# Launch monitor and log output (with partition suffix)
-# cargo run --release --bin disk_monitor -- $SERVER_PID 200 > $log_dir/disk_monitor_${NUM_PARTITIONS}.log &
-# DISK_MONITOR_PID=$!
-
 echo "Running clickbench_client..."
 # Run client and log output
 env RUST_LOG=info RUST_BACKTRACE=full cargo run --release --bin clickbench_client \
@@ -47,14 +45,10 @@ env RUST_LOG=info RUST_BACKTRACE=full cargo run --release --bin clickbench_clien
     --file clickbench/data/hits.parquet \
     --query 20 \
     --partitions $NUM_PARTITIONS \
-    --iteration 5 \
-    --disk-usage-histogram-dir disk_usage > $log_dir/client.log 2>&1
+    --iteration 10 \
+    --disk-usage-histogram-dir disk_usage_stats > $log_dir/client.log 2>&1
 
 echo "Killing bench_server (PID $SERVER_PID)..."
 # Kill the server process
 kill $SERVER_PID
 wait $SERVER_PID 2>/dev/null
-
-# wait $DISK_MONITOR_PID 2>/dev/null
-
-# tail -n 1 $log_dir/disk_monitor_${NUM_PARTITIONS}.log

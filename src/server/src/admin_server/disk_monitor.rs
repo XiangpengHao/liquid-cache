@@ -83,17 +83,25 @@ impl DiskMonitor {
             }
             thread::sleep(Duration::from_millis(Self::SAMPLING_INTERVAL));
         }
+        let histogram = self.histogram.lock().unwrap();
+        for i in (50..=90).step_by(5) {
+            let quantile = i as f64 / 100.0;
+            log::info!("p{}: {}", i, histogram.value_at_quantile(quantile));
+        }
+        log::info!("p99: {}", histogram.value_at_quantile(0.99));
+
     }
 
     fn dump_histogram(self: &Arc<Self>) {
         let path_mutex = self.path.lock().unwrap();
         let path = (*path_mutex).as_ref().unwrap();
-        let filename = path.join("histogram.hdr");
-        let mut file = File::create(&filename).expect("Failed to create .hdr file");
-        let histogram = self.histogram.lock().unwrap();
+        let filename = path.join("histogram.hgrm");
+        let mut file = File::create(&filename).expect("Failed to create .hgrm file");
+        let mut histogram = self.histogram.lock().unwrap();
         V2Serializer::new()
             .serialize(&histogram, &mut file)
             .expect("Failed to serialize histogram");
+        histogram.reset();
     }
 
     pub(crate) fn stop_recording(self: Arc<Self>) {

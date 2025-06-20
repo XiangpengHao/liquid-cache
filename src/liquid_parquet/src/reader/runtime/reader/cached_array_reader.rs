@@ -67,7 +67,7 @@ impl CachedArrayReader {
         self.liquid_cache.batch_size()
     }
 
-    fn fetch_batch(&mut self, batch_id: BatchID) -> Result<(), ParquetError> {
+    async fn fetch_batch(&mut self, batch_id: BatchID) -> Result<(), ParquetError> {
         // now we need to read from inner reader, first check if the inner id is up to date.
         let row_id = *batch_id as usize * self.batch_size();
         if self.inner_row_id < row_id {
@@ -83,7 +83,7 @@ impl CachedArrayReader {
         // But the reader reads as Dictionary or Utf8 type, depending on the cache mode.
         let array = cast_from_parquet_to_liquid_type(array, self.liquid_cache.cache_mode());
 
-        _ = self.liquid_cache.insert(batch_id, array.clone());
+        _ = self.liquid_cache.insert(batch_id, array.clone()).await;
         self.reader_local_cache.insert(batch_id, array);
 
         self.inner_row_id += read;
@@ -94,17 +94,17 @@ impl CachedArrayReader {
         self.reader_local_cache.contains_key(&batch_id) || self.liquid_cache.is_cached(batch_id)
     }
 
-    fn ensure_cached(&mut self, batch_id: BatchID) -> Result<(), ParquetError> {
+    async fn ensure_cached(&mut self, batch_id: BatchID) -> Result<(), ParquetError> {
         if *batch_id >= self.next_batch_to_check_cached {
             if !self.is_cached(batch_id) {
-                self.fetch_batch(batch_id)?;
+                self.fetch_batch(batch_id).await?;
             }
             self.next_batch_to_check_cached = *batch_id + 1;
         }
         Ok(())
     }
 
-    fn read_records_inner(&mut self, request_size: usize) -> Result<usize, ParquetError> {
+    async fn read_records_inner(&mut self, request_size: usize) -> Result<usize, ParquetError> {
         let batch_size = self.batch_size();
         assert!(request_size <= batch_size);
 
@@ -113,8 +113,8 @@ impl CachedArrayReader {
         let starting_batch = BatchID::from_row_id(self.current_row, batch_size);
         let ending_batch = BatchID::from_row_id(self.current_row + request_size - 1, batch_size);
 
-        self.ensure_cached(starting_batch)?;
-        self.ensure_cached(ending_batch)?;
+        self.ensure_cached(starting_batch).await?;
+        self.ensure_cached(ending_batch).await?;
 
         self.current_row += request_size;
         Ok(request_size)
@@ -231,7 +231,12 @@ impl ArrayReader for CachedArrayReader {
 
         while read < request_size {
             let size = std::cmp::min(batch_size, request_size - read);
-            read += self.read_records_inner(size)?;
+            read += tokio::task::block_in_place(|| {
+                let handle = tokio::runtime::Handle::current();
+                handle.block_on(async {
+                    self.read_records_inner(size).await.unwrap()
+                })                
+            });
         }
         Ok(read)
     }

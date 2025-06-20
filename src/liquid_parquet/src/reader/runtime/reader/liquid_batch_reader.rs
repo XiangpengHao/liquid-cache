@@ -173,6 +173,7 @@ impl LiquidBatchReader {
 impl Iterator for LiquidBatchReader {
     type Item = Result<RecordBatch, ArrowError>;
 
+    // TODO(): Make this an async stream
     fn next(&mut self) -> Option<Self::Item> {
         while let Some(selection) = take_next_batch(&mut self.selection, self.batch_size) {
             let filtered_selection = tokio::task::block_in_place(|| {
