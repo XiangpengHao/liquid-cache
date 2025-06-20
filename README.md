@@ -158,6 +158,46 @@ See [dev/README.md](./dev/README.md)
 
 See [benchmark/README.md](./benchmark/README.md)
 
+## Performance troubleshooting
+
+### Inherit LiquidCache configurations
+
+LiquidCache uses non-default DataFusion configurations. Inherit them properly:
+
+**Use ListingTable:**
+```rust
+let (ctx, _) = LiquidCacheInProcessBuilder::new().build(config)?;
+
+let listing_options = ParquetReadOptions::default()
+    .to_listing_options(&ctx.copied_config(), ctx.copied_table_options());
+ctx.register_listing_table("default", &table_path, listing_options, None, None)
+    .await?;
+```
+
+**Or register Parquet directly:**
+```rust
+let (ctx, _) = LiquidCacheInProcessBuilder::new().build(config)?;
+ctx.register_parquet("default", "examples/nano_hits.parquet", Default::default())
+    .await?;
+```
+
+### Disable background transcoding
+
+For performance testing, disable background transcoding:
+
+```rust
+let (ctx, _) = LiquidCacheInProcessBuilder::new()
+    .with_cache_mode(LiquidCacheMode::Liquid {
+        transcode_in_background: false,
+    })
+    .build(config)?;
+```
+
+### x86-64 optimization
+
+LiquidCache is optimized for x86-64 with specific [instructions](https://github.com/XiangpengHao/liquid-cache/blob/f8d5b77829fa7996a56c031eb25503f7b0b0428d/src/liquid_parquet/src/utils.rs#L229-L327). ARM chips (e.g., Apple Silicon) use fallback implementations. Contributions welcome!
+
+
 ## FAQ
 
 #### Can I use LiquidCache in production today?

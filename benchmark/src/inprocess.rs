@@ -222,7 +222,7 @@ impl InProcessBenchmarkRunner {
                     .options_mut()
                     .execution
                     .parquet
-                    .pushdown_filters = false;
+                    .pushdown_filters = true;
                 (SessionContext::new_with_config(session_config), None)
             }
             InProcessBenchmarkMode::Arrow => {
