@@ -50,7 +50,10 @@ impl LiquidArray for LiquidByteArray {
             .unwrap()
             .as_primitive::<UInt16Type>()
             .clone();
-        let bit_packed_array = BitPackedArray::from_primitive(filtered_keys, keys.bit_width());
+        let bit_packed_array = match keys.bit_width() {
+            Some(bit_width) => BitPackedArray::from_primitive(filtered_keys, bit_width),
+            None => BitPackedArray::new_null_array(filtered_keys.len()),
+        };
         Arc::new(LiquidByteArray {
             keys: bit_packed_array,
             values,
@@ -852,5 +855,18 @@ mod tests {
         // Test the roundtrip
         let string_array = builder.finish();
         test_roundtrip(string_array);
+    }
+
+    #[test]
+    fn test_filter_all_nulls() {
+        let original: Vec<Option<&str>> = vec![None, None, None];
+        let array = StringArray::from(original.clone());
+        let compressor = LiquidByteArray::train_compressor(array.iter());
+        let liquid_array = LiquidByteArray::from_string_array(&array, compressor);
+        let result_array = liquid_array.filter(&BooleanArray::from(vec![true, false, true]));
+        let result_array = result_array.to_arrow_array();
+
+        assert_eq!(result_array.len(), 2);
+        assert_eq!(result_array.null_count(), 2);
     }
 }
