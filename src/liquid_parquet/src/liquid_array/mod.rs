@@ -141,8 +141,11 @@ pub trait LiquidArray: std::fmt::Debug + Send + Sync {
 /// A reference to a Liquid array.
 pub type LiquidArrayRef = Arc<dyn LiquidArray>;
 
+/// Get the bit width for a given max value.
+/// Returns 1 if the max value is 0.
+/// Returns 64 - max_value.leading_zeros() as u8 otherwise.
 pub(crate) fn get_bit_width(max_value: u64) -> NonZero<u8> {
-    if max_value <= 1 {
+    if max_value == 0 {
         // todo: here we actually should return 0, as we should just use constant encoding.
         // but that's not implemented yet.
         NonZero::new(1).unwrap()

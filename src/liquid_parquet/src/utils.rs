@@ -74,9 +74,7 @@ impl CheckedDictionaryArray {
 
     pub fn bit_width_for_key(&self) -> NonZero<u8> {
         let distinct_count = self.as_ref().values().len();
-        let max_bit_width = get_bit_width(distinct_count as u64);
-        debug_assert!(2u64.pow(max_bit_width.get() as u32) >= distinct_count as u64);
-        max_bit_width
+        get_bit_width(distinct_count as u64)
     }
 }
 

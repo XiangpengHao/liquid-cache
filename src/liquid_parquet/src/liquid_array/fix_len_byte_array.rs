@@ -106,7 +106,14 @@ impl LiquidArray for LiquidFixedLenByteArray {
             .unwrap()
             .as_primitive::<UInt16Type>()
             .clone();
-        let bit_packed_array = BitPackedArray::from_primitive(filtered_keys, keys.bit_width());
+        let Some(bit_width) = keys.bit_width() else {
+            return Arc::new(LiquidFixedLenByteArray {
+                arrow_type: self.arrow_type.clone(),
+                keys: BitPackedArray::new_null_array(filtered_keys.len()),
+                values,
+            });
+        };
+        let bit_packed_array = BitPackedArray::from_primitive(filtered_keys, bit_width);
         Arc::new(LiquidFixedLenByteArray {
             arrow_type: self.arrow_type.clone(),
             keys: bit_packed_array,
