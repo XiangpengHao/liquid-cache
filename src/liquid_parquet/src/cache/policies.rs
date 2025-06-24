@@ -5,8 +5,7 @@ use std::{
     collections::{HashMap, VecDeque},
     ptr::NonNull,
 };
-
-use super::{CacheAdvice, CacheEntryID};
+use crate::lib::{CacheAdvice, CacheEntryID};
 
 /// The cache policy that guides the replacement of LiquidCache
 pub trait CachePolicy: std::fmt::Debug + Send + Sync {
@@ -247,13 +246,14 @@ fn fallback_advice(entry_id: &CacheEntryID, cache_mode: &LiquidCacheMode) -> Cac
 mod test {
     use liquid_cache_common::LiquidCacheMode;
 
-    use crate::cache::utils::{create_cache_store, create_entry_id, create_test_array};
+    use crate::cache::utils::{create_cache_store, create_test_array};
     use crate::policies::CachePolicy;
 
-    use super::super::{CacheAdvice, CacheEntryID, CachedBatch};
+    use super::super::{CacheEntryID, CachedBatch};
     use super::{DiscardPolicy, FiloPolicy, LruInternalState, LruPolicy, ToDiskPolicy};
     use crate::sync::{Arc, Barrier, thread};
     use std::sync::atomic::Ordering;
+    use crate::lib::{create_entry_id, CacheAdvice, CacheEntryID};
 
     // Helper to create entry IDs for tests
     fn entry(id: u64) -> CacheEntryID {

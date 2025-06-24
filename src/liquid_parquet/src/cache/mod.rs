@@ -20,11 +20,11 @@ use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
-use store::{CacheAdvice, CacheStore};
+use store::{CacheStore};
 use tokio::runtime::Runtime;
 use transcode::transcode_liquid_inner;
-pub(crate) use utils::BatchID;
-use utils::{CacheEntryID, ColumnAccessPath};
+use utils::{ColumnAccessPath};
+use crate::lib::CacheEntryID;
 
 mod budget;
 /// Module containing cache eviction policies like FIFO
@@ -34,6 +34,7 @@ mod store;
 mod tracer;
 mod transcode;
 mod utils;
+pub mod lib;
 
 /// A dedicated Tokio thread pool for background transcoding tasks.
 /// This pool is built with 4 worker threads.
@@ -740,6 +741,7 @@ mod tests {
     use parquet::arrow::ArrowWriter;
     use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
     use std::sync::Arc;
+    use crate::lib::BatchID;
 
     fn setup_cache(batch_size: usize) -> LiquidCachedRowGroupRef {
         let tmp_dir = tempfile::tempdir().unwrap();

@@ -3,7 +3,7 @@ use std::fmt::{Debug, Formatter};
 use std::path::PathBuf;
 
 use super::{
-    CacheEntryID, CachedBatch, LiquidCompressorStates,
+    CachedBatch, LiquidCompressorStates,
     budget::BudgetAccounting,
     policies::CachePolicy,
     tracer::CacheTracer,
@@ -14,6 +14,7 @@ use crate::liquid_array::LiquidArrayRef;
 use crate::sync::{Arc, RwLock};
 use ahash::AHashMap;
 use liquid_cache_common::LiquidCacheMode;
+use crate::lib::{CacheAdvice, CacheEntryID};
 
 #[derive(Debug)]
 struct CompressorStates {
@@ -103,20 +104,7 @@ pub(crate) struct CacheStore {
     compressor_states: CompressorStates,
 }
 
-/// Advice given by the cache policy.
-#[derive(PartialEq, Eq, Debug)]
-pub enum CacheAdvice {
-    /// Evict the entry with the given ID.
-    Evict(CacheEntryID),
-    /// Transcode the entry to disk.
-    TranscodeToDisk(CacheEntryID),
-    /// Transcode the entry to liquid memory.
-    Transcode(CacheEntryID),
-    /// Write the entry to disk as-is (preserve format).
-    ToDisk(CacheEntryID),
-    /// Discard the entry,  do not cache.
-    Discard,
-}
+
 
 impl CacheStore {
     pub(super) fn new(
@@ -374,15 +362,17 @@ mod tests {
     use super::*;
     use crate::cache::{
         policies::{CachePolicy, LruPolicy},
-        utils::{create_cache_store, create_entry_id, create_test_array},
+        utils::{create_cache_store, create_test_array},
     };
     use crate::sync::thread;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use arrow::array::Array;
     use liquid_cache_common::LiquidCacheMode;
+    use crate::lib::create_entry_id;
 
     mod partitioned_hash_store_tests {
+        use crate::lib::create_entry_id;
         use super::*;
 
         #[test]

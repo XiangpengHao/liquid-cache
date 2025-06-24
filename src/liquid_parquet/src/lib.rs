@@ -6,6 +6,7 @@ pub mod liquid_array;
 mod reader;
 mod sync;
 pub use cache::policies;
+pub use cache::lib;
 pub use cache::{LiquidCache, LiquidCacheRef, LiquidCachedFileRef};
 pub use reader::LiquidParquetSource;
 pub(crate) mod utils;

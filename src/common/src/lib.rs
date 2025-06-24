@@ -24,20 +24,6 @@ pub enum CacheMode {
     StaticFileServer,
 }
 
-/// Specify which eviction logic the cache should use
-/// See [`LiquidCacheMode`](https://docs.rs/liquid-cache-parquet/latest/liquid_cache_parquet/policies/index.html)
-#[derive(Clone, Debug, Default, Copy, PartialEq, Eq)]
-pub enum CacheEvictionStrategy {
-    /// Don't cache new data.
-    #[default]
-    Discard,
-    /// First In Last Out
-    Filo,
-    /// Least Recently Used
-    Lru,
-    /// Write to disk when the cache is full.
-    ToDisk,
-}
 
 impl Display for CacheMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

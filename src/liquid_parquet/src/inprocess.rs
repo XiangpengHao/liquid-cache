@@ -6,11 +6,12 @@ use datafusion::error::Result;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
-use liquid_cache_common::{CacheEvictionStrategy, LiquidCacheMode};
+use liquid_cache_common::{LiquidCacheMode};
 
 use crate::cache::policies::CachePolicy;
 use crate::utils::rewrite_data_source_plan;
 use crate::{LiquidCache, LiquidCacheRef};
+use crate::policies::{FiloPolicy};
 
 /// Builder for in-process liquid cache session context
 ///
@@ -20,7 +21,7 @@ use crate::{LiquidCache, LiquidCacheRef};
 /// # Example
 /// ```rust
 /// use liquid_cache_parquet::{
-///     common::{CacheEvictionStrategy, LiquidCacheMode},
+///     common::{LiquidCacheMode},
 ///     LiquidCacheInProcessBuilder,
 /// };
 /// use datafusion::prelude::{SessionConfig, SessionContext};
@@ -28,13 +29,14 @@ use crate::{LiquidCache, LiquidCacheRef};
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-///     let temp_dir = TempDir::new().unwrap();
+///     use liquid_cache_parquet::policies::FiloPolicy;
+/// let temp_dir = TempDir::new().unwrap();
 ///
 ///     let (ctx, _) = LiquidCacheInProcessBuilder::new()
 ///         .with_max_cache_bytes(1024 * 1024 * 1024) // 1GB
 ///         .with_cache_dir(temp_dir.path().to_path_buf())
 ///         .with_cache_mode(LiquidCacheMode::Liquid { transcode_in_background: false })
-///         .with_cache_strategy(CacheEvictionStrategy::Discard)
+///         .with_cache_strategy(Box::new(FiloPolicy::new()))
 ///         .build(SessionConfig::new())?;
 ///
 ///     // Register the test parquet file
@@ -56,7 +58,7 @@ pub struct LiquidCacheInProcessBuilder {
     /// Cache mode (`LiquidCacheMode::Arrow` or `LiquidCacheMode::Liquid`)
     cache_mode: LiquidCacheMode,
     /// Cache eviction strategy
-    cache_strategy: CacheEvictionStrategy,
+    cache_strategy: Box<dyn CachePolicy>,
 }
 
 impl Default for LiquidCacheInProcessBuilder {
@@ -66,7 +68,7 @@ impl Default for LiquidCacheInProcessBuilder {
             max_cache_bytes: 1024 * 1024 * 1024, // 1GB
             cache_dir: std::env::temp_dir().join("liquid_cache"),
             cache_mode: LiquidCacheMode::default(),
-            cache_strategy: CacheEvictionStrategy::Discard,
+            cache_strategy: Box::new(FiloPolicy::new()),
         }
     }
 }
@@ -102,7 +104,7 @@ impl LiquidCacheInProcessBuilder {
     }
 
     /// Set cache strategy
-    pub fn with_cache_strategy(mut self, cache_strategy: CacheEvictionStrategy) -> Self {
+    pub fn with_cache_strategy(mut self, cache_strategy: Box<dyn CachePolicy>) -> Self {
         self.cache_strategy = cache_strategy;
         self
     }
@@ -119,19 +121,12 @@ impl LiquidCacheInProcessBuilder {
         config.options_mut().execution.parquet.binary_as_string = true;
         config.options_mut().execution.batch_size = self.batch_size;
 
-        // Create the cache
-        let policy: Box<dyn CachePolicy> = match self.cache_strategy {
-            CacheEvictionStrategy::Discard => Box::new(crate::policies::DiscardPolicy),
-            CacheEvictionStrategy::Lru => Box::new(crate::policies::LruPolicy::new()),
-            CacheEvictionStrategy::Filo => Box::new(crate::policies::FiloPolicy::new()),
-            CacheEvictionStrategy::ToDisk => Box::new(crate::policies::ToDiskPolicy::new()),
-        };
         let cache = LiquidCache::new(
             self.batch_size,
             self.max_cache_bytes,
             self.cache_dir,
             self.cache_mode,
-            policy,
+            self.cache_strategy,
         );
         let cache_ref = Arc::new(cache);
 
