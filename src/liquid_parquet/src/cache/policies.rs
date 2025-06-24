@@ -248,8 +248,8 @@ fn fallback_advice(entry_id: &CacheEntryID, cache_mode: &LiquidCacheMode) -> Cac
 mod test {
     use liquid_cache_common::LiquidCacheMode;
 
-    use crate::cache::utils::{create_cache_store, create_entry_id, create_test_array};
     use crate::cache::policies::CachePolicy;
+    use crate::cache::utils::{create_cache_store, create_entry_id, create_test_array};
 
     use super::super::CachedBatch;
     use super::*;
