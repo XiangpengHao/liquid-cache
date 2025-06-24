@@ -1,6 +1,6 @@
 use datafusion::prelude::SessionConfig;
 use liquid_cache_parquet::lib::CacheAdvice;
-use liquid_cache_parquet::policies::CachePolicy;
+use liquid_cache_parquet::policies::{CachePolicy, DiscardPolicy};
 use liquid_cache_parquet::{LiquidCacheInProcessBuilder, common::LiquidCacheMode};
 use tempfile::TempDir;
 
@@ -14,7 +14,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_cache_mode(LiquidCacheMode::Liquid {
             transcode_in_background: true,
         })
-        .with_cache_strategy(Box::new(CustomPolicy))
+        .with_cache_strategy(Box::new(DiscardPolicy))
         .build(SessionConfig::new())?;
 
     ctx.register_parquet("hits", "examples/nano_hits.parquet", Default::default())

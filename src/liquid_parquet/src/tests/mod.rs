@@ -12,9 +12,10 @@ use datafusion::{
     physical_plan::{ExecutionPlan, collect, display::DisplayableExecutionPlan},
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
-use liquid_cache_common::{CacheEvictionStrategy, LiquidCacheMode};
+use liquid_cache_common::LiquidCacheMode;
 
 use crate::LiquidCacheInProcessBuilder;
+use crate::policies::DiscardPolicy;
 
 const TEST_FILE: &str = "../../examples/nano_hits.parquet";
 
@@ -30,7 +31,7 @@ async fn create_session_context_with_liquid_cache(
         .with_max_cache_bytes(cache_size_bytes)
         .with_cache_dir(temp_dir.path().to_path_buf())
         .with_cache_mode(cache_mode)
-        .with_cache_strategy(CacheEvictionStrategy::Discard)
+        .with_cache_strategy(Box::new(DiscardPolicy))
         .build(config)?;
 
     // Register the test parquet file

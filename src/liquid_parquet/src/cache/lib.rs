@@ -217,13 +217,13 @@ mod tests {
 
     #[test]
     fn test_batch_id_from_row_id() {
-        let mut batch_id = BatchID::from_row_id(256, 128);
+        let batch_id = BatchID::from_row_id(256, 128);
         assert_eq!(batch_id.v, 2);
     }
 
     #[test]
     fn test_batch_id_from_raw() {
-        let mut batch_id = BatchID::from_raw(5);
+        let batch_id = BatchID::from_raw(5);
         assert_eq!(batch_id.v, 5);
     }
 

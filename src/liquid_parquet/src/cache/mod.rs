@@ -724,7 +724,7 @@ impl LiquidCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::{BatchID, LiquidCache, LiquidCachedRowGroupRef};
+    use crate::cache::{LiquidCache, LiquidCachedRowGroupRef};
     use crate::lib::BatchID;
     use crate::policies::DiscardPolicy;
     use crate::reader::FilterCandidateBuilder;

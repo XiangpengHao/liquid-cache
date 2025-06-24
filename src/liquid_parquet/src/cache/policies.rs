@@ -249,7 +249,7 @@ mod test {
     use crate::cache::utils::{create_cache_store, create_test_array};
     use crate::policies::CachePolicy;
 
-    use super::super::{CacheEntryID, CachedBatch};
+    use super::super::CachedBatch;
     use super::{DiscardPolicy, FiloPolicy, LruInternalState, LruPolicy, ToDiskPolicy};
     use crate::lib::{CacheAdvice, CacheEntryID, create_entry_id};
     use crate::sync::{Arc, Barrier, thread};
