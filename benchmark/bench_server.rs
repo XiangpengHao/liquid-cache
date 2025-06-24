@@ -4,7 +4,7 @@ use clap::Parser;
 use fastrace_tonic::FastraceServerLayer;
 use liquid_cache_benchmarks::setup_observability;
 use liquid_cache_common::CacheMode;
-use liquid_cache_parquet::policies::DiscardPolicy;
+use liquid_cache_parquet::cache::policies::DiscardPolicy;
 use liquid_cache_server::{LiquidCacheService, run_admin_server};
 use log::info;
 use mimalloc::MiMalloc;

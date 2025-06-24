@@ -10,7 +10,8 @@ use super::{
     transcode_liquid_inner,
     utils::{CacheConfig, ColumnAccessPath},
 };
-use crate::lib::{CacheAdvice, CacheEntryID};
+use crate::cache::utils::CacheAdvice;
+use crate::cache::CacheEntryID;
 use crate::liquid_array::LiquidArrayRef;
 use crate::sync::{Arc, RwLock};
 use ahash::AHashMap;
@@ -360,18 +361,17 @@ mod tests {
     use super::*;
     use crate::cache::{
         policies::{CachePolicy, LruPolicy},
-        utils::{create_cache_store, create_test_array},
+        utils::{create_cache_store, create_entry_id, create_test_array},
     };
     use crate::sync::thread;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use crate::lib::create_entry_id;
     use arrow::array::Array;
     use liquid_cache_common::LiquidCacheMode;
 
     mod partitioned_hash_store_tests {
         use super::*;
-        use crate::lib::create_entry_id;
+        use crate::cache::utils::create_entry_id;
 
         #[test]
         fn test_get_and_is_cached() {

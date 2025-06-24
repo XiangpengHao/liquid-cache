@@ -6,7 +6,7 @@ use datafusion::{
     prelude::SessionContext,
 };
 use liquid_cache_common::CacheMode;
-use liquid_cache_parquet::policies::DiscardPolicy;
+use liquid_cache_parquet::cache::policies::DiscardPolicy;
 use uuid::Uuid;
 
 mod cases;

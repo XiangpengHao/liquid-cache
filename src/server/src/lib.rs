@@ -40,7 +40,7 @@ use liquid_cache_common::{
     CacheMode,
     rpc::{FetchResults, LiquidCacheActions},
 };
-use liquid_cache_parquet::LiquidCacheRef;
+use liquid_cache_parquet::cache::LiquidCacheRef;
 use log::info;
 use prost::bytes::Bytes;
 use service::LiquidCacheServiceInner;
@@ -59,7 +59,7 @@ pub use admin_server::{models::*, run_admin_server};
 pub use errors::{
     LiquidCacheErrorExt, LiquidCacheResult, anyhow_to_status, df_error_to_status_with_trace,
 };
-use liquid_cache_parquet::policies::{CachePolicy, LruPolicy};
+use liquid_cache_parquet::cache::policies::{CachePolicy, LruPolicy};
 use object_store::path::Path;
 use object_store::{GetOptions, GetRange};
 
@@ -75,7 +75,7 @@ mod tests;
 /// use datafusion::prelude::SessionContext;
 /// use liquid_cache_server::LiquidCacheService;
 /// use tonic::transport::Server;
-/// use liquid_cache_parquet::policies::LruPolicy;
+/// use liquid_cache_parquet::cache::policies::LruPolicy;
 /// let liquid_cache = LiquidCacheService::new(SessionContext::new(), None, None, Default::default(), Box::new(LruPolicy::new())).unwrap();
 /// let flight = FlightServiceServer::new(liquid_cache);
 /// Server::builder()

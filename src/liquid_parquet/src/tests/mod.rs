@@ -15,7 +15,7 @@ use datafusion::{
 use liquid_cache_common::LiquidCacheMode;
 
 use crate::LiquidCacheInProcessBuilder;
-use crate::policies::DiscardPolicy;
+use crate::cache::policies::DiscardPolicy;
 
 const TEST_FILE: &str = "../../examples/nano_hits.parquet";
 

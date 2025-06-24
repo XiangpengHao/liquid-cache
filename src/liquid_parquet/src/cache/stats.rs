@@ -163,10 +163,9 @@ impl LiquidCache {
 mod tests {
     use std::io::Read;
 
-    use crate::cache::BatchID;
+    use crate::cache::{BatchID, policies::DiscardPolicy};
 
     use super::*;
-    use crate::policies::DiscardPolicy;
     use arrow::{
         array::{Array, AsArray},
         datatypes::UInt64Type,

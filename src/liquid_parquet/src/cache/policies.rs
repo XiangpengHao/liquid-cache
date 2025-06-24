@@ -1,7 +1,9 @@
 use liquid_cache_common::LiquidCacheMode;
 
-use crate::lib::{CacheAdvice, CacheEntryID};
-use crate::sync::Mutex;
+use crate::{
+    cache::{CacheEntryID, utils::CacheAdvice},
+    sync::Mutex,
+};
 use std::{
     collections::{HashMap, VecDeque},
     ptr::NonNull,
@@ -246,12 +248,12 @@ fn fallback_advice(entry_id: &CacheEntryID, cache_mode: &LiquidCacheMode) -> Cac
 mod test {
     use liquid_cache_common::LiquidCacheMode;
 
-    use crate::cache::utils::{create_cache_store, create_test_array};
-    use crate::policies::CachePolicy;
+    use crate::cache::utils::{create_cache_store, create_entry_id, create_test_array};
+    use crate::cache::policies::CachePolicy;
 
     use super::super::CachedBatch;
+    use super::*;
     use super::{DiscardPolicy, FiloPolicy, LruInternalState, LruPolicy, ToDiskPolicy};
-    use crate::lib::{CacheAdvice, CacheEntryID, create_entry_id};
     use crate::sync::{Arc, Barrier, thread};
     use std::sync::atomic::Ordering;
 

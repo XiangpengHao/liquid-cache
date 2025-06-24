@@ -1,6 +1,6 @@
 use datafusion::prelude::SessionConfig;
-use liquid_cache_parquet::lib::CacheAdvice;
-use liquid_cache_parquet::policies::{CachePolicy, DiscardPolicy};
+use liquid_cache_parquet::cache::policies::{CachePolicy, DiscardPolicy};
+use liquid_cache_parquet::cache::{CacheAdvice, CacheEntryID};
 use liquid_cache_parquet::{LiquidCacheInProcessBuilder, common::LiquidCacheMode};
 use tempfile::TempDir;
 
@@ -28,11 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 pub struct CustomPolicy;
 
 impl CachePolicy for CustomPolicy {
-    fn advise(
-        &self,
-        _entry_id: &liquid_cache_parquet::lib::CacheEntryID,
-        _cache_mode: &LiquidCacheMode,
-    ) -> CacheAdvice {
+    fn advise(&self, _entry_id: &CacheEntryID, _cache_mode: &LiquidCacheMode) -> CacheAdvice {
         CacheAdvice::Discard
     }
 }

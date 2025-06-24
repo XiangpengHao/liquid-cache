@@ -8,10 +8,9 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use liquid_cache_common::LiquidCacheMode;
 
-use crate::cache::policies::CachePolicy;
-use crate::policies::FiloPolicy;
+use crate::cache::policies::{CachePolicy, FiloPolicy};
+use crate::cache::{LiquidCache, LiquidCacheRef};
 use crate::utils::rewrite_data_source_plan;
-use crate::{LiquidCache, LiquidCacheRef};
 
 /// Builder for in-process liquid cache session context
 ///
@@ -29,7 +28,7 @@ use crate::{LiquidCache, LiquidCacheRef};
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-///     use liquid_cache_parquet::policies::FiloPolicy;
+///     use liquid_cache_parquet::cache::policies::FiloPolicy;
 /// let temp_dir = TempDir::new().unwrap();
 ///
 ///     let (ctx, _) = LiquidCacheInProcessBuilder::new()

@@ -18,7 +18,7 @@ use datafusion::{
 };
 use parquet::arrow::arrow_reader::RowSelector;
 
-use crate::{LiquidCacheRef, LiquidParquetSource, liquid_array::get_bit_width};
+use crate::{LiquidParquetSource, cache::LiquidCacheRef, liquid_array::get_bit_width};
 
 /// A wrapper around `DictionaryArray<UInt16Type>` that ensures the values are unique.
 /// This is because we leverage the fact that the values are unique in the dictionary to short cut the
@@ -375,7 +375,7 @@ pub fn rewrite_data_source_plan(
 
 #[cfg(test)]
 mod tests {
-    use crate::{LiquidCache, policies::DiscardPolicy};
+    use crate::cache::{LiquidCache, policies::DiscardPolicy};
 
     use super::*;
     use arrow::array::{BinaryArray, DictionaryArray};

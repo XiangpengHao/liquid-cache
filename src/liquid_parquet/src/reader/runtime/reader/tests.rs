@@ -1,7 +1,5 @@
-use crate::policies::DiscardPolicy;
 use crate::{
-    LiquidCachedFileRef,
-    cache::LiquidCache,
+    cache::{LiquidCache, LiquidCachedFileRef, policies::DiscardPolicy},
     reader::{
         plantime::CachedMetaReaderFactory,
         runtime::{ArrowReaderBuilderBridge, liquid_stream::LiquidStreamBuilder},
