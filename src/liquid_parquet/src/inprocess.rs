@@ -47,7 +47,7 @@ use crate::policies::{FiloPolicy};
 ///     Ok(())
 /// }
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct LiquidCacheInProcessBuilder {
     /// Size of batches for caching
     batch_size: usize,

@@ -17,9 +17,10 @@ use parquet::{
 
 use super::super::parquet_bridge::{ParquetField, ParquetFieldType};
 use crate::{
-    cache::{BatchID, LiquidCachedColumnRef, LiquidCachedRowGroupRef},
+    cache::{LiquidCachedColumnRef, LiquidCachedRowGroupRef},
     reader::runtime::parquet_bridge::StructArrayReaderBridge,
 };
+use crate::lib::BatchID;
 
 /// A cached array reader will cache the rows in batch_size granularity.
 ///

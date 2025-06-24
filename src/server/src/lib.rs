@@ -36,8 +36,7 @@ use datafusion::{
 use datafusion_proto::bytes::physical_plan_from_bytes;
 use fastrace::prelude::SpanContext;
 use futures::{Stream, TryStreamExt};
-use liquid_cache_common::{
-    CacheEvictionStrategy, CacheMode,
+use liquid_cache_common::{CacheMode,
     rpc::{FetchResults, LiquidCacheActions},
 };
 use liquid_cache_parquet::LiquidCacheRef;
@@ -61,6 +60,7 @@ pub use errors::{
 };
 use object_store::path::Path;
 use object_store::{GetOptions, GetRange};
+use liquid_cache_parquet::policies::{CachePolicy, LruPolicy};
 
 #[cfg(test)]
 mod tests;
@@ -74,8 +74,8 @@ mod tests;
 /// use datafusion::prelude::SessionContext;
 /// use liquid_cache_server::LiquidCacheService;
 /// use tonic::transport::Server;
-/// use liquid_cache_common::CacheEvictionStrategy::Discard;
-/// let liquid_cache = LiquidCacheService::new(SessionContext::new(), None, None, Default::default(), Discard).unwrap();
+/// use liquid_cache_parquet::policies::LruPolicy;
+/// let liquid_cache = LiquidCacheService::new(SessionContext::new(), None, None, Default::default(), Box::new(LruPolicy::new())).unwrap();
 /// let flight = FlightServiceServer::new(liquid_cache);
 /// Server::builder()
 ///     .add_service(flight)
@@ -101,7 +101,7 @@ impl LiquidCacheService {
             None,
             None,
             CacheMode::LiquidEagerTranscode,
-            CacheEvictionStrategy::Discard,
+            Box::new(LruPolicy::new()),
         )
     }
 
@@ -118,7 +118,7 @@ impl LiquidCacheService {
         max_cache_bytes: Option<usize>,
         disk_cache_dir: Option<PathBuf>,
         cache_mode: CacheMode,
-        cache_policy: CacheEvictionStrategy,
+        cache_policy: Box<dyn CachePolicy>,
     ) -> anyhow::Result<Self> {
         let disk_cache_dir = match disk_cache_dir {
             Some(dir) => dir,

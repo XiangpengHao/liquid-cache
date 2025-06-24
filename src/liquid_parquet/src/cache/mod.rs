@@ -24,7 +24,7 @@ use store::{CacheStore};
 use tokio::runtime::Runtime;
 use transcode::transcode_liquid_inner;
 use utils::{ColumnAccessPath};
-use crate::lib::CacheEntryID;
+use crate::lib::{BatchID, CacheEntryID};
 
 mod budget;
 /// Module containing cache eviction policies like FIFO
