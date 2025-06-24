@@ -11,10 +11,8 @@ use datafusion::parquet::arrow::{
 };
 use datafusion::parquet::file::properties::WriterProperties;
 use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
-use liquid_cache_parquet::{
-    LiquidCacheInProcessBuilder, LiquidCacheRef,
-    common::{CacheEvictionStrategy, LiquidCacheMode},
-};
+use liquid_cache_parquet::cache::policies::ToDiskPolicy;
+use liquid_cache_parquet::{LiquidCacheInProcessBuilder, LiquidCacheRef, common::LiquidCacheMode};
 use tempfile::TempDir;
 
 #[derive(Debug)]
@@ -154,7 +152,7 @@ async fn run_cache_behavior_benchmark() -> Result<(), Box<dyn std::error::Error>
         .with_cache_mode(LiquidCacheMode::Liquid {
             transcode_in_background: false,
         })
-        .with_cache_strategy(CacheEvictionStrategy::ToDisk)
+        .with_cache_strategy(Box::new(ToDiskPolicy::new()))
         .build(SessionConfig::new())?;
 
     // Register the benchmark parquet file

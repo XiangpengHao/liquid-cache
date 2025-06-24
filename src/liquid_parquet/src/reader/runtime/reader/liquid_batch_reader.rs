@@ -7,12 +7,11 @@ use arrow_schema::{ArrowError, DataType, Schema, SchemaRef};
 use parquet::arrow::array_reader::ArrayReader;
 use parquet::arrow::arrow_reader::{ArrowPredicate, RowSelection, RowSelector};
 
+use super::LiquidRowFilter;
 use crate::cache::{BatchID, LiquidCachedRowGroupRef};
 use crate::reader::runtime::utils::take_next_batch;
 use crate::utils::{boolean_buffer_and_then, row_selector_to_boolean_buffer};
 use crate::{ABLATION_STUDY_MODE, AblationStudyMode};
-
-use super::LiquidRowFilter;
 
 fn read_record_batch_from_parquet<'a>(
     reader: &mut Box<dyn ArrayReader>,

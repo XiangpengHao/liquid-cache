@@ -1,22 +1,21 @@
 #![warn(missing_docs)]
 #![doc = include_str!("../README.md")]
 
-mod cache;
 pub mod liquid_array;
 mod reader;
 mod sync;
-pub use cache::policies;
-pub use cache::{LiquidCache, LiquidCacheRef, LiquidCachedFileRef};
-pub use reader::LiquidParquetSource;
 pub(crate) mod utils;
-pub use utils::{boolean_buffer_and_then, rewrite_data_source_plan};
+
 mod inprocess;
 #[cfg(test)]
 mod tests;
 
+pub mod cache;
+pub use cache::{LiquidCache, LiquidCacheRef};
 pub use inprocess::LiquidCacheInProcessBuilder;
-
 pub use liquid_cache_common as common;
+pub use reader::LiquidParquetSource;
+pub use utils::{boolean_buffer_and_then, rewrite_data_source_plan};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd)]
 #[allow(unused)]

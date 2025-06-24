@@ -1,6 +1,11 @@
+//! This module contains the cache implementation for the Liquid Parquet reader.
+//! It is responsible for caching the data in memory and on disk, and for evicting
+//! data from the cache when the cache is full.
+//!
+
 use super::liquid_array::LiquidArrayRef;
+use crate::cache::policies::CachePolicy;
 use crate::liquid_array::ipc::{self, LiquidIPCContext};
-use crate::policies::CachePolicy;
 use crate::reader::{LiquidPredicate, extract_multi_column_or, try_evaluate_predicate};
 use crate::sync::{Mutex, RwLock};
 use crate::utils::boolean_buffer_or;
@@ -20,20 +25,22 @@ use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
-use store::{CacheAdvice, CacheStore};
+use store::CacheStore;
 use tokio::runtime::Runtime;
 use transcode::transcode_liquid_inner;
-pub(crate) use utils::BatchID;
-use utils::{CacheEntryID, ColumnAccessPath};
+use utils::ColumnAccessPath;
 
 mod budget;
-/// Module containing cache eviction policies like FIFO
-pub mod policies;
+
 mod stats;
 mod store;
 mod tracer;
 mod transcode;
 mod utils;
+
+pub use crate::cache::utils::{BatchID, CacheAdvice, CacheEntryID};
+/// Module containing cache eviction policies like FIFO
+pub mod policies;
 
 /// A dedicated Tokio thread pool for background transcoding tasks.
 /// This pool is built with 4 worker threads.
@@ -65,7 +72,7 @@ impl LiquidCompressorStates {
 }
 
 #[derive(Debug, Clone)]
-pub enum CachedBatch {
+pub(crate) enum CachedBatch {
     MemoryArrow(ArrayRef),
     MemoryLiquid(LiquidArrayRef),
     DiskLiquid,
@@ -104,15 +111,15 @@ impl Display for CachedBatch {
 }
 
 #[derive(Debug)]
-pub struct LiquidCachedColumn {
+pub(crate) struct LiquidCachedColumn {
     cache_store: Arc<CacheStore>,
     field: Arc<Field>,
     column_path: ColumnAccessPath,
 }
 
-pub type LiquidCachedColumnRef = Arc<LiquidCachedColumn>;
+pub(crate) type LiquidCachedColumnRef = Arc<LiquidCachedColumn>;
 
-pub enum InsertArrowArrayError {
+pub(crate) enum InsertArrowArrayError {
     AlreadyCached,
 }
 
@@ -414,7 +421,7 @@ impl LiquidCachedColumn {
 }
 
 #[derive(Debug)]
-pub struct LiquidCachedRowGroup {
+pub(crate) struct LiquidCachedRowGroup {
     columns: RwLock<AHashMap<u64, Arc<LiquidCachedColumn>>>,
     cache_store: Arc<CacheStore>,
     row_group_id: u64,
@@ -557,10 +564,10 @@ impl LiquidCachedRowGroup {
     }
 }
 
-pub type LiquidCachedRowGroupRef = Arc<LiquidCachedRowGroup>;
+pub(crate) type LiquidCachedRowGroupRef = Arc<LiquidCachedRowGroup>;
 
 #[derive(Debug)]
-pub struct LiquidCachedFile {
+pub(crate) struct LiquidCachedFile {
     row_groups: Mutex<AHashMap<u64, Arc<LiquidCachedRowGroup>>>,
     cache_store: Arc<CacheStore>,
     file_id: u64,
@@ -594,15 +601,10 @@ impl LiquidCachedFile {
     pub fn cache_mode(&self) -> &LiquidCacheMode {
         self.cache_store.config().cache_mode()
     }
-
-    #[cfg(test)]
-    pub fn memory_usage(&self) -> usize {
-        self.cache_store.budget().memory_usage_bytes()
-    }
 }
 
 /// A reference to a cached file.
-pub type LiquidCachedFileRef = Arc<LiquidCachedFile>;
+pub(crate) type LiquidCachedFileRef = Arc<LiquidCachedFile>;
 
 /// The main cache structure.
 #[derive(Debug)]
@@ -643,19 +645,13 @@ impl LiquidCache {
     }
 
     /// Register a file in the cache.
-    pub fn register_or_get_file(&self, file_path: String) -> LiquidCachedFileRef {
+    pub(crate) fn register_or_get_file(&self, file_path: String) -> LiquidCachedFileRef {
         let mut files = self.files.lock().unwrap();
         let value = files.entry(file_path.clone()).or_insert_with(|| {
             let file_id = self.current_file_id.fetch_add(1, Ordering::Relaxed);
             Arc::new(LiquidCachedFile::new(self.cache_store.clone(), file_id))
         });
         value.clone()
-    }
-
-    /// Get a file from the cache.
-    pub fn get_file(&self, file_path: String) -> Option<LiquidCachedFileRef> {
-        let files = self.files.lock().unwrap();
-        files.get(&file_path).cloned()
     }
 
     /// Get the batch size of the cache.
@@ -722,8 +718,7 @@ impl LiquidCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::{BatchID, LiquidCache, LiquidCachedRowGroupRef};
-    use crate::policies::DiscardPolicy;
+    use crate::cache::{LiquidCache, LiquidCachedRowGroupRef, policies::DiscardPolicy};
     use crate::reader::FilterCandidateBuilder;
     use arrow::array::Int32Array;
     use arrow::buffer::BooleanBuffer;

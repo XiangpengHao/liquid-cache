@@ -1,12 +1,13 @@
 use liquid_cache_common::LiquidCacheMode;
 
-use crate::sync::Mutex;
+use crate::{
+    cache::{CacheEntryID, utils::CacheAdvice},
+    sync::Mutex,
+};
 use std::{
     collections::{HashMap, VecDeque},
     ptr::NonNull,
 };
-
-use super::{CacheAdvice, CacheEntryID};
 
 /// The cache policy that guides the replacement of LiquidCache
 pub trait CachePolicy: std::fmt::Debug + Send + Sync {
@@ -247,10 +248,11 @@ fn fallback_advice(entry_id: &CacheEntryID, cache_mode: &LiquidCacheMode) -> Cac
 mod test {
     use liquid_cache_common::LiquidCacheMode;
 
+    use crate::cache::policies::CachePolicy;
     use crate::cache::utils::{create_cache_store, create_entry_id, create_test_array};
-    use crate::policies::CachePolicy;
 
-    use super::super::{CacheAdvice, CacheEntryID, CachedBatch};
+    use super::super::CachedBatch;
+    use super::*;
     use super::{DiscardPolicy, FiloPolicy, LruInternalState, LruPolicy, ToDiskPolicy};
     use crate::sync::{Arc, Barrier, thread};
     use std::sync::atomic::Ordering;

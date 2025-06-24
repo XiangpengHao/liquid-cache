@@ -1,7 +1,9 @@
+use crate::{BenchmarkResult, IterationResult, Query, QueryResult, run_query};
 use anyhow::Result;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::prelude::{SessionConfig, SessionContext};
-use liquid_cache_common::{CacheEvictionStrategy, LiquidCacheMode};
+use liquid_cache_common::LiquidCacheMode;
+use liquid_cache_parquet::cache::policies::ToDiskPolicy;
 use liquid_cache_parquet::{LiquidCacheInProcessBuilder, LiquidCacheRef};
 use log::info;
 use serde::{Deserialize, Serialize};
@@ -13,8 +15,6 @@ use std::{
     time::Instant,
 };
 use sysinfo::Disks;
-
-use crate::{BenchmarkResult, IterationResult, Query, QueryResult, run_query};
 
 #[derive(Clone, Debug, Default, Copy, PartialEq, Eq, Serialize)]
 pub enum InProcessBenchmarkMode {
@@ -230,7 +230,7 @@ impl InProcessBenchmarkRunner {
                     .with_max_cache_bytes(cache_size)
                     .with_cache_mode(LiquidCacheMode::Arrow)
                     .with_cache_dir(cache_dir)
-                    .with_cache_strategy(CacheEvictionStrategy::ToDisk)
+                    .with_cache_strategy(Box::new(ToDiskPolicy::new()))
                     .build(session_config)?;
                 (v.0, Some(v.1))
             }
@@ -241,7 +241,7 @@ impl InProcessBenchmarkRunner {
                         transcode_in_background: true,
                     })
                     .with_cache_dir(cache_dir)
-                    .with_cache_strategy(CacheEvictionStrategy::ToDisk)
+                    .with_cache_strategy(Box::new(ToDiskPolicy::new()))
                     .build(session_config)?;
                 (v.0, Some(v.1))
             }
@@ -252,7 +252,7 @@ impl InProcessBenchmarkRunner {
                         transcode_in_background: false,
                     })
                     .with_cache_dir(cache_dir)
-                    .with_cache_strategy(CacheEvictionStrategy::ToDisk)
+                    .with_cache_strategy(Box::new(ToDiskPolicy::new()))
                     .build(session_config)?;
                 (v.0, Some(v.1))
             }

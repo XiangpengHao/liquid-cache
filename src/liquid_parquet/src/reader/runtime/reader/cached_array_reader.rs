@@ -388,7 +388,7 @@ mod tests {
 
     use super::*;
     use crate::cache::LiquidCache;
-    use crate::policies::DiscardPolicy;
+    use crate::cache::policies::DiscardPolicy;
 
     struct MockArrayReader {
         rows: Vec<i32>,

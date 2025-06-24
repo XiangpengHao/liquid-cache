@@ -3,13 +3,15 @@ use std::fmt::{Debug, Formatter};
 use std::path::PathBuf;
 
 use super::{
-    CacheEntryID, CachedBatch, LiquidCompressorStates,
+    CachedBatch, LiquidCompressorStates,
     budget::BudgetAccounting,
     policies::CachePolicy,
     tracer::CacheTracer,
     transcode_liquid_inner,
     utils::{CacheConfig, ColumnAccessPath},
 };
+use crate::cache::CacheEntryID;
+use crate::cache::utils::CacheAdvice;
 use crate::liquid_array::LiquidArrayRef;
 use crate::sync::{Arc, RwLock};
 use ahash::AHashMap;
@@ -101,21 +103,6 @@ pub(crate) struct CacheStore {
     policy: Box<dyn CachePolicy>,
     tracer: CacheTracer,
     compressor_states: CompressorStates,
-}
-
-/// Advice given by the cache policy.
-#[derive(PartialEq, Eq, Debug)]
-pub enum CacheAdvice {
-    /// Evict the entry with the given ID.
-    Evict(CacheEntryID),
-    /// Transcode the entry to disk.
-    TranscodeToDisk(CacheEntryID),
-    /// Transcode the entry to liquid memory.
-    Transcode(CacheEntryID),
-    /// Write the entry to disk as-is (preserve format).
-    ToDisk(CacheEntryID),
-    /// Discard the entry,  do not cache.
-    Discard,
 }
 
 impl CacheStore {
@@ -384,6 +371,7 @@ mod tests {
 
     mod partitioned_hash_store_tests {
         use super::*;
+        use crate::cache::utils::create_entry_id;
 
         #[test]
         fn test_get_and_is_cached() {

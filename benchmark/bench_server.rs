@@ -3,7 +3,8 @@ use axum::Router;
 use clap::Parser;
 use fastrace_tonic::FastraceServerLayer;
 use liquid_cache_benchmarks::setup_observability;
-use liquid_cache_common::{CacheEvictionStrategy, CacheMode};
+use liquid_cache_common::CacheMode;
+use liquid_cache_parquet::cache::policies::DiscardPolicy;
 use liquid_cache_server::{LiquidCacheService, run_admin_server};
 use log::info;
 use mimalloc::MiMalloc;
@@ -95,7 +96,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 max_cache_bytes,
                 args.disk_cache_dir.clone(),
                 args.cache_mode,
-                CacheEvictionStrategy::Discard,
+                Box::new(DiscardPolicy),
             )?;
 
             let liquid_cache_server = Arc::new(liquid_cache_server);

@@ -7,10 +7,9 @@ use datafusion::{
     physical_plan::{ExecutionPlan, display::DisplayableExecutionPlan, metrics::MetricValue},
     prelude::SessionContext,
 };
-use liquid_cache_common::{CacheEvictionStrategy, CacheMode, rpc::ExecutionMetricsResponse};
-use liquid_cache_parquet::{LiquidCache, LiquidCacheRef};
+use liquid_cache_common::{CacheMode, rpc::ExecutionMetricsResponse};
 use liquid_cache_parquet::{
-    policies::{CachePolicy, DiscardPolicy, FiloPolicy, LruPolicy, ToDiskPolicy},
+    cache::{LiquidCache, LiquidCacheRef, policies::CachePolicy},
     rewrite_data_source_plan,
 };
 use log::{debug, info};
@@ -49,19 +48,12 @@ impl LiquidCacheServiceInner {
         max_cache_bytes: Option<usize>,
         disk_cache_dir: PathBuf,
         cache_mode: CacheMode,
-        case_eviction_policy: CacheEvictionStrategy,
+        cache_policy: Box<dyn CachePolicy>,
     ) -> Self {
         let batch_size = default_ctx.state().config().batch_size();
 
         let parquet_cache_dir = disk_cache_dir.join("parquet");
         let liquid_cache_dir = disk_cache_dir.join("liquid");
-
-        let cache_policy: Box<dyn CachePolicy> = match case_eviction_policy {
-            CacheEvictionStrategy::Lru => Box::new(LruPolicy::new()),
-            CacheEvictionStrategy::Discard => Box::new(DiscardPolicy),
-            CacheEvictionStrategy::Filo => Box::new(FiloPolicy::new()),
-            CacheEvictionStrategy::ToDisk => Box::new(ToDiskPolicy::new()),
-        };
 
         let liquid_cache = match cache_mode {
             CacheMode::Parquet => None,
@@ -266,7 +258,7 @@ impl LiquidCacheServiceInner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use liquid_cache_common::CacheEvictionStrategy::Discard;
+    use liquid_cache_parquet::cache::policies::LruPolicy;
     #[tokio::test]
     async fn test_register_object_store() {
         let server = LiquidCacheServiceInner::new(
@@ -274,7 +266,7 @@ mod tests {
             None,
             PathBuf::from("test"),
             CacheMode::LiquidEagerTranscode,
-            Discard,
+            Box::new(LruPolicy::new()),
         );
         let url = Url::parse("file:///").unwrap();
         server
