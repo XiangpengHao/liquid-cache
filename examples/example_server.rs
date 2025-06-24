@@ -17,10 +17,10 @@
 
 use arrow_flight::flight_service_server::FlightServiceServer;
 use datafusion::prelude::SessionContext;
-use liquid_cache_common::{CacheMode};
+use liquid_cache_common::CacheMode;
+use liquid_cache_parquet::policies::LruPolicy;
 use liquid_cache_server::LiquidCacheService;
 use tonic::transport::Server;
-use liquid_cache_parquet::policies::LruPolicy;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

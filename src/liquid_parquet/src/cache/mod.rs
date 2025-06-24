@@ -1,4 +1,5 @@
 use super::liquid_array::LiquidArrayRef;
+use crate::lib::{BatchID, CacheEntryID};
 use crate::liquid_array::ipc::{self, LiquidIPCContext};
 use crate::policies::CachePolicy;
 use crate::reader::{LiquidPredicate, extract_multi_column_or, try_evaluate_predicate};
@@ -20,13 +21,14 @@ use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
-use store::{CacheStore};
+use store::CacheStore;
 use tokio::runtime::Runtime;
 use transcode::transcode_liquid_inner;
-use utils::{ColumnAccessPath};
-use crate::lib::{BatchID, CacheEntryID};
+use utils::ColumnAccessPath;
 
 mod budget;
+/// Module containing block structure
+pub mod lib;
 /// Module containing cache eviction policies like FIFO
 pub mod policies;
 mod stats;
@@ -34,7 +36,6 @@ mod store;
 mod tracer;
 mod transcode;
 mod utils;
-pub mod lib;
 
 /// A dedicated Tokio thread pool for background transcoding tasks.
 /// This pool is built with 4 worker threads.
@@ -724,6 +725,7 @@ impl LiquidCache {
 mod tests {
     use super::*;
     use crate::cache::{BatchID, LiquidCache, LiquidCachedRowGroupRef};
+    use crate::lib::BatchID;
     use crate::policies::DiscardPolicy;
     use crate::reader::FilterCandidateBuilder;
     use arrow::array::Int32Array;
@@ -741,7 +743,6 @@ mod tests {
     use parquet::arrow::ArrowWriter;
     use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
     use std::sync::Arc;
-    use crate::lib::BatchID;
 
     fn setup_cache(batch_size: usize) -> LiquidCachedRowGroupRef {
         let tmp_dir = tempfile::tempdir().unwrap();

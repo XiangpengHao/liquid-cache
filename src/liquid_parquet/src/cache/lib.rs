@@ -1,8 +1,8 @@
+use crate::liquid_array::LiquidArrayRef;
 use std::fs::File;
 use std::io::Write;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
-use crate::liquid_array::LiquidArrayRef;
 
 /// Advice given by the cache policy.
 #[derive(PartialEq, Eq, Debug)]
@@ -50,15 +50,14 @@ impl From<usize> for CacheEntryID {
 }
 
 impl CacheEntryID {
+    /// returns row group id
     pub fn row_group_id(&self) -> u16 {
         self.rg_id
     }
 }
 
-
 const _: () = assert!(std::mem::size_of::<CacheEntryID>() == 8);
 const _: () = assert!(std::mem::align_of::<CacheEntryID>() == 8);
-
 
 const _: () = assert!(std::mem::size_of::<CacheEntryID>() == 8);
 
@@ -211,7 +210,6 @@ pub(crate) fn create_entry_id(
     )
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -308,5 +306,4 @@ mod tests {
             .join("batch_4.liquid");
         assert_eq!(entry_id.on_disk_path(cache_root), expected_path);
     }
-
 }

@@ -10,11 +10,11 @@ use super::{
     transcode_liquid_inner,
     utils::{CacheConfig, ColumnAccessPath},
 };
+use crate::lib::{CacheAdvice, CacheEntryID};
 use crate::liquid_array::LiquidArrayRef;
 use crate::sync::{Arc, RwLock};
 use ahash::AHashMap;
 use liquid_cache_common::LiquidCacheMode;
-use crate::lib::{CacheAdvice, CacheEntryID};
 
 #[derive(Debug)]
 struct CompressorStates {
@@ -103,8 +103,6 @@ pub(crate) struct CacheStore {
     tracer: CacheTracer,
     compressor_states: CompressorStates,
 }
-
-
 
 impl CacheStore {
     pub(super) fn new(
@@ -367,13 +365,13 @@ mod tests {
     use crate::sync::thread;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use crate::lib::create_entry_id;
     use arrow::array::Array;
     use liquid_cache_common::LiquidCacheMode;
-    use crate::lib::create_entry_id;
 
     mod partitioned_hash_store_tests {
-        use crate::lib::create_entry_id;
         use super::*;
+        use crate::lib::create_entry_id;
 
         #[test]
         fn test_get_and_is_cached() {

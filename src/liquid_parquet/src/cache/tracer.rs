@@ -134,10 +134,10 @@ impl CacheTracer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lib::BatchID;
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
     use std::fs::File;
     use tempfile::tempdir;
-    use crate::lib::BatchID;
 
     #[test]
     fn test_cache_tracer_enable_disable() {

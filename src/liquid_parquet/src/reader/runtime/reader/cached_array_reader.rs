@@ -16,11 +16,11 @@ use parquet::{
 };
 
 use super::super::parquet_bridge::{ParquetField, ParquetFieldType};
+use crate::lib::BatchID;
 use crate::{
     cache::{LiquidCachedColumnRef, LiquidCachedRowGroupRef},
     reader::runtime::parquet_bridge::StructArrayReaderBridge,
 };
-use crate::lib::BatchID;
 
 /// A cached array reader will cache the rows in batch_size granularity.
 ///

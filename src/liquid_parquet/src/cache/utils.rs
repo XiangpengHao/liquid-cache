@@ -1,9 +1,7 @@
-use std::{
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
-use liquid_cache_common::LiquidCacheMode;
 use crate::lib::{BatchID, CacheEntryID};
+use liquid_cache_common::LiquidCacheMode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub(super) struct ColumnAccessPath {
@@ -63,8 +61,6 @@ impl From<CacheEntryID> for ColumnAccessPath {
         }
     }
 }
-
-
 
 #[derive(Debug)]
 pub(super) struct CacheConfig {
@@ -138,12 +134,10 @@ pub(crate) fn create_cache_store(
     )
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
-
 
     #[test]
     fn test_column_path_from_cache_entry_id() {

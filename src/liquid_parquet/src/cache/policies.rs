@@ -1,11 +1,11 @@
 use liquid_cache_common::LiquidCacheMode;
 
+use crate::lib::{CacheAdvice, CacheEntryID};
 use crate::sync::Mutex;
 use std::{
     collections::{HashMap, VecDeque},
     ptr::NonNull,
 };
-use crate::lib::{CacheAdvice, CacheEntryID};
 
 /// The cache policy that guides the replacement of LiquidCache
 pub trait CachePolicy: std::fmt::Debug + Send + Sync {
@@ -251,9 +251,9 @@ mod test {
 
     use super::super::{CacheEntryID, CachedBatch};
     use super::{DiscardPolicy, FiloPolicy, LruInternalState, LruPolicy, ToDiskPolicy};
+    use crate::lib::{CacheAdvice, CacheEntryID, create_entry_id};
     use crate::sync::{Arc, Barrier, thread};
     use std::sync::atomic::Ordering;
-    use crate::lib::{create_entry_id, CacheAdvice, CacheEntryID};
 
     // Helper to create entry IDs for tests
     fn entry(id: u64) -> CacheEntryID {

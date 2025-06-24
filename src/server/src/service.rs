@@ -9,10 +9,7 @@ use datafusion::{
 };
 use liquid_cache_common::{CacheMode, rpc::ExecutionMetricsResponse};
 use liquid_cache_parquet::{LiquidCache, LiquidCacheRef};
-use liquid_cache_parquet::{
-    policies::{CachePolicy, DiscardPolicy, FiloPolicy, LruPolicy, ToDiskPolicy},
-    rewrite_data_source_plan,
-};
+use liquid_cache_parquet::{policies::CachePolicy, rewrite_data_source_plan};
 use log::{debug, info};
 use object_store::ObjectStore;
 use std::sync::RwLock;
@@ -259,6 +256,7 @@ impl LiquidCacheServiceInner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use liquid_cache_parquet::policies::LruPolicy;
     #[tokio::test]
     async fn test_register_object_store() {
         let server = LiquidCacheServiceInner::new(

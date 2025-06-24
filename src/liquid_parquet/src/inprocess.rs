@@ -6,12 +6,12 @@ use datafusion::error::Result;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
-use liquid_cache_common::{LiquidCacheMode};
+use liquid_cache_common::LiquidCacheMode;
 
 use crate::cache::policies::CachePolicy;
+use crate::policies::FiloPolicy;
 use crate::utils::rewrite_data_source_plan;
 use crate::{LiquidCache, LiquidCacheRef};
-use crate::policies::{FiloPolicy};
 
 /// Builder for in-process liquid cache session context
 ///

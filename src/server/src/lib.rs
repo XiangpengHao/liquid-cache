@@ -36,7 +36,8 @@ use datafusion::{
 use datafusion_proto::bytes::physical_plan_from_bytes;
 use fastrace::prelude::SpanContext;
 use futures::{Stream, TryStreamExt};
-use liquid_cache_common::{CacheMode,
+use liquid_cache_common::{
+    CacheMode,
     rpc::{FetchResults, LiquidCacheActions},
 };
 use liquid_cache_parquet::LiquidCacheRef;
@@ -58,9 +59,9 @@ pub use admin_server::{models::*, run_admin_server};
 pub use errors::{
     LiquidCacheErrorExt, LiquidCacheResult, anyhow_to_status, df_error_to_status_with_trace,
 };
+use liquid_cache_parquet::policies::{CachePolicy, LruPolicy};
 use object_store::path::Path;
 use object_store::{GetOptions, GetRange};
-use liquid_cache_parquet::policies::{CachePolicy, LruPolicy};
 
 #[cfg(test)]
 mod tests;

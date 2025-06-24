@@ -1,7 +1,9 @@
+use crate::{BenchmarkResult, IterationResult, Query, QueryResult, run_query};
 use anyhow::Result;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::prelude::{SessionConfig, SessionContext};
-use liquid_cache_common::{LiquidCacheMode};
+use liquid_cache_common::LiquidCacheMode;
+use liquid_cache_parquet::policies::ToDiskPolicy;
 use liquid_cache_parquet::{LiquidCacheInProcessBuilder, LiquidCacheRef};
 use log::info;
 use serde::{Deserialize, Serialize};
@@ -13,8 +15,6 @@ use std::{
     time::Instant,
 };
 use sysinfo::Disks;
-use liquid_cache_parquet::policies::ToDiskPolicy;
-use crate::{BenchmarkResult, IterationResult, Query, QueryResult, run_query};
 
 #[derive(Clone, Debug, Default, Copy, PartialEq, Eq, Serialize)]
 pub enum InProcessBenchmarkMode {
