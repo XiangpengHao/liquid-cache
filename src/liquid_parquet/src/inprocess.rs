@@ -185,7 +185,7 @@ mod tests {
 
     use super::*;
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test]
     async fn register_with_listing_table() -> Result<()> {
         let file_format = ParquetFormat::default().with_enable_pruning(true);
         let listing_options =
@@ -202,7 +202,7 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test]
     async fn test_provide_schema() -> Result<()> {
         let (ctx, _) = LiquidCacheInProcessBuilder::new().build(SessionConfig::new())?;
 
@@ -229,7 +229,7 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test]
     async fn test_provide_schema2() -> Result<()> {
         let df_ctx = SessionContext::new();
         let liquid_ctx = {

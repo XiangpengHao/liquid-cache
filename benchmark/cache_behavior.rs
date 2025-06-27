@@ -232,7 +232,9 @@ async fn run_cache_behavior_benchmark() -> Result<(), Box<dyn std::error::Error>
     .log();
 
     println!("--- Resetting cache ---");
-    cache.reset();
+    unsafe {
+        cache.reset();
+    }
     drop_os_page_cache().await?;
 
     run_query_with_timing(

@@ -146,11 +146,10 @@ pub(crate) fn get_predicate_column_id(projection: &parquet::arrow::ProjectionMas
 }
 
 use parquet::arrow::async_reader::AsyncReader;
-use tokio::sync::Mutex;
 
 use crate::reader::plantime::ParquetMetadataCacheReader;
 
-use super::{liquid_stream::ClonableAsyncFileReader, liquid_stream::LiquidStreamBuilder};
+use super::liquid_stream::LiquidStreamBuilder;
 
 pub struct ArrowReaderBuilderBridge {
     pub(crate) input: AsyncReader<ParquetMetadataCacheReader>,
@@ -188,7 +187,6 @@ impl ArrowReaderBuilderBridge {
 
     pub(crate) fn into_liquid_builder(self) -> LiquidStreamBuilder {
         let input: ParquetMetadataCacheReader = unsafe { std::mem::transmute(self.input) };
-        let input = ClonableAsyncFileReader(Arc::new(Mutex::new(input)));
         LiquidStreamBuilder {
             input,
             metadata: self.metadata,
