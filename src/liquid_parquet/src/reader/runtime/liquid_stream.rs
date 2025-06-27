@@ -25,7 +25,6 @@ use std::{
     sync::Arc,
     task::{Context, Poll},
 };
-use tokio::sync::Mutex;
 
 use super::reader::{LiquidBatchReader, build_cached_array_reader};
 use super::{InMemoryRowGroup, LiquidRowFilter};
@@ -37,7 +36,7 @@ struct ReaderFactory {
 
     fields: Option<Arc<ParquetField>>,
 
-    input: ClonableAsyncFileReader,
+    input: ParquetMetadataCacheReader,
 
     filter: Option<LiquidRowFilter>,
 
@@ -82,7 +81,13 @@ impl ReaderFactory {
             p
         });
 
-        let mut row_group = InMemoryRowGroup::new(meta, offset_index, projection_to_cache);
+        let cached_row_group = self.liquid_cache.row_group(row_group_idx as u64);
+        let mut row_group = InMemoryRowGroup::new(
+            meta, 
+            offset_index, 
+            projection_to_cache,
+            cached_row_group.clone()
+        );
 
         let mut selection =
             selection.unwrap_or_else(|| vec![RowSelector::select(meta.num_rows() as usize)].into());
@@ -95,13 +100,13 @@ impl ReaderFactory {
                 }
 
                 let p_projection = predicate.projection();
-                row_group.fetch(&self.input, p_projection).await?;
+                row_group.fetch(&mut self.input, p_projection).await?;
 
                 let array_reader = build_cached_array_reader(
                     self.fields.as_deref(),
                     p_projection,
                     &row_group,
-                    self.liquid_cache.row_group(row_group_idx as u64).clone(),
+                    cached_row_group.clone(),
                 )?;
                 filter_readers.push(array_reader);
             }
@@ -138,9 +143,8 @@ impl ReaderFactory {
             *limit -= rows_after;
         }
 
-        row_group.fetch(&self.input, &projection).await?;
+        row_group.fetch(&mut self.input, &projection).await?;
 
-        let cached_row_group = self.liquid_cache.row_group(row_group_idx as u64);
         let array_reader = build_cached_array_reader(
             self.fields.as_deref(),
             &projection,
@@ -180,11 +184,9 @@ impl std::fmt::Debug for StreamState {
     }
 }
 
-#[derive(Clone)]
-pub struct ClonableAsyncFileReader(pub Arc<Mutex<ParquetMetadataCacheReader>>);
 
 pub struct LiquidStreamBuilder {
-    pub(crate) input: ClonableAsyncFileReader,
+    pub(crate) input: ParquetMetadataCacheReader,
 
     pub(crate) metadata: Arc<ParquetMetaData>,
 
