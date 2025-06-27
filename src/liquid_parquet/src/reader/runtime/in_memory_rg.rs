@@ -79,8 +79,7 @@ impl InMemoryRowGroup<'_> {
                 let data_len = data.len();
                 if data_len != length as usize {
                     return Err(ParquetError::General(format!(
-                        "Data length mismatch: expected {} bytes, got {} bytes",
-                        length, data_len
+                        "Data length mismatch: expected {length} bytes, got {data_len} bytes",
                     )));
                 }
                 self.column_chunks[idx] = Some(Arc::new(ColumnChunkData::Materialized {
@@ -100,8 +99,8 @@ impl InMemoryRowGroup<'_> {
     ) -> bool {
         if let Some(cached_column) = liquid_cache.get_column(column_idx as u64) {
             let num_rows = self.row_count;
-            let batch_size = cached_column.batch_size() as usize;
-            let num_batches = (num_rows + batch_size - 1) / batch_size;
+            let batch_size = cached_column.batch_size();
+            let num_batches = num_rows.div_ceil(batch_size);
 
             // Check if all batches are cached
             for batch_idx in 0..num_batches {

@@ -83,10 +83,10 @@ impl ReaderFactory {
 
         let cached_row_group = self.liquid_cache.row_group(row_group_idx as u64);
         let mut row_group = InMemoryRowGroup::new(
-            meta, 
-            offset_index, 
+            meta,
+            offset_index,
             projection_to_cache,
-            cached_row_group.clone()
+            cached_row_group.clone(),
         );
 
         let mut selection =
@@ -183,7 +183,6 @@ impl std::fmt::Debug for StreamState {
         }
     }
 }
-
 
 pub struct LiquidStreamBuilder {
     pub(crate) input: ParquetMetadataCacheReader,
