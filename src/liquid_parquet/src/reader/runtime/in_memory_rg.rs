@@ -55,34 +55,41 @@ impl InMemoryRowGroup<'_> {
         projection: &ProjectionMask,
     ) -> Result<(), parquet::errors::ParquetError> {
         // Check if we need to fetch any data
-        let need_to_fetch = self.check_if_fetch_needed(&self.liquid_cache, projection);
-
-        if need_to_fetch {
-            // Some data is not cached - fetch entire row group
-            self.fetch_entire_row_group(reader, projection).await
-        } else {
-            // All data is cached - create cached chunks
-            self.create_cached_chunks(projection)
-        }
-    }
-
-    /// Check if any required data is missing from cache
-    fn check_if_fetch_needed(
-        &self,
-        liquid_cache: &LiquidCachedRowGroupRef,
-        projection: &ProjectionMask,
-    ) -> bool {
         for idx in 0..self.column_chunks.len() {
-            if self.column_chunks[idx].is_some() || !projection.leaf_included(idx) {
+            if !projection.leaf_included(idx) {
+                // don't read this column
                 continue;
             }
 
-            // Check if this column is fully cached
-            if !self.is_column_fully_cached(idx, liquid_cache) {
-                return true; // Need to fetch because this column has missing data
+            if self.column_chunks[idx].is_some() {
+                // this column is already fetched
+                continue;
+            }
+
+            if self.is_column_fully_cached(idx, &self.liquid_cache) {
+                // this column is fully cached
+                self.column_chunks[idx] = Some(Arc::new(ColumnChunkData::Cached {
+                    length: self.metadata.column(idx).byte_range().1,
+                }));
+            } else {
+                // this column is not fully cached, fetch it
+                let (start, length) = self.metadata.column(idx).byte_range();
+                let range = start..start + length;
+                let data = reader.get_bytes(range).await?;
+                let data_len = data.len();
+                if data_len != length as usize {
+                    return Err(ParquetError::General(format!(
+                        "Data length mismatch: expected {} bytes, got {} bytes",
+                        length, data_len
+                    )));
+                }
+                self.column_chunks[idx] = Some(Arc::new(ColumnChunkData::Materialized {
+                    offset: start,
+                    data,
+                }));
             }
         }
-        false // All required data is cached
+        Ok(())
     }
 
     /// Check if all batches for a column are cached
@@ -108,74 +115,6 @@ impl InMemoryRowGroup<'_> {
             // Column doesn't exist in cache, so it's not cached
             false
         }
-    }
-
-    /// Fetch entire row group data for all projected columns
-    async fn fetch_entire_row_group(
-        &mut self,
-        reader: &mut ParquetMetadataCacheReader,
-        projection: &ProjectionMask,
-    ) -> Result<(), parquet::errors::ParquetError> {
-        // Determine the range spanning all required columns
-        let mut min_start = u64::MAX;
-        let mut max_end = 0u64;
-
-        for idx in 0..self.column_chunks.len() {
-            if !projection.leaf_included(idx) {
-                continue;
-            }
-
-            let (start, length) = self.metadata.column(idx).byte_range();
-            min_start = min_start.min(start);
-            max_end = max_end.max(start + length);
-        }
-
-        if min_start == u64::MAX {
-            return Ok(()); // No columns to fetch
-        }
-
-        // Fetch the entire range
-        let range = min_start..max_end;
-        let all_data = reader
-            .get_bytes(range)
-            .await
-            .map_err(|e| ParquetError::External(Box::new(e)))?;
-
-        // Create prefetched chunks for each projected column
-        for idx in 0..self.column_chunks.len() {
-            if !projection.leaf_included(idx) {
-                continue;
-            }
-
-            let (start, length) = self.metadata.column(idx).byte_range();
-            let column_start = (start - min_start) as usize;
-            let column_data = all_data.slice(column_start..column_start + length as usize);
-
-            self.column_chunks[idx] = Some(Arc::new(ColumnChunkData::Materialized {
-                offset: start,
-                data: column_data,
-            }));
-        }
-
-        Ok(())
-    }
-
-    /// Create cached chunks when all data is cached
-    /// These chunks will delegate to the cache for actual data access
-    fn create_cached_chunks(
-        &mut self,
-        projection: &ProjectionMask,
-    ) -> Result<(), parquet::errors::ParquetError> {
-        for idx in 0..self.column_chunks.len() {
-            if !projection.leaf_included(idx) {
-                continue;
-            }
-
-            let length = self.metadata.column(idx).byte_range().1;
-
-            self.column_chunks[idx] = Some(Arc::new(ColumnChunkData::Cached { length }));
-        }
-        Ok(())
     }
 }
 
@@ -353,11 +292,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_cache_reset_after_fetch() {
+        let tmp_dir = tempfile::tempdir().unwrap();
         let batch_size = 8192 * 2;
         let liquid_cache = LiquidCache::new(
             batch_size,
-            usize::MAX,
-            PathBuf::from("whatever"),
+            batch_size,
+            tmp_dir.path().to_path_buf(),
             LiquidCacheMode::Liquid {
                 transcode_in_background: false,
             },
@@ -408,7 +348,6 @@ mod tests {
                 liquid_cache_rg.clone(),
             )
             .unwrap();
-            liquid_cache.reset(); // this is the key
             array_reader.read_records(value_cnt).unwrap();
             array_reader.consume_batch().unwrap();
         }

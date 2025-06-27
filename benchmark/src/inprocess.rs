@@ -498,7 +498,9 @@ impl InProcessBenchmarkRunner {
                 if self.reset_cache
                     && let Some(cache) = &cache
                 {
-                    cache.reset();
+                    unsafe {
+                        cache.reset();
+                    }
                 }
             }
 

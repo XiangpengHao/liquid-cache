@@ -50,7 +50,9 @@ pub(crate) async fn shutdown_handler() -> Json<ApiResponse> {
 pub(crate) async fn reset_cache_handler(State(state): State<Arc<AppState>>) -> Json<ApiResponse> {
     info!("Resetting cache...");
     if let Some(cache) = state.liquid_cache.cache() {
-        cache.reset();
+        unsafe {
+            cache.reset();
+        }
     }
 
     Json(ApiResponse {

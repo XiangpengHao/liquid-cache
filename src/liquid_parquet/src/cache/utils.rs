@@ -147,7 +147,10 @@ pub enum CacheAdvice {
     Transcode(CacheEntryID),
     /// Write the entry to disk as-is (preserve format).
     ToDisk(CacheEntryID),
-    /// Discard the entry,  do not cache.
+    /// Discard the incoming entry, do not cache.
+    // Note that discarding a previously cached entry is disallowed,
+    // as it creates race conditions when one thread reads that a entry is cached,
+    // and later only to find it is not cached.
     Discard,
 }
 

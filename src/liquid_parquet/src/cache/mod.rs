@@ -690,7 +690,11 @@ impl LiquidCache {
     }
 
     /// Reset the cache.
-    pub fn reset(&self) {
+    ///
+    /// # Safety
+    /// This is unsafe because resetting the cache while other threads are using the cache may cause undefined behavior.
+    /// You should only call this when no one else is using the cache.
+    pub unsafe fn reset(&self) {
         let mut files = self.files.lock().unwrap();
         for file in files.values_mut() {
             file.reset();

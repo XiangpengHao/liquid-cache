@@ -99,7 +99,7 @@ async fn test_runner(sql: &str, reference: &str) {
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn test_url_prefix_filtering() {
     let sql = r#"select COUNT(*) from hits where "URL" like 'https://%'"#;
 
@@ -116,7 +116,7 @@ async fn test_url_prefix_filtering() {
     test_runner(sql, &reference).await;
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn test_url_selection_and_ordering() {
     let sql = r#"select "URL" from hits where "URL" like '%tours%' order by "URL" desc"#;
 
@@ -133,7 +133,7 @@ async fn test_url_selection_and_ordering() {
     test_runner(sql, &reference).await;
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn test_os_selection() {
     let sql = r#"select "OS" from hits where "URL" like '%tours%' order by "OS" desc"#;
 
@@ -151,7 +151,7 @@ async fn test_os_selection() {
     test_runner(sql, &reference).await;
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn test_referer_filtering() {
     let sql = r#"select "Referer" from hits where "Referer" <> '' AND "URL" like '%tours%' order by "Referer" desc"#;
 
@@ -169,7 +169,7 @@ async fn test_referer_filtering() {
     test_runner(sql, &reference).await;
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn test_provide_schema_with_filter() {
     let sql = r#"select "WatchID", "OS", "EventTime" from hits where "OS" <> 2 order by "WatchID" desc limit 10"#;
 
