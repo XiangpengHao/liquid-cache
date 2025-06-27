@@ -244,6 +244,7 @@ mod tests {
             },
         },
     };
+    use arrow::array::AsArray;
     use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
     use liquid_cache_common::{LiquidCacheMode, ParquetReaderSchema};
     use object_store::{ObjectStore, local::LocalFileSystem};
@@ -349,6 +350,339 @@ mod tests {
             .unwrap();
             array_reader.read_records(value_cnt).unwrap();
             array_reader.consume_batch().unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn test_partial_projection_with_mixed_cache_state() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let batch_size = 8192 * 2;
+        let liquid_cache = LiquidCache::new(
+            batch_size,
+            batch_size,
+            tmp_dir.path().to_path_buf(),
+            LiquidCacheMode::Liquid {
+                transcode_in_background: false,
+            },
+            Box::new(DiscardPolicy),
+        );
+        let liquid_cache_file = liquid_cache.register_or_get_file("test_partial".into());
+
+        let mut builder = get_test_stream_builder(batch_size).await;
+        let fields = builder.fields.clone();
+        let row_group_metadata = &builder.metadata.row_groups()[0];
+        let value_cnt = row_group_metadata.num_rows() as usize;
+        let liquid_cache_rg = liquid_cache_file.row_group(0);
+
+        // Get the number of columns to create meaningful projections
+        let num_columns = row_group_metadata.columns().len();
+        assert!(num_columns >= 3, "Need at least 3 columns for this test");
+
+        // Step 1: Pre-populate cache with only first 2 columns using full projection
+        {
+            let first_two_projection =
+                ProjectionMask::roots(row_group_metadata.schema_descr(), vec![0, 1]);
+
+            let mut row_group =
+                InMemoryRowGroup::new(&row_group_metadata, None, None, liquid_cache_rg.clone());
+
+            row_group
+                .fetch(&mut builder.input, &first_two_projection)
+                .await
+                .unwrap();
+
+            let mut array_reader = build_cached_array_reader(
+                fields.as_ref().map(|f| f.as_ref()),
+                &first_two_projection,
+                &row_group,
+                liquid_cache_rg.clone(),
+            )
+            .unwrap();
+
+            array_reader.read_records(value_cnt).unwrap();
+            array_reader.consume_batch().unwrap();
+        }
+
+        // Step 2: Verify that first 2 columns are cached
+        for col_idx in 0..2 {
+            assert!(
+                liquid_cache_rg.get_column(col_idx as u64).is_some(),
+                "Column {} should be in cache after step 1",
+                col_idx
+            );
+        }
+
+        // Step 3: Create a projection that includes cached (0,1) and non-cached (2) columns
+        let mixed_projection = if num_columns > 2 {
+            ProjectionMask::roots(row_group_metadata.schema_descr(), vec![0, 2])
+        } else {
+            ProjectionMask::roots(row_group_metadata.schema_descr(), vec![0, 1])
+        };
+
+        // Step 4: Test fetch with mixed cache state
+        {
+            let mut row_group =
+                InMemoryRowGroup::new(&row_group_metadata, None, None, liquid_cache_rg.clone());
+
+            // This should succeed - should use cached data for column 0 and fetch column 2
+            row_group
+                .fetch(&mut builder.input, &mixed_projection)
+                .await
+                .unwrap();
+
+            let mut array_reader = build_cached_array_reader(
+                fields.as_ref().map(|f| f.as_ref()),
+                &mixed_projection,
+                &row_group,
+                liquid_cache_rg.clone(),
+            )
+            .unwrap();
+
+            array_reader.read_records(value_cnt).unwrap();
+            let batch = array_reader.consume_batch().unwrap();
+
+            // Verify we got the expected number of columns
+            if num_columns > 2 {
+                assert_eq!(batch.as_struct().columns().len(), 2);
+            }
+        }
+
+        // Step 5: Test accessing unfetched column should fail
+        {
+            let mut row_group =
+                InMemoryRowGroup::new(&row_group_metadata, None, None, liquid_cache_rg.clone());
+
+            // Only fetch column 0
+            let single_col_projection =
+                ProjectionMask::roots(row_group_metadata.schema_descr(), vec![0]);
+            row_group
+                .fetch(&mut builder.input, &single_col_projection)
+                .await
+                .unwrap();
+
+            // Try to access unfetched column - should fail
+            if num_columns > 1 {
+                let result = row_group.column_chunks(1);
+                assert!(result.is_err(), "Accessing unfetched column should fail");
+                if let Err(err) = result {
+                    assert!(err.to_string().contains("column was not fetched"));
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_predicate_projection_caching_flow() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let batch_size = 8192 * 2;
+        let liquid_cache = LiquidCache::new(
+            batch_size,
+            batch_size,
+            tmp_dir.path().to_path_buf(),
+            LiquidCacheMode::Liquid {
+                transcode_in_background: false,
+            },
+            Box::new(DiscardPolicy),
+        );
+        let liquid_cache_file = liquid_cache.register_or_get_file("test_predicate".into());
+
+        let mut builder = get_test_stream_builder(batch_size).await;
+        let fields = builder.fields.clone();
+        let row_group_metadata = &builder.metadata.row_groups()[0];
+        let value_cnt = row_group_metadata.num_rows() as usize;
+        let liquid_cache_rg = liquid_cache_file.row_group(0);
+
+        let num_columns = row_group_metadata.columns().len();
+        assert!(num_columns >= 3, "Need at least 3 columns for this test");
+
+        // Simulate the liquid_stream.rs predicate flow:
+        // 1. Create predicate projection (columns 0, 1)
+        // 2. Create main projection (columns 1, 2)
+        // 3. projection_to_cache should be intersection: (column 1)
+
+        let predicate_projection =
+            ProjectionMask::roots(row_group_metadata.schema_descr(), vec![0, 1]);
+
+        let main_projection = ProjectionMask::roots(row_group_metadata.schema_descr(), vec![1, 2]);
+
+        // Calculate projection_to_cache as intersection
+        let mut projection_to_cache = predicate_projection.clone();
+        projection_to_cache.intersect(&main_projection);
+
+        // Step 1: Create row group with projection_to_cache (simulating filter scenario)
+        let mut row_group = InMemoryRowGroup::new(
+            &row_group_metadata,
+            None,
+            Some(projection_to_cache),
+            liquid_cache_rg.clone(),
+        );
+
+        // Step 2: Fetch predicate columns first (simulating filter evaluation)
+        row_group
+            .fetch(&mut builder.input, &predicate_projection)
+            .await
+            .unwrap();
+
+        // Build array reader for predicate columns
+        let mut predicate_reader = build_cached_array_reader(
+            fields.as_ref().map(|f| f.as_ref()),
+            &predicate_projection,
+            &row_group,
+            liquid_cache_rg.clone(),
+        )
+        .unwrap();
+
+        // Simulate predicate evaluation
+        predicate_reader.read_records(value_cnt).unwrap();
+        predicate_reader.consume_batch().unwrap();
+
+        // Step 3: Fetch main projection columns (simulating final projection)
+        row_group
+            .fetch(&mut builder.input, &main_projection)
+            .await
+            .unwrap();
+
+        let mut main_reader = build_cached_array_reader(
+            fields.as_ref().map(|f| f.as_ref()),
+            &main_projection,
+            &row_group,
+            liquid_cache_rg.clone(),
+        )
+        .unwrap();
+
+        main_reader.read_records(value_cnt).unwrap();
+        let final_batch = main_reader.consume_batch().unwrap();
+
+        // Verify final result has correct number of columns
+        assert_eq!(final_batch.as_struct().columns().len(), 2);
+
+        // Step 4: Verify caching behavior - column 1 should be cached (in intersection)
+        // while column 0 and 2 should only be cached if fetched
+        assert!(
+            liquid_cache_rg.get_column(1).is_some(),
+            "Column 1 should be cached as it's in projection_to_cache"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_error_handling_and_data_integrity() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let batch_size = 8192 * 2;
+        let liquid_cache = LiquidCache::new(
+            batch_size,
+            batch_size,
+            tmp_dir.path().to_path_buf(),
+            LiquidCacheMode::Liquid {
+                transcode_in_background: false,
+            },
+            Box::new(DiscardPolicy),
+        );
+        let liquid_cache_file = liquid_cache.register_or_get_file("test_errors".into());
+
+        let mut builder = get_test_stream_builder(batch_size).await;
+        let fields = builder.fields.clone();
+        let row_group_metadata = &builder.metadata.row_groups()[0];
+        let liquid_cache_rg = liquid_cache_file.row_group(0);
+
+        let num_columns = row_group_metadata.columns().len();
+
+        // Test 1: Access unfetched but valid column index
+        {
+            let mut row_group =
+                InMemoryRowGroup::new(&row_group_metadata, None, None, liquid_cache_rg.clone());
+
+            // Fetch only column 0
+            let single_projection =
+                ProjectionMask::roots(row_group_metadata.schema_descr(), vec![0]);
+            row_group
+                .fetch(&mut builder.input, &single_projection)
+                .await
+                .unwrap();
+
+            // Try to access column 1 which exists but wasn't fetched
+            if num_columns > 1 {
+                let result = row_group.column_chunks(1);
+                assert!(
+                    result.is_err(),
+                    "Should fail when accessing unfetched column"
+                );
+                if let Err(err) = result {
+                    assert!(err.to_string().contains("column was not fetched"));
+                }
+            }
+        }
+
+        // Test 2: Empty projection should work
+        {
+            let mut row_group =
+                InMemoryRowGroup::new(&row_group_metadata, None, None, liquid_cache_rg.clone());
+
+            let empty_projection = ProjectionMask::roots(row_group_metadata.schema_descr(), vec![]);
+
+            // This should succeed without fetching anything
+            row_group
+                .fetch(&mut builder.input, &empty_projection)
+                .await
+                .unwrap();
+        }
+
+        // Test 3: Multiple fetches should be idempotent
+        {
+            let mut row_group =
+                InMemoryRowGroup::new(&row_group_metadata, None, None, liquid_cache_rg.clone());
+
+            let projection = ProjectionMask::roots(row_group_metadata.schema_descr(), vec![0]);
+
+            // First fetch
+            row_group
+                .fetch(&mut builder.input, &projection)
+                .await
+                .unwrap();
+
+            // Second fetch of same column should be no-op
+            row_group
+                .fetch(&mut builder.input, &projection)
+                .await
+                .unwrap();
+
+            // Should still be able to access the column
+            let result = row_group.column_chunks(0);
+            assert!(
+                result.is_ok(),
+                "Should be able to access fetched column after multiple fetches"
+            );
+        }
+
+        // Test 4: Verify is_column_fully_cached logic
+        {
+            let mut row_group =
+                InMemoryRowGroup::new(&row_group_metadata, None, None, liquid_cache_rg.clone());
+
+            // Before fetching, column should not be considered fully cached
+            assert!(!row_group.is_column_fully_cached(0, &liquid_cache_rg));
+
+            // After fetching and reading, check if caching logic works
+            let projection = ProjectionMask::roots(row_group_metadata.schema_descr(), vec![0]);
+            row_group
+                .fetch(&mut builder.input, &projection)
+                .await
+                .unwrap();
+
+            let mut array_reader = build_cached_array_reader(
+                fields.as_ref().map(|f| f.as_ref()),
+                &projection,
+                &row_group,
+                liquid_cache_rg.clone(),
+            )
+            .unwrap();
+
+            array_reader
+                .read_records(row_group_metadata.num_rows() as usize)
+                .unwrap();
+            array_reader.consume_batch().unwrap();
+
+            // Note: The column might now be cached depending on the implementation
+            // This test mainly ensures the is_column_fully_cached method doesn't panic
         }
     }
 }
