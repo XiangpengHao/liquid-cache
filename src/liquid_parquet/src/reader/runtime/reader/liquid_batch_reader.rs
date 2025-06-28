@@ -44,7 +44,7 @@ pub(crate) struct LiquidBatchReader {
     row_filter: Option<LiquidRowFilter>,
     predicate_readers: Vec<Box<dyn ArrayReader>>,
     projection_reader: Box<dyn ArrayReader>,
-    projection_mask: Option<ProjectionMask>,
+    can_optimize_single_column_filter_projection: bool,
 }
 
 impl LiquidBatchReader {
@@ -53,7 +53,7 @@ impl LiquidBatchReader {
         array_reader: Box<dyn ArrayReader>,
         selection: RowSelection,
         filter_readers: Vec<Box<dyn ArrayReader>>,
-        row_filter: Option<LiquidRowFilter>,
+        mut row_filter: Option<LiquidRowFilter>,
         liquid_cache: LiquidCachedRowGroupRef,
         projection_mask: Option<ProjectionMask>,
     ) -> Self {
@@ -61,6 +61,9 @@ impl LiquidBatchReader {
             DataType::Struct(fields) => Schema::new(fields.clone()),
             _ => unreachable!("Struct array reader's data type is not struct!"),
         };
+
+        let can_optimize_single_column_filter_projection =
+            can_optimize_single_column_filter_projection(&mut row_filter, &projection_mask);
 
         Self {
             liquid_cache,
@@ -71,7 +74,7 @@ impl LiquidBatchReader {
             row_filter,
             predicate_readers: filter_readers,
             projection_reader: array_reader,
-            projection_mask,
+            can_optimize_single_column_filter_projection,
         }
     }
 
@@ -178,11 +181,9 @@ impl Iterator for LiquidBatchReader {
     type Item = Result<RecordBatch, ArrowError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match can_optimize_single_column_filter_projection(
-            &mut self.row_filter,
-            &self.projection_mask,
-        ) {
-            Some(predicate) => {
+        match self.can_optimize_single_column_filter_projection {
+            true => {
+                let predicate = &mut self.row_filter.as_mut().unwrap().predicates[0];
                 while let Some(selection) = take_next_batch(&mut self.selection, self.batch_size) {
                     match read_and_filter_single_column(
                         selection,
@@ -196,7 +197,7 @@ impl Iterator for LiquidBatchReader {
                     }
                 }
             }
-            None => {
+            false => {
                 while let Some(selection) = take_next_batch(&mut self.selection, self.batch_size) {
                     match self.build_predicate_filter(selection) {
                         Ok(filtered_selection) => {
@@ -267,13 +268,13 @@ fn read_and_filter_single_column(
 fn can_optimize_single_column_filter_projection<'a>(
     row_filter: &'a mut Option<LiquidRowFilter>,
     projection_mask: &Option<ProjectionMask>,
-) -> Option<&'a mut LiquidPredicate> {
+) -> bool {
     let Some(filter) = row_filter else {
-        return None;
+        return false;
     };
 
     if filter.predicates.len() != 1 {
-        return None;
+        return false;
     }
 
     let predicate = &mut filter.predicates[0];
@@ -282,7 +283,7 @@ fn can_optimize_single_column_filter_projection<'a>(
     // Check if this predicate is supported by try_evaluate_predicate
     // If so, return None to skip this optimization and let liquid predicate handle it
     if is_predicate_supported_by_liquid(&expr) {
-        return None;
+        return false;
     }
 
     let predicate_projection = predicate.projection();
@@ -291,16 +292,16 @@ fn can_optimize_single_column_filter_projection<'a>(
     let predicate_column_ids = get_predicate_column_id(predicate_projection);
 
     if predicate_column_ids.len() != 1 {
-        return None;
+        return false;
     }
     let Some(projection_mask) = projection_mask else {
-        return None;
+        return false;
     };
 
     if predicate_projection != projection_mask {
-        return None;
+        return false;
     }
-    return Some(predicate);
+    return true;
 }
 
 #[cfg(test)]
