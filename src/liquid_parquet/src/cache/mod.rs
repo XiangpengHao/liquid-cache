@@ -119,6 +119,7 @@ pub(crate) struct LiquidCachedColumn {
 
 pub(crate) type LiquidCachedColumnRef = Arc<LiquidCachedColumn>;
 
+#[derive(Debug)]
 pub(crate) enum InsertArrowArrayError {
     AlreadyCached,
 }
