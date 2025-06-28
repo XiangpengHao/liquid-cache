@@ -163,6 +163,154 @@ jobs:
           files: codecov_tpch.json
           fail_ci_if_error: true
 
+  benchmark:
+    name: Performance Benchmark
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2025-04-29
+      - run: sudo apt-get update && sudo apt-get install -y wget jq
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Setup ClickBench partitioned data download
+        run: |
+          mkdir -p benchmark/clickbench/data
+          for partition in 0 1 2 3; do
+            echo "Downloading partition ${partition}..."
+            wget "https://datasets.clickhouse.com/hits_compatible/athena_partitioned/hits_${partition}.parquet" \
+              -O "benchmark/clickbench/data/hits_${partition}.parquet"
+          done
+
+      - name: Update manifest for partitioned data
+        run: |
+          # Update the manifest to point to the partitioned data directory
+          sed 's|"benchmark/clickbench/data/hits.parquet"|"benchmark/clickbench/data"|' \
+            benchmark/clickbench/manifest.json > benchmark/clickbench/benchmark_manifest.json
+
+      - name: Build benchmark binary
+        run: cargo build --release --bin in_process
+
+      - name: Run benchmark
+        run: |
+          mkdir -p benchmark_results
+          env RUST_LOG=info cargo run --release --bin in_process -- \
+            --manifest benchmark/clickbench/benchmark_manifest.json \
+            --output benchmark_results/benchmark.json \
+            --iteration 3 \
+            --bench-mode liquid-eager-transcode
+
+      - name: Create timestamped benchmark result
+        run: |
+          jq --arg timestamp "$(date -Iminutes)" --arg commit "${{ github.sha }}" \
+             '. + {"timestamp": $timestamp, "commit": $commit}' \
+             benchmark_results/benchmark.json > benchmark_results/final.json
+
+      - name: Setup benchmark branch
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          
+          # Try to fetch the benchmark branch
+          git fetch origin benchmark:benchmark 2>/dev/null || true
+          git checkout benchmark 2>/dev/null || git checkout -b benchmark
+
+      - name: Save benchmark results to branch
+        run: |
+          mkdir -p benchmarks
+          cp benchmark_results/final.json "benchmarks/${{ github.sha }}.json"
+          git add "benchmarks/${{ github.sha }}.json"
+          git commit -m "Add benchmark results for ${{ github.sha }}" || echo "No changes to commit"
+          git push origin benchmark || git push --set-upstream origin benchmark
+
+      - name: Compare with main branch baseline
+        id: compare
+        run: |
+          # Get the latest commit from main branch
+          main_commit=$(git log origin/main --format="%H" -n 1)
+          baseline_benchmark="benchmarks/${main_commit}.json"
+          
+          echo "Looking for baseline benchmark: $baseline_benchmark"
+          
+          if [ -f "$baseline_benchmark" ]; then
+            echo "Comparing with main branch commit: ${main_commit:0:8}"
+            
+            # Use the external Python script for comparison
+            python3 .github/compare_benchmarks.py \
+              "benchmark_results/final.json" \
+              "$baseline_benchmark" \
+              --output comparison.md
+            
+            echo "COMPARISON_AVAILABLE=true" >> $GITHUB_OUTPUT
+          else
+            echo "No baseline benchmark found for main branch commit: ${main_commit:0:8}"
+            echo "Expected file: $baseline_benchmark"
+            
+            # Create a simple message for first-time runs
+            cat > comparison.md << 'EOF'
+          ## 📊 Benchmark Comparison
+          
+          **No baseline found** - This appears to be the first benchmark run or the main branch doesn't have benchmark data yet.
+          
+          The benchmark results have been saved and will be used as a baseline for future comparisons.
+          
+          ✅ Benchmark completed successfully
+          EOF
+            echo "COMPARISON_AVAILABLE=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Comment PR with benchmark results
+        if: steps.compare.outputs.COMPARISON_AVAILABLE == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            
+            let comment = '';
+            try {
+              comment = fs.readFileSync('comparison.md', 'utf8');
+            } catch (error) {
+              comment = 'Error reading benchmark comparison results';
+            }
+            
+            // Find existing benchmark comment
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            
+            const botComment = comments.data.find(comment => 
+              comment.user.type === 'Bot' && 
+              comment.body.includes('## 📊 Benchmark Comparison')
+            );
+            
+            if (botComment) {
+              // Update existing comment
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: comment
+              });
+            } else {
+              // Create new comment
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: comment
+              });
+            }
+
   examples:
     name: Run client/server examples (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
