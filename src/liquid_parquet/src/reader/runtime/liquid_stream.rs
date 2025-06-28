@@ -159,6 +159,7 @@ impl ReaderFactory {
             filter_readers,
             self.filter.take(),
             cached_row_group,
+            Some(projection),
         );
 
         Ok((self, Some(reader)))

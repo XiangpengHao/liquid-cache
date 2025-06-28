@@ -2,13 +2,16 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use arrow::array::{Array, AsArray, BooleanArray, RecordBatch, RecordBatchReader};
-use arrow::compute::prep_null_mask_filter;
+use arrow::compute::{filter_record_batch, prep_null_mask_filter};
 use arrow_schema::{ArrowError, DataType, Schema, SchemaRef};
+use parquet::arrow::ProjectionMask;
 use parquet::arrow::array_reader::ArrayReader;
 use parquet::arrow::arrow_reader::{ArrowPredicate, RowSelection, RowSelector};
 
 use super::LiquidRowFilter;
 use crate::cache::{BatchID, LiquidCachedRowGroupRef};
+use crate::reader::LiquidPredicate;
+use crate::reader::runtime::liquid_predicate::is_predicate_supported_by_liquid;
 use crate::reader::runtime::utils::take_next_batch;
 use crate::utils::{boolean_buffer_and_then, row_selector_to_boolean_buffer};
 use crate::{ABLATION_STUDY_MODE, AblationStudyMode};
@@ -41,6 +44,7 @@ pub(crate) struct LiquidBatchReader {
     row_filter: Option<LiquidRowFilter>,
     predicate_readers: Vec<Box<dyn ArrayReader>>,
     projection_reader: Box<dyn ArrayReader>,
+    projection_mask: Option<ProjectionMask>,
 }
 
 impl LiquidBatchReader {
@@ -51,6 +55,7 @@ impl LiquidBatchReader {
         filter_readers: Vec<Box<dyn ArrayReader>>,
         row_filter: Option<LiquidRowFilter>,
         liquid_cache: LiquidCachedRowGroupRef,
+        projection_mask: Option<ProjectionMask>,
     ) -> Self {
         let schema = match array_reader.get_data_type() {
             DataType::Struct(fields) => Schema::new(fields.clone()),
@@ -66,6 +71,7 @@ impl LiquidBatchReader {
             row_filter,
             predicate_readers: filter_readers,
             projection_reader: array_reader,
+            projection_mask,
         }
     }
 
@@ -172,10 +178,37 @@ impl Iterator for LiquidBatchReader {
     type Item = Result<RecordBatch, ArrowError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        while let Some(selection) = take_next_batch(&mut self.selection, self.batch_size) {
-            let filtered_selection = self.build_predicate_filter(selection).unwrap();
-            if let Some(record_batch) = self.read_selection(filtered_selection).unwrap() {
-                return Some(Ok(record_batch));
+        match can_optimize_single_column_filter_projection(
+            &mut self.row_filter,
+            &self.projection_mask,
+        ) {
+            Some(predicate) => {
+                while let Some(selection) = take_next_batch(&mut self.selection, self.batch_size) {
+                    match read_and_filter_single_column(
+                        selection,
+                        &mut self.projection_reader,
+                        predicate,
+                        &mut self.current_batch_id,
+                    ) {
+                        Ok(Some(record_batch)) => return Some(Ok(record_batch)),
+                        Ok(None) => continue, // No rows passed the filter, try next batch
+                        Err(e) => return Some(Err(e)),
+                    }
+                }
+            }
+            None => {
+                while let Some(selection) = take_next_batch(&mut self.selection, self.batch_size) {
+                    match self.build_predicate_filter(selection) {
+                        Ok(filtered_selection) => {
+                            match self.read_selection(filtered_selection) {
+                                Ok(Some(record_batch)) => return Some(Ok(record_batch)),
+                                Ok(None) => continue, // No rows to read, try next batch
+                                Err(e) => return Some(Err(e)),
+                            }
+                        }
+                        Err(e) => return Some(Err(e)),
+                    }
+                }
             }
         }
         None
@@ -186,4 +219,94 @@ impl RecordBatchReader for LiquidBatchReader {
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
     }
+}
+
+fn read_and_filter_single_column(
+    selection: Vec<RowSelector>,
+    projection_reader: &mut Box<dyn ArrayReader>,
+    predicate: &mut LiquidPredicate,
+    batch_id: &mut BatchID,
+) -> Result<Option<RecordBatch>, ArrowError> {
+    // This optimized path reads the single column data and applies the predicate directly
+    // instead of the two-step process of building filter then reading selection
+    for selector in &selection {
+        if selector.skip {
+            projection_reader.skip_records(selector.row_count)?;
+        } else {
+            projection_reader.read_records(selector.row_count)?;
+        }
+    }
+
+    let array = projection_reader.consume_batch()?;
+    let struct_array = array.as_struct();
+    let record_batch = RecordBatch::from(struct_array);
+
+    // Now apply the predicate to the record batch to get the boolean mask
+    let boolean_mask = predicate.evaluate(record_batch.clone())?;
+
+    let boolean_mask = match boolean_mask.null_count() {
+        0 => boolean_mask,
+        _ => prep_null_mask_filter(&boolean_mask),
+    };
+
+    let filtered_batch = filter_record_batch(&record_batch, &boolean_mask)?;
+
+    batch_id.inc();
+
+    Ok(if filtered_batch.num_rows() > 0 {
+        Some(filtered_batch)
+    } else {
+        None
+    })
+}
+
+/// Check if we can use the optimized single column filter+projection path
+/// for example: SELECT A FROM table WHERE A > 10
+///
+/// In this case, there's no point to pushdown the filter.
+fn can_optimize_single_column_filter_projection<'a>(
+    row_filter: &'a mut Option<LiquidRowFilter>,
+    projection_mask: &Option<ProjectionMask>,
+) -> Option<&'a mut LiquidPredicate> {
+    let Some(filter) = row_filter else {
+        return None;
+    };
+
+    if filter.predicates.len() != 1 {
+        return None;
+    }
+
+    let predicate = &mut filter.predicates[0];
+    let expr = predicate.physical_expr_physical_column_index();
+
+    // Check if this predicate is supported by try_evaluate_predicate
+    // If so, return None to skip this optimization and let liquid predicate handle it
+    if is_predicate_supported_by_liquid(&expr) {
+        return None;
+    }
+
+    let predicate_projection = predicate.projection();
+
+    use crate::reader::runtime::get_predicate_column_id;
+    let predicate_column_ids = get_predicate_column_id(predicate_projection);
+
+    if predicate_column_ids.len() != 1 {
+        return None;
+    }
+    let Some(projection_mask) = projection_mask else {
+        return None;
+    };
+
+    if predicate_projection != projection_mask {
+        return None;
+    }
+    return Some(predicate);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{LiquidCache, cache::policies::DiscardPolicy};
+    use liquid_cache_common::LiquidCacheMode;
+    use std::sync::Arc;
 }
