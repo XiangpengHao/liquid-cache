@@ -1,5 +1,6 @@
 use crate::{BenchmarkResult, IterationResult, Query, QueryResult, run_query};
 use anyhow::Result;
+use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use liquid_cache_common::LiquidCacheMode;
@@ -409,7 +410,7 @@ impl InProcessBenchmarkRunner {
         let now = Instant::now();
         let starting_timestamp = bench_start_time.elapsed();
 
-        let (_results, _execution_plan) = self.execute_query(ctx, query, manifest).await?;
+        let (results, _execution_plan) = self.execute_query(ctx, query, manifest).await?;
         let elapsed = now.elapsed();
 
         disk_info.refresh(true);
@@ -440,6 +441,8 @@ impl InProcessBenchmarkRunner {
             disk_bytes_written: disk_written,
             starting_timestamp,
         };
+
+        println!("{}", pretty_format_batches(&results).unwrap());
 
         info!("\n{result}");
         Ok(result)
