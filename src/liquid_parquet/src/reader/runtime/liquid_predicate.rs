@@ -156,16 +156,23 @@ fn extract_column_literal(expr: &Arc<dyn PhysicalExpr>) -> Option<(usize, Arc<dy
 /// This includes BinaryExpr (column op literal) and LikeExpr patterns, but only for string literals
 pub(crate) fn is_predicate_supported_by_liquid(expr: &Arc<dyn PhysicalExpr>) -> bool {
     use datafusion::common::ScalarValue;
-    
+
     if let Some(binary_expr) = expr.as_any().downcast_ref::<BinaryExpr>() {
         // Check if it's column op literal pattern
-        if binary_expr.left().as_any().downcast_ref::<Column>().is_some()
+        if binary_expr
+            .left()
+            .as_any()
+            .downcast_ref::<Column>()
+            .is_some()
             && let Some(literal) = binary_expr.right().as_any().downcast_ref::<Literal>()
         {
             // Only support string literals, not primitive literals
-            return matches!(literal.value(), 
-                ScalarValue::Utf8(_) | ScalarValue::LargeUtf8(_) | ScalarValue::Utf8View(_) |
-                ScalarValue::Dictionary(_, _)
+            return matches!(
+                literal.value(),
+                ScalarValue::Utf8(_)
+                    | ScalarValue::LargeUtf8(_)
+                    | ScalarValue::Utf8View(_)
+                    | ScalarValue::Dictionary(_, _)
             );
         }
     } else if let Some(like_expr) = expr.as_any().downcast_ref::<LikeExpr>() {
@@ -174,9 +181,12 @@ pub(crate) fn is_predicate_supported_by_liquid(expr: &Arc<dyn PhysicalExpr>) -> 
             && let Some(literal) = like_expr.pattern().as_any().downcast_ref::<Literal>()
         {
             // LIKE operations are only supported with string literals
-            return matches!(literal.value(), 
-                ScalarValue::Utf8(_) | ScalarValue::LargeUtf8(_) | ScalarValue::Utf8View(_) |
-                ScalarValue::Dictionary(_, _)
+            return matches!(
+                literal.value(),
+                ScalarValue::Utf8(_)
+                    | ScalarValue::LargeUtf8(_)
+                    | ScalarValue::Utf8View(_)
+                    | ScalarValue::Dictionary(_, _)
             );
         }
     }
