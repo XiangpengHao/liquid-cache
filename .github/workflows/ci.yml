@@ -192,16 +192,9 @@ jobs:
 
       - name: Update manifest for partitioned data
         run: |
-          # Create manifest that uses partitioned data and external queries file
-          cat > benchmark/clickbench/benchmark_manifest.json << 'EOF'
-          {
-            "name": "ClickBench Partitioned",
-            "tables": {
-              "hits": "benchmark/clickbench/data"
-            },
-            "queries": "benchmark/clickbench/queries/queries.sql"
-          }
-          EOF
+          # Update the manifest to point to the partitioned data directory
+          sed 's|"benchmark/clickbench/data/hits.parquet"|"benchmark/clickbench/data"|' \
+            benchmark/clickbench/manifest.json > benchmark/clickbench/benchmark_manifest.json
 
       - name: Build benchmark binary
         run: cargo build --release --bin in_process
