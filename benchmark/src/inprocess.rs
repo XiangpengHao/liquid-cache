@@ -183,10 +183,7 @@ impl InProcessBenchmarkRunner {
     /// If it ends with .sql or contains path separators, treat as file path
     /// Otherwise, treat as inline SQL
     fn is_file_path(query_str: &str) -> bool {
-        query_str.ends_with(".sql")
-            || query_str.contains('/')
-            || query_str.contains('\\')
-            || (!query_str.contains(' ') && !query_str.contains('\n'))
+        query_str.ends_with(".sql") && std::fs::metadata(query_str).is_ok()
     }
 
     async fn setup_context(

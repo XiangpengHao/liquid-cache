@@ -1,9 +1,0 @@
-{
-	"name": "ClickBench",
-	"tables": {
-		"hits": "benchmark/clickbench/data/hits.parquet"
-	},
-	"queries": [
-		"select * from hits limit 10"
-	]
-}
