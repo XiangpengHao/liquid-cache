@@ -167,10 +167,14 @@ jobs:
     name: Performance Benchmark
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2025-04-29
@@ -188,9 +192,16 @@ jobs:
 
       - name: Update manifest for partitioned data
         run: |
-          # Update the manifest to point to the partitioned data directory
-          sed 's|"benchmark/clickbench/data/hits.parquet"|"benchmark/clickbench/data"|' \
-            benchmark/clickbench/manifest.json > benchmark/clickbench/benchmark_manifest.json
+          # Create manifest that uses partitioned data and external queries file
+          cat > benchmark/clickbench/benchmark_manifest.json << 'EOF'
+          {
+            "name": "ClickBench Partitioned",
+            "tables": {
+              "hits": "benchmark/clickbench/data"
+            },
+            "queries": "benchmark/clickbench/queries/queries.sql"
+          }
+          EOF
 
       - name: Build benchmark binary
         run: cargo build --release --bin in_process
