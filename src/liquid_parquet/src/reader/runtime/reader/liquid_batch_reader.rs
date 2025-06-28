@@ -265,8 +265,8 @@ fn read_and_filter_single_column(
 /// for example: SELECT A FROM table WHERE A > 10
 ///
 /// In this case, there's no point to pushdown the filter.
-fn can_optimize_single_column_filter_projection<'a>(
-    row_filter: &'a mut Option<LiquidRowFilter>,
+fn can_optimize_single_column_filter_projection(
+    row_filter: &mut Option<LiquidRowFilter>,
     projection_mask: &Option<ProjectionMask>,
 ) -> bool {
     let Some(filter) = row_filter else {
@@ -282,7 +282,7 @@ fn can_optimize_single_column_filter_projection<'a>(
 
     // Check if this predicate is supported by try_evaluate_predicate
     // If so, return None to skip this optimization and let liquid predicate handle it
-    if is_predicate_supported_by_liquid(&expr) {
+    if is_predicate_supported_by_liquid(expr) {
         return false;
     }
 
@@ -301,5 +301,5 @@ fn can_optimize_single_column_filter_projection<'a>(
     if predicate_projection != projection_mask {
         return false;
     }
-    return true;
+    true
 }
