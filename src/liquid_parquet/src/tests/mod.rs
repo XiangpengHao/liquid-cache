@@ -170,6 +170,24 @@ async fn test_referer_filtering() {
 }
 
 #[tokio::test]
+async fn test_single_column_filter_projection() {
+    let sql = r#"select "WatchID" from hits where "WatchID" = 6978470580070504163"#;
+
+    let (reference, plan) = run_sql_with_cache(
+        sql,
+        LiquidCacheMode::Liquid {
+            transcode_in_background: false,
+        },
+        1024 * 1024,
+    )
+    .await;
+
+    insta::assert_snapshot!(format!("plan: \n{}\nvalues: \n{}", plan, reference));
+
+    test_runner(sql, &reference).await;
+}
+
+#[tokio::test]
 async fn test_provide_schema_with_filter() {
     let sql = r#"select "WatchID", "OS", "EventTime" from hits where "OS" <> 2 order by "WatchID" desc limit 10"#;
 

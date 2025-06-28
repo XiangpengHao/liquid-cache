@@ -303,11 +303,3 @@ fn can_optimize_single_column_filter_projection<'a>(
     }
     return true;
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{LiquidCache, cache::policies::DiscardPolicy};
-    use liquid_cache_common::LiquidCacheMode;
-    use std::sync::Arc;
-}

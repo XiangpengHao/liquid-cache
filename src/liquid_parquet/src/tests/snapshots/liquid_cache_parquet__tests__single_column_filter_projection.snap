@@ -1,0 +1,20 @@
+---
+source: src/liquid_parquet/src/tests/mod.rs
+expression: "format!(\"plan: \\n{}\\nvalues: \\n{}\", plan, reference)"
+---
+plan: 
+┌───────────────────────────┐
+│       DataSourceExec      │
+│    --------------------   │
+│          files: 1         │
+│                           │
+│          format:          │
+│       liquid_parquet      │
+└───────────────────────────┘
+
+values: 
++---------------------+
+| WatchID             |
++---------------------+
+| 6978470580070504163 |
++---------------------+
