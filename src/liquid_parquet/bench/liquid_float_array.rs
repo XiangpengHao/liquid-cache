@@ -1,9 +1,9 @@
-use divan::Bencher;
 use datafusion::arrow::{
     array::PrimitiveArray,
     buffer::ScalarBuffer,
     datatypes::{Float32Type, Float64Type},
 };
+use divan::Bencher;
 use liquid_cache_parquet::liquid_array::{LiquidArray, LiquidFloatArray};
 use rand::Rng;
 
@@ -21,9 +21,7 @@ fn float32_liquid_encode<const SIZE: usize>(bencher: Bencher) {
             PrimitiveArray::new(ScalarBuffer::from(array), None)
         })
         .input_counter(|_| divan::counter::BytesCount::new(SIZE * std::mem::size_of::<f32>()))
-        .bench_values(|arrow_array| {
-            LiquidFloatArray::<Float32Type>::from_arrow_array(arrow_array)
-        });
+        .bench_values(|arrow_array| LiquidFloatArray::<Float32Type>::from_arrow_array(arrow_array));
 }
 
 #[divan::bench(consts = BENCH_SIZES)]
@@ -38,9 +36,7 @@ fn float64_liquid_encode<const SIZE: usize>(bencher: Bencher) {
             PrimitiveArray::new(ScalarBuffer::from(array), None)
         })
         .input_counter(|_| divan::counter::BytesCount::new(SIZE * std::mem::size_of::<f64>()))
-        .bench_values(|arrow_array| {
-            LiquidFloatArray::<Float64Type>::from_arrow_array(arrow_array)
-        });
+        .bench_values(|arrow_array| LiquidFloatArray::<Float64Type>::from_arrow_array(arrow_array));
 }
 
 #[divan::bench(consts = BENCH_SIZES)]
@@ -56,9 +52,7 @@ fn float32_liquid_decode<const SIZE: usize>(bencher: Bencher) {
             LiquidFloatArray::<Float32Type>::from_arrow_array(arrow_array)
         })
         .input_counter(|_| divan::counter::BytesCount::new(SIZE * std::mem::size_of::<f32>()))
-        .bench_values(|liquid_array| {
-            liquid_array.to_arrow_array()
-        });
+        .bench_values(|liquid_array| liquid_array.to_arrow_array());
 }
 
 #[divan::bench(consts = BENCH_SIZES)]
@@ -74,9 +68,7 @@ fn float64_liquid_decode<const SIZE: usize>(bencher: Bencher) {
             LiquidFloatArray::<Float64Type>::from_arrow_array(arrow_array)
         })
         .input_counter(|_| divan::counter::BytesCount::new(SIZE * std::mem::size_of::<f64>()))
-        .bench_values(|liquid_array| {
-            liquid_array.to_arrow_array()
-        });
+        .bench_values(|liquid_array| liquid_array.to_arrow_array());
 }
 
 fn main() {
