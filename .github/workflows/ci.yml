@@ -204,7 +204,7 @@ jobs:
           env RUST_LOG=info cargo run --release --bin in_process -- \
             --manifest benchmark/clickbench/benchmark_manifest.json \
             --output benchmark_results/benchmark.json \
-            --iteration 3 \
+            --iteration 5 \
             --bench-mode liquid-eager-transcode
 
       - name: Create timestamped benchmark result
