@@ -1,5 +1,5 @@
 use arrow::{array::BooleanBufferBuilder, buffer::BooleanBuffer};
-use criterion::{Criterion, Throughput, criterion_group, criterion_main};
+use divan::Bencher;
 use liquid_cache_parquet::boolean_buffer_and_then;
 
 use rand::Rng;
@@ -32,37 +32,19 @@ fn generate_right_boolean_buffer(count_set_bits: usize, selectivity: f64) -> Boo
     builder.finish()
 }
 
-fn benchmark_boolean_and_then(c: &mut Criterion) {
-    // Three selectivity levels: low (10%), medium (50%), high (90%)
-    let selectivities = [0.1, 0.5, 0.9];
-
-    for left_selectivity in selectivities {
-        for right_selectivity in selectivities {
-            let group_name = format!(
-                "boolean_and_then_left_{:.0}%_right_{:.0}%",
-                left_selectivity * 100.0,
-                right_selectivity * 100.0
-            );
-
-            let mut group = c.benchmark_group(&group_name);
-
-            // Set throughput based on the buffer size in bytes
-            // Each boolean buffer uses approximately size/8 bytes
-            group.throughput(Throughput::Bytes((BUFFER_SIZE / 8) as u64));
-
-            group.bench_function("size_16384", |b| {
-                // Pre-generate test data
-                let left = generate_boolean_buffer(BUFFER_SIZE, left_selectivity);
-                let count_set_bits = left.count_set_bits();
-                let right = generate_right_boolean_buffer(count_set_bits, right_selectivity);
-
-                b.iter(|| std::hint::black_box(boolean_buffer_and_then(&left, &right)))
-            });
-
-            group.finish();
-        }
-    }
+#[divan::bench(args = [(0.1, 0.1), (0.1, 0.5), (0.1, 0.9), (0.5, 0.1), (0.5, 0.5), (0.5, 0.9), (0.9, 0.1), (0.9, 0.5), (0.9, 0.9)])]
+fn benchmark_boolean_and_then(bencher: Bencher, (left_selectivity, right_selectivity): (f64, f64)) {
+    bencher
+        .with_inputs(|| {
+            let left = generate_boolean_buffer(BUFFER_SIZE, left_selectivity);
+            let count_set_bits = left.count_set_bits();
+            let right = generate_right_boolean_buffer(count_set_bits, right_selectivity);
+            (left, right)
+        })
+        .input_counter(|_| divan::counter::BytesCount::new((BUFFER_SIZE / 8) as usize))
+        .bench_values(|(left, right)| std::hint::black_box(boolean_buffer_and_then(&left, &right)));
 }
 
-criterion_group!(benches, benchmark_boolean_and_then);
-criterion_main!(benches);
+fn main() {
+    divan::main();
+}
