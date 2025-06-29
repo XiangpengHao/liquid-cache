@@ -1,5 +1,4 @@
-use criterion::Throughput;
-use criterion::*;
+use divan::Bencher;
 
 use std::num::NonZero;
 
@@ -28,90 +27,54 @@ fn create_selection_array(array_size: usize, selectivity: f64) -> BooleanArray {
     BooleanArray::from(values)
 }
 
-fn from_primitive_benchmark(c: &mut Criterion) {
+#[divan::bench(args = BIT_WIDTHS, consts = ARRAY_SIZES)]
+fn from_primitive_benchmark<const SIZE: usize>(bencher: Bencher, bit_width: u8) {
     use arrow::datatypes::UInt32Type;
 
-    for bit_width in BIT_WIDTHS {
-        for array_size in ARRAY_SIZES {
-            let values: Vec<u32> = create_random_vec(array_size, bit_width);
+    let values: Vec<u32> = create_random_vec(SIZE, bit_width);
+    let array = PrimitiveArray::<UInt32Type>::from(values);
+    let bit_width = NonZero::new(bit_width).unwrap();
 
-            let array = PrimitiveArray::<UInt32Type>::from(values);
-            let bit_width = NonZero::new(bit_width).unwrap();
-
-            let mut group = c.benchmark_group(format!("from_primitive_bw_{}", bit_width));
-            group.throughput(Throughput::Bytes(
-                (array_size * std::mem::size_of::<u32>()) as u64,
-            ));
-            group.bench_function(format!("size_{}", array_size), |b| {
-                b.iter(|| {
-                    std::hint::black_box(BitPackedArray::from_primitive(array.clone(), bit_width))
-                })
-            });
-            group.finish();
-        }
-    }
+    bencher
+        .with_inputs(|| array.clone())
+        .input_counter(|_| divan::counter::BytesCount::new(SIZE * std::mem::size_of::<u32>()))
+        .bench_values(|array| {
+            std::hint::black_box(BitPackedArray::from_primitive(array, bit_width))
+        });
 }
 
-fn to_primitive_benchmark(c: &mut Criterion) {
-    use arrow::datatypes::UInt32Type;
-    for bit_width in BIT_WIDTHS {
-        for array_size in ARRAY_SIZES {
-            let values: Vec<u32> = create_random_vec(array_size, bit_width);
-
-            let array = PrimitiveArray::<UInt32Type>::from(values);
-            let bit_width = NonZero::new(bit_width).unwrap();
-            let bit_packed = BitPackedArray::from_primitive(array, bit_width);
-
-            let mut group = c.benchmark_group(format!("to_primitive_bw_{}", bit_width));
-            group.throughput(Throughput::Bytes(
-                (array_size * std::mem::size_of::<u32>()) as u64,
-            ));
-            group.bench_function(format!("size_{}", array_size), |b| {
-                b.iter(|| std::hint::black_box(bit_packed.to_primitive()))
-            });
-            group.finish();
-        }
-    }
-}
-
-fn filter_benchmark(c: &mut Criterion) {
+#[divan::bench(args = BIT_WIDTHS, consts = ARRAY_SIZES)]
+fn to_primitive_benchmark<const SIZE: usize>(bencher: Bencher, bit_width: u8) {
     use arrow::datatypes::UInt32Type;
 
-    let selectivities = vec![0.01, 0.1, 0.3, 0.7, 0.9];
+    let values: Vec<u32> = create_random_vec(SIZE, bit_width);
+    let array = PrimitiveArray::<UInt32Type>::from(values);
+    let bit_width = NonZero::new(bit_width).unwrap();
+    let bit_packed = BitPackedArray::from_primitive(array, bit_width);
 
-    for selectivity in selectivities {
-        for bit_width in BIT_WIDTHS {
-            for array_size in ARRAY_SIZES {
-                let values: Vec<u32> = create_random_vec(array_size, bit_width);
-
-                let array = PrimitiveArray::<UInt32Type>::from(values);
-                let liquid_array = LiquidPrimitiveArray::<UInt32Type>::from_arrow_array(array);
-
-                let selection = create_selection_array(array_size, selectivity);
-
-                let mut group = c.benchmark_group(format!(
-                    "primitive_filter_sel_{}_bw_{}",
-                    (selectivity * 100.0) as u32,
-                    bit_width
-                ));
-                group.throughput(Throughput::Bytes(
-                    (array_size * std::mem::size_of::<u32>()) as u64,
-                ));
-                group.bench_function(format!("size_{}", array_size), |b| {
-                    b.iter(|| std::hint::black_box(liquid_array.filter(&selection)))
-                });
-                group.finish();
-            }
-        }
-    }
+    bencher
+        .with_inputs(|| bit_packed.clone())
+        .input_counter(|_| divan::counter::BytesCount::new(SIZE * std::mem::size_of::<u32>()))
+        .bench_values(|bit_packed| std::hint::black_box(bit_packed.to_primitive()));
 }
 
-criterion_group!(
-    benches,
-    from_primitive_benchmark,
-    to_primitive_benchmark,
-    filter_benchmark
-);
+#[divan::bench(args = [(0.01, 1), (0.01, 3), (0.01, 7), (0.01, 11), (0.01, 19), (0.01, 27), (0.1, 1), (0.1, 3), (0.1, 7), (0.1, 11), (0.1, 19), (0.1, 27), (0.3, 1), (0.3, 3), (0.3, 7), (0.3, 11), (0.3, 19), (0.3, 27), (0.7, 1), (0.7, 3), (0.7, 7), (0.7, 11), (0.7, 19), (0.7, 27), (0.9, 1), (0.9, 3), (0.9, 7), (0.9, 11), (0.9, 19), (0.9, 27)], consts = ARRAY_SIZES)]
+fn filter_benchmark<const SIZE: usize>(bencher: Bencher, (selectivity, bit_width): (f64, u8)) {
+    use arrow::datatypes::UInt32Type;
 
-// Entry point for Criterion benchmarking
-criterion_main!(benches);
+    let values: Vec<u32> = create_random_vec(SIZE, bit_width);
+    let array = PrimitiveArray::<UInt32Type>::from(values);
+    let liquid_array = LiquidPrimitiveArray::<UInt32Type>::from_arrow_array(array);
+    let selection = create_selection_array(SIZE, selectivity);
+
+    bencher
+        .with_inputs(|| (&liquid_array, &selection))
+        .input_counter(|_| divan::counter::BytesCount::new(SIZE * std::mem::size_of::<u32>()))
+        .bench_values(|(liquid_array, selection)| {
+            std::hint::black_box(liquid_array.filter(selection))
+        });
+}
+
+fn main() {
+    divan::main();
+}
