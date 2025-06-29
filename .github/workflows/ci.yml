@@ -166,7 +166,6 @@ jobs:
   benchmark:
     name: Performance Benchmark
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
     permissions:
       contents: write
       pull-requests: write
@@ -205,7 +204,7 @@ jobs:
           env RUST_LOG=info cargo run --release --bin in_process -- \
             --manifest benchmark/clickbench/benchmark_manifest.json \
             --output benchmark_results/benchmark.json \
-            --iteration 3 \
+            --iteration 5 \
             --bench-mode liquid-eager-transcode
 
       - name: Create timestamped benchmark result
@@ -215,6 +214,7 @@ jobs:
              benchmark_results/benchmark.json > benchmark_results/final.json
 
       - name: Setup benchmark branch
+        if: github.ref == 'refs/heads/main'
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
@@ -224,6 +224,7 @@ jobs:
           git checkout benchmark 2>/dev/null || git checkout -b benchmark
 
       - name: Save benchmark results to branch
+        if: github.ref == 'refs/heads/main'
         run: |
           mkdir -p benchmarks
           cp benchmark_results/final.json "benchmarks/${{ github.sha }}.json"
@@ -234,41 +235,70 @@ jobs:
       - name: Compare with main branch baseline
         id: compare
         run: |
-          # Get the latest commit from main branch
-          main_commit=$(git log origin/main --format="%H" -n 1)
-          baseline_benchmark="benchmarks/${main_commit}.json"
+          # Fetch the benchmark branch to access existing benchmarks for comparison
+          git fetch origin benchmark:benchmark 2>/dev/null || true
           
-          echo "Looking for baseline benchmark: $baseline_benchmark"
-          
-          if [ -f "$baseline_benchmark" ]; then
-            echo "Comparing with main branch commit: ${main_commit:0:8}"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            # For PRs, compare against the latest main branch commit benchmark
+            main_commit=$(git log origin/main --format="%H" -n 1)
+            baseline_benchmark="benchmarks/${main_commit}.json"
             
-            # Use the external Python script for comparison
-            python3 .github/compare_benchmarks.py \
-              "benchmark_results/final.json" \
-              "$baseline_benchmark" \
-              --output comparison.md
+            # Switch to benchmark branch to check for baseline
+            git checkout benchmark 2>/dev/null || echo "Benchmark branch not found"
             
-            echo "COMPARISON_AVAILABLE=true" >> $GITHUB_OUTPUT
-          else
-            echo "No baseline benchmark found for main branch commit: ${main_commit:0:8}"
-            echo "Expected file: $baseline_benchmark"
-            
-            # Create a simple message for first-time runs
-            cat > comparison.md << 'EOF'
+            if [ -f "$baseline_benchmark" ]; then
+              echo "Comparing with main branch commit: ${main_commit:0:8}"
+              
+              # Use the external Python script for comparison
+              python3 .github/compare_benchmarks.py \
+                "benchmark_results/final.json" \
+                "$baseline_benchmark" \
+                --output comparison.md
+              
+              echo "COMPARISON_AVAILABLE=true" >> $GITHUB_OUTPUT
+            else
+              echo "No baseline benchmark found for main branch commit: ${main_commit:0:8}"
+              
+              # Find the most recent benchmark as fallback
+              if ls benchmarks/*.json >/dev/null 2>&1; then
+                baseline_benchmark=$(ls -t benchmarks/*.json | head -n 1)
+                baseline_commit=$(basename "$baseline_benchmark" .json)
+                
+                echo "Using most recent benchmark as baseline: ${baseline_commit:0:8}"
+                
+                python3 .github/compare_benchmarks.py \
+                  "benchmark_results/final.json" \
+                  "$baseline_benchmark" \
+                  --output comparison.md
+                
+                echo "COMPARISON_AVAILABLE=true" >> $GITHUB_OUTPUT
+              else
+                cat > comparison.md << 'EOF'
           ## 📊 Benchmark Comparison
           
-          **No baseline found** - This appears to be the first benchmark run or the main branch doesn't have benchmark data yet.
+          **No baseline found** - This appears to be the first benchmark run.
           
           The benchmark results have been saved and will be used as a baseline for future comparisons.
           
           ✅ Benchmark completed successfully
           EOF
+                echo "COMPARISON_AVAILABLE=true" >> $GITHUB_OUTPUT
+              fi
+            fi
+          else
+            # For main branch runs, just indicate successful completion
+            cat > comparison.md << 'EOF'
+          ## 📊 Benchmark Completed
+          
+          ✅ Benchmark completed successfully and results saved to benchmark branch.
+          
+          This baseline will be used for future PR comparisons.
+          EOF
             echo "COMPARISON_AVAILABLE=true" >> $GITHUB_OUTPUT
           fi
 
       - name: Comment PR with benchmark results
-        if: steps.compare.outputs.COMPARISON_AVAILABLE == 'true'
+        if: steps.compare.outputs.COMPARISON_AVAILABLE == 'true' && github.event_name == 'pull_request'
         uses: actions/github-script@v7
         with:
           script: |
