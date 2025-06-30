@@ -165,7 +165,7 @@ jobs:
 
   benchmark:
     name: Performance Benchmark
-    runs-on: ubuntu-latest
+    runs-on: ubicloud-standard-4-ubuntu-2404
     permissions:
       contents: write
       pull-requests: write
@@ -178,7 +178,7 @@ jobs:
         with:
           toolchain: nightly-2025-04-29
       - run: sudo apt-get update && sudo apt-get install -y wget jq
-      - uses: Swatinem/rust-cache@v2
+      - uses: ubicloud/rust-cache@v2
 
       - name: Setup ClickBench partitioned data download
         run: |
@@ -238,6 +238,9 @@ jobs:
           # Fetch the benchmark branch to access existing benchmarks for comparison
           git fetch origin benchmark:benchmark 2>/dev/null || true
           
+          # Save the comparison script before switching branches
+          cp .github/compare_benchmarks.py /tmp/compare_benchmarks.py
+          
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             # For PRs, compare against the latest main branch commit benchmark
             main_commit=$(git log origin/main --format="%H" -n 1)
@@ -249,8 +252,8 @@ jobs:
             if [ -f "$baseline_benchmark" ]; then
               echo "Comparing with main branch commit: ${main_commit:0:8}"
               
-              # Use the external Python script for comparison
-              python3 .github/compare_benchmarks.py \
+              # Use the external Python script for comparison (from saved copy)
+              python3 /tmp/compare_benchmarks.py \
                 "benchmark_results/final.json" \
                 "$baseline_benchmark" \
                 --output comparison.md
@@ -266,7 +269,8 @@ jobs:
                 
                 echo "Using most recent benchmark as baseline: ${baseline_commit:0:8}"
                 
-                python3 .github/compare_benchmarks.py \
+                # Use the external Python script for comparison (from saved copy)
+                python3 /tmp/compare_benchmarks.py \
                   "benchmark_results/final.json" \
                   "$baseline_benchmark" \
                   --output comparison.md

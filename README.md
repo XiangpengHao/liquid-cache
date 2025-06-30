@@ -229,6 +229,7 @@ If you want to get involved in the research process, feel free to [reach out](ht
 
 LiquidCache is a research project funded by:
 - [InfluxData](https://www.influxdata.com/)
+- [Bauplan](https://www.bauplanlabs.com)
 - Taxpayers of the state of Wisconsin and the federal government. 
 
 As such, LiquidCache is and will always be open source and free to use.

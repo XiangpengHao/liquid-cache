@@ -76,16 +76,19 @@ def is_significant_change(change_pct: float, threshold: float = 10.0) -> bool:
     return abs(change_pct) >= threshold
 
 
-def format_compact_metric(current: float, baseline: float, formatter_func) -> str:
-    """Format metric in compact form: current (baseline, ±x%)."""
+def format_metric_with_baseline(current: float, baseline: float, formatter_func) -> str:
+    """Format metric with baseline in italics: current *(baseline)*."""
+    return f"{formatter_func(current)} *({formatter_func(baseline)})*"
+
+
+def format_change_percentage(current: float, baseline: float) -> str:
+    """Format percentage change with bold for significant changes."""
     change_pct = calculate_change(baseline, current)
     
-    if abs(change_pct) >= 10.0:  # Significant change threshold
-        change_str = f"**{change_pct:+.1f}%**"
+    if abs(change_pct) >= 15.0:  # Significant change threshold
+        return f"**{change_pct:+.1f}%**"
     else:
-        change_str = f"{change_pct:+.1f}%"
-    
-    return f"{formatter_func(current)} ({formatter_func(baseline)}, {change_str})"
+        return f"{change_pct:+.1f}%"
 
 
 def load_benchmark_data(file_path: str) -> Dict[str, Any]:
@@ -173,32 +176,47 @@ def compare_benchmarks(
     lines.append("")
 
     lines.append(
-        "| Query | Cold Time | Warm Time | CPU Time | Memory |"
+        "| Query | Cold Time | Δ | Warm Time | Δ | CPU Time | Δ | Memory | Δ |"
     )
     lines.append(
-        "|-------|-----------|-----------|----------|--------|"
+        "|-------|-----------|---|-----------|---|----------|---|--------|---|"
     )
 
     for comp in comparison:
-        cold_time_str = format_compact_metric(
+        cold_time_str = format_metric_with_baseline(
             comp['curr_cold_time'], comp['baseline_cold_time'], format_time
         )
-        warm_time_str = format_compact_metric(
+        cold_change_str = format_change_percentage(
+            comp['curr_cold_time'], comp['baseline_cold_time']
+        )
+        
+        warm_time_str = format_metric_with_baseline(
             comp['curr_warm_time'], comp['baseline_warm_time'], format_time
         )
-        cpu_time_str = format_compact_metric(
+        warm_change_str = format_change_percentage(
+            comp['curr_warm_time'], comp['baseline_warm_time']
+        )
+        
+        cpu_time_str = format_metric_with_baseline(
             comp['curr_cpu_time'], comp['baseline_cpu_time'], format_time
         )
-        memory_str = format_compact_metric(
+        cpu_change_str = format_change_percentage(
+            comp['curr_cpu_time'], comp['baseline_cpu_time']
+        )
+        
+        memory_str = format_metric_with_baseline(
             comp['curr_memory'], comp['baseline_memory'], format_memory
+        )
+        memory_change_str = format_change_percentage(
+            comp['curr_memory'], comp['baseline_memory']
         )
 
         lines.append(
             f"| Q{comp['query']} | "
-            f"{cold_time_str} | "
-            f"{warm_time_str} | "
-            f"{cpu_time_str} | "
-            f"{memory_str} |"
+            f"{cold_time_str} | {cold_change_str} | "
+            f"{warm_time_str} | {warm_change_str} | "
+            f"{cpu_time_str} | {cpu_change_str} | "
+            f"{memory_str} | {memory_change_str} |"
         )
 
     # Summary
