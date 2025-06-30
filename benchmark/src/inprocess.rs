@@ -5,7 +5,9 @@ use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use liquid_cache_common::LiquidCacheMode;
 use liquid_cache_parquet::cache::policies::ToDiskPolicy;
-use liquid_cache_parquet::{extract_execution_metrics, LiquidCacheInProcessBuilder, LiquidCacheRef};
+use liquid_cache_parquet::{
+    LiquidCacheInProcessBuilder, LiquidCacheRef, extract_execution_metrics,
+};
 use log::info;
 use serde::{Deserialize, Serialize};
 use std::{
