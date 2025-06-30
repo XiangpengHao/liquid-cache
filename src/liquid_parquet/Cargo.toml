@@ -66,6 +66,10 @@ path = "bench/bench_eviction.rs"
 name = "trace_visualization"
 path = "bench/trace_visualization.rs"
 
+[[bin]]
+name = "reuse_analysis"
+path = "bench/reuse_analysis.rs"
+
 [[bench]]
 name = "fsstarray"
 path = "bench/fsstarray.rs"
