@@ -249,6 +249,9 @@ jobs:
             if [ -f "$baseline_benchmark" ]; then
               echo "Comparing with main branch commit: ${main_commit:0:8}"
               
+              # Copy the comparison script from main branch to ensure we use the latest version
+              git checkout main -- .github/compare_benchmarks.py
+              
               # Use the external Python script for comparison
               python3 .github/compare_benchmarks.py \
                 "benchmark_results/final.json" \
@@ -265,6 +268,9 @@ jobs:
                 baseline_commit=$(basename "$baseline_benchmark" .json)
                 
                 echo "Using most recent benchmark as baseline: ${baseline_commit:0:8}"
+                
+                # Copy the comparison script from main branch to ensure we use the latest version
+                git checkout main -- .github/compare_benchmarks.py
                 
                 python3 .github/compare_benchmarks.py \
                   "benchmark_results/final.json" \
