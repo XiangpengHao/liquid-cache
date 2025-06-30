@@ -11,7 +11,8 @@ use parquet::column::page::PageMetadata;
 use parquet::column::page::PageReader;
 use parquet::errors::ParquetError;
 use parquet::file::reader::ChunkReader;
-use parquet::file::reader::SerializedPageReader;
+
+use crate::reader::runtime::reader::serialized_page_reader::SerializedPageReader;
 
 struct CachedPage {
     dict: Option<(usize, Page)>, // page offset -> page
@@ -171,31 +172,26 @@ impl<R: ChunkReader> Iterator for CachedPageReader<R> {
 
 impl<R: ChunkReader> PageReader for CachedPageReader<R> {
     fn get_next_page(&mut self) -> Result<Option<Page>, ParquetError> {
-        // We need to wait for peek_next_page_offset() hit next release.
-        // I think it will be late Jan 2025.
-        //
-        // let next_page_offset = self.inner.peek_next_page_offset()?;
+        let next_page_offset = self.inner.peek_next_page_offset()?;
 
-        // let Some(offset) = next_page_offset else {
-        //     return Ok(None);
-        // };
+        let Some(offset) = next_page_offset else {
+            return Ok(None);
+        };
 
-        // let mut cache = self.cache.get();
+        let mut cache = self.cache.get();
 
-        // let page = cache.get_page(self.col_id, offset);
-        // if let Some(page) = page {
-        //     self.inner.skip_next_page()?;
-        //     Ok(Some(page))
-        // } else {
-        //     let inner_page = self.inner.get_next_page()?;
-        //     let Some(inner_page) = inner_page else {
-        //         return Ok(None);
-        //     };
-        //     cache.insert_page(self.col_id, offset, inner_page.clone());
-        //     Ok(Some(inner_page))
-        // }
-
-        self.inner.get_next_page()
+        let page = cache.get_page(self.col_id, offset);
+        if let Some(page) = page {
+            self.inner.skip_next_page()?;
+            Ok(Some(page))
+        } else {
+            let inner_page = self.inner.get_next_page()?;
+            let Some(inner_page) = inner_page else {
+                return Ok(None);
+            };
+            cache.insert_page(self.col_id, offset, inner_page.clone());
+            Ok(Some(inner_page))
+        }
     }
 
     fn peek_next_page(&mut self) -> Result<Option<PageMetadata>, ParquetError> {

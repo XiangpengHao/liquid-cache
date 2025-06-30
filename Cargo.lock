@@ -2843,6 +2843,7 @@ dependencies = [
  "serde",
  "shuttle",
  "tempfile",
+ "thrift",
  "tokio",
  "tracing-subscriber",
  "url",
