@@ -14,8 +14,9 @@ use datafusion::{
     catalog::memory::DataSourceExec,
     common::tree_node::{Transformed, TreeNode, TreeNodeRecursion},
     datasource::{physical_plan::ParquetSource, source::DataSource},
-    physical_plan::ExecutionPlan,
+    physical_plan::{ExecutionPlan, metrics::MetricValue},
 };
+use liquid_cache_common::rpc::ExecutionMetricsResponse;
 use parquet::arrow::arrow_reader::RowSelector;
 
 use crate::{LiquidParquetSource, cache::LiquidCacheRef, liquid_array::get_bit_width};
@@ -334,6 +335,68 @@ pub(super) fn row_selector_to_boolean_buffer(selection: &[RowSelector]) -> Boole
         }
     }
     buffer.finish()
+}
+
+/// Extracts execution metrics from a physical execution plan.
+///
+/// This function traverses the plan tree to find all DataSourceExec nodes and aggregates
+/// their metrics, including processing time and bytes scanned. It can be used by both
+/// client-server and in-process benchmarks to get consistent metrics.
+///
+/// # Arguments
+///
+/// * `plan` - The execution plan to extract metrics from
+/// * `liquid_cache` - Optional reference to the liquid cache for memory usage calculation
+///
+/// # Returns
+///
+/// An `ExecutionMetricsResponse` containing:
+/// - `pushdown_eval_time`: Time spent processing data (in milliseconds)
+/// - `cache_memory_usage`: Total cache memory usage including bytes scanned
+/// - `liquid_cache_usage`: Memory usage of the liquid cache specifically
+pub fn extract_execution_metrics(
+    plan: &Arc<dyn ExecutionPlan>,
+    liquid_cache: Option<&LiquidCacheRef>,
+) -> ExecutionMetricsResponse {
+    // Traverse the plan tree to find all DataSourceExec nodes and collect their metrics
+    let mut time_elapsed_processing_millis = 0;
+    let mut bytes_scanned = 0;
+
+    let _ = plan.apply(|node| {
+        let any_plan = node.as_any();
+        if let Some(data_source_exec) = any_plan.downcast_ref::<DataSourceExec>()
+            && let Some(metrics) = data_source_exec.metrics()
+        {
+            let aggregated_metrics = metrics
+                .aggregate_by_name()
+                .sorted_for_display()
+                .timestamps_removed();
+
+            for metric in aggregated_metrics.iter() {
+                if let MetricValue::Time { name, time } = metric.value()
+                    && name == "time_elapsed_processing"
+                {
+                    time_elapsed_processing_millis += time.value() / 1_000_000;
+                } else if let MetricValue::Count { name, count } = metric.value()
+                    && name == "bytes_scanned"
+                {
+                    bytes_scanned += count.value();
+                }
+            }
+        }
+        Ok(TreeNodeRecursion::Continue)
+    });
+
+    let liquid_cache_usage = liquid_cache
+        .map(|cache| cache.compute_memory_usage_bytes())
+        .unwrap_or(0);
+    let cache_memory_usage = liquid_cache_usage + bytes_scanned as u64;
+
+    ExecutionMetricsResponse {
+        pushdown_eval_time: time_elapsed_processing_millis as u64,
+        cache_memory_usage,
+        liquid_cache_usage,
+    }
 }
 
 /// Rewrite the data source plan to use liquid cache.

@@ -1,16 +1,14 @@
 use crate::{ExecutionStats, local_cache::LocalCache};
 use anyhow::Result;
 use datafusion::{
-    common::tree_node::{TreeNode, TreeNodeRecursion},
-    datasource::source::DataSourceExec,
     execution::{SendableRecordBatchStream, object_store::ObjectStoreUrl},
-    physical_plan::{ExecutionPlan, display::DisplayableExecutionPlan, metrics::MetricValue},
+    physical_plan::{ExecutionPlan, display::DisplayableExecutionPlan},
     prelude::SessionContext,
 };
 use liquid_cache_common::{CacheMode, rpc::ExecutionMetricsResponse};
 use liquid_cache_parquet::{
     cache::{LiquidCache, LiquidCacheRef, policies::CachePolicy},
-    rewrite_data_source_plan,
+    extract_execution_metrics, rewrite_data_source_plan,
 };
 use log::{debug, info};
 use object_store::ObjectStore;
@@ -189,48 +187,7 @@ impl LiquidCacheServiceInner {
             .plan
             .clone();
 
-        // Traverse the plan tree to find all DataSourceExec nodes and collect their metrics
-        let mut time_elapsed_processing_millis = 0;
-        let mut bytes_scanned = 0;
-
-        plan.apply(|node| {
-            let any_plan = node.as_any();
-            if let Some(data_source_exec) = any_plan.downcast_ref::<DataSourceExec>()
-                && let Some(metrics) = data_source_exec.metrics()
-            {
-                let aggregated_metrics = metrics
-                    .aggregate_by_name()
-                    .sorted_for_display()
-                    .timestamps_removed();
-
-                for metric in aggregated_metrics.iter() {
-                    if let MetricValue::Time { name, time } = metric.value()
-                        && name == "time_elapsed_processing"
-                    {
-                        time_elapsed_processing_millis += time.value() / 1_000_000;
-                    } else if let MetricValue::Count { name, count } = metric.value()
-                        && name == "bytes_scanned"
-                    {
-                        bytes_scanned += count.value();
-                    }
-                }
-            }
-            Ok(TreeNodeRecursion::Continue)
-        })
-        .ok()?;
-
-        let liquid_cache_usage = self
-            .cache()
-            .as_ref()
-            .map(|cache| cache.compute_memory_usage_bytes())
-            .unwrap_or(0);
-        let cache_memory_usage = liquid_cache_usage + bytes_scanned as u64;
-
-        let response = ExecutionMetricsResponse {
-            pushdown_eval_time: time_elapsed_processing_millis as u64,
-            cache_memory_usage,
-            liquid_cache_usage,
-        };
+        let response = extract_execution_metrics(&plan, self.cache().as_ref());
         Some(response)
     }
 

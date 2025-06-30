@@ -5,7 +5,7 @@ use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use liquid_cache_common::LiquidCacheMode;
 use liquid_cache_parquet::cache::policies::ToDiskPolicy;
-use liquid_cache_parquet::{LiquidCacheInProcessBuilder, LiquidCacheRef};
+use liquid_cache_parquet::{extract_execution_metrics, LiquidCacheInProcessBuilder, LiquidCacheRef};
 use log::info;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -407,7 +407,7 @@ impl InProcessBenchmarkRunner {
         let now = Instant::now();
         let starting_timestamp = bench_start_time.elapsed();
 
-        let (results, _execution_plan) = self.execute_query(ctx, query, manifest).await?;
+        let (results, execution_plan) = self.execute_query(ctx, query, manifest).await?;
         let elapsed = now.elapsed();
 
         disk_info.refresh(true);
@@ -422,18 +422,15 @@ impl InProcessBenchmarkRunner {
             self.write_flamegraph(&profiler, query.id, iteration)?;
         }
 
-        let cache_memory_usage = if let Some(cache) = cache {
-            cache.memory_usage_bytes()
-        } else {
-            0
-        };
+        // Extract execution metrics using the shared function
+        let metrics = extract_execution_metrics(&execution_plan, cache.as_ref());
 
         let result = IterationResult {
             network_traffic: 0,
             time_millis: elapsed.as_millis() as u64,
-            cache_cpu_time: 0, // Not easily available for in-process
-            cache_memory_usage: cache_memory_usage as u64,
-            liquid_cache_usage: cache_memory_usage as u64,
+            cache_cpu_time: metrics.pushdown_eval_time,
+            cache_memory_usage: metrics.cache_memory_usage,
+            liquid_cache_usage: metrics.liquid_cache_usage,
             disk_bytes_read: disk_read,
             disk_bytes_written: disk_written,
             starting_timestamp,
