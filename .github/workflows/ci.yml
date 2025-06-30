@@ -165,7 +165,7 @@ jobs:
 
   benchmark:
     name: Performance Benchmark
-    runs-on: ubuntu-latest
+    runs-on: ubicloud-standard-2-ubuntu-2404
     permissions:
       contents: write
       pull-requests: write
@@ -178,7 +178,7 @@ jobs:
         with:
           toolchain: nightly-2025-04-29
       - run: sudo apt-get update && sudo apt-get install -y wget jq
-      - uses: Swatinem/rust-cache@v2
+      - uses: ubicloud/rust-cache@v2
 
       - name: Setup ClickBench partitioned data download
         run: |
