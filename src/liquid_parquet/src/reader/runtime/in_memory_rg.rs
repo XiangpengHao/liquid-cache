@@ -8,13 +8,16 @@ use parquet::{
     file::{
         metadata::RowGroupMetaData,
         page_index::offset_index::OffsetIndexMetaData,
-        reader::{ChunkReader, Length, SerializedPageReader},
+        reader::{ChunkReader, Length},
     },
 };
 
 use super::reader::cached_page::{CachedPageReader, PredicatePageCache};
-use crate::cache::{BatchID, LiquidCachedRowGroupRef};
 use crate::reader::plantime::ParquetMetadataCacheReader;
+use crate::{
+    cache::{BatchID, LiquidCachedRowGroupRef},
+    reader::runtime::reader::SerializedPageReader,
+};
 
 /// An in-memory collection of column chunks
 pub(super) struct InMemoryRowGroup<'a> {

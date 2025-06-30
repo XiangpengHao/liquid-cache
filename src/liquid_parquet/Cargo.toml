@@ -30,6 +30,7 @@ liquid-cache-common = { workspace = true }
 fastrace = { workspace = true }
 fastrace-futures = { workspace = true }
 congee = { workspace = true }
+thrift = { version = "0.17.0", default-features = false }
 
 [dev-dependencies]
 tempfile = "3.20.0"
