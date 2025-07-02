@@ -10,12 +10,12 @@ description = "10x lower latency for cloud-native DataFusion"
 
 [workspace]
 members = [
-	"benchmark",
-	"src/server",
-	"src/client",
-	"src/liquid_parquet",
-	"src/common",
-	"examples",
+    "benchmark",
+    "src/server",
+    "src/client",
+    "src/liquid_parquet",
+    "src/common",
+    "examples",
 ]
 resolver = "3"
 
@@ -25,7 +25,7 @@ liquid-cache-client = { path = "src/client", version = "0.1.6" }
 liquid-cache-parquet = { path = "src/liquid_parquet", version = "0.1.6" }
 liquid-cache-common = { path = "src/common", version = "0.1.6" }
 arrow = { version = "55.1.0", default-features = false, features = [
-	"prettyprint",
+    "prettyprint",
 ] }
 arrow-flight = { version = "55.1.0", features = ["flight-sql-experimental"] }
 arrow-schema = { version = "55.1.0", features = ["serde"] }
@@ -35,6 +35,7 @@ datafusion-proto = { version = "47.0.0" }
 async-trait = "0.1.88"
 futures = { version = "0.3.31", default-features = false, features = ["std"] }
 tokio = { version = "1.45.0", features = ["rt-multi-thread"] }
+tokio-metrics = { version = "0.4.2", features = ["rt"] }
 log = "0.4.27"
 tonic = { version = "0.12" }
 url = "2.5.4"

@@ -129,6 +129,7 @@ impl BenchmarkRunner {
 
         common.start_trace().await;
         common.start_flamegraph().await;
+        common.start_task_stats().await;
 
         let root = Span::root(
             format!("{}-{}-{}", benchmark.benchmark_name(), query.id, iteration),
@@ -151,6 +152,7 @@ impl BenchmarkRunner {
         let disk_read: u64 = disk.iter().map(|disk| disk.usage().read_bytes).sum();
         let disk_written: u64 = disk.iter().map(|disk| disk.usage().written_bytes).sum();
 
+        common.stop_task_stats().await;
         let flamegraph = if !plan_uuid.is_empty() {
             common.stop_flamegraph().await
         } else {

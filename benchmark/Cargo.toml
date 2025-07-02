@@ -5,6 +5,7 @@ edition = { workspace = true }
 publish = false
 
 [dependencies]
+tokio-metrics = "0.4.2"
 liquid-cache-server = { workspace = true }
 liquid-cache-client = { workspace = true }
 liquid-cache-parquet = { workspace = true }

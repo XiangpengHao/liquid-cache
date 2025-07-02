@@ -2761,6 +2761,7 @@ dependencies = [
  "sysinfo",
  "tempfile",
  "tokio",
+ "tokio-metrics",
  "tonic",
  "tower 0.5.2",
  "tower-http",
@@ -2881,6 +2882,7 @@ dependencies = [
  "sysinfo",
  "tempfile",
  "tokio",
+ "tokio-metrics",
  "tonic",
  "tower-http",
  "url",
@@ -4582,6 +4584,18 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "tokio-metrics"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7817b32d36c9b94744d7aa3f8fc13526aa0f5112009d7045f3c659413a6e44ac"
+dependencies = [
+ "futures-util",
+ "pin-project-lite",
+ "tokio",
+ "tokio-stream",
 ]
 
 [[package]]

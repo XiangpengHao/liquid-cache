@@ -4,6 +4,7 @@ use std::{
     sync::Arc,
 };
 
+use crate::admin_server::task_monitor::LiquidTaskMetricsResponse;
 use axum::{
     Json,
     extract::{Query, State},
@@ -314,6 +315,25 @@ pub(crate) async fn get_cache_stats_handler(
             status: "error".to_string(),
         }),
     }
+}
+
+pub(crate) async fn start_task_stats_handler(
+    State(state): State<Arc<AppState>>,
+) -> Json<ApiResponse> {
+    state.task_monitor.run_collector().await;
+    Json(ApiResponse {
+        message: "Task monitor started".to_string(),
+        status: "success".to_string(),
+    })
+}
+
+pub(crate) async fn stop_task_stats_handler(
+    State(state): State<Arc<AppState>>,
+) -> Json<LiquidTaskMetricsResponse> {
+    state.task_monitor.stop_collector().await;
+    let metrics_response = state.task_monitor.get_metrics().await;
+    state.task_monitor.reset_counters();
+    Json(metrics_response)
 }
 
 pub(crate) async fn start_flamegraph_handler(

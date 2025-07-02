@@ -24,7 +24,6 @@ jobs:
           toolchain: nightly-2025-04-29
 
       - uses: Swatinem/rust-cache@v2
-      
       - name: Check formatting
         run: cargo fmt --all -- --check
 
@@ -32,13 +31,18 @@ jobs:
         run: cargo doc --no-deps --document-private-items
         env:
           RUSTDOCFLAGS: -D warnings
+          RUSTFLAGS: --cfg tokio_unstable
 
       - name: Run clippy
         run: cargo clippy -- -D warnings
+        env:
+          RUSTFLAGS: --cfg tokio_unstable
 
   unit_test:
     name: Unit Test
     runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: --cfg tokio_unstable
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -51,8 +55,10 @@ jobs:
         run: cargo llvm-cov --workspace --codecov --output-path codecov.json
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
+        env:
+          RUSTFLAGS: --cfg tokio_unstable
         with:
-          token: ${{ secrets.CODECOV_TOKEN }} 
+          token: ${{ secrets.CODECOV_TOKEN }}
           files: codecov.json
           fail_ci_if_error: true
   
@@ -119,6 +125,8 @@ jobs:
           cat server.log || echo "No server log found"
             curl http://localhost:53703/shutdown
           cargo llvm-cov report --codecov --output-path codecov_clickbench.json
+        env:
+          RUSTFLAGS: --cfg tokio_unstable
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
         with:
@@ -156,6 +164,8 @@ jobs:
           cat server.log || echo "No server log found"
           curl http://localhost:53703/shutdown
           cargo llvm-cov report --codecov --output-path codecov_tpch.json
+        env:
+          RUSTFLAGS: --cfg tokio_unstable
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
         with:
@@ -350,8 +360,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ ubuntu-latest, macos-latest ]
       fail-fast: false
+    env:
+      RUSTFLAGS: --cfg tokio_unstable
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master

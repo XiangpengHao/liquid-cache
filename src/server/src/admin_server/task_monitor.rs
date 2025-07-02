@@ -1,0 +1,142 @@
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Duration;
+use tokio_metrics::{RuntimeMonitor, TaskMonitor};
+
+pub(crate) struct LiquidTaskMonitor {
+    monitor: TaskMonitor,
+    rt_monitor: RuntimeMonitor,
+    cancellation_token: Arc<AtomicBool>,
+    liquid_task_metrics: Arc<LiquidTaskMetrics>,
+}
+
+pub(crate) struct LiquidTaskMetrics {
+    total_tasks_n: AtomicU64,
+    total_slow_poll_n: AtomicU64,
+    total_poll_n: AtomicU64,
+    mean_poll_duration_ms: AtomicU64,
+    mean_idle_duration_ms: AtomicU64,
+}
+
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct LiquidTaskMetricsResponse {
+    pub total_tasks_n: u64,
+    pub total_slow_poll_n: u64,
+    pub total_poll_n: u64,
+    pub mean_poll_duration_ms: u64,
+    pub mean_idle_duration_ms: u64,
+}
+
+impl LiquidTaskMonitor {
+    pub fn new() -> Self {
+        let handle = tokio::runtime::Handle::current();
+        let rt_monitor = tokio_metrics::RuntimeMonitor::new(&handle);
+        let liquid_task_metrics = LiquidTaskMetrics {
+            total_tasks_n: AtomicU64::new(0),
+            total_slow_poll_n: AtomicU64::new(0),
+            total_poll_n: AtomicU64::new(0),
+            mean_poll_duration_ms: AtomicU64::new(0),
+            mean_idle_duration_ms: AtomicU64::new(0),
+        };
+
+        Self {
+            rt_monitor,
+            monitor: TaskMonitor::new(),
+            cancellation_token: Arc::new(AtomicBool::new(false)),
+            liquid_task_metrics: Arc::new(liquid_task_metrics),
+        }
+    }
+
+    pub async fn run_collector(&self) {
+        let mut monitor_interval = self.monitor.intervals();
+        let mut rt_monitor_interval = self.rt_monitor.intervals();
+        let liquid_metrics = self.liquid_task_metrics.clone();
+        let cancellation_token = self.cancellation_token.clone();
+
+        fn update_high_mark(counter: &AtomicU64, new_value: u64) {
+            let current = counter.load(Ordering::Acquire);
+            if new_value <= current {
+                return;
+            }
+
+            counter.fetch_max(new_value, Ordering::AcqRel);
+        }
+
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(10));
+
+            loop {
+                if cancellation_token.load(Ordering::Acquire) {
+                    return;
+                }
+
+                if let Some(metrics) = monitor_interval.next() {
+                    update_high_mark(
+                        &liquid_metrics.total_slow_poll_n,
+                        metrics.total_slow_poll_count,
+                    );
+                    update_high_mark(&liquid_metrics.total_poll_n, metrics.total_poll_count);
+                    update_high_mark(
+                        &liquid_metrics.mean_poll_duration_ms,
+                        metrics.mean_idle_duration().as_millis() as u64,
+                    );
+                }
+
+                if let Some(metrics) = rt_monitor_interval.next() {
+                    update_high_mark(
+                        &liquid_metrics.total_tasks_n,
+                        metrics.live_tasks_count as u64,
+                    );
+                    update_high_mark(
+                        &liquid_metrics.mean_poll_duration_ms,
+                        metrics.mean_poll_duration.as_millis() as u64,
+                    );
+                }
+
+                interval.tick().await;
+            }
+        });
+    }
+
+    pub async fn stop_collector(&self) {
+        self.cancellation_token.store(true, Ordering::Release);
+    }
+
+    pub async fn get_metrics(&self) -> LiquidTaskMetricsResponse {
+        LiquidTaskMetricsResponse {
+            total_tasks_n: self
+                .liquid_task_metrics
+                .total_tasks_n
+                .load(Ordering::Acquire),
+            total_slow_poll_n: self
+                .liquid_task_metrics
+                .total_slow_poll_n
+                .load(Ordering::Acquire),
+            total_poll_n: self
+                .liquid_task_metrics
+                .total_poll_n
+                .load(Ordering::Acquire),
+            mean_poll_duration_ms: self
+                .liquid_task_metrics
+                .mean_poll_duration_ms
+                .load(Ordering::Acquire),
+            mean_idle_duration_ms: self
+                .liquid_task_metrics
+                .mean_idle_duration_ms
+                .load(Ordering::Acquire),
+        }
+    }
+
+    pub fn reset_counters(&self) {
+        self.liquid_task_metrics
+            .total_slow_poll_n
+            .store(0, Ordering::Relaxed);
+        self.liquid_task_metrics
+            .total_poll_n
+            .store(0, Ordering::Relaxed);
+        self.liquid_task_metrics
+            .total_tasks_n
+            .store(0, Ordering::Relaxed);
+        self.cancellation_token.store(false, Ordering::Relaxed);
+    }
+}
