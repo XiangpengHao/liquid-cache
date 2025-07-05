@@ -7,7 +7,4 @@ mod opener;
 mod row_filter;
 mod row_group_filter;
 mod source;
-pub(crate) use row_filter::LiquidPredicate;
-
-#[cfg(test)]
-pub(crate) use row_filter::FilterCandidateBuilder;
+pub use row_filter::{FilterCandidate, FilterCandidateBuilder, LiquidPredicate};
