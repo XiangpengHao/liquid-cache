@@ -44,13 +44,12 @@ fn setup_cache(tmp_dir: &TempDir) -> Arc<LiquidCachedColumn> {
         LiquidCacheMode::Liquid {
             transcode_in_background: false,
         },
-        Box::new(DiscardPolicy::default()),
+        Box::new(DiscardPolicy),
     );
     let file = cache.register_or_get_file("test_file.parquet".to_string());
     let row_group = file.row_group(0);
     let field = Arc::new(Field::new("test_column", DataType::Int32, false));
-    let column = row_group.create_column(0, field);
-    column
+    row_group.create_column(0, field)
 }
 
 #[divan::bench(args = SELECTIVITIES, sample_count = 1000)]

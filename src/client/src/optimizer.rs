@@ -232,7 +232,7 @@ mod tests {
         let display_plan = DisplayableExecutionPlan::new(plan.as_ref());
         let plan_str = display_plan.indent(false).to_string();
 
-        println!("Plan: {}", plan_str);
+        println!("Plan: {plan_str}");
 
         // With the top-down approach, the LiquidCacheClientExec should contain:
         // 1. The AggregateExec with mode=Partial

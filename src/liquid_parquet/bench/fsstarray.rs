@@ -18,7 +18,7 @@ fn create_string_arrays_from_file() -> Vec<(usize, StringArray)> {
 
     let readme = fs::read_to_string(TEST_FILE_PATH).expect("Failed to read file");
     let license = fs::read_to_string(LICENSE_FILE_PATH).expect("Failed to read file");
-    let content = format!("{}\n\n{}", readme, license);
+    let content = format!("{readme}\n\n{license}");
 
     let mut result = Vec::new();
 

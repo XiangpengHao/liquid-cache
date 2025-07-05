@@ -41,7 +41,7 @@ fn benchmark_boolean_and_then(bencher: Bencher, (left_selectivity, right_selecti
             let right = generate_right_boolean_buffer(count_set_bits, right_selectivity);
             (left, right)
         })
-        .input_counter(|_| divan::counter::BytesCount::new((BUFFER_SIZE / 8) as usize))
+        .input_counter(|_| divan::counter::BytesCount::new(BUFFER_SIZE / 8))
         .bench_values(|(left, right)| std::hint::black_box(boolean_buffer_and_then(&left, &right)));
 }
 

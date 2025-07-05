@@ -955,7 +955,7 @@ mod tests {
 
         // Single character strings
         for c in "abcdefghijklmnopqrstuvwxyz".chars() {
-            builder.append_value(&c.to_string());
+            builder.append_value(c.to_string());
         }
 
         // Highly repetitive string to test compression effectiveness
@@ -1036,11 +1036,11 @@ mod tests {
         assert_eq!(boolean_array.len(), 5);
 
         // Should match indices 0 and 3 (both "apple")
-        assert_eq!(boolean_array.value(0), true); // "apple"
-        assert_eq!(boolean_array.value(1), false); // "banana"
-        assert_eq!(boolean_array.value(2), false); // "cherry"
-        assert_eq!(boolean_array.value(3), true); // "apple"
-        assert_eq!(boolean_array.value(4), false); // "grape"
+        assert!(boolean_array.value(0)); // "apple"
+        assert!(!boolean_array.value(1)); // "banana"
+        assert!(!boolean_array.value(2)); // "cherry"
+        assert!(boolean_array.value(3)); // "apple"
+        assert!(!boolean_array.value(4)); // "grape"
     }
 
     #[test]

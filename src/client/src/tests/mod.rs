@@ -19,7 +19,7 @@ async fn setup_tpch_ctx() -> Arc<SessionContext> {
     ];
 
     for table in tables {
-        let table_url = format!("../../benchmark/tpch/data/sf0.001/{}.parquet", table);
+        let table_url = format!("../../benchmark/tpch/data/sf0.001/{table}.parquet");
         ctx.register_parquet(table, table_url, Default::default())
             .await
             .unwrap();
