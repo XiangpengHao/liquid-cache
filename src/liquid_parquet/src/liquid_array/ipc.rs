@@ -855,7 +855,7 @@ mod tests {
         assert_eq!(result.as_ref(), &array);
 
         // 2. No nulls array
-        let no_nulls: Vec<Option<i32>> = (0..1000).map(|i| Some(i)).collect();
+        let no_nulls: Vec<Option<i32>> = (0..1000).map(Some).collect();
         let array = PrimitiveArray::<Int32Type>::from(no_nulls);
         let liquid_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(array.clone());
         let bytes = liquid_array.to_bytes_inner();

@@ -858,7 +858,7 @@ mod tests {
             column.insert(batch_id, inner_array).unwrap();
         }
         let mut row_group =
-            InMemoryRowGroup::new(&row_group_metadata, None, None, liquid_cache_rg.clone());
+            InMemoryRowGroup::new(row_group_metadata, None, None, liquid_cache_rg.clone());
         row_group
             .fetch(&mut builder.input, &ProjectionMask::all())
             .await

@@ -569,14 +569,12 @@ mod tests {
             let compressed_size = liquid_array.get_array_memory_size();
 
             println!(
-                "Type: {}, uncompressed_size: {}, compressed_size: {}",
-                type_name, uncompressed_size, compressed_size
+                "Type: {type_name}, uncompressed_size: {uncompressed_size}, compressed_size: {compressed_size}"
             );
             // Assert that compression actually reduced the size
             assert!(
                 compressed_size < uncompressed_size,
-                "{} compression failed to reduce size",
-                type_name
+                "{type_name} compression failed to reduce size"
             );
         }
 

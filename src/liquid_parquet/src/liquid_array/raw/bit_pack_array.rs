@@ -352,7 +352,7 @@ mod tests {
         let before_size = array.get_array_memory_size();
         let bit_packed = BitPackedArray::from_primitive(array, NonZero::new(10).unwrap());
         let after_size = bit_packed.get_array_memory_size();
-        println!("before: {}, after: {}", before_size, after_size);
+        println!("before: {before_size}, after: {after_size}");
         let unpacked = bit_packed.to_primitive();
 
         assert_eq!(unpacked.len(), 1024);
