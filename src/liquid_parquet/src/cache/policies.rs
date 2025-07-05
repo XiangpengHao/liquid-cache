@@ -366,8 +366,8 @@ mod test {
     impl LruInternalState {
         fn check_integrity(&self) {
             let map_count = self.map.len();
-            let forward_count = count_nodes_in_list(&self);
-            let backward_count = count_nodes_reverse(&self);
+            let forward_count = count_nodes_in_list(self);
+            let backward_count = count_nodes_reverse(self);
 
             assert_eq!(map_count, forward_count);
             assert_eq!(map_count, backward_count);
@@ -474,8 +474,7 @@ mod test {
         assert_eq!(
             entries.len(),
             unique_entries.len(),
-            "Some entries were advised for eviction multiple times: {:?}",
-            entries
+            "Some entries were advised for eviction multiple times: {entries:?}"
         );
     }
 
@@ -577,7 +576,7 @@ mod test {
         let entry_id2 = create_entry_id(1, 1, 1, 2);
         let entry_id3 = create_entry_id(1, 1, 1, 3);
 
-        let on_disk_path = entry_id1.on_disk_path(&store.config().cache_root_dir());
+        let on_disk_path = entry_id1.on_disk_path(store.config().cache_root_dir());
         std::fs::create_dir_all(on_disk_path.parent().unwrap()).unwrap();
 
         store.insert(entry_id1, create_test_array(100));
@@ -595,7 +594,7 @@ mod test {
         match store.get(&entry_id2) {
             Some(CachedBatch::DiskLiquid) => {}
             None => {} // This is also acceptable if fully evicted
-            other => panic!("Expected OnDiskLiquid or None, got {:?}", other),
+            other => panic!("Expected OnDiskLiquid or None, got {other:?}"),
         }
     }
 
@@ -608,7 +607,7 @@ mod test {
         let entry_id2 = create_entry_id(1, 1, 1, 2);
         let entry_id3 = create_entry_id(1, 1, 1, 3);
 
-        let on_disk_path = entry_id1.on_disk_path(&store.config().cache_root_dir());
+        let on_disk_path = entry_id1.on_disk_path(store.config().cache_root_dir());
         std::fs::create_dir_all(on_disk_path.parent().unwrap()).unwrap();
 
         store.insert(entry_id1, create_test_array(100));
@@ -625,7 +624,7 @@ mod test {
         match store.get(&entry_id3) {
             Some(CachedBatch::DiskLiquid) => {}
             None => {} // This is also acceptable if fully evicted
-            other => panic!("Expected OnDiskLiquid or None, got {:?}", other),
+            other => panic!("Expected OnDiskLiquid or None, got {other:?}"),
         }
     }
 
@@ -637,8 +636,8 @@ mod test {
         let entry_id1 = create_entry_id(1, 1, 1, 1);
         let entry_id2 = create_entry_id(1, 1, 1, 2);
 
-        let on_disk_liquid_path = entry_id1.on_disk_path(&store.config().cache_root_dir());
-        let on_disk_arrow_path = entry_id1.on_disk_arrow_path(&store.config().cache_root_dir());
+        let on_disk_liquid_path = entry_id1.on_disk_path(store.config().cache_root_dir());
+        let on_disk_arrow_path = entry_id1.on_disk_arrow_path(store.config().cache_root_dir());
         std::fs::create_dir_all(on_disk_liquid_path.parent().unwrap()).unwrap();
         std::fs::create_dir_all(on_disk_arrow_path.parent().unwrap()).unwrap();
 

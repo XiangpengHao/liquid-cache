@@ -229,7 +229,7 @@ mod tests {
     #[test]
     fn test_transcode_string() {
         let array: ArrayRef = Arc::new(StringArray::from_iter_values(
-            (0..TEST_ARRAY_SIZE).map(|i| format!("test_string_{}", i)),
+            (0..TEST_ARRAY_SIZE).map(|i| format!("test_string_{i}")),
         ));
         let state = create_compressor_states();
 
@@ -240,7 +240,7 @@ mod tests {
     #[test]
     fn test_transcode_dictionary() {
         // Create a dictionary with many repeated values
-        let values = StringArray::from_iter_values((0..100).map(|i| format!("value_{}", i)));
+        let values = StringArray::from_iter_values((0..100).map(|i| format!("value_{i}")));
         let keys: Vec<u16> = (0..TEST_ARRAY_SIZE).map(|i| (i % 100) as u16).collect();
 
         let dict_array =

@@ -386,9 +386,9 @@ mod tests {
 
         // Verify the directory structure matches
         let expected_dir = cache_root
-            .join(format!("file_{}", file_id))
-            .join(format!("rg_{}", row_group_id))
-            .join(format!("col_{}", column_id));
+            .join(format!("file_{file_id}"))
+            .join(format!("rg_{row_group_id}"))
+            .join(format!("col_{column_id}"));
 
         assert_eq!(entry_path.parent().unwrap(), &expected_dir);
 

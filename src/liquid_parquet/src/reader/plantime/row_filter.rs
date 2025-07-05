@@ -84,8 +84,7 @@ use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::utils::reassign_predicate_columns;
 use datafusion::physical_expr::{PhysicalExpr, split_conjunction};
 
-use crate::liquid_array::LiquidArrayRef;
-use crate::reader::runtime::{LiquidRowFilter, get_predicate_column_id, try_evaluate_predicate};
+use crate::reader::runtime::{LiquidRowFilter, get_predicate_column_id};
 
 /// A "compiled" predicate passed to `ParquetRecordBatchStream` to perform
 /// row-level filtering during parquet decoding.
@@ -143,15 +142,9 @@ impl LiquidPredicate {
         })
     }
 
-    pub(crate) fn physical_expr_physical_column_index(&self) -> &Arc<dyn PhysicalExpr> {
+    /// Get the physical expression with physical column index.
+    pub fn physical_expr_physical_column_index(&self) -> &Arc<dyn PhysicalExpr> {
         &self.physical_expr_physical_column_index
-    }
-
-    pub(crate) fn evaluate_liquid(
-        &mut self,
-        array: &LiquidArrayRef,
-    ) -> Result<Option<BooleanArray>, ArrowError> {
-        try_evaluate_predicate(&self.physical_expr, array)
     }
 
     pub(crate) fn predicate_column_ids(&self) -> Vec<usize> {
