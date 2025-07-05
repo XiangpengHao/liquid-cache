@@ -110,8 +110,9 @@ impl Display for CachedBatch {
     }
 }
 
+/// A column in the cache.
 #[derive(Debug)]
-pub(crate) struct LiquidCachedColumn {
+pub struct LiquidCachedColumn {
     cache_store: Arc<CacheStore>,
     field: Arc<Field>,
     column_path: ColumnAccessPath,
@@ -119,8 +120,10 @@ pub(crate) struct LiquidCachedColumn {
 
 pub(crate) type LiquidCachedColumnRef = Arc<LiquidCachedColumn>;
 
+/// Error type for inserting an arrow array into the cache.
 #[derive(Debug)]
-pub(crate) enum InsertArrowArrayError {
+pub enum InsertArrowArrayError {
+    /// The array is already cached.
     AlreadyCached,
 }
 
@@ -220,7 +223,8 @@ impl LiquidCachedColumn {
         RecordBatch::try_new(schema, vec![array]).unwrap()
     }
 
-    fn eval_selection_with_predicate(
+    /// Evaluates a predicate on a cached column.
+    pub fn eval_selection_with_predicate(
         &self,
         batch_id: BatchID,
         selection: &BooleanBuffer,
@@ -291,7 +295,8 @@ impl LiquidCachedColumn {
         }
     }
 
-    pub(crate) fn get_arrow_array_with_filter(
+    /// Get an arrow array with a filter applied.
+    pub fn get_arrow_array_with_filter(
         &self,
         batch_id: BatchID,
         filter: &BooleanArray,
@@ -377,7 +382,7 @@ impl LiquidCachedColumn {
     }
 
     /// Insert an array into the cache.
-    pub(crate) fn insert(
+    pub fn insert(
         self: &Arc<Self>,
         batch_id: BatchID,
         array: ArrayRef,
@@ -421,8 +426,9 @@ impl LiquidCachedColumn {
     }
 }
 
+/// A row group in the cache.
 #[derive(Debug)]
-pub(crate) struct LiquidCachedRowGroup {
+pub struct LiquidCachedRowGroup {
     columns: RwLock<AHashMap<u64, Arc<LiquidCachedColumn>>>,
     cache_store: Arc<CacheStore>,
     row_group_id: u64,
@@ -445,6 +451,7 @@ impl LiquidCachedRowGroup {
         }
     }
 
+    /// Create a column in the row group.
     pub fn create_column(&self, column_id: u64, field: Arc<Field>) -> LiquidCachedColumnRef {
         use std::collections::hash_map::Entry;
         let mut columns = self.columns.write().unwrap();
@@ -484,10 +491,12 @@ impl LiquidCachedRowGroup {
         }
     }
 
+    /// Get a column from the row group.
     pub fn get_column(&self, column_id: u64) -> Option<LiquidCachedColumnRef> {
         self.columns.read().unwrap().get(&column_id).cloned()
     }
 
+    /// Evaluate a predicate on a row group.
     pub fn evaluate_selection_with_predicate(
         &self,
         batch_id: BatchID,
@@ -567,8 +576,9 @@ impl LiquidCachedRowGroup {
 
 pub(crate) type LiquidCachedRowGroupRef = Arc<LiquidCachedRowGroup>;
 
+/// A file in the cache.
 #[derive(Debug)]
-pub(crate) struct LiquidCachedFile {
+pub struct LiquidCachedFile {
     row_groups: Mutex<AHashMap<u64, Arc<LiquidCachedRowGroup>>>,
     cache_store: Arc<CacheStore>,
     file_id: u64,
@@ -583,6 +593,7 @@ impl LiquidCachedFile {
         }
     }
 
+    /// Get a row group from the cache.
     pub fn row_group(&self, row_group_id: u64) -> LiquidCachedRowGroupRef {
         let mut row_groups = self.row_groups.lock().unwrap();
         let row_group = row_groups.entry(row_group_id).or_insert_with(|| {
@@ -599,6 +610,7 @@ impl LiquidCachedFile {
         self.cache_store.reset();
     }
 
+    /// Get the cache mode of the cache.
     pub fn cache_mode(&self) -> &LiquidCacheMode {
         self.cache_store.config().cache_mode()
     }
@@ -646,7 +658,7 @@ impl LiquidCache {
     }
 
     /// Register a file in the cache.
-    pub(crate) fn register_or_get_file(&self, file_path: String) -> LiquidCachedFileRef {
+    pub fn register_or_get_file(&self, file_path: String) -> LiquidCachedFileRef {
         let mut files = self.files.lock().unwrap();
         let value = files.entry(file_path.clone()).or_insert_with(|| {
             let file_id = self.current_file_id.fetch_add(1, Ordering::Relaxed);
