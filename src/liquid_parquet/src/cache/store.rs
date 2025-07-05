@@ -403,16 +403,16 @@ mod tests {
         #[test]
         fn test_reset() {
             let store = ArtStore::new();
-            let entry_id = create_entry_id(1, 1 as u64, 1, 1);
+            let entry_id = create_entry_id(1, 1, 1, 1);
             let array = create_test_array(100);
 
             store.insert(&entry_id, array.clone());
 
-            let entry_id = create_entry_id(1, 1 as u64, 1, 1);
+            let entry_id = create_entry_id(1, 1, 1, 1);
             assert!(store.is_cached(&entry_id));
 
             store.reset();
-            let entry_id = create_entry_id(1, 1 as u64, 1, 1);
+            let entry_id = create_entry_id(1, 1, 1, 1);
             assert!(!store.is_cached(&entry_id));
         }
     }
@@ -513,19 +513,19 @@ mod tests {
             let advisor = TestPolicy::new(AdviceType::Evict, Some(entry_id1));
             let store = create_cache_store(8000, Box::new(advisor)); // Small budget to force advice
 
-            let on_disk_path = entry_id1.on_disk_path(&store.config.cache_root_dir());
+            let on_disk_path = entry_id1.on_disk_path(store.config.cache_root_dir());
             std::fs::create_dir_all(on_disk_path.parent().unwrap()).unwrap();
 
             store.insert(entry_id1, create_test_array(800));
             match store.get(&entry_id1).unwrap() {
                 CachedBatch::MemoryArrow(_) => {}
-                other => panic!("Expected ArrowMemory, got {:?}", other),
+                other => panic!("Expected ArrowMemory, got {other:?}"),
             }
 
             store.insert(entry_id2, create_test_array(800));
             match store.get(&entry_id1).unwrap() {
                 CachedBatch::DiskLiquid => {}
-                other => panic!("Expected OnDiskLiquid after eviction, got {:?}", other),
+                other => panic!("Expected OnDiskLiquid after eviction, got {other:?}"),
             }
         }
 
@@ -537,13 +537,13 @@ mod tests {
             store.insert(entry_id1, create_test_array(800));
             match store.get(&entry_id1).unwrap() {
                 CachedBatch::MemoryArrow(_) => {}
-                other => panic!("Expected ArrowMemory, got {:?}", other),
+                other => panic!("Expected ArrowMemory, got {other:?}"),
             }
 
             store.insert(entry_id2, create_test_array(800));
             match store.get(&entry_id1).unwrap() {
                 CachedBatch::MemoryLiquid(_) => {}
-                other => panic!("Expected LiquidMemory after transcoding, got {:?}", other),
+                other => panic!("Expected LiquidMemory after transcoding, got {other:?}"),
             }
         }
 
@@ -552,14 +552,14 @@ mod tests {
             let advisor = TestPolicy::new(AdviceType::TranscodeToDisk, None);
             let store = create_cache_store(8000, Box::new(advisor)); // Tiny budget to force disk storage
 
-            let on_disk_path = entry_id3.on_disk_path(&store.config.cache_root_dir());
+            let on_disk_path = entry_id3.on_disk_path(store.config.cache_root_dir());
             std::fs::create_dir_all(on_disk_path.parent().unwrap()).unwrap();
 
             store.insert(entry_id1, create_test_array(800));
             store.insert(entry_id3, create_test_array(800));
             match store.get(&entry_id3).unwrap() {
                 CachedBatch::DiskLiquid => {}
-                other => panic!("Expected OnDiskLiquid, got {:?}", other),
+                other => panic!("Expected OnDiskLiquid, got {other:?}"),
             }
         }
 
@@ -568,7 +568,7 @@ mod tests {
             let advisor = TestPolicy::new(AdviceType::ToDisk, None);
             let store = create_cache_store(8000, Box::new(advisor)); // Small budget to force disk storage
 
-            let on_disk_arrow_path = entry_id1.on_disk_arrow_path(&store.config.cache_root_dir());
+            let on_disk_arrow_path = entry_id1.on_disk_arrow_path(store.config.cache_root_dir());
             std::fs::create_dir_all(on_disk_arrow_path.parent().unwrap()).unwrap();
 
             // Insert arrow data - should be written as DiskArrow (preserving format)
@@ -577,7 +577,7 @@ mod tests {
 
             match store.get(&entry_id2).unwrap() {
                 CachedBatch::DiskArrow => {}
-                other => panic!("Expected DiskArrow after ToDisk advice, got {:?}", other),
+                other => panic!("Expected DiskArrow after ToDisk advice, got {other:?}"),
             }
         }
     }
@@ -606,7 +606,7 @@ mod tests {
         let budget_size = num_threads * ops_per_thread * 100 * 8 / 2;
         let store = Arc::new(create_cache_store(budget_size, Box::new(LruPolicy::new())));
         let entry_id = create_entry_id(1, 1, 1, 1);
-        let on_disk_path = entry_id.on_disk_path(&store.config().cache_root_dir());
+        let on_disk_path = entry_id.on_disk_path(store.config().cache_root_dir());
         std::fs::create_dir_all(on_disk_path.parent().unwrap()).unwrap();
 
         let mut handles = vec![];

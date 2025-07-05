@@ -84,8 +84,7 @@ use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::utils::reassign_predicate_columns;
 use datafusion::physical_expr::{PhysicalExpr, split_conjunction};
 
-use crate::liquid_array::LiquidArrayRef;
-use crate::reader::runtime::{LiquidRowFilter, get_predicate_column_id, try_evaluate_predicate};
+use crate::reader::runtime::{LiquidRowFilter, get_predicate_column_id};
 
 /// A "compiled" predicate passed to `ParquetRecordBatchStream` to perform
 /// row-level filtering during parquet decoding.
@@ -97,7 +96,7 @@ use crate::reader::runtime::{LiquidRowFilter, get_predicate_column_id, try_evalu
 /// An expression can be evaluated as a `DatafusionArrowPredicate` if it:
 /// * Does not reference any projected columns
 /// * Does not reference columns with non-primitive types (e.g. structs / lists)
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LiquidPredicate {
     /// the filter expression
     physical_expr: Arc<dyn PhysicalExpr>,
@@ -118,7 +117,7 @@ pub struct LiquidPredicate {
 
 impl LiquidPredicate {
     /// Create a new `LiquidPredicate` from a `FilterCandidate`
-    pub(crate) fn try_new(
+    pub fn try_new(
         candidate: FilterCandidate,
         metadata: &ParquetMetaData,
         rows_pruned: metrics::Count,
@@ -143,18 +142,12 @@ impl LiquidPredicate {
         })
     }
 
+    /// Get the physical expression with physical column index.
     pub fn physical_expr_physical_column_index(&self) -> &Arc<dyn PhysicalExpr> {
         &self.physical_expr_physical_column_index
     }
 
-    pub fn evaluate_liquid(
-        &mut self,
-        array: &LiquidArrayRef,
-    ) -> Result<Option<BooleanArray>, ArrowError> {
-        try_evaluate_predicate(&self.physical_expr, array)
-    }
-
-    pub fn predicate_column_ids(&self) -> Vec<usize> {
+    pub(crate) fn predicate_column_ids(&self) -> Vec<usize> {
         let projection = self.projection();
         get_predicate_column_id(projection)
     }
@@ -195,7 +188,7 @@ impl ArrowPredicate for LiquidPredicate {
 /// of evaluating the resulting expression.
 ///
 /// See the module level documentation for more information.
-pub(crate) struct FilterCandidate {
+pub struct FilterCandidate {
     expr: Arc<dyn PhysicalExpr>,
     required_bytes: usize,
     can_use_index: bool,
@@ -244,7 +237,7 @@ pub(crate) struct FilterCandidate {
 /// When evaluating the predicate as a filter on the parquet file, the predicate
 /// must be rewritten to `NULL = 'foo'` as the `address` column will be filled
 /// in with `NULL` values during the rest of the evaluation.
-pub(crate) struct FilterCandidateBuilder {
+pub struct FilterCandidateBuilder {
     expr: Arc<dyn PhysicalExpr>,
     /// The schema of this parquet file.
     /// Columns may have different types from the table schema and there may be
@@ -259,6 +252,7 @@ pub(crate) struct FilterCandidateBuilder {
 }
 
 impl FilterCandidateBuilder {
+    /// Create a new `FilterCandidateBuilder`
     pub fn new(
         expr: Arc<dyn PhysicalExpr>,
         file_schema: SchemaRef,

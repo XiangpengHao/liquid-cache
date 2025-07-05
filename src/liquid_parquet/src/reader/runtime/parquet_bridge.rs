@@ -220,6 +220,8 @@ impl StructArrayReaderBridge {
 
 #[cfg(test)]
 mod tests {
+    use crate::reader;
+
     use super::*;
     use std::mem::transmute;
 
@@ -229,7 +231,12 @@ mod tests {
         let proj = ProjectionMask {
             mask: Some(vec![false, true, false, true, true, false]),
         };
-        let predicate_ids = unsafe { get_predicate_column_id(transmute(&proj)) };
+        let predicate_ids = unsafe {
+            get_predicate_column_id(transmute::<
+                &reader::runtime::parquet_bridge::ProjectionMask,
+                &parquet::arrow::ProjectionMask,
+            >(&proj))
+        };
         assert_eq!(predicate_ids, vec![1, 3, 4]);
     }
 }

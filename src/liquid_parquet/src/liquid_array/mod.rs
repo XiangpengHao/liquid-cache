@@ -12,7 +12,9 @@ pub(crate) mod utils;
 use std::{any::Any, num::NonZero, sync::Arc};
 
 use arrow::array::{ArrayRef, BooleanArray};
-pub use byte_array::LiquidByteArray;
+use arrow_schema::ArrowError;
+pub use byte_array::{LiquidByteArray, get_string_needle};
+use datafusion::physical_plan::PhysicalExpr;
 pub use fix_len_byte_array::LiquidFixedLenByteArray;
 use float_array::LiquidFloatType;
 pub use float_array::{LiquidFloat32Array, LiquidFloat64Array, LiquidFloatArray};
@@ -136,6 +138,22 @@ pub trait LiquidArray: std::fmt::Debug + Send + Sync {
 
     /// Filter the Liquid array with a boolean array.
     fn filter(&self, selection: &BooleanArray) -> LiquidArrayRef;
+
+    /// Filter the Liquid array with a boolean array and return an **arrow array**.
+    fn filter_to_arrow(&self, selection: &BooleanArray) -> ArrayRef {
+        let filtered = self.filter(selection);
+        filtered.to_best_arrow_array()
+    }
+
+    /// Try to evaluate a predicate on the Liquid array with a filter.
+    /// Returns `None` if the predicate is not supported.
+    fn try_eval_predicate(
+        &self,
+        _predicate: &Arc<dyn PhysicalExpr>,
+        _filter: &BooleanArray,
+    ) -> Result<Option<BooleanArray>, ArrowError> {
+        Ok(None)
+    }
 }
 
 /// A reference to a Liquid array.

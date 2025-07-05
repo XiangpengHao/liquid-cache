@@ -744,7 +744,7 @@ mod tests {
                         "The quick brown fox jumps over the lazy dog {}",
                         i
                     )),
-                    _ => builder.append_value(&format!("Lorem ipsum dolor sit amet {}", i)),
+                    _ => builder.append_value(&format!("Lorem ipsum dolor sit amet {i}")),
                 }
             }
         }

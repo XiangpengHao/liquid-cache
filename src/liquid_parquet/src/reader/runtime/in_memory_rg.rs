@@ -509,7 +509,7 @@ mod tests {
 
         {
             let mut row_group =
-                InMemoryRowGroup::new(&row_group_metadata, None, None, liquid_cache_rg.clone());
+                InMemoryRowGroup::new(row_group_metadata, None, None, liquid_cache_rg.clone());
 
             row_group
                 .fetch(&mut builder.input, &ProjectionMask::all())
@@ -531,7 +531,7 @@ mod tests {
         // by now everything should be cached
         {
             let mut row_group =
-                InMemoryRowGroup::new(&row_group_metadata, None, None, liquid_cache_rg.clone());
+                InMemoryRowGroup::new(row_group_metadata, None, None, liquid_cache_rg.clone());
             row_group
                 .fetch(&mut builder.input, &ProjectionMask::all())
                 .await
@@ -559,7 +559,7 @@ mod tests {
             LiquidCacheMode::Liquid {
                 transcode_in_background: false,
             },
-            Box::new(DiscardPolicy::default()),
+            Box::new(DiscardPolicy),
         );
         let liquid_cache_file = liquid_cache.register_or_get_file("test".to_string());
         let liquid_cache_rg = liquid_cache_file.row_group(0);
@@ -801,7 +801,7 @@ mod tests {
             LiquidCacheMode::Liquid {
                 transcode_in_background: false,
             },
-            Box::new(DiscardPolicy::default()),
+            Box::new(DiscardPolicy),
         );
         let liquid_cache_file = liquid_cache.register_or_get_file("test_file".to_string());
         let liquid_cache_rg = liquid_cache_file.row_group(0);
@@ -820,7 +820,7 @@ mod tests {
 
         let value_cnt = row_group_metadata.num_rows() as usize;
         let mut row_group =
-            InMemoryRowGroup::new(&row_group_metadata, None, None, liquid_cache_rg.clone());
+            InMemoryRowGroup::new(row_group_metadata, None, None, liquid_cache_rg.clone());
         let mask = ProjectionMask::leaves(builder.metadata.file_metadata().schema_descr(), vec![2]); // title column
 
         row_group.fetch(&mut builder.input, &mask).await.unwrap();

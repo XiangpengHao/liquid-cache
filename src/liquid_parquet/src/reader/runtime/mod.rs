@@ -1,6 +1,6 @@
 use crate::reader::LiquidPredicate;
 use in_memory_rg::InMemoryRowGroup;
-pub(crate) use liquid_predicate::{extract_multi_column_or, try_evaluate_predicate};
+pub(crate) use liquid_predicate::extract_multi_column_or;
 pub(crate) use parquet_bridge::ArrowReaderBuilderBridge;
 pub(crate) use parquet_bridge::get_predicate_column_id;
 
