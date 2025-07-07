@@ -160,7 +160,7 @@ pub enum CacheAdvice {
 pub struct CacheEntryID {
     file_id: u16,
     rg_id: u16,
-    row_id: u16,
+    col_id: u16,
     batch_id: BatchID,
 }
 
@@ -168,7 +168,7 @@ impl From<CacheEntryID> for usize {
     fn from(id: CacheEntryID) -> Self {
         (id.file_id as usize) << 48
             | (id.rg_id as usize) << 32
-            | (id.row_id as usize) << 16
+            | (id.col_id as usize) << 16
             | (id.batch_id.v as usize)
     }
 }
@@ -178,7 +178,7 @@ impl From<usize> for CacheEntryID {
         Self {
             file_id: (value >> 48) as u16,
             rg_id: ((value >> 32) & 0xFFFF) as u16,
-            row_id: ((value >> 16) & 0xFFFF) as u16,
+            col_id: ((value >> 16) & 0xFFFF) as u16,
             batch_id: BatchID::from_raw((value & 0xFFFF) as u16),
         }
     }
@@ -242,7 +242,7 @@ impl CacheEntryID {
         Self {
             file_id: file_id as u16,
             rg_id: row_group_id as u16,
-            row_id: column_id as u16,
+            col_id: column_id as u16,
             batch_id,
         }
     }
@@ -260,7 +260,7 @@ impl CacheEntryID {
     }
 
     pub(super) fn column_id_inner(&self) -> u64 {
-        self.row_id as u64
+        self.col_id as u64
     }
 
     pub(super) fn on_disk_path(&self, cache_root_dir: &Path) -> PathBuf {
