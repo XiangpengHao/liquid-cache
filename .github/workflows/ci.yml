@@ -34,7 +34,7 @@ jobs:
           RUSTDOCFLAGS: -D warnings
 
       - name: Run clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
   unit_test:
     name: Unit Test

@@ -68,3 +68,8 @@ path = "bench/bench_eviction.rs"
 name = "fsstarray"
 path = "bench/fsstarray.rs"
 harness = false
+
+[[bench]]
+name = "filter_pushdown"
+path = "bench/filter_pushdown.rs"
+harness = false

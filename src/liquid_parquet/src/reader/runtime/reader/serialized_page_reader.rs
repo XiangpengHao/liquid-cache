@@ -636,7 +636,7 @@ mod tests {
                     if i % 3 == 0 {
                         None
                     } else {
-                        Some(format!("name_{}", i))
+                        Some(format!("name_{i}"))
                     }
                 })
                 .collect();
@@ -735,7 +735,7 @@ mod tests {
         if let Some(_metadata) = peeked_metadata {
             // Should be able to peek multiple times
             let peeked_again = page_reader.peek_next_page().unwrap();
-            assert_eq!(peeked_again.is_some(), true);
+            assert!(peeked_again.is_some());
 
             // Now read the actual page
             let page = page_reader.get_next_page().unwrap();
@@ -783,8 +783,7 @@ mod tests {
             // Each offset should be unique
             assert!(
                 seen_offsets.insert(offset),
-                "Page offset {} should be unique",
-                offset
+                "Page offset {offset} should be unique"
             );
 
             // Read the page to advance
@@ -844,13 +843,13 @@ mod tests {
         let mut page_reader = create_test_page_reader_from_file(&file, 0, 0).unwrap();
 
         // Should not be at boundary when there are pages to read
-        assert_eq!(page_reader.at_record_boundary().unwrap(), false);
+        assert!(!page_reader.at_record_boundary().unwrap());
 
         // Read all pages
         while page_reader.get_next_page().unwrap().is_some() {}
 
         // Should be at boundary when no more pages
-        assert_eq!(page_reader.at_record_boundary().unwrap(), true);
+        assert!(page_reader.at_record_boundary().unwrap());
     }
 
     #[test]
@@ -873,8 +872,7 @@ mod tests {
 
             assert!(
                 page_count > 0,
-                "Should read pages with compression {:?}",
-                compression
+                "Should read pages with compression {compression:?}"
             );
         }
     }
@@ -901,8 +899,7 @@ mod tests {
 
             assert!(
                 page_count > 0,
-                "Should read pages from row group {}",
-                row_group
+                "Should read pages from row group {row_group}"
             );
         }
     }
@@ -1044,13 +1041,11 @@ mod tests {
 
             assert!(
                 page_count > 0,
-                "Should read pages from large file row group {}",
-                row_group
+                "Should read pages from large file row group {row_group}"
             );
             assert!(
                 total_bytes > 0,
-                "Should read some data from row group {}",
-                row_group
+                "Should read some data from row group {row_group}"
             );
         }
     }
@@ -1137,20 +1132,20 @@ mod tests {
         let mut page_reader = create_test_page_reader_from_file(&file, 0, 0).unwrap();
 
         // Not at boundary initially
-        assert_eq!(page_reader.at_record_boundary().unwrap(), false);
+        assert!(!page_reader.at_record_boundary().unwrap());
 
         let mut pages_read = 0;
         while let Ok(Some(_page)) = page_reader.get_next_page() {
             pages_read += 1;
             // After reading some pages, boundary detection should still work
             if page_reader.peek_next_page().unwrap().is_some() {
-                assert_eq!(page_reader.at_record_boundary().unwrap(), false);
+                assert!(!page_reader.at_record_boundary().unwrap());
             }
         }
 
         assert!(pages_read > 0);
         // At boundary after reading all pages
-        assert_eq!(page_reader.at_record_boundary().unwrap(), true);
+        assert!(page_reader.at_record_boundary().unwrap());
     }
 
     // Additional comprehensive tests for liquid cache specific scenarios
@@ -1184,8 +1179,7 @@ mod tests {
 
         // Log the page type distribution for debugging
         println!(
-            "Page distribution - Dict: {}, V1: {}, V2: {}",
-            dictionary_pages, data_pages_v1, data_pages_v2
+            "Page distribution - Dict: {dictionary_pages}, V1: {data_pages_v1}, V2: {data_pages_v2}"
         );
     }
 
@@ -1299,10 +1293,7 @@ mod tests {
 
         assert!(total_pages > 0, "Should have read pages");
         assert!(max_page_size > 0, "Should have non-zero page sizes");
-        println!(
-            "Max page size: {} bytes, Total pages: {}",
-            max_page_size, total_pages
-        );
+        println!("Max page size: {max_page_size} bytes, Total pages: {total_pages}");
     }
 
     #[test]

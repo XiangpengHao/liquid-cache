@@ -529,8 +529,7 @@ mod tests {
             assert_eq!(
                 result_bmi2.value(i),
                 result_orig.value(i),
-                "Mismatch at position {}",
-                i
+                "Mismatch at position {i}"
             );
         }
     }
@@ -561,8 +560,7 @@ mod tests {
             assert_eq!(
                 result_bmi2.value(i),
                 result_orig.value(i),
-                "Mismatch at position {}",
-                i
+                "Mismatch at position {i}"
             );
             // Should be true for even indices, false for odd
             assert_eq!(result_bmi2.value(i), i % 2 == 0);
@@ -582,8 +580,8 @@ mod tests {
         assert_eq!(result_bmi2_empty.len(), result_orig_empty.len());
         assert_eq!(result_bmi2_empty.len(), 8);
         for i in 0..8 {
-            assert_eq!(result_bmi2_empty.value(i), false);
-            assert_eq!(result_orig_empty.value(i), false);
+            assert!(!result_bmi2_empty.value(i));
+            assert!(!result_orig_empty.value(i));
         }
     }
 
@@ -594,7 +592,7 @@ mod tests {
             1000000,
             PathBuf::from("test"),
             *cache_mode,
-            Box::new(DiscardPolicy::default()),
+            Box::new(DiscardPolicy),
         ));
         let rewritten = rewrite_data_source_plan(plan, &liquid_cache);
 

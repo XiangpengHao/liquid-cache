@@ -11,6 +11,8 @@ use arrow::array::{
     },
 };
 use arrow::buffer::ScalarBuffer;
+use arrow_schema::ArrowError;
+use datafusion::physical_plan::PhysicalExpr;
 use fastlanes::BitPacking;
 use num_traits::{AsPrimitive, FromPrimitive};
 
@@ -215,6 +217,20 @@ where
             bit_packed,
             reference_value: self.reference_value,
         })
+    }
+
+    fn filter_to_arrow(&self, selection: &BooleanArray) -> ArrayRef {
+        let arrow_array = self.to_arrow_array();
+        arrow::compute::kernels::filter::filter(&arrow_array, selection).unwrap()
+    }
+
+    fn try_eval_predicate(
+        &self,
+        _predicate: &Arc<dyn PhysicalExpr>,
+        _filter: &BooleanArray,
+    ) -> Result<Option<BooleanArray>, ArrowError> {
+        // primitive array is not supported for liquid predicate
+        Ok(None)
     }
 
     fn to_bytes(&self) -> Vec<u8> {

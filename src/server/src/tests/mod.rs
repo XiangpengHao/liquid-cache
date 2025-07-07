@@ -37,7 +37,7 @@ async fn run_sql(sql: &str, mode: CacheMode, cache_size_bytes: usize, file_path:
     async fn get_result(service: &LiquidCacheServiceInner, sql: &str) -> String {
         let handle = Uuid::new_v4();
         let ctx = service.get_ctx();
-        let plan = get_physical_plan(sql, &ctx).await;
+        let plan = get_physical_plan(sql, ctx).await;
         service.register_plan(handle, plan);
         let plan = service.get_plan(&handle).unwrap();
         let batches = collect(plan.plan, ctx.task_ctx()).await.unwrap();

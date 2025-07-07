@@ -29,10 +29,10 @@ fn test_output_schema(cache_mode: &LiquidCacheMode) -> SchemaRef {
 }
 
 pub fn generate_test_parquet() -> (File, String) {
-    return (
+    (
         File::open(TEST_FILE_PATH).unwrap(),
         TEST_FILE_PATH.to_string(),
-    );
+    )
 }
 
 fn get_baseline_record_batch(batch_size: usize, projection: &[usize]) -> Vec<RecordBatch> {
@@ -124,7 +124,7 @@ fn get_test_cache(
         usize::MAX,
         cache_dir,
         *cache_mode,
-        Box::new(DiscardPolicy::default()),
+        Box::new(DiscardPolicy),
     );
 
     lq.register_or_get_file("".to_string())
@@ -138,7 +138,7 @@ async fn basic_stuff(cache_mode: &LiquidCacheMode) {
     let reader = builder.build(liquid_cache).unwrap();
 
     let schema = reader.schema();
-    assert_schema_eq(&schema, test_output_schema(cache_mode).as_ref());
+    assert_schema_eq(schema, test_output_schema(cache_mode).as_ref());
 
     let projection = (0..schema.fields().len()).collect::<Vec<_>>();
 
@@ -182,7 +182,7 @@ async fn read_with_projection(cache_mode: &LiquidCacheMode) {
         column_projections.iter().cloned(),
     );
     let batch_size = builder.batch_size;
-    let liquid_cache = get_test_cache(batch_size, tmp_dir.path().to_path_buf(), &cache_mode);
+    let liquid_cache = get_test_cache(batch_size, tmp_dir.path().to_path_buf(), cache_mode);
     let reader = builder.build(liquid_cache).unwrap();
 
     let batches = reader
@@ -259,7 +259,7 @@ async fn test_reading_with_full_cache() {
         LiquidCacheMode::Liquid {
             transcode_in_background: false,
         },
-        Box::new(DiscardPolicy::default()),
+        Box::new(DiscardPolicy),
     );
     let lq_file = lq.register_or_get_file("".to_string());
 

@@ -456,7 +456,7 @@ mod tests {
             LiquidCacheMode::Liquid {
                 transcode_in_background: false,
             },
-            Box::new(DiscardPolicy::default()),
+            Box::new(DiscardPolicy),
         ));
         let file = liquid_cache.register_or_get_file("test".to_string());
         let row_group = file.row_group(0);

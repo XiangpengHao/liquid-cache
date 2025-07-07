@@ -92,8 +92,7 @@ async fn test_runner(sql: &str, reference: &str) {
             let (result, _plan) = run_sql_with_cache(sql, cache_mode, cache_size).await;
             assert_eq!(
                 result, reference,
-                "Results differ for cache_mode: {:?}, cache_size: {}",
-                cache_mode, cache_size
+                "Results differ for cache_mode: {cache_mode:?}, cache_size: {cache_size}"
             );
         }
     }
@@ -234,8 +233,8 @@ async fn test_provide_schema_with_filter() {
 
     let formatted_results = pretty_format_batches(&results).unwrap().to_string();
     if formatted_results != reference {
-        println!("formatted_results: \n{}", formatted_results);
-        println!("reference: \n{}", reference);
+        println!("formatted_results: \n{formatted_results}");
+        println!("reference: \n{reference}");
     }
     assert_eq!(formatted_results, reference);
 }

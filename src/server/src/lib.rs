@@ -336,7 +336,6 @@ impl FlightSqlService for LiquidCacheService {
 #[cfg(test)]
 mod server_actions_tests {
     use super::*;
-    use LiquidCacheService;
     use liquid_cache_common::rpc::PrefetchFromObjectStoreRequest;
     use std::collections::HashMap;
     use tokio::fs::File;

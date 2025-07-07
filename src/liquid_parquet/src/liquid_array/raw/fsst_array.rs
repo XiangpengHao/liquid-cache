@@ -634,17 +634,14 @@ mod tests {
                 builder.append_null();
             } else {
                 match i % 5 {
-                    0 => builder.append_value(&format!("hello world {}", i)),
-                    1 => builder.append_value(&format!("🦀 rust is awesome {}", i)),
-                    2 => builder.append_value(&format!(
-                        "testing string compression with a longer string to test efficiency {}",
-                        i
+                    0 => builder.append_value(format!("hello world {i}")),
+                    1 => builder.append_value(format!("🦀 rust is awesome {i}")),
+                    2 => builder.append_value(format!(
+                        "testing string compression with a longer string to test efficiency {i}"
                     )),
-                    3 => builder.append_value(&format!(
-                        "The quick brown fox jumps over the lazy dog {}",
-                        i
-                    )),
-                    _ => builder.append_value(&format!("Lorem ipsum dolor sit amet {}", i)),
+                    3 => builder
+                        .append_value(format!("The quick brown fox jumps over the lazy dog {i}")),
+                    _ => builder.append_value(format!("Lorem ipsum dolor sit amet {i}")),
                 }
             }
         }
@@ -673,7 +670,7 @@ mod tests {
             if i % 100 == 0 {
                 builder.append_null();
             } else {
-                builder.append_value(&format!("test string value {}", i));
+                builder.append_value(format!("test string value {i}"));
             }
         }
         let original = builder.finish();
@@ -718,10 +715,7 @@ mod tests {
         let fsst_array =
             FsstArray::from_decimal128_array_with_compressor(&original, compressor_arc);
         let compressed_size = fsst_array.get_array_memory_size();
-        println!(
-            "original size: {}, compressed size: {}",
-            original_size, compressed_size
-        );
+        println!("original size: {original_size}, compressed size: {compressed_size}");
         assert!(compressed_size < original_size);
     }
 
@@ -734,17 +728,14 @@ mod tests {
                 builder.append_null();
             } else {
                 match i % 5 {
-                    0 => builder.append_value(&format!("hello world {}", i)),
-                    1 => builder.append_value(&format!("🦀 rust is awesome {}", i)),
-                    2 => builder.append_value(&format!(
-                        "testing string compression with a longer string to test efficiency {}",
-                        i
+                    0 => builder.append_value(format!("hello world {i}")),
+                    1 => builder.append_value(format!("🦀 rust is awesome {i}")),
+                    2 => builder.append_value(format!(
+                        "testing string compression with a longer string to test efficiency {i}"
                     )),
-                    3 => builder.append_value(&format!(
-                        "The quick brown fox jumps over the lazy dog {}",
-                        i
-                    )),
-                    _ => builder.append_value(&format!("Lorem ipsum dolor sit amet {}", i)),
+                    3 => builder
+                        .append_value(format!("The quick brown fox jumps over the lazy dog {i}")),
+                    _ => builder.append_value(format!("Lorem ipsum dolor sit amet {i}")),
                 }
             }
         }

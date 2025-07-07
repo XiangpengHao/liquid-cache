@@ -6,7 +6,7 @@
 use super::liquid_array::LiquidArrayRef;
 use crate::cache::policies::CachePolicy;
 use crate::liquid_array::ipc::{self, LiquidIPCContext};
-use crate::reader::{LiquidPredicate, extract_multi_column_or, try_evaluate_predicate};
+use crate::reader::{LiquidPredicate, extract_multi_column_or};
 use crate::sync::{Mutex, RwLock};
 use crate::utils::boolean_buffer_or;
 use crate::{ABLATION_STUDY_MODE, AblationStudyMode};
@@ -110,8 +110,9 @@ impl Display for CachedBatch {
     }
 }
 
+/// A column in the cache.
 #[derive(Debug)]
-pub(crate) struct LiquidCachedColumn {
+pub struct LiquidCachedColumn {
     cache_store: Arc<CacheStore>,
     field: Arc<Field>,
     column_path: ColumnAccessPath,
@@ -119,8 +120,10 @@ pub(crate) struct LiquidCachedColumn {
 
 pub(crate) type LiquidCachedColumnRef = Arc<LiquidCachedColumn>;
 
+/// Error type for inserting an arrow array into the cache.
 #[derive(Debug)]
-pub(crate) enum InsertArrowArrayError {
+pub enum InsertArrowArrayError {
+    /// The array is already cached.
     AlreadyCached,
 }
 
@@ -193,24 +196,25 @@ impl LiquidCachedColumn {
     /// Evaluates a predicate on a liquid array.
     /// It optimistically tries to evaluate on liquid array, and if that fails,
     /// it falls back to evaluating on an arrow array.
-    fn eval_selection_with_predicate_inner(
+    fn eval_predicate_with_filter_inner(
         &self,
         predicate: &mut LiquidPredicate,
         array: &LiquidArrayRef,
-    ) -> BooleanBuffer {
-        match predicate.evaluate_liquid(array).unwrap() {
-            Some(v) => {
-                let (buffer, _) = v.into_parts();
-                buffer
+        filter: &BooleanArray,
+    ) -> Result<BooleanBuffer, ArrowError> {
+        match array.try_eval_predicate(predicate.physical_expr_physical_column_index(), filter)? {
+            Some(new_filter) => {
+                let (buffer, _) = new_filter.into_parts();
+                Ok(buffer)
             }
             None => {
-                let arrow_batch = array.to_arrow_array();
+                let arrow_batch = array.filter_to_arrow(filter);
                 let schema = Schema::new(vec![self.field.clone()]);
                 let record_batch =
                     RecordBatch::try_new(Arc::new(schema), vec![arrow_batch]).unwrap();
                 let boolean_array = predicate.evaluate(record_batch).unwrap();
                 let (buffer, _) = boolean_array.into_parts();
-                buffer
+                Ok(buffer)
             }
         }
     }
@@ -220,16 +224,17 @@ impl LiquidCachedColumn {
         RecordBatch::try_new(schema, vec![array]).unwrap()
     }
 
-    fn eval_selection_with_predicate(
+    /// Evaluates a predicate on a cached column.
+    pub fn eval_predicate_with_filter(
         &self,
         batch_id: BatchID,
-        selection: &BooleanBuffer,
+        filter: &BooleanBuffer,
         predicate: &mut LiquidPredicate,
     ) -> Option<Result<BooleanBuffer, ArrowError>> {
         let cached_entry = self.cache_store.get(&self.entry_id(batch_id))?;
         match &cached_entry {
             CachedBatch::MemoryArrow(array) => {
-                let boolean_array = BooleanArray::new(selection.clone(), None);
+                let boolean_array = BooleanArray::new(filter.clone(), None);
                 let selected = arrow::compute::filter(array, &boolean_array).unwrap();
                 let record_batch = self.arrow_array_to_record_batch(selected);
                 let boolean_array = predicate.evaluate(record_batch).unwrap();
@@ -240,16 +245,10 @@ impl LiquidCachedColumn {
                 let (buffer, _) = predicate_filter.into_parts();
                 Some(Ok(buffer))
             }
-            CachedBatch::DiskLiquid => {
-                let array = self.read_liquid_from_disk(batch_id);
-                let boolean_array = BooleanArray::new(selection.clone(), None);
-                let filtered = array.filter(&boolean_array);
-                let buffer = self.eval_selection_with_predicate_inner(predicate, &filtered);
-                Some(Ok(buffer))
-            }
+
             CachedBatch::DiskArrow => {
                 let array = self.read_arrow_from_disk(batch_id);
-                let boolean_array = BooleanArray::new(selection.clone(), None);
+                let boolean_array = BooleanArray::new(filter.clone(), None);
                 let selected = arrow::compute::filter(&array, &boolean_array).unwrap();
                 let record_batch = self.arrow_array_to_record_batch(selected);
                 let boolean_array = predicate.evaluate(record_batch).unwrap();
@@ -262,7 +261,7 @@ impl LiquidCachedColumn {
             }
             CachedBatch::MemoryLiquid(array) => match ABLATION_STUDY_MODE {
                 AblationStudyMode::FullDecoding => {
-                    let boolean_array = BooleanArray::new(selection.clone(), None);
+                    let boolean_array = BooleanArray::new(filter.clone(), None);
                     let arrow = array.to_arrow_array();
                     let filtered = arrow::compute::filter(&arrow, &boolean_array).unwrap();
                     let record_batch = self.arrow_array_to_record_batch(filtered);
@@ -272,7 +271,7 @@ impl LiquidCachedColumn {
                 }
                 AblationStudyMode::SelectiveDecoding
                 | AblationStudyMode::SelectiveWithLateMaterialization => {
-                    let boolean_array = BooleanArray::new(selection.clone(), None);
+                    let boolean_array = BooleanArray::new(filter.clone(), None);
                     let filtered = array.filter(&boolean_array);
                     let arrow = filtered.to_arrow_array();
                     let record_batch = self.arrow_array_to_record_batch(arrow);
@@ -282,16 +281,24 @@ impl LiquidCachedColumn {
                 }
                 AblationStudyMode::EvaluateOnEncodedData
                 | AblationStudyMode::EvaluateOnPartialEncodedData => {
-                    let boolean_array = BooleanArray::new(selection.clone(), None);
-                    let filtered = array.filter(&boolean_array);
-                    let buffer = self.eval_selection_with_predicate_inner(predicate, &filtered);
-                    Some(Ok(buffer))
+                    let boolean_array = BooleanArray::new(filter.clone(), None);
+                    let buffer =
+                        self.eval_predicate_with_filter_inner(predicate, array, &boolean_array);
+                    Some(buffer)
                 }
             },
+            CachedBatch::DiskLiquid => {
+                let array = self.read_liquid_from_disk(batch_id);
+                let boolean_array = BooleanArray::new(filter.clone(), None);
+                let buffer =
+                    self.eval_predicate_with_filter_inner(predicate, &array, &boolean_array);
+                Some(buffer)
+            }
         }
     }
 
-    pub(crate) fn get_arrow_array_with_filter(
+    /// Get an arrow array with a filter applied.
+    pub fn get_arrow_array_with_filter(
         &self,
         batch_id: BatchID,
         filter: &BooleanArray,
@@ -302,6 +309,11 @@ impl LiquidCachedColumn {
                 let filtered = arrow::compute::filter(array, filter).unwrap();
                 Some(filtered)
             }
+            CachedBatch::DiskArrow => {
+                let array = self.read_arrow_from_disk(batch_id);
+                let filtered = arrow::compute::filter(&array, filter).unwrap();
+                Some(filtered)
+            }
             CachedBatch::MemoryLiquid(array) => match ABLATION_STUDY_MODE {
                 AblationStudyMode::FullDecoding => {
                     let arrow = array.to_arrow_array();
@@ -309,18 +321,13 @@ impl LiquidCachedColumn {
                     Some(filtered)
                 }
                 _ => {
-                    let filtered = array.filter(filter);
-                    Some(filtered.to_best_arrow_array())
+                    let filtered = array.filter_to_arrow(filter);
+                    Some(filtered)
                 }
             },
             CachedBatch::DiskLiquid => {
                 let array = self.read_liquid_from_disk(batch_id);
-                let filtered = array.filter(filter);
-                Some(filtered.to_best_arrow_array())
-            }
-            CachedBatch::DiskArrow => {
-                let array = self.read_arrow_from_disk(batch_id);
-                let filtered = arrow::compute::filter(&array, filter).unwrap();
+                let filtered = array.filter_to_arrow(filter);
                 Some(filtered)
             }
         }
@@ -377,7 +384,7 @@ impl LiquidCachedColumn {
     }
 
     /// Insert an array into the cache.
-    pub(crate) fn insert(
+    pub fn insert(
         self: &Arc<Self>,
         batch_id: BatchID,
         array: ArrayRef,
@@ -421,8 +428,9 @@ impl LiquidCachedColumn {
     }
 }
 
+/// A row group in the cache.
 #[derive(Debug)]
-pub(crate) struct LiquidCachedRowGroup {
+pub struct LiquidCachedRowGroup {
     columns: RwLock<AHashMap<u64, Arc<LiquidCachedColumn>>>,
     cache_store: Arc<CacheStore>,
     row_group_id: u64,
@@ -445,6 +453,7 @@ impl LiquidCachedRowGroup {
         }
     }
 
+    /// Create a column in the row group.
     pub fn create_column(&self, column_id: u64, field: Arc<Field>) -> LiquidCachedColumnRef {
         use std::collections::hash_map::Entry;
         let mut columns = self.columns.write().unwrap();
@@ -484,10 +493,12 @@ impl LiquidCachedRowGroup {
         }
     }
 
+    /// Get a column from the row group.
     pub fn get_column(&self, column_id: u64) -> Option<LiquidCachedColumnRef> {
         self.columns.read().unwrap().get(&column_id).cloned()
     }
 
+    /// Evaluate a predicate on a row group.
     pub fn evaluate_selection_with_predicate(
         &self,
         batch_id: BatchID,
@@ -500,7 +511,7 @@ impl LiquidCachedRowGroup {
             // If we only have one column, we can short-circuit and try to evaluate the predicate on encoded data.
             let column_id = column_ids[0];
             let cache = self.get_column(column_id as u64)?;
-            return cache.eval_selection_with_predicate(batch_id, selection, predicate);
+            return cache.eval_predicate_with_filter(batch_id, selection, predicate);
         } else if column_ids.len() >= 2 {
             // Try to extract multiple column-literal expressions from OR structure
             if let Some(column_exprs) =
@@ -511,29 +522,22 @@ impl LiquidCachedRowGroup {
                 for (col_idx, expr) in column_exprs {
                     let column = self.get_column(col_idx as u64)?;
                     let entry = self.cache_store.get(&column.entry_id(batch_id))?;
-                    let filtered = match entry {
-                        CachedBatch::MemoryLiquid(array) => {
-                            let boolean_array = BooleanArray::new(selection.clone(), None);
-                            array.filter(&boolean_array)
-                        }
-                        CachedBatch::DiskLiquid => {
-                            let array = column.read_liquid_from_disk(batch_id);
-                            let boolean_array = BooleanArray::new(selection.clone(), None);
-                            array.filter(&boolean_array)
-                        }
-
+                    let liquid_array = match entry {
+                        CachedBatch::MemoryLiquid(array) => array,
+                        CachedBatch::DiskLiquid => column.read_liquid_from_disk(batch_id),
                         _ => {
                             combined_buffer = None;
                             break;
                         }
                     };
-                    let buffer = if let Ok(Some(buffer)) = try_evaluate_predicate(&expr, &filtered)
-                    {
-                        buffer
-                    } else {
-                        combined_buffer = None;
-                        break;
-                    };
+                    let filter = BooleanArray::new(selection.clone(), None);
+                    let buffer =
+                        if let Ok(Some(buffer)) = liquid_array.try_eval_predicate(&expr, &filter) {
+                            buffer
+                        } else {
+                            combined_buffer = None;
+                            break;
+                        };
                     let buffer = buffer.into_parts().0;
 
                     combined_buffer = Some(match combined_buffer {
@@ -567,8 +571,9 @@ impl LiquidCachedRowGroup {
 
 pub(crate) type LiquidCachedRowGroupRef = Arc<LiquidCachedRowGroup>;
 
+/// A file in the cache.
 #[derive(Debug)]
-pub(crate) struct LiquidCachedFile {
+pub struct LiquidCachedFile {
     row_groups: Mutex<AHashMap<u64, Arc<LiquidCachedRowGroup>>>,
     cache_store: Arc<CacheStore>,
     file_id: u64,
@@ -583,6 +588,7 @@ impl LiquidCachedFile {
         }
     }
 
+    /// Get a row group from the cache.
     pub fn row_group(&self, row_group_id: u64) -> LiquidCachedRowGroupRef {
         let mut row_groups = self.row_groups.lock().unwrap();
         let row_group = row_groups.entry(row_group_id).or_insert_with(|| {
@@ -599,6 +605,7 @@ impl LiquidCachedFile {
         self.cache_store.reset();
     }
 
+    /// Get the cache mode of the cache.
     pub fn cache_mode(&self) -> &LiquidCacheMode {
         self.cache_store.config().cache_mode()
     }
@@ -646,7 +653,7 @@ impl LiquidCache {
     }
 
     /// Register a file in the cache.
-    pub(crate) fn register_or_get_file(&self, file_path: String) -> LiquidCachedFileRef {
+    pub fn register_or_get_file(&self, file_path: String) -> LiquidCachedFileRef {
         let mut files = self.files.lock().unwrap();
         let value = files.entry(file_path.clone()).or_insert_with(|| {
             let file_id = self.current_file_id.fetch_add(1, Ordering::Relaxed);
@@ -750,7 +757,7 @@ mod tests {
             LiquidCacheMode::Liquid {
                 transcode_in_background: false,
             },
-            Box::new(DiscardPolicy::default()),
+            Box::new(DiscardPolicy),
         );
         let file = cache.register_or_get_file("test".to_string());
         file.row_group(0)

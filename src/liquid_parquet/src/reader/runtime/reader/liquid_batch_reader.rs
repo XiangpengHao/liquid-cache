@@ -280,7 +280,7 @@ fn can_optimize_single_column_filter_projection(
     let predicate = &mut filter.predicates[0];
     let expr = predicate.physical_expr_physical_column_index();
 
-    // Check if this predicate is supported by try_evaluate_predicate
+    // Check if this predicate is supported by liquid array predicate evaluation
     // If so, return None to skip this optimization and let liquid predicate handle it
     if is_predicate_supported_by_liquid(expr) {
         return false;

@@ -210,7 +210,7 @@ pub struct BatchID {
 impl BatchID {
     /// Creates a new BatchID from a row id and a batch size.
     /// The row id is at the boundary of the batch.
-    pub(crate) fn from_row_id(row_id: usize, batch_size: usize) -> Self {
+    pub fn from_row_id(row_id: usize, batch_size: usize) -> Self {
         Self {
             v: (row_id / batch_size) as u16,
         }
@@ -386,9 +386,9 @@ mod tests {
 
         // Verify the directory structure matches
         let expected_dir = cache_root
-            .join(format!("file_{}", file_id))
-            .join(format!("rg_{}", row_group_id))
-            .join(format!("col_{}", column_id));
+            .join(format!("file_{file_id}"))
+            .join(format!("rg_{row_group_id}"))
+            .join(format!("col_{column_id}"));
 
         assert_eq!(entry_path.parent().unwrap(), &expected_dir);
 

@@ -32,7 +32,7 @@ fn bench<C: Cache>(total_size: u64, create: impl Fn(u64) -> C, name: String) {
         }
 
         let (hits, total) = cache.result();
-        println!("{},{},{},{}", name, cache_size, hits, total);
+        println!("{name},{cache_size},{hits},{total}");
 
         cache_size /= 10;
     }
@@ -64,7 +64,7 @@ fn main() {
         }
     }
 
-    println!("Read {} inserts, total size: {}", count, total_size);
+    println!("Read {count} inserts, total size: {total_size}");
 
     bench(total_size, LruCache::new, "LRU".to_string());
     bench(total_size, ClockCache::new, "CLOCK".to_string());

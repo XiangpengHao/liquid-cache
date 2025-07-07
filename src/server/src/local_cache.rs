@@ -329,7 +329,7 @@ mod tests {
         // Verify that the returned data matches the expected pattern
         for (i, byte) in result.iter().enumerate() {
             let expected = ((range.start + i as u64) % 256) as u8;
-            assert_eq!(*byte, expected, "Mismatch at position {}", i);
+            assert_eq!(*byte, expected, "Mismatch at position {i}");
         }
 
         Ok(())
@@ -382,8 +382,7 @@ mod tests {
             let chunk_path = cache.get_chunk_path(&Path::from(file_path), chunk_idx);
             assert!(
                 cache.is_chunk_ready(&chunk_path),
-                "Chunk {} should be ready",
-                chunk_idx
+                "Chunk {chunk_idx} should be ready"
             );
         }
 
@@ -521,7 +520,7 @@ mod tests {
         let start = file_size - 1024 * 1024;
         for (i, byte) in data.iter().enumerate() {
             let expected = ((start + i as u64) % 256) as u8;
-            assert_eq!(*byte, expected, "Mismatch at position {}", i);
+            assert_eq!(*byte, expected, "Mismatch at position {i}");
         }
 
         Ok(())

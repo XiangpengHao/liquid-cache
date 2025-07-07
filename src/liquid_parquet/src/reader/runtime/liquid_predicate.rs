@@ -1,98 +1,9 @@
 use std::sync::Arc;
 
-use arrow::array::{AsArray, BooleanArray};
-use arrow::compute::kernels;
-use arrow_schema::ArrowError;
-use datafusion::common::ScalarValue;
-use datafusion::logical_expr::{ColumnarValue, Operator};
+use datafusion::logical_expr::Operator;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr::expressions::{BinaryExpr, LikeExpr, Literal};
-use datafusion::physical_expr_common::datum::apply_cmp;
 use datafusion::physical_plan::expressions::Column;
-
-use crate::liquid_array::{AsLiquidArray, LiquidArray, LiquidArrayRef};
-
-fn get_string_needle(value: &ScalarValue) -> Option<&str> {
-    if let ScalarValue::Utf8(Some(v)) = value {
-        Some(v)
-    } else if let ScalarValue::Utf8View(Some(v)) = value {
-        Some(v)
-    } else if let ScalarValue::LargeUtf8(Some(v)) = value {
-        Some(v)
-    } else if let ScalarValue::Dictionary(_, value) = value {
-        get_string_needle(value.as_ref())
-    } else {
-        None
-    }
-}
-
-pub(crate) fn try_evaluate_predicate(
-    expr: &Arc<dyn PhysicalExpr>,
-    array: &LiquidArrayRef,
-) -> Result<Option<BooleanArray>, ArrowError> {
-    if let Some(binary_expr) = expr.as_any().downcast_ref::<BinaryExpr>() {
-        if let Some(literal) = binary_expr.right().as_any().downcast_ref::<Literal>() {
-            let op = binary_expr.op();
-            if let Some(array) = array.as_string_array_opt() {
-                if let Some(needle) = get_string_needle(literal.value()) {
-                    if op == &Operator::Eq {
-                        let result = array.compare_equals(needle);
-                        return Ok(Some(result));
-                    } else if op == &Operator::NotEq {
-                        let result = array.compare_not_equals(needle);
-                        return Ok(Some(result));
-                    }
-                }
-
-                let dict_array = array.to_dict_arrow();
-                let lhs = ColumnarValue::Array(Arc::new(dict_array));
-                let rhs = ColumnarValue::Scalar(literal.value().clone());
-
-                let result = match op {
-                    Operator::NotEq => apply_cmp(&lhs, &rhs, kernels::cmp::neq),
-                    Operator::Eq => apply_cmp(&lhs, &rhs, kernels::cmp::eq),
-                    Operator::Lt => apply_cmp(&lhs, &rhs, kernels::cmp::lt),
-                    Operator::LtEq => apply_cmp(&lhs, &rhs, kernels::cmp::lt_eq),
-                    Operator::Gt => apply_cmp(&lhs, &rhs, kernels::cmp::gt),
-                    Operator::GtEq => apply_cmp(&lhs, &rhs, kernels::cmp::gt_eq),
-                    Operator::LikeMatch => apply_cmp(&lhs, &rhs, arrow::compute::like),
-                    Operator::ILikeMatch => apply_cmp(&lhs, &rhs, arrow::compute::ilike),
-                    Operator::NotLikeMatch => apply_cmp(&lhs, &rhs, arrow::compute::nlike),
-                    Operator::NotILikeMatch => apply_cmp(&lhs, &rhs, arrow::compute::nilike),
-                    _ => return Ok(None),
-                };
-                if let Ok(result) = result {
-                    let filtered = result.into_array(array.len())?.as_boolean().clone();
-                    return Ok(Some(filtered));
-                }
-            }
-        }
-    } else if let Some(like_expr) = expr.as_any().downcast_ref::<LikeExpr>()
-        && like_expr
-            .pattern()
-            .as_any()
-            .downcast_ref::<Literal>()
-            .is_some()
-        && let Some(literal) = like_expr.pattern().as_any().downcast_ref::<Literal>()
-    {
-        let arrow_dict = array.as_string().to_dict_arrow();
-
-        let lhs = ColumnarValue::Array(Arc::new(arrow_dict));
-        let rhs = ColumnarValue::Scalar(literal.value().clone());
-
-        let result = match (like_expr.negated(), like_expr.case_insensitive()) {
-            (false, false) => apply_cmp(&lhs, &rhs, arrow::compute::like),
-            (true, false) => apply_cmp(&lhs, &rhs, arrow::compute::nlike),
-            (false, true) => apply_cmp(&lhs, &rhs, arrow::compute::ilike),
-            (true, true) => apply_cmp(&lhs, &rhs, arrow::compute::nilike),
-        };
-        if let Ok(result) = result {
-            let filtered = result.into_array(array.len())?.as_boolean().clone();
-            return Ok(Some(filtered));
-        }
-    }
-    Ok(None)
-}
 
 /// Extract multiple column-literal expressions from a nested OR structure.
 /// Returns a vector of (column_index, expression) pairs if all leaf expressions
@@ -152,7 +63,7 @@ fn extract_column_literal(expr: &Arc<dyn PhysicalExpr>) -> Option<(usize, Arc<dy
     None
 }
 
-/// Check if a predicate is supported by try_evaluate_predicate in liquid_predicate.rs
+/// Check if a predicate is supported by the liquid array predicate evaluation.
 /// This includes BinaryExpr (column op literal) and LikeExpr patterns, but only for string literals
 pub(crate) fn is_predicate_supported_by_liquid(expr: &Arc<dyn PhysicalExpr>) -> bool {
     use datafusion::common::ScalarValue;
@@ -291,115 +202,6 @@ mod tests {
             Arc::new(BinaryExpr::new(valid_expr, Operator::Or, invalid_expr));
 
         let result = extract_multi_column_or(&mixed_expr);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_try_evaluate_predicate_string_equality() {
-        use crate::liquid_array::LiquidByteArray;
-        use arrow::array::StringViewArray;
-
-        // Test the optimized string equality path
-        let string_data = vec!["apple", "banana", "cherry", "apple", "grape"];
-        let arrow_array = StringViewArray::from(string_data);
-        let (_compressor, liquid_array) = LiquidByteArray::train_from_arrow_view(&arrow_array);
-        let liquid_ref: LiquidArrayRef = Arc::new(liquid_array);
-
-        // Create predicate: column = "apple"
-        let expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
-            Arc::new(Column::new("test_col", 0)),
-            Operator::Eq,
-            Arc::new(Literal::new(ScalarValue::Utf8(Some("apple".to_string())))),
-        ));
-
-        let result = try_evaluate_predicate(&expr, &liquid_ref).unwrap();
-        assert!(result.is_some());
-
-        let boolean_array = result.unwrap();
-        assert_eq!(boolean_array.len(), 5);
-
-        // Should match indices 0 and 3 (both "apple")
-        assert_eq!(boolean_array.value(0), true); // "apple"
-        assert_eq!(boolean_array.value(1), false); // "banana"
-        assert_eq!(boolean_array.value(2), false); // "cherry"
-        assert_eq!(boolean_array.value(3), true); // "apple"
-        assert_eq!(boolean_array.value(4), false); // "grape"
-    }
-
-    #[test]
-    fn test_try_evaluate_predicate_numeric_not_supported() {
-        use crate::liquid_array::LiquidPrimitiveArray;
-        use arrow::array::Int32Array;
-        use arrow::datatypes::Int32Type;
-
-        // Test that numeric comparisons are not supported and return None
-        let numeric_data = vec![10, 20, 30, 15, 25];
-        let arrow_array = Int32Array::from(numeric_data);
-        let liquid_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(arrow_array);
-        let liquid_ref: LiquidArrayRef = Arc::new(liquid_array);
-
-        // Create predicate: column > 20
-        let expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
-            Arc::new(Column::new("test_col", 0)),
-            Operator::Gt,
-            Arc::new(Literal::new(ScalarValue::Int32(Some(20)))),
-        ));
-
-        let result = try_evaluate_predicate(&expr, &liquid_ref).unwrap();
-        // Numeric comparisons are not supported, should return None
-        assert!(result.is_none());
-
-        // Test other numeric operators that are also not supported
-        let eq_expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
-            Arc::new(Column::new("test_col", 0)),
-            Operator::Eq,
-            Arc::new(Literal::new(ScalarValue::Int32(Some(20)))),
-        ));
-
-        let result = try_evaluate_predicate(&eq_expr, &liquid_ref).unwrap();
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_try_evaluate_predicate_unsupported_expression() {
-        use crate::liquid_array::LiquidPrimitiveArray;
-        use arrow::array::Int32Array;
-        use arrow::datatypes::Int32Type;
-
-        // Test unsupported expression types that should return None
-        let numeric_data = vec![10, 20, 30, 15, 25];
-        let arrow_array = Int32Array::from(numeric_data);
-        let liquid_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(arrow_array);
-        let liquid_ref: LiquidArrayRef = Arc::new(liquid_array);
-
-        // Create unsupported predicate: column + 5 (not column op literal)
-        let add_expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
-            Arc::new(Column::new("test_col", 0)),
-            Operator::Plus,
-            Arc::new(Literal::new(ScalarValue::Int32(Some(5)))),
-        ));
-
-        let result = try_evaluate_predicate(&add_expr, &liquid_ref).unwrap();
-        assert!(result.is_none());
-
-        // Test another unsupported case: literal op column (wrong order)
-        let wrong_order_expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
-            Arc::new(Literal::new(ScalarValue::Int32(Some(20)))),
-            Operator::Eq,
-            Arc::new(Column::new("test_col", 0)),
-        ));
-
-        let result = try_evaluate_predicate(&wrong_order_expr, &liquid_ref).unwrap();
-        assert!(result.is_none());
-
-        // Test column-column comparison (not column-literal)
-        let col_col_expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
-            Arc::new(Column::new("col1", 0)),
-            Operator::Eq,
-            Arc::new(Column::new("col2", 1)),
-        ));
-
-        let result = try_evaluate_predicate(&col_col_expr, &liquid_ref).unwrap();
         assert!(result.is_none());
     }
 }
