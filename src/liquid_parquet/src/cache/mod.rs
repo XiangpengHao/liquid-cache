@@ -390,7 +390,7 @@ impl LiquidCachedColumn {
             LiquidCacheMode::Arrow => {
                 let entry_id = self.entry_id(batch_id);
                 self.cache_store
-                    .insert(entry_id, CachedBatch::MemoryArrow(array.clone()));
+                    .insert(entry_id, CachedBatch::MemoryArrow(array));
                 Ok(())
             }
             LiquidCacheMode::Liquid {
