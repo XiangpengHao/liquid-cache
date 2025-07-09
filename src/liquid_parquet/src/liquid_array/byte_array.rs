@@ -410,10 +410,11 @@ impl LiquidByteArray {
         array: &DictionaryArray<UInt16Type>,
         compressor: Arc<Compressor>,
     ) -> Self {
+        let arrow_type = ArrowByteType::from_arrow_type(array.values().data_type());
         Self::from_dict_array_inner(
             unsafe { CheckedDictionaryArray::new_unchecked_i_know_what_i_am_doing(array) },
             compressor,
-            ArrowByteType::Dict16Utf8,
+            arrow_type,
         )
     }
 

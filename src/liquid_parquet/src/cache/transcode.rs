@@ -181,7 +181,7 @@ mod tests {
     use super::*;
     use crate::sync::RwLock;
     use arrow::array::{
-        ArrayRef, BinaryViewArray, BooleanArray, DictionaryArray, Float32Array, Float64Array,
+        ArrayRef, BinaryArray, BinaryViewArray, BooleanArray, DictionaryArray, Float32Array, Float64Array,
         Int32Array, Int64Array, StringArray, UInt16Array,
     };
     use arrow::datatypes::UInt16Type;
@@ -265,9 +265,28 @@ mod tests {
     }
 
     #[test]
-    fn test_transcode_dictionary() {
+    fn test_transcode_dictionary_uft8() {
         // Create a dictionary with many repeated values
         let values = StringArray::from_iter_values((0..100).map(|i| format!("value_{i}")));
+        let keys: Vec<u16> = (0..TEST_ARRAY_SIZE).map(|i| (i % 100) as u16).collect();
+
+        let dict_array =
+            DictionaryArray::<UInt16Type>::try_new(UInt16Array::from(keys), Arc::new(values))
+                .unwrap();
+
+        let array: ArrayRef = Arc::new(dict_array);
+        let state = create_compressor_states();
+
+        let transcoded = transcode_liquid_inner(&array, &state).unwrap();
+        assert_transcode(&array, &transcoded);
+    }
+
+    #[test]
+    fn test_transcode_dictionary_binary() {
+        // Create a dictionary with binary values and many repeated values
+        let values = BinaryArray::from_iter_values(
+            (0..100).map(|i| format!("binary_value_{i}").into_bytes())
+        );
         let keys: Vec<u16> = (0..TEST_ARRAY_SIZE).map(|i| (i % 100) as u16).collect();
 
         let dict_array =
