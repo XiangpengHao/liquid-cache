@@ -2,9 +2,9 @@ use std::{num::NonZero, sync::Arc};
 
 use arrow::{
     array::{
-        ArrayAccessor, ArrayIter, BooleanArray, BooleanBufferBuilder, DictionaryArray,
-        GenericByteArray, GenericByteDictionaryBuilder, PrimitiveArray, PrimitiveDictionaryBuilder,
-        StringViewArray,
+        ArrayAccessor, ArrayIter, BinaryViewArray, BooleanArray, BooleanBufferBuilder,
+        DictionaryArray, GenericByteArray, GenericByteDictionaryBuilder, PrimitiveArray,
+        PrimitiveDictionaryBuilder, StringViewArray,
     },
     buffer::{BooleanBuffer, MutableBuffer},
     datatypes::{BinaryType, ByteArrayType, DecimalType, UInt16Type, Utf8Type},
@@ -42,6 +42,11 @@ impl CheckedDictionaryArray {
     pub fn from_string_view_array(array: &StringViewArray) -> Self {
         let iter = array.iter();
         byte_array_to_dict_array::<Utf8Type, _>(iter)
+    }
+
+    pub fn from_binary_view_array(array: &BinaryViewArray) -> Self {
+        let iter = array.iter();
+        byte_array_to_dict_array::<BinaryType, _>(iter)
     }
 
     pub fn from_decimal_array<T: DecimalType>(array: &PrimitiveArray<T>) -> Self {

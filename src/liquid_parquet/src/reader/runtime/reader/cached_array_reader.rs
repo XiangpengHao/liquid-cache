@@ -6,7 +6,7 @@ use arrow::{
     buffer::BooleanBuffer,
 };
 use arrow_schema::{DataType, Field, Fields};
-use liquid_cache_common::{cast_from_parquet_to_liquid_type, coerce_from_parquet_to_liquid_type};
+use liquid_cache_common::{cast_from_parquet_to_liquid_type, coerce_parquet_type_to_liquid_type};
 use parquet::{
     arrow::{
         array_reader::{ArrayReader, StructArrayReader},
@@ -49,7 +49,7 @@ struct CachedArrayReader {
 impl CachedArrayReader {
     fn new(inner: Box<dyn ArrayReader>, liquid_cache: LiquidCachedColumnRef) -> Self {
         let inner_type = inner.get_data_type();
-        let data_type = coerce_from_parquet_to_liquid_type(inner_type, liquid_cache.cache_mode());
+        let data_type = coerce_parquet_type_to_liquid_type(inner_type, liquid_cache.cache_mode());
 
         Self {
             inner,

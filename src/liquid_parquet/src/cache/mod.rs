@@ -17,7 +17,7 @@ use arrow::compute::prep_null_mask_filter;
 use arrow::ipc::reader::StreamReader;
 use arrow_schema::{ArrowError, DataType, Field, Schema};
 use bytes::Bytes;
-use liquid_cache_common::{LiquidCacheMode, coerce_from_parquet_to_liquid_type};
+use liquid_cache_common::{LiquidCacheMode, coerce_parquet_type_to_liquid_type};
 use parquet::arrow::arrow_reader::ArrowPredicate;
 use std::fmt::Display;
 use std::fs::File;
@@ -459,15 +459,17 @@ impl LiquidCachedRowGroup {
         let mut columns = self.columns.write().unwrap();
 
         let field = match field.data_type() {
-            DataType::Utf8View => {
+            DataType::Utf8View | DataType::BinaryView => {
                 let field: Field = Field::clone(&field);
-                let new_data_type = coerce_from_parquet_to_liquid_type(
+                let new_data_type = coerce_parquet_type_to_liquid_type(
                     field.data_type(),
                     self.cache_store.config().cache_mode(),
                 );
                 Arc::new(field.with_data_type(new_data_type))
             }
-            DataType::Utf8 | DataType::LargeUtf8 => unreachable!(),
+            DataType::Utf8 | DataType::LargeUtf8 | DataType::Binary | DataType::LargeBinary => {
+                unreachable!()
+            }
             _ => field,
         };
 
