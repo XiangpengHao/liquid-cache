@@ -181,8 +181,8 @@ mod tests {
     use super::*;
     use crate::sync::RwLock;
     use arrow::array::{
-        ArrayRef, BinaryArray, BinaryViewArray, BooleanArray, DictionaryArray, Float32Array, Float64Array,
-        Int32Array, Int64Array, StringArray, UInt16Array,
+        ArrayRef, BinaryArray, BinaryViewArray, BooleanArray, DictionaryArray, Float32Array,
+        Float64Array, Int32Array, Int64Array, StringArray, UInt16Array,
     };
     use arrow::datatypes::UInt16Type;
 
@@ -285,7 +285,7 @@ mod tests {
     fn test_transcode_dictionary_binary() {
         // Create a dictionary with binary values and many repeated values
         let values = BinaryArray::from_iter_values(
-            (0..100).map(|i| format!("binary_value_{i}").into_bytes())
+            (0..100).map(|i| format!("binary_value_{i}").into_bytes()),
         );
         let keys: Vec<u16> = (0..TEST_ARRAY_SIZE).map(|i| (i % 100) as u16).collect();
 
