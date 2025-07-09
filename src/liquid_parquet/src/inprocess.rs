@@ -117,7 +117,6 @@ impl LiquidCacheInProcessBuilder {
             .execution
             .parquet
             .schema_force_view_types = false;
-        config.options_mut().execution.parquet.binary_as_string = true;
         config.options_mut().execution.batch_size = self.batch_size;
 
         let cache = LiquidCache::new(
