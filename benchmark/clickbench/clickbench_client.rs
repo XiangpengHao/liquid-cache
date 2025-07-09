@@ -136,15 +136,24 @@ fn create_s3_options_from_env(bucket_name: &str) -> Option<HashMap<String, Strin
     let mut s3_options = HashMap::new();
 
     // Get credentials from environment variables (standard AWS approach)
-    let access_key_id = std::env::var("AWS_ACCESS_KEY_ID").ok()?;
-    let secret_access_key = std::env::var("AWS_SECRET_ACCESS_KEY").ok()?;
+    let access_key_id = std::env::var("AWS_ACCESS_KEY_ID").ok();
+    let secret_access_key = std::env::var("AWS_SECRET_ACCESS_KEY").ok();
     let region = std::env::var("AWS_REGION")
         .or_else(|_| std::env::var("AWS_DEFAULT_REGION"))
-        .ok()?;
+        .ok();
 
-    s3_options.insert("access_key_id".to_string(), access_key_id);
-    s3_options.insert("secret_access_key".to_string(), secret_access_key);
-    s3_options.insert("region".to_string(), region);
+    if let Some(access_key_id) = access_key_id
+        && let Some(secret_access_key) = secret_access_key
+    {
+        s3_options.insert("access_key_id".to_string(), access_key_id);
+        s3_options.insert("secret_access_key".to_string(), secret_access_key);
+    } else {
+        s3_options.insert("skip_signature".to_string(), "true".to_string());
+    }
+
+    if let Some(region) = region {
+        s3_options.insert("region".to_string(), region);
+    }
 
     // Check for custom endpoint (for LocalStack, MinIO, etc.)
     if let Ok(endpoint) =
@@ -247,9 +256,6 @@ impl Benchmark for ClickBenchBenchmark {
 
             // Prepare S3 object store configuration from environment variables with S3 Express detection
             let s3_options = create_s3_options_from_env(bucket_name);
-            if s3_options.is_none() {
-                log::warn!("No S3 credentials found!");
-            }
 
             // Extract bucket from S3 URL for object store registration
             let bucket_url = format!("s3://{bucket_name}/");

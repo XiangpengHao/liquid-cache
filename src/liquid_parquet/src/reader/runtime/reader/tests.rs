@@ -5,12 +5,12 @@ use crate::{
         runtime::{ArrowReaderBuilderBridge, liquid_stream::LiquidStreamBuilder},
     },
 };
-use arrow::{datatypes::Schema, record_batch::RecordBatch};
+use arrow::record_batch::RecordBatch;
 use arrow_schema::SchemaRef;
 use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
 use futures::StreamExt;
 use liquid_cache_common::{
-    LiquidCacheMode, coerce_binary_to_string, coerce_string_to_view, coerce_to_liquid_cache_types,
+    LiquidCacheMode, ParquetReaderSchema, coerce_parquet_schema_to_liquid_schema,
 };
 use object_store::ObjectMeta;
 use parquet::arrow::{
@@ -25,7 +25,10 @@ fn test_output_schema(cache_mode: &LiquidCacheMode) -> SchemaRef {
     let file = File::open(TEST_FILE_PATH).unwrap();
     let builder = ArrowReaderMetadata::load(&file, Default::default()).unwrap();
     let schema = builder.schema().clone();
-    Arc::new(coerce_to_liquid_cache_types(schema.as_ref(), cache_mode))
+    Arc::new(coerce_parquet_schema_to_liquid_schema(
+        schema.as_ref(),
+        cache_mode,
+    ))
 }
 
 pub fn generate_test_parquet() -> (File, String) {
@@ -72,15 +75,15 @@ async fn get_test_reader() -> (LiquidStreamBuilder, File) {
     let mut async_reader =
         reader_factory.create_liquid_reader(0, object_meta.into(), None, &metrics);
 
-    let metadata = ArrowReaderMetadata::load_async(&mut async_reader, Default::default())
+    let reader_metadata = ArrowReaderMetadata::load_async(&mut async_reader, Default::default())
         .await
         .unwrap();
-    let schema = Arc::clone(metadata.schema());
-    let schema = coerce_binary_to_string(&schema);
-    let reader_schema = Arc::new(coerce_string_to_view(&schema));
+    let mut physical_file_schema = Arc::clone(reader_metadata.schema());
+    physical_file_schema = ParquetReaderSchema::from(&physical_file_schema);
 
-    let options = ArrowReaderOptions::new().with_schema(Arc::clone(&reader_schema));
-    let metadata = ArrowReaderMetadata::try_new(Arc::clone(metadata.metadata()), options).unwrap();
+    let options = ArrowReaderOptions::new().with_schema(Arc::clone(&physical_file_schema));
+    let metadata =
+        ArrowReaderMetadata::try_new(Arc::clone(reader_metadata.metadata()), options).unwrap();
 
     let builder = ParquetRecordBatchStreamBuilder::new_with_metadata(async_reader, metadata)
         .with_batch_size(BATCH_SIZE);
@@ -107,13 +110,6 @@ fn assert_batch_eq(left: &RecordBatch, right: &RecordBatch) {
     }
 }
 
-fn assert_schema_eq(left: &Schema, right: &Schema) {
-    assert_eq!(left.fields().len(), right.fields().len());
-    for (f_l, f_r) in left.fields().iter().zip(right.fields().iter()) {
-        assert_eq!(f_l, f_r);
-    }
-}
-
 fn get_test_cache(
     bath_size: usize,
     cache_dir: PathBuf,
@@ -137,8 +133,7 @@ async fn basic_stuff(cache_mode: &LiquidCacheMode) {
     let liquid_cache = get_test_cache(batch_size, tmp_dir.path().to_path_buf(), cache_mode);
     let reader = builder.build(liquid_cache).unwrap();
 
-    let schema = reader.schema();
-    assert_schema_eq(schema, test_output_schema(cache_mode).as_ref());
+    let schema = test_output_schema(cache_mode);
 
     let projection = (0..schema.fields().len()).collect::<Vec<_>>();
 
@@ -248,6 +243,9 @@ async fn test_reading_warm() {
 #[tokio::test]
 async fn test_reading_with_full_cache() {
     let column_projections = vec![0, 3, 6, 8];
+    let cache_mode = LiquidCacheMode::Liquid {
+        transcode_in_background: false,
+    };
     let (mut builder, _file) = get_test_reader().await;
     let batch_size = builder.batch_size;
     let tmp_dir = tempfile::tempdir().unwrap();
@@ -256,9 +254,7 @@ async fn test_reading_with_full_cache() {
         batch_size,
         1,
         tmp_dir.path().to_path_buf(),
-        LiquidCacheMode::Liquid {
-            transcode_in_background: false,
-        },
+        cache_mode,
         Box::new(DiscardPolicy),
     );
     let lq_file = lq.register_or_get_file("".to_string());

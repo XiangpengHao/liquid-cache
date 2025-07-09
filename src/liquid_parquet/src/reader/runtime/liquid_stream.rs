@@ -8,7 +8,7 @@ use arrow_schema::{DataType, Fields, Schema, SchemaRef};
 use fastrace::Event;
 use fastrace::local::LocalSpan;
 use futures::{FutureExt, Stream, future::BoxFuture, ready};
-use liquid_cache_common::coerce_from_parquet_reader_to_liquid_types;
+use liquid_cache_common::coerce_parquet_schema_to_liquid_schema;
 use parquet::arrow::arrow_reader::ArrowPredicate;
 use parquet::{
     arrow::{
@@ -253,7 +253,7 @@ impl LiquidStreamBuilder {
             _ => unreachable!("Must be Struct for root type"),
         };
         let schema = Arc::new(Schema::new(projected_fields));
-        let schema = Arc::new(coerce_from_parquet_reader_to_liquid_types(
+        let schema = Arc::new(coerce_parquet_schema_to_liquid_schema(
             &schema,
             &liquid_cache_mode,
         ));
@@ -287,13 +287,6 @@ pub struct LiquidStream {
     reader: Option<ReaderFactory>,
 
     state: StreamState,
-}
-
-impl LiquidStream {
-    #[cfg(test)]
-    pub(crate) fn schema(&self) -> &SchemaRef {
-        &self.schema
-    }
 }
 
 impl std::fmt::Debug for LiquidStream {

@@ -1,4 +1,5 @@
 use ahash::HashMap;
+use arrow::array::BinaryViewArray;
 use arrow::array::{
     Array, ArrayAccessor, ArrayIter, ArrayRef, BinaryArray, BooleanArray, BooleanBufferBuilder,
     BufferBuilder, DictionaryArray, GenericByteArray, StringArray, StringViewArray, UInt16Array,
@@ -173,7 +174,7 @@ pub fn get_string_needle(value: &ScalarValue) -> Option<&str> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(u16)]
 pub(crate) enum ArrowByteType {
     Utf8 = 0,
@@ -262,6 +263,12 @@ impl LiquidByteArray {
         Self::from_dict_array_inner(dict, compressor, ArrowByteType::Utf8View)
     }
 
+    /// Create a LiquidByteArray from an Arrow [BinaryViewArray].
+    pub fn from_binary_view_array(array: &BinaryViewArray, compressor: Arc<Compressor>) -> Self {
+        let dict = CheckedDictionaryArray::from_binary_view_array(array);
+        Self::from_dict_array_inner(dict, compressor, ArrowByteType::BinaryView)
+    }
+
     /// Train a compressor from an iterator of byte arrays.
     pub fn train_compressor_bytes<'a, T: ArrayAccessor<Item = &'a [u8]>>(
         array: ArrayIter<T>,
@@ -297,12 +304,23 @@ impl LiquidByteArray {
     }
 
     /// Train a compressor from an Arrow StringViewArray.
-    pub fn train_from_arrow_view(array: &StringViewArray) -> (Arc<Compressor>, Self) {
+    pub fn train_from_string_view(array: &StringViewArray) -> (Arc<Compressor>, Self) {
         let dict = CheckedDictionaryArray::from_string_view_array(array);
         let compressor = Self::train_compressor(dict.as_ref().values().as_string::<i32>().iter());
         (
             compressor.clone(),
             Self::from_dict_array_inner(dict, compressor, ArrowByteType::Utf8View),
+        )
+    }
+
+    /// Train a compressor from an Arrow BinaryViewArray.
+    pub fn train_from_binary_view(array: &BinaryViewArray) -> (Arc<Compressor>, Self) {
+        let dict = CheckedDictionaryArray::from_binary_view_array(array);
+        let compressor =
+            Self::train_compressor_bytes(dict.as_ref().values().as_binary::<i32>().iter());
+        (
+            compressor.clone(),
+            Self::from_dict_array_inner(dict, compressor, ArrowByteType::BinaryView),
         )
     }
 
@@ -392,10 +410,11 @@ impl LiquidByteArray {
         array: &DictionaryArray<UInt16Type>,
         compressor: Arc<Compressor>,
     ) -> Self {
+        let arrow_type = ArrowByteType::from_arrow_type(array.values().data_type());
         Self::from_dict_array_inner(
             unsafe { CheckedDictionaryArray::new_unchecked_i_know_what_i_am_doing(array) },
             compressor,
-            ArrowByteType::Dict16Utf8,
+            arrow_type,
         )
     }
 
@@ -1020,7 +1039,7 @@ mod tests {
         // Test the optimized string equality path
         let string_data = vec!["apple", "banana", "cherry", "apple", "grape"];
         let arrow_array = StringViewArray::from(string_data);
-        let (_compressor, liquid_array) = LiquidByteArray::train_from_arrow_view(&arrow_array);
+        let (_compressor, liquid_array) = LiquidByteArray::train_from_string_view(&arrow_array);
 
         // Create predicate: column = "apple"
         let expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
@@ -1116,5 +1135,107 @@ mod tests {
             .try_eval_predicate(&col_col_expr, &filter)
             .unwrap();
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_train_from_binary_view() {
+        // Create binary data with some repeated patterns for compression
+        let binary_data: Vec<&[u8]> = vec![
+            b"hello",
+            b"world",
+            b"hello",              // duplicate
+            b"test\x00\x01\x02",   // with null bytes
+            b"world",              // duplicate
+            b"binary\xff\xfe\xfd", // with high bytes
+        ];
+
+        let input = BinaryViewArray::from_iter_values(binary_data.iter().copied());
+
+        // Test train_from_binary_view
+        let (compressor, liquid_array1) = LiquidByteArray::train_from_binary_view(&input);
+
+        // Verify the liquid array has correct properties
+        assert_eq!(liquid_array1.len(), input.len());
+        assert_eq!(liquid_array1.original_arrow_type, ArrowByteType::BinaryView);
+
+        // Test roundtrip conversion with train_from_binary_view
+        let output1 = liquid_array1.to_arrow_array();
+        let output_binary_view1 = output1.as_binary_view();
+
+        // Verify all values match
+        assert_eq!(input.len(), output_binary_view1.len());
+        for i in 0..input.len() {
+            assert_eq!(input.value(i), output_binary_view1.value(i));
+        }
+
+        // Test from_binary_view_array with the same compressor
+        let liquid_array2 = LiquidByteArray::from_binary_view_array(&input, compressor);
+
+        // Verify the second liquid array has correct properties
+        assert_eq!(liquid_array2.len(), input.len());
+        assert_eq!(liquid_array2.original_arrow_type, ArrowByteType::BinaryView);
+
+        // Test roundtrip conversion with from_binary_view_array
+        let output2 = liquid_array2.to_arrow_array();
+        let output_binary_view2 = output2.as_binary_view();
+
+        // Verify all values match
+        assert_eq!(input.len(), output_binary_view2.len());
+        for i in 0..input.len() {
+            assert_eq!(input.value(i), output_binary_view2.value(i));
+        }
+
+        // Both methods should produce equivalent results
+        let dict1 = liquid_array1.to_dict_arrow();
+        let dict2 = liquid_array2.to_dict_arrow();
+        assert_eq!(dict1.keys(), dict2.keys());
+        assert_eq!(dict1.values().len(), dict2.values().len());
+    }
+
+    #[test]
+    fn test_train_from_binary_view_with_nulls() {
+        let binary_data: Vec<Option<&[u8]>> = vec![
+            Some(b"data1"),
+            None,
+            Some(b"data2"),
+            None,
+            Some(b"data1"), // duplicate
+        ];
+
+        let input = BinaryViewArray::from(binary_data.clone());
+        let (compressor, liquid_array1) = LiquidByteArray::train_from_binary_view(&input);
+
+        // Verify roundtrip with nulls for train_from_binary_view
+        let output1 = liquid_array1.to_arrow_array();
+        let output_binary_view1 = output1.as_binary_view();
+
+        assert_eq!(input.len(), output_binary_view1.len());
+        assert_eq!(input.null_count(), output_binary_view1.null_count());
+
+        for i in 0..input.len() {
+            if input.is_null(i) {
+                assert!(output_binary_view1.is_null(i));
+            } else {
+                assert_eq!(input.value(i), output_binary_view1.value(i));
+            }
+        }
+
+        // Test from_binary_view_array with nulls
+        let liquid_array2 = LiquidByteArray::from_binary_view_array(&input, compressor);
+
+        // Verify roundtrip with nulls for from_binary_view_array
+        let output2 = liquid_array2.to_arrow_array();
+        let output_binary_view2 = output2.as_binary_view();
+
+        assert_eq!(input.len(), output_binary_view2.len());
+        assert_eq!(input.null_count(), output_binary_view2.null_count());
+
+        for i in 0..input.len() {
+            if input.is_null(i) {
+                assert!(output_binary_view2.is_null(i));
+            } else {
+                assert_eq!(input.value(i), output_binary_view2.value(i));
+            }
+        }
     }
 }

@@ -151,7 +151,6 @@ impl LiquidCacheService {
         let mut session_config = SessionConfig::from_env()?;
         let options_mut = session_config.options_mut();
         options_mut.execution.parquet.pushdown_filters = true;
-        options_mut.execution.parquet.binary_as_string = true;
         options_mut.execution.batch_size = 8192 * 2;
 
         {

@@ -103,6 +103,13 @@ The benchmark uses a JSON manifest file to describe the data tables and queries 
         "aws_secret_access_key": "my-secret-key",
         "aws_region": "us-west-2"
       }
+    },
+    {
+      "url": "s3://my-bucket-2",
+      "options": {
+        "aws_region": "eu-central-1",
+        "skip_signature": "true"
+      }
     }
   ]
 }
