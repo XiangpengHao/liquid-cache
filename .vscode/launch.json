@@ -131,7 +131,7 @@
 			},
 			"args": [
 				"--manifest",
-				"benchmark/data/openobserve.json",
+				"benchmark/data/clickbench.json",
 			],
 			"cwd": "${workspaceFolder}"
 		},

@@ -9,6 +9,7 @@ use liquid_cache_parquet::{
     LiquidCacheInProcessBuilder, LiquidCacheRef, extract_execution_metrics,
 };
 use log::info;
+use object_store::ObjectStore;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -52,8 +53,7 @@ impl std::str::FromStr for InProcessBenchmarkMode {
 pub struct ObjectStoreConfig {
     /// Object store URL (e.g., "s3://bucket-name", "gs://bucket-name", "http://localhost:9000")
     pub url: String,
-    /// Optional configuration options for the object store
-    pub options: Option<HashMap<String, String>>,
+    pub options: HashMap<String, String>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -114,6 +114,18 @@ impl BenchmarkManifest {
         let content = std::fs::read_to_string(path)?;
         let manifest: Self = serde_json::from_str(&content)?;
         Ok(manifest)
+    }
+
+    pub fn get_object_store(&self) -> Option<Vec<(ObjectStoreUrl, Box<dyn ObjectStore>)>> {
+        let mut object_stores = Vec::new();
+        for config in self.object_stores.as_ref()? {
+            let url = ObjectStoreUrl::parse(&config.url).ok()?;
+            let (object_store, _) =
+                object_store::parse_url_opts(url.as_ref(), &config.options).ok()?;
+            object_stores.push((url, object_store));
+        }
+
+        Some(object_stores)
     }
 }
 
@@ -271,15 +283,9 @@ impl InProcessBenchmarkRunner {
             }
         };
 
-        // Register object stores if configured
-        if let Some(object_stores) = &manifest.object_stores {
-            for store_config in object_stores {
-                let url = ObjectStoreUrl::parse(&store_config.url)?;
-                let options = store_config.options.clone().unwrap_or_default();
-
-                let (object_store, _) = object_store::parse_url_opts(url.as_ref(), options)?;
+        if let Some(object_stores) = manifest.get_object_store() {
+            for (url, object_store) in object_stores {
                 ctx.register_object_store(url.as_ref(), Arc::new(object_store));
-                info!("Registered object store: {}", store_config.url);
             }
         }
 
