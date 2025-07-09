@@ -181,8 +181,8 @@ mod tests {
     use super::*;
     use crate::sync::RwLock;
     use arrow::array::{
-        ArrayRef, BinaryViewArray, BooleanArray, DictionaryArray, Float32Array, Float64Array, Int32Array,
-        Int64Array, StringArray, UInt16Array,
+        ArrayRef, BinaryViewArray, BooleanArray, DictionaryArray, Float32Array, Float64Array,
+        Int32Array, Int64Array, StringArray, UInt16Array,
     };
     use arrow::datatypes::UInt16Type;
 

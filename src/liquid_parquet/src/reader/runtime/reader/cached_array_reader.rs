@@ -282,10 +282,11 @@ fn get_column_ids(
                                 column_ids.push(col_idx);
                             }
                         }
-                        _ => log::info!(
-                            "We only support primitives and structs, got child field:\n{:?}",
-                            parquet
-                        ),
+                        _ => {
+                            log::info!(
+                                "We only support primitives and structs, got child field:\n{parquet:?}"
+                            );
+                        }
                     }
                 }
                 column_ids
