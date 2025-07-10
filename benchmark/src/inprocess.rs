@@ -27,7 +27,6 @@ pub enum InProcessBenchmarkMode {
     #[default]
     Liquid,
     LiquidEagerTranscode,
-    Orc,
 }
 
 impl std::str::FromStr for InProcessBenchmarkMode {
@@ -39,10 +38,9 @@ impl std::str::FromStr for InProcessBenchmarkMode {
             "arrow" => InProcessBenchmarkMode::Arrow,
             "liquid" => InProcessBenchmarkMode::Liquid,
             "liquid-eager-transcode" => InProcessBenchmarkMode::LiquidEagerTranscode,
-            "orc" => InProcessBenchmarkMode::Orc,
             _ => {
                 return Err(format!(
-                    "Invalid in-process benchmark mode: {s}, must be one of: parquet, arrow, liquid, liquid-eager-transcode, orc"
+                    "Invalid in-process benchmark mode: {s}, must be one of: parquet, arrow, liquid, liquid-eager-transcode"
                 ));
             }
         })
@@ -268,19 +266,6 @@ impl InProcessBenchmarkRunner {
                     .build(session_config)?;
                 (v.0, Some(v.1))
             }
-            InProcessBenchmarkMode::Orc => {
-                use datafusion_orc::{OrcReadOptions, SessionContextOrcExt};
-
-                let ctx = SessionContext::new_with_config(session_config);
-                for (table_name, table_path) in &manifest.tables {
-                    if table_path.ends_with(".orc") {
-                        ctx.register_orc(table_name, table_path, OrcReadOptions::default())
-                            .await?;
-                        info!("Registered ORC table '{table_name}' from {table_path}");
-                    }
-                }
-                (ctx, None)
-            }
         };
 
         if let Some(object_stores) = manifest.get_object_store() {
@@ -289,13 +274,11 @@ impl InProcessBenchmarkRunner {
             }
         }
 
-        // Register tables from manifest (skip ORC tables if already registered)
+        // Register tables from manifest
         for (table_name, table_path_str) in &manifest.tables {
-            if !table_path_str.ends_with(".orc") {
-                ctx.register_parquet(table_name, table_path_str, Default::default())
-                    .await?;
-                info!("Registered table '{table_name}' from {table_path_str}");
-            }
+            ctx.register_parquet(table_name, table_path_str, Default::default())
+                .await?;
+            info!("Registered table '{table_name}' from {table_path_str}");
         }
 
         Ok((Arc::new(ctx), cache))
