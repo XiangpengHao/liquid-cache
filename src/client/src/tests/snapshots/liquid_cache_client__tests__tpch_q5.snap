@@ -145,12 +145,13 @@ expression: displayable.tree_render().to_string()
                                                                                        │ (o_orderkey = l_orderkey) │                                           │
                                                                                        └─────────────┬─────────────┘                                           │
                                                                                        ┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
-                                                                                       │   CoalescePartitionsExec  │                             │   LiquidCacheClientExec   │
-                                                                                       │                           │                             │    --------------------   │
-                                                                                       │                           │                             │          server:          │
-                                                                                       │                           │                             │  http://localhost:50051,  │
+                                                                                       │       ProjectionExec      │                             │   LiquidCacheClientExec   │
+                                                                                       │    --------------------   │                             │    --------------------   │
+                                                                                       │        c_nationkey:       │                             │          server:          │
+                                                                                       │        c_nationkey        │                             │  http://localhost:50051,  │
                                                                                        │                           │                             │        mode=liquid,       │
-                                                                                       │                           │                             │      object_stores=[]     │
+                                                                                       │        o_orderkey:        │                             │      object_stores=[]     │
+                                                                                       │         o_orderkey        │                             │                           │
                                                                                        └─────────────┬─────────────┘                             └─────────────┬─────────────┘
                                                                                        ┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
                                                                                        │    CoalesceBatchesExec    │                             │       DataSourceExec      │
@@ -162,7 +163,7 @@ expression: displayable.tree_render().to_string()
                                                                                        │        HashJoinExec       │
                                                                                        │    --------------------   │
                                                                                        │            on:            ├──────────────┐
-                                                                                       │  (c_custkey = o_custkey)  │              │
+                                                                                       │  (o_custkey = c_custkey)  │              │
                                                                                        └─────────────┬─────────────┘              │
                                                                                        ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
                                                                                        │   LiquidCacheClientExec   ││   LiquidCacheClientExec   │
@@ -173,22 +174,13 @@ expression: displayable.tree_render().to_string()
                                                                                        │      object_stores=[]     ││      object_stores=[]     │
                                                                                        └─────────────┬─────────────┘└─────────────┬─────────────┘
                                                                                        ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-                                                                                       │       DataSourceExec      ││      RepartitionExec      │
+                                                                                       │       DataSourceExec      ││       DataSourceExec      │
                                                                                        │    --------------------   ││    --------------------   │
-                                                                                       │          files: 1         ││ partition_count(in->out): │
-                                                                                       │      format: parquet      ││           1 -> 8          │
+                                                                                       │          files: 1         ││          files: 1         │
+                                                                                       │      format: parquet      ││      format: parquet      │
                                                                                        │                           ││                           │
-                                                                                       │                           ││    partitioning_scheme:   │
-                                                                                       │                           ││     RoundRobinBatch(8)    │
-                                                                                       └───────────────────────────┘└─────────────┬─────────────┘
-                                                                                                                    ┌─────────────┴─────────────┐
-                                                                                                                    │       DataSourceExec      │
-                                                                                                                    │    --------------------   │
-                                                                                                                    │          files: 1         │
-                                                                                                                    │      format: parquet      │
-                                                                                                                    │                           │
-                                                                                                                    │         predicate:        │
-                                                                                                                    │ o_orderdate >= 1994-01-01 │
-                                                                                                                    │   AND o_orderdate < 1995  │
-                                                                                                                    │           -01-01          │
-                                                                                                                    └───────────────────────────┘
+                                                                                       │         predicate:        ││                           │
+                                                                                       │ o_orderdate >= 1994-01-01 ││                           │
+                                                                                       │   AND o_orderdate < 1995  ││                           │
+                                                                                       │           -01-01          ││                           │
+                                                                                       └───────────────────────────┘└───────────────────────────┘

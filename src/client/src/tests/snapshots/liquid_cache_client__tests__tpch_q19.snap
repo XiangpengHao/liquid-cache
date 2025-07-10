@@ -55,21 +55,20 @@ expression: displayable.tree_render().to_string()
 │      format: parquet      ││           1 -> 8          │
 │                           ││                           │
 │         predicate:        ││    partitioning_scheme:   │
-│ p_size >= 1 AND (p_brand =││     RoundRobinBatch(8)    │
-│  Brand#12 AND p_container ││                           │
-│   IN (SM CASE, SM BOX, SM ││                           │
-│      PACK, SM PKG) AND    ││                           │
-│       p_size <= 5 OR      ││                           │
-│     p_brand = Brand#23    ││                           │
+│  (p_brand = Brand#12 AND  ││     RoundRobinBatch(8)    │
+│     p_container IN (SM    ││                           │
+│    CASE, SM BOX, SM PACK  ││                           │
+│ , SM PKG) AND p_size <= 5 ││                           │
+│    OR p_brand = Brand#23  ││                           │
 │     AND p_container IN    ││                           │
 │   (MED BAG, MED BOX, MED  ││                           │
 │     PKG, MED PACK) AND    ││                           │
 │       p_size <= 10 OR     ││                           │
 │     p_brand = Brand#34    ││                           │
-│     AND p_container IN    ││                           │
-│    (LG CASE, LG BOX, LG   ││                           │
-│      PACK, LG PKG) AND    ││                           │
-│        p_size <= 15)      ││                           │
+│   AND p_container IN (LG  ││                           │
+│   CASE, LG BOX, LG PACK,  ││                           │
+│    LG PKG) AND p_size <=  ││                           │
+│     15) AND p_size >= 1   ││                           │
 └───────────────────────────┘└─────────────┬─────────────┘
                              ┌─────────────┴─────────────┐
                              │       DataSourceExec      │
@@ -78,21 +77,19 @@ expression: displayable.tree_render().to_string()
                              │      format: parquet      │
                              │                           │
                              │         predicate:        │
+                             │  (l_quantity >= Some(100) │
+                             │  ,15,2 AND l_quantity <=  │
+                             │     Some(1100),15,2 OR    │
+                             │     l_quantity >= Some    │
+                             │      (1000),15,2 AND      │
+                             │        l_quantity <=      │
+                             │     Some(2000),15,2 OR    │
+                             │     l_quantity >= Some    │
+                             │      (2000),15,2 AND      │
+                             │        l_quantity <=      │
+                             │    Some(3000),15,2) AND   │
                              │    (l_shipmode = AIR OR   │
-                             │      l_shipmode = AIR     │
-                             │          REG) AND         │
-                             │         l_shipinstr       │
-                             │  uct = DELIVER IN PERSON  │
-                             │     AND (l_quantity >=    │
-                             │     Some(100),15,2 AND    │
-                             │     l_quantity <= Some    │
-                             │       (1100),15,2 OR      │
-                             │        l_quantity >=      │
-                             │     Some(1000),15,2 AND   │
-                             │     l_quantity <= Some    │
-                             │       (2000),15,2 OR      │
-                             │        l_quantity >=      │
-                             │     Some(2000),15,2 AND   │
-                             │   l_quantity <= Some(3000 │
-                             │          ),15,2)          │
+                             │    l_shipmode = AIR REG   │
+                             │   ) AND l_shipinstruct =  │
+                             │      DELIVER IN PERSON    │
                              └───────────────────────────┘

@@ -123,25 +123,13 @@ expression: displayable.tree_render().to_string()
                              │ (o_orderkey = l_orderkey) │              │
                              └─────────────┬─────────────┘              │
                              ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-                             │   LiquidCacheClientExec   ││       ProjectionExec      │
+                             │   LiquidCacheClientExec   ││      RepartitionExec      │
                              │    --------------------   ││    --------------------   │
-                             │          server:          ││        l_discount:        │
-                             │  http://localhost:50051,  ││         l_discount        │
+                             │          server:          ││ partition_count(in->out): │
+                             │  http://localhost:50051,  ││           1 -> 8          │
                              │        mode=liquid,       ││                           │
-                             │      object_stores=[]     ││      l_extendedprice:     │
-                             │                           ││      l_extendedprice      │
-                             │                           ││                           │
-                             │                           ││        l_orderkey:        │
-                             │                           ││         l_orderkey        │
-                             │                           ││                           │
-                             │                           ││        l_quantity:        │
-                             │                           ││         l_quantity        │
-                             │                           ││                           │
-                             │                           ││       ps_supplycost:      │
-                             │                           ││       ps_supplycost       │
-                             │                           ││                           │
-                             │                           ││        s_nationkey:       │
-                             │                           ││        s_nationkey        │
+                             │      object_stores=[]     ││    partitioning_scheme:   │
+                             │                           ││     RoundRobinBatch(8)    │
                              └─────────────┬─────────────┘└─────────────┬─────────────┘
                              ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
                              │       DataSourceExec      ││    CoalesceBatchesExec    │
@@ -152,31 +140,60 @@ expression: displayable.tree_render().to_string()
                                                           ┌─────────────┴─────────────┐
                                                           │        HashJoinExec       │
                                                           │    --------------------   │
+                                                          │            on:            ├────────────────────────────────────────────────────────────────────────┐
+                                                          │ (l_suppkey = ps_suppkey), │                                                                        │
+                                                          │  (l_partkey = ps_partkey) │                                                                        │
+                                                          └─────────────┬─────────────┘                                                                        │
+                                                          ┌─────────────┴─────────────┐                                                          ┌─────────────┴─────────────┐
+                                                          │   CoalescePartitionsExec  │                                                          │   LiquidCacheClientExec   │
+                                                          │                           │                                                          │    --------------------   │
+                                                          │                           │                                                          │          server:          │
+                                                          │                           │                                                          │  http://localhost:50051,  │
+                                                          │                           │                                                          │        mode=liquid,       │
+                                                          │                           │                                                          │      object_stores=[]     │
+                                                          └─────────────┬─────────────┘                                                          └─────────────┬─────────────┘
+                                                          ┌─────────────┴─────────────┐                                                          ┌─────────────┴─────────────┐
+                                                          │       ProjectionExec      │                                                          │       DataSourceExec      │
+                                                          │    --------------------   │                                                          │    --------------------   │
+                                                          │        l_discount:        │                                                          │          files: 1         │
+                                                          │         l_discount        │                                                          │      format: parquet      │
+                                                          │                           │                                                          │                           │
+                                                          │      l_extendedprice:     │                                                          │                           │
+                                                          │      l_extendedprice      │                                                          │                           │
+                                                          │                           │                                                          │                           │
+                                                          │        l_orderkey:        │                                                          │                           │
+                                                          │         l_orderkey        │                                                          │                           │
+                                                          │                           │                                                          │                           │
+                                                          │    l_partkey: l_partkey   │                                                          │                           │
+                                                          │                           │                                                          │                           │
+                                                          │        l_quantity:        │                                                          │                           │
+                                                          │         l_quantity        │                                                          │                           │
+                                                          │                           │                                                          │                           │
+                                                          │    l_suppkey: l_suppkey   │                                                          │                           │
+                                                          │                           │                                                          │                           │
+                                                          │        s_nationkey:       │                                                          │                           │
+                                                          │        s_nationkey        │                                                          │                           │
+                                                          └─────────────┬─────────────┘                                                          └───────────────────────────┘
+                                                          ┌─────────────┴─────────────┐
+                                                          │    CoalesceBatchesExec    │
+                                                          │    --------------------   │
+                                                          │     target_batch_size:    │
+                                                          │           16384           │
+                                                          └─────────────┬─────────────┘
+                                                          ┌─────────────┴─────────────┐
+                                                          │        HashJoinExec       │
+                                                          │    --------------------   │
                                                           │            on:            ├──────────────┐
-                                                          │ (ps_suppkey = l_suppkey), │              │
-                                                          │  (ps_partkey = l_partkey) │              │
+                                                          │  (s_suppkey = l_suppkey)  │              │
                                                           └─────────────┬─────────────┘              │
                                                           ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-                                                          │   LiquidCacheClientExec   ││       ProjectionExec      │
+                                                          │   LiquidCacheClientExec   ││      RepartitionExec      │
                                                           │    --------------------   ││    --------------------   │
-                                                          │          server:          ││        l_discount:        │
-                                                          │  http://localhost:50051,  ││         l_discount        │
+                                                          │          server:          ││ partition_count(in->out): │
+                                                          │  http://localhost:50051,  ││           1 -> 8          │
                                                           │        mode=liquid,       ││                           │
-                                                          │      object_stores=[]     ││      l_extendedprice:     │
-                                                          │                           ││      l_extendedprice      │
-                                                          │                           ││                           │
-                                                          │                           ││        l_orderkey:        │
-                                                          │                           ││         l_orderkey        │
-                                                          │                           ││                           │
-                                                          │                           ││    l_partkey: l_partkey   │
-                                                          │                           ││                           │
-                                                          │                           ││        l_quantity:        │
-                                                          │                           ││         l_quantity        │
-                                                          │                           ││                           │
-                                                          │                           ││    l_suppkey: l_suppkey   │
-                                                          │                           ││                           │
-                                                          │                           ││        s_nationkey:       │
-                                                          │                           ││        s_nationkey        │
+                                                          │      object_stores=[]     ││    partitioning_scheme:   │
+                                                          │                           ││     RoundRobinBatch(8)    │
                                                           └─────────────┬─────────────┘└─────────────┬─────────────┘
                                                           ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
                                                           │       DataSourceExec      ││    CoalesceBatchesExec    │
@@ -188,43 +205,22 @@ expression: displayable.tree_render().to_string()
                                                                                        │        HashJoinExec       │
                                                                                        │    --------------------   │
                                                                                        │            on:            ├──────────────┐
-                                                                                       │  (s_suppkey = l_suppkey)  │              │
+                                                                                       │  (p_partkey = l_partkey)  │              │
                                                                                        └─────────────┬─────────────┘              │
                                                                                        ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-                                                                                       │   LiquidCacheClientExec   ││      RepartitionExec      │
+                                                                                       │   LiquidCacheClientExec   ││   LiquidCacheClientExec   │
                                                                                        │    --------------------   ││    --------------------   │
-                                                                                       │          server:          ││ partition_count(in->out): │
-                                                                                       │  http://localhost:50051,  ││           1 -> 8          │
-                                                                                       │        mode=liquid,       ││                           │
-                                                                                       │      object_stores=[]     ││    partitioning_scheme:   │
-                                                                                       │                           ││     RoundRobinBatch(8)    │
+                                                                                       │          server:          ││          server:          │
+                                                                                       │  http://localhost:50051,  ││  http://localhost:50051,  │
+                                                                                       │        mode=liquid,       ││        mode=liquid,       │
+                                                                                       │      object_stores=[]     ││      object_stores=[]     │
                                                                                        └─────────────┬─────────────┘└─────────────┬─────────────┘
                                                                                        ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-                                                                                       │       DataSourceExec      ││    CoalesceBatchesExec    │
+                                                                                       │       DataSourceExec      ││       DataSourceExec      │
                                                                                        │    --------------------   ││    --------------------   │
-                                                                                       │          files: 1         ││     target_batch_size:    │
-                                                                                       │      format: parquet      ││           16384           │
-                                                                                       └───────────────────────────┘└─────────────┬─────────────┘
-                                                                                                                    ┌─────────────┴─────────────┐
-                                                                                                                    │        HashJoinExec       │
-                                                                                                                    │    --------------------   │
-                                                                                                                    │            on:            ├──────────────┐
-                                                                                                                    │  (p_partkey = l_partkey)  │              │
-                                                                                                                    └─────────────┬─────────────┘              │
-                                                                                                                    ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-                                                                                                                    │   LiquidCacheClientExec   ││   LiquidCacheClientExec   │
-                                                                                                                    │    --------------------   ││    --------------------   │
-                                                                                                                    │          server:          ││          server:          │
-                                                                                                                    │  http://localhost:50051,  ││  http://localhost:50051,  │
-                                                                                                                    │        mode=liquid,       ││        mode=liquid,       │
-                                                                                                                    │      object_stores=[]     ││      object_stores=[]     │
-                                                                                                                    └─────────────┬─────────────┘└─────────────┬─────────────┘
-                                                                                                                    ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-                                                                                                                    │       DataSourceExec      ││       DataSourceExec      │
-                                                                                                                    │    --------------------   ││    --------------------   │
-                                                                                                                    │          files: 1         ││          files: 1         │
-                                                                                                                    │      format: parquet      ││      format: parquet      │
-                                                                                                                    │                           ││                           │
-                                                                                                                    │         predicate:        ││                           │
-                                                                                                                    │    p_name LIKE %green%    ││                           │
-                                                                                                                    └───────────────────────────┘└───────────────────────────┘
+                                                                                       │          files: 1         ││          files: 1         │
+                                                                                       │      format: parquet      ││      format: parquet      │
+                                                                                       │                           ││                           │
+                                                                                       │         predicate:        ││                           │
+                                                                                       │    p_name LIKE %green%    ││                           │
+                                                                                       └───────────────────────────┘└───────────────────────────┘
