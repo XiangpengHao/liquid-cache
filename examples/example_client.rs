@@ -62,7 +62,6 @@ pub async fn main() -> Result<()> {
         .unwrap_or_default()
         .to_str()
         .unwrap_or("default");
-    let sql = args.query;
     let object_store = object_store::http::HttpBuilder::new()
         .with_url(object_store_url.as_str())
         .build()
@@ -72,7 +71,7 @@ pub async fn main() -> Result<()> {
     ctx.register_parquet(table_name, url.as_ref(), Default::default())
         .await?;
 
-    ctx.sql(&sql).await?.show().await?;
+    ctx.sql(&args.query).await?.show().await?;
 
     Ok(())
 }

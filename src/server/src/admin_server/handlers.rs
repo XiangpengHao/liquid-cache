@@ -339,13 +339,8 @@ impl From<&Arc<dyn ExecutionPlan>> for ExecutionPlanWithStats {
         }
 
         let mut column_statistics = Vec::new();
-        for (i, cs) in plan
-            .statistics()
-            .unwrap()
-            .column_statistics
-            .iter()
-            .enumerate()
-        {
+        let stats = plan.partition_statistics(None).unwrap_or_default();
+        for (i, cs) in stats.column_statistics.iter().enumerate() {
             let min = if cs.min_value != Precision::Absent {
                 Some(cs.min_value.to_string())
             } else {
@@ -393,8 +388,8 @@ impl From<&Arc<dyn ExecutionPlan>> for ExecutionPlanWithStats {
                 })
                 .collect(),
             statistics: Statistics {
-                num_rows: plan.statistics().unwrap().num_rows.to_string(),
-                total_byte_size: plan.statistics().unwrap().total_byte_size.to_string(),
+                num_rows: stats.num_rows.to_string(),
+                total_byte_size: stats.total_byte_size.to_string(),
                 column_statistics,
             },
             metrics: metric_values,

@@ -168,21 +168,13 @@ expression: displayable.tree_render().to_string()
                                                           │  (c_custkey = o_custkey)  │              │
                                                           └─────────────┬─────────────┘              │
                                                           ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-                                                          │   LiquidCacheClientExec   ││       ProjectionExec      │
+                                                          │   LiquidCacheClientExec   ││      RepartitionExec      │
                                                           │    --------------------   ││    --------------------   │
-                                                          │          server:          ││        l_discount:        │
-                                                          │  http://localhost:50051,  ││         l_discount        │
+                                                          │          server:          ││ partition_count(in->out): │
+                                                          │  http://localhost:50051,  ││           1 -> 8          │
                                                           │        mode=liquid,       ││                           │
-                                                          │      object_stores=[]     ││      l_extendedprice:     │
-                                                          │                           ││      l_extendedprice      │
-                                                          │                           ││                           │
-                                                          │                           ││        l_shipdate:        │
-                                                          │                           ││         l_shipdate        │
-                                                          │                           ││                           │
-                                                          │                           ││    o_custkey: o_custkey   │
-                                                          │                           ││                           │
-                                                          │                           ││        s_nationkey:       │
-                                                          │                           ││        s_nationkey        │
+                                                          │      object_stores=[]     ││    partitioning_scheme:   │
+                                                          │                           ││     RoundRobinBatch(8)    │
                                                           └─────────────┬─────────────┘└─────────────┬─────────────┘
                                                           ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
                                                           │       DataSourceExec      ││    CoalesceBatchesExec    │
@@ -193,48 +185,54 @@ expression: displayable.tree_render().to_string()
                                                                                        ┌─────────────┴─────────────┐
                                                                                        │        HashJoinExec       │
                                                                                        │    --------------------   │
+                                                                                       │            on:            ├───────────────────────────────────────────┐
+                                                                                       │ (l_orderkey = o_orderkey) │                                           │
+                                                                                       └─────────────┬─────────────┘                                           │
+                                                                                       ┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
+                                                                                       │   CoalescePartitionsExec  │                             │   LiquidCacheClientExec   │
+                                                                                       │                           │                             │    --------------------   │
+                                                                                       │                           │                             │          server:          │
+                                                                                       │                           │                             │  http://localhost:50051,  │
+                                                                                       │                           │                             │        mode=liquid,       │
+                                                                                       │                           │                             │      object_stores=[]     │
+                                                                                       └─────────────┬─────────────┘                             └─────────────┬─────────────┘
+                                                                                       ┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
+                                                                                       │    CoalesceBatchesExec    │                             │       DataSourceExec      │
+                                                                                       │    --------------------   │                             │    --------------------   │
+                                                                                       │     target_batch_size:    │                             │          files: 1         │
+                                                                                       │           16384           │                             │      format: parquet      │
+                                                                                       └─────────────┬─────────────┘                             └───────────────────────────┘
+                                                                                       ┌─────────────┴─────────────┐
+                                                                                       │        HashJoinExec       │
+                                                                                       │    --------------------   │
                                                                                        │            on:            ├──────────────┐
-                                                                                       │ (o_orderkey = l_orderkey) │              │
+                                                                                       │  (s_suppkey = l_suppkey)  │              │
                                                                                        └─────────────┬─────────────┘              │
                                                                                        ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-                                                                                       │   LiquidCacheClientExec   ││    CoalesceBatchesExec    │
+                                                                                       │   LiquidCacheClientExec   ││   LiquidCacheClientExec   │
                                                                                        │    --------------------   ││    --------------------   │
-                                                                                       │          server:          ││     target_batch_size:    │
-                                                                                       │  http://localhost:50051,  ││           16384           │
-                                                                                       │        mode=liquid,       ││                           │
-                                                                                       │      object_stores=[]     ││                           │
+                                                                                       │          server:          ││          server:          │
+                                                                                       │  http://localhost:50051,  ││  http://localhost:50051,  │
+                                                                                       │        mode=liquid,       ││        mode=liquid,       │
+                                                                                       │      object_stores=[]     ││      object_stores=[]     │
                                                                                        └─────────────┬─────────────┘└─────────────┬─────────────┘
                                                                                        ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-                                                                                       │       DataSourceExec      ││        HashJoinExec       │
+                                                                                       │       DataSourceExec      ││      RepartitionExec      │
                                                                                        │    --------------------   ││    --------------------   │
-                                                                                       │          files: 1         ││            on:            ├──────────────┐
-                                                                                       │      format: parquet      ││  (s_suppkey = l_suppkey)  │              │
-                                                                                       └───────────────────────────┘└─────────────┬─────────────┘              │
-                                                                                                                    ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-                                                                                                                    │   LiquidCacheClientExec   ││   LiquidCacheClientExec   │
-                                                                                                                    │    --------------------   ││    --------------------   │
-                                                                                                                    │          server:          ││          server:          │
-                                                                                                                    │  http://localhost:50051,  ││  http://localhost:50051,  │
-                                                                                                                    │        mode=liquid,       ││        mode=liquid,       │
-                                                                                                                    │      object_stores=[]     ││      object_stores=[]     │
-                                                                                                                    └─────────────┬─────────────┘└─────────────┬─────────────┘
-                                                                                                                    ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-                                                                                                                    │       DataSourceExec      ││      RepartitionExec      │
-                                                                                                                    │    --------------------   ││    --------------------   │
-                                                                                                                    │          files: 1         ││ partition_count(in->out): │
-                                                                                                                    │      format: parquet      ││           1 -> 8          │
-                                                                                                                    │                           ││                           │
-                                                                                                                    │                           ││    partitioning_scheme:   │
-                                                                                                                    │                           ││     RoundRobinBatch(8)    │
-                                                                                                                    └───────────────────────────┘└─────────────┬─────────────┘
-                                                                                                                                                 ┌─────────────┴─────────────┐
-                                                                                                                                                 │       DataSourceExec      │
-                                                                                                                                                 │    --------------------   │
-                                                                                                                                                 │          files: 1         │
-                                                                                                                                                 │      format: parquet      │
-                                                                                                                                                 │                           │
-                                                                                                                                                 │         predicate:        │
-                                                                                                                                                 │  l_shipdate >= 1995-01-01 │
-                                                                                                                                                 │   AND l_shipdate <= 1996  │
-                                                                                                                                                 │           -12-31          │
-                                                                                                                                                 └───────────────────────────┘
+                                                                                       │          files: 1         ││ partition_count(in->out): │
+                                                                                       │      format: parquet      ││           1 -> 8          │
+                                                                                       │                           ││                           │
+                                                                                       │                           ││    partitioning_scheme:   │
+                                                                                       │                           ││     RoundRobinBatch(8)    │
+                                                                                       └───────────────────────────┘└─────────────┬─────────────┘
+                                                                                                                    ┌─────────────┴─────────────┐
+                                                                                                                    │       DataSourceExec      │
+                                                                                                                    │    --------------------   │
+                                                                                                                    │          files: 1         │
+                                                                                                                    │      format: parquet      │
+                                                                                                                    │                           │
+                                                                                                                    │         predicate:        │
+                                                                                                                    │  l_shipdate >= 1995-01-01 │
+                                                                                                                    │   AND l_shipdate <= 1996  │
+                                                                                                                    │           -12-31          │
+                                                                                                                    └───────────────────────────┘
