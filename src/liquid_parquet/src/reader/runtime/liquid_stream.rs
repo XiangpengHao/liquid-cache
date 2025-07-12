@@ -26,7 +26,8 @@ use std::{
     task::{Context, Poll},
 };
 
-use super::reader::{LiquidBatchReader, build_cached_array_reader};
+use super::liquid_batch_reader::LiquidBatchReader;
+use super::reader::build_cached_array_reader;
 use super::{InMemoryRowGroup, LiquidRowFilter};
 
 type ReadResult = Result<(ReaderFactory, Option<LiquidBatchReader>), ParquetError>;

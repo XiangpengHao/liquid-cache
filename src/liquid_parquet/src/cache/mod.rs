@@ -9,7 +9,6 @@ use crate::liquid_array::ipc::{self, LiquidIPCContext};
 use crate::reader::{LiquidPredicate, extract_multi_column_or};
 use crate::sync::{Mutex, RwLock};
 use crate::utils::boolean_buffer_or;
-use crate::{ABLATION_STUDY_MODE, AblationStudyMode};
 use ahash::AHashMap;
 use arrow::array::{Array, ArrayRef, BooleanArray, RecordBatch};
 use arrow::buffer::BooleanBuffer;
@@ -259,34 +258,12 @@ impl LiquidCachedColumn {
                 let (buffer, _) = predicate_filter.into_parts();
                 Some(Ok(buffer))
             }
-            CachedBatch::MemoryLiquid(array) => match ABLATION_STUDY_MODE {
-                AblationStudyMode::FullDecoding => {
-                    let boolean_array = BooleanArray::new(filter.clone(), None);
-                    let arrow = array.to_arrow_array();
-                    let filtered = arrow::compute::filter(&arrow, &boolean_array).unwrap();
-                    let record_batch = self.arrow_array_to_record_batch(filtered);
-                    let boolean_array = predicate.evaluate(record_batch).unwrap();
-                    let (buffer, _) = boolean_array.into_parts();
-                    Some(Ok(buffer))
-                }
-                AblationStudyMode::SelectiveDecoding
-                | AblationStudyMode::SelectiveWithLateMaterialization => {
-                    let boolean_array = BooleanArray::new(filter.clone(), None);
-                    let filtered = array.filter(&boolean_array);
-                    let arrow = filtered.to_arrow_array();
-                    let record_batch = self.arrow_array_to_record_batch(arrow);
-                    let boolean_array = predicate.evaluate(record_batch).unwrap();
-                    let (buffer, _) = boolean_array.into_parts();
-                    Some(Ok(buffer))
-                }
-                AblationStudyMode::EvaluateOnEncodedData
-                | AblationStudyMode::EvaluateOnPartialEncodedData => {
-                    let boolean_array = BooleanArray::new(filter.clone(), None);
-                    let buffer =
-                        self.eval_predicate_with_filter_inner(predicate, array, &boolean_array);
-                    Some(buffer)
-                }
-            },
+            CachedBatch::MemoryLiquid(array) => {
+                let boolean_array = BooleanArray::new(filter.clone(), None);
+                let buffer =
+                    self.eval_predicate_with_filter_inner(predicate, array, &boolean_array);
+                Some(buffer)
+            }
             CachedBatch::DiskLiquid => {
                 let array = self.read_liquid_from_disk(batch_id);
                 let boolean_array = BooleanArray::new(filter.clone(), None);
@@ -314,17 +291,10 @@ impl LiquidCachedColumn {
                 let filtered = arrow::compute::filter(&array, filter).unwrap();
                 Some(filtered)
             }
-            CachedBatch::MemoryLiquid(array) => match ABLATION_STUDY_MODE {
-                AblationStudyMode::FullDecoding => {
-                    let arrow = array.to_arrow_array();
-                    let filtered = arrow::compute::filter(&arrow, filter).unwrap();
-                    Some(filtered)
-                }
-                _ => {
-                    let filtered = array.filter_to_arrow(filter);
-                    Some(filtered)
-                }
-            },
+            CachedBatch::MemoryLiquid(array) => {
+                let filtered = array.filter_to_arrow(filter);
+                Some(filtered)
+            }
             CachedBatch::DiskLiquid => {
                 let array = self.read_liquid_from_disk(batch_id);
                 let filtered = array.filter_to_arrow(filter);

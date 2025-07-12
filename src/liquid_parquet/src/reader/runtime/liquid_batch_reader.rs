@@ -14,7 +14,6 @@ use crate::reader::LiquidPredicate;
 use crate::reader::runtime::liquid_predicate::is_predicate_supported_by_liquid;
 use crate::reader::runtime::utils::take_next_batch;
 use crate::utils::{boolean_buffer_and_then, row_selector_to_boolean_buffer};
-use crate::{ABLATION_STUDY_MODE, AblationStudyMode};
 
 fn read_record_batch_from_parquet<'a>(
     reader: &mut Box<dyn ArrayReader>,
@@ -86,71 +85,60 @@ impl LiquidBatchReader {
         &mut self,
         selection: Vec<RowSelector>,
     ) -> Result<RowSelection, ArrowError> {
-        match &mut self.row_filter {
-            None => Ok(selection.into()),
-            Some(filter) => {
-                debug_assert_eq!(
-                    self.predicate_readers.len(),
-                    filter.predicates.len(),
-                    "predicate readers and predicates should have the same length"
-                );
+        let Some(filter) = &mut self.row_filter else {
+            return Ok(selection.into());
+        };
 
-                let mut input_selection = row_selector_to_boolean_buffer(&selection);
-                let mut final_selection = input_selection.clone();
-                let selection_size = input_selection.len();
+        debug_assert_eq!(
+            self.predicate_readers.len(),
+            filter.predicates.len(),
+            "predicate readers and predicates should have the same length"
+        );
 
-                for (predicate, reader) in filter
-                    .predicates
-                    .iter_mut()
-                    .zip(self.predicate_readers.iter_mut())
-                {
-                    if input_selection.count_set_bits() == 0 {
-                        reader.skip_records(selection_size).unwrap();
-                        continue;
-                    }
+        let mut input_selection = row_selector_to_boolean_buffer(&selection);
+        let selection_size = input_selection.len();
 
-                    let cached_result = self.liquid_cache.evaluate_selection_with_predicate(
-                        self.current_batch_id,
-                        &input_selection,
-                        predicate,
-                    );
-
-                    let boolean_mask = if let Some(result) = cached_result {
-                        reader.skip_records(selection_size).unwrap();
-                        result?
-                    } else {
-                        // slow case, where the predicate column is not cached
-                        // we need to read from parquet file
-                        let row_selection = RowSelection::from_filters(&[BooleanArray::new(
-                            input_selection.clone(),
-                            None,
-                        )]);
-
-                        let record_batch =
-                            read_record_batch_from_parquet(reader, row_selection.iter())?;
-                        let filter_mask = predicate.evaluate(record_batch).unwrap();
-                        let filter_mask = match filter_mask.null_count() {
-                            0 => filter_mask,
-                            _ => prep_null_mask_filter(&filter_mask),
-                        };
-                        let (buffer, null) = filter_mask.into_parts();
-                        assert!(null.is_none());
-                        buffer
-                    };
-
-                    if ABLATION_STUDY_MODE >= AblationStudyMode::SelectiveWithLateMaterialization {
-                        input_selection = boolean_buffer_and_then(&input_selection, &boolean_mask);
-                    } else {
-                        final_selection = boolean_buffer_and_then(&final_selection, &boolean_mask);
-                    }
-                }
-                if ABLATION_STUDY_MODE >= AblationStudyMode::SelectiveWithLateMaterialization {
-                    final_selection = input_selection;
-                }
-                let filter = BooleanArray::new(final_selection, None);
-                Ok(RowSelection::from_filters(&[filter]))
+        for (predicate, reader) in filter
+            .predicates
+            .iter_mut()
+            .zip(self.predicate_readers.iter_mut())
+        {
+            if input_selection.count_set_bits() == 0 {
+                reader.skip_records(selection_size).unwrap();
+                continue;
             }
+
+            let cached_result = self.liquid_cache.evaluate_selection_with_predicate(
+                self.current_batch_id,
+                &input_selection,
+                predicate,
+            );
+
+            let boolean_mask = if let Some(result) = cached_result {
+                reader.skip_records(selection_size).unwrap();
+                result?
+            } else {
+                // slow case, where the predicate column is not cached
+                // we need to read from parquet file
+                let row_selection =
+                    RowSelection::from_filters(&[BooleanArray::new(input_selection.clone(), None)]);
+
+                let record_batch = read_record_batch_from_parquet(reader, row_selection.iter())?;
+                let filter_mask = predicate.evaluate(record_batch).unwrap();
+                let filter_mask = match filter_mask.null_count() {
+                    0 => filter_mask,
+                    _ => prep_null_mask_filter(&filter_mask),
+                };
+                let (buffer, null) = filter_mask.into_parts();
+                assert!(null.is_none());
+                buffer
+            };
+            input_selection = boolean_buffer_and_then(&input_selection, &boolean_mask);
         }
+        Ok(RowSelection::from_filters(&[BooleanArray::new(
+            input_selection,
+            None,
+        )]))
     }
 
     fn read_selection(

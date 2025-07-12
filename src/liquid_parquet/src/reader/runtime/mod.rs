@@ -5,6 +5,7 @@ pub(crate) use parquet_bridge::ArrowReaderBuilderBridge;
 pub(crate) use parquet_bridge::get_predicate_column_id;
 
 mod in_memory_rg;
+mod liquid_batch_reader;
 mod liquid_predicate;
 mod liquid_stream;
 mod parquet_bridge;
