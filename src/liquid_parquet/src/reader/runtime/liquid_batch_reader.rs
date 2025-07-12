@@ -14,7 +14,6 @@ use crate::reader::LiquidPredicate;
 use crate::reader::runtime::liquid_predicate::is_predicate_supported_by_liquid;
 use crate::reader::runtime::utils::take_next_batch;
 use crate::utils::{boolean_buffer_and_then, row_selector_to_boolean_buffer};
-use crate::{ABLATION_STUDY_MODE, AblationStudyMode};
 
 fn read_record_batch_from_parquet<'a>(
     reader: &mut Box<dyn ArrayReader>,
@@ -96,7 +95,6 @@ impl LiquidBatchReader {
                 );
 
                 let mut input_selection = row_selector_to_boolean_buffer(&selection);
-                let mut final_selection = input_selection.clone();
                 let selection_size = input_selection.len();
 
                 for (predicate, reader) in filter
@@ -137,17 +135,9 @@ impl LiquidBatchReader {
                         assert!(null.is_none());
                         buffer
                     };
-
-                    if ABLATION_STUDY_MODE >= AblationStudyMode::SelectiveWithLateMaterialization {
-                        input_selection = boolean_buffer_and_then(&input_selection, &boolean_mask);
-                    } else {
-                        final_selection = boolean_buffer_and_then(&final_selection, &boolean_mask);
-                    }
+                    input_selection = boolean_buffer_and_then(&input_selection, &boolean_mask);
                 }
-                if ABLATION_STUDY_MODE >= AblationStudyMode::SelectiveWithLateMaterialization {
-                    final_selection = input_selection;
-                }
-                let filter = BooleanArray::new(final_selection, None);
+                let filter = BooleanArray::new(input_selection, None);
                 Ok(RowSelection::from_filters(&[filter]))
             }
         }

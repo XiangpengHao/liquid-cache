@@ -7,6 +7,7 @@ pub(crate) use parquet_bridge::get_predicate_column_id;
 mod in_memory_rg;
 mod liquid_predicate;
 mod liquid_stream;
+mod liquid_batch_reader;
 mod parquet_bridge;
 mod reader;
 mod utils;
