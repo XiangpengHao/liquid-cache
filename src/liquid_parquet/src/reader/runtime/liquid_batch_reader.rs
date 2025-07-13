@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use arrow::array::{Array, AsArray, BooleanArray, RecordBatch, RecordBatchReader};
+use arrow::buffer::BooleanBuffer;
 use arrow::compute::{filter_record_batch, prep_null_mask_filter};
 use arrow_schema::{ArrowError, DataType, Schema, SchemaRef};
 use parquet::arrow::ProjectionMask;
@@ -43,6 +44,7 @@ pub(crate) struct LiquidBatchReader {
     row_filter: Option<LiquidRowFilter>,
     predicate_readers: Vec<Box<dyn ArrayReader>>,
     projection_reader: Box<dyn ArrayReader>,
+    projection_mask: Option<ProjectionMask>,
     can_optimize_single_column_filter_projection: bool,
 }
 
@@ -73,6 +75,7 @@ impl LiquidBatchReader {
             row_filter,
             predicate_readers: filter_readers,
             projection_reader: array_reader,
+            projection_mask,
             can_optimize_single_column_filter_projection,
         }
     }
@@ -84,9 +87,11 @@ impl LiquidBatchReader {
     fn build_predicate_filter(
         &mut self,
         selection: Vec<RowSelector>,
-    ) -> Result<RowSelection, ArrowError> {
+    ) -> Result<BooleanBuffer, ArrowError> {
+        let mut input_selection = row_selector_to_boolean_buffer(&selection);
+
         let Some(filter) = &mut self.row_filter else {
-            return Ok(selection.into());
+            return Ok(input_selection);
         };
 
         debug_assert_eq!(
@@ -95,7 +100,6 @@ impl LiquidBatchReader {
             "predicate readers and predicates should have the same length"
         );
 
-        let mut input_selection = row_selector_to_boolean_buffer(&selection);
         let selection_size = input_selection.len();
 
         for (predicate, reader) in filter
@@ -135,32 +139,75 @@ impl LiquidBatchReader {
             };
             input_selection = boolean_buffer_and_then(&input_selection, &boolean_mask);
         }
-        Ok(RowSelection::from_filters(&[BooleanArray::new(
-            input_selection,
-            None,
-        )]))
+        Ok(input_selection)
+    }
+
+    fn try_read_from_cache(
+        &mut self,
+        selection: &BooleanBuffer,
+    ) -> Result<Option<RecordBatch>, ArrowError> {
+        // Try to read from cache first - check if all projected columns are cached
+        let mut all_cached = true;
+        let mut cached_arrays = Vec::new();
+
+        let filter = BooleanArray::new(selection.clone(), None);
+
+        // Get the column indices that are actually projected
+        use crate::reader::runtime::get_predicate_column_id;
+        let column_indices: Vec<usize> = if let Some(ref projection_mask) = self.projection_mask {
+            get_predicate_column_id(projection_mask)
+        } else {
+            (0..self.schema.fields().len()).collect()
+        };
+
+        for &column_idx in &column_indices {
+            if let Some(column) = self.liquid_cache.get_column(column_idx as u64) {
+                if let Some(array) =
+                    column.get_arrow_array_with_filter(self.current_batch_id, &filter)
+                {
+                    cached_arrays.push(array);
+                } else {
+                    all_cached = false;
+                    break;
+                }
+            } else {
+                all_cached = false;
+                break;
+            }
+        }
+
+        // It's possible that the projection is empty, e.g., SELECT COUNT(*) FROM table.
+        if !cached_arrays.is_empty() && all_cached {
+            // All columns are cached, skip reading from projection_reader to keep it in sync
+            self.projection_reader.skip_records(selection.len())?;
+
+            let batch = RecordBatch::try_new(self.schema.clone(), cached_arrays)?;
+            return Ok(Some(batch));
+        }
+
+        // Cache miss - return None to indicate fallback needed
+        Ok(None)
     }
 
     fn read_selection(
         &mut self,
-        selection: RowSelection,
+        selection: BooleanBuffer,
     ) -> Result<Option<RecordBatch>, ArrowError> {
-        self.current_batch_id.inc();
+        // Try to read from cache first, this avoids the expensive read/skip operations.
+        if let Some(batch) = self.try_read_from_cache(&selection)? {
+            return Ok(Some(batch));
+        }
+
+        let selection = RowSelection::from_filters(&[BooleanArray::new(selection, None)]);
+
         if !selection.selects_any() {
             self.projection_reader.skip_records(self.batch_size)?;
             return Ok(None);
         }
 
-        for selector in selection.iter() {
-            if selector.skip {
-                self.projection_reader.skip_records(selector.row_count)?;
-            } else {
-                self.projection_reader.read_records(selector.row_count)?;
-            }
-        }
-        let array = self.projection_reader.consume_batch()?;
-        let struct_array = array.as_struct();
-        let batch = RecordBatch::from(struct_array);
+        // Fall back to original approach when not all columns are cached,
+        // note that this will still read from cache for columns that are cached.
+        let batch = read_record_batch_from_parquet(&mut self.projection_reader, selection.iter())?;
         Ok(Some(batch))
     }
 }
@@ -190,8 +237,14 @@ impl Iterator for LiquidBatchReader {
                     match self.build_predicate_filter(selection) {
                         Ok(filtered_selection) => {
                             match self.read_selection(filtered_selection) {
-                                Ok(Some(record_batch)) => return Some(Ok(record_batch)),
-                                Ok(None) => continue, // No rows to read, try next batch
+                                Ok(Some(record_batch)) => {
+                                    self.current_batch_id.inc();
+                                    return Some(Ok(record_batch));
+                                }
+                                Ok(None) => {
+                                    self.current_batch_id.inc();
+                                    continue; // No rows to read, try next batch
+                                }
                                 Err(e) => return Some(Err(e)),
                             }
                         }
@@ -290,4 +343,146 @@ fn can_optimize_single_column_filter_projection(
         return false;
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::reader::plantime::{FilterCandidateBuilder, LiquidPredicate};
+    use crate::reader::runtime::LiquidRowFilter;
+    use arrow::array::{Int32Array, RecordBatch, StringArray};
+    use arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::common::ScalarValue;
+    use datafusion::datasource::schema_adapter::DefaultSchemaAdapterFactory;
+    use datafusion::logical_expr::Operator;
+    use datafusion::physical_expr::PhysicalExpr;
+    use datafusion::physical_expr::expressions::{BinaryExpr, Column, Literal};
+    use datafusion::physical_plan::metrics;
+    use parquet::arrow::ProjectionMask;
+    use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
+    use parquet::arrow::arrow_writer::ArrowWriter;
+    use std::sync::Arc;
+
+    #[test]
+    fn test_can_optimize_single_column_filter_projection() {
+        // Create test schema
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("col_a", DataType::Int32, false),
+            Field::new("col_b", DataType::Utf8, false),
+        ]));
+
+        // Create test parquet metadata
+        let temp_file = tempfile::NamedTempFile::new().unwrap();
+        let mut writer =
+            ArrowWriter::try_new(temp_file.reopen().unwrap(), schema.clone(), None).unwrap();
+
+        let col_a = Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5]));
+        let col_b = Arc::new(StringArray::from(vec!["a", "b", "c", "d", "e"]));
+        let batch = RecordBatch::try_new(schema.clone(), vec![col_a, col_b]).unwrap();
+
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+
+        let file = std::fs::File::open(temp_file.path()).unwrap();
+        let metadata = ArrowReaderMetadata::load(&file, ArrowReaderOptions::new()).unwrap();
+        let parquet_metadata = metadata.metadata();
+
+        // Helper function to create predicate
+        let create_predicate = |expr: Arc<dyn PhysicalExpr>| -> LiquidPredicate {
+            let adapter_factory = Arc::new(DefaultSchemaAdapterFactory);
+            let builder =
+                FilterCandidateBuilder::new(expr, schema.clone(), schema.clone(), adapter_factory);
+            let candidate = builder.build(parquet_metadata).unwrap().unwrap();
+
+            LiquidPredicate::try_new(
+                candidate,
+                parquet_metadata,
+                metrics::Count::new(),
+                metrics::Count::new(),
+                metrics::Time::new(),
+            )
+            .unwrap()
+        };
+
+        // Test 1: No filter - should return false
+        assert!(!can_optimize_single_column_filter_projection(
+            &mut None, &None
+        ));
+
+        // Test 2: Multiple predicates - should return false
+        let expr1: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("col_a", 0)),
+            Operator::Eq,
+            Arc::new(Literal::new(ScalarValue::Int32(Some(1)))),
+        ));
+        let expr2: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("col_a", 0)),
+            Operator::Gt,
+            Arc::new(Literal::new(ScalarValue::Int32(Some(2)))),
+        ));
+        let mut filter = Some(LiquidRowFilter::new(vec![
+            create_predicate(expr1),
+            create_predicate(expr2),
+        ]));
+        assert!(!can_optimize_single_column_filter_projection(
+            &mut filter,
+            &None
+        ));
+
+        // Test 3: String literal (supported by liquid) - should return false
+        let expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("col_b", 1)),
+            Operator::Eq,
+            Arc::new(Literal::new(ScalarValue::Utf8(Some("test".to_string())))),
+        ));
+        let mut filter = Some(LiquidRowFilter::new(vec![create_predicate(expr)]));
+        assert!(!can_optimize_single_column_filter_projection(
+            &mut filter,
+            &None
+        ));
+
+        // Test 4: Primitive literal with no projection mask - should return false
+        let expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("col_a", 0)),
+            Operator::Eq,
+            Arc::new(Literal::new(ScalarValue::Int32(Some(1)))),
+        ));
+        let mut filter = Some(LiquidRowFilter::new(vec![create_predicate(expr)]));
+        assert!(!can_optimize_single_column_filter_projection(
+            &mut filter,
+            &None
+        ));
+
+        // Test 5: Projection mismatch - should return false
+        let expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("col_a", 0)),
+            Operator::Eq,
+            Arc::new(Literal::new(ScalarValue::Int32(Some(1)))),
+        ));
+        let mut filter = Some(LiquidRowFilter::new(vec![create_predicate(expr)]));
+        let projection_mask = ProjectionMask::roots(
+            parquet_metadata.file_metadata().schema_descr(),
+            vec![1], // Column 1 instead of column 0
+        );
+        assert!(!can_optimize_single_column_filter_projection(
+            &mut filter,
+            &Some(projection_mask)
+        ));
+
+        // Test 6: SUCCESS - primitive literal with matching projection - should return true
+        let expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("col_a", 0)),
+            Operator::Eq,
+            Arc::new(Literal::new(ScalarValue::Int32(Some(1)))),
+        ));
+        let mut filter = Some(LiquidRowFilter::new(vec![create_predicate(expr)]));
+        let projection_mask = ProjectionMask::roots(
+            parquet_metadata.file_metadata().schema_descr(),
+            vec![0], // Column 0 matches the predicate
+        );
+        assert!(can_optimize_single_column_filter_projection(
+            &mut filter,
+            &Some(projection_mask)
+        ));
+    }
 }

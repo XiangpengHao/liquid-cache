@@ -1,16 +1,13 @@
-use std::{any::Any, collections::VecDeque};
+use std::any::Any;
 
 use ahash::AHashMap;
-use arrow::{
-    array::{ArrayRef, BooleanArray, BooleanBufferBuilder, new_empty_array},
-    buffer::BooleanBuffer,
-};
+use arrow::array::{ArrayRef, BooleanArray, BooleanBufferBuilder, new_empty_array};
 use arrow_schema::{DataType, Field, Fields};
 use liquid_cache_common::{cast_from_parquet_to_liquid_type, coerce_parquet_type_to_liquid_type};
 use parquet::{
     arrow::{
         array_reader::{ArrayReader, StructArrayReader},
-        arrow_reader::{RowGroups, RowSelector},
+        arrow_reader::RowGroups,
     },
     errors::ParquetError,
 };
@@ -40,7 +37,7 @@ struct CachedArrayReader {
     data_type: DataType,
     current_row: usize,
     inner_row_id: usize,
-    selection: VecDeque<RowSelector>,
+    selection_buffer: BooleanBufferBuilder,
     liquid_cache: LiquidCachedColumnRef,
     reader_local_cache: AHashMap<BatchID, ArrayRef>,
     next_batch_to_check_cached: u16,
@@ -56,7 +53,7 @@ impl CachedArrayReader {
             data_type,
             current_row: 0,
             inner_row_id: 0,
-            selection: VecDeque::new(),
+            selection_buffer: BooleanBufferBuilder::new(0),
             liquid_cache,
             reader_local_cache: AHashMap::new(),
             next_batch_to_check_cached: 0,
@@ -108,7 +105,7 @@ impl CachedArrayReader {
         let batch_size = self.batch_size();
         assert!(request_size <= batch_size);
 
-        self.selection.push_back(RowSelector::select(request_size));
+        self.selection_buffer.append_n(request_size, true);
 
         let starting_batch = BatchID::from_row_id(self.current_row, batch_size);
         let ending_batch = BatchID::from_row_id(self.current_row + request_size - 1, batch_size);
@@ -122,7 +119,7 @@ impl CachedArrayReader {
 
     fn skip_records_inner(&mut self, to_skip: usize) -> Result<usize, ParquetError> {
         assert!(to_skip <= self.batch_size());
-        self.selection.push_back(RowSelector::skip(to_skip));
+        self.selection_buffer.append_n(to_skip, false);
 
         self.current_row += to_skip;
 
@@ -132,15 +129,19 @@ impl CachedArrayReader {
     }
 
     fn consume_batch_inner(&mut self) -> Result<ArrayRef, ParquetError> {
-        let row_count: usize = self.selection.iter().map(|s| s.row_count).sum();
+        let batch_size = self.batch_size();
+        let mut selection_builder = std::mem::replace(
+            &mut self.selection_buffer,
+            BooleanBufferBuilder::new(batch_size),
+        );
+        let selection_buffer = selection_builder.finish();
+        let row_count = selection_buffer.len();
         let batch_size = self.liquid_cache.batch_size();
         let start_row = self.current_row - row_count;
 
         if row_count == 0 {
             return Ok(new_empty_array(&self.data_type));
         }
-
-        let selection_buffer = row_selection_to_boolean_buffer(row_count, self.selection.iter());
 
         // Calculate batch range involved in this selection
         let start_batch = start_row / batch_size;
@@ -193,8 +194,6 @@ impl CachedArrayReader {
             rt.push(array);
         }
 
-        self.selection.clear();
-
         match rt.len() {
             0 => Ok(new_empty_array(&self.data_type)),
             1 => Ok(rt.into_iter().next().unwrap()),
@@ -203,17 +202,6 @@ impl CachedArrayReader {
             )?),
         }
     }
-}
-
-fn row_selection_to_boolean_buffer<'a>(
-    row_count: usize,
-    selection: impl Iterator<Item = &'a RowSelector>,
-) -> BooleanBuffer {
-    let mut buffer = BooleanBufferBuilder::new(row_count);
-    for selector in selection {
-        buffer.append_n(selector.row_count, !selector.skip);
-    }
-    buffer.finish()
 }
 
 impl ArrayReader for CachedArrayReader {
