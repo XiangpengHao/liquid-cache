@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use arrow::array::{Array, AsArray, BooleanArray, RecordBatch, RecordBatchReader};
+use arrow::buffer::BooleanBuffer;
 use arrow::compute::{filter_record_batch, prep_null_mask_filter};
 use arrow_schema::{ArrowError, DataType, Schema, SchemaRef};
 use parquet::arrow::ProjectionMask;
@@ -84,9 +85,11 @@ impl LiquidBatchReader {
     fn build_predicate_filter(
         &mut self,
         selection: Vec<RowSelector>,
-    ) -> Result<RowSelection, ArrowError> {
+    ) -> Result<BooleanBuffer, ArrowError> {
+        let mut input_selection = row_selector_to_boolean_buffer(&selection);
+
         let Some(filter) = &mut self.row_filter else {
-            return Ok(selection.into());
+            return Ok(input_selection);
         };
 
         debug_assert_eq!(
@@ -95,7 +98,6 @@ impl LiquidBatchReader {
             "predicate readers and predicates should have the same length"
         );
 
-        let mut input_selection = row_selector_to_boolean_buffer(&selection);
         let selection_size = input_selection.len();
 
         for (predicate, reader) in filter
@@ -135,23 +137,67 @@ impl LiquidBatchReader {
             };
             input_selection = boolean_buffer_and_then(&input_selection, &boolean_mask);
         }
-        Ok(RowSelection::from_filters(&[BooleanArray::new(
-            input_selection,
-            None,
-        )]))
+        Ok(input_selection)
+    }
+
+    fn try_read_from_cache(
+        &mut self,
+        selection: &BooleanBuffer,
+    ) -> Result<Option<RecordBatch>, ArrowError> {
+        // Try to read from cache first - check if all projected columns are cached
+        let mut all_cached = true;
+        let mut cached_arrays = Vec::new();
+
+        let filter = BooleanArray::new(selection.clone(), None);
+        for (field_idx, _field) in self.schema.fields().iter().enumerate() {
+            if let Some(column) = self.liquid_cache.get_column(field_idx as u64) {
+                if let Some(array) =
+                    column.get_arrow_array_with_filter(self.current_batch_id, &filter)
+                {
+                    cached_arrays.push(array);
+                } else {
+                    all_cached = false;
+                    break;
+                }
+            } else {
+                all_cached = false;
+                break;
+            }
+        }
+
+        // It's possible that the projection is empty, e.g., SELECT COUNT(*) FROM table.
+        if !cached_arrays.is_empty() && all_cached {
+            // All columns are cached, skip reading from projection_reader to keep it in sync
+            self.projection_reader.skip_records(selection.len())?;
+
+            let batch = RecordBatch::try_new(self.schema.clone(), cached_arrays)?;
+            return Ok(Some(batch));
+        }
+
+        // Cache miss - return None to indicate fallback needed
+        Ok(None)
     }
 
     fn read_selection(
         &mut self,
-        selection: RowSelection,
+        selection: BooleanBuffer,
     ) -> Result<Option<RecordBatch>, ArrowError> {
-        self.current_batch_id.inc();
+        // Try to read from cache first, this avoids the expensive read/skip operations.
+        if let Some(batch) = self.try_read_from_cache(&selection)? {
+            return Ok(Some(batch));
+        }
+
+        let selection = RowSelection::from_filters(&[BooleanArray::new(selection, None)]);
+
         if !selection.selects_any() {
             self.projection_reader.skip_records(self.batch_size)?;
             return Ok(None);
         }
 
-        for selector in selection.iter() {
+        // Fall back to original approach when not all columns are cached,
+        // note that this will still read from cache for columns that are cached.
+        let selection_vec: Vec<RowSelector> = selection.iter().cloned().collect();
+        for selector in selection_vec {
             if selector.skip {
                 self.projection_reader.skip_records(selector.row_count)?;
             } else {
@@ -190,8 +236,14 @@ impl Iterator for LiquidBatchReader {
                     match self.build_predicate_filter(selection) {
                         Ok(filtered_selection) => {
                             match self.read_selection(filtered_selection) {
-                                Ok(Some(record_batch)) => return Some(Ok(record_batch)),
-                                Ok(None) => continue, // No rows to read, try next batch
+                                Ok(Some(record_batch)) => {
+                                    self.current_batch_id.inc();
+                                    return Some(Ok(record_batch));
+                                }
+                                Ok(None) => {
+                                    self.current_batch_id.inc();
+                                    continue; // No rows to read, try next batch
+                                }
                                 Err(e) => return Some(Err(e)),
                             }
                         }
