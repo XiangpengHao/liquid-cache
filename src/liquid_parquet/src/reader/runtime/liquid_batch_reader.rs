@@ -44,6 +44,7 @@ pub(crate) struct LiquidBatchReader {
     row_filter: Option<LiquidRowFilter>,
     predicate_readers: Vec<Box<dyn ArrayReader>>,
     projection_reader: Box<dyn ArrayReader>,
+    projection_mask: Option<ProjectionMask>,
     can_optimize_single_column_filter_projection: bool,
 }
 
@@ -74,6 +75,7 @@ impl LiquidBatchReader {
             row_filter,
             predicate_readers: filter_readers,
             projection_reader: array_reader,
+            projection_mask,
             can_optimize_single_column_filter_projection,
         }
     }
@@ -149,8 +151,17 @@ impl LiquidBatchReader {
         let mut cached_arrays = Vec::new();
 
         let filter = BooleanArray::new(selection.clone(), None);
-        for (field_idx, _field) in self.schema.fields().iter().enumerate() {
-            if let Some(column) = self.liquid_cache.get_column(field_idx as u64) {
+
+        // Get the column indices that are actually projected
+        use crate::reader::runtime::get_predicate_column_id;
+        let column_indices: Vec<usize> = if let Some(ref projection_mask) = self.projection_mask {
+            get_predicate_column_id(projection_mask)
+        } else {
+            (0..self.schema.fields().len()).collect()
+        };
+
+        for &column_idx in &column_indices {
+            if let Some(column) = self.liquid_cache.get_column(column_idx as u64) {
                 if let Some(array) =
                     column.get_arrow_array_with_filter(self.current_batch_id, &filter)
                 {
