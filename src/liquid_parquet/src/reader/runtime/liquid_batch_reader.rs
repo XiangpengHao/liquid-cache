@@ -196,17 +196,7 @@ impl LiquidBatchReader {
 
         // Fall back to original approach when not all columns are cached,
         // note that this will still read from cache for columns that are cached.
-        let selection_vec: Vec<RowSelector> = selection.iter().cloned().collect();
-        for selector in selection_vec {
-            if selector.skip {
-                self.projection_reader.skip_records(selector.row_count)?;
-            } else {
-                self.projection_reader.read_records(selector.row_count)?;
-            }
-        }
-        let array = self.projection_reader.consume_batch()?;
-        let struct_array = array.as_struct();
-        let batch = RecordBatch::from(struct_array);
+        let batch = read_record_batch_from_parquet(&mut self.projection_reader, selection.iter())?;
         Ok(Some(batch))
     }
 }
@@ -342,4 +332,147 @@ fn can_optimize_single_column_filter_projection(
         return false;
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::reader::plantime::{FilterCandidateBuilder, LiquidPredicate};
+    use crate::reader::runtime::LiquidRowFilter;
+    use arrow::array::{Int32Array, RecordBatch, StringArray};
+    use arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::common::ScalarValue;
+    use datafusion::datasource::schema_adapter::DefaultSchemaAdapterFactory;
+    use datafusion::logical_expr::Operator;
+    use datafusion::physical_expr::PhysicalExpr;
+    use datafusion::physical_expr::expressions::{BinaryExpr, Column, Literal};
+    use datafusion::physical_plan::metrics;
+    use parquet::arrow::ProjectionMask;
+    use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
+    use parquet::arrow::arrow_writer::ArrowWriter;
+    use std::sync::Arc;
+
+    #[test]
+    fn test_can_optimize_single_column_filter_projection() {
+        // Create test schema
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("col_a", DataType::Int32, false),
+            Field::new("col_b", DataType::Utf8, false),
+        ]));
+
+        // Create test parquet metadata
+        let temp_file = tempfile::NamedTempFile::new().unwrap();
+        let mut writer =
+            ArrowWriter::try_new(temp_file.reopen().unwrap(), schema.clone(), None).unwrap();
+
+        let col_a = Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5]));
+        let col_b = Arc::new(StringArray::from(vec!["a", "b", "c", "d", "e"]));
+        let batch = RecordBatch::try_new(schema.clone(), vec![col_a, col_b]).unwrap();
+
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+
+        let file = std::fs::File::open(temp_file.path()).unwrap();
+        let metadata = ArrowReaderMetadata::load(&file, ArrowReaderOptions::new()).unwrap();
+        let parquet_metadata = metadata.metadata();
+
+        // Helper function to create predicate
+        let create_predicate = |expr: Arc<dyn PhysicalExpr>| -> LiquidPredicate {
+            let adapter_factory = Arc::new(DefaultSchemaAdapterFactory);
+            let builder =
+                FilterCandidateBuilder::new(expr, schema.clone(), schema.clone(), adapter_factory);
+            let candidate = builder.build(&parquet_metadata).unwrap().unwrap();
+
+            LiquidPredicate::try_new(
+                candidate,
+                &parquet_metadata,
+                metrics::Count::new(),
+                metrics::Count::new(),
+                metrics::Time::new(),
+            )
+            .unwrap()
+        };
+
+        // Test 1: No filter - should return false
+        assert_eq!(
+            can_optimize_single_column_filter_projection(&mut None, &None),
+            false
+        );
+
+        // Test 2: Multiple predicates - should return false
+        let expr1: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("col_a", 0)),
+            Operator::Eq,
+            Arc::new(Literal::new(ScalarValue::Int32(Some(1)))),
+        ));
+        let expr2: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("col_a", 0)),
+            Operator::Gt,
+            Arc::new(Literal::new(ScalarValue::Int32(Some(2)))),
+        ));
+        let mut filter = Some(LiquidRowFilter::new(vec![
+            create_predicate(expr1),
+            create_predicate(expr2),
+        ]));
+        assert_eq!(
+            can_optimize_single_column_filter_projection(&mut filter, &None),
+            false
+        );
+
+        // Test 3: String literal (supported by liquid) - should return false
+        let expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("col_b", 1)),
+            Operator::Eq,
+            Arc::new(Literal::new(ScalarValue::Utf8(Some("test".to_string())))),
+        ));
+        let mut filter = Some(LiquidRowFilter::new(vec![create_predicate(expr)]));
+        assert_eq!(
+            can_optimize_single_column_filter_projection(&mut filter, &None),
+            false
+        );
+
+        // Test 4: Primitive literal with no projection mask - should return false
+        let expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("col_a", 0)),
+            Operator::Eq,
+            Arc::new(Literal::new(ScalarValue::Int32(Some(1)))),
+        ));
+        let mut filter = Some(LiquidRowFilter::new(vec![create_predicate(expr)]));
+        assert_eq!(
+            can_optimize_single_column_filter_projection(&mut filter, &None),
+            false
+        );
+
+        // Test 5: Projection mismatch - should return false
+        let expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("col_a", 0)),
+            Operator::Eq,
+            Arc::new(Literal::new(ScalarValue::Int32(Some(1)))),
+        ));
+        let mut filter = Some(LiquidRowFilter::new(vec![create_predicate(expr)]));
+        let projection_mask = ProjectionMask::roots(
+            parquet_metadata.file_metadata().schema_descr(),
+            vec![1], // Column 1 instead of column 0
+        );
+        assert_eq!(
+            can_optimize_single_column_filter_projection(&mut filter, &Some(projection_mask)),
+            false
+        );
+
+        // Test 6: SUCCESS - primitive literal with matching projection - should return true
+        let expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("col_a", 0)),
+            Operator::Eq,
+            Arc::new(Literal::new(ScalarValue::Int32(Some(1)))),
+        ));
+        let mut filter = Some(LiquidRowFilter::new(vec![create_predicate(expr)]));
+        let projection_mask = ProjectionMask::roots(
+            parquet_metadata.file_metadata().schema_descr(),
+            vec![0], // Column 0 matches the predicate
+        );
+        assert_eq!(
+            can_optimize_single_column_filter_projection(&mut filter, &Some(projection_mask)),
+            true
+        );
+    }
 }
