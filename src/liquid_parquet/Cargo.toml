@@ -35,6 +35,9 @@ congee = { workspace = true }
 plotters = "0.3.7"
 chrono = "0.4.41"
 rand = "0.9.0"
+petgraph = "0.6"
+walkdir = "2.4"
+indicatif = "0.17"
 
 [dev-dependencies]
 tempfile = "3.19.1"
@@ -70,7 +73,15 @@ path = "bench/trace_visualization.rs"
 name = "reuse_analysis"
 path = "bench/reuse_analysis.rs"
 
+[[bin]]
+name = "graph_analysis"
+path = "bench/graph_analysis.rs"
+
 [[bench]]
 name = "fsstarray"
 path = "bench/fsstarray.rs"
 harness = false
+
+[[bin]]
+name = "basic_policy_sim"
+path = "bench/basic_policy_sim.rs"

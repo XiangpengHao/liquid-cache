@@ -1,1 +1,1 @@
-SELECT COUNT(*) FROM hits;
+SELECT "AdvEngineID" FROM hits WHERE "AdvEngineID" <> 0;
