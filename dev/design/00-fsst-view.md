@@ -52,7 +52,7 @@ TLDR:
 Design decisions:
 1. The strings in the FSST buffer are unique, i.e., if two strings are different, their dictionary keys are different, and vice versa.
 2. There's only one FSST buffer, this avoids the need to track buffer ids as in StringView representation in Arrow. 
-3. Offset refers to the string offset in the FSST buffer.
+3. Offset refers to the string offset in the FSST buffer, it use Arrow's offset buffer.
 4. Nulls refers to the null bit of the DictionaryView.
 5. DictionaryView consumes 8 bytes, with fixed 6-byte prefix. 
 6. Everything but FSST buffer is stored in memory.
@@ -76,3 +76,10 @@ Each view in StringView has 16 bytes, this is too large.
 FSSTView shrinks it to 8 bytes by:
 1. remove buffer id
 2. remove offset and len by storing dictionary offset in a separate field, and use dictionary index to get the offset and len.
+
+### Use prefix to skip decompression
+
+When comparing FSSTView with a string needle, we can skip the decompression by using the prefix: first check if the 6-byte prefix is enough to determine the result, if not, then decompress the string for comparison.
+
+Design discussion:
+- Sometimes it's faster to decompress the entire array and then do the comparison. But when?
