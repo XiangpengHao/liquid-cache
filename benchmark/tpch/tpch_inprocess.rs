@@ -69,22 +69,13 @@ impl TpchInProcessBenchmark {
 
         // Add tables based on benchmark mode
         for table_name in tables.iter() {
-            let table_path = if self.bench_mode == InProcessBenchmarkMode::Orc {
-                format!(
-                    "file://{}/{}/{}.orc",
-                    current_dir,
-                    self.data_dir.display(),
-                    table_name
-                )
-            } else {
-                Url::parse(&format!(
-                    "file://{}/{}/{}.parquet",
-                    current_dir,
-                    self.data_dir.display(),
-                    table_name
-                ))?
-                .to_string()
-            };
+            let table_path = Url::parse(&format!(
+                "file://{}/{}/{}.parquet",
+                current_dir,
+                self.data_dir.display(),
+                table_name
+            ))?
+            .to_string();
             manifest = manifest.add_table(table_name.to_string(), table_path);
         }
 
