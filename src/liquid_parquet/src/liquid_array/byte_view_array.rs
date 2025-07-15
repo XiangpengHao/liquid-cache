@@ -58,6 +58,7 @@ impl LiquidArray for LiquidByteViewArray {
         self.dictionary_views.len() * std::mem::size_of::<DictionaryView>()
             + self.offsets.inner().len() * std::mem::size_of::<i32>()
             + self.nulls.as_ref().map_or(0, |n| n.buffer().len())
+            + self.fsst_buffer.get_array_memory_size()
             + std::mem::size_of::<Self>()
     }
 
@@ -154,28 +155,19 @@ fn try_eval_predicate_inner(
     expr: &Arc<dyn PhysicalExpr>,
     array: &LiquidByteViewArray,
 ) -> Result<Option<BooleanArray>, ArrowError> {
+    // Handle binary expressions (comparisons)
     if let Some(binary_expr) = expr.as_any().downcast_ref::<BinaryExpr>() {
         if let Some(literal) = binary_expr.right().as_any().downcast_ref::<Literal>() {
             let op = binary_expr.op();
+
+            // Try to use string needle optimization first
             if let Some(needle) = get_string_needle(literal.value()) {
                 let needle_bytes = needle.as_bytes();
-                match op {
-                    Operator::Eq => {
-                        let result = array.compare_equals(needle_bytes);
-                        return Ok(Some(result));
-                    }
-                    Operator::NotEq => {
-                        let result = array.compare_not_equals(needle_bytes);
-                        return Ok(Some(result));
-                    }
-                    Operator::Lt | Operator::LtEq | Operator::Gt | Operator::GtEq => {
-                        let result = array.compare_with_prefix_optimization(needle_bytes, op)?;
-                        return Ok(Some(result));
-                    }
-                    _ => {}
-                }
+                let result = array.compare_with(needle_bytes, op)?;
+                return Ok(Some(result));
             }
 
+            // Fallback to Arrow operations
             let dict_array = array.to_dict_arrow();
             let lhs = ColumnarValue::Array(Arc::new(dict_array));
             let rhs = ColumnarValue::Scalar(literal.value().clone());
@@ -198,7 +190,9 @@ fn try_eval_predicate_inner(
                 return Ok(Some(filtered));
             }
         }
-    } else if let Some(like_expr) = expr.as_any().downcast_ref::<LikeExpr>()
+    }
+    // Handle like expressions
+    else if let Some(like_expr) = expr.as_any().downcast_ref::<LikeExpr>()
         && like_expr
             .pattern()
             .as_any()
@@ -484,8 +478,25 @@ impl LiquidByteViewArray {
         BooleanArray::new(values, nulls)
     }
 
-    /// Compare with prefix optimization for ordering operations
-    pub fn compare_with_prefix_optimization(
+    /// Compare with prefix optimization and fallback to Arrow operations
+    pub fn compare_with(&self, needle: &[u8], op: &Operator) -> Result<BooleanArray, ArrowError> {
+        match op {
+            // Handle equality operations with existing optimized methods
+            Operator::Eq => Ok(self.compare_equals(needle)),
+            Operator::NotEq => Ok(self.compare_not_equals(needle)),
+
+            // Handle ordering operations with prefix optimization
+            Operator::Lt | Operator::LtEq | Operator::Gt | Operator::GtEq => {
+                self.compare_with_prefix_optimization(needle, op)
+            }
+
+            // For other operations, fall back to Arrow operations
+            _ => self.compare_with_arrow_fallback(needle, op),
+        }
+    }
+
+    /// Prefix optimization for ordering operations
+    fn compare_with_prefix_optimization(
         &self,
         needle: &[u8],
         op: &Operator,
@@ -547,9 +558,9 @@ impl LiquidByteViewArray {
                     }
                 }
 
-                // This should never happen if called correctly from try_eval_predicate_inner
+                // This should never happen if called correctly
                 (_, _) => {
-                    panic!("Unexpected operator {op:?} in compare_with_prefix_optimization");
+                    unreachable!("Unexpected operator {op:?} in compare_with_prefix_optimization");
                 }
             };
 
@@ -558,6 +569,37 @@ impl LiquidByteViewArray {
 
         let buffer = buffer_builder.finish();
         Ok(BooleanArray::new(buffer, self.nulls().cloned()))
+    }
+
+    /// Fallback to Arrow operations for unsupported operations
+    fn compare_with_arrow_fallback(
+        &self,
+        needle: &[u8],
+        op: &Operator,
+    ) -> Result<BooleanArray, ArrowError> {
+        let dict_array = self.to_dict_arrow();
+        let needle_scalar = datafusion::common::ScalarValue::Binary(Some(needle.to_vec()));
+        let lhs = ColumnarValue::Array(Arc::new(dict_array));
+        let rhs = ColumnarValue::Scalar(needle_scalar);
+
+        let result = match op {
+            Operator::LikeMatch => apply_cmp(&lhs, &rhs, arrow::compute::like),
+            Operator::ILikeMatch => apply_cmp(&lhs, &rhs, arrow::compute::ilike),
+            Operator::NotLikeMatch => apply_cmp(&lhs, &rhs, arrow::compute::nlike),
+            Operator::NotILikeMatch => apply_cmp(&lhs, &rhs, arrow::compute::nilike),
+            _ => {
+                return Err(ArrowError::NotYetImplemented(format!(
+                    "Operator {op:?} not supported in compare_with"
+                )));
+            }
+        }?;
+
+        match result {
+            ColumnarValue::Array(arr) => Ok(arr.as_boolean().clone()),
+            ColumnarValue::Scalar(_) => Err(ArrowError::ComputeError(
+                "Expected array result from comparison".to_string(),
+            )),
+        }
     }
 
     /// Serialize to bytes
