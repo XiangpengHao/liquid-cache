@@ -2,6 +2,7 @@
 //! You should not use this module directly.
 //! Instead, use `liquid_cache_server` or `liquid_cache_client` to interact with LiquidCache.
 mod byte_array;
+mod byte_view_array;
 mod fix_len_byte_array;
 mod float_array;
 pub(crate) mod ipc;
@@ -14,6 +15,7 @@ use std::{any::Any, num::NonZero, sync::Arc};
 use arrow::array::{ArrayRef, BooleanArray};
 use arrow_schema::ArrowError;
 pub use byte_array::{LiquidByteArray, get_string_needle};
+pub use byte_view_array::LiquidByteViewArray;
 use datafusion::physical_plan::PhysicalExpr;
 pub use fix_len_byte_array::LiquidFixedLenByteArray;
 use float_array::LiquidFloatType;
@@ -68,6 +70,15 @@ pub trait AsLiquidArray {
         self.as_binary_array_opt().expect("liquid binary array")
     }
 
+    /// Get the underlying byte view array.
+    fn as_byte_view_array_opt(&self) -> Option<&LiquidByteViewArray>;
+
+    /// Get the underlying byte view array.
+    fn as_byte_view(&self) -> &LiquidByteViewArray {
+        self.as_byte_view_array_opt()
+            .expect("liquid byte view array")
+    }
+
     /// Get the underlying primitive array.
     fn as_primitive_array_opt<T: LiquidPrimitiveType>(&self) -> Option<&LiquidPrimitiveArray<T>>;
 
@@ -96,6 +107,10 @@ impl AsLiquidArray for dyn LiquidArray + '_ {
     }
 
     fn as_binary_array_opt(&self) -> Option<&LiquidByteArray> {
+        self.as_any().downcast_ref()
+    }
+
+    fn as_byte_view_array_opt(&self) -> Option<&LiquidByteViewArray> {
         self.as_any().downcast_ref()
     }
 
