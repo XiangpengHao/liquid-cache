@@ -1,5 +1,5 @@
 [workspace.package]
-version = "0.1.6"
+version = "0.1.7"
 edition = "2024"
 repository = "https://github.com/XiangpengHao/liquid-cache"
 authors = ["XiangpengHao <xiangpeng.hao@wisc.edu>"]
@@ -20,10 +20,10 @@ members = [
 resolver = "3"
 
 [workspace.dependencies]
-liquid-cache-server = { path = "src/server", version = "0.1.6" }
-liquid-cache-client = { path = "src/client", version = "0.1.6" }
-liquid-cache-parquet = { path = "src/liquid_parquet", version = "0.1.6" }
-liquid-cache-common = { path = "src/common", version = "0.1.6" }
+liquid-cache-server = { path = "src/server", version = "0.1.7" }
+liquid-cache-client = { path = "src/client", version = "0.1.7" }
+liquid-cache-parquet = { path = "src/liquid_parquet", version = "0.1.7" }
+liquid-cache-common = { path = "src/common", version = "0.1.7" }
 arrow = { version = "=55.1.0", default-features = false, features = [
 	"prettyprint",
 ] }
