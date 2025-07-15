@@ -190,7 +190,8 @@ impl ExecutionPlan for LiquidCacheClientExec {
     }
 
     fn statistics(&self) -> Result<Statistics> {
-        self.remote_plan.statistics()
+        // Use partition_statistics with None to get stats for the entire plan
+        self.remote_plan.partition_statistics(None)
     }
 
     fn supports_limit_pushdown(&self) -> bool {
