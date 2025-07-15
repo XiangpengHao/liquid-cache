@@ -73,3 +73,8 @@ harness = false
 name = "filter_pushdown"
 path = "bench/filter_pushdown.rs"
 harness = false
+
+[[bench]]
+name = "byte_array_vs_byte_view"
+path = "bench/byte_array_vs_byte_view.rs"
+harness = false
