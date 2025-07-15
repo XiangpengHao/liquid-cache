@@ -28,18 +28,15 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      packages: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly-2025-04-29
-
+        uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
       - name: Install cargo-release
