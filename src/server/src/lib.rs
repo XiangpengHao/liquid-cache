@@ -198,7 +198,7 @@ impl LiquidCacheService {
             .ok_or_else(|| anyhow::anyhow!("Expected FetchResults but got None!"))?;
 
         let span_context = SpanContext::decode_w3c_traceparent(&fetch_results.traceparent)
-            .ok_or_else(|| anyhow::anyhow!("Failed to decode traceparent"))?;
+            .unwrap_or_else(SpanContext::random);
         let span = fastrace::Span::root("poll_stream", span_context);
 
         let handle = Uuid::from_bytes_ref(fetch_results.handle.as_ref().try_into()?);
