@@ -1,5 +1,3 @@
 [toolchain]
-# I really don't want to use nightly, but we have to, until:
-# https://github.com/spiraldb/fastlanes/issues/45 is fixed.
-channel = "nightly-2025-05-20"
-components = ["rustfmt", "clippy", "rust-src", "miri"]
+channel = "1.88.0"
+components = ["rustfmt", "clippy", "rust-src"]
