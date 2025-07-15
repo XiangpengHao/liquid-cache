@@ -1,8 +1,8 @@
-use arrow::array::BinaryViewArray;
 use arrow::array::{
     Array, ArrayAccessor, ArrayIter, ArrayRef, BinaryArray, BooleanArray, DictionaryArray,
     GenericByteArray, StringArray, StringViewArray, UInt16Array, cast::AsArray, types::UInt16Type,
 };
+use arrow::array::{BinaryViewArray, BooleanBufferBuilder};
 use arrow::buffer::{BooleanBuffer, Buffer, NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::compute::{cast, kernels};
 use arrow::datatypes::{BinaryType, ByteArrayType, Utf8Type};
@@ -44,7 +44,6 @@ impl DictionaryView {
         self.key
     }
 
-    #[cfg(test)]
     pub fn prefix(&self) -> &[u8; 6] {
         &self.prefix
     }
@@ -159,12 +158,21 @@ fn try_eval_predicate_inner(
         if let Some(literal) = binary_expr.right().as_any().downcast_ref::<Literal>() {
             let op = binary_expr.op();
             if let Some(needle) = get_string_needle(literal.value()) {
-                if op == &Operator::Eq {
-                    let result = array.compare_equals(needle);
-                    return Ok(Some(result));
-                } else if op == &Operator::NotEq {
-                    let result = array.compare_not_equals(needle);
-                    return Ok(Some(result));
+                let needle_bytes = needle.as_bytes();
+                match op {
+                    Operator::Eq => {
+                        let result = array.compare_equals(needle_bytes);
+                        return Ok(Some(result));
+                    }
+                    Operator::NotEq => {
+                        let result = array.compare_not_equals(needle_bytes);
+                        return Ok(Some(result));
+                    }
+                    Operator::Lt | Operator::LtEq | Operator::Gt | Operator::GtEq => {
+                        let result = array.compare_with_prefix_optimization(needle_bytes, op)?;
+                        return Ok(Some(result));
+                    }
+                    _ => {}
                 }
             }
 
@@ -337,12 +345,12 @@ impl LiquidByteViewArray {
 
         // Create dictionary views with prefixes - one per original array element
         let mut dictionary_views = Vec::with_capacity(keys.len());
-        
+
         // Create offsets for unique values - one per unique value in FSST buffer
         let mut offsets = Vec::with_capacity(values.len() + 1);
         let mut current_offset = 0i32;
         offsets.push(current_offset);
-        
+
         // Calculate offsets for each unique value in the dictionary
         for i in 0..values.len() {
             let value_bytes: &[u8] = if let Some(string_values) = values.as_string_opt::<i32>() {
@@ -355,12 +363,13 @@ impl LiquidByteViewArray {
             current_offset += value_bytes.len() as i32;
             offsets.push(current_offset);
         }
-        
+
         // Create dictionary views with prefixes for each key
         for key_opt in keys.iter() {
             if let Some(key) = key_opt {
                 // Get value bytes for prefix extraction
-                let value_bytes: &[u8] = if let Some(string_values) = values.as_string_opt::<i32>() {
+                let value_bytes: &[u8] = if let Some(string_values) = values.as_string_opt::<i32>()
+                {
                     string_values.value(key as usize).as_bytes()
                 } else if let Some(binary_values) = values.as_binary_opt::<i32>() {
                     binary_values.value(key as usize)
@@ -443,21 +452,112 @@ impl LiquidByteViewArray {
         self.nulls.as_ref()
     }
 
-    /// Compare equality with a string needle
-    pub fn compare_equals(&self, needle: &str) -> BooleanArray {
-        // For now, fallback to dictionary comparison
-        // TODO: Implement optimized prefix-based comparison
-        let dict = self.to_dict_arrow();
-        let needle_array = arrow::array::StringArray::from(vec![needle; dict.len()]);
-        kernels::cmp::eq(&dict, &needle_array).unwrap()
+    /// Compare equality with a byte needle
+    pub fn compare_equals(&self, needle: &[u8]) -> BooleanArray {
+        let compressor = self.fsst_buffer.compressor();
+        let compressed = compressor.compress(needle);
+
+        let values = &self.fsst_buffer.compressed;
+        let idx = values.iter().position(|v| v == Some(compressed.as_ref()));
+
+        if let Some(idx) = idx {
+            let target_key = idx as u16;
+            let mut buffer_builder = BooleanBufferBuilder::new(self.dictionary_views.len());
+
+            for view in &self.dictionary_views {
+                buffer_builder.append(view.key() == target_key);
+            }
+
+            let buffer = buffer_builder.finish();
+            BooleanArray::new(buffer, self.nulls().cloned())
+        } else {
+            let buffer = BooleanBuffer::new_unset(self.dictionary_views.len());
+            BooleanArray::new(buffer, self.nulls().cloned())
+        }
     }
 
-    /// Compare not equals with a string needle
-    pub fn compare_not_equals(&self, needle: &str) -> BooleanArray {
+    /// Compare not equals with a byte needle
+    pub fn compare_not_equals(&self, needle: &[u8]) -> BooleanArray {
         let result = self.compare_equals(needle);
         let (values, nulls) = result.into_parts();
         let values = !&values;
         BooleanArray::new(values, nulls)
+    }
+
+    /// Compare with prefix optimization for ordering operations
+    pub fn compare_with_prefix_optimization(
+        &self,
+        needle: &[u8],
+        op: &Operator,
+    ) -> Result<BooleanArray, ArrowError> {
+        // Extract needle prefix (first 6 bytes, padded with zeros if shorter)
+        let mut needle_prefix = [0u8; 6];
+        let prefix_len = std::cmp::min(needle.len(), 6);
+        needle_prefix[..prefix_len].copy_from_slice(&needle[..prefix_len]);
+
+        let mut buffer_builder = BooleanBufferBuilder::new(self.dictionary_views.len());
+        let decompressor = self.fsst_buffer.decompressor();
+
+        for view in &self.dictionary_views {
+            let prefix_cmp = view.prefix().cmp(&needle_prefix);
+
+            let result = match (op, prefix_cmp) {
+                // For Lt: if prefix < needle_prefix => true, if prefix > needle_prefix => false
+                (Operator::Lt, std::cmp::Ordering::Less) => true,
+                (Operator::Lt, std::cmp::Ordering::Greater) => false,
+
+                // For LtEq: if prefix < needle_prefix => true, if prefix > needle_prefix => false
+                (Operator::LtEq, std::cmp::Ordering::Less) => true,
+                (Operator::LtEq, std::cmp::Ordering::Greater) => false,
+
+                // For Gt: if prefix > needle_prefix => true, if prefix < needle_prefix => false
+                (Operator::Gt, std::cmp::Ordering::Greater) => true,
+                (Operator::Gt, std::cmp::Ordering::Less) => false,
+
+                // For GtEq: if prefix > needle_prefix => true, if prefix < needle_prefix => false
+                (Operator::GtEq, std::cmp::Ordering::Greater) => true,
+                (Operator::GtEq, std::cmp::Ordering::Less) => false,
+
+                // When prefixes are equal, we need to decompress and compare full values
+                (
+                    Operator::Lt | Operator::LtEq | Operator::Gt | Operator::GtEq,
+                    std::cmp::Ordering::Equal,
+                ) => {
+                    let key = view.key() as usize;
+
+                    // Get the compressed value from fsst_buffer
+                    if key < self.fsst_buffer.compressed.len()
+                        && !self.fsst_buffer.compressed.is_null(key)
+                    {
+                        let compressed_value = self.fsst_buffer.compressed.value(key);
+                        // Decompress the value - this allocates but only for inconclusive cases
+                        let decompressed_bytes = decompressor.decompress(compressed_value);
+
+                        // Compare the decompressed bytes with needle bytes directly
+                        match op {
+                            Operator::Lt => decompressed_bytes.as_slice() < needle,
+                            Operator::LtEq => decompressed_bytes.as_slice() <= needle,
+                            Operator::Gt => decompressed_bytes.as_slice() > needle,
+                            Operator::GtEq => decompressed_bytes.as_slice() >= needle,
+                            _ => unreachable!("Should only be called with comparison operators"),
+                        }
+                    } else {
+                        // Handle null case - nulls are typically considered "less than" any value
+                        matches!(op, Operator::Lt | Operator::LtEq)
+                    }
+                }
+
+                // This should never happen if called correctly from try_eval_predicate_inner
+                (_, _) => {
+                    panic!("Unexpected operator {op:?} in compare_with_prefix_optimization");
+                }
+            };
+
+            buffer_builder.append(result);
+        }
+
+        let buffer = buffer_builder.finish();
+        Ok(BooleanArray::new(buffer, self.nulls().cloned()))
     }
 
     /// Serialize to bytes
@@ -576,7 +676,7 @@ mod tests {
         let dict_output = liquid_array.to_dict_arrow();
         assert_eq!(
             &input,
-            cast(&dict_output, &input.data_type())
+            cast(&dict_output, input.data_type())
                 .unwrap()
                 .as_string::<i32>()
         );
@@ -689,7 +789,7 @@ mod tests {
             let compressor = LiquidByteViewArray::train_compressor(input_array.iter());
             let liquid_array = LiquidByteViewArray::from_string_array(&input_array, compressor);
 
-            let result = liquid_array.compare_equals(case.needle);
+            let result = liquid_array.compare_equals(case.needle.as_bytes());
             let expected_array = BooleanArray::from(case.expected.clone());
 
             assert_eq!(result, expected_array);
@@ -795,5 +895,224 @@ mod tests {
             liquid_array.fsst_buffer.compressor().symbol_table().len(),
             liquid_array.fsst_buffer.compressor().symbol_table().len()
         );
+    }
+
+    #[test]
+    fn test_compare_with_prefix_optimization_fast_path() {
+        // Test case 1: Prefix comparison can decide most results without decompression
+        // Uses strings with distinct prefixes to test the fast path
+        let input = StringArray::from(vec![
+            "apple123",  // prefix: "apple\0"
+            "banana456", // prefix: "banana"
+            "cherry789", // prefix: "cherry"
+            "apple999",  // prefix: "apple\0" (same as first)
+            "zebra000",  // prefix: "zebra\0"
+        ]);
+
+        let compressor = LiquidByteViewArray::train_compressor(input.iter());
+        let liquid_array = LiquidByteViewArray::from_string_array(&input, compressor);
+
+        // Test Lt with needle "car" (prefix: "car\0\0\0")
+        // Expected: "apple123" < "car" => true, "banana456" < "car" => true, others false
+        let result = liquid_array
+            .compare_with_prefix_optimization(b"car", &Operator::Lt)
+            .unwrap();
+        let expected = BooleanArray::from(vec![true, true, false, true, false]);
+        assert_eq!(result, expected);
+
+        // Test Gt with needle "dog" (prefix: "dog\0\0\0")
+        // Expected: only "zebra000" > "dog" => true
+        let result = liquid_array
+            .compare_with_prefix_optimization(b"dog", &Operator::Gt)
+            .unwrap();
+        let expected = BooleanArray::from(vec![false, false, false, false, true]);
+        assert_eq!(result, expected);
+
+        // Test GtEq with needle "apple" (prefix: "apple\0")
+        // Expected: all except "apple123" and "apple999" need decompression, others by prefix
+        let result = liquid_array
+            .compare_with_prefix_optimization(b"apple", &Operator::GtEq)
+            .unwrap();
+        let expected = BooleanArray::from(vec![true, true, true, true, true]);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_compare_with_prefix_optimization_decompression_path() {
+        // Test case 2: Cases where prefix comparison is inconclusive and requires decompression
+        // Uses strings with identical prefixes but different suffixes
+        let input = StringArray::from(vec![
+            "prefix_aaa", // prefix: "prefix"
+            "prefix_bbb", // prefix: "prefix" (same prefix)
+            "prefix_ccc", // prefix: "prefix" (same prefix)
+            "prefix_abc", // prefix: "prefix" (same prefix)
+            "different",  // prefix: "differ" (different prefix)
+        ]);
+
+        let compressor = LiquidByteViewArray::train_compressor(input.iter());
+        let liquid_array = LiquidByteViewArray::from_string_array(&input, compressor);
+
+        // Test Lt with needle "prefix_b" - this will require decompression for prefix matches
+        // Expected: "prefix_aaa" < "prefix_b" => true, "prefix_bbb" < "prefix_b" => false, etc.
+        let result = liquid_array
+            .compare_with_prefix_optimization(b"prefix_b", &Operator::Lt)
+            .unwrap();
+        let expected = BooleanArray::from(vec![true, false, false, true, true]);
+        assert_eq!(result, expected);
+
+        // Test LtEq with needle "prefix_bbb" - exact match case with decompression
+        let result = liquid_array
+            .compare_with_prefix_optimization(b"prefix_bbb", &Operator::LtEq)
+            .unwrap();
+        let expected = BooleanArray::from(vec![true, true, false, true, true]);
+        assert_eq!(result, expected);
+
+        // Test Gt with needle "prefix_abc" - requires decompression for prefix matches
+        let result = liquid_array
+            .compare_with_prefix_optimization(b"prefix_abc", &Operator::Gt)
+            .unwrap();
+        let expected = BooleanArray::from(vec![false, true, true, false, false]);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_compare_with_prefix_optimization_edge_cases_and_nulls() {
+        // Test case 3: Edge cases including nulls, empty strings, and boundary conditions
+        let input = StringArray::from(vec![
+            Some(""),           // Empty string (prefix: "\0\0\0\0\0\0")
+            None,               // Null value
+            Some("a"),          // Single character (prefix: "a\0\0\0\0\0")
+            Some("abcdef"),     // Exactly 6 chars (prefix: "abcdef")
+            Some("abcdefghij"), // Longer than 6 chars (prefix: "abcdef")
+            Some("abcdeg"),     // Differs at position 5 (prefix: "abcdeg")
+        ]);
+
+        let compressor = LiquidByteViewArray::train_compressor(input.iter());
+        let liquid_array = LiquidByteViewArray::from_string_array(&input, compressor);
+
+        // Test Lt with empty string needle - should test null handling
+        let result = liquid_array
+            .compare_with_prefix_optimization(b"", &Operator::Lt)
+            .unwrap();
+        let expected = BooleanArray::from(vec![
+            Some(false),
+            None,
+            Some(false),
+            Some(false),
+            Some(false),
+            Some(false),
+        ]);
+        assert_eq!(result, expected);
+
+        // Test Gt with needle "abcdef" - tests exact prefix match requiring decompression
+        let result = liquid_array
+            .compare_with_prefix_optimization(b"abcdef", &Operator::Gt)
+            .unwrap();
+        let expected = BooleanArray::from(vec![
+            Some(false),
+            None,
+            Some(false),
+            Some(false),
+            Some(true),
+            Some(true),
+        ]);
+        assert_eq!(result, expected);
+
+        // Test LtEq with needle "b" - tests single character comparisons
+        let result = liquid_array
+            .compare_with_prefix_optimization(b"b", &Operator::LtEq)
+            .unwrap();
+        let expected = BooleanArray::from(vec![
+            Some(true),
+            None,
+            Some(true),
+            Some(true),
+            Some(true),
+            Some(true),
+        ]);
+        assert_eq!(result, expected);
+
+        // Test GtEq with needle "abcdeg" - tests decompression when prefix exactly matches needle prefix
+        let result = liquid_array
+            .compare_with_prefix_optimization(b"abcdeg", &Operator::GtEq)
+            .unwrap();
+        // b"" >= b"abcdeg" => false
+        // null => null
+        // b"a" >= b"abcdeg" => false
+        // b"abcdef" >= b"abcdeg" => false (because b"abcdef" < b"abcdeg" since 'f' < 'g')
+        // b"abcdefghij" >= b"abcdeg" => false (because b"abcdefghij" < b"abcdeg" since 'f' < 'g')
+        // b"abcdeg" >= b"abcdeg" => true (exact match)
+        let expected = BooleanArray::from(vec![
+            Some(false),
+            None,
+            Some(false),
+            Some(false),
+            Some(false),
+            Some(true),
+        ]);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_compare_with_prefix_optimization_utf8_and_binary() {
+        // Test case 4: UTF-8 encoded strings and binary data comparisons
+        // This demonstrates the advantage of byte-level comparison
+        let input = StringArray::from(vec![
+            "café",   // UTF-8: [99, 97, 102, 195, 169]
+            "naïve",  // UTF-8: [110, 97, 195, 175, 118, 101]
+            "résumé", // UTF-8: [114, 195, 169, 115, 117, 109, 195, 169]
+            "hello",  // ASCII: [104, 101, 108, 108, 111]
+            "世界",   // UTF-8: [228, 184, 150, 231, 149, 140]
+        ]);
+
+        let compressor = LiquidByteViewArray::train_compressor(input.iter());
+        let liquid_array = LiquidByteViewArray::from_string_array(&input, compressor);
+
+        // Test Lt with UTF-8 needle "naïve" (UTF-8: [110, 97, 195, 175, 118, 101])
+        // Expected: "café" < "naïve" => true (99 < 110), "hello" < "naïve" => true, others false
+        let naive_bytes = "naïve".as_bytes(); // [110, 97, 195, 175, 118, 101]
+        let result = liquid_array
+            .compare_with_prefix_optimization(naive_bytes, &Operator::Lt)
+            .unwrap();
+        let expected = BooleanArray::from(vec![true, false, false, true, false]);
+        assert_eq!(result, expected);
+
+        // Test Gt with UTF-8 needle "café" (UTF-8: [99, 97, 102, 195, 169])
+        // Expected: strings with first byte > 99 should be true
+        let cafe_bytes = "café".as_bytes(); // [99, 97, 102, 195, 169]
+        let result = liquid_array
+            .compare_with_prefix_optimization(cafe_bytes, &Operator::Gt)
+            .unwrap();
+        let expected = BooleanArray::from(vec![false, true, true, true, true]);
+        assert_eq!(result, expected);
+
+        // Test LtEq with Chinese characters "世界" (UTF-8: [228, 184, 150, 231, 149, 140])
+        // Expected: only strings with first byte <= 228 should be true, but since 228 is quite high,
+        // most Latin characters will be true
+        let world_bytes = "世界".as_bytes(); // [228, 184, 150, 231, 149, 140]
+        let result = liquid_array
+            .compare_with_prefix_optimization(world_bytes, &Operator::LtEq)
+            .unwrap();
+        let expected = BooleanArray::from(vec![true, true, true, true, true]);
+        assert_eq!(result, expected);
+
+        // Test exact equality with "résumé" using GtEq and LtEq to verify byte-level precision
+        let resume_bytes = "résumé".as_bytes(); // [114, 195, 169, 115, 117, 109, 195, 169]
+        let gte_result = liquid_array
+            .compare_with_prefix_optimization(resume_bytes, &Operator::GtEq)
+            .unwrap();
+        let lte_result = liquid_array
+            .compare_with_prefix_optimization(resume_bytes, &Operator::LtEq)
+            .unwrap();
+
+        // Check GtEq and LtEq results separately
+        // GtEq: "café"(99) >= "résumé"(114) => false, "naïve"(110) >= "résumé"(114) => false,
+        //       "résumé"(114) >= "résumé"(114) => true, "hello"(104) >= "résumé"(114) => false,
+        //       "世界"(228) >= "résumé"(114) => true
+        let gte_expected = BooleanArray::from(vec![false, false, true, false, true]);
+        // LtEq: all strings with first byte <= 114 should be true, "世界"(228) should be false
+        let lte_expected = BooleanArray::from(vec![true, true, true, true, false]);
+        assert_eq!(gte_result, gte_expected);
+        assert_eq!(lte_result, lte_expected);
     }
 }
