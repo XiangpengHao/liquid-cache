@@ -19,10 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly-2025-04-29
-
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       
       - name: Check formatting
@@ -41,9 +38,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly-2025-04-29
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
@@ -61,9 +56,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly-2025-04-29
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Run shuttle test
         run: |
@@ -75,9 +68,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly-2025-04-29
+      # Sanitizers can only run on nightly
+      - uses: dtolnay/rust-toolchain@nightly
       # Address sanitizers can't be cached: https://github.com/Swatinem/rust-cache/issues/161
       - run: sudo apt install llvm-dev -y
       - name: Run address sanitizer
@@ -89,9 +81,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly-2025-04-29
+      - uses: dtolnay/rust-toolchain@stable
       - run: sudo apt-get update && sudo apt-get install -y wget
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
@@ -131,9 +121,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly-2025-04-29
+      - uses: dtolnay/rust-toolchain@stable
       - run: sudo apt-get update && sudo apt-get install -y wget
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
@@ -174,9 +162,7 @@ jobs:
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly-2025-04-29
+      - uses: dtolnay/rust-toolchain@stable
       - run: sudo apt-get update && sudo apt-get install -y wget jq
       - uses: ubicloud/rust-cache@v2
 
@@ -315,34 +301,50 @@ jobs:
               comment = 'Error reading benchmark comparison results';
             }
             
-            // Find existing benchmark comment
-            const comments = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-            });
+            // Check if this is an external PR (from a fork)
+            const isExternalPR = context.payload.pull_request.head.repo.full_name !== context.payload.pull_request.base.repo.full_name;
             
-            const botComment = comments.data.find(comment => 
-              comment.user.type === 'Bot' && 
-              comment.body.includes('## 📊 Benchmark Comparison')
-            );
+            if (isExternalPR) {
+              console.log('Skipping comment for external PR due to permission restrictions');
+              console.log('Benchmark results:');
+              console.log(comment);
+              return;
+            }
             
-            if (botComment) {
-              // Update existing comment
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: botComment.id,
-                body: comment
-              });
-            } else {
-              // Create new comment
-              await github.rest.issues.createComment({
+            try {
+              // Find existing benchmark comment
+              const comments = await github.rest.issues.listComments({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: context.issue.number,
-                body: comment
               });
+              
+              const botComment = comments.data.find(comment => 
+                comment.user.type === 'Bot' && 
+                comment.body.includes('## 📊 Benchmark Comparison')
+              );
+              
+              if (botComment) {
+                // Update existing comment
+                await github.rest.issues.updateComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: botComment.id,
+                  body: comment
+                });
+              } else {
+                // Create new comment
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  body: comment
+                });
+              }
+            } catch (error) {
+              console.log('Failed to post comment, likely due to permissions:', error.message);
+              console.log('Benchmark results:');
+              console.log(comment);
             }
 
   examples:
@@ -354,10 +356,7 @@ jobs:
       fail-fast: false
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly-2025-04-29
-
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
       - name: Build LiquidCache server
