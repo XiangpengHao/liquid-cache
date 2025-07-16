@@ -12,11 +12,11 @@ use parquet::{
     },
 };
 
-use super::reader::cached_page::{CachedPageReader, PredicatePageCache};
+use super::parquet::cached_page::{CachedPageReader, PredicatePageCache};
 use crate::reader::plantime::ParquetMetadataCacheReader;
 use crate::{
     cache::{BatchID, LiquidCachedRowGroupRef},
-    reader::runtime::reader::SerializedPageReader,
+    reader::runtime::parquet::SerializedPageReader,
 };
 
 /// An in-memory collection of column chunks
@@ -431,7 +431,7 @@ mod tests {
             plantime::CachedMetaReaderFactory,
             runtime::{
                 ArrowReaderBuilderBridge, liquid_stream::LiquidStreamBuilder,
-                reader::build_cached_array_reader,
+                parquet::build_cached_array_reader,
             },
         },
     };
