@@ -30,8 +30,6 @@ pub struct BenchmarkManifest {
     pub queries: Vec<String>,
     /// Optional object store configurations
     pub object_stores: Option<Vec<ObjectStoreConfig>>,
-    /// Special handling for queries (e.g., TPC-H Q15 has multiple statements)
-    pub special_query_handling: Option<HashMap<u32, String>>,
 }
 
 impl BenchmarkManifest {
@@ -42,7 +40,6 @@ impl BenchmarkManifest {
             tables: HashMap::new(),
             queries: Vec::new(),
             object_stores: None,
-            special_query_handling: None,
         }
     }
 
@@ -58,11 +55,6 @@ impl BenchmarkManifest {
 
     pub fn add_query<S: Into<String>>(mut self, query: S) -> Self {
         self.queries.push(query.into());
-        self
-    }
-
-    pub fn with_special_query_handling(mut self, handling: HashMap<u32, String>) -> Self {
-        self.special_query_handling = Some(handling);
         self
     }
 

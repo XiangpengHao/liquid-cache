@@ -228,31 +228,10 @@ impl InProcessBenchmarkRunner {
         &self,
         ctx: &Arc<SessionContext>,
         query: &Query,
-        manifest: &BenchmarkManifest,
     ) -> Result<(
         Vec<datafusion::arrow::array::RecordBatch>,
         Arc<dyn datafusion::physical_plan::ExecutionPlan>,
     )> {
-        // Check for special query handling
-        if let Some(special_handling) = &manifest.special_query_handling
-            && let Some(handling_type) = special_handling.get(&query.id)
-            && handling_type == "tpch_q15"
-            && query.id == 15
-        {
-            // Q15 has three queries, the second one is the one we want to test
-            let queries: Vec<&str> = query.sql.split(';').collect();
-            let mut results = Vec::new();
-            let mut plan = None;
-            for (i, q) in queries.iter().enumerate() {
-                let (result, p, _) = run_query(ctx, q).await?;
-                if i == 1 {
-                    results = result;
-                    plan = Some(p);
-                }
-            }
-            return Ok((results, plan.unwrap()));
-        }
-
         let (results, plan, _) = run_query(ctx, &query.sql).await?;
         Ok((results, plan))
     }
@@ -288,7 +267,6 @@ impl InProcessBenchmarkRunner {
         &self,
         ctx: &Arc<SessionContext>,
         query: &Query,
-        manifest: &BenchmarkManifest,
         bench_start_time: Instant,
         cache: Option<LiquidCacheRef>,
         iteration: u32,
@@ -316,7 +294,7 @@ impl InProcessBenchmarkRunner {
         let now = Instant::now();
         let starting_timestamp = bench_start_time.elapsed();
 
-        let (results, execution_plan) = self.execute_query(ctx, query, manifest).await?;
+        let (results, execution_plan) = self.execute_query(ctx, query).await?;
         let elapsed = now.elapsed();
 
         disk_info.refresh(true);
@@ -389,14 +367,7 @@ impl InProcessBenchmarkRunner {
 
             for it in 0..self.iteration {
                 let iteration_result = self
-                    .run_single_iteration(
-                        &ctx,
-                        query,
-                        &manifest,
-                        bench_start_time,
-                        cache.clone(),
-                        it + 1,
-                    )
+                    .run_single_iteration(&ctx, query, bench_start_time, cache.clone(), it + 1)
                     .await?;
 
                 query_result.add(iteration_result);

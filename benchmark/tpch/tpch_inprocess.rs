@@ -5,7 +5,7 @@ use liquid_cache_benchmarks::{
 };
 use mimalloc::MiMalloc;
 use serde::Serialize;
-use std::{collections::HashMap, path::PathBuf};
+use std::path::PathBuf;
 use url::Url;
 
 #[global_allocator]
@@ -94,13 +94,6 @@ impl TpchInProcessBenchmark {
                 // For TPC-H, we add the query SQL directly as inline SQL
                 manifest = manifest.add_query(query.sql);
             }
-        }
-
-        // Add special handling for Q15
-        if query_filter.contains(&15) {
-            let mut special_handling = HashMap::new();
-            special_handling.insert(15, "tpch_q15".to_string());
-            manifest = manifest.with_special_query_handling(special_handling);
         }
 
         Ok(manifest)

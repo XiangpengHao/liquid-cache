@@ -147,26 +147,6 @@ impl Benchmark for TpchBenchmark {
         Arc<dyn datafusion::physical_plan::ExecutionPlan>,
         Vec<Uuid>,
     )> {
-        // Check if this query has special handling defined in the manifest
-        if let Some(special_handling) = &self.manifest.special_query_handling {
-            if special_handling.contains_key(&query.id) {
-                // Q15 has three queries, the second one is the one we want to test
-                let queries: Vec<&str> = query.sql.split(';').collect();
-                let mut results = Vec::new();
-                let mut physical_plan = None;
-                let mut plan_uuids = Vec::new();
-                for (i, q) in queries.iter().enumerate() {
-                    let (result, plan, uuid) = run_query(ctx, q).await?;
-                    if i == 1 {
-                        physical_plan = Some(plan);
-                        results = result;
-                        plan_uuids = uuid;
-                    }
-                }
-                return Ok((results, physical_plan.unwrap(), plan_uuids));
-            }
-        }
-
         run_query(ctx, &query.sql).await
     }
 }
