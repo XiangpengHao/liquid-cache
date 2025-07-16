@@ -195,28 +195,8 @@ impl Benchmark for ClickBench {
             LiquidCacheBuilder::new(&self.common_args.server).with_cache_mode(mode);
         let ctx = liquid_cache_builder.build(session_config)?;
 
-        if let Some(object_stores) = self.manifest.get_object_store() {
-            for (url, object_store) in object_stores {
-                ctx.register_object_store(url.as_ref(), Arc::new(object_store));
-            }
-        }
-
-        // Register tables from manifest
-        for (table_name, table_path) in &self.manifest.tables {
-            let table_url = if table_path.starts_with("s3://")
-                || table_path.starts_with("http://")
-                || table_path.starts_with("https://")
-            {
-                Url::parse(table_path).expect("Failed to parse table path")
-            } else {
-                let current_dir = std::env::current_dir()?.to_string_lossy().to_string();
-                Url::parse(&format!("file://{}/{}", current_dir, table_path))
-                    .expect("Failed to parse table path")
-            };
-
-            ctx.register_parquet(table_name, table_url, Default::default())
-                .await?;
-        }
+        self.manifest.register_object_stores(&ctx).await.unwrap();
+        self.manifest.register_tables(&ctx).await.unwrap();
 
         Ok(Arc::new(ctx))
     }

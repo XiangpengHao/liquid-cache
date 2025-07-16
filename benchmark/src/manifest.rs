@@ -1,10 +1,13 @@
 use anyhow::Result;
 use datafusion::execution::object_store::ObjectStoreUrl;
+use datafusion::prelude::SessionContext;
 use object_store::ObjectStore;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::PathBuf;
+use std::sync::Arc;
+use url::Url;
 
 use crate::Query;
 
@@ -85,6 +88,34 @@ impl BenchmarkManifest {
         }
 
         Some(object_stores)
+    }
+
+    pub async fn register_tables(&self, ctx: &SessionContext) -> Result<()> {
+        let current_dir = std::env::current_dir()?.to_string_lossy().to_string();
+        for (table_name, table_path) in &self.tables {
+            let table_url = if table_path.starts_with("s3://")
+                || table_path.starts_with("http://")
+                || table_path.starts_with("https://")
+            {
+                Url::parse(table_path).expect("Failed to parse table path")
+            } else {
+                Url::parse(&format!("file://{}/{}", current_dir, table_path))
+                    .expect("Failed to parse table path")
+            };
+
+            ctx.register_parquet(table_name, table_url, Default::default())
+                .await?;
+        }
+        Ok(())
+    }
+
+    pub async fn register_object_stores(&self, ctx: &SessionContext) -> Result<()> {
+        if let Some(object_stores) = self.get_object_store() {
+            for (url, object_store) in object_stores {
+                ctx.register_object_store(url.as_ref(), Arc::new(object_store));
+            }
+        }
+        Ok(())
     }
 
     pub fn load_queries(&self) -> Vec<Query> {
