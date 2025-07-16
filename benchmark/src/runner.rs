@@ -32,18 +32,18 @@ pub trait Benchmark: Serialize + Clone {
     async fn get_queries(&self) -> Result<Vec<Query>>;
 
     /// Validate query results against expected answers (optional)
-    async fn validate_result(&self, query: &Query, results: &[RecordBatch]) -> Result<()>;
+    async fn validate_result(&self, query: &Query, results: &[RecordBatch]);
 
     /// Custom query execution logic (optional, for special cases like TPCH Q15)
     async fn execute_query(
         &self,
         ctx: &Arc<SessionContext>,
         query: &Query,
-    ) -> Result<(
+    ) -> (
         Vec<RecordBatch>,
         Arc<dyn datafusion::physical_plan::ExecutionPlan>,
         Vec<Uuid>,
-    )>;
+    );
 
     /// Get the benchmark name for tracing
     fn benchmark_name(&self) -> &'static str;
@@ -81,7 +81,7 @@ impl BenchmarkRunner {
         let bench_start_time = Instant::now();
 
         for query in queries {
-            let mut query_result = QueryResult::new(query.id, query.sql.clone());
+            let mut query_result = QueryResult::new(query.clone());
 
             for it in 0..common.iteration {
                 let iteration_result = Self::run_single_iteration(
@@ -125,7 +125,7 @@ impl BenchmarkRunner {
     ) -> Result<IterationResult> {
         let common = benchmark.common_args();
 
-        info!("Running query {}: \n{}", query.id, query.sql);
+        info!("Running query {}", query.id());
 
         common.start_trace().await;
         common.start_flamegraph().await;
@@ -139,7 +139,7 @@ impl BenchmarkRunner {
         let now = Instant::now();
         let starting_timestamp = bench_start_time.elapsed();
 
-        let (results, physical_plan, plan_uuid) = benchmark.execute_query(ctx, query).await?;
+        let (results, physical_plan, plan_uuid) = benchmark.execute_query(ctx, query).await;
         let elapsed = now.elapsed();
 
         networks.refresh(true);
@@ -167,7 +167,7 @@ impl BenchmarkRunner {
         let result_str = pretty::pretty_format_batches(&results).unwrap();
         debug!("Query result: \n{result_str}");
 
-        benchmark.validate_result(query, &results).await?;
+        benchmark.validate_result(query, &results).await;
 
         common.get_cache_stats().await;
         let network_traffic = network_info.received();
@@ -180,7 +180,7 @@ impl BenchmarkRunner {
                     format!("{}-q{}-{}", benchmark.benchmark_name(), query.id, iteration),
                     network_traffic,
                     elapsed.as_millis() as u64,
-                    query.sql.clone(),
+                    query.statement.clone(),
                 )
                 .await;
         }

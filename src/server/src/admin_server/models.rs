@@ -14,7 +14,7 @@ pub struct ExecutionStats {
     /// Execution time in milliseconds
     pub execution_time_ms: u64,
     /// User input SQL
-    pub user_sql: String,
+    pub user_sql: Vec<String>,
 }
 
 /// Execution stats with plan

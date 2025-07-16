@@ -21,19 +21,10 @@ static GLOBAL: MiMalloc = MiMalloc;
 pub struct TpchArgs {
     /// Path to the benchmark manifest file
     #[arg(long)]
-    pub manifest_path: PathBuf,
+    pub manifest: PathBuf,
 
     #[clap(flatten)]
     pub common: CommonBenchmarkArgs,
-}
-
-impl TpchArgs {
-    /// Load the benchmark manifest
-    fn load_manifest(&self) -> BenchmarkManifest {
-        let manifest = BenchmarkManifest::load_from_file(&self.manifest_path)
-            .expect("Failed to load manifest");
-        manifest
-    }
 }
 
 #[derive(Clone, Serialize)]
@@ -44,7 +35,7 @@ struct TpchBenchmark {
 
 impl TpchBenchmark {
     fn new(args: TpchArgs) -> Self {
-        let manifest = args.load_manifest();
+        let manifest = BenchmarkManifest::load_from_file(&args.manifest).unwrap();
         let common_args = args.common;
         Self {
             manifest,
@@ -118,7 +109,7 @@ impl Benchmark for TpchBenchmark {
     }
 
     async fn get_queries(&self) -> Result<Vec<liquid_cache_benchmarks::Query>> {
-        let queries = self.manifest.load_queries();
+        let queries = self.manifest.load_queries(1);
         Ok(queries)
     }
 
@@ -126,12 +117,11 @@ impl Benchmark for TpchBenchmark {
         &self,
         query: &liquid_cache_benchmarks::Query,
         results: &[RecordBatch],
-    ) -> Result<()> {
+    ) {
         if let Some(answer_dir) = &self.common_args.answer_dir {
-            tpch::check_result_against_answer(results, answer_dir, query.id)?;
-            info!("Query {} passed validation", query.id);
+            tpch::check_result_against_answer(results, answer_dir, query.id() + 1);
+            info!("Query {} passed validation", query.id());
         }
-        Ok(())
     }
 
     fn benchmark_name(&self) -> &'static str {
@@ -142,12 +132,19 @@ impl Benchmark for TpchBenchmark {
         &self,
         ctx: &Arc<SessionContext>,
         query: &liquid_cache_benchmarks::Query,
-    ) -> Result<(
+    ) -> (
         Vec<RecordBatch>,
         Arc<dyn datafusion::physical_plan::ExecutionPlan>,
         Vec<Uuid>,
-    )> {
-        run_query(ctx, &query.sql).await
+    ) {
+        if query.id() == 15 {
+            run_query(ctx, &query.statement()[0]).await;
+            let rt = run_query(ctx, &query.statement()[1]).await;
+            run_query(ctx, &query.statement()[2]).await;
+            rt
+        } else {
+            run_query(ctx, &query.statement()[0]).await
+        }
     }
 }
 

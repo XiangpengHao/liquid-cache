@@ -20,27 +20,27 @@ pub fn get_query_by_id(query_dir: impl AsRef<Path>, query_id: u32) -> Result<Vec
 }
 
 /// Check query results against expected answers stored in parquet files
-pub fn check_result_against_answer(
-    results: &[RecordBatch],
-    answer_dir: &Path,
-    query_id: u32,
-) -> Result<()> {
+pub fn check_result_against_answer(results: &[RecordBatch], answer_dir: &Path, query_id: u32) {
     let baseline_path = format!("{}/q{}.parquet", answer_dir.display(), query_id);
-    let baseline_file = File::open(baseline_path)?;
+    let baseline_file = File::open(baseline_path).unwrap();
     let mut baseline_batches = Vec::new();
-    let reader = ParquetRecordBatchReaderBuilder::try_new(baseline_file)?.build()?;
+    let reader = ParquetRecordBatchReaderBuilder::try_new(baseline_file)
+        .unwrap()
+        .build()
+        .unwrap();
     for batch in reader {
-        baseline_batches.push(batch?);
+        baseline_batches.push(batch.unwrap());
     }
 
     // Compare answers and result
-    let result_batch = datafusion::arrow::compute::concat_batches(&results[0].schema(), results)?;
+    let result_batch =
+        datafusion::arrow::compute::concat_batches(&results[0].schema(), results).unwrap();
     let answer_batch = datafusion::arrow::compute::concat_batches(
         &baseline_batches[0].schema(),
         &baseline_batches,
-    )?;
+    )
+    .unwrap();
     assert_batch_eq(&answer_batch, &result_batch);
-    Ok(())
 }
 
 /// Get all TPCH queries (1-22) from the query directory
@@ -51,10 +51,7 @@ pub fn get_all_queries(query_dir: impl AsRef<Path>) -> Result<Vec<Query>> {
     for id in query_ids {
         let query_strings = get_query_by_id(&query_dir, id)?;
 
-        queries.push(Query {
-            id,
-            sql: query_strings.join(";"),
-        });
+        queries.push(Query::new(id, query_strings));
     }
     Ok(queries)
 }

@@ -109,13 +109,6 @@ impl InProcessBenchmarkRunner {
         self
     }
 
-    /// Determine if a string is a file path or inline SQL
-    /// If it ends with .sql or contains path separators, treat as file path
-    /// Otherwise, treat as inline SQL
-    fn is_file_path(query_str: &str) -> bool {
-        query_str.ends_with(".sql") && std::fs::metadata(query_str).is_ok()
-    }
-
     async fn setup_context(
         &self,
         manifest: &BenchmarkManifest,
@@ -202,28 +195,6 @@ impl InProcessBenchmarkRunner {
         Ok((Arc::new(ctx), cache))
     }
 
-    async fn load_queries(&self, manifest: &BenchmarkManifest) -> Result<Vec<Query>> {
-        let mut queries = Vec::new();
-
-        for (index, query_str) in manifest.queries.iter().enumerate() {
-            let sql = if Self::is_file_path(query_str) {
-                let sql = std::fs::read_to_string(query_str)?;
-                info!("Loaded query {index} from file: {query_str}");
-                sql
-            } else {
-                info!("Loaded query {index} from inline SQL");
-                query_str.clone()
-            };
-
-            queries.push(Query {
-                id: index as u32,
-                sql,
-            });
-        }
-
-        Ok(queries)
-    }
-
     async fn execute_query(
         &self,
         ctx: &Arc<SessionContext>,
@@ -232,7 +203,7 @@ impl InProcessBenchmarkRunner {
         Vec<datafusion::arrow::array::RecordBatch>,
         Arc<dyn datafusion::physical_plan::ExecutionPlan>,
     )> {
-        let (results, plan, _) = run_query(ctx, &query.sql).await?;
+        let (results, plan, _) = run_query(ctx, &query.statement()[0]).await;
         Ok((results, plan))
     }
 
@@ -272,8 +243,10 @@ impl InProcessBenchmarkRunner {
         iteration: u32,
     ) -> Result<IterationResult> {
         info!(
-            "Running query {} iteration {}: \n{}",
-            query.id, iteration, query.sql
+            "Running query {} iteration {}: \n{:?}",
+            query.id(),
+            iteration,
+            query.statement()
         );
 
         // Start flamegraph profiling if enabled
@@ -338,7 +311,7 @@ impl InProcessBenchmarkRunner {
         info!("Running benchmark: {}", manifest.name);
 
         let (ctx, cache) = self.setup_context(&manifest).await?;
-        let queries = self.load_queries(&manifest).await?;
+        let queries = manifest.load_queries(0);
 
         // Filter queries if specific query index is requested
         let query_indices: Vec<usize> = if let Some(query_index) = self.query_filter {
@@ -363,7 +336,7 @@ impl InProcessBenchmarkRunner {
 
         for query_index in query_indices {
             let query = &queries[query_index];
-            let mut query_result = QueryResult::new(query.id, query.sql.clone());
+            let mut query_result = QueryResult::new(query.clone());
 
             for it in 0..self.iteration {
                 let iteration_result = self

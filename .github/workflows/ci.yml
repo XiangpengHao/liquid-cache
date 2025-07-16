@@ -148,7 +148,7 @@ jobs:
           cargo build --bin tpch_client
           env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic --cache-mode liquid_eager_transcode &> server.log &
           sleep 2  # Wait for server to start up
-          env RUST_LOG=info cargo run --bin tpch_client -- --query-dir benchmark/tpch/queries --answer-dir benchmark/tpch/answers/sf0.1 --data-dir benchmark/tpch/data/sf0.1
+          env RUST_LOG=info cargo run --bin tpch_client -- --manifest benchmark/tpch/manifest.json --answer-dir benchmark/tpch/answers/sf0.1
           echo "=== Server logs ==="
           cat server.log || echo "No server log found"
           curl http://localhost:53703/shutdown

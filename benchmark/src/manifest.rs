@@ -91,7 +91,7 @@ impl BenchmarkManifest {
             {
                 Url::parse(table_path).expect("Failed to parse table path")
             } else {
-                Url::parse(&format!("file://{}/{}", current_dir, table_path))
+                Url::parse(&format!("file://{current_dir}/{table_path}"))
                     .expect("Failed to parse table path")
             };
 
@@ -110,18 +110,19 @@ impl BenchmarkManifest {
         Ok(())
     }
 
-    pub fn load_queries(&self) -> Vec<Query> {
+    pub fn load_queries(&self, id_offset: u32) -> Vec<Query> {
         let mut queries = Vec::new();
         for (index, query) in self.queries.iter().enumerate() {
             let sql = if std::path::Path::new(query).exists() {
-                std::fs::read_to_string(query).expect("Failed to read query file")
+                let raw_string = std::fs::read_to_string(query).expect("Failed to read query file");
+                raw_string.split(";").map(|s| s.to_string()).collect()
             } else {
-                query.clone()
+                vec![query.clone()]
             };
 
             queries.push(Query {
-                id: index as u32,
-                sql,
+                id: index as u32 + id_offset,
+                statement: sql,
             });
         }
         queries

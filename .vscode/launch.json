@@ -72,12 +72,8 @@
 				"RUST_LOG": "info"
 			},
 			"args": [
-				"--query-dir",
-				"benchmark/tpch/queries",
-				"--data-dir",
-				"benchmark/tpch/data/sf100.0",
-				"--query",
-				"6",
+				"--manifest",
+				"benchmark/tpch/manifest.json",
 			],
 			"cwd": "${workspaceFolder}"
 		},

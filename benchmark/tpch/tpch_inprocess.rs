@@ -90,9 +90,9 @@ impl TpchInProcessBenchmark {
         };
 
         for query in queries {
-            if query_filter.contains(&query.id) {
+            if query_filter.contains(&query.id()) {
                 // For TPC-H, we add the query SQL directly as inline SQL
-                manifest = manifest.add_query(query.sql);
+                manifest = manifest.add_query(query.statement()[0].clone());
             }
         }
 
