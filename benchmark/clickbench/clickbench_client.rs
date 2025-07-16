@@ -107,19 +107,19 @@ fn check_result_against_answer(
 pub struct ClickBenchBenchmark {
     /// Path to the benchmark manifest file
     #[arg(long)]
-    pub manifest_path: PathBuf,
+    pub manifest: PathBuf,
 
     #[clap(flatten)]
     pub common: CommonBenchmarkArgs,
 
     /// Cached manifest to avoid re-loading
     #[clap(skip)]
-    pub manifest: Option<BenchmarkManifest>,
+    pub manifest_val: Option<BenchmarkManifest>,
 }
 
 impl ClickBenchBenchmark {
     fn get_manifest(&self) -> Result<&BenchmarkManifest> {
-        self.manifest.as_ref().ok_or_else(|| {
+        self.manifest_val.as_ref().ok_or_else(|| {
             datafusion::error::DataFusionError::Configuration(
                 "Manifest not loaded. Call load_manifest() first.".to_string(),
             )
@@ -127,9 +127,9 @@ impl ClickBenchBenchmark {
     }
 
     fn load_manifest(&mut self) -> Result<()> {
-        let manifest = BenchmarkManifest::load_from_file(&self.manifest_path)
+        let manifest = BenchmarkManifest::load_from_file(&self.manifest)
             .map_err(|e| datafusion::error::DataFusionError::Configuration(e.to_string()))?;
-        self.manifest = Some(manifest);
+        self.manifest_val = Some(manifest);
         Ok(())
     }
 }

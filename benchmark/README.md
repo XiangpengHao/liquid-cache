@@ -125,7 +125,7 @@ cargo run --release --bin bench_server -- --cache-mode liquid_eager_transcode
 ### Run client
 
 ```bash
-env RUST_LOG=info,clickbench_client=debug RUSTFLAGS='-C target-cpu=native' cargo run --release --bin tpch_client -- --query-dir benchmark/tpch/queries/ --data-dir benchmark/tpch/data/sf0.1  --iteration 3 --answer-dir benchmark/tpch/answers/sf0.1
+env RUST_LOG=info,tpch_client=debug RUSTFLAGS='-C target-cpu=native' cargo run --release --bin tpch_client -- --manifest benchmark/tpch/manifest.json --iteration 3 --answer-dir benchmark/tpch/answers/sf0.1
 ```
 
 
