@@ -12,7 +12,7 @@ use parquet::column::page::PageReader;
 use parquet::errors::ParquetError;
 use parquet::file::reader::ChunkReader;
 
-use crate::reader::runtime::reader::serialized_page_reader::SerializedPageReader;
+use crate::reader::runtime::parquet_reader::serialized_page_reader::SerializedPageReader;
 
 struct CachedPage {
     dict: Option<(usize, Page)>, // page offset -> page

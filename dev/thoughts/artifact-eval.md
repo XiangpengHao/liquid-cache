@@ -24,9 +24,23 @@ const ABLATION_STUDY_MODE: AblationStudyMode = AblationStudyMode::FullDecoding;
 env RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS='-C target-cpu=native' cargo run --release --bin bench_server -- --address 127.0.0.1:5001 --abort-on-panic
 ```
 
-3. Run client with:
+3. Create a manifest file (e.g., `ablation_manifest.json`) with your configuration:
+```json
+{
+  "name": "ClickBench-Ablation",
+  "description": "ClickBench benchmark for ablation study",
+  "tables": {
+    "hits": "benchmark/data/hits.parquet"
+  },
+  "queries": [
+    "SELECT COUNT(*) FROM hits;"
+  ]
+}
+```
+
+4. Run client with:
 ```bash
-env RUST_LOG=info,clickbench_client=debug RUST_BACKTRACE=1 RUSTFLAGS='-C target-cpu=native' cargo run --release --bin clickbench_client -- --query-path benchmark/query_select.sql --file benchmark/data/hits.parquet --bench-mode liquid-eager-transcode --server http://127.0.0.1:5001 --iteration 5 --output benchmark/data/liquid_eager_transcode.json --reset-cache
+env RUST_LOG=info,clickbench_client=debug RUST_BACKTRACE=1 RUSTFLAGS='-C target-cpu=native' cargo run --release --bin clickbench_client -- --manifest-path ablation_manifest.json --bench-mode liquid-eager-transcode --server http://127.0.0.1:5001 --iteration 5 --output benchmark/data/liquid_eager_transcode.json --reset-cache
 ```
 
 
@@ -42,18 +56,40 @@ First you need to create a bucket on S3 and upload the data to it.
 Note that not all region support S3-express, but us-west-2 does.
 
 ```bash
-export AWS_ACCESS_KEY_ID=your-access-key-id
-export AWS_SECRET_ACCESS_KEY=your-secret-access-key
-export AWS_REGION=us-west-2
-
 aws s3 cp benchmark/clickbench/data/hits.parquet s3://liquid-cache-test-s3express--usw2-az1--x-s3/hits.parquet --region us-west-2
 ```
-Then you can run benchmark by setting the `--file` to the S3 url. 
+
+Now create a manifest file (e.g., `s3express_manifest.json`) that includes the S3 configuration:
+
+```json
+{
+  "name": "ClickBench-S3Express",
+  "description": "ClickBench benchmark with S3 Express One Zone",
+  "tables": {
+    "hits": "s3://liquid-cache-test-s3express--usw2-az1--x-s3/hits.parquet"
+  },
+  "queries": [
+    "SELECT COUNT(*) FROM hits;",
+    "SELECT COUNT(*) FROM hits WHERE AdvEngineID <> 0;"
+  ],
+  "object_stores": [
+    {
+      "url": "s3://liquid-cache-test-s3express--usw2-az1--x-s3",
+      "options": {
+        "access_key_id": "your-access-key-id",
+        "secret_access_key": "your-secret-access-key",
+        "region": "us-west-2",
+        "s3_express": "true"
+      }
+    }
+  ]
+}
+```
+
+Then you can run the benchmark using the manifest file:
 
 ```bash
-env RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS='-C target
--cpu=native' cargo run --release --bin clickbench_client -- --query-path benchmark/click
-bench/queries/queries.sql --file s3://liquid-cache-test-s3express--usw2-az1--x-s3/hits.parquet --iteration 5 --query 20 --output benchmark/clickbench/data/results/liquid_blocking.minio.json
+env RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS='-C target-cpu=native' cargo run --release --bin clickbench_client -- --manifest-path s3express_manifest.json --iteration 5 --query 20 --output benchmark/clickbench/data/results/liquid_blocking.s3express.json
 ```
 
 For S3-express, you additionally need to configure bucket policy (in web ui) to allow create sessions.
@@ -75,7 +111,6 @@ For S3-express, you additionally need to configure bucket policy (in web ui) to 
 }
 ```
 
-
 ### Start MinIO instance:
 
 ```bash
@@ -87,10 +122,38 @@ It creates default user `minioadmin` with password `minioadmin`.
 You want to create a bucket and upload the data to it.
 
 ```bash
-export AWS_ACCESS_KEY_ID=minioadmin
-export AWS_SECRET_ACCESS_KEY=minioadmin
-
 aws s3 cp benchmark/clickbench/data/hits.parquet s3://liquid-cache-minio/hits.parquet --endpoint-url http://amd182.utah.cloudlab.us:9000
 ```
 
-Then you can run the benchmark by passing the `--file` to the minio bucket url.
+Create a manifest file (e.g., `minio_manifest.json`) for MinIO:
+
+```json
+{
+  "name": "ClickBench-MinIO",
+  "description": "ClickBench benchmark with MinIO",
+  "tables": {
+    "hits": "s3://liquid-cache-minio/hits.parquet"
+  },
+  "queries": [
+    "SELECT COUNT(*) FROM hits;",
+    "SELECT COUNT(*) FROM hits WHERE AdvEngineID <> 0;"
+  ],
+  "object_stores": [
+    {
+      "url": "s3://liquid-cache-minio",
+      "options": {
+        "access_key_id": "minioadmin",
+        "secret_access_key": "minioadmin",
+        "endpoint": "http://amd182.utah.cloudlab.us:9000",
+        "allow_http": "true"
+      }
+    }
+  ]
+}
+```
+
+Then you can run the benchmark using the manifest file:
+
+```bash
+env RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS='-C target-cpu=native' cargo run --release --bin clickbench_client -- --manifest-path minio_manifest.json --iteration 5 --query 20 --output benchmark/clickbench/data/results/liquid_blocking.minio.json
+```

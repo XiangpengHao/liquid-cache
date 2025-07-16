@@ -311,7 +311,7 @@ mod tests {
         thrift::TSerializable,
     };
 
-    use crate::reader::runtime::reader::thrift::TCompactSliceInputProtocol;
+    use crate::reader::runtime::parquet_reader::thrift::TCompactSliceInputProtocol;
 
     #[test]
     pub fn read_boolean_list_field_type() {

@@ -9,7 +9,7 @@ mod liquid_batch_reader;
 mod liquid_predicate;
 mod liquid_stream;
 mod parquet_bridge;
-mod reader;
+mod parquet_reader;
 mod utils;
 
 pub struct LiquidRowFilter {

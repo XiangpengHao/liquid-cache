@@ -212,10 +212,6 @@ LiquidCache is a data cache. It caches logically equivalent but physically diffe
 
 LiquidCache does not cache query results - it only caches data, allowing the same cache to be used for different queries.
 
-#### Nightly Rust, seriously?
-
-We will transition to stable Rust once we believe the project is ready for production.
-
 #### How does LiquidCache work?
 
 Check out our [paper](/dev/doc/liquid-cache-vldb.pdf) (under submission to VLDB) for more details. Meanwhile, we are working on a technical blog to introduce LiquidCache in a more accessible way.

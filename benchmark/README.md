@@ -33,14 +33,71 @@ done
 
 ```bash
 cargo run --release --bin bench_server
-cargo run --release --bin clickbench_client -- --query-path benchmark/clickbench/queries/queries.sql --file benchmark/clickbench/data/hits.parquet
+cargo run --release --bin clickbench_client -- --manifest-path benchmark/clickbench/manifest.json
 ```
 
 #### Advanced
 
 ```bash
 env RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS='-C target-cpu=native' cargo run --release --bin bench_server -- --cache-mode liquid_eager_transcode
-env RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS='-C target-cpu=native' cargo run --release --bin clickbench_client -- --query-path benchmark/clickbench/queries/queries.sql --file benchmark/clickbench/data/hits.parquet --query 42
+env RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS='-C target-cpu=native' cargo run --release --bin clickbench_client -- --manifest-path benchmark/clickbench/manifest.json --query 42
+```
+
+### ClickBench with S3 Storage
+
+For S3-based benchmarks, create a manifest file with object store configuration:
+
+#### Regular S3
+
+```json
+{
+  "name": "ClickBench-S3",
+  "description": "ClickBench benchmark with S3 storage",
+  "tables": {
+    "hits": "s3://my-clickbench-bucket/hits.parquet"
+  },
+  "queries": [
+    "SELECT COUNT(*) FROM hits;",
+    "SELECT COUNT(*) FROM hits WHERE AdvEngineID <> 0;"
+  ],
+  "object_stores": [
+    {
+      "url": "s3://my-clickbench-bucket",
+      "options": {
+        "access_key_id": "your-access-key",
+        "secret_access_key": "your-secret-key",
+        "region": "us-east-1"
+      }
+    }
+  ]
+}
+```
+
+#### S3 Express One Zone
+
+```json
+{
+  "name": "ClickBench-S3Express",
+  "description": "ClickBench benchmark with S3 Express One Zone",
+  "tables": {
+    "hits": "s3://my-s3express-bucket--usw2-az1--x-s3/hits.parquet"
+  },
+  "queries": [
+    "SELECT COUNT(*) FROM hits;",
+    "SELECT COUNT(*) FROM hits WHERE AdvEngineID <> 0;"
+  ],
+  "object_stores": [
+    {
+      "url": "s3://my-s3express-bucket--usw2-az1--x-s3",
+      "options": {
+        "access_key_id": "your-access-key",
+        "secret_access_key": "your-secret-key",
+        "region": "us-west-2",
+        "s3_express": "true"
+      }
+    }
+  ]
+}
 ```
 
 ## TPCH
@@ -71,44 +128,6 @@ cargo run --release --bin bench_server -- --cache-mode liquid_eager_transcode
 env RUST_LOG=info,clickbench_client=debug RUSTFLAGS='-C target-cpu=native' cargo run --release --bin tpch_client -- --query-dir benchmark/tpch/queries/ --data-dir benchmark/tpch/data/sf0.1  --iteration 3 --answer-dir benchmark/tpch/answers/sf0.1
 ```
 
-## In process mode
-The benchmark uses a JSON manifest file to describe the data tables and queries to run.
-
-### JSON Format
-
-```json
-{
-  "name": "My Benchmark Suite",
-  "description": "Description of what this benchmark tests",
-  "tables": {
-    "table1": "data/table1.parquet",
-    "table2": "data/table2.parquet"
-  },
-  "queries": [
-    "queries/aggregation.sql",
-    "SELECT COUNT(*) FROM table1 WHERE col > 100",
-    "queries/complex_join.sql",
-    "SELECT t1.id, t2.name FROM table1 t1 JOIN table2 t2 ON t1.id = t2.id LIMIT 10"
-  ],
-  "object_stores": [
-    {
-      "url": "s3://my-bucket",
-      "options": {
-        "aws_access_key_id": "my-access-key",
-        "aws_secret_access_key": "my-secret-key",
-        "aws_region": "us-west-2"
-      }
-    },
-    {
-      "url": "s3://my-bucket-2",
-      "options": {
-        "aws_region": "eu-central-1",
-        "skip_signature": "true"
-      }
-    }
-  ]
-}
-```
 
 
 ## Profile
@@ -134,7 +153,7 @@ You can use [`parquet-viewer`](https://parquet-viewer.xiangpeng.systems) to view
 
 To collect cache trace, simply add `--cache-trace-dir benchmark/data/cache_trace` to the client command, for example:
 ```bash
-env RUST_LOG=info cargo run --bin clickbench_client --release -- --query-path benchmark/clickbench/queries/queries.sql --file benchmark/clickbench/data/hits.parquet --query 20 --iteration 2 --partitions 8 --cache-trace-dir benchmark/data/
+env RUST_LOG=info cargo run --bin clickbench_client --release -- --manifest-path clickbench_manifest.json --query 20 --iteration 2 --partitions 8 --cache-trace-dir benchmark/data/
 ```
 It will generate a parquet file that contains the cache trace for each query that the server executed.
 

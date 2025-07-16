@@ -27,7 +27,7 @@ use std::{
 };
 
 use super::liquid_batch_reader::LiquidBatchReader;
-use super::reader::build_cached_array_reader;
+use super::parquet_reader::build_cached_array_reader;
 use super::{InMemoryRowGroup, LiquidRowFilter};
 
 type ReadResult = Result<(ReaderFactory, Option<LiquidBatchReader>), ParquetError>;
