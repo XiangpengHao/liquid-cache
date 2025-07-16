@@ -119,7 +119,7 @@ impl Benchmark for TpchBenchmark {
         results: &[RecordBatch],
     ) {
         if let Some(answer_dir) = &self.common_args.answer_dir {
-            tpch::check_result_against_answer(results, answer_dir, query.id() + 1);
+            tpch::check_result_against_answer(results, answer_dir, query.id());
             info!("Query {} passed validation", query.id());
         }
     }
