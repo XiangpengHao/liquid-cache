@@ -112,7 +112,7 @@ fn check_result_against_answer(results: &[RecordBatch], answer_dir: &Path, query
 pub struct ClickBenchArgs {
     /// Path to the benchmark manifest file
     #[arg(long)]
-    pub manifest_path: PathBuf,
+    pub manifest: PathBuf,
 
     #[clap(flatten)]
     pub common: ClientBenchmarkArgs,
