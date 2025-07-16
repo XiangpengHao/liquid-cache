@@ -6,6 +6,8 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::path::PathBuf;
 
+use crate::Query;
+
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct ObjectStoreConfig {
     /// Object store URL (e.g., "s3://bucket-name", "gs://bucket-name", "http://localhost:9000")
@@ -83,5 +85,22 @@ impl BenchmarkManifest {
         }
 
         Some(object_stores)
+    }
+
+    pub fn load_queries(&self) -> Vec<Query> {
+        let mut queries = Vec::new();
+        for (index, query) in self.queries.iter().enumerate() {
+            let sql = if std::path::Path::new(query).exists() {
+                std::fs::read_to_string(query).expect("Failed to read query file")
+            } else {
+                query.clone()
+            };
+
+            queries.push(Query {
+                id: index as u32,
+                sql,
+            });
+        }
+        queries
     }
 }

@@ -9,7 +9,9 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion::{error::Result, prelude::SessionConfig};
-use liquid_cache_benchmarks::{Benchmark, CommonBenchmarkArgs, utils::assert_batch_eq};
+use liquid_cache_benchmarks::{
+    Benchmark, BenchmarkManifest, CommonBenchmarkArgs, utils::assert_batch_eq,
+};
 use liquid_cache_benchmarks::{BenchmarkMode, BenchmarkRunner, Query, run_query};
 use liquid_cache_client::LiquidCacheBuilder;
 use liquid_cache_common::CacheMode;
@@ -18,9 +20,7 @@ use mimalloc::MiMalloc;
 use object_store::ClientConfigKey;
 use serde::Serialize;
 use std::{
-    collections::HashMap,
     fs::File,
-    io::{BufRead, BufReader},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -104,93 +104,46 @@ fn check_result_against_answer(
 
 #[derive(Parser, Serialize, Clone)]
 #[command(name = "ClickBench Benchmark")]
-pub struct ClickBenchBenchmark {
-    /// Path to the query file
+pub struct ClickBenchArgs {
+    /// Path to the benchmark manifest file
     #[arg(long)]
-    pub query_path: PathBuf,
-
-    /// Path to the ClickBench file, hit.parquet or directory to partitioned files
-    /// This can be a local path (file:///path/to/file.parquet) or an S3 URL (s3://bucket/path/to/file.parquet)
-    ///
-    /// S3 Express One Zone buckets are automatically detected by their naming pattern (ending with --zone--x-s3)
-    /// and will be configured appropriately. You can also manually enable S3 Express via the AWS_S3_EXPRESS=true
-    /// environment variable.
-    ///
-    /// Custom S3 endpoints (e.g., LocalStack, MinIO) can be configured using AWS_ENDPOINT_URL or AWS_ENDPOINT
-    /// environment variables. HTTP endpoints are automatically allowed when detected.
-    #[arg(long)]
-    pub file: PathBuf,
+    pub manifest_path: PathBuf,
 
     #[clap(flatten)]
     pub common: CommonBenchmarkArgs,
 }
 
-/// Check if a bucket name indicates an S3 Express One Zone bucket
-/// S3 Express buckets have names ending with --zone--x-s3
-fn is_s3_express_bucket(bucket_name: &str) -> bool {
-    bucket_name.ends_with("--x-s3") && bucket_name.contains("--")
+impl ClickBenchArgs {
+    /// Load the benchmark manifest with caching
+    fn load_manifest(&self) -> BenchmarkManifest {
+        let manifest = BenchmarkManifest::load_from_file(&self.manifest_path)
+            .expect("Failed to load manifest");
+        manifest
+    }
 }
 
-/// Create S3 options from environment variables, with S3 Express detection and custom endpoint support
-fn create_s3_options_from_env(bucket_name: &str) -> Option<HashMap<String, String>> {
-    let mut s3_options = HashMap::new();
-
-    // Get credentials from environment variables (standard AWS approach)
-    let access_key_id = std::env::var("AWS_ACCESS_KEY_ID").ok();
-    let secret_access_key = std::env::var("AWS_SECRET_ACCESS_KEY").ok();
-    let region = std::env::var("AWS_REGION")
-        .or_else(|_| std::env::var("AWS_DEFAULT_REGION"))
-        .ok();
-
-    if let Some(access_key_id) = access_key_id
-        && let Some(secret_access_key) = secret_access_key
-    {
-        s3_options.insert("access_key_id".to_string(), access_key_id);
-        s3_options.insert("secret_access_key".to_string(), secret_access_key);
-    } else {
-        s3_options.insert("skip_signature".to_string(), "true".to_string());
-    }
-
-    if let Some(region) = region {
-        s3_options.insert("region".to_string(), region);
-    }
-
-    // Check for custom endpoint (for LocalStack, MinIO, etc.)
-    if let Ok(endpoint) =
-        std::env::var("AWS_ENDPOINT_URL").or_else(|_| std::env::var("AWS_ENDPOINT"))
-    {
-        s3_options.insert("endpoint".to_string(), endpoint.clone());
-        info!("Using custom S3 endpoint: {endpoint}");
-
-        // For custom endpoints, often we need to allow HTTP
-        if endpoint.starts_with("http://") {
-            s3_options.insert("allow_http".to_string(), "true".to_string());
-            info!("Allowing HTTP connections for custom endpoint");
-        }
-    }
-
-    // Check if this is an S3 Express One Zone bucket
-    if is_s3_express_bucket(bucket_name) {
-        s3_options.insert("s3_express".to_string(), "true".to_string());
-        info!("Detected S3 Express One Zone bucket: {bucket_name}");
-    }
-
-    // Allow manual override via environment variable
-    if let Ok(s3_express) = std::env::var("AWS_S3_EXPRESS") {
-        s3_options.insert("s3_express".to_string(), s3_express.clone());
-        if s3_express == "true" {
-            info!("S3 Express manually enabled via AWS_S3_EXPRESS environment variable");
-        }
-    }
-
-    Some(s3_options)
+#[derive(Clone, Serialize)]
+struct ClickBench {
+    manifest: BenchmarkManifest,
+    common_args: CommonBenchmarkArgs,
 }
 
-impl Benchmark for ClickBenchBenchmark {
-    type Args = ClickBenchBenchmark;
+impl ClickBench {
+    fn new(args: ClickBenchArgs) -> Self {
+        let manifest = args.load_manifest();
+        let common_args = args.common;
+        Self {
+            manifest,
+            common_args,
+        }
+    }
+}
+
+impl Benchmark for ClickBench {
+    type Args = ClickBench;
 
     fn common_args(&self) -> &CommonBenchmarkArgs {
-        &self.common
+        &self.common_args
     }
 
     fn args(&self) -> &Self::Args {
@@ -199,26 +152,15 @@ impl Benchmark for ClickBenchBenchmark {
 
     #[fastrace::trace]
     async fn setup_context(&self) -> Result<Arc<SessionContext>> {
-        let table_name = "hits";
-
-        // Determine if this is an S3 URL or local file path
-        let table_url = if self.file.to_string_lossy().starts_with("s3://") {
-            Url::parse(&self.file.to_string_lossy())
-                .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?
-        } else {
-            let current_dir = std::env::current_dir()?.to_string_lossy().to_string();
-            Url::parse(&format!("file://{}/{}", current_dir, self.file.display()))
-                .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?
-        };
-
-        let mode = match self.common.bench_mode {
+        // Load the manifest
+        let mode = match self.common_args.bench_mode {
             BenchmarkMode::ParquetFileserver => {
                 let mut session_config = SessionConfig::from_env()?;
-                if let Some(partitions) = self.common.partitions {
+                if let Some(partitions) = self.common_args.partitions {
                     session_config.options_mut().execution.target_partitions = partitions;
                 }
                 let ctx = Arc::new(SessionContext::new_with_config(session_config));
-                let base_url = Url::parse(&self.common.server).unwrap();
+                let base_url = Url::parse(&self.common_args.server).unwrap();
 
                 let object_store = object_store::http::HttpBuilder::new()
                     .with_url(base_url.clone())
@@ -227,12 +169,15 @@ impl Benchmark for ClickBenchBenchmark {
                     .unwrap();
                 ctx.register_object_store(&base_url, Arc::new(object_store));
 
-                ctx.register_parquet(
-                    "hits",
-                    format!("{}/hits.parquet", self.common.server),
-                    Default::default(),
-                )
-                .await?;
+                // Register tables from manifest
+                for (table_name, table_path) in &self.manifest.tables {
+                    ctx.register_parquet(
+                        table_name,
+                        format!("{}/{}", self.common_args.server, table_path),
+                        Default::default(),
+                    )
+                    .await?;
+                }
                 return Ok(ctx);
             }
             BenchmarkMode::ParquetPushdown => CacheMode::Parquet,
@@ -242,47 +187,42 @@ impl Benchmark for ClickBenchBenchmark {
         };
 
         let mut session_config = SessionConfig::from_env()?;
-        if let Some(partitions) = self.common.partitions {
+        if let Some(partitions) = self.common_args.partitions {
             session_config.options_mut().execution.target_partitions = partitions;
         }
 
-        // Prepare S3 credentials if this is an S3 URL
-        let mut liquid_cache_builder =
-            LiquidCacheBuilder::new(&self.common.server).with_cache_mode(mode);
+        let liquid_cache_builder =
+            LiquidCacheBuilder::new(&self.common_args.server).with_cache_mode(mode);
+        let ctx = liquid_cache_builder.build(session_config)?;
 
-        if table_url.scheme() == "s3" {
-            // Extract bucket name for S3 Express detection
-            let bucket_name = table_url.host_str().unwrap_or_default();
-
-            // Prepare S3 object store configuration from environment variables with S3 Express detection
-            let s3_options = create_s3_options_from_env(bucket_name);
-
-            // Extract bucket from S3 URL for object store registration
-            let bucket_url = format!("s3://{bucket_name}/");
-            let object_store_url =
-                datafusion::execution::object_store::ObjectStoreUrl::parse(&bucket_url)?;
-
-            liquid_cache_builder =
-                liquid_cache_builder.with_object_store(object_store_url, s3_options);
+        if let Some(object_stores) = self.manifest.get_object_store() {
+            for (url, object_store) in object_stores {
+                ctx.register_object_store(url.as_ref(), Arc::new(object_store));
+            }
         }
 
-        let ctx = liquid_cache_builder.build(session_config)?;
-        ctx.register_parquet(table_name, table_url, Default::default())
-            .await?;
+        // Register tables from manifest
+        for (table_name, table_path) in &self.manifest.tables {
+            let table_url = if table_path.starts_with("s3://")
+                || table_path.starts_with("http://")
+                || table_path.starts_with("https://")
+            {
+                Url::parse(table_path).expect("Failed to parse table path")
+            } else {
+                let current_dir = std::env::current_dir()?.to_string_lossy().to_string();
+                Url::parse(&format!("file://{}/{}", current_dir, table_path))
+                    .expect("Failed to parse table path")
+            };
+
+            ctx.register_parquet(table_name, table_url, Default::default())
+                .await?;
+        }
+
         Ok(Arc::new(ctx))
     }
 
     async fn get_queries(&self) -> Result<Vec<Query>> {
-        let query_path = self.query_path.as_path();
-        let file = File::open(query_path)?;
-        let reader = BufReader::new(file);
-        let mut queries = Vec::new();
-        for (index, line) in reader.lines().enumerate() {
-            queries.push(Query {
-                id: index as u32,
-                sql: line?,
-            });
-        }
+        let queries = self.manifest.load_queries();
         Ok(queries)
     }
 
@@ -299,7 +239,7 @@ impl Benchmark for ClickBenchBenchmark {
     }
 
     async fn validate_result(&self, query: &Query, results: &[RecordBatch]) -> Result<()> {
-        if let Some(answer_dir) = &self.common.answer_dir {
+        if let Some(answer_dir) = &self.common_args.answer_dir {
             check_result_against_answer(results, answer_dir, query)?;
             info!("Query {} passed validation", query.id);
         }
@@ -313,7 +253,7 @@ impl Benchmark for ClickBenchBenchmark {
 
 #[tokio::main]
 pub async fn main() -> Result<()> {
-    let benchmark = ClickBenchBenchmark::parse();
-    BenchmarkRunner::run(benchmark).await?;
+    let clickbench = ClickBench::new(ClickBenchArgs::parse());
+    BenchmarkRunner::run(clickbench).await?;
     Ok(())
 }
