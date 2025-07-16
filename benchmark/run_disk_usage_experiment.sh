@@ -19,10 +19,6 @@ mkdir -p log
 mkdir -p tmp
 mkdir -p disk_usage_stats
 
-# if [ -d tmp ]; then
-#     rm -rf tmp/*
-# fi
-
 log_dir=log/$(date +"%Y-%m-%d_%H-%M")
 mkdir -p $log_dir
 ln -sfn $log_dir latest
@@ -53,4 +49,4 @@ echo "Killing bench_server (PID $SERVER_PID)..."
 kill $SERVER_PID
 wait $SERVER_PID 2>/dev/null
 
-python3 parse_disk_usage.py latest/server.log
+python3 parse_latency_bw.py $log_dir/server.log
