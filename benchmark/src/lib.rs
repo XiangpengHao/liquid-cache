@@ -18,12 +18,14 @@ use std::{fmt::Display, str::FromStr, sync::Arc};
 use uuid::Uuid;
 
 pub mod inprocess;
+mod manifest;
 mod observability;
 pub mod runner;
 pub mod tpch;
 pub mod utils;
 
 pub use inprocess::*;
+pub use manifest::BenchmarkManifest;
 pub use observability::*;
 pub use runner::*;
 
