@@ -10,7 +10,7 @@ use datafusion::{
 };
 use datafusion::{error::Result, prelude::SessionConfig};
 use liquid_cache_benchmarks::{
-    Benchmark, BenchmarkManifest, CommonBenchmarkArgs, utils::assert_batch_eq,
+    Benchmark, BenchmarkManifest, ClientBenchmarkArgs, utils::assert_batch_eq,
 };
 use liquid_cache_benchmarks::{BenchmarkMode, BenchmarkRunner, Query, run_query};
 use liquid_cache_client::LiquidCacheBuilder;
@@ -115,13 +115,13 @@ pub struct ClickBenchArgs {
     pub manifest_path: PathBuf,
 
     #[clap(flatten)]
-    pub common: CommonBenchmarkArgs,
+    pub common: ClientBenchmarkArgs,
 }
 
 #[derive(Clone, Serialize)]
 struct ClickBench {
     manifest: BenchmarkManifest,
-    common_args: CommonBenchmarkArgs,
+    common_args: ClientBenchmarkArgs,
 }
 
 impl ClickBench {
@@ -138,7 +138,7 @@ impl ClickBench {
 impl Benchmark for ClickBench {
     type Args = ClickBench;
 
-    fn common_args(&self) -> &CommonBenchmarkArgs {
+    fn common_args(&self) -> &ClientBenchmarkArgs {
         &self.common_args
     }
 

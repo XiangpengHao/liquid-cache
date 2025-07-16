@@ -1,5 +1,5 @@
 use crate::{
-    BenchmarkResult, CommonBenchmarkArgs, IterationResult, Query, QueryResult, setup_observability,
+    BenchmarkResult, ClientBenchmarkArgs, IterationResult, Query, QueryResult, setup_observability,
 };
 use datafusion::{
     arrow::{array::RecordBatch, util::pretty},
@@ -20,7 +20,7 @@ pub trait Benchmark: Serialize + Clone {
     type Args: Serialize + Clone;
 
     /// Get the common benchmark arguments
-    fn common_args(&self) -> &CommonBenchmarkArgs;
+    fn common_args(&self) -> &ClientBenchmarkArgs;
 
     /// Get the benchmark-specific arguments
     fn args(&self) -> &Self::Args;

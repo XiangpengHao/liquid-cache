@@ -17,17 +17,17 @@ use std::time::Duration;
 use std::{fmt::Display, str::FromStr, sync::Arc};
 use uuid::Uuid;
 
-pub mod inprocess;
+pub mod client_runner;
+pub mod inprocess_runner;
 mod manifest;
 mod observability;
-pub mod runner;
 pub mod tpch;
 pub mod utils;
 
-pub use inprocess::*;
+pub use client_runner::*;
+pub use inprocess_runner::*;
 pub use manifest::BenchmarkManifest;
 pub use observability::*;
-pub use runner::*;
 
 #[derive(Serialize, Clone)]
 pub struct Query {
@@ -50,7 +50,7 @@ impl Query {
 }
 
 #[derive(Parser, Serialize, Clone)]
-pub struct CommonBenchmarkArgs {
+pub struct ClientBenchmarkArgs {
     /// LiquidCache server URL
     #[arg(long, default_value = "http://localhost:15214")]
     pub server: String,
@@ -112,7 +112,7 @@ pub struct CommonBenchmarkArgs {
     pub flamegraph: bool,
 }
 
-impl CommonBenchmarkArgs {
+impl ClientBenchmarkArgs {
     pub async fn start_trace(&self) {
         if self.cache_trace_dir.is_some() {
             let client = reqwest::Client::new();

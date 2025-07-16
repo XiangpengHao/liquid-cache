@@ -1,7 +1,7 @@
 use clap::Parser;
 use datafusion::prelude::SessionConfig;
 use datafusion::{arrow::array::RecordBatch, error::Result, prelude::SessionContext};
-use liquid_cache_benchmarks::{Benchmark, BenchmarkManifest, CommonBenchmarkArgs, run_query, tpch};
+use liquid_cache_benchmarks::{Benchmark, BenchmarkManifest, ClientBenchmarkArgs, run_query, tpch};
 use liquid_cache_benchmarks::{BenchmarkMode, BenchmarkRunner};
 use liquid_cache_client::LiquidCacheBuilder;
 use liquid_cache_common::CacheMode;
@@ -24,13 +24,13 @@ pub struct TpchArgs {
     pub manifest: PathBuf,
 
     #[clap(flatten)]
-    pub common: CommonBenchmarkArgs,
+    pub common: ClientBenchmarkArgs,
 }
 
 #[derive(Clone, Serialize)]
 struct TpchBenchmark {
     manifest: BenchmarkManifest,
-    common_args: CommonBenchmarkArgs,
+    common_args: ClientBenchmarkArgs,
 }
 
 impl TpchBenchmark {
@@ -47,7 +47,7 @@ impl TpchBenchmark {
 impl Benchmark for TpchBenchmark {
     type Args = TpchBenchmark;
 
-    fn common_args(&self) -> &CommonBenchmarkArgs {
+    fn common_args(&self) -> &ClientBenchmarkArgs {
         &self.common_args
     }
 
