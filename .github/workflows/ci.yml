@@ -96,7 +96,7 @@ jobs:
       - name: Update manifest for partitioned data
         run: |
           # Update the manifest to point to the partitioned data directory
-          sed 's|"benchmark/clickbench/data/hits.parquet"|"benchmark/clickbench/data"|' \
+          sed 's|"benchmark/clickbench/data/hits.parquet"|"benchmark/clickbench/data/hits_0.parquet"|' \
             benchmark/clickbench/manifest.json > benchmark/clickbench/benchmark_manifest.json
 
       - name: Run ClickBench
