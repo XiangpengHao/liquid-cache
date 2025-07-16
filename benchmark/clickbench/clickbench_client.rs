@@ -126,7 +126,7 @@ struct ClickBench {
 
 impl ClickBench {
     fn new(args: ClickBenchArgs) -> Self {
-        let manifest = BenchmarkManifest::load_from_file(&args.manifest_path).unwrap();
+        let manifest = BenchmarkManifest::load_from_file(&args.manifest).unwrap();
         let common_args = args.common;
         Self {
             manifest,
