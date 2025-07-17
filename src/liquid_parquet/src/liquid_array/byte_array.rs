@@ -435,7 +435,7 @@ impl LiquidByteArray {
     }
 
     /// Get the decompressor of the LiquidStringArray.
-    pub fn decompressor(&self) -> Decompressor {
+    pub fn decompressor(&self) -> Decompressor<'_> {
         self.values.decompressor()
     }
 

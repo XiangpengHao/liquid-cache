@@ -3,7 +3,7 @@ use arrow::array::{
     GenericByteArray, StringArray, StringViewArray, UInt16Array, cast::AsArray, types::UInt16Type,
 };
 use arrow::array::{BinaryViewArray, BooleanBufferBuilder};
-use arrow::buffer::{BooleanBuffer, Buffer, NullBuffer, OffsetBuffer, ScalarBuffer};
+use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::compute::{cast, kernels};
 use arrow::datatypes::{BinaryType, ByteArrayType, Utf8Type};
 use arrow_schema::ArrowError;
@@ -92,7 +92,7 @@ impl LiquidArray for LiquidByteViewArray {
     }
 
     fn to_bytes(&self) -> Vec<u8> {
-        self.to_bytes_inner()
+        todo!("I need to think more carefully about this")
     }
 
     fn data_type(&self) -> LiquidDataType {
@@ -404,7 +404,7 @@ impl LiquidByteViewArray {
     }
 
     /// Get the decompressor of the FSST buffer
-    pub fn decompressor(&self) -> Decompressor {
+    pub fn decompressor(&self) -> Decompressor<'_> {
         self.fsst_buffer.decompressor()
     }
 
@@ -599,107 +599,6 @@ impl LiquidByteViewArray {
             ColumnarValue::Scalar(_) => Err(ArrowError::ComputeError(
                 "Expected array result from comparison".to_string(),
             )),
-        }
-    }
-
-    /// Serialize to bytes
-    pub fn to_bytes_inner(&self) -> Vec<u8> {
-        let mut buffer = Vec::new();
-
-        // Write header
-        buffer.extend_from_slice(&(self.dictionary_views.len() as u64).to_le_bytes());
-        buffer.extend_from_slice(&(self.original_arrow_type as u16).to_le_bytes());
-
-        // Write nulls flag and data
-        let has_nulls = self.nulls.is_some();
-        buffer.push(has_nulls as u8);
-        if let Some(nulls) = &self.nulls {
-            let nulls_bytes = nulls.buffer().as_slice();
-            buffer.extend_from_slice(&(nulls_bytes.len() as u32).to_le_bytes());
-            buffer.extend_from_slice(nulls_bytes);
-        }
-
-        // Write dictionary views
-        for view in &self.dictionary_views {
-            buffer.extend_from_slice(&view.key.to_le_bytes());
-            buffer.extend_from_slice(&view.prefix);
-        }
-
-        // Write offsets
-        for offset in self.offsets.iter() {
-            buffer.extend_from_slice(&offset.to_le_bytes());
-        }
-
-        // Write FSST buffer
-        self.fsst_buffer.to_bytes(&mut buffer);
-
-        buffer
-    }
-
-    /// Deserialize from bytes
-    pub fn from_bytes(bytes: bytes::Bytes, compressor: Arc<Compressor>) -> Self {
-        let mut offset = 0;
-
-        // Read header
-        let array_len = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap()) as usize;
-        offset += 8;
-
-        let arrow_type = ArrowByteType::from(u16::from_le_bytes(
-            bytes[offset..offset + 2].try_into().unwrap(),
-        ));
-        offset += 2;
-
-        // Read nulls
-        let has_nulls = bytes[offset] != 0;
-        offset += 1;
-
-        let nulls = if has_nulls {
-            let nulls_len =
-                u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
-            offset += 4;
-
-            let nulls_slice = bytes.slice(offset..offset + nulls_len);
-            let nulls_buffer = Buffer::from(nulls_slice);
-            let boolean_buffer = BooleanBuffer::new(nulls_buffer, 0, array_len);
-            offset += nulls_len;
-
-            Some(NullBuffer::from(boolean_buffer))
-        } else {
-            None
-        };
-
-        // Read dictionary views
-        let mut dictionary_views = Vec::with_capacity(array_len);
-        for _ in 0..array_len {
-            let key = u16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap());
-            offset += 2;
-
-            let mut prefix = [0u8; 6];
-            prefix.copy_from_slice(&bytes[offset..offset + 6]);
-            offset += 6;
-
-            dictionary_views.push(DictionaryView::new(key, prefix));
-        }
-
-        // Read offsets
-        let mut offsets = Vec::with_capacity(array_len);
-        for _ in 0..array_len {
-            let offset_val = i32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
-            offset += 4;
-            offsets.push(offset_val);
-        }
-        let offsets = OffsetBuffer::new(ScalarBuffer::from(offsets));
-
-        // Read FSST buffer
-        let fsst_bytes = bytes.slice(offset..);
-        let fsst_buffer = FsstArray::from_bytes(fsst_bytes, compressor);
-
-        Self {
-            dictionary_views,
-            offsets,
-            nulls,
-            fsst_buffer: Arc::new(fsst_buffer),
-            original_arrow_type: arrow_type,
         }
     }
 }

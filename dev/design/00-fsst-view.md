@@ -81,3 +81,14 @@ When comparing FSSTView with a string needle, we can skip the decompression by u
 
 Design discussion:
 - Sometimes it's faster to decompress the entire array and then do the comparison. But when?
+
+
+## Engineering details
+
+### Fuzz test
+
+1. Use cargo-fuzz to test the FSSTView implementation.
+2. We use [structured fuzzing](https://rust-fuzz.github.io/book/cargo-fuzz/structure-aware-fuzzing.html#structure-aware-fuzzing) to generate array of strings and 10 `compare_with` operations.
+3. We test the following functions:
+- Roundtrip from and to arrow StringArray.
+- The `compare_with` function. We test that our `compare_with` function is equivalent to the Arrow's equivalent function.

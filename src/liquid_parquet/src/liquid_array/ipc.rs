@@ -503,7 +503,7 @@ impl LiquidByteArray {
         let keys_size = result.len() - keys_start;
 
         // Add padding to ensure FsstArray starts at an 8-byte aligned position
-        while result.len() % 8 != 0 {
+        while !result.len().is_multiple_of(8) {
             result.push(0);
         }
 
@@ -659,7 +659,7 @@ impl LiquidFixedLenByteArray {
         let keys_size = result.len() - keys_start;
 
         // Add padding to ensure FsstArray starts at an 8-byte aligned position
-        while result.len() % 8 != 0 {
+        while !result.len().is_multiple_of(8) {
             result.push(0);
         }
 

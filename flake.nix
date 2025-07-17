@@ -30,7 +30,10 @@
               eza
               fd
               llvmPackages.bintools
-              (rust-bin.fromRustupToolchainFile (./rust-toolchain.toml))
+              cargo-fuzz
+              (rust-bin.selectLatestNightlyWith (toolchain: toolchain.default.override {
+                extensions = [ "rust-src" "llvm-tools-preview" ];
+              }))
             ];
           };
       }
