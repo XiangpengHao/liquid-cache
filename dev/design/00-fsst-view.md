@@ -92,3 +92,21 @@ Design discussion:
 3. We test the following functions:
 - Roundtrip from and to arrow StringArray.
 - The `compare_with` function. We test that our `compare_with` function is equivalent to the Arrow's equivalent function.
+
+### Evict to disk
+
+FSSTView can be evicted to disk, but we only evict the FSST buffer and keep the DictionaryView in memory, this allows most of the time to avoid decompression and IO.
+
+To do this, we need to change the `fsst_buffer` to be an enum, with two variants:
+1. `InMemory(FsstArray)`
+2. `OnDisk(PathBuf)`
+
+We will need to add two functions:
+1. `evict_to_disk`: evict the FSST buffer to disk, and keep the DictionaryView in memory. the enum will change from `InMemory` to `OnDisk`.
+2. `load_from_disk`: load the FSST buffer from disk, and keep the DictionaryView in memory. the enum will change from `OnDisk` to `InMemory`.
+
+The above two functions will need to be thread-safe, so a `std::sync::RwLock` is needed.
+
+When we need to read from `fsst_buffer`:
+1. If it's `InMemory`, we can read from it directly.
+2. If it's `OnDisk`, we read it from disk, do the work, and drop the in-memory data, i.e., **no promotion policy**.

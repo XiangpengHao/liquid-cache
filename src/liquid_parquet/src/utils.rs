@@ -508,11 +508,11 @@ mod tests {
 
         // Create a pattern where every 3rd bit is set in left
         for i in 0..size {
-            let is_set = i % 3 == 0;
+            let is_set = i.is_multiple_of(3);
             left_builder.append(is_set);
             if is_set {
                 // For right buffer, alternate between true/false
-                right_bits.push(right_bits.len() % 2 == 0);
+                right_bits.push(right_bits.len().is_multiple_of(2));
             }
         }
         let left = left_builder.finish();
@@ -568,7 +568,7 @@ mod tests {
                 "Mismatch at position {i}"
             );
             // Should be true for even indices, false for odd
-            assert_eq!(result_bmi2.value(i), i % 2 == 0);
+            assert_eq!(result_bmi2.value(i), i.is_multiple_of(2));
         }
 
         // Test case: no bits set in left

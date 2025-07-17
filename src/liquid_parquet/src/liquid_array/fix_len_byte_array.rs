@@ -361,7 +361,7 @@ mod tests {
 
         let mut filter_builder = arrow::array::BooleanBuilder::new();
         for i in 0..liquid_array.len() {
-            filter_builder.append_value(i % 2 == 0);
+            filter_builder.append_value(i.is_multiple_of(2));
         }
         let filter = filter_builder.finish();
         let filtered_array = liquid_array.filter(&filter);

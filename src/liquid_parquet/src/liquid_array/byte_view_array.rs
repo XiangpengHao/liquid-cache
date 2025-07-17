@@ -13,7 +13,33 @@ use datafusion::physical_plan::PhysicalExpr;
 use datafusion::physical_plan::expressions::{BinaryExpr, LikeExpr, Literal};
 use fsst::{Compressor, Decompressor};
 use std::any::Any;
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
+
+#[cfg(test)]
+use std::cell::Cell;
+
+#[cfg(test)]
+thread_local! {
+    static DISK_READ_COUNTER: Cell<usize> = const { Cell::new(0)};
+}
+
+#[cfg(test)]
+fn increment_disk_read_counter() {
+    DISK_READ_COUNTER.with(|counter| {
+        counter.set(counter.get() + 1);
+    });
+}
+
+#[cfg(test)]
+fn get_disk_read_counter() -> usize {
+    DISK_READ_COUNTER.with(|counter| counter.get())
+}
+
+#[cfg(test)]
+fn reset_disk_read_counter() {
+    DISK_READ_COUNTER.with(|counter| counter.set(0));
+}
 
 use super::{
     LiquidArray, LiquidArrayRef, LiquidDataType,
@@ -21,6 +47,8 @@ use super::{
 };
 use crate::liquid_array::raw::FsstArray;
 use crate::utils::CheckedDictionaryArray;
+use std::fs::File;
+use std::io::{self, Write};
 
 /// A dictionary view structure that stores dictionary key and a 6-byte prefix
 /// Layout: [key: u16][prefix: 6 bytes]
@@ -49,6 +77,81 @@ impl DictionaryView {
     }
 }
 
+/// Storage options for FSST buffer - can be in memory or on disk
+#[derive(Clone)]
+pub enum FsstBufferStorage {
+    InMemory(Arc<FsstArray>),
+    OnDisk(PathBuf, Arc<Compressor>),
+}
+
+impl std::fmt::Debug for FsstBufferStorage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FsstBufferStorage::InMemory(fsst_array) => {
+                f.debug_tuple("InMemory").field(fsst_array).finish()
+            }
+            FsstBufferStorage::OnDisk(path, _) => f
+                .debug_tuple("OnDisk")
+                .field(path)
+                .field(&"<Compressor>")
+                .finish(),
+        }
+    }
+}
+
+impl FsstBufferStorage {
+    /// Get the FSST array, loading from disk if necessary
+    pub fn get_fsst_array(&self) -> Result<Arc<FsstArray>, io::Error> {
+        match self {
+            FsstBufferStorage::InMemory(array) => Ok(array.clone()),
+            FsstBufferStorage::OnDisk(path, compressor) => {
+                // Increment disk read counter for testing
+                #[cfg(test)]
+                increment_disk_read_counter();
+
+                let bytes = std::fs::read(path)?;
+                let bytes = bytes::Bytes::from(bytes);
+                let fsst_array = FsstArray::from_bytes(bytes, compressor.clone());
+                Ok(Arc::new(fsst_array))
+            }
+        }
+    }
+
+    /// Get the compressor without loading the full FSST array
+    pub fn get_compressor(&self) -> &Compressor {
+        match self {
+            FsstBufferStorage::InMemory(array) => array.compressor(),
+            FsstBufferStorage::OnDisk(_, compressor) => compressor,
+        }
+    }
+
+    /// Get the decompressor without loading the full FSST array
+    pub fn get_decompressor(&self) -> Decompressor<'_> {
+        match self {
+            FsstBufferStorage::InMemory(array) => array.decompressor(),
+            FsstBufferStorage::OnDisk(_, compressor) => compressor.decompressor(),
+        }
+    }
+
+    /// Get memory size - returns 0 for on-disk storage
+    pub fn get_array_memory_size(&self) -> usize {
+        match self {
+            FsstBufferStorage::InMemory(array) => array.get_array_memory_size(),
+            FsstBufferStorage::OnDisk(_, _) => 0,
+        }
+    }
+
+    /// Check if the buffer is stored in memory
+    pub fn is_in_memory(&self) -> bool {
+        matches!(self, FsstBufferStorage::InMemory(_))
+    }
+
+    /// Check if the buffer is stored on disk
+    pub fn is_on_disk(&self) -> bool {
+        matches!(self, FsstBufferStorage::OnDisk(_, _))
+    }
+}
+
 impl LiquidArray for LiquidByteViewArray {
     fn as_any(&self) -> &dyn Any {
         self
@@ -58,7 +161,7 @@ impl LiquidArray for LiquidByteViewArray {
         self.dictionary_views.len() * std::mem::size_of::<DictionaryView>()
             + self.offsets.inner().len() * std::mem::size_of::<i32>()
             + self.nulls.as_ref().map_or(0, |n| n.buffer().len())
-            + self.fsst_buffer.get_array_memory_size()
+            + self.fsst_buffer.read().unwrap().get_array_memory_size()
             + std::mem::size_of::<Self>()
     }
 
@@ -223,14 +326,14 @@ fn try_eval_predicate_inner(
 /// - Dictionary views with 2-byte keys and 6-byte prefixes stored in memory
 /// - Offsets for unique values in FSST buffer stored in memory
 /// - Nulls stored in memory
-/// - FSST buffer stored on disk (currently in memory, on disk not implemented yet)
+/// - FSST buffer can be stored in memory or on disk
 ///
 /// Data access flow:
 /// 1. Use dictionary view key to index into offsets buffer to get start/end positions
 /// 2. Use those offsets to read the corresponding bytes from FSST buffer
 /// 3. Decompress those bytes to get the full value
 /// 4. Use prefix for quick comparisons to avoid decompression when possible
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct LiquidByteViewArray {
     /// Dictionary views containing key (u16) and prefix (6 bytes)
     dictionary_views: Vec<DictionaryView>,
@@ -238,10 +341,22 @@ pub struct LiquidByteViewArray {
     offsets: OffsetBuffer<i32>,
     /// Null buffer
     nulls: Option<NullBuffer>,
-    /// FSST-compressed buffer (stored on disk)
-    fsst_buffer: Arc<FsstArray>,
+    /// FSST-compressed buffer (can be in memory or on disk)
+    fsst_buffer: Arc<RwLock<FsstBufferStorage>>,
     /// Used to convert back to the original arrow type
     original_arrow_type: ArrowByteType,
+}
+
+impl std::fmt::Debug for LiquidByteViewArray {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LiquidByteViewArray")
+            .field("dictionary_views", &self.dictionary_views)
+            .field("offsets", &self.offsets)
+            .field("nulls", &self.nulls)
+            .field("fsst_buffer", &self.fsst_buffer)
+            .field("original_arrow_type", &self.original_arrow_type)
+            .finish()
+    }
 }
 
 impl LiquidByteViewArray {
@@ -387,9 +502,9 @@ impl LiquidByteViewArray {
 
         // Create FSST buffer from unique values
         let fsst_buffer = if let Some(string_values) = values.as_string_opt::<i32>() {
-            FsstArray::from_byte_array_with_compressor(string_values, compressor)
+            FsstArray::from_byte_array_with_compressor(string_values, compressor.clone())
         } else if let Some(binary_values) = values.as_binary_opt::<i32>() {
-            FsstArray::from_byte_array_with_compressor(binary_values, compressor)
+            FsstArray::from_byte_array_with_compressor(binary_values, compressor.clone())
         } else {
             panic!("Unsupported dictionary value type")
         };
@@ -398,14 +513,11 @@ impl LiquidByteViewArray {
             dictionary_views,
             offsets,
             nulls: keys.nulls().cloned(),
-            fsst_buffer: Arc::new(fsst_buffer),
+            fsst_buffer: Arc::new(RwLock::new(FsstBufferStorage::InMemory(Arc::new(
+                fsst_buffer,
+            )))),
             original_arrow_type: arrow_type,
         }
-    }
-
-    /// Get the decompressor of the FSST buffer
-    pub fn decompressor(&self) -> Decompressor<'_> {
-        self.fsst_buffer.decompressor()
     }
 
     /// Convert to Arrow DictionaryArray
@@ -423,13 +535,15 @@ impl LiquidByteViewArray {
         };
 
         // Convert FSST buffer to values
+        let storage = self.fsst_buffer.read().unwrap();
+        let fsst_array = storage.get_fsst_array().unwrap();
         let values = if self.original_arrow_type == ArrowByteType::Utf8
             || self.original_arrow_type == ArrowByteType::Utf8View
             || self.original_arrow_type == ArrowByteType::Dict16Utf8
         {
-            Arc::new(self.fsst_buffer.to_arrow_byte_array::<Utf8Type>()) as ArrayRef
+            Arc::new(fsst_array.to_arrow_byte_array::<Utf8Type>()) as ArrayRef
         } else {
-            Arc::new(self.fsst_buffer.to_arrow_byte_array::<BinaryType>()) as ArrayRef
+            Arc::new(fsst_array.to_arrow_byte_array::<BinaryType>()) as ArrayRef
         };
 
         unsafe { DictionaryArray::<UInt16Type>::new_unchecked(keys_array, values) }
@@ -447,11 +561,14 @@ impl LiquidByteViewArray {
     }
 
     /// Compare equality with a byte needle
-    pub fn compare_equals(&self, needle: &[u8]) -> BooleanArray {
-        let compressor = self.fsst_buffer.compressor();
+    fn compare_equals(&self, needle: &[u8]) -> BooleanArray {
+        let storage = self.fsst_buffer.read().unwrap();
+        let compressor = storage.get_compressor();
         let compressed = compressor.compress(needle);
 
-        let values = &self.fsst_buffer.compressed;
+        // We need the full FSST array to search through the compressed values
+        let fsst_array = storage.get_fsst_array().unwrap();
+        let values = &fsst_array.compressed;
         let idx = values.iter().position(|v| v == Some(compressed.as_ref()));
 
         if let Some(idx) = idx {
@@ -471,7 +588,7 @@ impl LiquidByteViewArray {
     }
 
     /// Compare not equals with a byte needle
-    pub fn compare_not_equals(&self, needle: &[u8]) -> BooleanArray {
+    fn compare_not_equals(&self, needle: &[u8]) -> BooleanArray {
         let result = self.compare_equals(needle);
         let (values, nulls) = result.into_parts();
         let values = !&values;
@@ -507,7 +624,11 @@ impl LiquidByteViewArray {
         needle_prefix[..prefix_len].copy_from_slice(&needle[..prefix_len]);
 
         let mut buffer_builder = BooleanBufferBuilder::new(self.dictionary_views.len());
-        let decompressor = self.fsst_buffer.decompressor();
+        let storage = self.fsst_buffer.read().unwrap();
+        let decompressor = storage.get_decompressor();
+
+        // Only load the full FSST array if we encounter any equal prefixes
+        let mut fsst_array: Option<Arc<FsstArray>> = None;
 
         for view in &self.dictionary_views {
             let prefix_cmp = view.prefix().cmp(&needle_prefix);
@@ -536,11 +657,16 @@ impl LiquidByteViewArray {
                 ) => {
                     let key = view.key() as usize;
 
-                    // Get the compressed value from fsst_buffer
-                    if key < self.fsst_buffer.compressed.len()
-                        && !self.fsst_buffer.compressed.is_null(key)
+                    // Lazy load the full FSST array only when we need it
+                    if fsst_array.is_none() {
+                        fsst_array = Some(storage.get_fsst_array().unwrap());
+                    }
+                    let fsst_array_ref = fsst_array.as_ref().unwrap();
+
+                    if key < fsst_array_ref.compressed.len()
+                        && !fsst_array_ref.compressed.is_null(key)
                     {
-                        let compressed_value = self.fsst_buffer.compressed.value(key);
+                        let compressed_value = fsst_array_ref.compressed.value(key);
                         // Decompress the value - this allocates but only for inconclusive cases
                         let decompressed_bytes = decompressor.decompress(compressed_value);
 
@@ -600,6 +726,64 @@ impl LiquidByteViewArray {
                 "Expected array result from comparison".to_string(),
             )),
         }
+    }
+
+    /// Evict the FSST buffer to disk
+    pub fn evict_to_disk(&self, path: PathBuf) -> Result<(), io::Error> {
+        let mut storage = self.fsst_buffer.write().unwrap();
+
+        match &*storage {
+            FsstBufferStorage::InMemory(fsst_array) => {
+                let mut buffer = Vec::new();
+                fsst_array.to_bytes(&mut buffer);
+
+                let mut file = File::create(&path)?;
+                file.write_all(&buffer)?;
+
+                let compressor = Arc::new(fsst_array.compressor().clone());
+                *storage = FsstBufferStorage::OnDisk(path, compressor);
+                Ok(())
+            }
+            FsstBufferStorage::OnDisk(_, _) => Ok(()),
+        }
+    }
+
+    /// Load the FSST buffer from disk into memory
+    pub fn load_from_disk(&self) -> Result<(), io::Error> {
+        let mut storage = self.fsst_buffer.write().unwrap();
+
+        match &*storage {
+            FsstBufferStorage::OnDisk(path, compressor) => {
+                let bytes = std::fs::read(path)?;
+                let bytes = bytes::Bytes::from(bytes);
+                let fsst_array = FsstArray::from_bytes(bytes, compressor.clone());
+                *storage = FsstBufferStorage::InMemory(Arc::new(fsst_array));
+                Ok(())
+            }
+            FsstBufferStorage::InMemory(_) => Ok(()),
+        }
+    }
+
+    /// Check if the FSST buffer is currently stored on disk
+    pub fn is_fsst_buffer_on_disk(&self) -> bool {
+        self.fsst_buffer.read().unwrap().is_on_disk()
+    }
+
+    /// Check if the FSST buffer is currently stored in memory
+    pub fn is_fsst_buffer_in_memory(&self) -> bool {
+        self.fsst_buffer.read().unwrap().is_in_memory()
+    }
+
+    /// Get disk read count for testing
+    #[cfg(test)]
+    pub fn get_disk_read_count(&self) -> usize {
+        get_disk_read_counter()
+    }
+
+    /// Reset disk read count for testing
+    #[cfg(test)]
+    pub fn reset_disk_read_count(&self) {
+        reset_disk_read_counter()
     }
 }
 
@@ -767,7 +951,13 @@ mod tests {
         // Offsets has one more element than unique values (standard offset buffer format)
         assert_eq!(liquid_array.offsets.len(), 4); // 3 unique values + 1 = 4 offsets
         assert!(liquid_array.nulls.is_none());
-        assert!(!liquid_array.fsst_buffer.compressed.is_empty());
+        let fsst_array = liquid_array
+            .fsst_buffer
+            .read()
+            .unwrap()
+            .get_fsst_array()
+            .unwrap();
+        assert!(!fsst_array.compressed.is_empty());
     }
 
     #[test]
@@ -830,11 +1020,17 @@ mod tests {
         let compressor = LiquidByteViewArray::train_compressor(input.iter());
         let liquid_array = LiquidByteViewArray::from_string_array(&input, compressor);
 
-        let _decompressor = liquid_array.decompressor();
         // Just verify we can get the decompressor without errors
+        let fsst_array = liquid_array
+            .fsst_buffer
+            .read()
+            .unwrap()
+            .get_fsst_array()
+            .unwrap();
+        let _decompressor = fsst_array.decompressor();
         assert_eq!(
-            liquid_array.fsst_buffer.compressor().symbol_table().len(),
-            liquid_array.fsst_buffer.compressor().symbol_table().len()
+            fsst_array.compressor().symbol_table().len(),
+            fsst_array.compressor().symbol_table().len()
         );
     }
 
@@ -1055,5 +1251,204 @@ mod tests {
         let lte_expected = BooleanArray::from(vec![true, true, true, true, false]);
         assert_eq!(gte_result, gte_expected);
         assert_eq!(lte_result, lte_expected);
+    }
+
+    #[test]
+    fn test_evict_to_disk_functionality() {
+        let input = StringArray::from(vec![
+            "hello world",
+            "fsst compression",
+            "evict to disk",
+            "hello world", // duplicate
+            "test data",
+        ]);
+        let compressor = LiquidByteViewArray::train_compressor(input.iter());
+        let liquid_array = LiquidByteViewArray::from_string_array(&input, compressor);
+
+        // Verify initially in memory
+        assert!(liquid_array.is_fsst_buffer_in_memory());
+        assert!(!liquid_array.is_fsst_buffer_on_disk());
+
+        // Test behavior before eviction
+        let original_arrow = liquid_array.to_arrow_array();
+        let original_compare = liquid_array.compare_equals(b"hello world");
+
+        // Create a temporary file for eviction
+        let temp_path = std::env::temp_dir().join("test_evict_fsst.bin");
+
+        // Evict to disk
+        liquid_array.evict_to_disk(temp_path.clone()).unwrap();
+
+        // Verify now on disk
+        assert!(!liquid_array.is_fsst_buffer_in_memory());
+        assert!(liquid_array.is_fsst_buffer_on_disk());
+
+        // Test that functionality still works after eviction
+        let evicted_arrow = liquid_array.to_arrow_array();
+        let evicted_compare = liquid_array.compare_equals(b"hello world");
+
+        // Should be identical
+        assert_eq!(original_arrow.as_ref(), evicted_arrow.as_ref());
+        assert_eq!(original_compare, evicted_compare);
+
+        // Test load from disk
+        liquid_array.load_from_disk().unwrap();
+
+        // Verify back in memory
+        assert!(liquid_array.is_fsst_buffer_in_memory());
+        assert!(!liquid_array.is_fsst_buffer_on_disk());
+
+        // Test that functionality still works after loading
+        let loaded_arrow = liquid_array.to_arrow_array();
+        let loaded_compare = liquid_array.compare_equals(b"hello world");
+
+        // Should be identical to original
+        assert_eq!(original_arrow.as_ref(), loaded_arrow.as_ref());
+        assert_eq!(original_compare, loaded_compare);
+
+        // Test double eviction (should be no-op)
+        liquid_array.evict_to_disk(temp_path.clone()).unwrap();
+        liquid_array.evict_to_disk(temp_path.clone()).unwrap(); // Should not fail
+
+        // Test double load (should be no-op)
+        liquid_array.load_from_disk().unwrap();
+        liquid_array.load_from_disk().unwrap(); // Should not fail
+
+        // Cleanup
+        let _ = std::fs::remove_file(temp_path);
+    }
+
+    #[test]
+    fn test_efficient_compressor_decompressor_access() {
+        // Reset counter at start of test to avoid interference from other tests
+        reset_disk_read_counter();
+
+        let input = StringArray::from(vec![
+            "prefix_aaa", // prefix: "prefix"
+            "prefix_bbb", // prefix: "prefix" (same prefix)
+            "prefix_ccc", // prefix: "prefix" (same prefix)
+            "different",  // prefix: "differ" (different prefix)
+        ]);
+        let compressor = LiquidByteViewArray::train_compressor(input.iter());
+        let liquid_array = LiquidByteViewArray::from_string_array(&input, compressor);
+
+        // Evict to disk to test efficiency
+        let temp_path = std::env::temp_dir().join("test_efficient_access.bin");
+        liquid_array.evict_to_disk(temp_path.clone()).unwrap();
+
+        // Test that we can access compressor and decompressor without loading full array
+        let storage = liquid_array.fsst_buffer.read().unwrap();
+        let _compressor = storage.get_compressor();
+        let _decompressor = storage.get_decompressor();
+
+        // Test prefix optimization - should work efficiently with mostly prefix comparisons
+        // "prefix_b" should be able to determine most results via prefix comparison
+        let result = liquid_array
+            .compare_with(b"prefix_b", &Operator::Lt)
+            .unwrap();
+        let expected = BooleanArray::from(vec![true, false, false, true]);
+        assert_eq!(result, expected);
+
+        // Test that comparison with very different prefix works efficiently
+        // "zzz" should be resolvable by prefix comparison alone for most values
+        let result = liquid_array.compare_with(b"zzz", &Operator::Lt).unwrap();
+        let expected = BooleanArray::from(vec![true, true, true, true]);
+        assert_eq!(result, expected);
+
+        // Cleanup
+        let _ = std::fs::remove_file(temp_path);
+    }
+
+    #[test]
+    fn test_disk_read_counter_instrumentation() {
+        // Reset counter at start of test to avoid interference from other tests
+        reset_disk_read_counter();
+
+        let input = StringArray::from(vec![
+            "apple123", // Different prefixes to test prefix optimization
+            "banana456",
+            "cherry789",
+            "zebra000",
+        ]);
+        let compressor = LiquidByteViewArray::train_compressor(input.iter());
+        let liquid_array = LiquidByteViewArray::from_string_array(&input, compressor);
+
+        // Initial state - in memory, no disk reads
+        assert!(liquid_array.is_fsst_buffer_in_memory());
+        assert_eq!(liquid_array.get_disk_read_count(), 0);
+
+        // Evict to disk
+        let temp_path = std::env::temp_dir().join("test_disk_reads.bin");
+        liquid_array.evict_to_disk(temp_path.clone()).unwrap();
+        assert!(liquid_array.is_fsst_buffer_on_disk());
+        assert_eq!(liquid_array.get_disk_read_count(), 0); // Eviction doesn't count as read
+
+        // Reset counter and test operations that should NOT trigger disk reads
+        liquid_array.reset_disk_read_count();
+
+        // 1. Get compressor - should not read from disk
+        let storage = liquid_array.fsst_buffer.read().unwrap();
+        let _compressor = storage.get_compressor();
+        assert_eq!(liquid_array.get_disk_read_count(), 0);
+
+        // 2. Get decompressor - should not read from disk
+        let _decompressor = storage.get_decompressor();
+        assert_eq!(liquid_array.get_disk_read_count(), 0);
+        drop(storage);
+
+        // 3. Prefix-only comparison (should resolve without disk I/O)
+        // "car" < "apple123" is false, "car" < "banana456" is false, etc.
+        // All comparisons should be resolved by prefix alone
+        let result = liquid_array.compare_with(b"car", &Operator::Lt).unwrap();
+        assert_eq!(liquid_array.get_disk_read_count(), 0);
+        let expected = BooleanArray::from(vec![true, true, false, false]);
+        assert_eq!(result, expected);
+
+        // 4. Another prefix-only comparison
+        let result = liquid_array.compare_with(b"zzz", &Operator::Gt).unwrap();
+        assert_eq!(liquid_array.get_disk_read_count(), 0);
+        let expected = BooleanArray::from(vec![false, false, false, false]);
+        assert_eq!(result, expected);
+
+        // Reset counter and test operations that SHOULD trigger disk reads
+        liquid_array.reset_disk_read_count();
+
+        // 5. Equality comparison - needs to search through compressed values
+        let result = liquid_array.compare_equals(b"apple123");
+        assert_eq!(liquid_array.get_disk_read_count(), 1); // Should read once
+        let expected = BooleanArray::from(vec![true, false, false, false]);
+        assert_eq!(result, expected);
+
+        // 6. Another equality comparison - should read again (no caching)
+        let result = liquid_array.compare_equals(b"banana456");
+        assert_eq!(liquid_array.get_disk_read_count(), 2); // Should read twice total
+        let expected = BooleanArray::from(vec![false, true, false, false]);
+        assert_eq!(result, expected);
+
+        // 7. Arrow conversion - needs full data
+        let _arrow_array = liquid_array.to_arrow_array();
+        assert_eq!(liquid_array.get_disk_read_count(), 3); // Should read third time
+
+        // 8. Comparison with equal prefixes (needs decompression)
+        let input_equal_prefixes =
+            StringArray::from(vec!["prefix_aaa", "prefix_bbb", "prefix_ccc", "different"]);
+        let compressor2 = LiquidByteViewArray::train_compressor(input_equal_prefixes.iter());
+        let liquid_array2 =
+            LiquidByteViewArray::from_string_array(&input_equal_prefixes, compressor2);
+        let temp_path2 = std::env::temp_dir().join("test_disk_reads2.bin");
+        liquid_array2.evict_to_disk(temp_path2.clone()).unwrap();
+        liquid_array2.reset_disk_read_count();
+
+        // This should trigger disk read because prefixes are equal and need decompression
+        let result = liquid_array2
+            .compare_with(b"prefix_b", &Operator::Lt)
+            .unwrap();
+        assert_eq!(liquid_array2.get_disk_read_count(), 1); // Should read once for decompression
+        let expected = BooleanArray::from(vec![true, false, false, true]);
+        assert_eq!(result, expected);
+
+        // Cleanup
+        let _ = std::fs::remove_file(temp_path);
+        let _ = std::fs::remove_file(temp_path2);
     }
 }

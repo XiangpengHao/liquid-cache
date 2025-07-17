@@ -399,8 +399,8 @@ mod tests {
         let unpacked = bit_packed.to_primitive();
 
         assert_eq!(unpacked.len(), 1000);
-        for i in 0..1000 {
-            if i % 2 == 0 {
+        for i in 0..1000_usize {
+            if i.is_multiple_of(2) {
                 assert_eq!(unpacked.value(i), i as u32);
             } else {
                 assert!(unpacked.is_null(i));
@@ -465,7 +465,7 @@ mod tests {
     fn test_to_bytes_from_bytes_with_nulls() {
         // Create a test array with some nulls
         let values: Vec<Option<u32>> = (0..100)
-            .map(|i| if i % 3 == 0 { None } else { Some(i) })
+            .map(|i: u32| if i.is_multiple_of(3) { None } else { Some(i) })
             .collect();
         let array = PrimitiveArray::<UInt32Type>::from(values);
         let bit_width = NonZero::new(10).unwrap();
