@@ -135,7 +135,7 @@ impl PredicatePageCache {
     }
 
     #[allow(unused)]
-    fn get(&self) -> MutexGuard<PredicatePageCacheInner> {
+    fn get(&self) -> MutexGuard<'_, PredicatePageCacheInner> {
         self.inner.lock().unwrap()
     }
 }

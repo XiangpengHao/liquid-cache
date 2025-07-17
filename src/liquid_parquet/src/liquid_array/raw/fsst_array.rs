@@ -264,7 +264,7 @@ impl FsstArray {
     }
 
     /// Returns a decompressor for the FsstArray.
-    pub fn decompressor(&self) -> Decompressor {
+    pub fn decompressor(&self) -> Decompressor<'_> {
         self.compressor.decompressor()
     }
 
