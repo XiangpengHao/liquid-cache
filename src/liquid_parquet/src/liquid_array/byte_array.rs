@@ -1,13 +1,19 @@
 use ahash::HashMap;
+use arrow::array::BinaryViewArray;
 use arrow::array::{
     Array, ArrayAccessor, ArrayIter, ArrayRef, BinaryArray, BooleanArray, BooleanBufferBuilder,
     BufferBuilder, DictionaryArray, GenericByteArray, StringArray, StringViewArray, UInt16Array,
     cast::AsArray, types::UInt16Type,
 };
 use arrow::buffer::{BooleanBuffer, Buffer, NullBuffer, OffsetBuffer, ScalarBuffer};
-use arrow::compute::cast;
+use arrow::compute::{cast, kernels};
 use arrow::datatypes::{BinaryType, ByteArrayType, Utf8Type};
-use arrow_schema::DataType;
+use arrow_schema::{ArrowError, DataType};
+use datafusion::logical_expr::{ColumnarValue, Operator};
+use datafusion::physical_expr_common::datum::apply_cmp;
+use datafusion::physical_plan::PhysicalExpr;
+use datafusion::physical_plan::expressions::{BinaryExpr, LikeExpr, Literal};
+use datafusion::scalar::ScalarValue;
 use fsst::{Compressor, Decompressor};
 use std::any::Any;
 use std::mem::MaybeUninit;
@@ -43,19 +49,17 @@ impl LiquidArray for LiquidByteArray {
     }
 
     fn filter(&self, selection: &BooleanArray) -> LiquidArrayRef {
-        let values = self.values.clone();
-        let keys = self.keys.clone();
-        let primitive_keys = keys.to_primitive();
-        let filtered_keys = arrow::compute::filter(&primitive_keys, selection)
-            .unwrap()
-            .as_primitive::<UInt16Type>()
-            .clone();
-        let bit_packed_array = BitPackedArray::from_primitive(filtered_keys, keys.bit_width());
-        Arc::new(LiquidByteArray {
-            keys: bit_packed_array,
-            values,
-            original_arrow_type: self.original_arrow_type,
-        })
+        let filtered = filter_inner(self, selection);
+        Arc::new(filtered)
+    }
+
+    fn try_eval_predicate(
+        &self,
+        expr: &Arc<dyn PhysicalExpr>,
+        filter: &BooleanArray,
+    ) -> Result<Option<BooleanArray>, ArrowError> {
+        let filtered = filter_inner(self, filter);
+        try_eval_predicate_inner(expr, &filtered)
     }
 
     fn to_bytes(&self) -> Vec<u8> {
@@ -67,7 +71,110 @@ impl LiquidArray for LiquidByteArray {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+fn filter_inner(array: &LiquidByteArray, filter: &BooleanArray) -> LiquidByteArray {
+    let values = array.values.clone();
+    let keys = array.keys.clone();
+    let primitive_keys = keys.to_primitive();
+    let filtered_keys = arrow::compute::filter(&primitive_keys, filter)
+        .unwrap()
+        .as_primitive::<UInt16Type>()
+        .clone();
+    let bit_packed_array = match keys.bit_width() {
+        Some(bit_width) => BitPackedArray::from_primitive(filtered_keys, bit_width),
+        None => BitPackedArray::new_null_array(filtered_keys.len()),
+    };
+    LiquidByteArray {
+        keys: bit_packed_array,
+        values,
+        original_arrow_type: array.original_arrow_type,
+    }
+}
+
+fn try_eval_predicate_inner(
+    expr: &Arc<dyn PhysicalExpr>,
+    array: &LiquidByteArray,
+) -> Result<Option<BooleanArray>, ArrowError> {
+    if let Some(binary_expr) = expr.as_any().downcast_ref::<BinaryExpr>() {
+        if let Some(literal) = binary_expr.right().as_any().downcast_ref::<Literal>() {
+            let op = binary_expr.op();
+            if let Some(needle) = get_string_needle(literal.value()) {
+                if op == &Operator::Eq {
+                    let result = array.compare_equals(needle);
+                    return Ok(Some(result));
+                } else if op == &Operator::NotEq {
+                    let result = array.compare_not_equals(needle);
+                    return Ok(Some(result));
+                }
+            }
+
+            let dict_array = array.to_dict_arrow();
+            let lhs = ColumnarValue::Array(Arc::new(dict_array));
+            let rhs = ColumnarValue::Scalar(literal.value().clone());
+
+            let result = match op {
+                Operator::NotEq => apply_cmp(&lhs, &rhs, kernels::cmp::neq),
+                Operator::Eq => apply_cmp(&lhs, &rhs, kernels::cmp::eq),
+                Operator::Lt => apply_cmp(&lhs, &rhs, kernels::cmp::lt),
+                Operator::LtEq => apply_cmp(&lhs, &rhs, kernels::cmp::lt_eq),
+                Operator::Gt => apply_cmp(&lhs, &rhs, kernels::cmp::gt),
+                Operator::GtEq => apply_cmp(&lhs, &rhs, kernels::cmp::gt_eq),
+                Operator::LikeMatch => apply_cmp(&lhs, &rhs, arrow::compute::like),
+                Operator::ILikeMatch => apply_cmp(&lhs, &rhs, arrow::compute::ilike),
+                Operator::NotLikeMatch => apply_cmp(&lhs, &rhs, arrow::compute::nlike),
+                Operator::NotILikeMatch => apply_cmp(&lhs, &rhs, arrow::compute::nilike),
+                _ => return Ok(None),
+            };
+            if let Ok(result) = result {
+                let filtered = result.into_array(array.len())?.as_boolean().clone();
+                return Ok(Some(filtered));
+            }
+        }
+    } else if let Some(like_expr) = expr.as_any().downcast_ref::<LikeExpr>()
+        && like_expr
+            .pattern()
+            .as_any()
+            .downcast_ref::<Literal>()
+            .is_some()
+        && let Some(literal) = like_expr.pattern().as_any().downcast_ref::<Literal>()
+    {
+        let arrow_dict = array.to_dict_arrow();
+
+        let lhs = ColumnarValue::Array(Arc::new(arrow_dict));
+        let rhs = ColumnarValue::Scalar(literal.value().clone());
+
+        let result = match (like_expr.negated(), like_expr.case_insensitive()) {
+            (false, false) => apply_cmp(&lhs, &rhs, arrow::compute::like),
+            (true, false) => apply_cmp(&lhs, &rhs, arrow::compute::nlike),
+            (false, true) => apply_cmp(&lhs, &rhs, arrow::compute::ilike),
+            (true, true) => apply_cmp(&lhs, &rhs, arrow::compute::nilike),
+        };
+        if let Ok(result) = result {
+            let filtered = result.into_array(array.len())?.as_boolean().clone();
+            return Ok(Some(filtered));
+        }
+    }
+    Ok(None)
+}
+
+/// Extract a string needle from a scalar value for string comparison operations.
+///
+/// This function handles various string scalar value types including Utf8, Utf8View,
+/// LargeUtf8, and Dictionary types. Returns `None` for non-string types or null values.
+pub fn get_string_needle(value: &ScalarValue) -> Option<&str> {
+    if let ScalarValue::Utf8(Some(v)) = value {
+        Some(v)
+    } else if let ScalarValue::Utf8View(Some(v)) = value {
+        Some(v)
+    } else if let ScalarValue::LargeUtf8(Some(v)) = value {
+        Some(v)
+    } else if let ScalarValue::Dictionary(_, value) = value {
+        get_string_needle(value.as_ref())
+    } else {
+        None
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(u16)]
 pub(crate) enum ArrowByteType {
     Utf8 = 0,
@@ -140,7 +247,7 @@ impl ArrowByteType {
 }
 
 /// An array that stores strings in a dictionary format, with a bit-packed array for the keys and a FSST array for the values.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LiquidByteArray {
     pub(crate) keys: BitPackedArray<UInt16Type>,
     /// TODO: we need to specify that the values in the FsstArray must be unique, this enables us some optimizations.
@@ -154,6 +261,12 @@ impl LiquidByteArray {
     pub fn from_string_view_array(array: &StringViewArray, compressor: Arc<Compressor>) -> Self {
         let dict = CheckedDictionaryArray::from_string_view_array(array);
         Self::from_dict_array_inner(dict, compressor, ArrowByteType::Utf8View)
+    }
+
+    /// Create a LiquidByteArray from an Arrow [BinaryViewArray].
+    pub fn from_binary_view_array(array: &BinaryViewArray, compressor: Arc<Compressor>) -> Self {
+        let dict = CheckedDictionaryArray::from_binary_view_array(array);
+        Self::from_dict_array_inner(dict, compressor, ArrowByteType::BinaryView)
     }
 
     /// Train a compressor from an iterator of byte arrays.
@@ -191,12 +304,23 @@ impl LiquidByteArray {
     }
 
     /// Train a compressor from an Arrow StringViewArray.
-    pub fn train_from_arrow_view(array: &StringViewArray) -> (Arc<Compressor>, Self) {
+    pub fn train_from_string_view(array: &StringViewArray) -> (Arc<Compressor>, Self) {
         let dict = CheckedDictionaryArray::from_string_view_array(array);
         let compressor = Self::train_compressor(dict.as_ref().values().as_string::<i32>().iter());
         (
             compressor.clone(),
             Self::from_dict_array_inner(dict, compressor, ArrowByteType::Utf8View),
+        )
+    }
+
+    /// Train a compressor from an Arrow BinaryViewArray.
+    pub fn train_from_binary_view(array: &BinaryViewArray) -> (Arc<Compressor>, Self) {
+        let dict = CheckedDictionaryArray::from_binary_view_array(array);
+        let compressor =
+            Self::train_compressor_bytes(dict.as_ref().values().as_binary::<i32>().iter());
+        (
+            compressor.clone(),
+            Self::from_dict_array_inner(dict, compressor, ArrowByteType::BinaryView),
         )
     }
 
@@ -286,10 +410,11 @@ impl LiquidByteArray {
         array: &DictionaryArray<UInt16Type>,
         compressor: Arc<Compressor>,
     ) -> Self {
+        let arrow_type = ArrowByteType::from_arrow_type(array.values().data_type());
         Self::from_dict_array_inner(
             unsafe { CheckedDictionaryArray::new_unchecked_i_know_what_i_am_doing(array) },
             compressor,
-            ArrowByteType::Dict16Utf8,
+            arrow_type,
         )
     }
 
@@ -310,13 +435,13 @@ impl LiquidByteArray {
     }
 
     /// Get the decompressor of the LiquidStringArray.
-    pub fn decompressor(&self) -> Decompressor {
+    pub fn decompressor(&self) -> Decompressor<'_> {
         self.values.decompressor()
     }
 
     /// Convert the LiquidStringArray to arrow's DictionaryArray.
     pub fn to_dict_arrow(&self) -> DictionaryArray<UInt16Type> {
-        if self.keys.len() < 2048 {
+        if self.keys.len() < 2048 || self.keys.len() < self.values.compressed.len() {
             // a heuristic to selective decompress.
             self.to_dict_arrow_decompress_keyed()
         } else {
@@ -466,9 +591,15 @@ impl LiquidByteArray {
 
 #[cfg(test)]
 mod tests {
+    use crate::liquid_array::LiquidPrimitiveArray;
+
     use super::*;
-    use arrow::array::Array;
+    use arrow::{
+        array::{Array, Int32Array},
+        datatypes::Int32Type,
+    };
     use bytes::Bytes;
+    use datafusion::physical_plan::expressions::Column;
     use std::num::NonZero;
 
     fn test_roundtrip(input: StringArray) {
@@ -535,7 +666,7 @@ mod tests {
 
     #[test]
     fn test_roundtrip_with_many_duplicates() {
-        let values = vec!["a", "b", "c"];
+        let values = ["a", "b", "c"];
         let input: Vec<&str> = (0..1000).map(|i| values[i % values.len()]).collect();
         let input = StringArray::from(input);
         test_roundtrip(input);
@@ -843,7 +974,7 @@ mod tests {
 
         // Single character strings
         for c in "abcdefghijklmnopqrstuvwxyz".chars() {
-            builder.append_value(&c.to_string());
+            builder.append_value(c.to_string());
         }
 
         // Highly repetitive string to test compression effectiveness
@@ -852,5 +983,259 @@ mod tests {
         // Test the roundtrip
         let string_array = builder.finish();
         test_roundtrip(string_array);
+    }
+
+    #[test]
+    fn test_filter_all_nulls() {
+        let original: Vec<Option<&str>> = vec![None, None, None];
+        let array = StringArray::from(original.clone());
+        let compressor = LiquidByteArray::train_compressor(array.iter());
+        let liquid_array = LiquidByteArray::from_string_array(&array, compressor);
+        let result_array = liquid_array.filter(&BooleanArray::from(vec![true, false, true]));
+        let result_array = result_array.to_arrow_array();
+
+        assert_eq!(result_array.len(), 2);
+        assert_eq!(result_array.null_count(), 2);
+    }
+
+    #[test]
+    fn test_get_string_needle() {
+        // Test Utf8 scalar value
+        let utf8_value = ScalarValue::Utf8(Some("test_string".to_string()));
+        assert_eq!(get_string_needle(&utf8_value), Some("test_string"));
+
+        // Test Utf8View scalar value
+        let utf8_view_value = ScalarValue::Utf8View(Some("test_view".to_string()));
+        assert_eq!(get_string_needle(&utf8_view_value), Some("test_view"));
+
+        // Test LargeUtf8 scalar value
+        let large_utf8_value = ScalarValue::LargeUtf8(Some("test_large".to_string()));
+        assert_eq!(get_string_needle(&large_utf8_value), Some("test_large"));
+
+        // Test Dictionary scalar value
+        let dict_inner = ScalarValue::Utf8(Some("test_dict".to_string()));
+        let dict_value = ScalarValue::Dictionary(
+            Box::new(arrow_schema::DataType::Int32),
+            Box::new(dict_inner),
+        );
+        assert_eq!(get_string_needle(&dict_value), Some("test_dict"));
+
+        // Test None values
+        let utf8_none = ScalarValue::Utf8(None);
+        assert_eq!(get_string_needle(&utf8_none), None);
+
+        // Test non-string scalar value
+        let int_value = ScalarValue::Int32(Some(42));
+        assert_eq!(get_string_needle(&int_value), None);
+    }
+
+    #[test]
+    fn test_try_eval_predicate_inner_string_equality() {
+        use datafusion::logical_expr::Operator;
+        use datafusion::physical_expr::expressions::BinaryExpr;
+        use datafusion::physical_plan::expressions::{Column, Literal};
+        use datafusion::scalar::ScalarValue;
+
+        // Test the optimized string equality path
+        let string_data = vec!["apple", "banana", "cherry", "apple", "grape"];
+        let arrow_array = StringViewArray::from(string_data);
+        let (_compressor, liquid_array) = LiquidByteArray::train_from_string_view(&arrow_array);
+
+        // Create predicate: column = "apple"
+        let expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("test_col", 0)),
+            Operator::Eq,
+            Arc::new(Literal::new(ScalarValue::Utf8(Some("apple".to_string())))),
+        ));
+
+        let result = try_eval_predicate_inner(&expr, &liquid_array).unwrap();
+        assert!(result.is_some());
+
+        let boolean_array = result.unwrap();
+        assert_eq!(boolean_array.len(), 5);
+
+        // Should match indices 0 and 3 (both "apple")
+        assert!(boolean_array.value(0)); // "apple"
+        assert!(!boolean_array.value(1)); // "banana"
+        assert!(!boolean_array.value(2)); // "cherry"
+        assert!(boolean_array.value(3)); // "apple"
+        assert!(!boolean_array.value(4)); // "grape"
+    }
+
+    #[test]
+    fn test_try_eval_predicate_inner_numeric_not_supported() {
+        // Test that numeric comparisons are not supported and return None
+        let numeric_data = vec![10, 20, 30, 15, 25];
+        let arrow_array = Int32Array::from(numeric_data);
+        let liquid_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(arrow_array);
+        let liquid_ref: LiquidArrayRef = Arc::new(liquid_array);
+
+        // Create predicate: column > 20
+        let expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("test_col", 0)),
+            Operator::Gt,
+            Arc::new(Literal::new(ScalarValue::Int32(Some(20)))),
+        ));
+
+        let filter = BooleanArray::from(vec![true; liquid_ref.len()]);
+        let result = liquid_ref.try_eval_predicate(&expr, &filter).unwrap();
+        // Numeric comparisons are not supported, should return None
+        assert!(result.is_none());
+
+        // Test other numeric operators that are also not supported
+        let eq_expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("test_col", 0)),
+            Operator::Eq,
+            Arc::new(Literal::new(ScalarValue::Int32(Some(20)))),
+        ));
+
+        let result = liquid_ref.try_eval_predicate(&eq_expr, &filter).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_try_eval_predicate_inner_unsupported_expression() {
+        // Test unsupported expression types that should return None
+        let numeric_data = vec![10, 20, 30, 15, 25];
+        let arrow_array = Int32Array::from(numeric_data);
+        let liquid_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(arrow_array);
+        let liquid_ref: LiquidArrayRef = Arc::new(liquid_array);
+
+        // Create unsupported predicate: column + 5 (not column op literal)
+        let add_expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("test_col", 0)),
+            Operator::Plus,
+            Arc::new(Literal::new(ScalarValue::Int32(Some(5)))),
+        ));
+
+        let filter = BooleanArray::from(vec![true; liquid_ref.len()]);
+        let result = liquid_ref.try_eval_predicate(&add_expr, &filter).unwrap();
+        assert!(result.is_none());
+
+        // Test another unsupported case: literal op column (wrong order)
+        let wrong_order_expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Literal::new(ScalarValue::Int32(Some(20)))),
+            Operator::Eq,
+            Arc::new(Column::new("test_col", 0)),
+        ));
+
+        let result = liquid_ref
+            .try_eval_predicate(&wrong_order_expr, &filter)
+            .unwrap();
+        assert!(result.is_none());
+
+        // Test column-column comparison (not column-literal)
+        let col_col_expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("col1", 0)),
+            Operator::Eq,
+            Arc::new(Column::new("col2", 1)),
+        ));
+
+        let result = liquid_ref
+            .try_eval_predicate(&col_col_expr, &filter)
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_train_from_binary_view() {
+        // Create binary data with some repeated patterns for compression
+        let binary_data: Vec<&[u8]> = vec![
+            b"hello",
+            b"world",
+            b"hello",              // duplicate
+            b"test\x00\x01\x02",   // with null bytes
+            b"world",              // duplicate
+            b"binary\xff\xfe\xfd", // with high bytes
+        ];
+
+        let input = BinaryViewArray::from_iter_values(binary_data.iter().copied());
+
+        // Test train_from_binary_view
+        let (compressor, liquid_array1) = LiquidByteArray::train_from_binary_view(&input);
+
+        // Verify the liquid array has correct properties
+        assert_eq!(liquid_array1.len(), input.len());
+        assert_eq!(liquid_array1.original_arrow_type, ArrowByteType::BinaryView);
+
+        // Test roundtrip conversion with train_from_binary_view
+        let output1 = liquid_array1.to_arrow_array();
+        let output_binary_view1 = output1.as_binary_view();
+
+        // Verify all values match
+        assert_eq!(input.len(), output_binary_view1.len());
+        for i in 0..input.len() {
+            assert_eq!(input.value(i), output_binary_view1.value(i));
+        }
+
+        // Test from_binary_view_array with the same compressor
+        let liquid_array2 = LiquidByteArray::from_binary_view_array(&input, compressor);
+
+        // Verify the second liquid array has correct properties
+        assert_eq!(liquid_array2.len(), input.len());
+        assert_eq!(liquid_array2.original_arrow_type, ArrowByteType::BinaryView);
+
+        // Test roundtrip conversion with from_binary_view_array
+        let output2 = liquid_array2.to_arrow_array();
+        let output_binary_view2 = output2.as_binary_view();
+
+        // Verify all values match
+        assert_eq!(input.len(), output_binary_view2.len());
+        for i in 0..input.len() {
+            assert_eq!(input.value(i), output_binary_view2.value(i));
+        }
+
+        // Both methods should produce equivalent results
+        let dict1 = liquid_array1.to_dict_arrow();
+        let dict2 = liquid_array2.to_dict_arrow();
+        assert_eq!(dict1.keys(), dict2.keys());
+        assert_eq!(dict1.values().len(), dict2.values().len());
+    }
+
+    #[test]
+    fn test_train_from_binary_view_with_nulls() {
+        let binary_data: Vec<Option<&[u8]>> = vec![
+            Some(b"data1"),
+            None,
+            Some(b"data2"),
+            None,
+            Some(b"data1"), // duplicate
+        ];
+
+        let input = BinaryViewArray::from(binary_data.clone());
+        let (compressor, liquid_array1) = LiquidByteArray::train_from_binary_view(&input);
+
+        // Verify roundtrip with nulls for train_from_binary_view
+        let output1 = liquid_array1.to_arrow_array();
+        let output_binary_view1 = output1.as_binary_view();
+
+        assert_eq!(input.len(), output_binary_view1.len());
+        assert_eq!(input.null_count(), output_binary_view1.null_count());
+
+        for i in 0..input.len() {
+            if input.is_null(i) {
+                assert!(output_binary_view1.is_null(i));
+            } else {
+                assert_eq!(input.value(i), output_binary_view1.value(i));
+            }
+        }
+
+        // Test from_binary_view_array with nulls
+        let liquid_array2 = LiquidByteArray::from_binary_view_array(&input, compressor);
+
+        // Verify roundtrip with nulls for from_binary_view_array
+        let output2 = liquid_array2.to_arrow_array();
+        let output_binary_view2 = output2.as_binary_view();
+
+        assert_eq!(input.len(), output_binary_view2.len());
+        assert_eq!(input.null_count(), output_binary_view2.null_count());
+
+        for i in 0..input.len() {
+            if input.is_null(i) {
+                assert!(output_binary_view2.is_null(i));
+            } else {
+                assert_eq!(input.value(i), output_binary_view2.value(i));
+            }
+        }
     }
 }

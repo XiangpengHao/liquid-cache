@@ -47,11 +47,30 @@ impl LocalCache {
         cache_dir.join(format!("chunk_{chunk_index}.bin"))
     }
 
+    /// Get the temporary path for a chunk while it's being written
+    fn get_temp_chunk_path(&self, path: &Path, chunk_index: u64) -> PathBuf {
+        let cache_dir = self.get_cache_dir_for_path(path);
+        // Include timestamp and thread ID to avoid conflicts between concurrent writes
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let thread_id = std::thread::current().id();
+        cache_dir.join(format!(
+            "in-progress-chunk_{chunk_index}_{now}_{thread_id:?}.bin"
+        ))
+    }
+
     /// Calculate which chunks are needed for a given range
     fn chunks_for_range(&self, range: &Range<u64>) -> RangeInclusive<u64> {
         let start_chunk = range.start / CACHE_BLOCK_SIZE;
         let end_chunk = (range.end - 1) / CACHE_BLOCK_SIZE; // -1 because end is exclusive
         start_chunk..=end_chunk
+    }
+
+    /// Check if a cached chunk is ready to be read (file exists, since rename is atomic)
+    fn is_chunk_ready(&self, chunk_path: &std::path::Path) -> bool {
+        chunk_path.exists()
     }
 
     /// Read data from a cached chunk
@@ -61,7 +80,7 @@ impl LocalCache {
         offset: u64,
         len: usize,
     ) -> Result<Bytes> {
-        let mut file = tokio::fs::File::open(chunk_path)
+        let mut file = tokio::fs::File::open(&chunk_path)
             .await
             .map_err(|e| Error::Generic {
                 store: "LocalCache",
@@ -96,26 +115,48 @@ impl LocalCache {
             })?;
         }
 
-        let chunk_path = self.get_chunk_path(path, chunk_index);
-        let mut file = tokio::fs::File::create(chunk_path)
+        // Write to a temporary file first
+        let temp_chunk_path = self.get_temp_chunk_path(path, chunk_index);
+        let final_chunk_path = self.get_chunk_path(path, chunk_index);
+
+        let mut file = tokio::fs::File::create(&temp_chunk_path)
             .await
             .map_err(|e| Error::Generic {
                 store: "LocalCache",
                 source: Box::new(e),
             })?;
 
+        // Write the data to the temporary file
         file.write_all(&data).await.map_err(|e| Error::Generic {
             store: "LocalCache",
             source: Box::new(e),
         })?;
 
-        // This sync is necessary to ensure that an immediate read from cache will return the data
+        // Sync to ensure data is written to disk before rename
         file.sync_all().await.map_err(|e| Error::Generic {
             store: "LocalCache",
             source: Box::new(e),
         })?;
 
-        Ok(())
+        // Close the file before rename
+        drop(file);
+
+        // Atomically rename the temporary file to the final location
+        // If another thread already created the file, that's fine - we can just clean up our temp file
+        match tokio::fs::rename(&temp_chunk_path, &final_chunk_path).await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                let _ = tokio::fs::remove_file(&temp_chunk_path).await;
+                if final_chunk_path.exists() {
+                    Ok(())
+                } else {
+                    Err(Error::Generic {
+                        store: "LocalCache",
+                        source: Box::new(e),
+                    })
+                }
+            }
+        }
     }
 
     /// Get range data from cached chunks
@@ -191,7 +232,7 @@ impl ObjectStore for LocalCache {
         let mut missing_chunks = Vec::new();
         for chunk_idx in chunks_needed {
             let chunk_path = self.get_chunk_path(location, chunk_idx);
-            if !chunk_path.exists() {
+            if !self.is_chunk_ready(&chunk_path) {
                 missing_chunks.push(chunk_idx);
             }
         }
@@ -259,6 +300,7 @@ impl ObjectStore for LocalCache {
 mod tests {
     use super::*;
     use bytes::Bytes;
+    use liquid_cache_common::mock_store::MockStore;
     use object_store::memory::InMemory;
     use std::ops::Range;
     use tempfile::tempdir;
@@ -287,7 +329,7 @@ mod tests {
         // Verify that the returned data matches the expected pattern
         for (i, byte) in result.iter().enumerate() {
             let expected = ((range.start + i as u64) % 256) as u8;
-            assert_eq!(*byte, expected, "Mismatch at position {}", i);
+            assert_eq!(*byte, expected, "Mismatch at position {i}");
         }
 
         Ok(())
@@ -312,7 +354,10 @@ mod tests {
         assert!(cache_dir.exists(), "Cache directory should exist");
 
         let chunk_path = cache.get_chunk_path(&Path::from(file_path), 0);
-        assert!(chunk_path.exists(), "Chunk file should exist");
+        assert!(
+            cache.is_chunk_ready(&chunk_path),
+            "Chunk file should be ready"
+        );
 
         Ok(())
     }
@@ -335,7 +380,10 @@ mod tests {
         // Verify all chunks were cached
         for chunk_idx in 0..=2 {
             let chunk_path = cache.get_chunk_path(&Path::from(file_path), chunk_idx);
-            assert!(chunk_path.exists(), "Chunk {} should exist", chunk_idx);
+            assert!(
+                cache.is_chunk_ready(&chunk_path),
+                "Chunk {chunk_idx} should be ready"
+            );
         }
 
         Ok(())
@@ -360,13 +408,22 @@ mod tests {
 
         // Verify only the requested chunk was cached
         let chunk1_path = cache.get_chunk_path(&Path::from(file_path), 1);
-        assert!(chunk1_path.exists(), "Chunk 1 should exist");
+        assert!(
+            cache.is_chunk_ready(&chunk1_path),
+            "Chunk 1 should be ready"
+        );
 
         // Other chunks should not be cached yet
         let chunk0_path = cache.get_chunk_path(&Path::from(file_path), 0);
         let chunk2_path = cache.get_chunk_path(&Path::from(file_path), 2);
-        assert!(!chunk0_path.exists(), "Chunk 0 should not exist yet");
-        assert!(!chunk2_path.exists(), "Chunk 2 should not exist yet");
+        assert!(
+            !cache.is_chunk_ready(&chunk0_path),
+            "Chunk 0 should not be ready yet"
+        );
+        assert!(
+            !cache.is_chunk_ready(&chunk2_path),
+            "Chunk 2 should not be ready yet"
+        );
 
         Ok(())
     }
@@ -392,9 +449,18 @@ mod tests {
         let chunk0_path = cache.get_chunk_path(&Path::from(file_path), 0);
         let chunk1_path = cache.get_chunk_path(&Path::from(file_path), 1);
         let chunk2_path = cache.get_chunk_path(&Path::from(file_path), 2);
-        assert!(chunk0_path.exists(), "Chunk 0 should exist");
-        assert!(chunk1_path.exists(), "Chunk 1 should exist");
-        assert!(chunk2_path.exists(), "Chunk 2 should exist");
+        assert!(
+            cache.is_chunk_ready(&chunk0_path),
+            "Chunk 0 should be ready"
+        );
+        assert!(
+            cache.is_chunk_ready(&chunk1_path),
+            "Chunk 1 should be ready"
+        );
+        assert!(
+            cache.is_chunk_ready(&chunk2_path),
+            "Chunk 2 should be ready"
+        );
 
         Ok(())
     }
@@ -454,7 +520,7 @@ mod tests {
         let start = file_size - 1024 * 1024;
         for (i, byte) in data.iter().enumerate() {
             let expected = ((start + i as u64) % 256) as u8;
-            assert_eq!(*byte, expected, "Mismatch at position {}", i);
+            assert_eq!(*byte, expected, "Mismatch at position {i}");
         }
 
         Ok(())
@@ -479,7 +545,10 @@ mod tests {
 
             // Verify data was cached
             let chunk_path = first_cache.get_chunk_path(&Path::from(file_path), 0);
-            assert!(chunk_path.exists(), "First chunk should be cached");
+            assert!(
+                first_cache.is_chunk_ready(&chunk_path),
+                "First chunk should be cached"
+            );
         }
 
         // Modify the data in the inner store to verify the second cache uses cached data
@@ -496,6 +565,34 @@ mod tests {
         // Additional verification - check if a specific range is read correctly
         let mid_range = file_size / 2;
         verify_range(&second_cache, file_path, mid_range..mid_range + 1024).await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_object_store_metrics() -> Result<()> {
+        let inner = Arc::new(MockStore::new_with_files(
+            1,
+            (CACHE_BLOCK_SIZE * 3) as usize,
+        ));
+        let temp_dir = tempdir().unwrap();
+        let cache = LocalCache::new(inner.clone(), temp_dir.path().to_path_buf());
+
+        let path = Path::from("0.parquet");
+        let start = CACHE_BLOCK_SIZE / 2;
+        let end = CACHE_BLOCK_SIZE + CACHE_BLOCK_SIZE / 2;
+
+        verify_range(&cache, path.as_ref(), start..end).await?;
+
+        let ranges = inner.get_access_ranges(&path).unwrap();
+        assert_eq!(ranges.len(), 2);
+        assert_eq!(ranges[0], 0..CACHE_BLOCK_SIZE);
+        assert_eq!(ranges[1], CACHE_BLOCK_SIZE..CACHE_BLOCK_SIZE * 2);
+
+        // second request should hit cache and not increase range count
+        verify_range(&cache, path.as_ref(), start + 1024..end - 1024).await?;
+        let ranges_after = inner.get_access_ranges(&path).unwrap();
+        assert_eq!(ranges_after.len(), 2);
 
         Ok(())
     }

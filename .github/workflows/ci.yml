@@ -19,10 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly-2025-04-29
-
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       
       - name: Check formatting
@@ -34,16 +31,14 @@ jobs:
           RUSTDOCFLAGS: -D warnings
 
       - name: Run clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
   unit_test:
     name: Unit Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly-2025-04-29
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
@@ -61,9 +56,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly-2025-04-29
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Run shuttle test
         run: |
@@ -75,9 +68,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      # Sanitizers can only run on nightly
+      - uses: dtolnay/rust-toolchain@nightly
         with:
-          toolchain: nightly-2025-04-29
+          components: rust-src
+
       # Address sanitizers can't be cached: https://github.com/Swatinem/rust-cache/issues/161
       - run: sudo apt install llvm-dev -y
       - name: Run address sanitizer
@@ -89,9 +84,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly-2025-04-29
+      - uses: dtolnay/rust-toolchain@stable
       - run: sudo apt-get update && sudo apt-get install -y wget
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
@@ -100,6 +93,12 @@ jobs:
         run: |
           mkdir -p benchmark/data
           wget https://datasets.clickhouse.com/hits_compatible/athena_partitioned/hits_0.parquet -O benchmark/data/hits_0.parquet
+      - name: Update manifest for partitioned data
+        run: |
+          # Update the manifest to point to the partitioned data directory
+          sed 's|"benchmark/clickbench/data/hits.parquet"|"benchmark/data/hits_0.parquet"|' \
+            benchmark/clickbench/manifest.json > benchmark/clickbench/benchmark_manifest.json
+
       - name: Run ClickBench
         run: |
           source <(cargo llvm-cov show-env --export-prefix)
@@ -108,16 +107,16 @@ jobs:
           cargo build --bin clickbench_client
           env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic --cache-mode liquid_eager_transcode &> server.log &
           sleep 2  # Wait for server to start up
-          env RUST_LOG=info cargo run --bin clickbench_client -- --query-path benchmark/clickbench/queries/queries.sql --file examples/nano_hits.parquet
+          env RUST_LOG=info cargo run --bin clickbench_client -- --manifest benchmark/clickbench/benchmark_manifest.json
           echo "=== Server logs ==="
           cat server.log || echo "No server log found"
-          curl http://localhost:50052/shutdown
+          curl http://localhost:53703/shutdown
           env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic --cache-mode liquid_eager_transcode &> server.log &
           sleep 2  # Wait for server to start up
-          env RUST_LOG=info cargo run --bin clickbench_client -- --query-path benchmark/clickbench/queries/queries.sql --file benchmark/data/hits_0.parquet --answer-dir benchmark/clickbench/answers/clickbench_0
+          env RUST_LOG=info cargo run --bin clickbench_client -- --manifest benchmark/clickbench/benchmark_manifest.json --answer-dir benchmark/clickbench/answers/clickbench_0
           echo "=== Server logs (partition 0) ==="
           cat server.log || echo "No server log found"
-          curl http://localhost:50052/shutdown
+            curl http://localhost:53703/shutdown
           cargo llvm-cov report --codecov --output-path codecov_clickbench.json
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
@@ -131,9 +130,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly-2025-04-29
+      - uses: dtolnay/rust-toolchain@stable
       - run: sudo apt-get update && sudo apt-get install -y wget
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
@@ -151,10 +148,10 @@ jobs:
           cargo build --bin tpch_client
           env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic --cache-mode liquid_eager_transcode &> server.log &
           sleep 2  # Wait for server to start up
-          env RUST_LOG=info cargo run --bin tpch_client -- --query-dir benchmark/tpch/queries --answer-dir benchmark/tpch/answers/sf0.1 --data-dir benchmark/tpch/data/sf0.1
+          env RUST_LOG=info cargo run --bin tpch_client -- --manifest benchmark/tpch/manifest.json --answer-dir benchmark/tpch/answers/sf0.1
           echo "=== Server logs ==="
           cat server.log || echo "No server log found"
-          curl http://localhost:50052/shutdown
+          curl http://localhost:53703/shutdown
           cargo llvm-cov report --codecov --output-path codecov_tpch.json
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
@@ -162,6 +159,202 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: codecov_tpch.json
           fail_ci_if_error: true
+
+  benchmark:
+    name: Performance Benchmark
+    runs-on: ubicloud-standard-4-ubuntu-2404
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y wget jq
+      - uses: ubicloud/rust-cache@v2
+
+      - name: Setup ClickBench partitioned data download
+        run: |
+          mkdir -p benchmark/clickbench/data
+          for partition in 0 1 2 3; do
+            echo "Downloading partition ${partition}..."
+            wget "https://datasets.clickhouse.com/hits_compatible/athena_partitioned/hits_${partition}.parquet" \
+              -O "benchmark/clickbench/data/hits_${partition}.parquet"
+          done
+
+      - name: Update manifest for partitioned data
+        run: |
+          # Update the manifest to point to the partitioned data directory
+          sed 's|"benchmark/clickbench/data/hits.parquet"|"benchmark/clickbench/data"|' \
+            benchmark/clickbench/manifest.json > benchmark/clickbench/benchmark_manifest.json
+
+      - name: Build benchmark binary
+        run: cargo build --release --bin in_process
+
+      - name: Run benchmark
+        run: |
+          mkdir -p benchmark_results
+          env RUST_LOG=info cargo run --release --bin in_process -- \
+            --manifest benchmark/clickbench/benchmark_manifest.json \
+            --output benchmark_results/benchmark.json \
+            --iteration 5 \
+            --bench-mode liquid-eager-transcode
+
+      - name: Create timestamped benchmark result
+        run: |
+          jq --arg timestamp "$(date -Iminutes)" --arg commit "${{ github.sha }}" \
+             '. + {"timestamp": $timestamp, "commit": $commit}' \
+             benchmark_results/benchmark.json > benchmark_results/final.json
+
+      - name: Setup benchmark branch
+        if: github.ref == 'refs/heads/main'
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          
+          # Try to fetch the benchmark branch
+          git fetch origin benchmark:benchmark 2>/dev/null || true
+          git checkout benchmark 2>/dev/null || git checkout -b benchmark
+
+      - name: Save benchmark results to branch
+        if: github.ref == 'refs/heads/main'
+        run: |
+          mkdir -p benchmarks
+          cp benchmark_results/final.json "benchmarks/${{ github.sha }}.json"
+          git add "benchmarks/${{ github.sha }}.json"
+          git commit -m "Add benchmark results for ${{ github.sha }}" || echo "No changes to commit"
+          git push origin benchmark || git push --set-upstream origin benchmark
+
+      - name: Compare with main branch baseline
+        id: compare
+        run: |
+          # Fetch the benchmark branch to access existing benchmarks for comparison
+          git fetch origin benchmark:benchmark 2>/dev/null || true
+          
+          # Save the comparison script before switching branches
+          cp .github/compare_benchmarks.py /tmp/compare_benchmarks.py
+          
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            # For PRs, compare against the latest main branch commit benchmark
+            main_commit=$(git log origin/main --format="%H" -n 1)
+            baseline_benchmark="benchmarks/${main_commit}.json"
+            
+            # Switch to benchmark branch to check for baseline
+            git checkout benchmark 2>/dev/null || echo "Benchmark branch not found"
+            
+            if [ -f "$baseline_benchmark" ]; then
+              echo "Comparing with main branch commit: ${main_commit:0:8}"
+              
+              # Use the external Python script for comparison (from saved copy)
+              python3 /tmp/compare_benchmarks.py \
+                "benchmark_results/final.json" \
+                "$baseline_benchmark" \
+                --output comparison.md
+              
+              echo "COMPARISON_AVAILABLE=true" >> $GITHUB_OUTPUT
+            else
+              echo "No baseline benchmark found for main branch commit: ${main_commit:0:8}"
+              
+              # Find the most recent benchmark as fallback
+              if ls benchmarks/*.json >/dev/null 2>&1; then
+                baseline_benchmark=$(ls -t benchmarks/*.json | head -n 1)
+                baseline_commit=$(basename "$baseline_benchmark" .json)
+                
+                echo "Using most recent benchmark as baseline: ${baseline_commit:0:8}"
+                
+                # Use the external Python script for comparison (from saved copy)
+                python3 /tmp/compare_benchmarks.py \
+                  "benchmark_results/final.json" \
+                  "$baseline_benchmark" \
+                  --output comparison.md
+                
+                echo "COMPARISON_AVAILABLE=true" >> $GITHUB_OUTPUT
+              else
+                cat > comparison.md << 'EOF'
+          ## 📊 Benchmark Comparison
+          
+          **No baseline found** - This appears to be the first benchmark run.
+          
+          The benchmark results have been saved and will be used as a baseline for future comparisons.
+          
+          ✅ Benchmark completed successfully
+          EOF
+                echo "COMPARISON_AVAILABLE=true" >> $GITHUB_OUTPUT
+              fi
+            fi
+          else
+            # For main branch runs, just indicate successful completion
+            cat > comparison.md << 'EOF'
+          ## 📊 Benchmark Completed
+          
+          ✅ Benchmark completed successfully and results saved to benchmark branch.
+          
+          This baseline will be used for future PR comparisons.
+          EOF
+            echo "COMPARISON_AVAILABLE=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Comment PR with benchmark results
+        if: steps.compare.outputs.COMPARISON_AVAILABLE == 'true' && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            
+            let comment = '';
+            try {
+              comment = fs.readFileSync('comparison.md', 'utf8');
+            } catch (error) {
+              comment = 'Error reading benchmark comparison results';
+            }
+            
+            // Check if this is an external PR (from a fork)
+            const isExternalPR = context.payload.pull_request.head.repo.full_name !== context.payload.pull_request.base.repo.full_name;
+            
+            if (isExternalPR) {
+              console.log('Skipping comment for external PR due to permission restrictions');
+              console.log('Benchmark results:');
+              console.log(comment);
+              return;
+            }
+            
+            try {
+              // Find existing benchmark comment
+              const comments = await github.rest.issues.listComments({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+              });
+              
+              const botComment = comments.data.find(comment => 
+                comment.user.type === 'Bot' && 
+                comment.body.includes('## 📊 Benchmark Comparison')
+              );
+              
+              if (botComment) {
+                // Update existing comment
+                await github.rest.issues.updateComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: botComment.id,
+                  body: comment
+                });
+              } else {
+                // Create new comment
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  body: comment
+                });
+              }
+            } catch (error) {
+              console.log('Failed to post comment, likely due to permissions:', error.message);
+              console.log('Benchmark results:');
+              console.log(comment);
+            }
 
   examples:
     name: Run client/server examples (${{ matrix.os }})
@@ -172,10 +365,7 @@ jobs:
       fail-fast: false
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly-2025-04-29
-
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
       - name: Build LiquidCache server

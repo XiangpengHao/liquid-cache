@@ -23,9 +23,7 @@
 			},
 			"args": [
 				"--max-cache-mb",
-				"1000",
-				"--cache-mode",
-				"arrow"
+				"10"
 			],
 			"cwd": "${workspaceFolder}",
 		},
@@ -74,16 +72,64 @@
 				"RUST_LOG": "info"
 			},
 			"args": [
+				"--manifest",
+				"benchmark/tpch/manifest.json",
+			],
+			"cwd": "${workspaceFolder}"
+		},
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "tpch_inprocess",
+			"cargo": {
+				"args": [
+					"build",
+					"--bin=tpch_inprocess",
+				],
+				"filter": {
+					"name": "tpch_inprocess",
+					"kind": "bin"
+				}
+			},
+			"env": {
+				"RUST_LOG": "info"
+			},
+			"args": [
 				"--query-dir",
 				"benchmark/tpch/queries",
 				"--data-dir",
-				"benchmark/tpch/data/sf0.01",
+				"benchmark/tpch/data/sf100.0",
 				"--query",
-				"15",
-				"--answer-dir",
-				"benchmark/tpch/answers/sf0.01"
+				"12",
+				"--partitions",
+				"10",
+				"--max-cache-mb",
+				"1024"
 			],
 			"cwd": "${workspaceFolder}"
-		}
+		},
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "inprocess",
+			"cargo": {
+				"args": [
+					"build",
+					"--bin=in_process",
+				],
+				"filter": {
+					"name": "in_process",
+					"kind": "bin"
+				}
+			},
+			"env": {
+				"RUST_LOG": "info"
+			},
+			"args": [
+				"--manifest",
+				"benchmark/data/clickbench.json",
+			],
+			"cwd": "${workspaceFolder}"
+		},
 	]
 }

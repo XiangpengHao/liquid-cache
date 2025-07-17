@@ -11,10 +11,16 @@ repository = { workspace = true }
 arrow-flight = { workspace = true }
 arrow-schema = { workspace = true }
 arrow = { workspace = true }
-prost = { workspace = true }
+async-trait = { workspace = true }
 bytes = { workspace = true }
-url = { workspace = true }
+chrono = "0.4.41"
+futures = { workspace = true }
+object_store = { workspace = true }
+prost = { workspace = true }
 serde = { workspace = true }
+thiserror = "2.0.12"
+tokio = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

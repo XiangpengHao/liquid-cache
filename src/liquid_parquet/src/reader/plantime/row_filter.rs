@@ -1,5 +1,3 @@
-// Not our code, some of them might be unused.
-
 // Licensed to the Apache Software Foundation (ASF) under one
 // or more contributor license agreements.  See the NOTICE file
 // distributed with this work for additional information
@@ -65,32 +63,28 @@ use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use arrow::array::{AsArray, BooleanArray};
-use arrow::compute::kernels;
+use arrow::array::BooleanArray;
 use arrow::datatypes::{DataType, Schema};
 use arrow::error::{ArrowError, Result as ArrowResult};
 use arrow::record_batch::RecordBatch;
 use arrow_schema::SchemaRef;
 use datafusion::datasource::physical_plan::ParquetFileMetrics;
-use datafusion::logical_expr::{ColumnarValue, Operator};
-use datafusion::physical_expr_common::datum::apply_cmp;
+use datafusion::logical_expr::Operator;
 use datafusion::physical_plan::expressions::{BinaryExpr, LikeExpr};
 use datafusion::physical_plan::metrics;
 use parquet::arrow::ProjectionMask;
 use parquet::arrow::arrow_reader::ArrowPredicate;
 use parquet::file::metadata::ParquetMetaData;
 
+use datafusion::common::Result;
 use datafusion::common::cast::as_boolean_array;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion, TreeNodeVisitor};
-use datafusion::common::{Result, ScalarValue};
-use datafusion::datasource::schema_adapter::{DefaultSchemaAdapterFactory, SchemaMapper};
-use datafusion::physical_expr::expressions::{Column, Literal};
+use datafusion::datasource::schema_adapter::{SchemaAdapterFactory, SchemaMapper};
+use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::utils::reassign_predicate_columns;
 use datafusion::physical_expr::{PhysicalExpr, split_conjunction};
 
-use crate::LiquidPredicate;
-use crate::liquid_array::{AsLiquidArray, LiquidArray, LiquidArrayRef};
-use crate::reader::runtime::LiquidRowFilter;
+use crate::reader::runtime::{LiquidRowFilter, get_predicate_column_id};
 
 /// A "compiled" predicate passed to `ParquetRecordBatchStream` to perform
 /// row-level filtering during parquet decoding.
@@ -102,10 +96,12 @@ use crate::reader::runtime::LiquidRowFilter;
 /// An expression can be evaluated as a `DatafusionArrowPredicate` if it:
 /// * Does not reference any projected columns
 /// * Does not reference columns with non-primitive types (e.g. structs / lists)
-#[derive(Debug)]
-pub(crate) struct DatafusionArrowPredicate {
+#[derive(Debug, Clone)]
+pub struct LiquidPredicate {
     /// the filter expression
     physical_expr: Arc<dyn PhysicalExpr>,
+    /// the filter expression without reassigned index
+    physical_expr_physical_column_index: Arc<dyn PhysicalExpr>,
     /// Path to the columns in the parquet schema required to evaluate the
     /// expression
     projection_mask: ProjectionMask,
@@ -119,8 +115,8 @@ pub(crate) struct DatafusionArrowPredicate {
     schema_mapper: Arc<dyn SchemaMapper>,
 }
 
-impl DatafusionArrowPredicate {
-    /// Create a new `DatafusionArrowPredicate` from a `FilterCandidate`
+impl LiquidPredicate {
+    /// Create a new `LiquidPredicate` from a `FilterCandidate`
     pub fn try_new(
         candidate: FilterCandidate,
         metadata: &ParquetMetaData,
@@ -129,10 +125,12 @@ impl DatafusionArrowPredicate {
         time: metrics::Time,
     ) -> Result<Self> {
         let projected_schema = Arc::clone(&candidate.filter_schema);
-        let physical_expr = reassign_predicate_columns(candidate.expr, &projected_schema, true)?;
+        let physical_expr =
+            reassign_predicate_columns(candidate.expr.clone(), &projected_schema, true)?;
 
         Ok(Self {
             physical_expr,
+            physical_expr_physical_column_index: candidate.expr,
             projection_mask: ProjectionMask::roots(
                 metadata.file_metadata().schema_descr(),
                 candidate.projection,
@@ -143,89 +141,19 @@ impl DatafusionArrowPredicate {
             schema_mapper: candidate.schema_mapper,
         })
     }
-}
 
-fn get_string_needle(value: &ScalarValue) -> Option<&str> {
-    if let ScalarValue::Utf8(Some(v)) = value {
-        Some(v)
-    } else if let ScalarValue::Dictionary(_, value) = value {
-        if let ScalarValue::Utf8(Some(v)) = value.as_ref() {
-            Some(v)
-        } else {
-            None
-        }
-    } else {
-        None
+    /// Get the physical expression with physical column index.
+    pub fn physical_expr_physical_column_index(&self) -> &Arc<dyn PhysicalExpr> {
+        &self.physical_expr_physical_column_index
+    }
+
+    pub(crate) fn predicate_column_ids(&self) -> Vec<usize> {
+        let projection = self.projection();
+        get_predicate_column_id(projection)
     }
 }
 
-impl LiquidPredicate for DatafusionArrowPredicate {
-    fn evaluate_liquid(
-        &mut self,
-        array: &LiquidArrayRef,
-    ) -> Result<Option<BooleanArray>, ArrowError> {
-        if let Some(binary_expr) = self.physical_expr.as_any().downcast_ref::<BinaryExpr>() {
-            if let Some(literal) = binary_expr.right().as_any().downcast_ref::<Literal>() {
-                let op = binary_expr.op();
-                if let Some(array) = array.as_string_array_opt() {
-                    if let Some(needle) = get_string_needle(literal.value()) {
-                        if op == &Operator::Eq {
-                            let result = array.compare_equals(needle);
-                            return Ok(Some(result));
-                        } else if op == &Operator::NotEq {
-                            let result = array.compare_not_equals(needle);
-                            return Ok(Some(result));
-                        }
-                    }
-
-                    let dict_array = array.to_dict_arrow();
-                    let lhs = ColumnarValue::Array(Arc::new(dict_array));
-                    let rhs = ColumnarValue::Scalar(literal.value().clone());
-
-                    let result = match op {
-                        Operator::NotEq => apply_cmp(&lhs, &rhs, kernels::cmp::neq),
-                        Operator::Eq => apply_cmp(&lhs, &rhs, kernels::cmp::eq),
-                        Operator::Lt => apply_cmp(&lhs, &rhs, kernels::cmp::lt),
-                        Operator::LtEq => apply_cmp(&lhs, &rhs, kernels::cmp::lt_eq),
-                        Operator::Gt => apply_cmp(&lhs, &rhs, kernels::cmp::gt),
-                        Operator::GtEq => apply_cmp(&lhs, &rhs, kernels::cmp::gt_eq),
-                        Operator::LikeMatch => apply_cmp(&lhs, &rhs, arrow::compute::like),
-                        Operator::ILikeMatch => apply_cmp(&lhs, &rhs, arrow::compute::ilike),
-                        Operator::NotLikeMatch => apply_cmp(&lhs, &rhs, arrow::compute::nlike),
-                        Operator::NotILikeMatch => apply_cmp(&lhs, &rhs, arrow::compute::nilike),
-                        _ => panic!("unsupported operator: {op:?}"),
-                    };
-                    if let Ok(result) = result {
-                        let filtered = result.into_array(array.len())?.as_boolean().clone();
-                        return Ok(Some(filtered));
-                    }
-                }
-            }
-        } else if let Some(like_expr) = self.physical_expr.as_any().downcast_ref::<LikeExpr>() {
-            if let Some(literal) = like_expr.pattern().as_any().downcast_ref::<Literal>() {
-                let arrow_dict = array.as_string().to_dict_arrow();
-
-                let lhs = ColumnarValue::Array(Arc::new(arrow_dict));
-                let rhs = ColumnarValue::Scalar(literal.value().clone());
-
-                let result = match (like_expr.negated(), like_expr.case_insensitive()) {
-                    (false, false) => apply_cmp(&lhs, &rhs, arrow::compute::like),
-                    (true, false) => apply_cmp(&lhs, &rhs, arrow::compute::nlike),
-                    (false, true) => apply_cmp(&lhs, &rhs, arrow::compute::ilike),
-                    (true, true) => apply_cmp(&lhs, &rhs, arrow::compute::nilike),
-                };
-                if let Ok(result) = result {
-                    let filtered = result.into_array(array.len())?.as_boolean().clone();
-                    return Ok(Some(filtered));
-                }
-            }
-        }
-        // Not supported for this data type
-        Ok(None)
-    }
-}
-
-impl ArrowPredicate for DatafusionArrowPredicate {
+impl ArrowPredicate for LiquidPredicate {
     fn projection(&self) -> &ProjectionMask {
         &self.projection_mask
     }
@@ -260,7 +188,7 @@ impl ArrowPredicate for DatafusionArrowPredicate {
 /// of evaluating the resulting expression.
 ///
 /// See the module level documentation for more information.
-pub(crate) struct FilterCandidate {
+pub struct FilterCandidate {
     expr: Arc<dyn PhysicalExpr>,
     required_bytes: usize,
     can_use_index: bool,
@@ -309,25 +237,33 @@ pub(crate) struct FilterCandidate {
 /// When evaluating the predicate as a filter on the parquet file, the predicate
 /// must be rewritten to `NULL = 'foo'` as the `address` column will be filled
 /// in with `NULL` values during the rest of the evaluation.
-struct FilterCandidateBuilder<'a> {
+pub struct FilterCandidateBuilder {
     expr: Arc<dyn PhysicalExpr>,
-    /// The schema of this parquet file
-    file_schema: &'a Schema,
+    /// The schema of this parquet file.
+    /// Columns may have different types from the table schema and there may be
+    /// columns in the file schema that are not in the table schema or columns that
+    /// are in the table schema that are not in the file schema.
+    file_schema: SchemaRef,
     /// The schema of the table (merged schema) -- columns may be in different
     /// order than in the file and have columns that are not in the file schema
-    table_schema: &'a Schema,
+    table_schema: SchemaRef,
+    /// A `SchemaAdapterFactory` used to map the file schema to the table schema.
+    schema_adapter_factory: Arc<dyn SchemaAdapterFactory>,
 }
 
-impl<'a> FilterCandidateBuilder<'a> {
+impl FilterCandidateBuilder {
+    /// Create a new `FilterCandidateBuilder`
     pub fn new(
         expr: Arc<dyn PhysicalExpr>,
-        file_schema: &'a Schema,
-        table_schema: &'a Schema,
+        file_schema: SchemaRef,
+        table_schema: SchemaRef,
+        schema_adapter_factory: Arc<dyn SchemaAdapterFactory>,
     ) -> Self {
         Self {
             expr,
             file_schema,
             table_schema,
+            schema_adapter_factory,
         }
     }
 
@@ -340,7 +276,7 @@ impl<'a> FilterCandidateBuilder<'a> {
     /// * `Err(e)` if an error occurs while building the candidate
     pub fn build(self, metadata: &ParquetMetaData) -> Result<Option<FilterCandidate>> {
         let Some(required_indices_into_table_schema) =
-            pushdown_columns(&self.expr, self.table_schema)?
+            pushdown_columns(&self.expr, &self.table_schema)?
         else {
             return Ok(None);
         };
@@ -354,9 +290,10 @@ impl<'a> FilterCandidateBuilder<'a> {
                 .project(&required_indices_into_table_schema)?,
         );
 
-        let (schema_mapper, projection_into_file_schema) =
-            DefaultSchemaAdapterFactory::from_schema(projected_table_schema.clone())
-                .map_schema(self.file_schema)?;
+        let (schema_mapper, projection_into_file_schema) = self
+            .schema_adapter_factory
+            .create(Arc::clone(&projected_table_schema), self.table_schema)
+            .map_schema(&self.file_schema)?;
 
         let required_bytes = size_of_columns(&projection_into_file_schema, metadata)?;
         let can_use_index = columns_sorted(&projection_into_file_schema, metadata)?;
@@ -424,10 +361,10 @@ impl TreeNodeVisitor<'_> for PushdownChecker<'_> {
     type Node = Arc<dyn PhysicalExpr>;
 
     fn f_down(&mut self, node: &Self::Node) -> Result<TreeNodeRecursion> {
-        if let Some(column) = node.as_any().downcast_ref::<Column>() {
-            if let Some(recursion) = self.check_single_column(column.name()) {
-                return Ok(recursion);
-            }
+        if let Some(column) = node.as_any().downcast_ref::<Column>()
+            && let Some(recursion) = self.check_single_column(column.name())
+        {
+            return Ok(recursion);
         }
 
         Ok(TreeNodeRecursion::Continue)
@@ -490,11 +427,12 @@ fn columns_sorted(_columns: &[usize], _metadata: &ParquetMetaData) -> Result<boo
 /// `a = 1` and `c = 3`.
 pub fn build_row_filter(
     expr: &Arc<dyn PhysicalExpr>,
-    file_schema: &Schema,
-    table_schema: &Schema,
+    physical_file_schema: &SchemaRef,
+    logical_file_schema: &SchemaRef,
     metadata: &ParquetMetaData,
     reorder_predicates: bool,
     file_metrics: &ParquetFileMetrics,
+    schema_adapter_factory: &Arc<dyn SchemaAdapterFactory>,
 ) -> Result<Option<LiquidRowFilter>> {
     let rows_pruned = &file_metrics.pushdown_rows_pruned;
     let rows_matched = &file_metrics.pushdown_rows_matched;
@@ -508,7 +446,13 @@ pub fn build_row_filter(
     let mut candidates: Vec<FilterCandidate> = predicates
         .into_iter()
         .map(|expr| {
-            FilterCandidateBuilder::new(Arc::clone(expr), file_schema, table_schema).build(metadata)
+            FilterCandidateBuilder::new(
+                Arc::clone(expr),
+                physical_file_schema.clone(),
+                logical_file_schema.clone(),
+                Arc::clone(schema_adapter_factory),
+            )
+            .build(metadata)
         })
         .collect::<Result<Vec<_>, _>>()?
         .into_iter()
@@ -545,14 +489,13 @@ pub fn build_row_filter(
     candidates
         .into_iter()
         .map(|candidate| {
-            DatafusionArrowPredicate::try_new(
+            LiquidPredicate::try_new(
                 candidate,
                 metadata,
                 rows_pruned.clone(),
                 rows_matched.clone(),
                 time.clone(),
             )
-            .map(|pred| Box::new(pred) as _)
         })
         .collect::<Result<Vec<_>, _>>()
         .map(|filters| Some(LiquidRowFilter::new(filters)))

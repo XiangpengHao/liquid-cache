@@ -40,7 +40,7 @@ use liquid_cache_common::{
     CacheMode,
     rpc::{FetchResults, LiquidCacheActions},
 };
-use liquid_cache_parquet::LiquidCacheRef;
+use liquid_cache_parquet::cache::LiquidCacheRef;
 use log::info;
 use prost::bytes::Bytes;
 use service::LiquidCacheServiceInner;
@@ -53,8 +53,15 @@ mod service;
 mod utils;
 use utils::FinalStream;
 mod admin_server;
+mod errors;
 mod local_cache;
-pub use admin_server::run_admin_server;
+pub use admin_server::{models::*, run_admin_server};
+pub use errors::{
+    LiquidCacheErrorExt, LiquidCacheResult, anyhow_to_status, df_error_to_status_with_trace,
+};
+use liquid_cache_parquet::cache::policies::{CachePolicy, LruPolicy};
+use object_store::path::Path;
+use object_store::{GetOptions, GetRange};
 
 #[cfg(test)]
 mod tests;
@@ -68,11 +75,12 @@ mod tests;
 /// use datafusion::prelude::SessionContext;
 /// use liquid_cache_server::LiquidCacheService;
 /// use tonic::transport::Server;
-/// let liquid_cache = LiquidCacheService::new(SessionContext::new(), None, None, Default::default());
+/// use liquid_cache_parquet::cache::policies::LruPolicy;
+/// let liquid_cache = LiquidCacheService::new(SessionContext::new(), None, None, Default::default(), Box::new(LruPolicy::new())).unwrap();
 /// let flight = FlightServiceServer::new(liquid_cache);
 /// Server::builder()
 ///     .add_service(flight)
-///     .serve("0.0.0.0:50051".parse().unwrap());
+///     .serve("0.0.0.0:15214".parse().unwrap());
 /// ```
 pub struct LiquidCacheService {
     inner: LiquidCacheServiceInner,
@@ -87,9 +95,15 @@ impl Default for LiquidCacheService {
 impl LiquidCacheService {
     /// Create a new [LiquidCacheService] with a default [SessionContext]
     /// With no disk cache and unbounded memory usage.
-    pub fn try_new() -> Result<Self, DataFusionError> {
+    pub fn try_new() -> anyhow::Result<Self> {
         let ctx = Self::context()?;
-        Ok(Self::new(ctx, None, None, CacheMode::LiquidEagerTranscode))
+        Self::new(
+            ctx,
+            None,
+            None,
+            CacheMode::LiquidEagerTranscode,
+            Box::new(LruPolicy::new()),
+        )
     }
 
     /// Create a new [LiquidCacheService] with a custom [SessionContext]
@@ -105,15 +119,25 @@ impl LiquidCacheService {
         max_cache_bytes: Option<usize>,
         disk_cache_dir: Option<PathBuf>,
         cache_mode: CacheMode,
-    ) -> Self {
-        Self {
+        cache_policy: Box<dyn CachePolicy>,
+    ) -> anyhow::Result<Self> {
+        let disk_cache_dir = match disk_cache_dir {
+            Some(dir) => dir,
+            None => {
+                let dir = tempfile::tempdir()?.keep();
+                info!("Using temporary directory for disk cache: {dir:?}");
+                dir
+            }
+        };
+        Ok(Self {
             inner: LiquidCacheServiceInner::new(
                 Arc::new(ctx),
                 max_cache_bytes,
                 disk_cache_dir,
                 cache_mode,
+                cache_policy,
             ),
-        }
+        })
     }
 
     /// Get a reference to the cache
@@ -127,7 +151,6 @@ impl LiquidCacheService {
         let mut session_config = SessionConfig::from_env()?;
         let options_mut = session_config.options_mut();
         options_mut.execution.parquet.pushdown_filters = true;
-        options_mut.execution.parquet.binary_as_string = true;
         options_mut.execution.batch_size = 8192 * 2;
 
         {
@@ -137,7 +160,7 @@ impl LiquidCacheService {
             options_mut.execution.parquet.schema_force_view_types = false;
         }
 
-        let object_store_url = ObjectStoreUrl::parse("file://").unwrap();
+        let object_store_url = ObjectStoreUrl::parse("file://")?;
         let object_store = object_store::local::LocalFileSystem::new();
 
         let state = SessionStateBuilder::new()
@@ -157,6 +180,107 @@ impl LiquidCacheService {
 
     pub(crate) fn inner(&self) -> &LiquidCacheServiceInner {
         &self.inner
+    }
+
+    async fn do_get_fallback_inner(
+        &self,
+        message: Any,
+    ) -> anyhow::Result<Response<<Self as FlightService>::DoGetStream>> {
+        if !message.is::<FetchResults>() {
+            return Err(anyhow::anyhow!(
+                "do_get: The defined request is invalid: {}",
+                message.type_url
+            ));
+        }
+
+        let fetch_results: FetchResults = message
+            .unpack()?
+            .ok_or_else(|| anyhow::anyhow!("Expected FetchResults but got None!"))?;
+
+        let span_context = SpanContext::decode_w3c_traceparent(&fetch_results.traceparent)
+            .unwrap_or_else(SpanContext::random);
+        let span = fastrace::Span::root("poll_stream", span_context);
+
+        let handle = Uuid::from_bytes_ref(fetch_results.handle.as_ref().try_into()?);
+        let partition = fetch_results.partition as usize;
+        let stream = self.inner.execute_plan(handle, partition).await?;
+        let stream = FinalStream::new(stream, self.inner.batch_size(), span).map_err(|e| {
+            let status = anyhow_to_status(anyhow::Error::from(e).context("Error executing plan"));
+            arrow_flight::error::FlightError::Tonic(Box::new(status))
+        });
+
+        let ipc_options = IpcWriteOptions::default();
+        let stream = FlightDataEncoderBuilder::new()
+            .with_options(ipc_options)
+            .with_dictionary_handling(DictionaryHandling::Resend)
+            .build(stream)
+            .map_err(Status::from);
+
+        Ok(Response::new(Box::pin(stream)))
+    }
+
+    async fn do_action_inner(
+        &self,
+        action: LiquidCacheActions,
+    ) -> anyhow::Result<Response<<Self as FlightService>::DoActionStream>> {
+        match action {
+            LiquidCacheActions::RegisterObjectStore(cmd) => {
+                let url = Url::parse(&cmd.url)?;
+                self.inner.register_object_store(&url, cmd.options).await?;
+
+                let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
+                    body: Bytes::default(),
+                })]);
+                Ok(Response::new(Box::pin(output)))
+            }
+            LiquidCacheActions::RegisterPlan(cmd) => {
+                let plan = cmd.plan;
+                let plan = physical_plan_from_bytes(&plan, self.inner.get_ctx())?;
+                let handle = Uuid::from_bytes_ref(cmd.handle.as_ref().try_into()?);
+                self.inner.register_plan(*handle, plan);
+                let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
+                    body: Bytes::default(),
+                })]);
+                Ok(Response::new(Box::pin(output)))
+            }
+            LiquidCacheActions::PrefetchFromObjectStore(cmd) => {
+                // Parse the object store URL (e.g., s3://bucket)
+                let url = Url::parse(&cmd.url)?;
+
+                // Register the object store if not already registered
+                self.inner
+                    .register_object_store(&url, cmd.store_options)
+                    .await?;
+
+                // Get the local cache wrapper for this object store
+                let local_cache = self.inner.get_object_store(&url)?;
+
+                // Parse the path to the object within the store (e.g., path/to/file.parquet)
+                let path = Path::from(cmd.location);
+
+                // Create a range for the specific chunk we want to prefetch, if specified
+                let get_options = if cmd.range_start.is_some() && cmd.range_end.is_some() {
+                    let chunk_range =
+                        GetRange::Bounded(cmd.range_start.unwrap()..cmd.range_end.unwrap());
+                    GetOptions {
+                        range: Some(chunk_range),
+                        ..GetOptions::default()
+                    }
+                } else {
+                    GetOptions::default()
+                };
+
+                // Call the underlying object store to get the data and cache it
+                // The LocalCache wrapper will handle caching the fetched data
+                local_cache.get_opts(&path, get_options).await?;
+
+                // Return empty response to indicate successful prefetch
+                let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
+                    body: Bytes::default(),
+                })]);
+                Ok(Response::new(Box::pin(output)))
+            }
+        }
     }
 }
 
@@ -180,35 +304,9 @@ impl FlightSqlService for LiquidCacheService {
         _request: Request<Ticket>,
         message: Any,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
-        if !message.is::<FetchResults>() {
-            Err(Status::unimplemented(format!(
-                "do_get: The defined request is invalid: {}",
-                message.type_url
-            )))?
-        }
-        let fetch_results: FetchResults = message
-            .unpack()
-            .map_err(|e| Status::internal(format!("{e:?}")))?
-            .ok_or_else(|| Status::internal("Expected FetchResults but got None!"))?;
-
-        let span_context = SpanContext::decode_w3c_traceparent(&fetch_results.traceparent).unwrap();
-        let span = fastrace::Span::root("poll_stream", span_context);
-
-        let handle = Uuid::from_bytes_ref(fetch_results.handle.as_ref().try_into().unwrap());
-        let partition = fetch_results.partition as usize;
-        let stream = self.inner.execute_plan(handle, partition).await;
-        let stream = FinalStream::new(stream, self.inner.batch_size(), span).map_err(|e| {
-            panic!("Error executing plan: {e:?}");
-        });
-
-        let ipc_options = IpcWriteOptions::default();
-        let stream = FlightDataEncoderBuilder::new()
-            .with_options(ipc_options)
-            .with_dictionary_handling(DictionaryHandling::Resend)
-            .build(stream)
-            .map_err(Status::from);
-
-        Ok(Response::new(Box::pin(stream)))
+        self.do_get_fallback_inner(message)
+            .await
+            .map_err(anyhow_to_status)
     }
 
     async fn do_put_prepared_statement_update(
@@ -228,34 +326,207 @@ impl FlightSqlService for LiquidCacheService {
         request: Request<Action>,
     ) -> Result<Response<<Self as FlightService>::DoActionStream>, Status> {
         let action = LiquidCacheActions::from(request.into_inner());
-        match action {
-            LiquidCacheActions::RegisterObjectStore(cmd) => {
-                self.inner
-                    .register_object_store(&Url::parse(&cmd.url).unwrap(), cmd.options)
-                    .await
-                    .map_err(df_error_to_status)?;
-
-                let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
-                    body: Bytes::default(),
-                })]);
-                return Ok(Response::new(Box::pin(output)));
-            }
-            LiquidCacheActions::RegisterPlan(cmd) => {
-                let plan = cmd.plan;
-                let plan = physical_plan_from_bytes(&plan, self.inner.get_ctx()).unwrap();
-                let handle = Uuid::from_bytes_ref(cmd.handle.as_ref().try_into().unwrap());
-                self.inner.register_plan(*handle, plan);
-                let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
-                    body: Bytes::default(),
-                })]);
-                return Ok(Response::new(Box::pin(output)));
-            }
-        }
+        self.do_action_inner(action).await.map_err(anyhow_to_status)
     }
 
     async fn register_sql_info(&self, _id: i32, _result: &SqlInfo) {}
 }
 
-fn df_error_to_status(err: datafusion::error::DataFusionError) -> Status {
-    Status::internal(format!("{err:?}"))
+#[cfg(test)]
+mod server_actions_tests {
+    use super::*;
+    use liquid_cache_common::rpc::PrefetchFromObjectStoreRequest;
+    use std::collections::HashMap;
+    use tokio::fs::File;
+    use tokio::io::AsyncWriteExt;
+
+    async fn create_test_file(file_path: &str, size_mb: usize) -> anyhow::Result<()> {
+        let mut file = File::create(file_path).await?;
+        let size_bytes = size_mb * 1024 * 1024;
+
+        let chunk_size = 64 * 1024;
+        let chunk_data = vec![0u8; chunk_size];
+        let mut written = 0;
+
+        while written < size_bytes {
+            let remaining = size_bytes - written;
+            let write_size = std::cmp::min(chunk_size, remaining);
+            file.write_all(&chunk_data[..write_size]).await?;
+            written += write_size;
+        }
+
+        file.flush().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_prefetch_from_object_store() {
+        let service = LiquidCacheService::default();
+
+        // Create temporary test file
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("test_prefetch_data.bin");
+        let file_path_str = file_path.to_string_lossy().to_string();
+
+        // Generate 16MB test file
+        create_test_file(&file_path_str, 16).await.unwrap();
+
+        // Test with local file system
+        let url = Url::parse("file:///").unwrap();
+
+        let request = PrefetchFromObjectStoreRequest {
+            url: url.to_string(),
+            store_options: HashMap::new(),
+            location: file_path_str.clone(),
+            range_start: None,
+            range_end: None,
+        };
+
+        let action = LiquidCacheActions::PrefetchFromObjectStore(request);
+        let result = service.do_action_inner(action).await.unwrap();
+
+        let mut stream = result.into_inner();
+        let result = stream.try_next().await.unwrap().unwrap();
+        assert!(result.body.is_empty());
+
+        // Cleanup is handled by tempdir drop
+    }
+
+    #[tokio::test]
+    async fn test_prefetch_from_object_store_with_range() {
+        let service = LiquidCacheService::default();
+
+        // Create temporary test file
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("test_prefetch_data_range.bin");
+        let file_path_str = file_path.to_string_lossy().to_string();
+
+        // Generate 16MB test file
+        create_test_file(&file_path_str, 16).await.unwrap();
+
+        // Test with local file system
+        let url = Url::parse("file:///").unwrap();
+
+        // range from 1mb to 10mb
+        let range_start = 1024 * 1024;
+        let range_end = 10 * 1024 * 1024;
+
+        let request = PrefetchFromObjectStoreRequest {
+            url: url.to_string(),
+            store_options: HashMap::new(),
+            location: file_path_str.clone(),
+            range_start: Some(range_start),
+            range_end: Some(range_end),
+        };
+
+        let action = LiquidCacheActions::PrefetchFromObjectStore(request);
+        let result = service.do_action_inner(action).await.unwrap();
+
+        let mut stream = result.into_inner();
+        let result = stream.try_next().await.unwrap().unwrap();
+        assert!(result.body.is_empty());
+
+        // Cleanup is handled by tempdir drop
+    }
+
+    #[tokio::test]
+    async fn test_prefetch_invalid_object_store() {
+        let service = LiquidCacheService::default();
+
+        let request = PrefetchFromObjectStoreRequest {
+            url: "invalid://url".to_string(),
+            store_options: HashMap::new(),
+            location: "test.parquet".to_string(),
+            range_start: Some(0),
+            range_end: Some(1024),
+        };
+
+        let action = LiquidCacheActions::PrefetchFromObjectStore(request);
+        let result = service.do_action_inner(action).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_prefetch_invalid_location() {
+        let service = LiquidCacheService::default();
+
+        let url = Url::parse("file:///").unwrap();
+        let request = PrefetchFromObjectStoreRequest {
+            url: url.to_string(),
+            store_options: HashMap::new(),
+            location: "non_existent_file.parquet".to_string(),
+            range_start: Some(0),
+            range_end: Some(1024),
+        };
+
+        let action = LiquidCacheActions::PrefetchFromObjectStore(request);
+        let result = service.do_action_inner(action).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_prefetch_with_mock_store_metrics() {
+        use crate::local_cache::LocalCache;
+        use datafusion::execution::object_store::ObjectStoreUrl;
+        use liquid_cache_common::mock_store::MockStore;
+        use liquid_cache_common::utils::sanitize_object_store_url_for_dirname;
+
+        const BLOCK_SIZE: u64 = 1024 * 1024 * 4;
+
+        let service = LiquidCacheService::default();
+
+        let url = Url::parse("s3://mock").unwrap();
+
+        let inner = Arc::new(MockStore::new_with_files(1, (BLOCK_SIZE * 3) as usize));
+
+        let cache_dir = service
+            .get_parquet_cache_dir()
+            .join(sanitize_object_store_url_for_dirname(&url));
+        let local_cache = LocalCache::new(inner.clone(), cache_dir);
+
+        let object_store_url = ObjectStoreUrl::parse(url.as_str()).unwrap();
+        service
+            .inner()
+            .get_ctx()
+            .runtime_env()
+            .register_object_store(object_store_url.as_ref(), Arc::new(local_cache));
+
+        let start = BLOCK_SIZE / 2;
+        let end = BLOCK_SIZE + start;
+
+        let request = PrefetchFromObjectStoreRequest {
+            url: url.to_string(),
+            store_options: HashMap::new(),
+            location: "0.parquet".to_string(),
+            range_start: Some(start),
+            range_end: Some(end),
+        };
+
+        let action = LiquidCacheActions::PrefetchFromObjectStore(request);
+        let result = service.do_action_inner(action).await.unwrap();
+        let mut stream = result.into_inner();
+        let _ = stream.try_next().await.unwrap().unwrap();
+
+        let path = Path::from("0.parquet");
+        let ranges = inner.get_access_ranges(&path).unwrap();
+        assert_eq!(ranges.len(), 2);
+        assert_eq!(ranges[0], 0..BLOCK_SIZE);
+        assert_eq!(ranges[1], BLOCK_SIZE..BLOCK_SIZE * 2);
+
+        let request2 = PrefetchFromObjectStoreRequest {
+            url: url.to_string(),
+            store_options: HashMap::new(),
+            location: "0.parquet".to_string(),
+            range_start: Some(start + 1024),
+            range_end: Some(end - 1024),
+        };
+
+        let action = LiquidCacheActions::PrefetchFromObjectStore(request2);
+        let result = service.do_action_inner(action).await.unwrap();
+        let mut stream = result.into_inner();
+        let _ = stream.try_next().await.unwrap().unwrap();
+
+        let ranges_after = inner.get_access_ranges(&path).unwrap();
+        assert_eq!(ranges_after.len(), 2);
+    }
 }

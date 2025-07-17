@@ -3,12 +3,8 @@ pub(crate) use source::CachedMetaReaderFactory;
 pub use source::LiquidParquetSource;
 pub(crate) use source::ParquetMetadataCacheReader;
 
-// This is entirely copied from DataFusion
-// We should make DataFusion to public this
-mod row_filter;
-
-// This is entirely copied from DataFusion
-// We should make DataFusion to public this
 mod opener;
+mod row_filter;
 mod row_group_filter;
 mod source;
+pub use row_filter::{FilterCandidate, FilterCandidateBuilder, LiquidPredicate};

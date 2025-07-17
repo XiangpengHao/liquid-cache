@@ -1,185 +1,156 @@
-use clap::{Parser, arg};
-use datafusion::{
-    arrow::{array::RecordBatch, util::pretty},
-    error::Result,
-    parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder,
-    physical_plan::display::DisplayableExecutionPlan,
-};
-use fastrace::prelude::*;
-use liquid_cache_benchmarks::{
-    BenchmarkResult, CommonBenchmarkArgs, IterationResult, QueryResult, run_query,
-    setup_observability, utils::assert_batch_eq,
-};
-use log::{debug, info};
+use clap::Parser;
+use datafusion::prelude::SessionConfig;
+use datafusion::{arrow::array::RecordBatch, error::Result, prelude::SessionContext};
+use liquid_cache_benchmarks::{Benchmark, BenchmarkManifest, ClientBenchmarkArgs, run_query, tpch};
+use liquid_cache_benchmarks::{BenchmarkMode, BenchmarkRunner};
+use liquid_cache_client::LiquidCacheBuilder;
+use liquid_cache_common::CacheMode;
+use log::info;
 use mimalloc::MiMalloc;
+use object_store::ClientConfigKey;
 use serde::Serialize;
-use std::{
-    fs::File,
-    path::{Path, PathBuf},
-    time::Instant,
-};
-use sysinfo::Networks;
+use std::{path::PathBuf, sync::Arc};
+use url::Url;
+use uuid::Uuid;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
 #[derive(Parser, Serialize, Clone)]
-#[command(name = "TPCH Benchmark Client")]
-struct CliArgs {
-    /// Path to the query directory
-    #[arg(long = "query-dir")]
-    query_dir: PathBuf,
-
-    /// Path to the data directory with TPCH data
-    #[arg(long = "data-dir")]
-    data_dir: PathBuf,
+#[command(name = "TPCH Benchmark")]
+pub struct TpchArgs {
+    /// Path to the benchmark manifest file
+    #[arg(long)]
+    pub manifest: PathBuf,
 
     #[clap(flatten)]
-    common: CommonBenchmarkArgs,
+    pub common: ClientBenchmarkArgs,
 }
 
-/// One query file can contain multiple queries, separated by `;`
-fn get_query_by_id(query_dir: impl AsRef<Path>, query_id: u32) -> Result<Vec<String>> {
-    let query_dir = query_dir.as_ref();
-    let mut path = query_dir.to_owned();
-    path.push(format!("q{query_id}.sql"));
-    let content = std::fs::read_to_string(&path)?;
-    Ok(content
-        .split(';')
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .collect())
+#[derive(Clone, Serialize)]
+struct TpchBenchmark {
+    manifest: BenchmarkManifest,
+    common_args: ClientBenchmarkArgs,
 }
 
-fn check_result_against_answer(
-    results: &Vec<RecordBatch>,
-    answer_dir: &Path,
-    query_id: u32,
-) -> Result<()> {
-    let baseline_path = format!("{}/q{}.parquet", answer_dir.display(), query_id);
-    let baseline_file = File::open(baseline_path)?;
-    let mut baseline_batches = Vec::new();
-    let reader = ParquetRecordBatchReaderBuilder::try_new(baseline_file)?.build()?;
-    for batch in reader {
-        baseline_batches.push(batch?);
+impl TpchBenchmark {
+    fn new(args: TpchArgs) -> Self {
+        let manifest = BenchmarkManifest::load_from_file(&args.manifest).unwrap();
+        let common_args = args.common;
+        Self {
+            manifest,
+            common_args,
+        }
+    }
+}
+
+impl Benchmark for TpchBenchmark {
+    type Args = TpchBenchmark;
+
+    fn common_args(&self) -> &ClientBenchmarkArgs {
+        &self.common_args
     }
 
-    // Compare answers and result
-    let result_batch = datafusion::arrow::compute::concat_batches(&results[0].schema(), results)?;
-    let answer_batch = datafusion::arrow::compute::concat_batches(
-        &baseline_batches[0].schema(),
-        &baseline_batches,
-    )?;
-    assert_batch_eq(&answer_batch, &result_batch);
-    Ok(())
+    fn args(&self) -> &Self::Args {
+        self
+    }
+
+    #[fastrace::trace]
+    async fn setup_context(&self) -> Result<Arc<SessionContext>> {
+        let mut session_config = SessionConfig::from_env()?;
+
+        let mode = match self.common_args.bench_mode {
+            BenchmarkMode::ParquetFileserver => {
+                let ctx = Arc::new(SessionContext::new_with_config(session_config));
+                let base_url = Url::parse(&self.common_args.server).unwrap();
+
+                let object_store = object_store::http::HttpBuilder::new()
+                    .with_url(base_url.clone())
+                    .with_config(ClientConfigKey::AllowHttp, "true")
+                    .build()
+                    .unwrap();
+                ctx.register_object_store(&base_url, Arc::new(object_store));
+
+                // Register tables from manifest
+                for (table_name, table_path) in &self.manifest.tables {
+                    ctx.register_parquet(
+                        table_name,
+                        format!("{}/{}", self.common_args.server, table_path),
+                        Default::default(),
+                    )
+                    .await?;
+                }
+                return Ok(ctx);
+            }
+            BenchmarkMode::ParquetPushdown => CacheMode::Parquet,
+            BenchmarkMode::ArrowPushdown => CacheMode::Arrow,
+            BenchmarkMode::LiquidCache => CacheMode::Liquid,
+            BenchmarkMode::LiquidEagerTranscode => CacheMode::LiquidEagerTranscode,
+        };
+
+        session_config
+            .options_mut()
+            .execution
+            .parquet
+            .pushdown_filters = true;
+
+        if let Some(partitions) = self.common_args.partitions {
+            session_config.options_mut().execution.target_partitions = partitions;
+        }
+
+        let liquid_cache_builder =
+            LiquidCacheBuilder::new(&self.common_args.server).with_cache_mode(mode);
+        let ctx = liquid_cache_builder.build(session_config)?;
+
+        self.manifest.register_object_stores(&ctx).await.unwrap();
+        self.manifest.register_tables(&ctx).await.unwrap();
+
+        Ok(Arc::new(ctx))
+    }
+
+    async fn get_queries(&self) -> Result<Vec<liquid_cache_benchmarks::Query>> {
+        let queries = self.manifest.load_queries(1);
+        Ok(queries)
+    }
+
+    async fn validate_result(
+        &self,
+        query: &liquid_cache_benchmarks::Query,
+        results: &[RecordBatch],
+    ) {
+        if let Some(answer_dir) = &self.common_args.answer_dir {
+            tpch::check_result_against_answer(results, answer_dir, query.id());
+            info!("Query {} passed validation", query.id());
+        }
+    }
+
+    fn benchmark_name(&self) -> &'static str {
+        "tpch"
+    }
+
+    async fn execute_query(
+        &self,
+        ctx: &Arc<SessionContext>,
+        query: &liquid_cache_benchmarks::Query,
+    ) -> (
+        Vec<RecordBatch>,
+        Arc<dyn datafusion::physical_plan::ExecutionPlan>,
+        Vec<Uuid>,
+    ) {
+        if query.id() == 15 {
+            run_query(ctx, &query.statement()[0]).await;
+            let rt = run_query(ctx, &query.statement()[1]).await;
+            run_query(ctx, &query.statement()[2]).await;
+            rt
+        } else {
+            run_query(ctx, &query.statement()[0]).await
+        }
+    }
 }
 
 #[tokio::main]
 pub async fn main() -> Result<()> {
-    let args = CliArgs::parse();
-    setup_observability(
-        "tpch-client",
-        opentelemetry::trace::SpanKind::Client,
-        args.common.openobserve_auth.as_deref(),
-    );
-
-    let ctx = args.common.setup_tpch_ctx(&args.data_dir).await?;
-
-    let mut benchmark_result = BenchmarkResult {
-        args: args.clone(),
-        results: Vec::new(),
-    };
-
-    let query_ids = if let Some(query) = args.common.query {
-        vec![query]
-    } else {
-        (1..=22).collect()
-    };
-
-    std::fs::create_dir_all("benchmark/data/results")?;
-
-    let mut networks = Networks::new_with_refreshed_list();
-    let bench_start_time = Instant::now();
-
-    for id in query_ids {
-        let query = get_query_by_id(&args.query_dir, id)?;
-        let mut query_result = QueryResult::new(id, query.join(";"));
-        for it in 0..args.common.iteration {
-            let root = Span::root(format!("tpch-client-{id}-{it}"), SpanContext::random());
-            let _g = root.set_local_parent();
-            args.common.start_trace().await;
-            args.common.start_flamegraph().await;
-            info!("Running query {}: \n{}", id, query.join(";"));
-            let now = Instant::now();
-            let starting_timestamp = bench_start_time.elapsed();
-            let (results, physical_plan) = if id == 15 {
-                // Q15 has three queries, the second one is the one we want to test
-                let mut results = Vec::new();
-                let mut physical_plan = None;
-                for (i, q) in query.iter().enumerate() {
-                    let (result, plan) = run_query(&ctx, q).await?;
-                    if i == 1 {
-                        physical_plan = Some(plan);
-                        results = result;
-                    }
-                }
-                (results, physical_plan.unwrap())
-            } else {
-                run_query(&ctx, &query[0]).await?
-            };
-            let elapsed = now.elapsed();
-            networks.refresh(true);
-            // for mac its lo0 and for linux its lo.
-            let network_info = networks
-                .get("lo0")
-                .or_else(|| networks.get("lo"))
-                .expect("No loopback interface found in networks");
-
-            args.common.stop_flamegraph().await;
-            args.common.stop_trace().await;
-
-            let physical_plan_with_metrics =
-                DisplayableExecutionPlan::with_metrics(physical_plan.as_ref());
-            debug!(
-                "Physical plan: \n{}",
-                physical_plan_with_metrics.indent(true)
-            );
-            let result_str = pretty::pretty_format_batches(&results).unwrap();
-            debug!("Query result: \n{result_str}");
-
-            // Check query answers
-            if let Some(answer_dir) = &args.common.answer_dir {
-                check_result_against_answer(&results, answer_dir, id)?;
-                info!("Query {id} passed validation");
-            }
-
-            args.common.get_cache_stats().await;
-
-            let metrics_response = args.common.get_execution_metrics(&physical_plan).await;
-
-            let result = IterationResult {
-                network_traffic: network_info.received(),
-                time_millis: elapsed.as_millis() as u64,
-                cache_cpu_time: metrics_response.pushdown_eval_time,
-                cache_memory_usage: metrics_response.cache_memory_usage,
-                liquid_cache_usage: metrics_response.liquid_cache_usage,
-                starting_timestamp,
-            };
-            result.log();
-            query_result.add(result);
-        }
-        if args.common.reset_cache {
-            args.common.reset_cache().await?;
-        }
-        benchmark_result.results.push(query_result);
-    }
-
-    if let Some(output_path) = &args.common.output {
-        let output_file = File::create(output_path)?;
-        serde_json::to_writer_pretty(output_file, &benchmark_result).unwrap();
-    }
-
-    fastrace::flush();
+    let tpch = TpchBenchmark::new(TpchArgs::parse());
+    BenchmarkRunner::run(tpch).await?;
     Ok(())
 }

@@ -125,14 +125,16 @@ impl LiquidCache {
         self.cache_store.for_each_entry(|entry_id, cached_batch| {
             let memory_size = cached_batch.memory_usage_bytes();
             let row_count = match cached_batch {
-                CachedBatch::ArrowMemory(array) => Some(array.len() as u64),
-                CachedBatch::LiquidMemory(array) => Some(array.len() as u64),
-                CachedBatch::OnDiskLiquid => None,
+                CachedBatch::MemoryArrow(array) => Some(array.len() as u64),
+                CachedBatch::MemoryLiquid(array) => Some(array.len() as u64),
+                CachedBatch::DiskLiquid => None,
+                CachedBatch::DiskArrow => None, // We'd need to read it to get the count
             };
             let cache_type = match cached_batch {
-                CachedBatch::ArrowMemory(_) => "InMemory",
-                CachedBatch::LiquidMemory(_) => "LiquidMemory",
-                CachedBatch::OnDiskLiquid => "OnDiskLiquid",
+                CachedBatch::MemoryArrow(_) => "InMemory",
+                CachedBatch::MemoryLiquid(_) => "LiquidMemory",
+                CachedBatch::DiskLiquid => "OnDiskLiquid",
+                CachedBatch::DiskArrow => "OnDiskArrow",
             };
             let reference_count = cached_batch.reference_count();
             writer
@@ -161,7 +163,7 @@ impl LiquidCache {
 mod tests {
     use std::io::Read;
 
-    use crate::cache::BatchID;
+    use crate::cache::{BatchID, policies::DiscardPolicy};
 
     use super::*;
     use arrow::{
@@ -180,7 +182,8 @@ mod tests {
             1024,
             usize::MAX,
             tmp_dir.path().to_path_buf(),
-            LiquidCacheMode::InMemoryArrow,
+            LiquidCacheMode::Arrow,
+            Box::new(DiscardPolicy),
         );
         let array = Arc::new(arrow::array::Int32Array::from(vec![1, 2, 3]));
         let num_rows = 8 * 8 * 8 * 8;
@@ -201,8 +204,8 @@ mod tests {
                     for batch in 0..8 {
                         let batch_id = BatchID::from_raw(batch);
                         assert!(column.insert(batch_id, array.clone()).is_ok());
-                        row_group_id_sum += rg as u64;
-                        column_id_sum += col as u64;
+                        row_group_id_sum += rg;
+                        column_id_sum += col;
                         row_start_id_sum += *batch_id as u64 * cache.batch_size() as u64;
                         row_count_sum += array.len() as u64;
                         memory_size_sum += array.get_array_memory_size();

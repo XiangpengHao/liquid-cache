@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use datafusion::arrow;
 use datafusion::arrow::array::Array;
 use datafusion::arrow::compute::kernels::numeric::{div, sub_wrapping};
@@ -6,7 +8,23 @@ use datafusion::arrow::{
     array::{AsArray, RecordBatch},
     datatypes::DataType,
 };
+use datafusion::common::tree_node::TreeNode;
+use datafusion::physical_plan::ExecutionPlan;
+use liquid_cache_client::LiquidCacheClientExec;
 use log::warn;
+use uuid::Uuid;
+
+pub(crate) fn get_plan_uuids(plan: &Arc<dyn ExecutionPlan>) -> Vec<Uuid> {
+    let mut uuids = Vec::new();
+    plan.apply(|plan| {
+        if let Some(plan) = plan.as_any().downcast_ref::<LiquidCacheClientExec>() {
+            uuids.push(plan.get_uuid());
+        }
+        Ok(datafusion::common::tree_node::TreeNodeRecursion::Continue)
+    })
+    .unwrap();
+    uuids
+}
 
 fn float_eq_helper(left: &dyn Array, right: &dyn Array, tol: f64) -> bool {
     let diff = sub_wrapping(&left, &right).unwrap();
@@ -91,15 +109,15 @@ mod tests {
     #[test]
     fn test_float_eq() {
         let left = Float64Array::from(vec![
-            1.9481948778949233e18,
-            1.9481948778941111e18,
-            1.9481948778949233e18,
+            1.948_194_877_894_923e18,
+            1.948_194_877_894_111e18,
+            1.948_194_877_894_923e18,
             0.00,
         ]);
         let right = Float64Array::from(vec![
-            1.948194877894922e18,
-            1.9481948778942222e18,
-            1.948194877894922e18,
+            1.948_194_877_894_922e18,
+            1.948_194_877_894_222e18,
+            1.948_194_877_894_922e18,
             0.00,
         ]);
         assert!(float_eq_helper(&left, &right, 1e-9));

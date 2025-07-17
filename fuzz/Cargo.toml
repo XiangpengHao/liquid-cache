@@ -1,0 +1,24 @@
+[package]
+name = "liquid-cache-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1.0", features = ["derive"] }
+arrow = "55.1.0"
+datafusion = "47.0.0"
+
+[dependencies.liquid-cache-parquet]
+path = "../src/liquid_parquet"
+
+[[bin]]
+name = "fsst_view"
+path = "fuzz_targets/fsst_view.rs"
+test = false
+doc = false
+bench = false

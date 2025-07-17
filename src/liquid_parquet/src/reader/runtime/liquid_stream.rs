@@ -8,7 +8,8 @@ use arrow_schema::{DataType, Fields, Schema, SchemaRef};
 use fastrace::Event;
 use fastrace::local::LocalSpan;
 use futures::{FutureExt, Stream, future::BoxFuture, ready};
-use liquid_cache_common::coerce_from_parquet_reader_to_liquid_types;
+use liquid_cache_common::coerce_parquet_schema_to_liquid_schema;
+use parquet::arrow::arrow_reader::ArrowPredicate;
 use parquet::{
     arrow::{
         ProjectionMask,
@@ -24,9 +25,9 @@ use std::{
     sync::Arc,
     task::{Context, Poll},
 };
-use tokio::sync::Mutex;
 
-use super::reader::{LiquidBatchReader, build_cached_array_reader};
+use super::liquid_batch_reader::LiquidBatchReader;
+use super::parquet::build_cached_array_reader;
 use super::{InMemoryRowGroup, LiquidRowFilter};
 
 type ReadResult = Result<(ReaderFactory, Option<LiquidBatchReader>), ParquetError>;
@@ -36,7 +37,7 @@ struct ReaderFactory {
 
     fields: Option<Arc<ParquetField>>,
 
-    input: ClonableAsyncFileReader,
+    input: ParquetMetadataCacheReader,
 
     filter: Option<LiquidRowFilter>,
 
@@ -81,7 +82,13 @@ impl ReaderFactory {
             p
         });
 
-        let mut row_group = InMemoryRowGroup::new(meta, offset_index, projection_to_cache);
+        let cached_row_group = self.liquid_cache.row_group(row_group_idx as u64);
+        let mut row_group = InMemoryRowGroup::new(
+            meta,
+            offset_index,
+            projection_to_cache,
+            cached_row_group.clone(),
+        );
 
         let mut selection =
             selection.unwrap_or_else(|| vec![RowSelector::select(meta.num_rows() as usize)].into());
@@ -94,15 +101,13 @@ impl ReaderFactory {
                 }
 
                 let p_projection = predicate.projection();
-                row_group
-                    .fetch(&self.input, p_projection, &selection)
-                    .await?;
+                row_group.fetch(&mut self.input, p_projection).await?;
 
                 let array_reader = build_cached_array_reader(
                     self.fields.as_deref(),
                     p_projection,
                     &row_group,
-                    self.liquid_cache.row_group(row_group_idx as u64).clone(),
+                    cached_row_group.clone(),
                 )?;
                 filter_readers.push(array_reader);
             }
@@ -139,11 +144,8 @@ impl ReaderFactory {
             *limit -= rows_after;
         }
 
-        row_group
-            .fetch(&self.input, &projection, &selection)
-            .await?;
+        row_group.fetch(&mut self.input, &projection).await?;
 
-        let cached_row_group = self.liquid_cache.row_group(row_group_idx as u64);
         let array_reader = build_cached_array_reader(
             self.fields.as_deref(),
             &projection,
@@ -158,6 +160,7 @@ impl ReaderFactory {
             filter_readers,
             self.filter.take(),
             cached_row_group,
+            Some(projection),
         );
 
         Ok((self, Some(reader)))
@@ -183,11 +186,8 @@ impl std::fmt::Debug for StreamState {
     }
 }
 
-#[derive(Clone)]
-pub struct ClonableAsyncFileReader(pub Arc<Mutex<ParquetMetadataCacheReader>>);
-
 pub struct LiquidStreamBuilder {
-    pub(crate) input: ClonableAsyncFileReader,
+    pub(crate) input: ParquetMetadataCacheReader,
 
     pub(crate) metadata: Arc<ParquetMetaData>,
 
@@ -254,7 +254,7 @@ impl LiquidStreamBuilder {
             _ => unreachable!("Must be Struct for root type"),
         };
         let schema = Arc::new(Schema::new(projected_fields));
-        let schema = Arc::new(coerce_from_parquet_reader_to_liquid_types(
+        let schema = Arc::new(coerce_parquet_schema_to_liquid_schema(
             &schema,
             &liquid_cache_mode,
         ));
@@ -288,13 +288,6 @@ pub struct LiquidStream {
     reader: Option<ReaderFactory>,
 
     state: StreamState,
-}
-
-impl LiquidStream {
-    #[cfg(test)]
-    pub(crate) fn schema(&self) -> &SchemaRef {
-        &self.schema
-    }
 }
 
 impl std::fmt::Debug for LiquidStream {

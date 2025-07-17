@@ -56,6 +56,9 @@ uvx --from duckdb python tpch_gen.py --scale 0.01
 
 In NixOS, you want to set `env LD_LIBRARY_PATH=$NIX_LD_LIBRARY_PATH`
 
+
+
+
 ### Run server (same as ClickBench)
 
 ```bash
@@ -68,6 +71,44 @@ cargo run --release --bin bench_server -- --cache-mode liquid_eager_transcode
 env RUST_LOG=info,clickbench_client=debug RUSTFLAGS='-C target-cpu=native' cargo run --release --bin tpch_client -- --query-dir benchmark/tpch/queries/ --data-dir benchmark/tpch/data/sf0.1  --iteration 3 --answer-dir benchmark/tpch/answers/sf0.1
 ```
 
+## In process mode
+The benchmark uses a JSON manifest file to describe the data tables and queries to run.
+
+### JSON Format
+
+```json
+{
+  "name": "My Benchmark Suite",
+  "description": "Description of what this benchmark tests",
+  "tables": {
+    "table1": "data/table1.parquet",
+    "table2": "data/table2.parquet"
+  },
+  "queries": [
+    "queries/aggregation.sql",
+    "SELECT COUNT(*) FROM table1 WHERE col > 100",
+    "queries/complex_join.sql",
+    "SELECT t1.id, t2.name FROM table1 t1 JOIN table2 t2 ON t1.id = t2.id LIMIT 10"
+  ],
+  "object_stores": [
+    {
+      "url": "s3://my-bucket",
+      "options": {
+        "aws_access_key_id": "my-access-key",
+        "aws_secret_access_key": "my-secret-key",
+        "aws_region": "us-west-2"
+      }
+    },
+    {
+      "url": "s3://my-bucket-2",
+      "options": {
+        "aws_region": "eu-central-1",
+        "skip_signature": "true"
+      }
+    }
+  ]
+}
+```
 
 
 ## Profile

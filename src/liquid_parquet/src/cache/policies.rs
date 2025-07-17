@@ -1,13 +1,14 @@
 use liquid_cache_common::LiquidCacheMode;
 
-use crate::sync::Mutex;
+use crate::{
+    cache::{CacheEntryID, utils::CacheAdvice},
+    sync::Mutex,
+};
 use rand::{Rng, rng};
 use std::{
     collections::{HashMap, VecDeque},
     ptr::NonNull,
 };
-
-use super::{CacheAdvice, CacheEntryID};
 
 /// The cache policy that guides the replacement of LiquidCache
 pub trait CachePolicy: std::fmt::Debug + Send + Sync {
@@ -19,9 +20,6 @@ pub trait CachePolicy: std::fmt::Debug + Send + Sync {
 
     /// Notify the cache policy that an entry was accessed.
     fn notify_access(&self, _entry_id: &CacheEntryID) {}
-
-    /// Notify the cache policy that an entry was evicted.
-    fn notify_evict(&self, _entry_id: &CacheEntryID);
 }
 
 /// The policy that implements the FILO (First In, Last Out) algorithm.
@@ -56,11 +54,6 @@ impl CachePolicy for FiloPolicy {
             return CacheAdvice::Evict(newest_entry);
         }
         fallback_advice(entry_id, cache_mode)
-    }
-
-    fn notify_evict(&self, entry_id: &CacheEntryID) {
-        let mut queue = self.queue.lock().unwrap();
-        queue.retain(|id| id != entry_id);
     }
 
     fn notify_insert(&self, entry_id: &CacheEntryID) {
@@ -147,9 +140,17 @@ unsafe impl Sync for LruPolicy {}
 
 impl CachePolicy for LruPolicy {
     fn advise(&self, entry_id: &CacheEntryID, cache_mode: &LiquidCacheMode) -> CacheAdvice {
-        let state = self.state.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
         if let Some(tail_ptr) = state.tail {
             let tail_entry_id = unsafe { tail_ptr.as_ref().entry_id };
+            let node_ptr = state
+                .map
+                .remove(&tail_entry_id)
+                .expect("tail node not found");
+            unsafe {
+                self.unlink_node(&mut state, node_ptr);
+                drop(Box::from_raw(node_ptr.as_ptr()));
+            }
             return CacheAdvice::Evict(tail_entry_id);
         }
         fallback_advice(entry_id, cache_mode)
@@ -164,16 +165,6 @@ impl CachePolicy for LruPolicy {
             }
         }
         // If not in map, it means it was already evicted or never inserted
-    }
-
-    fn notify_evict(&self, entry_id: &CacheEntryID) {
-        let mut state = self.state.lock().unwrap();
-        if let Some(node_ptr) = state.map.remove(entry_id) {
-            unsafe {
-                self.unlink_node(&mut state, node_ptr);
-                drop(Box::from_raw(node_ptr.as_ptr()));
-            }
-        }
     }
 
     fn notify_insert(&self, entry_id: &CacheEntryID) {
@@ -227,8 +218,24 @@ impl CachePolicy for DiscardPolicy {
     fn advise(&self, _entry_id: &CacheEntryID, _cache_mode: &LiquidCacheMode) -> CacheAdvice {
         CacheAdvice::Discard
     }
+}
 
-    fn notify_evict(&self, _entry_id: &CacheEntryID) {}
+/// The policy that writes entries to disk when the cache is full.
+/// This preserves the original format of the data (Arrow stays Arrow, Liquid stays Liquid).
+#[derive(Debug, Default)]
+pub struct ToDiskPolicy;
+
+impl ToDiskPolicy {
+    /// Create a new [ToDiskPolicy].
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl CachePolicy for ToDiskPolicy {
+    fn advise(&self, entry_id: &CacheEntryID, _cache_mode: &LiquidCacheMode) -> CacheAdvice {
+        CacheAdvice::ToDisk(*entry_id)
+    }
 }
 
 /// SIEVE as implemented by (<https://cachemon.github.io/SIEVE-website/>)
@@ -330,6 +337,11 @@ impl CachePolicy for SievePolicy {
                     // evict this one
                     let evict_id = node.entry_id;
                     state.hand = node.prev.or(state.tail);
+                    state.map.remove(&evict_id);
+                    unsafe {
+                        self.unlink_node(&mut state, ptr);
+                        drop(Box::from_raw(ptr.as_ptr()));
+                    }
                     return CacheAdvice::Evict(evict_id);
                 }
             } else {
@@ -373,20 +385,6 @@ impl CachePolicy for SievePolicy {
         // initialize hand on first insert
         if state.hand.is_none() {
             state.hand = state.tail;
-        }
-    }
-
-    fn notify_evict(&self, entry_id: &CacheEntryID) {
-        let mut state = self.state.lock().unwrap();
-        if let Some(ptr) = state.map.remove(entry_id) {
-            unsafe {
-                // if our hand was pointing at the evicted node, move it back
-                if state.hand == Some(ptr) {
-                    state.hand = ptr.as_ref().prev.or(state.tail);
-                }
-                self.unlink_node(&mut state, ptr);
-                drop(Box::from_raw(ptr.as_ptr()));
-            }
         }
     }
 }
@@ -499,6 +497,13 @@ impl CachePolicy for ClockPolicy {
                 // advance hand to next (wrap to head)
                 let next = node.next.unwrap_or(state.head.unwrap());
                 state.hand = Some(next);
+
+                let node_ptr = ptr;
+                state.map.remove(&evict_id);
+                unsafe {
+                    self.unlink_node(&mut state, node_ptr);
+                    drop(Box::from_raw(node_ptr.as_ptr()));
+                }
                 return CacheAdvice::Evict(evict_id);
             }
             // give a second chance: clear bit and move on
@@ -548,21 +553,6 @@ impl CachePolicy for ClockPolicy {
         if let Some(&(mut ptr)) = state.map.get(entry_id) {
             unsafe {
                 ptr.as_mut().referenced = true;
-            }
-        }
-    }
-
-    fn notify_evict(&self, entry_id: &CacheEntryID) {
-        let mut state = self.state.lock().unwrap();
-        if let Some(ptr) = state.map.remove(entry_id) {
-            unsafe {
-                // advance hand if it pointed here
-                if state.hand == Some(ptr) {
-                    let next = ptr.as_ref().next.unwrap_or(state.head.unwrap());
-                    state.hand = Some(next);
-                }
-                self.unlink_node(&mut state, ptr);
-                drop(Box::from_raw(ptr.as_ptr()));
             }
         }
     }
@@ -627,16 +617,11 @@ impl CachePolicy for RandomPolicy {
     fn notify_access(&self, _entry_id: &CacheEntryID) {
         // Random policy does not change state on access
     }
-
-    fn notify_evict(&self, entry_id: &CacheEntryID) {
-        let mut state = self.state.lock().unwrap();
-        state.entries.retain(|&id| id != *entry_id);
-    }
 }
 
 fn fallback_advice(entry_id: &CacheEntryID, cache_mode: &LiquidCacheMode) -> CacheAdvice {
     match cache_mode {
-        LiquidCacheMode::InMemoryArrow => CacheAdvice::Discard,
+        LiquidCacheMode::Arrow => CacheAdvice::Discard,
         _ => CacheAdvice::TranscodeToDisk(*entry_id),
     }
 }
@@ -645,12 +630,12 @@ fn fallback_advice(entry_id: &CacheEntryID, cache_mode: &LiquidCacheMode) -> Cac
 mod test {
     use liquid_cache_common::LiquidCacheMode;
 
+    use crate::cache::policies::CachePolicy;
     use crate::cache::tracer::CacheAccessReason;
     use crate::cache::utils::{create_cache_store, create_entry_id, create_test_array};
-    use crate::policies::CachePolicy;
 
     use super::super::{CacheAdvice, CacheEntryID, CachedBatch};
-    use super::{ClockPolicy, FiloPolicy, LruInternalState, LruPolicy, SievePolicy};
+    use super::*;
     use crate::sync::{Arc, Barrier, thread};
     use std::sync::atomic::Ordering;
 
@@ -665,12 +650,12 @@ mod test {
         expect_evict: CacheEntryID,
         trigger_entry: CacheEntryID,
     ) {
-        let advice = policy.advise(&trigger_entry, &LiquidCacheMode::InMemoryArrow);
+        let advice = policy.advise(&trigger_entry, &LiquidCacheMode::Arrow);
         assert_eq!(advice, CacheAdvice::Evict(expect_evict));
     }
 
     fn assert_discard_advice(policy: &LruPolicy, trigger_entry: CacheEntryID) {
-        let advice = policy.advise(&trigger_entry, &LiquidCacheMode::InMemoryArrow);
+        let advice = policy.advise(&trigger_entry, &LiquidCacheMode::Arrow);
         assert_eq!(advice, CacheAdvice::Discard);
     }
 
@@ -763,8 +748,8 @@ mod test {
     impl LruInternalState {
         fn check_integrity(&self) {
             let map_count = self.map.len();
-            let forward_count = count_nodes_in_list(&self);
-            let backward_count = count_nodes_reverse(&self);
+            let forward_count = count_nodes_in_list(self);
+            let backward_count = count_nodes_reverse(self);
 
             assert_eq!(map_count, forward_count);
             assert_eq!(map_count, backward_count);
@@ -806,8 +791,8 @@ mod test {
         }
         policy.notify_access(&entry(2));
         policy.notify_access(&entry(5));
-        policy.notify_evict(&entry(0));
-        policy.notify_evict(&entry(1));
+        policy.advise(&entry(0), &LiquidCacheMode::Arrow);
+        policy.advise(&entry(1), &LiquidCacheMode::Arrow);
 
         let state = policy.state.lock().unwrap();
         state.check_integrity();
@@ -831,6 +816,65 @@ mod test {
     #[test]
     fn shuttle_lru_operations() {
         crate::utils::shuttle_test(concurrent_lru_operations);
+    }
+
+    fn concurrent_invariant_advice_once(policy: Arc<dyn CachePolicy>) {
+        let num_threads = 4;
+
+        for i in 0..100 {
+            policy.notify_insert(&entry(i));
+        }
+
+        let advised_entries = Arc::new(crate::sync::Mutex::new(Vec::new()));
+
+        let mut handles = Vec::new();
+        for _ in 0..num_threads {
+            let policy_clone = policy.clone();
+            let advised_entries_clone = advised_entries.clone();
+
+            let handle = thread::spawn(move || {
+                let advice = policy_clone.advise(&entry(999), &LiquidCacheMode::Arrow);
+                if let CacheAdvice::Evict(entry_id) = advice {
+                    let mut entries = advised_entries_clone.lock().unwrap();
+                    entries.push(entry_id);
+                }
+            });
+
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let entries = advised_entries.lock().unwrap();
+        let mut unique_entries = entries.clone();
+        unique_entries.sort();
+        unique_entries.dedup();
+
+        // If there are duplicates, entries.len() will be greater than unique_entries.len()
+        assert_eq!(
+            entries.len(),
+            unique_entries.len(),
+            "Some entries were advised for eviction multiple times: {entries:?}"
+        );
+    }
+
+    #[test]
+    fn test_concurrent_invariant_advice_once() {
+        concurrent_invariant_advice_once(Arc::new(LruPolicy::new()));
+
+        concurrent_invariant_advice_once(Arc::new(DiscardPolicy));
+
+        concurrent_invariant_advice_once(Arc::new(FiloPolicy::new()));
+
+        concurrent_invariant_advice_once(Arc::new(ToDiskPolicy::new()));
+    }
+
+    #[cfg(feature = "shuttle")]
+    #[test]
+    fn shuttle_concurrent_invariant_advice_once() {
+        crate::utils::shuttle_test(test_concurrent_invariant_advice_once);
     }
 
     fn concurrent_lru_operations() {
@@ -877,7 +921,7 @@ mod test {
                                 // Evict some earlier entries we created
                                 let to_evict =
                                     entry((thread_id * operations_per_thread + i - 20) as u64);
-                                policy_clone.notify_evict(&to_evict);
+                                policy_clone.advise(&to_evict, &LiquidCacheMode::Arrow);
                                 total_evictions_clone.fetch_add(1, Ordering::SeqCst);
                             }
                         }
@@ -914,7 +958,7 @@ mod test {
         let entry_id2 = create_entry_id(1, 1, 1, 2);
         let entry_id3 = create_entry_id(1, 1, 1, 3);
 
-        let on_disk_path = entry_id1.on_disk_path(&store.config().cache_root_dir());
+        let on_disk_path = entry_id1.on_disk_path(store.config().cache_root_dir());
         std::fs::create_dir_all(on_disk_path.parent().unwrap()).unwrap();
 
         store.insert(entry_id1, create_test_array(100));
@@ -930,9 +974,9 @@ mod test {
         assert!(store.get(&entry_id3, CacheAccessReason::Testing).is_some());
 
         match store.get(&entry_id2, CacheAccessReason::Testing) {
-            Some(CachedBatch::OnDiskLiquid) => {}
+            Some(CachedBatch::DiskLiquid) => {}
             None => {} // This is also acceptable if fully evicted
-            other => panic!("Expected OnDiskLiquid or None, got {:?}", other),
+            other => panic!("Expected OnDiskLiquid or None, got {other:?}"),
         }
     }
 
@@ -945,7 +989,7 @@ mod test {
         let entry_id2 = create_entry_id(1, 1, 1, 2);
         let entry_id3 = create_entry_id(1, 1, 1, 3);
 
-        let on_disk_path = entry_id1.on_disk_path(&store.config().cache_root_dir());
+        let on_disk_path = entry_id1.on_disk_path(store.config().cache_root_dir());
         std::fs::create_dir_all(on_disk_path.parent().unwrap()).unwrap();
 
         store.insert(entry_id1, create_test_array(100));
@@ -960,9 +1004,9 @@ mod test {
         assert!(store.get(&entry_id4, CacheAccessReason::Testing).is_some());
 
         match store.get(&entry_id3, CacheAccessReason::Testing) {
-            Some(CachedBatch::OnDiskLiquid) => {}
+            Some(CachedBatch::DiskLiquid) => {}
             None => {} // This is also acceptable if fully evicted
-            other => panic!("Expected OnDiskLiquid or None, got {:?}", other),
+            other => panic!("Expected OnDiskLiquid or None, got {other:?}"),
         }
     }
 
@@ -979,7 +1023,7 @@ mod test {
         policy.notify_insert(&e3);
 
         // No accesses yet; first eviction should target e1 (the oldest, at tail)
-        let advice = policy.advise(&entry(4), &LiquidCacheMode::InMemoryArrow);
+        let advice = policy.advise(&entry(4), &LiquidCacheMode::Arrow);
         assert_eq!(advice, CacheAdvice::Evict(e1));
     }
 
@@ -998,7 +1042,7 @@ mod test {
         policy.notify_access(&e1);
 
         // Now eviction should skip e1 (clearing its bit) and evict e2
-        let advice = policy.advise(&entry(4), &LiquidCacheMode::InMemoryArrow);
+        let advice = policy.advise(&entry(4), &LiquidCacheMode::Arrow);
         assert_eq!(advice, CacheAdvice::Evict(e2));
     }
 
@@ -1019,7 +1063,7 @@ mod test {
         policy.notify_access(&e3);
 
         // First advise clears all bits in one pass, second pass evicts e1
-        let first = policy.advise(&entry(4), &LiquidCacheMode::InMemoryArrow);
+        let first = policy.advise(&entry(4), &LiquidCacheMode::Arrow);
         // Should clear bits, not evict yet
         assert_eq!(first, CacheAdvice::Evict(e1));
     }
@@ -1031,7 +1075,7 @@ mod test {
         policy.notify_insert(&e1);
 
         // With only one item, advising eviction should evict e1
-        let advice = policy.advise(&e1, &LiquidCacheMode::InMemoryArrow);
+        let advice = policy.advise(&e1, &LiquidCacheMode::Arrow);
         assert_eq!(advice, CacheAdvice::Evict(e1));
     }
 
@@ -1039,7 +1083,7 @@ mod test {
     fn test_sieve_policy_advise_empty() {
         let policy = SievePolicy::new();
         // No entries inserted: fallback should discard
-        let advice = policy.advise(&entry(1), &LiquidCacheMode::InMemoryArrow);
+        let advice = policy.advise(&entry(1), &LiquidCacheMode::Arrow);
         assert_eq!(advice, CacheAdvice::Discard);
     }
 
@@ -1067,7 +1111,7 @@ mod test {
 
         // SIEVE should evict the oldest entry (entry_id1)
         match store.get(&entry_id1, CacheAccessReason::Testing) {
-            Some(CachedBatch::OnDiskLiquid) => {}
+            Some(CachedBatch::DiskLiquid) => {}
             None => {} // Also acceptable if fully evicted
             other => panic!("Expected OnDiskLiquid or None, got {:?}", other),
         }
@@ -1091,7 +1135,7 @@ mod test {
         policy.notify_insert(&e3);
 
         // Without any prior evictions or accesses, the oldest (e1) should be evicted
-        let advice = policy.advise(&entry(4), &LiquidCacheMode::InMemoryArrow);
+        let advice = policy.advise(&entry(4), &LiquidCacheMode::Arrow);
         assert_eq!(advice, CacheAdvice::Evict(e1));
     }
 
@@ -1107,17 +1151,15 @@ mod test {
         policy.notify_insert(&e3);
 
         // First eviction should remove e1
-        let adv1 = policy.advise(&entry(4), &LiquidCacheMode::InMemoryArrow);
+        let adv1 = policy.advise(&entry(4), &LiquidCacheMode::Arrow);
         assert_eq!(adv1, CacheAdvice::Evict(e1));
-        policy.notify_evict(&e1);
 
         // Next eviction should remove e3 (next hand position)
-        let adv2 = policy.advise(&entry(5), &LiquidCacheMode::InMemoryArrow);
+        let adv2 = policy.advise(&entry(5), &LiquidCacheMode::Arrow);
         assert_eq!(adv2, CacheAdvice::Evict(e3));
-        policy.notify_evict(&e3);
 
         // Finally, e2 should be evicted
-        let adv3 = policy.advise(&entry(6), &LiquidCacheMode::InMemoryArrow);
+        let adv3 = policy.advise(&entry(6), &LiquidCacheMode::Arrow);
         assert_eq!(adv3, CacheAdvice::Evict(e2));
     }
 
@@ -1128,7 +1170,7 @@ mod test {
         policy.notify_insert(&e1);
 
         // With only one item, evicting should return that item
-        let advice = policy.advise(&e1, &LiquidCacheMode::InMemoryArrow);
+        let advice = policy.advise(&e1, &LiquidCacheMode::Arrow);
         assert_eq!(advice, CacheAdvice::Evict(e1));
     }
 
@@ -1137,7 +1179,7 @@ mod test {
         let policy = ClockPolicy::new();
 
         // No entries inserted: should discard
-        let advice = policy.advise(&entry(1), &LiquidCacheMode::InMemoryArrow);
+        let advice = policy.advise(&entry(1), &LiquidCacheMode::Arrow);
         assert_eq!(advice, CacheAdvice::Discard);
     }
 
@@ -1165,7 +1207,7 @@ mod test {
 
         // Oldest (entry_id1) should be on-disk or evicted
         match store.get(&entry_id1, CacheAccessReason::Testing) {
-            Some(CachedBatch::OnDiskLiquid) => {}
+            Some(CachedBatch::DiskLiquid) => {}
             None => {}
             other => panic!("Expected OnDiskLiquid or None, got {:?}", other),
         }
@@ -1174,5 +1216,49 @@ mod test {
         assert!(store.get(&entry_id2, CacheAccessReason::Testing).is_some());
         assert!(store.get(&entry_id3, CacheAccessReason::Testing).is_some());
         assert!(store.get(&entry_id4, CacheAccessReason::Testing).is_some());
+    }
+    fn test_to_disk_policy() {
+        let advisor = ToDiskPolicy::new();
+        let store = create_cache_store(3000, Box::new(advisor)); // Small budget to force disk storage
+
+        let entry_id1 = create_entry_id(1, 1, 1, 1);
+        let entry_id2 = create_entry_id(1, 1, 1, 2);
+
+        let on_disk_liquid_path = entry_id1.on_disk_path(store.config().cache_root_dir());
+        let on_disk_arrow_path = entry_id1.on_disk_arrow_path(store.config().cache_root_dir());
+        std::fs::create_dir_all(on_disk_liquid_path.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(on_disk_arrow_path.parent().unwrap()).unwrap();
+
+        store.insert(entry_id1, create_test_array(100));
+        assert!(matches!(
+            store.get(&entry_id1, CacheAccessReason::Testing).unwrap(),
+            CachedBatch::MemoryArrow(_)
+        ));
+
+        store.insert(entry_id2, create_test_array(2000)); // Large enough to exceed budget
+
+        assert!(matches!(
+            store.get(&entry_id2, CacheAccessReason::Testing).unwrap(),
+            CachedBatch::DiskArrow
+        ));
+
+        assert!(store.get(&entry_id1, CacheAccessReason::Testing).is_some());
+    }
+
+    #[test]
+    fn test_to_disk_policy_advice() {
+        let policy = ToDiskPolicy::new();
+        let entry_id = entry(42);
+
+        let advice = policy.advise(&entry_id, &LiquidCacheMode::Arrow);
+        assert_eq!(advice, CacheAdvice::ToDisk(entry_id));
+
+        let advice = policy.advise(
+            &entry_id,
+            &LiquidCacheMode::Liquid {
+                transcode_in_background: false,
+            },
+        );
+        assert_eq!(advice, CacheAdvice::ToDisk(entry_id));
     }
 }

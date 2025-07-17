@@ -8,12 +8,30 @@ use axum::{
     Json,
     extract::{Query, State},
 };
+use datafusion::{
+    catalog::memory::DataSourceExec,
+    common::{
+        stats::Precision,
+        tree_node::{TreeNode, TreeNodeRecursion},
+    },
+    datasource::physical_plan::FileScanConfig,
+    physical_plan::ExecutionPlan,
+};
 use liquid_cache_common::rpc::ExecutionMetricsResponse;
+use liquid_cache_parquet::LiquidParquetSource;
 use log::info;
 use serde::Serialize;
 use uuid::Uuid;
 
-use super::{ApiResponse, AppState};
+use crate::{
+    ColumnStatistics, ExecutionPlanWithStats, ExecutionStatsWithPlan, MetricValues, PlanInfo,
+    SchemaField, Statistics,
+};
+
+use super::{
+    AppState,
+    models::{ApiResponse, ExecutionStats},
+};
 
 pub(crate) async fn shutdown_handler() -> Json<ApiResponse> {
     info!("Shutdown request received, shutting down server...");
@@ -32,7 +50,9 @@ pub(crate) async fn shutdown_handler() -> Json<ApiResponse> {
 pub(crate) async fn reset_cache_handler(State(state): State<Arc<AppState>>) -> Json<ApiResponse> {
     info!("Resetting cache...");
     if let Some(cache) = state.liquid_cache.cache() {
-        cache.reset();
+        unsafe {
+            cache.reset();
+        }
     }
 
     Json(ApiResponse {
@@ -307,26 +327,177 @@ pub(crate) async fn start_flamegraph_handler(
     })
 }
 
-#[derive(serde::Deserialize)]
-pub(crate) struct FlameGraphParams {
-    output_dir: String,
+impl From<&Arc<dyn ExecutionPlan>> for ExecutionPlanWithStats {
+    fn from(plan: &Arc<dyn ExecutionPlan>) -> Self {
+        let metrics = plan.metrics().unwrap().aggregate_by_name();
+        let mut metric_values = Vec::new();
+        for metric in metrics.iter() {
+            metric_values.push(MetricValues {
+                name: metric.value().name().to_string(),
+                value: metric.value().to_string(),
+            });
+        }
+
+        let mut column_statistics = Vec::new();
+        for (i, cs) in plan
+            .statistics()
+            .unwrap()
+            .column_statistics
+            .iter()
+            .enumerate()
+        {
+            let min = if cs.min_value != Precision::Absent {
+                Some(cs.min_value.to_string())
+            } else {
+                None
+            };
+            let max = if cs.max_value != Precision::Absent {
+                Some(cs.max_value.to_string())
+            } else {
+                None
+            };
+            let sum = if cs.sum_value != Precision::Absent {
+                Some(cs.sum_value.to_string())
+            } else {
+                None
+            };
+            let distinct = if cs.distinct_count != Precision::Absent {
+                Some(cs.distinct_count.to_string())
+            } else {
+                None
+            };
+            let null = if cs.null_count != Precision::Absent {
+                Some(cs.null_count.to_string())
+            } else {
+                None
+            };
+            column_statistics.push(ColumnStatistics {
+                name: format!("col_{i}"),
+                null,
+                min,
+                max,
+                sum,
+                distinct_count: distinct,
+            });
+        }
+
+        ExecutionPlanWithStats {
+            name: plan.name().to_string(),
+            schema: plan
+                .schema()
+                .fields()
+                .iter()
+                .map(|field| SchemaField {
+                    name: field.name().to_string(),
+                    data_type: field.data_type().to_string(),
+                })
+                .collect(),
+            statistics: Statistics {
+                num_rows: plan.statistics().unwrap().num_rows.to_string(),
+                total_byte_size: plan.statistics().unwrap().total_byte_size.to_string(),
+                column_statistics,
+            },
+            metrics: metric_values,
+            children: plan
+                .children()
+                .iter()
+                .map(|child| (*child).into())
+                .collect(),
+        }
+    }
+}
+
+fn get_liquid_exec_info(plan: &Arc<dyn ExecutionPlan>) -> Option<String> {
+    let mut rv = None;
+    plan.apply(|node| {
+        let Some(data_source) = node.as_any().downcast_ref::<DataSourceExec>() else {
+            return Ok(TreeNodeRecursion::Continue);
+        };
+        let file_scan_config = data_source
+            .data_source()
+            .as_any()
+            .downcast_ref::<FileScanConfig>()
+            .expect("FileScanConfig not found");
+        let Some(liquid_source) = file_scan_config
+            .file_source()
+            .as_any()
+            .downcast_ref::<LiquidParquetSource>()
+        else {
+            return Ok(TreeNodeRecursion::Continue);
+        };
+        let predicate = liquid_source.predicate();
+
+        rv = predicate.map(|v| v.to_string());
+        Ok(TreeNodeRecursion::Stop)
+    })
+    .unwrap();
+    rv
+}
+
+pub(crate) async fn get_execution_stats(
+    State(state): State<Arc<AppState>>,
+) -> Json<Vec<ExecutionStatsWithPlan>> {
+    let execution_stats = state.liquid_cache.inner().get_execution_stats();
+    let mut rv = Vec::new();
+    for execution_stat in execution_stats {
+        let mut plans = Vec::new();
+        for plan_id in execution_stat.plan_ids.iter() {
+            let uuid = Uuid::parse_str(plan_id).expect("Invalid plan ID");
+            let plan = state
+                .liquid_cache
+                .inner()
+                .get_plan(&uuid)
+                .expect("Plan not found");
+            let model_plan = ExecutionPlanWithStats::from(&plan.plan);
+            let plan_info = PlanInfo {
+                id: plan_id.to_string(),
+                created_at: plan
+                    .created_at
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+                plan: model_plan,
+                predicate: get_liquid_exec_info(&plan.plan),
+            };
+            plans.push(plan_info);
+        }
+        let execution_stats_with_plan = ExecutionStatsWithPlan {
+            execution_stats: execution_stat,
+            plans,
+        };
+        rv.push(execution_stats_with_plan);
+    }
+    Json(rv)
 }
 
 pub(crate) async fn stop_flamegraph_handler(
     State(state): State<Arc<AppState>>,
-    Query(params): Query<FlameGraphParams>,
 ) -> Json<ApiResponse> {
-    let output_dir = PathBuf::from(&params.output_dir);
-    let filepath = state.flamegraph.stop(&output_dir);
-    info!(
-        "Flamegraph collection stopped, saved to {}",
-        filepath.display()
-    );
+    let svg_content = if let Ok(svg_content) = state.flamegraph.stop_to_string() {
+        svg_content
+    } else {
+        return Json(ApiResponse {
+            message: "Flamegraph not generated".to_string(),
+            status: "error".to_string(),
+        });
+    };
     Json(ApiResponse {
-        message: format!(
-            "Flamegraph collection stopped, saved to {}",
-            filepath.display()
-        ),
+        message: svg_content,
+        status: "success".to_string(),
+    })
+}
+
+pub(crate) async fn add_execution_stats_handler(
+    State(state): State<Arc<AppState>>,
+    Json(params): Json<ExecutionStats>,
+) -> Json<ApiResponse> {
+    let message = format!(
+        "Execution stats added for execution {}",
+        params.display_name
+    );
+    state.liquid_cache.inner().add_execution_stats(params);
+    Json(ApiResponse {
+        message,
         status: "success".to_string(),
     })
 }

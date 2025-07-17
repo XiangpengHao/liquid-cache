@@ -21,7 +21,6 @@ use datafusion::{
     },
 };
 use futures::{FutureExt, future::BoxFuture};
-use liquid_cache_common::{CacheSchema, LiquidCacheMode};
 use object_store::{ObjectStore, path::Path};
 use parquet::{
     arrow::{
@@ -165,7 +164,6 @@ pub struct LiquidParquetSource {
     page_pruning_predicate: Option<Arc<PagePruningAccessPlanFilter>>,
     table_parquet_options: TableParquetOptions,
     liquid_cache: LiquidCacheRef,
-    liquid_cache_mode: LiquidCacheMode,
     batch_size: Option<usize>,
     projected_statistics: Option<Statistics>,
 }
@@ -217,11 +215,13 @@ impl LiquidParquetSource {
     }
 
     /// Create a new LiquidParquetSource from a ParquetSource
+    ///
+    /// `downstream_full_schema` is the schema that the LiquidCache will be mapped onto,
+    /// and the schema that `DataSourceExec` will return.
     pub fn from_parquet_source(
         source: ParquetSource,
-        file_schema: Arc<Schema>,
+        downstream_full_schema: Arc<Schema>,
         liquid_cache: LiquidCacheRef,
-        liquid_cache_mode: LiquidCacheMode,
     ) -> Self {
         let predicate = source.predicate().cloned();
 
@@ -229,7 +229,6 @@ impl LiquidParquetSource {
             table_parquet_options: source.table_parquet_options().clone(),
             batch_size: Some(liquid_cache.batch_size()),
             liquid_cache,
-            liquid_cache_mode,
             metrics: source.metrics().clone(),
             predicate: None,
             pruning_predicate: None,
@@ -238,10 +237,15 @@ impl LiquidParquetSource {
         };
 
         if let Some(predicate) = predicate {
-            v = v.with_predicate(file_schema, predicate);
+            v = v.with_predicate(downstream_full_schema, predicate);
         }
 
         v
+    }
+
+    /// Get the predicate for the LiquidParquetSource
+    pub fn predicate(&self) -> Option<Arc<dyn PhysicalExpr>> {
+        self.predicate.clone()
     }
 }
 
@@ -270,9 +274,6 @@ impl FileSource for LiquidParquetSource {
         let reader_factory = Arc::new(CachedMetaReaderFactory::new(object_store));
         let schema_adapter = Arc::new(DefaultSchemaAdapterFactory);
 
-        let cache_schema =
-            CacheSchema::new(base_config.file_schema.clone(), &self.liquid_cache_mode);
-
         let opener = LiquidParquetOpener::new(
             partition,
             Arc::from(projection),
@@ -282,10 +283,9 @@ impl FileSource for LiquidParquetSource {
             self.predicate.clone(),
             self.pruning_predicate.clone(),
             self.page_pruning_predicate.clone(),
-            cache_schema,
+            base_config.file_schema.clone(),
             self.metrics.clone(),
             self.liquid_cache.clone(),
-            self.liquid_cache_mode,
             reader_factory,
             self.reorder_filters(),
             schema_adapter,

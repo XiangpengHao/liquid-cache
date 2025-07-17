@@ -23,12 +23,11 @@ use datafusion::{
 };
 use futures::StreamExt;
 use futures::TryStreamExt;
-use liquid_cache_common::{CacheSchema, ClientSchema, LiquidCacheMode, ParquetSchema};
+use liquid_cache_common::ParquetReaderSchema;
 use log::debug;
 use parquet::arrow::{
     ParquetRecordBatchStreamBuilder, ProjectionMask,
     arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions},
-    async_reader::AsyncFileReader,
 };
 
 use super::source::CachedMetaReaderFactory;
@@ -41,13 +40,7 @@ pub struct LiquidParquetOpener {
     predicate: Option<Arc<dyn PhysicalExpr>>,
     pruning_predicate: Option<Arc<PruningPredicate>>,
     page_pruning_predicate: Option<Arc<PagePruningAccessPlanFilter>>,
-    // Schema mess:
-    // 1. The client pass in a schema with UTF8 type (disabled string view), as client schema
-    // 2. Our reader will read as string view, so we need to coerce it to string view, as file schema
-    // 3. LiquidCache stores Dict<UInt16, UTF8> as string, so we have a liquid schema.
-    cache_schema: CacheSchema,
-    parquet_schema: ParquetSchema,
-    client_schema: ClientSchema,
+    downstream_full_schema: SchemaRef,
     metrics: ExecutionPlanMetricsSet,
     parquet_file_reader_factory: Arc<CachedMetaReaderFactory>,
     reorder_filters: bool,
@@ -65,17 +58,13 @@ impl LiquidParquetOpener {
         predicate: Option<Arc<dyn PhysicalExpr>>,
         pruning_predicate: Option<Arc<PruningPredicate>>,
         page_pruning_predicate: Option<Arc<PagePruningAccessPlanFilter>>,
-        cache_schema: CacheSchema,
+        downstream_full_schema: SchemaRef,
         metrics: ExecutionPlanMetricsSet,
         liquid_cache: LiquidCacheRef,
-        liquid_cache_mode: LiquidCacheMode,
         parquet_file_reader_factory: Arc<CachedMetaReaderFactory>,
         reorder_filters: bool,
         schema_adapter_factory: Arc<dyn SchemaAdapterFactory>,
     ) -> Self {
-        let parquet_schema = ParquetSchema::from(&cache_schema, &liquid_cache_mode);
-        let client_schema = ClientSchema::from(&cache_schema, &liquid_cache_mode);
-
         Self {
             partition_index,
             projection,
@@ -84,9 +73,7 @@ impl LiquidParquetOpener {
             predicate,
             pruning_predicate,
             page_pruning_predicate,
-            cache_schema,
-            parquet_schema,
-            client_schema,
+            downstream_full_schema,
             metrics,
             liquid_cache,
             parquet_file_reader_factory,
@@ -109,7 +96,7 @@ impl FileOpener for LiquidParquetOpener {
             .liquid_cache
             .register_or_get_file(file_meta.location().to_string());
 
-        let mut reader = self.parquet_file_reader_factory.create_liquid_reader(
+        let mut async_file_reader = self.parquet_file_reader_factory.create_liquid_reader(
             self.partition_index,
             file_meta,
             metadata_size_hint,
@@ -118,43 +105,57 @@ impl FileOpener for LiquidParquetOpener {
 
         let batch_size = self.batch_size;
 
-        let projected_schema = SchemaRef::from(self.cache_schema.project(&self.projection)?);
+        let projected_schema =
+            SchemaRef::from(self.downstream_full_schema.project(&self.projection)?);
         let schema_adapter = self
             .schema_adapter_factory
-            .create(projected_schema, Arc::clone(&self.cache_schema));
+            .create(projected_schema, Arc::clone(&self.downstream_full_schema));
         let predicate = self.predicate.clone();
         let pruning_predicate = self.pruning_predicate.clone();
         let page_pruning_predicate = self.page_pruning_predicate.clone();
-        let cache_schema = Arc::clone(&self.cache_schema);
-        let client_schema = Arc::clone(&self.client_schema);
-        let parquet_schema = Arc::clone(&self.parquet_schema);
+        let downstream_full_schema = Arc::clone(&self.downstream_full_schema);
         let reorder_predicates = self.reorder_filters;
         let enable_page_index = should_enable_page_index(&self.page_pruning_predicate);
         let limit = self.limit;
+        let schema_adapter_factory = Arc::clone(&self.schema_adapter_factory);
 
         Ok(Box::pin(async move {
-            let options = ArrowReaderOptions::new().with_page_index(enable_page_index);
+            let mut options = ArrowReaderOptions::new().with_page_index(enable_page_index);
 
             let mut metadata_timer = file_metrics.metadata_load_time.timer();
 
-            let parquet_metadata = reader.get_metadata(Some(&options)).await?;
-            let metadata = ArrowReaderMetadata::try_new(parquet_metadata, options)?;
+            // Begin by loading the metadata from the underlying reader (note
+            // the returned metadata may actually include page indexes as some
+            // readers may return page indexes even when not requested -- for
+            // example when they are cached)
+            let mut reader_metadata =
+                ArrowReaderMetadata::load_async(&mut async_file_reader, options.clone()).await?;
+
+            // Note about schemas: we are actually dealing with **3 different schemas** here:
+            // - The table schema as defined by the TableProvider.
+            //   This is what the user sees, what they get when they `SELECT * FROM table`, etc.
+            // - The logical file schema: this is the table schema minus any hive partition columns and projections.
+            //   This is what the physical file schema is coerced to.
+            // - The physical file schema: this is the schema as defined by the parquet file. This is what the parquet file actually contains.
+            let mut physical_file_schema = Arc::clone(reader_metadata.schema());
+            physical_file_schema = ParquetReaderSchema::from(&physical_file_schema);
+            options = options.with_schema(Arc::clone(&physical_file_schema));
+            reader_metadata =
+                ArrowReaderMetadata::try_new(Arc::clone(reader_metadata.metadata()), options)?;
             debug_assert!(
-                Arc::strong_count(metadata.metadata()) > 1,
+                Arc::strong_count(reader_metadata.metadata()) > 1,
                 "meta data must be cached already"
             );
 
-            let options = ArrowReaderOptions::new()
-                .with_page_index(enable_page_index)
-                .with_schema(Arc::clone(&parquet_schema));
-            let metadata = ArrowReaderMetadata::try_new(Arc::clone(metadata.metadata()), options)?;
-
             metadata_timer.stop();
 
-            let mut builder = ParquetRecordBatchStreamBuilder::new_with_metadata(reader, metadata);
+            let mut builder = ParquetRecordBatchStreamBuilder::new_with_metadata(
+                async_file_reader,
+                reader_metadata,
+            );
 
-            let (_schema_mapping, adapted_projections) =
-                schema_adapter.map_schema(&parquet_schema)?;
+            let (schema_mapping, adapted_projections) =
+                schema_adapter.map_schema(&physical_file_schema)?;
 
             let mask = ProjectionMask::roots(
                 builder.parquet_schema(),
@@ -165,11 +166,12 @@ impl FileOpener for LiquidParquetOpener {
             let row_filter = predicate.as_ref().and_then(|p| {
                 let row_filter = row_filter::build_row_filter(
                     p,
-                    &cache_schema,
-                    &client_schema,
+                    &physical_file_schema,
+                    &downstream_full_schema,
                     builder.metadata(),
                     reorder_predicates,
                     &file_metrics,
+                    &schema_adapter_factory,
                 );
 
                 match row_filter {
@@ -197,7 +199,7 @@ impl FileOpener for LiquidParquetOpener {
             // If there is a predicate that can be evaluated against the metadata
             if let Some(predicate) = predicate.as_ref() {
                 row_groups.prune_by_statistics(
-                    &parquet_schema,
+                    &physical_file_schema,
                     builder.parquet_schema(),
                     rg_metadata,
                     predicate,
@@ -207,7 +209,7 @@ impl FileOpener for LiquidParquetOpener {
                 if !row_groups.is_empty() {
                     row_groups
                         .prune_by_bloom_filters(
-                            &parquet_schema,
+                            &physical_file_schema,
                             &mut builder,
                             predicate,
                             &file_metrics,
@@ -221,16 +223,17 @@ impl FileOpener for LiquidParquetOpener {
             // page index pruning: if all data on individual pages can
             // be ruled using page metadata, rows from other columns
             // with that range can be skipped as well
-            if enable_page_index && !access_plan.is_empty() {
-                if let Some(p) = page_pruning_predicate {
-                    access_plan = p.prune_plan_with_page_index(
-                        access_plan,
-                        &parquet_schema,
-                        builder.parquet_schema(),
-                        file_metadata.as_ref(),
-                        &file_metrics,
-                    );
-                }
+            if enable_page_index
+                && !access_plan.is_empty()
+                && let Some(p) = page_pruning_predicate
+            {
+                access_plan = p.prune_plan_with_page_index(
+                    access_plan,
+                    &physical_file_schema,
+                    builder.parquet_schema(),
+                    file_metadata.as_ref(),
+                    &file_metrics,
+                );
             }
 
             let row_group_indexes = access_plan.row_group_indexes();
@@ -256,7 +259,11 @@ impl FileOpener for LiquidParquetOpener {
 
             let stream = liquid_builder.build(liquid_cache)?;
 
-            let adapted = stream.map_err(|e| ArrowError::ExternalError(Box::new(e)));
+            let adapted = stream
+                .map_err(|e| ArrowError::ExternalError(Box::new(e)))
+                .map(move |batch| {
+                    batch.and_then(|batch| schema_mapping.map_batch(batch).map_err(Into::into))
+                });
 
             Ok(adapted.boxed())
         }))

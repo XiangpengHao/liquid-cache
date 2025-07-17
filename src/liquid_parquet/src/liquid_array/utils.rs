@@ -21,7 +21,7 @@ pub(crate) fn gen_test_decimal_array<T: arrow::datatypes::DecimalType>(
             } else {
                 i * 100 + 42
             };
-            builder.append_value(value as i64);
+            builder.append_value(value);
         }
     }
     let array = builder.finish();

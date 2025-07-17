@@ -24,9 +24,9 @@ bytes = { workspace = true }
 log = { workspace = true }
 object_store = { workspace = true }
 itertools = { workspace = true }
-fastlanes = "0.1.8"
+fastlanes = "0.2.0"
 num-traits = "0.2.19"
-zerocopy = { version = "0.8.24", features = ["derive"] }
+zerocopy = { version = "0.8.25", features = ["derive"] }
 liquid-cache-common = { workspace = true }
 fastrace = { workspace = true }
 fastrace-futures = { workspace = true }
@@ -38,13 +38,17 @@ rand = "0.9.0"
 petgraph = "0.6"
 walkdir = "2.4"
 indicatif = "0.17"
+thrift = { version = "0.17.0", default-features = false }
 
 [dev-dependencies]
-tempfile = "3.19.1"
+tempfile = "3.20.0"
 criterion = "0.5.1"
+divan = "0.1"
+rand = "0.9.1"
 shuttle = "0.8.0"
 tracing-subscriber = "0.3.19"
-paste = "1.0.14"
+paste = "1.0.15"
+insta = { version = "1.43.1" }
 
 [features]
 shuttle = []
@@ -60,6 +64,10 @@ name = "liquid_float_array"
 harness = false
 path = "bench/liquid_float_array.rs"
 
+[[bench]]
+name = "boolean_and_then"
+harness = false
+path = "bench/boolean_and_then.rs"
 
 [[bin]]
 name = "bench_eviction"
@@ -73,15 +81,18 @@ path = "bench/trace_visualization.rs"
 name = "reuse_analysis"
 path = "bench/reuse_analysis.rs"
 
-[[bin]]
-name = "graph_analysis"
-path = "bench/graph_analysis.rs"
-
 [[bench]]
 name = "fsstarray"
 path = "bench/fsstarray.rs"
 harness = false
 
-[[bin]]
-name = "basic_policy_sim"
-path = "bench/basic_policy_sim.rs"
+
+[[bench]]
+name = "filter_pushdown"
+path = "bench/filter_pushdown.rs"
+harness = false
+
+[[bench]]
+name = "byte_array_vs_byte_view"
+path = "bench/byte_array_vs_byte_view.rs"
+harness = false

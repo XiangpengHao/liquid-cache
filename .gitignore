@@ -4,3 +4,5 @@ target
 .idea
 profile.json
 data/
+.direnv
+.claude

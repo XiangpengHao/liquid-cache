@@ -18,6 +18,7 @@
 
 LiquidCache is a pushdown cache for S3 --
 projections, filters, and aggregations are evaluated at the cache server before returning data to query engines (e.g., [DataFusion](https://github.com/apache/datafusion)).
+LiquidCache is a research project [funded](https://xiangpeng.systems/fund/) by [InfluxData](https://www.influxdata.com/).
 
 ## Features
 LiquidCache is a radical redesign of caching: it **caches logical data** rather than its physical representations.
@@ -28,6 +29,7 @@ This means that:
 
 Cons:
 - LiquidCache is not a transparent cache (consider [Foyer](https://github.com/foyer-rs/foyer) instead), it leverages query semantics to optimize caching. 
+
 ## Architecture
 
 Both LiquidCache and DataFusion run on cloud servers within the same region, but are configured differently:
@@ -41,12 +43,11 @@ Each component can be scaled independently as the workload grows.
 <img src="https://raw.githubusercontent.com/XiangpengHao/liquid-cache/main/dev/doc/arch.png" alt="architecture" width="400"/>
 
 
-## Integrate LiquidCache in 5 Minutes
+## Start a LiquidCache Server in 5 Minutes
 Check out the [examples](https://github.com/XiangpengHao/liquid-cache/tree/main/examples) folder for more details. 
 
 
-
-#### 1. Start a Cache Server:
+#### 1. Create a Cache Server:
 ```rust
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -54,26 +55,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         SessionContext::new(),
         Some(1024 * 1024 * 1024),               // max memory cache size 1GB
         Some(tempfile::tempdir()?.into_path()), // disk cache dir
-    );
+    )?;
 
     let flight = FlightServiceServer::new(liquid_cache);
 
     Server::builder()
         .add_service(flight)
-        .serve("0.0.0.0:50051".parse()?)
+        .serve("0.0.0.0:15214".parse()?)
         .await?;
 
     Ok(())
 }
-```
-
-Or use our pre-built docker image:
-```bash
-docker run -p 50051:50051 -v ~/liquid_cache:/cache \
-  ghcr.io/xiangpenghao/liquid-cache/liquid-cache-server:latest \
-  /app/bench_server \
-  --address 0.0.0.0:50051 \
-  --disk-cache-dir /cache
 ```
 
 #### 2. Connect to the cache server:
@@ -102,25 +94,39 @@ pub async fn main() -> Result<()> {
 }
 ```
 
-## Community server
+## In-process mode 
 
-We run a community server for LiquidCache at <https://hex.tail0766e4.ts.net:50051> (hosted on Xiangpeng's NAS, use at your own risk).
+If you are uncomfortable with a dedicated server, LiquidCache also provides an in-process mode.
 
-You can try it out by running:
-```bash
-cargo run --bin example_client --release -- \
-    --cache-server https://hex.tail0766e4.ts.net:50051 \
-    --file "https://huggingface.co/datasets/HuggingFaceFW/fineweb/resolve/main/data/CC-MAIN-2024-51/000_00042.parquet" \
-    --query "SELECT COUNT(*) FROM \"000_00042\" WHERE \"token_count\" < 100"
-```
+```rust
+use datafusion::prelude::SessionConfig;
+use liquid_cache_parquet::{
+    LiquidCacheInProcessBuilder,
+    common::{LiquidCacheMode},
+};
+use liquid_cache_parquet::policies::{CachePolicy, DiscardPolicy};
+use tempfile::TempDir;
 
-Expected output (within a second):
-```
-+----------+
-| count(*) |
-+----------+
-| 44805    |
-+----------+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = TempDir::new().unwrap();
+
+    let (ctx, _) = LiquidCacheInProcessBuilder::new()
+        .with_max_cache_bytes(1024 * 1024 * 1024) // 1GB
+        .with_cache_dir(temp_dir.path().to_path_buf())
+        .with_cache_mode(LiquidCacheMode::Liquid {
+            transcode_in_background: true,
+        })
+        .with_cache_strategy(Box::new(DiscardPolicy))
+        .build(SessionConfig::new())?;
+
+    ctx.register_parquet("hits", "examples/nano_hits.parquet", Default::default())
+        .await?;
+
+    ctx.sql("SELECT COUNT(*) FROM hits").await?.show().await?;
+    Ok(())
+}
+
 ```
 
 
@@ -140,7 +146,7 @@ cargo run --bin bench_server --release
 #### 3. Run a ClickBench Client
 In a different terminal, run the ClickBench client:
 ```bash
-cargo run --bin clickbench_client --release -- --query-path benchmark/clickbench/queries.sql --file examples/nano_hits.parquet
+cargo run --bin clickbench_client --release -- --query-path benchmark/clickbench/queries/queries.sql --file examples/nano_hits.parquet --output benchmark/data/results/nano_hits.json
 ```
 (Note: replace `nano_hits.parquet` with the [real ClickBench dataset](https://github.com/ClickHouse/ClickBench) for full benchmarking)
 
@@ -152,6 +158,46 @@ See [dev/README.md](./dev/README.md)
 ## Benchmark
 
 See [benchmark/README.md](./benchmark/README.md)
+
+## Performance troubleshooting
+
+### Inherit LiquidCache configurations
+
+LiquidCache uses non-default DataFusion configurations. Inherit them properly:
+
+**Use ListingTable:**
+```rust
+let (ctx, _) = LiquidCacheInProcessBuilder::new().build(config)?;
+
+let listing_options = ParquetReadOptions::default()
+    .to_listing_options(&ctx.copied_config(), ctx.copied_table_options());
+ctx.register_listing_table("default", &table_path, listing_options, None, None)
+    .await?;
+```
+
+**Or register Parquet directly:**
+```rust
+let (ctx, _) = LiquidCacheInProcessBuilder::new().build(config)?;
+ctx.register_parquet("default", "examples/nano_hits.parquet", Default::default())
+    .await?;
+```
+
+### Disable background transcoding
+
+For performance testing, disable background transcoding:
+
+```rust
+let (ctx, _) = LiquidCacheInProcessBuilder::new()
+    .with_cache_mode(LiquidCacheMode::Liquid {
+        transcode_in_background: false,
+    })
+    .build(config)?;
+```
+
+### x86-64 optimization
+
+LiquidCache is optimized for x86-64 with specific [instructions](https://github.com/XiangpengHao/liquid-cache/blob/f8d5b77829fa7996a56c031eb25503f7b0b0428d/src/liquid_parquet/src/utils.rs#L229-L327). ARM chips (e.g., Apple Silicon) use fallback implementations. Contributions welcome!
+
 
 ## FAQ
 
@@ -183,6 +229,7 @@ If you want to get involved in the research process, feel free to [reach out](ht
 
 LiquidCache is a research project funded by:
 - [InfluxData](https://www.influxdata.com/)
+- [Bauplan](https://www.bauplanlabs.com)
 - Taxpayers of the state of Wisconsin and the federal government. 
 
 As such, LiquidCache is and will always be open source and free to use.

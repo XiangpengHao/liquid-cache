@@ -27,10 +27,11 @@ async-trait = { workspace = true }
 bytes = { workspace = true }
 async-stream = "0.3"
 tempfile = { workspace = true }
-axum = "0.8.3"
+axum = "0.8.4"
 serde = { workspace = true }
-tower-http = { version = "0.6.2", features = ["cors"] }
-sysinfo = { version = "0.34.2", default-features = false, features = [
+serde_json = { workspace = true }
+tower-http = { version = "0.6.4", features = ["cors"] }
+sysinfo = { version = "0.35.1", default-features = false, features = [
 	"component",
 	"disk",
 	"network",
@@ -41,7 +42,9 @@ uuid = { workspace = true }
 fastrace = { workspace = true }
 fastrace-futures = { workspace = true }
 pprof = { version = "0.14.0", features = ["flamegraph"] }
+anyhow = "1.0"
 
 [dev-dependencies]
 liquid-cache-client = { workspace = true }
-insta = { version = "1.42.2" }
+insta = { version = "1.43.1" }
+parquet = { workspace = true }

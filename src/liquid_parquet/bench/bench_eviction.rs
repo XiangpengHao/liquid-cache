@@ -5,11 +5,11 @@ use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
 
-use liquid_cache_parquet::cache::store::CacheAdvice;
-use liquid_cache_parquet::cache::utils::CacheEntryID;
-use liquid_cache_parquet::policies::{
+use liquid_cache_parquet::cache::policies::{
     CachePolicy, ClockPolicy, DiscardPolicy, FiloPolicy, LruPolicy, RandomPolicy, SievePolicy,
 };
+use liquid_cache_parquet::cache::utils::CacheAdvice;
+use liquid_cache_parquet::cache::utils::CacheEntryID;
 
 // Import the Cache trait and implementations from eviction_cache.rs
 //mod eviction_cache;
@@ -35,20 +35,16 @@ impl CacheImpl {
     }
     fn insert(&mut self, key: u64) {
         if self.data.len() >= self.size {
-            let advice = self.p.advise(
-                &CacheEntryID::from(key as usize),
-                &LiquidCacheMode::InMemoryArrow,
-            );
+            let advice = self
+                .p
+                .advise(&CacheEntryID::from(key as usize), &LiquidCacheMode::Arrow);
             match advice {
                 CacheAdvice::Evict(id) => {
                     // Convert CacheEntryID back to usize and then to u64
                     let evicted_key: usize = id.into();
                     self.data.remove(&(evicted_key as u64));
-                    self.p.notify_evict(&id);
-                    //println!("Evicted: {:?}", id);
                 }
                 _ => {
-                    //panic!("Unexpected advice: {:?}", advice);
                     return;
                 }
             }
@@ -124,10 +120,10 @@ fn simulate_belady(trace: &[u64], cache_size: usize) -> (u64, u64) {
         }
 
         // Remove the current position from future positions
-        if let Some(positions) = future_positions.get_mut(&item) {
-            if let Some(pos) = positions.iter().position(|&p| p == current_pos) {
-                positions.remove(pos);
-            }
+        if let Some(positions) = future_positions.get_mut(&item)
+            && let Some(pos) = positions.iter().position(|&p| p == current_pos)
+        {
+            positions.remove(pos);
         }
     }
 
@@ -405,10 +401,10 @@ fn access_patterns_belady() {
         }
 
         // Remove the current position from future positions
-        if let Some(positions) = future_positions.get_mut(&item) {
-            if let Some(pos) = positions.iter().position(|&p| p == current_pos) {
-                positions.remove(pos);
-            }
+        if let Some(positions) = future_positions.get_mut(&item)
+            && let Some(pos) = positions.iter().position(|&p| p == current_pos)
+        {
+            positions.remove(pos);
         }
     }
 
@@ -571,7 +567,6 @@ fn main() {
     let trace: Vec<u64> = trace_data.iter().map(|(key, _)| *key).collect();
     let initial_cache_size = unique_items.len() as i64;
     let mut cache_size = initial_cache_size;
-
     while cache_size > 0 {
         let (hits, misses) = simulate_belady(&trace, cache_size as usize);
         let hit_rate = hits as f64 / (hits + misses) as f64;

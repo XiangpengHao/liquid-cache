@@ -1,0 +1,35 @@
+---
+source: src/liquid_parquet/src/tests/mod.rs
+expression: "format!(\"plan: \\n{}\\nvalues: \\n{}\", plan, reference)"
+---
+plan: 
+┌───────────────────────────┐
+│          SortExec         │
+│    --------------------   │
+│         URL@0 DESC        │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       DataSourceExec      │
+│    --------------------   │
+│          files: 1         │
+│                           │
+│          format:          │
+│       liquid_parquet      │
+└───────────────────────────┘
+
+values: 
++-------------------------------------------------------------------------------------------------------------------------------+
+| URL                                                                                                                           |
++-------------------------------------------------------------------------------------------------------------------------------+
+| https://produkty%2Fpulove.ru/search_terms-vzyat_kobrye-russion/russia/piterators-tourse                                       |
+| https://produkty%2Fpulove.ru/search_terms-vzyat_kobrye-russion/russia/piterators-tourse                                       |
+| https://produkty%2Fpulove.ru/booklyattion-ware/tours.ru                                                                       |
+| https://produkty%2Fpulove.ru/booklyattion-ware/tours.ru                                                                       |
+| https://produkty%2Fpulove.ru/booklyattion-ware/activaro.ru/cars.ru/footours-index.ru/files/item=11497449%26pz%3D0             |
+| https://produkty%2Fpulove.ru/booklyattion-ware/activaro.ru/cars.ru/footours-index.ru/files/item=11497449%26pz%3D0             |
+| https://produkty%2Fpulove.ru/booklyattion-ware/activaro.ru/cars.ru/footours-index.ru/files/item=11497449%26pz%3D0             |
+| https://produkty%2Fpulove.ru/booklyattion-ware/activaro.ru/cars.ru/footours-index.ru/files/item=11497449%26pz%3D0             |
+| https://produkty%2Fplata.ru/filmId=e308f57e213e9eee96bcb752910-widget/tours.ru/product_priznaniya-1-metallic=0&engineVolumeTo |
+| https://produkty%2Fplata.ru/filmId=e308f57e213e9eee96bcb752910-widget/tours.ru/product_priznaniya-1-metallic=0&engineVolumeTo |
+| http://tours/Ekategoriya%2F&sr=http://slovareniye                                                                             |
++-------------------------------------------------------------------------------------------------------------------------------+

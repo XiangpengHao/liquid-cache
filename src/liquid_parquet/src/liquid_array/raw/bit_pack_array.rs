@@ -15,7 +15,7 @@ where
 {
     packed_values: ScalarBuffer<T::Native>,
     nulls: Option<NullBuffer>,
-    bit_width: NonZero<u8>,
+    bit_width: Option<NonZero<u8>>, // if None, the array is entirely null
     original_len: usize,
 }
 
@@ -44,7 +44,7 @@ where
         Self {
             packed_values: vec![T::Native::usize_as(0); len].into(),
             nulls: Some(NullBuffer::new_null(len)),
-            bit_width: NonZero::new(u8::MAX).unwrap(),
+            bit_width: None,
             original_len: len,
         }
     }
@@ -57,7 +57,7 @@ where
         self.nulls.as_ref()
     }
 
-    pub(crate) fn bit_width(&self) -> NonZero<u8> {
+    pub(crate) fn bit_width(&self) -> Option<NonZero<u8>> {
         self.bit_width
     }
 
@@ -118,7 +118,7 @@ where
         Self {
             packed_values: scalar_buffer,
             nulls,
-            bit_width,
+            bit_width: Some(bit_width),
             original_len,
         }
     }
@@ -126,12 +126,11 @@ where
     /// Converts the bit-packed array to a primitive array.
     pub fn to_primitive(&self) -> PrimitiveArray<T> {
         // Special case for all nulls, don't unpack
-        if let Some(nulls) = self.nulls() {
-            if nulls.null_count() == self.original_len {
-                return PrimitiveArray::<T>::new_null(self.original_len);
-            }
-        }
-        let bit_width = self.bit_width.get() as usize;
+        let bit_width = if let Some(bit_width) = self.bit_width {
+            bit_width.get() as usize
+        } else {
+            return PrimitiveArray::<T>::new_null(self.original_len);
+        };
         let packed = self.packed_values.as_ref();
         let length = self.original_len;
         let offset = 0;
@@ -233,7 +232,7 @@ where
         let start_offset = buffer.len();
 
         buffer.extend_from_slice(&(self.original_len as u32).to_le_bytes());
-        buffer.push(self.bit_width.get());
+        buffer.push(self.bit_width.map_or(0, |bit_width| bit_width.get()));
         buffer.push(has_nulls);
         buffer.extend_from_slice(&(nulls_bytes.len() as u32).to_le_bytes());
         buffer.extend_from_slice(&(values_bytes.len() as u32).to_le_bytes());
@@ -315,10 +314,14 @@ where
 
         let packed_values = ScalarBuffer::<T::Native>::new(values_buffer, 0, packed_len);
 
+        if nulls.is_some() && nulls.as_ref().unwrap().null_count() == original_len {
+            return Self::new_null_array(original_len);
+        }
+
         Self {
             packed_values,
             nulls,
-            bit_width: NonZero::new(bit_width).unwrap(),
+            bit_width: Some(NonZero::new(bit_width).unwrap()),
             original_len,
         }
     }
@@ -349,7 +352,7 @@ mod tests {
         let before_size = array.get_array_memory_size();
         let bit_packed = BitPackedArray::from_primitive(array, NonZero::new(10).unwrap());
         let after_size = bit_packed.get_array_memory_size();
-        println!("before: {}, after: {}", before_size, after_size);
+        println!("before: {before_size}, after: {after_size}");
         let unpacked = bit_packed.to_primitive();
 
         assert_eq!(unpacked.len(), 1024);
@@ -509,7 +512,7 @@ mod tests {
         let bit_packed_no_nulls = BitPackedArray::<UInt32Type> {
             packed_values: scalar_buffer.clone(),
             nulls: None,
-            bit_width: NonZero::new(10).unwrap(),
+            bit_width: Some(NonZero::new(10).unwrap()),
             original_len: 1024,
         };
 
@@ -529,7 +532,7 @@ mod tests {
         let bit_packed_with_nulls = BitPackedArray::<UInt32Type> {
             packed_values: scalar_buffer.clone(),
             nulls: nulls.clone(), // Clone the Option<NullBuffer>
-            bit_width: NonZero::new(10).unwrap(),
+            bit_width: Some(NonZero::new(10).unwrap()),
             original_len: 1024,
         };
 

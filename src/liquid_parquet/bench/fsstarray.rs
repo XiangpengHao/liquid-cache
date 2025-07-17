@@ -1,6 +1,5 @@
-use criterion::*;
+use divan::Bencher;
 use std::sync::Arc;
-use std::time::Duration;
 
 extern crate arrow;
 
@@ -19,7 +18,7 @@ fn create_string_arrays_from_file() -> Vec<(usize, StringArray)> {
 
     let readme = fs::read_to_string(TEST_FILE_PATH).expect("Failed to read file");
     let license = fs::read_to_string(LICENSE_FILE_PATH).expect("Failed to read file");
-    let content = format!("{}\n\n{}", readme, license);
+    let content = format!("{readme}\n\n{license}");
 
     let mut result = Vec::new();
 
@@ -37,106 +36,62 @@ fn create_string_arrays_from_file() -> Vec<(usize, StringArray)> {
     result
 }
 
-// Benchmark for training the FSST compressor
-fn compressor_benchmark(c: &mut Criterion) {
+#[divan::bench(args = CHUNK_SIZE)]
+fn compressor_benchmark(bencher: Bencher, chunk_size: usize) {
     let string_arrays = create_string_arrays_from_file();
+    let (_, string_array) = string_arrays
+        .into_iter()
+        .find(|(s, _)| *s == chunk_size)
+        .unwrap();
+    let total_size = chunk_size * string_array.len();
 
-    let mut group = c.benchmark_group("fsst");
-    for (chunk_size, string_array) in string_arrays {
-        let total_size = chunk_size * string_array.len();
-        // Set the measurement time for the benchmark
-        group.measurement_time(Duration::new(10, 0));
-
-        // Set the throughput for the benchmark
-        group.throughput(Throughput::Bytes(total_size as u64));
-
-        // Benchmark the FSST compressor training
-        group.bench_function(
-            format!("train_compressor - chunk_size: {}", chunk_size),
-            |b| {
-                b.iter(|| {
-                    let input = criterion::black_box(
-                        string_array.iter().flat_map(|s| s.map(|a| a.as_bytes())),
-                    );
-                    FsstArray::train_compressor(input)
-                });
-            },
-        );
-    }
-    group.finish();
-}
-
-// Benchmark for creating an FSST array from a byte array using a pre-trained compressor
-fn from_byte_array_with_compressor_benchmark(c: &mut Criterion) {
-    let string_arrays = create_string_arrays_from_file();
-
-    let mut group = c.benchmark_group(format!("fsst"));
-    for (chunk_size, string_array) in string_arrays {
-        // Train the FSST compressor
-        let compressor =
-            FsstArray::train_compressor(string_array.iter().flat_map(|s| s.map(|s| s.as_bytes())));
-
-        let compressed =
-            FsstArray::from_byte_array_with_compressor(&string_array, Arc::new(compressor.clone()));
-        let compressed_size = compressed.get_array_memory_size();
-        let uncompressed_size = chunk_size * string_array.len();
-        println!(
-            "compressed_size: {}, uncompressed_size: {}, compression_ratio: {}",
-            compressed_size,
-            uncompressed_size,
-            compressed_size as f64 / uncompressed_size as f64
-        );
-
-        // Set the throughput for the benchmark
-        group.throughput(Throughput::Bytes(uncompressed_size as u64));
-
-        // Benchmark the creation of an FSST array from a byte array
-        group.bench_function(format!("compress - chunk_size: {}", chunk_size), |b| {
-            b.iter(|| {
-                criterion::black_box(FsstArray::from_byte_array_with_compressor(
-                    &string_array,
-                    Arc::new(compressor.clone()),
-                ))
-            });
+    bencher
+        .with_inputs(|| string_array.clone())
+        .input_counter(move |_| divan::counter::BytesCount::new(total_size))
+        .bench_values(|string_array| {
+            let input = string_array.iter().flat_map(|s| s.map(|a| a.as_bytes()));
+            FsstArray::train_compressor(input)
         });
-    }
-    group.finish();
 }
 
-// Benchmark for converting an FSST array to an Arrow byte array
-fn to_arrow_byte_array_benchmark(c: &mut Criterion) {
+#[divan::bench(args = CHUNK_SIZE)]
+fn from_byte_array_with_compressor_benchmark(bencher: Bencher, chunk_size: usize) {
     let string_arrays = create_string_arrays_from_file();
+    let (_, string_array) = string_arrays
+        .into_iter()
+        .find(|(s, _)| *s == chunk_size)
+        .unwrap();
+    let compressor =
+        FsstArray::train_compressor(string_array.iter().flat_map(|s| s.map(|s| s.as_bytes())));
+    let uncompressed_size = chunk_size * string_array.len();
 
-    let mut group = c.benchmark_group(format!("fsst"));
-    for (chunk_size, string_array) in string_arrays {
-        // Train the FSST compressor
-        let compressor =
-            FsstArray::train_compressor(string_array.iter().flat_map(|s| s.map(|s| s.as_bytes())));
-
-        // Create an FSST array using the trained compressor
-        let fsst_values =
-            FsstArray::from_byte_array_with_compressor(&string_array, Arc::new(compressor));
-
-        let total_size = chunk_size * string_array.len();
-
-        // Set the throughput for the benchmark
-        group.throughput(Throughput::Bytes(total_size as u64));
-
-        // Benchmark the conversion of FSST array to Arrow byte array
-        group.bench_function(format!("decompress - chunk_size: {}", chunk_size), |b| {
-            b.iter(|| criterion::black_box(fsst_values.to_arrow_byte_array::<Utf8Type>()));
+    bencher
+        .with_inputs(|| (string_array.clone(), Arc::new(compressor.clone())))
+        .input_counter(move |_| divan::counter::BytesCount::new(uncompressed_size))
+        .bench_values(|(string_array, compressor)| {
+            FsstArray::from_byte_array_with_compressor(&string_array, compressor)
         });
-    }
-    group.finish();
 }
 
-// Define the benchmark group
-criterion_group!(
-    benches,
-    compressor_benchmark,
-    from_byte_array_with_compressor_benchmark,
-    to_arrow_byte_array_benchmark
-);
+#[divan::bench(args = CHUNK_SIZE)]
+fn to_arrow_byte_array_benchmark(bencher: Bencher, chunk_size: usize) {
+    let string_arrays = create_string_arrays_from_file();
+    let (_, string_array) = string_arrays
+        .into_iter()
+        .find(|(s, _)| *s == chunk_size)
+        .unwrap();
+    let compressor =
+        FsstArray::train_compressor(string_array.iter().flat_map(|s| s.map(|s| s.as_bytes())));
+    let fsst_values =
+        FsstArray::from_byte_array_with_compressor(&string_array, Arc::new(compressor));
+    let total_size = chunk_size * string_array.len();
 
-// Entry point for Criterion benchmarking
-criterion_main!(benches);
+    bencher
+        .with_inputs(|| fsst_values.clone())
+        .input_counter(move |_| divan::counter::BytesCount::new(total_size))
+        .bench_values(|fsst_values| fsst_values.to_arrow_byte_array::<Utf8Type>());
+}
+
+fn main() {
+    divan::main();
+}

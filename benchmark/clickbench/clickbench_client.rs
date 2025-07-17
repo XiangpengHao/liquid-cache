@@ -1,59 +1,38 @@
-use std::{
-    fs::File,
-    io::{BufRead, BufReader},
-    path::{Path, PathBuf},
-    time::Instant,
-};
-
-use clap::{Parser, arg, command};
+use clap::Parser;
 use datafusion::{
-    arrow::{array::RecordBatch, util::pretty},
-    error::Result,
+    arrow::array::RecordBatch,
     parquet::{
         arrow::{ArrowWriter, arrow_reader::ParquetRecordBatchReaderBuilder},
         basic::Compression,
         file::properties::WriterProperties,
     },
-    physical_plan::display::DisplayableExecutionPlan,
+    prelude::SessionContext,
 };
-use fastrace::prelude::*;
+use datafusion::{error::Result, prelude::SessionConfig};
 use liquid_cache_benchmarks::{
-    BenchmarkResult, CommonBenchmarkArgs, IterationResult, QueryResult, run_query,
-    setup_observability, utils::assert_batch_eq,
+    Benchmark, BenchmarkManifest, ClientBenchmarkArgs, utils::assert_batch_eq,
 };
-use log::{debug, info};
+use liquid_cache_benchmarks::{BenchmarkMode, BenchmarkRunner, Query, run_query};
+use liquid_cache_client::LiquidCacheBuilder;
+use liquid_cache_common::CacheMode;
+use log::info;
 use mimalloc::MiMalloc;
+use object_store::ClientConfigKey;
 use serde::Serialize;
-use std::fs::File as StdFile;
-use sysinfo::Networks;
+use std::{
+    fs::File,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+use url::Url;
+use uuid::Uuid;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
-fn get_query(
-    query_path: impl AsRef<Path>,
-    query_number: Option<u32>,
-) -> Result<Vec<(u32, String)>> {
-    let query_path = query_path.as_ref();
-    let file = File::open(query_path)?;
-    let reader = BufReader::new(file);
-    let mut queries = Vec::new();
-    for (index, line) in reader.lines().enumerate() {
-        queries.push((index as u32, line?));
-    }
-    if let Some(query_number) = query_number {
-        Ok(queries
-            .into_iter()
-            .filter(|(id, _)| *id == query_number)
-            .collect())
-    } else {
-        Ok(queries)
-    }
-}
-
-fn save_result(result: &[RecordBatch], query_id: u32) -> Result<()> {
+fn save_result(result: &[RecordBatch], query_id: u32) {
     let file_path = format!("benchmark/data/results/Q{query_id}.parquet");
-    let file = File::create(&file_path)?;
+    let file = File::create(&file_path).unwrap();
     let props = WriterProperties::builder()
         .set_compression(Compression::SNAPPY)
         .build();
@@ -63,167 +42,193 @@ fn save_result(result: &[RecordBatch], query_id: u32) -> Result<()> {
     }
     writer.close().unwrap();
     info!("Query {query_id} result saved to {file_path}");
-    Ok(())
 }
 
-fn check_result_against_answer(
-    results: &Vec<RecordBatch>,
-    answer_dir: &Path,
-    query_id: u32,
-    query: &str,
-) -> Result<()> {
+fn check_result_against_answer(results: &[RecordBatch], answer_dir: &Path, query: &Query) {
     // - If query returns no results, check if baseline exists
     // - If baseline does not exist, skip query
     // - If baseline exists, panic
     if results.is_empty() {
-        let baseline_exists = format!("{}/Q{}.parquet", answer_dir.display(), query_id);
+        let baseline_exists = format!("{}/Q{}.parquet", answer_dir.display(), query.id());
         match File::open(baseline_exists) {
             Err(_) => {
-                info!("Query {query_id} returned no results (matches baseline)");
-                return Ok(());
+                info!(
+                    "Query {} returned no results (matches baseline)",
+                    query.id()
+                );
+                return;
             }
-            Ok(_) => panic!("Query {query_id} returned no results but baseline exists"),
+            Ok(_) => {
+                panic!(
+                    "Query {} returned no results but baseline exists",
+                    query.id()
+                )
+            }
         }
     }
     // Read answers
-    let baseline_path = format!("{}/Q{}.parquet", answer_dir.display(), query_id);
-    let baseline_file = File::open(baseline_path)?;
+    let baseline_path = format!("{}/Q{}.parquet", answer_dir.display(), query.id());
+    let baseline_file = File::open(baseline_path).unwrap();
     let mut baseline_batches = Vec::new();
-    let reader = ParquetRecordBatchReaderBuilder::try_new(baseline_file)?.build()?;
+    let reader = ParquetRecordBatchReaderBuilder::try_new(baseline_file)
+        .unwrap()
+        .build()
+        .unwrap();
     for batch in reader {
-        baseline_batches.push(batch?);
+        baseline_batches.push(batch.unwrap());
     }
 
     // Compare answers and result
-    let result_batch = datafusion::arrow::compute::concat_batches(&results[0].schema(), results)?;
+    let result_batch =
+        datafusion::arrow::compute::concat_batches(&results[0].schema(), results).unwrap();
     let baseline_batch = datafusion::arrow::compute::concat_batches(
         &baseline_batches[0].schema(),
         &baseline_batches,
-    )?;
-    if query.contains("LIMIT") {
-        info!("Query {query_id} contains LIMIT, only validating the shape of the result");
+    )
+    .unwrap();
+    if query.statement()[0].contains("LIMIT") {
+        info!(
+            "Query {} contains LIMIT, only validating the shape of the result",
+            query.id()
+        );
         let (result_num_rows, result_columns) =
             (result_batch.num_rows(), result_batch.columns().len());
         let (baseline_num_rows, baseline_columns) =
             (baseline_batch.num_rows(), baseline_batch.columns().len());
         if result_num_rows != baseline_num_rows || result_columns != baseline_columns {
-            save_result(results, query_id)?;
+            save_result(results, query.id());
             panic!(
-                "Query {query_id} result does not match baseline. Result(num_rows: {result_num_rows}, num_columns: {result_columns}), Baseline(num_rows: {baseline_num_rows}, num_columns: {baseline_columns})"
+                "Query {} result does not match baseline. Result(num_rows: {result_num_rows}, num_columns: {result_columns}), Baseline(num_rows: {baseline_num_rows}, num_columns: {baseline_columns})",
+                query.id()
             );
         }
     } else {
         assert_batch_eq(&result_batch, &baseline_batch);
     }
-    Ok(())
 }
 
 #[derive(Parser, Serialize, Clone)]
-#[command(name = "ClickBench Benchmark Client")]
-struct CliArgs {
-    /// Path to the query file
+#[command(name = "ClickBench Benchmark")]
+pub struct ClickBenchArgs {
+    /// Path to the benchmark manifest file
     #[arg(long)]
-    query_path: PathBuf,
-
-    /// Path to the ClickBench file, hit.parquet or directory to partitioned files
-    #[arg(long)]
-    file: PathBuf,
+    pub manifest: PathBuf,
 
     #[clap(flatten)]
-    common: CommonBenchmarkArgs,
+    pub common: ClientBenchmarkArgs,
+}
+
+#[derive(Clone, Serialize)]
+struct ClickBench {
+    manifest: BenchmarkManifest,
+    common_args: ClientBenchmarkArgs,
+}
+
+impl ClickBench {
+    fn new(args: ClickBenchArgs) -> Self {
+        let manifest = BenchmarkManifest::load_from_file(&args.manifest).unwrap();
+        let common_args = args.common;
+        Self {
+            manifest,
+            common_args,
+        }
+    }
+}
+
+impl Benchmark for ClickBench {
+    type Args = ClickBench;
+
+    fn common_args(&self) -> &ClientBenchmarkArgs {
+        &self.common_args
+    }
+
+    fn args(&self) -> &Self::Args {
+        self
+    }
+
+    #[fastrace::trace]
+    async fn setup_context(&self) -> Result<Arc<SessionContext>> {
+        // Load the manifest
+        let mode = match self.common_args.bench_mode {
+            BenchmarkMode::ParquetFileserver => {
+                let mut session_config = SessionConfig::from_env()?;
+                if let Some(partitions) = self.common_args.partitions {
+                    session_config.options_mut().execution.target_partitions = partitions;
+                }
+                let ctx = Arc::new(SessionContext::new_with_config(session_config));
+                let base_url = Url::parse(&self.common_args.server).unwrap();
+
+                let object_store = object_store::http::HttpBuilder::new()
+                    .with_url(base_url.clone())
+                    .with_config(ClientConfigKey::AllowHttp, "true")
+                    .build()
+                    .unwrap();
+                ctx.register_object_store(&base_url, Arc::new(object_store));
+
+                // Register tables from manifest
+                for (table_name, table_path) in &self.manifest.tables {
+                    ctx.register_parquet(
+                        table_name,
+                        format!("{}/{}", self.common_args.server, table_path),
+                        Default::default(),
+                    )
+                    .await?;
+                }
+                return Ok(ctx);
+            }
+            BenchmarkMode::ParquetPushdown => CacheMode::Parquet,
+            BenchmarkMode::ArrowPushdown => CacheMode::Arrow,
+            BenchmarkMode::LiquidCache => CacheMode::Liquid,
+            BenchmarkMode::LiquidEagerTranscode => CacheMode::LiquidEagerTranscode,
+        };
+
+        let mut session_config = SessionConfig::from_env()?;
+        if let Some(partitions) = self.common_args.partitions {
+            session_config.options_mut().execution.target_partitions = partitions;
+        }
+
+        let liquid_cache_builder =
+            LiquidCacheBuilder::new(&self.common_args.server).with_cache_mode(mode);
+        let ctx = liquid_cache_builder.build(session_config)?;
+
+        self.manifest.register_object_stores(&ctx).await.unwrap();
+        self.manifest.register_tables(&ctx).await.unwrap();
+
+        Ok(Arc::new(ctx))
+    }
+
+    async fn get_queries(&self) -> Result<Vec<Query>> {
+        let queries = self.manifest.load_queries(0);
+        Ok(queries)
+    }
+
+    async fn execute_query(
+        &self,
+        ctx: &Arc<SessionContext>,
+        query: &Query,
+    ) -> (
+        Vec<RecordBatch>,
+        Arc<dyn datafusion::physical_plan::ExecutionPlan>,
+        Vec<Uuid>,
+    ) {
+        run_query(ctx, &query.statement()[0]).await
+    }
+
+    async fn validate_result(&self, query: &Query, results: &[RecordBatch]) {
+        if let Some(answer_dir) = &self.common_args.answer_dir {
+            check_result_against_answer(results, answer_dir, query);
+            info!("Query {} passed validation", query.id());
+        }
+    }
+
+    fn benchmark_name(&self) -> &'static str {
+        "clickbench"
+    }
 }
 
 #[tokio::main]
 pub async fn main() -> Result<()> {
-    let args = CliArgs::parse();
-    setup_observability(
-        "clickbench-client",
-        opentelemetry::trace::SpanKind::Client,
-        args.common.openobserve_auth.as_deref(),
-    );
-
-    let queries = get_query(&args.query_path, args.common.query)?;
-    let ctx = args.common.setup_clickbench_ctx(&args.file).await?;
-
-    let mut benchmark_result = BenchmarkResult {
-        args: args.clone(),
-        results: Vec::new(),
-    };
-
-    std::fs::create_dir_all("benchmark/data/results")?;
-
-    let mut networks = Networks::new_with_refreshed_list();
-    let bench_start_time = Instant::now();
-
-    for (id, query) in queries {
-        let mut query_result = QueryResult::new(id, query.clone());
-        for it in 0..args.common.iteration {
-            info!("Running query {id}: \n{query}");
-
-            args.common.start_trace().await;
-            args.common.start_flamegraph().await;
-
-            let root = Span::root(
-                format!("clickbench-client-{id}-{it}"),
-                SpanContext::random(),
-            );
-            let _g = root.set_local_parent();
-            let now = Instant::now();
-            let starting_timestamp = bench_start_time.elapsed();
-            let (results, physical_plan) = run_query(&ctx, &query).await?;
-            let elapsed = now.elapsed();
-
-            networks.refresh(true);
-            // for mac its lo0 and for linux its lo.
-            let network_info = networks
-                .get("lo0")
-                .or_else(|| networks.get("lo"))
-                .expect("No loopback interface found in networks");
-
-            args.common.stop_flamegraph().await;
-            args.common.stop_trace().await;
-
-            let physical_plan_with_metrics =
-                DisplayableExecutionPlan::with_metrics(physical_plan.as_ref());
-            debug!(
-                "Physical plan: \n{}",
-                physical_plan_with_metrics.indent(true)
-            );
-            let result_str = pretty::pretty_format_batches(&results).unwrap();
-            debug!("Query result: \n{result_str}");
-
-            // Check query answers
-            if let Some(answer_dir) = &args.common.answer_dir {
-                check_result_against_answer(&results, answer_dir, id, &query)?;
-                info!("Query {id} passed validation");
-            }
-
-            args.common.get_cache_stats().await;
-
-            let metrics_response = args.common.get_execution_metrics(&physical_plan).await;
-
-            let result = IterationResult {
-                network_traffic: network_info.received(),
-                time_millis: elapsed.as_millis() as u64,
-                cache_cpu_time: metrics_response.pushdown_eval_time,
-                cache_memory_usage: metrics_response.cache_memory_usage,
-                liquid_cache_usage: metrics_response.liquid_cache_usage,
-                starting_timestamp,
-            };
-            result.log();
-            query_result.add(result);
-        }
-        if args.common.reset_cache {
-            args.common.reset_cache().await?;
-        }
-        benchmark_result.results.push(query_result);
-    }
-
-    if let Some(output_path) = &args.common.output {
-        let output_file = StdFile::create(output_path)?;
-        serde_json::to_writer_pretty(output_file, &benchmark_result).unwrap();
-    }
-
-    fastrace::flush();
+    let clickbench = ClickBench::new(ClickBenchArgs::parse());
+    BenchmarkRunner::run(clickbench).await?;
     Ok(())
 }

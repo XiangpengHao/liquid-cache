@@ -11,6 +11,8 @@ use arrow::array::{
     },
 };
 use arrow::buffer::ScalarBuffer;
+use arrow_schema::ArrowError;
+use datafusion::physical_plan::PhysicalExpr;
 use fastlanes::BitPacking;
 use num_traits::{AsPrimitive, FromPrimitive};
 
@@ -200,11 +202,35 @@ where
     }
 
     fn filter(&self, selection: &BooleanArray) -> LiquidArrayRef {
-        let values = self.to_arrow_array();
-        let filtered_values = arrow::compute::kernels::filter::filter(&values, selection).unwrap();
-        let primitive_values = filtered_values.as_primitive::<T>().clone();
-        let bit_packed = Self::from_arrow_array(primitive_values);
-        Arc::new(bit_packed)
+        let unsigned_array: PrimitiveArray<T::UnSignedType> = self.bit_packed.to_primitive();
+        let filtered_values =
+            arrow::compute::kernels::filter::filter(&unsigned_array, selection).unwrap();
+        let filtered_values = filtered_values.as_primitive::<T::UnSignedType>().clone();
+        let Some(bit_width) = self.bit_packed.bit_width() else {
+            return Arc::new(LiquidPrimitiveArray::<T> {
+                bit_packed: BitPackedArray::new_null_array(filtered_values.len()),
+                reference_value: self.reference_value,
+            });
+        };
+        let bit_packed = BitPackedArray::from_primitive(filtered_values, bit_width);
+        Arc::new(LiquidPrimitiveArray::<T> {
+            bit_packed,
+            reference_value: self.reference_value,
+        })
+    }
+
+    fn filter_to_arrow(&self, selection: &BooleanArray) -> ArrayRef {
+        let arrow_array = self.to_arrow_array();
+        arrow::compute::kernels::filter::filter(&arrow_array, selection).unwrap()
+    }
+
+    fn try_eval_predicate(
+        &self,
+        _predicate: &Arc<dyn PhysicalExpr>,
+        _filter: &BooleanArray,
+    ) -> Result<Option<BooleanArray>, ArrowError> {
+        // primitive array is not supported for liquid predicate
+        Ok(None)
     }
 
     fn to_bytes(&self) -> Vec<u8> {
@@ -362,6 +388,18 @@ mod tests {
 
         assert_eq!(result_array.len(), original.len());
         assert_eq!(result_array.null_count(), original.len());
+    }
+
+    #[test]
+    fn test_all_nulls_filter() {
+        let original: Vec<Option<i32>> = vec![None, None, None];
+        let array = PrimitiveArray::<Int32Type>::from(original.clone());
+        let liquid_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(array);
+        let result_array = liquid_array.filter(&BooleanArray::from(vec![true, false, true]));
+        let result_array = result_array.to_arrow_array();
+
+        assert_eq!(result_array.len(), 2);
+        assert_eq!(result_array.null_count(), 2);
     }
 
     #[test]

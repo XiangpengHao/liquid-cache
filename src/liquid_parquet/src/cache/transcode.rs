@@ -115,7 +115,23 @@ pub(super) fn transcode_liquid_inner<'a>(
             drop(compressor);
             let mut compressors = state.fsst_compressor.write().unwrap();
             let (compressor, compressed) =
-                LiquidByteArray::train_from_arrow_view(array.as_string_view());
+                LiquidByteArray::train_from_string_view(array.as_string_view());
+            *compressors = Some(compressor);
+            Ok(Arc::new(compressed))
+        }
+        DataType::BinaryView => {
+            let compressor = state.fsst_compressor.read().unwrap();
+            if let Some(compressor) = compressor.as_ref() {
+                let compressed = LiquidByteArray::from_binary_view_array(
+                    array.as_binary_view(),
+                    compressor.clone(),
+                );
+                return Ok(Arc::new(compressed));
+            }
+            drop(compressor);
+            let mut compressors = state.fsst_compressor.write().unwrap();
+            let (compressor, compressed) =
+                LiquidByteArray::train_from_binary_view(array.as_binary_view());
             *compressors = Some(compressor);
             Ok(Arc::new(compressed))
         }
@@ -165,8 +181,8 @@ mod tests {
     use super::*;
     use crate::sync::RwLock;
     use arrow::array::{
-        ArrayRef, BooleanArray, DictionaryArray, Float32Array, Float64Array, Int32Array,
-        Int64Array, StringArray, UInt16Array,
+        ArrayRef, BinaryArray, BinaryViewArray, BooleanArray, DictionaryArray, Float32Array,
+        Float64Array, Int32Array, Int64Array, StringArray, UInt16Array,
     };
     use arrow::datatypes::UInt16Type;
 
@@ -229,7 +245,7 @@ mod tests {
     #[test]
     fn test_transcode_string() {
         let array: ArrayRef = Arc::new(StringArray::from_iter_values(
-            (0..TEST_ARRAY_SIZE).map(|i| format!("test_string_{}", i)),
+            (0..TEST_ARRAY_SIZE).map(|i| format!("test_string_{i}")),
         ));
         let state = create_compressor_states();
 
@@ -238,9 +254,39 @@ mod tests {
     }
 
     #[test]
-    fn test_transcode_dictionary() {
+    fn test_transcode_binary_view() {
+        let array: ArrayRef = Arc::new(BinaryViewArray::from_iter_values(
+            (0..TEST_ARRAY_SIZE).map(|i| format!("test_binary_{i}").into_bytes()),
+        ));
+        let state = create_compressor_states();
+
+        let transcoded = transcode_liquid_inner(&array, &state).unwrap();
+        assert_transcode(&array, &transcoded);
+    }
+
+    #[test]
+    fn test_transcode_dictionary_uft8() {
         // Create a dictionary with many repeated values
-        let values = StringArray::from_iter_values((0..100).map(|i| format!("value_{}", i)));
+        let values = StringArray::from_iter_values((0..100).map(|i| format!("value_{i}")));
+        let keys: Vec<u16> = (0..TEST_ARRAY_SIZE).map(|i| (i % 100) as u16).collect();
+
+        let dict_array =
+            DictionaryArray::<UInt16Type>::try_new(UInt16Array::from(keys), Arc::new(values))
+                .unwrap();
+
+        let array: ArrayRef = Arc::new(dict_array);
+        let state = create_compressor_states();
+
+        let transcoded = transcode_liquid_inner(&array, &state).unwrap();
+        assert_transcode(&array, &transcoded);
+    }
+
+    #[test]
+    fn test_transcode_dictionary_binary() {
+        // Create a dictionary with binary values and many repeated values
+        let values = BinaryArray::from_iter_values(
+            (0..100).map(|i| format!("binary_value_{i}").into_bytes()),
+        );
         let keys: Vec<u16> = (0..TEST_ARRAY_SIZE).map(|i| (i % 100) as u16).collect();
 
         let dict_array =

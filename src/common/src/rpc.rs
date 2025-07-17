@@ -16,6 +16,8 @@ pub enum LiquidCacheActions {
     RegisterObjectStore(RegisterObjectStoreRequest),
     /// Register a plan with the LiquidCache service.
     RegisterPlan(RegisterPlanRequest),
+    /// Prefetch parquet files from the object store.
+    PrefetchFromObjectStore(PrefetchFromObjectStoreRequest),
 }
 
 impl From<LiquidCacheActions> for Action {
@@ -27,6 +29,10 @@ impl From<LiquidCacheActions> for Action {
             },
             LiquidCacheActions::RegisterPlan(request) => Action {
                 r#type: "RegisterPlan".to_string(),
+                body: request.as_any().encode_to_vec().into(),
+            },
+            LiquidCacheActions::PrefetchFromObjectStore(request) => Action {
+                r#type: "PrefetchFromObjectStore".to_string(),
                 body: request.as_any().encode_to_vec().into(),
             },
         }
@@ -45,6 +51,14 @@ impl From<Action> for LiquidCacheActions {
                 let any = Any::decode(action.body).unwrap();
                 let request = any.unpack::<RegisterPlanRequest>().unwrap().unwrap();
                 LiquidCacheActions::RegisterPlan(request)
+            }
+            "PrefetchFromObjectStore" => {
+                let any = Any::decode(action.body).unwrap();
+                let request = any
+                    .unpack::<PrefetchFromObjectStoreRequest>()
+                    .unwrap()
+                    .unwrap();
+                LiquidCacheActions::PrefetchFromObjectStore(request)
             }
             _ => panic!("Invalid action: {}", action.r#type),
         }
@@ -140,6 +154,44 @@ impl ProstMessageExt for RegisterObjectStoreRequest {
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PrefetchFromObjectStoreRequest {
+    /// Url of the object store. eg. s3://bucket
+    #[prost(string, tag = "1")]
+    pub url: ::prost::alloc::string::String,
+
+    /// Config options for the object store
+    /// For S3, this might include "access_key_id", "secret_access_key", etc.
+    #[prost(map = "string, string", tag = "2")]
+    pub store_options: HashMap<String, String>,
+
+    /// Location of the file within the object store. eg. path/to/file.parquet
+    #[prost(string, tag = "3")]
+    pub location: ::prost::alloc::string::String,
+
+    /// The start byte offset of the range to prefetch (inclusive)
+    /// If not specified, prefetch from the beginning of the file
+    #[prost(uint64, optional, tag = "4")]
+    pub range_start: Option<u64>,
+
+    /// The end byte offset of the range to prefetch (exclusive)
+    /// If not specified, prefetch until the end of the file
+    #[prost(uint64, optional, tag = "5")]
+    pub range_end: Option<u64>,
+}
+
+impl ProstMessageExt for PrefetchFromObjectStoreRequest {
+    fn type_url() -> &'static str {
+        ""
+    }
+    fn as_any(&self) -> Any {
+        Any {
+            type_url: PrefetchFromObjectStoreRequest::type_url().to_string(),
+            value: ::prost::Message::encode_to_vec(self).into(),
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FetchResults {
     #[prost(bytes, tag = "1")]
     pub handle: Bytes,
@@ -172,7 +224,7 @@ impl ProstMessageExt for FetchResults {
     }
 }
 
-#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize, Debug)]
 pub struct ExecutionMetricsResponse {
     pub pushdown_eval_time: u64,
     pub cache_memory_usage: u64,

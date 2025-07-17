@@ -2,6 +2,7 @@
 //! You should not use this module directly.
 //! Instead, use `liquid_cache_server` or `liquid_cache_client` to interact with LiquidCache.
 mod byte_array;
+mod byte_view_array;
 mod fix_len_byte_array;
 mod float_array;
 pub(crate) mod ipc;
@@ -12,7 +13,10 @@ pub(crate) mod utils;
 use std::{any::Any, num::NonZero, sync::Arc};
 
 use arrow::array::{ArrayRef, BooleanArray};
-pub use byte_array::LiquidByteArray;
+use arrow_schema::ArrowError;
+pub use byte_array::{LiquidByteArray, get_string_needle};
+pub use byte_view_array::LiquidByteViewArray;
+use datafusion::physical_plan::PhysicalExpr;
 pub use fix_len_byte_array::LiquidFixedLenByteArray;
 use float_array::LiquidFloatType;
 pub use float_array::{LiquidFloat32Array, LiquidFloat64Array, LiquidFloatArray};
@@ -66,6 +70,15 @@ pub trait AsLiquidArray {
         self.as_binary_array_opt().expect("liquid binary array")
     }
 
+    /// Get the underlying byte view array.
+    fn as_byte_view_array_opt(&self) -> Option<&LiquidByteViewArray>;
+
+    /// Get the underlying byte view array.
+    fn as_byte_view(&self) -> &LiquidByteViewArray {
+        self.as_byte_view_array_opt()
+            .expect("liquid byte view array")
+    }
+
     /// Get the underlying primitive array.
     fn as_primitive_array_opt<T: LiquidPrimitiveType>(&self) -> Option<&LiquidPrimitiveArray<T>>;
 
@@ -94,6 +107,10 @@ impl AsLiquidArray for dyn LiquidArray + '_ {
     }
 
     fn as_binary_array_opt(&self) -> Option<&LiquidByteArray> {
+        self.as_any().downcast_ref()
+    }
+
+    fn as_byte_view_array_opt(&self) -> Option<&LiquidByteViewArray> {
         self.as_any().downcast_ref()
     }
 
@@ -136,13 +153,32 @@ pub trait LiquidArray: std::fmt::Debug + Send + Sync {
 
     /// Filter the Liquid array with a boolean array.
     fn filter(&self, selection: &BooleanArray) -> LiquidArrayRef;
+
+    /// Filter the Liquid array with a boolean array and return an **arrow array**.
+    fn filter_to_arrow(&self, selection: &BooleanArray) -> ArrayRef {
+        let filtered = self.filter(selection);
+        filtered.to_best_arrow_array()
+    }
+
+    /// Try to evaluate a predicate on the Liquid array with a filter.
+    /// Returns `None` if the predicate is not supported.
+    fn try_eval_predicate(
+        &self,
+        _predicate: &Arc<dyn PhysicalExpr>,
+        _filter: &BooleanArray,
+    ) -> Result<Option<BooleanArray>, ArrowError> {
+        Ok(None)
+    }
 }
 
 /// A reference to a Liquid array.
 pub type LiquidArrayRef = Arc<dyn LiquidArray>;
 
+/// Get the bit width for a given max value.
+/// Returns 1 if the max value is 0.
+/// Returns 64 - max_value.leading_zeros() as u8 otherwise.
 pub(crate) fn get_bit_width(max_value: u64) -> NonZero<u8> {
-    if max_value <= 1 {
+    if max_value == 0 {
         // todo: here we actually should return 0, as we should just use constant encoding.
         // but that's not implemented yet.
         NonZero::new(1).unwrap()
