@@ -520,6 +520,11 @@ impl LiquidByteViewArray {
         }
     }
 
+    /// Get the decompressor of the FSST buffer
+    pub fn decompressor(&self) -> Decompressor<'_> {
+        self.fsst_buffer.decompressor()
+    }
+
     /// Convert to Arrow DictionaryArray
     pub fn to_dict_arrow(&self) -> DictionaryArray<UInt16Type> {
         // Create keys array from dictionary views
