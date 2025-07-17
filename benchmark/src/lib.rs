@@ -17,23 +17,40 @@ use std::time::Duration;
 use std::{fmt::Display, str::FromStr, sync::Arc};
 use uuid::Uuid;
 
-pub mod inprocess;
+pub mod client_runner;
+pub mod inprocess_runner;
+mod manifest;
 mod observability;
-pub mod runner;
 pub mod tpch;
 pub mod utils;
 
-pub use inprocess::*;
+pub use client_runner::*;
+pub use inprocess_runner::*;
+pub use manifest::BenchmarkManifest;
 pub use observability::*;
-pub use runner::*;
 
+#[derive(Serialize, Clone)]
 pub struct Query {
-    pub id: u32,
-    pub sql: String,
+    id: u32,
+    statement: Vec<String>,
+}
+
+impl Query {
+    pub fn new(id: u32, statement: Vec<String>) -> Self {
+        Self { id, statement }
+    }
+
+    pub fn id(&self) -> u32 {
+        self.id
+    }
+
+    pub fn statement(&self) -> &Vec<String> {
+        &self.statement
+    }
 }
 
 #[derive(Parser, Serialize, Clone)]
-pub struct CommonBenchmarkArgs {
+pub struct ClientBenchmarkArgs {
     /// LiquidCache server URL
     #[arg(long, default_value = "http://localhost:15214")]
     pub server: String,
@@ -95,7 +112,7 @@ pub struct CommonBenchmarkArgs {
     pub flamegraph: bool,
 }
 
-impl CommonBenchmarkArgs {
+impl ClientBenchmarkArgs {
     pub async fn start_trace(&self) {
         if self.cache_trace_dir.is_some() {
             let client = reqwest::Client::new();
@@ -287,7 +304,7 @@ impl CommonBenchmarkArgs {
         display_name: String,
         network_traffic_bytes: u64,
         execution_time_ms: u64,
-        user_sql: String,
+        user_sql: Vec<String>,
     ) {
         let params = ExecutionStats {
             plan_ids: plan_uuid.iter().map(|uuid| uuid.to_string()).collect(),
@@ -352,16 +369,18 @@ impl FromStr for BenchmarkMode {
 pub async fn run_query(
     ctx: &Arc<SessionContext>,
     query: &str,
-) -> Result<(Vec<RecordBatch>, Arc<dyn ExecutionPlan>, Vec<Uuid>)> {
+) -> (Vec<RecordBatch>, Arc<dyn ExecutionPlan>, Vec<Uuid>) {
     let df = ctx
         .sql(query)
         .in_span(Span::enter_with_local_parent("logical_plan"))
-        .await?;
+        .await
+        .unwrap();
     let (state, logical_plan) = df.into_parts();
     let physical_plan = state
         .create_physical_plan(&logical_plan)
         .in_span(Span::enter_with_local_parent("physical_plan"))
-        .await?;
+        .await
+        .unwrap();
 
     let ctx = TaskContext::from(&state);
     let cfg = ctx
@@ -371,9 +390,9 @@ pub async fn run_query(
             "poll_physical_plan",
         )));
     let ctx = ctx.with_session_config(cfg);
-    let results = collect(physical_plan.clone(), Arc::new(ctx)).await?;
+    let results = collect(physical_plan.clone(), Arc::new(ctx)).await.unwrap();
     let plan_uuids = utils::get_plan_uuids(&physical_plan);
-    Ok((results, physical_plan, plan_uuids))
+    (results, physical_plan, plan_uuids)
 }
 
 #[derive(Serialize)]
@@ -384,15 +403,13 @@ pub struct BenchmarkResult<T: Serialize> {
 
 #[derive(Serialize)]
 pub struct QueryResult {
-    id: u32,
-    query: String,
+    query: Query,
     iteration_results: Vec<IterationResult>,
 }
 
 impl QueryResult {
-    pub fn new(id: u32, query: String) -> Self {
+    pub fn new(query: Query) -> Self {
         Self {
-            id,
             query,
             iteration_results: Vec::new(),
         }

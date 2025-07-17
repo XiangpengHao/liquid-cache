@@ -1,7 +1,7 @@
 use clap::Parser;
 use datafusion::prelude::SessionConfig;
 use datafusion::{arrow::array::RecordBatch, error::Result, prelude::SessionContext};
-use liquid_cache_benchmarks::{Benchmark, CommonBenchmarkArgs, run_query, tpch};
+use liquid_cache_benchmarks::{Benchmark, BenchmarkManifest, ClientBenchmarkArgs, run_query, tpch};
 use liquid_cache_benchmarks::{BenchmarkMode, BenchmarkRunner};
 use liquid_cache_client::LiquidCacheBuilder;
 use liquid_cache_common::CacheMode;
@@ -18,24 +18,37 @@ static GLOBAL: MiMalloc = MiMalloc;
 
 #[derive(Parser, Serialize, Clone)]
 #[command(name = "TPCH Benchmark")]
-pub struct TpchBenchmark {
-    /// Path to the query directory
-    #[arg(long = "query-dir")]
-    pub query_dir: PathBuf,
-
-    /// Path to the data directory with TPCH data
-    #[arg(long = "data-dir")]
-    pub data_dir: PathBuf,
+pub struct TpchArgs {
+    /// Path to the benchmark manifest file
+    #[arg(long)]
+    pub manifest: PathBuf,
 
     #[clap(flatten)]
-    pub common: CommonBenchmarkArgs,
+    pub common: ClientBenchmarkArgs,
+}
+
+#[derive(Clone, Serialize)]
+struct TpchBenchmark {
+    manifest: BenchmarkManifest,
+    common_args: ClientBenchmarkArgs,
+}
+
+impl TpchBenchmark {
+    fn new(args: TpchArgs) -> Self {
+        let manifest = BenchmarkManifest::load_from_file(&args.manifest).unwrap();
+        let common_args = args.common;
+        Self {
+            manifest,
+            common_args,
+        }
+    }
 }
 
 impl Benchmark for TpchBenchmark {
     type Args = TpchBenchmark;
 
-    fn common_args(&self) -> &CommonBenchmarkArgs {
-        &self.common
+    fn common_args(&self) -> &ClientBenchmarkArgs {
+        &self.common_args
     }
 
     fn args(&self) -> &Self::Args {
@@ -45,16 +58,11 @@ impl Benchmark for TpchBenchmark {
     #[fastrace::trace]
     async fn setup_context(&self) -> Result<Arc<SessionContext>> {
         let mut session_config = SessionConfig::from_env()?;
-        let current_dir = std::env::current_dir()?.to_string_lossy().to_string();
 
-        let tables = [
-            "customer", "lineitem", "nation", "orders", "part", "partsupp", "region", "supplier",
-        ];
-
-        let mode = match self.common.bench_mode {
+        let mode = match self.common_args.bench_mode {
             BenchmarkMode::ParquetFileserver => {
                 let ctx = Arc::new(SessionContext::new_with_config(session_config));
-                let base_url = Url::parse(&self.common.server).unwrap();
+                let base_url = Url::parse(&self.common_args.server).unwrap();
 
                 let object_store = object_store::http::HttpBuilder::new()
                     .with_url(base_url.clone())
@@ -63,16 +71,14 @@ impl Benchmark for TpchBenchmark {
                     .unwrap();
                 ctx.register_object_store(&base_url, Arc::new(object_store));
 
-                for table_name in tables.iter() {
-                    let table_path = Url::parse(&format!(
-                        "file://{}/{}/{}.parquet",
-                        current_dir,
-                        self.data_dir.display(),
-                        table_name
-                    ))
-                    .unwrap();
-                    ctx.register_parquet(*table_name, table_path, Default::default())
-                        .await?;
+                // Register tables from manifest
+                for (table_name, table_path) in &self.manifest.tables {
+                    ctx.register_parquet(
+                        table_name,
+                        format!("{}/{}", self.common_args.server, table_path),
+                        Default::default(),
+                    )
+                    .await?;
                 }
                 return Ok(ctx);
             }
@@ -81,48 +87,41 @@ impl Benchmark for TpchBenchmark {
             BenchmarkMode::LiquidCache => CacheMode::Liquid,
             BenchmarkMode::LiquidEagerTranscode => CacheMode::LiquidEagerTranscode,
         };
+
         session_config
             .options_mut()
             .execution
             .parquet
             .pushdown_filters = true;
-        let mut session_config = SessionConfig::from_env()?;
-        if let Some(partitions) = self.common.partitions {
+
+        if let Some(partitions) = self.common_args.partitions {
             session_config.options_mut().execution.target_partitions = partitions;
         }
-        let ctx = LiquidCacheBuilder::new(&self.common.server)
-            .with_cache_mode(mode)
-            .build(session_config)?;
 
-        for table_name in tables.iter() {
-            let table_url = Url::parse(&format!(
-                "file://{}/{}/{}.parquet",
-                current_dir,
-                self.data_dir.display(),
-                table_name
-            ))
-            .unwrap();
-            ctx.register_parquet(*table_name, table_url, Default::default())
-                .await?;
-        }
+        let liquid_cache_builder =
+            LiquidCacheBuilder::new(&self.common_args.server).with_cache_mode(mode);
+        let ctx = liquid_cache_builder.build(session_config)?;
+
+        self.manifest.register_object_stores(&ctx).await.unwrap();
+        self.manifest.register_tables(&ctx).await.unwrap();
 
         Ok(Arc::new(ctx))
     }
 
     async fn get_queries(&self) -> Result<Vec<liquid_cache_benchmarks::Query>> {
-        tpch::get_all_queries(&self.query_dir)
+        let queries = self.manifest.load_queries(1);
+        Ok(queries)
     }
 
     async fn validate_result(
         &self,
         query: &liquid_cache_benchmarks::Query,
         results: &[RecordBatch],
-    ) -> Result<()> {
-        if let Some(answer_dir) = &self.common.answer_dir {
-            tpch::check_result_against_answer(results, answer_dir, query.id)?;
-            info!("Query {} passed validation", query.id);
+    ) {
+        if let Some(answer_dir) = &self.common_args.answer_dir {
+            tpch::check_result_against_answer(results, answer_dir, query.id());
+            info!("Query {} passed validation", query.id());
         }
-        Ok(())
     }
 
     fn benchmark_name(&self) -> &'static str {
@@ -133,35 +132,25 @@ impl Benchmark for TpchBenchmark {
         &self,
         ctx: &Arc<SessionContext>,
         query: &liquid_cache_benchmarks::Query,
-    ) -> Result<(
+    ) -> (
         Vec<RecordBatch>,
         Arc<dyn datafusion::physical_plan::ExecutionPlan>,
         Vec<Uuid>,
-    )> {
-        if query.id == 15 {
-            // Q15 has three queries, the second one is the one we want to test
-            let queries: Vec<&str> = query.sql.split(';').collect();
-            let mut results = Vec::new();
-            let mut physical_plan = None;
-            let mut plan_uuids = Vec::new();
-            for (i, q) in queries.iter().enumerate() {
-                let (result, plan, uuid) = run_query(ctx, q).await?;
-                if i == 1 {
-                    physical_plan = Some(plan);
-                    results = result;
-                    plan_uuids = uuid;
-                }
-            }
-            Ok((results, physical_plan.unwrap(), plan_uuids))
+    ) {
+        if query.id() == 15 {
+            run_query(ctx, &query.statement()[0]).await;
+            let rt = run_query(ctx, &query.statement()[1]).await;
+            run_query(ctx, &query.statement()[2]).await;
+            rt
         } else {
-            run_query(ctx, &query.sql).await
+            run_query(ctx, &query.statement()[0]).await
         }
     }
 }
 
 #[tokio::main]
 pub async fn main() -> Result<()> {
-    let benchmark = TpchBenchmark::parse();
-    BenchmarkRunner::run(benchmark).await?;
+    let tpch = TpchBenchmark::new(TpchArgs::parse());
+    BenchmarkRunner::run(tpch).await?;
     Ok(())
 }

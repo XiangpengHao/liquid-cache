@@ -93,6 +93,12 @@ jobs:
         run: |
           mkdir -p benchmark/data
           wget https://datasets.clickhouse.com/hits_compatible/athena_partitioned/hits_0.parquet -O benchmark/data/hits_0.parquet
+      - name: Update manifest for partitioned data
+        run: |
+          # Update the manifest to point to the partitioned data directory
+          sed 's|"benchmark/clickbench/data/hits.parquet"|"benchmark/data/hits_0.parquet"|' \
+            benchmark/clickbench/manifest.json > benchmark/clickbench/benchmark_manifest.json
+
       - name: Run ClickBench
         run: |
           source <(cargo llvm-cov show-env --export-prefix)
@@ -101,13 +107,13 @@ jobs:
           cargo build --bin clickbench_client
           env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic --cache-mode liquid_eager_transcode &> server.log &
           sleep 2  # Wait for server to start up
-          env RUST_LOG=info cargo run --bin clickbench_client -- --query-path benchmark/clickbench/queries/queries.sql --file examples/nano_hits.parquet
+          env RUST_LOG=info cargo run --bin clickbench_client -- --manifest benchmark/clickbench/benchmark_manifest.json
           echo "=== Server logs ==="
           cat server.log || echo "No server log found"
           curl http://localhost:53703/shutdown
           env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic --cache-mode liquid_eager_transcode &> server.log &
           sleep 2  # Wait for server to start up
-          env RUST_LOG=info cargo run --bin clickbench_client -- --query-path benchmark/clickbench/queries/queries.sql --file benchmark/data/hits_0.parquet --answer-dir benchmark/clickbench/answers/clickbench_0
+          env RUST_LOG=info cargo run --bin clickbench_client -- --manifest benchmark/clickbench/benchmark_manifest.json --answer-dir benchmark/clickbench/answers/clickbench_0
           echo "=== Server logs (partition 0) ==="
           cat server.log || echo "No server log found"
             curl http://localhost:53703/shutdown
@@ -142,7 +148,7 @@ jobs:
           cargo build --bin tpch_client
           env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic --cache-mode liquid_eager_transcode &> server.log &
           sleep 2  # Wait for server to start up
-          env RUST_LOG=info cargo run --bin tpch_client -- --query-dir benchmark/tpch/queries --answer-dir benchmark/tpch/answers/sf0.1 --data-dir benchmark/tpch/data/sf0.1
+          env RUST_LOG=info cargo run --bin tpch_client -- --manifest benchmark/tpch/manifest.json --answer-dir benchmark/tpch/answers/sf0.1
           echo "=== Server logs ==="
           cat server.log || echo "No server log found"
           curl http://localhost:53703/shutdown

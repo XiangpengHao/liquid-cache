@@ -1,7 +1,7 @@
+use crate::manifest::BenchmarkManifest;
 use crate::{BenchmarkResult, IterationResult, Query, QueryResult, run_query};
 use anyhow::Result;
 use datafusion::arrow::util::pretty::pretty_format_batches;
-use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use liquid_cache_common::LiquidCacheMode;
 use liquid_cache_parquet::cache::policies::ToDiskPolicy;
@@ -9,10 +9,8 @@ use liquid_cache_parquet::{
     LiquidCacheInProcessBuilder, LiquidCacheRef, extract_execution_metrics,
 };
 use log::info;
-use object_store::ObjectStore;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::{
-    collections::HashMap,
     fs::{File, create_dir_all},
     path::PathBuf,
     sync::Arc,
@@ -44,86 +42,6 @@ impl std::str::FromStr for InProcessBenchmarkMode {
                 ));
             }
         })
-    }
-}
-
-#[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct ObjectStoreConfig {
-    /// Object store URL (e.g., "s3://bucket-name", "gs://bucket-name", "http://localhost:9000")
-    pub url: String,
-    pub options: HashMap<String, String>,
-}
-
-#[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct BenchmarkManifest {
-    /// Name of the benchmark suite
-    pub name: String,
-    /// Description of the benchmark
-    pub description: Option<String>,
-    /// Data tables configuration: table name -> parquet file path
-    pub tables: HashMap<String, String>,
-    /// Array of SQL queries - each element can be a file path or inline SQL
-    pub queries: Vec<String>,
-    /// Optional object store configurations
-    pub object_stores: Option<Vec<ObjectStoreConfig>>,
-    /// Special handling for queries (e.g., TPC-H Q15 has multiple statements)
-    pub special_query_handling: Option<HashMap<u32, String>>,
-}
-
-impl BenchmarkManifest {
-    pub fn new(name: String) -> Self {
-        Self {
-            name,
-            description: None,
-            tables: HashMap::new(),
-            queries: Vec::new(),
-            object_stores: None,
-            special_query_handling: None,
-        }
-    }
-
-    pub fn with_description(mut self, description: String) -> Self {
-        self.description = Some(description);
-        self
-    }
-
-    pub fn add_table<S: Into<String>>(mut self, name: S, path: S) -> Self {
-        self.tables.insert(name.into(), path.into());
-        self
-    }
-
-    pub fn add_query<S: Into<String>>(mut self, query: S) -> Self {
-        self.queries.push(query.into());
-        self
-    }
-
-    pub fn with_special_query_handling(mut self, handling: HashMap<u32, String>) -> Self {
-        self.special_query_handling = Some(handling);
-        self
-    }
-
-    pub fn save_to_file(&self, path: &PathBuf) -> Result<()> {
-        let file = File::create(path)?;
-        serde_json::to_writer_pretty(file, self)?;
-        Ok(())
-    }
-
-    pub fn load_from_file(path: &PathBuf) -> Result<Self> {
-        let content = std::fs::read_to_string(path)?;
-        let manifest: Self = serde_json::from_str(&content)?;
-        Ok(manifest)
-    }
-
-    pub fn get_object_store(&self) -> Option<Vec<(ObjectStoreUrl, Box<dyn ObjectStore>)>> {
-        let mut object_stores = Vec::new();
-        for config in self.object_stores.as_ref()? {
-            let url = ObjectStoreUrl::parse(&config.url).ok()?;
-            let (object_store, _) =
-                object_store::parse_url_opts(url.as_ref(), &config.options).ok()?;
-            object_stores.push((url, object_store));
-        }
-
-        Some(object_stores)
     }
 }
 
@@ -189,13 +107,6 @@ impl InProcessBenchmarkRunner {
     pub fn with_query_filter(mut self, query_filter: Option<usize>) -> Self {
         self.query_filter = query_filter;
         self
-    }
-
-    /// Determine if a string is a file path or inline SQL
-    /// If it ends with .sql or contains path separators, treat as file path
-    /// Otherwise, treat as inline SQL
-    fn is_file_path(query_str: &str) -> bool {
-        query_str.ends_with(".sql") && std::fs::metadata(query_str).is_ok()
     }
 
     async fn setup_context(
@@ -284,58 +195,15 @@ impl InProcessBenchmarkRunner {
         Ok((Arc::new(ctx), cache))
     }
 
-    async fn load_queries(&self, manifest: &BenchmarkManifest) -> Result<Vec<Query>> {
-        let mut queries = Vec::new();
-
-        for (index, query_str) in manifest.queries.iter().enumerate() {
-            let sql = if Self::is_file_path(query_str) {
-                let sql = std::fs::read_to_string(query_str)?;
-                info!("Loaded query {index} from file: {query_str}");
-                sql
-            } else {
-                info!("Loaded query {index} from inline SQL");
-                query_str.clone()
-            };
-
-            queries.push(Query {
-                id: index as u32,
-                sql,
-            });
-        }
-
-        Ok(queries)
-    }
-
     async fn execute_query(
         &self,
         ctx: &Arc<SessionContext>,
         query: &Query,
-        manifest: &BenchmarkManifest,
     ) -> Result<(
         Vec<datafusion::arrow::array::RecordBatch>,
         Arc<dyn datafusion::physical_plan::ExecutionPlan>,
     )> {
-        // Check for special query handling
-        if let Some(special_handling) = &manifest.special_query_handling
-            && let Some(handling_type) = special_handling.get(&query.id)
-            && handling_type == "tpch_q15"
-            && query.id == 15
-        {
-            // Q15 has three queries, the second one is the one we want to test
-            let queries: Vec<&str> = query.sql.split(';').collect();
-            let mut results = Vec::new();
-            let mut plan = None;
-            for (i, q) in queries.iter().enumerate() {
-                let (result, p, _) = run_query(ctx, q).await?;
-                if i == 1 {
-                    results = result;
-                    plan = Some(p);
-                }
-            }
-            return Ok((results, plan.unwrap()));
-        }
-
-        let (results, plan, _) = run_query(ctx, &query.sql).await?;
+        let (results, plan, _) = run_query(ctx, &query.statement()[0]).await;
         Ok((results, plan))
     }
 
@@ -370,14 +238,15 @@ impl InProcessBenchmarkRunner {
         &self,
         ctx: &Arc<SessionContext>,
         query: &Query,
-        manifest: &BenchmarkManifest,
         bench_start_time: Instant,
         cache: Option<LiquidCacheRef>,
         iteration: u32,
     ) -> Result<IterationResult> {
         info!(
-            "Running query {} iteration {}: \n{}",
-            query.id, iteration, query.sql
+            "Running query {} iteration {}: \n{:?}",
+            query.id(),
+            iteration,
+            query.statement()
         );
 
         // Start flamegraph profiling if enabled
@@ -398,7 +267,7 @@ impl InProcessBenchmarkRunner {
         let now = Instant::now();
         let starting_timestamp = bench_start_time.elapsed();
 
-        let (results, execution_plan) = self.execute_query(ctx, query, manifest).await?;
+        let (results, execution_plan) = self.execute_query(ctx, query).await?;
         let elapsed = now.elapsed();
 
         disk_info.refresh(true);
@@ -442,7 +311,7 @@ impl InProcessBenchmarkRunner {
         info!("Running benchmark: {}", manifest.name);
 
         let (ctx, cache) = self.setup_context(&manifest).await?;
-        let queries = self.load_queries(&manifest).await?;
+        let queries = manifest.load_queries(0);
 
         // Filter queries if specific query index is requested
         let query_indices: Vec<usize> = if let Some(query_index) = self.query_filter {
@@ -467,18 +336,11 @@ impl InProcessBenchmarkRunner {
 
         for query_index in query_indices {
             let query = &queries[query_index];
-            let mut query_result = QueryResult::new(query.id, query.sql.clone());
+            let mut query_result = QueryResult::new(query.clone());
 
             for it in 0..self.iteration {
                 let iteration_result = self
-                    .run_single_iteration(
-                        &ctx,
-                        query,
-                        &manifest,
-                        bench_start_time,
-                        cache.clone(),
-                        it + 1,
-                    )
+                    .run_single_iteration(&ctx, query, bench_start_time, cache.clone(), it + 1)
                     .await?;
 
                 query_result.add(iteration_result);
