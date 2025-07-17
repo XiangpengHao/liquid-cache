@@ -108,7 +108,8 @@ fn find_pushdown_candidate(plan: &Arc<dyn ExecutionPlan>) -> Option<Arc<dyn Exec
         // Check if child is DataSourceExec or RepartitionExec->DataSourceExec
         if child.as_any().downcast_ref::<DataSourceExec>().is_some() {
             return Some(plan.clone());
-        } else if let Some(repart) = child.as_any().downcast_ref::<RepartitionExec>()
+        }
+        if let Some(repart) = child.as_any().downcast_ref::<RepartitionExec>()
             && let Some(repart_child) = repart.children().first()
             && repart_child
                 .as_any()

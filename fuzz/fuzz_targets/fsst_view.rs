@@ -88,7 +88,7 @@ fn test_compare_with(
         let operator = op.operator.to_datafusion_operator();
 
         // Get expected result from Arrow operations
-        let arrow_result = compute_arrow_comparison(&arrow_array, &op.needle, &operator);
+        let arrow_result = compute_arrow_comparison(arrow_array, &op.needle, &operator);
 
         // Get result from LiquidByteViewArray
         let liquid_result = liquid_array.compare_with(needle_bytes, &operator);
