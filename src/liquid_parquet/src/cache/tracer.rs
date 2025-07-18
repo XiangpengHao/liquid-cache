@@ -185,8 +185,10 @@ mod tests {
         let entries = tracer.entries.lock().unwrap();
         assert_eq!(entries[0].entry_id, entry_id);
         assert_eq!(entries[0].cache_memory_bytes, 1000);
+        assert_eq!(entries[0].entry_size, 100);
         assert_eq!(entries[1].entry_id, entry_id);
         assert_eq!(entries[1].cache_memory_bytes, 2000);
+        assert_eq!(entries[1].entry_size, 100);
     }
 
     #[test]
@@ -237,7 +239,7 @@ mod tests {
         assert_eq!(batch.num_rows(), 2);
 
         // Verify the columns exist
-        assert_eq!(batch.num_columns(), 6);
+        assert_eq!(batch.num_columns(), 7);
 
         // Check file_id column values
         let file_id_array = batch
@@ -275,9 +277,18 @@ mod tests {
         assert_eq!(batch_id_array.value(0), 4);
         assert_eq!(batch_id_array.value(1), 8);
 
+        // Check entry_size column values
+        let entry_size_array = batch
+            .column(4)
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap();
+        assert_eq!(entry_size_array.value(0), 100);
+        assert_eq!(entry_size_array.value(1), 100);
+
         // Check cache_memory_bytes column values
         let cache_memory_bytes_array = batch
-            .column(4)
+            .column(5)
             .as_any()
             .downcast_ref::<UInt64Array>()
             .unwrap();
