@@ -23,23 +23,23 @@ Dictionary(u16)    FSSTArray(BinaryArray)
 ## New string representation
 
 ```
- Nulls  DictionaryView(u64)   Offset │   FSST Buffer           
- ┌───┐  ┌────────────────┐   ┌─────┐ │  ┌─────────────────────┐
- │   │  │┌──┐┌──────────┐│   │ i32 │ │  │                     │
- │   │  ││12││prefix(6b)││   │     │ │  │                     │
- │   │  │└──┘└──────────┘│   │     │ │  │                     │
- │   │  │┌──┐┌──────────┐│   │     │ │  │                     │
- │   │  ││37││prefix(6b)││   │     │ │  │                     │
- │   │  │└──┘└──────────┘│   │     │ │  │                     │
- │   │  │┌──┐┌──────────┐│   │     │ │  │                     │
- │   │  ││42││prefix(6b)││   └─────┘ │  │                     │
- │   │  │└──┘└──────────┘│           │  │                     │
- │   │  │┌──┐┌──────────┐│           │  │                     │
- │   │  ││17││prefix(6b)││           │  │                     │
- │   │  │└──┘└──────────┘│           │  │                     │
- └───┘  └────────────────┘           │  └─────────────────────┘
-                                     │                         
-                            In-memory│Disk                     
+Nulls DictionaryView(u64)  Offset  │   FSST Buffer           
+ ┌──┐ ┌────────────────┐ ┌───────┐ │  ┌─────────────────────┐
+ │  │ │┌──┐┌──────────┐│ │  i32  │ │  │                     │
+ │  │ ││12││prefix(6b)││ │       │ │  │                     │
+ │  │ │└──┘└──────────┘│ │       │ │  │                     │
+ │  │ │┌──┐┌──────────┐│ │       │ │  │                     │
+ │  │ ││37││prefix(6b)││ │       │ │  │                     │
+ │  │ │└──┘└──────────┘│ │       │ │  │                     │
+ │  │ │┌──┐┌──────────┐│ │       │ │  │                     │
+ │  │ ││42││prefix(6b)││ └───────┘ │  │                     │
+ │  │ │└──┘└──────────┘│ Prefix    │  │                     │
+ │  │ │┌──┐┌──────────┐│ (shared)  │  │                     │
+ │  │ ││17││prefix(6b)││ ┌───────┐ │  │                     │
+ │  │ │└──┘└──────────┘│ │       │ │  │                     │
+ └──┘ └────────────────┘ └───────┘ │  └─────────────────────┘
+                                   │                         
+                          In-memory│Disk                     
 ```
 
 TLDR: 
@@ -50,14 +50,28 @@ TLDR:
 Design decisions:
 1. The strings in the FSST buffer are unique, i.e., if two strings are different, their dictionary keys are different, and vice versa.
 2. There's only one FSST buffer, this avoids the need to track buffer ids as in StringView representation in Arrow. 
-3. Offset refers to the string offset in the FSST buffer, it use Arrow's offset buffer.
-4. Nulls refers to the null bit of the DictionaryView.
-5. DictionaryView consumes 8 bytes, with fixed 6-byte prefix. 
-6. Everything but FSST buffer is stored in memory.
+3. Shared prefix is the prefix that is shared across all strings in the array.
+4. Offset refers to the string offset in the FSST buffer, it use Arrow's offset buffer.
+5. Nulls refers to the null bit of the DictionaryView.
+6. DictionaryView consumes 8 bytes, with fixed 6-byte prefix, this prefix is the string after the shared prefix.
+7. Everything but FSST buffer is stored in memory.
+
+For example if the array is:
+- "hello"
+- "hello world"
+- "hello rust program"
+
+Then the shared prefix is "hello", the prefix of the dictionary view are:
+- "" (empty string)
+- " world"
+- " rust "
+
+
 
 Questions:
 1. should we bit-pack the offsets?
 2. should we merge the null bits into DictionaryView? Maybe read this paper: https://dl.acm.org/doi/pdf/10.1145/3662010.3663452
+3. Should we extract a common prefix of the dictionary?
 
 
 ## Design notes
@@ -110,3 +124,68 @@ The above two functions will need to be thread-safe, so a `std::sync::RwLock` is
 When we need to read from `fsst_buffer`:
 1. If it's `InMemory`, we can read from it directly.
 2. If it's `OnDisk`, we read it from disk, do the work, and drop the in-memory data, i.e., **no promotion policy**.
+
+
+## Performance evaluation
+
+All the benchmark below should be self-sufficient, i.e., the benchmark should be able to run without any external dependencies, without any external setup. Just cargo run and it should work.
+
+### Encode and decode performance
+
+(1) convert arrow StringViewArray to FSSTView, (2) convert arrow StringViewArray to baseline dictionary-based array.
+(3) convert arrow IPC format and compress it with Snappy/Zstd/LZ4.
+
+Compare: 1. encode time, 2. encode size, 3. decode time (decode to arrow StringViewArray).
+
+Workload 1: [fineweb dataset](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu).
+- the `id` column.
+- the `date` column.
+- the `url` column.
+- the `file_path` column.
+
+(We don't use the `text` column because it's too large for the benchmark purpose.)
+The fineweb dataset link:
+- https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu/blob/main/data/CC-MAIN-2025-26/000_00000.parquet
+- https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu/blob/main/data/CC-MAIN-2025-26/000_00001.parquet
+- https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu/blob/main/data/CC-MAIN-2025-26/000_00002.parquet
+- https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu/blob/main/data/CC-MAIN-2025-26/000_00003.parquet
+- https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu/blob/main/data/CC-MAIN-2025-26/000_00004.parquet
+
+Workload 2: [ClickBench dataset](https://github.com/ClickHouse/ClickBench).
+- the `title` column.
+- the `url` column.
+- the `search_phrase` column.
+
+Setup:
+- everything is in memory, no IO yet.
+
+Download phase:
+- read parquet data with the projection we care about, don't download if the file is already downloaded (see below).
+- read the record batch into arrow, and save it to tmp disk using arrow IPC format.
+
+
+
+### Sort performance
+
+This is to exercise the effectiveness of the prefix.
+
+Same workload as above, but we compare the performance of sorting the array.
+Instead of sorting the entire column, we sort the each of the batch independently, each batch is 8192*2 rows.
+
+### Find needle performance
+
+Randomly pick one string from the array, and find it across the entire column.
+
+This exercise both the effectiveness of the prefix, and the effectiveness of evaluating on encoded data.
+
+### IO performance
+
+We need to implement a cache abstraction, where the cache size is 1%, 10%, 30%, and 100% of the total size.
+
+For arrow StringViewArray and existing dictionary-based array, we stop inserting to cache when the cache is full, and write data to disk. 
+For FSSTView, we initially insert the entire column to cache, and when cache is full, we evict some of the previously inserted FSST buffer to disk to make room for the new data, which only keeps the DictionaryView in memory.
+
+Then we compare the performance of the following operations:
+1. Sorting the column.
+2. Finding a needle in the column.
+3. Convert to arrow StringViewArray. 
