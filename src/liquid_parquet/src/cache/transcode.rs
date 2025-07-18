@@ -303,7 +303,7 @@ mod tests {
     #[test]
     fn test_transcode_unsupported_type() {
         // Create a boolean array which is not supported by the transcoder
-        let values: Vec<bool> = (0..TEST_ARRAY_SIZE).map(|i| i % 2 == 0).collect();
+        let values: Vec<bool> = (0..TEST_ARRAY_SIZE).map(|i| i.is_multiple_of(2)).collect();
         let array: ArrayRef = Arc::new(BooleanArray::from(values));
         let state = create_compressor_states();
 

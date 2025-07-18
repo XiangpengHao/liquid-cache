@@ -139,10 +139,10 @@ mod tests {
                         successful_reservations.push(reserve_size);
                     }
 
-                    if i % 5 == 0 && !successful_reservations.is_empty() {
+                    if i.is_multiple_of(5) && !successful_reservations.is_empty() {
                         let idx = i % successful_reservations.len();
                         let old_size = successful_reservations[idx];
-                        let new_size = if i % 2 == 0 {
+                        let new_size = if i.is_multiple_of(2) {
                             old_size + 5 // Grow
                         } else {
                             old_size.saturating_sub(5) // Shrink

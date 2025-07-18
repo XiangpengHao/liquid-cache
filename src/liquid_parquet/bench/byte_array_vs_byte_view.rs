@@ -69,7 +69,9 @@ fn byte_view_array_eq_operation(bencher: Bencher, chunk_size: usize) {
 
     bencher
         .with_inputs(|| (liquid_array.clone(), needle))
-        .bench_values(|(arr, needle)| arr.compare_equals(needle));
+        .bench_values(|(arr, needle)| {
+            arr.compare_with(needle, &datafusion::logical_expr::Operator::Eq)
+        });
 }
 
 #[divan::bench(args = CHUNK_SIZE)]

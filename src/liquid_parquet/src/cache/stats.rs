@@ -210,7 +210,7 @@ mod tests {
                         row_count_sum += array.len() as u64;
                         memory_size_sum += array.get_array_memory_size();
 
-                        if batch % 2 == 0 {
+                        if batch.is_multiple_of(2) {
                             _ = column.get_arrow_array_test_only(batch_id).unwrap();
                         }
                     }
