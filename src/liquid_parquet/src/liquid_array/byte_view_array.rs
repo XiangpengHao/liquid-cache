@@ -162,6 +162,7 @@ impl LiquidArray for LiquidByteViewArray {
             + self.offsets.inner().len() * std::mem::size_of::<i32>()
             + self.nulls.as_ref().map_or(0, |n| n.buffer().len())
             + self.fsst_buffer.read().unwrap().get_array_memory_size()
+            + self.shared_prefix.len()
             + std::mem::size_of::<Self>()
     }
 
@@ -251,6 +252,7 @@ fn filter_inner(array: &LiquidByteViewArray, filter: &BooleanArray) -> LiquidByt
         nulls: filtered_nulls,
         fsst_buffer: array.fsst_buffer.clone(),
         original_arrow_type: array.original_arrow_type,
+        shared_prefix: array.shared_prefix.clone(),
     }
 }
 
@@ -345,6 +347,8 @@ pub struct LiquidByteViewArray {
     fsst_buffer: Arc<RwLock<FsstBufferStorage>>,
     /// Used to convert back to the original arrow type
     original_arrow_type: ArrowByteType,
+    /// Shared prefix across all strings in the array
+    shared_prefix: Vec<u8>,
 }
 
 impl std::fmt::Debug for LiquidByteViewArray {
@@ -355,6 +359,7 @@ impl std::fmt::Debug for LiquidByteViewArray {
             .field("nulls", &self.nulls)
             .field("fsst_buffer", &self.fsst_buffer)
             .field("original_arrow_type", &self.original_arrow_type)
+            .field("shared_prefix", &self.shared_prefix)
             .finish()
     }
 }
@@ -452,6 +457,49 @@ impl LiquidByteViewArray {
     ) -> Self {
         let (keys, values) = dict.as_ref().clone().into_parts();
 
+        // Calculate shared prefix directly from values array without intermediate allocations
+        let shared_prefix = if values.len() == 0 {
+            Vec::new()
+        } else {
+            // Get first value as initial candidate for shared prefix
+            let first_value_bytes = if let Some(string_values) = values.as_string_opt::<i32>() {
+                string_values.value(0).as_bytes()
+            } else if let Some(binary_values) = values.as_binary_opt::<i32>() {
+                binary_values.value(0)
+            } else {
+                panic!("Unsupported dictionary value type")
+            };
+
+            let mut shared_prefix = first_value_bytes.to_vec();
+
+            // Compare with remaining values and truncate shared prefix
+            for i in 1..values.len() {
+                let value_bytes = if let Some(string_values) = values.as_string_opt::<i32>() {
+                    string_values.value(i).as_bytes()
+                } else if let Some(binary_values) = values.as_binary_opt::<i32>() {
+                    binary_values.value(i)
+                } else {
+                    panic!("Unsupported dictionary value type")
+                };
+
+                let common_len = shared_prefix
+                    .iter()
+                    .zip(value_bytes.iter())
+                    .take_while(|(a, b)| a == b)
+                    .count();
+                shared_prefix.truncate(common_len);
+
+                // Early exit if no common prefix
+                if shared_prefix.is_empty() {
+                    break;
+                }
+            }
+
+            shared_prefix
+        };
+
+        let shared_prefix_len = shared_prefix.len();
+
         // Create dictionary views with prefixes - one per original array element
         let mut dictionary_views = Vec::with_capacity(keys.len());
 
@@ -462,34 +510,41 @@ impl LiquidByteViewArray {
 
         // Calculate offsets for each unique value in the dictionary
         for i in 0..values.len() {
-            let value_bytes: &[u8] = if let Some(string_values) = values.as_string_opt::<i32>() {
-                string_values.value(i).as_bytes()
+            let value_len = if let Some(string_values) = values.as_string_opt::<i32>() {
+                string_values.value(i).len()
             } else if let Some(binary_values) = values.as_binary_opt::<i32>() {
-                binary_values.value(i)
+                binary_values.value(i).len()
             } else {
                 panic!("Unsupported dictionary value type")
             };
-            current_offset += value_bytes.len() as i32;
+            current_offset += value_len as i32;
             offsets.push(current_offset);
         }
 
         // Create dictionary views with prefixes for each key
         for key_opt in keys.iter() {
             if let Some(key) = key_opt {
-                // Get value bytes for prefix extraction
-                let value_bytes: &[u8] = if let Some(string_values) = values.as_string_opt::<i32>()
-                {
-                    string_values.value(key as usize).as_bytes()
+                let key_idx = key as usize;
+
+                // Get value bytes for this key
+                let value_bytes = if let Some(string_values) = values.as_string_opt::<i32>() {
+                    string_values.value(key_idx).as_bytes()
                 } else if let Some(binary_values) = values.as_binary_opt::<i32>() {
-                    binary_values.value(key as usize)
+                    binary_values.value(key_idx)
                 } else {
                     panic!("Unsupported dictionary value type")
                 };
 
-                // Extract 6-byte prefix
+                // Extract 6-byte prefix after removing shared prefix
+                let remaining_bytes = if shared_prefix_len < value_bytes.len() {
+                    &value_bytes[shared_prefix_len..]
+                } else {
+                    &[]
+                };
+
                 let mut prefix = [0u8; 6];
-                let prefix_len = std::cmp::min(value_bytes.len(), 6);
-                prefix[..prefix_len].copy_from_slice(&value_bytes[..prefix_len]);
+                let prefix_len = std::cmp::min(remaining_bytes.len(), 6);
+                prefix[..prefix_len].copy_from_slice(&remaining_bytes[..prefix_len]);
 
                 dictionary_views.push(DictionaryView::new(key, prefix));
             } else {
@@ -500,7 +555,7 @@ impl LiquidByteViewArray {
 
         let offsets = OffsetBuffer::new(ScalarBuffer::from(offsets));
 
-        // Create FSST buffer from unique values
+        // Create FSST buffer from unique values (full strings, not after removing shared prefix)
         let fsst_buffer = if let Some(string_values) = values.as_string_opt::<i32>() {
             FsstArray::from_byte_array_with_compressor(string_values, compressor.clone())
         } else if let Some(binary_values) = values.as_binary_opt::<i32>() {
@@ -517,6 +572,7 @@ impl LiquidByteViewArray {
                 fsst_buffer,
             )))),
             original_arrow_type: arrow_type,
+            shared_prefix,
         }
     }
 
@@ -534,9 +590,11 @@ impl LiquidByteViewArray {
             UInt16Array::from(keys)
         };
 
-        // Convert FSST buffer to values
+        // Convert FSST buffer to values (full strings are already stored)
         let storage = self.fsst_buffer.read().unwrap();
         let fsst_array = storage.get_fsst_array().unwrap();
+
+        // Get full values directly from FSST buffer (no need to prepend shared prefix)
         let values = if self.original_arrow_type == ArrowByteType::Utf8
             || self.original_arrow_type == ArrowByteType::Utf8View
             || self.original_arrow_type == ArrowByteType::Dict16Utf8
@@ -564,6 +622,8 @@ impl LiquidByteViewArray {
     fn compare_equals(&self, needle: &[u8]) -> BooleanArray {
         let storage = self.fsst_buffer.read().unwrap();
         let compressor = storage.get_compressor();
+        
+        // Compress the full needle (not after removing shared prefix)
         let compressed = compressor.compress(needle);
 
         // We need the full FSST array to search through the compressed values
@@ -612,16 +672,100 @@ impl LiquidByteViewArray {
         }
     }
 
-    /// Prefix optimization for ordering operations
-    fn compare_with_prefix_optimization(
+    /// Check if shared prefix comparison can short-circuit the entire operation
+    fn try_shared_prefix_short_circuit(
+        &self,
+        needle: &[u8],
+        op: &Operator,
+    ) -> Option<BooleanArray> {
+        let shared_prefix_len = self.shared_prefix.len();
+        if shared_prefix_len == 0 || needle.is_empty() {
+            return None;
+        }
+
+        let needle_shared_len = std::cmp::min(needle.len(), shared_prefix_len);
+        let shared_cmp = self.shared_prefix[..needle_shared_len].cmp(&needle[..needle_shared_len]);
+
+        let all_true = || {
+            let buffer = BooleanBuffer::new_set(self.dictionary_views.len());
+            BooleanArray::new(buffer, self.nulls().cloned())
+        };
+
+        let all_false = || {
+            let buffer = BooleanBuffer::new_unset(self.dictionary_views.len());
+            BooleanArray::new(buffer, self.nulls().cloned())
+        };
+
+        match (op, shared_cmp) {
+            (Operator::Lt | Operator::LtEq, std::cmp::Ordering::Less) => Some(all_true()),
+            (Operator::Lt | Operator::LtEq, std::cmp::Ordering::Greater) => Some(all_false()),
+            (Operator::Gt | Operator::GtEq, std::cmp::Ordering::Greater) => Some(all_true()),
+            (Operator::Gt | Operator::GtEq, std::cmp::Ordering::Less) => Some(all_false()),
+
+            // Handle case where compared parts are equal but lengths differ
+            (op, std::cmp::Ordering::Equal) => {
+                if needle.len() < shared_prefix_len {
+                    // All strings start with shared_prefix which is longer than needle
+                    // So all strings > needle (for Gt/GtEq) or all strings not < needle (for Lt/LtEq)
+                    match op {
+                        Operator::Gt | Operator::GtEq => Some(all_true()),
+                        Operator::Lt => Some(all_false()),
+                        Operator::LtEq => {
+                            // Only true if some string equals the needle exactly
+                            // Since all strings start with shared_prefix (longer than needle), none can equal needle
+                            Some(all_false())
+                        }
+                        _ => None,
+                    }
+                } else if needle.len() > shared_prefix_len {
+                    // Needle is longer than shared prefix - can't determine from shared prefix alone
+                    None
+                } else {
+                    // needle.len() == shared_prefix_len
+                    // All strings start with exactly needle, so need to check if any string equals needle exactly
+                    None
+                }
+            }
+
+            // For all other operators that shouldn't be handled by this function
+            _ => None,
+        }
+    }
+
+    /// Compare two byte slices directly (decompressed data now contains full strings)
+    fn compare_bytes_with_shared_prefix(
+        &self,
+        decompressed_full: &[u8],
+        needle: &[u8],
+        op: &Operator,
+    ) -> bool {
+        // Decompressed data now contains full strings, so compare directly
+        match op {
+            Operator::Lt => decompressed_full < needle,
+            Operator::LtEq => decompressed_full <= needle,
+            Operator::Gt => decompressed_full > needle,
+            Operator::GtEq => decompressed_full >= needle,
+            _ => unreachable!("Should only be called with comparison operators"),
+        }
+    }
+
+    /// Compare individual elements using prefix optimization
+    fn compare_individual_elements(
         &self,
         needle: &[u8],
         op: &Operator,
     ) -> Result<BooleanArray, ArrowError> {
-        // Extract needle prefix (first 6 bytes, padded with zeros if shorter)
+        let shared_prefix_len = self.shared_prefix.len();
+        let needle_after_shared = if shared_prefix_len < needle.len() {
+            &needle[shared_prefix_len..]
+        } else {
+            &[]
+        };
+
+        // Extract needle prefix from the part after shared prefix (for comparing with DictionaryView prefix)
         let mut needle_prefix = [0u8; 6];
-        let prefix_len = std::cmp::min(needle.len(), 6);
-        needle_prefix[..prefix_len].copy_from_slice(&needle[..prefix_len]);
+        let prefix_len = std::cmp::min(needle_after_shared.len(), 6);
+        needle_prefix[..prefix_len].copy_from_slice(&needle_after_shared[..prefix_len]);
 
         let mut buffer_builder = BooleanBufferBuilder::new(self.dictionary_views.len());
         let storage = self.fsst_buffer.read().unwrap();
@@ -634,23 +778,16 @@ impl LiquidByteViewArray {
             let prefix_cmp = view.prefix().cmp(&needle_prefix);
 
             let result = match (op, prefix_cmp) {
-                // For Lt: if prefix < needle_prefix => true, if prefix > needle_prefix => false
                 (Operator::Lt, std::cmp::Ordering::Less) => true,
                 (Operator::Lt, std::cmp::Ordering::Greater) => false,
-
-                // For LtEq: if prefix < needle_prefix => true, if prefix > needle_prefix => false
                 (Operator::LtEq, std::cmp::Ordering::Less) => true,
                 (Operator::LtEq, std::cmp::Ordering::Greater) => false,
-
-                // For Gt: if prefix > needle_prefix => true, if prefix < needle_prefix => false
                 (Operator::Gt, std::cmp::Ordering::Greater) => true,
                 (Operator::Gt, std::cmp::Ordering::Less) => false,
-
-                // For GtEq: if prefix > needle_prefix => true, if prefix < needle_prefix => false
                 (Operator::GtEq, std::cmp::Ordering::Greater) => true,
                 (Operator::GtEq, std::cmp::Ordering::Less) => false,
 
-                // When prefixes are equal, we need to decompress and compare full values
+                // When prefixes are equal, we need to decompress and compare
                 (
                     Operator::Lt | Operator::LtEq | Operator::Gt | Operator::GtEq,
                     std::cmp::Ordering::Equal,
@@ -667,26 +804,21 @@ impl LiquidByteViewArray {
                         && !fsst_array_ref.compressed.is_null(key)
                     {
                         let compressed_value = fsst_array_ref.compressed.value(key);
-                        // Decompress the value - this allocates but only for inconclusive cases
                         let decompressed_bytes = decompressor.decompress(compressed_value);
 
-                        // Compare the decompressed bytes with needle bytes directly
-                        match op {
-                            Operator::Lt => decompressed_bytes.as_slice() < needle,
-                            Operator::LtEq => decompressed_bytes.as_slice() <= needle,
-                            Operator::Gt => decompressed_bytes.as_slice() > needle,
-                            Operator::GtEq => decompressed_bytes.as_slice() >= needle,
-                            _ => unreachable!("Should only be called with comparison operators"),
-                        }
+                        // Compare without creating full_value allocation
+                        self.compare_bytes_with_shared_prefix(&decompressed_bytes, needle, op)
                     } else {
                         // Handle null case - nulls are typically considered "less than" any value
                         matches!(op, Operator::Lt | Operator::LtEq)
                     }
                 }
 
-                // This should never happen if called correctly
-                (_, _) => {
-                    unreachable!("Unexpected operator {op:?} in compare_with_prefix_optimization");
+                // For all other operators that this method shouldn't handle
+                _ => {
+                    unreachable!(
+                        "compare_individual_elements should only be called with comparison operators"
+                    )
                 }
             };
 
@@ -695,6 +827,21 @@ impl LiquidByteViewArray {
 
         let buffer = buffer_builder.finish();
         Ok(BooleanArray::new(buffer, self.nulls().cloned()))
+    }
+
+    /// Prefix optimization for ordering operations
+    fn compare_with_prefix_optimization(
+        &self,
+        needle: &[u8],
+        op: &Operator,
+    ) -> Result<BooleanArray, ArrowError> {
+        // Try to short-circuit based on shared prefix comparison
+        if let Some(result) = self.try_shared_prefix_short_circuit(needle, op) {
+            return Ok(result);
+        }
+
+        // Fall back to individual element comparison
+        self.compare_individual_elements(needle, op)
     }
 
     /// Fallback to Arrow operations for unsupported operations
@@ -934,10 +1081,187 @@ mod tests {
         let compressor = LiquidByteViewArray::train_compressor(input.iter());
         let liquid_array = LiquidByteViewArray::from_string_array(&input, compressor);
 
-        // Check that prefixes are extracted correctly
+        // With no shared prefix, the dictionary prefixes should be the original strings (truncated to 6 bytes)
+        assert_eq!(liquid_array.shared_prefix, Vec::<u8>::new());
         assert_eq!(liquid_array.dictionary_views[0].prefix(), b"hello\0");
         assert_eq!(liquid_array.dictionary_views[1].prefix(), b"world\0");
         assert_eq!(liquid_array.dictionary_views[2].prefix(), b"test\0\0");
+    }
+
+    #[test]
+    fn test_shared_prefix_functionality() {
+        // Test case with shared prefix
+        let input = StringArray::from(vec![
+            "hello_world",
+            "hello_rust",
+            "hello_test",
+            "hello_code",
+        ]);
+        let compressor = LiquidByteViewArray::train_compressor(input.iter());
+        let liquid_array = LiquidByteViewArray::from_string_array(&input, compressor);
+
+        // Should extract "hello_" as shared prefix
+        assert_eq!(liquid_array.shared_prefix, b"hello_");
+
+        // Dictionary prefixes should be the remaining parts after shared prefix
+        assert_eq!(liquid_array.dictionary_views[0].prefix(), b"world\0");
+        assert_eq!(liquid_array.dictionary_views[1].prefix(), b"rust\0\0");
+        assert_eq!(liquid_array.dictionary_views[2].prefix(), b"test\0\0");
+        assert_eq!(liquid_array.dictionary_views[3].prefix(), b"code\0\0");
+
+        // Test roundtrip - should reconstruct original strings correctly
+        let output = liquid_array.to_arrow_array();
+        assert_eq!(&input, output.as_string::<i32>());
+
+        // Test comparison with shared prefix optimization
+        let result = liquid_array.compare_equals(b"hello_rust");
+        let expected = BooleanArray::from(vec![false, true, false, false]);
+        assert_eq!(result, expected);
+
+        // Test comparison that doesn't match shared prefix
+        let result = liquid_array.compare_equals(b"goodbye_world");
+        let expected = BooleanArray::from(vec![false, false, false, false]);
+        assert_eq!(result, expected);
+
+        // Test partial shared prefix match
+        let result = liquid_array.compare_equals(b"hello_");
+        let expected = BooleanArray::from(vec![false, false, false, false]);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_shared_prefix_with_short_strings() {
+        // Test case: short strings that fit entirely in the 6-byte prefix
+        let input = StringArray::from(vec!["abc", "abcde", "abcdef", "abcdefg"]);
+        let compressor = LiquidByteViewArray::train_compressor(input.iter());
+        let liquid_array = LiquidByteViewArray::from_string_array(&input, compressor);
+
+        // Should extract "abc" as shared prefix
+        assert_eq!(liquid_array.shared_prefix, b"abc");
+
+        // Dictionary prefixes should be the remaining parts after shared prefix
+        assert_eq!(liquid_array.dictionary_views[0].prefix(), &[0u8; 6]); // empty after "abc"
+        assert_eq!(liquid_array.dictionary_views[1].prefix(), b"de\0\0\0\0"); // "de" after "abc"
+        assert_eq!(liquid_array.dictionary_views[2].prefix(), b"def\0\0\0"); // "def" after "abc"
+        assert_eq!(liquid_array.dictionary_views[3].prefix(), b"defg\0\0"); // "defg" after "abc"
+
+        // Test roundtrip
+        let output = liquid_array.to_arrow_array();
+        assert_eq!(&input, output.as_string::<i32>());
+
+        // Test equality comparisons with short strings
+        let result = liquid_array.compare_equals(b"abc");
+        let expected = BooleanArray::from(vec![true, false, false, false]);
+        assert_eq!(result, expected);
+
+        let result = liquid_array.compare_equals(b"abcde");
+        let expected = BooleanArray::from(vec![false, true, false, false]);
+        assert_eq!(result, expected);
+
+        // Test ordering comparisons that can be resolved by shared prefix
+        let result = liquid_array.compare_with(b"ab", &Operator::Gt).unwrap();
+        let expected = BooleanArray::from(vec![true, true, true, true]); // All start with "abc" > "ab"
+        assert_eq!(result, expected);
+
+        let result = liquid_array.compare_with(b"abcd", &Operator::Lt).unwrap();
+        let expected = BooleanArray::from(vec![true, false, false, false]); // Only "abc" < "abcd"
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_shared_prefix_contains_complete_strings() {
+        // Test case: shared prefix completely contains some strings
+        let input = StringArray::from(vec!["data", "database", "data_entry", "data_", "datatype"]);
+        let compressor = LiquidByteViewArray::train_compressor(input.iter());
+        let liquid_array = LiquidByteViewArray::from_string_array(&input, compressor);
+
+        // Should extract "data" as shared prefix
+        assert_eq!(liquid_array.shared_prefix, b"data");
+
+        // Dictionary prefixes should be the remaining parts
+        assert_eq!(liquid_array.dictionary_views[0].prefix(), &[0u8; 6]); // "data" - empty remainder
+        assert_eq!(liquid_array.dictionary_views[1].prefix(), b"base\0\0"); // "database" - "base" remainder
+        assert_eq!(liquid_array.dictionary_views[2].prefix(), b"_entry"); // "data_entry" - "_entry" remainder
+        assert_eq!(liquid_array.dictionary_views[3].prefix(), b"_\0\0\0\0\0"); // "data_" - "_" remainder
+        assert_eq!(liquid_array.dictionary_views[4].prefix(), b"type\0\0"); // "datatype" - "type" remainder
+
+        // Test roundtrip
+        let output = liquid_array.to_arrow_array();
+        assert_eq!(&input, output.as_string::<i32>());
+
+        // Test equality with exact shared prefix
+        let result = liquid_array.compare_equals(b"data");
+        let expected = BooleanArray::from(vec![true, false, false, false, false]);
+        assert_eq!(result, expected);
+
+        // Test comparisons where shared prefix helps
+        let result = liquid_array.compare_with(b"dat", &Operator::Gt).unwrap();
+        let expected = BooleanArray::from(vec![true, true, true, true, true]); // All > "dat"
+        assert_eq!(result, expected);
+
+        let result = liquid_array.compare_with(b"datab", &Operator::Lt).unwrap();
+        let expected = BooleanArray::from(vec![true, false, true, true, false]); // "data", "data_entry", and "data_" < "datab"
+        assert_eq!(result, expected);
+
+        // Test comparison with needle shorter than shared prefix
+        let result = liquid_array.compare_with(b"da", &Operator::Gt).unwrap();
+        let expected = BooleanArray::from(vec![true, true, true, true, true]); // All > "da"
+        assert_eq!(result, expected);
+
+        // Test comparison with needle equal to shared prefix
+        let result = liquid_array.compare_with(b"data", &Operator::GtEq).unwrap();
+        let expected = BooleanArray::from(vec![true, true, true, true, true]); // All >= "data"
+        assert_eq!(result, expected);
+
+        let result = liquid_array.compare_with(b"data", &Operator::Gt).unwrap();
+        let expected = BooleanArray::from(vec![false, true, true, true, true]); // All except exact "data" > "data"
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_shared_prefix_edge_cases() {
+        // Test case 1: All strings are the same (full shared prefix)
+        let input = StringArray::from(vec!["identical", "identical", "identical"]);
+        let compressor = LiquidByteViewArray::train_compressor(input.iter());
+        let liquid_array = LiquidByteViewArray::from_string_array(&input, compressor);
+
+        assert_eq!(liquid_array.shared_prefix, b"identical");
+        // All dictionary prefixes should be empty
+        for view in &liquid_array.dictionary_views {
+            assert_eq!(view.prefix(), &[0u8; 6]);
+        }
+
+        // Test roundtrip
+        let output = liquid_array.to_arrow_array();
+        assert_eq!(&input, output.as_string::<i32>());
+
+        // Test case 2: One string is a prefix of others
+        let input = StringArray::from(vec!["hello", "hello_world", "hello_test"]);
+        let compressor = LiquidByteViewArray::train_compressor(input.iter());
+        let liquid_array = LiquidByteViewArray::from_string_array(&input, compressor);
+
+        assert_eq!(liquid_array.shared_prefix, b"hello");
+        assert_eq!(liquid_array.dictionary_views[0].prefix(), &[0u8; 6]); // empty after "hello"
+        assert_eq!(liquid_array.dictionary_views[1].prefix(), b"_world");
+        assert_eq!(liquid_array.dictionary_views[2].prefix(), b"_test\0");
+
+        // Test roundtrip
+        let output = liquid_array.to_arrow_array();
+        assert_eq!(&input, output.as_string::<i32>());
+
+        // Test case 3: Empty string in array (should limit shared prefix)
+        let input = StringArray::from(vec!["", "hello", "hello_world"]);
+        let compressor = LiquidByteViewArray::train_compressor(input.iter());
+        let liquid_array = LiquidByteViewArray::from_string_array(&input, compressor);
+
+        assert_eq!(liquid_array.shared_prefix, Vec::<u8>::new()); // empty shared prefix
+        assert_eq!(liquid_array.dictionary_views[0].prefix(), &[0u8; 6]);
+        assert_eq!(liquid_array.dictionary_views[1].prefix(), b"hello\0");
+        assert_eq!(liquid_array.dictionary_views[2].prefix(), b"hello_");
+
+        // Test roundtrip
+        let output = liquid_array.to_arrow_array();
+        assert_eq!(&input, output.as_string::<i32>());
     }
 
     #[test]

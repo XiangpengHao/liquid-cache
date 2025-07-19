@@ -96,6 +96,11 @@ When comparing FSSTView with a string needle, we can skip the decompression by u
 Design discussion:
 - Sometimes it's faster to decompress the entire array and then do the comparison. But when?
 
+### FSST buffer contains full strings
+Although the DictionaryView contains the prefix (both shared and non-shared), the FSST buffer contains the full strings.
+This allows faster conversion to arrow StringViewArray, because we don't need to prepend the prefix to the decompressed strings.
+After all, we don't need FSST buffer to be short, because they are on disk anyway.
+
 
 ## Engineering details
 
