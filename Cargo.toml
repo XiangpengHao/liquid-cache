@@ -34,7 +34,7 @@ datafusion = { version = "47.0.0" }
 datafusion-proto = { version = "47.0.0" }
 async-trait = "0.1.88"
 futures = { version = "0.3.31", default-features = false, features = ["std"] }
-tokio = { version = "1.45.0", features = ["rt-multi-thread"] }
+tokio = { version = "1.45.0", features = ["rt-multi-thread", "fs"] }
 log = "0.4.27"
 tonic = { version = "0.12" }
 url = "2.5.4"

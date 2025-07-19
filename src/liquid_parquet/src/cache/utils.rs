@@ -1,9 +1,24 @@
+use crate::cache::file_io::INST;
+use crate::cache::threadpool_uring::{FileIoOp, IoTask, UringFuture};
 use crate::liquid_array::LiquidArrayRef;
 use liquid_cache_common::LiquidCacheMode;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::ops::Deref;
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+#[allow(dead_code)]
+pub(crate) enum FileIOMode {
+    BlockingIoUring,
+    Default,
+    ThreadPoolIoUring,
+    TokioAsync
+}
+
+pub(crate) static FILE_IO_MODE: FileIOMode = FileIOMode::ThreadPoolIoUring;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub(super) struct ColumnAccessPath {
@@ -281,15 +296,59 @@ impl CacheEntryID {
             .join(format!("batch_{batch_id}.arrow"))
     }
 
-    pub(super) fn write_liquid_to_disk(
+    pub(super) async fn write_liquid_to_disk(
         &self,
         cache_root_dir: &Path,
         array: &LiquidArrayRef,
+    ) -> Result<usize, std::io::Error> {
+        match FILE_IO_MODE {
+            FileIOMode::BlockingIoUring => self.write_liquid_to_disk_blocking_uring(cache_root_dir, array),
+            FileIOMode::Default => self.write_liquid_to_disk_pio(cache_root_dir, array),
+            FileIOMode::ThreadPoolIoUring => self.write_liquid_to_disk_threadpool_uring(cache_root_dir, array).await,
+            FileIOMode::TokioAsync => self.write_liquid_to_disk_async(cache_root_dir, array).await,
+        }
+    }
+
+    fn write_liquid_to_disk_pio(&self,
+        cache_root_dir: &Path,
+        array: &LiquidArrayRef
     ) -> Result<usize, std::io::Error> {
         let path = self.on_disk_path(cache_root_dir);
         let bytes = array.to_bytes();
         let mut file = File::create(&path)?;
         file.write_all(&bytes)?;
+        Ok(bytes.len())
+    }
+
+    async fn write_liquid_to_disk_async(&self, cache_root_dir: &Path, liquid_array: &LiquidArrayRef) -> Result<usize, std::io::Error> {
+        let bytes = liquid_array.to_bytes();
+        let file_path = self.on_disk_path(cache_root_dir);
+        let disk_size = bytes.len();
+        tokio::fs::write(file_path, bytes).await.expect("Failed to write to disk");
+        Ok(disk_size)
+    }
+
+    fn write_liquid_to_disk_blocking_uring(&self, cache_root_dir: &Path, liquid_array: &LiquidArrayRef) -> Result<usize, std::io::Error> {
+        let bytes = liquid_array.to_bytes();
+        let path = self.on_disk_path(cache_root_dir);
+
+        tokio::task::block_in_place(|| {
+            INST.with(|ring| {
+                let file = OpenOptions::new().create(true).write(true).custom_flags(libc::O_DIRECT).open(path).unwrap();
+                ring.borrow_mut().write_blocking(file.as_raw_fd(), &bytes);
+            })
+        });
+        Ok(bytes.len())
+    }
+
+    async fn write_liquid_to_disk_threadpool_uring(self: &Self, cache_root_dir: &Path, liquid_array: &LiquidArrayRef) -> Result<usize, std::io::Error> {
+        let mut bytes = liquid_array.to_bytes();
+        let path = self.on_disk_path(cache_root_dir);
+        let file = OpenOptions::new().create(true).write(true).custom_flags(libc::O_DIRECT).open(path).unwrap();
+        let task = Arc::new(IoTask::new(FileIoOp::FileWrite, bytes.as_mut_ptr(), bytes.len(), file.as_raw_fd()));
+        // UringFuture will be responsible for submitting and driving the future to completion
+        let uring_fut = UringFuture::new(task);
+        uring_fut.await;
         Ok(bytes.len())
     }
 

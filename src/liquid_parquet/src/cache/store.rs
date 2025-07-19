@@ -154,7 +154,7 @@ impl CacheStore {
 
     /// Returns Some(CachedBatch) if need to retry the insert.
     #[must_use]
-    fn apply_advice(&self, advice: CacheAdvice, not_inserted: CachedBatch) -> Option<CachedBatch> {
+    async fn apply_advice(self: &Self, advice: CacheAdvice, not_inserted: CachedBatch) -> Option<CachedBatch> {
         match advice {
             CacheAdvice::Transcode(to_transcode) => {
                 let compressor_states = self.compressor_states.get_compressor(&to_transcode);
@@ -193,7 +193,7 @@ impl CacheStore {
                         return Some(not_inserted);
                     }
                 };
-                self.write_liquid_to_disk(&to_evict, &liquid_array);
+                self.write_liquid_to_disk(&to_evict, &liquid_array).await;
                 self.insert_inner(to_evict, CachedBatch::DiskLiquid)
                     .expect("failed to insert on disk liquid");
                 Some(not_inserted)
@@ -213,7 +213,7 @@ impl CacheStore {
                         return None;
                     }
                 };
-                self.write_liquid_to_disk(&to_transcode, &liquid_array);
+                self.write_liquid_to_disk(&to_transcode, &liquid_array).await;
                 self.insert_inner(to_transcode, CachedBatch::DiskLiquid)
                     .expect("failed to insert on disk liquid");
                 None
@@ -226,7 +226,7 @@ impl CacheStore {
                             .expect("failed to insert on disk arrow");
                     }
                     CachedBatch::MemoryLiquid(liquid_array) => {
-                        self.write_liquid_to_disk(&to_disk, &liquid_array);
+                        self.write_liquid_to_disk(&to_disk, &liquid_array).await;
                         self.insert_inner(to_disk, CachedBatch::DiskLiquid)
                             .expect("failed to insert on disk liquid");
                     }
@@ -241,9 +241,10 @@ impl CacheStore {
         }
     }
 
-    fn write_liquid_to_disk(&self, entry_id: &CacheEntryID, liquid_array: &LiquidArrayRef) {
+    async fn write_liquid_to_disk(&self, entry_id: &CacheEntryID, liquid_array: &LiquidArrayRef) {
         let disk_usage = entry_id
             .write_liquid_to_disk(self.config.cache_root_dir(), liquid_array)
+            .await
             .expect("failed to write liquid to disk");
         self.budget.add_used_disk_bytes(disk_usage);
     }
@@ -255,7 +256,7 @@ impl CacheStore {
         self.budget.add_used_disk_bytes(disk_usage);
     }
 
-    pub(super) fn insert(&self, entry_id: CacheEntryID, mut batch_to_cache: CachedBatch) {
+    pub(super) async fn insert(self: &Self, entry_id: CacheEntryID, mut batch_to_cache: CachedBatch) {
         let mut loop_count = 0;
         loop {
             let Err((advice, not_inserted)) = self.insert_inner(entry_id, batch_to_cache) else {
@@ -263,7 +264,7 @@ impl CacheStore {
                 return;
             };
 
-            let Some(not_inserted) = self.apply_advice(advice, not_inserted) else {
+            let Some(not_inserted) = self.apply_advice(advice, not_inserted).await else {
                 return;
             };
 
@@ -319,7 +320,7 @@ impl CacheStore {
         self.compressor_states.get_compressor(entry_id)
     }
 
-    pub(super) fn flush_all_to_disk(&self) {
+    pub(super) async fn flush_all_to_disk(&self) {
         // Collect all entries that need to be flushed to disk
         let mut entries_to_flush = Vec::new();
 
@@ -343,7 +344,7 @@ impl CacheStore {
                         .expect("failed to insert disk arrow entry");
                 }
                 CachedBatch::MemoryLiquid(liquid_array) => {
-                    self.write_liquid_to_disk(&entry_id, &liquid_array);
+                    self.write_liquid_to_disk(&entry_id, &liquid_array).await;
                     self.insert_inner(entry_id, CachedBatch::DiskLiquid)
                         .expect("failed to insert disk liquid entry");
                 }
@@ -465,7 +466,7 @@ mod tests {
     fn test_basic_cache_operations() {
         // Test basic insert, get, and size tracking in one test
         let budget_size = 10 * 1024;
-        let store = create_cache_store(budget_size, Box::new(LruPolicy::new()));
+        let store = Arc::new(create_cache_store(budget_size, Box::new(LruPolicy::new())));
 
         // 1. Initial budget should be empty
         assert_eq!(store.budget.memory_usage_bytes(), 0);
@@ -511,7 +512,7 @@ mod tests {
         // 1. Test EVICT advice
         {
             let advisor = TestPolicy::new(AdviceType::Evict, Some(entry_id1));
-            let store = create_cache_store(8000, Box::new(advisor)); // Small budget to force advice
+            let store = Arc::new(create_cache_store(8000, Box::new(advisor))); // Small budget to force advice
 
             let on_disk_path = entry_id1.on_disk_path(store.config.cache_root_dir());
             std::fs::create_dir_all(on_disk_path.parent().unwrap()).unwrap();
@@ -532,7 +533,7 @@ mod tests {
         // 2. Test TRANSCODE advice
         {
             let advisor = TestPolicy::new(AdviceType::Transcode, Some(entry_id1));
-            let store = create_cache_store(8000, Box::new(advisor)); // Small budget
+            let store = Arc::new(create_cache_store(8000, Box::new(advisor))); // Small budget
 
             store.insert(entry_id1, create_test_array(800));
             match store.get(&entry_id1).unwrap() {
@@ -550,7 +551,7 @@ mod tests {
         // 3. Test TRANSCODE_TO_DISK advice
         {
             let advisor = TestPolicy::new(AdviceType::TranscodeToDisk, None);
-            let store = create_cache_store(8000, Box::new(advisor)); // Tiny budget to force disk storage
+            let store = Arc::new(create_cache_store(8000, Box::new(advisor))); // Tiny budget to force disk storage
 
             let on_disk_path = entry_id3.on_disk_path(store.config.cache_root_dir());
             std::fs::create_dir_all(on_disk_path.parent().unwrap()).unwrap();

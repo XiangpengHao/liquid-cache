@@ -5,6 +5,8 @@
 
 use super::liquid_array::LiquidArrayRef;
 use crate::cache::policies::CachePolicy;
+use crate::cache::threadpool_uring::{FileIoOp, IoTask, IoUringThreadpool, UringFuture};
+use crate::cache::utils::FILE_IO_MODE;
 use crate::liquid_array::ipc::{self, LiquidIPCContext};
 use crate::reader::{LiquidPredicate, extract_multi_column_or};
 use crate::sync::{Mutex, RwLock};
@@ -16,15 +18,19 @@ use arrow::compute::prep_null_mask_filter;
 use arrow::ipc::reader::StreamReader;
 use arrow_schema::{ArrowError, DataType, Field, Schema};
 use bytes::Bytes;
+use file_io::INST;
 use liquid_cache_common::{LiquidCacheMode, coerce_parquet_type_to_liquid_type};
 use parquet::arrow::arrow_reader::ArrowPredicate;
+use std::alloc::Layout;
 use std::fmt::Display;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Read};
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
-use store::CacheStore;
+use store::{CacheStore, FileIOMode, FILE_IO_MODE};
 use tokio::runtime::Runtime;
 use transcode::transcode_liquid_inner;
 use utils::ColumnAccessPath;
@@ -40,6 +46,8 @@ mod utils;
 pub use crate::cache::utils::{BatchID, CacheAdvice, CacheEntryID};
 /// Module containing cache eviction policies like FIFO
 pub mod policies;
+mod file_io;
+mod threadpool_uring;
 
 /// A dedicated Tokio thread pool for background transcoding tasks.
 /// This pool is built with 4 worker threads.
@@ -162,17 +170,19 @@ impl LiquidCachedColumn {
 
     /// Reads a liquid array from disk.
     /// Panics if the file does not exist.
-    fn read_liquid_from_disk(&self, batch_id: BatchID) -> LiquidArrayRef {
+    async fn read_liquid_from_disk(&self, batch_id: BatchID) -> LiquidArrayRef {
         // TODO: maybe use async here?
         // But async in tokio is way slower than sync.
         let entry_id = self.entry_id(batch_id);
         let path = entry_id.on_disk_path(self.cache_store.config().cache_root_dir());
         let compressor = self.cache_store.compressor_states(&entry_id);
         let compressor = compressor.fsst_compressor.read().unwrap().clone();
-        let mut file = File::open(path).unwrap();
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes).unwrap();
-        let bytes = Bytes::from(bytes);
+        let bytes = match FILE_IO_MODE {
+            utils::FileIOMode::BlockingIoUring => self.read_from_disk_pio(&path),
+            utils::FileIOMode::Default => self.read_from_disk_pio(&path),
+            utils::FileIOMode::ThreadPoolIoUring => self.read_from_disk_threadpool_uring(&path).await,
+            utils::FileIOMode::TokioAsync => self.read_from_disk_async(&path).await,
+        };
         ipc::read_from_bytes(bytes, &LiquidIPCContext::new(compressor))
     }
 
@@ -190,6 +200,47 @@ impl LiquidCachedColumn {
 
         // Extract the array from the batch (assuming single column)
         batch.column(0).clone()
+    }
+
+    fn read_from_disk_pio(&self, path: &PathBuf) -> Bytes {
+        let mut file = File::open(path).unwrap();
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).unwrap();
+        Bytes::from(bytes)
+    }
+
+    async fn read_from_disk_async(&self, path: &PathBuf) -> Bytes {
+        let bytes = tokio::fs::read(&path).await.expect("tokio::fs::read failed");
+        Bytes::from(bytes)
+    }
+
+    fn read_from_disk_uring(&self, path: &PathBuf) -> Bytes {
+        let bytes = tokio::task::block_in_place(|| {
+            INST.with(|ring| {
+                let file = OpenOptions::new().read(true).custom_flags(libc::O_DIRECT).open(path).unwrap();
+                let file_size = file.metadata().unwrap().len();
+                ring.borrow_mut().read_blocking(file.as_raw_fd(), file_size as usize)
+            })
+        });
+        bytes
+    }
+
+    async fn read_from_disk_threadpool_uring(self: &Self, path: &PathBuf) -> Bytes {
+        let file = OpenOptions::new().read(true).custom_flags(libc::O_DIRECT).open(path).unwrap();
+        let num_bytes = file.metadata().unwrap().len() as usize;
+
+        let layout = Layout::from_size_align(num_bytes as usize, IoUringThreadpool::BUFFER_ALIGNMENT)
+            .expect("Failed to create memory layout for disk read result");
+        let base_ptr = unsafe { std::alloc::alloc(layout) };
+        let task = Arc::new(IoTask::new(FileIoOp::FileRead, base_ptr, num_bytes, file.as_raw_fd()));
+        // UringFuture will be responsible for submitting and driving the future to completion
+        let uring_fut = UringFuture::new(task);
+        uring_fut.await;
+
+        let buf = unsafe {
+            std::slice::from_raw_parts(base_ptr, num_bytes)
+        };
+        Bytes::from(buf)
     }
 
     /// Evaluates a predicate on a liquid array.
@@ -224,8 +275,8 @@ impl LiquidCachedColumn {
     }
 
     /// Evaluates a predicate on a cached column.
-    pub fn eval_predicate_with_filter(
-        &self,
+    pub async fn eval_predicate_with_filter(
+        self: &Self,
         batch_id: BatchID,
         filter: &BooleanBuffer,
         predicate: &mut LiquidPredicate,
@@ -246,7 +297,7 @@ impl LiquidCachedColumn {
             }
 
             CachedBatch::DiskArrow => {
-                let array = self.read_arrow_from_disk(batch_id);
+                let array = self.read_liquid_from_disk(batch_id).await;
                 let boolean_array = BooleanArray::new(filter.clone(), None);
                 let selected = arrow::compute::filter(&array, &boolean_array).unwrap();
                 let record_batch = self.arrow_array_to_record_batch(selected);
@@ -265,7 +316,7 @@ impl LiquidCachedColumn {
                 Some(buffer)
             }
             CachedBatch::DiskLiquid => {
-                let array = self.read_liquid_from_disk(batch_id);
+                let array = self.read_liquid_from_disk(batch_id).await;
                 let boolean_array = BooleanArray::new(filter.clone(), None);
                 let buffer =
                     self.eval_predicate_with_filter_inner(predicate, &array, &boolean_array);
@@ -275,7 +326,7 @@ impl LiquidCachedColumn {
     }
 
     /// Get an arrow array with a filter applied.
-    pub fn get_arrow_array_with_filter(
+    pub async fn get_arrow_array_with_filter(
         &self,
         batch_id: BatchID,
         filter: &BooleanArray,
@@ -296,7 +347,7 @@ impl LiquidCachedColumn {
                 Some(filtered)
             }
             CachedBatch::DiskLiquid => {
-                let array = self.read_liquid_from_disk(batch_id);
+                let array = self.read_liquid_from_disk(batch_id).await;
                 let filtered = array.filter_to_arrow(filter);
                 Some(filtered)
             }
@@ -320,7 +371,7 @@ impl LiquidCachedColumn {
         }
     }
 
-    fn insert_as_liquid_foreground(
+    async fn insert_as_liquid_foreground(
         self: &Arc<Self>,
         batch_id: BatchID,
         array: ArrayRef,
@@ -332,12 +383,12 @@ impl LiquidCachedColumn {
             Err(_) => CachedBatch::MemoryArrow(array.clone()),
         };
 
-        self.cache_store.insert(self.entry_id(batch_id), transcoded);
+        self.cache_store.insert(self.entry_id(batch_id), transcoded).await;
 
         Ok(())
     }
 
-    fn insert_as_liquid_background(
+    async fn insert_as_liquid_background(
         self: &Arc<Self>,
         batch_id: BatchID,
         array: ArrayRef,
@@ -345,16 +396,16 @@ impl LiquidCachedColumn {
         self.cache_store.insert(
             self.entry_id(batch_id),
             CachedBatch::MemoryArrow(array.clone()),
-        );
+        ).await;
         let column_arc = Arc::clone(self);
         TRANSCODE_THREAD_POOL.spawn(async move {
-            column_arc.transcode_to_liquid(batch_id, array);
+            column_arc.transcode_to_liquid(batch_id, array).await;
         });
         Ok(())
     }
 
     /// Insert an array into the cache.
-    pub fn insert(
+    pub async fn insert(
         self: &Arc<Self>,
         batch_id: BatchID,
         array: ArrayRef,
@@ -367,29 +418,29 @@ impl LiquidCachedColumn {
             LiquidCacheMode::Arrow => {
                 let entry_id = self.entry_id(batch_id);
                 self.cache_store
-                    .insert(entry_id, CachedBatch::MemoryArrow(array));
+                    .insert(entry_id, CachedBatch::MemoryArrow(array)).await;
                 Ok(())
             }
             LiquidCacheMode::Liquid {
                 transcode_in_background,
             } => {
                 if *transcode_in_background {
-                    self.insert_as_liquid_background(batch_id, array)
+                    self.insert_as_liquid_background(batch_id, array).await
                 } else {
-                    self.insert_as_liquid_foreground(batch_id, array)
+                    self.insert_as_liquid_foreground(batch_id, array).await
                 }
             }
         }
     }
 
-    fn transcode_to_liquid(self: &Arc<Self>, batch_id: BatchID, array: ArrayRef) {
+    async fn transcode_to_liquid(self: &Arc<Self>, batch_id: BatchID, array: ArrayRef) {
         let compressor = self.cache_store.compressor_states(&self.entry_id(batch_id));
         match transcode_liquid_inner(&array, &compressor) {
             Ok(transcoded) => {
                 self.cache_store.insert(
                     self.entry_id(batch_id),
                     CachedBatch::MemoryLiquid(transcoded),
-                );
+                ).await;
             }
             Err(_array) => {
                 // if the array data type is not supported yet, we just leave it as is.
@@ -471,7 +522,7 @@ impl LiquidCachedRowGroup {
     }
 
     /// Evaluate a predicate on a row group.
-    pub fn evaluate_selection_with_predicate(
+    pub async fn evaluate_selection_with_predicate(
         &self,
         batch_id: BatchID,
         selection: &BooleanBuffer,
@@ -483,7 +534,7 @@ impl LiquidCachedRowGroup {
             // If we only have one column, we can short-circuit and try to evaluate the predicate on encoded data.
             let column_id = column_ids[0];
             let cache = self.get_column(column_id as u64)?;
-            return cache.eval_predicate_with_filter(batch_id, selection, predicate);
+            return cache.eval_predicate_with_filter(batch_id, selection, predicate).await;
         } else if column_ids.len() >= 2 {
             // Try to extract multiple column-literal expressions from OR structure
             if let Some(column_exprs) =
@@ -496,7 +547,7 @@ impl LiquidCachedRowGroup {
                     let entry = self.cache_store.get(&column.entry_id(batch_id))?;
                     let liquid_array = match entry {
                         CachedBatch::MemoryLiquid(array) => array,
-                        CachedBatch::DiskLiquid => column.read_liquid_from_disk(batch_id),
+                        CachedBatch::DiskLiquid => column.read_liquid_from_disk(batch_id).await,
                         _ => {
                             combined_buffer = None;
                             break;
@@ -529,7 +580,7 @@ impl LiquidCachedRowGroup {
         let mut fields = Vec::new();
         for column_id in column_ids {
             let column = self.get_column(column_id as u64)?;
-            let array = column.get_arrow_array_with_filter(batch_id, &mask)?;
+            let array = column.get_arrow_array_with_filter(batch_id, &mask).await?;
             arrays.push(array);
             fields.push(column.field.clone());
         }
@@ -689,8 +740,8 @@ impl LiquidCache {
     /// This is for admin use only.
     /// This has no guarantees that some new entry will not be inserted in the meantime, or some entries are promoted to memory again.
     /// You mostly want to use this when no one else is using the cache.
-    pub fn flush_data(&self) {
-        self.cache_store.flush_all_to_disk();
+    pub async fn flush_data(&self) {
+        self.cache_store.flush_all_to_disk().await;
     }
 
     /// Get the cache mode of the cache.
@@ -735,8 +786,8 @@ mod tests {
         file.row_group(0)
     }
 
-    #[test]
-    fn evaluate_or_on_cached_columns() {
+    #[tokio::test]
+    async fn evaluate_or_on_cached_columns() {
         let batch_size = 4;
         let row_group = setup_cache(batch_size);
 
@@ -753,8 +804,8 @@ mod tests {
         let array_a = Arc::new(Int32Array::from(vec![1, 2, 3, 4]));
         let array_b = Arc::new(Int32Array::from(vec![10, 20, 30, 40]));
 
-        assert!(col_a.insert(batch_id, array_a.clone()).is_ok());
-        assert!(col_b.insert(batch_id, array_b.clone()).is_ok());
+        assert!(col_a.insert(batch_id, array_a.clone()).await.is_ok());
+        assert!(col_b.insert(batch_id, array_b.clone()).await.is_ok());
 
         // build parquet metadata for predicate construction
         let tmp_meta = tempfile::NamedTempFile::new().unwrap();
@@ -799,6 +850,7 @@ mod tests {
         let selection = BooleanBuffer::new_set(batch_size);
         let result = row_group
             .evaluate_selection_with_predicate(batch_id, &selection, &mut predicate)
+            .await
             .unwrap()
             .unwrap();
 
@@ -806,8 +858,8 @@ mod tests {
         assert_eq!(result, expected);
     }
 
-    #[test]
-    fn evaluate_three_column_or() {
+    #[tokio::test]
+    async fn evaluate_three_column_or() {
         let batch_size = 8;
         let row_group = setup_cache(batch_size);
 
@@ -829,9 +881,9 @@ mod tests {
             100, 200, 300, 400, 500, 600, 700, 800,
         ]));
 
-        assert!(col_a.insert(batch_id, array_a.clone()).is_ok());
-        assert!(col_b.insert(batch_id, array_b.clone()).is_ok());
-        assert!(col_c.insert(batch_id, array_c.clone()).is_ok());
+        assert!(col_a.insert(batch_id, array_a.clone()).await.is_ok());
+        assert!(col_b.insert(batch_id, array_b.clone()).await.is_ok());
+        assert!(col_c.insert(batch_id, array_c.clone()).await.is_ok());
 
         // build parquet metadata for predicate construction
         let tmp_meta = tempfile::NamedTempFile::new().unwrap();
@@ -885,6 +937,7 @@ mod tests {
         let selection = BooleanBuffer::new_set(batch_size);
         let result = row_group
             .evaluate_selection_with_predicate(batch_id, &selection, &mut predicate)
+            .await
             .unwrap()
             .unwrap();
 
@@ -893,8 +946,8 @@ mod tests {
         assert_eq!(result, expected);
     }
 
-    #[test]
-    fn evaluate_string_column_or() {
+    #[tokio::test]
+    async fn evaluate_string_column_or() {
         let batch_size = 8;
         let row_group = setup_cache(batch_size);
 
@@ -917,8 +970,8 @@ mod tests {
             "New York", "London", "Paris", "Tokyo", "Berlin", "Sydney", "Madrid", "Rome",
         ]));
 
-        assert!(col_name.insert(batch_id, array_name.clone()).is_ok());
-        assert!(col_city.insert(batch_id, array_city.clone()).is_ok());
+        assert!(col_name.insert(batch_id, array_name.clone()).await.is_ok());
+        assert!(col_city.insert(batch_id, array_city.clone()).await.is_ok());
 
         // build parquet metadata for predicate construction
         let tmp_meta = tempfile::NamedTempFile::new().unwrap();
@@ -965,6 +1018,7 @@ mod tests {
         let selection = BooleanBuffer::new_set(batch_size);
         let result = row_group
             .evaluate_selection_with_predicate(batch_id, &selection, &mut predicate)
+            .await
             .unwrap()
             .unwrap();
 

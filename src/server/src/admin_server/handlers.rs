@@ -202,6 +202,11 @@ pub(crate) struct CacheStatsParams {
     path: String,
 }
 
+#[derive(serde::Deserialize)]
+pub(crate) struct DiskUsageMonitorParams {
+    path: String,
+}
+
 pub(crate) async fn start_trace_handler(State(state): State<Arc<AppState>>) -> Json<ApiResponse> {
     info!("Starting cache trace collection...");
     if let Some(cache) = state.liquid_cache.cache() {
@@ -498,6 +503,29 @@ pub(crate) async fn add_execution_stats_handler(
     state.liquid_cache.inner().add_execution_stats(params);
     Json(ApiResponse {
         message,
+        status: "success".to_string(),
+    })
+}
+
+pub(crate) async fn start_disk_usage_monitor_handler(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<DiskUsageMonitorParams>,
+) -> Json<ApiResponse> {
+    state.disk_monitor.clone().start_recording(params.path);
+    let message = "Successfully started disk usage monitoring";
+    Json(ApiResponse {
+        message: message.to_string(),
+        status: "success".to_string(),
+    })
+}
+
+pub(crate) async fn stop_disk_usage_monitor_handler(
+    State(state): State<Arc<AppState>>,
+) -> Json<ApiResponse> {
+    state.disk_monitor.clone().stop_recording();
+    let message = "Stopped disk usage monitoring";
+    Json(ApiResponse {
+        message: message.to_string(),
         status: "success".to_string(),
     })
 }

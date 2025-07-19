@@ -188,7 +188,7 @@ async fn run_cache_behavior_benchmark() -> Result<(), Box<dyn std::error::Error>
     .log();
 
     println!("--- Flushing cache to disk ---");
-    cache.flush_data();
+    cache.flush_data().await;
     drop_os_page_cache().await?;
 
     run_query_with_timing(

@@ -175,8 +175,8 @@ mod tests {
     use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
     use tempfile::NamedTempFile;
 
-    #[test]
-    fn test_stats_writer() -> Result<(), ParquetError> {
+    #[tokio::test]
+    async fn test_stats_writer() -> Result<(), ParquetError> {
         let tmp_dir = tempfile::tempdir().unwrap();
         let cache = LiquidCache::new(
             1024,
@@ -203,7 +203,7 @@ mod tests {
                         .create_column(col, Arc::new(Field::new("test", DataType::Int32, false)));
                     for batch in 0..8 {
                         let batch_id = BatchID::from_raw(batch);
-                        assert!(column.insert(batch_id, array.clone()).is_ok());
+                        assert!(column.insert(batch_id, array.clone()).await.is_ok());
                         row_group_id_sum += rg;
                         column_id_sum += col;
                         row_start_id_sum += *batch_id as u64 * cache.batch_size() as u64;

@@ -81,7 +81,7 @@ impl LiquidBatchReader {
         self.row_filter.take()
     }
 
-    fn build_predicate_filter(
+    async fn build_predicate_filter(
         &mut self,
         selection: Vec<RowSelector>,
     ) -> Result<RowSelection, ArrowError> {
@@ -112,7 +112,7 @@ impl LiquidBatchReader {
                 self.current_batch_id,
                 &input_selection,
                 predicate,
-            );
+            ).await;
 
             let boolean_mask = if let Some(result) = cached_result {
                 reader.skip_records(selection_size).unwrap();

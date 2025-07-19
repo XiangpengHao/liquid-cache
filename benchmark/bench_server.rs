@@ -96,7 +96,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 max_cache_bytes,
                 args.disk_cache_dir.clone(),
                 args.cache_mode,
-                Box::new(DiscardPolicy),
+                Box::new(LruPolicy),
             )?;
 
             let liquid_cache_server = Arc::new(liquid_cache_server);
