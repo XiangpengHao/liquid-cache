@@ -458,7 +458,7 @@ impl LiquidByteViewArray {
         let (keys, values) = dict.as_ref().clone().into_parts();
 
         // Calculate shared prefix directly from values array without intermediate allocations
-        let shared_prefix = if values.len() == 0 {
+        let shared_prefix = if values.is_empty() {
             Vec::new()
         } else {
             // Get first value as initial candidate for shared prefix
@@ -622,7 +622,7 @@ impl LiquidByteViewArray {
     fn compare_equals(&self, needle: &[u8]) -> BooleanArray {
         let storage = self.fsst_buffer.read().unwrap();
         let compressor = storage.get_compressor();
-        
+
         // Compress the full needle (not after removing shared prefix)
         let compressed = compressor.compress(needle);
 
