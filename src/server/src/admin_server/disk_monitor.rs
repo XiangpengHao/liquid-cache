@@ -26,7 +26,7 @@ unsafe impl Send for DiskMonitor {}
 unsafe impl Sync for DiskMonitor {}
 
 impl DiskMonitor {
-    const SAMPLING_INTERVAL: u64 = 200;
+    const SAMPLING_INTERVAL: u64 = 100;
 
     pub(crate) fn new() -> DiskMonitor {
         let histogram =

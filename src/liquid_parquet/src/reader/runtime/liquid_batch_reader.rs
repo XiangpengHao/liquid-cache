@@ -1,12 +1,16 @@
 use std::collections::VecDeque;
+use std::pin::Pin;
 use std::sync::Arc;
 
-use arrow::array::{Array, AsArray, BooleanArray, RecordBatch, RecordBatchReader};
+use arrow::array::{Array, AsArray, BooleanArray, RecordBatch};
 use arrow::compute::{filter_record_batch, prep_null_mask_filter};
 use arrow_schema::{ArrowError, DataType, Schema, SchemaRef};
+use futures::future::BoxFuture;
+use futures::{FutureExt, Stream};
 use parquet::arrow::ProjectionMask;
 use parquet::arrow::array_reader::ArrayReader;
 use parquet::arrow::arrow_reader::{ArrowPredicate, RowSelection, RowSelector};
+use std::task::{Context, Poll};
 
 use super::LiquidRowFilter;
 use crate::cache::{BatchID, LiquidCachedRowGroupRef};
@@ -34,6 +38,76 @@ fn read_record_batch_from_parquet<'a>(
     Ok(record_batch)
 }
 
+struct PredicateBuilder {
+    predicate_readers: Option<Vec<Box<dyn ArrayReader>>>,
+    row_filter: Option<LiquidRowFilter>,
+    liquid_cache: LiquidCachedRowGroupRef,
+}
+
+unsafe impl Send for PredicateBuilder {}
+
+impl PredicateBuilder {
+    async fn build_predicate_filter(
+        mut self: Self,
+        current_batch_id: BatchID,
+        selection: Vec<RowSelector>,
+    ) -> Result<(PredicateBuilder, RowSelection), ArrowError> {
+        let Some(filter) = &mut self.row_filter else {
+            return Ok((self, selection.into()));
+        };
+
+        debug_assert_eq!(
+            self.predicate_readers.as_mut().unwrap().len(),
+            filter.predicates.len(),
+            "predicate readers and predicates should have the same length"
+        );
+
+        let mut input_selection = row_selector_to_boolean_buffer(&selection);
+        let selection_size = input_selection.len();
+
+        for (predicate, reader) in filter
+            .predicates
+            .iter_mut()
+            .zip(self.predicate_readers.as_mut().unwrap().iter_mut())
+        {
+            if input_selection.count_set_bits() == 0 {
+                reader.skip_records(selection_size).unwrap();
+                continue;
+            }
+
+            let cached_result = self
+                .liquid_cache
+                .evaluate_selection_with_predicate(current_batch_id, &input_selection, predicate)
+                .await;
+
+            let boolean_mask = if let Some(result) = cached_result {
+                reader.skip_records(selection_size).unwrap();
+                result?
+            } else {
+                // slow case, where the predicate column is not cached
+                // we need to read from parquet file
+                let row_selection =
+                    RowSelection::from_filters(&[BooleanArray::new(input_selection.clone(), None)]);
+
+                let record_batch = read_record_batch_from_parquet(reader, row_selection.iter())?;
+                let filter_mask = predicate.evaluate(record_batch).unwrap();
+                let filter_mask = match filter_mask.null_count() {
+                    0 => filter_mask,
+                    _ => prep_null_mask_filter(&filter_mask),
+                };
+                let (buffer, null) = filter_mask.into_parts();
+                assert!(null.is_none());
+                buffer
+            };
+            input_selection = boolean_buffer_and_then(&input_selection, &boolean_mask);
+        }
+        Ok((
+            self,
+            RowSelection::from_filters(&[BooleanArray::new(input_selection, None)]),
+        ))
+    }
+}
+
 pub(crate) struct LiquidBatchReader {
     liquid_cache: LiquidCachedRowGroupRef,
     current_batch_id: BatchID,
@@ -41,9 +115,15 @@ pub(crate) struct LiquidBatchReader {
     schema: SchemaRef,
     batch_size: usize,
     row_filter: Option<LiquidRowFilter>,
-    predicate_readers: Vec<Box<dyn ArrayReader>>,
+    predicate_readers: Option<Vec<Box<dyn ArrayReader>>>,
     projection_reader: Box<dyn ArrayReader>,
     can_optimize_single_column_filter_projection: bool,
+    state: LiquidBatchReaderState,
+}
+
+enum LiquidBatchReaderState {
+    Init,
+    BuildingPredicate(BoxFuture<'static, Result<(PredicateBuilder, RowSelection), ArrowError>>),
 }
 
 impl LiquidBatchReader {
@@ -71,74 +151,15 @@ impl LiquidBatchReader {
             schema: Arc::new(schema),
             batch_size,
             row_filter,
-            predicate_readers: filter_readers,
+            predicate_readers: Some(filter_readers),
             projection_reader: array_reader,
             can_optimize_single_column_filter_projection,
+            state: LiquidBatchReaderState::Init,
         }
     }
 
     pub(crate) fn take_filter(&mut self) -> Option<LiquidRowFilter> {
         self.row_filter.take()
-    }
-
-    async fn build_predicate_filter(
-        &mut self,
-        selection: Vec<RowSelector>,
-    ) -> Result<RowSelection, ArrowError> {
-        let Some(filter) = &mut self.row_filter else {
-            return Ok(selection.into());
-        };
-
-        debug_assert_eq!(
-            self.predicate_readers.len(),
-            filter.predicates.len(),
-            "predicate readers and predicates should have the same length"
-        );
-
-        let mut input_selection = row_selector_to_boolean_buffer(&selection);
-        let selection_size = input_selection.len();
-
-        for (predicate, reader) in filter
-            .predicates
-            .iter_mut()
-            .zip(self.predicate_readers.iter_mut())
-        {
-            if input_selection.count_set_bits() == 0 {
-                reader.skip_records(selection_size).unwrap();
-                continue;
-            }
-
-            let cached_result = self.liquid_cache.evaluate_selection_with_predicate(
-                self.current_batch_id,
-                &input_selection,
-                predicate,
-            ).await;
-
-            let boolean_mask = if let Some(result) = cached_result {
-                reader.skip_records(selection_size).unwrap();
-                result?
-            } else {
-                // slow case, where the predicate column is not cached
-                // we need to read from parquet file
-                let row_selection =
-                    RowSelection::from_filters(&[BooleanArray::new(input_selection.clone(), None)]);
-
-                let record_batch = read_record_batch_from_parquet(reader, row_selection.iter())?;
-                let filter_mask = predicate.evaluate(record_batch).unwrap();
-                let filter_mask = match filter_mask.null_count() {
-                    0 => filter_mask,
-                    _ => prep_null_mask_filter(&filter_mask),
-                };
-                let (buffer, null) = filter_mask.into_parts();
-                assert!(null.is_none());
-                buffer
-            };
-            input_selection = boolean_buffer_and_then(&input_selection, &boolean_mask);
-        }
-        Ok(RowSelection::from_filters(&[BooleanArray::new(
-            input_selection,
-            None,
-        )]))
     }
 
     fn read_selection(
@@ -163,50 +184,87 @@ impl LiquidBatchReader {
         let batch = RecordBatch::from(struct_array);
         Ok(Some(batch))
     }
+
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
 }
 
-impl Iterator for LiquidBatchReader {
+impl Stream for LiquidBatchReader {
     type Item = Result<RecordBatch, ArrowError>;
 
-    fn next(&mut self) -> Option<Self::Item> {
-        match self.can_optimize_single_column_filter_projection {
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = unsafe { self.get_unchecked_mut() };
+        match this.can_optimize_single_column_filter_projection {
             true => {
-                let predicate = &mut self.row_filter.as_mut().unwrap().predicates[0];
-                while let Some(selection) = take_next_batch(&mut self.selection, self.batch_size) {
+                let batch_size = this.batch_size.clone();
+                while let Some(selection) = take_next_batch(&mut this.selection, batch_size) {
+                    let predicate = &mut this.row_filter.as_mut().unwrap().predicates[0];
                     match read_and_filter_single_column(
                         selection,
-                        &mut self.projection_reader,
+                        &mut this.projection_reader,
                         predicate,
-                        &mut self.current_batch_id,
+                        &mut this.current_batch_id,
                     ) {
-                        Ok(Some(record_batch)) => return Some(Ok(record_batch)),
+                        Ok(Some(record_batch)) => return Poll::Ready(Some(Ok(record_batch))),
                         Ok(None) => continue, // No rows passed the filter, try next batch
-                        Err(e) => return Some(Err(e)),
+                        Err(e) => return Poll::Ready(Some(Err(e))),
                     }
                 }
             }
             false => {
-                while let Some(selection) = take_next_batch(&mut self.selection, self.batch_size) {
-                    match self.build_predicate_filter(selection) {
-                        Ok(filtered_selection) => {
-                            match self.read_selection(filtered_selection) {
-                                Ok(Some(record_batch)) => return Some(Ok(record_batch)),
-                                Ok(None) => continue, // No rows to read, try next batch
-                                Err(e) => return Some(Err(e)),
+                loop {
+                    match &mut this.state {
+                        LiquidBatchReaderState::Init => {
+                            if let Some(selection) =
+                                take_next_batch(&mut this.selection, this.batch_size)
+                            {
+                                // Move predicate_readers and row_filter into the PredicateBuilder as a workaround to the borrow checker
+                                let predicate_builder = PredicateBuilder {
+                                    predicate_readers: this.predicate_readers.take(),
+                                    row_filter: this.row_filter.take(),
+                                    liquid_cache: this.liquid_cache.clone(),
+                                };
+                                let fut = Box::pin(predicate_builder.build_predicate_filter(
+                                    this.current_batch_id.clone(),
+                                    selection,
+                                ));
+
+                                this.state =
+                                    LiquidBatchReaderState::BuildingPredicate(Box::pin(fut));
+                            } else {
+                                return Poll::Ready(None);
                             }
                         }
-                        Err(e) => return Some(Err(e)),
+                        LiquidBatchReaderState::BuildingPredicate(fut) => {
+                            match fut.poll_unpin(cx) {
+                                Poll::Ready(Ok((mut predicate_builder, row_selection))) => {
+                                    this.state = LiquidBatchReaderState::Init;
+                                    this.row_filter = predicate_builder.row_filter.take();
+                                    this.predicate_readers =
+                                        predicate_builder.predicate_readers.take();
+
+                                    match this.read_selection(row_selection) {
+                                        Ok(Some(record_batch)) => {
+                                            // log::info!("Read record batch of length: {}", record_batch.num_rows());
+                                            return Poll::Ready(Some(Ok(record_batch)));
+                                        }
+                                        Ok(None) => continue, // No rows to read, try next batch
+                                        Err(e) => return Poll::Ready(Some(Err(e))),
+                                    }
+                                }
+                                Poll::Ready(Err(e)) => {
+                                    this.state = LiquidBatchReaderState::Init;
+                                    return Poll::Ready(Some(Err(e)))
+                                }
+                                Poll::Pending => return Poll::Pending,
+                            }
+                        }
                     }
                 }
             }
         }
-        None
-    }
-}
-
-impl RecordBatchReader for LiquidBatchReader {
-    fn schema(&self) -> SchemaRef {
-        self.schema.clone()
+        Poll::Ready(None)
     }
 }
 

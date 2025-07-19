@@ -7,6 +7,7 @@ use arrow::array::RecordBatch;
 use arrow_schema::{DataType, Fields, Schema, SchemaRef};
 use fastrace::Event;
 use fastrace::local::LocalSpan;
+use futures::StreamExt;
 use futures::{FutureExt, Stream, future::BoxFuture, ready};
 use liquid_cache_common::coerce_parquet_schema_to_liquid_schema;
 use parquet::arrow::arrow_reader::ArrowPredicate;
@@ -308,19 +309,22 @@ impl Stream for LiquidStream {
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         loop {
             match &mut self.state {
-                StreamState::Decoding(batch_reader) => match batch_reader.next() {
-                    Some(Ok(batch)) => {
+                StreamState::Decoding(batch_reader) => match batch_reader.poll_next_unpin(cx) {
+                    Poll::Ready(Some(Ok(batch))) => {
                         return Poll::Ready(Some(Ok(batch)));
                     }
-                    Some(Err(e)) => {
+                    Poll::Ready(Some(Err(e))) => {
                         panic!("Decoding next batch error: {e:?}");
                     }
-                    None => {
+                    Poll::Ready(None) => {
                         // this is ugly, but works for now.
                         let filter = batch_reader.take_filter();
                         self.reader.as_mut().unwrap().filter = filter;
                         self.state = StreamState::Init
-                    }
+                    },
+                    Poll::Pending => {
+                        return Poll::Pending;
+                    },
                 },
                 StreamState::Init => {
                     let row_group_idx = match self.row_groups.pop_front() {

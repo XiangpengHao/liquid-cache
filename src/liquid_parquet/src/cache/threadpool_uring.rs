@@ -1,4 +1,4 @@
-use std::{os::fd::RawFd, pin::Pin, sync::{atomic::Ordering, Arc, LazyLock, Mutex}, task::{Context, Poll, Waker}, thread};
+use std::{os::fd::RawFd, pin::Pin, sync::{atomic::{fence, Ordering}, Arc, LazyLock, Mutex}, task::{Context, Poll, Waker}, thread};
 
 use std::sync::atomic::AtomicBool;
 use io_uring::{cqueue, opcode, squeue, IoUring};
@@ -26,6 +26,10 @@ impl IoTask {
     pub(crate) fn set_waker(self: &Self, waker: *const Waker) {
         let mut guard = self.waker.lock().unwrap();
         *guard = Some(waker);
+    }
+
+    pub(crate) fn get_ptr(self: &Self) -> *mut u8 {
+        self.base_ptr
     }
 }
 
@@ -102,7 +106,7 @@ struct UringWorker {
 }
 
 impl UringWorker {
-    const CHUNK_SIZE: usize = 8192;
+    const CHUNK_SIZE: usize = 8192 * 4;
 
     fn new(channel: crossbeam_channel::Receiver<Arc<IoTask>>, ring: io_uring::IoUring) -> UringWorker {
         let mut completions_array = Vec::<usize>::new();
@@ -212,7 +216,8 @@ impl UringWorker {
                     let remaining = &mut self.completions_array[opcode];
                     *remaining -= 1;
                     if *remaining == 0 {
-                        self.tasks[opcode].as_ref().unwrap().completed.store(true, Ordering::Relaxed);
+                        self.tasks[opcode].as_ref().unwrap().completed.store(true, Ordering::Release);
+                        // assert_eq!(self.tasks[opcode].as_ref().unwrap().completed.load(Ordering::Acquire), true);
                         let guard = self.tasks[opcode].as_ref().unwrap().waker.lock().unwrap();
                         if let Some(waker) = *guard {
                             unsafe { (*waker).wake_by_ref(); }
@@ -256,7 +261,7 @@ impl Future for UringFuture {
                     self.state = UringState::Submitted;
                 },
                 UringState::Submitted => {
-                    match self.task.completed.load(Ordering::Relaxed) {
+                    match self.task.completed.load(Ordering::Acquire) {
                         false => {
                             return Poll::Pending;
                         },

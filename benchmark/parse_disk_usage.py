@@ -18,7 +18,8 @@ def main():
                 if match:
                     percentile = int(match.group(1))
                     value = int(match.group(2))
-                    percentiles[percentile].append(value)
+                    if value > 1200:
+                        percentiles[percentile].append(value)
     except FileNotFoundError:
         print(f"Error: File '{log_file_path}' not found.")
         sys.exit(1)

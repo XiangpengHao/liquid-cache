@@ -37,29 +37,6 @@ impl IoUringInstance {
         }
     }
 
-    // fn register_buffers(ring: &io_uring::IoUring) -> Vec<iovec> {
-    //     let layout = Layout::from_size_align(
-    //         (Self::NUM_ENTRIES as usize) * Self::CHUNK_SIZE,
-    //         Self::BUFFER_ALIGNMENT,
-    //     )
-    //     .expect("Failed to create memory layout for pre-registered buffers");
-    //     let mut vectors = Vec::<iovec>::new();
-    //     unsafe {
-    //         let ptr = std::alloc::alloc(layout);
-    //         for pos in 0..Self::NUM_ENTRIES {
-    //             let iov = iovec {
-    //                 iov_base: (ptr.wrapping_add((pos as usize) * Self::CHUNK_SIZE)) as *mut c_void,
-    //                 iov_len: Self::CHUNK_SIZE,
-    //             };
-    //             vectors.push(iov);
-    //         }
-    //         ring.submitter()
-    //             .register_buffers(vectors.as_slice())
-    //             .expect("Failed to pre-register buffers");
-    //     }
-    //     vectors
-    // }
-
     #[inline]
     fn register_fd(self: &mut Self, fd: RawFd) {
         self.inner

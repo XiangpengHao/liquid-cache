@@ -25,12 +25,13 @@ use std::alloc::Layout;
 use std::fmt::Display;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Read};
+use std::ops::Deref;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
-use store::{CacheStore, FileIOMode, FILE_IO_MODE};
+use store::{CacheStore};
 use tokio::runtime::Runtime;
 use transcode::transcode_liquid_inner;
 use utils::ColumnAccessPath;
@@ -178,7 +179,7 @@ impl LiquidCachedColumn {
         let compressor = self.cache_store.compressor_states(&entry_id);
         let compressor = compressor.fsst_compressor.read().unwrap().clone();
         let bytes = match FILE_IO_MODE {
-            utils::FileIOMode::BlockingIoUring => self.read_from_disk_pio(&path),
+            utils::FileIOMode::BlockingIoUring => self.read_from_disk_uring(&path),
             utils::FileIOMode::Default => self.read_from_disk_pio(&path),
             utils::FileIOMode::ThreadPoolIoUring => self.read_from_disk_threadpool_uring(&path).await,
             utils::FileIOMode::TokioAsync => self.read_from_disk_async(&path).await,
@@ -234,12 +235,13 @@ impl LiquidCachedColumn {
         let base_ptr = unsafe { std::alloc::alloc(layout) };
         let task = Arc::new(IoTask::new(FileIoOp::FileRead, base_ptr, num_bytes, file.as_raw_fd()));
         // UringFuture will be responsible for submitting and driving the future to completion
-        let uring_fut = UringFuture::new(task);
-        uring_fut.await;
+        let uring_fut = UringFuture::new(task.clone());
+        let _result = uring_fut.await;
 
         let buf = unsafe {
-            std::slice::from_raw_parts(base_ptr, num_bytes)
+            std::slice::from_raw_parts(task.deref().get_ptr(), num_bytes)
         };
+
         Bytes::from(buf)
     }
 
@@ -297,7 +299,7 @@ impl LiquidCachedColumn {
             }
 
             CachedBatch::DiskArrow => {
-                let array = self.read_liquid_from_disk(batch_id).await;
+                let array = self.read_arrow_from_disk(batch_id);
                 let boolean_array = BooleanArray::new(filter.clone(), None);
                 let selected = arrow::compute::filter(&array, &boolean_array).unwrap();
                 let record_batch = self.arrow_array_to_record_batch(selected);
@@ -355,13 +357,13 @@ impl LiquidCachedColumn {
     }
 
     #[cfg(test)]
-    pub(crate) fn get_arrow_array_test_only(&self, batch_id: BatchID) -> Option<ArrayRef> {
+    pub(crate) async fn get_arrow_array_test_only(&self, batch_id: BatchID) -> Option<ArrayRef> {
         let cached_entry = self.cache_store.get(&self.entry_id(batch_id))?;
         match cached_entry {
             CachedBatch::MemoryArrow(array) => Some(array),
             CachedBatch::MemoryLiquid(array) => Some(array.to_best_arrow_array()),
             CachedBatch::DiskLiquid => {
-                let array = self.read_liquid_from_disk(batch_id);
+                let array = self.read_liquid_from_disk(batch_id).await;
                 Some(array.to_best_arrow_array())
             }
             CachedBatch::DiskArrow => {
