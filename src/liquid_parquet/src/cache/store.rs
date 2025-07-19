@@ -278,13 +278,21 @@ impl CacheStore {
     }
 
     pub(super) fn get(&self, entry_id: &CacheEntryID) -> Option<CachedBatch> {
-        self.tracer
-            .trace_get(*entry_id, self.budget.memory_usage_bytes());
-
+        let batch = self.cached_data.get(entry_id);
+        if let Some(ref batch) = batch {
+            self.tracer.trace_get(
+                *entry_id,
+                self.budget.memory_usage_bytes(),
+                batch.memory_usage_bytes(),
+            );
+        } else {
+            self.tracer
+                .trace_get(*entry_id, self.budget.memory_usage_bytes(), 0);
+        }
         // Notify the advisor that this entry was accessed
         self.policy.notify_access(entry_id);
 
-        self.cached_data.get(entry_id)
+        batch
     }
 
     /// Iterate over all entries in the cache.
