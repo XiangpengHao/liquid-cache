@@ -44,7 +44,7 @@ async fn download_clickbench(string_columns: &[&str]) -> Dataset {
 
     let quoted_columns = string_columns
         .iter()
-        .map(|c| format!("\"{}\"", c))
+        .map(|c| format!("\"{c}\""))
         .collect::<Vec<_>>();
 
     let df = ctx
@@ -58,11 +58,11 @@ async fn download_clickbench(string_columns: &[&str]) -> Dataset {
 
     let avg_length = string_columns
         .iter()
-        .map(|c| format!("AVG(LENGTH(\"{}\")) AS \"{}\"", c, c))
+        .map(|c| format!("AVG(LENGTH(\"{c}\")) AS \"{c}\""))
         .collect::<Vec<_>>()
         .join(", ");
     let avg_length_batches = ctx
-        .sql(&format!("SELECT {} FROM \"hits\"", avg_length))
+        .sql(&format!("SELECT {avg_length} FROM \"hits\""))
         .await
         .unwrap()
         .collect()
@@ -568,9 +568,9 @@ fn main() {
 
     for c in columns {
         let array = dataset.data.get(c).unwrap();
-        println!("{} average length: {}", c, array.avg_str_length);
+        println!("{c} average length: {}", array.avg_str_length);
 
-        println!("Running all benchmarks for {}", c);
+        println!("Running all benchmarks for {c}");
         let benchmark_results = runner.run_all_benchmarks(&array.data);
 
         // Print results
