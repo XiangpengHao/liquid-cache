@@ -236,15 +236,14 @@ fn roundtrip_string_array_lz4(array: &Vec<StringViewArray>) -> EncodeResult {
         writer.write(&batch).unwrap();
         writer.finish().unwrap();
         encode_time += start.elapsed().as_secs_f64();
+        total_size += file.len();
 
         let start = Instant::now();
         let mut file = Cursor::new(file);
         let mut reader = arrow::ipc::reader::FileReader::try_new(&mut file, None).unwrap();
         let batch = reader.next().unwrap().unwrap();
-        let v = batch.column(0).as_string::<i32>().clone();
+        let _v = batch.column(0).as_string::<i32>().clone();
         decode_time += start.elapsed().as_secs_f64();
-
-        total_size += v.get_array_memory_size();
     }
 
     EncodeResult {
@@ -340,7 +339,7 @@ fn main() {
     };
 
     let json_output = serde_json::to_string_pretty(&complete_results).unwrap();
-    let mut file = File::create("target/benchmark_results.json").unwrap();
+    let mut file = File::create("../../target/benchmark_results.json").unwrap();
     file.write_all(json_output.as_bytes()).unwrap();
 
     println!("Benchmark results written to target/benchmark_results.json");
