@@ -78,3 +78,9 @@ harness = false
 name = "byte_array_vs_byte_view"
 path = "bench/byte_array_vs_byte_view.rs"
 harness = false
+
+
+[[bin]]
+name = "fsst_view_study"
+path = "study/fsst_view.rs"
+
