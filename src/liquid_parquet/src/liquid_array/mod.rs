@@ -15,7 +15,7 @@ use std::{any::Any, num::NonZero, sync::Arc};
 use arrow::array::{ArrayRef, BooleanArray};
 use arrow_schema::ArrowError;
 pub use byte_array::{LiquidByteArray, get_string_needle};
-pub use byte_view_array::LiquidByteViewArray;
+pub use byte_view_array::{ByteViewArrayMemoryUsage, LiquidByteViewArray};
 use datafusion::physical_plan::PhysicalExpr;
 pub use fix_len_byte_array::LiquidFixedLenByteArray;
 use float_array::LiquidFloatType;
