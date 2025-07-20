@@ -15,15 +15,15 @@ pub struct IoTask {
     num_bytes: usize,
     fd: RawFd,
     completed: AtomicBool,
-    waker: Mutex<Option<*const Waker>>,
+    waker: Mutex<Option<Waker>>,
 }
 
 impl IoTask {
     pub(crate) fn new(op: FileIoOp, base_ptr: *mut u8, num_bytes: usize, fd: RawFd) -> IoTask {
-        return IoTask {op, base_ptr, num_bytes, fd, completed: AtomicBool::new(false), waker: Mutex::<Option<*const Waker>>::new(None)}
+        return IoTask {op, base_ptr, num_bytes, fd, completed: AtomicBool::new(false), waker: Mutex::<Option<Waker>>::new(None)}
     }
 
-    pub(crate) fn set_waker(self: &Self, waker: *const Waker) {
+    pub(crate) fn set_waker(self: &Self, waker: Waker) {
         let mut guard = self.waker.lock().unwrap();
         *guard = Some(waker);
     }
@@ -216,14 +216,13 @@ impl UringWorker {
                     let remaining = &mut self.completions_array[opcode];
                     *remaining -= 1;
                     if *remaining == 0 {
-                        self.tasks[opcode].as_ref().unwrap().completed.store(true, Ordering::Release);
-                        // assert_eq!(self.tasks[opcode].as_ref().unwrap().completed.load(Ordering::Acquire), true);
-                        let guard = self.tasks[opcode].as_ref().unwrap().waker.lock().unwrap();
-                        if let Some(waker) = *guard {
-                            unsafe { (*waker).wake_by_ref(); }
+                        self.tasks[opcode].as_ref().unwrap().completed.store(true, Ordering::Relaxed);
+                        let mut guard = self.tasks[opcode].as_ref().unwrap().waker.lock().unwrap();
+                        if let Some(waker) = guard.take() {
+                            waker.wake();
                         }
                     }
-                }
+                },
                 None => {
                     break;
                 }
@@ -252,22 +251,22 @@ impl Future for UringFuture {
     type Output = ();
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-        loop {
-            match self.state {
-                UringState::Initialized => {
-                    // Measure the io latency
-                    IO_URING_THREAD_POOL_INST.submit_task(self.task.clone());
-                    self.task.set_waker(std::ptr::from_ref(cx.waker()));
-                    self.state = UringState::Submitted;
-                },
-                UringState::Submitted => {
-                    match self.task.completed.load(Ordering::Acquire) {
-                        false => {
-                            return Poll::Pending;
-                        },
-                        true => {
-                            return Poll::Ready(());
-                        }
+        match self.state {
+            UringState::Initialized => {
+                // Measure the io latency
+                IO_URING_THREAD_POOL_INST.submit_task(self.task.clone());
+                self.task.set_waker(cx.waker().clone());
+                self.state = UringState::Submitted;
+                return Poll::Pending;
+            },
+            UringState::Submitted => {
+                match self.task.completed.load(Ordering::Relaxed) {
+                    false => {
+                        self.task.set_waker(cx.waker().clone());
+                        return Poll::Pending;
+                    },
+                    true => {
+                        return Poll::Ready(());
                     }
                 }
             }
