@@ -18,6 +18,7 @@ use super::CacheEntryID;
 struct TraceEvent {
     entry_id: CacheEntryID,
     cache_memory_bytes: usize,
+    entry_size: usize,
     time_stamp_nanos: u128,
 }
 
@@ -54,7 +55,12 @@ impl CacheTracer {
         self.enabled.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    pub(super) fn trace_get(&self, entry_id: CacheEntryID, cache_memory_bytes: usize) {
+    pub(super) fn trace_get(
+        &self,
+        entry_id: CacheEntryID,
+        cache_memory_bytes: usize,
+        entry_size: usize,
+    ) {
         if !self.enabled() {
             return;
         }
@@ -66,6 +72,7 @@ impl CacheTracer {
         entries.push(TraceEvent {
             entry_id,
             cache_memory_bytes,
+            entry_size,
             time_stamp_nanos,
         });
     }
@@ -81,6 +88,7 @@ impl CacheTracer {
             Field::new("row_group_id", DataType::UInt64, false),
             Field::new("column_id", DataType::UInt64, false),
             Field::new("batch_id", DataType::UInt64, false),
+            Field::new("entry_size", DataType::UInt64, false),
             Field::new("cache_memory_bytes", DataType::UInt64, false),
             Field::new("time_stamp_nanos", DataType::UInt64, false),
         ]));
@@ -90,6 +98,7 @@ impl CacheTracer {
         let mut row_group_ids = Vec::with_capacity(num_rows);
         let mut column_ids = Vec::with_capacity(num_rows);
         let mut batch_ids = Vec::with_capacity(num_rows);
+        let mut entry_sizes = Vec::with_capacity(num_rows);
         let mut cache_memory_bytes_vec = Vec::with_capacity(num_rows);
         let mut time_stamp_nanos_vec = Vec::with_capacity(num_rows);
 
@@ -98,6 +107,7 @@ impl CacheTracer {
             row_group_ids.push(event.entry_id.row_group_id_inner());
             column_ids.push(event.entry_id.column_id_inner());
             batch_ids.push(event.entry_id.batch_id_inner()); // Assuming batch_id_inner exists or add it
+            entry_sizes.push(event.entry_size as u64);
             cache_memory_bytes_vec.push(event.cache_memory_bytes as u64);
             time_stamp_nanos_vec.push(event.time_stamp_nanos as u64);
         }
@@ -109,6 +119,7 @@ impl CacheTracer {
                 Arc::new(UInt64Array::from(row_group_ids)) as ArrayRef,
                 Arc::new(UInt64Array::from(column_ids)) as ArrayRef,
                 Arc::new(UInt64Array::from(batch_ids)) as ArrayRef,
+                Arc::new(UInt64Array::from(entry_sizes)) as ArrayRef,
                 Arc::new(UInt64Array::from(cache_memory_bytes_vec)) as ArrayRef,
                 Arc::new(UInt64Array::from(time_stamp_nanos_vec)) as ArrayRef,
             ],
@@ -158,24 +169,26 @@ mod tests {
 
         // Should not record when disabled
         let entry_id = CacheEntryID::new(1, 2, 3, BatchID::from_raw(4));
-        tracer.trace_get(entry_id, 1000);
+        tracer.trace_get(entry_id, 1000, 100);
         assert!(tracer.entries.lock().unwrap().is_empty());
 
         // Should record when enabled
         tracer.enable();
-        tracer.trace_get(entry_id, 1000);
+        tracer.trace_get(entry_id, 1000, 100);
         assert_eq!(tracer.entries.lock().unwrap().len(), 1);
 
         // Multiple events
-        tracer.trace_get(entry_id, 2000);
+        tracer.trace_get(entry_id, 2000, 100);
         assert_eq!(tracer.entries.lock().unwrap().len(), 2);
 
         // Check entry data
         let entries = tracer.entries.lock().unwrap();
         assert_eq!(entries[0].entry_id, entry_id);
         assert_eq!(entries[0].cache_memory_bytes, 1000);
+        assert_eq!(entries[0].entry_size, 100);
         assert_eq!(entries[1].entry_id, entry_id);
         assert_eq!(entries[1].cache_memory_bytes, 2000);
+        assert_eq!(entries[1].entry_size, 100);
     }
 
     #[test]
@@ -202,8 +215,8 @@ mod tests {
         let entry_id1 = CacheEntryID::new(1, 2, 3, BatchID::from_raw(4));
         let entry_id2 = CacheEntryID::new(5, 6, 7, BatchID::from_raw(8));
 
-        tracer.trace_get(entry_id1, 1000);
-        tracer.trace_get(entry_id2, 2000);
+        tracer.trace_get(entry_id1, 1000, 100);
+        tracer.trace_get(entry_id2, 2000, 100);
 
         // Flush to file
         tracer.flush(&file_path);
@@ -226,7 +239,7 @@ mod tests {
         assert_eq!(batch.num_rows(), 2);
 
         // Verify the columns exist
-        assert_eq!(batch.num_columns(), 6);
+        assert_eq!(batch.num_columns(), 7);
 
         // Check file_id column values
         let file_id_array = batch
@@ -264,9 +277,18 @@ mod tests {
         assert_eq!(batch_id_array.value(0), 4);
         assert_eq!(batch_id_array.value(1), 8);
 
+        // Check entry_size column values
+        let entry_size_array = batch
+            .column(4)
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap();
+        assert_eq!(entry_size_array.value(0), 100);
+        assert_eq!(entry_size_array.value(1), 100);
+
         // Check cache_memory_bytes column values
         let cache_memory_bytes_array = batch
-            .column(4)
+            .column(5)
             .as_any()
             .downcast_ref::<UInt64Array>()
             .unwrap();
@@ -284,11 +306,11 @@ mod tests {
         tracer.enable();
 
         // Add first batch of entries
-        tracer.trace_get(CacheEntryID::new(1, 2, 3, BatchID::from_raw(4)), 1000);
+        tracer.trace_get(CacheEntryID::new(1, 2, 3, BatchID::from_raw(4)), 1000, 100);
         tracer.flush(&file_path1);
 
         // Add second batch of entries
-        tracer.trace_get(CacheEntryID::new(5, 6, 7, BatchID::from_raw(8)), 2000);
+        tracer.trace_get(CacheEntryID::new(5, 6, 7, BatchID::from_raw(8)), 2000, 100);
         tracer.flush(&file_path2);
 
         // Verify both files exist
