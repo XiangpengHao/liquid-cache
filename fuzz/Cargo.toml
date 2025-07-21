@@ -17,7 +17,7 @@ datafusion = "47.0.0"
 path = "../src/liquid_parquet"
 
 [[bin]]
-name = "fsst_view"
+name = "fsst_view_fuzz"
 path = "fuzz_targets/fsst_view.rs"
 test = false
 doc = false

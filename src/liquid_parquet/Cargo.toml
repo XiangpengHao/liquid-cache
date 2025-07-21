@@ -21,7 +21,7 @@ fsst-rs = "0.5.2"
 serde = { workspace = true }
 bytes = { workspace = true }
 log = { workspace = true }
-object_store = { workspace = true }
+object_store = { workspace = true, features = ["http"] }
 itertools = { workspace = true }
 fastlanes = "0.2.0"
 num-traits = "0.2.19"
@@ -40,6 +40,9 @@ shuttle = "0.8.0"
 tracing-subscriber = "0.3.19"
 paste = "1.0.15"
 insta = { version = "1.43.1" }
+anyhow = "1.0"
+serde_json = { workspace = true }
+mimalloc = "0.1.46"
 
 [features]
 shuttle = []
@@ -79,8 +82,7 @@ name = "byte_array_vs_byte_view"
 path = "bench/byte_array_vs_byte_view.rs"
 harness = false
 
-
-[[bin]]
+[[bench]]
 name = "fsst_view_study"
 path = "study/fsst_view.rs"
-
+harness = false

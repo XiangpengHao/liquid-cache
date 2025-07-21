@@ -13,6 +13,7 @@ use datafusion::physical_plan::PhysicalExpr;
 use datafusion::physical_plan::expressions::{BinaryExpr, LikeExpr, Literal};
 use fsst::{Compressor, Decompressor};
 use std::any::Any;
+use std::fmt::Display;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
@@ -158,12 +159,7 @@ impl LiquidArray for LiquidByteViewArray {
     }
 
     fn get_array_memory_size(&self) -> usize {
-        self.dictionary_views.len() * std::mem::size_of::<DictionaryView>()
-            + self.offsets.inner().len() * std::mem::size_of::<i32>()
-            + self.nulls.as_ref().map_or(0, |n| n.buffer().len())
-            + self.fsst_buffer.read().unwrap().get_array_memory_size()
-            + self.shared_prefix.len()
-            + std::mem::size_of::<Self>()
+        self.get_detailed_memory_usage().total()
     }
 
     fn len(&self) -> usize {
@@ -931,6 +927,71 @@ impl LiquidByteViewArray {
     #[cfg(test)]
     pub fn reset_disk_read_count(&self) {
         reset_disk_read_counter()
+    }
+
+    /// Get detailed memory usage of the byte view array
+    pub fn get_detailed_memory_usage(&self) -> ByteViewArrayMemoryUsage {
+        ByteViewArrayMemoryUsage {
+            dictionary_views: self.dictionary_views.len() * std::mem::size_of::<DictionaryView>(),
+            offsets: self.offsets.inner().len() * std::mem::size_of::<i32>(),
+            nulls: self.nulls.as_ref().map_or(0, |n| n.buffer().len()),
+            fsst_buffer: self.fsst_buffer.read().unwrap().get_array_memory_size(),
+            shared_prefix: self.shared_prefix.len(),
+            struct_size: std::mem::size_of::<Self>(),
+        }
+    }
+}
+
+/// Detailed memory usage of the byte view array
+pub struct ByteViewArrayMemoryUsage {
+    /// Memory usage of the dictionary views
+    pub dictionary_views: usize,
+    /// Memory usage of the offsets
+    pub offsets: usize,
+    /// Memory usage of the nulls
+    pub nulls: usize,
+    /// Memory usage of the FSST buffer
+    pub fsst_buffer: usize,
+    /// Memory usage of the shared prefix
+    pub shared_prefix: usize,
+    /// Memory usage of the struct size
+    pub struct_size: usize,
+}
+
+impl Display for ByteViewArrayMemoryUsage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ByteViewArrayMemoryUsage")
+            .field("dictionary_views", &self.dictionary_views)
+            .field("offsets", &self.offsets)
+            .field("nulls", &self.nulls)
+            .field("fsst_buffer", &self.fsst_buffer)
+            .field("shared_prefix", &self.shared_prefix)
+            .field("struct_size", &self.struct_size)
+            .field("total", &self.total())
+            .finish()
+    }
+}
+
+impl ByteViewArrayMemoryUsage {
+    /// Get the total memory usage of the byte view array
+    pub fn total(&self) -> usize {
+        self.dictionary_views
+            + self.offsets
+            + self.nulls
+            + self.fsst_buffer
+            + self.shared_prefix
+            + self.struct_size
+    }
+}
+
+impl std::ops::AddAssign for ByteViewArrayMemoryUsage {
+    fn add_assign(&mut self, other: Self) {
+        self.dictionary_views += other.dictionary_views;
+        self.offsets += other.offsets;
+        self.nulls += other.nulls;
+        self.fsst_buffer += other.fsst_buffer;
+        self.shared_prefix += other.shared_prefix;
+        self.struct_size += other.struct_size;
     }
 }
 

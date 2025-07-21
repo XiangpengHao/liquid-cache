@@ -156,7 +156,7 @@ The fineweb dataset link:
 - https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu/blob/main/data/CC-MAIN-2025-26/000_00003.parquet
 - https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu/blob/main/data/CC-MAIN-2025-26/000_00004.parquet
 
-Workload 2: [ClickBench dataset](https://github.com/ClickHouse/ClickBench).
+Workload 2: [ClickBench dataset](https://datasets.clickhouse.com/hits_compatible/athena/hits.parquet).
 - the `title` column.
 - the `url` column.
 - the `search_phrase` column.
@@ -165,8 +165,9 @@ Setup:
 - everything is in memory, no IO yet.
 
 Download phase:
-- read parquet data with the projection we care about, don't download if the file is already downloaded (see below).
-- read the record batch into arrow, and save it to tmp disk using arrow IPC format.
+- to load data, we simply register the parquet file to datafusion, and use sql (e.g., `SELECT url, title, search_phrase FROM parquet_file`) to read the columns we care about.
+- once we read the record batch for the first time, we save it to tmp disk using arrow IPC format to avoid re-downloading the data.
+- if the data is already downloaded, we simply read it from disk.
 
 
 

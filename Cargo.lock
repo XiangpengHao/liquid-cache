@@ -2834,6 +2834,7 @@ name = "liquid-cache-parquet"
 version = "0.1.7"
 dependencies = [
  "ahash",
+ "anyhow",
  "arrow",
  "arrow-schema",
  "async-trait",
@@ -2850,12 +2851,14 @@ dependencies = [
  "itertools",
  "liquid-cache-common",
  "log",
+ "mimalloc",
  "num-traits",
  "object_store",
  "parquet",
  "paste",
  "rand 0.9.1",
  "serde",
+ "serde_json",
  "shuttle",
  "tempfile",
  "thrift",
