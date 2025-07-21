@@ -178,6 +178,11 @@ This is to exercise the effectiveness of the prefix.
 Same workload as above, but we compare the performance of sorting the array.
 Instead of sorting the entire column, we sort the each of the batch independently, each batch is 8192*2 rows.
 
+It turns out that fsst-view doesn't help sort performance, because:
+- Efficient sort should first perform on the dictionary, which will not use the prefix. 
+- Even if for array that are all unique, we still need to decompress the array as long as there's one string that can't be resolved by the prefix. Decompressing individual strings and track+cache the decompressed strings can be slower than decompressing the entire array in one shot.
+- But we probably can still use prefix to skip the comparison of the dictionary.
+
 ### Find needle performance
 
 Randomly pick one string from the array, and find it across the entire column.

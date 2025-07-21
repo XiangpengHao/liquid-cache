@@ -5,7 +5,7 @@ use arrow::array::{
 };
 use arrow::array::{BinaryViewArray, BooleanBufferBuilder};
 use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer, ScalarBuffer};
-use arrow::compute::{cast, kernels};
+use arrow::compute::{cast, kernels, sort_to_indices};
 use arrow::datatypes::{BinaryType, ByteArrayType, Utf8Type};
 use arrow_schema::ArrowError;
 use datafusion::logical_expr::{ColumnarValue, Operator};
@@ -43,23 +43,6 @@ fn get_disk_read_counter() -> usize {
 #[cfg(test)]
 fn reset_disk_read_counter() {
     DISK_READ_COUNTER.with(|counter| counter.set(0));
-}
-
-#[cfg(test)]
-fn increment_full_data_comparison_counter() {
-    FULL_DATA_COMPARISON_COUNTER.with(|counter| {
-        counter.set(counter.get() + 1);
-    });
-}
-
-#[cfg(test)]
-fn get_full_data_comparison_counter() -> usize {
-    FULL_DATA_COMPARISON_COUNTER.with(|counter| counter.get())
-}
-
-#[cfg(test)]
-fn reset_full_data_comparison_counter() {
-    FULL_DATA_COMPARISON_COUNTER.with(|counter| counter.set(0));
 }
 
 use super::{
@@ -963,129 +946,11 @@ impl LiquidByteViewArray {
 
     /// Sort the array and return indices that would sort the array
     pub fn sort_to_indices(&self) -> Result<UInt32Array, ArrowError> {
-        let len = self.dictionary_views.len();
-        if len == 0 {
-            return Ok(UInt32Array::from(Vec::<u32>::new()));
-        }
-        if len == 1 {
-            return Ok(UInt32Array::from(vec![0u32]));
-        }
-
-        // Partition into null and non-null indices (inspired by arrow's partition_validity)
-        let (null_indices, non_null_indices) = self.partition_validity();
-
-        if non_null_indices.is_empty() {
-            // All nulls
-            let all_indices: Vec<u32> = (0..len as u32).collect();
-            return Ok(UInt32Array::from(all_indices));
-        }
-
-        if null_indices.is_empty() {
-            // No nulls, sort all elements
-            return self.sort_non_null_indices(non_null_indices);
-        }
-
-        // Sort non-null elements
-        let sorted_non_null = self.sort_non_null_indices(non_null_indices)?;
-
-        // Combine: nulls first, then sorted non-nulls
-        let mut result_indices = null_indices;
-        result_indices.extend_from_slice(sorted_non_null.values());
-
-        Ok(UInt32Array::from(result_indices))
-    }
-
-    /// Partition indices into null and non-null groups
-    fn partition_validity(&self) -> (Vec<u32>, Vec<u32>) {
-        let len = self.dictionary_views.len();
-        let mut null_indices = Vec::new();
-        let mut non_null_indices = Vec::new();
-
-        if let Some(nulls) = &self.nulls {
-            for i in 0..len {
-                if nulls.is_null(i) {
-                    null_indices.push(i as u32);
-                } else {
-                    non_null_indices.push(i as u32);
-                }
-            }
-        } else {
-            // No nulls, all indices are non-null
-            non_null_indices.extend(0..len as u32);
-        }
-
-        (null_indices, non_null_indices)
-    }
-
-    /// Sort non-null indices using optimized comparison
-    fn sort_non_null_indices(&self, mut indices: Vec<u32>) -> Result<UInt32Array, ArrowError> {
-        if indices.len() <= 1 {
-            return Ok(UInt32Array::from(indices));
-        }
-
-        let fsst_array = self.fsst_buffer.read().unwrap().get_fsst_array().unwrap();
-        let mut maybe_decompressed = MaybeDecompressed::NotDecompressed(fsst_array);
-
-        indices.sort_unstable_by(|&a, &b| {
-            self.compare_elements_optimized(a as usize, b as usize, &mut maybe_decompressed)
-        });
-
-        Ok(UInt32Array::from(indices))
-    }
-
-    /// Optimized comparison function with reduced branches and efficient caching
-    fn compare_elements_optimized(
-        &self,
-        a_idx: usize,
-        b_idx: usize,
-        maybe_decompressed: &mut MaybeDecompressed,
-    ) -> std::cmp::Ordering {
-        let view_a = &self.dictionary_views[a_idx];
-        let view_b = &self.dictionary_views[b_idx];
-
-        // Early exit if same key
-        let key_a_idx = view_a.key() as usize;
-        let key_b_idx = view_b.key() as usize;
-
-        if key_a_idx == key_b_idx {
-            return std::cmp::Ordering::Equal;
-        }
-
-        // Compare 6-byte prefixes first (most comparisons can be resolved here)
-        let prefix_cmp = view_a.prefix().cmp(view_b.prefix());
-
-        if prefix_cmp != std::cmp::Ordering::Equal {
-            return prefix_cmp;
-        }
-
-        // Increment counter when we fallback to full data comparison
-        #[cfg(test)]
-        increment_full_data_comparison_counter();
-
-        let decompressed = maybe_decompressed.get_decompressed();
-        let decompressed_a = decompressed.value(key_a_idx);
-        let decompressed_b = decompressed.value(key_b_idx);
-        decompressed_a.cmp(decompressed_b)
+        let arrow_array = self.to_dict_arrow();
+        sort_to_indices(&arrow_array, None, None)
     }
 }
 
-enum MaybeDecompressed {
-    Decompressed(Arc<BinaryArray>),
-    NotDecompressed(Arc<FsstArray>),
-}
-
-impl MaybeDecompressed {
-    fn get_decompressed(&mut self) -> &BinaryArray {
-        match self {
-            MaybeDecompressed::Decompressed(decompressed) => decompressed,
-            MaybeDecompressed::NotDecompressed(fsst_array) => {
-                let decompressed = fsst_array.to_arrow_byte_array::<BinaryType>();
-                *self = MaybeDecompressed::Decompressed(Arc::new(decompressed));
-                self.get_decompressed()
-            }
-        }
-    }
-}
 /// Detailed memory usage of the byte view array
 pub struct ByteViewArrayMemoryUsage {
     /// Memory usage of the dictionary views
@@ -1888,19 +1753,12 @@ mod tests {
         let _ = std::fs::remove_file(temp_path);
     }
 
-    fn sort_to_indices_test(
-        input: Vec<Option<&str>>,
-        expected_idx: Vec<u32>,
-        expected_full_data_comparisons: usize,
-    ) {
-        reset_full_data_comparison_counter();
+    fn sort_to_indices_test(input: Vec<Option<&str>>, expected_idx: Vec<u32>) {
         let input = StringArray::from(input);
         let compressor = LiquidByteViewArray::train_compressor(input.iter());
         let liquid_array = LiquidByteViewArray::from_string_array(&input, compressor);
         let indices = liquid_array.sort_to_indices().unwrap();
         assert_eq!(indices, UInt32Array::from(expected_idx));
-        let full_data_comparisons = get_full_data_comparison_counter();
-        assert_eq!(full_data_comparisons, expected_full_data_comparisons);
     }
 
     #[test]
@@ -1908,7 +1766,6 @@ mod tests {
         sort_to_indices_test(
             vec![Some("zebra"), Some("apple"), Some("banana"), Some("cherry")],
             vec![1, 2, 3, 0],
-            0,
         );
 
         // with nulls
@@ -1923,7 +1780,6 @@ mod tests {
             ],
             // Expected order: null(1), null(4), apple(2), banana(3), cherry(5), zebra(0)
             vec![1, 4, 2, 3, 5, 0],
-            0,
         );
 
         // shared prefix
@@ -1935,7 +1791,6 @@ mod tests {
                 Some("prefix_cherry"),
             ],
             vec![1, 2, 3, 0],
-            0,
         );
 
         // with duplicate values
@@ -1948,7 +1803,6 @@ mod tests {
                 Some("banana"),
             ],
             vec![0, 2, 1, 4, 3],
-            0,
         );
     }
 
@@ -1961,7 +1815,6 @@ mod tests {
                 Some("pre_apple_def"),
             ],
             vec![0, 2, 1],
-            1,
         );
 
         sort_to_indices_test(
@@ -1971,7 +1824,6 @@ mod tests {
                 Some("pre_appll_abc"),
             ],
             vec![0, 2, 1],
-            0,
         );
     }
 

@@ -36,7 +36,7 @@ impl WorkloadType {
             "encode_decode" => Ok(Self::EncodeDecode),
             "find_needle" => Ok(Self::FindNeedle),
             "sort" => Ok(Self::Sort),
-            _ => Err(format!("Unknown workload: {}", s)),
+            _ => Err(format!("Unknown workload: {s}")),
         }
     }
 
@@ -342,7 +342,7 @@ impl BenchmarkRunner {
                 ));
             }
             Some(unknown) => {
-                eprintln!("Unknown benchmark type: {}. Using all benchmarks.", unknown);
+                eprintln!("Unknown benchmark type: {unknown}. Using all benchmarks.");
                 results.push(Self::run_benchmark(
                     FsstViewBenchmark { compressor: None },
                     arrays,
@@ -475,7 +475,8 @@ impl ArrayBenchmark for FsstViewBenchmark {
 
     fn run_sort(&self, encoded_data: &Self::EncodedData) -> f64 {
         let start = Instant::now();
-        let _indices = encoded_data.sort_to_indices().unwrap();
+        let arrow_array = encoded_data.to_dict_arrow();
+        let _indices = sort_to_indices(&arrow_array, None, None).unwrap();
         start.elapsed().as_secs_f64()
     }
 }
@@ -524,7 +525,7 @@ impl ArrayBenchmark for ByteArrayBenchmark {
 
     fn run_sort(&self, encoded_data: &Self::EncodedData) -> f64 {
         let start = Instant::now();
-        let arrow_array = encoded_data.to_arrow_array();
+        let arrow_array = encoded_data.to_dict_arrow();
         let _indices = sort_to_indices(&arrow_array, None, None).unwrap();
         start.elapsed().as_secs_f64()
     }
@@ -696,9 +697,9 @@ fn main() {
     let runner = BenchmarkRunner;
     let mut all_column_results = Vec::new();
 
-    println!("Running workloads: {:?}", workloads_to_run);
+    println!("Running workloads: {workloads_to_run:?}");
     if let Some(ref benchmark) = args.benchmark {
-        println!("Benchmark filter: {}", benchmark);
+        println!("Benchmark filter: {benchmark}");
     }
     println!("Columns: {}", columns_to_process.join(", "));
     println!();
@@ -752,10 +753,10 @@ fn main() {
 
     let json_output = serde_json::to_string_pretty(&complete_results).unwrap();
     let filename = "../../target/benchmark_results.json";
-    let mut file = File::create(&filename).unwrap();
+    let mut file = File::create(filename).unwrap();
     file.write_all(json_output.as_bytes()).unwrap();
 
-    println!("Benchmark results written to {}", filename);
+    println!("Benchmark results written to {filename}");
 
     println!("Benchmark completed!");
 }
