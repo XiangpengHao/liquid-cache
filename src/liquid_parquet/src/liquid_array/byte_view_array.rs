@@ -961,7 +961,7 @@ impl LiquidByteViewArray {
         let mut decompressed_cache: HashMap<u16, Vec<u8>> = HashMap::new();
 
         // Sort by comparison function that uses shared prefix, view prefixes, and caching
-        indices.sort_by(|&(a_idx, _), &(b_idx, _)| {
+        indices.sort_unstable_by(|&(a_idx, _), &(b_idx, _)| {
             self.compare_elements_cached(a_idx, b_idx, &mut decompressed_cache)
         });
 

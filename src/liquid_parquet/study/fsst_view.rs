@@ -24,28 +24,24 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[derive(Debug, Clone, PartialEq)]
 enum WorkloadType {
-    EncodeDecodeOnly,
-    FindNeedleOnly,
-    SortOnly,
+    EncodeDecode,
+    FindNeedle,
+    Sort,
 }
 
 impl WorkloadType {
     fn from_str(s: &str) -> Result<Self, String> {
         match s {
-            "encode_decode" => Ok(Self::EncodeDecodeOnly),
-            "find_needle" => Ok(Self::FindNeedleOnly),
-            "sort" => Ok(Self::SortOnly),
+            "encode_decode" => Ok(Self::EncodeDecode),
+            "find_needle" => Ok(Self::FindNeedle),
+            "sort" => Ok(Self::Sort),
             _ => Err(format!("Unknown workload: {}", s)),
         }
     }
 
     fn parse_workloads(s: &str) -> Result<Vec<Self>, String> {
         if s == "all" {
-            Ok(vec![
-                Self::EncodeDecodeOnly,
-                Self::FindNeedleOnly,
-                Self::SortOnly,
-            ])
+            Ok(vec![Self::EncodeDecode, Self::FindNeedle, Self::Sort])
         } else {
             s.split(',')
                 .map(|w| Self::from_str(w.trim()))
@@ -232,17 +228,17 @@ impl BenchmarkRunner {
 
                 for workload in workloads {
                     match workload {
-                        WorkloadType::EncodeDecodeOnly => {
+                        WorkloadType::EncodeDecode => {
                             let result = benchmark.run_encode_decode(arrays);
                             println!("{} encode/decode: {}", benchmark.workload_name(), result);
                             encode_result = Some(result);
                         }
-                        WorkloadType::FindNeedleOnly => {
+                        WorkloadType::FindNeedle => {
                             let result = benchmark.run_find_needle(arrays, &needles);
                             println!("{} find needle: {}", benchmark.workload_name(), result);
                             find_needle_result = Some(result);
                         }
-                        WorkloadType::SortOnly => {
+                        WorkloadType::Sort => {
                             let result = benchmark.run_sort(arrays);
                             println!("{} sort: {}", benchmark.workload_name(), result);
                             sort_result = Some(result);
