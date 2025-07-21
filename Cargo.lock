@@ -2839,6 +2839,7 @@ dependencies = [
  "arrow-schema",
  "async-trait",
  "bytes",
+ "clap",
  "congee",
  "datafusion",
  "divan",

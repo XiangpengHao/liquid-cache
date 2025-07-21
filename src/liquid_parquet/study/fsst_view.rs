@@ -5,6 +5,8 @@ use std::io::{Cursor, Write};
 use std::sync::Arc;
 use std::time::Instant;
 
+use clap::Parser;
+
 use arrow::array::{Array, AsArray, RecordBatch, StringViewArray};
 use arrow::compute::{cast, sort_to_indices};
 use arrow::datatypes::{DataType, Float64Type};
@@ -19,6 +21,68 @@ use serde::{Deserialize, Serialize};
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+#[derive(Debug, Clone, PartialEq)]
+enum WorkloadType {
+    EncodeDecodeOnly,
+    FindNeedleOnly,
+    SortOnly,
+}
+
+impl WorkloadType {
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "encode_decode" => Ok(Self::EncodeDecodeOnly),
+            "find_needle" => Ok(Self::FindNeedleOnly),
+            "sort" => Ok(Self::SortOnly),
+            _ => Err(format!("Unknown workload: {}", s)),
+        }
+    }
+
+    fn parse_workloads(s: &str) -> Result<Vec<Self>, String> {
+        if s == "all" {
+            Ok(vec![
+                Self::EncodeDecodeOnly,
+                Self::FindNeedleOnly,
+                Self::SortOnly,
+            ])
+        } else {
+            s.split(',')
+                .map(|w| Self::from_str(w.trim()))
+                .collect::<Result<Vec<_>, _>>()
+        }
+    }
+}
+
+#[derive(Parser)]
+#[command(name = "FSST View Benchmark")]
+#[command(about = "A benchmark tool for comparing different array compression techniques")]
+struct CliArgs {
+    /// Workload type to run
+    #[arg(long, default_value = "all")]
+    #[arg(
+        help = "Workload to run: encode_decode, find_needle, sort, all, or comma-separated list (e.g., encode_decode,sort)"
+    )]
+    workload: String,
+
+    /// Benchmark type to run
+    #[arg(long)]
+    #[arg(
+        help = "Benchmark type to run: fsst_view, byte_array, string_array, string_array_lz4, or all"
+    )]
+    benchmark: Option<String>,
+
+    /// Columns to process
+    #[arg(long)]
+    #[arg(
+        help = "Comma-separated list of columns to process. Available: Title,URL,SearchPhrase,Referer,OriginalURL"
+    )]
+    columns: Option<String>,
+
+    #[arg(long, default_value = "false")]
+    #[arg(help = "make cargo happy")]
+    bench: bool,
+}
 
 #[derive(Clone)]
 struct ColumnData {
@@ -57,7 +121,9 @@ async fn download_clickbench_column(column: &str) -> ColumnData {
 
     // Get average string length
     let avg_length_batches = ctx
-        .sql(&format!("SELECT AVG(LENGTH(\"{column}\")) AS \"{column}\" FROM \"hits\""))
+        .sql(&format!(
+            "SELECT AVG(LENGTH(\"{column}\")) AS \"{column}\" FROM \"hits\""
+        ))
         .await
         .unwrap()
         .collect()
@@ -107,9 +173,9 @@ struct SortResult {
 
 #[derive(Serialize, Deserialize, Clone)]
 struct BenchmarkResults {
-    encode_result: EncodeResult,
-    find_needle_result: FindNeedleResult,
-    sort_result: SortResult,
+    encode_result: Option<EncodeResult>,
+    find_needle_result: Option<FindNeedleResult>,
+    sort_result: Option<SortResult>,
 }
 
 /// Trait for running benchmarks on different array types
@@ -123,37 +189,66 @@ trait ArrayBenchmark {
 struct BenchmarkRunner;
 
 impl BenchmarkRunner {
-    fn run_all_benchmarks(&self, arrays: &[StringViewArray]) -> Vec<BenchmarkResults> {
-        let needles = select_random_needles(&arrays[0]);
-
-        let benchmarks: Vec<Box<dyn ArrayBenchmark>> = vec![
+    fn get_benchmarks() -> Vec<Box<dyn ArrayBenchmark>> {
+        vec![
             Box::new(FsstViewBenchmark),
             Box::new(ByteArrayBenchmark),
             Box::new(StringArrayBenchmark),
             Box::new(StringArrayLz4Benchmark),
-        ];
+        ]
+    }
+
+    fn get_filtered_benchmarks(filter: Option<&str>) -> Vec<Box<dyn ArrayBenchmark>> {
+        let all_benchmarks = Self::get_benchmarks();
+
+        match filter {
+            Some("fsst_view") => vec![Box::new(FsstViewBenchmark)],
+            Some("byte_array") => vec![Box::new(ByteArrayBenchmark)],
+            Some("string_array") => vec![Box::new(StringArrayBenchmark)],
+            Some("string_array_lz4") => vec![Box::new(StringArrayLz4Benchmark)],
+            Some("all") | None => all_benchmarks,
+            Some(unknown) => {
+                eprintln!("Unknown benchmark type: {}. Using all benchmarks.", unknown);
+                all_benchmarks
+            }
+        }
+    }
+
+    fn run_workloads(
+        &self,
+        arrays: &[StringViewArray],
+        workloads: &[WorkloadType],
+        benchmark_filter: Option<&str>,
+    ) -> Vec<BenchmarkResults> {
+        let benchmarks = Self::get_filtered_benchmarks(benchmark_filter);
+        let needles = select_random_needles(&arrays[0]);
 
         benchmarks
             .into_iter()
             .map(|benchmark| {
-                let encode_result = benchmark.run_encode_decode(arrays);
-                println!(
-                    "{} encode/decode: {}",
-                    benchmark.workload_name(),
-                    encode_result
-                );
-                let find_needle_result = benchmark.run_find_needle(arrays, &needles);
-                println!(
-                    "{} find needle: {}",
-                    benchmark.workload_name(),
-                    find_needle_result
-                );
-                let sort_result = benchmark.run_sort(arrays);
-                println!(
-                    "{} sort: {}",
-                    benchmark.workload_name(),
-                    sort_result
-                );
+                let mut encode_result = None;
+                let mut find_needle_result = None;
+                let mut sort_result = None;
+
+                for workload in workloads {
+                    match workload {
+                        WorkloadType::EncodeDecodeOnly => {
+                            let result = benchmark.run_encode_decode(arrays);
+                            println!("{} encode/decode: {}", benchmark.workload_name(), result);
+                            encode_result = Some(result);
+                        }
+                        WorkloadType::FindNeedleOnly => {
+                            let result = benchmark.run_find_needle(arrays, &needles);
+                            println!("{} find needle: {}", benchmark.workload_name(), result);
+                            find_needle_result = Some(result);
+                        }
+                        WorkloadType::SortOnly => {
+                            let result = benchmark.run_sort(arrays);
+                            println!("{} sort: {}", benchmark.workload_name(), result);
+                            sort_result = Some(result);
+                        }
+                    }
+                }
                 BenchmarkResults {
                     encode_result,
                     find_needle_result,
@@ -192,8 +287,7 @@ impl Display for SortResult {
         write!(
             f,
             "{} -- total: {:.4} s",
-            self.workload,
-            self.total_sort_time_sec
+            self.workload, self.total_sort_time_sec
         )
     }
 }
@@ -652,36 +746,40 @@ struct CompleteResults {
 }
 
 fn main() {
-    let columns = ["Title", "URL", "SearchPhrase", "Referer", "OriginalURL"];
+    let args = CliArgs::parse();
+
+    // Parse and validate workloads
+    let workloads_to_run = WorkloadType::parse_workloads(&args.workload).unwrap();
+
+    let all_columns = ["Title", "URL", "SearchPhrase", "Referer", "OriginalURL"];
+    let columns_to_process: Vec<&str> = if let Some(ref columns_str) = args.columns {
+        columns_str.split(',').map(|s| s.trim()).collect()
+    } else {
+        all_columns.to_vec()
+    };
+
     let runner = BenchmarkRunner;
+    let mut all_column_results = Vec::new();
 
-    let mut results = Vec::new();
+    println!("Running workloads: {:?}", workloads_to_run);
+    if let Some(ref benchmark) = args.benchmark {
+        println!("Benchmark filter: {}", benchmark);
+    }
+    println!("Columns: {}", columns_to_process.join(", "));
+    println!();
 
-    for c in columns {
+    for c in columns_to_process {
         println!("Loading column: {c}");
         let column_data = load_column_data(c);
         println!("{c} average length: {}", column_data.avg_str_length);
 
-        println!("Running all benchmarks for {c}");
-        let benchmark_results = runner.run_all_benchmarks(&column_data.data);
+        println!("Running benchmarks for {c}");
+        let benchmark_results = runner.run_workloads(
+            &column_data.data,
+            &workloads_to_run,
+            args.benchmark.as_deref(),
+        );
 
-        // Print results
-        for result in &benchmark_results {
-            println!(
-                "{} {}: {}",
-                c, result.encode_result.workload, result.encode_result
-            );
-            println!(
-                "{} {} find needle: {}",
-                c, result.find_needle_result.workload, result.find_needle_result
-            );
-            println!(
-                "{} {} sort: {}",
-                c, result.sort_result.workload, result.sort_result
-            );
-        }
-
-        // Get FSST view memory usage for detailed reporting
         let (compressor, _) = LiquidByteViewArray::train_from_string_view(&column_data.data[0]);
         let mut total_detailed_memory_usage = ByteViewArrayMemoryUsage {
             dictionary_views: 0,
@@ -697,18 +795,17 @@ fn main() {
             total_detailed_memory_usage += array.get_detailed_memory_usage();
         }
 
-        results.push(BenchmarkResult {
+        all_column_results.push(BenchmarkResult {
             column_name: c.to_string(),
             avg_string_length: column_data.avg_str_length,
             benchmark_results,
             fsst_view_memory_usage: total_detailed_memory_usage.into(),
         });
 
-        // Explicitly drop column_data to free memory before processing next column
-        drop(column_data);
-        println!("Finished processing {c}, memory freed\n");
+        println!("Finished processing {c}\n");
     }
 
+    // Write all results to JSON file once at the end
     let complete_results = CompleteResults {
         benchmark_name: "FSST View Study".to_string(),
         timestamp: std::time::SystemTime::now()
@@ -716,12 +813,15 @@ fn main() {
             .unwrap()
             .as_secs()
             .to_string(),
-        columns: results,
+        columns: all_column_results,
     };
 
     let json_output = serde_json::to_string_pretty(&complete_results).unwrap();
-    let mut file = File::create("../../target/benchmark_results.json").unwrap();
+    let filename = "../../target/benchmark_results.json";
+    let mut file = File::create(&filename).unwrap();
     file.write_all(json_output.as_bytes()).unwrap();
 
-    println!("Benchmark results written to target/benchmark_results.json");
+    println!("Benchmark results written to {}", filename);
+
+    println!("Benchmark completed!");
 }

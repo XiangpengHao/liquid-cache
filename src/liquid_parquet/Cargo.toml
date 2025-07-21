@@ -43,6 +43,7 @@ insta = { version = "1.43.1" }
 anyhow = "1.0"
 serde_json = { workspace = true }
 mimalloc = "0.1.46"
+clap = { version = "4.5.38", features = ["derive"] }
 
 [features]
 shuttle = []
