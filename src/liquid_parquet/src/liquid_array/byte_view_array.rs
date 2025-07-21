@@ -14,7 +14,7 @@ use datafusion::physical_plan::PhysicalExpr;
 use datafusion::physical_plan::expressions::{BinaryExpr, LikeExpr, Literal};
 use fsst::{Compressor, Decompressor};
 use std::any::Any;
-use std::collections::HashMap;
+
 use std::fmt::Display;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -950,46 +950,102 @@ impl LiquidByteViewArray {
     }
 
     /// Sort the array and return indices that would sort the array
-    /// Uses caching to avoid redundant decompression of values during sorting
+    /// Uses optimized approach: separate nulls, pre-allocate cache, reduce branches
     pub fn sort_to_indices_cached(&self) -> Result<UInt32Array, ArrowError> {
         let len = self.dictionary_views.len();
+        if len == 0 {
+            return Ok(UInt32Array::from(Vec::<u32>::new()));
+        }
+        if len == 1 {
+            return Ok(UInt32Array::from(vec![0u32]));
+        }
 
-        // Create initial indices
-        let mut indices: Vec<(usize, u32)> = (0..len).map(|i| (i, i as u32)).collect();
+        // Partition into null and non-null indices (inspired by arrow's partition_validity)
+        let (null_indices, non_null_indices) = self.partition_validity();
 
-        // Create cache for decompressed values
-        let mut decompressed_cache: HashMap<u16, Vec<u8>> = HashMap::new();
+        if non_null_indices.is_empty() {
+            // All nulls
+            let all_indices: Vec<u32> = (0..len as u32).collect();
+            return Ok(UInt32Array::from(all_indices));
+        }
 
-        // Sort by comparison function that uses shared prefix, view prefixes, and caching
-        indices.sort_unstable_by(|&(a_idx, _), &(b_idx, _)| {
-            self.compare_elements_cached(a_idx, b_idx, &mut decompressed_cache)
-        });
+        if null_indices.is_empty() {
+            // No nulls, sort all elements
+            return self.sort_non_null_indices(non_null_indices);
+        }
 
-        // Extract sorted indices
-        let sorted_indices: Vec<u32> = indices.into_iter().map(|(_, idx)| idx).collect();
+        // Sort non-null elements
+        let sorted_non_null = self.sort_non_null_indices(non_null_indices)?;
 
-        Ok(UInt32Array::from(sorted_indices))
+        // Combine: nulls first, then sorted non-nulls
+        let mut result_indices = null_indices;
+        result_indices.extend_from_slice(sorted_non_null.values());
+
+        Ok(UInt32Array::from(result_indices))
     }
 
-    /// Compare two elements in the array using shared prefix, view prefixes, and caching
-    /// Returns std::cmp::Ordering for sorting
-    fn compare_elements_cached(
+    /// Partition indices into null and non-null groups
+    fn partition_validity(&self) -> (Vec<u32>, Vec<u32>) {
+        let len = self.dictionary_views.len();
+        let mut null_indices = Vec::new();
+        let mut non_null_indices = Vec::new();
+
+        if let Some(nulls) = &self.nulls {
+            for i in 0..len {
+                if nulls.is_null(i) {
+                    null_indices.push(i as u32);
+                } else {
+                    non_null_indices.push(i as u32);
+                }
+            }
+        } else {
+            // No nulls, all indices are non-null
+            non_null_indices.extend(0..len as u32);
+        }
+
+        (null_indices, non_null_indices)
+    }
+
+    /// Sort non-null indices using optimized comparison
+    fn sort_non_null_indices(&self, mut indices: Vec<u32>) -> Result<UInt32Array, ArrowError> {
+        if indices.len() <= 1 {
+            return Ok(UInt32Array::from(indices));
+        }
+
+        // Pre-allocate cache as Vec for O(1) access
+        let max_key = self
+            .fsst_buffer
+            .read()
+            .unwrap()
+            .get_fsst_array()
+            .unwrap()
+            .compressed
+            .len();
+        let mut decompressed_cache: Vec<Option<Vec<u8>>> = vec![None; max_key];
+        let fsst_array = self.fsst_buffer.read().unwrap().get_fsst_array().unwrap();
+
+        // Sort using optimized comparison
+        indices.sort_unstable_by(|&a, &b| {
+            self.compare_elements_optimized(
+                a as usize,
+                b as usize,
+                &mut decompressed_cache,
+                &fsst_array,
+            )
+        });
+
+        Ok(UInt32Array::from(indices))
+    }
+
+    /// Optimized comparison function with reduced branches and efficient caching
+    fn compare_elements_optimized(
         &self,
         a_idx: usize,
         b_idx: usize,
-        cache: &mut HashMap<u16, Vec<u8>>,
+        cache: &mut Vec<Option<Vec<u8>>>,
+        fsst_array: &FsstArray,
     ) -> std::cmp::Ordering {
-        // Handle null values - nulls are considered "less than" any value
-        let a_is_null = self.nulls.as_ref().is_some_and(|n| n.is_null(a_idx));
-        let b_is_null = self.nulls.as_ref().is_some_and(|n| n.is_null(b_idx));
-
-        match (a_is_null, b_is_null) {
-            (true, true) => return std::cmp::Ordering::Equal,
-            (true, false) => return std::cmp::Ordering::Less,
-            (false, true) => return std::cmp::Ordering::Greater,
-            (false, false) => {} // Continue with normal comparison
-        }
-
+        // Early exit for identical indices
         if a_idx == b_idx {
             return std::cmp::Ordering::Equal;
         }
@@ -997,52 +1053,51 @@ impl LiquidByteViewArray {
         let view_a = &self.dictionary_views[a_idx];
         let view_b = &self.dictionary_views[b_idx];
 
-        // First compare by the 6-byte prefixes (which are after the shared prefix)
+        // Compare 6-byte prefixes first (most comparisons can be resolved here)
         let prefix_cmp = view_a.prefix().cmp(view_b.prefix());
 
         if prefix_cmp != std::cmp::Ordering::Equal {
             return prefix_cmp;
         }
 
-        // If prefixes are equal, we need to compare the full values
-        // This requires decompression with caching
-        self.compare_full_values_cached(view_a.key(), view_b.key(), cache)
+        // Prefixes are equal - need full value comparison via decompression
+        self.compare_full_values_optimized(view_a.key(), view_b.key(), cache, fsst_array)
     }
 
-    /// Compare full values by decompressing them when prefixes are identical, with caching
-    fn compare_full_values_cached(
+    fn compare_full_values_optimized(
         &self,
         key_a: u16,
         key_b: u16,
-        cache: &mut HashMap<u16, Vec<u8>>,
+        cache: &mut Vec<Option<Vec<u8>>>,
+        fsst_array: &FsstArray,
     ) -> std::cmp::Ordering {
-        let storage = self.fsst_buffer.read().unwrap();
-        let fsst_array = storage.get_fsst_array().unwrap();
-        let decompressor = storage.get_decompressor();
+        // Early exit if same key
+        if key_a == key_b {
+            return std::cmp::Ordering::Equal;
+        }
 
-        // Get compressed values
         let key_a_idx = key_a as usize;
         let key_b_idx = key_b as usize;
 
-        // Ensure value A is cached
-        if !cache.contains_key(&key_a) {
+        let decompressor = fsst_array.decompressor();
+        // Lazy decompress value A if not cached
+        if cache[key_a_idx].is_none() {
             let compressed_a = fsst_array.compressed.value(key_a_idx);
             let decompressed_a = decompressor.decompress(compressed_a);
-            cache.insert(key_a, decompressed_a);
+            cache[key_a_idx] = Some(decompressed_a);
         }
 
-        // Ensure value B is cached
-        if !cache.contains_key(&key_b) {
+        // Lazy decompress value B if not cached
+        if cache[key_b_idx].is_none() {
             let compressed_b = fsst_array.compressed.value(key_b_idx);
             let decompressed_b = decompressor.decompress(compressed_b);
-            cache.insert(key_b, decompressed_b);
+            cache[key_b_idx] = Some(decompressed_b);
         }
 
-        // Compare cached values directly without cloning
-        let decompressed_a = cache.get(&key_a).unwrap();
-        let decompressed_b = cache.get(&key_b).unwrap();
+        // Compare cached values
+        let decompressed_a = cache[key_a_idx].as_ref().unwrap();
+        let decompressed_b = cache[key_b_idx].as_ref().unwrap();
 
-        // The decompressed values contain the full strings (including shared prefix)
         decompressed_a.cmp(decompressed_b)
     }
 }

@@ -13,6 +13,7 @@ use arrow::datatypes::{DataType, Float64Type};
 use arrow_schema::{Field, Schema};
 use datafusion::logical_expr::Operator;
 use datafusion::prelude::*;
+use fsst::Compressor;
 use liquid_cache_parquet::liquid_array::{
     ByteViewArrayMemoryUsage, LiquidArray, LiquidByteArray, LiquidByteViewArray,
 };
@@ -176,37 +177,99 @@ struct BenchmarkResults {
 
 /// Trait for running benchmarks on different array types
 trait ArrayBenchmark {
-    fn run_encode_decode(&self, arrays: &[StringViewArray]) -> EncodeResult;
-    fn run_find_needle(&self, arrays: &[StringViewArray], needles: &[String]) -> FindNeedleResult;
-    fn run_sort(&self, arrays: &[StringViewArray]) -> SortResult;
+    type EncodedData;
+
+    fn encode(&mut self, array: &StringViewArray) -> (Self::EncodedData, f64, usize);
+    fn run_decode(&self, encoded_data: &Self::EncodedData) -> f64;
+    fn run_find_needle(&self, encoded_data: &Self::EncodedData, needles: &[String]) -> f64;
+    fn run_sort(&self, encoded_data: &Self::EncodedData) -> f64;
     fn workload_name(&self) -> String;
 }
 
 struct BenchmarkRunner;
 
 impl BenchmarkRunner {
-    fn get_benchmarks() -> Vec<Box<dyn ArrayBenchmark>> {
-        vec![
-            Box::new(FsstViewBenchmark),
-            Box::new(ByteArrayBenchmark),
-            Box::new(StringArrayBenchmark),
-            Box::new(StringArrayLz4Benchmark),
-        ]
-    }
+    fn run_benchmark<T: ArrayBenchmark>(
+        mut benchmark: T,
+        arrays: &[StringViewArray],
+        workloads: &[WorkloadType],
+        needles: &[String],
+    ) -> BenchmarkResults {
+        let mut total_encode_time = 0.0;
+        let mut total_decode_time = 0.0;
+        let mut total_size = 0;
+        let mut total_find_needle_time = 0.0;
+        let mut total_sort_time = 0.0;
 
-    fn get_filtered_benchmarks(filter: Option<&str>) -> Vec<Box<dyn ArrayBenchmark>> {
-        let all_benchmarks = Self::get_benchmarks();
+        // Process each array individually
+        for array in arrays {
+            let (encoded_data, encode_time, size) = benchmark.encode(array);
+            total_encode_time += encode_time;
+            total_size += size;
 
-        match filter {
-            Some("fsst_view") => vec![Box::new(FsstViewBenchmark)],
-            Some("byte_array") => vec![Box::new(ByteArrayBenchmark)],
-            Some("string_array") => vec![Box::new(StringArrayBenchmark)],
-            Some("string_array_lz4") => vec![Box::new(StringArrayLz4Benchmark)],
-            Some("all") | None => all_benchmarks,
-            Some(unknown) => {
-                eprintln!("Unknown benchmark type: {}. Using all benchmarks.", unknown);
-                all_benchmarks
+            for workload in workloads {
+                match workload {
+                    WorkloadType::EncodeDecode => {
+                        let decode_time = benchmark.run_decode(&encoded_data);
+                        total_decode_time += decode_time;
+                    }
+                    WorkloadType::FindNeedle => {
+                        let search_time = benchmark.run_find_needle(&encoded_data, needles);
+                        total_find_needle_time += search_time;
+                    }
+                    WorkloadType::Sort => {
+                        let sort_time = benchmark.run_sort(&encoded_data);
+                        total_sort_time += sort_time;
+                    }
+                }
             }
+        }
+
+        let mut encode_result = None;
+        let mut find_needle_result = None;
+        let mut sort_result = None;
+
+        for workload in workloads {
+            match workload {
+                WorkloadType::EncodeDecode => {
+                    let result = EncodeResult {
+                        total_size,
+                        encode_time_sec: total_encode_time,
+                        decode_time_sec: total_decode_time,
+                        workload: benchmark.workload_name(),
+                    };
+                    println!("{} encode/decode: {}", benchmark.workload_name(), result);
+                    encode_result = Some(result);
+                }
+                WorkloadType::FindNeedle => {
+                    let needle_count = needles.len();
+                    let avg_search_time_per_needle_sec =
+                        total_find_needle_time / needle_count as f64;
+                    let result = FindNeedleResult {
+                        needle_count,
+                        total_search_time_sec: total_find_needle_time,
+                        avg_search_time_per_needle_sec,
+                        avg_search_time_per_needle_ms: avg_search_time_per_needle_sec * 1000.0,
+                        workload: benchmark.workload_name(),
+                    };
+                    println!("{} find needle: {}", benchmark.workload_name(), result);
+                    find_needle_result = Some(result);
+                }
+                WorkloadType::Sort => {
+                    let result = SortResult {
+                        total_sort_time_sec: total_sort_time,
+                        workload: benchmark.workload_name(),
+                    };
+                    println!("{} sort: {}", benchmark.workload_name(), result);
+                    sort_result = Some(result);
+                }
+            }
+        }
+
+        BenchmarkResults {
+            encode_result,
+            find_needle_result,
+            sort_result,
         }
     }
 
@@ -216,42 +279,98 @@ impl BenchmarkRunner {
         workloads: &[WorkloadType],
         benchmark_filter: Option<&str>,
     ) -> Vec<BenchmarkResults> {
-        let benchmarks = Self::get_filtered_benchmarks(benchmark_filter);
         let needles = select_random_needles(&arrays[0]);
+        let mut results = Vec::new();
 
-        benchmarks
-            .into_iter()
-            .map(|benchmark| {
-                let mut encode_result = None;
-                let mut find_needle_result = None;
-                let mut sort_result = None;
+        match benchmark_filter {
+            Some("fsst_view") => {
+                results.push(Self::run_benchmark(
+                    FsstViewBenchmark { compressor: None },
+                    arrays,
+                    workloads,
+                    &needles,
+                ));
+            }
+            Some("byte_array") => {
+                results.push(Self::run_benchmark(
+                    ByteArrayBenchmark { compressor: None },
+                    arrays,
+                    workloads,
+                    &needles,
+                ));
+            }
+            Some("string_array") => {
+                results.push(Self::run_benchmark(
+                    StringArrayBenchmark,
+                    arrays,
+                    workloads,
+                    &needles,
+                ));
+            }
+            Some("string_array_lz4") => {
+                results.push(Self::run_benchmark(
+                    StringArrayLz4Benchmark,
+                    arrays,
+                    workloads,
+                    &needles,
+                ));
+            }
+            Some("all") | None => {
+                results.push(Self::run_benchmark(
+                    FsstViewBenchmark { compressor: None },
+                    arrays,
+                    workloads,
+                    &needles,
+                ));
+                results.push(Self::run_benchmark(
+                    ByteArrayBenchmark { compressor: None },
+                    arrays,
+                    workloads,
+                    &needles,
+                ));
+                results.push(Self::run_benchmark(
+                    StringArrayBenchmark,
+                    arrays,
+                    workloads,
+                    &needles,
+                ));
+                results.push(Self::run_benchmark(
+                    StringArrayLz4Benchmark,
+                    arrays,
+                    workloads,
+                    &needles,
+                ));
+            }
+            Some(unknown) => {
+                eprintln!("Unknown benchmark type: {}. Using all benchmarks.", unknown);
+                results.push(Self::run_benchmark(
+                    FsstViewBenchmark { compressor: None },
+                    arrays,
+                    workloads,
+                    &needles,
+                ));
+                results.push(Self::run_benchmark(
+                    ByteArrayBenchmark { compressor: None },
+                    arrays,
+                    workloads,
+                    &needles,
+                ));
+                results.push(Self::run_benchmark(
+                    StringArrayBenchmark,
+                    arrays,
+                    workloads,
+                    &needles,
+                ));
+                results.push(Self::run_benchmark(
+                    StringArrayLz4Benchmark,
+                    arrays,
+                    workloads,
+                    &needles,
+                ));
+            }
+        }
 
-                for workload in workloads {
-                    match workload {
-                        WorkloadType::EncodeDecode => {
-                            let result = benchmark.run_encode_decode(arrays);
-                            println!("{} encode/decode: {}", benchmark.workload_name(), result);
-                            encode_result = Some(result);
-                        }
-                        WorkloadType::FindNeedle => {
-                            let result = benchmark.run_find_needle(arrays, &needles);
-                            println!("{} find needle: {}", benchmark.workload_name(), result);
-                            find_needle_result = Some(result);
-                        }
-                        WorkloadType::Sort => {
-                            let result = benchmark.run_sort(arrays);
-                            println!("{} sort: {}", benchmark.workload_name(), result);
-                            sort_result = Some(result);
-                        }
-                    }
-                }
-                BenchmarkResults {
-                    encode_result,
-                    find_needle_result,
-                    sort_result,
-                }
-            })
-            .collect()
+        results
     }
 }
 
@@ -309,395 +428,215 @@ fn select_random_needles(first_batch: &StringViewArray) -> Vec<String> {
     all_strings.into_iter().take(10).collect()
 }
 
-struct FsstViewBenchmark;
+struct FsstViewBenchmark {
+    compressor: Option<Arc<Compressor>>,
+}
 
 impl ArrayBenchmark for FsstViewBenchmark {
+    type EncodedData = LiquidByteViewArray;
+
     fn workload_name(&self) -> String {
         "FSSTView".to_string()
     }
 
-    fn run_encode_decode(&self, arrays: &[StringViewArray]) -> EncodeResult {
-        let (compressor, _) = LiquidByteViewArray::train_from_string_view(&arrays[0]);
-        let mut total_size = 0;
-        let mut encode_time: f64 = 0.0;
-        let mut decode_time: f64 = 0.0;
+    fn encode(&mut self, array: &StringViewArray) -> (Self::EncodedData, f64, usize) {
+        // Train compressor only on the first call
+        let compressor = if let Some(cached_compressor) = &self.compressor {
+            cached_compressor.clone()
+        } else {
+            let (trained_compressor, _) = LiquidByteViewArray::train_from_string_view(array);
+            self.compressor = Some(trained_compressor.clone());
+            trained_compressor
+        };
 
-        for a in arrays {
-            let start = Instant::now();
-            let array = LiquidByteViewArray::from_string_view_array(a, compressor.clone());
-            encode_time += start.elapsed().as_secs_f64();
-
-            total_size += array.get_array_memory_size();
-
-            let start = Instant::now();
-            let _array = array.to_arrow_array();
-            decode_time += start.elapsed().as_secs_f64();
-        }
-
-        EncodeResult {
-            total_size,
-            encode_time_sec: encode_time,
-            decode_time_sec: decode_time,
-            workload: self.workload_name(),
-        }
+        let start = Instant::now();
+        let encoded_array = LiquidByteViewArray::from_string_view_array(array, compressor);
+        let encode_time = start.elapsed().as_secs_f64();
+        let size = encoded_array.get_array_memory_size();
+        (encoded_array, encode_time, size)
     }
 
-    fn run_find_needle(&self, arrays: &[StringViewArray], needles: &[String]) -> FindNeedleResult {
-        let (compressor, _) = LiquidByteViewArray::train_from_string_view(&arrays[0]);
-        let needle_count = needles.len();
-        let mut total_search_time_sec = 0.0;
-
-        for array in arrays {
-            let fsst_array = LiquidByteViewArray::from_string_view_array(array, compressor.clone());
-            let start = Instant::now();
-            for needle in needles {
-                let needle_bytes = needle.as_bytes();
-                let _result = fsst_array
-                    .compare_with(needle_bytes, &Operator::Eq)
-                    .unwrap();
-            }
-            total_search_time_sec += start.elapsed().as_secs_f64();
-        }
-
-        let avg_search_time_per_needle_sec = total_search_time_sec / needle_count as f64;
-        let avg_search_time_per_needle_ms = avg_search_time_per_needle_sec * 1000.0;
-
-        FindNeedleResult {
-            needle_count,
-            total_search_time_sec,
-            avg_search_time_per_needle_sec,
-            avg_search_time_per_needle_ms,
-            workload: self.workload_name(),
-        }
+    fn run_decode(&self, encoded_data: &Self::EncodedData) -> f64 {
+        let start = Instant::now();
+        let _array = encoded_data.to_arrow_array();
+        start.elapsed().as_secs_f64()
     }
 
-    fn run_sort(&self, arrays: &[StringViewArray]) -> SortResult {
-        let (compressor, _) = LiquidByteViewArray::train_from_string_view(&arrays[0]);
-        let mut total_sort_time_sec = 0.0;
-
-        for array in arrays {
-            let fsst_array = LiquidByteViewArray::from_string_view_array(array, compressor.clone());
-            let start = Instant::now();
-            let _indices = fsst_array.sort_to_indices().unwrap();
-            total_sort_time_sec += start.elapsed().as_secs_f64();
+    fn run_find_needle(&self, encoded_data: &Self::EncodedData, needles: &[String]) -> f64 {
+        let start = Instant::now();
+        for needle in needles {
+            let needle_bytes = needle.as_bytes();
+            let _result = encoded_data
+                .compare_with(needle_bytes, &Operator::Eq)
+                .unwrap();
         }
+        start.elapsed().as_secs_f64()
+    }
 
-        SortResult {
-            total_sort_time_sec,
-            workload: self.workload_name(),
-        }
+    fn run_sort(&self, encoded_data: &Self::EncodedData) -> f64 {
+        let start = Instant::now();
+        let _indices = encoded_data.sort_to_indices().unwrap();
+        start.elapsed().as_secs_f64()
     }
 }
 
-struct ByteArrayBenchmark;
+struct ByteArrayBenchmark {
+    compressor: Option<Arc<Compressor>>,
+}
 
 impl ArrayBenchmark for ByteArrayBenchmark {
+    type EncodedData = LiquidByteArray;
+
     fn workload_name(&self) -> String {
         "ByteArray".to_string()
     }
 
-    fn run_encode_decode(&self, arrays: &[StringViewArray]) -> EncodeResult {
-        let (compressor, _) = LiquidByteArray::train_from_string_view(&arrays[0]);
-        let mut total_size = 0;
-        let mut encode_time: f64 = 0.0;
-        let mut decode_time: f64 = 0.0;
+    fn encode(&mut self, array: &StringViewArray) -> (Self::EncodedData, f64, usize) {
+        // Train compressor only on the first call
+        let compressor = if let Some(cached_compressor) = &self.compressor {
+            cached_compressor.clone()
+        } else {
+            let (trained_compressor, _) = LiquidByteArray::train_from_string_view(array);
+            self.compressor = Some(trained_compressor.clone());
+            trained_compressor
+        };
 
-        for a in arrays {
-            let start = Instant::now();
-            let array = LiquidByteArray::from_string_view_array(a, compressor.clone());
-            encode_time += start.elapsed().as_secs_f64();
-
-            total_size += array.get_array_memory_size();
-
-            let start = Instant::now();
-            let _array = array.to_arrow_array();
-            decode_time += start.elapsed().as_secs_f64();
-        }
-
-        EncodeResult {
-            total_size,
-            encode_time_sec: encode_time,
-            decode_time_sec: decode_time,
-            workload: self.workload_name(),
-        }
+        let start = Instant::now();
+        let encoded_array = LiquidByteArray::from_string_view_array(array, compressor);
+        let encode_time = start.elapsed().as_secs_f64();
+        let size = encoded_array.get_array_memory_size();
+        (encoded_array, encode_time, size)
     }
 
-    fn run_find_needle(&self, arrays: &[StringViewArray], needles: &[String]) -> FindNeedleResult {
-        let (compressor, _) = LiquidByteArray::train_from_string_view(&arrays[0]);
-        let needle_count = needles.len();
-        let mut total_search_time_sec = 0.0;
-
-        for array in arrays {
-            let byte_array = LiquidByteArray::from_string_view_array(array, compressor.clone());
-            let start = Instant::now();
-            for needle in needles {
-                let _result = byte_array.compare_equals(needle);
-            }
-            total_search_time_sec += start.elapsed().as_secs_f64();
-        }
-
-        let avg_search_time_per_needle_sec = total_search_time_sec / needle_count as f64;
-        let avg_search_time_per_needle_ms = avg_search_time_per_needle_sec * 1000.0;
-
-        FindNeedleResult {
-            needle_count,
-            total_search_time_sec,
-            avg_search_time_per_needle_sec,
-            avg_search_time_per_needle_ms,
-            workload: self.workload_name(),
-        }
+    fn run_decode(&self, encoded_data: &Self::EncodedData) -> f64 {
+        let start = Instant::now();
+        let _array = encoded_data.to_arrow_array();
+        start.elapsed().as_secs_f64()
     }
 
-    fn run_sort(&self, arrays: &[StringViewArray]) -> SortResult {
-        let (compressor, _) = LiquidByteArray::train_from_string_view(&arrays[0]);
-        let mut total_sort_time_sec = 0.0;
-
-        for array in arrays {
-            let byte_array = LiquidByteArray::from_string_view_array(array, compressor.clone());
-            let start = Instant::now();
-            let arrow_array = byte_array.to_arrow_array();
-            let _indices = sort_to_indices(&arrow_array, None, None).unwrap();
-            total_sort_time_sec += start.elapsed().as_secs_f64();
+    fn run_find_needle(&self, encoded_data: &Self::EncodedData, needles: &[String]) -> f64 {
+        let start = Instant::now();
+        for needle in needles {
+            let _result = encoded_data.compare_equals(needle);
         }
+        start.elapsed().as_secs_f64()
+    }
 
-        SortResult {
-            total_sort_time_sec,
-            workload: self.workload_name(),
-        }
+    fn run_sort(&self, encoded_data: &Self::EncodedData) -> f64 {
+        let start = Instant::now();
+        let arrow_array = encoded_data.to_arrow_array();
+        let _indices = sort_to_indices(&arrow_array, None, None).unwrap();
+        start.elapsed().as_secs_f64()
     }
 }
 
 struct StringArrayBenchmark;
 
 impl ArrayBenchmark for StringArrayBenchmark {
+    type EncodedData = StringViewArray;
+
     fn workload_name(&self) -> String {
         "StringArray".to_string()
     }
 
-    fn run_encode_decode(&self, arrays: &[StringViewArray]) -> EncodeResult {
-        let mut encode_time: f64 = 0.0;
-        let mut decode_time: f64 = 0.0;
-        let mut total_size = 0;
-
-        for a in arrays {
-            let start = Instant::now();
-            let v = cast(a, &DataType::Utf8).unwrap();
-            let v = v.as_string::<i32>().clone();
-            encode_time += start.elapsed().as_secs_f64();
-
-            total_size += v.get_array_memory_size();
-
-            let start = Instant::now();
-            let _v = cast(&v, &DataType::Utf8View).unwrap();
-            decode_time += start.elapsed().as_secs_f64();
-        }
-
-        EncodeResult {
-            total_size,
-            encode_time_sec: encode_time,
-            decode_time_sec: decode_time,
-            workload: self.workload_name(),
-        }
-    }
-
-    fn run_find_needle(&self, arrays: &[StringViewArray], needles: &[String]) -> FindNeedleResult {
-        if arrays.is_empty() || needles.is_empty() {
-            return FindNeedleResult {
-                needle_count: 0,
-                total_search_time_sec: 0.0,
-                avg_search_time_per_needle_sec: 0.0,
-                avg_search_time_per_needle_ms: 0.0,
-                workload: self.workload_name(),
-            };
-        }
-
-        let needle_count = needles.len();
+    fn encode(&mut self, array: &StringViewArray) -> (Self::EncodedData, f64, usize) {
         let start = Instant::now();
-
-        for needle in needles {
-            for string_view_array in arrays {
-                let needle_scalar = arrow::array::StringViewArray::new_scalar(needle.clone());
-                let _result =
-                    arrow::compute::kernels::cmp::eq(&string_view_array, &needle_scalar).unwrap();
-            }
-        }
-
-        let total_search_time_sec = start.elapsed().as_secs_f64();
-        let avg_search_time_per_needle_sec = total_search_time_sec / needle_count as f64;
-        let avg_search_time_per_needle_ms = avg_search_time_per_needle_sec * 1000.0;
-
-        FindNeedleResult {
-            needle_count,
-            total_search_time_sec,
-            avg_search_time_per_needle_sec,
-            avg_search_time_per_needle_ms,
-            workload: self.workload_name(),
-        }
+        let v = cast(array, &DataType::Utf8).unwrap();
+        let v = v.as_string::<i32>().clone();
+        let encode_time = start.elapsed().as_secs_f64();
+        let size = v.get_array_memory_size();
+        (array.clone(), encode_time, size)
     }
 
-    fn run_sort(&self, arrays: &[StringViewArray]) -> SortResult {
-        let mut total_sort_time_sec = 0.0;
+    fn run_decode(&self, encoded_data: &Self::EncodedData) -> f64 {
+        let start = Instant::now();
+        let _v = cast(encoded_data, &DataType::Utf8View).unwrap();
+        start.elapsed().as_secs_f64()
+    }
 
-        for array in arrays {
-            let start = Instant::now();
-            let _indices = sort_to_indices(array, None, None).unwrap();
-            total_sort_time_sec += start.elapsed().as_secs_f64();
+    fn run_find_needle(&self, encoded_data: &Self::EncodedData, needles: &[String]) -> f64 {
+        let start = Instant::now();
+        for needle in needles {
+            let needle_scalar = arrow::array::StringViewArray::new_scalar(needle.clone());
+            let _result = arrow::compute::kernels::cmp::eq(encoded_data, &needle_scalar).unwrap();
         }
+        start.elapsed().as_secs_f64()
+    }
 
-        SortResult {
-            total_sort_time_sec,
-            workload: self.workload_name(),
-        }
+    fn run_sort(&self, encoded_data: &Self::EncodedData) -> f64 {
+        let start = Instant::now();
+        let _indices = sort_to_indices(encoded_data, None, None).unwrap();
+        start.elapsed().as_secs_f64()
     }
 }
 
 struct StringArrayLz4Benchmark;
 
 impl ArrayBenchmark for StringArrayLz4Benchmark {
+    type EncodedData = Vec<u8>;
+
     fn workload_name(&self) -> String {
         "StringArrayLZ4".to_string()
     }
 
-    fn run_encode_decode(&self, arrays: &[StringViewArray]) -> EncodeResult {
+    fn encode(&mut self, array: &StringViewArray) -> (Self::EncodedData, f64, usize) {
         let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, false)]));
         let compression = arrow::ipc::CompressionType::LZ4_FRAME;
         let options = arrow::ipc::writer::IpcWriteOptions::default()
             .try_with_compression(Some(compression))
             .unwrap();
 
-        let mut encode_time: f64 = 0.0;
-        let mut decode_time: f64 = 0.0;
-        let mut total_size = 0;
+        let v = cast(array, &DataType::Utf8).unwrap();
+        let mut file = vec![];
+        let mut writer = arrow::ipc::writer::FileWriter::try_new_with_options(
+            &mut file,
+            &schema,
+            options.clone(),
+        )
+        .unwrap();
 
-        for a in arrays {
-            let v = cast(a, &DataType::Utf8).unwrap();
-
-            let mut file = vec![];
-            let mut writer = arrow::ipc::writer::FileWriter::try_new_with_options(
-                &mut file,
-                &schema,
-                options.clone(),
-            )
-            .unwrap();
-
-            let start = Instant::now();
-            let batch = RecordBatch::try_new(schema.clone(), vec![v]).unwrap();
-            writer.write(&batch).unwrap();
-            writer.finish().unwrap();
-            encode_time += start.elapsed().as_secs_f64();
-            total_size += file.len();
-
-            let start = Instant::now();
-            let mut file = Cursor::new(file);
-            let mut reader = arrow::ipc::reader::FileReader::try_new(&mut file, None).unwrap();
-            let batch = reader.next().unwrap().unwrap();
-            let _v = batch.column(0).as_string::<i32>().clone();
-            decode_time += start.elapsed().as_secs_f64();
-        }
-
-        EncodeResult {
-            total_size,
-            encode_time_sec: encode_time,
-            decode_time_sec: decode_time,
-            workload: self.workload_name(),
-        }
+        let start = Instant::now();
+        let batch = RecordBatch::try_new(schema.clone(), vec![v]).unwrap();
+        writer.write(&batch).unwrap();
+        writer.finish().unwrap();
+        let encode_time = start.elapsed().as_secs_f64();
+        let size = file.len();
+        (file, encode_time, size)
     }
 
-    fn run_find_needle(&self, arrays: &[StringViewArray], needles: &[String]) -> FindNeedleResult {
-        if arrays.is_empty() || needles.is_empty() {
-            return FindNeedleResult {
-                needle_count: 0,
-                total_search_time_sec: 0.0,
-                avg_search_time_per_needle_sec: 0.0,
-                avg_search_time_per_needle_ms: 0.0,
-                workload: self.workload_name(),
-            };
-        }
-
-        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, false)]));
-        let compression = arrow::ipc::CompressionType::LZ4_FRAME;
-        let options = arrow::ipc::writer::IpcWriteOptions::default()
-            .try_with_compression(Some(compression))
-            .unwrap();
-
-        let needle_count = needles.len();
-        let mut total_search_time_sec = 0.0;
-
-        for array in arrays {
-            let v = cast(array, &DataType::Utf8).unwrap();
-            let mut file = vec![];
-            let mut writer = arrow::ipc::writer::FileWriter::try_new_with_options(
-                &mut file,
-                &schema,
-                options.clone(),
-            )
-            .unwrap();
-            let batch = RecordBatch::try_new(schema.clone(), vec![v]).unwrap();
-            writer.write(&batch).unwrap();
-            writer.finish().unwrap();
-
-            for needle in needles {
-                let start = Instant::now();
-                // Decompress and search
-                let mut file = Cursor::new(&file);
-                let mut reader = arrow::ipc::reader::FileReader::try_new(&mut file, None).unwrap();
-                let batch = reader.next().unwrap().unwrap();
-                let string_array = batch.column(0).as_string::<i32>();
-
-                let needle_scalar = arrow::array::StringArray::new_scalar(needle.clone());
-                let _result =
-                    arrow::compute::kernels::cmp::eq(&string_array, &needle_scalar).unwrap();
-                total_search_time_sec += start.elapsed().as_secs_f64();
-            }
-        }
-        let avg_search_time_per_needle_sec = total_search_time_sec / needle_count as f64;
-        let avg_search_time_per_needle_ms = avg_search_time_per_needle_sec * 1000.0;
-
-        FindNeedleResult {
-            needle_count,
-            total_search_time_sec,
-            avg_search_time_per_needle_sec,
-            avg_search_time_per_needle_ms,
-            workload: self.workload_name(),
-        }
+    fn run_decode(&self, encoded_data: &Self::EncodedData) -> f64 {
+        let start = Instant::now();
+        let mut file = Cursor::new(encoded_data);
+        let mut reader = arrow::ipc::reader::FileReader::try_new(&mut file, None).unwrap();
+        let batch = reader.next().unwrap().unwrap();
+        let _v = batch.column(0).as_string::<i32>().clone();
+        start.elapsed().as_secs_f64()
     }
 
-    fn run_sort(&self, arrays: &[StringViewArray]) -> SortResult {
-        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, false)]));
-        let compression = arrow::ipc::CompressionType::LZ4_FRAME;
-        let options = arrow::ipc::writer::IpcWriteOptions::default()
-            .try_with_compression(Some(compression))
-            .unwrap();
-
-        let mut total_sort_time_sec = 0.0;
-
-        for array in arrays {
-            let v = cast(array, &DataType::Utf8).unwrap();
-            let mut file = vec![];
-            let mut writer = arrow::ipc::writer::FileWriter::try_new_with_options(
-                &mut file,
-                &schema,
-                options.clone(),
-            )
-            .unwrap();
-            let batch = RecordBatch::try_new(schema.clone(), vec![v]).unwrap();
-            writer.write(&batch).unwrap();
-            writer.finish().unwrap();
-
-            let start = Instant::now();
-            // Decompress and sort
-            let mut file = Cursor::new(&file);
+    fn run_find_needle(&self, encoded_data: &Self::EncodedData, needles: &[String]) -> f64 {
+        let start = Instant::now();
+        for needle in needles {
+            // Decompress and search
+            let mut file = Cursor::new(encoded_data);
             let mut reader = arrow::ipc::reader::FileReader::try_new(&mut file, None).unwrap();
             let batch = reader.next().unwrap().unwrap();
             let string_array = batch.column(0).as_string::<i32>();
-            let _indices = sort_to_indices(&string_array, None, None).unwrap();
-            total_sort_time_sec += start.elapsed().as_secs_f64();
-        }
 
-        SortResult {
-            total_sort_time_sec,
-            workload: self.workload_name(),
+            let needle_scalar = arrow::array::StringArray::new_scalar(needle.clone());
+            let _result = arrow::compute::kernels::cmp::eq(&string_array, &needle_scalar).unwrap();
         }
+        start.elapsed().as_secs_f64()
+    }
+
+    fn run_sort(&self, encoded_data: &Self::EncodedData) -> f64 {
+        let start = Instant::now();
+        // Decompress and sort
+        let mut file = Cursor::new(encoded_data);
+        let mut reader = arrow::ipc::reader::FileReader::try_new(&mut file, None).unwrap();
+        let batch = reader.next().unwrap().unwrap();
+        let string_array = batch.column(0).as_string::<i32>();
+        let _indices = sort_to_indices(&string_array, None, None).unwrap();
+        start.elapsed().as_secs_f64()
     }
 }
 
@@ -769,7 +708,6 @@ fn main() {
         let column_data = load_column_data(c);
         println!("{c} average length: {}", column_data.avg_str_length);
 
-        println!("Running benchmarks for {c}");
         let benchmark_results = runner.run_workloads(
             &column_data.data,
             &workloads_to_run,
