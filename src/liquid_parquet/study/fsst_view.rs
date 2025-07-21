@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fmt::Display;
 use std::fs::File;
 use std::io::{Cursor, Write};
@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use arrow::array::{Array, AsArray, RecordBatch, StringViewArray};
-use arrow::compute::cast;
+use arrow::compute::{cast, sort_to_indices};
 use arrow::datatypes::{DataType, Float64Type};
 use arrow_schema::{Field, Schema};
 use datafusion::logical_expr::Operator;
@@ -21,17 +21,12 @@ use serde::{Deserialize, Serialize};
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[derive(Clone)]
-struct Dataset {
-    data: HashMap<String, ColumnData>,
-}
-
-#[derive(Clone)]
 struct ColumnData {
     data: Vec<StringViewArray>,
     avg_str_length: f64,
 }
 
-async fn download_clickbench(string_columns: &[&str]) -> Dataset {
+async fn download_clickbench_column(column: &str) -> ColumnData {
     let config = SessionConfig::default().with_batch_size(8192 * 2);
     let ctx = SessionContext::new_with_config(config);
     ctx.register_parquet(
@@ -42,66 +37,49 @@ async fn download_clickbench(string_columns: &[&str]) -> Dataset {
     .await
     .unwrap();
 
-    let quoted_columns = string_columns
-        .iter()
-        .map(|c| format!("\"{c}\""))
-        .collect::<Vec<_>>();
-
+    // Load the column data
     let df = ctx
-        .sql(&format!(
-            "SELECT {} from \"hits\"",
-            quoted_columns.join(", ")
-        ))
+        .sql(&format!("SELECT \"{column}\" from \"hits\""))
         .await
         .unwrap();
     let batches = df.collect().await.unwrap();
 
-    let avg_length = string_columns
+    let column_data = batches
         .iter()
-        .map(|c| format!("AVG(LENGTH(\"{c}\")) AS \"{c}\""))
-        .collect::<Vec<_>>()
-        .join(", ");
+        .map(|batch| {
+            batch
+                .column_by_name(column)
+                .unwrap()
+                .as_string_view()
+                .clone()
+        })
+        .collect::<Vec<_>>();
+
+    // Get average string length
     let avg_length_batches = ctx
-        .sql(&format!("SELECT {avg_length} FROM \"hits\""))
+        .sql(&format!("SELECT AVG(LENGTH(\"{column}\")) AS \"{column}\" FROM \"hits\""))
         .await
         .unwrap()
         .collect()
         .await
         .unwrap();
 
-    let mut data = HashMap::new();
-    for column in string_columns {
-        let column_data = batches
-            .iter()
-            .map(|batch| {
-                batch
-                    .column_by_name(column)
-                    .unwrap()
-                    .as_string_view()
-                    .clone()
-            })
-            .collect::<Vec<_>>();
-        let avg_str_length = avg_length_batches[0]
-            .column_by_name(column)
-            .unwrap()
-            .as_primitive::<Float64Type>()
-            .clone()
-            .value(0);
-        data.insert(
-            column.to_string(),
-            ColumnData {
-                data: column_data,
-                avg_str_length,
-            },
-        );
-    }
+    let avg_str_length = avg_length_batches[0]
+        .column_by_name(column)
+        .unwrap()
+        .as_primitive::<Float64Type>()
+        .clone()
+        .value(0);
 
-    Dataset { data }
+    ColumnData {
+        data: column_data,
+        avg_str_length,
+    }
 }
 
-fn setup_data(columns: &[&str]) -> Dataset {
+fn load_column_data(column: &str) -> ColumnData {
     let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(download_clickbench(columns))
+    rt.block_on(download_clickbench_column(column))
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -122,15 +100,23 @@ struct FindNeedleResult {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
+struct SortResult {
+    total_sort_time_sec: f64,
+    workload: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
 struct BenchmarkResults {
     encode_result: EncodeResult,
     find_needle_result: FindNeedleResult,
+    sort_result: SortResult,
 }
 
 /// Trait for running benchmarks on different array types
 trait ArrayBenchmark {
     fn run_encode_decode(&self, arrays: &[StringViewArray]) -> EncodeResult;
     fn run_find_needle(&self, arrays: &[StringViewArray], needles: &[String]) -> FindNeedleResult;
+    fn run_sort(&self, arrays: &[StringViewArray]) -> SortResult;
     fn workload_name(&self) -> String;
 }
 
@@ -162,9 +148,16 @@ impl BenchmarkRunner {
                     benchmark.workload_name(),
                     find_needle_result
                 );
+                let sort_result = benchmark.run_sort(arrays);
+                println!(
+                    "{} sort: {}",
+                    benchmark.workload_name(),
+                    sort_result
+                );
                 BenchmarkResults {
                     encode_result,
                     find_needle_result,
+                    sort_result,
                 }
             })
             .collect()
@@ -190,6 +183,17 @@ impl Display for FindNeedleResult {
             self.needle_count,
             self.total_search_time_sec,
             self.avg_search_time_per_needle_ms
+        )
+    }
+}
+
+impl Display for SortResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} -- total: {:.4} s",
+            self.workload,
+            self.total_sort_time_sec
         )
     }
 }
@@ -276,6 +280,23 @@ impl ArrayBenchmark for FsstViewBenchmark {
             workload: self.workload_name(),
         }
     }
+
+    fn run_sort(&self, arrays: &[StringViewArray]) -> SortResult {
+        let (compressor, _) = LiquidByteViewArray::train_from_string_view(&arrays[0]);
+        let mut total_sort_time_sec = 0.0;
+
+        for array in arrays {
+            let fsst_array = LiquidByteViewArray::from_string_view_array(array, compressor.clone());
+            let start = Instant::now();
+            let _indices = fsst_array.sort_to_indices().unwrap();
+            total_sort_time_sec += start.elapsed().as_secs_f64();
+        }
+
+        SortResult {
+            total_sort_time_sec,
+            workload: self.workload_name(),
+        }
+    }
 }
 
 struct ByteArrayBenchmark;
@@ -333,6 +354,24 @@ impl ArrayBenchmark for ByteArrayBenchmark {
             total_search_time_sec,
             avg_search_time_per_needle_sec,
             avg_search_time_per_needle_ms,
+            workload: self.workload_name(),
+        }
+    }
+
+    fn run_sort(&self, arrays: &[StringViewArray]) -> SortResult {
+        let (compressor, _) = LiquidByteArray::train_from_string_view(&arrays[0]);
+        let mut total_sort_time_sec = 0.0;
+
+        for array in arrays {
+            let byte_array = LiquidByteArray::from_string_view_array(array, compressor.clone());
+            let start = Instant::now();
+            let arrow_array = byte_array.to_arrow_array();
+            let _indices = sort_to_indices(&arrow_array, None, None).unwrap();
+            total_sort_time_sec += start.elapsed().as_secs_f64();
+        }
+
+        SortResult {
+            total_sort_time_sec,
             workload: self.workload_name(),
         }
     }
@@ -402,6 +441,21 @@ impl ArrayBenchmark for StringArrayBenchmark {
             total_search_time_sec,
             avg_search_time_per_needle_sec,
             avg_search_time_per_needle_ms,
+            workload: self.workload_name(),
+        }
+    }
+
+    fn run_sort(&self, arrays: &[StringViewArray]) -> SortResult {
+        let mut total_sort_time_sec = 0.0;
+
+        for array in arrays {
+            let start = Instant::now();
+            let _indices = sort_to_indices(array, None, None).unwrap();
+            total_sort_time_sec += start.elapsed().as_secs_f64();
+        }
+
+        SortResult {
+            total_sort_time_sec,
             workload: self.workload_name(),
         }
     }
@@ -517,6 +571,44 @@ impl ArrayBenchmark for StringArrayLz4Benchmark {
             workload: self.workload_name(),
         }
     }
+
+    fn run_sort(&self, arrays: &[StringViewArray]) -> SortResult {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, false)]));
+        let compression = arrow::ipc::CompressionType::LZ4_FRAME;
+        let options = arrow::ipc::writer::IpcWriteOptions::default()
+            .try_with_compression(Some(compression))
+            .unwrap();
+
+        let mut total_sort_time_sec = 0.0;
+
+        for array in arrays {
+            let v = cast(array, &DataType::Utf8).unwrap();
+            let mut file = vec![];
+            let mut writer = arrow::ipc::writer::FileWriter::try_new_with_options(
+                &mut file,
+                &schema,
+                options.clone(),
+            )
+            .unwrap();
+            let batch = RecordBatch::try_new(schema.clone(), vec![v]).unwrap();
+            writer.write(&batch).unwrap();
+            writer.finish().unwrap();
+
+            let start = Instant::now();
+            // Decompress and sort
+            let mut file = Cursor::new(&file);
+            let mut reader = arrow::ipc::reader::FileReader::try_new(&mut file, None).unwrap();
+            let batch = reader.next().unwrap().unwrap();
+            let string_array = batch.column(0).as_string::<i32>();
+            let _indices = sort_to_indices(&string_array, None, None).unwrap();
+            total_sort_time_sec += start.elapsed().as_secs_f64();
+        }
+
+        SortResult {
+            total_sort_time_sec,
+            workload: self.workload_name(),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -561,17 +653,17 @@ struct CompleteResults {
 
 fn main() {
     let columns = ["Title", "URL", "SearchPhrase", "Referer", "OriginalURL"];
-    let dataset = setup_data(&columns);
     let runner = BenchmarkRunner;
 
     let mut results = Vec::new();
 
     for c in columns {
-        let array = dataset.data.get(c).unwrap();
-        println!("{c} average length: {}", array.avg_str_length);
+        println!("Loading column: {c}");
+        let column_data = load_column_data(c);
+        println!("{c} average length: {}", column_data.avg_str_length);
 
         println!("Running all benchmarks for {c}");
-        let benchmark_results = runner.run_all_benchmarks(&array.data);
+        let benchmark_results = runner.run_all_benchmarks(&column_data.data);
 
         // Print results
         for result in &benchmark_results {
@@ -583,10 +675,14 @@ fn main() {
                 "{} {} find needle: {}",
                 c, result.find_needle_result.workload, result.find_needle_result
             );
+            println!(
+                "{} {} sort: {}",
+                c, result.sort_result.workload, result.sort_result
+            );
         }
 
         // Get FSST view memory usage for detailed reporting
-        let (compressor, _) = LiquidByteViewArray::train_from_string_view(&array.data[0]);
+        let (compressor, _) = LiquidByteViewArray::train_from_string_view(&column_data.data[0]);
         let mut total_detailed_memory_usage = ByteViewArrayMemoryUsage {
             dictionary_views: 0,
             offsets: 0,
@@ -596,17 +692,21 @@ fn main() {
             struct_size: 0,
         };
 
-        for a in &array.data {
+        for a in &column_data.data {
             let array = LiquidByteViewArray::from_string_view_array(a, compressor.clone());
             total_detailed_memory_usage += array.get_detailed_memory_usage();
         }
 
         results.push(BenchmarkResult {
             column_name: c.to_string(),
-            avg_string_length: array.avg_str_length,
+            avg_string_length: column_data.avg_str_length,
             benchmark_results,
             fsst_view_memory_usage: total_detailed_memory_usage.into(),
         });
+
+        // Explicitly drop column_data to free memory before processing next column
+        drop(column_data);
+        println!("Finished processing {c}, memory freed\n");
     }
 
     let complete_results = CompleteResults {
