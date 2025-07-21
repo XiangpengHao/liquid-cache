@@ -1,6 +1,7 @@
 use arrow::array::{
     Array, ArrayAccessor, ArrayIter, ArrayRef, BinaryArray, BooleanArray, DictionaryArray,
-    GenericByteArray, StringArray, StringViewArray, UInt16Array, UInt32Array, cast::AsArray, types::UInt16Type,
+    GenericByteArray, StringArray, StringViewArray, UInt16Array, UInt32Array, cast::AsArray,
+    types::UInt16Type,
 };
 use arrow::array::{BinaryViewArray, BooleanBufferBuilder};
 use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer, ScalarBuffer};
@@ -13,6 +14,7 @@ use datafusion::physical_plan::PhysicalExpr;
 use datafusion::physical_plan::expressions::{BinaryExpr, LikeExpr, Literal};
 use fsst::{Compressor, Decompressor};
 use std::any::Any;
+use std::collections::HashMap;
 use std::fmt::Display;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -944,36 +946,52 @@ impl LiquidByteViewArray {
     /// Sort the array and return indices that would sort the array
     /// Uses shared prefix and dictionary view prefixes for efficient sorting
     pub fn sort_to_indices(&self) -> Result<UInt32Array, ArrowError> {
-        let len = self.dictionary_views.len();
-        
-        // Create initial indices
-        let mut indices: Vec<(usize, u32)> = (0..len)
-            .map(|i| (i, i as u32))
-            .collect();
+        self.sort_to_indices_cached()
+    }
 
-        // Sort by comparison function that uses shared prefix and view prefixes
+    /// Sort the array and return indices that would sort the array
+    /// Uses caching to avoid redundant decompression of values during sorting
+    pub fn sort_to_indices_cached(&self) -> Result<UInt32Array, ArrowError> {
+        let len = self.dictionary_views.len();
+
+        // Create initial indices
+        let mut indices: Vec<(usize, u32)> = (0..len).map(|i| (i, i as u32)).collect();
+
+        // Create cache for decompressed values
+        let mut decompressed_cache: HashMap<u16, Vec<u8>> = HashMap::new();
+
+        // Sort by comparison function that uses shared prefix, view prefixes, and caching
         indices.sort_by(|&(a_idx, _), &(b_idx, _)| {
-            self.compare_elements(a_idx, b_idx)
+            self.compare_elements_cached(a_idx, b_idx, &mut decompressed_cache)
         });
 
         // Extract sorted indices
         let sorted_indices: Vec<u32> = indices.into_iter().map(|(_, idx)| idx).collect();
-        
+
         Ok(UInt32Array::from(sorted_indices))
     }
 
-    /// Compare two elements in the array using shared prefix and view prefixes
+    /// Compare two elements in the array using shared prefix, view prefixes, and caching
     /// Returns std::cmp::Ordering for sorting
-    fn compare_elements(&self, a_idx: usize, b_idx: usize) -> std::cmp::Ordering {
+    fn compare_elements_cached(
+        &self,
+        a_idx: usize,
+        b_idx: usize,
+        cache: &mut HashMap<u16, Vec<u8>>,
+    ) -> std::cmp::Ordering {
         // Handle null values - nulls are considered "less than" any value
         let a_is_null = self.nulls.as_ref().is_some_and(|n| n.is_null(a_idx));
         let b_is_null = self.nulls.as_ref().is_some_and(|n| n.is_null(b_idx));
-        
+
         match (a_is_null, b_is_null) {
             (true, true) => return std::cmp::Ordering::Equal,
             (true, false) => return std::cmp::Ordering::Less,
             (false, true) => return std::cmp::Ordering::Greater,
-            (false, false) => {}, // Continue with normal comparison
+            (false, false) => {} // Continue with normal comparison
+        }
+
+        if a_idx == b_idx {
+            return std::cmp::Ordering::Equal;
         }
 
         let view_a = &self.dictionary_views[a_idx];
@@ -981,23 +999,23 @@ impl LiquidByteViewArray {
 
         // First compare by the 6-byte prefixes (which are after the shared prefix)
         let prefix_cmp = view_a.prefix().cmp(view_b.prefix());
-        
+
         if prefix_cmp != std::cmp::Ordering::Equal {
             return prefix_cmp;
         }
 
         // If prefixes are equal, we need to compare the full values
-        // This requires decompression
-        self.compare_full_values(view_a.key(), view_b.key())
+        // This requires decompression with caching
+        self.compare_full_values_cached(view_a.key(), view_b.key(), cache)
     }
 
-    /// Compare full values by decompressing them when prefixes are identical
-    fn compare_full_values(&self, key_a: u16, key_b: u16) -> std::cmp::Ordering {
-        // If keys are the same, the values are identical
-        if key_a == key_b {
-            return std::cmp::Ordering::Equal;
-        }
-
+    /// Compare full values by decompressing them when prefixes are identical, with caching
+    fn compare_full_values_cached(
+        &self,
+        key_a: u16,
+        key_b: u16,
+        cache: &mut HashMap<u16, Vec<u8>>,
+    ) -> std::cmp::Ordering {
         let storage = self.fsst_buffer.read().unwrap();
         let fsst_array = storage.get_fsst_array().unwrap();
         let decompressor = storage.get_decompressor();
@@ -1006,24 +1024,26 @@ impl LiquidByteViewArray {
         let key_a_idx = key_a as usize;
         let key_b_idx = key_b as usize;
 
-        // Handle case where keys are out of bounds or null
-        if key_a_idx >= fsst_array.compressed.len() || key_b_idx >= fsst_array.compressed.len() {
-            return key_a.cmp(&key_b); // Fallback to key comparison
+        // Ensure value A is cached
+        if !cache.contains_key(&key_a) {
+            let compressed_a = fsst_array.compressed.value(key_a_idx);
+            let decompressed_a = decompressor.decompress(compressed_a);
+            cache.insert(key_a, decompressed_a);
         }
 
-        if fsst_array.compressed.is_null(key_a_idx) || fsst_array.compressed.is_null(key_b_idx) {
-            return key_a.cmp(&key_b); // Fallback to key comparison
+        // Ensure value B is cached
+        if !cache.contains_key(&key_b) {
+            let compressed_b = fsst_array.compressed.value(key_b_idx);
+            let decompressed_b = decompressor.decompress(compressed_b);
+            cache.insert(key_b, decompressed_b);
         }
 
-        // Decompress both values and compare
-        let compressed_a = fsst_array.compressed.value(key_a_idx);
-        let compressed_b = fsst_array.compressed.value(key_b_idx);
-        
-        let decompressed_a = decompressor.decompress(compressed_a);
-        let decompressed_b = decompressor.decompress(compressed_b);
+        // Compare cached values directly without cloning
+        let decompressed_a = cache.get(&key_a).unwrap();
+        let decompressed_b = cache.get(&key_b).unwrap();
 
         // The decompressed values contain the full strings (including shared prefix)
-        decompressed_a.cmp(&decompressed_b)
+        decompressed_a.cmp(decompressed_b)
     }
 }
 
@@ -1844,10 +1864,27 @@ mod tests {
         let arrow_array = cast(&dict_array, &arrow::datatypes::DataType::Utf8).unwrap();
         let string_array = arrow_array.as_string::<i32>();
 
-        let sorted_values: Vec<&str> = indices.iter()
+        let sorted_values: Vec<&str> = indices
+            .iter()
             .map(|idx| string_array.value(idx.unwrap() as usize))
             .collect();
         assert_eq!(sorted_values, vec!["apple", "banana", "cherry", "zebra"]);
+    }
+
+    #[test]
+    fn test_sort_to_indices_cached() {
+        let input = StringArray::from(vec!["zebra", "apple", "banana", "cherry"]);
+        let compressor = LiquidByteViewArray::train_compressor(input.iter());
+        let liquid_array = LiquidByteViewArray::from_string_array(&input, compressor);
+
+        // Test cached version produces same results as non-cached
+        let cached_indices = liquid_array.sort_to_indices_cached().unwrap();
+        let expected = UInt32Array::from(vec![1u32, 2u32, 3u32, 0u32]); // apple, banana, cherry, zebra
+        assert_eq!(cached_indices, expected);
+
+        // Verify both methods produce identical results
+        let regular_indices = liquid_array.sort_to_indices().unwrap();
+        assert_eq!(cached_indices, regular_indices);
     }
 
     #[test]
@@ -1864,7 +1901,7 @@ mod tests {
         let liquid_array = LiquidByteViewArray::from_string_array(&input, compressor);
 
         let indices = liquid_array.sort_to_indices().unwrap();
-        
+
         // Nulls should come first, then sorted non-null values
         // Expected order: null(1), null(4), apple(2), banana(3), cherry(5), zebra(0)
         let expected = UInt32Array::from(vec![1u32, 4u32, 2u32, 3u32, 5u32, 0u32]);
@@ -1875,7 +1912,7 @@ mod tests {
     fn test_sort_to_indices_with_shared_prefix() {
         let input = StringArray::from(vec![
             "hello_world",
-            "hello_apple", 
+            "hello_apple",
             "hello_zebra",
             "hello_banana",
         ]);
@@ -1886,7 +1923,7 @@ mod tests {
         assert_eq!(liquid_array.shared_prefix, b"hello_");
 
         let indices = liquid_array.sort_to_indices().unwrap();
-        
+
         // Should sort by the part after shared prefix: apple, banana, world, zebra
         let expected = UInt32Array::from(vec![1u32, 3u32, 0u32, 2u32]);
         assert_eq!(indices, expected);
@@ -1896,26 +1933,24 @@ mod tests {
         let arrow_array = cast(&dict_array, &arrow::datatypes::DataType::Utf8).unwrap();
         let string_array = arrow_array.as_string::<i32>();
 
-        let sorted_values: Vec<&str> = indices.iter()
+        let sorted_values: Vec<&str> = indices
+            .iter()
             .map(|idx| string_array.value(idx.unwrap() as usize))
             .collect();
-        assert_eq!(sorted_values, vec!["hello_apple", "hello_banana", "hello_world", "hello_zebra"]);
+        assert_eq!(
+            sorted_values,
+            vec!["hello_apple", "hello_banana", "hello_world", "hello_zebra"]
+        );
     }
 
     #[test]
     fn test_sort_to_indices_with_duplicate_values() {
-        let input = StringArray::from(vec![
-            "banana",
-            "apple", 
-            "banana",
-            "apple",
-            "cherry",
-        ]);
+        let input = StringArray::from(vec!["banana", "apple", "banana", "apple", "cherry"]);
         let compressor = LiquidByteViewArray::train_compressor(input.iter());
         let liquid_array = LiquidByteViewArray::from_string_array(&input, compressor);
 
         let indices = liquid_array.sort_to_indices().unwrap();
-        
+
         // Should group identical values together
         // apple(1), apple(3), banana(0), banana(2), cherry(4)
         let expected = UInt32Array::from(vec![1u32, 3u32, 0u32, 2u32, 4u32]);
@@ -1926,10 +1961,14 @@ mod tests {
         let arrow_array = cast(&dict_array, &arrow::datatypes::DataType::Utf8).unwrap();
         let string_array = arrow_array.as_string::<i32>();
 
-        let sorted_values: Vec<&str> = indices.iter()
+        let sorted_values: Vec<&str> = indices
+            .iter()
             .map(|idx| string_array.value(idx.unwrap() as usize))
             .collect();
-        assert_eq!(sorted_values, vec!["apple", "apple", "banana", "banana", "cherry"]);
+        assert_eq!(
+            sorted_values,
+            vec!["apple", "apple", "banana", "banana", "cherry"]
+        );
     }
 
     #[test]
@@ -1955,14 +1994,14 @@ mod tests {
         // Test case where 6-byte prefixes are identical and requires decompression
         let input = StringArray::from(vec![
             "prefix_long_string_z",
-            "prefix_long_string_a", 
+            "prefix_long_string_a",
             "prefix_long_string_m",
         ]);
         let compressor = LiquidByteViewArray::train_compressor(input.iter());
         let liquid_array = LiquidByteViewArray::from_string_array(&input, compressor);
 
         let indices = liquid_array.sort_to_indices().unwrap();
-        
+
         // Should sort correctly even when prefixes are identical
         let expected = UInt32Array::from(vec![1u32, 2u32, 0u32]); // _a, _m, _z
         assert_eq!(indices, expected);
@@ -1972,10 +2011,18 @@ mod tests {
         let arrow_array = cast(&dict_array, &arrow::datatypes::DataType::Utf8).unwrap();
         let string_array = arrow_array.as_string::<i32>();
 
-        let sorted_values: Vec<&str> = indices.iter()
+        let sorted_values: Vec<&str> = indices
+            .iter()
             .map(|idx| string_array.value(idx.unwrap() as usize))
             .collect();
-        assert_eq!(sorted_values, vec!["prefix_long_string_a", "prefix_long_string_m", "prefix_long_string_z"]);
+        assert_eq!(
+            sorted_values,
+            vec![
+                "prefix_long_string_a",
+                "prefix_long_string_m",
+                "prefix_long_string_z"
+            ]
+        );
     }
 
     #[test]
