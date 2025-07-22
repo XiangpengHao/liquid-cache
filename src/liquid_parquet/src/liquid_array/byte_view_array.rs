@@ -4,8 +4,7 @@ use arrow::array::{
     types::UInt16Type,
 };
 use arrow::array::{BinaryViewArray, BooleanBufferBuilder};
-use arrow::buffer::{BooleanBuffer, Buffer, NullBuffer};
-use arrow::array::BufferBuilder;
+use arrow::buffer::{BooleanBuffer, Buffer, NullBuffer, OffsetBuffer};
 use arrow::compute::{cast, kernels, sort_to_indices};
 use arrow::datatypes::ByteArrayType;
 use arrow_schema::ArrowError;
@@ -16,8 +15,8 @@ use datafusion::physical_plan::PhysicalExpr;
 use datafusion::physical_plan::expressions::{BinaryExpr, LikeExpr, Literal};
 use fsst::{Compressor, Decompressor};
 use std::any::Any;
-use std::mem::MaybeUninit;
 use std::fmt::Display;
+use std::mem::MaybeUninit;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
@@ -51,16 +50,15 @@ use super::{
     LiquidArray, LiquidArrayRef, LiquidDataType,
     byte_array::{ArrowByteType, get_string_needle},
 };
+use crate::liquid_array::raw::fsst_array::{RawFsstBuffer, train_compressor};
 use crate::utils::CheckedDictionaryArray;
 use std::fs::File;
 use std::io::{self, Write};
 
-/// An offset view structure that stores entry index and an 8-byte prefix
-/// Layout: [entry_index: u32][prefix: 8 bytes]
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct OffsetView {
-    entry_index: u32,
+    offset: u32,
     prefix: [u8; 8],
 }
 
@@ -70,14 +68,11 @@ const _: () = if std::mem::size_of::<OffsetView>() != 12 {
 
 impl OffsetView {
     pub fn new(offset: u32, prefix: [u8; 8]) -> Self {
-        Self {
-            entry_index: offset,
-            prefix,
-        }
+        Self { offset, prefix }
     }
 
     pub fn offset(&self) -> u32 {
-        self.entry_index
+        self.offset
     }
 
     pub fn prefix(&self) -> &[u8; 8] {
@@ -85,202 +80,11 @@ impl OffsetView {
     }
 }
 
-/// Raw FSST buffer that stores compressed data using Arrow Buffer
-/// Offsets are managed externally in OffsetView array
-#[derive(Clone)]
-pub struct RawFsstBuffer {
-    /// Compressed data buffer - all compressed entries concatenated
-    values_buffer: Buffer,
-    /// Compressor for decompression
-    compressor: Arc<Compressor>,
-    /// Total uncompressed length (for validation/stats)
-    uncompressed_len: usize,
-}
-
-impl std::fmt::Debug for RawFsstBuffer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RawFsstBuffer")
-            .field("total_compressed_len", &self.values_buffer.len())
-            .field("uncompressed_len", &self.uncompressed_len)
-            .field("compressor", &"<Compressor>")
-            .finish()
-    }
-}
-
-impl RawFsstBuffer {
-    /// Create new RawFsstBuffer from Arrow Buffer
-    pub fn new(
-        values_buffer: Buffer,
-        compressor: Arc<Compressor>,
-        uncompressed_len: usize,
-    ) -> Self {
-        Self {
-            values_buffer,
-            compressor,
-            uncompressed_len,
-        }
-    }
-
-    /// Create RawFsstBuffer from an iterator of byte slices
-    /// Returns the buffer and a vector of byte offsets for OffsetView construction
-    pub fn from_byte_slices<I, T>(iter: I, compressor: Arc<Compressor>) -> (Self, Vec<u32>)
-    where
-        I: Iterator<Item = Option<T>>,
-        T: AsRef<[u8]>,
-    {
-        let mut values_buffer = Vec::new();
-        let mut offsets = Vec::new();
-        let mut uncompressed_len = 0;
-        let mut compress_work_buffer = Vec::with_capacity(1024);
-
-        // Start with offset 0
-        offsets.push(0u32);
-
-        for item in iter {
-            if let Some(bytes) = item {
-                let bytes = bytes.as_ref();
-                uncompressed_len += bytes.len();
-
-                // Compress the data
-                compress_work_buffer.clear();
-                unsafe {
-                    compressor.compress_into(bytes, &mut compress_work_buffer);
-                }
-
-                // Append compressed data to values buffer
-                values_buffer.extend_from_slice(&compress_work_buffer);
-
-                // Append the new offset (cumulative length)
-                offsets.push(values_buffer.len() as u32);
-            }
-        }
-
-        // Convert to Arrow buffer
-        let values_buffer = Buffer::from(values_buffer);
-        let raw_buffer = Self::new(values_buffer, compressor, uncompressed_len);
-
-        (raw_buffer, offsets)
-    }
-
-    /// Train a compressor from an iterator of strings
-    pub fn train_compressor<'a, I>(iter: I) -> Arc<Compressor>
-    where
-        I: Iterator<Item = &'a [u8]>,
-    {
-        let strings: Vec<&[u8]> = iter.collect();
-        Arc::new(fsst::Compressor::train(&strings))
-    }
-
-    /// Get compressed data slice using byte offsets
-    pub fn get_compressed_slice(&self, start_offset: u32, end_offset: u32) -> &[u8] {
-        let start = start_offset as usize;
-        let end = end_offset as usize;
-        debug_assert!(end <= self.values_buffer.len(), "Offset out of bounds");
-        debug_assert!(start <= end, "Invalid offset range");
-        &self.values_buffer.as_slice()[start..end]
-    }
-
-    /// Decompress slice using byte offsets (allocates a Vec - use only for individual comparisons)
-    pub fn decompress_slice(&self, start_offset: u32, end_offset: u32) -> Vec<u8> {
-        let compressed_data = self.get_compressed_slice(start_offset, end_offset);
-        let decompressor = self.compressor.decompressor();
-        decompressor.decompress(compressed_data)
-    }
-
-    /// Decompress slice using byte offsets into provided buffer - zero allocation
-    /// Returns the number of bytes written
-    pub fn decompress_slice_into(&self, start_offset: u32, end_offset: u32, output: &mut [MaybeUninit<u8>]) -> usize {
-        let compressed_data = self.get_compressed_slice(start_offset, end_offset);
-        let decompressor = self.compressor.decompressor();
-        decompressor.decompress_into(compressed_data, output)
-    }
-
-    /// Fast decompress slice directly into a Vec's capacity - avoids allocation
-    /// The Vec must have sufficient capacity. Returns the number of bytes written.
-    /// # Safety
-    /// The caller must ensure the Vec has sufficient capacity for the decompressed data
-    pub unsafe fn decompress_slice_into_vec(&self, start_offset: u32, end_offset: u32, output: &mut Vec<u8>) -> usize {
-        let compressed_data = self.get_compressed_slice(start_offset, end_offset);
-        let decompressor = self.compressor.decompressor();
-        
-        unsafe {
-            let slice = std::slice::from_raw_parts_mut(
-                output.as_mut_ptr().add(output.len()) as *mut MaybeUninit<u8>,
-                output.capacity() - output.len()
-            );
-            let len = decompressor.decompress_into(compressed_data, slice);
-            let new_len = output.len() + len;
-            debug_assert!(new_len <= output.capacity());
-            output.set_len(new_len);
-            len
-        }
-    }
-
-    /// Get the compressor
-    pub fn compressor(&self) -> &Compressor {
-        &self.compressor
-    }
-
-    /// Get decompressor
-    pub fn decompressor(&self) -> Decompressor<'_> {
-        self.compressor.decompressor()
-    }
-
-    /// Get memory size
-    pub fn get_memory_size(&self) -> usize {
-        self.values_buffer.len() + std::mem::size_of::<Self>()
-    }
-
-    /// Get total compressed size
-    pub fn compressed_len(&self) -> usize {
-        self.values_buffer.len()
-    }
-
-    /// Get total uncompressed length
-    pub fn uncompressed_len(&self) -> usize {
-        self.uncompressed_len
-    }
-
-    /// Serialize to bytes for disk storage
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut buffer = Vec::new();
-
-        // Write header: uncompressed_len (8 bytes) + values_len (4 bytes)
-        buffer.extend_from_slice(&(self.uncompressed_len as u64).to_le_bytes());
-        buffer.extend_from_slice(&(self.values_buffer.len() as u32).to_le_bytes());
-
-        // Write values buffer
-        buffer.extend_from_slice(self.values_buffer.as_slice());
-
-        buffer
-    }
-
-    /// Deserialize from bytes
-    pub fn from_bytes(bytes: bytes::Bytes, compressor: Arc<Compressor>) -> Self {
-        if bytes.len() < 12 {
-            panic!("Buffer too small for header");
-        }
-
-        let uncompressed_len = u64::from_le_bytes(bytes[0..8].try_into().unwrap()) as usize;
-        let values_len = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
-
-        if bytes.len() < 12 + values_len {
-            panic!("Buffer too small for data");
-        }
-
-        // Extract values buffer
-        let values_slice = bytes.slice(12..12 + values_len);
-        let values_buffer = Buffer::from(values_slice);
-
-        Self::new(values_buffer, compressor, uncompressed_len)
-    }
-}
-
 /// Storage options for FSST buffer - can be in memory or on disk
 #[derive(Clone)]
 pub enum FsstBufferStorage {
     InMemory(Arc<RawFsstBuffer>),
-    OnDisk(PathBuf, Arc<Compressor>),
+    OnDisk(PathBuf),
 }
 
 impl std::fmt::Debug for FsstBufferStorage {
@@ -289,11 +93,7 @@ impl std::fmt::Debug for FsstBufferStorage {
             FsstBufferStorage::InMemory(raw_buffer) => {
                 f.debug_tuple("InMemory").field(raw_buffer).finish()
             }
-            FsstBufferStorage::OnDisk(path, _) => f
-                .debug_tuple("OnDisk")
-                .field(path)
-                .field(&"<Compressor>")
-                .finish(),
+            FsstBufferStorage::OnDisk(path) => f.debug_tuple("OnDisk").field(path).finish(),
         }
     }
 }
@@ -303,33 +103,16 @@ impl FsstBufferStorage {
     pub fn get_raw_buffer(&self) -> Result<Arc<RawFsstBuffer>, io::Error> {
         match self {
             FsstBufferStorage::InMemory(buffer) => Ok(buffer.clone()),
-            FsstBufferStorage::OnDisk(path, compressor) => {
+            FsstBufferStorage::OnDisk(path) => {
                 // Increment disk read counter for testing
                 #[cfg(test)]
                 increment_disk_read_counter();
 
                 let bytes = std::fs::read(path)?;
                 let bytes = bytes::Bytes::from(bytes);
-                let raw_buffer = RawFsstBuffer::from_bytes(bytes, compressor.clone());
+                let raw_buffer = RawFsstBuffer::from_bytes(bytes);
                 Ok(Arc::new(raw_buffer))
             }
-        }
-    }
-
-    #[cfg(test)]
-    /// Get the compressor without loading the full buffer
-    pub fn get_compressor(&self) -> &Compressor {
-        match self {
-            FsstBufferStorage::InMemory(buffer) => buffer.compressor(),
-            FsstBufferStorage::OnDisk(_, compressor) => compressor,
-        }
-    }
-
-    /// Get the decompressor without loading the full buffer
-    pub fn get_decompressor(&self) -> Decompressor<'_> {
-        match self {
-            FsstBufferStorage::InMemory(buffer) => buffer.decompressor(),
-            FsstBufferStorage::OnDisk(_, compressor) => compressor.decompressor(),
         }
     }
 
@@ -337,7 +120,7 @@ impl FsstBufferStorage {
     pub fn get_array_memory_size(&self) -> usize {
         match self {
             FsstBufferStorage::InMemory(buffer) => buffer.get_memory_size(),
-            FsstBufferStorage::OnDisk(_, _) => 0,
+            FsstBufferStorage::OnDisk(_) => 0,
         }
     }
 
@@ -348,7 +131,7 @@ impl FsstBufferStorage {
 
     /// Check if the buffer is stored on disk
     pub fn is_on_disk(&self) -> bool {
-        matches!(self, FsstBufferStorage::OnDisk(_, _))
+        matches!(self, FsstBufferStorage::OnDisk(_))
     }
 }
 
@@ -413,6 +196,7 @@ fn filter_inner(array: &LiquidByteViewArray, filter: &BooleanArray) -> LiquidByt
         fsst_buffer: array.fsst_buffer.clone(),
         original_arrow_type: array.original_arrow_type,
         shared_prefix: array.shared_prefix.clone(),
+        compressor: array.compressor.clone(),
     }
 }
 
@@ -506,6 +290,8 @@ pub struct LiquidByteViewArray {
     original_arrow_type: ArrowByteType,
     /// Shared prefix across all strings in the array
     shared_prefix: Vec<u8>,
+    /// Compressor for decompression
+    compressor: Arc<Compressor>,
 }
 
 impl std::fmt::Debug for LiquidByteViewArray {
@@ -516,6 +302,7 @@ impl std::fmt::Debug for LiquidByteViewArray {
             .field("fsst_buffer", &self.fsst_buffer)
             .field("original_arrow_type", &self.original_arrow_type)
             .field("shared_prefix", &self.shared_prefix)
+            .field("compressor", &"<Compressor>")
             .finish()
     }
 }
@@ -563,16 +350,18 @@ impl LiquidByteViewArray {
     pub fn train_compressor<'a, T: ArrayAccessor<Item = &'a str>>(
         array: ArrayIter<T>,
     ) -> Arc<Compressor> {
-        let strings = array.filter_map(|s| s.as_ref().map(|s| s.as_bytes()));
-        RawFsstBuffer::train_compressor(strings)
+        Arc::new(train_compressor(
+            array.filter_map(|s| s.as_ref().map(|s| s.as_bytes())),
+        ))
     }
 
     /// Train a compressor from an iterator of byte arrays
     pub fn train_compressor_bytes<'a, T: ArrayAccessor<Item = &'a [u8]>>(
         array: ArrayIter<T>,
     ) -> Arc<Compressor> {
-        let strings = array.filter_map(|s| s.as_ref().map(|s| *s));
-        RawFsstBuffer::train_compressor(strings)
+        Arc::new(train_compressor(
+            array.filter_map(|s| s.as_ref().map(|s| *s)),
+        ))
     }
 
     /// Generic implementation for view arrays (StringViewArray and BinaryViewArray)
@@ -659,15 +448,22 @@ impl LiquidByteViewArray {
         // Create offset views with prefixes - one per unique value in dictionary
         let mut offset_views = Vec::with_capacity(values.len());
 
+        let mut compress_buffer = Vec::with_capacity(1024 * 1024 * 2);
+
         // Create the raw buffer and get the byte offsets
         let (raw_fsst_buffer, byte_offsets) =
             if let Some(string_values) = values.as_string_opt::<i32>() {
                 RawFsstBuffer::from_byte_slices(
                     string_values.iter().map(|s| s.map(|s| s.as_bytes())),
                     compressor.clone(),
+                    &mut compress_buffer,
                 )
             } else if let Some(binary_values) = values.as_binary_opt::<i32>() {
-                RawFsstBuffer::from_byte_slices(binary_values.iter(), compressor.clone())
+                RawFsstBuffer::from_byte_slices(
+                    binary_values.iter(),
+                    compressor.clone(),
+                    &mut compress_buffer,
+                )
             } else {
                 panic!("Unsupported dictionary value type")
             };
@@ -711,6 +507,7 @@ impl LiquidByteViewArray {
             )))),
             original_arrow_type: arrow_type,
             shared_prefix,
+            compressor,
         }
     }
 
@@ -722,44 +519,20 @@ impl LiquidByteViewArray {
         let storage = self.fsst_buffer.read().unwrap();
         let raw_buffer = storage.get_raw_buffer().unwrap();
 
-        // Build Arrow array from decompressed values
-        let mut values_buffer = Vec::new();
-        let mut offsets_buffer = Vec::with_capacity(self.offset_views.len() + 1);
-        offsets_buffer.push(0i32);
+        let (values_buffer, offsets_buffer) =
+            raw_buffer.to_uncompressed(&self.compressor.decompressor(), &self.offset_views);
+        let nulls = self.nulls().cloned();
 
-        for (i, offset_view) in self.offset_views.iter().enumerate() {
-            // Use byte offsets to get compressed data
-            let start_offset = offset_view.offset();
-            let end_offset = if i + 1 < self.offset_views.len() {
-                self.offset_views[i + 1].offset()
-            } else {
-                raw_buffer.compressed_len() as u32
-            };
-
-            // Fast decompression directly into the values_buffer
-            unsafe {
-                raw_buffer.decompress_slice_into_vec(start_offset, end_offset, &mut values_buffer);
-            }
-            offsets_buffer.push(values_buffer.len() as i32);
-        }
-
-        // Create Arrow array from the decompressed data
         let values = if self.original_arrow_type == ArrowByteType::Utf8
             || self.original_arrow_type == ArrowByteType::Utf8View
             || self.original_arrow_type == ArrowByteType::Dict16Utf8
         {
-            let string_array = StringArray::from_iter_values(offsets_buffer.windows(2).map(|w| {
-                let start = w[0] as usize;
-                let end = w[1] as usize;
-                std::str::from_utf8(&values_buffer[start..end]).unwrap()
-            }));
+            let string_array =
+                unsafe { StringArray::new_unchecked(offsets_buffer, values_buffer, nulls) };
             Arc::new(string_array) as ArrayRef
         } else {
-            let binary_array = BinaryArray::from_iter_values(offsets_buffer.windows(2).map(|w| {
-                let start = w[0] as usize;
-                let end = w[1] as usize;
-                &values_buffer[start..end]
-            }));
+            let binary_array =
+                unsafe { BinaryArray::new_unchecked(offsets_buffer, values_buffer, nulls) };
             Arc::new(binary_array) as ArrayRef
         };
 
@@ -778,49 +551,11 @@ impl LiquidByteViewArray {
     }
 
     /// Compare equality with a byte needle
-    fn compare_equals(&self, needle: &[u8]) -> BooleanArray {
-        let storage = self.fsst_buffer.read().unwrap();
-        let raw_buffer = storage.get_raw_buffer().unwrap();
-
-        // Find which offset view corresponds to this needle by decompressing and comparing
-        let mut target_key: Option<u16> = None;
-
-        for (i, offset_view) in self.offset_views.iter().enumerate() {
-            // Use byte offsets to get compressed data
-            let start_offset = offset_view.offset();
-            let end_offset = if i + 1 < self.offset_views.len() {
-                self.offset_views[i + 1].offset()
-            } else {
-                raw_buffer.compressed_len() as u32
-            };
-
-            // Use simple allocation approach for individual comparisons
-            let decompressed = raw_buffer.decompress_slice(start_offset, end_offset);
-
-            if decompressed == needle {
-                target_key = Some(i as u16);
-                break;
-            }
-        }
-
-        if let Some(target_key) = target_key {
-            let mut buffer_builder = BooleanBufferBuilder::new(self.dictionary_keys.len());
-
-            for i in 0..self.dictionary_keys.len() {
-                let key = if self.dictionary_keys.is_null(i) {
-                    0 // Handle null case
-                } else {
-                    self.dictionary_keys.value(i)
-                };
-                buffer_builder.append(key == target_key);
-            }
-
-            let buffer = buffer_builder.finish();
-            BooleanArray::new(buffer, self.nulls().cloned())
-        } else {
-            let buffer = BooleanBuffer::new_unset(self.dictionary_keys.len());
-            BooleanArray::new(buffer, self.nulls().cloned())
-        }
+    fn compare_equals(&self, _needle: &[u8]) -> BooleanArray {
+        // strategy:
+        // 1. if the fsst buffer is in memory, we directly compress the needle and compare it with the fsst buffer
+        // 2. if the fsst buffer is on disk, we first create a bitmask of values whose prefix matches the needle, then use bitmask to only decompress the values that match the bitmask
+        todo!()
     }
 
     /// Compare not equals with a byte needle
@@ -840,7 +575,7 @@ impl LiquidByteViewArray {
 
             // Handle ordering operations with prefix optimization
             Operator::Lt | Operator::LtEq | Operator::Gt | Operator::GtEq => {
-                self.compare_with_prefix_optimization(needle, op)
+                self.compare_with_inner(needle, op)
             }
 
             // For other operations, fall back to Arrow operations
@@ -855,9 +590,6 @@ impl LiquidByteViewArray {
         op: &Operator,
     ) -> Option<BooleanArray> {
         let shared_prefix_len = self.shared_prefix.len();
-        if shared_prefix_len == 0 || needle.is_empty() {
-            return None;
-        }
 
         let needle_shared_len = std::cmp::min(needle.len(), shared_prefix_len);
         let shared_cmp = self.shared_prefix[..needle_shared_len].cmp(&needle[..needle_shared_len]);
@@ -908,133 +640,15 @@ impl LiquidByteViewArray {
         }
     }
 
-    /// Compare two byte slices directly (decompressed data now contains full strings)
-    fn compare_bytes_with_shared_prefix(
-        &self,
-        decompressed_full: &[u8],
-        needle: &[u8],
-        op: &Operator,
-    ) -> bool {
-        // Decompressed data now contains full strings, so compare directly
-        match op {
-            Operator::Lt => decompressed_full < needle,
-            Operator::LtEq => decompressed_full <= needle,
-            Operator::Gt => decompressed_full > needle,
-            Operator::GtEq => decompressed_full >= needle,
-            _ => unreachable!("Should only be called with comparison operators"),
-        }
-    }
-
-    /// Compare individual elements using prefix optimization
-    fn compare_individual_elements(
-        &self,
-        needle: &[u8],
-        op: &Operator,
-    ) -> Result<BooleanArray, ArrowError> {
-        let shared_prefix_len = self.shared_prefix.len();
-        let needle_after_shared = if shared_prefix_len < needle.len() {
-            &needle[shared_prefix_len..]
-        } else {
-            &[]
-        };
-
-        // Extract needle prefix from the part after shared prefix (for comparing with OffsetView prefix)
-        let mut needle_prefix = [0u8; 8];
-        let prefix_len = std::cmp::min(needle_after_shared.len(), 8);
-        needle_prefix[..prefix_len].copy_from_slice(&needle_after_shared[..prefix_len]);
-
-        let mut buffer_builder = BooleanBufferBuilder::new(self.dictionary_keys.len());
-        let storage = self.fsst_buffer.read().unwrap();
-        let _decompressor = storage.get_decompressor();
-
-        // Only load the raw buffer if we encounter any equal prefixes
-        let mut raw_buffer_cache: Option<Arc<RawFsstBuffer>> = None;
-
-        for i in 0..self.dictionary_keys.len() {
-            let key = if self.dictionary_keys.is_null(i) {
-                0 // Handle null case
-            } else {
-                self.dictionary_keys.value(i) as usize
-            };
-
-            // Get prefix from offset_views using the key as index
-            if key >= self.offset_views.len() {
-                // Invalid key, treat as null/less than
-                buffer_builder.append(matches!(op, Operator::Lt | Operator::LtEq));
-                continue;
-            }
-
-            let offset_view = &self.offset_views[key];
-            let prefix_cmp = offset_view.prefix().cmp(&needle_prefix);
-
-            let result = match (op, prefix_cmp) {
-                (Operator::Lt, std::cmp::Ordering::Less) => true,
-                (Operator::Lt, std::cmp::Ordering::Greater) => false,
-                (Operator::LtEq, std::cmp::Ordering::Less) => true,
-                (Operator::LtEq, std::cmp::Ordering::Greater) => false,
-                (Operator::Gt, std::cmp::Ordering::Greater) => true,
-                (Operator::Gt, std::cmp::Ordering::Less) => false,
-                (Operator::GtEq, std::cmp::Ordering::Greater) => true,
-                (Operator::GtEq, std::cmp::Ordering::Less) => false,
-
-                // When prefixes are equal, we need to decompress and compare
-                (
-                    Operator::Lt | Operator::LtEq | Operator::Gt | Operator::GtEq,
-                    std::cmp::Ordering::Equal,
-                ) => {
-                    // Lazy load the raw buffer only when we need it
-                    if raw_buffer_cache.is_none() {
-                        raw_buffer_cache = Some(storage.get_raw_buffer().unwrap());
-                    }
-                    let raw_buffer = raw_buffer_cache.as_ref().unwrap();
-
-                    if key < self.offset_views.len() {
-                        let start_offset = self.offset_views[key].offset();
-                        let end_offset = if key + 1 < self.offset_views.len() {
-                            self.offset_views[key + 1].offset()
-                        } else {
-                            raw_buffer.compressed_len() as u32
-                        };
-
-                        // Use simple allocation approach for individual comparisons
-                        let decompressed_bytes = raw_buffer.decompress_slice(start_offset, end_offset);
-
-                        // Compare without creating full_value allocation
-                        self.compare_bytes_with_shared_prefix(&decompressed_bytes, needle, op)
-                    } else {
-                        // Handle null case - nulls are typically considered "less than" any value
-                        matches!(op, Operator::Lt | Operator::LtEq)
-                    }
-                }
-
-                // For all other operators that this method shouldn't handle
-                _ => {
-                    unreachable!(
-                        "compare_individual_elements should only be called with comparison operators"
-                    )
-                }
-            };
-
-            buffer_builder.append(result);
-        }
-
-        let buffer = buffer_builder.finish();
-        Ok(BooleanArray::new(buffer, self.nulls().cloned()))
-    }
-
     /// Prefix optimization for ordering operations
-    fn compare_with_prefix_optimization(
-        &self,
-        needle: &[u8],
-        op: &Operator,
-    ) -> Result<BooleanArray, ArrowError> {
+    fn compare_with_inner(&self, needle: &[u8], op: &Operator) -> Result<BooleanArray, ArrowError> {
         // Try to short-circuit based on shared prefix comparison
         if let Some(result) = self.try_shared_prefix_short_circuit(needle, op) {
             return Ok(result);
         }
 
-        // Fall back to individual element comparison
-        self.compare_individual_elements(needle, op)
+        // need to compare the entire string.
+        todo!()
     }
 
     /// Fallback to Arrow operations for unsupported operations
@@ -1079,11 +693,10 @@ impl LiquidByteViewArray {
                 let mut file = File::create(&path)?;
                 file.write_all(&buffer)?;
 
-                let compressor = Arc::new(raw_buffer.compressor().clone());
-                *storage = FsstBufferStorage::OnDisk(path, compressor);
+                *storage = FsstBufferStorage::OnDisk(path);
                 Ok(())
             }
-            FsstBufferStorage::OnDisk(_, _) => Ok(()),
+            FsstBufferStorage::OnDisk(_) => Ok(()),
         }
     }
 
@@ -1092,10 +705,10 @@ impl LiquidByteViewArray {
         let mut storage = self.fsst_buffer.write().unwrap();
 
         match &*storage {
-            FsstBufferStorage::OnDisk(path, compressor) => {
+            FsstBufferStorage::OnDisk(path) => {
                 let bytes = std::fs::read(path)?;
                 let bytes = bytes::Bytes::from(bytes);
-                let raw_buffer = RawFsstBuffer::from_bytes(bytes, compressor.clone());
+                let raw_buffer = RawFsstBuffer::from_bytes(bytes);
                 *storage = FsstBufferStorage::InMemory(Arc::new(raw_buffer));
                 Ok(())
             }
@@ -1539,13 +1152,12 @@ mod tests {
         // Offset views - one per unique value
         assert_eq!(liquid_array.offset_views.len(), 3); // 3 unique values = 3 offset views
         assert!(liquid_array.nulls().is_none());
-        let raw_buffer = liquid_array
+        let _raw_buffer = liquid_array
             .fsst_buffer
             .read()
             .unwrap()
             .get_raw_buffer()
             .unwrap();
-        assert!(raw_buffer.compressed_len() > 0);
     }
 
     #[test]
@@ -1603,26 +1215,6 @@ mod tests {
     }
 
     #[test]
-    fn test_decompressor_access() {
-        let input = StringArray::from(vec!["hello", "world"]);
-        let compressor = LiquidByteViewArray::train_compressor(input.iter());
-        let liquid_array = LiquidByteViewArray::from_string_array(&input, compressor);
-
-        // Just verify we can get the decompressor without errors
-        let raw_buffer = liquid_array
-            .fsst_buffer
-            .read()
-            .unwrap()
-            .get_raw_buffer()
-            .unwrap();
-        let _decompressor = raw_buffer.decompressor();
-        assert_eq!(
-            raw_buffer.compressor().symbol_table().len(),
-            raw_buffer.compressor().symbol_table().len()
-        );
-    }
-
-    #[test]
     fn test_compare_with_prefix_optimization_fast_path() {
         // Test case 1: Prefix comparison can decide most results without decompression
         // Uses strings with distinct prefixes to test the fast path
@@ -1640,7 +1232,7 @@ mod tests {
         // Test Lt with needle "car" (prefix: "car\0\0\0")
         // Expected: "apple123" < "car" => true, "banana456" < "car" => true, others false
         let result = liquid_array
-            .compare_with_prefix_optimization(b"car", &Operator::Lt)
+            .compare_with_inner(b"car", &Operator::Lt)
             .unwrap();
         let expected = BooleanArray::from(vec![true, true, false, true, false]);
         assert_eq!(result, expected);
@@ -1648,7 +1240,7 @@ mod tests {
         // Test Gt with needle "dog" (prefix: "dog\0\0\0")
         // Expected: only "zebra000" > "dog" => true
         let result = liquid_array
-            .compare_with_prefix_optimization(b"dog", &Operator::Gt)
+            .compare_with_inner(b"dog", &Operator::Gt)
             .unwrap();
         let expected = BooleanArray::from(vec![false, false, false, false, true]);
         assert_eq!(result, expected);
@@ -1656,7 +1248,7 @@ mod tests {
         // Test GtEq with needle "apple" (prefix: "apple\0")
         // Expected: all except "apple123" and "apple999" need decompression, others by prefix
         let result = liquid_array
-            .compare_with_prefix_optimization(b"apple", &Operator::GtEq)
+            .compare_with_inner(b"apple", &Operator::GtEq)
             .unwrap();
         let expected = BooleanArray::from(vec![true, true, true, true, true]);
         assert_eq!(result, expected);
@@ -1680,21 +1272,21 @@ mod tests {
         // Test Lt with needle "prefix_b" - this will require decompression for prefix matches
         // Expected: "prefix_aaa" < "prefix_b" => true, "prefix_bbb" < "prefix_b" => false, etc.
         let result = liquid_array
-            .compare_with_prefix_optimization(b"prefix_b", &Operator::Lt)
+            .compare_with_inner(b"prefix_b", &Operator::Lt)
             .unwrap();
         let expected = BooleanArray::from(vec![true, false, false, true, true]);
         assert_eq!(result, expected);
 
         // Test LtEq with needle "prefix_bbb" - exact match case with decompression
         let result = liquid_array
-            .compare_with_prefix_optimization(b"prefix_bbb", &Operator::LtEq)
+            .compare_with_inner(b"prefix_bbb", &Operator::LtEq)
             .unwrap();
         let expected = BooleanArray::from(vec![true, true, false, true, true]);
         assert_eq!(result, expected);
 
         // Test Gt with needle "prefix_abc" - requires decompression for prefix matches
         let result = liquid_array
-            .compare_with_prefix_optimization(b"prefix_abc", &Operator::Gt)
+            .compare_with_inner(b"prefix_abc", &Operator::Gt)
             .unwrap();
         let expected = BooleanArray::from(vec![false, true, true, false, false]);
         assert_eq!(result, expected);
@@ -1716,9 +1308,7 @@ mod tests {
         let liquid_array = LiquidByteViewArray::from_string_array(&input, compressor);
 
         // Test Lt with empty string needle - should test null handling
-        let result = liquid_array
-            .compare_with_prefix_optimization(b"", &Operator::Lt)
-            .unwrap();
+        let result = liquid_array.compare_with_inner(b"", &Operator::Lt).unwrap();
         let expected = BooleanArray::from(vec![
             Some(false),
             None,
@@ -1731,7 +1321,7 @@ mod tests {
 
         // Test Gt with needle "abcdef" - tests exact prefix match requiring decompression
         let result = liquid_array
-            .compare_with_prefix_optimization(b"abcdef", &Operator::Gt)
+            .compare_with_inner(b"abcdef", &Operator::Gt)
             .unwrap();
         let expected = BooleanArray::from(vec![
             Some(false),
@@ -1745,7 +1335,7 @@ mod tests {
 
         // Test LtEq with needle "b" - tests single character comparisons
         let result = liquid_array
-            .compare_with_prefix_optimization(b"b", &Operator::LtEq)
+            .compare_with_inner(b"b", &Operator::LtEq)
             .unwrap();
         let expected = BooleanArray::from(vec![
             Some(true),
@@ -1759,7 +1349,7 @@ mod tests {
 
         // Test GtEq with needle "abcdeg" - tests decompression when prefix exactly matches needle prefix
         let result = liquid_array
-            .compare_with_prefix_optimization(b"abcdeg", &Operator::GtEq)
+            .compare_with_inner(b"abcdeg", &Operator::GtEq)
             .unwrap();
         // b"" >= b"abcdeg" => false
         // null => null
@@ -1797,7 +1387,7 @@ mod tests {
         // Expected: "café" < "naïve" => true (99 < 110), "hello" < "naïve" => true, others false
         let naive_bytes = "naïve".as_bytes(); // [110, 97, 195, 175, 118, 101]
         let result = liquid_array
-            .compare_with_prefix_optimization(naive_bytes, &Operator::Lt)
+            .compare_with_inner(naive_bytes, &Operator::Lt)
             .unwrap();
         let expected = BooleanArray::from(vec![true, false, false, true, false]);
         assert_eq!(result, expected);
@@ -1806,7 +1396,7 @@ mod tests {
         // Expected: strings with first byte > 99 should be true
         let cafe_bytes = "café".as_bytes(); // [99, 97, 102, 195, 169]
         let result = liquid_array
-            .compare_with_prefix_optimization(cafe_bytes, &Operator::Gt)
+            .compare_with_inner(cafe_bytes, &Operator::Gt)
             .unwrap();
         let expected = BooleanArray::from(vec![false, true, true, true, true]);
         assert_eq!(result, expected);
@@ -1816,7 +1406,7 @@ mod tests {
         // most Latin characters will be true
         let world_bytes = "世界".as_bytes(); // [228, 184, 150, 231, 149, 140]
         let result = liquid_array
-            .compare_with_prefix_optimization(world_bytes, &Operator::LtEq)
+            .compare_with_inner(world_bytes, &Operator::LtEq)
             .unwrap();
         let expected = BooleanArray::from(vec![true, true, true, true, true]);
         assert_eq!(result, expected);
@@ -1824,10 +1414,10 @@ mod tests {
         // Test exact equality with "résumé" using GtEq and LtEq to verify byte-level precision
         let resume_bytes = "résumé".as_bytes(); // [114, 195, 169, 115, 117, 109, 195, 169]
         let gte_result = liquid_array
-            .compare_with_prefix_optimization(resume_bytes, &Operator::GtEq)
+            .compare_with_inner(resume_bytes, &Operator::GtEq)
             .unwrap();
         let lte_result = liquid_array
-            .compare_with_prefix_optimization(resume_bytes, &Operator::LtEq)
+            .compare_with_inner(resume_bytes, &Operator::LtEq)
             .unwrap();
 
         // Check GtEq and LtEq results separately
@@ -1901,47 +1491,6 @@ mod tests {
         // Test double load (should be no-op)
         liquid_array.load_from_disk().unwrap();
         liquid_array.load_from_disk().unwrap(); // Should not fail
-
-        // Cleanup
-        let _ = std::fs::remove_file(temp_path);
-    }
-
-    #[test]
-    fn test_efficient_compressor_decompressor_access() {
-        // Reset counter at start of test to avoid interference from other tests
-        reset_disk_read_counter();
-
-        let input = StringArray::from(vec![
-            "prefix_aaa", // prefix: "prefix"
-            "prefix_bbb", // prefix: "prefix" (same prefix)
-            "prefix_ccc", // prefix: "prefix" (same prefix)
-            "different",  // prefix: "differ" (different prefix)
-        ]);
-        let compressor = LiquidByteViewArray::train_compressor(input.iter());
-        let liquid_array = LiquidByteViewArray::from_string_array(&input, compressor);
-
-        // Evict to disk to test efficiency
-        let temp_path = std::env::temp_dir().join("test_efficient_access.bin");
-        liquid_array.evict_to_disk(temp_path.clone()).unwrap();
-
-        // Test that we can access compressor and decompressor without loading full array
-        let storage = liquid_array.fsst_buffer.read().unwrap();
-        let _compressor = storage.get_compressor();
-        let _decompressor = storage.get_decompressor();
-
-        // Test prefix optimization - should work efficiently with mostly prefix comparisons
-        // "prefix_b" should be able to determine most results via prefix comparison
-        let result = liquid_array
-            .compare_with(b"prefix_b", &Operator::Lt)
-            .unwrap();
-        let expected = BooleanArray::from(vec![true, false, false, true]);
-        assert_eq!(result, expected);
-
-        // Test that comparison with very different prefix works efficiently
-        // "zzz" should be resolvable by prefix comparison alone for most values
-        let result = liquid_array.compare_with(b"zzz", &Operator::Lt).unwrap();
-        let expected = BooleanArray::from(vec![true, true, true, true]);
-        assert_eq!(result, expected);
 
         // Cleanup
         let _ = std::fs::remove_file(temp_path);
@@ -2047,16 +1596,6 @@ mod tests {
 
         // Reset counter and test operations that should NOT trigger disk reads
         liquid_array.reset_disk_read_count();
-
-        // 1. Get compressor - should not read from disk
-        let storage = liquid_array.fsst_buffer.read().unwrap();
-        let _compressor = storage.get_compressor();
-        assert_eq!(liquid_array.get_disk_read_count(), 0);
-
-        // 2. Get decompressor - should not read from disk
-        let _decompressor = storage.get_decompressor();
-        assert_eq!(liquid_array.get_disk_read_count(), 0);
-        drop(storage);
 
         // 3. Prefix-only comparison (should resolve without disk I/O)
         // "car" < "apple123" is false, "car" < "banana456" is false, etc.

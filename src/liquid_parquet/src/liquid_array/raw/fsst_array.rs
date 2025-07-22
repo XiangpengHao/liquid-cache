@@ -1,9 +1,10 @@
 use arrow::{
     array::{
         Array, ArrayData, ArrayDataBuilder, BinaryArray, BufferBuilder, Decimal128Array,
-        Decimal256Array, GenericByteArray, StringArray, builder::BinaryBuilder,
+        Decimal256Array, GenericByteArray, OffsetBufferBuilder, StringArray,
+        builder::BinaryBuilder,
     },
-    buffer::{BooleanBuffer, Buffer, NullBuffer},
+    buffer::{BooleanBuffer, Buffer, NullBuffer, OffsetBuffer},
     datatypes::{ByteArrayType, Utf8Type},
 };
 use bytes;
@@ -13,7 +14,151 @@ use std::io::{Error, ErrorKind};
 use std::mem::MaybeUninit;
 use std::sync::Arc;
 
-use crate::liquid_array::fix_len_byte_array::ArrowFixedLenByteArrayType;
+use crate::liquid_array::{
+    byte_view_array::OffsetView, fix_len_byte_array::ArrowFixedLenByteArrayType,
+};
+
+/// Raw FSST buffer that stores compressed data using Arrow Buffer
+/// Offsets are managed externally in OffsetView array
+#[derive(Clone)]
+pub struct RawFsstBuffer {
+    values: Buffer,
+    uncompressed_bytes: usize,
+}
+
+impl std::fmt::Debug for RawFsstBuffer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RawFsstBuffer")
+            .field("values_len", &self.values.len())
+            .field("uncompressed_bytes", &self.uncompressed_bytes)
+            .finish()
+    }
+}
+
+impl RawFsstBuffer {
+    pub fn from_parts(values: Buffer, uncompressed_bytes: usize) -> Self {
+        Self {
+            values,
+            uncompressed_bytes,
+        }
+    }
+
+    /// Create RawFsstBuffer from an iterator of byte slices
+    /// Returns the buffer and a vector of byte offsets for OffsetView construction
+    pub fn from_byte_slices<I, T>(
+        iter: I,
+        compressor: Arc<Compressor>,
+        compress_buffer: &mut Vec<u8>,
+    ) -> (Self, Vec<u32>)
+    where
+        I: Iterator<Item = Option<T>>,
+        T: AsRef<[u8]>,
+    {
+        let mut values_buffer = Vec::new();
+        let mut offsets = Vec::new();
+        let mut uncompressed_len = 0;
+
+        offsets.push(0u32);
+        for item in iter {
+            if let Some(bytes) = item {
+                let bytes = bytes.as_ref();
+                uncompressed_len += bytes.len();
+
+                compress_buffer.clear();
+                unsafe {
+                    compressor.compress_into(bytes, compress_buffer);
+                }
+
+                values_buffer.extend_from_slice(compress_buffer);
+            }
+            offsets.push(values_buffer.len() as u32);
+        }
+
+        // Convert to Arrow buffer
+        values_buffer.shrink_to_fit();
+        let values_buffer = Buffer::from(values_buffer);
+        let raw_buffer = Self::from_parts(values_buffer, uncompressed_len);
+
+        (raw_buffer, offsets)
+    }
+
+    pub fn to_uncompressed(
+        &self,
+        decompressor: &Decompressor<'_>,
+        offset: &[OffsetView],
+    ) -> (Buffer, OffsetBuffer<i32>) {
+        let mut value_buffer: Vec<u8> = Vec::with_capacity(self.uncompressed_bytes + 8);
+        let mut offsets: OffsetBufferBuilder<i32> = OffsetBufferBuilder::new(offset.len());
+
+        for i in 0..offset.len().saturating_sub(1) {
+            let start_offset = offset[i].offset();
+            let end_offset = offset[i + 1].offset();
+
+            if start_offset != end_offset {
+                // Get the compressed slice
+                let compressed_slice = self.get_compressed_slice(start_offset, end_offset);
+
+                // Decompress into the value buffer
+                let slice = unsafe {
+                    std::slice::from_raw_parts_mut(
+                        value_buffer.as_mut_ptr().add(value_buffer.len()) as *mut MaybeUninit<u8>,
+                        value_buffer.capacity() - value_buffer.len(),
+                    )
+                };
+                let decompressed_len = decompressor.decompress_into(compressed_slice, slice);
+
+                let new_len = value_buffer.len() + decompressed_len;
+                debug_assert!(new_len <= value_buffer.capacity());
+                unsafe {
+                    value_buffer.set_len(new_len);
+                }
+                offsets.push_length(decompressed_len);
+            } else {
+                offsets.push_length(0);
+            }
+        }
+
+        let buffer = Buffer::from(value_buffer);
+        (buffer, offsets.finish())
+    }
+
+    /// Get compressed data slice using byte offsets
+    pub fn get_compressed_slice(&self, start_offset: u32, end_offset: u32) -> &[u8] {
+        let start = start_offset as usize;
+        let end = end_offset as usize;
+        debug_assert!(end <= self.values.len(), "Offset out of bounds");
+        debug_assert!(start <= end, "Invalid offset range");
+        &self.values.as_slice()[start..end]
+    }
+
+    pub fn get_memory_size(&self) -> usize {
+        self.values.len() + std::mem::size_of::<Self>()
+    }
+
+    pub fn get_compressed_bytes(&self) -> usize {
+        self.values.len()
+    }
+
+    pub fn get_uncompressed_bytes(&self) -> usize {
+        self.uncompressed_bytes
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut buffer = Vec::with_capacity(self.values.len() + 12);
+        buffer.extend_from_slice(&(self.uncompressed_bytes as u64).to_le_bytes());
+        buffer.extend_from_slice(&(self.values.len() as u32).to_le_bytes());
+        buffer.extend_from_slice(self.values.as_slice());
+        buffer
+    }
+
+    pub fn from_bytes(bytes: bytes::Bytes) -> Self {
+        let uncompressed_bytes = u64::from_le_bytes(bytes[0..8].try_into().unwrap()) as usize;
+        let values_len = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+        let values = bytes.slice(12..12 + values_len);
+        let values = Buffer::from(values);
+        Self::from_parts(values, uncompressed_bytes)
+    }
+}
 
 /// A wrapper around a FsstArray that provides a reference to the compressor.
 #[derive(Clone)]
@@ -31,6 +176,14 @@ impl std::fmt::Debug for FsstArray {
 
 const SYMBOL_SIZE_BYTES: usize = std::mem::size_of::<Symbol>();
 
+pub fn train_compressor<'a, I>(iter: I) -> Compressor
+where
+    I: Iterator<Item = &'a [u8]>,
+{
+    let strings: Vec<&[u8]> = iter.collect();
+    fsst::Compressor::train(&strings)
+}
+
 impl FsstArray {
     /// Creates a new FsstArray from a BinaryArray, a compressor, and an uncompressed length.
     pub fn from_parts(
@@ -47,8 +200,7 @@ impl FsstArray {
 
     /// Trains a compressor on a sequence of strings.
     pub fn train_compressor<'a>(input: impl Iterator<Item = &'a [u8]>) -> Compressor {
-        let strings = input.collect::<Vec<_>>();
-        fsst::Compressor::train(&strings)
+        train_compressor(input)
     }
 
     fn from_iter(
