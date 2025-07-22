@@ -764,8 +764,114 @@ impl LiquidByteViewArray {
             return Ok(result);
         }
 
-        // need to compare the entire string.
-        todo!()
+        let needle_suffix = &needle[self.shared_prefix.len()..];
+        let num_unique = self.offset_views.len().saturating_sub(1);
+        let mut dict_results = Vec::with_capacity(num_unique);
+        let mut needs_full_comparison = Vec::new();
+
+        // Try prefix comparison for each unique value
+        for i in 0..num_unique {
+            let prefix = self.offset_views[i].prefix();
+
+            // Compare prefix with needle_suffix
+            let cmp_len = std::cmp::min(8, needle_suffix.len());
+            let prefix_slice = &prefix[..cmp_len];
+            let needle_slice = &needle_suffix[..cmp_len];
+
+            match prefix_slice.cmp(needle_slice) {
+                std::cmp::Ordering::Less => {
+                    // Prefix < needle, so full string < needle
+                    let result = match op {
+                        Operator::Lt | Operator::LtEq => Some(true),
+                        Operator::Gt | Operator::GtEq => Some(false),
+                        _ => None,
+                    };
+                    dict_results.push(result);
+                }
+                std::cmp::Ordering::Greater => {
+                    // Prefix > needle, so full string > needle
+                    let result = match op {
+                        Operator::Lt | Operator::LtEq => Some(false),
+                        Operator::Gt | Operator::GtEq => Some(true),
+                        _ => None,
+                    };
+                    dict_results.push(result);
+                }
+                std::cmp::Ordering::Equal => {
+                    dict_results.push(None);
+                    needs_full_comparison.push(i);
+                }
+            }
+        }
+
+        // For values needing full comparison, load buffer and decompress
+        if !needs_full_comparison.is_empty() {
+            let storage = self.fsst_buffer.read().unwrap();
+            let raw_buffer = storage.get_raw_buffer().map_err(|e| {
+                ArrowError::IoError(format!("Failed to load FSST buffer: {}", e), e.into())
+            })?;
+
+            let mut decompressed_buffer = Vec::with_capacity(128);
+            for &i in &needs_full_comparison {
+                let start_offset = self.offset_views[i].offset();
+                let end_offset = self.offset_views[i + 1].offset();
+
+                let compressed_value = raw_buffer.get_compressed_slice(start_offset, end_offset);
+                let capacity = compressed_value.len() * 2 + 8;
+                decompressed_buffer.clear();
+                decompressed_buffer.reserve(capacity);
+                let decompressed_len = unsafe {
+                    let slice = std::slice::from_raw_parts_mut(
+                        decompressed_buffer.as_mut_ptr() as *mut std::mem::MaybeUninit<u8>,
+                        capacity,
+                    );
+                    self.compressor
+                        .decompressor()
+                        .decompress_into(compressed_value, slice)
+                };
+                unsafe {
+                    decompressed_buffer.set_len(decompressed_len);
+                }
+
+                let value_cmp = decompressed_buffer.as_slice().cmp(needle);
+                let result = match (op, value_cmp) {
+                    (Operator::Lt, std::cmp::Ordering::Less) => Some(true),
+                    (Operator::Lt, _) => Some(false),
+                    (Operator::LtEq, std::cmp::Ordering::Less | std::cmp::Ordering::Equal) => {
+                        Some(true)
+                    }
+                    (Operator::LtEq, _) => Some(false),
+                    (Operator::Gt, std::cmp::Ordering::Greater) => Some(true),
+                    (Operator::Gt, _) => Some(false),
+                    (Operator::GtEq, std::cmp::Ordering::Greater | std::cmp::Ordering::Equal) => {
+                        Some(true)
+                    }
+                    (Operator::GtEq, _) => Some(false),
+                    _ => None,
+                };
+                dict_results[i] = result;
+            }
+        }
+
+        // Map dictionary results to array results
+        let mut builder = BooleanBuilder::with_capacity(self.dictionary_keys.len());
+        for &dict_key in self.dictionary_keys.values().iter() {
+            let matches = if dict_key as usize >= dict_results.len() {
+                false
+            } else {
+                dict_results[dict_key as usize].unwrap_or(false)
+            };
+            builder.append_value(matches);
+        }
+
+        let mut result = builder.finish();
+        // Preserve nulls from dictionary keys
+        if let Some(nulls) = self.nulls() {
+            let (values, _) = result.into_parts();
+            result = BooleanArray::new(values, Some(nulls.clone()));
+        }
+
+        Ok(result)
     }
 
     /// Fallback to Arrow operations for unsupported operations
@@ -1197,6 +1303,16 @@ mod tests {
     }
 
     #[test]
+    fn test_shared_prefix_corner_case() {
+        let input = StringArray::from(vec!["data", "database", "data_entry", "data_", "datatype"]);
+        let compressor = LiquidByteViewArray::train_compressor(input.iter());
+        let liquid_array = LiquidByteViewArray::from_string_array(&input, compressor);
+        let result = liquid_array.compare_with(b"data", &Operator::GtEq).unwrap();
+        let expected = BooleanArray::from(vec![true, true, true, true, true]); // All >= "data"
+        assert_eq!(result, expected);
+    }
+
+    #[test]
     fn test_shared_prefix_edge_cases() {
         // Test case 1: All strings are the same (full shared prefix)
         let input = StringArray::from(vec!["identical", "identical", "identical"]);
@@ -1250,8 +1366,7 @@ mod tests {
 
         // Verify memory layout components
         assert_eq!(liquid_array.dictionary_keys.len(), 3);
-        // Offset views - one per unique value
-        assert_eq!(liquid_array.offset_views.len(), 3); // 3 unique values = 3 offset views
+        assert_eq!(liquid_array.offset_views.len(), 4);
         assert!(liquid_array.nulls().is_none());
         let _raw_buffer = liquid_array
             .fsst_buffer
@@ -1796,19 +1911,19 @@ mod tests {
 
         // 5. Equality comparison - needs to search through compressed values
         let result = liquid_array.compare_equals(b"apple123");
-        assert_eq!(liquid_array.get_disk_read_count(), 1); // Should read once
+        assert_eq!(liquid_array.get_disk_read_count(), 0);
         let expected = BooleanArray::from(vec![true, false, false, false]);
         assert_eq!(result, expected);
 
         // 6. Another equality comparison - should read again (no caching)
         let result = liquid_array.compare_equals(b"banana456");
-        assert_eq!(liquid_array.get_disk_read_count(), 2); // Should read twice total
+        assert_eq!(liquid_array.get_disk_read_count(), 1);
         let expected = BooleanArray::from(vec![false, true, false, false]);
         assert_eq!(result, expected);
 
         // 7. Arrow conversion - needs full data
         let _arrow_array = liquid_array.to_arrow_array();
-        assert_eq!(liquid_array.get_disk_read_count(), 3); // Should read third time
+        assert_eq!(liquid_array.get_disk_read_count(), 2);
 
         // 8. Comparison with equal prefixes (needs decompression)
         let input_equal_prefixes =
