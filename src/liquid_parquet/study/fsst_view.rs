@@ -85,6 +85,8 @@ struct CliArgs {
 struct ColumnData {
     data: Vec<StringViewArray>,
     avg_str_length: f64,
+    distinct_count_ratio: f64,
+    non_empty_ratio: f64,
 }
 
 async fn download_clickbench_column(column: &str) -> ColumnData {
@@ -116,10 +118,14 @@ async fn download_clickbench_column(column: &str) -> ColumnData {
         })
         .collect::<Vec<_>>();
 
-    // Get average string length
-    let avg_length_batches = ctx
+    // Get average string length, distinct count ratio, and non-empty ratio in one query
+    let stats_batches = ctx
         .sql(&format!(
-            "SELECT AVG(LENGTH(\"{column}\")) AS \"{column}\" FROM \"hits\""
+            "SELECT 
+                AVG(LENGTH(\"{column}\")) AS avg_length,
+                COUNT(DISTINCT \"{column}\") * 1.0 / COUNT(\"{column}\") AS distinct_ratio,
+                COUNT(CASE WHEN \"{column}\" IS NOT NULL AND \"{column}\" != '' THEN 1 END) * 1.0 / COUNT(*) AS non_empty_ratio
+            FROM \"hits\""
         ))
         .await
         .unwrap()
@@ -127,8 +133,22 @@ async fn download_clickbench_column(column: &str) -> ColumnData {
         .await
         .unwrap();
 
-    let avg_str_length = avg_length_batches[0]
-        .column_by_name(column)
+    let avg_str_length = stats_batches[0]
+        .column_by_name("avg_length")
+        .unwrap()
+        .as_primitive::<Float64Type>()
+        .clone()
+        .value(0);
+
+    let distinct_count_ratio = stats_batches[0]
+        .column_by_name("distinct_ratio")
+        .unwrap()
+        .as_primitive::<Float64Type>()
+        .clone()
+        .value(0);
+
+    let non_empty_ratio = stats_batches[0]
+        .column_by_name("non_empty_ratio")
         .unwrap()
         .as_primitive::<Float64Type>()
         .clone()
@@ -137,6 +157,8 @@ async fn download_clickbench_column(column: &str) -> ColumnData {
     ColumnData {
         data: column_data,
         avg_str_length,
+        distinct_count_ratio,
+        non_empty_ratio,
     }
 }
 
@@ -645,7 +667,6 @@ impl ArrayBenchmark for StringArrayLz4Benchmark {
 struct SerializableMemoryUsage {
     dictionary_views: usize,
     offsets: usize,
-    nulls: usize,
     fsst_buffer: usize,
     shared_prefix: usize,
     struct_size: usize,
@@ -655,9 +676,8 @@ struct SerializableMemoryUsage {
 impl From<ByteViewArrayMemoryUsage> for SerializableMemoryUsage {
     fn from(usage: ByteViewArrayMemoryUsage) -> Self {
         Self {
-            dictionary_views: usage.dictionary_views,
+            dictionary_views: usage.dictionary_key,
             offsets: usage.offsets,
-            nulls: usage.nulls,
             fsst_buffer: usage.fsst_buffer,
             shared_prefix: usage.shared_prefix,
             struct_size: usage.struct_size,
@@ -670,6 +690,8 @@ impl From<ByteViewArrayMemoryUsage> for SerializableMemoryUsage {
 struct BenchmarkResult {
     column_name: String,
     avg_string_length: f64,
+    distinct_count_ratio: f64,
+    non_empty_ratio: f64,
     benchmark_results: Vec<BenchmarkResults>,
     fsst_view_memory_usage: SerializableMemoryUsage,
 }
@@ -707,7 +729,12 @@ fn main() {
     for c in columns_to_process {
         println!("Loading column: {c}");
         let column_data = load_column_data(c);
-        println!("{c} average length: {}", column_data.avg_str_length);
+        println!(
+            "{c} average length: {:.2}, distinct ratio: {:.4}, non-empty ratio: {:.4}",
+            column_data.avg_str_length,
+            column_data.distinct_count_ratio,
+            column_data.non_empty_ratio
+        );
 
         let benchmark_results = runner.run_workloads(
             &column_data.data,
@@ -717,9 +744,8 @@ fn main() {
 
         let (compressor, _) = LiquidByteViewArray::train_from_string_view(&column_data.data[0]);
         let mut total_detailed_memory_usage = ByteViewArrayMemoryUsage {
-            dictionary_views: 0,
+            dictionary_key: 0,
             offsets: 0,
-            nulls: 0,
             fsst_buffer: 0,
             shared_prefix: 0,
             struct_size: 0,
@@ -733,6 +759,8 @@ fn main() {
         all_column_results.push(BenchmarkResult {
             column_name: c.to_string(),
             avg_string_length: column_data.avg_str_length,
+            distinct_count_ratio: column_data.distinct_count_ratio,
+            non_empty_ratio: column_data.non_empty_ratio,
             benchmark_results,
             fsst_view_memory_usage: total_detailed_memory_usage.into(),
         });

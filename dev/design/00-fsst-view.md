@@ -23,29 +23,29 @@ Dictionary(u16)    FSSTArray(BinaryArray)
 ## New string representation
 
 ```
-Nulls DictionaryView(u64)  Offset  │   FSST Buffer           
- ┌──┐ ┌────────────────┐ ┌───────┐ │  ┌─────────────────────┐
- │  │ │┌──┐┌──────────┐│ │  i32  │ │  │                     │
- │  │ ││12││prefix(6b)││ │       │ │  │                     │
- │  │ │└──┘└──────────┘│ │       │ │  │                     │
- │  │ │┌──┐┌──────────┐│ │       │ │  │                     │
- │  │ ││37││prefix(6b)││ │       │ │  │                     │
- │  │ │└──┘└──────────┘│ │       │ │  │                     │
- │  │ │┌──┐┌──────────┐│ │       │ │  │                     │
- │  │ ││42││prefix(6b)││ └───────┘ │  │                     │
- │  │ │└──┘└──────────┘│ Prefix    │  │                     │
- │  │ │┌──┐┌──────────┐│ (shared)  │  │                     │
- │  │ ││17││prefix(6b)││ ┌───────┐ │  │                     │
- │  │ │└──┘└──────────┘│ │       │ │  │                     │
- └──┘ └────────────────┘ └───────┘ │  └─────────────────────┘
-                                   │                         
-                          In-memory│Disk                     
+        keys                                                  
+ Nulls  (u16)   OffsetView(u64)     │   FSST Buffer           
+  ┌──┐ ┌────┐  ┌──────────────────┐ │  ┌─────────────────────┐
+  │  │ │┌──┐│  │┌──────┐┌────────┐│ │  │                     │
+  │  │ ││12││  ││offset││Prefix  ││ │  │                     │
+  │  │ │└──┘│  │└──────┘└────────┘│ │  │                     │
+  │  │ │┌──┐│  │┌──────┐┌────────┐│ │  │                     │
+  │  │ ││37││  ││offset││Prefix  ││ │  │                     │
+  │  │ │└──┘│  │└──────┘└────────┘│ │  │                     │
+  │  │ │┌──┐│  │┌──────┐┌────────┐│ │  │                     │
+  │  │ ││42││  ││offset││Prefix  ││ │  │                     │
+  │  │ │└──┘│  │└──────┘└────────┘│ │  │                     │
+  │  │ │┌──┐│  └──────────────────┘ │  │                     │
+  │  │ ││17││  ┌──────────────────┐ │  │                     │
+  │  │ │└──┘│  │Shared prefix     │ │  │                     │
+  └──┘ └────┘  └──────────────────┘ │  └─────────────────────┘
+                                    │                         
+                           In-memory│Disk                     
 ```
 
 TLDR: 
-1. dictionary keys are stored as a 2-byte key index and a 6-byte prefix.
-2. Offset and nulls are stored in memory.
-3. FSST buffer is stored on disk.
+1. keys, offset and nulls are stored in memory.
+2. FSST buffer is stored on disk.
 
 Design decisions:
 1. The strings in the FSST buffer are unique, i.e., if two strings are different, their dictionary keys are different, and vice versa.
@@ -53,18 +53,19 @@ Design decisions:
 3. Shared prefix is the prefix that is shared across all strings in the array.
 4. Offset refers to the string offset in the FSST buffer, it use Arrow's offset buffer.
 5. Nulls refers to the null bit of the DictionaryView.
-6. DictionaryView consumes 8 bytes, with fixed 6-byte prefix, this prefix is the string after the shared prefix.
-7. Everything but FSST buffer is stored in memory.
+6. Keys are stored as u16, this is the index to the OffsetView.
+7. The OffsetView has 12 bytes, with 4 bytes of offset and 8 bytes of prefix. 
+8. Everything but FSST buffer is stored in memory.
 
 For example if the array is:
 - "hello"
 - "hello world"
 - "hello rust program"
 
-Then the shared prefix is "hello", the prefix of the dictionary view are:
+Then the shared prefix is "hello", the prefix of the offset view are:
 - "" (empty string)
 - " world"
-- " rust "
+- " rust pr"
 
 
 
@@ -97,7 +98,7 @@ Design discussion:
 - Sometimes it's faster to decompress the entire array and then do the comparison. But when?
 
 ### FSST buffer contains full strings
-Although the DictionaryView contains the prefix (both shared and non-shared), the FSST buffer contains the full strings.
+Although the OffsetView contains the prefix (both shared and non-shared), the FSST buffer contains the full strings.
 This allows faster conversion to arrow StringViewArray, because we don't need to prepend the prefix to the decompressed strings.
 After all, we don't need FSST buffer to be short, because they are on disk anyway.
 
@@ -114,15 +115,15 @@ After all, we don't need FSST buffer to be short, because they are on disk anywa
 
 ### Evict to disk
 
-FSSTView can be evicted to disk, but we only evict the FSST buffer and keep the DictionaryView in memory, this allows most of the time to avoid decompression and IO.
+FSSTView can be evicted to disk, but we only evict the FSST buffer and keep the OffsetView in memory, this allows most of the time to avoid decompression and IO.
 
 To do this, we need to change the `fsst_buffer` to be an enum, with two variants:
 1. `InMemory(FsstArray)`
 2. `OnDisk(PathBuf)`
 
 We will need to add two functions:
-1. `evict_to_disk`: evict the FSST buffer to disk, and keep the DictionaryView in memory. the enum will change from `InMemory` to `OnDisk`.
-2. `load_from_disk`: load the FSST buffer from disk, and keep the DictionaryView in memory. the enum will change from `OnDisk` to `InMemory`.
+1. `evict_to_disk`: evict the FSST buffer to disk, and keep the OffsetView in memory. the enum will change from `InMemory` to `OnDisk`.
+2. `load_from_disk`: load the FSST buffer from disk, and keep the OffsetView in memory. the enum will change from `OnDisk` to `InMemory`.
 
 The above two functions will need to be thread-safe, so a `std::sync::RwLock` is needed.
 
@@ -194,7 +195,7 @@ This exercise both the effectiveness of the prefix, and the effectiveness of eva
 We need to implement a cache abstraction, where the cache size is 1%, 10%, 30%, and 100% of the total size.
 
 For arrow StringViewArray and existing dictionary-based array, we stop inserting to cache when the cache is full, and write data to disk. 
-For FSSTView, we initially insert the entire column to cache, and when cache is full, we evict some of the previously inserted FSST buffer to disk to make room for the new data, which only keeps the DictionaryView in memory.
+For FSSTView, we initially insert the entire column to cache, and when cache is full, we evict some of the previously inserted FSST buffer to disk to make room for the new data, which only keeps the OffsetView in memory.
 
 Then we compare the performance of the following operations:
 1. Sorting the column.

@@ -4,7 +4,7 @@ use arrow::array::{
     types::UInt16Type,
 };
 use arrow::array::{BinaryViewArray, BooleanBufferBuilder};
-use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer, ScalarBuffer};
+use arrow::buffer::{BooleanBuffer, NullBuffer};
 use arrow::compute::{cast, kernels, sort_to_indices};
 use arrow::datatypes::{BinaryType, ByteArrayType, Utf8Type};
 use arrow_schema::ArrowError;
@@ -54,29 +54,29 @@ use crate::utils::CheckedDictionaryArray;
 use std::fs::File;
 use std::io::{self, Write};
 
-/// A dictionary view structure that stores dictionary key and a 6-byte prefix
-/// Layout: [key: u16][prefix: 6 bytes]
+/// An offset view structure that stores offset and an 8-byte prefix
+/// Layout: [offset: u32][prefix: 8 bytes]
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
-pub struct DictionaryView {
-    key: u16,
-    prefix: [u8; 6],
+pub struct OffsetView {
+    offset: u32,
+    prefix: [u8; 8],
 }
 
-const _: () = if std::mem::size_of::<DictionaryView>() != 8 {
-    panic!("DictionaryView must be 8 bytes")
+const _: () = if std::mem::size_of::<OffsetView>() != 12 {
+    panic!("OffsetView must be 12 bytes")
 };
 
-impl DictionaryView {
-    pub fn new(key: u16, prefix: [u8; 6]) -> Self {
-        Self { key, prefix }
+impl OffsetView {
+    pub fn new(offset: u32, prefix: [u8; 8]) -> Self {
+        Self { offset, prefix }
     }
 
-    pub fn key(&self) -> u16 {
-        self.key
+    pub fn offset(&self) -> u32 {
+        self.offset
     }
 
-    pub fn prefix(&self) -> &[u8; 6] {
+    pub fn prefix(&self) -> &[u8; 8] {
         &self.prefix
     }
 }
@@ -166,7 +166,7 @@ impl LiquidArray for LiquidByteViewArray {
     }
 
     fn len(&self) -> usize {
-        self.dictionary_views.len()
+        self.dictionary_keys.len()
     }
 
     #[inline]
@@ -204,51 +204,16 @@ impl LiquidArray for LiquidByteViewArray {
 }
 
 fn filter_inner(array: &LiquidByteViewArray, filter: &BooleanArray) -> LiquidByteViewArray {
-    // Only filter the dictionary views, not the offsets!
-    // Offsets reference unique values in FSST buffer and should remain unchanged
-    let filtered_views: Vec<DictionaryView> = array
-        .dictionary_views
-        .iter()
-        .zip(filter.iter())
-        .filter_map(|(view, select)| {
-            if select.unwrap_or(false) {
-                Some(*view)
-            } else {
-                None
-            }
-        })
-        .collect();
+    // Only filter the dictionary keys, not the offset views!
+    // Offset views reference unique values in FSST buffer and should remain unchanged
 
-    // Filter nulls to match the filtered views
-    let filtered_nulls = if let Some(nulls) = &array.nulls {
-        let indices: Vec<usize> = filter
-            .iter()
-            .enumerate()
-            .filter_map(|(i, select)| {
-                if select.unwrap_or(false) {
-                    Some(i)
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        let filtered_len = indices.len();
-        let mut filtered_nulls = Vec::with_capacity(filtered_len);
-        for idx in indices {
-            filtered_nulls.push(nulls.is_null(idx));
-        }
-
-        let buffer = BooleanBuffer::from(filtered_nulls);
-        Some(NullBuffer::from(buffer))
-    } else {
-        None
-    };
+    // Filter the dictionary keys using Arrow's built-in filter functionality
+    let filtered_keys = arrow::compute::filter(&array.dictionary_keys, filter).unwrap();
+    let filtered_keys = filtered_keys.as_primitive::<UInt16Type>().clone();
 
     LiquidByteViewArray {
-        dictionary_views: filtered_views,
-        offsets: array.offsets.clone(), // Keep original offsets - they reference unique values
-        nulls: filtered_nulls,
+        dictionary_keys: filtered_keys,
+        offset_views: array.offset_views.clone(), // Keep original offset views - they reference unique values
         fsst_buffer: array.fsst_buffer.clone(),
         original_arrow_type: array.original_arrow_type,
         shared_prefix: array.shared_prefix.clone(),
@@ -324,24 +289,22 @@ fn try_eval_predicate_inner(
 }
 
 /// An array that stores strings using the FSST view format:
-/// - Dictionary views with 2-byte keys and 6-byte prefixes stored in memory
-/// - Offsets for unique values in FSST buffer stored in memory
+/// - Dictionary views with 2-byte keys stored in memory
+/// - Offset views with 4-byte offsets and 8-byte prefixes stored in memory
 /// - Nulls stored in memory
 /// - FSST buffer can be stored in memory or on disk
 ///
 /// Data access flow:
-/// 1. Use dictionary view key to index into offsets buffer to get start/end positions
-/// 2. Use those offsets to read the corresponding bytes from FSST buffer
-/// 3. Decompress those bytes to get the full value
-/// 4. Use prefix for quick comparisons to avoid decompression when possible
+/// 1. Use dictionary view key to index into offset_views buffer
+/// 2. Use offset from offset_views to read the corresponding bytes from FSST buffer
+/// 3. Use prefix from offset_views for quick comparisons to avoid decompression when possible
+/// 4. Decompress bytes from FSST buffer to get the full value when needed
 #[derive(Clone)]
 pub struct LiquidByteViewArray {
-    /// Dictionary views containing key (u16) and prefix (6 bytes)
-    dictionary_views: Vec<DictionaryView>,
-    /// Offsets into the FSST buffer - one offset per unique value (same length as fsst_buffer)
-    offsets: OffsetBuffer<i32>,
-    /// Null buffer
-    nulls: Option<NullBuffer>,
+    /// Dictionary keys (u16) - one per array element, using Arrow's UInt16Array for zero-copy
+    dictionary_keys: UInt16Array,
+    /// Offset views containing offset (u32) and prefix (8 bytes) - one per unique value
+    offset_views: Vec<OffsetView>,
     /// FSST-compressed buffer (can be in memory or on disk)
     fsst_buffer: Arc<RwLock<FsstBufferStorage>>,
     /// Used to convert back to the original arrow type
@@ -353,9 +316,8 @@ pub struct LiquidByteViewArray {
 impl std::fmt::Debug for LiquidByteViewArray {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LiquidByteViewArray")
-            .field("dictionary_views", &self.dictionary_views)
-            .field("offsets", &self.offsets)
-            .field("nulls", &self.nulls)
+            .field("dictionary_keys", &self.dictionary_keys)
+            .field("offset_views", &self.offset_views)
             .field("fsst_buffer", &self.fsst_buffer)
             .field("original_arrow_type", &self.original_arrow_type)
             .field("shared_prefix", &self.shared_prefix)
@@ -499,60 +461,37 @@ impl LiquidByteViewArray {
 
         let shared_prefix_len = shared_prefix.len();
 
-        // Create dictionary views with prefixes - one per original array element
-        let mut dictionary_views = Vec::with_capacity(keys.len());
+        // Create offset views with prefixes - one per unique value in dictionary
+        let mut offset_views = Vec::with_capacity(values.len());
+        let mut current_offset = 0u32;
 
-        // Create offsets for unique values - one per unique value in FSST buffer
-        let mut offsets = Vec::with_capacity(values.len() + 1);
-        let mut current_offset = 0i32;
-        offsets.push(current_offset);
-
-        // Calculate offsets for each unique value in the dictionary
+        // Calculate offset views for each unique value in the dictionary
         for i in 0..values.len() {
-            let value_len = if let Some(string_values) = values.as_string_opt::<i32>() {
-                string_values.value(i).len()
+            let value_bytes = if let Some(string_values) = values.as_string_opt::<i32>() {
+                string_values.value(i).as_bytes()
             } else if let Some(binary_values) = values.as_binary_opt::<i32>() {
-                binary_values.value(i).len()
+                binary_values.value(i)
             } else {
                 panic!("Unsupported dictionary value type")
             };
-            current_offset += value_len as i32;
-            offsets.push(current_offset);
-        }
 
-        // Create dictionary views with prefixes for each key
-        for key_opt in keys.iter() {
-            if let Some(key) = key_opt {
-                let key_idx = key as usize;
-
-                // Get value bytes for this key
-                let value_bytes = if let Some(string_values) = values.as_string_opt::<i32>() {
-                    string_values.value(key_idx).as_bytes()
-                } else if let Some(binary_values) = values.as_binary_opt::<i32>() {
-                    binary_values.value(key_idx)
-                } else {
-                    panic!("Unsupported dictionary value type")
-                };
-
-                // Extract 6-byte prefix after removing shared prefix
-                let remaining_bytes = if shared_prefix_len < value_bytes.len() {
-                    &value_bytes[shared_prefix_len..]
-                } else {
-                    &[]
-                };
-
-                let mut prefix = [0u8; 6];
-                let prefix_len = std::cmp::min(remaining_bytes.len(), 6);
-                prefix[..prefix_len].copy_from_slice(&remaining_bytes[..prefix_len]);
-
-                dictionary_views.push(DictionaryView::new(key, prefix));
+            // Extract 8-byte prefix after removing shared prefix
+            let remaining_bytes = if shared_prefix_len < value_bytes.len() {
+                &value_bytes[shared_prefix_len..]
             } else {
-                // For null values, use a default view
-                dictionary_views.push(DictionaryView::new(0, [0u8; 6]));
-            }
+                &[]
+            };
+
+            let mut prefix = [0u8; 8];
+            let prefix_len = std::cmp::min(remaining_bytes.len(), 8);
+            prefix[..prefix_len].copy_from_slice(&remaining_bytes[..prefix_len]);
+
+            offset_views.push(OffsetView::new(current_offset, prefix));
+            current_offset += value_bytes.len() as u32;
         }
 
-        let offsets = OffsetBuffer::new(ScalarBuffer::from(offsets));
+        // Create UInt16Array from the original keys - zero copy from the CheckedDictionaryArray
+        let dictionary_keys = keys.clone();
 
         // Create FSST buffer from unique values (full strings, not after removing shared prefix)
         let fsst_buffer = if let Some(string_values) = values.as_string_opt::<i32>() {
@@ -564,9 +503,8 @@ impl LiquidByteViewArray {
         };
 
         Self {
-            dictionary_views,
-            offsets,
-            nulls: keys.nulls().cloned(),
+            dictionary_keys,
+            offset_views,
             fsst_buffer: Arc::new(RwLock::new(FsstBufferStorage::InMemory(Arc::new(
                 fsst_buffer,
             )))),
@@ -577,17 +515,7 @@ impl LiquidByteViewArray {
 
     /// Convert to Arrow DictionaryArray
     pub fn to_dict_arrow(&self) -> DictionaryArray<UInt16Type> {
-        // Create keys array from dictionary views
-        let keys = self
-            .dictionary_views
-            .iter()
-            .map(|view| view.key())
-            .collect::<Vec<_>>();
-        let keys_array = if let Some(nulls) = &self.nulls {
-            UInt16Array::new(keys.into(), Some(nulls.clone()))
-        } else {
-            UInt16Array::from(keys)
-        };
+        let keys_array = self.dictionary_keys.clone();
 
         // Convert FSST buffer to values (full strings are already stored)
         let storage = self.fsst_buffer.read().unwrap();
@@ -614,7 +542,7 @@ impl LiquidByteViewArray {
 
     /// Get the nulls buffer
     pub fn nulls(&self) -> Option<&NullBuffer> {
-        self.nulls.as_ref()
+        self.dictionary_keys.nulls()
     }
 
     /// Compare equality with a byte needle
@@ -632,16 +560,21 @@ impl LiquidByteViewArray {
 
         if let Some(idx) = idx {
             let target_key = idx as u16;
-            let mut buffer_builder = BooleanBufferBuilder::new(self.dictionary_views.len());
+            let mut buffer_builder = BooleanBufferBuilder::new(self.dictionary_keys.len());
 
-            for view in &self.dictionary_views {
-                buffer_builder.append(view.key() == target_key);
+            for i in 0..self.dictionary_keys.len() {
+                let key = if self.dictionary_keys.is_null(i) {
+                    0 // Handle null case
+                } else {
+                    self.dictionary_keys.value(i)
+                };
+                buffer_builder.append(key == target_key);
             }
 
             let buffer = buffer_builder.finish();
             BooleanArray::new(buffer, self.nulls().cloned())
         } else {
-            let buffer = BooleanBuffer::new_unset(self.dictionary_views.len());
+            let buffer = BooleanBuffer::new_unset(self.dictionary_keys.len());
             BooleanArray::new(buffer, self.nulls().cloned())
         }
     }
@@ -686,12 +619,12 @@ impl LiquidByteViewArray {
         let shared_cmp = self.shared_prefix[..needle_shared_len].cmp(&needle[..needle_shared_len]);
 
         let all_true = || {
-            let buffer = BooleanBuffer::new_set(self.dictionary_views.len());
+            let buffer = BooleanBuffer::new_set(self.dictionary_keys.len());
             BooleanArray::new(buffer, self.nulls().cloned())
         };
 
         let all_false = || {
-            let buffer = BooleanBuffer::new_unset(self.dictionary_views.len());
+            let buffer = BooleanBuffer::new_unset(self.dictionary_keys.len());
             BooleanArray::new(buffer, self.nulls().cloned())
         };
 
@@ -761,20 +694,34 @@ impl LiquidByteViewArray {
             &[]
         };
 
-        // Extract needle prefix from the part after shared prefix (for comparing with DictionaryView prefix)
-        let mut needle_prefix = [0u8; 6];
-        let prefix_len = std::cmp::min(needle_after_shared.len(), 6);
+        // Extract needle prefix from the part after shared prefix (for comparing with OffsetView prefix)
+        let mut needle_prefix = [0u8; 8];
+        let prefix_len = std::cmp::min(needle_after_shared.len(), 8);
         needle_prefix[..prefix_len].copy_from_slice(&needle_after_shared[..prefix_len]);
 
-        let mut buffer_builder = BooleanBufferBuilder::new(self.dictionary_views.len());
+        let mut buffer_builder = BooleanBufferBuilder::new(self.dictionary_keys.len());
         let storage = self.fsst_buffer.read().unwrap();
         let decompressor = storage.get_decompressor();
 
         // Only load the full FSST array if we encounter any equal prefixes
         let mut fsst_array: Option<Arc<FsstArray>> = None;
 
-        for view in &self.dictionary_views {
-            let prefix_cmp = view.prefix().cmp(&needle_prefix);
+        for i in 0..self.dictionary_keys.len() {
+            let key = if self.dictionary_keys.is_null(i) {
+                0 // Handle null case
+            } else {
+                self.dictionary_keys.value(i) as usize
+            };
+
+            // Get prefix from offset_views using the key as index
+            if key >= self.offset_views.len() {
+                // Invalid key, treat as null/less than
+                buffer_builder.append(matches!(op, Operator::Lt | Operator::LtEq));
+                continue;
+            }
+
+            let offset_view = &self.offset_views[key];
+            let prefix_cmp = offset_view.prefix().cmp(&needle_prefix);
 
             let result = match (op, prefix_cmp) {
                 (Operator::Lt, std::cmp::Ordering::Less) => true,
@@ -791,8 +738,6 @@ impl LiquidByteViewArray {
                     Operator::Lt | Operator::LtEq | Operator::Gt | Operator::GtEq,
                     std::cmp::Ordering::Equal,
                 ) => {
-                    let key = view.key() as usize;
-
                     // Lazy load the full FSST array only when we need it
                     if fsst_array.is_none() {
                         fsst_array = Some(storage.get_fsst_array().unwrap());
@@ -935,9 +880,8 @@ impl LiquidByteViewArray {
     /// Get detailed memory usage of the byte view array
     pub fn get_detailed_memory_usage(&self) -> ByteViewArrayMemoryUsage {
         ByteViewArrayMemoryUsage {
-            dictionary_views: self.dictionary_views.len() * std::mem::size_of::<DictionaryView>(),
-            offsets: self.offsets.inner().len() * std::mem::size_of::<i32>(),
-            nulls: self.nulls.as_ref().map_or(0, |n| n.buffer().len()),
+            dictionary_key: self.dictionary_keys.get_array_memory_size(),
+            offsets: self.offset_views.len() * std::mem::size_of::<OffsetView>(),
             fsst_buffer: self.fsst_buffer.read().unwrap().get_array_memory_size(),
             shared_prefix: self.shared_prefix.len(),
             struct_size: std::mem::size_of::<Self>(),
@@ -953,12 +897,10 @@ impl LiquidByteViewArray {
 
 /// Detailed memory usage of the byte view array
 pub struct ByteViewArrayMemoryUsage {
-    /// Memory usage of the dictionary views
-    pub dictionary_views: usize,
-    /// Memory usage of the offsets
+    /// Memory usage of the dictionary key
+    pub dictionary_key: usize,
+    /// Memory usage of the offset views
     pub offsets: usize,
-    /// Memory usage of the nulls
-    pub nulls: usize,
     /// Memory usage of the FSST buffer
     pub fsst_buffer: usize,
     /// Memory usage of the shared prefix
@@ -970,9 +912,8 @@ pub struct ByteViewArrayMemoryUsage {
 impl Display for ByteViewArrayMemoryUsage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ByteViewArrayMemoryUsage")
-            .field("dictionary_views", &self.dictionary_views)
+            .field("dictionary_key", &self.dictionary_key)
             .field("offsets", &self.offsets)
-            .field("nulls", &self.nulls)
             .field("fsst_buffer", &self.fsst_buffer)
             .field("shared_prefix", &self.shared_prefix)
             .field("struct_size", &self.struct_size)
@@ -984,9 +925,8 @@ impl Display for ByteViewArrayMemoryUsage {
 impl ByteViewArrayMemoryUsage {
     /// Get the total memory usage of the byte view array
     pub fn total(&self) -> usize {
-        self.dictionary_views
+        self.dictionary_key
             + self.offsets
-            + self.nulls
             + self.fsst_buffer
             + self.shared_prefix
             + self.struct_size
@@ -995,9 +935,8 @@ impl ByteViewArrayMemoryUsage {
 
 impl std::ops::AddAssign for ByteViewArrayMemoryUsage {
     fn add_assign(&mut self, other: Self) {
-        self.dictionary_views += other.dictionary_views;
+        self.dictionary_key += other.dictionary_key;
         self.offsets += other.offsets;
-        self.nulls += other.nulls;
         self.fsst_buffer += other.fsst_buffer;
         self.shared_prefix += other.shared_prefix;
         self.struct_size += other.struct_size;
@@ -1140,9 +1079,16 @@ mod tests {
 
     #[test]
     fn test_dictionary_view_structure() {
-        let view = DictionaryView::new(42, [1, 2, 3, 4, 5, 6]);
-        assert_eq!(view.key(), 42);
-        assert_eq!(view.prefix(), &[1, 2, 3, 4, 5, 6]);
+        // Test OffsetView structure
+        let offset_view = OffsetView::new(1024, [1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(offset_view.offset(), 1024);
+        assert_eq!(offset_view.prefix(), &[1, 2, 3, 4, 5, 6, 7, 8]);
+
+        // Test UInt16Array creation (dictionary keys are now stored directly in UInt16Array)
+        let keys = UInt16Array::from(vec![42, 100, 255]);
+        assert_eq!(keys.value(0), 42);
+        assert_eq!(keys.value(1), 100);
+        assert_eq!(keys.value(2), 255);
     }
 
     #[test]
@@ -1151,11 +1097,11 @@ mod tests {
         let compressor = LiquidByteViewArray::train_compressor(input.iter());
         let liquid_array = LiquidByteViewArray::from_string_array(&input, compressor);
 
-        // With no shared prefix, the dictionary prefixes should be the original strings (truncated to 6 bytes)
+        // With no shared prefix, the offset view prefixes should be the original strings (truncated to 8 bytes)
         assert_eq!(liquid_array.shared_prefix, Vec::<u8>::new());
-        assert_eq!(liquid_array.dictionary_views[0].prefix(), b"hello\0");
-        assert_eq!(liquid_array.dictionary_views[1].prefix(), b"world\0");
-        assert_eq!(liquid_array.dictionary_views[2].prefix(), b"test\0\0");
+        assert_eq!(liquid_array.offset_views[0].prefix(), b"hello\0\0\0");
+        assert_eq!(liquid_array.offset_views[1].prefix(), b"world\0\0\0");
+        assert_eq!(liquid_array.offset_views[2].prefix(), b"test\0\0\0\0");
     }
 
     #[test]
@@ -1173,11 +1119,11 @@ mod tests {
         // Should extract "hello_" as shared prefix
         assert_eq!(liquid_array.shared_prefix, b"hello_");
 
-        // Dictionary prefixes should be the remaining parts after shared prefix
-        assert_eq!(liquid_array.dictionary_views[0].prefix(), b"world\0");
-        assert_eq!(liquid_array.dictionary_views[1].prefix(), b"rust\0\0");
-        assert_eq!(liquid_array.dictionary_views[2].prefix(), b"test\0\0");
-        assert_eq!(liquid_array.dictionary_views[3].prefix(), b"code\0\0");
+        // Offset view prefixes should be the remaining parts after shared prefix (8 bytes)
+        assert_eq!(liquid_array.offset_views[0].prefix(), b"world\0\0\0");
+        assert_eq!(liquid_array.offset_views[1].prefix(), b"rust\0\0\0\0");
+        assert_eq!(liquid_array.offset_views[2].prefix(), b"test\0\0\0\0");
+        assert_eq!(liquid_array.offset_views[3].prefix(), b"code\0\0\0\0");
 
         // Test roundtrip - should reconstruct original strings correctly
         let output = liquid_array.to_arrow_array();
@@ -1209,11 +1155,11 @@ mod tests {
         // Should extract "abc" as shared prefix
         assert_eq!(liquid_array.shared_prefix, b"abc");
 
-        // Dictionary prefixes should be the remaining parts after shared prefix
-        assert_eq!(liquid_array.dictionary_views[0].prefix(), &[0u8; 6]); // empty after "abc"
-        assert_eq!(liquid_array.dictionary_views[1].prefix(), b"de\0\0\0\0"); // "de" after "abc"
-        assert_eq!(liquid_array.dictionary_views[2].prefix(), b"def\0\0\0"); // "def" after "abc"
-        assert_eq!(liquid_array.dictionary_views[3].prefix(), b"defg\0\0"); // "defg" after "abc"
+        // Offset view prefixes should be the remaining parts after shared prefix (8 bytes)
+        assert_eq!(liquid_array.offset_views[0].prefix(), &[0u8; 8]); // empty after "abc"
+        assert_eq!(liquid_array.offset_views[1].prefix(), b"de\0\0\0\0\0\0"); // "de" after "abc"
+        assert_eq!(liquid_array.offset_views[2].prefix(), b"def\0\0\0\0\0"); // "def" after "abc"
+        assert_eq!(liquid_array.offset_views[3].prefix(), b"defg\0\0\0\0"); // "defg" after "abc"
 
         // Test roundtrip
         let output = liquid_array.to_arrow_array();
@@ -1248,12 +1194,12 @@ mod tests {
         // Should extract "data" as shared prefix
         assert_eq!(liquid_array.shared_prefix, b"data");
 
-        // Dictionary prefixes should be the remaining parts
-        assert_eq!(liquid_array.dictionary_views[0].prefix(), &[0u8; 6]); // "data" - empty remainder
-        assert_eq!(liquid_array.dictionary_views[1].prefix(), b"base\0\0"); // "database" - "base" remainder
-        assert_eq!(liquid_array.dictionary_views[2].prefix(), b"_entry"); // "data_entry" - "_entry" remainder
-        assert_eq!(liquid_array.dictionary_views[3].prefix(), b"_\0\0\0\0\0"); // "data_" - "_" remainder
-        assert_eq!(liquid_array.dictionary_views[4].prefix(), b"type\0\0"); // "datatype" - "type" remainder
+        // Offset view prefixes should be the remaining parts (8 bytes)
+        assert_eq!(liquid_array.offset_views[0].prefix(), &[0u8; 8]); // "data" - empty remainder
+        assert_eq!(liquid_array.offset_views[1].prefix(), b"base\0\0\0\0"); // "database" - "base" remainder
+        assert_eq!(liquid_array.offset_views[2].prefix(), b"_entry\0\0"); // "data_entry" - "_entry" remainder
+        assert_eq!(liquid_array.offset_views[3].prefix(), b"_\0\0\0\0\0\0\0"); // "data_" - "_" remainder
+        assert_eq!(liquid_array.offset_views[4].prefix(), b"type\0\0\0\0"); // "datatype" - "type" remainder
 
         // Test roundtrip
         let output = liquid_array.to_arrow_array();
@@ -1296,9 +1242,9 @@ mod tests {
         let liquid_array = LiquidByteViewArray::from_string_array(&input, compressor);
 
         assert_eq!(liquid_array.shared_prefix, b"identical");
-        // All dictionary prefixes should be empty
-        for view in &liquid_array.dictionary_views {
-            assert_eq!(view.prefix(), &[0u8; 6]);
+        // All offset view prefixes should be empty
+        for offset_view in &liquid_array.offset_views {
+            assert_eq!(offset_view.prefix(), &[0u8; 8]);
         }
 
         // Test roundtrip
@@ -1311,9 +1257,9 @@ mod tests {
         let liquid_array = LiquidByteViewArray::from_string_array(&input, compressor);
 
         assert_eq!(liquid_array.shared_prefix, b"hello");
-        assert_eq!(liquid_array.dictionary_views[0].prefix(), &[0u8; 6]); // empty after "hello"
-        assert_eq!(liquid_array.dictionary_views[1].prefix(), b"_world");
-        assert_eq!(liquid_array.dictionary_views[2].prefix(), b"_test\0");
+        assert_eq!(liquid_array.offset_views[0].prefix(), &[0u8; 8]); // empty after "hello"
+        assert_eq!(liquid_array.offset_views[1].prefix(), b"_world\0\0");
+        assert_eq!(liquid_array.offset_views[2].prefix(), b"_test\0\0\0");
 
         // Test roundtrip
         let output = liquid_array.to_arrow_array();
@@ -1325,9 +1271,9 @@ mod tests {
         let liquid_array = LiquidByteViewArray::from_string_array(&input, compressor);
 
         assert_eq!(liquid_array.shared_prefix, Vec::<u8>::new()); // empty shared prefix
-        assert_eq!(liquid_array.dictionary_views[0].prefix(), &[0u8; 6]);
-        assert_eq!(liquid_array.dictionary_views[1].prefix(), b"hello\0");
-        assert_eq!(liquid_array.dictionary_views[2].prefix(), b"hello_");
+        assert_eq!(liquid_array.offset_views[0].prefix(), &[0u8; 8]);
+        assert_eq!(liquid_array.offset_views[1].prefix(), b"hello\0\0\0");
+        assert_eq!(liquid_array.offset_views[2].prefix(), b"hello_wo"); // "hello_world" truncated to 8 bytes
 
         // Test roundtrip
         let output = liquid_array.to_arrow_array();
@@ -1341,10 +1287,10 @@ mod tests {
         let liquid_array = LiquidByteViewArray::from_string_array(&input, compressor);
 
         // Verify memory layout components
-        assert_eq!(liquid_array.dictionary_views.len(), 3);
-        // Offsets has one more element than unique values (standard offset buffer format)
-        assert_eq!(liquid_array.offsets.len(), 4); // 3 unique values + 1 = 4 offsets
-        assert!(liquid_array.nulls.is_none());
+        assert_eq!(liquid_array.dictionary_keys.len(), 3);
+        // Offset views - one per unique value
+        assert_eq!(liquid_array.offset_views.len(), 3); // 3 unique values = 3 offset views
+        assert!(liquid_array.nulls().is_none());
         let fsst_array = liquid_array
             .fsst_buffer
             .read()
@@ -1376,7 +1322,7 @@ mod tests {
         let liquid_array = LiquidByteViewArray::from_string_array(&input, compressor);
 
         // Verify that dictionary views store unique values efficiently
-        assert_eq!(liquid_array.dictionary_views.len(), 5);
+        assert_eq!(liquid_array.dictionary_keys.len(), 5);
 
         // Verify that FSST buffer contains unique values
         let dict = liquid_array.to_dict_arrow();
