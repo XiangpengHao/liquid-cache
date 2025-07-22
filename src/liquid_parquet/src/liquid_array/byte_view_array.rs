@@ -494,13 +494,11 @@ impl LiquidByteViewArray {
             offset_views.push(OffsetView::new(byte_offset, prefix));
         }
 
-        // Create UInt16Array from the original keys - zero copy from the CheckedDictionaryArray
-        let dictionary_keys = keys.clone();
-
-        // raw_fsst_buffer was already created above when calculating offset views
+        assert_eq!(values.len(), byte_offsets.len() - 1);
+        offset_views.push(OffsetView::new(byte_offsets[values.len()], [0u8; 8]));
 
         Self {
-            dictionary_keys,
+            dictionary_keys: keys,
             offset_views,
             fsst_buffer: Arc::new(RwLock::new(FsstBufferStorage::InMemory(Arc::new(
                 raw_fsst_buffer,
@@ -521,18 +519,17 @@ impl LiquidByteViewArray {
 
         let (values_buffer, offsets_buffer) =
             raw_buffer.to_uncompressed(&self.compressor.decompressor(), &self.offset_views);
-        let nulls = self.nulls().cloned();
 
         let values = if self.original_arrow_type == ArrowByteType::Utf8
             || self.original_arrow_type == ArrowByteType::Utf8View
             || self.original_arrow_type == ArrowByteType::Dict16Utf8
         {
             let string_array =
-                unsafe { StringArray::new_unchecked(offsets_buffer, values_buffer, nulls) };
+                unsafe { StringArray::new_unchecked(offsets_buffer, values_buffer, None) };
             Arc::new(string_array) as ArrayRef
         } else {
             let binary_array =
-                unsafe { BinaryArray::new_unchecked(offsets_buffer, values_buffer, nulls) };
+                unsafe { BinaryArray::new_unchecked(offsets_buffer, values_buffer, None) };
             Arc::new(binary_array) as ArrayRef
         };
 
@@ -825,41 +822,19 @@ mod tests {
     }
 
     #[test]
-    fn test_simple_roundtrip() {
-        let input = StringArray::from(vec!["hello", "world", "hello", "rust"]);
-        test_string_roundtrip(input);
-    }
-
-    #[test]
     fn test_roundtrip_with_nulls() {
         let input = StringArray::from(vec![
             Some("hello"),
             None,
             Some("world"),
             None,
+            Some("This is a very long string that should be compressed well"),
             Some("hello"),
+            Some(""),
+            Some("This is a very long string that should be compressed well"),
         ]);
         test_string_roundtrip(input);
     }
-
-    #[test]
-    fn test_roundtrip_with_long_strings() {
-        let input = StringArray::from(vec![
-            "This is a very long string that should be compressed well",
-            "Another long string with some common patterns",
-            "This is a very long string that should be compressed well",
-            "Some unique text here to mix things up",
-            "Another long string with some common patterns",
-        ]);
-        test_string_roundtrip(input);
-    }
-
-    #[test]
-    fn test_empty_strings() {
-        let input = StringArray::from(vec!["", "", "non-empty", ""]);
-        test_string_roundtrip(input);
-    }
-
     #[test]
     fn test_string_view_roundtrip() {
         let input = StringViewArray::from(vec![
@@ -868,6 +843,9 @@ mod tests {
             Some("hello"),
             Some("rust"),
             None,
+            Some("This is a very long string that should be compressed well"),
+            Some(""),
+            Some("This is a very long string that should be compressed well"),
         ]);
 
         let (_compressor, liquid_array) = LiquidByteViewArray::train_from_string_view(&input);
@@ -883,6 +861,9 @@ mod tests {
             Some(b"hello".as_slice()),
             Some(b"rust\x00".as_slice()),
             None,
+            Some(b"This is a very long string that should be compressed well"),
+            Some(b""),
+            Some(b"This is a very long string that should be compressed well"),
         ]);
 
         let (_compressor, liquid_array) = LiquidByteViewArray::train_from_binary_view(&input);
