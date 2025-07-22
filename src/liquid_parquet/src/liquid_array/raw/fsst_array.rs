@@ -19,9 +19,8 @@ use crate::liquid_array::fix_len_byte_array::ArrowFixedLenByteArrayType;
 #[derive(Clone)]
 pub struct FsstArray {
     compressor: Arc<Compressor>,
-    // TODO: should we do a values + offset array here? So that the offset array is a bit-packed array?
-    pub(crate) compressed: BinaryArray,
-    pub(crate) uncompressed_len: usize,
+    compressed: BinaryArray,
+    uncompressed_bytes: usize,
 }
 
 impl std::fmt::Debug for FsstArray {
@@ -37,12 +36,12 @@ impl FsstArray {
     pub fn from_parts(
         compressed: BinaryArray,
         compressor: Arc<Compressor>,
-        uncompressed_len: usize,
+        uncompressed_bytes: usize,
     ) -> Self {
         Self {
             compressor,
             compressed,
-            uncompressed_len,
+            uncompressed_bytes,
         }
     }
 
@@ -85,7 +84,7 @@ impl FsstArray {
         FsstArray {
             compressor,
             compressed,
-            uncompressed_len,
+            uncompressed_bytes: uncompressed_len,
         }
     }
 
@@ -198,11 +197,26 @@ impl FsstArray {
         self.compressed.get_array_memory_size() + std::mem::size_of::<FsstArray>()
     }
 
+    /// Returns the uncompressed length of the FsstArray.
+    pub fn uncompressed_bytes(&self) -> usize {
+        self.uncompressed_bytes
+    }
+
+    /// Returns the length of the FsstArray.
+    pub fn len(&self) -> usize {
+        self.compressed.len()
+    }
+
+    /// Returns the compressed array.
+    pub fn compressed(&self) -> &BinaryArray {
+        &self.compressed
+    }
+
     /// Converts the FsstArray to a GenericByteArray.
     pub fn to_arrow_byte_array<T: ByteArrayType>(&self) -> GenericByteArray<T> {
         // we can directly use the null buffer in the compressed array.
         let null_buffer = self.compressed.nulls().cloned();
-        let mut value_buffer: Vec<u8> = Vec::with_capacity(self.uncompressed_len + 8);
+        let mut value_buffer: Vec<u8> = Vec::with_capacity(self.uncompressed_bytes + 8);
         let mut offsets_builder = BufferBuilder::<i32>::new(self.compressed.len() + 1);
         offsets_builder.append(0);
 
@@ -251,7 +265,7 @@ impl FsstArray {
             }
         }
 
-        assert_eq!(value_buffer.len(), self.uncompressed_len);
+        assert_eq!(value_buffer.len(), self.uncompressed_bytes);
         let value_buffer = Buffer::from(value_buffer);
         let offsets_buffer = offsets_builder.finish();
         let array_builder = ArrayDataBuilder::new(T::DATA_TYPE)
@@ -341,7 +355,7 @@ impl FsstArray {
         let start_offset = buffer.len();
 
         // Write header
-        buffer.extend_from_slice(&(self.uncompressed_len as u64).to_le_bytes());
+        buffer.extend_from_slice(&(self.uncompressed_bytes as u64).to_le_bytes());
         buffer.push(has_nulls);
         buffer.extend_from_slice(&(std::mem::size_of_val(offsets_bytes) as u32).to_le_bytes());
         buffer.extend_from_slice(&(values_bytes.len() as u32).to_le_bytes());
@@ -467,7 +481,7 @@ impl FsstArray {
         Self {
             compressor,
             compressed,
-            uncompressed_len,
+            uncompressed_bytes: uncompressed_len,
         }
     }
 

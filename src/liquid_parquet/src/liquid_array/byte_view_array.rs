@@ -4,17 +4,19 @@ use arrow::array::{
     types::UInt16Type,
 };
 use arrow::array::{BinaryViewArray, BooleanBufferBuilder};
-use arrow::buffer::{BooleanBuffer, NullBuffer};
+use arrow::buffer::{BooleanBuffer, Buffer, NullBuffer};
+use arrow::array::BufferBuilder;
 use arrow::compute::{cast, kernels, sort_to_indices};
-use arrow::datatypes::{BinaryType, ByteArrayType, Utf8Type};
+use arrow::datatypes::ByteArrayType;
 use arrow_schema::ArrowError;
+use bytes;
 use datafusion::logical_expr::{ColumnarValue, Operator};
 use datafusion::physical_expr_common::datum::apply_cmp;
 use datafusion::physical_plan::PhysicalExpr;
 use datafusion::physical_plan::expressions::{BinaryExpr, LikeExpr, Literal};
 use fsst::{Compressor, Decompressor};
 use std::any::Any;
-
+use std::mem::MaybeUninit;
 use std::fmt::Display;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -49,17 +51,16 @@ use super::{
     LiquidArray, LiquidArrayRef, LiquidDataType,
     byte_array::{ArrowByteType, get_string_needle},
 };
-use crate::liquid_array::raw::FsstArray;
 use crate::utils::CheckedDictionaryArray;
 use std::fs::File;
 use std::io::{self, Write};
 
-/// An offset view structure that stores offset and an 8-byte prefix
-/// Layout: [offset: u32][prefix: 8 bytes]
+/// An offset view structure that stores entry index and an 8-byte prefix
+/// Layout: [entry_index: u32][prefix: 8 bytes]
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct OffsetView {
-    offset: u32,
+    entry_index: u32,
     prefix: [u8; 8],
 }
 
@@ -69,11 +70,14 @@ const _: () = if std::mem::size_of::<OffsetView>() != 12 {
 
 impl OffsetView {
     pub fn new(offset: u32, prefix: [u8; 8]) -> Self {
-        Self { offset, prefix }
+        Self {
+            entry_index: offset,
+            prefix,
+        }
     }
 
     pub fn offset(&self) -> u32 {
-        self.offset
+        self.entry_index
     }
 
     pub fn prefix(&self) -> &[u8; 8] {
@@ -81,18 +85,209 @@ impl OffsetView {
     }
 }
 
+/// Raw FSST buffer that stores compressed data using Arrow Buffer
+/// Offsets are managed externally in OffsetView array
+#[derive(Clone)]
+pub struct RawFsstBuffer {
+    /// Compressed data buffer - all compressed entries concatenated
+    values_buffer: Buffer,
+    /// Compressor for decompression
+    compressor: Arc<Compressor>,
+    /// Total uncompressed length (for validation/stats)
+    uncompressed_len: usize,
+}
+
+impl std::fmt::Debug for RawFsstBuffer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RawFsstBuffer")
+            .field("total_compressed_len", &self.values_buffer.len())
+            .field("uncompressed_len", &self.uncompressed_len)
+            .field("compressor", &"<Compressor>")
+            .finish()
+    }
+}
+
+impl RawFsstBuffer {
+    /// Create new RawFsstBuffer from Arrow Buffer
+    pub fn new(
+        values_buffer: Buffer,
+        compressor: Arc<Compressor>,
+        uncompressed_len: usize,
+    ) -> Self {
+        Self {
+            values_buffer,
+            compressor,
+            uncompressed_len,
+        }
+    }
+
+    /// Create RawFsstBuffer from an iterator of byte slices
+    /// Returns the buffer and a vector of byte offsets for OffsetView construction
+    pub fn from_byte_slices<I, T>(iter: I, compressor: Arc<Compressor>) -> (Self, Vec<u32>)
+    where
+        I: Iterator<Item = Option<T>>,
+        T: AsRef<[u8]>,
+    {
+        let mut values_buffer = Vec::new();
+        let mut offsets = Vec::new();
+        let mut uncompressed_len = 0;
+        let mut compress_work_buffer = Vec::with_capacity(1024);
+
+        // Start with offset 0
+        offsets.push(0u32);
+
+        for item in iter {
+            if let Some(bytes) = item {
+                let bytes = bytes.as_ref();
+                uncompressed_len += bytes.len();
+
+                // Compress the data
+                compress_work_buffer.clear();
+                unsafe {
+                    compressor.compress_into(bytes, &mut compress_work_buffer);
+                }
+
+                // Append compressed data to values buffer
+                values_buffer.extend_from_slice(&compress_work_buffer);
+
+                // Append the new offset (cumulative length)
+                offsets.push(values_buffer.len() as u32);
+            }
+        }
+
+        // Convert to Arrow buffer
+        let values_buffer = Buffer::from(values_buffer);
+        let raw_buffer = Self::new(values_buffer, compressor, uncompressed_len);
+
+        (raw_buffer, offsets)
+    }
+
+    /// Train a compressor from an iterator of strings
+    pub fn train_compressor<'a, I>(iter: I) -> Arc<Compressor>
+    where
+        I: Iterator<Item = &'a [u8]>,
+    {
+        let strings: Vec<&[u8]> = iter.collect();
+        Arc::new(fsst::Compressor::train(&strings))
+    }
+
+    /// Get compressed data slice using byte offsets
+    pub fn get_compressed_slice(&self, start_offset: u32, end_offset: u32) -> &[u8] {
+        let start = start_offset as usize;
+        let end = end_offset as usize;
+        debug_assert!(end <= self.values_buffer.len(), "Offset out of bounds");
+        debug_assert!(start <= end, "Invalid offset range");
+        &self.values_buffer.as_slice()[start..end]
+    }
+
+    /// Decompress slice using byte offsets (allocates a Vec - use only for individual comparisons)
+    pub fn decompress_slice(&self, start_offset: u32, end_offset: u32) -> Vec<u8> {
+        let compressed_data = self.get_compressed_slice(start_offset, end_offset);
+        let decompressor = self.compressor.decompressor();
+        decompressor.decompress(compressed_data)
+    }
+
+    /// Decompress slice using byte offsets into provided buffer - zero allocation
+    /// Returns the number of bytes written
+    pub fn decompress_slice_into(&self, start_offset: u32, end_offset: u32, output: &mut [MaybeUninit<u8>]) -> usize {
+        let compressed_data = self.get_compressed_slice(start_offset, end_offset);
+        let decompressor = self.compressor.decompressor();
+        decompressor.decompress_into(compressed_data, output)
+    }
+
+    /// Fast decompress slice directly into a Vec's capacity - avoids allocation
+    /// The Vec must have sufficient capacity. Returns the number of bytes written.
+    /// # Safety
+    /// The caller must ensure the Vec has sufficient capacity for the decompressed data
+    pub unsafe fn decompress_slice_into_vec(&self, start_offset: u32, end_offset: u32, output: &mut Vec<u8>) -> usize {
+        let compressed_data = self.get_compressed_slice(start_offset, end_offset);
+        let decompressor = self.compressor.decompressor();
+        
+        unsafe {
+            let slice = std::slice::from_raw_parts_mut(
+                output.as_mut_ptr().add(output.len()) as *mut MaybeUninit<u8>,
+                output.capacity() - output.len()
+            );
+            let len = decompressor.decompress_into(compressed_data, slice);
+            let new_len = output.len() + len;
+            debug_assert!(new_len <= output.capacity());
+            output.set_len(new_len);
+            len
+        }
+    }
+
+    /// Get the compressor
+    pub fn compressor(&self) -> &Compressor {
+        &self.compressor
+    }
+
+    /// Get decompressor
+    pub fn decompressor(&self) -> Decompressor<'_> {
+        self.compressor.decompressor()
+    }
+
+    /// Get memory size
+    pub fn get_memory_size(&self) -> usize {
+        self.values_buffer.len() + std::mem::size_of::<Self>()
+    }
+
+    /// Get total compressed size
+    pub fn compressed_len(&self) -> usize {
+        self.values_buffer.len()
+    }
+
+    /// Get total uncompressed length
+    pub fn uncompressed_len(&self) -> usize {
+        self.uncompressed_len
+    }
+
+    /// Serialize to bytes for disk storage
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut buffer = Vec::new();
+
+        // Write header: uncompressed_len (8 bytes) + values_len (4 bytes)
+        buffer.extend_from_slice(&(self.uncompressed_len as u64).to_le_bytes());
+        buffer.extend_from_slice(&(self.values_buffer.len() as u32).to_le_bytes());
+
+        // Write values buffer
+        buffer.extend_from_slice(self.values_buffer.as_slice());
+
+        buffer
+    }
+
+    /// Deserialize from bytes
+    pub fn from_bytes(bytes: bytes::Bytes, compressor: Arc<Compressor>) -> Self {
+        if bytes.len() < 12 {
+            panic!("Buffer too small for header");
+        }
+
+        let uncompressed_len = u64::from_le_bytes(bytes[0..8].try_into().unwrap()) as usize;
+        let values_len = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+
+        if bytes.len() < 12 + values_len {
+            panic!("Buffer too small for data");
+        }
+
+        // Extract values buffer
+        let values_slice = bytes.slice(12..12 + values_len);
+        let values_buffer = Buffer::from(values_slice);
+
+        Self::new(values_buffer, compressor, uncompressed_len)
+    }
+}
+
 /// Storage options for FSST buffer - can be in memory or on disk
 #[derive(Clone)]
 pub enum FsstBufferStorage {
-    InMemory(Arc<FsstArray>),
+    InMemory(Arc<RawFsstBuffer>),
     OnDisk(PathBuf, Arc<Compressor>),
 }
 
 impl std::fmt::Debug for FsstBufferStorage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FsstBufferStorage::InMemory(fsst_array) => {
-                f.debug_tuple("InMemory").field(fsst_array).finish()
+            FsstBufferStorage::InMemory(raw_buffer) => {
+                f.debug_tuple("InMemory").field(raw_buffer).finish()
             }
             FsstBufferStorage::OnDisk(path, _) => f
                 .debug_tuple("OnDisk")
@@ -104,10 +299,10 @@ impl std::fmt::Debug for FsstBufferStorage {
 }
 
 impl FsstBufferStorage {
-    /// Get the FSST array, loading from disk if necessary
-    pub fn get_fsst_array(&self) -> Result<Arc<FsstArray>, io::Error> {
+    /// Get the raw FSST buffer, loading from disk if necessary
+    pub fn get_raw_buffer(&self) -> Result<Arc<RawFsstBuffer>, io::Error> {
         match self {
-            FsstBufferStorage::InMemory(array) => Ok(array.clone()),
+            FsstBufferStorage::InMemory(buffer) => Ok(buffer.clone()),
             FsstBufferStorage::OnDisk(path, compressor) => {
                 // Increment disk read counter for testing
                 #[cfg(test)]
@@ -115,24 +310,25 @@ impl FsstBufferStorage {
 
                 let bytes = std::fs::read(path)?;
                 let bytes = bytes::Bytes::from(bytes);
-                let fsst_array = FsstArray::from_bytes(bytes, compressor.clone());
-                Ok(Arc::new(fsst_array))
+                let raw_buffer = RawFsstBuffer::from_bytes(bytes, compressor.clone());
+                Ok(Arc::new(raw_buffer))
             }
         }
     }
 
-    /// Get the compressor without loading the full FSST array
+    #[cfg(test)]
+    /// Get the compressor without loading the full buffer
     pub fn get_compressor(&self) -> &Compressor {
         match self {
-            FsstBufferStorage::InMemory(array) => array.compressor(),
+            FsstBufferStorage::InMemory(buffer) => buffer.compressor(),
             FsstBufferStorage::OnDisk(_, compressor) => compressor,
         }
     }
 
-    /// Get the decompressor without loading the full FSST array
+    /// Get the decompressor without loading the full buffer
     pub fn get_decompressor(&self) -> Decompressor<'_> {
         match self {
-            FsstBufferStorage::InMemory(array) => array.decompressor(),
+            FsstBufferStorage::InMemory(buffer) => buffer.decompressor(),
             FsstBufferStorage::OnDisk(_, compressor) => compressor.decompressor(),
         }
     }
@@ -140,7 +336,7 @@ impl FsstBufferStorage {
     /// Get memory size - returns 0 for on-disk storage
     pub fn get_array_memory_size(&self) -> usize {
         match self {
-            FsstBufferStorage::InMemory(array) => array.get_array_memory_size(),
+            FsstBufferStorage::InMemory(buffer) => buffer.get_memory_size(),
             FsstBufferStorage::OnDisk(_, _) => 0,
         }
     }
@@ -289,13 +485,12 @@ fn try_eval_predicate_inner(
 }
 
 /// An array that stores strings using the FSST view format:
-/// - Dictionary views with 2-byte keys stored in memory
+/// - Dictionary keys with 2-byte keys stored in memory
 /// - Offset views with 4-byte offsets and 8-byte prefixes stored in memory
-/// - Nulls stored in memory
 /// - FSST buffer can be stored in memory or on disk
 ///
 /// Data access flow:
-/// 1. Use dictionary view key to index into offset_views buffer
+/// 1. Use dictionary key to index into offset_views buffer
 /// 2. Use offset from offset_views to read the corresponding bytes from FSST buffer
 /// 3. Use prefix from offset_views for quick comparisons to avoid decompression when possible
 /// 4. Decompress bytes from FSST buffer to get the full value when needed
@@ -369,7 +564,7 @@ impl LiquidByteViewArray {
         array: ArrayIter<T>,
     ) -> Arc<Compressor> {
         let strings = array.filter_map(|s| s.as_ref().map(|s| s.as_bytes()));
-        Arc::new(FsstArray::train_compressor(strings))
+        RawFsstBuffer::train_compressor(strings)
     }
 
     /// Train a compressor from an iterator of byte arrays
@@ -377,7 +572,7 @@ impl LiquidByteViewArray {
         array: ArrayIter<T>,
     ) -> Arc<Compressor> {
         let strings = array.filter_map(|s| s.as_ref().map(|s| *s));
-        Arc::new(FsstArray::train_compressor(strings))
+        RawFsstBuffer::train_compressor(strings)
     }
 
     /// Generic implementation for view arrays (StringViewArray and BinaryViewArray)
@@ -463,9 +658,21 @@ impl LiquidByteViewArray {
 
         // Create offset views with prefixes - one per unique value in dictionary
         let mut offset_views = Vec::with_capacity(values.len());
-        let mut current_offset = 0u32;
 
-        // Calculate offset views for each unique value in the dictionary
+        // Create the raw buffer and get the byte offsets
+        let (raw_fsst_buffer, byte_offsets) =
+            if let Some(string_values) = values.as_string_opt::<i32>() {
+                RawFsstBuffer::from_byte_slices(
+                    string_values.iter().map(|s| s.map(|s| s.as_bytes())),
+                    compressor.clone(),
+                )
+            } else if let Some(binary_values) = values.as_binary_opt::<i32>() {
+                RawFsstBuffer::from_byte_slices(binary_values.iter(), compressor.clone())
+            } else {
+                panic!("Unsupported dictionary value type")
+            };
+
+        // Calculate offset views for each unique value in the dictionary using actual byte offsets
         for i in 0..values.len() {
             let value_bytes = if let Some(string_values) = values.as_string_opt::<i32>() {
                 string_values.value(i).as_bytes()
@@ -486,27 +693,21 @@ impl LiquidByteViewArray {
             let prefix_len = std::cmp::min(remaining_bytes.len(), 8);
             prefix[..prefix_len].copy_from_slice(&remaining_bytes[..prefix_len]);
 
-            offset_views.push(OffsetView::new(current_offset, prefix));
-            current_offset += value_bytes.len() as u32;
+            // Use actual byte offset from the byte_offsets vec
+            let byte_offset = byte_offsets[i];
+            offset_views.push(OffsetView::new(byte_offset, prefix));
         }
 
         // Create UInt16Array from the original keys - zero copy from the CheckedDictionaryArray
         let dictionary_keys = keys.clone();
 
-        // Create FSST buffer from unique values (full strings, not after removing shared prefix)
-        let fsst_buffer = if let Some(string_values) = values.as_string_opt::<i32>() {
-            FsstArray::from_byte_array_with_compressor(string_values, compressor.clone())
-        } else if let Some(binary_values) = values.as_binary_opt::<i32>() {
-            FsstArray::from_byte_array_with_compressor(binary_values, compressor.clone())
-        } else {
-            panic!("Unsupported dictionary value type")
-        };
+        // raw_fsst_buffer was already created above when calculating offset views
 
         Self {
             dictionary_keys,
             offset_views,
             fsst_buffer: Arc::new(RwLock::new(FsstBufferStorage::InMemory(Arc::new(
-                fsst_buffer,
+                raw_fsst_buffer,
             )))),
             original_arrow_type: arrow_type,
             shared_prefix,
@@ -517,18 +718,49 @@ impl LiquidByteViewArray {
     pub fn to_dict_arrow(&self) -> DictionaryArray<UInt16Type> {
         let keys_array = self.dictionary_keys.clone();
 
-        // Convert FSST buffer to values (full strings are already stored)
+        // Convert raw FSST buffer to values using our offset views
         let storage = self.fsst_buffer.read().unwrap();
-        let fsst_array = storage.get_fsst_array().unwrap();
+        let raw_buffer = storage.get_raw_buffer().unwrap();
 
-        // Get full values directly from FSST buffer (no need to prepend shared prefix)
+        // Build Arrow array from decompressed values
+        let mut values_buffer = Vec::new();
+        let mut offsets_buffer = Vec::with_capacity(self.offset_views.len() + 1);
+        offsets_buffer.push(0i32);
+
+        for (i, offset_view) in self.offset_views.iter().enumerate() {
+            // Use byte offsets to get compressed data
+            let start_offset = offset_view.offset();
+            let end_offset = if i + 1 < self.offset_views.len() {
+                self.offset_views[i + 1].offset()
+            } else {
+                raw_buffer.compressed_len() as u32
+            };
+
+            // Fast decompression directly into the values_buffer
+            unsafe {
+                raw_buffer.decompress_slice_into_vec(start_offset, end_offset, &mut values_buffer);
+            }
+            offsets_buffer.push(values_buffer.len() as i32);
+        }
+
+        // Create Arrow array from the decompressed data
         let values = if self.original_arrow_type == ArrowByteType::Utf8
             || self.original_arrow_type == ArrowByteType::Utf8View
             || self.original_arrow_type == ArrowByteType::Dict16Utf8
         {
-            Arc::new(fsst_array.to_arrow_byte_array::<Utf8Type>()) as ArrayRef
+            let string_array = StringArray::from_iter_values(offsets_buffer.windows(2).map(|w| {
+                let start = w[0] as usize;
+                let end = w[1] as usize;
+                std::str::from_utf8(&values_buffer[start..end]).unwrap()
+            }));
+            Arc::new(string_array) as ArrayRef
         } else {
-            Arc::new(fsst_array.to_arrow_byte_array::<BinaryType>()) as ArrayRef
+            let binary_array = BinaryArray::from_iter_values(offsets_buffer.windows(2).map(|w| {
+                let start = w[0] as usize;
+                let end = w[1] as usize;
+                &values_buffer[start..end]
+            }));
+            Arc::new(binary_array) as ArrayRef
         };
 
         unsafe { DictionaryArray::<UInt16Type>::new_unchecked(keys_array, values) }
@@ -548,18 +780,30 @@ impl LiquidByteViewArray {
     /// Compare equality with a byte needle
     fn compare_equals(&self, needle: &[u8]) -> BooleanArray {
         let storage = self.fsst_buffer.read().unwrap();
-        let compressor = storage.get_compressor();
+        let raw_buffer = storage.get_raw_buffer().unwrap();
 
-        // Compress the full needle (not after removing shared prefix)
-        let compressed = compressor.compress(needle);
+        // Find which offset view corresponds to this needle by decompressing and comparing
+        let mut target_key: Option<u16> = None;
 
-        // We need the full FSST array to search through the compressed values
-        let fsst_array = storage.get_fsst_array().unwrap();
-        let values = &fsst_array.compressed;
-        let idx = values.iter().position(|v| v == Some(compressed.as_ref()));
+        for (i, offset_view) in self.offset_views.iter().enumerate() {
+            // Use byte offsets to get compressed data
+            let start_offset = offset_view.offset();
+            let end_offset = if i + 1 < self.offset_views.len() {
+                self.offset_views[i + 1].offset()
+            } else {
+                raw_buffer.compressed_len() as u32
+            };
 
-        if let Some(idx) = idx {
-            let target_key = idx as u16;
+            // Use simple allocation approach for individual comparisons
+            let decompressed = raw_buffer.decompress_slice(start_offset, end_offset);
+
+            if decompressed == needle {
+                target_key = Some(i as u16);
+                break;
+            }
+        }
+
+        if let Some(target_key) = target_key {
             let mut buffer_builder = BooleanBufferBuilder::new(self.dictionary_keys.len());
 
             for i in 0..self.dictionary_keys.len() {
@@ -701,10 +945,10 @@ impl LiquidByteViewArray {
 
         let mut buffer_builder = BooleanBufferBuilder::new(self.dictionary_keys.len());
         let storage = self.fsst_buffer.read().unwrap();
-        let decompressor = storage.get_decompressor();
+        let _decompressor = storage.get_decompressor();
 
-        // Only load the full FSST array if we encounter any equal prefixes
-        let mut fsst_array: Option<Arc<FsstArray>> = None;
+        // Only load the raw buffer if we encounter any equal prefixes
+        let mut raw_buffer_cache: Option<Arc<RawFsstBuffer>> = None;
 
         for i in 0..self.dictionary_keys.len() {
             let key = if self.dictionary_keys.is_null(i) {
@@ -738,17 +982,22 @@ impl LiquidByteViewArray {
                     Operator::Lt | Operator::LtEq | Operator::Gt | Operator::GtEq,
                     std::cmp::Ordering::Equal,
                 ) => {
-                    // Lazy load the full FSST array only when we need it
-                    if fsst_array.is_none() {
-                        fsst_array = Some(storage.get_fsst_array().unwrap());
+                    // Lazy load the raw buffer only when we need it
+                    if raw_buffer_cache.is_none() {
+                        raw_buffer_cache = Some(storage.get_raw_buffer().unwrap());
                     }
-                    let fsst_array_ref = fsst_array.as_ref().unwrap();
+                    let raw_buffer = raw_buffer_cache.as_ref().unwrap();
 
-                    if key < fsst_array_ref.compressed.len()
-                        && !fsst_array_ref.compressed.is_null(key)
-                    {
-                        let compressed_value = fsst_array_ref.compressed.value(key);
-                        let decompressed_bytes = decompressor.decompress(compressed_value);
+                    if key < self.offset_views.len() {
+                        let start_offset = self.offset_views[key].offset();
+                        let end_offset = if key + 1 < self.offset_views.len() {
+                            self.offset_views[key + 1].offset()
+                        } else {
+                            raw_buffer.compressed_len() as u32
+                        };
+
+                        // Use simple allocation approach for individual comparisons
+                        let decompressed_bytes = raw_buffer.decompress_slice(start_offset, end_offset);
 
                         // Compare without creating full_value allocation
                         self.compare_bytes_with_shared_prefix(&decompressed_bytes, needle, op)
@@ -824,14 +1073,13 @@ impl LiquidByteViewArray {
         let mut storage = self.fsst_buffer.write().unwrap();
 
         match &*storage {
-            FsstBufferStorage::InMemory(fsst_array) => {
-                let mut buffer = Vec::new();
-                fsst_array.to_bytes(&mut buffer);
+            FsstBufferStorage::InMemory(raw_buffer) => {
+                let buffer = raw_buffer.to_bytes();
 
                 let mut file = File::create(&path)?;
                 file.write_all(&buffer)?;
 
-                let compressor = Arc::new(fsst_array.compressor().clone());
+                let compressor = Arc::new(raw_buffer.compressor().clone());
                 *storage = FsstBufferStorage::OnDisk(path, compressor);
                 Ok(())
             }
@@ -847,8 +1095,8 @@ impl LiquidByteViewArray {
             FsstBufferStorage::OnDisk(path, compressor) => {
                 let bytes = std::fs::read(path)?;
                 let bytes = bytes::Bytes::from(bytes);
-                let fsst_array = FsstArray::from_bytes(bytes, compressor.clone());
-                *storage = FsstBufferStorage::InMemory(Arc::new(fsst_array));
+                let raw_buffer = RawFsstBuffer::from_bytes(bytes, compressor.clone());
+                *storage = FsstBufferStorage::InMemory(Arc::new(raw_buffer));
                 Ok(())
             }
             FsstBufferStorage::InMemory(_) => Ok(()),
@@ -1291,13 +1539,13 @@ mod tests {
         // Offset views - one per unique value
         assert_eq!(liquid_array.offset_views.len(), 3); // 3 unique values = 3 offset views
         assert!(liquid_array.nulls().is_none());
-        let fsst_array = liquid_array
+        let raw_buffer = liquid_array
             .fsst_buffer
             .read()
             .unwrap()
-            .get_fsst_array()
+            .get_raw_buffer()
             .unwrap();
-        assert!(!fsst_array.compressed.is_empty());
+        assert!(raw_buffer.compressed_len() > 0);
     }
 
     #[test]
@@ -1361,16 +1609,16 @@ mod tests {
         let liquid_array = LiquidByteViewArray::from_string_array(&input, compressor);
 
         // Just verify we can get the decompressor without errors
-        let fsst_array = liquid_array
+        let raw_buffer = liquid_array
             .fsst_buffer
             .read()
             .unwrap()
-            .get_fsst_array()
+            .get_raw_buffer()
             .unwrap();
-        let _decompressor = fsst_array.decompressor();
+        let _decompressor = raw_buffer.decompressor();
         assert_eq!(
-            fsst_array.compressor().symbol_table().len(),
-            fsst_array.compressor().symbol_table().len()
+            raw_buffer.compressor().symbol_table().len(),
+            raw_buffer.compressor().symbol_table().len()
         );
     }
 
