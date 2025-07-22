@@ -1,10 +1,10 @@
+use arrow::array::BinaryViewArray;
 use arrow::array::{
-    Array, ArrayAccessor, ArrayIter, ArrayRef, BinaryArray, BooleanArray, DictionaryArray,
-    GenericByteArray, StringArray, StringViewArray, UInt16Array, UInt32Array, cast::AsArray,
-    types::UInt16Type,
+    Array, ArrayAccessor, ArrayIter, ArrayRef, BinaryArray, BooleanArray, BooleanBuilder,
+    DictionaryArray, GenericByteArray, StringArray, StringViewArray, UInt16Array, UInt32Array,
+    cast::AsArray, types::UInt16Type,
 };
-use arrow::array::{BinaryViewArray, BooleanBufferBuilder};
-use arrow::buffer::{BooleanBuffer, Buffer, NullBuffer, OffsetBuffer};
+use arrow::buffer::{BooleanBuffer, NullBuffer};
 use arrow::compute::{cast, kernels, sort_to_indices};
 use arrow::datatypes::ByteArrayType;
 use arrow_schema::ArrowError;
@@ -13,10 +13,9 @@ use datafusion::logical_expr::{ColumnarValue, Operator};
 use datafusion::physical_expr_common::datum::apply_cmp;
 use datafusion::physical_plan::PhysicalExpr;
 use datafusion::physical_plan::expressions::{BinaryExpr, LikeExpr, Literal};
-use fsst::{Compressor, Decompressor};
+use fsst::Compressor;
 use std::any::Any;
 use std::fmt::Display;
-use std::mem::MaybeUninit;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
@@ -548,11 +547,132 @@ impl LiquidByteViewArray {
     }
 
     /// Compare equality with a byte needle
-    fn compare_equals(&self, _needle: &[u8]) -> BooleanArray {
-        // strategy:
-        // 1. if the fsst buffer is in memory, we directly compress the needle and compare it with the fsst buffer
-        // 2. if the fsst buffer is on disk, we first create a bitmask of values whose prefix matches the needle, then use bitmask to only decompress the values that match the bitmask
-        todo!()
+    fn compare_equals(&self, needle: &[u8]) -> BooleanArray {
+        // Fast path 1: Check shared prefix
+        let shared_prefix_len = self.shared_prefix.len();
+        if needle.len() < shared_prefix_len || needle[..shared_prefix_len] != self.shared_prefix {
+            return BooleanArray::new(
+                BooleanBuffer::new_unset(self.dictionary_keys.len()),
+                self.nulls().cloned(),
+            );
+        }
+
+        let storage = self.fsst_buffer.read().unwrap();
+        match &*storage {
+            FsstBufferStorage::InMemory(raw_buffer) => {
+                self.compare_equals_in_memory(needle, raw_buffer)
+            }
+            FsstBufferStorage::OnDisk(_) => self.compare_equals_on_disk(needle, &storage),
+        }
+    }
+
+    fn compare_equals_with_raw_buffer(
+        &self,
+        needle: &[u8],
+        raw_buffer: &RawFsstBuffer,
+    ) -> BooleanArray {
+        // Compress the full needle once
+        let compressed_needle = if needle.is_empty() {
+            Vec::new()
+        } else {
+            let mut compressed_needle = Vec::with_capacity(needle.len() * 2);
+            unsafe {
+                self.compressor
+                    .compress_into(needle, &mut compressed_needle);
+            }
+            compressed_needle
+        };
+
+        // Find the matching dictionary value (early exit since values are unique)
+        let num_unique = self.offset_views.len().saturating_sub(1);
+        let mut matching_dict_key = None;
+
+        for i in 0..num_unique {
+            let start_offset = self.offset_views[i].offset();
+            let end_offset = self.offset_views[i + 1].offset();
+
+            let compressed_value = raw_buffer.get_compressed_slice(start_offset, end_offset);
+            if compressed_value == compressed_needle.as_slice() {
+                matching_dict_key = Some(i as u16);
+                break; // Early exit - dictionary values are unique
+            }
+        }
+
+        // Map dictionary results to array results using BooleanBuilder
+        let mut builder = BooleanBuilder::with_capacity(self.dictionary_keys.len());
+        for &dict_key in self.dictionary_keys.values().iter() {
+            let matches = matching_dict_key.map_or(false, |key| dict_key == key);
+            builder.append_value(matches);
+        }
+
+        let mut result = builder.finish();
+        // Preserve nulls from dictionary keys
+        if let Some(nulls) = self.nulls() {
+            let (values, _) = result.into_parts();
+            result = BooleanArray::new(values, Some(nulls.clone()));
+        }
+        result
+    }
+
+    fn compare_equals_in_memory(
+        &self,
+        needle: &[u8],
+        raw_buffer: &Arc<RawFsstBuffer>,
+    ) -> BooleanArray {
+        self.compare_equals_with_raw_buffer(needle, raw_buffer)
+    }
+
+    fn compare_equals_on_disk(&self, needle: &[u8], storage: &FsstBufferStorage) -> BooleanArray {
+        let needle_suffix = &needle[self.shared_prefix.len()..];
+
+        // Try to decide from prefixes only
+        let num_unique = self.offset_views.len().saturating_sub(1);
+        let mut matching_dict_key = None;
+        let mut needs_full_comparison = false;
+
+        for i in 0..num_unique {
+            let prefix = self.offset_views[i].prefix();
+
+            if needle_suffix.len() <= 8 {
+                // Can decide from prefix alone
+                let mut needle_prefix = [0u8; 8];
+                let needle_prefix_len = std::cmp::min(needle_suffix.len(), 8);
+                needle_prefix[..needle_prefix_len]
+                    .copy_from_slice(&needle_suffix[..needle_prefix_len]);
+                if *prefix == needle_prefix {
+                    matching_dict_key = Some(i as u16);
+                    break;
+                }
+            } else {
+                // Check if prefix matches
+                if prefix[..8] == needle_suffix[..8] {
+                    // Can't decide from prefix alone - need full comparison
+                    needs_full_comparison = true;
+                    break;
+                }
+            }
+        }
+
+        if needs_full_comparison {
+            // Load raw buffer temporarily and use common comparison logic
+            let raw_buffer = storage.get_raw_buffer().unwrap();
+            self.compare_equals_with_raw_buffer(needle, &raw_buffer)
+        } else {
+            // Can decide from prefixes only - build result
+            let mut builder = BooleanBuilder::with_capacity(self.dictionary_keys.len());
+            for &dict_key in self.dictionary_keys.values().iter() {
+                let matches = matching_dict_key.map_or(false, |key| dict_key == key);
+                builder.append_value(matches);
+            }
+
+            let mut result = builder.finish();
+            // Preserve nulls from dictionary keys
+            if let Some(nulls) = self.nulls() {
+                let (values, _) = result.into_parts();
+                result = BooleanArray::new(values, Some(nulls.clone()));
+            }
+            result
+        }
     }
 
     /// Compare not equals with a byte needle
@@ -1548,6 +1668,85 @@ mod tests {
                 Some("pre_appll_abc"),
             ],
             vec![0, 2, 1],
+        );
+    }
+
+    fn test_compare_equals(input: StringArray, needle: &[u8], expected: BooleanArray) {
+        let temp_file = tempfile::NamedTempFile::new().unwrap();
+        let temp_path = temp_file.path().to_path_buf();
+
+        let compressor = LiquidByteViewArray::train_compressor(input.iter());
+        let liquid_array = LiquidByteViewArray::from_string_array(&input, compressor);
+        let result = liquid_array.compare_equals(needle);
+        assert_eq!(result, expected);
+
+        liquid_array.evict_to_disk(temp_path.clone()).unwrap();
+        let disk_result = liquid_array.compare_equals(needle);
+        assert_eq!(disk_result, expected);
+    }
+
+    #[test]
+    fn test_compare_equals_on_disk() {
+        let input = StringArray::from(vec![
+            Some("apple_orange"),
+            None,
+            Some("apple_orange_long_string"),
+            Some("apple_b"),
+            Some("apple_oo_long_string"),
+            Some("apple_b"),
+            Some("apple"),
+        ]);
+        test_compare_equals(
+            input.clone(),
+            b"apple",
+            BooleanArray::from(vec![
+                Some(false),
+                None,
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(true),
+            ]),
+        );
+        test_compare_equals(
+            input.clone(),
+            b"",
+            BooleanArray::from(vec![
+                Some(false),
+                None,
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(false),
+            ]),
+        );
+        test_compare_equals(
+            input.clone(),
+            b"apple_b",
+            BooleanArray::from(vec![
+                Some(false),
+                None,
+                Some(false),
+                Some(true),
+                Some(false),
+                Some(true),
+                Some(false),
+            ]),
+        );
+        test_compare_equals(
+            input.clone(),
+            b"apple_oo_long_string",
+            BooleanArray::from(vec![
+                Some(false),
+                None,
+                Some(false),
+                Some(false),
+                Some(true),
+                Some(false),
+                Some(false),
+            ]),
         );
     }
 

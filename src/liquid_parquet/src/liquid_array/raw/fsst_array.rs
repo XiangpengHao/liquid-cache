@@ -135,14 +135,6 @@ impl RawFsstBuffer {
         self.values.len() + std::mem::size_of::<Self>()
     }
 
-    pub fn get_compressed_bytes(&self) -> usize {
-        self.values.len()
-    }
-
-    pub fn get_uncompressed_bytes(&self) -> usize {
-        self.uncompressed_bytes
-    }
-
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut buffer = Vec::with_capacity(self.values.len() + 12);
         buffer.extend_from_slice(&(self.uncompressed_bytes as u64).to_le_bytes());
