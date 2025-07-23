@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 use liquid_cache_benchmarks::{
-    BenchmarkManifest, InProcessBenchmarkMode, InProcessBenchmarkRunner, setup_observability, tpch,
+    BenchmarkManifest, InProcessBenchmarkMode, InProcessBenchmarkRunner, setup_observability,
 };
 use mimalloc::MiMalloc;
 use serde::Serialize;
@@ -80,20 +80,15 @@ impl TpchInProcessBenchmark {
         }
 
         // Load queries from TPC-H directory
-        let queries = tpch::get_all_queries(&self.query_dir)?;
+        let query_ids = (1..=22).collect::<Vec<_>>();
 
-        // Filter to relevant queries if no specific query is requested
-        let query_filter: Vec<u32> = if let Some(query) = self.query {
-            vec![query]
-        } else {
-            RELEVANT_QUERIES.to_vec()
-        };
-
-        for query in queries {
-            if query_filter.contains(&query.id()) {
-                // For TPC-H, we add the query SQL directly as inline SQL
-                manifest = manifest.add_query(query.statement()[0].clone());
-            }
+        for query_id in query_ids {
+            manifest = manifest.add_query(
+                self.query_dir
+                    .join(format!("q{}.sql", query_id))
+                    .to_string_lossy()
+                    .to_string(),
+            );
         }
 
         Ok(manifest)

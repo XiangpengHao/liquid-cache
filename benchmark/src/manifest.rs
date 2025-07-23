@@ -115,7 +115,11 @@ impl BenchmarkManifest {
         for (index, query) in self.queries.iter().enumerate() {
             let sql = if std::path::Path::new(query).exists() {
                 let raw_string = std::fs::read_to_string(query).expect("Failed to read query file");
-                raw_string.split(";").map(|s| s.to_string()).collect()
+                raw_string
+                    .split(";")
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
             } else {
                 vec![query.clone()]
             };
