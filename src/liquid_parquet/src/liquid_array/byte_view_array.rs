@@ -571,17 +571,7 @@ impl LiquidByteViewArray {
         needle: &[u8],
         raw_buffer: &RawFsstBuffer,
     ) -> BooleanArray {
-        // Compress the full needle once
-        let compressed_needle = if needle.is_empty() {
-            Vec::new()
-        } else {
-            let mut compressed_needle = Vec::with_capacity(needle.len() * 2);
-            unsafe {
-                self.compressor
-                    .compress_into(needle, &mut compressed_needle);
-            }
-            compressed_needle
-        };
+        let compressed_needle = self.compressor.compress(needle);
 
         // Find the matching dictionary value (early exit since values are unique)
         let num_unique = self.offset_views.len().saturating_sub(1);
@@ -597,21 +587,15 @@ impl LiquidByteViewArray {
                 break; // Early exit - dictionary values are unique
             }
         }
+        let Some(matching_dict_key) = matching_dict_key else {
+            return BooleanArray::new(
+                BooleanBuffer::new_unset(self.dictionary_keys.len()),
+                self.nulls().cloned(),
+            );
+        };
 
-        // Map dictionary results to array results using BooleanBuilder
-        let mut builder = BooleanBuilder::with_capacity(self.dictionary_keys.len());
-        for &dict_key in self.dictionary_keys.values().iter() {
-            let matches = matching_dict_key.map_or(false, |key| dict_key == key);
-            builder.append_value(matches);
-        }
-
-        let mut result = builder.finish();
-        // Preserve nulls from dictionary keys
-        if let Some(nulls) = self.nulls() {
-            let (values, _) = result.into_parts();
-            result = BooleanArray::new(values, Some(nulls.clone()));
-        }
-        result
+        let to_compare = UInt16Array::new_scalar(matching_dict_key as u16);
+        arrow::compute::kernels::cmp::eq(&self.dictionary_keys, &to_compare).unwrap()
     }
 
     fn compare_equals_in_memory(
