@@ -102,6 +102,10 @@ Although the OffsetView contains the prefix (both shared and non-shared), the FS
 This allows faster conversion to arrow StringViewArray, because we don't need to prepend the prefix to the decompressed strings.
 After all, we don't need FSST buffer to be short, because they are on disk anyway.
 
+### Efficient sort
+- Sorting fsst view requires first sorting the dictionary, then use the dictionary rank to sort the keys.
+- When sorting the dictionary, we should use the prefix to delay the decompression/loading from disk.
+- Unlike `compare_with`, if we ever need to decompress one string from array, we simply decompress the entire array. this makes the sort simpler to implement and potentially faster (without needing to track the decompressed strings).
 
 ## Engineering details
 

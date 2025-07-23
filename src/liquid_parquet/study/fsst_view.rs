@@ -102,7 +102,7 @@ async fn download_clickbench_column(column: &str) -> ColumnData {
 
     // Load the column data
     let df = ctx
-        .sql(&format!("SELECT \"{column}\" from \"hits\""))
+        .sql(&format!("SELECT \"{column}\" from \"hits\" limit 10000000"))
         .await
         .unwrap();
     let batches = df.collect().await.unwrap();
@@ -192,9 +192,9 @@ struct SortResult {
 
 #[derive(Serialize, Deserialize, Clone)]
 struct BenchmarkResults {
-    encode_result: Option<EncodeResult>,
-    find_needle_result: Option<FindNeedleResult>,
-    sort_result: Option<SortResult>,
+    encode_results: Vec<EncodeResult>,
+    find_needle_results: Vec<FindNeedleResult>,
+    sort_results: Vec<SortResult>,
 }
 
 /// Trait for running benchmarks on different array types
@@ -217,81 +217,100 @@ impl BenchmarkRunner {
         workloads: &[WorkloadType],
         needles: &[String],
     ) -> BenchmarkResults {
-        let mut total_encode_time = 0.0;
-        let mut total_decode_time = 0.0;
-        let mut total_size = 0;
-        let mut total_find_needle_time = 0.0;
-        let mut total_sort_time = 0.0;
+        let mut encode_results = Vec::new();
+        let mut find_needle_results = Vec::new();
+        let mut sort_results = Vec::new();
 
-        // Process each array individually
-        for array in arrays {
-            let (encoded_data, encode_time, size) = benchmark.encode(array);
-            total_encode_time += encode_time;
-            total_size += size;
+        // Repeat each workload 3 times
+        for iteration in 0..3 {
+            let mut total_encode_time = 0.0;
+            let mut total_decode_time = 0.0;
+            let mut total_size = 0;
+            let mut total_find_needle_time = 0.0;
+            let mut total_sort_time = 0.0;
 
+            // First, encode all arrays (this is common for all workloads)
+            let mut encoded_arrays = Vec::new();
+            for array in arrays {
+                let (encoded_data, encode_time, size) = benchmark.encode(array);
+                total_encode_time += encode_time;
+                total_size += size;
+                encoded_arrays.push(encoded_data);
+            }
+
+            // Then run each specific workload
             for workload in workloads {
                 match workload {
                     WorkloadType::EncodeDecode => {
-                        let decode_time = benchmark.run_decode(&encoded_data);
-                        total_decode_time += decode_time;
+                        for encoded_data in &encoded_arrays {
+                            let decode_time = benchmark.run_decode(encoded_data);
+                            total_decode_time += decode_time;
+                        }
+
+                        let result = EncodeResult {
+                            total_size,
+                            encode_time_sec: total_encode_time,
+                            decode_time_sec: total_decode_time,
+                            workload: benchmark.workload_name(),
+                        };
+                        println!(
+                            "{} encode/decode (iteration {}): {}",
+                            benchmark.workload_name(),
+                            iteration + 1,
+                            result
+                        );
+                        encode_results.push(result);
                     }
                     WorkloadType::FindNeedle => {
-                        let search_time = benchmark.run_find_needle(&encoded_data, needles);
-                        total_find_needle_time += search_time;
+                        for encoded_data in &encoded_arrays {
+                            let search_time = benchmark.run_find_needle(encoded_data, needles);
+                            total_find_needle_time += search_time;
+                        }
+
+                        let needle_count = needles.len();
+                        let avg_search_time_per_needle_sec =
+                            total_find_needle_time / needle_count as f64;
+                        let result = FindNeedleResult {
+                            needle_count,
+                            total_search_time_sec: total_find_needle_time,
+                            avg_search_time_per_needle_sec,
+                            avg_search_time_per_needle_ms: avg_search_time_per_needle_sec * 1000.0,
+                            workload: benchmark.workload_name(),
+                        };
+                        println!(
+                            "{} find needle (iteration {}): {}",
+                            benchmark.workload_name(),
+                            iteration + 1,
+                            result
+                        );
+                        find_needle_results.push(result);
                     }
                     WorkloadType::Sort => {
-                        let sort_time = benchmark.run_sort(&encoded_data);
-                        total_sort_time += sort_time;
+                        for encoded_data in &encoded_arrays {
+                            let sort_time = benchmark.run_sort(encoded_data);
+                            total_sort_time += sort_time;
+                        }
+
+                        let result = SortResult {
+                            total_sort_time_sec: total_sort_time,
+                            workload: benchmark.workload_name(),
+                        };
+                        println!(
+                            "{} sort (iteration {}): {}",
+                            benchmark.workload_name(),
+                            iteration + 1,
+                            result
+                        );
+                        sort_results.push(result);
                     }
-                }
-            }
-        }
-
-        let mut encode_result = None;
-        let mut find_needle_result = None;
-        let mut sort_result = None;
-
-        for workload in workloads {
-            match workload {
-                WorkloadType::EncodeDecode => {
-                    let result = EncodeResult {
-                        total_size,
-                        encode_time_sec: total_encode_time,
-                        decode_time_sec: total_decode_time,
-                        workload: benchmark.workload_name(),
-                    };
-                    println!("{} encode/decode: {}", benchmark.workload_name(), result);
-                    encode_result = Some(result);
-                }
-                WorkloadType::FindNeedle => {
-                    let needle_count = needles.len();
-                    let avg_search_time_per_needle_sec =
-                        total_find_needle_time / needle_count as f64;
-                    let result = FindNeedleResult {
-                        needle_count,
-                        total_search_time_sec: total_find_needle_time,
-                        avg_search_time_per_needle_sec,
-                        avg_search_time_per_needle_ms: avg_search_time_per_needle_sec * 1000.0,
-                        workload: benchmark.workload_name(),
-                    };
-                    println!("{} find needle: {}", benchmark.workload_name(), result);
-                    find_needle_result = Some(result);
-                }
-                WorkloadType::Sort => {
-                    let result = SortResult {
-                        total_sort_time_sec: total_sort_time,
-                        workload: benchmark.workload_name(),
-                    };
-                    println!("{} sort: {}", benchmark.workload_name(), result);
-                    sort_result = Some(result);
                 }
             }
         }
 
         BenchmarkResults {
-            encode_result,
-            find_needle_result,
-            sort_result,
+            encode_results,
+            find_needle_results,
+            sort_results,
         }
     }
 
@@ -497,8 +516,7 @@ impl ArrayBenchmark for FsstViewBenchmark {
 
     fn run_sort(&self, encoded_data: &Self::EncodedData) -> f64 {
         let start = Instant::now();
-        let arrow_array = encoded_data.to_dict_arrow();
-        let _indices = sort_to_indices(&arrow_array, None, None).unwrap();
+        let _indices = encoded_data.sort_to_indices().unwrap();
         start.elapsed().as_secs_f64()
     }
 }
