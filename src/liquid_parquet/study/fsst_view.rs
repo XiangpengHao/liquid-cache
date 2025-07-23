@@ -27,6 +27,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 enum WorkloadType {
     EncodeDecode,
     FindNeedle,
+    CmpNeedle,
     Sort,
 }
 
@@ -35,6 +36,7 @@ impl WorkloadType {
         match s {
             "encode_decode" => Ok(Self::EncodeDecode),
             "find_needle" => Ok(Self::FindNeedle),
+            "cmp_needle" => Ok(Self::CmpNeedle),
             "sort" => Ok(Self::Sort),
             _ => Err(format!("Unknown workload: {s}")),
         }
@@ -42,7 +44,12 @@ impl WorkloadType {
 
     fn parse_workloads(s: &str) -> Result<Vec<Self>, String> {
         if s == "all" {
-            Ok(vec![Self::EncodeDecode, Self::FindNeedle, Self::Sort])
+            Ok(vec![
+                Self::EncodeDecode,
+                Self::FindNeedle,
+                Self::CmpNeedle,
+                Self::Sort,
+            ])
         } else {
             s.split(',')
                 .map(|w| Self::from_str(w.trim()))
@@ -58,7 +65,7 @@ struct CliArgs {
     /// Workload type to run
     #[arg(long, default_value = "all")]
     #[arg(
-        help = "Workload to run: encode_decode, find_needle, sort, all, or comma-separated list (e.g., encode_decode,sort)"
+        help = "Workload to run: encode_decode, find_needle, cmp_needle, sort, all, or comma-separated list (e.g., encode_decode,sort)"
     )]
     workload: String,
 
@@ -125,7 +132,7 @@ async fn download_clickbench_column(column: &str) -> ColumnData {
                 AVG(LENGTH(\"{column}\")) AS avg_length,
                 COUNT(DISTINCT \"{column}\") * 1.0 / COUNT(\"{column}\") AS distinct_ratio,
                 COUNT(CASE WHEN \"{column}\" IS NOT NULL AND \"{column}\" != '' THEN 1 END) * 1.0 / COUNT(*) AS non_empty_ratio
-            FROM \"hits\""
+            FROM \"hits\" limit 10000000"
         ))
         .await
         .unwrap()
@@ -185,6 +192,15 @@ struct FindNeedleResult {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
+struct CmpNeedleResult {
+    needle_count: usize,
+    total_cmp_time_sec: f64,
+    avg_cmp_time_per_needle_sec: f64,
+    avg_cmp_time_per_needle_ms: f64,
+    workload: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
 struct SortResult {
     total_sort_time_sec: f64,
     workload: String,
@@ -194,6 +210,7 @@ struct SortResult {
 struct BenchmarkResults {
     encode_results: Vec<EncodeResult>,
     find_needle_results: Vec<FindNeedleResult>,
+    cmp_needle_results: Vec<CmpNeedleResult>,
     sort_results: Vec<SortResult>,
 }
 
@@ -204,6 +221,7 @@ trait ArrayBenchmark {
     fn encode(&mut self, array: &StringViewArray) -> (Self::EncodedData, f64, usize);
     fn run_decode(&self, encoded_data: &Self::EncodedData) -> f64;
     fn run_find_needle(&self, encoded_data: &Self::EncodedData, needles: &[String]) -> f64;
+    fn run_cmp_needle(&self, encoded_data: &Self::EncodedData, needles: &[String]) -> f64;
     fn run_sort(&self, encoded_data: &Self::EncodedData) -> f64;
     fn workload_name(&self) -> String;
 }
@@ -219,6 +237,7 @@ impl BenchmarkRunner {
     ) -> BenchmarkResults {
         let mut encode_results = Vec::new();
         let mut find_needle_results = Vec::new();
+        let mut cmp_needle_results = Vec::new();
         let mut sort_results = Vec::new();
 
         // Repeat each workload 3 times
@@ -227,6 +246,7 @@ impl BenchmarkRunner {
             let mut total_decode_time = 0.0;
             let mut total_size = 0;
             let mut total_find_needle_time = 0.0;
+            let mut total_cmp_needle_time = 0.0;
             let mut total_sort_time = 0.0;
 
             // First, encode all arrays (this is common for all workloads)
@@ -285,6 +305,30 @@ impl BenchmarkRunner {
                         );
                         find_needle_results.push(result);
                     }
+                    WorkloadType::CmpNeedle => {
+                        for encoded_data in &encoded_arrays {
+                            let cmp_time = benchmark.run_cmp_needle(encoded_data, needles);
+                            total_cmp_needle_time += cmp_time;
+                        }
+
+                        let needle_count = needles.len();
+                        let avg_cmp_time_per_needle_sec =
+                            total_cmp_needle_time / needle_count as f64;
+                        let result = CmpNeedleResult {
+                            needle_count,
+                            total_cmp_time_sec: total_cmp_needle_time,
+                            avg_cmp_time_per_needle_sec,
+                            avg_cmp_time_per_needle_ms: avg_cmp_time_per_needle_sec * 1000.0,
+                            workload: benchmark.workload_name(),
+                        };
+                        println!(
+                            "{} cmp needle (iteration {}): {}",
+                            benchmark.workload_name(),
+                            iteration + 1,
+                            result
+                        );
+                        cmp_needle_results.push(result);
+                    }
                     WorkloadType::Sort => {
                         for encoded_data in &encoded_arrays {
                             let sort_time = benchmark.run_sort(encoded_data);
@@ -310,6 +354,7 @@ impl BenchmarkRunner {
         BenchmarkResults {
             encode_results,
             find_needle_results,
+            cmp_needle_results,
             sort_results,
         }
     }
@@ -438,6 +483,19 @@ impl Display for FindNeedleResult {
     }
 }
 
+impl Display for CmpNeedleResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} -- needles: {}, total: {:.4} s, avg: {:.3} ms per needle",
+            self.workload,
+            self.needle_count,
+            self.total_cmp_time_sec,
+            self.avg_cmp_time_per_needle_ms
+        )
+    }
+}
+
 impl Display for SortResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -514,6 +572,17 @@ impl ArrayBenchmark for FsstViewBenchmark {
         start.elapsed().as_secs_f64()
     }
 
+    fn run_cmp_needle(&self, encoded_data: &Self::EncodedData, needles: &[String]) -> f64 {
+        let start = Instant::now();
+        for needle in needles {
+            let needle_bytes = needle.as_bytes();
+            let _result = encoded_data
+                .compare_with(needle_bytes, &Operator::Gt)
+                .unwrap();
+        }
+        start.elapsed().as_secs_f64()
+    }
+
     fn run_sort(&self, encoded_data: &Self::EncodedData) -> f64 {
         let start = Instant::now();
         let _indices = encoded_data.sort_to_indices().unwrap();
@@ -563,6 +632,16 @@ impl ArrayBenchmark for ByteArrayBenchmark {
         start.elapsed().as_secs_f64()
     }
 
+    fn run_cmp_needle(&self, encoded_data: &Self::EncodedData, needles: &[String]) -> f64 {
+        let start = Instant::now();
+        for needle in needles {
+            let arrow_array = encoded_data.to_dict_arrow();
+            let needle_scalar = arrow::array::StringArray::new_scalar(needle.clone());
+            let _result = arrow::compute::kernels::cmp::gt(&arrow_array, &needle_scalar).unwrap();
+        }
+        start.elapsed().as_secs_f64()
+    }
+
     fn run_sort(&self, encoded_data: &Self::EncodedData) -> f64 {
         let start = Instant::now();
         let arrow_array = encoded_data.to_dict_arrow();
@@ -600,6 +679,15 @@ impl ArrayBenchmark for StringArrayBenchmark {
         for needle in needles {
             let needle_scalar = arrow::array::StringViewArray::new_scalar(needle.clone());
             let _result = arrow::compute::kernels::cmp::eq(encoded_data, &needle_scalar).unwrap();
+        }
+        start.elapsed().as_secs_f64()
+    }
+
+    fn run_cmp_needle(&self, encoded_data: &Self::EncodedData, needles: &[String]) -> f64 {
+        let start = Instant::now();
+        for needle in needles {
+            let needle_scalar = arrow::array::StringViewArray::new_scalar(needle.clone());
+            let _result = arrow::compute::kernels::cmp::gt(encoded_data, &needle_scalar).unwrap();
         }
         start.elapsed().as_secs_f64()
     }
@@ -665,6 +753,21 @@ impl ArrayBenchmark for StringArrayLz4Benchmark {
 
             let needle_scalar = arrow::array::StringArray::new_scalar(needle.clone());
             let _result = arrow::compute::kernels::cmp::eq(&string_array, &needle_scalar).unwrap();
+        }
+        start.elapsed().as_secs_f64()
+    }
+
+    fn run_cmp_needle(&self, encoded_data: &Self::EncodedData, needles: &[String]) -> f64 {
+        let start = Instant::now();
+        for needle in needles {
+            // Decompress and search
+            let mut file = Cursor::new(encoded_data);
+            let mut reader = arrow::ipc::reader::FileReader::try_new(&mut file, None).unwrap();
+            let batch = reader.next().unwrap().unwrap();
+            let string_array = batch.column(0).as_string::<i32>();
+
+            let needle_scalar = arrow::array::StringArray::new_scalar(needle.clone());
+            let _result = arrow::compute::kernels::cmp::gt(&string_array, &needle_scalar).unwrap();
         }
         start.elapsed().as_secs_f64()
     }

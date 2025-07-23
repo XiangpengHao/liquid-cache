@@ -789,19 +789,17 @@ impl LiquidByteViewArray {
                 .get_raw_buffer()
                 .map_err(|e| ArrowError::IoError(format!("Failed to load FSST buffer: {e}"), e))?;
 
-            let mut decompressed_buffer = Vec::with_capacity(128);
+            let mut decompressed_buffer = Vec::with_capacity(1024 * 1024 * 2);
             for &i in &needs_full_comparison {
                 let start_offset = self.offset_views[i].offset();
                 let end_offset = self.offset_views[i + 1].offset();
 
                 let compressed_value = raw_buffer.get_compressed_slice(start_offset, end_offset);
-                let capacity = compressed_value.len() * 2 + 8;
                 decompressed_buffer.clear();
-                decompressed_buffer.reserve(capacity);
                 let decompressed_len = unsafe {
                     let slice = std::slice::from_raw_parts_mut(
                         decompressed_buffer.as_mut_ptr() as *mut std::mem::MaybeUninit<u8>,
-                        capacity,
+                        decompressed_buffer.capacity(),
                     );
                     self.compressor
                         .decompressor()
