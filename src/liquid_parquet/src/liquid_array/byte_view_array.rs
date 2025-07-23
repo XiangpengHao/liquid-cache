@@ -955,7 +955,7 @@ impl LiquidByteViewArray {
     /// 3. Use dictionary ranks to sort the final keys
     pub fn sort_to_indices(&self) -> Result<UInt32Array, ArrowError> {
         // if distinct ratio is more than 10%, use arrow sort.
-        if self.offset_views.len() > (self.dictionary_keys.len() as usize / 10) {
+        if self.offset_views.len() > (self.dictionary_keys.len() / 10) {
             let array = self.to_dict_arrow();
             let sorted_array = sort_to_indices(&array, None, None)?;
             Ok(sorted_array)
@@ -1017,7 +1017,7 @@ impl LiquidByteViewArray {
                     Some(decompressed) => {
                         let string_a = decompressed.value_unchecked(a as usize);
                         let string_b = decompressed.value_unchecked(b as usize);
-                        string_a.cmp(&string_b)
+                        string_a.cmp(string_b)
                     }
                     None => {
                         let storage_guard = self.fsst_buffer.read().unwrap();
@@ -1031,7 +1031,7 @@ impl LiquidByteViewArray {
 
                         let string_a = binary_array.value(a as usize);
                         let string_b = binary_array.value(b as usize);
-                        let rt = string_a.cmp(&string_b);
+                        let rt = string_a.cmp(string_b);
                         decompressed = Some(binary_array);
                         rt
                     }
