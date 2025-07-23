@@ -643,19 +643,16 @@ impl LiquidByteViewArray {
             self.compare_equals_with_raw_buffer(needle, &raw_buffer)
         } else {
             // Can decide from prefixes only - build result
-            let mut builder = BooleanBuilder::with_capacity(self.dictionary_keys.len());
-            for &dict_key in self.dictionary_keys.values().iter() {
-                let matches = matching_dict_key.map_or(false, |key| dict_key == key);
-                builder.append_value(matches);
+            match matching_dict_key {
+                Some(matching_dict_key) => {
+                    let to_compare = UInt16Array::new_scalar(matching_dict_key as u16);
+                    arrow::compute::kernels::cmp::eq(&self.dictionary_keys, &to_compare).unwrap()
+                }
+                None => BooleanArray::new(
+                    BooleanBuffer::new_unset(self.dictionary_keys.len()),
+                    self.nulls().cloned(),
+                ),
             }
-
-            let mut result = builder.finish();
-            // Preserve nulls from dictionary keys
-            if let Some(nulls) = self.nulls() {
-                let (values, _) = result.into_parts();
-                result = BooleanArray::new(values, Some(nulls.clone()));
-            }
-            result
         }
     }
 
@@ -791,9 +788,9 @@ impl LiquidByteViewArray {
         // For values needing full comparison, load buffer and decompress
         if !needs_full_comparison.is_empty() {
             let storage = self.fsst_buffer.read().unwrap();
-            let raw_buffer = storage.get_raw_buffer().map_err(|e| {
-                ArrowError::IoError(format!("Failed to load FSST buffer: {}", e), e.into())
-            })?;
+            let raw_buffer = storage
+                .get_raw_buffer()
+                .map_err(|e| ArrowError::IoError(format!("Failed to load FSST buffer: {e}"), e))?;
 
             let mut decompressed_buffer = Vec::with_capacity(128);
             for &i in &needs_full_comparison {
