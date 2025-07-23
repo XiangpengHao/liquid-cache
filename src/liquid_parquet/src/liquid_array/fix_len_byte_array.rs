@@ -85,7 +85,7 @@ impl LiquidArray for LiquidFixedLenByteArray {
     }
 
     fn to_arrow_array(&self) -> ArrayRef {
-        if self.keys.len() < 2048 || self.keys.len() < self.values.compressed.len() {
+        if self.keys.len() < 2048 || self.keys.len() < self.values.len() {
             // Use keyed decompression for smaller arrays
             self.to_arrow_array_decompress_keyed()
         } else {
@@ -205,8 +205,8 @@ impl LiquidFixedLenByteArray {
     /// Convert to arrow array by only decompressing values referenced by keys
     fn to_arrow_array_decompress_keyed(&self) -> ArrayRef {
         let primitive_key = self.keys.to_primitive();
-        let mut hit_mask = BooleanBufferBuilder::new(self.values.compressed.len());
-        hit_mask.advance(self.values.compressed.len());
+        let mut hit_mask = BooleanBufferBuilder::new(self.values.len());
+        hit_mask.advance(self.values.len());
         for v in primitive_key.iter().flatten() {
             hit_mask.set_bit(v as usize, true);
         }
@@ -251,10 +251,10 @@ impl LiquidFixedLenByteArray {
         let mut value_buffer: Vec<u8> = Vec::with_capacity(selected_cnt * value_width + 8);
         let mut dst = value_buffer.as_mut_ptr();
 
-        assert_eq!(hit_mask.len(), self.values.compressed.len());
+        assert_eq!(hit_mask.len(), self.values.len());
         for i in 0..hit_mask.len() {
             if unsafe { hit_mask.value_unchecked(i) } {
-                let v = unsafe { self.values.compressed.value_unchecked(i) };
+                let v = unsafe { self.values.compressed().value_unchecked(i) };
                 let slice = unsafe {
                     std::slice::from_raw_parts_mut(dst as *mut MaybeUninit<u8>, value_width + 8)
                 };

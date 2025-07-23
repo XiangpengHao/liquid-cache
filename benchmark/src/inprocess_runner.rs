@@ -199,12 +199,17 @@ impl InProcessBenchmarkRunner {
         &self,
         ctx: &Arc<SessionContext>,
         query: &Query,
-    ) -> Result<(
+    ) -> Vec<(
         Vec<datafusion::arrow::array::RecordBatch>,
         Arc<dyn datafusion::physical_plan::ExecutionPlan>,
     )> {
-        let (results, plan, _) = run_query(ctx, &query.statement()[0]).await;
-        Ok((results, plan))
+        let mut results = Vec::new();
+
+        for q in query.statement() {
+            let (r, plan, _) = run_query(ctx, q).await;
+            results.push((r, plan));
+        }
+        results
     }
 
     fn write_flamegraph(
@@ -267,7 +272,15 @@ impl InProcessBenchmarkRunner {
         let now = Instant::now();
         let starting_timestamp = bench_start_time.elapsed();
 
-        let (results, execution_plan) = self.execute_query(ctx, query).await?;
+        let (results, execution_plan) = {
+            let r = self.execute_query(ctx, query).await;
+            if query.id() == 15 && query.statement().len() == 3 {
+                // special handle for tpch q15, this is very ugly
+                r[1].clone()
+            } else {
+                r[0].clone()
+            }
+        };
         let elapsed = now.elapsed();
 
         disk_info.refresh(true);

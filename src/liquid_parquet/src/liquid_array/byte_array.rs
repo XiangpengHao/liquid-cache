@@ -441,7 +441,7 @@ impl LiquidByteArray {
 
     /// Convert the LiquidStringArray to arrow's DictionaryArray.
     pub fn to_dict_arrow(&self) -> DictionaryArray<UInt16Type> {
-        if self.keys.len() < 2048 || self.keys.len() < self.values.compressed.len() {
+        if self.keys.len() < 2048 || self.keys.len() < self.values.len() {
             // a heuristic to selective decompress.
             self.to_dict_arrow_decompress_keyed()
         } else {
@@ -462,8 +462,8 @@ impl LiquidByteArray {
 
     fn to_dict_arrow_decompress_keyed(&self) -> DictionaryArray<UInt16Type> {
         let primitive_key = self.keys.to_primitive();
-        let mut hit_mask = BooleanBufferBuilder::new(self.values.compressed.len());
-        hit_mask.advance(self.values.compressed.len());
+        let mut hit_mask = BooleanBufferBuilder::new(self.values.len());
+        hit_mask.advance(self.values.len());
         for v in primitive_key.iter().flatten() {
             hit_mask.set_bit(v as usize, true);
         }
@@ -486,14 +486,14 @@ impl LiquidByteArray {
         );
 
         let decompressor = self.values.decompressor();
-        let mut value_buffer: Vec<u8> = Vec::with_capacity(self.values.uncompressed_len + 8);
+        let mut value_buffer: Vec<u8> = Vec::with_capacity(self.values.uncompressed_bytes() + 8);
         let mut offsets_builder = BufferBuilder::<i32>::new(selected_cnt + 1);
         offsets_builder.append(0);
 
-        assert_eq!(hit_mask.len(), self.values.compressed.len());
+        assert_eq!(hit_mask.len(), self.values.len());
         for (_select, v) in hit_mask
             .iter()
-            .zip(self.values.compressed.iter())
+            .zip(self.values.compressed().iter())
             .filter(|(select, _v)| *select)
         {
             let v = v.expect("values array can't be null");
@@ -574,7 +574,7 @@ impl LiquidByteArray {
         let compressor = self.values.compressor();
         let compressed = compressor.compress(needle.as_bytes());
 
-        let values = &self.values.compressed;
+        let values = self.values.compressed();
         let keys = self.keys.to_primitive();
 
         let idx = values.iter().position(|v| v == Some(compressed.as_ref()));
