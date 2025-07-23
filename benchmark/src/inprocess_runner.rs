@@ -206,7 +206,7 @@ impl InProcessBenchmarkRunner {
         let mut results = Vec::new();
 
         for q in query.statement() {
-            let (r, plan, _) = run_query(ctx, &q).await;
+            let (r, plan, _) = run_query(ctx, q).await;
             results.push((r, plan));
         }
         results

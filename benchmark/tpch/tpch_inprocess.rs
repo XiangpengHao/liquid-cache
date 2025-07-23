@@ -85,7 +85,7 @@ impl TpchInProcessBenchmark {
         for query_id in query_ids {
             manifest = manifest.add_query(
                 self.query_dir
-                    .join(format!("q{}.sql", query_id))
+                    .join(format!("q{query_id}.sql"))
                     .to_string_lossy()
                     .to_string(),
             );
