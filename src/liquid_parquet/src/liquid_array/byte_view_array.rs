@@ -467,8 +467,7 @@ impl LiquidByteViewArray {
                 panic!("Unsupported dictionary value type")
             };
 
-        // Calculate offset views for each unique value in the dictionary using actual byte offsets
-        for i in 0..values.len() {
+        for (i, byte_offset) in byte_offsets.iter().enumerate().take(values.len()) {
             let value_bytes = if let Some(string_values) = values.as_string_opt::<i32>() {
                 string_values.value(i).as_bytes()
             } else if let Some(binary_values) = values.as_binary_opt::<i32>() {
@@ -488,9 +487,7 @@ impl LiquidByteViewArray {
             let prefix_len = std::cmp::min(remaining_bytes.len(), 8);
             prefix[..prefix_len].copy_from_slice(&remaining_bytes[..prefix_len]);
 
-            // Use actual byte offset from the byte_offsets vec
-            let byte_offset = byte_offsets[i];
-            offset_views.push(OffsetView::new(byte_offset, prefix));
+            offset_views.push(OffsetView::new(*byte_offset, prefix));
         }
 
         assert_eq!(values.len(), byte_offsets.len() - 1);
@@ -594,7 +591,7 @@ impl LiquidByteViewArray {
             );
         };
 
-        let to_compare = UInt16Array::new_scalar(matching_dict_key as u16);
+        let to_compare = UInt16Array::new_scalar(matching_dict_key);
         arrow::compute::kernels::cmp::eq(&self.dictionary_keys, &to_compare).unwrap()
     }
 
@@ -645,7 +642,7 @@ impl LiquidByteViewArray {
             // Can decide from prefixes only - build result
             match matching_dict_key {
                 Some(matching_dict_key) => {
-                    let to_compare = UInt16Array::new_scalar(matching_dict_key as u16);
+                    let to_compare = UInt16Array::new_scalar(matching_dict_key);
                     arrow::compute::kernels::cmp::eq(&self.dictionary_keys, &to_compare).unwrap()
                 }
                 None => BooleanArray::new(
