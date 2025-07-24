@@ -47,6 +47,9 @@ tempfile = { workspace = true }
 pprof = { version = "0.14.0", features = ["flamegraph"] }
 anyhow = "1.0"
 datafusion-orc = { git = "https://github.com/XiangpengHao/datafusion-orc.git" }
+crossbeam-utils = "0.8"
+io-uring = "0.6.4"
+libc = "0.2.174"
 
 [[bin]]
 name = "clickbench_client"
@@ -71,3 +74,7 @@ path = "cache_behavior.rs"
 [[bin]]
 name = "in_process"
 path = "in_process.rs"
+
+[[bin]]
+name = "microbench_sequential_read"
+path = "microbench_sequential_read.rs"
