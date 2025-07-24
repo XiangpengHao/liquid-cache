@@ -31,6 +31,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
+use std::time::Instant;
 use store::{CacheStore};
 use tokio::runtime::Runtime;
 use transcode::transcode_liquid_inner;
@@ -178,12 +179,16 @@ impl LiquidCachedColumn {
         let path = entry_id.on_disk_path(self.cache_store.config().cache_root_dir());
         let compressor = self.cache_store.compressor_states(&entry_id);
         let compressor = compressor.fsst_compressor.read().unwrap().clone();
+        let start = Instant::now();
         let bytes = match FILE_IO_MODE {
             utils::FileIOMode::BlockingIoUring => self.read_from_disk_uring(&path),
             utils::FileIOMode::Default => self.read_from_disk_pio(&path),
             utils::FileIOMode::ThreadPoolIoUring => self.read_from_disk_threadpool_uring(&path).await,
             utils::FileIOMode::TokioAsync => self.read_from_disk_async(&path).await,
         };
+        let end = Instant::now();
+        let duration  = end.duration_since(start).as_micros();
+        log::info!("read_liquid_from_disk took {} us", duration);
         ipc::read_from_bytes(bytes, &LiquidIPCContext::new(compressor))
     }
 

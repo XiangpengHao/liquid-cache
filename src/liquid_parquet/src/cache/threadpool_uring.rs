@@ -1,4 +1,4 @@
-use std::{os::fd::RawFd, pin::Pin, sync::{atomic::{fence, Ordering}, Arc, LazyLock, Mutex}, task::{Context, Poll, Waker}, thread};
+use std::{os::fd::RawFd, pin::Pin, sync::{atomic::Ordering, Arc, LazyLock, Mutex}, task::{Context, Poll, Waker}, thread};
 
 use std::sync::atomic::AtomicBool;
 use io_uring::{cqueue, opcode, squeue, IoUring};
@@ -43,7 +43,8 @@ pub struct IoUringThreadpool {
 
 unsafe impl Sync for IoUringThreadpool {}
 
-pub(crate) static IO_URING_THREAD_POOL_INST: LazyLock<IoUringThreadpool> = LazyLock::new(|| IoUringThreadpool::new(5));
+pub(crate) static IO_URING_THREAD_POOL_INST: LazyLock<IoUringThreadpool> = LazyLock::new(|| IoUringThreadpool::new(8));
+static WORKER_TO_KERNEL_THREADS_RATIO: u32 = 2;
 
 static ENABLED: AtomicBool = AtomicBool::new(true);
 
@@ -51,28 +52,29 @@ impl IoUringThreadpool {
     const NUM_ENTRIES: u32 = 4096;
     pub const BUFFER_ALIGNMENT: usize = 4096;
 
-    fn new(num_workers: u32) -> IoUringThreadpool {
-        let mut builder = IoUring::<squeue::Entry, cqueue::Entry>::builder();
-        builder.setup_iopoll();
-        // Add a similar argument to the worker thread as well to sleep when not busy
-        builder.setup_sqpoll(50000);
-        
+    fn new(num_workers: u32) -> IoUringThreadpool {        
         let (sender, receiver) = crossbeam_channel::unbounded::<Arc<IoTask>>();
         let mut workers = Vec::<thread::JoinHandle<()>>::new();
 
-        for i in 0..num_workers as usize {
-            let ring = builder
-                .build(Self::NUM_ENTRIES)
-                .expect("Failed to build IoUring instance");
-            if i == 0 {
-                builder.setup_attach_wq(ring.as_raw_fd());
+        for _i in 0..(num_workers/WORKER_TO_KERNEL_THREADS_RATIO) as usize {
+            let mut builder = IoUring::<squeue::Entry, cqueue::Entry>::builder();
+            builder.setup_iopoll();
+            // Add a similar argument to the worker thread as well to sleep when not busy
+            builder.setup_sqpoll(50000);
+            for j in 0..WORKER_TO_KERNEL_THREADS_RATIO {
+                let ring = builder
+                    .build(Self::NUM_ENTRIES)
+                    .expect("Failed to build IoUring instance");
+                if j == 0 {
+                    builder.setup_attach_wq(ring.as_raw_fd());
+                }
+                let receiver_clone = receiver.clone();
+                let worker = thread::spawn(move || {
+                    let mut uring_worker = UringWorker::new(receiver_clone, ring);
+                    uring_worker.thread_loop();
+                });
+                workers.push(worker);
             }
-            let receiver_clone = receiver.clone();
-            let worker = thread::spawn(move || {
-                let mut uring_worker = UringWorker::new(receiver_clone, ring);
-                uring_worker.thread_loop();
-            });
-            workers.push(worker);
         }
         
         IoUringThreadpool {
@@ -106,7 +108,7 @@ struct UringWorker {
 }
 
 impl UringWorker {
-    const CHUNK_SIZE: usize = 8192 * 4;
+    const CHUNK_SIZE: usize = 8192 * 8;
 
     fn new(channel: crossbeam_channel::Receiver<Arc<IoTask>>, ring: io_uring::IoUring) -> UringWorker {
         let mut completions_array = Vec::<usize>::new();

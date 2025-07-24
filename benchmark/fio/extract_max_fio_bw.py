@@ -2,7 +2,7 @@ import sys
 import re
 
 def extract_max_bw(filename):
-    pattern = re.compile(r'^bw \(  KiB/s\):.*?max=(\d+)')
+    pattern = re.compile(r'bw \(  KiB/s\):.*?max=(\d+)')
     max_values = []
 
     with open(filename, 'r') as f:
@@ -30,3 +30,4 @@ if __name__ == "__main__":
             print(bw)
 
         print(f"\nMaximum of max values: {max(max_bw_list)} KiB/s")
+        print(f"Maximum possible bw: {sum(max_bw_list)/1024} MB/s")
