@@ -93,11 +93,10 @@ impl IoUringThreadpool {
         let (tx, rx) = mpsc::channel();
         let mut workers = Vec::<thread::JoinHandle<()>>::new();
         let mut first_iter = true;
+        let mut builder = IoUring::<squeue::Entry, cqueue::Entry>::builder();
+        builder.setup_iopoll();
+        builder.setup_sqpoll(50000);
         for files in files_per_thread.iter() {
-            let mut builder = IoUring::<squeue::Entry, cqueue::Entry>::builder();
-            builder.setup_iopoll();
-            // Add a similar argument to the worker thread as well to sleep when not busy
-            builder.setup_sqpoll(50000);
             let ring = builder
                 .build(Self::NUM_ENTRIES)
                 .expect("Failed to build IoUring instance");
@@ -118,12 +117,6 @@ impl IoUringThreadpool {
         drop(tx);
         IoUringThreadpool { workers, rx }
     }
-}
-
-#[derive(Debug)]
-pub enum FileIoOp {
-    FileRead,
-    FileWrite,
 }
 
 pub struct IoTask {
@@ -198,7 +191,6 @@ impl UringWorker {
                     self.timings[file_idx].0 = submit_time;
                     inflight += 1;
                     file_idx += 1;
-                    let _submitted = self.ring.submit();
                 } else {
                     last_io = task;
                 }
@@ -253,6 +245,9 @@ impl UringWorker {
                 Some(cqe) => {
                     let errno = -cqe.result();
                     let err = std::io::Error::from_raw_os_error(errno);
+                    if cqe.result() == 0 {
+                        print!("here\n");
+                    }
                     assert!(
                         cqe.result() == self.chunk_size as i32 || cqe.result() == 0,
                         "Read cqe result error: {err}"
@@ -263,8 +258,8 @@ impl UringWorker {
                     if *remaining == 0 {
                         self.timings[opcode].1 = Some(Instant::now());
                         completed += 1;
+                        self.tasks[opcode].take();
                     }
-                    self.tasks[opcode].take();
                 },
                 None => {
                     break;
@@ -336,10 +331,10 @@ pub fn run_posix_odirect_bench(config: &MicrobenchConfig) {
                     .custom_flags(libc::O_DIRECT)
                     .open(&file_path)
                     .expect("Failed to open file with O_DIRECT");
-                let start = Instant::now();
                 let fd = file.as_raw_fd();
                 let layout = Layout::from_size_align(file_size, 4096).unwrap();
                 let buf = unsafe { alloc(layout) };
+                let start = Instant::now();
                 let mut total_read = 0;
                 while total_read < file_size {
                     let to_read = std::cmp::min(4096, file_size - total_read);
