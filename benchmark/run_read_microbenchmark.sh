@@ -37,24 +37,30 @@ fi
 mkdir -p "$DIR"
 
 # Create files using fio
-# echo "Creating $NUM_FILES files of size $FILE_SIZE in $DIR ..."
-# for i in $(seq 0 $((NUM_FILES-1))); do
-#   FILE="$DIR/file${i}.dat"
-#   if [[ ! -f "$FILE" ]]; then
-#     echo "  Creating $FILE ..."
-#     fio --name=prep --filename="$FILE" --size="$FILE_SIZE" --rw=write --bs=1M --direct=1 --iodepth=1 --refill_buffers --randrepeat=0 --output=/dev/null &
-#   else
-#     echo "  $FILE already exists, skipping."
-#   fi
-# done
+echo "Creating $NUM_FILES files of size $FILE_SIZE in $DIR ..."
+for i in $(seq 0 $((NUM_FILES-1))); do
+  FILE="$DIR/file${i}.dat"
+  if [[ ! -f "$FILE" ]]; then
+    echo "  Creating $FILE ..."
+    fio --name=prep --filename="$FILE" --size="$FILE_SIZE" --rw=write --bs=1M --direct=1 --iodepth=1 --refill_buffers --randrepeat=0 --output=/dev/null &
+  else
+    echo "  $FILE already exists, skipping."
+  fi
+done
 
-# wait
+wait
+sync
 
 # Build file list for microbenchmark
 FILE_LIST=""
 for i in $(seq 0 $((NUM_FILES-1))); do
   FILE_LIST="$FILE_LIST $DIR/file${i}.dat"
 done
+
+sudo /usr/sbin/biosnoop-bpfcc -Q > biosnoop.log 2>&1 &
+BIO_PID=$!
+# Wait for 10 seconds to let the bio latency tool jit compilation finish
+sleep 10
 
 # Run the microbenchmark
 echo "Running microbenchmark..."
@@ -64,7 +70,13 @@ env RUST_LOG=info RUST_BACKTRACE=full cargo run --release --bin microbench_seque
   --file-size "$(( $(numfmt --from=iec $FILE_SIZE) ))" \
   --chunk-size "$(( $(numfmt --from=iec $CHUNK_SIZE) ))" \
   --files "$FILE_LIST" \
-  $EXTRA_ARGS
+  $EXTRA_ARGS &
+MICROBENCH_PID=$!
 
+wait $MICROBENCH_PID
+sudo kill $BIO_PID
+sync
+
+python3 parse_bpfcc.py --pid $MICROBENCH_PID --engine $ENGINE --file biosnoop.log
 echo "Done."
 # rm -rf "$DIR"/

@@ -5,9 +5,8 @@ use std::fs::{File, OpenOptions};
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::fd::AsRawFd;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::{num, thread};
-use std::time::{Duration, Instant};
+use std::thread;
+use std::time::Instant;
 use std::alloc::{Layout, alloc};
 use io_uring::{cqueue, opcode, squeue, IoUring};
 use std::sync::mpsc::{self, Receiver};
@@ -44,10 +43,6 @@ fn main() {
         .split_whitespace()
         .map(PathBuf::from)
         .collect();
-    // for file in &files {
-    //     println!("{}", file.to_str().unwrap());
-    // }
-    // println!("here");
     let config = MicrobenchConfig {
         files,
         num_threads: cli.num_threads,
@@ -125,7 +120,7 @@ pub struct IoTask {
     pub file: File,
 }
 
-fn create_io_task(file_path: &PathBuf, file_size: usize) -> Arc<IoTask> {
+fn create_io_task(file_path: &PathBuf, file_size: usize) -> IoTask {
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_DIRECT)
@@ -133,17 +128,17 @@ fn create_io_task(file_path: &PathBuf, file_size: usize) -> Arc<IoTask> {
         .expect("Failed to open file with O_DIRECT");
     let layout = Layout::from_size_align(file_size, IoUringThreadpool::BUFFER_ALIGNMENT).unwrap();
     let base_ptr = unsafe { alloc(layout) };
-    Arc::new(IoTask {
+    IoTask {
         base_ptr,
         num_bytes: file_size,
         file,
-    })
+    }
 }
 
 struct UringWorker {
     ring: io_uring::IoUring,
     completions_array: Vec<usize>,
-    tasks: Vec<Option<Arc<IoTask>>>,
+    tasks: Vec<Option<IoTask>>,
     file_paths: Vec<PathBuf>,
     file_size: usize,
     timings: Vec<(Instant, Option<Instant>)>, // (submit_time, completion_time), indexed by file_idx
@@ -154,8 +149,7 @@ impl UringWorker {
     fn new(ring: io_uring::IoUring, file_paths: Vec<PathBuf>, file_size: usize, chunk_size: usize) -> UringWorker {
         let mut completions_array = Vec::<usize>::new();
         completions_array.resize(1<<16, 0);
-        let mut tasks = Vec::<Option<Arc<IoTask>>>::new();
-        tasks.resize(1<<16, None);
+        let tasks = Vec::<Option<IoTask>>::new();
         let timings = vec![(Instant::now(), None); file_paths.len()];
         
         UringWorker {
@@ -169,30 +163,28 @@ impl UringWorker {
         }
     }
 
+    fn create_io_tasks(&mut self) {
+        for file_path in self.file_paths.iter() {
+            let task = create_io_task(file_path, self.file_size);
+            self.tasks.push(Some(task));
+        }
+    }
+
     fn thread_loop(&mut self) {
         let mut inflight = 0;
         let mut file_idx = 0;
         let num_files = self.file_paths.len();
-        let mut last_io: Option<Arc<IoTask>> = None;
+        self.create_io_tasks();
         while file_idx < num_files || inflight > 0 {
             // Submit next file if available
             if file_idx < num_files {
-                let mut task: Option<Arc<IoTask>> = None;
-                if last_io.is_some() {
-                    task = last_io.take();
-                } else {
-                    task = Some(create_io_task(&self.file_paths[file_idx], self.file_size));
-                }
                 let submit_time = Instant::now();
-                let num_chunks = self.submit_reads(&task.as_ref().unwrap(), file_idx.clone());
+                let num_chunks = self.submit_reads(file_idx.clone());
                 if num_chunks > 0 {
-                    self.tasks[file_idx] = task;
                     self.completions_array[file_idx] = num_chunks;
                     self.timings[file_idx].0 = submit_time;
                     inflight += 1;
                     file_idx += 1;
-                } else {
-                    last_io = task;
                 }
             }
             // Poll completions
@@ -202,7 +194,8 @@ impl UringWorker {
         }
     }
 
-    fn submit_reads(&mut self, task: &IoTask, file_idx: usize) -> usize {
+    fn submit_reads(&mut self, file_idx: usize) -> usize {
+        let task = self.tasks[file_idx].as_ref().unwrap();
         let ring = &mut self.ring;
         let sq = &mut (ring.submission());
         let mut buf_ptr = task.base_ptr;
@@ -323,6 +316,7 @@ pub fn run_posix_odirect_bench(config: &MicrobenchConfig) {
         let files = files.clone();
         let tx = tx.clone();
         let file_size = config.file_size;
+        // let chunk_size = config.chunk_size;
         let worker = thread::spawn(move || {
             let mut latencies = Vec::with_capacity(files.len());
             for file_path in files {
@@ -331,26 +325,35 @@ pub fn run_posix_odirect_bench(config: &MicrobenchConfig) {
                     .custom_flags(libc::O_DIRECT)
                     .open(&file_path)
                     .expect("Failed to open file with O_DIRECT");
-                let fd = file.as_raw_fd();
+
                 let layout = Layout::from_size_align(file_size, 4096).unwrap();
                 let buf = unsafe { alloc(layout) };
                 let start = Instant::now();
-                let mut total_read = 0;
-                while total_read < file_size {
-                    let to_read = std::cmp::min(4096, file_size - total_read);
-                    let ret = unsafe {
-                        libc::pread(
-                            fd,
-                            buf.add(total_read) as *mut libc::c_void,
-                            to_read,
-                            total_read as libc::off_t,
-                        )
-                    };
-                    if ret < 0 {
-                        panic!("pread failed: {}", std::io::Error::last_os_error());
-                    }
-                    total_read += ret as usize;
+                let ret = unsafe { libc::pread(
+                    file.as_raw_fd(),
+                    buf as *mut libc::c_void,
+                    file_size,
+                    0,
+                ) };
+                if ret < 0 {
+                    panic!("pread failed: {}", std::io::Error::last_os_error());
                 }
+                // let mut total_read = 0;
+                // while total_read < file_size {
+                //     let to_read = std::cmp::min(chunk_size, file_size - total_read);
+                //     let ret = unsafe {
+                //         libc::pread(
+                //             fd,
+                //             buf.add(total_read) as *mut libc::c_void,
+                //             to_read,
+                //             total_read as libc::off_t,
+                //         )
+                //     };
+                //     if ret < 0 {
+                //         panic!("pread failed: {}", std::io::Error::last_os_error());
+                //     }
+                //     total_read += ret as usize;
+                // }
                 let end = Instant::now();
                 let ms = (end - start).as_secs_f64() * 1000.0;
                 latencies.push(ms);
