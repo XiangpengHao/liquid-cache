@@ -39,10 +39,10 @@ mkdir -p "$DIR"
 # Create files using fio
 echo "Creating $NUM_FILES files of size $FILE_SIZE in $DIR ..."
 for i in $(seq 0 $((NUM_FILES-1))); do
-  FILE="$DIR/file${i}.dat"
+  FILE="$DIR/file${i}_${FILE_SIZE}.dat"
   if [[ ! -f "$FILE" ]]; then
     echo "  Creating $FILE ..."
-    fio --name=prep --filename="$FILE" --size="$FILE_SIZE" --rw=write --bs=1M --direct=1 --iodepth=1 --refill_buffers --randrepeat=0 --output=/dev/null &
+    fio --name=prep --filename="$FILE" --size="$FILE_SIZE" --rw=write --direct=1 --iodepth=1 --refill_buffers --randrepeat=0 --output=/dev/null &
   else
     echo "  $FILE already exists, skipping."
   fi
@@ -54,10 +54,11 @@ sync
 # Build file list for microbenchmark
 FILE_LIST=""
 for i in $(seq 0 $((NUM_FILES-1))); do
-  FILE_LIST="$FILE_LIST $DIR/file${i}.dat"
+  FILE_LIST="$FILE_LIST $DIR/file${i}_${FILE_SIZE}.dat"
 done
 
-sudo /usr/sbin/biosnoop-bpfcc -Q > biosnoop.log 2>&1 &
+rm -f biosnoop.txt
+sudo /usr/sbin/biosnoop-bpfcc -Q > biosnoop.txt 2>&1 &
 BIO_PID=$!
 # Wait for 10 seconds to let the bio latency tool jit compilation finish
 sleep 10
@@ -74,9 +75,9 @@ env RUST_LOG=info RUST_BACKTRACE=full cargo run --release --bin microbench_seque
 MICROBENCH_PID=$!
 
 wait $MICROBENCH_PID
-sudo kill $BIO_PID
+sudo kill -SIGINT $BIO_PID
 sync
 
-python3 parse_bpfcc.py --pid $MICROBENCH_PID --engine $ENGINE --file biosnoop.log
+python3 parse_bpfcc.py --pid $MICROBENCH_PID --engine $ENGINE --file biosnoop.txt --timing-type total
 echo "Done."
 # rm -rf "$DIR"/
