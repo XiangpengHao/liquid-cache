@@ -1,0 +1,28 @@
+--- a/src/liquid_parquet/src/reader/runtime/liquid_batch_reader.rs
++++ b/src/liquid_parquet/src/reader/runtime/liquid_batch_reader.rs
+@@ -235,6 +235,7 @@ impl Iterator for LiquidBatchReader {
+             false => {
+                 while let Some(selection) = take_next_batch(&mut self.selection, self.batch_size) {
+                     match self.build_predicate_filter(selection) {
+                         Ok(filtered_selection) => {
++                            // Increment batch_id BEFORE reading from cache to ensure unique cache keys
++                            self.current_batch_id.inc();
+                             match self.read_selection(filtered_selection) {
+                                 Ok(Some(record_batch)) => {
+-                                    self.current_batch_id.inc();
+                                     return Some(Ok(record_batch));
+                                 }
+                                 Ok(None) => {
+-                                    self.current_batch_id.inc();
+                                     continue; // No rows to read, try next batch
+                                 }
+                                 Err(e) => return Some(Err(e)),
+                             }
+                         }
+                         Err(e) => return Some(Err(e)),
+                     }
+                 }
+             }
+         }
+         None
+     }
