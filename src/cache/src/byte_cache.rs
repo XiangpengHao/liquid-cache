@@ -20,14 +20,14 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 const CACHE_BLOCK_SIZE: u64 = 1024 * 1024 * 4; // 4MB
 
 #[derive(Debug, Clone)]
-pub struct LocalCache {
+pub struct ByteCache {
     inner: Arc<dyn ObjectStore>,
     cache_dir: PathBuf,
 }
 
-impl LocalCache {
-    /// Create a new local cache, the cache_dir is the directory to store the cached files
-    /// `LocalCache` can read from a previously initialized cache directory
+impl ByteCache {
+    /// Create a new byte cache, the cache_dir is the directory to store the cached files
+    /// `ByteCache` can read from a previously initialized cache directory
     pub fn new(inner: Arc<dyn ObjectStore>, cache_dir: PathBuf) -> Self {
         if !cache_dir.exists() {
             fs::create_dir_all(&cache_dir).expect("Failed to create cache directory");
@@ -83,7 +83,7 @@ impl LocalCache {
         let mut file = tokio::fs::File::open(&chunk_path)
             .await
             .map_err(|e| Error::Generic {
-                store: "LocalCache",
+                store: "ByteCache",
                 source: Box::new(e),
             })?;
 
@@ -91,14 +91,14 @@ impl LocalCache {
         file.seek(tokio::io::SeekFrom::Start(offset))
             .await
             .map_err(|e| Error::Generic {
-                store: "LocalCache",
+                store: "ByteCache",
                 source: Box::new(e),
             })?;
 
         file.read_exact(&mut buffer)
             .await
             .map_err(|e| Error::Generic {
-                store: "LocalCache",
+                store: "ByteCache",
                 source: Box::new(e),
             })?;
 
@@ -110,7 +110,7 @@ impl LocalCache {
         let cache_dir = self.get_cache_dir_for_path(path);
         if !cache_dir.exists() {
             fs::create_dir_all(&cache_dir).map_err(|e| Error::Generic {
-                store: "LocalCache",
+                store: "ByteCache",
                 source: Box::new(e),
             })?;
         }
@@ -122,19 +122,19 @@ impl LocalCache {
         let mut file = tokio::fs::File::create(&temp_chunk_path)
             .await
             .map_err(|e| Error::Generic {
-                store: "LocalCache",
+                store: "ByteCache",
                 source: Box::new(e),
             })?;
 
         // Write the data to the temporary file
         file.write_all(&data).await.map_err(|e| Error::Generic {
-            store: "LocalCache",
+            store: "ByteCache",
             source: Box::new(e),
         })?;
 
         // Sync to ensure data is written to disk before rename
         file.sync_all().await.map_err(|e| Error::Generic {
-            store: "LocalCache",
+            store: "ByteCache",
             source: Box::new(e),
         })?;
 
@@ -151,7 +151,7 @@ impl LocalCache {
                     Ok(())
                 } else {
                     Err(Error::Generic {
-                        store: "LocalCache",
+                        store: "ByteCache",
                         source: Box::new(e),
                     })
                 }
@@ -191,14 +191,14 @@ impl LocalCache {
     }
 }
 
-impl Display for LocalCache {
+impl Display for ByteCache {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "LocalCache(cache_dir: {:?})", self.cache_dir)
+        write!(f, "ByteCache(cache_dir: {:?})", self.cache_dir)
     }
 }
 
 #[async_trait]
-impl ObjectStore for LocalCache {
+impl ObjectStore for ByteCache {
     fn list(&self, prefix: Option<&Path>) -> BoxStream<'static, Result<ObjectMeta>> {
         self.inner.list(prefix)
     }
@@ -272,7 +272,7 @@ impl ObjectStore for LocalCache {
         _payload: PutPayload,
         _opts: PutOptions,
     ) -> Result<PutResult> {
-        unreachable!("LocalCache does not support put")
+        unreachable!("ByteCache does not support put")
     }
 
     async fn put_multipart_opts(
@@ -280,19 +280,19 @@ impl ObjectStore for LocalCache {
         _location: &Path,
         _opts: PutMultipartOpts,
     ) -> Result<Box<dyn MultipartUpload>> {
-        unreachable!("LocalCache does not support multipart upload")
+        unreachable!("ByteCache does not support multipart upload")
     }
 
     async fn delete(&self, _location: &Path) -> Result<()> {
-        unreachable!("LocalCache does not support delete")
+        unreachable!("ByteCache does not support delete")
     }
 
     async fn copy(&self, _from: &Path, _to: &Path) -> Result<()> {
-        unreachable!("LocalCache does not support copy")
+        unreachable!("ByteCache does not support copy")
     }
 
     async fn copy_if_not_exists(&self, _from: &Path, _to: &Path) -> Result<()> {
-        unreachable!("LocalCache does not support copy_if_not_exists")
+        unreachable!("ByteCache does not support copy_if_not_exists")
     }
 }
 
@@ -340,7 +340,7 @@ mod tests {
     async fn test_small_file() -> Result<()> {
         let inner = Arc::new(InMemory::new());
         let temp_dir = tempdir().unwrap();
-        let cache = LocalCache::new(inner.clone(), temp_dir.path().to_path_buf());
+        let cache = ByteCache::new(inner.clone(), temp_dir.path().to_path_buf());
 
         // Create a small file (10KB)
         let file_path = "small_file.bin";
@@ -367,7 +367,7 @@ mod tests {
     async fn test_large_file() -> Result<()> {
         let inner = Arc::new(InMemory::new());
         let temp_dir = tempdir().unwrap();
-        let cache = LocalCache::new(inner.clone(), temp_dir.path().to_path_buf());
+        let cache = ByteCache::new(inner.clone(), temp_dir.path().to_path_buf());
 
         // Create a file slightly larger than 2 chunks (9MB)
         let file_path = "large_file.bin";
@@ -394,7 +394,7 @@ mod tests {
     async fn test_range_within_chunk() -> Result<()> {
         let inner = Arc::new(InMemory::new());
         let temp_dir = tempdir().unwrap();
-        let cache = LocalCache::new(inner.clone(), temp_dir.path().to_path_buf());
+        let cache = ByteCache::new(inner.clone(), temp_dir.path().to_path_buf());
 
         // Create a file larger than one chunk
         let file_path = "range_test.bin";
@@ -433,7 +433,7 @@ mod tests {
     async fn test_range_across_chunks() -> Result<()> {
         let inner = Arc::new(InMemory::new());
         let temp_dir = tempdir().unwrap();
-        let cache = LocalCache::new(inner.clone(), temp_dir.path().to_path_buf());
+        let cache = ByteCache::new(inner.clone(), temp_dir.path().to_path_buf());
 
         // Create a file larger than two chunks
         let file_path = "multi_chunk_range.bin";
@@ -470,7 +470,7 @@ mod tests {
     async fn test_cache_hit() -> Result<()> {
         let inner = Arc::new(InMemory::new());
         let temp_dir = tempdir().unwrap();
-        let cache = LocalCache::new(inner.clone(), temp_dir.path().to_path_buf());
+        let cache = ByteCache::new(inner.clone(), temp_dir.path().to_path_buf());
 
         // Create a file
         let file_path = "cache_hit.bin";
@@ -496,7 +496,7 @@ mod tests {
     async fn test_suffix_range() -> Result<()> {
         let inner = Arc::new(InMemory::new());
         let temp_dir = tempdir().unwrap();
-        let cache = LocalCache::new(inner.clone(), temp_dir.path().to_path_buf());
+        let cache = ByteCache::new(inner.clone(), temp_dir.path().to_path_buf());
 
         // Create a file
         let file_path = "suffix_range.bin";
@@ -540,7 +540,7 @@ mod tests {
 
         // First cache instance - read data to populate cache
         {
-            let first_cache = LocalCache::new(inner.clone(), cache_dir_path.clone());
+            let first_cache = ByteCache::new(inner.clone(), cache_dir_path.clone());
             verify_range(&first_cache, file_path, 0..file_size).await?;
 
             // Verify data was cached
@@ -557,7 +557,7 @@ mod tests {
         inner.put(&path, Bytes::from(modified_data).into()).await?;
 
         // Create a new cache instance pointing to the same directory
-        let second_cache = LocalCache::new(inner.clone(), cache_dir_path);
+        let second_cache = ByteCache::new(inner.clone(), cache_dir_path);
 
         // Read the data through the second cache - should get original data from cache
         verify_range(&second_cache, file_path, 0..file_size).await?;
@@ -576,7 +576,7 @@ mod tests {
             (CACHE_BLOCK_SIZE * 3) as usize,
         ));
         let temp_dir = tempdir().unwrap();
-        let cache = LocalCache::new(inner.clone(), temp_dir.path().to_path_buf());
+        let cache = ByteCache::new(inner.clone(), temp_dir.path().to_path_buf());
 
         let path = Path::from("0.parquet");
         let start = CACHE_BLOCK_SIZE / 2;

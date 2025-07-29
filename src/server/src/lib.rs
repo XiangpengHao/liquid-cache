@@ -54,7 +54,6 @@ mod utils;
 use utils::FinalStream;
 mod admin_server;
 mod errors;
-mod local_cache;
 pub use admin_server::{models::*, run_admin_server};
 pub use errors::{
     LiquidCacheErrorExt, LiquidCacheResult, anyhow_to_status, df_error_to_status_with_trace,
@@ -336,6 +335,7 @@ impl FlightSqlService for LiquidCacheService {
 mod server_actions_tests {
     use super::*;
     use liquid_cache_common::rpc::PrefetchFromObjectStoreRequest;
+    use liquid_cache_store::ByteCache;
     use std::collections::HashMap;
     use tokio::fs::File;
     use tokio::io::AsyncWriteExt;
@@ -466,7 +466,6 @@ mod server_actions_tests {
 
     #[tokio::test]
     async fn test_prefetch_with_mock_store_metrics() {
-        use crate::local_cache::LocalCache;
         use datafusion::execution::object_store::ObjectStoreUrl;
         use liquid_cache_common::mock_store::MockStore;
         use liquid_cache_common::utils::sanitize_object_store_url_for_dirname;
@@ -482,7 +481,7 @@ mod server_actions_tests {
         let cache_dir = service
             .get_parquet_cache_dir()
             .join(sanitize_object_store_url_for_dirname(&url));
-        let local_cache = LocalCache::new(inner.clone(), cache_dir);
+        let local_cache = ByteCache::new(inner.clone(), cache_dir);
 
         let object_store_url = ObjectStoreUrl::parse(url.as_str()).unwrap();
         service
