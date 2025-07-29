@@ -2890,6 +2890,7 @@ dependencies = [
  "liquid-cache-client",
  "liquid-cache-common",
  "liquid-cache-parquet",
+ "liquid-cache-store",
  "log",
  "object_store",
  "parquet",
@@ -2904,6 +2905,20 @@ dependencies = [
  "tower-http",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "liquid-cache-store"
+version = "0.1.7"
+dependencies = [
+ "async-stream",
+ "async-trait",
+ "bytes",
+ "futures",
+ "liquid-cache-common",
+ "object_store",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

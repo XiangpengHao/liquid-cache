@@ -1,4 +1,4 @@
-use crate::{ExecutionStats, local_cache::LocalCache};
+use crate::ExecutionStats;
 use anyhow::Result;
 use datafusion::{
     execution::{SendableRecordBatchStream, object_store::ObjectStoreUrl},
@@ -10,6 +10,7 @@ use liquid_cache_parquet::{
     cache::{LiquidCache, LiquidCacheRef, policies::CachePolicy},
     extract_execution_metrics, rewrite_data_source_plan,
 };
+use liquid_cache_store::ByteCache;
 use log::{debug, info};
 use object_store::ObjectStore;
 use std::sync::RwLock;
@@ -105,7 +106,7 @@ impl LiquidCacheServiceInner {
             let sanitized_url =
                 liquid_cache_common::utils::sanitize_object_store_url_for_dirname(url);
             let store_cache_dir = self.parquet_cache_dir.join(sanitized_url);
-            let local_cache = LocalCache::new(Arc::new(object_store), store_cache_dir);
+            let local_cache = ByteCache::new(Arc::new(object_store), store_cache_dir);
             Arc::new(local_cache)
         };
 
