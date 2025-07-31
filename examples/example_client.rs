@@ -18,7 +18,7 @@
 use clap::{Parser, command};
 use datafusion::{error::Result, execution::object_store::ObjectStoreUrl, prelude::*};
 use liquid_cache_client::LiquidCacheBuilder;
-use liquid_cache_common::CacheMode;
+use liquid_cache_client::common::CacheMode;
 use std::path::Path;
 use std::sync::Arc;
 use url::Url;
