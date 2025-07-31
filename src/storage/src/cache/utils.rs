@@ -5,6 +5,7 @@ use std::io::Write;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
+/// Column access path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub struct ColumnAccessPath {
     file_id: u16,
@@ -13,6 +14,7 @@ pub struct ColumnAccessPath {
 }
 
 impl ColumnAccessPath {
+    /// Create a new instance of ColumnAccessPath.
     pub fn new(file_id: u64, row_group_id: u64, column_id: u64) -> Self {
         debug_assert!(file_id <= u16::MAX as u64);
         debug_assert!(row_group_id <= u16::MAX as u64);
@@ -24,6 +26,7 @@ impl ColumnAccessPath {
         }
     }
 
+    /// Initialize the directory for the column access path.
     pub fn initialize_dir(&self, cache_root_dir: &Path) {
         let path = cache_root_dir
             .join(format!("file_{}", self.file_id_inner()))
@@ -32,18 +35,22 @@ impl ColumnAccessPath {
         std::fs::create_dir_all(&path).expect("Failed to create cache directory");
     }
 
+    /// Get the file id.
     fn file_id_inner(&self) -> u64 {
         self.file_id as u64
     }
 
+    /// Get the row group id.
     fn row_group_id_inner(&self) -> u64 {
         self.rg_id as u64
     }
 
+    /// Get the column id.
     fn column_id_inner(&self) -> u64 {
         self.col_id as u64
     }
 
+    /// Get the entry id.
     pub fn entry_id(&self, batch_id: BatchID) -> CacheEntryID {
         CacheEntryID::new(
             self.file_id_inner(),
@@ -216,10 +223,12 @@ impl BatchID {
         }
     }
 
+    /// Creates a new BatchID from a raw value.
     pub fn from_raw(v: u16) -> Self {
         Self { v }
     }
 
+    /// Increment the batch id.
     pub fn inc(&mut self) {
         debug_assert!(self.v < u16::MAX);
         self.v += 1;
@@ -235,6 +244,7 @@ impl Deref for BatchID {
 }
 
 impl CacheEntryID {
+    /// Creates a new CacheEntryID.
     pub(super) fn new(file_id: u64, row_group_id: u64, column_id: u64, batch_id: BatchID) -> Self {
         debug_assert!(file_id <= u16::MAX as u64);
         debug_assert!(row_group_id <= u16::MAX as u64);
@@ -247,22 +257,27 @@ impl CacheEntryID {
         }
     }
 
+    /// Get the batch id.
     pub fn batch_id_inner(&self) -> u64 {
         self.batch_id.v as u64
     }
 
+    /// Get the file id.
     pub fn file_id_inner(&self) -> u64 {
         self.file_id as u64
     }
 
+    /// Get the row group id.
     pub fn row_group_id_inner(&self) -> u64 {
         self.rg_id as u64
     }
 
+    /// Get the column id.
     pub fn column_id_inner(&self) -> u64 {
         self.col_id as u64
     }
 
+    /// Get the on-disk path.
     pub fn on_disk_path(&self, cache_root_dir: &Path) -> PathBuf {
         let batch_id = self.batch_id_inner();
         cache_root_dir
@@ -272,6 +287,7 @@ impl CacheEntryID {
             .join(format!("batch_{batch_id}.liquid"))
     }
 
+    /// Get the on-disk arrow path.
     pub fn on_disk_arrow_path(&self, cache_root_dir: &Path) -> PathBuf {
         let batch_id = self.batch_id_inner();
         cache_root_dir
@@ -281,6 +297,7 @@ impl CacheEntryID {
             .join(format!("batch_{batch_id}.arrow"))
     }
 
+    /// Write the liquid array to disk.
     pub(super) fn write_liquid_to_disk(
         &self,
         cache_root_dir: &Path,

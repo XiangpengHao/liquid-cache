@@ -1,3 +1,5 @@
+//! Cache layer for liquid cache.
+
 mod budget;
 mod core;
 pub mod policies;
@@ -16,6 +18,7 @@ use std::{
 pub use transcode::transcode_liquid_inner;
 pub use utils::{BatchID, CacheAdvice, CacheEntryID, ColumnAccessPath};
 
+/// States for liquid compressor.
 pub struct LiquidCompressorStates {
     fsst_compressor: RwLock<Option<Arc<fsst::Compressor>>>,
 }
@@ -33,26 +36,34 @@ impl Default for LiquidCompressorStates {
 }
 
 impl LiquidCompressorStates {
+    /// Create a new instance of LiquidCompressorStates.
     pub fn new() -> Self {
         Self {
             fsst_compressor: RwLock::new(None),
         }
     }
 
+    /// Get the fsst compressor.
     pub fn fsst_compressor(&self) -> Option<Arc<fsst::Compressor>> {
         self.fsst_compressor.read().unwrap().clone()
     }
 }
 
+/// Cached batch.
 #[derive(Debug, Clone)]
 pub enum CachedBatch {
+    /// Cached batch in memory as Arrow array.
     MemoryArrow(ArrayRef),
+    /// Cached batch in memory as liquid array.
     MemoryLiquid(LiquidArrayRef),
+    /// Cached batch on disk as liquid array.
     DiskLiquid,
+    /// Cached batch on disk as Arrow array.
     DiskArrow,
 }
 
 impl CachedBatch {
+    /// Get the memory usage of the cached batch.
     pub fn memory_usage_bytes(&self) -> usize {
         match self {
             Self::MemoryArrow(array) => array.get_array_memory_size(),
@@ -62,6 +73,7 @@ impl CachedBatch {
         }
     }
 
+    /// Get the reference count of the cached batch.
     pub fn reference_count(&self) -> usize {
         match self {
             Self::MemoryArrow(array) => Arc::strong_count(array),

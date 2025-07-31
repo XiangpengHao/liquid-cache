@@ -94,6 +94,7 @@ impl ArtStore {
     }
 }
 
+/// Cache store for liquid cache.
 #[derive(Debug)]
 pub struct CacheStore {
     cached_data: ArtStore,
@@ -105,6 +106,7 @@ pub struct CacheStore {
 }
 
 impl CacheStore {
+    /// Create a new instance of CacheStore.
     pub fn new(
         batch_size: usize,
         max_cache_bytes: usize,
@@ -254,6 +256,7 @@ impl CacheStore {
         self.budget.add_used_disk_bytes(disk_usage);
     }
 
+    /// Insert a batch into the cache.
     pub fn insert(&self, entry_id: CacheEntryID, mut batch_to_cache: CachedBatch) {
         let mut loop_count = 0;
         loop {
@@ -276,6 +279,7 @@ impl CacheStore {
         }
     }
 
+    /// Get a batch from the cache.
     pub fn get(&self, entry_id: &CacheEntryID) -> Option<CachedBatch> {
         let batch = self.cached_data.get(entry_id);
         let batch_size = batch.as_ref().map(|b| b.memory_usage_bytes()).unwrap_or(0);
@@ -294,31 +298,38 @@ impl CacheStore {
         self.cached_data.for_each(&mut f);
     }
 
+    /// Reset the cache.
     pub fn reset(&self) {
         self.cached_data.reset();
         self.budget.reset_usage();
     }
 
+    /// Check if a batch is cached.
     pub fn is_cached(&self, entry_id: &CacheEntryID) -> bool {
         self.cached_data.is_cached(entry_id)
     }
 
+    /// Get the config of the cache.
     pub fn config(&self) -> &CacheConfig {
         &self.config
     }
 
+    /// Get the budget of the cache.
     pub fn budget(&self) -> &BudgetAccounting {
         &self.budget
     }
 
+    /// Get the tracer of the cache.
     pub fn tracer(&self) -> &CacheTracer {
         &self.tracer
     }
 
+    /// Get the compressor states of the cache.
     pub fn compressor_states(&self, entry_id: &CacheEntryID) -> Arc<LiquidCompressorStates> {
         self.compressor_states.get_compressor(entry_id)
     }
 
+    /// Flush all entries to disk.
     pub fn flush_all_to_disk(&self) {
         // Collect all entries that need to be flushed to disk
         let mut entries_to_flush = Vec::new();

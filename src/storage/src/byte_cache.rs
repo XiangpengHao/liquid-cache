@@ -19,6 +19,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 const CACHE_BLOCK_SIZE: u64 = 1024 * 1024 * 4; // 4MB
 
+/// Byte cache for liquid cache, act like a object store.
 #[derive(Debug, Clone)]
 pub struct ByteCache {
     inner: Arc<dyn ObjectStore>,

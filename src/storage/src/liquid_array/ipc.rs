@@ -1,3 +1,5 @@
+//! IPC for liquid array.
+
 use std::sync::Arc;
 use std::{any::TypeId, mem::size_of};
 
@@ -95,16 +97,19 @@ impl LiquidIPCHeader {
     }
 }
 
+/// Context for liquid IPC.
 pub struct LiquidIPCContext {
     compressor: Option<Arc<Compressor>>,
 }
 
 impl LiquidIPCContext {
+    /// Create a new instance of LiquidIPCContext.
     pub fn new(compressor: Option<Arc<Compressor>>) -> Self {
         Self { compressor }
     }
 }
 
+/// Read a liquid array from bytes.
 pub fn read_from_bytes(bytes: Bytes, context: &LiquidIPCContext) -> LiquidArrayRef {
     let header = LiquidIPCHeader::from_bytes(&bytes);
     let logical_type = LiquidDataType::from(header.logical_type_id);

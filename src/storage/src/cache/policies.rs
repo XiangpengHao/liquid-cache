@@ -1,3 +1,5 @@
+//! Cache policies for liquid cache.
+
 use liquid_cache_common::LiquidCacheMode;
 
 use crate::{
