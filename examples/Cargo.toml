@@ -12,14 +12,14 @@ name = "example_client"
 path = "example_client.rs"
 
 [[bin]]
-name = "example_inprocess"
-path = "example_inprocess.rs"
+name = "example_local"
+path = "example_local.rs"
 
 [dependencies]
 datafusion = { workspace = true }
 liquid-cache-server = { workspace = true }
 liquid-cache-client = { workspace = true }
-liquid-cache-parquet = { workspace = true }
+liquid-cache-local = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 tokio = { workspace = true }

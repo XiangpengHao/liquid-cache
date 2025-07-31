@@ -16,6 +16,7 @@ members = [
 	"src/liquid_parquet",
 	"src/common",
 	"src/cache",
+	"src/local",
 	"examples",
 	"fuzz",
 ]
@@ -27,6 +28,7 @@ liquid-cache-client = { path = "src/client", version = "0.1.7" }
 liquid-cache-parquet = { path = "src/liquid_parquet", version = "0.1.7" }
 liquid-cache-common = { path = "src/common", version = "0.1.7" }
 liquid-cache-store = { path = "src/cache", version = "0.1.7" }
+liquid-cache-local = { path = "src/local", version = "0.1.7" }
 arrow = { version = "=55.1.0", default-features = false, features = [
 	"prettyprint",
 ] }

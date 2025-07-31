@@ -4,9 +4,8 @@ use anyhow::Result;
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use liquid_cache_common::LiquidCacheMode;
-use liquid_cache_parquet::{
-    LiquidCacheInProcessBuilder, LiquidCacheRef, extract_execution_metrics,
-};
+use liquid_cache_local::LiquidCacheInProcessBuilder;
+use liquid_cache_parquet::{LiquidCacheRef, extract_execution_metrics};
 use liquid_cache_store::store::policies::ToDiskPolicy;
 use log::info;
 use serde::Serialize;

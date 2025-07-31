@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod tests;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -7,11 +10,12 @@ use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use liquid_cache_common::LiquidCacheMode;
+use liquid_cache_parquet::{LiquidCache, LiquidCacheRef, rewrite_data_source_plan};
 use liquid_cache_store::store::CachePolicy;
 use liquid_cache_store::store::policies::FiloPolicy;
 
-use crate::cache::{LiquidCache, LiquidCacheRef};
-use crate::utils::rewrite_data_source_plan;
+pub use liquid_cache_common as common;
+pub use liquid_cache_store as store;
 
 /// Builder for in-process liquid cache session context
 ///
@@ -20,7 +24,7 @@ use crate::utils::rewrite_data_source_plan;
 ///
 /// # Example
 /// ```rust
-/// use liquid_cache_parquet::{
+/// use liquid_cache_local::{
 ///     common::{LiquidCacheMode},
 ///     LiquidCacheInProcessBuilder,
 /// };
@@ -29,7 +33,7 @@ use crate::utils::rewrite_data_source_plan;
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-///     use liquid_cache_parquet::cache::policies::FiloPolicy;
+///     use liquid_cache_local::store::policies::FiloPolicy;
 /// let temp_dir = TempDir::new().unwrap();
 ///
 ///     let (ctx, _) = LiquidCacheInProcessBuilder::new()
@@ -176,7 +180,7 @@ impl PhysicalOptimizerRule for InProcessOptimizer {
 }
 
 #[cfg(test)]
-mod tests {
+mod local_tests {
     use arrow_schema::{DataType, Field, Schema};
     use datafusion::datasource::{
         file_format::parquet::ParquetFormat,

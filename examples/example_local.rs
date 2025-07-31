@@ -1,7 +1,7 @@
 use datafusion::prelude::SessionConfig;
-use liquid_cache_parquet::store::store::policies::{CachePolicy, DiscardPolicy};
-use liquid_cache_parquet::store::store::{CacheAdvice, CacheEntryID};
-use liquid_cache_parquet::{LiquidCacheInProcessBuilder, common::LiquidCacheMode};
+use liquid_cache_local::store::store::policies::{CachePolicy, DiscardPolicy};
+use liquid_cache_local::store::store::{CacheAdvice, CacheEntryID};
+use liquid_cache_local::{LiquidCacheInProcessBuilder, common::LiquidCacheMode};
 use tempfile::TempDir;
 
 #[tokio::main]

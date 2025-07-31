@@ -1781,7 +1781,7 @@ dependencies = [
  "env_logger",
  "futures",
  "liquid-cache-client",
- "liquid-cache-parquet",
+ "liquid-cache-local",
  "liquid-cache-server",
  "log",
  "object_store",
@@ -2746,6 +2746,7 @@ dependencies = [
  "futures",
  "liquid-cache-client",
  "liquid-cache-common",
+ "liquid-cache-local",
  "liquid-cache-parquet",
  "liquid-cache-server",
  "liquid-cache-store",
@@ -2829,6 +2830,23 @@ dependencies = [
  "liquid-cache-common",
  "liquid-cache-parquet",
  "liquid-cache-store",
+]
+
+[[package]]
+name = "liquid-cache-local"
+version = "0.1.7"
+dependencies = [
+ "arrow",
+ "arrow-schema",
+ "datafusion",
+ "futures",
+ "insta",
+ "liquid-cache-common",
+ "liquid-cache-parquet",
+ "liquid-cache-store",
+ "log",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

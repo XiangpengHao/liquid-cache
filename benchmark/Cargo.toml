@@ -10,6 +10,7 @@ liquid-cache-client = { workspace = true }
 liquid-cache-parquet = { workspace = true }
 liquid-cache-store = { workspace = true }
 liquid-cache-common = { workspace = true }
+liquid-cache-local = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 datafusion = { workspace = true }

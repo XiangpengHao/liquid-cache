@@ -5,13 +5,8 @@ mod reader;
 mod sync;
 pub(crate) mod utils;
 
-mod inprocess;
-#[cfg(test)]
-mod tests;
-
 pub mod cache;
 pub use cache::{LiquidCache, LiquidCacheRef};
-pub use inprocess::LiquidCacheInProcessBuilder;
 pub use liquid_cache_common as common;
 pub use liquid_cache_store as store;
 pub use reader::{FilterCandidate, FilterCandidateBuilder, LiquidParquetSource, LiquidPredicate};
