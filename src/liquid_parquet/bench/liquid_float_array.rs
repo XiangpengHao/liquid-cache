@@ -4,7 +4,7 @@ use datafusion::arrow::{
     datatypes::{Float32Type, Float64Type},
 };
 use divan::Bencher;
-use liquid_cache_parquet::liquid_array::{LiquidArray, LiquidFloatArray};
+use liquid_cache_store::liquid_array::{LiquidArray, LiquidFloatArray};
 use rand::Rng;
 
 const BENCH_SIZES: [usize; 3] = [8192, 16384, 24576];

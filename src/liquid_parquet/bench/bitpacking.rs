@@ -3,8 +3,8 @@ use divan::Bencher;
 use std::num::NonZero;
 
 use arrow::array::{BooleanArray, PrimitiveArray};
-use liquid_cache_parquet::liquid_array::raw::BitPackedArray;
-use liquid_cache_parquet::liquid_array::{LiquidArray, LiquidPrimitiveArray};
+use liquid_cache_store::liquid_array::raw::BitPackedArray;
+use liquid_cache_store::liquid_array::{LiquidArray, LiquidPrimitiveArray};
 use rand::Rng;
 
 const ARRAY_SIZES: [usize; 4] = [8192, 16384, 32768, 65536];

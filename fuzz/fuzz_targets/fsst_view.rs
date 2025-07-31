@@ -7,7 +7,7 @@ use arrow::compute::kernels::cmp;
 use arrow::error::ArrowError;
 use datafusion::logical_expr::Operator;
 use libfuzzer_sys::fuzz_target;
-use liquid_cache_parquet::liquid_array::LiquidByteViewArray;
+use liquid_cache_store::liquid_array::LiquidByteViewArray;
 
 #[derive(Debug, Clone, Arbitrary)]
 struct FuzzInput {

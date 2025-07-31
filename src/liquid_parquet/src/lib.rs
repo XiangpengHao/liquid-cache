@@ -1,7 +1,6 @@
 #![warn(missing_docs)]
 #![doc = include_str!("../README.md")]
 
-pub mod liquid_array;
 mod reader;
 mod sync;
 pub(crate) mod utils;

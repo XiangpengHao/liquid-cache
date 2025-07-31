@@ -1,5 +1,5 @@
-use crate::liquid_array::LiquidArrayRef;
 use liquid_cache_common::LiquidCacheMode;
+use liquid_cache_store::liquid_array::LiquidArrayRef;
 use std::fs::File;
 use std::io::Write;
 use std::ops::Deref;

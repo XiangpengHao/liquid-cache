@@ -7,7 +7,7 @@ use arrow::{
     array::{Array, StringArray, StringBuilder},
     datatypes::Utf8Type,
 };
-use liquid_cache_parquet::liquid_array::raw::FsstArray;
+use liquid_cache_store::liquid_array::raw::FsstArray;
 use std::fs;
 
 const CHUNK_SIZE: [usize; 5] = [12, 32, 64, 128, 256];

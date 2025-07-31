@@ -2749,6 +2749,7 @@ dependencies = [
  "liquid-cache-common",
  "liquid-cache-parquet",
  "liquid-cache-server",
+ "liquid-cache-store",
  "log",
  "logforth",
  "mimalloc",
@@ -2826,7 +2827,9 @@ dependencies = [
  "arrow",
  "datafusion",
  "libfuzzer-sys",
+ "liquid-cache-common",
  "liquid-cache-parquet",
+ "liquid-cache-store",
 ]
 
 [[package]]
@@ -2851,6 +2854,7 @@ dependencies = [
  "insta",
  "itertools",
  "liquid-cache-common",
+ "liquid-cache-store",
  "log",
  "mimalloc",
  "num-traits",
@@ -2911,12 +2915,23 @@ dependencies = [
 name = "liquid-cache-store"
 version = "0.1.7"
 dependencies = [
+ "ahash",
+ "arrow",
+ "arrow-schema",
  "async-stream",
  "async-trait",
  "bytes",
+ "congee",
+ "datafusion",
+ "fastlanes",
+ "fsst-rs",
  "futures",
  "liquid-cache-common",
+ "log",
+ "num-traits",
  "object_store",
+ "parquet",
+ "paste",
  "tempfile",
  "tokio",
 ]

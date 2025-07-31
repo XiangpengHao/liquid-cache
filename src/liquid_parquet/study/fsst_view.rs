@@ -14,7 +14,7 @@ use arrow_schema::{Field, Schema};
 use datafusion::logical_expr::Operator;
 use datafusion::prelude::*;
 use fsst::Compressor;
-use liquid_cache_parquet::liquid_array::{
+use liquid_cache_store::liquid_array::{
     ByteViewArrayMemoryUsage, LiquidArray, LiquidByteArray, LiquidByteViewArray,
 };
 use rand::{rng, seq::SliceRandom};

@@ -12,10 +12,10 @@ use super::{
 };
 use crate::cache::CacheEntryID;
 use crate::cache::utils::CacheAdvice;
-use crate::liquid_array::LiquidArrayRef;
 use crate::sync::{Arc, RwLock};
 use ahash::AHashMap;
 use liquid_cache_common::LiquidCacheMode;
+use liquid_cache_store::liquid_array::LiquidArrayRef;
 
 #[derive(Debug)]
 struct CompressorStates {

@@ -27,6 +27,7 @@ fastlanes = "0.2.0"
 num-traits = "0.2.19"
 zerocopy = { version = "0.8.25", features = ["derive"] }
 liquid-cache-common = { workspace = true }
+liquid-cache-store = { workspace = true }
 fastrace = { workspace = true }
 fastrace-futures = { workspace = true }
 congee = { workspace = true }

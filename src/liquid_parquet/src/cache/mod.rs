@@ -3,9 +3,7 @@
 //! data from the cache when the cache is full.
 //!
 
-use super::liquid_array::LiquidArrayRef;
 use crate::cache::policies::CachePolicy;
-use crate::liquid_array::ipc::{self, LiquidIPCContext};
 use crate::reader::{LiquidPredicate, extract_multi_column_or};
 use crate::sync::{Mutex, RwLock};
 use crate::utils::boolean_buffer_or;
@@ -17,6 +15,8 @@ use arrow::ipc::reader::StreamReader;
 use arrow_schema::{ArrowError, DataType, Field, Schema};
 use bytes::Bytes;
 use liquid_cache_common::{LiquidCacheMode, coerce_parquet_type_to_liquid_type};
+use liquid_cache_store::liquid_array::LiquidArrayRef;
+use liquid_cache_store::liquid_array::ipc::{self, LiquidIPCContext};
 use parquet::arrow::arrow_reader::ArrowPredicate;
 use std::fmt::Display;
 use std::fs::File;
