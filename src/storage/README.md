@@ -1,1 +1,4 @@
-This crate provides a byte-cache layer for the DataFusion.
+# liquid-cache-storage
+
+Storage layer providing byte caching and liquid array data structures.
+

@@ -11,7 +11,7 @@ use datafusion::parquet::arrow::{
 };
 use datafusion::parquet::file::properties::WriterProperties;
 use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
-use liquid_cache_local::LiquidCacheInProcessBuilder;
+use liquid_cache_local::LiquidCacheLocalBuilder;
 use liquid_cache_parquet::{LiquidCacheRef, common::LiquidCacheMode};
 use liquid_cache_storage::policies::ToDiskPolicy;
 use tempfile::TempDir;
@@ -147,7 +147,7 @@ async fn run_cache_behavior_benchmark() -> Result<(), Box<dyn std::error::Error>
 
     // Step 2: Setup liquid cache in-process context
     let temp_dir = TempDir::new()?;
-    let (ctx, cache) = LiquidCacheInProcessBuilder::new()
+    let (ctx, cache) = LiquidCacheLocalBuilder::new()
         .with_max_cache_bytes(10 * 1024 * 1024 * 1024) // 10GB
         .with_cache_dir(temp_dir.path().to_path_buf())
         .with_cache_mode(LiquidCacheMode::Liquid {

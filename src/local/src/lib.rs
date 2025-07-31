@@ -26,7 +26,7 @@ pub use liquid_cache_storage as storage;
 /// ```rust
 /// use liquid_cache_local::{
 ///     common::{LiquidCacheMode},
-///     LiquidCacheInProcessBuilder,
+///     LiquidCacheLocalBuilder,
 /// };
 /// use datafusion::prelude::{SessionConfig, SessionContext};
 /// use tempfile::TempDir;
@@ -36,7 +36,7 @@ pub use liquid_cache_storage as storage;
 ///     use liquid_cache_local::storage::policies::FiloPolicy;
 ///     let temp_dir = TempDir::new().unwrap();
 ///
-///     let (ctx, _) = LiquidCacheInProcessBuilder::new()
+///     let (ctx, _) = LiquidCacheLocalBuilder::new()
 ///         .with_max_cache_bytes(1024 * 1024 * 1024) // 1GB
 ///         .with_cache_dir(temp_dir.path().to_path_buf())
 ///         .with_cache_mode(LiquidCacheMode::Liquid { transcode_in_background: false })
@@ -52,7 +52,7 @@ pub use liquid_cache_storage as storage;
 /// }
 /// ```
 #[derive(Debug)]
-pub struct LiquidCacheInProcessBuilder {
+pub struct LiquidCacheLocalBuilder {
     /// Size of batches for caching
     batch_size: usize,
     /// Maximum cache size in bytes
@@ -65,7 +65,7 @@ pub struct LiquidCacheInProcessBuilder {
     cache_strategy: Box<dyn CachePolicy>,
 }
 
-impl Default for LiquidCacheInProcessBuilder {
+impl Default for LiquidCacheLocalBuilder {
     fn default() -> Self {
         Self {
             batch_size: 8192 * 2,
@@ -77,7 +77,7 @@ impl Default for LiquidCacheInProcessBuilder {
     }
 }
 
-impl LiquidCacheInProcessBuilder {
+impl LiquidCacheLocalBuilder {
     /// Create a new builder with defaults
     pub fn new() -> Self {
         Self::default()
@@ -133,7 +133,7 @@ impl LiquidCacheInProcessBuilder {
         );
         let cache_ref = Arc::new(cache);
 
-        let optimizer = InProcessOptimizer::with_cache(cache_ref.clone());
+        let optimizer = LocalModeOptimizer::with_cache(cache_ref.clone());
 
         let state = datafusion::execution::SessionStateBuilder::new()
             .with_config(config)
@@ -145,23 +145,23 @@ impl LiquidCacheInProcessBuilder {
     }
 }
 
-/// Physical optimizer rule for in-process liquid cache
+/// Physical optimizer rule for local mode liquid cache
 ///
 /// This optimizer rewrites DataSourceExec nodes that read Parquet files
 /// to use LiquidParquetSource instead of the default ParquetSource
 #[derive(Debug)]
-struct InProcessOptimizer {
+struct LocalModeOptimizer {
     cache: LiquidCacheRef,
 }
 
-impl InProcessOptimizer {
+impl LocalModeOptimizer {
     /// Create an optimizer with an existing cache instance
     fn with_cache(cache: LiquidCacheRef) -> Self {
         Self { cache }
     }
 }
 
-impl PhysicalOptimizerRule for InProcessOptimizer {
+impl PhysicalOptimizerRule for LocalModeOptimizer {
     fn optimize(
         &self,
         plan: Arc<dyn ExecutionPlan>,
@@ -171,7 +171,7 @@ impl PhysicalOptimizerRule for InProcessOptimizer {
     }
 
     fn name(&self) -> &str {
-        "InProcessLiquidCacheOptimizer"
+        "LocalModeLiquidCacheOptimizer"
     }
 
     fn schema_check(&self) -> bool {
@@ -194,7 +194,7 @@ mod local_tests {
         let file_format = ParquetFormat::default().with_enable_pruning(true);
         let listing_options =
             ListingOptions::new(Arc::new(file_format)).with_file_extension(".parquet");
-        let (ctx, _) = LiquidCacheInProcessBuilder::new().build(SessionConfig::new())?;
+        let (ctx, _) = LiquidCacheLocalBuilder::new().build(SessionConfig::new())?;
         let table_path = ListingTableUrl::parse("../../examples/nano_hits.parquet")?;
         ctx.register_listing_table("hits", &table_path, listing_options.clone(), None, None)
             .await?;
@@ -208,7 +208,7 @@ mod local_tests {
 
     #[tokio::test]
     async fn test_provide_schema() -> Result<()> {
-        let (ctx, _) = LiquidCacheInProcessBuilder::new().build(SessionConfig::new())?;
+        let (ctx, _) = LiquidCacheLocalBuilder::new().build(SessionConfig::new())?;
 
         let file_format = ParquetFormat::default().with_enable_pruning(true);
         let listing_options =
@@ -237,7 +237,7 @@ mod local_tests {
     async fn test_provide_schema2() -> Result<()> {
         let df_ctx = SessionContext::new();
         let liquid_ctx = {
-            let (ctx, _) = LiquidCacheInProcessBuilder::new()
+            let (ctx, _) = LiquidCacheLocalBuilder::new()
                 .with_cache_mode(LiquidCacheMode::Liquid {
                     transcode_in_background: false,
                 })

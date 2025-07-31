@@ -15,7 +15,7 @@ use datafusion::{
 use liquid_cache_common::LiquidCacheMode;
 use liquid_cache_storage::policies::ToDiskPolicy;
 
-use crate::LiquidCacheInProcessBuilder;
+use crate::LiquidCacheLocalBuilder;
 
 const TEST_FILE: &str = "../../examples/nano_hits.parquet";
 
@@ -27,7 +27,7 @@ async fn create_session_context_with_liquid_cache(
 
     let mut config = SessionConfig::new();
     config.options_mut().execution.target_partitions = 4;
-    let (ctx, _) = LiquidCacheInProcessBuilder::new()
+    let (ctx, _) = LiquidCacheLocalBuilder::new()
         .with_max_cache_bytes(cache_size_bytes)
         .with_cache_dir(temp_dir.path().to_path_buf())
         .with_cache_mode(cache_mode)
@@ -202,7 +202,7 @@ async fn test_provide_schema_with_filter() {
 
     insta::assert_snapshot!(format!("plan: \n{}\nvalues: \n{}", plan, reference));
 
-    let (ctx, _) = LiquidCacheInProcessBuilder::new()
+    let (ctx, _) = LiquidCacheLocalBuilder::new()
         .with_cache_mode(LiquidCacheMode::Liquid {
             transcode_in_background: false,
         })
