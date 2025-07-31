@@ -10,7 +10,7 @@ repository = { workspace = true }
 
 [dependencies]
 liquid-cache-common = { workspace = true }
-liquid-cache-store = { workspace = true }
+liquid-cache-storage = { workspace = true }
 liquid-cache-parquet = { workspace = true }
 datafusion = { workspace = true }
 futures = { workspace = true }

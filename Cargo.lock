@@ -2749,7 +2749,7 @@ dependencies = [
  "liquid-cache-local",
  "liquid-cache-parquet",
  "liquid-cache-server",
- "liquid-cache-store",
+ "liquid-cache-storage",
  "log",
  "logforth",
  "mimalloc",
@@ -2829,7 +2829,7 @@ dependencies = [
  "libfuzzer-sys",
  "liquid-cache-common",
  "liquid-cache-parquet",
- "liquid-cache-store",
+ "liquid-cache-storage",
 ]
 
 [[package]]
@@ -2843,7 +2843,7 @@ dependencies = [
  "insta",
  "liquid-cache-common",
  "liquid-cache-parquet",
- "liquid-cache-store",
+ "liquid-cache-storage",
  "log",
  "tempfile",
  "tokio",
@@ -2871,7 +2871,7 @@ dependencies = [
  "insta",
  "itertools",
  "liquid-cache-common",
- "liquid-cache-store",
+ "liquid-cache-storage",
  "log",
  "mimalloc",
  "num-traits",
@@ -2911,7 +2911,7 @@ dependencies = [
  "liquid-cache-client",
  "liquid-cache-common",
  "liquid-cache-parquet",
- "liquid-cache-store",
+ "liquid-cache-storage",
  "log",
  "object_store",
  "parquet",
@@ -2929,7 +2929,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "liquid-cache-store"
+name = "liquid-cache-storage"
 version = "0.1.7"
 dependencies = [
  "ahash",

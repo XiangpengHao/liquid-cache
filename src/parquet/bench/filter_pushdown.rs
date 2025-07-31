@@ -1,6 +1,6 @@
 use divan::Bencher;
 use liquid_cache_parquet::cache::LiquidCachedColumn;
-use liquid_cache_store::store::policies::DiscardPolicy;
+use liquid_cache_storage::policies::DiscardPolicy;
 use std::sync::Arc;
 use tempfile::TempDir;
 
@@ -16,7 +16,7 @@ use datafusion::physical_plan::metrics;
 use liquid_cache_common::LiquidCacheMode;
 use liquid_cache_parquet::cache::LiquidCache;
 use liquid_cache_parquet::{FilterCandidateBuilder, LiquidPredicate};
-use liquid_cache_store::store::BatchID;
+use liquid_cache_storage::cache::BatchID;
 use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
 use rand::Rng;

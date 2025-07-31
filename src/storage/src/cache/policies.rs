@@ -1,7 +1,7 @@
 use liquid_cache_common::LiquidCacheMode;
 
 use crate::{
-    store::utils::{CacheAdvice, CacheEntryID},
+    cache::utils::{CacheAdvice, CacheEntryID},
     sync::Mutex,
 };
 use std::{
@@ -249,7 +249,7 @@ mod test {
     use super::*;
     use liquid_cache_common::LiquidCacheMode;
 
-    use crate::store::utils::{create_cache_store, create_entry_id, create_test_array};
+    use crate::cache::utils::{create_cache_store, create_entry_id, create_test_array};
 
     use super::super::CachedBatch;
     use super::{DiscardPolicy, FiloPolicy, LruInternalState, LruPolicy, ToDiskPolicy};

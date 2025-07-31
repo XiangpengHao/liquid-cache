@@ -170,7 +170,7 @@ mod tests {
     };
     use bytes::Bytes;
     use liquid_cache_common::LiquidCacheMode;
-    use liquid_cache_store::store::{policies::DiscardPolicy, BatchID};
+    use liquid_cache_storage::cache::{BatchID, policies::DiscardPolicy};
     use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
     use tempfile::NamedTempFile;
 

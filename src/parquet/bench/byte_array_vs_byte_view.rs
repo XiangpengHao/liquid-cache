@@ -5,7 +5,7 @@ extern crate arrow;
 
 use arrow::array::{Array, StringArray, StringBuilder};
 use datafusion::common::ScalarValue;
-use liquid_cache_store::liquid_array::{LiquidArray, LiquidByteArray, LiquidByteViewArray};
+use liquid_cache_storage::liquid_array::{LiquidArray, LiquidByteArray, LiquidByteViewArray};
 use std::fs;
 
 const CHUNK_SIZE: [usize; 5] = [12, 32, 64, 128, 256];

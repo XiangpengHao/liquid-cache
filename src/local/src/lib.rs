@@ -11,11 +11,11 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use liquid_cache_common::LiquidCacheMode;
 use liquid_cache_parquet::{LiquidCache, LiquidCacheRef, rewrite_data_source_plan};
-use liquid_cache_store::store::CachePolicy;
-use liquid_cache_store::store::policies::FiloPolicy;
+use liquid_cache_storage::policies::CachePolicy;
+use liquid_cache_storage::policies::FiloPolicy;
 
 pub use liquid_cache_common as common;
-pub use liquid_cache_store as store;
+pub use liquid_cache_storage as storage;
 
 /// Builder for in-process liquid cache session context
 ///
@@ -33,8 +33,8 @@ pub use liquid_cache_store as store;
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-///     use liquid_cache_local::store::policies::FiloPolicy;
-/// let temp_dir = TempDir::new().unwrap();
+///     use liquid_cache_local::storage::policies::FiloPolicy;
+///     let temp_dir = TempDir::new().unwrap();
 ///
 ///     let (ctx, _) = LiquidCacheInProcessBuilder::new()
 ///         .with_max_cache_bytes(1024 * 1024 * 1024) // 1GB

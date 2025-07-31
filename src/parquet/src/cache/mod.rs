@@ -14,12 +14,12 @@ use arrow::ipc::reader::StreamReader;
 use arrow_schema::{ArrowError, DataType, Field, Schema};
 use bytes::Bytes;
 use liquid_cache_common::{LiquidCacheMode, coerce_parquet_type_to_liquid_type};
-use liquid_cache_store::liquid_array::LiquidArrayRef;
-use liquid_cache_store::liquid_array::ipc::{self, LiquidIPCContext};
-use liquid_cache_store::store::{
+use liquid_cache_storage::cache::{
     BatchID, CacheEntryID, CachePolicy, CacheStore, CachedBatch, ColumnAccessPath,
     transcode_liquid_inner,
 };
+use liquid_cache_storage::liquid_array::LiquidArrayRef;
+use liquid_cache_storage::liquid_array::ipc::{self, LiquidIPCContext};
 use parquet::arrow::arrow_reader::ArrowPredicate;
 use std::fs::File;
 use std::io::{BufReader, Read};
@@ -648,7 +648,7 @@ mod tests {
     use datafusion::physical_plan::expressions::Column;
     use datafusion::physical_plan::metrics;
     use liquid_cache_common::LiquidCacheMode;
-    use liquid_cache_store::store::policies::DiscardPolicy;
+    use liquid_cache_storage::policies::DiscardPolicy;
     use parquet::arrow::ArrowWriter;
     use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
     use std::sync::Arc;

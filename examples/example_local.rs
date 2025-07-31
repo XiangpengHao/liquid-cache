@@ -1,6 +1,6 @@
 use datafusion::prelude::SessionConfig;
-use liquid_cache_local::store::store::policies::{CachePolicy, DiscardPolicy};
-use liquid_cache_local::store::store::{CacheAdvice, CacheEntryID};
+use liquid_cache_local::storage::cache::{CacheAdvice, CacheEntryID};
+use liquid_cache_local::storage::policies::{CachePolicy, DiscardPolicy};
 use liquid_cache_local::{LiquidCacheInProcessBuilder, common::LiquidCacheMode};
 use tempfile::TempDir;
 

@@ -13,7 +13,7 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use liquid_cache_common::LiquidCacheMode;
-use liquid_cache_store::store::policies::ToDiskPolicy;
+use liquid_cache_storage::policies::ToDiskPolicy;
 
 use crate::LiquidCacheInProcessBuilder;
 

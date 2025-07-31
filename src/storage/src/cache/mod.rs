@@ -1,18 +1,18 @@
 mod budget;
+mod core;
 pub mod policies;
-mod store;
 mod tracer;
 mod transcode;
 mod utils;
 
 use crate::liquid_array::LiquidArrayRef;
 use arrow::array::ArrayRef;
+pub use core::CacheStore;
 pub use policies::CachePolicy;
 use std::{
     fmt::Display,
     sync::{Arc, RwLock},
 };
-pub use store::CacheStore;
 pub use transcode::transcode_liquid_inner;
 pub use utils::{BatchID, CacheAdvice, CacheEntryID, ColumnAccessPath};
 
@@ -23,6 +23,12 @@ pub struct LiquidCompressorStates {
 impl std::fmt::Debug for LiquidCompressorStates {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "EtcCompressorStates")
+    }
+}
+
+impl Default for LiquidCompressorStates {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

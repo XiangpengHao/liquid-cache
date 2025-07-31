@@ -10,8 +10,8 @@ use super::{
     transcode::transcode_liquid_inner,
     utils::{CacheConfig, ColumnAccessPath},
 };
+use crate::cache::utils::{CacheAdvice, CacheEntryID};
 use crate::liquid_array::LiquidArrayRef;
-use crate::store::utils::{CacheAdvice, CacheEntryID};
 use crate::sync::{Arc, RwLock};
 use ahash::AHashMap;
 use liquid_cache_common::LiquidCacheMode;
@@ -359,9 +359,9 @@ impl CacheStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{
+    use crate::cache::{
+        core::ArtStore,
         policies::{CachePolicy, LruPolicy},
-        store::ArtStore,
         utils::{create_cache_store, create_entry_id, create_test_array},
     };
     use crate::sync::thread;
@@ -372,7 +372,7 @@ mod tests {
 
     mod partitioned_hash_store_tests {
         use super::*;
-        use crate::store::utils::create_entry_id;
+        use crate::cache::utils::create_entry_id;
 
         #[test]
         fn test_get_and_is_cached() {

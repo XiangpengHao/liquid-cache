@@ -17,7 +17,7 @@ use datafusion::{
     },
 };
 use fsst::Compressor;
-use liquid_cache_store::liquid_array::{LiquidByteArray, raw::BitPackedArray, raw::FsstArray};
+use liquid_cache_storage::liquid_array::{LiquidByteArray, raw::BitPackedArray, raw::FsstArray};
 use std::{
     fs::File,
     num::NonZero,

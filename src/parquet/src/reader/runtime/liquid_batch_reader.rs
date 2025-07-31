@@ -5,7 +5,7 @@ use arrow::array::{Array, AsArray, BooleanArray, RecordBatch, RecordBatchReader}
 use arrow::buffer::BooleanBuffer;
 use arrow::compute::{filter_record_batch, prep_null_mask_filter};
 use arrow_schema::{ArrowError, DataType, Schema, SchemaRef};
-use liquid_cache_store::store::BatchID;
+use liquid_cache_storage::cache::BatchID;
 use parquet::arrow::ProjectionMask;
 use parquet::arrow::array_reader::ArrayReader;
 use parquet::arrow::arrow_reader::{ArrowPredicate, RowSelection, RowSelector};

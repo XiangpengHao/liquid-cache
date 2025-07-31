@@ -144,7 +144,7 @@ impl CacheTracer {
 
 #[cfg(test)]
 mod tests {
-    use crate::store::utils::BatchID;
+    use crate::cache::utils::BatchID;
 
     use super::*;
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;

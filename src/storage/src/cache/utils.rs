@@ -117,10 +117,10 @@ pub(crate) fn create_test_array(size: usize) -> super::CachedBatch {
 pub(crate) fn create_cache_store(
     max_cache_bytes: usize,
     policy: Box<dyn super::policies::CachePolicy>,
-) -> super::store::CacheStore {
+) -> super::core::CacheStore {
     use tempfile::tempdir;
 
-    use crate::store::store::CacheStore;
+    use crate::cache::core::CacheStore;
 
     let temp_dir = tempdir().unwrap();
     let batch_size = 128;

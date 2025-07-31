@@ -1,5 +1,5 @@
 [package]
-name = "liquid-cache-store"
+name = "liquid-cache-storage"
 version = { workspace = true }
 edition = { workspace = true }
 license = { workspace = true }

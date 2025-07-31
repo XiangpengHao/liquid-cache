@@ -12,7 +12,7 @@ use futures::StreamExt;
 use liquid_cache_common::{
     LiquidCacheMode, ParquetReaderSchema, coerce_parquet_schema_to_liquid_schema,
 };
-use liquid_cache_store::store::policies::DiscardPolicy;
+use liquid_cache_storage::policies::DiscardPolicy;
 use object_store::ObjectMeta;
 use parquet::arrow::{
     ParquetRecordBatchStreamBuilder, ProjectionMask,

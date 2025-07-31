@@ -13,7 +13,7 @@ use datafusion::parquet::file::properties::WriterProperties;
 use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
 use liquid_cache_local::LiquidCacheInProcessBuilder;
 use liquid_cache_parquet::{LiquidCacheRef, common::LiquidCacheMode};
-use liquid_cache_store::store::policies::ToDiskPolicy;
+use liquid_cache_storage::policies::ToDiskPolicy;
 use tempfile::TempDir;
 
 #[derive(Debug)]
