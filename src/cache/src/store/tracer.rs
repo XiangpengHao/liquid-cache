@@ -13,7 +13,7 @@ use parquet::{
     arrow::arrow_writer::ArrowWriter, basic::Compression, file::properties::WriterProperties,
 };
 
-use super::CacheEntryID;
+use super::utils::CacheEntryID;
 
 struct TraceEvent {
     entry_id: CacheEntryID,
@@ -22,7 +22,7 @@ struct TraceEvent {
     time_stamp_nanos: u128,
 }
 
-pub(super) struct CacheTracer {
+pub struct CacheTracer {
     enabled: AtomicBool,
     entries: Mutex<Vec<TraceEvent>>,
 }
@@ -41,12 +41,12 @@ impl CacheTracer {
         }
     }
 
-    pub(super) fn enable(&self) {
+    pub fn enable(&self) {
         self.enabled
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
-    pub(super) fn disable(&self) {
+    pub fn disable(&self) {
         self.enabled
             .store(false, std::sync::atomic::Ordering::Relaxed);
     }
@@ -77,7 +77,7 @@ impl CacheTracer {
         });
     }
 
-    pub(super) fn flush(&self, to_file: impl AsRef<Path>) {
+    pub fn flush(&self, to_file: impl AsRef<Path>) {
         let mut entries = self.entries.lock().unwrap();
         if entries.is_empty() {
             return; // Nothing to flush
@@ -144,7 +144,7 @@ impl CacheTracer {
 
 #[cfg(test)]
 mod tests {
-    use crate::cache::BatchID;
+    use crate::store::utils::BatchID;
 
     use super::*;
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;

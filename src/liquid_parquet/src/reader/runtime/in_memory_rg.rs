@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use bytes::{Buf, Bytes};
+use liquid_cache_store::store::BatchID;
 use parquet::{
     arrow::{ProjectionMask, arrow_reader::RowGroups, async_reader::AsyncFileReader},
     column::page::{PageIterator, PageReader},
@@ -14,10 +15,7 @@ use parquet::{
 
 use super::parquet::cached_page::{CachedPageReader, PredicatePageCache};
 use crate::reader::plantime::ParquetMetadataCacheReader;
-use crate::{
-    cache::{BatchID, LiquidCachedRowGroupRef},
-    reader::runtime::parquet::SerializedPageReader,
-};
+use crate::{cache::LiquidCachedRowGroupRef, reader::runtime::parquet::SerializedPageReader};
 
 /// An in-memory collection of column chunks
 pub(super) struct InMemoryRowGroup<'a> {
@@ -426,7 +424,6 @@ mod tests {
     use super::*;
     use crate::{
         LiquidCache,
-        cache::policies::DiscardPolicy,
         reader::{
             plantime::CachedMetaReaderFactory,
             runtime::{
@@ -439,6 +436,7 @@ mod tests {
     use arrow::datatypes::{DataType, Field};
     use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
     use liquid_cache_common::{LiquidCacheMode, ParquetReaderSchema};
+    use liquid_cache_store::store::policies::DiscardPolicy;
     use object_store::{ObjectStore, local::LocalFileSystem};
     use parquet::arrow::{
         ParquetRecordBatchStreamBuilder,

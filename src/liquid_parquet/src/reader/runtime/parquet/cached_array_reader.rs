@@ -4,6 +4,7 @@ use ahash::AHashMap;
 use arrow::array::{ArrayRef, BooleanArray, BooleanBufferBuilder, new_empty_array};
 use arrow_schema::{DataType, Field, Fields};
 use liquid_cache_common::{cast_from_parquet_to_liquid_type, coerce_parquet_type_to_liquid_type};
+use liquid_cache_store::store::BatchID;
 use parquet::{
     arrow::{
         array_reader::{ArrayReader, StructArrayReader},
@@ -14,7 +15,7 @@ use parquet::{
 
 use super::super::parquet_bridge::{ParquetField, ParquetFieldType};
 use crate::{
-    cache::{BatchID, LiquidCachedColumnRef, LiquidCachedRowGroupRef},
+    cache::{LiquidCachedColumnRef, LiquidCachedRowGroupRef},
     reader::runtime::parquet_bridge::StructArrayReaderBridge,
 };
 
@@ -377,10 +378,10 @@ mod tests {
 
     use arrow::array::Int32Array;
     use liquid_cache_common::LiquidCacheMode;
+    use liquid_cache_store::store::policies::DiscardPolicy;
 
     use super::*;
     use crate::cache::LiquidCache;
-    use crate::cache::policies::DiscardPolicy;
 
     struct MockArrayReader {
         rows: Vec<i32>,

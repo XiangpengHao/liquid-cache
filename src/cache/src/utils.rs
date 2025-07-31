@@ -2,10 +2,9 @@ use std::num::NonZero;
 
 use arrow::{
     array::{
-        ArrayAccessor, ArrayIter, BinaryViewArray, BooleanArray, DictionaryArray, GenericByteArray,
+        ArrayAccessor, ArrayIter, BinaryViewArray, DictionaryArray, GenericByteArray,
         GenericByteDictionaryBuilder, PrimitiveArray, PrimitiveDictionaryBuilder, StringViewArray,
     },
-    buffer::BooleanBuffer,
     datatypes::{BinaryType, ByteArrayType, DecimalType, UInt16Type, Utf8Type},
 };
 use arrow_schema::DataType;
@@ -123,16 +122,6 @@ fn byte_array_to_dict_array<'a, T: ByteArrayType, I: ArrayAccessor<Item = &'a T:
 pub(crate) fn yield_now_if_shuttle() {
     #[cfg(all(feature = "shuttle", test))]
     shuttle::thread::yield_now();
-}
-
-/// Combines two [`BooleanBuffer`]s with logical OR.
-pub fn boolean_buffer_or(left: &BooleanBuffer, right: &BooleanBuffer) -> BooleanBuffer {
-    assert_eq!(left.len(), right.len());
-    let lhs = BooleanArray::new(left.clone(), None);
-    let rhs = BooleanArray::new(right.clone(), None);
-    let result = arrow::compute::kernels::boolean::or_kleene(&lhs, &rhs).unwrap();
-    let (buffer, _) = result.into_parts();
-    buffer
 }
 
 #[cfg(test)]

@@ -30,3 +30,6 @@ parquet = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 paste = "1.0.15"
+
+[features]
+shuttle = []

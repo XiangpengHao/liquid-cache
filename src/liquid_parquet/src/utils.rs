@@ -1,15 +1,9 @@
-use std::{num::NonZero, sync::Arc};
+use std::sync::Arc;
 
 use arrow::{
-    array::{
-        ArrayAccessor, ArrayIter, BinaryViewArray, BooleanArray, BooleanBufferBuilder,
-        DictionaryArray, GenericByteArray, GenericByteDictionaryBuilder, PrimitiveArray,
-        PrimitiveDictionaryBuilder, StringViewArray,
-    },
+    array::{BooleanArray, BooleanBufferBuilder},
     buffer::{BooleanBuffer, MutableBuffer},
-    datatypes::{BinaryType, ByteArrayType, DecimalType, UInt16Type, Utf8Type},
 };
-use arrow_schema::DataType;
 use datafusion::{
     catalog::memory::DataSourceExec,
     common::tree_node::{Transformed, TreeNode, TreeNodeRecursion},
@@ -20,29 +14,6 @@ use liquid_cache_common::rpc::ExecutionMetricsResponse;
 use parquet::arrow::arrow_reader::RowSelector;
 
 use crate::{LiquidParquetSource, cache::LiquidCacheRef};
-
-#[cfg(all(feature = "shuttle", test))]
-pub(crate) fn shuttle_test(test: impl Fn() + Send + Sync + 'static) {
-    _ = tracing_subscriber::fmt()
-        .with_ansi(true)
-        .with_thread_names(false)
-        .with_target(false)
-        .try_init();
-
-    let mut runner = shuttle::PortfolioRunner::new(true, Default::default());
-
-    let available_cores = std::thread::available_parallelism().unwrap().get().min(4);
-
-    for _i in 0..available_cores {
-        runner.add(shuttle::scheduler::PctScheduler::new(10, 1_000));
-    }
-    runner.run(test);
-}
-
-pub(crate) fn yield_now_if_shuttle() {
-    #[cfg(all(feature = "shuttle", test))]
-    shuttle::thread::yield_now();
-}
 
 /// Combines two [`BooleanBuffer`]s with logical OR.
 pub fn boolean_buffer_or(left: &BooleanBuffer, right: &BooleanBuffer) -> BooleanBuffer {
@@ -335,11 +306,12 @@ pub fn rewrite_data_source_plan(
 
 #[cfg(test)]
 mod tests {
-    use crate::cache::{LiquidCache, policies::DiscardPolicy};
+    use crate::cache::LiquidCache;
 
     use super::*;
     use datafusion::{datasource::physical_plan::FileScanConfig, prelude::SessionContext};
     use liquid_cache_common::LiquidCacheMode;
+    use liquid_cache_store::store::policies::DiscardPolicy;
     use std::{path::PathBuf, sync::Arc};
 
     #[test]

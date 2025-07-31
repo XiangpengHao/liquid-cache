@@ -1784,6 +1784,7 @@ dependencies = [
  "liquid-cache-common",
  "liquid-cache-parquet",
  "liquid-cache-server",
+ "liquid-cache-store",
  "log",
  "object_store",
  "tempfile",

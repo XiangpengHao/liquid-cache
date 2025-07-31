@@ -3,7 +3,6 @@
 //! data from the cache when the cache is full.
 //!
 
-use crate::cache::policies::CachePolicy;
 use crate::reader::{LiquidPredicate, extract_multi_column_or};
 use crate::sync::{Mutex, RwLock};
 use crate::utils::boolean_buffer_or;
@@ -17,29 +16,19 @@ use bytes::Bytes;
 use liquid_cache_common::{LiquidCacheMode, coerce_parquet_type_to_liquid_type};
 use liquid_cache_store::liquid_array::LiquidArrayRef;
 use liquid_cache_store::liquid_array::ipc::{self, LiquidIPCContext};
+use liquid_cache_store::store::{
+    BatchID, CacheEntryID, CachePolicy, CacheStore, CachedBatch, ColumnAccessPath,
+    transcode_liquid_inner,
+};
 use parquet::arrow::arrow_reader::ArrowPredicate;
-use std::fmt::Display;
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
-use store::CacheStore;
 use tokio::runtime::Runtime;
-use transcode::transcode_liquid_inner;
-use utils::ColumnAccessPath;
-
-mod budget;
 
 mod stats;
-mod store;
-mod tracer;
-mod transcode;
-mod utils;
-
-pub use crate::cache::utils::{BatchID, CacheAdvice, CacheEntryID};
-/// Module containing cache eviction policies like FIFO
-pub mod policies;
 
 /// A dedicated Tokio thread pool for background transcoding tasks.
 /// This pool is built with 4 worker threads.
@@ -51,63 +40,6 @@ static TRANSCODE_THREAD_POOL: LazyLock<Runtime> = LazyLock::new(|| {
         .build()
         .unwrap()
 });
-
-struct LiquidCompressorStates {
-    fsst_compressor: RwLock<Option<Arc<fsst::Compressor>>>,
-}
-
-impl std::fmt::Debug for LiquidCompressorStates {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "EtcCompressorStates")
-    }
-}
-
-impl LiquidCompressorStates {
-    fn new() -> Self {
-        Self {
-            fsst_compressor: RwLock::new(None),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) enum CachedBatch {
-    MemoryArrow(ArrayRef),
-    MemoryLiquid(LiquidArrayRef),
-    DiskLiquid,
-    DiskArrow,
-}
-
-impl CachedBatch {
-    fn memory_usage_bytes(&self) -> usize {
-        match self {
-            Self::MemoryArrow(array) => array.get_array_memory_size(),
-            Self::MemoryLiquid(array) => array.get_array_memory_size(),
-            Self::DiskLiquid => 0,
-            Self::DiskArrow => 0,
-        }
-    }
-
-    fn reference_count(&self) -> usize {
-        match self {
-            Self::MemoryArrow(array) => Arc::strong_count(array),
-            Self::MemoryLiquid(array) => Arc::strong_count(array),
-            Self::DiskLiquid => 0,
-            Self::DiskArrow => 0,
-        }
-    }
-}
-
-impl Display for CachedBatch {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::MemoryArrow(_) => write!(f, "MemoryArrow"),
-            Self::MemoryLiquid(_) => write!(f, "MemoryLiquid"),
-            Self::DiskLiquid => write!(f, "DiskLiquid"),
-            Self::DiskArrow => write!(f, "DiskArrow"),
-        }
-    }
-}
 
 /// A column in the cache.
 #[derive(Debug)]
@@ -168,7 +100,7 @@ impl LiquidCachedColumn {
         let entry_id = self.entry_id(batch_id);
         let path = entry_id.on_disk_path(self.cache_store.config().cache_root_dir());
         let compressor = self.cache_store.compressor_states(&entry_id);
-        let compressor = compressor.fsst_compressor.read().unwrap().clone();
+        let compressor = compressor.fsst_compressor();
         let mut file = File::open(path).unwrap();
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes).unwrap();
@@ -702,7 +634,7 @@ impl LiquidCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::{LiquidCache, LiquidCachedRowGroupRef, policies::DiscardPolicy};
+    use crate::cache::{LiquidCache, LiquidCachedRowGroupRef};
     use crate::reader::FilterCandidateBuilder;
     use arrow::array::Int32Array;
     use arrow::buffer::BooleanBuffer;
@@ -716,6 +648,7 @@ mod tests {
     use datafusion::physical_plan::expressions::Column;
     use datafusion::physical_plan::metrics;
     use liquid_cache_common::LiquidCacheMode;
+    use liquid_cache_store::store::policies::DiscardPolicy;
     use parquet::arrow::ArrowWriter;
     use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
     use std::sync::Arc;

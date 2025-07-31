@@ -7,10 +7,11 @@ use datafusion::{
 };
 use liquid_cache_common::{CacheMode, rpc::ExecutionMetricsResponse};
 use liquid_cache_parquet::{
-    cache::{LiquidCache, LiquidCacheRef, policies::CachePolicy},
+    cache::{LiquidCache, LiquidCacheRef},
     extract_execution_metrics, rewrite_data_source_plan,
 };
 use liquid_cache_store::ByteCache;
+use liquid_cache_store::store::policies::CachePolicy;
 use log::{debug, info};
 use object_store::ObjectStore;
 use std::sync::RwLock;
@@ -216,7 +217,7 @@ impl LiquidCacheServiceInner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use liquid_cache_parquet::cache::policies::LruPolicy;
+    use liquid_cache_store::store::policies::LruPolicy;
     #[tokio::test]
     async fn test_register_object_store() {
         let server = LiquidCacheServiceInner::new(

@@ -13,8 +13,9 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use liquid_cache_common::LiquidCacheMode;
+use liquid_cache_store::store::policies::ToDiskPolicy;
 
-use crate::{LiquidCacheInProcessBuilder, cache::policies::ToDiskPolicy};
+use crate::LiquidCacheInProcessBuilder;
 
 const TEST_FILE: &str = "../../examples/nano_hits.parquet";
 

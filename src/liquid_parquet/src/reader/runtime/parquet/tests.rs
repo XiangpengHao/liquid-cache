@@ -1,5 +1,5 @@
 use crate::{
-    cache::{LiquidCache, LiquidCachedFileRef, policies::DiscardPolicy},
+    cache::{LiquidCache, LiquidCachedFileRef},
     reader::{
         plantime::CachedMetaReaderFactory,
         runtime::{ArrowReaderBuilderBridge, liquid_stream::LiquidStreamBuilder},
@@ -12,6 +12,7 @@ use futures::StreamExt;
 use liquid_cache_common::{
     LiquidCacheMode, ParquetReaderSchema, coerce_parquet_schema_to_liquid_schema,
 };
+use liquid_cache_store::store::policies::DiscardPolicy;
 use object_store::ObjectMeta;
 use parquet::arrow::{
     ParquetRecordBatchStreamBuilder, ProjectionMask,

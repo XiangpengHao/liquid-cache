@@ -3,7 +3,7 @@ use crate::sync::atomic::{AtomicUsize, Ordering};
 use log::warn;
 
 #[derive(Debug)]
-pub(super) struct BudgetAccounting {
+pub struct BudgetAccounting {
     max_memory_bytes: usize,
     used_memory_bytes: AtomicUsize,
     used_disk_bytes: AtomicUsize,

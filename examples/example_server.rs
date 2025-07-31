@@ -18,8 +18,8 @@
 use arrow_flight::flight_service_server::FlightServiceServer;
 use datafusion::prelude::SessionContext;
 use liquid_cache_common::CacheMode;
-use liquid_cache_parquet::cache::policies::LruPolicy;
 use liquid_cache_server::LiquidCacheService;
+use liquid_cache_store::store::policies::LruPolicy;
 use tonic::transport::Server;
 
 #[tokio::main]

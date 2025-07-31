@@ -4,7 +4,7 @@ use arrow::array::types::*;
 use arrow::array::{ArrayRef, AsArray};
 use arrow_schema::DataType;
 
-use liquid_cache_store::liquid_array::{
+use crate::liquid_array::{
     LiquidArrayRef, LiquidByteArray, LiquidFixedLenByteArray, LiquidFloatArray,
     LiquidPrimitiveArray,
 };
@@ -14,7 +14,7 @@ use super::LiquidCompressorStates;
 /// This method is used to transcode an arrow array into a liquid array.
 ///
 /// Returns the transcoded liquid array if successful, otherwise returns the original arrow array.
-pub(super) fn transcode_liquid_inner<'a>(
+pub fn transcode_liquid_inner<'a>(
     array: &'a ArrayRef,
     state: &LiquidCompressorStates,
 ) -> Result<LiquidArrayRef, &'a ArrayRef> {

@@ -7,8 +7,9 @@ use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use liquid_cache_common::LiquidCacheMode;
+use liquid_cache_store::store::CachePolicy;
+use liquid_cache_store::store::policies::FiloPolicy;
 
-use crate::cache::policies::{CachePolicy, FiloPolicy};
 use crate::cache::{LiquidCache, LiquidCacheRef};
 use crate::utils::rewrite_data_source_plan;
 

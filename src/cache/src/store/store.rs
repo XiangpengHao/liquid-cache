@@ -7,15 +7,14 @@ use super::{
     budget::BudgetAccounting,
     policies::CachePolicy,
     tracer::CacheTracer,
-    transcode_liquid_inner,
+    transcode::transcode_liquid_inner,
     utils::{CacheConfig, ColumnAccessPath},
 };
-use crate::cache::CacheEntryID;
-use crate::cache::utils::CacheAdvice;
+use crate::liquid_array::LiquidArrayRef;
+use crate::store::utils::{CacheAdvice, CacheEntryID};
 use crate::sync::{Arc, RwLock};
 use ahash::AHashMap;
 use liquid_cache_common::LiquidCacheMode;
-use liquid_cache_store::liquid_array::LiquidArrayRef;
 
 #[derive(Debug)]
 struct CompressorStates {
@@ -96,7 +95,7 @@ impl ArtStore {
 }
 
 #[derive(Debug)]
-pub(crate) struct CacheStore {
+pub struct CacheStore {
     cached_data: ArtStore,
     config: CacheConfig,
     budget: BudgetAccounting,
@@ -106,7 +105,7 @@ pub(crate) struct CacheStore {
 }
 
 impl CacheStore {
-    pub(super) fn new(
+    pub fn new(
         batch_size: usize,
         max_cache_bytes: usize,
         cache_root_dir: PathBuf,
@@ -255,7 +254,7 @@ impl CacheStore {
         self.budget.add_used_disk_bytes(disk_usage);
     }
 
-    pub(super) fn insert(&self, entry_id: CacheEntryID, mut batch_to_cache: CachedBatch) {
+    pub fn insert(&self, entry_id: CacheEntryID, mut batch_to_cache: CachedBatch) {
         let mut loop_count = 0;
         loop {
             let Err((advice, not_inserted)) = self.insert_inner(entry_id, batch_to_cache) else {
@@ -277,7 +276,7 @@ impl CacheStore {
         }
     }
 
-    pub(super) fn get(&self, entry_id: &CacheEntryID) -> Option<CachedBatch> {
+    pub fn get(&self, entry_id: &CacheEntryID) -> Option<CachedBatch> {
         let batch = self.cached_data.get(entry_id);
         let batch_size = batch.as_ref().map(|b| b.memory_usage_bytes()).unwrap_or(0);
         self.tracer
@@ -291,36 +290,36 @@ impl CacheStore {
     /// Iterate over all entries in the cache.
     /// No guarantees are made about the order of the entries.
     /// Isolation level: read-committed
-    pub(super) fn for_each_entry(&self, mut f: impl FnMut(&CacheEntryID, &CachedBatch)) {
+    pub fn for_each_entry(&self, mut f: impl FnMut(&CacheEntryID, &CachedBatch)) {
         self.cached_data.for_each(&mut f);
     }
 
-    pub(super) fn reset(&self) {
+    pub fn reset(&self) {
         self.cached_data.reset();
         self.budget.reset_usage();
     }
 
-    pub(super) fn is_cached(&self, entry_id: &CacheEntryID) -> bool {
+    pub fn is_cached(&self, entry_id: &CacheEntryID) -> bool {
         self.cached_data.is_cached(entry_id)
     }
 
-    pub(super) fn config(&self) -> &CacheConfig {
+    pub fn config(&self) -> &CacheConfig {
         &self.config
     }
 
-    pub(super) fn budget(&self) -> &BudgetAccounting {
+    pub fn budget(&self) -> &BudgetAccounting {
         &self.budget
     }
 
-    pub(super) fn tracer(&self) -> &CacheTracer {
+    pub fn tracer(&self) -> &CacheTracer {
         &self.tracer
     }
 
-    pub(super) fn compressor_states(&self, entry_id: &CacheEntryID) -> Arc<LiquidCompressorStates> {
+    pub fn compressor_states(&self, entry_id: &CacheEntryID) -> Arc<LiquidCompressorStates> {
         self.compressor_states.get_compressor(entry_id)
     }
 
-    pub(super) fn flush_all_to_disk(&self) {
+    pub fn flush_all_to_disk(&self) {
         // Collect all entries that need to be flushed to disk
         let mut entries_to_flush = Vec::new();
 
@@ -360,8 +359,9 @@ impl CacheStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::{
+    use crate::store::{
         policies::{CachePolicy, LruPolicy},
+        store::ArtStore,
         utils::{create_cache_store, create_entry_id, create_test_array},
     };
     use crate::sync::thread;
@@ -372,7 +372,7 @@ mod tests {
 
     mod partitioned_hash_store_tests {
         use super::*;
-        use crate::cache::utils::create_entry_id;
+        use crate::store::utils::create_entry_id;
 
         #[test]
         fn test_get_and_is_cached() {

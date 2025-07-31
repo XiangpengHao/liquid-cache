@@ -1,19 +1,19 @@
+use crate::liquid_array::LiquidArrayRef;
 use liquid_cache_common::LiquidCacheMode;
-use liquid_cache_store::liquid_array::LiquidArrayRef;
 use std::fs::File;
 use std::io::Write;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
-pub(super) struct ColumnAccessPath {
+pub struct ColumnAccessPath {
     file_id: u16,
     rg_id: u16,
     col_id: u16,
 }
 
 impl ColumnAccessPath {
-    pub(super) fn new(file_id: u64, row_group_id: u64, column_id: u64) -> Self {
+    pub fn new(file_id: u64, row_group_id: u64, column_id: u64) -> Self {
         debug_assert!(file_id <= u16::MAX as u64);
         debug_assert!(row_group_id <= u16::MAX as u64);
         debug_assert!(column_id <= u16::MAX as u64);
@@ -24,7 +24,7 @@ impl ColumnAccessPath {
         }
     }
 
-    pub(super) fn initialize_dir(&self, cache_root_dir: &Path) {
+    pub fn initialize_dir(&self, cache_root_dir: &Path) {
         let path = cache_root_dir
             .join(format!("file_{}", self.file_id_inner()))
             .join(format!("rg_{}", self.row_group_id_inner()))
@@ -44,7 +44,7 @@ impl ColumnAccessPath {
         self.col_id as u64
     }
 
-    pub(super) fn entry_id(&self, batch_id: BatchID) -> CacheEntryID {
+    pub fn entry_id(&self, batch_id: BatchID) -> CacheEntryID {
         CacheEntryID::new(
             self.file_id_inner(),
             self.row_group_id_inner(),
@@ -65,7 +65,7 @@ impl From<CacheEntryID> for ColumnAccessPath {
 }
 
 #[derive(Debug)]
-pub(super) struct CacheConfig {
+pub struct CacheConfig {
     batch_size: usize,
     max_cache_bytes: usize,
     cache_root_dir: PathBuf,
@@ -120,7 +120,7 @@ pub(crate) fn create_cache_store(
 ) -> super::store::CacheStore {
     use tempfile::tempdir;
 
-    use crate::cache::store::CacheStore;
+    use crate::store::store::CacheStore;
 
     let temp_dir = tempdir().unwrap();
     let batch_size = 128;
@@ -216,11 +216,11 @@ impl BatchID {
         }
     }
 
-    pub(crate) fn from_raw(v: u16) -> Self {
+    pub fn from_raw(v: u16) -> Self {
         Self { v }
     }
 
-    pub(crate) fn inc(&mut self) {
+    pub fn inc(&mut self) {
         debug_assert!(self.v < u16::MAX);
         self.v += 1;
     }
@@ -247,23 +247,23 @@ impl CacheEntryID {
         }
     }
 
-    pub(super) fn batch_id_inner(&self) -> u64 {
+    pub fn batch_id_inner(&self) -> u64 {
         self.batch_id.v as u64
     }
 
-    pub(super) fn file_id_inner(&self) -> u64 {
+    pub fn file_id_inner(&self) -> u64 {
         self.file_id as u64
     }
 
-    pub(super) fn row_group_id_inner(&self) -> u64 {
+    pub fn row_group_id_inner(&self) -> u64 {
         self.rg_id as u64
     }
 
-    pub(super) fn column_id_inner(&self) -> u64 {
+    pub fn column_id_inner(&self) -> u64 {
         self.col_id as u64
     }
 
-    pub(super) fn on_disk_path(&self, cache_root_dir: &Path) -> PathBuf {
+    pub fn on_disk_path(&self, cache_root_dir: &Path) -> PathBuf {
         let batch_id = self.batch_id_inner();
         cache_root_dir
             .join(format!("file_{}", self.file_id_inner()))
@@ -272,7 +272,7 @@ impl CacheEntryID {
             .join(format!("batch_{batch_id}.liquid"))
     }
 
-    pub(super) fn on_disk_arrow_path(&self, cache_root_dir: &Path) -> PathBuf {
+    pub fn on_disk_arrow_path(&self, cache_root_dir: &Path) -> PathBuf {
         let batch_id = self.batch_id_inner();
         cache_root_dir
             .join(format!("file_{}", self.file_id_inner()))

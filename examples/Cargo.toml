@@ -21,6 +21,7 @@ liquid-cache-server = { workspace = true }
 liquid-cache-client = { workspace = true }
 liquid-cache-common = { workspace = true }
 liquid-cache-parquet = { workspace = true }
+liquid-cache-store = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 tokio = { workspace = true }

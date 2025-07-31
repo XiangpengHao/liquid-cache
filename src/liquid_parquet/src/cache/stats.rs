@@ -163,8 +163,6 @@ impl LiquidCache {
 mod tests {
     use std::io::Read;
 
-    use crate::cache::{BatchID, policies::DiscardPolicy};
-
     use super::*;
     use arrow::{
         array::{Array, AsArray},
@@ -172,6 +170,7 @@ mod tests {
     };
     use bytes::Bytes;
     use liquid_cache_common::LiquidCacheMode;
+    use liquid_cache_store::store::{policies::DiscardPolicy, BatchID};
     use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
     use tempfile::NamedTempFile;
 

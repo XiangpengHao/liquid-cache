@@ -5,12 +5,13 @@ use arrow::array::{Array, AsArray, BooleanArray, RecordBatch, RecordBatchReader}
 use arrow::buffer::BooleanBuffer;
 use arrow::compute::{filter_record_batch, prep_null_mask_filter};
 use arrow_schema::{ArrowError, DataType, Schema, SchemaRef};
+use liquid_cache_store::store::BatchID;
 use parquet::arrow::ProjectionMask;
 use parquet::arrow::array_reader::ArrayReader;
 use parquet::arrow::arrow_reader::{ArrowPredicate, RowSelection, RowSelector};
 
 use super::LiquidRowFilter;
-use crate::cache::{BatchID, LiquidCachedRowGroupRef};
+use crate::cache::LiquidCachedRowGroupRef;
 use crate::reader::LiquidPredicate;
 use crate::reader::runtime::liquid_predicate::is_predicate_supported_by_liquid;
 use crate::reader::runtime::utils::take_next_batch;

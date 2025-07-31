@@ -58,7 +58,7 @@ pub use admin_server::{models::*, run_admin_server};
 pub use errors::{
     LiquidCacheErrorExt, LiquidCacheResult, anyhow_to_status, df_error_to_status_with_trace,
 };
-use liquid_cache_parquet::cache::policies::{CachePolicy, LruPolicy};
+use liquid_cache_store::store::policies::{CachePolicy, LruPolicy};
 use object_store::path::Path;
 use object_store::{GetOptions, GetRange};
 
