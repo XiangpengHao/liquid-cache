@@ -1,5 +1,8 @@
 use crate::liquid_array::LiquidArrayRef;
+use crate::sync::{Arc, RwLock};
+use arrow::array::ArrayRef;
 use liquid_cache_common::LiquidCacheMode;
+use std::fmt::Display;
 use std::fs::File;
 use std::io::Write;
 use std::ops::Deref;
@@ -113,11 +116,11 @@ impl CacheConfig {
 
 // Helper methods
 #[cfg(test)]
-pub(crate) fn create_test_array(size: usize) -> super::CachedBatch {
+pub(crate) fn create_test_array(size: usize) -> CachedBatch {
     use arrow::array::Int64Array;
     use std::sync::Arc;
 
-    super::CachedBatch::MemoryArrow(Arc::new(Int64Array::from_iter_values(0..size as i64)))
+    CachedBatch::MemoryArrow(Arc::new(Int64Array::from_iter_values(0..size as i64)))
 }
 
 #[cfg(test)]
@@ -360,6 +363,94 @@ pub(crate) fn create_entry_id(
         column_id,
         BatchID::from_raw(batch_id),
     )
+}
+
+/// States for liquid compressor.
+pub struct LiquidCompressorStates {
+    fsst_compressor: RwLock<Option<Arc<fsst::Compressor>>>,
+}
+
+impl std::fmt::Debug for LiquidCompressorStates {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "EtcCompressorStates")
+    }
+}
+
+impl Default for LiquidCompressorStates {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl LiquidCompressorStates {
+    /// Create a new instance of LiquidCompressorStates.
+    pub fn new() -> Self {
+        Self {
+            fsst_compressor: RwLock::new(None),
+        }
+    }
+
+    pub fn new_with_fsst_compressor(fsst_compressor: Arc<fsst::Compressor>) -> Self {
+        Self {
+            fsst_compressor: RwLock::new(Some(fsst_compressor)),
+        }
+    }
+
+    /// Get the fsst compressor.
+    pub fn fsst_compressor(&self) -> Option<Arc<fsst::Compressor>> {
+        self.fsst_compressor.read().unwrap().clone()
+    }
+
+    /// Get the fsst compressor .
+    pub fn fsst_compressor_raw(&self) -> &RwLock<Option<Arc<fsst::Compressor>>> {
+        &self.fsst_compressor
+    }
+}
+
+/// Cached batch.
+#[derive(Debug, Clone)]
+pub enum CachedBatch {
+    /// Cached batch in memory as Arrow array.
+    MemoryArrow(ArrayRef),
+    /// Cached batch in memory as liquid array.
+    MemoryLiquid(LiquidArrayRef),
+    /// Cached batch on disk as liquid array.
+    DiskLiquid,
+    /// Cached batch on disk as Arrow array.
+    DiskArrow,
+}
+
+impl CachedBatch {
+    /// Get the memory usage of the cached batch.
+    pub fn memory_usage_bytes(&self) -> usize {
+        match self {
+            Self::MemoryArrow(array) => array.get_array_memory_size(),
+            Self::MemoryLiquid(array) => array.get_array_memory_size(),
+            Self::DiskLiquid => 0,
+            Self::DiskArrow => 0,
+        }
+    }
+
+    /// Get the reference count of the cached batch.
+    pub fn reference_count(&self) -> usize {
+        match self {
+            Self::MemoryArrow(array) => Arc::strong_count(array),
+            Self::MemoryLiquid(array) => Arc::strong_count(array),
+            Self::DiskLiquid => 0,
+            Self::DiskArrow => 0,
+        }
+    }
+}
+
+impl Display for CachedBatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MemoryArrow(_) => write!(f, "MemoryArrow"),
+            Self::MemoryLiquid(_) => write!(f, "MemoryLiquid"),
+            Self::DiskLiquid => write!(f, "DiskLiquid"),
+            Self::DiskArrow => write!(f, "DiskArrow"),
+        }
+    }
 }
 
 #[cfg(test)]

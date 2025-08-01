@@ -3,14 +3,14 @@ use std::fmt::{Debug, Formatter};
 use std::path::PathBuf;
 
 use super::{
-    CachedBatch, LiquidCompressorStates,
+    CachedBatch,
     budget::BudgetAccounting,
     policies::CachePolicy,
     tracer::CacheTracer,
     transcode::transcode_liquid_inner,
     utils::{CacheConfig, ColumnAccessPath},
 };
-use crate::cache::utils::{CacheAdvice, CacheEntryID};
+use crate::cache::utils::{CacheAdvice, CacheEntryID, LiquidCompressorStates};
 use crate::liquid_array::LiquidArrayRef;
 use crate::sync::{Arc, RwLock};
 use ahash::AHashMap;
