@@ -251,7 +251,9 @@ mod test {
     use super::*;
     use liquid_cache_common::LiquidCacheMode;
 
-    use crate::cache::utils::{create_cache_store, create_entry_id, create_test_array};
+    use crate::cache::utils::{
+        create_cache_store, create_entry_id, create_test_array, create_test_arrow_array,
+    };
 
     use super::super::CachedBatch;
     use super::{DiscardPolicy, FiloPolicy, LruInternalState, LruPolicy, ToDiskPolicy};
@@ -580,14 +582,14 @@ mod test {
         let on_disk_path = entry_id1.on_disk_path(store.config().cache_root_dir());
         std::fs::create_dir_all(on_disk_path.parent().unwrap()).unwrap();
 
-        store.insert(entry_id1, create_test_array(100));
-        store.insert(entry_id2, create_test_array(100));
-        store.insert(entry_id3, create_test_array(100));
+        store.insert(entry_id1, create_test_arrow_array(100));
+        store.insert(entry_id2, create_test_arrow_array(100));
+        store.insert(entry_id3, create_test_arrow_array(100));
 
         store.get(&entry_id1);
 
         let entry_id4 = create_entry_id(4, 4, 4, 4);
-        store.insert(entry_id4, create_test_array(100));
+        store.insert(entry_id4, create_test_arrow_array(100));
 
         assert!(store.get(&entry_id1).is_some());
         assert!(store.get(&entry_id3).is_some());
@@ -611,12 +613,12 @@ mod test {
         let on_disk_path = entry_id1.on_disk_path(store.config().cache_root_dir());
         std::fs::create_dir_all(on_disk_path.parent().unwrap()).unwrap();
 
-        store.insert(entry_id1, create_test_array(100));
-        store.insert(entry_id2, create_test_array(100));
-        store.insert(entry_id3, create_test_array(100));
+        store.insert(entry_id1, create_test_arrow_array(100));
+        store.insert(entry_id2, create_test_arrow_array(100));
+        store.insert(entry_id3, create_test_arrow_array(100));
 
         let entry_id4 = create_entry_id(4, 4, 4, 4);
-        store.insert(entry_id4, create_test_array(100));
+        store.insert(entry_id4, create_test_arrow_array(100));
 
         assert!(store.get(&entry_id1).is_some());
         assert!(store.get(&entry_id2).is_some());
@@ -642,13 +644,13 @@ mod test {
         std::fs::create_dir_all(on_disk_liquid_path.parent().unwrap()).unwrap();
         std::fs::create_dir_all(on_disk_arrow_path.parent().unwrap()).unwrap();
 
-        store.insert(entry_id1, create_test_array(100));
+        store.insert_inner(entry_id1, create_test_array(100));
         assert!(matches!(
             store.get(&entry_id1).unwrap(),
             CachedBatch::MemoryArrow(_)
         ));
 
-        store.insert(entry_id2, create_test_array(2000)); // Large enough to exceed budget
+        store.insert_inner(entry_id2, create_test_array(2000)); // Large enough to exceed budget
 
         assert!(matches!(
             store.get(&entry_id2).unwrap(),

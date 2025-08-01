@@ -123,11 +123,18 @@ pub(crate) fn create_test_array(size: usize) -> CachedBatch {
     CachedBatch::MemoryArrow(Arc::new(Int64Array::from_iter_values(0..size as i64)))
 }
 
+// Helper methods
+#[cfg(test)]
+pub(crate) fn create_test_arrow_array(size: usize) -> ArrayRef {
+    use arrow::array::Int64Array;
+    Arc::new(Int64Array::from_iter_values(0..size as i64))
+}
+
 #[cfg(test)]
 pub(crate) fn create_cache_store(
     max_cache_bytes: usize,
     policy: Box<dyn super::policies::CachePolicy>,
-) -> super::core::CacheStore {
+) -> Arc<super::core::CacheStore> {
     use tempfile::tempdir;
 
     use crate::cache::core::CacheStore;
@@ -135,13 +142,13 @@ pub(crate) fn create_cache_store(
     let temp_dir = tempdir().unwrap();
     let batch_size = 128;
 
-    CacheStore::new(
+    Arc::new(CacheStore::new(
         batch_size,
         max_cache_bytes,
         temp_dir.keep(),
         LiquidCacheMode::LiquidBlocking,
         policy,
-    )
+    ))
 }
 
 /// Advice given by the cache policy.
@@ -201,8 +208,6 @@ impl CacheEntryID {
 
 const _: () = assert!(std::mem::size_of::<CacheEntryID>() == 8);
 const _: () = assert!(std::mem::align_of::<CacheEntryID>() == 8);
-
-const _: () = assert!(std::mem::size_of::<CacheEntryID>() == 8);
 
 /// BatchID is a unique identifier for a batch of rows,
 /// it is row id divided by the batch size.

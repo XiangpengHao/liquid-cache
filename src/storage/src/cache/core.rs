@@ -1,3 +1,4 @@
+use arrow::array::ArrayRef;
 use congee::CongeeArc;
 use std::fmt::{Debug, Formatter};
 use std::path::PathBuf;
@@ -10,6 +11,7 @@ use super::{
     transcode::transcode_liquid_inner,
     utils::{CacheConfig, ColumnAccessPath},
 };
+use crate::cache::transcode::submit_background_transcoding_task;
 use crate::cache::utils::{CacheAdvice, CacheEntryID, LiquidCompressorStates};
 use crate::liquid_array::LiquidArrayRef;
 use crate::sync::{Arc, RwLock};
@@ -125,7 +127,7 @@ impl CacheStore {
         }
     }
 
-    fn insert_inner(
+    fn try_insert(
         &self,
         entry_id: CacheEntryID,
         cached_batch: CachedBatch,
@@ -168,7 +170,7 @@ impl CacheStore {
                     let liquid_array = transcode_liquid_inner(&array, compressor_states.as_ref())
                         .expect("Failed to transcode to liquid array");
                     let liquid_array = CachedBatch::MemoryLiquid(liquid_array);
-                    self.insert_inner(to_transcode, liquid_array)
+                    self.try_insert(to_transcode, liquid_array)
                         .expect("Failed to insert the transcoded batch");
                 }
 
@@ -195,7 +197,7 @@ impl CacheStore {
                     }
                 };
                 self.write_liquid_to_disk(&to_evict, &liquid_array);
-                self.insert_inner(to_evict, CachedBatch::DiskLiquid)
+                self.try_insert(to_evict, CachedBatch::DiskLiquid)
                     .expect("failed to insert on disk liquid");
                 Some(not_inserted)
             }
@@ -215,7 +217,7 @@ impl CacheStore {
                     }
                 };
                 self.write_liquid_to_disk(&to_transcode, &liquid_array);
-                self.insert_inner(to_transcode, CachedBatch::DiskLiquid)
+                self.try_insert(to_transcode, CachedBatch::DiskLiquid)
                     .expect("failed to insert on disk liquid");
                 None
             }
@@ -223,12 +225,12 @@ impl CacheStore {
                 match not_inserted {
                     CachedBatch::MemoryArrow(array) => {
                         self.write_arrow_to_disk(&to_disk, &array);
-                        self.insert_inner(to_disk, CachedBatch::DiskArrow)
+                        self.try_insert(to_disk, CachedBatch::DiskArrow)
                             .expect("failed to insert on disk arrow");
                     }
                     CachedBatch::MemoryLiquid(liquid_array) => {
                         self.write_liquid_to_disk(&to_disk, &liquid_array);
-                        self.insert_inner(to_disk, CachedBatch::DiskLiquid)
+                        self.try_insert(to_disk, CachedBatch::DiskLiquid)
                             .expect("failed to insert on disk liquid");
                     }
                     CachedBatch::DiskLiquid | CachedBatch::DiskArrow => {
@@ -257,10 +259,33 @@ impl CacheStore {
     }
 
     /// Insert a batch into the cache.
-    pub fn insert(&self, entry_id: CacheEntryID, mut batch_to_cache: CachedBatch) {
+    pub fn insert(self: &Arc<Self>, entry_id: CacheEntryID, batch_to_cache: ArrayRef) {
+        let batch = {
+            match self.config.cache_mode() {
+                LiquidCacheMode::Arrow => CachedBatch::MemoryArrow(batch_to_cache),
+                LiquidCacheMode::Liquid => {
+                    let original_batch = batch_to_cache.clone();
+                    submit_background_transcoding_task(batch_to_cache, self.clone(), entry_id);
+                    CachedBatch::MemoryArrow(original_batch)
+                }
+                LiquidCacheMode::LiquidBlocking => {
+                    let compressor_states = self.compressor_states.get_compressor(&entry_id);
+                    let liquid_array =
+                        transcode_liquid_inner(&batch_to_cache, compressor_states.as_ref())
+                            .expect("Failed to transcode to liquid array");
+                    CachedBatch::MemoryLiquid(liquid_array)
+                }
+            }
+        };
+
+        self.insert_inner(entry_id, batch);
+    }
+
+    /// Insert a batch into the cache, it will run cache replacement policy until the batch is inserted.
+    pub(crate) fn insert_inner(&self, entry_id: CacheEntryID, mut batch_to_cache: CachedBatch) {
         let mut loop_count = 0;
         loop {
-            let Err((advice, not_inserted)) = self.insert_inner(entry_id, batch_to_cache) else {
+            let Err((advice, not_inserted)) = self.try_insert(entry_id, batch_to_cache) else {
                 self.policy.notify_insert(&entry_id);
                 return;
             };
@@ -350,12 +375,12 @@ impl CacheStore {
             match batch {
                 CachedBatch::MemoryArrow(array) => {
                     self.write_arrow_to_disk(&entry_id, &array);
-                    self.insert_inner(entry_id, CachedBatch::DiskArrow)
+                    self.try_insert(entry_id, CachedBatch::DiskArrow)
                         .expect("failed to insert disk arrow entry");
                 }
                 CachedBatch::MemoryLiquid(liquid_array) => {
                     self.write_liquid_to_disk(&entry_id, &liquid_array);
-                    self.insert_inner(entry_id, CachedBatch::DiskLiquid)
+                    self.try_insert(entry_id, CachedBatch::DiskLiquid)
                         .expect("failed to insert disk liquid entry");
                 }
                 CachedBatch::DiskArrow | CachedBatch::DiskLiquid => {
@@ -373,7 +398,7 @@ mod tests {
     use crate::cache::{
         core::ArtStore,
         policies::{CachePolicy, LruPolicy},
-        utils::{create_cache_store, create_entry_id, create_test_array},
+        utils::{create_cache_store, create_entry_id, create_test_array, create_test_arrow_array},
     };
     use crate::sync::thread;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -486,7 +511,7 @@ mod tests {
         let entry_id1 = create_entry_id(1, 1, 1, 1);
         let array1 = create_test_array(100);
         let size1 = array1.memory_usage_bytes();
-        store.insert(entry_id1, array1);
+        store.insert_inner(entry_id1, array1);
 
         // Verify budget usage and data correctness
         assert_eq!(store.budget.memory_usage_bytes(), size1);
@@ -499,13 +524,13 @@ mod tests {
         let entry_id2 = create_entry_id(2, 2, 2, 2);
         let array2 = create_test_array(200);
         let size2 = array2.memory_usage_bytes();
-        store.insert(entry_id2, array2);
+        store.insert_inner(entry_id2, array2);
 
         assert_eq!(store.budget.memory_usage_bytes(), size1 + size2);
 
         let array3 = create_test_array(150);
         let size3 = array3.memory_usage_bytes();
-        store.insert(entry_id1, array3);
+        store.insert_inner(entry_id1, array3);
 
         assert_eq!(store.budget.memory_usage_bytes(), size3 + size2);
         assert!(store.get(&create_entry_id(999, 999, 999, 999)).is_none());
@@ -528,13 +553,13 @@ mod tests {
             let on_disk_path = entry_id1.on_disk_path(store.config.cache_root_dir());
             std::fs::create_dir_all(on_disk_path.parent().unwrap()).unwrap();
 
-            store.insert(entry_id1, create_test_array(800));
+            store.insert_inner(entry_id1, create_test_array(800));
             match store.get(&entry_id1).unwrap() {
                 CachedBatch::MemoryArrow(_) => {}
                 other => panic!("Expected ArrowMemory, got {other:?}"),
             }
 
-            store.insert(entry_id2, create_test_array(800));
+            store.insert_inner(entry_id2, create_test_array(800));
             match store.get(&entry_id1).unwrap() {
                 CachedBatch::DiskLiquid => {}
                 other => panic!("Expected OnDiskLiquid after eviction, got {other:?}"),
@@ -546,13 +571,13 @@ mod tests {
             let advisor = TestPolicy::new(AdviceType::Transcode, Some(entry_id1));
             let store = create_cache_store(8000, Box::new(advisor)); // Small budget
 
-            store.insert(entry_id1, create_test_array(800));
+            store.insert_inner(entry_id1, create_test_array(800));
             match store.get(&entry_id1).unwrap() {
                 CachedBatch::MemoryArrow(_) => {}
                 other => panic!("Expected ArrowMemory, got {other:?}"),
             }
 
-            store.insert(entry_id2, create_test_array(800));
+            store.insert_inner(entry_id2, create_test_array(800));
             match store.get(&entry_id1).unwrap() {
                 CachedBatch::MemoryLiquid(_) => {}
                 other => panic!("Expected LiquidMemory after transcoding, got {other:?}"),
@@ -567,8 +592,8 @@ mod tests {
             let on_disk_path = entry_id3.on_disk_path(store.config.cache_root_dir());
             std::fs::create_dir_all(on_disk_path.parent().unwrap()).unwrap();
 
-            store.insert(entry_id1, create_test_array(800));
-            store.insert(entry_id3, create_test_array(800));
+            store.insert_inner(entry_id1, create_test_array(800));
+            store.insert_inner(entry_id3, create_test_array(800));
             match store.get(&entry_id3).unwrap() {
                 CachedBatch::DiskLiquid => {}
                 other => panic!("Expected OnDiskLiquid, got {other:?}"),
@@ -584,8 +609,8 @@ mod tests {
             std::fs::create_dir_all(on_disk_arrow_path.parent().unwrap()).unwrap();
 
             // Insert arrow data - should be written as DiskArrow (preserving format)
-            store.insert(entry_id1, create_test_array(800));
-            store.insert(entry_id2, create_test_array(800)); // This should trigger ToDisk advice
+            store.insert_inner(entry_id1, create_test_array(800));
+            store.insert_inner(entry_id2, create_test_array(800)); // This should trigger ToDisk advice
 
             match store.get(&entry_id2).unwrap() {
                 CachedBatch::DiskArrow => {}
@@ -628,7 +653,7 @@ mod tests {
                 for i in 0..ops_per_thread {
                     let unique_id = thread_id * ops_per_thread + i;
                     let entry_id = create_entry_id(1, 1, 1, unique_id as u16);
-                    let array = create_test_array(100);
+                    let array = create_test_arrow_array(100);
                     store.insert(entry_id, array);
                 }
             }));

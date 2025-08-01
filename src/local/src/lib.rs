@@ -42,7 +42,7 @@ pub use liquid_cache_storage as storage;
 ///     let (ctx, _) = LiquidCacheLocalBuilder::new()
 ///         .with_max_cache_bytes(1024 * 1024 * 1024) // 1GB
 ///         .with_cache_dir(temp_dir.path().to_path_buf())
-///         .with_cache_mode(LiquidCacheMode::Liquid { transcode_in_background: false })
+///         .with_cache_mode(LiquidCacheMode::Liquid)
 ///         .with_cache_strategy(Box::new(FiloPolicy::new()))
 ///         .build(SessionConfig::new())?;
 ///
@@ -241,9 +241,7 @@ mod local_tests {
         let df_ctx = SessionContext::new();
         let liquid_ctx = {
             let (ctx, _) = LiquidCacheLocalBuilder::new()
-                .with_cache_mode(LiquidCacheMode::Liquid {
-                    transcode_in_background: false,
-                })
+                .with_cache_mode(LiquidCacheMode::LiquidBlocking)
                 .build(SessionConfig::new())?;
             ctx
         };

@@ -1,15 +1,41 @@
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use arrow::array::types::*;
 use arrow::array::{ArrayRef, AsArray};
 use arrow_schema::DataType;
+use tokio::runtime::Runtime;
 
+use crate::cache::{CacheEntryID, CacheStore, CachedBatch};
 use crate::liquid_array::{
     LiquidArrayRef, LiquidByteArray, LiquidFixedLenByteArray, LiquidFloatArray,
     LiquidPrimitiveArray,
 };
 
 use super::utils::LiquidCompressorStates;
+
+/// A dedicated Tokio thread pool for background transcoding tasks.
+/// This pool is built with 4 worker threads.
+pub(crate) static TRANSCODE_THREAD_POOL: LazyLock<Runtime> = LazyLock::new(|| {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .thread_name("transcode-worker")
+        .enable_all()
+        .build()
+        .unwrap()
+});
+
+pub fn submit_background_transcoding_task(
+    array: ArrayRef,
+    cache: Arc<CacheStore>,
+    entry_id: CacheEntryID,
+) {
+    let compressor_states = cache.compressor_states(&entry_id);
+    TRANSCODE_THREAD_POOL.spawn(async move {
+        let array = Arc::clone(&array);
+        let liquid_array = transcode_liquid_inner(&array, compressor_states.as_ref()).unwrap();
+        cache.insert_inner(entry_id, CachedBatch::MemoryLiquid(liquid_array));
+    });
+}
 
 /// This method is used to transcode an arrow array into a liquid array.
 ///

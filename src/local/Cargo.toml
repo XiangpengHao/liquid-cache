@@ -13,10 +13,8 @@ liquid-cache-common = { workspace = true }
 liquid-cache-storage = { workspace = true }
 liquid-cache-parquet = { workspace = true }
 datafusion = { workspace = true }
-futures = { workspace = true }
 arrow = { workspace = true }
 arrow-schema = { workspace = true }
-log = { workspace = true }
 tokio = { workspace = true }
 
 

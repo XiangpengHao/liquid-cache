@@ -78,12 +78,8 @@ async fn run_sql_with_cache(
 async fn test_runner(sql: &str, reference: &str) {
     let cache_modes = [
         LiquidCacheMode::Arrow,
-        LiquidCacheMode::Liquid {
-            transcode_in_background: false,
-        },
-        LiquidCacheMode::Liquid {
-            transcode_in_background: true,
-        },
+        LiquidCacheMode::Liquid,
+        LiquidCacheMode::LiquidBlocking,
     ];
 
     let cache_sizes = [10 * 1024, 1024 * 1024, usize::MAX]; // 10KB, 1MB, unlimited
@@ -105,9 +101,7 @@ async fn test_url_prefix_filtering() {
 
     let (reference, plan) = run_sql_with_cache(
         sql,
-        LiquidCacheMode::Liquid {
-            transcode_in_background: false,
-        },
+        LiquidCacheMode::LiquidBlocking,
         1024 * 1024,
     )
     .await;
@@ -122,9 +116,7 @@ async fn test_url_selection_and_ordering() {
 
     let (reference, plan) = run_sql_with_cache(
         sql,
-        LiquidCacheMode::Liquid {
-            transcode_in_background: false,
-        },
+        LiquidCacheMode::LiquidBlocking,
         1024 * 1024,
     )
     .await;
@@ -139,9 +131,7 @@ async fn test_os_selection() {
 
     let (reference, plan) = run_sql_with_cache(
         sql,
-        LiquidCacheMode::Liquid {
-            transcode_in_background: false,
-        },
+        LiquidCacheMode::LiquidBlocking,
         1024 * 1024,
     )
     .await;
@@ -157,9 +147,7 @@ async fn test_referer_filtering() {
 
     let (reference, plan) = run_sql_with_cache(
         sql,
-        LiquidCacheMode::Liquid {
-            transcode_in_background: false,
-        },
+        LiquidCacheMode::LiquidBlocking,
         1024 * 1024,
     )
     .await;
@@ -175,9 +163,7 @@ async fn test_single_column_filter_projection() {
 
     let (reference, plan) = run_sql_with_cache(
         sql,
-        LiquidCacheMode::Liquid {
-            transcode_in_background: false,
-        },
+        LiquidCacheMode::LiquidBlocking,
         1024 * 1024,
     )
     .await;
@@ -193,9 +179,7 @@ async fn test_provide_schema_with_filter() {
 
     let (reference, plan) = run_sql_with_cache(
         sql,
-        LiquidCacheMode::Liquid {
-            transcode_in_background: false,
-        },
+        LiquidCacheMode::LiquidBlocking,
         1024 * 1024,
     )
     .await;
@@ -203,9 +187,7 @@ async fn test_provide_schema_with_filter() {
     insta::assert_snapshot!(format!("plan: \n{}\nvalues: \n{}", plan, reference));
 
     let (ctx, _) = LiquidCacheLocalBuilder::new()
-        .with_cache_mode(LiquidCacheMode::Liquid {
-            transcode_in_background: false,
-        })
+        .with_cache_mode(LiquidCacheMode::LiquidBlocking)
         .build(SessionConfig::new())
         .unwrap();
 

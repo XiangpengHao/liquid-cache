@@ -1722,19 +1722,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "env_logger"
-version = "0.11.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "13c863f0904021b108aa8b2f55046443e6b1ebde8fd4a15c399893aae4fa069f"
-dependencies = [
- "anstream",
- "anstyle",
- "env_filter",
- "jiff",
- "log",
-]
-
-[[package]]
 name = "equator"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1775,15 +1762,11 @@ name = "examples"
 version = "0.0.0"
 dependencies = [
  "arrow-flight",
- "async-trait",
  "clap",
  "datafusion",
- "env_logger",
- "futures",
  "liquid-cache-client",
  "liquid-cache-local",
  "liquid-cache-server",
- "log",
  "object_store",
  "tempfile",
  "tokio",
@@ -1827,18 +1810,6 @@ dependencies = [
  "rand 0.9.1",
  "rtrb",
  "serde",
-]
-
-[[package]]
-name = "fastrace-futures"
-version = "0.7.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "25e1241db692c6a166407bda3e5f3e01b7cc00d281db35d905c4f44fbd3d0034"
-dependencies = [
- "fastrace",
- "futures-core",
- "futures-sink",
- "pin-project",
 ]
 
 [[package]]
@@ -2734,16 +2705,13 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "arrow-flight",
- "async-trait",
  "axum 0.8.4",
- "bytes",
  "clap",
  "datafusion",
  "fastrace",
  "fastrace-opentelemetry",
  "fastrace-tonic",
  "fsst-rs",
- "futures",
  "liquid-cache-client",
  "liquid-cache-common",
  "liquid-cache-local",
@@ -2759,7 +2727,6 @@ dependencies = [
  "opentelemetry_sdk",
  "parquet",
  "pprof",
- "prost",
  "reqwest",
  "serde",
  "serde_json",
@@ -2767,7 +2734,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "tonic",
- "tower 0.5.2",
  "tower-http",
  "url",
  "uuid",
@@ -2780,19 +2746,14 @@ dependencies = [
  "arrow",
  "arrow-flight",
  "arrow-schema",
- "async-trait",
  "datafusion",
  "datafusion-proto",
  "fastrace",
- "fastrace-futures",
  "fastrace-tonic",
  "futures",
  "insta",
  "liquid-cache-common",
- "log",
  "object_store",
- "prost",
- "serde",
  "tokio",
  "tonic",
  "tower 0.5.2",
@@ -2827,8 +2788,6 @@ dependencies = [
  "arrow",
  "datafusion",
  "libfuzzer-sys",
- "liquid-cache-common",
- "liquid-cache-parquet",
  "liquid-cache-storage",
 ]
 
@@ -2839,12 +2798,10 @@ dependencies = [
  "arrow",
  "arrow-schema",
  "datafusion",
- "futures",
  "insta",
  "liquid-cache-common",
  "liquid-cache-parquet",
  "liquid-cache-storage",
- "log",
  "tempfile",
  "tokio",
 ]
@@ -2854,30 +2811,21 @@ name = "liquid-cache-parquet"
 version = "0.1.7"
 dependencies = [
  "ahash",
- "anyhow",
  "arrow",
  "arrow-schema",
- "async-trait",
  "bytes",
  "clap",
- "congee",
  "datafusion",
  "divan",
- "fastlanes",
  "fastrace",
- "fastrace-futures",
  "fsst-rs",
  "futures",
- "insta",
- "itertools",
  "liquid-cache-common",
  "liquid-cache-storage",
  "log",
  "mimalloc",
- "num-traits",
  "object_store",
  "parquet",
- "paste",
  "rand 0.9.1",
  "serde",
  "serde_json",
@@ -2885,9 +2833,6 @@ dependencies = [
  "tempfile",
  "thrift",
  "tokio",
- "tracing-subscriber",
- "url",
- "zerocopy",
 ]
 
 [[package]]
@@ -2897,18 +2842,12 @@ dependencies = [
  "anyhow",
  "arrow",
  "arrow-flight",
- "arrow-schema",
- "async-stream",
- "async-trait",
  "axum 0.8.4",
- "bytes",
  "datafusion",
  "datafusion-proto",
  "fastrace",
- "fastrace-futures",
  "futures",
  "insta",
- "liquid-cache-client",
  "liquid-cache-common",
  "liquid-cache-parquet",
  "liquid-cache-storage",
@@ -2918,7 +2857,6 @@ dependencies = [
  "pprof",
  "prost",
  "serde",
- "serde_json",
  "sysinfo",
  "tempfile",
  "tokio",

@@ -14,7 +14,6 @@ datafusion-proto = { workspace = true }
 futures = { workspace = true }
 arrow = { workspace = true }
 arrow-flight = { workspace = true }
-arrow-schema = { workspace = true }
 log = { workspace = true }
 prost = { workspace = true }
 tonic = { workspace = true }
@@ -23,13 +22,9 @@ url = { workspace = true }
 liquid-cache-parquet = { workspace = true }
 object_store = { workspace = true, features = ["aws", "http"] }
 liquid-cache-common = { workspace = true }
-async-trait = { workspace = true }
-bytes = { workspace = true }
-async-stream = "0.3"
 tempfile = { workspace = true }
 axum = "0.8.4"
 serde = { workspace = true }
-serde_json = { workspace = true }
 tower-http = { version = "0.6.4", features = ["cors"] }
 sysinfo = { version = "0.35.1", default-features = false, features = [
 	"component",
@@ -40,12 +35,10 @@ sysinfo = { version = "0.35.1", default-features = false, features = [
 ] }
 uuid = { workspace = true }
 fastrace = { workspace = true }
-fastrace-futures = { workspace = true }
 pprof = { version = "0.14.0", features = ["flamegraph"] }
 anyhow = "1.0"
 liquid-cache-storage = { workspace = true }
 
 [dev-dependencies]
-liquid-cache-client = { workspace = true }
 insta = { version = "1.43.1" }
 parquet = { workspace = true }

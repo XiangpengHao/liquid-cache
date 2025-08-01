@@ -13,8 +13,6 @@ arbitrary = { version = "1.0", features = ["derive"] }
 arrow = "55.1.0"
 datafusion = "47.0.0"
 liquid-cache-storage = { workspace = true }
-liquid-cache-common = { workspace = true }
-liquid-cache-parquet = { workspace = true }
 
 [[bin]]
 name = "fsst_view_fuzz"
