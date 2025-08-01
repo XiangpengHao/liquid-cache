@@ -13,7 +13,7 @@ use arrow_schema::{ArrowError, DataType, Field, Schema};
 use bytes::Bytes;
 use liquid_cache_common::{LiquidCacheMode, coerce_parquet_type_to_liquid_type};
 use liquid_cache_storage::cache::{
-    BatchID, CacheEntryID, CachePolicy, CacheStore, CachedBatch, ColumnAccessPath,
+    BatchID, CacheEntryID, CachePolicy, CacheStorage, CachedBatch, ColumnAccessPath,
 };
 use liquid_cache_storage::liquid_array::LiquidArrayRef;
 use liquid_cache_storage::liquid_array::ipc::{self, LiquidIPCContext};
@@ -29,7 +29,7 @@ mod stats;
 /// A column in the cache.
 #[derive(Debug)]
 pub struct LiquidCachedColumn {
-    cache_store: Arc<CacheStore>,
+    cache_store: Arc<CacheStorage>,
     field: Arc<Field>,
     column_path: ColumnAccessPath,
 }
@@ -46,7 +46,7 @@ pub enum InsertArrowArrayError {
 impl LiquidCachedColumn {
     fn new(
         field: Arc<Field>,
-        cache_store: Arc<CacheStore>,
+        cache_store: Arc<CacheStorage>,
         column_id: u64,
         row_group_id: u64,
         file_id: u64,
@@ -255,13 +255,13 @@ impl LiquidCachedColumn {
 #[derive(Debug)]
 pub struct LiquidCachedRowGroup {
     columns: RwLock<AHashMap<u64, Arc<LiquidCachedColumn>>>,
-    cache_store: Arc<CacheStore>,
+    cache_store: Arc<CacheStorage>,
     row_group_id: u64,
     file_id: u64,
 }
 
 impl LiquidCachedRowGroup {
-    fn new(cache_store: Arc<CacheStore>, row_group_id: u64, file_id: u64) -> Self {
+    fn new(cache_store: Arc<CacheStorage>, row_group_id: u64, file_id: u64) -> Self {
         let cache_dir = cache_store
             .config()
             .cache_root_dir()
@@ -400,12 +400,12 @@ pub(crate) type LiquidCachedRowGroupRef = Arc<LiquidCachedRowGroup>;
 #[derive(Debug)]
 pub struct LiquidCachedFile {
     row_groups: Mutex<AHashMap<u64, Arc<LiquidCachedRowGroup>>>,
-    cache_store: Arc<CacheStore>,
+    cache_store: Arc<CacheStorage>,
     file_id: u64,
 }
 
 impl LiquidCachedFile {
-    fn new(cache_store: Arc<CacheStore>, file_id: u64) -> Self {
+    fn new(cache_store: Arc<CacheStorage>, file_id: u64) -> Self {
         Self {
             row_groups: Mutex::new(AHashMap::new()),
             cache_store,
@@ -445,7 +445,7 @@ pub struct LiquidCache {
     /// Files -> RowGroups -> Columns -> Batches
     files: Mutex<AHashMap<String, Arc<LiquidCachedFile>>>,
 
-    cache_store: Arc<CacheStore>,
+    cache_store: Arc<CacheStorage>,
 
     current_file_id: AtomicU64,
 }
@@ -466,7 +466,7 @@ impl LiquidCache {
 
         LiquidCache {
             files: Mutex::new(AHashMap::new()),
-            cache_store: Arc::new(CacheStore::new(
+            cache_store: Arc::new(CacheStorage::new(
                 batch_size,
                 max_cache_bytes,
                 cache_dir,

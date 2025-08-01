@@ -21,8 +21,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall@main 
       
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -36,7 +34,7 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Install cargo-shear
-        run: cargo binstall --no-confirm cargo-shear
+        run: cargo install cargo-shear --locked
 
       - name: Check for unused dependencies
         run: cargo shear

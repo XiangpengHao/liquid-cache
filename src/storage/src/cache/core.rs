@@ -96,9 +96,9 @@ impl ArtStore {
     }
 }
 
-/// Cache store for liquid cache.
+/// Cache storage for liquid cache.
 #[derive(Debug)]
-pub struct CacheStore {
+pub struct CacheStorage {
     cached_data: ArtStore,
     config: CacheConfig,
     budget: BudgetAccounting,
@@ -107,16 +107,16 @@ pub struct CacheStore {
     compressor_states: CompressorStates,
 }
 
-impl CacheStore {
-    /// Create a new instance of CacheStore.
+impl CacheStorage {
+    /// Create a new instance of CacheStorage.
     pub fn new(
         batch_size: usize,
         max_cache_bytes: usize,
-        cache_root_dir: PathBuf,
+        cache_dir: PathBuf,
         cache_mode: LiquidCacheMode,
         policy: Box<dyn CachePolicy>,
     ) -> Self {
-        let config = CacheConfig::new(batch_size, max_cache_bytes, cache_root_dir, cache_mode);
+        let config = CacheConfig::new(batch_size, max_cache_bytes, cache_dir, cache_mode);
         Self {
             cached_data: ArtStore::new(),
             budget: BudgetAccounting::new(config.max_cache_bytes()),

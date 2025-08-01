@@ -134,15 +134,15 @@ pub(crate) fn create_test_arrow_array(size: usize) -> ArrayRef {
 pub(crate) fn create_cache_store(
     max_cache_bytes: usize,
     policy: Box<dyn super::policies::CachePolicy>,
-) -> Arc<super::core::CacheStore> {
+) -> Arc<super::core::CacheStorage> {
     use tempfile::tempdir;
 
-    use crate::cache::core::CacheStore;
+    use crate::cache::core::CacheStorage;
 
     let temp_dir = tempdir().unwrap();
     let batch_size = 128;
 
-    Arc::new(CacheStore::new(
+    Arc::new(CacheStorage::new(
         batch_size,
         max_cache_bytes,
         temp_dir.keep(),
@@ -251,7 +251,7 @@ impl Deref for BatchID {
 
 impl CacheEntryID {
     /// Creates a new CacheEntryID.
-    pub(super) fn new(file_id: u64, row_group_id: u64, column_id: u64, batch_id: BatchID) -> Self {
+    pub fn new(file_id: u64, row_group_id: u64, column_id: u64, batch_id: BatchID) -> Self {
         debug_assert!(file_id <= u16::MAX as u64);
         debug_assert!(row_group_id <= u16::MAX as u64);
         debug_assert!(column_id <= u16::MAX as u64);
