@@ -1,4 +1,4 @@
-#![cfg_attr(not(doctest), doc = include_str!(concat!("../", std::env!("CARGO_PKG_README"))))]
+#![doc = include_str!("../README.md")]
 
 use std::str::FromStr;
 use std::{fmt::Display, sync::Arc};

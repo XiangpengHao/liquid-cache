@@ -1,0 +1,25 @@
+[package]
+name = "liquid-cache-local"
+version = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+readme = { workspace = true }
+description = { workspace = true }
+repository = { workspace = true }
+
+
+[dependencies]
+liquid-cache-common = { workspace = true }
+liquid-cache-storage = { workspace = true }
+liquid-cache-parquet = { workspace = true }
+datafusion = { workspace = true }
+futures = { workspace = true }
+arrow = { workspace = true }
+arrow-schema = { workspace = true }
+log = { workspace = true }
+tokio = { workspace = true }
+
+
+[dev-dependencies]
+insta = { version = "1.43.1" }
+tempfile = "3.20.0"

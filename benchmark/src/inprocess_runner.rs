@@ -4,10 +4,9 @@ use anyhow::Result;
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use liquid_cache_common::LiquidCacheMode;
-use liquid_cache_parquet::cache::policies::ToDiskPolicy;
-use liquid_cache_parquet::{
-    LiquidCacheInProcessBuilder, LiquidCacheRef, extract_execution_metrics,
-};
+use liquid_cache_local::LiquidCacheLocalBuilder;
+use liquid_cache_parquet::{LiquidCacheRef, extract_execution_metrics};
+use liquid_cache_storage::policies::ToDiskPolicy;
 use log::info;
 use serde::Serialize;
 use std::{
@@ -147,7 +146,7 @@ impl InProcessBenchmarkRunner {
                 (SessionContext::new_with_config(session_config), None)
             }
             InProcessBenchmarkMode::Arrow => {
-                let v = LiquidCacheInProcessBuilder::new()
+                let v = LiquidCacheLocalBuilder::new()
                     .with_max_cache_bytes(cache_size)
                     .with_cache_mode(LiquidCacheMode::Arrow)
                     .with_cache_dir(cache_dir)
@@ -156,7 +155,7 @@ impl InProcessBenchmarkRunner {
                 (v.0, Some(v.1))
             }
             InProcessBenchmarkMode::Liquid => {
-                let v = LiquidCacheInProcessBuilder::new()
+                let v = LiquidCacheLocalBuilder::new()
                     .with_max_cache_bytes(cache_size)
                     .with_cache_mode(LiquidCacheMode::Liquid {
                         transcode_in_background: true,
@@ -167,7 +166,7 @@ impl InProcessBenchmarkRunner {
                 (v.0, Some(v.1))
             }
             InProcessBenchmarkMode::LiquidEagerTranscode => {
-                let v = LiquidCacheInProcessBuilder::new()
+                let v = LiquidCacheLocalBuilder::new()
                     .with_max_cache_bytes(cache_size)
                     .with_cache_mode(LiquidCacheMode::Liquid {
                         transcode_in_background: false,

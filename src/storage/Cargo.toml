@@ -1,0 +1,37 @@
+[package]
+name = "liquid-cache-storage"
+version = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+readme = { workspace = true }
+description = { workspace = true }
+repository = { workspace = true }
+
+
+[dependencies]
+async-stream = "0.3.6"
+async-trait = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+object_store = { workspace = true }
+tokio = { workspace = true, features = ["fs"] }
+liquid-cache-common = { workspace = true }
+datafusion = { workspace = true }
+arrow = { workspace = true }
+arrow-schema = { workspace = true }
+fastlanes = "0.2.0"
+num-traits = "0.2.19"
+fsst-rs = "0.5.2"
+ahash = { workspace = true }
+congee = { workspace = true }
+log = { workspace = true }
+parquet = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+paste = "1.0.15"
+shuttle = "0.8.0"
+tracing-subscriber = "0.3.19"
+
+[features]
+shuttle = []

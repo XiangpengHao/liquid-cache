@@ -1781,8 +1781,7 @@ dependencies = [
  "env_logger",
  "futures",
  "liquid-cache-client",
- "liquid-cache-common",
- "liquid-cache-parquet",
+ "liquid-cache-local",
  "liquid-cache-server",
  "log",
  "object_store",
@@ -2747,8 +2746,10 @@ dependencies = [
  "futures",
  "liquid-cache-client",
  "liquid-cache-common",
+ "liquid-cache-local",
  "liquid-cache-parquet",
  "liquid-cache-server",
+ "liquid-cache-storage",
  "log",
  "logforth",
  "mimalloc",
@@ -2826,7 +2827,26 @@ dependencies = [
  "arrow",
  "datafusion",
  "libfuzzer-sys",
+ "liquid-cache-common",
  "liquid-cache-parquet",
+ "liquid-cache-storage",
+]
+
+[[package]]
+name = "liquid-cache-local"
+version = "0.1.7"
+dependencies = [
+ "arrow",
+ "arrow-schema",
+ "datafusion",
+ "futures",
+ "insta",
+ "liquid-cache-common",
+ "liquid-cache-parquet",
+ "liquid-cache-storage",
+ "log",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -2851,6 +2871,7 @@ dependencies = [
  "insta",
  "itertools",
  "liquid-cache-common",
+ "liquid-cache-storage",
  "log",
  "mimalloc",
  "num-traits",
@@ -2890,7 +2911,7 @@ dependencies = [
  "liquid-cache-client",
  "liquid-cache-common",
  "liquid-cache-parquet",
- "liquid-cache-store",
+ "liquid-cache-storage",
  "log",
  "object_store",
  "parquet",
@@ -2908,17 +2929,30 @@ dependencies = [
 ]
 
 [[package]]
-name = "liquid-cache-store"
+name = "liquid-cache-storage"
 version = "0.1.7"
 dependencies = [
+ "ahash",
+ "arrow",
+ "arrow-schema",
  "async-stream",
  "async-trait",
  "bytes",
+ "congee",
+ "datafusion",
+ "fastlanes",
+ "fsst-rs",
  "futures",
  "liquid-cache-common",
+ "log",
+ "num-traits",
  "object_store",
+ "parquet",
+ "paste",
+ "shuttle",
  "tempfile",
  "tokio",
+ "tracing-subscriber",
 ]
 
 [[package]]

@@ -18,6 +18,8 @@ use liquid_cache_common::CacheMode;
 pub use optimizer::PushdownOptimizer;
 use tonic::transport::Channel;
 
+pub use liquid_cache_common as common;
+
 #[cfg(test)]
 mod tests;
 

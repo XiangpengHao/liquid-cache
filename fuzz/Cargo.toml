@@ -12,9 +12,9 @@ libfuzzer-sys = "0.4"
 arbitrary = { version = "1.0", features = ["derive"] }
 arrow = "55.1.0"
 datafusion = "47.0.0"
-
-[dependencies.liquid-cache-parquet]
-path = "../src/liquid_parquet"
+liquid-cache-storage = { workspace = true }
+liquid-cache-common = { workspace = true }
+liquid-cache-parquet = { workspace = true }
 
 [[bin]]
 name = "fsst_view_fuzz"

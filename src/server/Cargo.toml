@@ -43,7 +43,7 @@ fastrace = { workspace = true }
 fastrace-futures = { workspace = true }
 pprof = { version = "0.14.0", features = ["flamegraph"] }
 anyhow = "1.0"
-liquid-cache-store = { workspace = true }
+liquid-cache-storage = { workspace = true }
 
 [dev-dependencies]
 liquid-cache-client = { workspace = true }

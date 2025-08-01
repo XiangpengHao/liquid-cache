@@ -16,7 +16,7 @@
 // under the License.
 
 #![warn(missing_docs)]
-#![cfg_attr(not(doctest), doc = include_str!(concat!("../", std::env!("CARGO_PKG_README"))))]
+#![doc = include_str!("../README.md")]
 
 use arrow::ipc::writer::IpcWriteOptions;
 use arrow_flight::{
@@ -58,7 +58,9 @@ pub use admin_server::{models::*, run_admin_server};
 pub use errors::{
     LiquidCacheErrorExt, LiquidCacheResult, anyhow_to_status, df_error_to_status_with_trace,
 };
-use liquid_cache_parquet::cache::policies::{CachePolicy, LruPolicy};
+pub use liquid_cache_common as common;
+pub use liquid_cache_storage as storage;
+use liquid_cache_storage::policies::{CachePolicy, LruPolicy};
 use object_store::path::Path;
 use object_store::{GetOptions, GetRange};
 
@@ -74,7 +76,7 @@ mod tests;
 /// use datafusion::prelude::SessionContext;
 /// use liquid_cache_server::LiquidCacheService;
 /// use tonic::transport::Server;
-/// use liquid_cache_parquet::cache::policies::LruPolicy;
+/// use liquid_cache_server::storage::policies::LruPolicy;
 /// let liquid_cache = LiquidCacheService::new(SessionContext::new(), None, None, Default::default(), Box::new(LruPolicy::new())).unwrap();
 /// let flight = FlightServiceServer::new(liquid_cache);
 /// Server::builder()
@@ -335,7 +337,7 @@ impl FlightSqlService for LiquidCacheService {
 mod server_actions_tests {
     use super::*;
     use liquid_cache_common::rpc::PrefetchFromObjectStoreRequest;
-    use liquid_cache_store::ByteCache;
+    use liquid_cache_storage::ByteCache;
     use std::collections::HashMap;
     use tokio::fs::File;
     use tokio::io::AsyncWriteExt;
