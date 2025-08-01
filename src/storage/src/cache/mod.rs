@@ -8,13 +8,11 @@ mod transcode;
 mod utils;
 
 use crate::liquid_array::LiquidArrayRef;
+use crate::sync::RwLock;
 use arrow::array::ArrayRef;
 pub use core::CacheStore;
 pub use policies::CachePolicy;
-use std::{
-    fmt::Display,
-    sync::{Arc, RwLock},
-};
+use std::{fmt::Display, sync::Arc};
 pub use transcode::transcode_liquid_inner;
 pub use utils::{BatchID, CacheAdvice, CacheEntryID, ColumnAccessPath};
 

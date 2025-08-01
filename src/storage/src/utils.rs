@@ -124,6 +124,24 @@ pub(crate) fn yield_now_if_shuttle() {
     shuttle::thread::yield_now();
 }
 
+#[cfg(all(feature = "shuttle", test))]
+pub(crate) fn shuttle_test(test: impl Fn() + Send + Sync + 'static) {
+    _ = tracing_subscriber::fmt()
+        .with_ansi(true)
+        .with_thread_names(false)
+        .with_target(false)
+        .try_init();
+
+    let mut runner = shuttle::PortfolioRunner::new(true, Default::default());
+
+    let available_cores = std::thread::available_parallelism().unwrap().get().min(4);
+
+    for _i in 0..available_cores {
+        runner.add(shuttle::scheduler::PctScheduler::new(10, 1_000));
+    }
+    runner.run(test);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

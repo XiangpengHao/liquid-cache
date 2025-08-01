@@ -2949,8 +2949,10 @@ dependencies = [
  "object_store",
  "parquet",
  "paste",
+ "shuttle",
  "tempfile",
  "tokio",
+ "tracing-subscriber",
 ]
 
 [[package]]
