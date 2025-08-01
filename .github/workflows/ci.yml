@@ -33,6 +33,12 @@ jobs:
       - name: Run clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+      - name: Install cargo-shear
+        run: cargo binstall --no-confirm cargo-shear
+
+      - name: Check for unused dependencies
+        run: cargo shear
+
   unit_test:
     name: Unit Test
     runs-on: ubuntu-latest
