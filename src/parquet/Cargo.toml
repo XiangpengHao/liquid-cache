@@ -15,8 +15,6 @@ datafusion = { workspace = true }
 futures = { workspace = true }
 tokio = { workspace = true }
 ahash = { workspace = true }
-fsst-rs = "0.5.2"
-serde = { workspace = true }
 bytes = { workspace = true }
 log = { workspace = true }
 object_store = { workspace = true, features = ["http"] }
@@ -30,9 +28,6 @@ tempfile = "3.20.0"
 divan = "0.1"
 rand = "0.9.1"
 shuttle = "0.8.0"
-serde_json = { workspace = true }
-mimalloc = "0.1.46"
-clap = { version = "4.5.38", features = ["derive"] }
 
 [features]
 shuttle = []
