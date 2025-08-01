@@ -2,6 +2,7 @@
 
 mod budget;
 mod core;
+mod index;
 pub mod policies;
 mod tracer;
 mod transcode;
