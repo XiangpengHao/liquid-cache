@@ -302,15 +302,8 @@ impl LiquidCachedColumn {
                     .insert(entry_id, CachedBatch::MemoryArrow(array));
                 Ok(())
             }
-            LiquidCacheMode::Liquid {
-                transcode_in_background,
-            } => {
-                if *transcode_in_background {
-                    self.insert_as_liquid_background(batch_id, array)
-                } else {
-                    self.insert_as_liquid_foreground(batch_id, array)
-                }
-            }
+            LiquidCacheMode::Liquid => self.insert_as_liquid_background(batch_id, array),
+            LiquidCacheMode::LiquidBlocking => self.insert_as_liquid_foreground(batch_id, array),
         }
     }
 
@@ -659,9 +652,7 @@ mod tests {
             batch_size,
             usize::MAX,
             tmp_dir.path().to_path_buf(),
-            LiquidCacheMode::Liquid {
-                transcode_in_background: false,
-            },
+            LiquidCacheMode::LiquidBlocking,
             Box::new(DiscardPolicy),
         );
         let file = cache.register_or_get_file("test".to_string());

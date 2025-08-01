@@ -666,12 +666,7 @@ mod test {
         let advice = policy.advise(&entry_id, &LiquidCacheMode::Arrow);
         assert_eq!(advice, CacheAdvice::ToDisk(entry_id));
 
-        let advice = policy.advise(
-            &entry_id,
-            &LiquidCacheMode::Liquid {
-                transcode_in_background: false,
-            },
-        );
+        let advice = policy.advise(&entry_id, &LiquidCacheMode::LiquidBlocking);
         assert_eq!(advice, CacheAdvice::ToDisk(entry_id));
     }
 }

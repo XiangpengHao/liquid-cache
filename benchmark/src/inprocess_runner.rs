@@ -157,9 +157,7 @@ impl InProcessBenchmarkRunner {
             InProcessBenchmarkMode::Liquid => {
                 let v = LiquidCacheLocalBuilder::new()
                     .with_max_cache_bytes(cache_size)
-                    .with_cache_mode(LiquidCacheMode::Liquid {
-                        transcode_in_background: true,
-                    })
+                    .with_cache_mode(LiquidCacheMode::Liquid)
                     .with_cache_dir(cache_dir)
                     .with_cache_strategy(Box::new(ToDiskPolicy::new()))
                     .build(session_config)?;
@@ -168,9 +166,7 @@ impl InProcessBenchmarkRunner {
             InProcessBenchmarkMode::LiquidEagerTranscode => {
                 let v = LiquidCacheLocalBuilder::new()
                     .with_max_cache_bytes(cache_size)
-                    .with_cache_mode(LiquidCacheMode::Liquid {
-                        transcode_in_background: false,
-                    })
+                    .with_cache_mode(LiquidCacheMode::LiquidBlocking)
                     .with_cache_dir(cache_dir)
                     .with_cache_strategy(Box::new(ToDiskPolicy::new()))
                     .build(session_config)?;

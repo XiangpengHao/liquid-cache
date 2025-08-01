@@ -43,9 +43,7 @@ fn setup_cache(tmp_dir: &TempDir) -> Arc<LiquidCachedColumn> {
         BATCH_SIZE,
         1024 * 1024 * 1024, // max_cache_bytes (1GB)
         tmp_dir.path().to_path_buf(),
-        LiquidCacheMode::Liquid {
-            transcode_in_background: false,
-        },
+        LiquidCacheMode::LiquidBlocking,
         Box::new(DiscardPolicy),
     );
     let file = cache.register_or_get_file("test_file.parquet".to_string());

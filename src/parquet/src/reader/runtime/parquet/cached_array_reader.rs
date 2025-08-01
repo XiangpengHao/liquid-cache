@@ -446,9 +446,7 @@ mod tests {
             BATCH_SIZE,
             usize::MAX,
             tmp_dir.path().to_path_buf(),
-            LiquidCacheMode::Liquid {
-                transcode_in_background: false,
-            },
+            LiquidCacheMode::LiquidBlocking,
             Box::new(DiscardPolicy),
         ));
         let file = liquid_cache.register_or_get_file("test".to_string());

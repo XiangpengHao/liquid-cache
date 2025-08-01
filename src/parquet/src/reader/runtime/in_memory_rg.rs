@@ -491,9 +491,7 @@ mod tests {
             batch_size,
             batch_size,
             tmp_dir.path().to_path_buf(),
-            LiquidCacheMode::Liquid {
-                transcode_in_background: false,
-            },
+            LiquidCacheMode::LiquidBlocking,
             Box::new(DiscardPolicy),
         );
         let liquid_cache_file = liquid_cache.register_or_get_file("whatever".into());
@@ -554,9 +552,7 @@ mod tests {
             batch_size,
             usize::MAX,
             tmp_dir.path().to_path_buf(),
-            LiquidCacheMode::Liquid {
-                transcode_in_background: false,
-            },
+            LiquidCacheMode::LiquidBlocking,
             Box::new(DiscardPolicy),
         );
         let liquid_cache_file = liquid_cache.register_or_get_file("test".to_string());
@@ -796,9 +792,7 @@ mod tests {
             batch_size,
             usize::MAX,
             dir.to_path_buf(),
-            LiquidCacheMode::Liquid {
-                transcode_in_background: false,
-            },
+            LiquidCacheMode::LiquidBlocking,
             Box::new(DiscardPolicy),
         );
         let liquid_cache_file = liquid_cache.register_or_get_file("test_file".to_string());
