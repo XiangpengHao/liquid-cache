@@ -39,28 +39,8 @@ shuttle = []
 
 
 [[bench]]
-name = "bitpacking"
-path = "bench/bitpacking.rs"
-harness = false
-
-[[bench]]
-name = "liquid_float_array"
-harness = false
-path = "bench/liquid_float_array.rs"
-
-[[bench]]
-name = "boolean_and_then"
-harness = false
-path = "bench/boolean_and_then.rs"
-
-[[bench]]
 name = "bench_eviction"
 path = "bench/bench_eviction.rs"
-
-[[bench]]
-name = "fsstarray"
-path = "bench/fsstarray.rs"
-harness = false
 
 [[bench]]
 name = "filter_pushdown"
@@ -68,11 +48,6 @@ path = "bench/filter_pushdown.rs"
 harness = false
 
 [[bench]]
-name = "byte_array_vs_byte_view"
-path = "bench/byte_array_vs_byte_view.rs"
+name = "boolean_and_then"
 harness = false
-
-[[bench]]
-name = "fsst_view_study"
-path = "study/fsst_view.rs"
-harness = false
+path = "bench/boolean_and_then.rs"
