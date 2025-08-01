@@ -68,7 +68,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Run shuttle test
         run: |
-          cd src/parquet
+          cd src/storage
           cargo test --features "shuttle" --release -- --test-threads=1 shuttle 
 
   address_san:
