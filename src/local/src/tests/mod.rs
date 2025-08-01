@@ -99,12 +99,8 @@ async fn test_runner(sql: &str, reference: &str) {
 async fn test_url_prefix_filtering() {
     let sql = r#"select COUNT(*) from hits where "URL" like 'https://%'"#;
 
-    let (reference, plan) = run_sql_with_cache(
-        sql,
-        LiquidCacheMode::LiquidBlocking,
-        1024 * 1024,
-    )
-    .await;
+    let (reference, plan) =
+        run_sql_with_cache(sql, LiquidCacheMode::LiquidBlocking, 1024 * 1024).await;
 
     insta::assert_snapshot!(format!("plan: \n{}\nvalues: \n{}", plan, reference));
     test_runner(sql, &reference).await;
@@ -114,12 +110,8 @@ async fn test_url_prefix_filtering() {
 async fn test_url_selection_and_ordering() {
     let sql = r#"select "URL" from hits where "URL" like '%tours%' order by "URL" desc"#;
 
-    let (reference, plan) = run_sql_with_cache(
-        sql,
-        LiquidCacheMode::LiquidBlocking,
-        1024 * 1024,
-    )
-    .await;
+    let (reference, plan) =
+        run_sql_with_cache(sql, LiquidCacheMode::LiquidBlocking, 1024 * 1024).await;
 
     insta::assert_snapshot!(format!("plan: \n{}\nvalues: \n{}", plan, reference));
     test_runner(sql, &reference).await;
@@ -129,12 +121,8 @@ async fn test_url_selection_and_ordering() {
 async fn test_os_selection() {
     let sql = r#"select "OS" from hits where "URL" like '%tours%' order by "OS" desc"#;
 
-    let (reference, plan) = run_sql_with_cache(
-        sql,
-        LiquidCacheMode::LiquidBlocking,
-        1024 * 1024,
-    )
-    .await;
+    let (reference, plan) =
+        run_sql_with_cache(sql, LiquidCacheMode::LiquidBlocking, 1024 * 1024).await;
 
     insta::assert_snapshot!(format!("plan: \n{}\nvalues: \n{}", plan, reference));
 
@@ -145,12 +133,8 @@ async fn test_os_selection() {
 async fn test_referer_filtering() {
     let sql = r#"select "Referer" from hits where "Referer" <> '' AND "URL" like '%tours%' order by "Referer" desc"#;
 
-    let (reference, plan) = run_sql_with_cache(
-        sql,
-        LiquidCacheMode::LiquidBlocking,
-        1024 * 1024,
-    )
-    .await;
+    let (reference, plan) =
+        run_sql_with_cache(sql, LiquidCacheMode::LiquidBlocking, 1024 * 1024).await;
 
     insta::assert_snapshot!(format!("plan: \n{}\nvalues: \n{}", plan, reference));
 
@@ -161,12 +145,8 @@ async fn test_referer_filtering() {
 async fn test_single_column_filter_projection() {
     let sql = r#"select "WatchID" from hits where "WatchID" = 6978470580070504163"#;
 
-    let (reference, plan) = run_sql_with_cache(
-        sql,
-        LiquidCacheMode::LiquidBlocking,
-        1024 * 1024,
-    )
-    .await;
+    let (reference, plan) =
+        run_sql_with_cache(sql, LiquidCacheMode::LiquidBlocking, 1024 * 1024).await;
 
     insta::assert_snapshot!(format!("plan: \n{}\nvalues: \n{}", plan, reference));
 
@@ -177,12 +157,8 @@ async fn test_single_column_filter_projection() {
 async fn test_provide_schema_with_filter() {
     let sql = r#"select "WatchID", "OS", "EventTime" from hits where "OS" <> 2 order by "WatchID" desc limit 10"#;
 
-    let (reference, plan) = run_sql_with_cache(
-        sql,
-        LiquidCacheMode::LiquidBlocking,
-        1024 * 1024,
-    )
-    .await;
+    let (reference, plan) =
+        run_sql_with_cache(sql, LiquidCacheMode::LiquidBlocking, 1024 * 1024).await;
 
     insta::assert_snapshot!(format!("plan: \n{}\nvalues: \n{}", plan, reference));
 
