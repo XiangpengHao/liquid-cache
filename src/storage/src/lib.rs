@@ -9,3 +9,4 @@ mod utils;
 
 pub use byte_cache::ByteCache;
 pub use cache::policies;
+pub use liquid_cache_common as common;

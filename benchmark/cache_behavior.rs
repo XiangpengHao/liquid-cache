@@ -150,9 +150,7 @@ async fn run_cache_behavior_benchmark() -> Result<(), Box<dyn std::error::Error>
     let (ctx, cache) = LiquidCacheLocalBuilder::new()
         .with_max_cache_bytes(10 * 1024 * 1024 * 1024) // 10GB
         .with_cache_dir(temp_dir.path().to_path_buf())
-        .with_cache_mode(LiquidCacheMode::Liquid {
-            transcode_in_background: false,
-        })
+        .with_cache_mode(LiquidCacheMode::LiquidBlocking)
         .with_cache_strategy(Box::new(ToDiskPolicy::new()))
         .build(SessionConfig::new())?;
 

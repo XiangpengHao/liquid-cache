@@ -33,6 +33,12 @@ jobs:
       - name: Run clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+      - name: Install cargo-shear
+        run: cargo install cargo-shear --locked
+
+      - name: Check for unused dependencies
+        run: cargo shear
+
   unit_test:
     name: Unit Test
     runs-on: ubuntu-latest
@@ -60,7 +66,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Run shuttle test
         run: |
-          cd src/parquet
+          cd src/storage
           cargo test --features "shuttle" --release -- --test-threads=1 shuttle 
 
   address_san:

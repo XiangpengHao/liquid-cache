@@ -1,15 +1,41 @@
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use arrow::array::types::*;
 use arrow::array::{ArrayRef, AsArray};
 use arrow_schema::DataType;
+use tokio::runtime::Runtime;
 
+use crate::cache::{CacheEntryID, CacheStorage, CachedBatch};
 use crate::liquid_array::{
     LiquidArrayRef, LiquidByteArray, LiquidFixedLenByteArray, LiquidFloatArray,
     LiquidPrimitiveArray,
 };
 
-use super::LiquidCompressorStates;
+use super::utils::LiquidCompressorStates;
+
+/// A dedicated Tokio thread pool for background transcoding tasks.
+/// This pool is built with 4 worker threads.
+pub(crate) static TRANSCODE_THREAD_POOL: LazyLock<Runtime> = LazyLock::new(|| {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .thread_name("transcode-worker")
+        .enable_all()
+        .build()
+        .unwrap()
+});
+
+pub fn submit_background_transcoding_task(
+    array: ArrayRef,
+    cache: Arc<CacheStorage>,
+    entry_id: CacheEntryID,
+) {
+    let compressor_states = cache.compressor_states(&entry_id);
+    TRANSCODE_THREAD_POOL.spawn(async move {
+        let array = Arc::clone(&array);
+        let liquid_array = transcode_liquid_inner(&array, compressor_states.as_ref()).unwrap();
+        cache.insert_inner(entry_id, CachedBatch::MemoryLiquid(liquid_array));
+    });
+}
 
 /// This method is used to transcode an arrow array into a liquid array.
 ///
@@ -59,7 +85,7 @@ pub fn transcode_liquid_inner<'a>(
                 array.as_primitive::<Float64Type>().clone(),
             )),
             DataType::Decimal128(_, _) => {
-                let compressor = state.fsst_compressor.read().unwrap();
+                let compressor = state.fsst_compressor().clone();
                 if let Some(compressor) = compressor.as_ref() {
                     let compressed = LiquidFixedLenByteArray::from_decimal_array(
                         array.as_primitive::<Decimal128Type>(),
@@ -68,7 +94,7 @@ pub fn transcode_liquid_inner<'a>(
                     return Ok(Arc::new(compressed));
                 }
                 drop(compressor);
-                let mut compressors = state.fsst_compressor.write().unwrap();
+                let mut compressors = state.fsst_compressor_raw().write().unwrap();
                 let (compressor, liquid_array) = LiquidFixedLenByteArray::train_from_decimal_array(
                     array.as_primitive::<Decimal128Type>(),
                 );
@@ -76,7 +102,7 @@ pub fn transcode_liquid_inner<'a>(
                 return Ok(Arc::new(liquid_array));
             }
             DataType::Decimal256(_, _) => {
-                let compressor = state.fsst_compressor.read().unwrap();
+                let compressor = state.fsst_compressor().clone();
                 if let Some(compressor) = compressor.as_ref() {
                     let compressed = LiquidFixedLenByteArray::from_decimal_array(
                         array.as_primitive::<Decimal256Type>(),
@@ -85,7 +111,7 @@ pub fn transcode_liquid_inner<'a>(
                     return Ok(Arc::new(compressed));
                 }
                 drop(compressor);
-                let mut compressors = state.fsst_compressor.write().unwrap();
+                let mut compressors = state.fsst_compressor_raw().write().unwrap();
                 let (compressor, liquid_array) = LiquidFixedLenByteArray::train_from_decimal_array(
                     array.as_primitive::<Decimal256Type>(),
                 );
@@ -104,7 +130,7 @@ pub fn transcode_liquid_inner<'a>(
     // Handle string/dictionary types.
     match array.data_type() {
         DataType::Utf8View => {
-            let compressor = state.fsst_compressor.read().unwrap();
+            let compressor = state.fsst_compressor().clone();
             if let Some(compressor) = compressor.as_ref() {
                 let compressed = LiquidByteArray::from_string_view_array(
                     array.as_string_view(),
@@ -113,14 +139,14 @@ pub fn transcode_liquid_inner<'a>(
                 return Ok(Arc::new(compressed));
             }
             drop(compressor);
-            let mut compressors = state.fsst_compressor.write().unwrap();
+            let mut compressors = state.fsst_compressor_raw().write().unwrap();
             let (compressor, compressed) =
                 LiquidByteArray::train_from_string_view(array.as_string_view());
             *compressors = Some(compressor);
             Ok(Arc::new(compressed))
         }
         DataType::BinaryView => {
-            let compressor = state.fsst_compressor.read().unwrap();
+            let compressor = state.fsst_compressor().clone();
             if let Some(compressor) = compressor.as_ref() {
                 let compressed = LiquidByteArray::from_binary_view_array(
                     array.as_binary_view(),
@@ -129,14 +155,14 @@ pub fn transcode_liquid_inner<'a>(
                 return Ok(Arc::new(compressed));
             }
             drop(compressor);
-            let mut compressors = state.fsst_compressor.write().unwrap();
+            let mut compressors = state.fsst_compressor_raw().write().unwrap();
             let (compressor, compressed) =
                 LiquidByteArray::train_from_binary_view(array.as_binary_view());
             *compressors = Some(compressor);
             Ok(Arc::new(compressed))
         }
         DataType::Utf8 => {
-            let compressor = state.fsst_compressor.read().unwrap();
+            let compressor = state.fsst_compressor().clone();
             if let Some(compressor) = compressor.as_ref() {
                 let compressed = LiquidByteArray::from_string_array(
                     array.as_string::<i32>(),
@@ -145,7 +171,7 @@ pub fn transcode_liquid_inner<'a>(
                 return Ok(Arc::new(compressed));
             }
             drop(compressor);
-            let mut compressors = state.fsst_compressor.write().unwrap();
+            let mut compressors = state.fsst_compressor_raw().write().unwrap();
             let (compressor, compressed) =
                 LiquidByteArray::train_from_arrow(array.as_string::<i32>());
             *compressors = Some(compressor);
@@ -153,7 +179,7 @@ pub fn transcode_liquid_inner<'a>(
         }
         DataType::Dictionary(_, _) => {
             if let Some(dict_array) = array.as_dictionary_opt::<UInt16Type>() {
-                let compressor = state.fsst_compressor.read().unwrap();
+                let compressor = state.fsst_compressor().clone();
                 if let Some(compressor) = compressor.as_ref() {
                     let liquid_array = unsafe {
                         LiquidByteArray::from_unique_dict_array(dict_array, compressor.clone())
@@ -161,7 +187,7 @@ pub fn transcode_liquid_inner<'a>(
                     return Ok(Arc::new(liquid_array));
                 }
                 drop(compressor);
-                let mut compressors = state.fsst_compressor.write().unwrap();
+                let mut compressors = state.fsst_compressor_raw().write().unwrap();
                 let (compressor, liquid_array) = LiquidByteArray::train_from_arrow_dict(dict_array);
                 *compressors = Some(compressor);
                 return Ok(Arc::new(liquid_array));
@@ -179,7 +205,6 @@ pub fn transcode_liquid_inner<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sync::RwLock;
     use arrow::array::{
         ArrayRef, BinaryArray, BinaryViewArray, BooleanArray, DictionaryArray, Float32Array,
         Float64Array, Int32Array, Int64Array, StringArray, UInt16Array,
@@ -187,12 +212,6 @@ mod tests {
     use arrow::datatypes::UInt16Type;
 
     const TEST_ARRAY_SIZE: usize = 8192;
-
-    fn create_compressor_states() -> LiquidCompressorStates {
-        LiquidCompressorStates {
-            fsst_compressor: RwLock::new(None),
-        }
-    }
 
     fn assert_transcode(original: &ArrayRef, transcoded: &LiquidArrayRef) {
         assert!(
@@ -208,7 +227,7 @@ mod tests {
     #[test]
     fn test_transcode_int32() {
         let array: ArrayRef = Arc::new(Int32Array::from_iter_values(0..TEST_ARRAY_SIZE as i32));
-        let state = create_compressor_states();
+        let state = LiquidCompressorStates::new();
         let transcoded = transcode_liquid_inner(&array, &state).unwrap();
         assert_transcode(&array, &transcoded);
     }
@@ -216,7 +235,7 @@ mod tests {
     #[test]
     fn test_transcode_int64() {
         let array: ArrayRef = Arc::new(Int64Array::from_iter_values(0..TEST_ARRAY_SIZE as i64));
-        let state = create_compressor_states();
+        let state = LiquidCompressorStates::new();
         let transcoded = transcode_liquid_inner(&array, &state).unwrap();
         assert_transcode(&array, &transcoded);
     }
@@ -226,7 +245,7 @@ mod tests {
         let array: ArrayRef = Arc::new(Float32Array::from_iter_values(
             (0..TEST_ARRAY_SIZE).map(|i| i as f32),
         ));
-        let state = create_compressor_states();
+        let state = LiquidCompressorStates::new();
         let transcoded = transcode_liquid_inner(&array, &state).unwrap();
         assert_transcode(&array, &transcoded);
     }
@@ -236,7 +255,7 @@ mod tests {
         let array: ArrayRef = Arc::new(Float64Array::from_iter_values(
             (0..TEST_ARRAY_SIZE).map(|i| i as f64),
         ));
-        let state = create_compressor_states();
+        let state = LiquidCompressorStates::new();
 
         let transcoded = transcode_liquid_inner(&array, &state).unwrap();
         assert_transcode(&array, &transcoded);
@@ -247,7 +266,7 @@ mod tests {
         let array: ArrayRef = Arc::new(StringArray::from_iter_values(
             (0..TEST_ARRAY_SIZE).map(|i| format!("test_string_{i}")),
         ));
-        let state = create_compressor_states();
+        let state = LiquidCompressorStates::new();
 
         let transcoded = transcode_liquid_inner(&array, &state).unwrap();
         assert_transcode(&array, &transcoded);
@@ -258,7 +277,7 @@ mod tests {
         let array: ArrayRef = Arc::new(BinaryViewArray::from_iter_values(
             (0..TEST_ARRAY_SIZE).map(|i| format!("test_binary_{i}").into_bytes()),
         ));
-        let state = create_compressor_states();
+        let state = LiquidCompressorStates::new();
 
         let transcoded = transcode_liquid_inner(&array, &state).unwrap();
         assert_transcode(&array, &transcoded);
@@ -275,7 +294,7 @@ mod tests {
                 .unwrap();
 
         let array: ArrayRef = Arc::new(dict_array);
-        let state = create_compressor_states();
+        let state = LiquidCompressorStates::new();
 
         let transcoded = transcode_liquid_inner(&array, &state).unwrap();
         assert_transcode(&array, &transcoded);
@@ -294,7 +313,7 @@ mod tests {
                 .unwrap();
 
         let array: ArrayRef = Arc::new(dict_array);
-        let state = create_compressor_states();
+        let state = LiquidCompressorStates::new();
 
         let transcoded = transcode_liquid_inner(&array, &state).unwrap();
         assert_transcode(&array, &transcoded);
@@ -305,7 +324,7 @@ mod tests {
         // Create a boolean array which is not supported by the transcoder
         let values: Vec<bool> = (0..TEST_ARRAY_SIZE).map(|i| i.is_multiple_of(2)).collect();
         let array: ArrayRef = Arc::new(BooleanArray::from(values));
-        let state = create_compressor_states();
+        let state = LiquidCompressorStates::new();
 
         // Try to transcode and expect an error
         let result = transcode_liquid_inner(&array, &state);

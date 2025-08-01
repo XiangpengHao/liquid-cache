@@ -15,16 +15,11 @@ datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
 arrow-schema = { workspace = true }
 futures = { workspace = true }
-serde = { workspace = true }
 tonic = { workspace = true }
-async-trait = { workspace = true }
-log = { workspace = true }
-prost = { workspace = true }
 uuid = { workspace = true }
 liquid-cache-common = { workspace = true }
 fastrace = { workspace = true }
 fastrace-tonic = { workspace = true }
-fastrace-futures = { workspace = true }
 tower = "0.5.2"
 tokio = { workspace = true }
 object_store = { workspace = true }

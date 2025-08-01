@@ -154,12 +154,8 @@ async fn basic_stuff(cache_mode: &LiquidCacheMode) {
 
 const CACHE_MODES: &[LiquidCacheMode] = &[
     LiquidCacheMode::Arrow,
-    LiquidCacheMode::Liquid {
-        transcode_in_background: false,
-    },
-    LiquidCacheMode::Liquid {
-        transcode_in_background: true,
-    },
+    LiquidCacheMode::Liquid,
+    LiquidCacheMode::LiquidBlocking,
 ];
 
 #[tokio::test]
@@ -244,9 +240,7 @@ async fn test_reading_warm() {
 #[tokio::test]
 async fn test_reading_with_full_cache() {
     let column_projections = vec![0, 3, 6, 8];
-    let cache_mode = LiquidCacheMode::Liquid {
-        transcode_in_background: false,
-    };
+    let cache_mode = LiquidCacheMode::LiquidBlocking;
     let (mut builder, _file) = get_test_reader().await;
     let batch_size = builder.batch_size;
     let tmp_dir = tempfile::tempdir().unwrap();

@@ -1,6 +1,4 @@
-//! This module contains the cache implementation for the Liquid Parquet reader.
-//! It is responsible for caching the data in memory and on disk, and for evicting
-//! data from the cache when the cache is full.
+//! This module contains the cache implementation for the Parquet reader.
 //!
 
 use crate::reader::{LiquidPredicate, extract_multi_column_or};
@@ -15,8 +13,7 @@ use arrow_schema::{ArrowError, DataType, Field, Schema};
 use bytes::Bytes;
 use liquid_cache_common::{LiquidCacheMode, coerce_parquet_type_to_liquid_type};
 use liquid_cache_storage::cache::{
-    BatchID, CacheEntryID, CachePolicy, CacheStore, CachedBatch, ColumnAccessPath,
-    transcode_liquid_inner,
+    BatchID, CacheEntryID, CachePolicy, CacheStorage, CachedBatch, ColumnAccessPath,
 };
 use liquid_cache_storage::liquid_array::LiquidArrayRef;
 use liquid_cache_storage::liquid_array::ipc::{self, LiquidIPCContext};
@@ -24,27 +21,15 @@ use parquet::arrow::arrow_reader::ArrowPredicate;
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock};
-use tokio::runtime::Runtime;
 
 mod stats;
-
-/// A dedicated Tokio thread pool for background transcoding tasks.
-/// This pool is built with 4 worker threads.
-static TRANSCODE_THREAD_POOL: LazyLock<Runtime> = LazyLock::new(|| {
-    tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(4)
-        .thread_name("transcode-worker")
-        .enable_all()
-        .build()
-        .unwrap()
-});
 
 /// A column in the cache.
 #[derive(Debug)]
 pub struct LiquidCachedColumn {
-    cache_store: Arc<CacheStore>,
+    cache_store: Arc<CacheStorage>,
     field: Arc<Field>,
     column_path: ColumnAccessPath,
 }
@@ -61,7 +46,7 @@ pub enum InsertArrowArrayError {
 impl LiquidCachedColumn {
     fn new(
         field: Arc<Field>,
-        cache_store: Arc<CacheStore>,
+        cache_store: Arc<CacheStorage>,
         column_id: u64,
         row_group_id: u64,
         file_id: u64,
@@ -252,39 +237,6 @@ impl LiquidCachedColumn {
         }
     }
 
-    fn insert_as_liquid_foreground(
-        self: &Arc<Self>,
-        batch_id: BatchID,
-        array: ArrayRef,
-    ) -> Result<(), InsertArrowArrayError> {
-        let compressor = self.cache_store.compressor_states(&self.entry_id(batch_id));
-
-        let transcoded = match transcode_liquid_inner(&array, &compressor) {
-            Ok(transcoded) => CachedBatch::MemoryLiquid(transcoded),
-            Err(_) => CachedBatch::MemoryArrow(array.clone()),
-        };
-
-        self.cache_store.insert(self.entry_id(batch_id), transcoded);
-
-        Ok(())
-    }
-
-    fn insert_as_liquid_background(
-        self: &Arc<Self>,
-        batch_id: BatchID,
-        array: ArrayRef,
-    ) -> Result<(), InsertArrowArrayError> {
-        self.cache_store.insert(
-            self.entry_id(batch_id),
-            CachedBatch::MemoryArrow(array.clone()),
-        );
-        let column_arc = Arc::clone(self);
-        TRANSCODE_THREAD_POOL.spawn(async move {
-            column_arc.transcode_to_liquid(batch_id, array);
-        });
-        Ok(())
-    }
-
     /// Insert an array into the cache.
     pub fn insert(
         self: &Arc<Self>,
@@ -294,39 +246,8 @@ impl LiquidCachedColumn {
         if self.is_cached(batch_id) {
             return Err(InsertArrowArrayError::AlreadyCached);
         }
-
-        match self.cache_mode() {
-            LiquidCacheMode::Arrow => {
-                let entry_id = self.entry_id(batch_id);
-                self.cache_store
-                    .insert(entry_id, CachedBatch::MemoryArrow(array));
-                Ok(())
-            }
-            LiquidCacheMode::Liquid {
-                transcode_in_background,
-            } => {
-                if *transcode_in_background {
-                    self.insert_as_liquid_background(batch_id, array)
-                } else {
-                    self.insert_as_liquid_foreground(batch_id, array)
-                }
-            }
-        }
-    }
-
-    fn transcode_to_liquid(self: &Arc<Self>, batch_id: BatchID, array: ArrayRef) {
-        let compressor = self.cache_store.compressor_states(&self.entry_id(batch_id));
-        match transcode_liquid_inner(&array, &compressor) {
-            Ok(transcoded) => {
-                self.cache_store.insert(
-                    self.entry_id(batch_id),
-                    CachedBatch::MemoryLiquid(transcoded),
-                );
-            }
-            Err(_array) => {
-                // if the array data type is not supported yet, we just leave it as is.
-            }
-        }
+        self.cache_store.insert(self.entry_id(batch_id), array);
+        Ok(())
     }
 }
 
@@ -334,13 +255,13 @@ impl LiquidCachedColumn {
 #[derive(Debug)]
 pub struct LiquidCachedRowGroup {
     columns: RwLock<AHashMap<u64, Arc<LiquidCachedColumn>>>,
-    cache_store: Arc<CacheStore>,
+    cache_store: Arc<CacheStorage>,
     row_group_id: u64,
     file_id: u64,
 }
 
 impl LiquidCachedRowGroup {
-    fn new(cache_store: Arc<CacheStore>, row_group_id: u64, file_id: u64) -> Self {
+    fn new(cache_store: Arc<CacheStorage>, row_group_id: u64, file_id: u64) -> Self {
         let cache_dir = cache_store
             .config()
             .cache_root_dir()
@@ -479,12 +400,12 @@ pub(crate) type LiquidCachedRowGroupRef = Arc<LiquidCachedRowGroup>;
 #[derive(Debug)]
 pub struct LiquidCachedFile {
     row_groups: Mutex<AHashMap<u64, Arc<LiquidCachedRowGroup>>>,
-    cache_store: Arc<CacheStore>,
+    cache_store: Arc<CacheStorage>,
     file_id: u64,
 }
 
 impl LiquidCachedFile {
-    fn new(cache_store: Arc<CacheStore>, file_id: u64) -> Self {
+    fn new(cache_store: Arc<CacheStorage>, file_id: u64) -> Self {
         Self {
             row_groups: Mutex::new(AHashMap::new()),
             cache_store,
@@ -524,7 +445,7 @@ pub struct LiquidCache {
     /// Files -> RowGroups -> Columns -> Batches
     files: Mutex<AHashMap<String, Arc<LiquidCachedFile>>>,
 
-    cache_store: Arc<CacheStore>,
+    cache_store: Arc<CacheStorage>,
 
     current_file_id: AtomicU64,
 }
@@ -545,7 +466,7 @@ impl LiquidCache {
 
         LiquidCache {
             files: Mutex::new(AHashMap::new()),
-            cache_store: Arc::new(CacheStore::new(
+            cache_store: Arc::new(CacheStorage::new(
                 batch_size,
                 max_cache_bytes,
                 cache_dir,
@@ -659,9 +580,7 @@ mod tests {
             batch_size,
             usize::MAX,
             tmp_dir.path().to_path_buf(),
-            LiquidCacheMode::Liquid {
-                transcode_in_background: false,
-            },
+            LiquidCacheMode::LiquidBlocking,
             Box::new(DiscardPolicy),
         );
         let file = cache.register_or_get_file("test".to_string());

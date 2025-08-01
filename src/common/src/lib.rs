@@ -62,33 +62,26 @@ impl FromStr for CacheMode {
 /// The mode of the cache.
 #[derive(Debug, Copy, Clone)]
 pub enum LiquidCacheMode {
-    /// The baseline that reads the arrays as is.
+    /// Cache Arrow.
     Arrow,
-    /// The baseline that reads the arrays as is, but transcode the data into liquid arrays in the background.
-    Liquid {
-        /// Whether to transcode the data into liquid arrays in the background.
-        transcode_in_background: bool,
-    },
+    /// Cache Liquid, it's initially cached as Arrow, and then transcode to liquid in background.
+    Liquid,
+    /// Cache Liquid, but block the thread when transcoding.
+    LiquidBlocking,
 }
 
 impl Default for LiquidCacheMode {
     fn default() -> Self {
-        Self::Liquid {
-            transcode_in_background: true,
-        }
+        Self::Liquid
     }
 }
 
 impl From<CacheMode> for LiquidCacheMode {
     fn from(value: CacheMode) -> Self {
         match value {
-            CacheMode::Liquid => LiquidCacheMode::Liquid {
-                transcode_in_background: true,
-            },
+            CacheMode::Liquid => LiquidCacheMode::Liquid,
             CacheMode::Arrow => LiquidCacheMode::Arrow,
-            CacheMode::LiquidEagerTranscode => LiquidCacheMode::Liquid {
-                transcode_in_background: false,
-            },
+            CacheMode::LiquidEagerTranscode => LiquidCacheMode::LiquidBlocking,
             CacheMode::Parquet => unreachable!(),
             CacheMode::StaticFileServer => unreachable!(),
         }
@@ -115,7 +108,7 @@ pub fn coerce_parquet_type_to_liquid_type(
                 data_type.clone()
             }
         }
-        LiquidCacheMode::Liquid { .. } => {
+        LiquidCacheMode::Liquid | LiquidCacheMode::LiquidBlocking => {
             if data_type.equals_datatype(&DataType::Utf8View) {
                 DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8))
             } else if data_type.equals_datatype(&DataType::BinaryView) {
@@ -138,7 +131,7 @@ pub fn cast_from_parquet_to_liquid_type(array: ArrayRef, cache_mode: &LiquidCach
                 array
             }
         }
-        LiquidCacheMode::Liquid { .. } => {
+        LiquidCacheMode::Liquid | LiquidCacheMode::LiquidBlocking => {
             if array.data_type() == &DataType::Utf8View {
                 arrow::compute::kernels::cast(
                     &array,

@@ -11,9 +11,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (ctx, _) = LiquidCacheLocalBuilder::new()
         .with_max_cache_bytes(1024 * 1024 * 1024) // 1GB
         .with_cache_dir(temp_dir.path().to_path_buf())
-        .with_cache_mode(LiquidCacheMode::Liquid {
-            transcode_in_background: true,
-        })
+        .with_cache_mode(LiquidCacheMode::Liquid)
         .with_cache_strategy(Box::new(DiscardPolicy))
         .build(SessionConfig::new())?;
 

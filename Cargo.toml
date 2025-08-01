@@ -43,7 +43,6 @@ tokio = { version = "1.45.0", features = ["rt-multi-thread"] }
 log = "0.4.27"
 tonic = { version = "0.12" }
 url = "2.5.4"
-itertools = "0.14.0"
 bytes = { version = "1.10.1", default-features = false }
 ahash = "0.8.12"
 prost = "0.13.5"
@@ -53,7 +52,6 @@ serde_json = { version = "1.0", default-features = false, features = ["std"] }
 tempfile = "3.20.0"
 uuid = { version = "1.16.0", features = ["v4"] }
 fastrace = "0.7"
-fastrace-futures = "0.7"
 fastrace-tonic = "0.1"
 congee = "0.4.1"
 
