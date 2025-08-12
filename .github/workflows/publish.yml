@@ -29,6 +29,8 @@ jobs:
       contents: write
       pull-requests: write
       packages: write
+    outputs:
+      new_version: ${{ steps.release.outputs.new_version }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -99,30 +101,6 @@ jobs:
           prerelease: false
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build binary
-        run: cargo build --release --bin bench_server
-
-      - name: Log in to the Container registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Set lower case owner name
-        run: |
-          echo "OWNER_LC=${OWNER,,}" >> ${GITHUB_ENV}
-        env:
-          OWNER: '${{ github.repository_owner }}'
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v4
-        with:
-          context: .
-          push: true
-          tags: ghcr.io/${{ env.OWNER_LC }}/liquid-cache/liquid-cache-server:latest,ghcr.io/${{ env.OWNER_LC }}/liquid-cache/liquid-cache-server:v${{ steps.release.outputs.new_version }}
-          file: dev/liquid_cache_server.dockerfile
-
       - name: Create Pull Request
         id: create_pr
         uses: peter-evans/create-pull-request@v7
@@ -137,5 +115,12 @@ jobs:
           commit-message: "chore: prepare release v${{ steps.release.outputs.new_version }}"
           delete-branch: true
 
-      - name: Output PR URL
-        run: echo "Pull request created at ${{ steps.create_pr.outputs.pull-request-url }}"
+        - name: Output PR URL
+          run: echo "Pull request created at ${{ steps.create_pr.outputs.pull-request-url }}"
+
+  publish-docker:
+    needs: release-and-publish
+    uses: ./.github/workflows/docker-release.yml
+    with:
+      version: ${{ needs.release-and-publish.outputs.new_version }}
+    secrets: inherit
