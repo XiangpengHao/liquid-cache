@@ -84,7 +84,45 @@ use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::utils::reassign_predicate_columns;
 use datafusion::physical_expr::{PhysicalExpr, split_conjunction};
 
-use crate::reader::runtime::{LiquidRowFilter, get_predicate_column_id};
+/// A row filter that can be used to filter rows from a parquet file.
+pub struct LiquidRowFilter {
+    predicates: Vec<LiquidPredicate>,
+}
+
+impl LiquidRowFilter {
+    /// Create a new `LiquidRowFilter` from a vector of `LiquidPredicate`s.
+    pub fn new(predicates: Vec<LiquidPredicate>) -> Self {
+        Self { predicates }
+    }
+
+    /// Get the predicates of the `LiquidRowFilter`.
+    pub fn predicates(&self) -> &[LiquidPredicate] {
+        &self.predicates
+    }
+
+    /// Get the predicates of the `LiquidRowFilter` as mutable.
+    pub fn predicates_mut(&mut self) -> &mut [LiquidPredicate] {
+        &mut self.predicates
+    }
+}
+
+pub(crate) fn get_predicate_column_id(projection: &parquet::arrow::ProjectionMask) -> Vec<usize> {
+    #[derive(Debug, Clone)]
+    struct ProjectionMaskLiquid {
+        mask: Option<Vec<bool>>,
+    }
+    let project_inner: &ProjectionMaskLiquid = unsafe { std::mem::transmute(projection) };
+    project_inner
+        .mask
+        .as_ref()
+        .map(|m| {
+            m.iter()
+                .enumerate()
+                .filter_map(|(pos, &x)| if x { Some(pos) } else { None })
+                .collect::<Vec<usize>>()
+        })
+        .unwrap_or_default()
+}
 
 /// A "compiled" predicate passed to `ParquetRecordBatchStream` to perform
 /// row-level filtering during parquet decoding.
@@ -147,7 +185,8 @@ impl LiquidPredicate {
         &self.physical_expr_physical_column_index
     }
 
-    pub(crate) fn predicate_column_ids(&self) -> Vec<usize> {
+    /// Get the column ids of the predicate.
+    pub fn predicate_column_ids(&self) -> Vec<usize> {
         let projection = self.projection();
         get_predicate_column_id(projection)
     }

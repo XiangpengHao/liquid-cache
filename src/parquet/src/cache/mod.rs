@@ -2,23 +2,17 @@
 //!
 
 use crate::cache::io::{ColumnAccessPath, ParquetIoWorker};
-use crate::reader::{LiquidPredicate, extract_multi_column_or};
+use crate::reader::extract_multi_column_or;
 use crate::sync::{Mutex, RwLock};
 use crate::utils::boolean_buffer_or;
 use ahash::AHashMap;
-use arrow::array::{Array, ArrayRef, BooleanArray, RecordBatch};
+use arrow::array::{ArrayRef, BooleanArray, RecordBatch};
 use arrow::buffer::BooleanBuffer;
-use arrow::compute::prep_null_mask_filter;
-use arrow::ipc::reader::StreamReader;
 use arrow_schema::{ArrowError, DataType, Field, Schema};
-use bytes::Bytes;
 use liquid_cache_common::{LiquidCacheMode, coerce_parquet_type_to_liquid_type};
+use liquid_cache_storage::LiquidPredicate;
 use liquid_cache_storage::cache::{CachePolicy, CacheStorage, CachedBatch};
-use liquid_cache_storage::liquid_array::LiquidArrayRef;
-use liquid_cache_storage::liquid_array::ipc::{self, LiquidIPCContext};
 use parquet::arrow::arrow_reader::ArrowPredicate;
-use std::fs::File;
-use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -80,69 +74,6 @@ impl LiquidCachedColumn {
         self.cache_store.is_cached(&self.entry_id(batch_id).into())
     }
 
-    /// Reads a liquid array from disk.
-    /// Panics if the file does not exist.
-    fn read_liquid_from_disk(&self, batch_id: BatchID) -> LiquidArrayRef {
-        // TODO: maybe use async here?
-        // But async in tokio is way slower than sync.
-        let entry_id = self.entry_id(batch_id);
-        let path = entry_id.on_disk_path(self.cache_store.config().cache_root_dir());
-        let compressor = self.cache_store.compressor_states(&entry_id.into());
-        let compressor = compressor.fsst_compressor();
-        let mut file = File::open(path).unwrap();
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes).unwrap();
-        let bytes = Bytes::from(bytes);
-        ipc::read_from_bytes(bytes, &LiquidIPCContext::new(compressor))
-    }
-
-    /// Reads an arrow array from disk in IPC format.
-    /// Panics if the file does not exist.
-    fn read_arrow_from_disk(&self, batch_id: BatchID) -> ArrayRef {
-        let entry_id = self.entry_id(batch_id);
-        let path = entry_id.on_disk_arrow_path(self.cache_store.config().cache_root_dir());
-        let file = File::open(path).unwrap();
-        let buf_reader = BufReader::new(file);
-        let mut stream_reader = StreamReader::try_new(buf_reader, None).unwrap();
-
-        // Read the first (and only) batch from the stream
-        let batch = stream_reader.next().unwrap().unwrap();
-
-        // Extract the array from the batch (assuming single column)
-        batch.column(0).clone()
-    }
-
-    /// Evaluates a predicate on a liquid array.
-    /// It optimistically tries to evaluate on liquid array, and if that fails,
-    /// it falls back to evaluating on an arrow array.
-    fn eval_predicate_with_filter_inner(
-        &self,
-        predicate: &mut LiquidPredicate,
-        array: &LiquidArrayRef,
-        filter: &BooleanArray,
-    ) -> Result<BooleanBuffer, ArrowError> {
-        match array.try_eval_predicate(predicate.physical_expr_physical_column_index(), filter)? {
-            Some(new_filter) => {
-                let (buffer, _) = new_filter.into_parts();
-                Ok(buffer)
-            }
-            None => {
-                let arrow_batch = array.filter_to_arrow(filter);
-                let schema = Schema::new(vec![self.field.clone()]);
-                let record_batch =
-                    RecordBatch::try_new(Arc::new(schema), vec![arrow_batch]).unwrap();
-                let boolean_array = predicate.evaluate(record_batch).unwrap();
-                let (buffer, _) = boolean_array.into_parts();
-                Ok(buffer)
-            }
-        }
-    }
-
-    fn arrow_array_to_record_batch(&self, array: ArrayRef) -> RecordBatch {
-        let schema = Arc::new(Schema::new(vec![self.field.clone()]));
-        RecordBatch::try_new(schema, vec![array]).unwrap()
-    }
-
     /// Evaluates a predicate on a cached column.
     pub fn eval_predicate_with_filter(
         &self,
@@ -151,47 +82,7 @@ impl LiquidCachedColumn {
         predicate: &mut LiquidPredicate,
     ) -> Option<Result<BooleanBuffer, ArrowError>> {
         let cached_entry = self.cache_store.get(&self.entry_id(batch_id).into())?;
-        match &cached_entry {
-            CachedBatch::MemoryArrow(array) => {
-                let boolean_array = BooleanArray::new(filter.clone(), None);
-                let selected = arrow::compute::filter(array, &boolean_array).unwrap();
-                let record_batch = self.arrow_array_to_record_batch(selected);
-                let boolean_array = predicate.evaluate(record_batch).unwrap();
-                let predicate_filter = match boolean_array.null_count() {
-                    0 => boolean_array,
-                    _ => prep_null_mask_filter(&boolean_array),
-                };
-                let (buffer, _) = predicate_filter.into_parts();
-                Some(Ok(buffer))
-            }
-
-            CachedBatch::DiskArrow => {
-                let array = self.read_arrow_from_disk(batch_id);
-                let boolean_array = BooleanArray::new(filter.clone(), None);
-                let selected = arrow::compute::filter(&array, &boolean_array).unwrap();
-                let record_batch = self.arrow_array_to_record_batch(selected);
-                let boolean_array = predicate.evaluate(record_batch).unwrap();
-                let predicate_filter = match boolean_array.null_count() {
-                    0 => boolean_array,
-                    _ => prep_null_mask_filter(&boolean_array),
-                };
-                let (buffer, _) = predicate_filter.into_parts();
-                Some(Ok(buffer))
-            }
-            CachedBatch::MemoryLiquid(array) => {
-                let boolean_array = BooleanArray::new(filter.clone(), None);
-                let buffer =
-                    self.eval_predicate_with_filter_inner(predicate, array, &boolean_array);
-                Some(buffer)
-            }
-            CachedBatch::DiskLiquid => {
-                let array = self.read_liquid_from_disk(batch_id);
-                let boolean_array = BooleanArray::new(filter.clone(), None);
-                let buffer =
-                    self.eval_predicate_with_filter_inner(predicate, &array, &boolean_array);
-                Some(buffer)
-            }
-        }
+        Some(cached_entry.eval_predicate_with_filter(filter, predicate, &self.field))
     }
 
     /// Get an arrow array with a filter applied.
@@ -201,43 +92,13 @@ impl LiquidCachedColumn {
         filter: &BooleanArray,
     ) -> Option<ArrayRef> {
         let inner_value = self.cache_store.get(&self.entry_id(batch_id).into())?;
-        match &inner_value {
-            CachedBatch::MemoryArrow(array) => {
-                let filtered = arrow::compute::filter(array, filter).unwrap();
-                Some(filtered)
-            }
-            CachedBatch::DiskArrow => {
-                let array = self.read_arrow_from_disk(batch_id);
-                let filtered = arrow::compute::filter(&array, filter).unwrap();
-                Some(filtered)
-            }
-            CachedBatch::MemoryLiquid(array) => {
-                let filtered = array.filter_to_arrow(filter);
-                Some(filtered)
-            }
-            CachedBatch::DiskLiquid => {
-                let array = self.read_liquid_from_disk(batch_id);
-                let filtered = array.filter_to_arrow(filter);
-                Some(filtered)
-            }
-        }
+        inner_value.get_arrow_with_filter(filter).ok()
     }
 
     #[cfg(test)]
     pub(crate) fn get_arrow_array_test_only(&self, batch_id: BatchID) -> Option<ArrayRef> {
         let cached_entry = self.cache_store.get(&self.entry_id(batch_id).into())?;
-        match cached_entry {
-            CachedBatch::MemoryArrow(array) => Some(array),
-            CachedBatch::MemoryLiquid(array) => Some(array.to_best_arrow_array()),
-            CachedBatch::DiskLiquid => {
-                let array = self.read_liquid_from_disk(batch_id);
-                Some(array.to_best_arrow_array())
-            }
-            CachedBatch::DiskArrow => {
-                let array = self.read_arrow_from_disk(batch_id);
-                Some(array)
-            }
-        }
+        Some(cached_entry.get_arrow_array())
     }
 
     /// Insert an array into the cache.
@@ -351,9 +212,8 @@ impl LiquidCachedRowGroup {
                 for (col_idx, expr) in column_exprs {
                     let column = self.get_column(col_idx as u64)?;
                     let entry = self.cache_store.get(&column.entry_id(batch_id).into())?;
-                    let liquid_array = match entry {
-                        CachedBatch::MemoryLiquid(array) => array,
-                        CachedBatch::DiskLiquid => column.read_liquid_from_disk(batch_id),
+                    let liquid_array = match entry.try_read_liquid() {
+                        Some(array) => array,
                         _ => {
                             combined_buffer = None;
                             break;
@@ -473,10 +333,10 @@ impl LiquidCache {
             cache_store: Arc::new(CacheStorage::new(
                 batch_size,
                 max_cache_bytes,
-                cache_dir,
+                cache_dir.clone(),
                 cache_mode,
                 cache_policy,
-                Arc::new(ParquetIoWorker::new()),
+                Arc::new(ParquetIoWorker::new(cache_dir)),
             )),
             current_file_id: AtomicU64::new(0),
         }
@@ -561,7 +421,6 @@ impl LiquidCache {
 mod tests {
     use super::*;
     use crate::cache::{LiquidCache, LiquidCachedRowGroupRef};
-    use crate::reader::FilterCandidateBuilder;
     use arrow::array::Int32Array;
     use arrow::buffer::BooleanBuffer;
     use arrow::datatypes::{DataType, Field, Schema};
@@ -574,6 +433,7 @@ mod tests {
     use datafusion::physical_plan::expressions::Column;
     use datafusion::physical_plan::metrics;
     use liquid_cache_common::LiquidCacheMode;
+    use liquid_cache_storage::FilterCandidateBuilder;
     use liquid_cache_storage::policies::DiscardPolicy;
     use parquet::arrow::ArrowWriter;
     use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};

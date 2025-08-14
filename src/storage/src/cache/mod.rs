@@ -8,7 +8,7 @@ mod tracer;
 mod transcode;
 mod utils;
 
-pub use core::CacheStorage;
+pub use core::{CacheStorage, CacheStorageBuilder};
 pub use core::{DefaultIoWorker, IoWorker};
 pub use policies::CachePolicy;
 pub use transcode::transcode_liquid_inner;

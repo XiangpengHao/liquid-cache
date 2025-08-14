@@ -14,17 +14,23 @@ use crate::{
 #[derive(Debug)]
 pub(crate) struct ParquetIoWorker {
     compressor_states: RwLock<AHashMap<ColumnAccessPath, Arc<LiquidCompressorStates>>>,
+    base_dir: PathBuf,
 }
 
 impl ParquetIoWorker {
-    pub fn new() -> Self {
+    pub fn new(base_dir: PathBuf) -> Self {
         Self {
             compressor_states: RwLock::new(AHashMap::new()),
+            base_dir,
         }
     }
 }
 
 impl IoWorker for ParquetIoWorker {
+    fn base_dir(&self) -> &Path {
+        &self.base_dir
+    }
+
     fn get_compressor_for_entry(&self, entry_id: &EntryID) -> Arc<LiquidCompressorStates> {
         let column_path = ColumnAccessPath::from(ParquetArrayID::from(*entry_id));
         let mut states = self.compressor_states.write().unwrap();
@@ -34,14 +40,14 @@ impl IoWorker for ParquetIoWorker {
             .clone()
     }
 
-    fn entry_arrow_path(&self, base_dir: &Path, entry_id: &EntryID) -> PathBuf {
+    fn entry_arrow_path(&self, entry_id: &EntryID) -> PathBuf {
         let parquet_array_id = ParquetArrayID::from(*entry_id);
-        parquet_array_id.on_disk_arrow_path(base_dir)
+        parquet_array_id.on_disk_arrow_path(self.base_dir())
     }
 
-    fn entry_liquid_path(&self, base_dir: &Path, entry_id: &EntryID) -> PathBuf {
+    fn entry_liquid_path(&self, entry_id: &EntryID) -> PathBuf {
         let parquet_array_id = ParquetArrayID::from(*entry_id);
-        parquet_array_id.on_disk_path(base_dir)
+        parquet_array_id.on_disk_path(self.base_dir())
     }
 }
 

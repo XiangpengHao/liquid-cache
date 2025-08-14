@@ -5,13 +5,12 @@ use arrow::array::{Array, AsArray, BooleanArray, RecordBatch, RecordBatchReader}
 use arrow::buffer::BooleanBuffer;
 use arrow::compute::{filter_record_batch, prep_null_mask_filter};
 use arrow_schema::{ArrowError, DataType, Schema, SchemaRef};
+use liquid_cache_storage::{LiquidPredicate, LiquidRowFilter};
 use parquet::arrow::ProjectionMask;
 use parquet::arrow::array_reader::ArrayReader;
 use parquet::arrow::arrow_reader::{ArrowPredicate, RowSelection, RowSelector};
 
-use super::LiquidRowFilter;
 use crate::cache::{BatchID, LiquidCachedRowGroupRef};
-use crate::reader::LiquidPredicate;
 use crate::reader::runtime::liquid_predicate::is_predicate_supported_by_liquid;
 use crate::reader::runtime::utils::take_next_batch;
 use crate::utils::{boolean_buffer_and_then, row_selector_to_boolean_buffer};
@@ -96,14 +95,14 @@ impl LiquidBatchReader {
 
         debug_assert_eq!(
             self.predicate_readers.len(),
-            filter.predicates.len(),
+            filter.predicates().len(),
             "predicate readers and predicates should have the same length"
         );
 
         let selection_size = input_selection.len();
 
         for (predicate, reader) in filter
-            .predicates
+            .predicates_mut()
             .iter_mut()
             .zip(self.predicate_readers.iter_mut())
         {
@@ -218,7 +217,7 @@ impl Iterator for LiquidBatchReader {
     fn next(&mut self) -> Option<Self::Item> {
         match self.can_optimize_single_column_filter_projection {
             true => {
-                let predicate = &mut self.row_filter.as_mut().unwrap().predicates[0];
+                let predicate = &mut self.row_filter.as_mut().unwrap().predicates_mut()[0];
                 while let Some(selection) = take_next_batch(&mut self.selection, self.batch_size) {
                     match read_and_filter_single_column(
                         selection,
@@ -314,11 +313,11 @@ fn can_optimize_single_column_filter_projection(
         return false;
     };
 
-    if filter.predicates.len() != 1 {
+    if filter.predicates().len() != 1 {
         return false;
     }
 
-    let predicate = &mut filter.predicates[0];
+    let predicate = &mut filter.predicates_mut()[0];
     let expr = predicate.physical_expr_physical_column_index();
 
     // Check if this predicate is supported by liquid array predicate evaluation
@@ -348,8 +347,6 @@ fn can_optimize_single_column_filter_projection(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::reader::plantime::{FilterCandidateBuilder, LiquidPredicate};
-    use crate::reader::runtime::LiquidRowFilter;
     use arrow::array::{Int32Array, RecordBatch, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
     use datafusion::common::ScalarValue;
@@ -358,6 +355,7 @@ mod tests {
     use datafusion::physical_expr::PhysicalExpr;
     use datafusion::physical_expr::expressions::{BinaryExpr, Column, Literal};
     use datafusion::physical_plan::metrics;
+    use liquid_cache_storage::FilterCandidateBuilder;
     use parquet::arrow::ProjectionMask;
     use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
     use parquet::arrow::arrow_writer::ArrowWriter;
