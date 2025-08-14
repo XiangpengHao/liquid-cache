@@ -15,7 +15,7 @@ use datafusion::physical_plan::expressions::Column;
 use datafusion::physical_plan::metrics;
 use liquid_cache_common::LiquidCacheMode;
 use liquid_cache_parquet::cache::{BatchID, LiquidCache};
-use liquid_cache_parquet::{FilterCandidateBuilder, LiquidPredicate};
+use liquid_cache_storage::{FilterCandidateBuilder, LiquidPredicate};
 use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
 use rand::Rng;

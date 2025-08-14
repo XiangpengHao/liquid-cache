@@ -3,8 +3,7 @@ use std::sync::Arc;
 use crate::{
     cache::LiquidCacheRef,
     reader::{
-        plantime::{row_filter, row_group_filter::RowGroupAccessPlanFilter},
-        runtime::ArrowReaderBuilderBridge,
+        plantime::row_group_filter::RowGroupAccessPlanFilter, runtime::ArrowReaderBuilderBridge,
     },
 };
 use arrow_schema::{ArrowError, SchemaRef};
@@ -24,6 +23,7 @@ use datafusion::{
 use futures::StreamExt;
 use futures::TryStreamExt;
 use liquid_cache_common::ParquetReaderSchema;
+use liquid_cache_storage::build_row_filter;
 use log::debug;
 use parquet::arrow::{
     ParquetRecordBatchStreamBuilder, ProjectionMask,
@@ -164,7 +164,7 @@ impl FileOpener for LiquidParquetOpener {
 
             // Filter pushdown: evaluate predicates during scan
             let row_filter = predicate.as_ref().and_then(|p| {
-                let row_filter = row_filter::build_row_filter(
+                let row_filter = build_row_filter(
                     p,
                     &physical_file_schema,
                     &downstream_full_schema,

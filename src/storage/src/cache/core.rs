@@ -1,6 +1,8 @@
 use arrow::array::ArrayRef;
+use arrow::ipc::reader::StreamReader;
+use bytes::Bytes;
 use std::fs::File;
-use std::io::Write;
+use std::io::{BufReader, Read, Write};
 use std::path::PathBuf;
 use std::{fmt::Debug, path::Path};
 
@@ -9,24 +11,31 @@ use super::{
     transcode::transcode_liquid_inner, utils::CacheConfig,
 };
 use crate::cache::transcode::submit_background_transcoding_task;
-use crate::cache::utils::{CacheAdvice, LiquidCompressorStates};
+use crate::cache::utils::{CacheAdvice, CachedData, LiquidCompressorStates};
 use crate::cache::{index::ArtIndex, utils::EntryID};
-use crate::liquid_array::LiquidArrayRef;
+use crate::liquid_array::ipc::LiquidIPCContext;
+use crate::liquid_array::{LiquidArrayRef, ipc};
+use crate::policies::DiscardPolicy;
 use crate::sync::Arc;
 use liquid_cache_common::LiquidCacheMode;
 
 /// A trait for objects that can handle IO operations for the cache.
 pub trait IoWorker: Debug + Send + Sync {
+    /// Get the base directory for the cache storage.
+    fn base_dir(&self) -> &Path;
+
     /// Get the compressor for an entry.
     fn get_compressor_for_entry(&self, entry_id: &EntryID) -> Arc<LiquidCompressorStates>;
+
     /// Get the path to the arrow file for an entry.
-    fn entry_arrow_path(&self, base_dir: &Path, entry_id: &EntryID) -> PathBuf;
+    fn entry_arrow_path(&self, entry_id: &EntryID) -> PathBuf;
+
     /// Get the path to the liquid file for an entry.
-    fn entry_liquid_path(&self, base_dir: &Path, entry_id: &EntryID) -> PathBuf;
+    fn entry_liquid_path(&self, entry_id: &EntryID) -> PathBuf;
+
     /// Write an arrow array to disk.
     fn write_arrow_to_disk(
         &self,
-        base_dir: &Path,
         entry_id: &EntryID,
         array: &ArrayRef,
     ) -> Result<usize, std::io::Error> {
@@ -35,7 +44,7 @@ pub trait IoWorker: Debug + Send + Sync {
         use std::fs::File;
         use std::io::BufWriter;
 
-        let file_path = self.entry_arrow_path(base_dir, entry_id);
+        let file_path = self.entry_arrow_path(entry_id);
 
         // Ensure parent directory exists
         if let Some(parent) = file_path.parent() {
@@ -63,15 +72,40 @@ pub trait IoWorker: Debug + Send + Sync {
     /// Write a liquid array to disk.
     fn write_liquid_to_disk(
         &self,
-        base_dir: &Path,
         entry_id: &EntryID,
         liquid_array: &LiquidArrayRef,
     ) -> Result<usize, std::io::Error> {
-        let path = self.entry_liquid_path(base_dir, entry_id);
+        let path = self.entry_liquid_path(entry_id);
         let bytes = liquid_array.to_bytes();
         let mut file = File::create(&path)?;
         file.write_all(&bytes)?;
         Ok(bytes.len())
+    }
+
+    /// Read an arrow array from disk.
+    fn read_arrow_from_disk(&self, entry_id: &EntryID) -> Result<ArrayRef, std::io::Error> {
+        let path = self.entry_arrow_path(entry_id);
+        let file = File::open(path)?;
+        let buf_reader = BufReader::new(file);
+        let mut stream_reader = StreamReader::try_new(buf_reader, None).unwrap();
+        let batch = stream_reader.next().unwrap().unwrap();
+        Ok(batch.column(0).clone())
+    }
+
+    /// Read a liquid array from disk.
+    fn read_liquid_from_disk(&self, entry_id: &EntryID) -> Result<LiquidArrayRef, std::io::Error> {
+        let path = self.entry_liquid_path(entry_id);
+        let mut file = File::open(path)?;
+
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        let bytes = Bytes::from(bytes);
+        let compressor = self.get_compressor_for_entry(entry_id);
+        let compressor = compressor.fsst_compressor();
+        Ok(ipc::read_from_bytes(
+            bytes,
+            &LiquidIPCContext::new(compressor),
+        ))
     }
 }
 
@@ -79,38 +113,167 @@ pub trait IoWorker: Debug + Send + Sync {
 #[derive(Debug)]
 pub struct DefaultIoWorker {
     compressor_state: Arc<LiquidCompressorStates>,
-}
-
-impl Default for DefaultIoWorker {
-    fn default() -> Self {
-        Self::new()
-    }
+    base_dir: PathBuf,
 }
 
 impl DefaultIoWorker {
     /// Create a new instance of DefaultIoWorker.
-    pub fn new() -> Self {
+    pub fn new(base_dir: PathBuf) -> Self {
         Self {
             compressor_state: Arc::new(LiquidCompressorStates::new()),
+            base_dir,
         }
     }
 }
 
 impl IoWorker for DefaultIoWorker {
+    fn base_dir(&self) -> &Path {
+        &self.base_dir
+    }
+
     fn get_compressor_for_entry(&self, _entry_id: &EntryID) -> Arc<LiquidCompressorStates> {
         self.compressor_state.clone()
     }
 
-    fn entry_arrow_path(&self, base_dir: &Path, entry_id: &EntryID) -> PathBuf {
-        base_dir.join(format!("{:016x}.arrow", usize::from(*entry_id)))
+    fn entry_arrow_path(&self, entry_id: &EntryID) -> PathBuf {
+        self.base_dir()
+            .join(format!("{:016x}.arrow", usize::from(*entry_id)))
     }
 
-    fn entry_liquid_path(&self, base_dir: &Path, entry_id: &EntryID) -> PathBuf {
-        base_dir.join(format!("{:016x}.liquid", usize::from(*entry_id)))
+    fn entry_liquid_path(&self, entry_id: &EntryID) -> PathBuf {
+        self.base_dir()
+            .join(format!("{:016x}.liquid", usize::from(*entry_id)))
+    }
+}
+
+/// Builder for [CacheStorage].
+///
+/// Example:
+/// ```rust
+/// use liquid_cache_storage::cache::{CacheStorageBuilder, DefaultIoWorker};
+/// use liquid_cache_storage::common::LiquidCacheMode;
+/// use liquid_cache_storage::policies::DiscardPolicy;
+/// use std::sync::Arc;
+/// use tempfile;
+/// use std::path::PathBuf;
+///
+/// let temp_dir = tempfile::tempdir().unwrap().keep();
+/// let storage = CacheStorageBuilder::new()
+///     .with_batch_size(8192)
+///     .with_max_cache_bytes(1024 * 1024 * 1024)
+///     .with_cache_mode(LiquidCacheMode::Liquid)
+///     .with_policy(Box::new(DiscardPolicy))
+///     .with_io_worker(Arc::new(DefaultIoWorker::new(temp_dir)))
+///     .build();
+/// ```
+pub struct CacheStorageBuilder {
+    batch_size: usize,
+    max_cache_bytes: usize,
+    cache_dir: Option<PathBuf>,
+    cache_mode: LiquidCacheMode,
+    policy: Box<dyn CachePolicy>,
+    io_worker: Option<Arc<dyn IoWorker>>,
+}
+
+impl Default for CacheStorageBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CacheStorageBuilder {
+    /// Create a new instance of CacheStorageBuilder.
+    pub fn new() -> Self {
+        Self {
+            batch_size: 8192,
+            max_cache_bytes: 1024 * 1024 * 1024,
+            cache_dir: None,
+            cache_mode: LiquidCacheMode::Liquid,
+            policy: Box::new(DiscardPolicy),
+            io_worker: None,
+        }
+    }
+
+    /// Set the cache directory for the cache.
+    /// Default is a temporary directory.
+    pub fn with_cache_dir(mut self, cache_dir: PathBuf) -> Self {
+        self.cache_dir = Some(cache_dir);
+        self
+    }
+
+    /// Set the batch size for the cache.
+    /// Default is 8192.
+    pub fn with_batch_size(mut self, batch_size: usize) -> Self {
+        self.batch_size = batch_size;
+        self
+    }
+
+    /// Set the max cache bytes for the cache.
+    /// Default is 1GB.
+    pub fn with_max_cache_bytes(mut self, max_cache_bytes: usize) -> Self {
+        self.max_cache_bytes = max_cache_bytes;
+        self
+    }
+
+    /// Set the cache mode for the cache.
+    /// Default is LiquidCacheMode::Liquid.
+    pub fn with_cache_mode(mut self, cache_mode: LiquidCacheMode) -> Self {
+        self.cache_mode = cache_mode;
+        self
+    }
+
+    /// Set the cache policy for the cache.
+    /// Default is DiscardPolicy.
+    pub fn with_policy(mut self, policy: Box<dyn CachePolicy>) -> Self {
+        self.policy = policy;
+        self
+    }
+
+    /// Set the io worker for the cache.
+    /// Default is [DefaultIoWorker].
+    pub fn with_io_worker(mut self, io_worker: Arc<dyn IoWorker>) -> Self {
+        self.io_worker = Some(io_worker);
+        self
+    }
+
+    /// Build the cache storage.
+    ///
+    /// The cache storage is wrapped in an [Arc] to allow for concurrent access.
+    pub fn build(self) -> Arc<CacheStorage> {
+        let cache_dir = self
+            .cache_dir
+            .unwrap_or_else(|| tempfile::tempdir().unwrap().keep());
+        let io_worker = self
+            .io_worker
+            .unwrap_or_else(|| Arc::new(DefaultIoWorker::new(cache_dir.clone())));
+        Arc::new(CacheStorage::new(
+            self.batch_size,
+            self.max_cache_bytes,
+            cache_dir,
+            self.cache_mode,
+            self.policy,
+            io_worker,
+        ))
     }
 }
 
 /// Cache storage for liquid cache.
+///
+/// Example:
+/// ```rust
+/// use liquid_cache_storage::cache::{CacheStorageBuilder, EntryID};
+/// use arrow::array::UInt64Array;
+/// use std::sync::Arc;
+///
+/// let storage = CacheStorageBuilder::new().build();
+///
+/// let entry_id = EntryID::from(0);
+/// let arrow_array = Arc::new(UInt64Array::from_iter_values(0..1000));
+/// storage.insert(entry_id, arrow_array.clone());
+///
+/// let batch = storage.get(&entry_id).unwrap();
+/// assert_eq!(batch.get_arrow_array().as_ref(), arrow_array.as_ref());
+/// ```
 #[derive(Debug)]
 pub struct CacheStorage {
     index: ArtIndex,
@@ -262,7 +425,7 @@ impl CacheStorage {
     fn write_liquid_to_disk(&self, entry_id: &EntryID, liquid_array: &LiquidArrayRef) {
         let disk_usage = self
             .io_worker
-            .write_liquid_to_disk(self.config.cache_root_dir(), entry_id, liquid_array)
+            .write_liquid_to_disk(entry_id, liquid_array)
             .expect("failed to write liquid to disk");
         self.budget.add_used_disk_bytes(disk_usage);
     }
@@ -270,7 +433,7 @@ impl CacheStorage {
     fn write_arrow_to_disk(&self, entry_id: &EntryID, array: &arrow::array::ArrayRef) {
         let disk_usage = self
             .io_worker
-            .write_arrow_to_disk(self.config.cache_root_dir(), entry_id, array)
+            .write_arrow_to_disk(entry_id, array)
             .expect("failed to write arrow to disk");
         self.budget.add_used_disk_bytes(disk_usage);
     }
@@ -322,7 +485,7 @@ impl CacheStorage {
     }
 
     /// Get a batch from the cache.
-    pub fn get(&self, entry_id: &EntryID) -> Option<CachedBatch> {
+    pub fn get(&self, entry_id: &EntryID) -> Option<CachedData<'_>> {
         let batch = self.index.get(entry_id);
         let batch_size = batch.as_ref().map(|b| b.memory_usage_bytes()).unwrap_or(0);
         self.tracer
@@ -330,7 +493,7 @@ impl CacheStorage {
         // Notify the advisor that this entry was accessed
         self.policy.notify_access(entry_id);
 
-        batch
+        batch.map(|b| CachedData::new(b, *entry_id, self.io_worker.as_ref()))
     }
 
     /// Iterate over all entries in the cache.
@@ -532,7 +695,7 @@ mod tests {
         // Verify budget usage and data correctness
         assert_eq!(store.budget.memory_usage_bytes(), size1);
         let retrieved1 = store.get(&entry_id1).unwrap();
-        match retrieved1 {
+        match retrieved1.raw_data() {
             CachedBatch::MemoryArrow(arr) => assert_eq!(arr.len(), 100),
             _ => panic!("Expected ArrowMemory"),
         }
@@ -567,13 +730,13 @@ mod tests {
             let store = create_cache_store(8000, Box::new(advisor)); // Small budget to force advice
 
             store.insert_inner(entry_id1, create_test_array(800));
-            match store.get(&entry_id1).unwrap() {
+            match store.get(&entry_id1).unwrap().raw_data() {
                 CachedBatch::MemoryArrow(_) => {}
                 other => panic!("Expected ArrowMemory, got {other:?}"),
             }
 
             store.insert_inner(entry_id2, create_test_array(800));
-            match store.get(&entry_id1).unwrap() {
+            match store.get(&entry_id1).unwrap().raw_data() {
                 CachedBatch::DiskLiquid => {}
                 other => panic!("Expected OnDiskLiquid after eviction, got {other:?}"),
             }
@@ -585,13 +748,13 @@ mod tests {
             let store = create_cache_store(8000, Box::new(advisor)); // Small budget
 
             store.insert_inner(entry_id1, create_test_array(800));
-            match store.get(&entry_id1).unwrap() {
+            match store.get(&entry_id1).unwrap().raw_data() {
                 CachedBatch::MemoryArrow(_) => {}
                 other => panic!("Expected ArrowMemory, got {other:?}"),
             }
 
             store.insert_inner(entry_id2, create_test_array(800));
-            match store.get(&entry_id1).unwrap() {
+            match store.get(&entry_id1).unwrap().raw_data() {
                 CachedBatch::MemoryLiquid(_) => {}
                 other => panic!("Expected LiquidMemory after transcoding, got {other:?}"),
             }
@@ -604,7 +767,7 @@ mod tests {
 
             store.insert_inner(entry_id1, create_test_array(800));
             store.insert_inner(entry_id3, create_test_array(800));
-            match store.get(&entry_id3).unwrap() {
+            match store.get(&entry_id3).unwrap().raw_data() {
                 CachedBatch::DiskLiquid => {}
                 other => panic!("Expected OnDiskLiquid, got {other:?}"),
             }
@@ -619,7 +782,7 @@ mod tests {
             store.insert_inner(entry_id1, create_test_array(800));
             store.insert_inner(entry_id2, create_test_array(800)); // This should trigger ToDisk advice
 
-            match store.get(&entry_id2).unwrap() {
+            match store.get(&entry_id2).unwrap().raw_data() {
                 CachedBatch::DiskArrow => {}
                 other => panic!("Expected DiskArrow after ToDisk advice, got {other:?}"),
             }

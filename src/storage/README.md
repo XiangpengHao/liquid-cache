@@ -2,32 +2,72 @@
 
 Storage layer providing byte caching and liquid array data structures.
 
+This library provides one way to insert into the cache and three ways to read from it:
+- read as Arrow array
+- read as Arrow array with a Boolean filter
+- evaluate a predicate against the cached data
+
+Below are four concise, runnable examples showcasing these core operations.
+
+## 1) Insert
 
 ```rust
-use liquid_cache_storage::cache::{CacheStorage, EntryID, CachedBatch, DefaultIoWorker};
-use liquid_cache_storage::policies::ToDiskPolicy;
-use liquid_cache_storage::common::LiquidCacheMode;
+use liquid_cache_storage::cache::{CacheStorageBuilder, EntryID};
 use arrow::array::UInt64Array;
 use std::sync::Arc;
 
-let batch_size = 8192;
-let max_cache_bytes = 1024 * 1024 * 1024; // 1GB
-let temp_dir = tempfile::tempdir().unwrap();
-let policy = Box::new(ToDiskPolicy::new());
+let storage = CacheStorageBuilder::new().build();
 
-let storage = Arc::new(CacheStorage::new(
-        batch_size,
-        max_cache_bytes,
-        temp_dir.keep(),
-        LiquidCacheMode::Liquid,
-        policy,
-        Arc::new(DefaultIoWorker::new()),
-));
+let entry_id = EntryID::from(42);
+let arrow_array = Arc::new(UInt64Array::from_iter_values(0..1000));
 
-let entry_id = EntryID::from(0);
-let arrow_array = UInt64Array::from_iter_values(0..1000);
-storage.insert(entry_id, Arc::new(arrow_array));
+// Insert once; replacement/placement is handled by the cache policy
+storage.insert(entry_id, arrow_array.clone());
 
-let batch = storage.get(&entry_id).unwrap();
-assert!(matches!(batch, CachedBatch::MemoryArrow(_)));
+assert!(storage.is_cached(&entry_id));
 ```
+
+## 2) Read as Arrow
+
+```rust
+use liquid_cache_storage::cache::{CacheStorageBuilder, EntryID};
+use arrow::array::UInt64Array;
+use std::sync::Arc;
+
+let storage = CacheStorageBuilder::new().build();
+
+let entry_id = EntryID::from(7);
+let arrow_array = Arc::new(UInt64Array::from_iter_values(0..16));
+storage.insert(entry_id, arrow_array.clone());
+
+let cached = storage.get(&entry_id).unwrap();
+let out = cached.get_arrow_array();
+assert_eq!(out.as_ref(), arrow_array.as_ref());
+```
+
+## 3) Read with a Boolean filter
+
+```rust
+use liquid_cache_storage::cache::{CacheStorageBuilder, EntryID};
+use arrow::array::{UInt64Array, BooleanArray};
+use std::sync::Arc;
+
+let storage = CacheStorageBuilder::new().build();
+
+let entry_id = EntryID::from(8);
+let data = Arc::new(UInt64Array::from_iter_values(0..10));
+storage.insert(entry_id, data.clone());
+
+// Keep even indices
+let filter = BooleanArray::from((0..10).map(|i| i % 2 == 0).collect::<Vec<_>>());
+
+let cached = storage.get(&entry_id).unwrap();
+let filtered = cached.get_arrow_with_filter(&filter).unwrap();
+
+let expected = Arc::new(UInt64Array::from_iter_values((0..10).filter(|i| i % 2 == 0)));
+assert_eq!(filtered.as_ref(), expected.as_ref());
+```
+
+## 4) Read using a predicate plus a pre-filter mask
+
+TODO: add example

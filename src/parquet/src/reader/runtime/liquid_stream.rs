@@ -9,6 +9,7 @@ use fastrace::Event;
 use fastrace::local::LocalSpan;
 use futures::{FutureExt, Stream, future::BoxFuture, ready};
 use liquid_cache_common::coerce_parquet_schema_to_liquid_schema;
+use liquid_cache_storage::LiquidRowFilter;
 use parquet::arrow::arrow_reader::ArrowPredicate;
 use parquet::{
     arrow::{
@@ -26,9 +27,9 @@ use std::{
     task::{Context, Poll},
 };
 
+use super::InMemoryRowGroup;
 use super::liquid_batch_reader::LiquidBatchReader;
 use super::parquet::build_cached_array_reader;
-use super::{InMemoryRowGroup, LiquidRowFilter};
 
 type ReadResult = Result<(ReaderFactory, Option<LiquidBatchReader>), ParquetError>;
 
@@ -68,7 +69,7 @@ impl ReaderFactory {
 
         let mut predicate_projection: Option<ProjectionMask> = None;
         if let Some(filter) = self.filter.as_mut() {
-            for predicate in filter.predicates.iter_mut() {
+            for predicate in filter.predicates_mut() {
                 let p_projection = predicate.projection();
                 if let Some(ref mut p) = predicate_projection {
                     p.union(p_projection);
@@ -95,7 +96,7 @@ impl ReaderFactory {
 
         let mut filter_readers = Vec::new();
         if let Some(filter) = self.filter.as_mut() {
-            for predicate in filter.predicates.iter_mut() {
+            for predicate in filter.predicates_mut() {
                 if !selection.selects_any() {
                     return Ok((self, None));
                 }

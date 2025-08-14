@@ -583,10 +583,11 @@ mod test {
         assert!(store.get(&entry_id1).is_some());
         assert!(store.get(&entry_id3).is_some());
 
-        match store.get(&entry_id2) {
-            Some(CachedBatch::DiskLiquid) => {}
-            None => {} // This is also acceptable if fully evicted
-            other => panic!("Expected OnDiskLiquid or None, got {other:?}"),
+        if let Some(data) = store.get(&entry_id2) {
+            match data.raw_data() {
+                CachedBatch::DiskLiquid => {}
+                _ => panic!("Expected OnDiskLiquid, got {:?}", data.raw_data()),
+            }
         }
     }
 
@@ -610,10 +611,11 @@ mod test {
         assert!(store.get(&entry_id2).is_some());
         assert!(store.get(&entry_id4).is_some());
 
-        match store.get(&entry_id3) {
-            Some(CachedBatch::DiskLiquid) => {}
-            None => {} // This is also acceptable if fully evicted
-            other => panic!("Expected OnDiskLiquid or None, got {other:?}"),
+        if let Some(data) = store.get(&entry_id3) {
+            match data.raw_data() {
+                CachedBatch::DiskLiquid => {}
+                _ => panic!("Expected OnDiskLiquid, got {:?}", data.raw_data()),
+            }
         }
     }
 
@@ -627,14 +629,14 @@ mod test {
 
         store.insert_inner(entry_id1, create_test_array(100));
         assert!(matches!(
-            store.get(&entry_id1).unwrap(),
+            store.get(&entry_id1).unwrap().raw_data(),
             CachedBatch::MemoryArrow(_)
         ));
 
         store.insert_inner(entry_id2, create_test_array(2000)); // Large enough to exceed budget
 
         assert!(matches!(
-            store.get(&entry_id2).unwrap(),
+            store.get(&entry_id2).unwrap().raw_data(),
             CachedBatch::DiskArrow
         ));
 

@@ -1,4 +1,3 @@
-use crate::reader::LiquidPredicate;
 use in_memory_rg::InMemoryRowGroup;
 pub(crate) use liquid_predicate::extract_multi_column_or;
 pub(crate) use parquet_bridge::ArrowReaderBuilderBridge;
@@ -11,13 +10,3 @@ mod liquid_stream;
 mod parquet;
 mod parquet_bridge;
 mod utils;
-
-pub struct LiquidRowFilter {
-    pub(crate) predicates: Vec<LiquidPredicate>,
-}
-
-impl LiquidRowFilter {
-    pub fn new(predicates: Vec<LiquidPredicate>) -> Self {
-        Self { predicates }
-    }
-}
