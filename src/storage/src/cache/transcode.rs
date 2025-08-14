@@ -5,7 +5,8 @@ use arrow::array::{ArrayRef, AsArray};
 use arrow_schema::DataType;
 use tokio::runtime::Runtime;
 
-use crate::cache::{CacheEntryID, CacheStorage, CachedBatch};
+use crate::cache::utils::EntryID;
+use crate::cache::{CacheStorage, CachedBatch};
 use crate::liquid_array::{
     LiquidArrayRef, LiquidByteArray, LiquidFixedLenByteArray, LiquidFloatArray,
     LiquidPrimitiveArray,
@@ -27,7 +28,7 @@ pub(crate) static TRANSCODE_THREAD_POOL: LazyLock<Runtime> = LazyLock::new(|| {
 pub fn submit_background_transcoding_task(
     array: ArrayRef,
     cache: Arc<CacheStorage>,
-    entry_id: CacheEntryID,
+    entry_id: EntryID,
 ) {
     let compressor_states = cache.compressor_states(&entry_id);
     TRANSCODE_THREAD_POOL.spawn(async move {

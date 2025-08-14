@@ -4,7 +4,7 @@ Storage layer providing byte caching and liquid array data structures.
 
 
 ```rust
-use liquid_cache_storage::cache::{CacheStorage, CacheEntryID, CachedBatch, BatchID};
+use liquid_cache_storage::cache::{CacheStorage, EntryID, CachedBatch, DefaultIoWorker};
 use liquid_cache_storage::policies::ToDiskPolicy;
 use liquid_cache_storage::common::LiquidCacheMode;
 use arrow::array::UInt64Array;
@@ -21,9 +21,10 @@ let storage = Arc::new(CacheStorage::new(
         temp_dir.keep(),
         LiquidCacheMode::Liquid,
         policy,
+        Arc::new(DefaultIoWorker::new()),
 ));
 
-let entry_id = CacheEntryID::new(0, 0, 0, BatchID::from_raw(0));
+let entry_id = EntryID::from(0);
 let arrow_array = UInt64Array::from_iter_values(0..1000);
 storage.insert(entry_id, Arc::new(arrow_array));
 

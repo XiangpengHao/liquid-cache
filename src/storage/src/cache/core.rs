@@ -1,42 +1,112 @@
 use arrow::array::ArrayRef;
-use std::fmt::Debug;
+use std::fs::File;
+use std::io::Write;
 use std::path::PathBuf;
+use std::{fmt::Debug, path::Path};
 
 use super::{
-    CachedBatch,
-    budget::BudgetAccounting,
-    policies::CachePolicy,
-    tracer::CacheTracer,
-    transcode::transcode_liquid_inner,
-    utils::{CacheConfig, ColumnAccessPath},
+    CachedBatch, budget::BudgetAccounting, policies::CachePolicy, tracer::CacheTracer,
+    transcode::transcode_liquid_inner, utils::CacheConfig,
 };
-use crate::cache::index::ArtIndex;
 use crate::cache::transcode::submit_background_transcoding_task;
-use crate::cache::utils::{CacheAdvice, CacheEntryID, LiquidCompressorStates};
+use crate::cache::utils::{CacheAdvice, LiquidCompressorStates};
+use crate::cache::{index::ArtIndex, utils::EntryID};
 use crate::liquid_array::LiquidArrayRef;
-use crate::sync::{Arc, RwLock};
-use ahash::AHashMap;
+use crate::sync::Arc;
 use liquid_cache_common::LiquidCacheMode;
 
-#[derive(Debug)]
-struct CompressorStates {
-    states: RwLock<AHashMap<ColumnAccessPath, Arc<LiquidCompressorStates>>>,
-}
+/// A trait for objects that can handle IO operations for the cache.
+pub trait IoWorker: Debug + Send + Sync {
+    /// Get the compressor for an entry.
+    fn get_compressor_for_entry(&self, entry_id: &EntryID) -> Arc<LiquidCompressorStates>;
+    /// Get the path to the arrow file for an entry.
+    fn entry_arrow_path(&self, base_dir: &Path, entry_id: &EntryID) -> PathBuf;
+    /// Get the path to the liquid file for an entry.
+    fn entry_liquid_path(&self, base_dir: &Path, entry_id: &EntryID) -> PathBuf;
+    /// Write an arrow array to disk.
+    fn write_arrow_to_disk(
+        &self,
+        base_dir: &Path,
+        entry_id: &EntryID,
+        array: &ArrayRef,
+    ) -> Result<usize, std::io::Error> {
+        use arrow::array::RecordBatch;
+        use arrow::ipc::writer::StreamWriter;
+        use std::fs::File;
+        use std::io::BufWriter;
 
-impl CompressorStates {
-    fn new() -> Self {
-        Self {
-            states: RwLock::new(AHashMap::new()),
+        let file_path = self.entry_arrow_path(base_dir, entry_id);
+
+        // Ensure parent directory exists
+        if let Some(parent) = file_path.parent() {
+            std::fs::create_dir_all(parent)?;
         }
+
+        let file = File::create(file_path)?;
+        let buf_writer = BufWriter::new(file);
+
+        // Create a record batch with the single array
+        // We need to create a dummy field since we don't have the original field here
+        let field =
+            arrow_schema::Field::new("column", array.data_type().clone(), array.null_count() > 0);
+        let schema = std::sync::Arc::new(arrow_schema::Schema::new(vec![field]));
+        let batch = RecordBatch::try_new(schema.clone(), vec![array.clone()]).unwrap();
+
+        let mut stream_writer = StreamWriter::try_new(buf_writer, &schema).unwrap();
+        stream_writer.write(&batch).unwrap();
+        stream_writer.finish().unwrap();
+
+        // Return approximate size for disk usage tracking
+        Ok(array.get_array_memory_size())
     }
 
-    fn get_compressor(&self, entry_id: &CacheEntryID) -> Arc<LiquidCompressorStates> {
-        let column_path = ColumnAccessPath::from(*entry_id);
-        let mut states = self.states.write().unwrap();
-        states
-            .entry(column_path)
-            .or_insert_with(|| Arc::new(LiquidCompressorStates::new()))
-            .clone()
+    /// Write a liquid array to disk.
+    fn write_liquid_to_disk(
+        &self,
+        base_dir: &Path,
+        entry_id: &EntryID,
+        liquid_array: &LiquidArrayRef,
+    ) -> Result<usize, std::io::Error> {
+        let path = self.entry_liquid_path(base_dir, entry_id);
+        let bytes = liquid_array.to_bytes();
+        let mut file = File::create(&path)?;
+        file.write_all(&bytes)?;
+        Ok(bytes.len())
+    }
+}
+
+/// A default implementation of IoWorker that uses the default compressor.
+#[derive(Debug)]
+pub struct DefaultIoWorker {
+    compressor_state: Arc<LiquidCompressorStates>,
+}
+
+impl Default for DefaultIoWorker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DefaultIoWorker {
+    /// Create a new instance of DefaultIoWorker.
+    pub fn new() -> Self {
+        Self {
+            compressor_state: Arc::new(LiquidCompressorStates::new()),
+        }
+    }
+}
+
+impl IoWorker for DefaultIoWorker {
+    fn get_compressor_for_entry(&self, _entry_id: &EntryID) -> Arc<LiquidCompressorStates> {
+        self.compressor_state.clone()
+    }
+
+    fn entry_arrow_path(&self, base_dir: &Path, entry_id: &EntryID) -> PathBuf {
+        base_dir.join(format!("{:016x}.arrow", usize::from(*entry_id)))
+    }
+
+    fn entry_liquid_path(&self, base_dir: &Path, entry_id: &EntryID) -> PathBuf {
+        base_dir.join(format!("{:016x}.liquid", usize::from(*entry_id)))
     }
 }
 
@@ -48,7 +118,7 @@ pub struct CacheStorage {
     budget: BudgetAccounting,
     policy: Box<dyn CachePolicy>,
     tracer: CacheTracer,
-    compressor_states: CompressorStates,
+    io_worker: Arc<dyn IoWorker>,
 }
 
 impl CacheStorage {
@@ -59,6 +129,7 @@ impl CacheStorage {
         cache_dir: PathBuf,
         cache_mode: LiquidCacheMode,
         policy: Box<dyn CachePolicy>,
+        io_worker: Arc<dyn IoWorker>,
     ) -> Self {
         let config = CacheConfig::new(batch_size, max_cache_bytes, cache_dir, cache_mode);
         Self {
@@ -67,13 +138,13 @@ impl CacheStorage {
             config,
             policy,
             tracer: CacheTracer::new(),
-            compressor_states: CompressorStates::new(),
+            io_worker,
         }
     }
 
     fn try_insert(
         &self,
-        entry_id: CacheEntryID,
+        entry_id: EntryID,
         cached_batch: CachedBatch,
     ) -> Result<(), (CacheAdvice, CachedBatch)> {
         let new_memory_size = cached_batch.memory_usage_bytes();
@@ -104,7 +175,7 @@ impl CacheStorage {
     fn apply_advice(&self, advice: CacheAdvice, not_inserted: CachedBatch) -> Option<CachedBatch> {
         match advice {
             CacheAdvice::Transcode(to_transcode) => {
-                let compressor_states = self.compressor_states.get_compressor(&to_transcode);
+                let compressor_states = self.io_worker.get_compressor_for_entry(&to_transcode);
                 let Some(to_transcode_batch) = self.index.get(&to_transcode) else {
                     // The batch is gone, no need to transcode
                     return Some(not_inserted);
@@ -121,7 +192,7 @@ impl CacheStorage {
                 Some(not_inserted)
             }
             CacheAdvice::Evict(to_evict) => {
-                let compressor_states = self.compressor_states.get_compressor(&to_evict);
+                let compressor_states = self.io_worker.get_compressor_for_entry(&to_evict);
                 let Some(to_evict_batch) = self.index.get(&to_evict) else {
                     return Some(not_inserted);
                 };
@@ -146,7 +217,7 @@ impl CacheStorage {
                 Some(not_inserted)
             }
             CacheAdvice::TranscodeToDisk(to_transcode) => {
-                let compressor_states = self.compressor_states.get_compressor(&to_transcode);
+                let compressor_states = self.io_worker.get_compressor_for_entry(&to_transcode);
                 let liquid_array = match not_inserted {
                     CachedBatch::MemoryArrow(array) => {
                         transcode_liquid_inner(&array, compressor_states.as_ref())
@@ -188,22 +259,24 @@ impl CacheStorage {
         }
     }
 
-    fn write_liquid_to_disk(&self, entry_id: &CacheEntryID, liquid_array: &LiquidArrayRef) {
-        let disk_usage = entry_id
-            .write_liquid_to_disk(self.config.cache_root_dir(), liquid_array)
+    fn write_liquid_to_disk(&self, entry_id: &EntryID, liquid_array: &LiquidArrayRef) {
+        let disk_usage = self
+            .io_worker
+            .write_liquid_to_disk(self.config.cache_root_dir(), entry_id, liquid_array)
             .expect("failed to write liquid to disk");
         self.budget.add_used_disk_bytes(disk_usage);
     }
 
-    fn write_arrow_to_disk(&self, entry_id: &CacheEntryID, array: &arrow::array::ArrayRef) {
-        let disk_usage = entry_id
-            .write_arrow_to_disk(self.config.cache_root_dir(), array)
+    fn write_arrow_to_disk(&self, entry_id: &EntryID, array: &arrow::array::ArrayRef) {
+        let disk_usage = self
+            .io_worker
+            .write_arrow_to_disk(self.config.cache_root_dir(), entry_id, array)
             .expect("failed to write arrow to disk");
         self.budget.add_used_disk_bytes(disk_usage);
     }
 
     /// Insert a batch into the cache.
-    pub fn insert(self: &Arc<Self>, entry_id: CacheEntryID, batch_to_cache: ArrayRef) {
+    pub fn insert(self: &Arc<Self>, entry_id: EntryID, batch_to_cache: ArrayRef) {
         let batch = {
             match self.config.cache_mode() {
                 LiquidCacheMode::Arrow => CachedBatch::MemoryArrow(batch_to_cache),
@@ -213,7 +286,7 @@ impl CacheStorage {
                     CachedBatch::MemoryArrow(original_batch)
                 }
                 LiquidCacheMode::LiquidBlocking => {
-                    let compressor_states = self.compressor_states.get_compressor(&entry_id);
+                    let compressor_states = self.io_worker.get_compressor_for_entry(&entry_id);
                     let liquid_array =
                         transcode_liquid_inner(&batch_to_cache, compressor_states.as_ref())
                             .expect("Failed to transcode to liquid array");
@@ -226,7 +299,7 @@ impl CacheStorage {
     }
 
     /// Insert a batch into the cache, it will run cache replacement policy until the batch is inserted.
-    pub(crate) fn insert_inner(&self, entry_id: CacheEntryID, mut batch_to_cache: CachedBatch) {
+    pub(crate) fn insert_inner(&self, entry_id: EntryID, mut batch_to_cache: CachedBatch) {
         let mut loop_count = 0;
         loop {
             let Err((advice, not_inserted)) = self.try_insert(entry_id, batch_to_cache) else {
@@ -249,7 +322,7 @@ impl CacheStorage {
     }
 
     /// Get a batch from the cache.
-    pub fn get(&self, entry_id: &CacheEntryID) -> Option<CachedBatch> {
+    pub fn get(&self, entry_id: &EntryID) -> Option<CachedBatch> {
         let batch = self.index.get(entry_id);
         let batch_size = batch.as_ref().map(|b| b.memory_usage_bytes()).unwrap_or(0);
         self.tracer
@@ -263,7 +336,7 @@ impl CacheStorage {
     /// Iterate over all entries in the cache.
     /// No guarantees are made about the order of the entries.
     /// Isolation level: read-committed
-    pub fn for_each_entry(&self, mut f: impl FnMut(&CacheEntryID, &CachedBatch)) {
+    pub fn for_each_entry(&self, mut f: impl FnMut(&EntryID, &CachedBatch)) {
         self.index.for_each(&mut f);
     }
 
@@ -274,7 +347,7 @@ impl CacheStorage {
     }
 
     /// Check if a batch is cached.
-    pub fn is_cached(&self, entry_id: &CacheEntryID) -> bool {
+    pub fn is_cached(&self, entry_id: &EntryID) -> bool {
         self.index.is_cached(entry_id)
     }
 
@@ -294,8 +367,8 @@ impl CacheStorage {
     }
 
     /// Get the compressor states of the cache.
-    pub fn compressor_states(&self, entry_id: &CacheEntryID) -> Arc<LiquidCompressorStates> {
-        self.compressor_states.get_compressor(entry_id)
+    pub fn compressor_states(&self, entry_id: &EntryID) -> Arc<LiquidCompressorStates> {
+        self.io_worker.get_compressor_for_entry(entry_id)
     }
 
     /// Flush all entries to disk.
@@ -342,7 +415,7 @@ mod tests {
     use crate::cache::{
         core::ArtIndex,
         policies::{CachePolicy, LruPolicy},
-        utils::{create_cache_store, create_entry_id, create_test_array, create_test_arrow_array},
+        utils::{create_cache_store, create_test_array, create_test_arrow_array},
     };
     use crate::sync::thread;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -352,13 +425,12 @@ mod tests {
 
     mod partitioned_hash_store_tests {
         use super::*;
-        use crate::cache::utils::create_entry_id;
 
         #[test]
         fn test_get_and_is_cached() {
             let store = ArtIndex::new();
-            let entry_id1 = create_entry_id(1, 1, 1, 1);
-            let entry_id2 = create_entry_id(2, 2, 2, 2);
+            let entry_id1: EntryID = EntryID::from(1);
+            let entry_id2: EntryID = EntryID::from(2);
             let array1 = create_test_array(100);
 
             // Initially, entries should not be cached
@@ -384,16 +456,16 @@ mod tests {
         #[test]
         fn test_reset() {
             let store = ArtIndex::new();
-            let entry_id = create_entry_id(1, 1, 1, 1);
+            let entry_id: EntryID = EntryID::from(1);
             let array = create_test_array(100);
 
             store.insert(&entry_id, array.clone());
 
-            let entry_id = create_entry_id(1, 1, 1, 1);
+            let entry_id: EntryID = EntryID::from(1);
             assert!(store.is_cached(&entry_id));
 
             store.reset();
-            let entry_id = create_entry_id(1, 1, 1, 1);
+            let entry_id: EntryID = EntryID::from(1);
             assert!(!store.is_cached(&entry_id));
         }
     }
@@ -402,7 +474,7 @@ mod tests {
     #[derive(Debug)]
     struct TestPolicy {
         advice_type: AdviceType,
-        target_id: Option<CacheEntryID>,
+        target_id: Option<EntryID>,
         advice_count: AtomicUsize,
     }
 
@@ -415,7 +487,7 @@ mod tests {
     }
 
     impl TestPolicy {
-        fn new(advice_type: AdviceType, target_id: Option<CacheEntryID>) -> Self {
+        fn new(advice_type: AdviceType, target_id: Option<EntryID>) -> Self {
             Self {
                 advice_type,
                 target_id,
@@ -425,7 +497,7 @@ mod tests {
     }
 
     impl CachePolicy for TestPolicy {
-        fn advise(&self, entry_id: &CacheEntryID, _cache_mode: &LiquidCacheMode) -> CacheAdvice {
+        fn advise(&self, entry_id: &EntryID, _cache_mode: &LiquidCacheMode) -> CacheAdvice {
             self.advice_count.fetch_add(1, Ordering::SeqCst);
             match self.advice_type {
                 AdviceType::Evict => {
@@ -452,7 +524,7 @@ mod tests {
         assert_eq!(store.budget.memory_usage_bytes(), 0);
 
         // 2. Insert and verify first entry
-        let entry_id1 = create_entry_id(1, 1, 1, 1);
+        let entry_id1: EntryID = EntryID::from(1);
         let array1 = create_test_array(100);
         let size1 = array1.memory_usage_bytes();
         store.insert_inner(entry_id1, array1);
@@ -465,7 +537,7 @@ mod tests {
             _ => panic!("Expected ArrowMemory"),
         }
 
-        let entry_id2 = create_entry_id(2, 2, 2, 2);
+        let entry_id2: EntryID = EntryID::from(2);
         let array2 = create_test_array(200);
         let size2 = array2.memory_usage_bytes();
         store.insert_inner(entry_id2, array2);
@@ -477,7 +549,7 @@ mod tests {
         store.insert_inner(entry_id1, array3);
 
         assert_eq!(store.budget.memory_usage_bytes(), size3 + size2);
-        assert!(store.get(&create_entry_id(999, 999, 999, 999)).is_none());
+        assert!(store.get(&EntryID::from(999)).is_none());
     }
 
     #[test]
@@ -485,17 +557,14 @@ mod tests {
         // Comprehensive test of all three advice types
 
         // Create entry IDs we'll use throughout the test
-        let entry_id1 = create_entry_id(1, 1, 1, 1);
-        let entry_id2 = create_entry_id(2, 2, 2, 2);
-        let entry_id3 = create_entry_id(3, 3, 3, 3);
+        let entry_id1 = EntryID::from(1);
+        let entry_id2 = EntryID::from(2);
+        let entry_id3 = EntryID::from(3);
 
         // 1. Test EVICT advice
         {
             let advisor = TestPolicy::new(AdviceType::Evict, Some(entry_id1));
             let store = create_cache_store(8000, Box::new(advisor)); // Small budget to force advice
-
-            let on_disk_path = entry_id1.on_disk_path(store.config.cache_root_dir());
-            std::fs::create_dir_all(on_disk_path.parent().unwrap()).unwrap();
 
             store.insert_inner(entry_id1, create_test_array(800));
             match store.get(&entry_id1).unwrap() {
@@ -533,9 +602,6 @@ mod tests {
             let advisor = TestPolicy::new(AdviceType::TranscodeToDisk, None);
             let store = create_cache_store(8000, Box::new(advisor)); // Tiny budget to force disk storage
 
-            let on_disk_path = entry_id3.on_disk_path(store.config.cache_root_dir());
-            std::fs::create_dir_all(on_disk_path.parent().unwrap()).unwrap();
-
             store.insert_inner(entry_id1, create_test_array(800));
             store.insert_inner(entry_id3, create_test_array(800));
             match store.get(&entry_id3).unwrap() {
@@ -548,9 +614,6 @@ mod tests {
         {
             let advisor = TestPolicy::new(AdviceType::ToDisk, None);
             let store = create_cache_store(8000, Box::new(advisor)); // Small budget to force disk storage
-
-            let on_disk_arrow_path = entry_id1.on_disk_arrow_path(store.config.cache_root_dir());
-            std::fs::create_dir_all(on_disk_arrow_path.parent().unwrap()).unwrap();
 
             // Insert arrow data - should be written as DiskArrow (preserving format)
             store.insert_inner(entry_id1, create_test_array(800));
@@ -580,9 +643,6 @@ mod tests {
 
         let budget_size = num_threads * ops_per_thread * 100 * 8 / 2;
         let store = Arc::new(create_cache_store(budget_size, Box::new(LruPolicy::new())));
-        let entry_id = create_entry_id(1, 1, 1, 1);
-        let on_disk_path = entry_id.on_disk_path(store.config().cache_root_dir());
-        std::fs::create_dir_all(on_disk_path.parent().unwrap()).unwrap();
 
         let mut handles = vec![];
         for thread_id in 0..num_threads {
@@ -590,7 +650,7 @@ mod tests {
             handles.push(thread::spawn(move || {
                 for i in 0..ops_per_thread {
                     let unique_id = thread_id * ops_per_thread + i;
-                    let entry_id = create_entry_id(1, 1, 1, unique_id as u16);
+                    let entry_id: EntryID = EntryID::from(unique_id);
                     let array = create_test_arrow_array(100);
                     store.insert(entry_id, array);
                 }
@@ -604,7 +664,7 @@ mod tests {
         for thread_id in 0..num_threads {
             for i in 0..ops_per_thread {
                 let unique_id = thread_id * ops_per_thread + i;
-                let entry_id = create_entry_id(1, 1, 1, unique_id as u16);
+                let entry_id: EntryID = EntryID::from(unique_id);
                 assert!(store.get(&entry_id).is_some());
             }
         }

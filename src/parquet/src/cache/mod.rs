@@ -1,6 +1,7 @@
 //! This module contains the cache implementation for the Parquet reader.
 //!
 
+use crate::cache::io::{ColumnAccessPath, ParquetIoWorker};
 use crate::reader::{LiquidPredicate, extract_multi_column_or};
 use crate::sync::{Mutex, RwLock};
 use crate::utils::boolean_buffer_or;
@@ -12,9 +13,7 @@ use arrow::ipc::reader::StreamReader;
 use arrow_schema::{ArrowError, DataType, Field, Schema};
 use bytes::Bytes;
 use liquid_cache_common::{LiquidCacheMode, coerce_parquet_type_to_liquid_type};
-use liquid_cache_storage::cache::{
-    BatchID, CacheEntryID, CachePolicy, CacheStorage, CachedBatch, ColumnAccessPath,
-};
+use liquid_cache_storage::cache::{CachePolicy, CacheStorage, CachedBatch};
 use liquid_cache_storage::liquid_array::LiquidArrayRef;
 use liquid_cache_storage::liquid_array::ipc::{self, LiquidIPCContext};
 use parquet::arrow::arrow_reader::ArrowPredicate;
@@ -24,7 +23,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod id;
+mod io;
 mod stats;
+
+pub use id::{BatchID, ParquetArrayID};
 
 /// A column in the cache.
 #[derive(Debug)]
@@ -61,7 +64,7 @@ impl LiquidCachedColumn {
     }
 
     /// row_id must be on a batch boundary.
-    fn entry_id(&self, batch_id: BatchID) -> CacheEntryID {
+    fn entry_id(&self, batch_id: BatchID) -> ParquetArrayID {
         self.column_path.entry_id(batch_id)
     }
 
@@ -74,7 +77,7 @@ impl LiquidCachedColumn {
     }
 
     pub(crate) fn is_cached(&self, batch_id: BatchID) -> bool {
-        self.cache_store.is_cached(&self.entry_id(batch_id))
+        self.cache_store.is_cached(&self.entry_id(batch_id).into())
     }
 
     /// Reads a liquid array from disk.
@@ -84,7 +87,7 @@ impl LiquidCachedColumn {
         // But async in tokio is way slower than sync.
         let entry_id = self.entry_id(batch_id);
         let path = entry_id.on_disk_path(self.cache_store.config().cache_root_dir());
-        let compressor = self.cache_store.compressor_states(&entry_id);
+        let compressor = self.cache_store.compressor_states(&entry_id.into());
         let compressor = compressor.fsst_compressor();
         let mut file = File::open(path).unwrap();
         let mut bytes = Vec::new();
@@ -147,7 +150,7 @@ impl LiquidCachedColumn {
         filter: &BooleanBuffer,
         predicate: &mut LiquidPredicate,
     ) -> Option<Result<BooleanBuffer, ArrowError>> {
-        let cached_entry = self.cache_store.get(&self.entry_id(batch_id))?;
+        let cached_entry = self.cache_store.get(&self.entry_id(batch_id).into())?;
         match &cached_entry {
             CachedBatch::MemoryArrow(array) => {
                 let boolean_array = BooleanArray::new(filter.clone(), None);
@@ -197,7 +200,7 @@ impl LiquidCachedColumn {
         batch_id: BatchID,
         filter: &BooleanArray,
     ) -> Option<ArrayRef> {
-        let inner_value = self.cache_store.get(&self.entry_id(batch_id))?;
+        let inner_value = self.cache_store.get(&self.entry_id(batch_id).into())?;
         match &inner_value {
             CachedBatch::MemoryArrow(array) => {
                 let filtered = arrow::compute::filter(array, filter).unwrap();
@@ -222,7 +225,7 @@ impl LiquidCachedColumn {
 
     #[cfg(test)]
     pub(crate) fn get_arrow_array_test_only(&self, batch_id: BatchID) -> Option<ArrayRef> {
-        let cached_entry = self.cache_store.get(&self.entry_id(batch_id))?;
+        let cached_entry = self.cache_store.get(&self.entry_id(batch_id).into())?;
         match cached_entry {
             CachedBatch::MemoryArrow(array) => Some(array),
             CachedBatch::MemoryLiquid(array) => Some(array.to_best_arrow_array()),
@@ -246,7 +249,8 @@ impl LiquidCachedColumn {
         if self.is_cached(batch_id) {
             return Err(InsertArrowArrayError::AlreadyCached);
         }
-        self.cache_store.insert(self.entry_id(batch_id), array);
+        self.cache_store
+            .insert(self.entry_id(batch_id).into(), array);
         Ok(())
     }
 }
@@ -346,7 +350,7 @@ impl LiquidCachedRowGroup {
 
                 for (col_idx, expr) in column_exprs {
                     let column = self.get_column(col_idx as u64)?;
-                    let entry = self.cache_store.get(&column.entry_id(batch_id))?;
+                    let entry = self.cache_store.get(&column.entry_id(batch_id).into())?;
                     let liquid_array = match entry {
                         CachedBatch::MemoryLiquid(array) => array,
                         CachedBatch::DiskLiquid => column.read_liquid_from_disk(batch_id),
@@ -472,6 +476,7 @@ impl LiquidCache {
                 cache_dir,
                 cache_mode,
                 cache_policy,
+                Arc::new(ParquetIoWorker::new()),
             )),
             current_file_id: AtomicU64::new(0),
         }

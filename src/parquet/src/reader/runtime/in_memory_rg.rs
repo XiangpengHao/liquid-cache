@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use bytes::{Buf, Bytes};
-use liquid_cache_storage::cache::BatchID;
 use parquet::{
     arrow::{ProjectionMask, arrow_reader::RowGroups, async_reader::AsyncFileReader},
     column::page::{PageIterator, PageReader},
@@ -14,7 +13,7 @@ use parquet::{
 };
 
 use super::parquet::cached_page::{CachedPageReader, PredicatePageCache};
-use crate::reader::plantime::ParquetMetadataCacheReader;
+use crate::{cache::BatchID, reader::plantime::ParquetMetadataCacheReader};
 use crate::{cache::LiquidCachedRowGroupRef, reader::runtime::parquet::SerializedPageReader};
 
 /// An in-memory collection of column chunks

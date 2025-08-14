@@ -3,7 +3,7 @@
 use liquid_cache_common::LiquidCacheMode;
 
 use crate::{
-    cache::utils::{CacheAdvice, CacheEntryID},
+    cache::utils::{CacheAdvice, EntryID},
     sync::Mutex,
 };
 use std::{
@@ -14,20 +14,20 @@ use std::{
 /// The cache policy that guides the replacement of LiquidCache
 pub trait CachePolicy: std::fmt::Debug + Send + Sync {
     /// Give advice on what to do when cache is full.
-    fn advise(&self, entry_id: &CacheEntryID, cache_mode: &LiquidCacheMode) -> CacheAdvice;
+    fn advise(&self, entry_id: &EntryID, cache_mode: &LiquidCacheMode) -> CacheAdvice;
 
     /// Notify the cache policy that an entry was inserted.
-    fn notify_insert(&self, _entry_id: &CacheEntryID) {}
+    fn notify_insert(&self, _entry_id: &EntryID) {}
 
     /// Notify the cache policy that an entry was accessed.
-    fn notify_access(&self, _entry_id: &CacheEntryID) {}
+    fn notify_access(&self, _entry_id: &EntryID) {}
 }
 
 /// The policy that implements the FILO (First In, Last Out) algorithm.
 /// Newest entries are evicted first.
 #[derive(Debug, Default)]
 pub struct FiloPolicy {
-    queue: Mutex<VecDeque<CacheEntryID>>,
+    queue: Mutex<VecDeque<EntryID>>,
 }
 
 impl FiloPolicy {
@@ -38,40 +38,40 @@ impl FiloPolicy {
         }
     }
 
-    fn add_entry(&self, entry_id: &CacheEntryID) {
+    fn add_entry(&self, entry_id: &EntryID) {
         let mut queue = self.queue.lock().unwrap();
         queue.push_front(*entry_id);
     }
 
-    fn get_newest_entry(&self) -> Option<CacheEntryID> {
+    fn get_newest_entry(&self) -> Option<EntryID> {
         let mut queue = self.queue.lock().unwrap();
         queue.pop_front()
     }
 }
 
 impl CachePolicy for FiloPolicy {
-    fn advise(&self, entry_id: &CacheEntryID, cache_mode: &LiquidCacheMode) -> CacheAdvice {
+    fn advise(&self, entry_id: &EntryID, cache_mode: &LiquidCacheMode) -> CacheAdvice {
         if let Some(newest_entry) = self.get_newest_entry() {
             return CacheAdvice::Evict(newest_entry);
         }
         fallback_advice(entry_id, cache_mode)
     }
 
-    fn notify_insert(&self, entry_id: &CacheEntryID) {
+    fn notify_insert(&self, entry_id: &EntryID) {
         self.add_entry(entry_id);
     }
 }
 
 #[derive(Debug)]
 struct Node {
-    entry_id: CacheEntryID,
+    entry_id: EntryID,
     prev: Option<NonNull<Node>>,
     next: Option<NonNull<Node>>,
 }
 
 #[derive(Debug, Default)]
 struct LruInternalState {
-    map: HashMap<CacheEntryID, NonNull<Node>>,
+    map: HashMap<EntryID, NonNull<Node>>,
     head: Option<NonNull<Node>>,
     tail: Option<NonNull<Node>>,
 }
@@ -140,7 +140,7 @@ unsafe impl Send for LruPolicy {}
 unsafe impl Sync for LruPolicy {}
 
 impl CachePolicy for LruPolicy {
-    fn advise(&self, entry_id: &CacheEntryID, cache_mode: &LiquidCacheMode) -> CacheAdvice {
+    fn advise(&self, entry_id: &EntryID, cache_mode: &LiquidCacheMode) -> CacheAdvice {
         let mut state = self.state.lock().unwrap();
         if let Some(tail_ptr) = state.tail {
             let tail_entry_id = unsafe { tail_ptr.as_ref().entry_id };
@@ -157,7 +157,7 @@ impl CachePolicy for LruPolicy {
         fallback_advice(entry_id, cache_mode)
     }
 
-    fn notify_access(&self, entry_id: &CacheEntryID) {
+    fn notify_access(&self, entry_id: &EntryID) {
         let mut state = self.state.lock().unwrap();
         if let Some(node_ptr) = state.map.get(entry_id).copied() {
             unsafe {
@@ -168,7 +168,7 @@ impl CachePolicy for LruPolicy {
         // If not in map, it means it was already evicted or never inserted
     }
 
-    fn notify_insert(&self, entry_id: &CacheEntryID) {
+    fn notify_insert(&self, entry_id: &EntryID) {
         let mut state = self.state.lock().unwrap();
 
         // If entry already exists, move it to front (treat insert like access)
@@ -216,7 +216,7 @@ impl Drop for LruPolicy {
 pub struct DiscardPolicy;
 
 impl CachePolicy for DiscardPolicy {
-    fn advise(&self, _entry_id: &CacheEntryID, _cache_mode: &LiquidCacheMode) -> CacheAdvice {
+    fn advise(&self, _entry_id: &EntryID, _cache_mode: &LiquidCacheMode) -> CacheAdvice {
         CacheAdvice::Discard
     }
 }
@@ -234,12 +234,12 @@ impl ToDiskPolicy {
 }
 
 impl CachePolicy for ToDiskPolicy {
-    fn advise(&self, entry_id: &CacheEntryID, _cache_mode: &LiquidCacheMode) -> CacheAdvice {
+    fn advise(&self, entry_id: &EntryID, _cache_mode: &LiquidCacheMode) -> CacheAdvice {
         CacheAdvice::ToDisk(*entry_id)
     }
 }
 
-fn fallback_advice(entry_id: &CacheEntryID, cache_mode: &LiquidCacheMode) -> CacheAdvice {
+fn fallback_advice(entry_id: &EntryID, cache_mode: &LiquidCacheMode) -> CacheAdvice {
     match cache_mode {
         LiquidCacheMode::Arrow => CacheAdvice::Discard,
         _ => CacheAdvice::TranscodeToDisk(*entry_id),
@@ -251,9 +251,7 @@ mod test {
     use super::*;
     use liquid_cache_common::LiquidCacheMode;
 
-    use crate::cache::utils::{
-        create_cache_store, create_entry_id, create_test_array, create_test_arrow_array,
-    };
+    use crate::cache::utils::{create_cache_store, create_test_array, create_test_arrow_array};
 
     use super::super::CachedBatch;
     use super::{DiscardPolicy, FiloPolicy, LruInternalState, LruPolicy, ToDiskPolicy};
@@ -261,21 +259,17 @@ mod test {
     use std::sync::atomic::Ordering;
 
     // Helper to create entry IDs for tests
-    fn entry(id: u64) -> CacheEntryID {
-        create_entry_id(id, id, id, id as u16)
+    fn entry(id: usize) -> EntryID {
+        id.into()
     }
 
     // Helper to assert eviction advice
-    fn assert_evict_advice(
-        policy: &LruPolicy,
-        expect_evict: CacheEntryID,
-        trigger_entry: CacheEntryID,
-    ) {
+    fn assert_evict_advice(policy: &LruPolicy, expect_evict: EntryID, trigger_entry: EntryID) {
         let advice = policy.advise(&trigger_entry, &LiquidCacheMode::Arrow);
         assert_eq!(advice, CacheAdvice::Evict(expect_evict));
     }
 
-    fn assert_discard_advice(policy: &LruPolicy, trigger_entry: CacheEntryID) {
+    fn assert_discard_advice(policy: &LruPolicy, trigger_entry: EntryID) {
         let advice = policy.advise(&trigger_entry, &LiquidCacheMode::Arrow);
         assert_eq!(advice, CacheAdvice::Discard);
     }
@@ -520,7 +514,7 @@ mod test {
 
                 for i in 0..operations_per_thread {
                     let op_type = i % 3; // 0: insert, 1: access, 2: evict
-                    let entry_id = entry((thread_id * operations_per_thread + i) as u64);
+                    let entry_id = entry(thread_id * operations_per_thread + i);
 
                     match op_type {
                         0 => {
@@ -531,8 +525,7 @@ mod test {
                             // Every thread also accesses entries created by other threads
                             if i > 10 {
                                 let other_thread = (thread_id + 1) % num_threads;
-                                let other_id =
-                                    entry((other_thread * operations_per_thread + i - 10) as u64);
+                                let other_id = entry(other_thread * operations_per_thread + i - 10);
                                 policy_clone.notify_access(&other_id);
                             }
                             policy_clone.notify_access(&entry_id);
@@ -540,8 +533,7 @@ mod test {
                         2 => {
                             if i > 20 {
                                 // Evict some earlier entries we created
-                                let to_evict =
-                                    entry((thread_id * operations_per_thread + i - 20) as u64);
+                                let to_evict = entry(thread_id * operations_per_thread + i - 20);
                                 policy_clone.advise(&to_evict, &LiquidCacheMode::Arrow);
                                 total_evictions_clone.fetch_add(1, Ordering::SeqCst);
                             }
@@ -575,12 +567,9 @@ mod test {
         let advisor = LruPolicy::new();
         let store = create_cache_store(3000, Box::new(advisor));
 
-        let entry_id1 = create_entry_id(1, 1, 1, 1);
-        let entry_id2 = create_entry_id(1, 1, 1, 2);
-        let entry_id3 = create_entry_id(1, 1, 1, 3);
-
-        let on_disk_path = entry_id1.on_disk_path(store.config().cache_root_dir());
-        std::fs::create_dir_all(on_disk_path.parent().unwrap()).unwrap();
+        let entry_id1 = EntryID::from(1);
+        let entry_id2 = EntryID::from(2);
+        let entry_id3 = EntryID::from(3);
 
         store.insert(entry_id1, create_test_arrow_array(100));
         store.insert(entry_id2, create_test_arrow_array(100));
@@ -588,7 +577,7 @@ mod test {
 
         store.get(&entry_id1);
 
-        let entry_id4 = create_entry_id(4, 4, 4, 4);
+        let entry_id4 = EntryID::from(4);
         store.insert(entry_id4, create_test_arrow_array(100));
 
         assert!(store.get(&entry_id1).is_some());
@@ -606,18 +595,15 @@ mod test {
         let advisor = FiloPolicy::new();
         let store = create_cache_store(3000, Box::new(advisor));
 
-        let entry_id1 = create_entry_id(1, 1, 1, 1);
-        let entry_id2 = create_entry_id(1, 1, 1, 2);
-        let entry_id3 = create_entry_id(1, 1, 1, 3);
-
-        let on_disk_path = entry_id1.on_disk_path(store.config().cache_root_dir());
-        std::fs::create_dir_all(on_disk_path.parent().unwrap()).unwrap();
+        let entry_id1 = EntryID::from(1);
+        let entry_id2 = EntryID::from(2);
+        let entry_id3 = EntryID::from(3);
 
         store.insert(entry_id1, create_test_arrow_array(100));
         store.insert(entry_id2, create_test_arrow_array(100));
         store.insert(entry_id3, create_test_arrow_array(100));
 
-        let entry_id4 = create_entry_id(4, 4, 4, 4);
+        let entry_id4: EntryID = EntryID::from(4);
         store.insert(entry_id4, create_test_arrow_array(100));
 
         assert!(store.get(&entry_id1).is_some());
@@ -636,13 +622,8 @@ mod test {
         let advisor = ToDiskPolicy::new();
         let store = create_cache_store(3000, Box::new(advisor)); // Small budget to force disk storage
 
-        let entry_id1 = create_entry_id(1, 1, 1, 1);
-        let entry_id2 = create_entry_id(1, 1, 1, 2);
-
-        let on_disk_liquid_path = entry_id1.on_disk_path(store.config().cache_root_dir());
-        let on_disk_arrow_path = entry_id1.on_disk_arrow_path(store.config().cache_root_dir());
-        std::fs::create_dir_all(on_disk_liquid_path.parent().unwrap()).unwrap();
-        std::fs::create_dir_all(on_disk_arrow_path.parent().unwrap()).unwrap();
+        let entry_id1 = EntryID::from(1);
+        let entry_id2 = EntryID::from(2);
 
         store.insert_inner(entry_id1, create_test_array(100));
         assert!(matches!(

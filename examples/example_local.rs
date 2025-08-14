@@ -1,5 +1,5 @@
 use datafusion::prelude::SessionConfig;
-use liquid_cache_local::storage::cache::{CacheAdvice, CacheEntryID};
+use liquid_cache_local::storage::cache::{CacheAdvice, EntryID};
 use liquid_cache_local::storage::policies::{CachePolicy, DiscardPolicy};
 use liquid_cache_local::{LiquidCacheLocalBuilder, common::LiquidCacheMode};
 use tempfile::TempDir;
@@ -26,7 +26,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 pub struct CustomPolicy;
 
 impl CachePolicy for CustomPolicy {
-    fn advise(&self, _entry_id: &CacheEntryID, _cache_mode: &LiquidCacheMode) -> CacheAdvice {
+    fn advise(&self, _entry_id: &EntryID, _cache_mode: &LiquidCacheMode) -> CacheAdvice {
         CacheAdvice::Discard
     }
 }
