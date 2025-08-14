@@ -9,6 +9,7 @@ mod transcode;
 mod utils;
 
 pub use core::CacheStorage;
+pub use core::{DefaultIoWorker, IoWorker};
 pub use policies::CachePolicy;
 pub use transcode::transcode_liquid_inner;
-pub use utils::{BatchID, CacheAdvice, CacheEntryID, CachedBatch, ColumnAccessPath};
+pub use utils::{CacheAdvice, CachedBatch, EntryID, LiquidCompressorStates};

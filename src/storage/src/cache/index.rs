@@ -4,10 +4,10 @@ use std::{
     sync::Arc,
 };
 
-use crate::cache::{CacheEntryID, CachedBatch};
+use crate::cache::{CachedBatch, utils::EntryID};
 
 pub(crate) struct ArtIndex {
-    art: CongeeArc<CacheEntryID, CachedBatch>,
+    art: CongeeArc<EntryID, CachedBatch>,
 }
 
 impl Debug for ArtIndex {
@@ -18,22 +18,22 @@ impl Debug for ArtIndex {
 
 impl ArtIndex {
     pub(crate) fn new() -> Self {
-        let art: CongeeArc<CacheEntryID, CachedBatch> = CongeeArc::new();
+        let art: CongeeArc<EntryID, CachedBatch> = CongeeArc::new();
         Self { art }
     }
 
-    pub(crate) fn get(&self, entry_id: &CacheEntryID) -> Option<CachedBatch> {
+    pub(crate) fn get(&self, entry_id: &EntryID) -> Option<CachedBatch> {
         let guard = self.art.pin();
         let batch = self.art.get(*entry_id, &guard)?;
         Some(CachedBatch::clone(&batch))
     }
 
-    pub(crate) fn is_cached(&self, entry_id: &CacheEntryID) -> bool {
+    pub(crate) fn is_cached(&self, entry_id: &EntryID) -> bool {
         let guard = self.art.pin();
         self.art.get(*entry_id, &guard).is_some()
     }
 
-    pub(crate) fn insert(&self, entry_id: &CacheEntryID, batch: CachedBatch) {
+    pub(crate) fn insert(&self, entry_id: &EntryID, batch: CachedBatch) {
         let guard = self.art.pin();
         _ = self
             .art
@@ -48,7 +48,7 @@ impl ArtIndex {
         });
     }
 
-    pub(crate) fn for_each(&self, mut f: impl FnMut(&CacheEntryID, &CachedBatch)) {
+    pub(crate) fn for_each(&self, mut f: impl FnMut(&EntryID, &CachedBatch)) {
         let guard = self.art.pin();
         for id in self.art.keys().into_iter() {
             f(
@@ -62,7 +62,7 @@ impl ArtIndex {
     }
 
     #[cfg(test)]
-    pub(crate) fn keys(&self) -> Vec<CacheEntryID> {
+    pub(crate) fn keys(&self) -> Vec<EntryID> {
         self.art.keys()
     }
 }

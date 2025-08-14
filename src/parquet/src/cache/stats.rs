@@ -1,5 +1,5 @@
 use super::{CachedBatch, LiquidCache};
-use crate::sync::Arc;
+use crate::{cache::id::ParquetArrayID, sync::Arc};
 use arrow::array::{ArrayBuilder, RecordBatch, StringBuilder, UInt64Builder};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use parquet::{
@@ -137,6 +137,7 @@ impl LiquidCache {
                 CachedBatch::DiskArrow => "OnDiskArrow",
             };
             let reference_count = cached_batch.reference_count();
+            let entry_id = ParquetArrayID::from(*entry_id);
             writer
                 .append_entry(
                     entry_id
@@ -163,6 +164,8 @@ impl LiquidCache {
 mod tests {
     use std::io::Read;
 
+    use crate::cache::id::BatchID;
+
     use super::*;
     use arrow::{
         array::{Array, AsArray},
@@ -170,7 +173,7 @@ mod tests {
     };
     use bytes::Bytes;
     use liquid_cache_common::LiquidCacheMode;
-    use liquid_cache_storage::cache::{BatchID, policies::DiscardPolicy};
+    use liquid_cache_storage::cache::policies::DiscardPolicy;
     use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
     use tempfile::NamedTempFile;
 

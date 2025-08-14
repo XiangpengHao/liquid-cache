@@ -115,8 +115,8 @@ jobs:
           commit-message: "chore: prepare release v${{ steps.release.outputs.new_version }}"
           delete-branch: true
 
-        - name: Output PR URL
-          run: echo "Pull request created at ${{ steps.create_pr.outputs.pull-request-url }}"
+      - name: Output PR URL
+        run: echo "Pull request created at ${{ steps.create_pr.outputs.pull-request-url }}"
 
   publish-docker:
     needs: release-and-publish
