@@ -2,7 +2,7 @@
 //!
 
 use crate::cache::io::{ColumnAccessPath, ParquetIoWorker};
-use crate::reader::extract_multi_column_or;
+use crate::reader::{LiquidPredicate, extract_multi_column_or};
 use crate::sync::{Mutex, RwLock};
 use crate::utils::boolean_buffer_or;
 use ahash::AHashMap;
@@ -11,7 +11,6 @@ use arrow::buffer::BooleanBuffer;
 use arrow::compute::prep_null_mask_filter;
 use arrow_schema::{ArrowError, DataType, Field, Schema};
 use liquid_cache_common::{LiquidCacheMode, coerce_parquet_type_to_liquid_type};
-use liquid_cache_storage::LiquidPredicate;
 use liquid_cache_storage::cache::cached_data::PredicatePushdownResult;
 use liquid_cache_storage::cache::{CachePolicy, CacheStorage};
 use parquet::arrow::arrow_reader::ArrowPredicate;
@@ -92,10 +91,10 @@ impl LiquidCachedColumn {
 
         let filter = BooleanArray::new(filter.clone(), None);
         let result = cached_entry
-            .get_with_predicate_pushdown(&filter, predicate.physical_expr_physical_column_index())
+            .get_with_predicate(&filter, predicate.physical_expr_physical_column_index())
             .ok()?;
         match result {
-            PredicatePushdownResult::PredicateEvaluated(buffer) => Some(Ok(buffer)),
+            PredicatePushdownResult::Evaluated(buffer) => Some(Ok(buffer)),
             PredicatePushdownResult::Filtered(array) => {
                 let record_batch = self.arrow_array_to_record_batch(array, &self.field);
                 let boolean_array = predicate.evaluate(record_batch).unwrap();
@@ -116,7 +115,7 @@ impl LiquidCachedColumn {
         filter: &BooleanArray,
     ) -> Option<ArrayRef> {
         let inner_value = self.cache_store.get(&self.entry_id(batch_id).into())?;
-        inner_value.get_with_selection_pushdown(filter).ok()
+        inner_value.get_with_selection(filter).ok()
     }
 
     #[cfg(test)]
@@ -445,6 +444,7 @@ impl LiquidCache {
 mod tests {
     use super::*;
     use crate::cache::{LiquidCache, LiquidCachedRowGroupRef};
+    use crate::reader::FilterCandidateBuilder;
     use arrow::array::Int32Array;
     use arrow::buffer::BooleanBuffer;
     use arrow::datatypes::{DataType, Field, Schema};
@@ -456,7 +456,6 @@ mod tests {
     use datafusion::physical_expr::expressions::{BinaryExpr, Literal};
     use datafusion::physical_plan::expressions::Column;
     use liquid_cache_common::LiquidCacheMode;
-    use liquid_cache_storage::FilterCandidateBuilder;
     use liquid_cache_storage::policies::DiscardPolicy;
     use parquet::arrow::ArrowWriter;
     use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};

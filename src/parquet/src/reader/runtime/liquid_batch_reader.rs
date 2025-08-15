@@ -5,12 +5,12 @@ use arrow::array::{Array, AsArray, BooleanArray, RecordBatch, RecordBatchReader}
 use arrow::buffer::BooleanBuffer;
 use arrow::compute::{filter_record_batch, prep_null_mask_filter};
 use arrow_schema::{ArrowError, DataType, Schema, SchemaRef};
-use liquid_cache_storage::{LiquidPredicate, LiquidRowFilter};
 use parquet::arrow::ProjectionMask;
 use parquet::arrow::array_reader::ArrayReader;
 use parquet::arrow::arrow_reader::{ArrowPredicate, RowSelection, RowSelector};
 
 use crate::cache::{BatchID, LiquidCachedRowGroupRef};
+use crate::reader::plantime::{LiquidPredicate, LiquidRowFilter};
 use crate::reader::runtime::liquid_predicate::is_predicate_supported_by_liquid;
 use crate::reader::runtime::utils::take_next_batch;
 use crate::utils::{boolean_buffer_and_then, row_selector_to_boolean_buffer};
@@ -346,6 +346,8 @@ fn can_optimize_single_column_filter_projection(
 
 #[cfg(test)]
 mod tests {
+    use crate::reader::plantime::FilterCandidateBuilder;
+
     use super::*;
     use arrow::array::{Int32Array, RecordBatch, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
@@ -355,7 +357,6 @@ mod tests {
     use datafusion::physical_expr::PhysicalExpr;
     use datafusion::physical_expr::expressions::{BinaryExpr, Column, Literal};
     use datafusion::physical_plan::metrics;
-    use liquid_cache_storage::FilterCandidateBuilder;
     use parquet::arrow::ProjectionMask;
     use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
     use parquet::arrow::arrow_writer::ArrowWriter;
