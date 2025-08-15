@@ -288,7 +288,7 @@ pub struct CacheStorage {
 
 impl CacheStorage {
     /// Create a new instance of CacheStorage.
-    pub fn new(
+    fn new(
         batch_size: usize,
         max_cache_bytes: usize,
         cache_dir: PathBuf,

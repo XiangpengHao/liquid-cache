@@ -69,20 +69,20 @@ pub(crate) fn create_cache_store(
 ) -> Arc<super::core::CacheStorage> {
     use tempfile::tempdir;
 
-    use crate::cache::core::{CacheStorage, DefaultIoWorker};
+    use crate::cache::{CacheStorageBuilder, core::DefaultIoWorker};
 
     let temp_dir = tempdir().unwrap();
     let base_dir = temp_dir.keep();
     let batch_size = 128;
 
-    Arc::new(CacheStorage::new(
-        batch_size,
-        max_cache_bytes,
-        base_dir.clone(),
-        LiquidCacheMode::LiquidBlocking,
-        policy,
-        Arc::new(DefaultIoWorker::new(base_dir)),
-    ))
+    let builder = CacheStorageBuilder::new()
+        .with_batch_size(batch_size)
+        .with_max_cache_bytes(max_cache_bytes)
+        .with_cache_dir(base_dir.clone())
+        .with_cache_mode(LiquidCacheMode::LiquidBlocking)
+        .with_policy(policy)
+        .with_io_worker(Arc::new(DefaultIoWorker::new(base_dir)));
+    builder.build()
 }
 
 /// Advice given by the cache policy.
