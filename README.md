@@ -17,8 +17,8 @@
 </div>
 
 LiquidCache is a pushdown cache for S3 --
-projections, filters, and aggregations are evaluated at the cache server before returning data to query engines (e.g., [DataFusion](https://github.com/apache/datafusion)).
-LiquidCache is a research project [funded](https://xiangpeng.systems/fund/) by [InfluxData](https://www.influxdata.com/).
+projections, filters, and aggregations are evaluated at the cache server before sending to [DataFusion](https://github.com/apache/datafusion).
+LiquidCache is a research project [funded](https://xiangpeng.systems/fund/) by [InfluxData](https://www.influxdata.com/), [SpiralDB](https://spiraldb.com/), and [Bauplan](https://www.bauplanlabs.com).
 
 ## Features
 LiquidCache is a radical redesign of caching: it **caches logical data** rather than its physical representations.
@@ -31,11 +31,6 @@ Cons:
 - LiquidCache is not a transparent cache (consider [Foyer](https://github.com/foyer-rs/foyer) instead), it leverages query semantics to optimize caching. 
 
 ## Architecture
-
-Both LiquidCache and DataFusion run on cloud servers within the same region, but are configured differently:
-
-- LiquidCache often has a memory/CPU ratio of 16:1 (e.g., 64GB memory and 4 cores)
-- DataFusion often has a memory/CPU ratio of 2:1 (e.g., 32GB memory and 16 cores)
 
 Multiple DataFusion nodes share the same LiquidCache instance through network connections. 
 Each component can be scaled independently as the workload grows. 
@@ -79,12 +74,10 @@ Then, create a new DataFusion context with LiquidCache:
 ```rust
 #[tokio::main]
 pub async fn main() -> Result<()> {
-/*==========================LiquidCache============================*/
     let ctx = LiquidCacheBuilder::new(cache_server)
         .with_object_store(ObjectStoreUrl::parse(object_store_url.as_str())?, None)
         .with_cache_mode(CacheMode::Liquid)
         .build(SessionConfig::from_env()?)?;
-/*=================================================================*/
 
     let ctx: Arc<SessionContext> = Arc::new(ctx);
     ctx.register_table(table_name, ...)
@@ -130,27 +123,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 
-## Run ClickBench 
-
-#### 1. Setup the Repository
-```bash
-git clone https://github.com/XiangpengHao/liquid-cache.git
-cd liquid-cache
-```
-
-#### 2. Run a LiquidCache Server
-```bash
-cargo run --bin bench_server --release
-```
-
-#### 3. Run a ClickBench Client
-In a different terminal, run the ClickBench client:
-```bash
-cargo run --bin clickbench_client --release -- --query-path benchmark/clickbench/queries/queries.sql --file examples/nano_hits.parquet --output benchmark/data/results/nano_hits.json
-```
-(Note: replace `nano_hits.parquet` with the [real ClickBench dataset](https://github.com/ClickHouse/ClickBench) for full benchmarking)
-
-
 ## Development
 
 See [dev/README.md](./dev/README.md)
@@ -163,9 +135,9 @@ See [benchmark/README.md](./benchmark/README.md)
 
 ### Inherit LiquidCache configurations
 
-LiquidCache uses non-default DataFusion configurations. Inherit them properly:
+LiquidCache requires a few non-default DataFusion configurations:
 
-**Use ListingTable:**
+**ListingTable:**
 ```rust
 let (ctx, _) = LiquidCacheInProcessBuilder::new().build(config)?;
 
@@ -206,16 +178,6 @@ LiquidCache is optimized for x86-64 with specific [instructions](https://github.
 Not yet. While production readiness is our goal, we are still implementing features and polishing the system.
 LiquidCache began as a research project exploring new approaches to build cost-effective caching systems. Like most research projects, it takes time to mature, and we welcome your help!
 
-#### Does LiquidCache cache data or results?
-
-LiquidCache is a data cache. It caches logically equivalent but physically different data from object storage.
-
-LiquidCache does not cache query results - it only caches data, allowing the same cache to be used for different queries.
-
-#### Nightly Rust, seriously?
-
-We will transition to stable Rust once we believe the project is ready for production.
-
 #### How does LiquidCache work?
 
 Check out our [paper](/dev/doc/liquid-cache-vldb.pdf) (under submission to VLDB) for more details. Meanwhile, we are working on a technical blog to introduce LiquidCache in a more accessible way.
@@ -228,6 +190,7 @@ If you want to get involved in the research process, feel free to [reach out](ht
 #### Who is behind LiquidCache?
 
 LiquidCache is a research project funded by:
+- [SpiralDB](https://spiraldb.com/)
 - [InfluxData](https://www.influxdata.com/)
 - [Bauplan](https://www.bauplanlabs.com)
 - Taxpayers of the state of Wisconsin and the federal government. 

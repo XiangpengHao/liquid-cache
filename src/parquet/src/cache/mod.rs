@@ -12,7 +12,7 @@ use arrow::compute::prep_null_mask_filter;
 use arrow_schema::{ArrowError, DataType, Field, Schema};
 use liquid_cache_common::{LiquidCacheMode, coerce_parquet_type_to_liquid_type};
 use liquid_cache_storage::cache::cached_data::PredicatePushdownResult;
-use liquid_cache_storage::cache::{CachePolicy, CacheStorage};
+use liquid_cache_storage::cache::{CachePolicy, CacheStorage, CacheStorageBuilder};
 use parquet::arrow::arrow_reader::ArrowPredicate;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -350,17 +350,18 @@ impl LiquidCache {
         cache_policy: Box<dyn CachePolicy>,
     ) -> Self {
         assert!(batch_size.is_power_of_two());
+        let cache_storage_builder = CacheStorageBuilder::new()
+            .with_batch_size(batch_size)
+            .with_max_cache_bytes(max_cache_bytes)
+            .with_cache_dir(cache_dir.clone())
+            .with_cache_mode(cache_mode)
+            .with_policy(cache_policy)
+            .with_io_worker(Arc::new(ParquetIoWorker::new(cache_dir)));
+        let cache_storage = cache_storage_builder.build();
 
         LiquidCache {
             files: Mutex::new(AHashMap::new()),
-            cache_store: Arc::new(CacheStorage::new(
-                batch_size,
-                max_cache_bytes,
-                cache_dir.clone(),
-                cache_mode,
-                cache_policy,
-                Arc::new(ParquetIoWorker::new(cache_dir)),
-            )),
+            cache_store: cache_storage,
             current_file_id: AtomicU64::new(0),
         }
     }
