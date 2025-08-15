@@ -391,10 +391,11 @@ mod tests {
             let builder =
                 FilterCandidateBuilder::new(expr, schema.clone(), schema.clone(), adapter_factory);
             let candidate = builder.build(parquet_metadata).unwrap().unwrap();
+            let projection = candidate.projection(parquet_metadata);
 
-            LiquidPredicate::try_new(
+            LiquidPredicate::try_new_with_metrics(
                 candidate,
-                parquet_metadata,
+                projection,
                 metrics::Count::new(),
                 metrics::Count::new(),
                 metrics::Time::new(),

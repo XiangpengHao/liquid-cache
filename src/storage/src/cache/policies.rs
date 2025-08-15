@@ -253,7 +253,7 @@ mod test {
 
     use crate::cache::utils::{create_cache_store, create_test_array, create_test_arrow_array};
 
-    use super::super::CachedBatch;
+    use super::super::cached_data::CachedBatch;
     use super::{DiscardPolicy, FiloPolicy, LruInternalState, LruPolicy, ToDiskPolicy};
     use crate::sync::{Arc, Barrier, thread};
     use std::sync::atomic::Ordering;

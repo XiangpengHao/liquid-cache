@@ -155,9 +155,9 @@ pub struct LiquidPredicate {
 
 impl LiquidPredicate {
     /// Create a new `LiquidPredicate` from a `FilterCandidate`
-    pub fn try_new(
+    pub fn try_new_with_metrics(
         candidate: FilterCandidate,
-        metadata: &ParquetMetaData,
+        projection: ProjectionMask,
         rows_pruned: metrics::Count,
         rows_matched: metrics::Count,
         time: metrics::Time,
@@ -169,15 +169,23 @@ impl LiquidPredicate {
         Ok(Self {
             physical_expr,
             physical_expr_physical_column_index: candidate.expr,
-            projection_mask: ProjectionMask::roots(
-                metadata.file_metadata().schema_descr(),
-                candidate.projection,
-            ),
+            projection_mask: projection,
             rows_pruned,
             rows_matched,
             time,
             schema_mapper: candidate.schema_mapper,
         })
+    }
+
+    /// Create a new `LiquidPredicate` from a `FilterCandidate`
+    pub fn try_new(candidate: FilterCandidate, projection: ProjectionMask) -> Result<Self> {
+        Self::try_new_with_metrics(
+            candidate,
+            projection,
+            metrics::Count::new(),
+            metrics::Count::new(),
+            metrics::Time::new(),
+        )
     }
 
     /// Get the physical expression with physical column index.
@@ -237,6 +245,15 @@ pub struct FilterCandidate {
     schema_mapper: Arc<dyn SchemaMapper>,
     /// The projected table schema that this filter references
     filter_schema: SchemaRef,
+}
+
+impl FilterCandidate {
+    pub fn projection(&self, metadata: &ParquetMetaData) -> ProjectionMask {
+        ProjectionMask::roots(
+            metadata.file_metadata().schema_descr(),
+            self.projection.iter().copied(),
+        )
+    }
 }
 
 /// Helper to build a `FilterCandidate`.
@@ -528,9 +545,13 @@ pub fn build_row_filter(
     candidates
         .into_iter()
         .map(|candidate| {
-            LiquidPredicate::try_new(
+            let projection = ProjectionMask::roots(
+                metadata.file_metadata().schema_descr(),
+                candidate.projection.iter().copied(),
+            );
+            LiquidPredicate::try_new_with_metrics(
                 candidate,
-                metadata,
+                projection,
                 rows_pruned.clone(),
                 rows_matched.clone(),
                 time.clone(),

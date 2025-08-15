@@ -1,15 +1,17 @@
+//! Cached data in the cache.
+
 use std::{fmt::Display, sync::Arc};
 
 use arrow::{
-    array::{Array, ArrayRef, BooleanArray, RecordBatch},
+    array::{ArrayRef, BooleanArray},
     buffer::BooleanBuffer,
-    compute::prep_null_mask_filter,
 };
-use arrow_schema::{ArrowError, Field, Schema};
-use parquet::arrow::arrow_reader::ArrowPredicate;
+use arrow_schema::ArrowError;
+use datafusion::physical_plan::PhysicalExpr;
 
-use crate::{LiquidPredicate, cache::EntryID, liquid_array::LiquidArrayRef};
+use crate::{cache::EntryID, liquid_array::LiquidArrayRef};
 
+/// A wrapper around the actual data in the cache.
 #[derive(Debug)]
 pub struct CachedData<'a> {
     data: CachedBatch,
@@ -17,8 +19,21 @@ pub struct CachedData<'a> {
     io_worker: &'a dyn super::core::IoWorker,
 }
 
+/// The result of predicate pushdown.
+pub enum PredicatePushdownResult {
+    /// The predicate is evaluated on the filtered data and the result is a boolean buffer.
+    PredicateEvaluated(BooleanBuffer),
+
+    /// The predicate is not evaluated but data is filtered.
+    Filtered(ArrayRef),
+}
+
 impl<'a> CachedData<'a> {
-    pub fn new(data: CachedBatch, id: EntryID, io_worker: &'a dyn super::core::IoWorker) -> Self {
+    pub(crate) fn new(
+        data: CachedBatch,
+        id: EntryID,
+        io_worker: &'a dyn super::core::IoWorker,
+    ) -> Self {
         Self {
             data,
             id,
@@ -31,11 +46,7 @@ impl<'a> CachedData<'a> {
         &self.data
     }
 
-    fn arrow_array_to_record_batch(&self, array: ArrayRef, field: &Arc<Field>) -> RecordBatch {
-        let schema = Arc::new(Schema::new(vec![field.clone()]));
-        RecordBatch::try_new(schema, vec![array]).unwrap()
-    }
-
+    /// Get the arrow array from the cached data.
     pub fn get_arrow_array(&self) -> ArrayRef {
         match &self.data {
             CachedBatch::MemoryArrow(array) => array.clone(),
@@ -49,6 +60,8 @@ impl<'a> CachedData<'a> {
         }
     }
 
+    /// Try to read the liquid array from the cached data.
+    /// Return None if the cached data is not a liquid array.
     pub fn try_read_liquid(&self) -> Option<LiquidArrayRef> {
         match &self.data {
             CachedBatch::MemoryLiquid(array) => Some(array.clone()),
@@ -59,94 +72,73 @@ impl<'a> CachedData<'a> {
         }
     }
 
-    pub fn get_arrow_with_filter(&self, filter: &BooleanArray) -> Result<ArrayRef, std::io::Error> {
+    /// Get the arrow array with selection pushdown.
+    pub fn get_with_selection_pushdown(
+        &self,
+        selection: &BooleanArray,
+    ) -> Result<ArrayRef, ArrowError> {
         match &self.data {
             CachedBatch::MemoryArrow(array) => {
-                let filtered = arrow::compute::filter(array, filter).unwrap();
+                let filtered = arrow::compute::filter(array, selection)?;
                 Ok(filtered)
             }
             CachedBatch::MemoryLiquid(array) => {
-                let filtered = array.filter_to_arrow(filter);
+                let filtered = array.filter_to_arrow(selection);
                 Ok(filtered)
             }
             CachedBatch::DiskLiquid => {
-                let array = self.io_worker.read_liquid_from_disk(&self.id).unwrap();
-                let filtered = array.filter_to_arrow(filter);
+                let array = self.io_worker.read_liquid_from_disk(&self.id)?;
+                let filtered = array.filter_to_arrow(selection);
                 Ok(filtered)
             }
             CachedBatch::DiskArrow => {
-                let array = self.io_worker.read_arrow_from_disk(&self.id).unwrap();
-                let filtered = arrow::compute::filter(&array, filter).unwrap();
+                let array = self.io_worker.read_arrow_from_disk(&self.id)?;
+                let filtered = arrow::compute::filter(&array, selection)?;
                 Ok(filtered)
+            }
+        }
+    }
+
+    /// Get the arrow array with predicate pushdown.
+    pub fn get_with_predicate_pushdown(
+        &self,
+        selection: &BooleanArray,
+        predicate: &Arc<dyn PhysicalExpr>,
+    ) -> Result<PredicatePushdownResult, ArrowError> {
+        match &self.data {
+            CachedBatch::MemoryArrow(array) => {
+                let selected = arrow::compute::filter(array, selection)?;
+                return Ok(PredicatePushdownResult::Filtered(selected));
+            }
+            CachedBatch::DiskArrow => {
+                let array = self.io_worker.read_arrow_from_disk(&self.id)?;
+                let selected = arrow::compute::filter(&array, selection)?;
+                return Ok(PredicatePushdownResult::Filtered(selected));
+            }
+            CachedBatch::MemoryLiquid(array) => {
+                self.eval_predicate_with_filter_inner(predicate, array, selection)
+            }
+            CachedBatch::DiskLiquid => {
+                let array = self.io_worker.read_liquid_from_disk(&self.id).unwrap();
+                self.eval_predicate_with_filter_inner(predicate, &array, selection)
             }
         }
     }
 
     fn eval_predicate_with_filter_inner(
         &self,
-        predicate: &mut LiquidPredicate,
+        predicate: &Arc<dyn PhysicalExpr>,
         array: &LiquidArrayRef,
-        filter: &BooleanArray,
-        field: &Arc<Field>,
-    ) -> Result<BooleanBuffer, ArrowError> {
-        match array.try_eval_predicate(predicate.physical_expr_physical_column_index(), filter)? {
+        selection: &BooleanArray,
+    ) -> Result<PredicatePushdownResult, ArrowError> {
+        match array.try_eval_predicate(predicate, selection)? {
             Some(new_filter) => {
                 let (buffer, _) = new_filter.into_parts();
-                Ok(buffer)
+                Ok(PredicatePushdownResult::PredicateEvaluated(buffer))
             }
             None => {
-                let arrow_batch = array.filter_to_arrow(filter);
-                let schema = Schema::new(vec![field.clone()]);
-                let record_batch =
-                    RecordBatch::try_new(Arc::new(schema), vec![arrow_batch]).unwrap();
-                let boolean_array = predicate.evaluate(record_batch).unwrap();
-                let (buffer, _) = boolean_array.into_parts();
-                Ok(buffer)
-            }
-        }
-    }
-
-    pub fn eval_predicate_with_filter(
-        &self,
-        filter: &BooleanBuffer,
-        predicate: &mut LiquidPredicate,
-        field: &Arc<Field>,
-    ) -> Result<BooleanBuffer, ArrowError> {
-        match &self.data {
-            CachedBatch::MemoryArrow(array) => {
-                let boolean_array = BooleanArray::new(filter.clone(), None);
-                let selected = arrow::compute::filter(array, &boolean_array).unwrap();
-                let record_batch = self.arrow_array_to_record_batch(selected, field);
-                let boolean_array = predicate.evaluate(record_batch).unwrap();
-                let predicate_filter = match boolean_array.null_count() {
-                    0 => boolean_array,
-                    _ => prep_null_mask_filter(&boolean_array),
-                };
-                let (buffer, _) = predicate_filter.into_parts();
-                Ok(buffer)
-            }
-
-            CachedBatch::DiskArrow => {
-                let array = self.io_worker.read_arrow_from_disk(&self.id).unwrap();
-                let boolean_array = BooleanArray::new(filter.clone(), None);
-                let selected = arrow::compute::filter(&array, &boolean_array).unwrap();
-                let record_batch = self.arrow_array_to_record_batch(selected, field);
-                let boolean_array = predicate.evaluate(record_batch).unwrap();
-                let predicate_filter = match boolean_array.null_count() {
-                    0 => boolean_array,
-                    _ => prep_null_mask_filter(&boolean_array),
-                };
-                let (buffer, _) = predicate_filter.into_parts();
-                Ok(buffer)
-            }
-            CachedBatch::MemoryLiquid(array) => {
-                let boolean_array = BooleanArray::new(filter.clone(), None);
-                self.eval_predicate_with_filter_inner(predicate, array, &boolean_array, field)
-            }
-            CachedBatch::DiskLiquid => {
-                let array = self.io_worker.read_liquid_from_disk(&self.id).unwrap();
-                let boolean_array = BooleanArray::new(filter.clone(), None);
-                self.eval_predicate_with_filter_inner(predicate, &array, &boolean_array, field)
+                let filtered = array.filter_to_arrow(selection);
+                Ok(PredicatePushdownResult::Filtered(filtered))
             }
         }
     }

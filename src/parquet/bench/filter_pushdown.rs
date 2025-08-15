@@ -118,9 +118,10 @@ fn get_arrow_array_with_filter_liquid_cache(bencher: Bencher, selectivity: f64) 
         adapter_factory,
     );
     let candidate = builder.build(metadata.metadata()).unwrap().unwrap();
-    let predicate = LiquidPredicate::try_new(
+    let projection = candidate.projection(metadata.metadata());
+    let predicate = LiquidPredicate::try_new_with_metrics(
         candidate,
-        metadata.metadata(),
+        projection,
         metrics::Count::new(),
         metrics::Count::new(),
         metrics::Time::new(),

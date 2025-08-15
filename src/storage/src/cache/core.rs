@@ -8,8 +8,9 @@ use std::path::PathBuf;
 use std::{fmt::Debug, path::Path};
 
 use super::{
-    CachedBatch, budget::BudgetAccounting, cached_data::CachedData, policies::CachePolicy,
-    tracer::CacheTracer, transcode::transcode_liquid_inner, utils::CacheConfig,
+    budget::BudgetAccounting, cached_data::CachedBatch, cached_data::CachedData,
+    policies::CachePolicy, tracer::CacheTracer, transcode::transcode_liquid_inner,
+    utils::CacheConfig,
 };
 use crate::cache::transcode::submit_background_transcoding_task;
 use crate::cache::utils::{CacheAdvice, LiquidCompressorStates};

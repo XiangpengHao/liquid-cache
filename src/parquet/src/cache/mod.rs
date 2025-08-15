@@ -6,12 +6,14 @@ use crate::reader::extract_multi_column_or;
 use crate::sync::{Mutex, RwLock};
 use crate::utils::boolean_buffer_or;
 use ahash::AHashMap;
-use arrow::array::{ArrayRef, BooleanArray, RecordBatch};
+use arrow::array::{Array, ArrayRef, BooleanArray, RecordBatch};
 use arrow::buffer::BooleanBuffer;
+use arrow::compute::prep_null_mask_filter;
 use arrow_schema::{ArrowError, DataType, Field, Schema};
 use liquid_cache_common::{LiquidCacheMode, coerce_parquet_type_to_liquid_type};
 use liquid_cache_storage::LiquidPredicate;
-use liquid_cache_storage::cache::{CachePolicy, CacheStorage, CachedBatch};
+use liquid_cache_storage::cache::cached_data::PredicatePushdownResult;
+use liquid_cache_storage::cache::{CachePolicy, CacheStorage};
 use parquet::arrow::arrow_reader::ArrowPredicate;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -74,6 +76,11 @@ impl LiquidCachedColumn {
         self.cache_store.is_cached(&self.entry_id(batch_id).into())
     }
 
+    fn arrow_array_to_record_batch(&self, array: ArrayRef, field: &Arc<Field>) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![field.clone()]));
+        RecordBatch::try_new(schema, vec![array]).unwrap()
+    }
+
     /// Evaluates a predicate on a cached column.
     pub fn eval_predicate_with_filter(
         &self,
@@ -82,7 +89,24 @@ impl LiquidCachedColumn {
         predicate: &mut LiquidPredicate,
     ) -> Option<Result<BooleanBuffer, ArrowError>> {
         let cached_entry = self.cache_store.get(&self.entry_id(batch_id).into())?;
-        Some(cached_entry.eval_predicate_with_filter(filter, predicate, &self.field))
+
+        let filter = BooleanArray::new(filter.clone(), None);
+        let result = cached_entry
+            .get_with_predicate_pushdown(&filter, predicate.physical_expr_physical_column_index())
+            .ok()?;
+        match result {
+            PredicatePushdownResult::PredicateEvaluated(buffer) => Some(Ok(buffer)),
+            PredicatePushdownResult::Filtered(array) => {
+                let record_batch = self.arrow_array_to_record_batch(array, &self.field);
+                let boolean_array = predicate.evaluate(record_batch).unwrap();
+                let predicate_filter = match boolean_array.null_count() {
+                    0 => boolean_array,
+                    _ => prep_null_mask_filter(&boolean_array),
+                };
+                let (buffer, _) = predicate_filter.into_parts();
+                Some(Ok(buffer))
+            }
+        }
     }
 
     /// Get an arrow array with a filter applied.
@@ -92,7 +116,7 @@ impl LiquidCachedColumn {
         filter: &BooleanArray,
     ) -> Option<ArrayRef> {
         let inner_value = self.cache_store.get(&self.entry_id(batch_id).into())?;
-        inner_value.get_arrow_with_filter(filter).ok()
+        inner_value.get_with_selection_pushdown(filter).ok()
     }
 
     #[cfg(test)]
@@ -431,7 +455,6 @@ mod tests {
     use datafusion::physical_expr::PhysicalExpr;
     use datafusion::physical_expr::expressions::{BinaryExpr, Literal};
     use datafusion::physical_plan::expressions::Column;
-    use datafusion::physical_plan::metrics;
     use liquid_cache_common::LiquidCacheMode;
     use liquid_cache_storage::FilterCandidateBuilder;
     use liquid_cache_storage::policies::DiscardPolicy;
@@ -504,14 +527,8 @@ mod tests {
             adapter_factory,
         );
         let candidate = builder.build(metadata.metadata()).unwrap().unwrap();
-        let mut predicate = LiquidPredicate::try_new(
-            candidate,
-            metadata.metadata(),
-            metrics::Count::new(),
-            metrics::Count::new(),
-            metrics::Time::new(),
-        )
-        .unwrap();
+        let projection = candidate.projection(metadata.metadata());
+        let mut predicate = LiquidPredicate::try_new(candidate, projection).unwrap();
 
         let selection = BooleanBuffer::new_set(batch_size);
         let result = row_group
@@ -590,14 +607,8 @@ mod tests {
             adapter_factory,
         );
         let candidate = builder.build(metadata.metadata()).unwrap().unwrap();
-        let mut predicate = LiquidPredicate::try_new(
-            candidate,
-            metadata.metadata(),
-            metrics::Count::new(),
-            metrics::Count::new(),
-            metrics::Time::new(),
-        )
-        .unwrap();
+        let projection = candidate.projection(metadata.metadata());
+        let mut predicate = LiquidPredicate::try_new(candidate, projection).unwrap();
 
         let selection = BooleanBuffer::new_set(batch_size);
         let result = row_group
@@ -670,14 +681,8 @@ mod tests {
             adapter_factory,
         );
         let candidate = builder.build(metadata.metadata()).unwrap().unwrap();
-        let mut predicate = LiquidPredicate::try_new(
-            candidate,
-            metadata.metadata(),
-            metrics::Count::new(),
-            metrics::Count::new(),
-            metrics::Time::new(),
-        )
-        .unwrap();
+        let projection = candidate.projection(metadata.metadata());
+        let mut predicate = LiquidPredicate::try_new(candidate, projection).unwrap();
 
         let selection = BooleanBuffer::new_set(batch_size);
         let result = row_group
