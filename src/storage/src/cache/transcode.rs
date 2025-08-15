@@ -6,7 +6,7 @@ use arrow_schema::DataType;
 use tokio::runtime::Runtime;
 
 use crate::cache::utils::EntryID;
-use crate::cache::{CacheStorage, CachedBatch};
+use crate::cache::{CacheStorage, cached_data::CachedBatch};
 use crate::liquid_array::{
     LiquidArrayRef, LiquidByteArray, LiquidFixedLenByteArray, LiquidFloatArray,
     LiquidPrimitiveArray,

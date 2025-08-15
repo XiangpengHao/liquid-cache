@@ -1,5 +1,6 @@
 use divan::Bencher;
 use liquid_cache_parquet::cache::LiquidCachedColumn;
+use liquid_cache_parquet::{FilterCandidateBuilder, LiquidPredicate};
 use liquid_cache_storage::policies::DiscardPolicy;
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -15,7 +16,6 @@ use datafusion::physical_plan::expressions::Column;
 use datafusion::physical_plan::metrics;
 use liquid_cache_common::LiquidCacheMode;
 use liquid_cache_parquet::cache::{BatchID, LiquidCache};
-use liquid_cache_storage::{FilterCandidateBuilder, LiquidPredicate};
 use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
 use rand::Rng;
@@ -118,9 +118,10 @@ fn get_arrow_array_with_filter_liquid_cache(bencher: Bencher, selectivity: f64) 
         adapter_factory,
     );
     let candidate = builder.build(metadata.metadata()).unwrap().unwrap();
-    let predicate = LiquidPredicate::try_new(
+    let projection = candidate.projection(metadata.metadata());
+    let predicate = LiquidPredicate::try_new_with_metrics(
         candidate,
-        metadata.metadata(),
+        projection,
         metrics::Count::new(),
         metrics::Count::new(),
         metrics::Time::new(),

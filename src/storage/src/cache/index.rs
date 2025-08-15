@@ -4,7 +4,7 @@ use std::{
     sync::Arc,
 };
 
-use crate::cache::{CachedBatch, utils::EntryID};
+use crate::cache::{cached_data::CachedBatch, utils::EntryID};
 
 pub(crate) struct ArtIndex {
     art: CongeeArc<EntryID, CachedBatch>,

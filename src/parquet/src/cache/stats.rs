@@ -1,7 +1,8 @@
-use super::{CachedBatch, LiquidCache};
+use super::LiquidCache;
 use crate::{cache::id::ParquetArrayID, sync::Arc};
 use arrow::array::{ArrayBuilder, RecordBatch, StringBuilder, UInt64Builder};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use liquid_cache_storage::cache::cached_data::CachedBatch;
 use parquet::{
     arrow::ArrowWriter, basic::Compression, errors::ParquetError,
     file::properties::WriterProperties,

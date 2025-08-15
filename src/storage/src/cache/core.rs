@@ -1,5 +1,6 @@
 use arrow::array::ArrayRef;
 use arrow::ipc::reader::StreamReader;
+use arrow_schema::ArrowError;
 use bytes::Bytes;
 use std::fs::File;
 use std::io::{BufReader, Read, Write};
@@ -7,11 +8,12 @@ use std::path::PathBuf;
 use std::{fmt::Debug, path::Path};
 
 use super::{
-    CachedBatch, budget::BudgetAccounting, policies::CachePolicy, tracer::CacheTracer,
-    transcode::transcode_liquid_inner, utils::CacheConfig,
+    budget::BudgetAccounting, cached_data::CachedBatch, cached_data::CachedData,
+    policies::CachePolicy, tracer::CacheTracer, transcode::transcode_liquid_inner,
+    utils::CacheConfig,
 };
 use crate::cache::transcode::submit_background_transcoding_task;
-use crate::cache::utils::{CacheAdvice, CachedData, LiquidCompressorStates};
+use crate::cache::utils::{CacheAdvice, LiquidCompressorStates};
 use crate::cache::{index::ArtIndex, utils::EntryID};
 use crate::liquid_array::ipc::LiquidIPCContext;
 use crate::liquid_array::{LiquidArrayRef, ipc};
@@ -83,17 +85,17 @@ pub trait IoWorker: Debug + Send + Sync {
     }
 
     /// Read an arrow array from disk.
-    fn read_arrow_from_disk(&self, entry_id: &EntryID) -> Result<ArrayRef, std::io::Error> {
+    fn read_arrow_from_disk(&self, entry_id: &EntryID) -> Result<ArrayRef, ArrowError> {
         let path = self.entry_arrow_path(entry_id);
         let file = File::open(path)?;
         let buf_reader = BufReader::new(file);
         let mut stream_reader = StreamReader::try_new(buf_reader, None).unwrap();
-        let batch = stream_reader.next().unwrap().unwrap();
+        let batch = stream_reader.next().unwrap()?;
         Ok(batch.column(0).clone())
     }
 
     /// Read a liquid array from disk.
-    fn read_liquid_from_disk(&self, entry_id: &EntryID) -> Result<LiquidArrayRef, std::io::Error> {
+    fn read_liquid_from_disk(&self, entry_id: &EntryID) -> Result<LiquidArrayRef, ArrowError> {
         let path = self.entry_liquid_path(entry_id);
         let mut file = File::open(path)?;
 

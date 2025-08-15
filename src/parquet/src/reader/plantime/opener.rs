@@ -3,7 +3,8 @@ use std::sync::Arc;
 use crate::{
     cache::LiquidCacheRef,
     reader::{
-        plantime::row_group_filter::RowGroupAccessPlanFilter, runtime::ArrowReaderBuilderBridge,
+        plantime::{row_filter::build_row_filter, row_group_filter::RowGroupAccessPlanFilter},
+        runtime::ArrowReaderBuilderBridge,
     },
 };
 use arrow_schema::{ArrowError, SchemaRef};
@@ -23,7 +24,6 @@ use datafusion::{
 use futures::StreamExt;
 use futures::TryStreamExt;
 use liquid_cache_common::ParquetReaderSchema;
-use liquid_cache_storage::build_row_filter;
 use log::debug;
 use parquet::arrow::{
     ParquetRecordBatchStreamBuilder, ProjectionMask,

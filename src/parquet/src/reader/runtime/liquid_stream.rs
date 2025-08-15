@@ -1,5 +1,5 @@
 use crate::cache::LiquidCachedFileRef;
-use crate::reader::plantime::ParquetMetadataCacheReader;
+use crate::reader::plantime::{LiquidRowFilter, ParquetMetadataCacheReader};
 use crate::reader::runtime::parquet_bridge::{
     ParquetField, limit_row_selection, offset_row_selection,
 };
@@ -9,7 +9,6 @@ use fastrace::Event;
 use fastrace::local::LocalSpan;
 use futures::{FutureExt, Stream, future::BoxFuture, ready};
 use liquid_cache_common::coerce_parquet_schema_to_liquid_schema;
-use liquid_cache_storage::LiquidRowFilter;
 use parquet::arrow::arrow_reader::ArrowPredicate;
 use parquet::{
     arrow::{
