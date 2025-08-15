@@ -1,0 +1,112 @@
+name: nightly-fuzz
+
+on:
+  schedule:
+    - cron: '0 0 * * *' # 00:00 UTC daily
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [fsst_view]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust (nightly) with llvm-tools
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: llvm-tools-preview
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz
+
+      - name: Ensure clang/llvm present
+        run: sudo apt-get update && sudo apt-get install -y clang llvm lld
+
+      - name: Run fuzzing (3h, use all cores)
+        shell: bash
+        env:
+          RUST_BACKTRACE: 1
+        run: |
+          set -euxo pipefail
+
+          # Ensure llvm tools are available on PATH
+          LLVM_TOOLS_DIR="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin"
+          echo "${LLVM_TOOLS_DIR}" >> "${GITHUB_PATH}"
+
+          CORES=$(nproc)
+          TARGET="${{ matrix.target }}"
+          echo "Fuzz target: ${TARGET} with ${CORES} cores"
+
+          # Start fresh each run
+          rm -rf "fuzz/corpus/${TARGET}" "fuzz/artifacts/${TARGET}" "fuzz/coverage/${TARGET}"
+
+          # Run fuzzing for 3 hours using all cores
+          cargo fuzz run "${TARGET}" -- -jobs="${CORES}" -workers="${CORES}" -max_total_time=10800
+
+          # Generate coverage data
+          cargo fuzz coverage "${TARGET}"
+
+          # Find instrumented binary produced by cargo fuzz coverage
+          BIN=$(find target -path "*/coverage/*/release/${TARGET}" -type f -perm -111 | head -n1)
+          if [[ -z "${BIN}" ]]; then
+            echo "Failed to locate coverage binary for ${TARGET}" >&2
+            exit 1
+          fi
+
+          mkdir -p "fuzz/coverage/${TARGET}/html"
+
+          # Produce human-readable HTML coverage report
+          llvm-cov show "${BIN}" \
+            --instr-profile "fuzz/coverage/${TARGET}/coverage.profdata" \
+            --format html \
+            --ignore-filename-regex ".\\.cargo" \
+            > "fuzz/coverage/${TARGET}/html/index.html"
+
+          # Produce text summary and add to job summary
+          llvm-cov report "${BIN}" \
+            --instr-profile "fuzz/coverage/${TARGET}/coverage.profdata" \
+            > "fuzz/coverage/${TARGET}/coverage.txt"
+
+          {
+            echo "### ${TARGET} coverage"
+            echo '```'
+            cat "fuzz/coverage/${TARGET}/coverage.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage text summary
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fuzz-coverage-text-${{ matrix.target }}
+          path: |
+            fuzz/coverage/${{ matrix.target }}/coverage.txt
+          if-no-files-found: warn
+
+      - name: Upload fuzz artifacts (crashes, reduces, etc.)
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: |
+            fuzz/artifacts/${{ matrix.target }}
+          if-no-files-found: warn
+
+  
+
+
