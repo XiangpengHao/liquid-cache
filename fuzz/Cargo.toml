@@ -9,8 +9,8 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-arbitrary = { version = "1.0", features = ["derive"] }
-arrow = "55.1.0"
+arbitrary = { version = "1.4", features = ["derive"] }
+arrow = "55.2.0"
 datafusion = "47.0.0"
 liquid-cache-storage = { workspace = true }
 
