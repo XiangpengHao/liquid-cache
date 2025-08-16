@@ -12,7 +12,7 @@ use bytes::Bytes;
 use futures::{Stream, stream::BoxStream};
 use object_store::{
     Error, GetOptions, GetRange, GetResult, GetResultPayload, ListResult, MultipartUpload,
-    ObjectMeta, ObjectStore, PutMultipartOpts, PutOptions, PutPayload, PutResult, Result,
+    ObjectMeta, ObjectStore, PutMultipartOptions, PutOptions, PutPayload, PutResult, Result,
     path::Path,
 };
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
@@ -279,7 +279,7 @@ impl ObjectStore for ByteCache {
     async fn put_multipart_opts(
         &self,
         _location: &Path,
-        _opts: PutMultipartOpts,
+        _opts: PutMultipartOptions,
     ) -> Result<Box<dyn MultipartUpload>> {
         unreachable!("ByteCache does not support multipart upload")
     }
