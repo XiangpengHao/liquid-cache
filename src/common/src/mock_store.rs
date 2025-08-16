@@ -4,10 +4,10 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use futures::{StreamExt, stream::BoxStream};
+use object_store::PutMultipartOptions;
 use object_store::{
     Attributes, Error, GetOptions, GetResult, GetResultPayload, ListResult, MultipartUpload,
-    ObjectMeta, ObjectStore, PutMode, PutMultipartOpts, PutOptions, PutPayload, PutResult, Result,
-    path::Path,
+    ObjectMeta, ObjectStore, PutMode, PutOptions, PutPayload, PutResult, Result, path::Path,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
@@ -408,7 +408,7 @@ impl ObjectStore for MockStore {
     async fn put_multipart_opts(
         &self,
         _location: &Path,
-        _opts: PutMultipartOpts,
+        _opts: PutMultipartOptions,
     ) -> Result<Box<dyn MultipartUpload>> {
         unreachable!("MockStore does not support multipart upload")
     }
