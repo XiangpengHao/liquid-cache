@@ -25,8 +25,8 @@ liquid-cache-common = { workspace = true }
 tempfile = { workspace = true }
 axum = "0.8.4"
 serde = { workspace = true }
-tower-http = { version = "0.6.4", features = ["cors"] }
-sysinfo = { version = "0.35.1", default-features = false, features = [
+tower-http = { version = "0.6.6", features = ["cors"] }
+sysinfo = { version = "0.35.2", default-features = false, features = [
 	"component",
 	"disk",
 	"network",
@@ -35,7 +35,7 @@ sysinfo = { version = "0.35.1", default-features = false, features = [
 ] }
 uuid = { workspace = true }
 fastrace = { workspace = true }
-pprof = { version = "0.14.0", features = ["flamegraph"] }
+pprof = { version = "0.14.1", features = ["flamegraph"] }
 anyhow = "1.0"
 liquid-cache-storage = { workspace = true }
 
