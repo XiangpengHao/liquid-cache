@@ -81,7 +81,13 @@ jobs:
           cargo publish -p liquid-cache-common
           sleep 30  # Wait for the registry to update
           
+          cargo publish -p liquid-cache-storage
+          sleep 30
+          
           cargo publish -p liquid-cache-parquet
+          sleep 30
+          
+          cargo publish -p liquid-cache-local
           sleep 30
           
           cargo publish -p liquid-cache-client
