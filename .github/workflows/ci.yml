@@ -109,15 +109,15 @@ jobs:
         run: |
           source <(cargo llvm-cov show-env --export-prefix)
           cargo llvm-cov clean --workspace
-          cargo build --profile ci --bin bench_server
-          cargo build --profile ci --bin clickbench_client
-          env RUST_LOG=info nohup cargo run --profile ci --bin bench_server -- --abort-on-panic --cache-mode liquid_eager_transcode &> server.log &
+          cargo build --bin bench_server
+          cargo build --bin clickbench_client
+          env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic --cache-mode liquid_eager_transcode &> server.log &
           sleep 2  # Wait for server to start up
-          env RUST_LOG=info cargo run --profile ci --bin clickbench_client -- --manifest benchmark/clickbench/benchmark_manifest.json
+          env RUST_LOG=info cargo run --bin clickbench_client -- --manifest benchmark/clickbench/benchmark_manifest.json
           echo "=== Server logs ==="
           cat server.log || echo "No server log found"
           curl http://localhost:53703/shutdown
-          env RUST_LOG=info cargo run --profile ci --bin in_process -- --manifest benchmark/clickbench/benchmark_manifest.json
+          env RUST_LOG=info cargo run --bin in_process -- --manifest benchmark/clickbench/benchmark_manifest.json
           cargo llvm-cov report --codecov --output-path codecov_clickbench.json
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5

@@ -59,15 +59,6 @@ congee = "0.4.1"
 [profile.dev.package]
 insta.opt-level = 3
 
-[profile.ci]
-# Slightly optimized but with full debug checks for CI
-inherits = "dev"
-opt-level = 2
-debug-assertions = true
-overflow-checks = true
-incremental = false
-debug = false
-
 [patch.crates-io]
 # datafusion = { path = "../datafusion/datafusion/core" }
 # datafusion-proto = { path = "../datafusion/datafusion/proto" }
