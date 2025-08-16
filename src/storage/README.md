@@ -49,7 +49,8 @@ assert_eq!(out.as_ref(), arrow_array.as_ref());
 
 ```rust
 use liquid_cache_storage::cache::{CacheStorageBuilder, EntryID};
-use arrow::array::{UInt64Array, BooleanArray};
+use arrow::array::UInt64Array;
+use arrow::buffer::BooleanBuffer;
 use std::sync::Arc;
 
 let storage = CacheStorageBuilder::new().build();
@@ -59,7 +60,7 @@ let data = Arc::new(UInt64Array::from_iter_values(0..10));
 storage.insert(entry_id, data.clone());
 
 // Keep even indices
-let filter = BooleanArray::from((0..10).map(|i| i % 2 == 0).collect::<Vec<_>>());
+let filter = BooleanBuffer::from((0..10).map(|i| i % 2 == 0).collect::<Vec<_>>());
 
 let cached = storage.get(&entry_id).unwrap();
 let filtered = cached.get_with_selection(&filter).unwrap();
@@ -88,7 +89,7 @@ let data = Arc::new(StringArray::from(vec![
     Some("apple"), Some("banana"), None, Some("apple"), Some("cherry"),
 ]));
 storage.insert(entry_id, data.clone());
-let selection = BooleanArray::from(vec![true, true, false, true, true]);
+let selection = BooleanBuffer::from(vec![true, true, false, true, true]);
 let expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
     Arc::new(Column::new("col", 0)),
     Operator::Eq,
@@ -98,6 +99,6 @@ let cached = storage.get(&entry_id).unwrap();
 let result = cached
     .get_with_predicate(&selection, &expr)
     .unwrap();
-let expected = BooleanBuffer::from(vec![true, false, true, false]);
+let expected = BooleanArray::from(vec![true, false, true, false]);
 assert_eq!(result, PredicatePushdownResult::Evaluated(expected));
 ```

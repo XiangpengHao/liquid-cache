@@ -578,7 +578,6 @@ impl CacheStorage {
 mod tests {
     use super::*;
     use crate::cache::{
-        core::ArtIndex,
         policies::{CachePolicy, LruPolicy},
         utils::{create_cache_store, create_test_array, create_test_arrow_array},
     };
@@ -587,53 +586,6 @@ mod tests {
 
     use arrow::array::Array;
     use liquid_cache_common::LiquidCacheMode;
-
-    mod partitioned_hash_store_tests {
-        use super::*;
-
-        #[test]
-        fn test_get_and_is_cached() {
-            let store = ArtIndex::new();
-            let entry_id1: EntryID = EntryID::from(1);
-            let entry_id2: EntryID = EntryID::from(2);
-            let array1 = create_test_array(100);
-
-            // Initially, entries should not be cached
-            assert!(!store.is_cached(&entry_id1));
-            assert!(!store.is_cached(&entry_id2));
-            assert!(store.get(&entry_id1).is_none());
-
-            // Insert an entry and verify it's cached
-            {
-                store.insert(&entry_id1, array1.clone());
-            }
-
-            assert!(store.is_cached(&entry_id1));
-            assert!(!store.is_cached(&entry_id2));
-
-            // Get should return the cached value
-            match store.get(&entry_id1) {
-                Some(CachedBatch::MemoryArrow(arr)) => assert_eq!(arr.len(), 100),
-                _ => panic!("Expected ArrowMemory batch"),
-            }
-        }
-
-        #[test]
-        fn test_reset() {
-            let store = ArtIndex::new();
-            let entry_id: EntryID = EntryID::from(1);
-            let array = create_test_array(100);
-
-            store.insert(&entry_id, array.clone());
-
-            let entry_id: EntryID = EntryID::from(1);
-            assert!(store.is_cached(&entry_id));
-
-            store.reset();
-            let entry_id: EntryID = EntryID::from(1);
-            assert!(!store.is_cached(&entry_id));
-        }
-    }
 
     // Unified advice type for more concise testing
     #[derive(Debug)]

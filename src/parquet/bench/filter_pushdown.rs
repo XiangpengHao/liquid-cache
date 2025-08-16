@@ -1,3 +1,4 @@
+use arrow::buffer::BooleanBuffer;
 use divan::Bencher;
 use liquid_cache_parquet::cache::LiquidCachedColumn;
 use liquid_cache_parquet::{FilterCandidateBuilder, LiquidPredicate};
@@ -5,7 +6,7 @@ use liquid_cache_storage::policies::DiscardPolicy;
 use std::sync::Arc;
 use tempfile::TempDir;
 
-use arrow::array::{ArrayRef, BooleanArray, Int32Array, RecordBatch};
+use arrow::array::{ArrayRef, Int32Array, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema};
 use datafusion::common::ScalarValue;
 use datafusion::datasource::schema_adapter::DefaultSchemaAdapterFactory;
@@ -29,12 +30,12 @@ fn create_test_data(array_size: usize) -> ArrayRef {
     Arc::new(Int32Array::from(values))
 }
 
-fn create_boolean_filter(array_size: usize, selectivity: f64) -> BooleanArray {
+fn create_boolean_filter(array_size: usize, selectivity: f64) -> BooleanBuffer {
     let mut rng = rand::rng();
     let values: Vec<bool> = (0..array_size)
         .map(|_| rng.random::<f64>() < selectivity)
         .collect();
-    BooleanArray::from(values)
+    BooleanBuffer::from(values)
 }
 
 fn setup_cache(tmp_dir: &TempDir) -> Arc<LiquidCachedColumn> {
@@ -84,7 +85,7 @@ fn get_arrow_array_with_filter_liquid_cache(bencher: Bencher, selectivity: f64) 
         .insert(batch_id, test_data.clone())
         .expect("Failed to insert data");
 
-    let (filter, _) = create_boolean_filter(BATCH_SIZE, selectivity).into_parts();
+    let filter = create_boolean_filter(BATCH_SIZE, selectivity);
 
     // Create a simple predicate for benchmarking (column = 500)
     let schema = Arc::new(Schema::new(vec![Field::new(

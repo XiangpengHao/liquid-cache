@@ -158,7 +158,7 @@ impl LiquidArray for LiquidByteViewArray {
         Arc::new(dict)
     }
 
-    fn filter(&self, selection: &BooleanArray) -> LiquidArrayRef {
+    fn filter(&self, selection: &BooleanBuffer) -> LiquidArrayRef {
         let filtered = filter_inner(self, selection);
         Arc::new(filtered)
     }
@@ -166,7 +166,7 @@ impl LiquidArray for LiquidByteViewArray {
     fn try_eval_predicate(
         &self,
         expr: &Arc<dyn PhysicalExpr>,
-        filter: &BooleanArray,
+        filter: &BooleanBuffer,
     ) -> Result<Option<BooleanArray>, ArrowError> {
         let filtered = filter_inner(self, filter);
         try_eval_predicate_inner(expr, &filtered)
@@ -181,12 +181,13 @@ impl LiquidArray for LiquidByteViewArray {
     }
 }
 
-fn filter_inner(array: &LiquidByteViewArray, filter: &BooleanArray) -> LiquidByteViewArray {
+fn filter_inner(array: &LiquidByteViewArray, filter: &BooleanBuffer) -> LiquidByteViewArray {
     // Only filter the dictionary keys, not the offset views!
     // Offset views reference unique values in FSST buffer and should remain unchanged
 
     // Filter the dictionary keys using Arrow's built-in filter functionality
-    let filtered_keys = arrow::compute::filter(&array.dictionary_keys, filter).unwrap();
+    let filter = BooleanArray::new(filter.clone(), None);
+    let filtered_keys = arrow::compute::filter(&array.dictionary_keys, &filter).unwrap();
     let filtered_keys = filtered_keys.as_primitive::<UInt16Type>().clone();
 
     LiquidByteViewArray {
@@ -1101,6 +1102,7 @@ impl std::ops::AddAssign for ByteViewArrayMemoryUsage {
 mod tests {
     use super::*;
     use arrow::array::Array;
+    use rand::{Rng, SeedableRng};
 
     fn test_string_roundtrip(input: StringArray) {
         let compressor = LiquidByteViewArray::train_compressor(input.iter());
@@ -1446,19 +1448,36 @@ mod tests {
             .unwrap();
     }
 
+    fn check_filter_result(input: &StringArray, filter: BooleanBuffer) {
+        let compressor = LiquidByteViewArray::train_compressor(input.iter());
+        let liquid_array = LiquidByteViewArray::from_string_array(input, compressor);
+        let filtered = liquid_array.filter(&filter);
+        let output = filtered.to_arrow_array();
+        let expected = {
+            let selection = BooleanArray::new(filter.clone(), None);
+            let arrow_filtered = arrow::compute::filter(&input, &selection).unwrap();
+            arrow_filtered.as_string::<i32>().clone()
+        };
+        assert_eq!(output.as_ref(), &expected);
+    }
+
     #[test]
     fn test_filter_functionality() {
-        let input = StringArray::from(vec!["hello", "test", "test", "test", "rust"]);
-        let compressor = LiquidByteViewArray::train_compressor(input.iter());
-        let liquid_array = LiquidByteViewArray::from_string_array(&input, compressor);
-
-        let filter = BooleanArray::from(vec![true, false, true, false, true]);
-        let filtered = liquid_array.filter(&filter);
-
-        assert_eq!(filtered.len(), 3);
-        let output = filtered.to_arrow_array();
-        let expected = StringArray::from(vec!["hello", "test", "rust"]);
-        assert_eq!(&expected, output.as_string::<i32>());
+        let input = StringArray::from(vec![
+            Some("hello"),
+            Some("test"),
+            None,
+            Some("test"),
+            None,
+            Some("test"),
+            Some("rust"),
+        ]);
+        let mut seeded_rng = rand::rngs::StdRng::seed_from_u64(42);
+        for _i in 0..100 {
+            let filter =
+                BooleanBuffer::from_iter((0..input.len()).map(|_| seeded_rng.random::<bool>()));
+            check_filter_result(&input, filter);
+        }
     }
 
     #[test]

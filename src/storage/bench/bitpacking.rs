@@ -1,8 +1,9 @@
+use arrow::buffer::BooleanBuffer;
 use divan::Bencher;
 
 use std::num::NonZero;
 
-use arrow::array::{BooleanArray, PrimitiveArray};
+use arrow::array::PrimitiveArray;
 use liquid_cache_storage::liquid_array::raw::BitPackedArray;
 use liquid_cache_storage::liquid_array::{LiquidArray, LiquidPrimitiveArray};
 use rand::Rng;
@@ -19,12 +20,12 @@ fn create_random_vec(array_size: usize, bit_width: u8) -> Vec<u32> {
     values
 }
 
-fn create_selection_array(array_size: usize, selectivity: f64) -> BooleanArray {
+fn create_selection_array(array_size: usize, selectivity: f64) -> BooleanBuffer {
     let mut rng = rand::rng();
     let values: Vec<bool> = (0..array_size)
         .map(|_| rng.random::<f64>() < selectivity)
         .collect();
-    BooleanArray::from(values)
+    BooleanBuffer::from(values)
 }
 
 #[divan::bench(args = BIT_WIDTHS, consts = ARRAY_SIZES)]

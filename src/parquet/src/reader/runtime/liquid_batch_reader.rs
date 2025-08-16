@@ -119,7 +119,12 @@ impl LiquidBatchReader {
 
             let boolean_mask = if let Some(result) = cached_result {
                 reader.skip_records(selection_size).unwrap();
-                result?
+                let result = result?;
+                let filter_mask = match result.null_count() {
+                    0 => result,
+                    _ => prep_null_mask_filter(&result),
+                };
+                filter_mask.into_parts().0
             } else {
                 // slow case, where the predicate column is not cached
                 // we need to read from parquet file
@@ -149,8 +154,6 @@ impl LiquidBatchReader {
         let mut all_cached = true;
         let mut cached_arrays = Vec::new();
 
-        let filter = BooleanArray::new(selection.clone(), None);
-
         // Get the column indices that are actually projected
         use crate::reader::runtime::get_predicate_column_id;
         let column_indices: Vec<usize> = if let Some(ref projection_mask) = self.projection_mask {
@@ -162,7 +165,7 @@ impl LiquidBatchReader {
         for &column_idx in &column_indices {
             if let Some(column) = self.liquid_cache.get_column(column_idx as u64) {
                 if let Some(array) =
-                    column.get_arrow_array_with_filter(self.current_batch_id, &filter)
+                    column.get_arrow_array_with_filter(self.current_batch_id, selection)
                 {
                     cached_arrays.push(array);
                 } else {
