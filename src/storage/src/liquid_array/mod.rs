@@ -12,7 +12,10 @@ pub(crate) mod utils;
 
 use std::{any::Any, num::NonZero, sync::Arc};
 
-use arrow::array::{ArrayRef, BooleanArray};
+use arrow::{
+    array::{ArrayRef, BooleanArray},
+    buffer::BooleanBuffer,
+};
 use arrow_schema::ArrowError;
 pub use byte_array::{LiquidByteArray, get_string_needle};
 pub use byte_view_array::{ByteViewArrayMemoryUsage, LiquidByteViewArray};
@@ -151,21 +154,24 @@ pub trait LiquidArray: std::fmt::Debug + Send + Sync {
     /// Serialize the Liquid array to a byte array.
     fn to_bytes(&self) -> Vec<u8>;
 
-    /// Filter the Liquid array with a boolean array.
-    fn filter(&self, selection: &BooleanArray) -> LiquidArrayRef;
+    /// Filter the Liquid array with a boolean buffer.
+    fn filter(&self, selection: &BooleanBuffer) -> LiquidArrayRef;
 
     /// Filter the Liquid array with a boolean array and return an **arrow array**.
-    fn filter_to_arrow(&self, selection: &BooleanArray) -> ArrayRef {
+    fn filter_to_arrow(&self, selection: &BooleanBuffer) -> ArrayRef {
         let filtered = self.filter(selection);
         filtered.to_best_arrow_array()
     }
 
     /// Try to evaluate a predicate on the Liquid array with a filter.
     /// Returns `None` if the predicate is not supported.
+    ///
+    /// Note that the filter is a boolean buffer, not a boolean array, i.e., filter can't be nullable.
+    /// The returned boolean mask is nullable if the the original array is nullable.
     fn try_eval_predicate(
         &self,
         _predicate: &Arc<dyn PhysicalExpr>,
-        _filter: &BooleanArray,
+        _filter: &BooleanBuffer,
     ) -> Result<Option<BooleanArray>, ArrowError> {
         Ok(None)
     }

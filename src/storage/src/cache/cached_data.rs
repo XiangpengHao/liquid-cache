@@ -23,7 +23,7 @@ pub struct CachedData<'a> {
 #[derive(Debug, PartialEq)]
 pub enum PredicatePushdownResult {
     /// The predicate is evaluated on the filtered data and the result is a boolean buffer.
-    Evaluated(BooleanBuffer),
+    Evaluated(BooleanArray),
 
     /// The predicate is not evaluated but data is filtered.
     Filtered(ArrayRef),
@@ -74,10 +74,11 @@ impl<'a> CachedData<'a> {
     }
 
     /// Get the arrow array with selection pushdown.
-    pub fn get_with_selection(&self, selection: &BooleanArray) -> Result<ArrayRef, ArrowError> {
+    pub fn get_with_selection(&self, selection: &BooleanBuffer) -> Result<ArrayRef, ArrowError> {
         match &self.data {
             CachedBatch::MemoryArrow(array) => {
-                let filtered = arrow::compute::filter(array, selection)?;
+                let selection = BooleanArray::new(selection.clone(), None);
+                let filtered = arrow::compute::filter(array, &selection)?;
                 Ok(filtered)
             }
             CachedBatch::MemoryLiquid(array) => {
@@ -91,7 +92,8 @@ impl<'a> CachedData<'a> {
             }
             CachedBatch::DiskArrow => {
                 let array = self.io_worker.read_arrow_from_disk(&self.id)?;
-                let filtered = arrow::compute::filter(&array, selection)?;
+                let selection = BooleanArray::new(selection.clone(), None);
+                let filtered = arrow::compute::filter(&array, &selection)?;
                 Ok(filtered)
             }
         }
@@ -100,6 +102,8 @@ impl<'a> CachedData<'a> {
     /// Get the arrow array with predicate pushdown.
     ///
     /// The `selection` is applied **before** predicate evaluation.
+    /// For example, if the selection is `[true, true, false, true, false]`,
+    /// The return boolean buffer will be length of 3, each corresponding to the selected rows.
     ///
     /// Returns:
     /// - `PredicatePushdownResult::Evaluated(buffer)`: the predicate is evaluated on the filtered data and the result is a boolean buffer.
@@ -126,7 +130,7 @@ impl<'a> CachedData<'a> {
     /// ]));
     /// storage.insert(entry_id, data.clone());
     ///
-    /// let selection = BooleanArray::from(vec![true, true, false, true, true]);
+    /// let selection = BooleanBuffer::from(vec![true, true, false, true, true]);
     ///
     /// let expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
     ///     Arc::new(Column::new("col", 0)),
@@ -138,22 +142,24 @@ impl<'a> CachedData<'a> {
     /// let result = cached
     ///     .get_with_predicate(&selection, &expr)
     ///     .unwrap();
-    /// let expected = BooleanBuffer::from(vec![true, false, true, false]);
+    /// let expected = BooleanArray::from(vec![true, false, true, false]);
     /// assert_eq!(result, PredicatePushdownResult::Evaluated(expected));
     /// ```
     pub fn get_with_predicate(
         &self,
-        selection: &BooleanArray,
+        selection: &BooleanBuffer,
         predicate: &Arc<dyn PhysicalExpr>,
     ) -> Result<PredicatePushdownResult, ArrowError> {
         match &self.data {
             CachedBatch::MemoryArrow(array) => {
-                let selected = arrow::compute::filter(array, selection)?;
+                let selection = BooleanArray::new(selection.clone(), None);
+                let selected = arrow::compute::filter(array, &selection)?;
                 Ok(PredicatePushdownResult::Filtered(selected))
             }
             CachedBatch::DiskArrow => {
                 let array = self.io_worker.read_arrow_from_disk(&self.id)?;
-                let selected = arrow::compute::filter(&array, selection)?;
+                let selection = BooleanArray::new(selection.clone(), None);
+                let selected = arrow::compute::filter(&array, &selection)?;
                 Ok(PredicatePushdownResult::Filtered(selected))
             }
             CachedBatch::MemoryLiquid(array) => {
@@ -170,13 +176,10 @@ impl<'a> CachedData<'a> {
         &self,
         predicate: &Arc<dyn PhysicalExpr>,
         array: &LiquidArrayRef,
-        selection: &BooleanArray,
+        selection: &BooleanBuffer,
     ) -> Result<PredicatePushdownResult, ArrowError> {
         match array.try_eval_predicate(predicate, selection)? {
-            Some(new_filter) => {
-                let (buffer, _) = new_filter.into_parts();
-                Ok(PredicatePushdownResult::Evaluated(buffer))
-            }
+            Some(new_filter) => Ok(PredicatePushdownResult::Evaluated(new_filter)),
             None => {
                 let filtered = array.filter_to_arrow(selection);
                 Ok(PredicatePushdownResult::Filtered(filtered))
@@ -233,12 +236,17 @@ impl Display for CachedBatch {
 
 #[cfg(test)]
 mod tests {
+    use crate::liquid_array::LiquidByteArray;
+
     use super::*;
-    use arrow::array::{Array, Int64Array, StringArray};
+    use arrow::array::{Array, AsArray, Int64Array, RecordBatch, StringArray};
     use arrow::compute as compute_kernels;
-    use datafusion::logical_expr::Operator;
+    use arrow_schema::{DataType, Field, Schema};
+    use datafusion::logical_expr::{ColumnarValue, Operator};
     use datafusion::physical_plan::expressions::{BinaryExpr, Column, Literal};
     use datafusion::scalar::ScalarValue;
+    use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
 
     fn io_worker() -> (tempfile::TempDir, super::super::core::DefaultIoWorker) {
         let tmp = tempfile::tempdir().unwrap();
@@ -275,33 +283,71 @@ mod tests {
     #[test]
     fn test_get_with_selection_memory_arrow() {
         let array: ArrayRef = Arc::new(Int64Array::from_iter_values(0..10));
-        let selection = BooleanArray::from((0..10).map(|i| i % 2 == 0).collect::<Vec<_>>());
+        let selection = BooleanBuffer::from((0..10).map(|i| i % 2 == 0).collect::<Vec<_>>());
 
         let id = EntryID::from(3usize);
         let (_tmp, io) = io_worker();
         let cached = CachedData::new(CachedBatch::MemoryArrow(array.clone()), id, &io);
 
         let filtered = cached.get_with_selection(&selection).unwrap();
+        let selection = BooleanArray::new(selection.clone(), None);
         let expected = compute_kernels::filter(&array, &selection).unwrap();
         assert_eq!(filtered.as_ref(), expected.as_ref());
     }
 
+    fn test_string_predicate(string_array: &StringArray, expr: &Arc<dyn PhysicalExpr>) {
+        let (_compressor, liquid) = LiquidByteArray::train_from_arrow(string_array);
+        let liquid_ref: LiquidArrayRef = Arc::new(liquid);
+
+        let id = EntryID::from(9usize);
+        let (_tmp, io) = io_worker();
+        let cached = CachedData::new(CachedBatch::MemoryLiquid(liquid_ref), id, &io);
+
+        let mut seed_rng = StdRng::seed_from_u64(42);
+        for _i in 0..100 {
+            let selection = BooleanBuffer::from_iter(
+                (0..string_array.len()).map(|_| seed_rng.random_bool(0.5)),
+            );
+
+            let expected = {
+                let selection = BooleanArray::new(selection.clone(), None);
+                let filtered = arrow::compute::filter(&string_array, &selection).unwrap();
+                let record_batch = RecordBatch::try_new(
+                    Arc::new(Schema::new(vec![Field::new("col", DataType::Utf8, true)])),
+                    vec![filtered],
+                )
+                .unwrap();
+                let evaluated = expr.evaluate(&record_batch).unwrap();
+                let filtered = match evaluated {
+                    ColumnarValue::Array(array) => array,
+                    ColumnarValue::Scalar(_) => panic!("expected array, got scalar"),
+                };
+                filtered.as_boolean().clone()
+            };
+
+            let result = cached
+                .get_with_predicate(&selection, expr)
+                .expect("predicate should succeed");
+
+            match result {
+                PredicatePushdownResult::Evaluated(buf) => {
+                    assert_eq!(buf, expected);
+                }
+                other => panic!("expected Evaluated, got {other:?}"),
+            }
+        }
+    }
+
     #[test]
     fn test_get_with_predicate_evaluated_for_strings() {
-        // Mirror the doc example: evaluate predicate on filtered liquid strings
-        let data = Arc::new(StringArray::from(vec![
+        let data = StringArray::from(vec![
             Some("apple"),
             Some("banana"),
             None,
             Some("apple"),
+            None,
             Some("cherry"),
-        ]));
-
-        // Build a liquid array in-memory so we hit the Evaluated branch
-        let (_compressor, liquid) = crate::liquid_array::LiquidByteArray::train_from_arrow(&data);
-        let liquid_ref: LiquidArrayRef = Arc::new(liquid);
-
-        let selection = BooleanArray::from(vec![true, true, false, true, true]);
+        ]);
 
         let expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
             Arc::new(Column::new("col", 0)),
@@ -309,21 +355,7 @@ mod tests {
             Arc::new(Literal::new(ScalarValue::Utf8(Some("apple".to_string())))),
         ));
 
-        let id = EntryID::from(9usize);
-        let (_tmp, io) = io_worker();
-        let cached = CachedData::new(CachedBatch::MemoryLiquid(liquid_ref), id, &io);
-
-        let result = cached
-            .get_with_predicate(&selection, &expr)
-            .expect("predicate should succeed");
-
-        match result {
-            PredicatePushdownResult::Evaluated(buf) => {
-                let expected = BooleanBuffer::from(vec![true, false, true, false]);
-                assert_eq!(buf, expected);
-            }
-            other => panic!("expected Evaluated, got {other:?}"),
-        }
+        test_string_predicate(&data, &expr);
     }
 
     #[test]

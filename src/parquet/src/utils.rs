@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use arrow::{
-    array::{BooleanArray, BooleanBufferBuilder},
+    array::BooleanBufferBuilder,
     buffer::{BooleanBuffer, MutableBuffer},
 };
 use datafusion::{
@@ -14,16 +14,6 @@ use liquid_cache_common::rpc::ExecutionMetricsResponse;
 use parquet::arrow::arrow_reader::RowSelector;
 
 use crate::{LiquidParquetSource, cache::LiquidCacheRef};
-
-/// Combines two [`BooleanBuffer`]s with logical OR.
-pub fn boolean_buffer_or(left: &BooleanBuffer, right: &BooleanBuffer) -> BooleanBuffer {
-    assert_eq!(left.len(), right.len());
-    let lhs = BooleanArray::new(left.clone(), None);
-    let rhs = BooleanArray::new(right.clone(), None);
-    let result = arrow::compute::kernels::boolean::or_kleene(&lhs, &rhs).unwrap();
-    let (buffer, _) = result.into_parts();
-    buffer
-}
 
 fn boolean_buffer_and_then_fallback(left: &BooleanBuffer, right: &BooleanBuffer) -> BooleanBuffer {
     debug_assert_eq!(

@@ -6,7 +6,7 @@ use arrow::{
         Array, ArrayRef, AsArray, BooleanArray, BooleanBufferBuilder, DictionaryArray,
         PrimitiveArray, UInt16Array,
     },
-    buffer::Buffer,
+    buffer::{BooleanBuffer, Buffer},
     compute::kernels::cast,
     datatypes::{Decimal128Type, Decimal256Type, DecimalType, UInt16Type},
 };
@@ -98,11 +98,12 @@ impl LiquidArray for LiquidFixedLenByteArray {
         self.to_arrow_array()
     }
 
-    fn filter(&self, selection: &BooleanArray) -> LiquidArrayRef {
+    fn filter(&self, selection: &BooleanBuffer) -> LiquidArrayRef {
         let values = self.values.clone();
         let keys = self.keys.clone();
         let primitive_keys = keys.to_primitive();
-        let filtered_keys = arrow::compute::filter(&primitive_keys, selection)
+        let selection = BooleanArray::new(selection.clone(), None);
+        let filtered_keys = arrow::compute::filter(&primitive_keys, &selection)
             .unwrap()
             .as_primitive::<UInt16Type>()
             .clone();
@@ -364,6 +365,7 @@ mod tests {
             filter_builder.append_value(i.is_multiple_of(2));
         }
         let filter = filter_builder.finish();
+        let (filter, _null) = filter.into_parts();
         let filtered_array = liquid_array.filter(&filter);
         let arrow_filtered = filtered_array.to_arrow_array();
         let arrow_typed = arrow_filtered.as_primitive::<T>();

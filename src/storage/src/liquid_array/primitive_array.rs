@@ -10,7 +10,7 @@ use arrow::array::{
         UInt32Type, UInt64Type,
     },
 };
-use arrow::buffer::ScalarBuffer;
+use arrow::buffer::{BooleanBuffer, ScalarBuffer};
 use arrow_schema::ArrowError;
 use datafusion::physical_plan::PhysicalExpr;
 use fastlanes::BitPacking;
@@ -201,10 +201,11 @@ where
         Arc::new(PrimitiveArray::<T>::new(values, nulls.cloned()))
     }
 
-    fn filter(&self, selection: &BooleanArray) -> LiquidArrayRef {
+    fn filter(&self, selection: &BooleanBuffer) -> LiquidArrayRef {
         let unsigned_array: PrimitiveArray<T::UnSignedType> = self.bit_packed.to_primitive();
+        let selection = BooleanArray::new(selection.clone(), None);
         let filtered_values =
-            arrow::compute::kernels::filter::filter(&unsigned_array, selection).unwrap();
+            arrow::compute::kernels::filter::filter(&unsigned_array, &selection).unwrap();
         let filtered_values = filtered_values.as_primitive::<T::UnSignedType>().clone();
         let Some(bit_width) = self.bit_packed.bit_width() else {
             return Arc::new(LiquidPrimitiveArray::<T> {
@@ -219,15 +220,16 @@ where
         })
     }
 
-    fn filter_to_arrow(&self, selection: &BooleanArray) -> ArrayRef {
+    fn filter_to_arrow(&self, selection: &BooleanBuffer) -> ArrayRef {
         let arrow_array = self.to_arrow_array();
-        arrow::compute::kernels::filter::filter(&arrow_array, selection).unwrap()
+        let selection = BooleanArray::new(selection.clone(), None);
+        arrow::compute::kernels::filter::filter(&arrow_array, &selection).unwrap()
     }
 
     fn try_eval_predicate(
         &self,
         _predicate: &Arc<dyn PhysicalExpr>,
-        _filter: &BooleanArray,
+        _filter: &BooleanBuffer,
     ) -> Result<Option<BooleanArray>, ArrowError> {
         // primitive array is not supported for liquid predicate
         Ok(None)
@@ -395,7 +397,7 @@ mod tests {
         let original: Vec<Option<i32>> = vec![None, None, None];
         let array = PrimitiveArray::<Int32Type>::from(original.clone());
         let liquid_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(array);
-        let result_array = liquid_array.filter(&BooleanArray::from(vec![true, false, true]));
+        let result_array = liquid_array.filter(&BooleanBuffer::from(vec![true, false, true]));
         let result_array = result_array.to_arrow_array();
 
         assert_eq!(result_array.len(), 2);
@@ -431,7 +433,7 @@ mod tests {
         let liquid_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(array);
 
         // Create selection mask: keep indices 0, 2, and 4
-        let selection = BooleanArray::from(vec![true, false, true, false, true]);
+        let selection = BooleanBuffer::from(vec![true, false, true, false, true]);
 
         // Apply filter
         let filtered = liquid_array.filter(&selection);
@@ -451,7 +453,7 @@ mod tests {
         let liquid_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(array);
 
         // Keep first and last elements
-        let selection = BooleanArray::from(vec![true, false, false, true]);
+        let selection = BooleanBuffer::from(vec![true, false, false, true]);
 
         let filtered = liquid_array.filter(&selection);
         let result_array = filtered.to_arrow_array();
@@ -468,7 +470,7 @@ mod tests {
         let liquid_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(array);
 
         // Filter out all elements
-        let selection = BooleanArray::from(vec![false, false, false]);
+        let selection = BooleanBuffer::from(vec![false, false, false]);
 
         let filtered = liquid_array.filter(&selection);
         let result_array = filtered.to_arrow_array();

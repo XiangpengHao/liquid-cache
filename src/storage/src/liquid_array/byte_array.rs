@@ -48,7 +48,7 @@ impl LiquidArray for LiquidByteArray {
         Arc::new(dict)
     }
 
-    fn filter(&self, selection: &BooleanArray) -> LiquidArrayRef {
+    fn filter(&self, selection: &BooleanBuffer) -> LiquidArrayRef {
         let filtered = filter_inner(self, selection);
         Arc::new(filtered)
     }
@@ -56,7 +56,7 @@ impl LiquidArray for LiquidByteArray {
     fn try_eval_predicate(
         &self,
         expr: &Arc<dyn PhysicalExpr>,
-        filter: &BooleanArray,
+        filter: &BooleanBuffer,
     ) -> Result<Option<BooleanArray>, ArrowError> {
         let filtered = filter_inner(self, filter);
         try_eval_predicate_inner(expr, &filtered)
@@ -71,11 +71,12 @@ impl LiquidArray for LiquidByteArray {
     }
 }
 
-fn filter_inner(array: &LiquidByteArray, filter: &BooleanArray) -> LiquidByteArray {
+fn filter_inner(array: &LiquidByteArray, filter: &BooleanBuffer) -> LiquidByteArray {
     let values = array.values.clone();
     let keys = array.keys.clone();
     let primitive_keys = keys.to_primitive();
-    let filtered_keys = arrow::compute::filter(&primitive_keys, filter)
+    let filter = BooleanArray::new(filter.clone(), None);
+    let filtered_keys = arrow::compute::filter(&primitive_keys, &filter)
         .unwrap()
         .as_primitive::<UInt16Type>()
         .clone();
@@ -991,7 +992,7 @@ mod tests {
         let array = StringArray::from(original.clone());
         let compressor = LiquidByteArray::train_compressor(array.iter());
         let liquid_array = LiquidByteArray::from_string_array(&array, compressor);
-        let result_array = liquid_array.filter(&BooleanArray::from(vec![true, false, true]));
+        let result_array = liquid_array.filter(&BooleanBuffer::from(vec![true, false, true]));
         let result_array = result_array.to_arrow_array();
 
         assert_eq!(result_array.len(), 2);
@@ -1077,7 +1078,7 @@ mod tests {
             Arc::new(Literal::new(ScalarValue::Int32(Some(20)))),
         ));
 
-        let filter = BooleanArray::from(vec![true; liquid_ref.len()]);
+        let filter = BooleanBuffer::from(vec![true; liquid_ref.len()]);
         let result = liquid_ref.try_eval_predicate(&expr, &filter).unwrap();
         // Numeric comparisons are not supported, should return None
         assert!(result.is_none());
@@ -1108,7 +1109,7 @@ mod tests {
             Arc::new(Literal::new(ScalarValue::Int32(Some(5)))),
         ));
 
-        let filter = BooleanArray::from(vec![true; liquid_ref.len()]);
+        let filter = BooleanBuffer::from(vec![true; liquid_ref.len()]);
         let result = liquid_ref.try_eval_predicate(&add_expr, &filter).unwrap();
         assert!(result.is_none());
 

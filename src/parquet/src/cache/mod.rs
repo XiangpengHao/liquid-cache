@@ -4,7 +4,6 @@
 use crate::cache::io::{ColumnAccessPath, ParquetIoWorker};
 use crate::reader::{LiquidPredicate, extract_multi_column_or};
 use crate::sync::{Mutex, RwLock};
-use crate::utils::boolean_buffer_or;
 use ahash::AHashMap;
 use arrow::array::{Array, ArrayRef, BooleanArray, RecordBatch};
 use arrow::buffer::BooleanBuffer;
@@ -86,12 +85,11 @@ impl LiquidCachedColumn {
         batch_id: BatchID,
         filter: &BooleanBuffer,
         predicate: &mut LiquidPredicate,
-    ) -> Option<Result<BooleanBuffer, ArrowError>> {
+    ) -> Option<Result<BooleanArray, ArrowError>> {
         let cached_entry = self.cache_store.get(&self.entry_id(batch_id).into())?;
 
-        let filter = BooleanArray::new(filter.clone(), None);
         let result = cached_entry
-            .get_with_predicate(&filter, predicate.physical_expr_physical_column_index())
+            .get_with_predicate(filter, predicate.physical_expr_physical_column_index())
             .ok()?;
         match result {
             PredicatePushdownResult::Evaluated(buffer) => Some(Ok(buffer)),
@@ -102,8 +100,7 @@ impl LiquidCachedColumn {
                     0 => boolean_array,
                     _ => prep_null_mask_filter(&boolean_array),
                 };
-                let (buffer, _) = predicate_filter.into_parts();
-                Some(Ok(buffer))
+                Some(Ok(predicate_filter))
             }
         }
     }
@@ -112,7 +109,7 @@ impl LiquidCachedColumn {
     pub fn get_arrow_array_with_filter(
         &self,
         batch_id: BatchID,
-        filter: &BooleanArray,
+        filter: &BooleanBuffer,
     ) -> Option<ArrayRef> {
         let inner_value = self.cache_store.get(&self.entry_id(batch_id).into())?;
         inner_value.get_with_selection(filter).ok()
@@ -217,7 +214,7 @@ impl LiquidCachedRowGroup {
         batch_id: BatchID,
         selection: &BooleanBuffer,
         predicate: &mut LiquidPredicate,
-    ) -> Option<Result<BooleanBuffer, ArrowError>> {
+    ) -> Option<Result<BooleanArray, ArrowError>> {
         let column_ids = predicate.predicate_column_ids();
 
         if column_ids.len() == 1 {
@@ -230,7 +227,7 @@ impl LiquidCachedRowGroup {
             if let Some(column_exprs) =
                 extract_multi_column_or(predicate.physical_expr_physical_column_index())
             {
-                let mut combined_buffer = None;
+                let mut combined_buffer: Option<BooleanArray> = None;
 
                 for (col_idx, expr) in column_exprs {
                     let column = self.get_column(col_idx as u64)?;
@@ -242,19 +239,20 @@ impl LiquidCachedRowGroup {
                             break;
                         }
                     };
-                    let filter = BooleanArray::new(selection.clone(), None);
-                    let buffer =
-                        if let Ok(Some(buffer)) = liquid_array.try_eval_predicate(&expr, &filter) {
-                            buffer
-                        } else {
-                            combined_buffer = None;
-                            break;
-                        };
-                    let buffer = buffer.into_parts().0;
+                    let buffer = if let Ok(Some(buffer)) =
+                        liquid_array.try_eval_predicate(&expr, selection)
+                    {
+                        buffer
+                    } else {
+                        combined_buffer = None;
+                        break;
+                    };
 
                     combined_buffer = Some(match combined_buffer {
                         None => buffer,
-                        Some(existing) => boolean_buffer_or(&existing, &buffer),
+                        Some(existing) => {
+                            arrow::compute::kernels::boolean::or_kleene(&existing, &buffer).ok()?
+                        }
                     });
                 }
 
@@ -264,20 +262,18 @@ impl LiquidCachedRowGroup {
             }
         }
         // Otherwise, we need to first convert the data into arrow arrays.
-        let mask = BooleanArray::from(selection.clone());
         let mut arrays = Vec::new();
         let mut fields = Vec::new();
         for column_id in column_ids {
             let column = self.get_column(column_id as u64)?;
-            let array = column.get_arrow_array_with_filter(batch_id, &mask)?;
+            let array = column.get_arrow_array_with_filter(batch_id, selection)?;
             arrays.push(array);
             fields.push(column.field.clone());
         }
         let schema = Arc::new(Schema::new(fields));
         let record_batch = RecordBatch::try_new(schema, arrays).unwrap();
         let boolean_array = predicate.evaluate(record_batch).unwrap();
-        let (buffer, _) = boolean_array.into_parts();
-        Some(Ok(buffer))
+        Some(Ok(boolean_array))
     }
 }
 
@@ -536,7 +532,7 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        let expected = BooleanBuffer::collect_bool(batch_size, |i| i == 1 || i == 2);
+        let expected = BooleanBuffer::collect_bool(batch_size, |i| i == 1 || i == 2).into();
         assert_eq!(result, expected);
     }
 
@@ -617,7 +613,8 @@ mod tests {
             .unwrap();
 
         // Expected: row 1 (a=2), row 3 (b=40), row 5 (c=600) -> indices 1, 3, 5
-        let expected = BooleanBuffer::collect_bool(batch_size, |i| i == 1 || i == 3 || i == 5);
+        let expected =
+            BooleanBuffer::collect_bool(batch_size, |i| i == 1 || i == 3 || i == 5).into();
         assert_eq!(result, expected);
     }
 
@@ -691,7 +688,7 @@ mod tests {
             .unwrap();
 
         // Expected: row 1 (name="Bob"), row 3 (city="Tokyo") -> indices 1, 3
-        let expected = BooleanBuffer::collect_bool(batch_size, |i| i == 1 || i == 3);
+        let expected = BooleanBuffer::collect_bool(batch_size, |i| i == 1 || i == 3).into();
         assert_eq!(result, expected);
     }
 }

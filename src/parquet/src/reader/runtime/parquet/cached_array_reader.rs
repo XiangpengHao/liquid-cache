@@ -170,16 +170,16 @@ impl CachedArrayReader {
                 continue;
             }
 
-            let mask_array = BooleanArray::from(mask);
             // Get cached array and apply filter
             let array = match self
                 .liquid_cache
-                .get_arrow_array_with_filter(batch_id, &mask_array)
+                .get_arrow_array_with_filter(batch_id, &mask)
             {
                 Some(array) => array,
                 None => {
                     let array = self.reader_local_cache.remove(&batch_id).unwrap();
-                    arrow::compute::filter(&array, &mask_array).unwrap()
+                    let mask = BooleanArray::from(mask);
+                    arrow::compute::filter(&array, &mask).unwrap()
                 }
             };
 

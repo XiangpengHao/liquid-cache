@@ -9,7 +9,7 @@ use arrow::{
         Array, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType, AsArray, BooleanArray,
         PrimitiveArray,
     },
-    buffer::ScalarBuffer,
+    buffer::{BooleanBuffer, ScalarBuffer},
     datatypes::{
         ArrowNativeType, Float32Type, Float64Type, Int32Type, Int64Type, UInt32Type, UInt64Type,
     },
@@ -283,9 +283,10 @@ where
         self.to_bytes_inner()
     }
 
-    fn filter(&self, selection: &BooleanArray) -> LiquidArrayRef {
+    fn filter(&self, selection: &BooleanBuffer) -> LiquidArrayRef {
         let values = self.to_arrow_array();
-        let filtered_values = arrow::compute::kernels::filter::filter(&values, selection).unwrap();
+        let selection = BooleanArray::new(selection.clone(), None);
+        let filtered_values = arrow::compute::kernels::filter::filter(&values, &selection).unwrap();
         let primitive_values = filtered_values.as_primitive::<T>().clone();
         let bit_packed = Self::from_arrow_array(primitive_values);
         Arc::new(bit_packed)
@@ -510,7 +511,7 @@ mod tests {
         let liquid_array = LiquidFloatArray::<Float32Type>::from_arrow_array(array);
 
         // Create selection mask: keep indices 0, 2, and 4
-        let selection = BooleanArray::from(vec![true, false, true, false, true]);
+        let selection = BooleanBuffer::from(vec![true, false, true, false, true]);
 
         // Apply filter
         let filtered = liquid_array.filter(&selection);
@@ -530,7 +531,7 @@ mod tests {
         let liquid_array = LiquidFloatArray::<Float32Type>::from_arrow_array(array);
 
         // Keep first and last elements
-        let selection = BooleanArray::from(vec![true, false, false, true]);
+        let selection = BooleanBuffer::from(vec![true, false, false, true]);
 
         let filtered = liquid_array.filter(&selection);
         let result_array = filtered.to_arrow_array();
@@ -547,7 +548,7 @@ mod tests {
         let liquid_array = LiquidFloatArray::<Float32Type>::from_arrow_array(array);
 
         // Filter out all elements
-        let selection = BooleanArray::from(vec![false, false, false]);
+        let selection = BooleanBuffer::from(vec![false, false, false]);
 
         let filtered = liquid_array.filter(&selection);
         let result_array = filtered.to_arrow_array();
