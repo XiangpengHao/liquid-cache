@@ -180,7 +180,7 @@ LiquidCache began as a research project exploring new approaches to build cost-e
 
 #### How does LiquidCache work?
 
-Check out our [paper](/dev/doc/liquid-cache-vldb.pdf) (under submission to VLDB) for more details. Meanwhile, we are working on a technical blog to introduce LiquidCache in a more accessible way.
+Check out our [paper](/dev/doc/liquid-cache-vldb.pdf) (to appear in VLDB 2026) for more details. Meanwhile, we are working on a technical blog to introduce LiquidCache in a more accessible way.
 
 #### How can I get involved?
 
