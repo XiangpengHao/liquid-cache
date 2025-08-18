@@ -34,8 +34,8 @@ jobs:
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz
 
-      - name: Ensure clang/llvm present
-        run: sudo apt-get update && sudo apt-get install -y clang llvm lld
+      - name: Ensure clang present
+        run: sudo apt-get update && sudo apt-get install -y clang lld
 
       - name: Run fuzzing (3h, use all cores)
         shell: bash
@@ -44,9 +44,9 @@ jobs:
         run: |
           set -euxo pipefail
 
-          # Ensure llvm tools are available on PATH
+          # Ensure llvm tools from the Rust toolchain are used (avoid system llvm mismatch)
           LLVM_TOOLS_DIR="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin"
-          echo "${LLVM_TOOLS_DIR}" >> "${GITHUB_PATH}"
+          export PATH="${LLVM_TOOLS_DIR}:${PATH}"
 
           CORES=$(nproc)
           TARGET="${{ matrix.target }}"
@@ -58,7 +58,7 @@ jobs:
           # Run fuzzing for 3 hours using all cores
           cargo fuzz run "${TARGET}" -- -jobs="${CORES}" -workers="${CORES}" -max_total_time=10800
 
-          # Generate coverage data
+          # Generate coverage data (uses llvm-profdata from PATH -> toolchain version)
           cargo fuzz coverage "${TARGET}"
 
           # Find instrumented binary produced by cargo fuzz coverage
@@ -70,15 +70,15 @@ jobs:
 
           mkdir -p "fuzz/coverage/${TARGET}/html"
 
-          # Produce human-readable HTML coverage report
-          llvm-cov show "${BIN}" \
+          # Produce human-readable HTML coverage report (use toolchain llvm-cov)
+          "${LLVM_TOOLS_DIR}/llvm-cov" show "${BIN}" \
             --instr-profile "fuzz/coverage/${TARGET}/coverage.profdata" \
             --format html \
             --ignore-filename-regex ".\\.cargo" \
             > "fuzz/coverage/${TARGET}/html/index.html"
 
           # Produce text summary and add to job summary
-          llvm-cov report "${BIN}" \
+          "${LLVM_TOOLS_DIR}/llvm-cov" report "${BIN}" \
             --instr-profile "fuzz/coverage/${TARGET}/coverage.profdata" \
             > "fuzz/coverage/${TARGET}/coverage.txt"
 
