@@ -126,6 +126,9 @@ jobs:
 
   publish-docker:
     needs: release-and-publish
+    permissions:
+      contents: read
+      packages: write
     uses: ./.github/workflows/docker-release.yml
     with:
       version: ${{ needs.release-and-publish.outputs.new_version }}
