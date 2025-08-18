@@ -12,8 +12,9 @@ use super::{
     policies::CachePolicy, tracer::CacheTracer, transcode::transcode_liquid_inner,
     utils::CacheConfig,
 };
+use crate::cache::cached_data::IoRequest;
 use crate::cache::transcode::submit_background_transcoding_task;
-use crate::cache::utils::{CacheAdvice, LiquidCompressorStates};
+use crate::cache::utils::{CacheAdvice, LiquidCompressorStates, arrow_to_bytes};
 use crate::cache::{index::ArtIndex, utils::EntryID};
 use crate::liquid_array::ipc::LiquidIPCContext;
 use crate::liquid_array::{LiquidArrayRef, ipc};
@@ -35,40 +36,31 @@ pub trait IoWorker: Debug + Send + Sync {
     /// Get the path to the liquid file for an entry.
     fn entry_liquid_path(&self, entry_id: &EntryID) -> PathBuf;
 
+    /// Read bytes from an entry.
+    fn read_entry(&self, request: &IoRequest) -> Result<Bytes, std::io::Error> {
+        let path = &request.path;
+        let mut file = File::open(path)?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        Ok(Bytes::from(bytes))
+    }
+
     /// Write an arrow array to disk.
     fn write_arrow_to_disk(
         &self,
         entry_id: &EntryID,
         array: &ArrayRef,
-    ) -> Result<usize, std::io::Error> {
-        use arrow::array::RecordBatch;
-        use arrow::ipc::writer::StreamWriter;
-        use std::fs::File;
-        use std::io::BufWriter;
-
+    ) -> Result<usize, ArrowError> {
         let file_path = self.entry_arrow_path(entry_id);
 
         // Ensure parent directory exists
         if let Some(parent) = file_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-
-        let file = File::create(file_path)?;
-        let buf_writer = BufWriter::new(file);
-
-        // Create a record batch with the single array
-        // We need to create a dummy field since we don't have the original field here
-        let field =
-            arrow_schema::Field::new("column", array.data_type().clone(), array.null_count() > 0);
-        let schema = std::sync::Arc::new(arrow_schema::Schema::new(vec![field]));
-        let batch = RecordBatch::try_new(schema.clone(), vec![array.clone()]).unwrap();
-
-        let mut stream_writer = StreamWriter::try_new(buf_writer, &schema).unwrap();
-        stream_writer.write(&batch).unwrap();
-        stream_writer.finish().unwrap();
-
-        // Return approximate size for disk usage tracking
-        Ok(array.get_array_memory_size())
+        let bytes = arrow_to_bytes(array)?;
+        let mut file = File::create(file_path)?;
+        file.write_all(&bytes)?;
+        Ok(bytes.len())
     }
 
     /// Write a liquid array to disk.

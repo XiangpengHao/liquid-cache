@@ -1,8 +1,9 @@
 #[cfg(test)]
 use crate::cache::cached_data::CachedBatch;
 use crate::sync::{Arc, RwLock};
-#[cfg(test)]
 use arrow::array::ArrayRef;
+use arrow_schema::ArrowError;
+use bytes::Bytes;
 use liquid_cache_common::LiquidCacheMode;
 use std::path::PathBuf;
 
@@ -162,4 +163,24 @@ impl LiquidCompressorStates {
     pub fn fsst_compressor_raw(&self) -> &RwLock<Option<Arc<fsst::Compressor>>> {
         &self.fsst_compressor
     }
+}
+
+pub(crate) fn arrow_to_bytes(array: &ArrayRef) -> Result<Bytes, ArrowError> {
+    use arrow::array::RecordBatch;
+    use arrow::ipc::writer::StreamWriter;
+
+    let mut bytes = Vec::new();
+
+    // Create a record batch with the single array
+    // We need to create a dummy field since we don't have the original field here
+    let field =
+        arrow_schema::Field::new("column", array.data_type().clone(), array.null_count() > 0);
+    let schema = std::sync::Arc::new(arrow_schema::Schema::new(vec![field]));
+    let batch = RecordBatch::try_new(schema.clone(), vec![array.clone()])?;
+
+    let mut stream_writer = StreamWriter::try_new(&mut bytes, &schema)?;
+    stream_writer.write(&batch)?;
+    stream_writer.finish()?;
+
+    Ok(Bytes::from(bytes))
 }

@@ -65,17 +65,25 @@ impl<'a> CachedData<'a> {
                     path: self.io_worker.entry_liquid_path(&self.id),
                     compressor_states: self.io_worker.get_compressor_for_entry(&self.id),
                 };
-                SansIo::Pending(GetWithSelectionSansIo {
-                    state: GetWithSelectionState::NeedBytes { selection, pending },
-                })
+                let io_request = pending.as_io_request();
+                SansIo::Pending((
+                    GetWithSelectionSansIo {
+                        state: GetWithSelectionState::NeedBytes { selection, pending },
+                    },
+                    io_request,
+                ))
             }
             CachedBatch::DiskArrow => {
                 let pending = PendingIo::Arrow {
                     path: self.io_worker.entry_arrow_path(&self.id),
                 };
-                SansIo::Pending(GetWithSelectionSansIo {
-                    state: GetWithSelectionState::NeedBytes { selection, pending },
-                })
+                let io_request = pending.as_io_request();
+                SansIo::Pending((
+                    GetWithSelectionSansIo {
+                        state: GetWithSelectionState::NeedBytes { selection, pending },
+                    },
+                    io_request,
+                ))
             }
         }
     }
@@ -133,14 +141,14 @@ impl<'a> CachedData<'a> {
     }
 
     /// Build a sans-IO state machine to obtain a `LiquidArrayRef` if the cached data is liquid.
-    pub fn try_read_liquid_sans_io(&self) -> Option<SansIo<LiquidArrayRef, GetLiquidArrayState>> {
+    pub fn try_read_liquid_sans_io(&self) -> SansIo<Option<LiquidArrayRef>, GetLiquidArrayState> {
         match &self.data {
-            CachedBatch::MemoryLiquid(array) => Some(SansIo::Ready(array.clone())),
-            CachedBatch::DiskLiquid => Some(SansIo::Pending(GetLiquidArrayState::new(
+            CachedBatch::MemoryLiquid(array) => SansIo::Ready(Some(array.clone())),
+            CachedBatch::DiskLiquid => SansIo::Pending(GetLiquidArrayState::new(
                 self.io_worker.entry_liquid_path(&self.id),
                 self.io_worker.get_compressor_for_entry(&self.id),
-            ))),
-            _ => None,
+            )),
+            _ => SansIo::Ready(None),
         }
     }
 
@@ -261,13 +269,17 @@ impl<'a> CachedData<'a> {
                 let pending = PendingIo::Arrow {
                     path: self.io_worker.entry_arrow_path(&self.id),
                 };
-                SansIo::Pending(GetWithPredicateState {
-                    state: GetWithPredicateStateInner::NeedBytes {
-                        selection,
-                        predicate,
-                        pending,
+                let io_request = pending.as_io_request();
+                SansIo::Pending((
+                    GetWithPredicateState {
+                        state: GetWithPredicateStateInner::NeedBytes {
+                            selection,
+                            predicate,
+                            pending,
+                        },
                     },
-                })
+                    io_request,
+                ))
             }
             CachedBatch::MemoryLiquid(array) => {
                 let result = match array.try_eval_predicate(predicate, selection) {
@@ -285,13 +297,17 @@ impl<'a> CachedData<'a> {
                     path: self.io_worker.entry_liquid_path(&self.id),
                     compressor_states: self.io_worker.get_compressor_for_entry(&self.id),
                 };
-                SansIo::Pending(GetWithPredicateState {
-                    state: GetWithPredicateStateInner::NeedBytes {
-                        selection,
-                        predicate,
-                        pending,
+                let io_request = pending.as_io_request();
+                SansIo::Pending((
+                    GetWithPredicateState {
+                        state: GetWithPredicateStateInner::NeedBytes {
+                            selection,
+                            predicate,
+                            pending,
+                        },
                     },
-                })
+                    io_request,
+                ))
             }
         }
     }
@@ -327,7 +343,7 @@ pub enum SansIo<T, M> {
     /// The output is ready.
     Ready(T),
     /// The output needs IO.
-    Pending(M),
+    Pending((M, IoRequest)),
 }
 
 /// A state machine that can be used to perform a sans-IO operation.
@@ -417,19 +433,28 @@ pub struct GetArrowArrayState {
 }
 
 impl GetArrowArrayState {
-    fn new_arrow(path: PathBuf) -> Self {
-        Self {
-            state: GetArrowArrayStateInner::NeedBytes(PendingIo::Arrow { path }),
-        }
+    fn new_arrow(path: PathBuf) -> (Self, IoRequest) {
+        let pending = PendingIo::Arrow { path };
+        let io_request = pending.as_io_request();
+        let state = Self {
+            state: GetArrowArrayStateInner::NeedBytes(pending),
+        };
+        (state, io_request)
     }
 
-    fn new_liquid(path: PathBuf, compressor_states: Arc<LiquidCompressorStates>) -> Self {
-        Self {
-            state: GetArrowArrayStateInner::NeedBytes(PendingIo::Liquid {
-                path,
-                compressor_states,
-            }),
-        }
+    fn new_liquid(
+        path: PathBuf,
+        compressor_states: Arc<LiquidCompressorStates>,
+    ) -> (Self, IoRequest) {
+        let pending = PendingIo::Liquid {
+            path,
+            compressor_states,
+        };
+        let io_request = pending.as_io_request();
+        let state = Self {
+            state: GetArrowArrayStateInner::NeedBytes(pending),
+        };
+        (state, io_request)
     }
 }
 
@@ -511,13 +536,16 @@ pub struct GetLiquidArrayState {
 }
 
 impl GetLiquidArrayState {
-    fn new(path: PathBuf, compressor_states: Arc<LiquidCompressorStates>) -> Self {
-        Self {
-            state: GetLiquidArrayStateInner::NeedBytes(PendingIo::Liquid {
-                path,
-                compressor_states,
-            }),
-        }
+    fn new(path: PathBuf, compressor_states: Arc<LiquidCompressorStates>) -> (Self, IoRequest) {
+        let pending = PendingIo::Liquid {
+            path,
+            compressor_states,
+        };
+        let io_request = pending.as_io_request();
+        let state = Self {
+            state: GetLiquidArrayStateInner::NeedBytes(pending),
+        };
+        (state, io_request)
     }
 }
 
@@ -661,9 +689,16 @@ impl Display for CachedBatch {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+    use std::sync::RwLock;
+
+    use crate::cache::utils::arrow_to_bytes;
+    use crate::cache::{IoWorker, transcode_liquid_inner};
     use crate::liquid_array::LiquidByteArray;
 
     use super::*;
+    use crate::cache::cached_data::SansIoStateMachine;
+    use ahash::HashMap;
     use arrow::array::{Array, AsArray, Int64Array, RecordBatch, StringArray};
     use arrow::compute as compute_kernels;
     use arrow_schema::{DataType, Field, Schema};
@@ -673,9 +708,83 @@ mod tests {
     use rand::rngs::StdRng;
     use rand::{Rng, SeedableRng};
 
-    fn io_worker() -> (tempfile::TempDir, super::super::core::DefaultIoWorker) {
+    #[derive(Debug)]
+    struct MockIoWorker {
+        compressor_states: Arc<LiquidCompressorStates>,
+        base_dir: PathBuf,
+        store: RwLock<HashMap<PathBuf, Bytes>>,
+    }
+
+    impl IoWorker for MockIoWorker {
+        fn base_dir(&self) -> &Path {
+            &self.base_dir
+        }
+
+        fn get_compressor_for_entry(&self, _entry_id: &EntryID) -> Arc<LiquidCompressorStates> {
+            self.compressor_states.clone()
+        }
+
+        fn entry_arrow_path(&self, entry_id: &EntryID) -> PathBuf {
+            self.base_dir
+                .join(format!("{:016x}.arrow", usize::from(*entry_id)))
+        }
+
+        fn entry_liquid_path(&self, entry_id: &EntryID) -> PathBuf {
+            self.base_dir
+                .join(format!("{:016x}.liquid", usize::from(*entry_id)))
+        }
+
+        fn read_entry(&self, request: &IoRequest) -> Result<Bytes, std::io::Error> {
+            let bytes = self
+                .store
+                .read()
+                .unwrap()
+                .get(&request.path)
+                .unwrap()
+                .clone();
+            Ok(bytes.clone())
+        }
+
+        fn write_arrow_to_disk(
+            &self,
+            entry_id: &EntryID,
+            array: &ArrayRef,
+        ) -> Result<usize, ArrowError> {
+            let bytes = arrow_to_bytes(array)?;
+            let path = self.entry_arrow_path(entry_id);
+            let len = bytes.len();
+            self.store.write().unwrap().insert(path, bytes.clone());
+            Ok(len)
+        }
+
+        fn write_liquid_to_disk(
+            &self,
+            entry_id: &EntryID,
+            liquid_array: &LiquidArrayRef,
+        ) -> Result<usize, std::io::Error> {
+            let path = self.entry_liquid_path(entry_id);
+            let bytes = liquid_array.to_bytes();
+            self.store
+                .write()
+                .unwrap()
+                .insert(path, Bytes::from(bytes.to_vec()));
+            Ok(bytes.len())
+        }
+    }
+
+    fn io_worker(compressor: Option<Arc<fsst::Compressor>>) -> (tempfile::TempDir, MockIoWorker) {
         let tmp = tempfile::tempdir().unwrap();
-        let io = super::super::core::DefaultIoWorker::new(tmp.path().to_path_buf());
+        let compressor_state = match compressor {
+            Some(compressor) => {
+                Arc::new(LiquidCompressorStates::new_with_fsst_compressor(compressor))
+            }
+            None => Arc::new(LiquidCompressorStates::default()),
+        };
+        let io = MockIoWorker {
+            compressor_states: compressor_state,
+            base_dir: tmp.path().to_path_buf(),
+            store: RwLock::new(HashMap::default()),
+        };
         (tmp, io)
     }
 
@@ -683,7 +792,7 @@ mod tests {
     fn test_get_arrow_array_memory_arrow() {
         let array: ArrayRef = Arc::new(Int64Array::from_iter_values(0..8));
         let id = EntryID::from(1usize);
-        let (_tmp, io) = io_worker();
+        let (_tmp, io) = io_worker(None);
         let cached = CachedData::new(CachedBatch::MemoryArrow(array.clone()), id, &io);
 
         let out = cached.get_arrow_array();
@@ -691,42 +800,119 @@ mod tests {
     }
 
     #[test]
-    fn test_try_read_liquid_memory_liquid() {
+    fn test_try_read_liquid() {
         // Build a small liquid string array
         let input = StringArray::from(vec!["a", "b", "a", "c"]);
-        let (_compressor, etc) = crate::liquid_array::LiquidByteArray::train_from_arrow(&input);
+        let (compressor, etc) = crate::liquid_array::LiquidByteArray::train_from_arrow(&input);
         let liquid_ref: LiquidArrayRef = Arc::new(etc);
 
         let id = EntryID::from(2usize);
-        let (_tmp, io) = io_worker();
-        let cached = CachedData::new(CachedBatch::MemoryLiquid(liquid_ref.clone()), id, &io);
+        let (_tmp, io) = io_worker(Some(compressor));
+        let in_memory = CachedData::new(CachedBatch::MemoryLiquid(liquid_ref.clone()), id, &io);
+        let on_disk = CachedData::new(CachedBatch::DiskLiquid, id, &io);
+        io.write_liquid_to_disk(&id, &liquid_ref).unwrap();
+        let arrow_input: ArrayRef = Arc::new(input);
 
-        let got = cached.try_read_liquid().expect("should be liquid");
-        assert_eq!(got.to_best_arrow_array().len(), input.len());
+        {
+            let SansIo::Ready(Some(liquid)) = in_memory.try_read_liquid_sans_io() else {
+                panic!("should be liquid");
+            };
+
+            assert_eq!(liquid.to_arrow_array().as_ref(), arrow_input.as_ref());
+        }
+
+        {
+            let SansIo::Pending((mut state, io_request)) = on_disk.try_read_liquid_sans_io() else {
+                panic!("should be pending");
+            };
+
+            state.feed(io.read_entry(&io_request).unwrap());
+            let TryGet::Ready(liquid) = state.try_get() else {
+                panic!("should be ready");
+            };
+            assert_eq!(liquid.to_arrow_array().as_ref(), arrow_input.as_ref());
+        }
+
+        // Try if non-liquid batch can be read as liquid
+        let on_disk_non_liquid = CachedData::new(CachedBatch::DiskArrow, id, &io);
+        let SansIo::Ready(None) = on_disk_non_liquid.try_read_liquid_sans_io() else {
+            panic!("should be none");
+        };
     }
 
     #[test]
-    fn test_get_with_selection_memory_arrow() {
+    fn test_get_with_selection_memory() {
         let array: ArrayRef = Arc::new(Int64Array::from_iter_values(0..10));
         let selection = BooleanBuffer::from((0..10).map(|i| i % 2 == 0).collect::<Vec<_>>());
 
         let id = EntryID::from(3usize);
-        let (_tmp, io) = io_worker();
+        let (_tmp, io) = io_worker(None);
         let cached = CachedData::new(CachedBatch::MemoryArrow(array.clone()), id, &io);
 
-        let filtered = cached.get_with_selection(&selection).unwrap();
-        let selection = BooleanArray::new(selection.clone(), None);
-        let expected = compute_kernels::filter(&array, &selection).unwrap();
+        let SansIo::Ready(Ok(filtered)) = cached.get_with_selection_sans_io(&selection) else {
+            panic!("should be ready");
+        };
+        let selection_array = BooleanArray::new(selection.clone(), None);
+        let expected = compute_kernels::filter(&array, &selection_array).unwrap();
+        assert_eq!(filtered.as_ref(), expected.as_ref());
+
+        let liquid_array =
+            transcode_liquid_inner(&array, &LiquidCompressorStates::default()).unwrap();
+        let cached = CachedData::new(CachedBatch::MemoryLiquid(liquid_array), id, &io);
+
+        let SansIo::Ready(Ok(filtered)) = cached.get_with_selection_sans_io(&selection) else {
+            panic!("should be ready");
+        };
         assert_eq!(filtered.as_ref(), expected.as_ref());
     }
 
+    #[test]
+    fn test_get_with_selection_disk() {
+        let array: ArrayRef = Arc::new(Int64Array::from_iter_values(0..10));
+        let selection = BooleanBuffer::from((0..10).map(|i| i % 2 == 0).collect::<Vec<_>>());
+
+        let id = EntryID::from(3usize);
+        let (_tmp, io) = io_worker(None);
+        let cached = CachedData::new(CachedBatch::DiskArrow, id, &io);
+        io.write_arrow_to_disk(&id, &array).unwrap();
+
+        let test_get = |cached: &CachedData| {
+            let SansIo::Pending((mut state, io_request)) =
+                cached.get_with_selection_sans_io(&selection)
+            else {
+                panic!("should be pending");
+            };
+
+            state.feed(io.read_entry(&io_request).unwrap());
+            let TryGet::Ready(Ok(filtered)) = state.try_get() else {
+                panic!("should be ready");
+            };
+            let selection_array = BooleanArray::new(selection.clone(), None);
+            let expected = compute_kernels::filter(&array, &selection_array).unwrap();
+            assert_eq!(filtered.as_ref(), expected.as_ref());
+        };
+        test_get(&cached);
+
+        let liquid_array =
+            transcode_liquid_inner(&array, &LiquidCompressorStates::default()).unwrap();
+        let cached = CachedData::new(CachedBatch::DiskLiquid, id, &io);
+        io.write_liquid_to_disk(&id, &liquid_array).unwrap();
+        test_get(&cached);
+    }
+
     fn test_string_predicate(string_array: &StringArray, expr: &Arc<dyn PhysicalExpr>) {
-        let (_compressor, liquid) = LiquidByteArray::train_from_arrow(string_array);
+        let (compressor, liquid) = LiquidByteArray::train_from_arrow(string_array);
         let liquid_ref: LiquidArrayRef = Arc::new(liquid);
 
         let id = EntryID::from(9usize);
-        let (_tmp, io) = io_worker();
-        let cached = CachedData::new(CachedBatch::MemoryLiquid(liquid_ref), id, &io);
+        let (_tmp, io) = io_worker(Some(compressor));
+        let arrow_array: ArrayRef = Arc::new(string_array.clone());
+        let memory_liquid = CachedData::new(CachedBatch::MemoryLiquid(liquid_ref.clone()), id, &io);
+        let disk_liquid = CachedData::new(CachedBatch::DiskLiquid, id, &io);
+        let memory_arrow = CachedData::new(CachedBatch::MemoryArrow(arrow_array.clone()), id, &io);
+        let disk_arrow = CachedData::new(CachedBatch::DiskArrow, id, &io);
+        io.write_liquid_to_disk(&id, &liquid_ref).unwrap();
+        io.write_arrow_to_disk(&id, &arrow_array).unwrap();
 
         let mut seed_rng = StdRng::seed_from_u64(42);
         for _i in 0..100 {
@@ -734,31 +920,83 @@ mod tests {
                 (0..string_array.len()).map(|_| seed_rng.random_bool(0.5)),
             );
 
-            let expected = {
+            let (eval_expected, filter_expected) = {
                 let selection = BooleanArray::new(selection.clone(), None);
                 let filtered = arrow::compute::filter(&string_array, &selection).unwrap();
                 let record_batch = RecordBatch::try_new(
                     Arc::new(Schema::new(vec![Field::new("col", DataType::Utf8, true)])),
-                    vec![filtered],
+                    vec![filtered.clone()],
                 )
                 .unwrap();
                 let evaluated = expr.evaluate(&record_batch).unwrap();
-                let filtered = match evaluated {
+                let filter_eval = match evaluated {
                     ColumnarValue::Array(array) => array,
                     ColumnarValue::Scalar(_) => panic!("expected array, got scalar"),
                 };
-                filtered.as_boolean().clone()
+                (filter_eval.as_boolean().clone(), filtered)
             };
 
-            let result = cached
-                .get_with_predicate(&selection, expr)
-                .expect("predicate should succeed");
-
-            match result {
-                PredicatePushdownResult::Evaluated(buf) => {
-                    assert_eq!(buf, expected);
+            let expect_filtered = |result: PredicatePushdownResult| match result {
+                PredicatePushdownResult::Filtered(array) => {
+                    assert_eq!(array.as_ref(), filter_expected.as_ref());
                 }
-                other => panic!("expected Evaluated, got {other:?}"),
+                other => panic!("expected filtered, got {other:?}"),
+            };
+            let expect_evaluated = |result: PredicatePushdownResult| match result {
+                PredicatePushdownResult::Evaluated(array) => {
+                    assert_eq!(array, eval_expected);
+                }
+                other => panic!("expected evaluated, got {other:?}"),
+            };
+
+            // memory arrow
+            {
+                let SansIo::Ready(Ok(result)) =
+                    memory_arrow.get_with_predicate_sans_io(&selection, expr)
+                else {
+                    panic!("should be ready");
+                };
+                expect_filtered(result);
+            }
+
+            // memory liquid
+            {
+                let SansIo::Ready(Ok(result)) =
+                    memory_liquid.get_with_predicate_sans_io(&selection, expr)
+                else {
+                    panic!("should be ready");
+                };
+                expect_evaluated(result);
+            }
+
+            // disk arrow
+            {
+                let SansIo::Pending((mut state, io_request)) =
+                    disk_arrow.get_with_predicate_sans_io(&selection, expr)
+                else {
+                    panic!("should be ready");
+                };
+
+                state.feed(io.read_entry(&io_request).unwrap());
+                let TryGet::Ready(Ok(result)) = state.try_get() else {
+                    panic!("should be ready");
+                };
+                expect_filtered(result);
+            }
+
+            // disk liquid
+            {
+                let SansIo::Pending((mut state, io_request)) =
+                    disk_liquid.get_with_predicate_sans_io(&selection, expr)
+                else {
+                    panic!("should be ready");
+                };
+
+                state.feed(io.read_entry(&io_request).unwrap());
+                let TryGet::Ready(Ok(result)) = state.try_get() else {
+                    panic!("should be ready");
+                };
+                expect_evaluated(result);
             }
         }
     }
