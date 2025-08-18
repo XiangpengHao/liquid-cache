@@ -9,7 +9,10 @@ use arrow::{
 use arrow_schema::ArrowError;
 use datafusion::physical_plan::PhysicalExpr;
 
+use crate::cache::LiquidCompressorStates;
 use crate::{cache::EntryID, liquid_array::LiquidArrayRef};
+use bytes::Bytes;
+use std::path::PathBuf;
 
 /// A wrapper around the actual data in the cache.
 #[derive(Debug)]
@@ -42,6 +45,62 @@ impl<'a> CachedData<'a> {
         }
     }
 
+    /// Build a sans-IO state machine to obtain an Arrow `ArrayRef` with selection pushdown.
+    pub fn get_with_selection_sans_io<'selection>(
+        &self,
+        selection: &'selection BooleanBuffer,
+    ) -> SansIo<Result<ArrayRef, ArrowError>, GetWithSelectionSansIo<'selection>> {
+        match &self.data {
+            CachedBatch::MemoryArrow(array) => {
+                let selection_array = BooleanArray::new(selection.clone(), None);
+                let result = arrow::compute::filter(array, &selection_array);
+                SansIo::Ready(result)
+            }
+            CachedBatch::MemoryLiquid(array) => {
+                let filtered = array.filter_to_arrow(selection);
+                SansIo::Ready(Ok(filtered))
+            }
+            CachedBatch::DiskLiquid => {
+                let pending = PendingIo::Liquid {
+                    path: self.io_worker.entry_liquid_path(&self.id),
+                    compressor_states: self.io_worker.get_compressor_for_entry(&self.id),
+                };
+                SansIo::Pending(GetWithSelectionSansIo {
+                    state: GetWithSelectionState::NeedBytes { selection, pending },
+                })
+            }
+            CachedBatch::DiskArrow => {
+                let pending = PendingIo::Arrow {
+                    path: self.io_worker.entry_arrow_path(&self.id),
+                };
+                SansIo::Pending(GetWithSelectionSansIo {
+                    state: GetWithSelectionState::NeedBytes { selection, pending },
+                })
+            }
+        }
+    }
+
+    /// Build a sans-IO state machine to obtain an Arrow `ArrayRef`.
+    ///
+    /// This does not perform IO itself. Instead, it may request IO via [`GetArrowArraySansIo::need_io`].
+    /// The caller should fulfill the IO request and call [`GetArrowArraySansIo::feed`] with the bytes,
+    /// then consume the state machine with [`GetArrowArraySansIo::into_output`].
+    pub fn get_arrow_array_sans_io(&self) -> SansIo<ArrayRef, GetArrowArrayState> {
+        match &self.data {
+            CachedBatch::MemoryArrow(array) => SansIo::Ready(array.clone()),
+            CachedBatch::MemoryLiquid(array) => SansIo::Ready(array.to_best_arrow_array()),
+            CachedBatch::DiskLiquid => {
+                let path = self.io_worker.entry_liquid_path(&self.id);
+                let compressor_states = self.io_worker.get_compressor_for_entry(&self.id);
+                SansIo::Pending(GetArrowArrayState::new_liquid(path, compressor_states))
+            }
+            CachedBatch::DiskArrow => {
+                let path = self.io_worker.entry_arrow_path(&self.id);
+                SansIo::Pending(GetArrowArrayState::new_arrow(path))
+            }
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn raw_data(&self) -> &CachedBatch {
         &self.data
@@ -69,6 +128,18 @@ impl<'a> CachedData<'a> {
             CachedBatch::DiskLiquid => {
                 Some(self.io_worker.read_liquid_from_disk(&self.id).unwrap())
             }
+            _ => None,
+        }
+    }
+
+    /// Build a sans-IO state machine to obtain a `LiquidArrayRef` if the cached data is liquid.
+    pub fn try_read_liquid_sans_io(&self) -> Option<SansIo<LiquidArrayRef, GetLiquidArrayState>> {
+        match &self.data {
+            CachedBatch::MemoryLiquid(array) => Some(SansIo::Ready(array.clone())),
+            CachedBatch::DiskLiquid => Some(SansIo::Pending(GetLiquidArrayState::new(
+                self.io_worker.entry_liquid_path(&self.id),
+                self.io_worker.get_compressor_for_entry(&self.id),
+            ))),
             _ => None,
         }
     }
@@ -172,6 +243,59 @@ impl<'a> CachedData<'a> {
         }
     }
 
+    /// Build a sans-IO state machine to evaluate a predicate with selection pushdown.
+    pub fn get_with_predicate_sans_io<'predicate, 'selection>(
+        &self,
+        selection: &'predicate BooleanBuffer,
+        predicate: &'predicate Arc<dyn PhysicalExpr>,
+    ) -> SansIo<Result<PredicatePushdownResult, ArrowError>, GetWithPredicateState<'predicate>>
+    {
+        match &self.data {
+            CachedBatch::MemoryArrow(array) => {
+                let selection_array = BooleanArray::new(selection.clone(), None);
+                let selected = arrow::compute::filter(array, &selection_array);
+                let result = selected.map(PredicatePushdownResult::Filtered);
+                SansIo::Ready(result)
+            }
+            CachedBatch::DiskArrow => {
+                let pending = PendingIo::Arrow {
+                    path: self.io_worker.entry_arrow_path(&self.id),
+                };
+                SansIo::Pending(GetWithPredicateState {
+                    state: GetWithPredicateStateInner::NeedBytes {
+                        selection,
+                        predicate,
+                        pending,
+                    },
+                })
+            }
+            CachedBatch::MemoryLiquid(array) => {
+                let result = match array.try_eval_predicate(predicate, selection) {
+                    Ok(Some(buf)) => Ok(PredicatePushdownResult::Evaluated(buf)),
+                    Ok(None) => {
+                        let filtered = array.filter_to_arrow(selection);
+                        Ok(PredicatePushdownResult::Filtered(filtered))
+                    }
+                    Err(e) => Err(e),
+                };
+                SansIo::Ready(result)
+            }
+            CachedBatch::DiskLiquid => {
+                let pending = PendingIo::Liquid {
+                    path: self.io_worker.entry_liquid_path(&self.id),
+                    compressor_states: self.io_worker.get_compressor_for_entry(&self.id),
+                };
+                SansIo::Pending(GetWithPredicateState {
+                    state: GetWithPredicateStateInner::NeedBytes {
+                        selection,
+                        predicate,
+                        pending,
+                    },
+                })
+            }
+        }
+    }
+
     fn eval_predicate_with_filter_inner(
         &self,
         predicate: &Arc<dyn PhysicalExpr>,
@@ -184,6 +308,307 @@ impl<'a> CachedData<'a> {
                 let filtered = array.filter_to_arrow(selection);
                 Ok(PredicatePushdownResult::Filtered(filtered))
             }
+        }
+    }
+}
+
+/// The result of a sans-IO operation.
+#[derive(Debug, Clone)]
+pub enum TryGet<T, M> {
+    /// The output is ready.
+    Ready(T),
+    /// The output is not ready. The second element is the state machine and the third element is the IO request.
+    NeedIo((M, IoRequest)),
+}
+
+/// The result of a sans-IO operation.
+#[derive(Debug)]
+pub enum SansIo<T, M> {
+    /// The output is ready.
+    Ready(T),
+    /// The output needs IO.
+    Pending(M),
+}
+
+/// A state machine that can be used to perform a sans-IO operation.
+pub trait SansIoStateMachine: Sized {
+    /// The output type of the state machine.
+    type Output;
+
+    /// Attempt to get the output. If IO is needed, returns an IO request.
+    fn try_get(self) -> TryGet<Self::Output, Self>;
+
+    /// Feed the state machine with IO bytes previously requested by `try_get`.
+    fn feed(&mut self, data: Bytes);
+}
+
+/// Description of an IO request to satisfy a sans-IO operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IoRequest {
+    /// The path to read.
+    pub path: PathBuf,
+}
+
+/// Reusable description of pending IO for Arrow or Liquid on-disk formats.
+#[derive(Debug, Clone)]
+enum PendingIo {
+    Arrow {
+        path: PathBuf,
+    },
+    Liquid {
+        path: PathBuf,
+        compressor_states: Arc<LiquidCompressorStates>,
+    },
+}
+
+impl PendingIo {
+    fn as_io_request(&self) -> IoRequest {
+        match self {
+            PendingIo::Arrow { path } => IoRequest { path: path.clone() },
+            PendingIo::Liquid { path, .. } => IoRequest { path: path.clone() },
+        }
+    }
+
+    fn decode_arrow(&self, data: Bytes) -> ArrayRef {
+        match self {
+            PendingIo::Arrow { .. } => {
+                let cursor = std::io::Cursor::new(data.to_vec());
+                let mut reader = arrow::ipc::reader::StreamReader::try_new(cursor, None)
+                    .expect("invalid arrow stream bytes");
+                let batch = reader
+                    .next()
+                    .expect("empty arrow stream")
+                    .expect("failed to read arrow stream");
+                batch.column(0).clone()
+            }
+            PendingIo::Liquid {
+                compressor_states, ..
+            } => {
+                let compressor = compressor_states.fsst_compressor();
+                let liquid = crate::liquid_array::ipc::read_from_bytes(
+                    data,
+                    &crate::liquid_array::ipc::LiquidIPCContext::new(compressor),
+                );
+                liquid.to_arrow_array()
+            }
+        }
+    }
+
+    fn decode_liquid(&self, data: Bytes) -> LiquidArrayRef {
+        match self {
+            PendingIo::Liquid {
+                compressor_states, ..
+            } => {
+                let compressor = compressor_states.fsst_compressor();
+                crate::liquid_array::ipc::read_from_bytes(
+                    data,
+                    &crate::liquid_array::ipc::LiquidIPCContext::new(compressor),
+                )
+            }
+            PendingIo::Arrow { .. } => panic!("decode_liquid called on Arrow pending io"),
+        }
+    }
+}
+
+/// State machine to obtain an Arrow `ArrayRef` without performing IO internally.
+#[derive(Debug)]
+pub struct GetArrowArrayState {
+    state: GetArrowArrayStateInner,
+}
+
+impl GetArrowArrayState {
+    fn new_arrow(path: PathBuf) -> Self {
+        Self {
+            state: GetArrowArrayStateInner::NeedBytes(PendingIo::Arrow { path }),
+        }
+    }
+
+    fn new_liquid(path: PathBuf, compressor_states: Arc<LiquidCompressorStates>) -> Self {
+        Self {
+            state: GetArrowArrayStateInner::NeedBytes(PendingIo::Liquid {
+                path,
+                compressor_states,
+            }),
+        }
+    }
+}
+
+#[derive(Debug)]
+enum GetArrowArrayStateInner {
+    Ready(ArrayRef),
+    NeedBytes(PendingIo),
+}
+
+impl SansIoStateMachine for GetArrowArrayState {
+    type Output = ArrayRef;
+
+    fn try_get(self) -> TryGet<ArrayRef, Self> {
+        match self.state {
+            GetArrowArrayStateInner::Ready(array) => TryGet::Ready(array),
+            GetArrowArrayStateInner::NeedBytes(ref p) => {
+                let io_request = p.as_io_request();
+                TryGet::NeedIo((self, io_request))
+            }
+        }
+    }
+
+    fn feed(&mut self, data: Bytes) {
+        match &mut self.state {
+            GetArrowArrayStateInner::Ready(_) => {}
+            GetArrowArrayStateInner::NeedBytes(pending_state) => {
+                let array = pending_state.decode_arrow(data);
+                self.state = GetArrowArrayStateInner::Ready(array);
+            }
+        }
+    }
+}
+
+/// State machine: selection pushdown sans-IO
+#[derive(Debug)]
+pub struct GetWithSelectionSansIo<'selection> {
+    state: GetWithSelectionState<'selection>,
+}
+
+#[derive(Debug)]
+enum GetWithSelectionState<'selection> {
+    NeedBytes {
+        selection: &'selection BooleanBuffer,
+        pending: PendingIo,
+    },
+    Done(Result<ArrayRef, ArrowError>),
+}
+
+impl<'a> SansIoStateMachine for GetWithSelectionSansIo<'a> {
+    type Output = Result<ArrayRef, ArrowError>;
+
+    fn try_get(self) -> TryGet<Result<ArrayRef, ArrowError>, Self> {
+        match self.state {
+            GetWithSelectionState::Done(r) => TryGet::Ready(r),
+            GetWithSelectionState::NeedBytes { ref pending, .. } => {
+                let io_request = pending.as_io_request();
+                TryGet::NeedIo((self, io_request))
+            }
+        }
+    }
+
+    fn feed(&mut self, data: Bytes) {
+        match &mut self.state {
+            GetWithSelectionState::Done(_) => {}
+            GetWithSelectionState::NeedBytes { pending, selection } => {
+                let array = pending.decode_arrow(data);
+                let selection_array = BooleanArray::new(selection.clone(), None);
+                let filtered = arrow::compute::filter(&array, &selection_array);
+                self.state = GetWithSelectionState::Done(filtered);
+            }
+        }
+    }
+}
+
+/// State machine: read `LiquidArrayRef` sans-IO
+#[derive(Debug)]
+pub struct GetLiquidArrayState {
+    state: GetLiquidArrayStateInner,
+}
+
+impl GetLiquidArrayState {
+    fn new(path: PathBuf, compressor_states: Arc<LiquidCompressorStates>) -> Self {
+        Self {
+            state: GetLiquidArrayStateInner::NeedBytes(PendingIo::Liquid {
+                path,
+                compressor_states,
+            }),
+        }
+    }
+}
+
+#[derive(Debug)]
+enum GetLiquidArrayStateInner {
+    NeedBytes(PendingIo),
+    Done(LiquidArrayRef),
+}
+
+impl SansIoStateMachine for GetLiquidArrayState {
+    type Output = LiquidArrayRef;
+
+    fn try_get(self) -> TryGet<LiquidArrayRef, Self> {
+        match &self.state {
+            GetLiquidArrayStateInner::Done(liq) => TryGet::Ready(liq.clone()),
+            GetLiquidArrayStateInner::NeedBytes(p) => {
+                let io_request = p.as_io_request();
+                TryGet::NeedIo((self, io_request))
+            }
+        }
+    }
+
+    fn feed(&mut self, data: Bytes) {
+        match &mut self.state {
+            GetLiquidArrayStateInner::Done(_) => {}
+            GetLiquidArrayStateInner::NeedBytes(pending) => {
+                let liquid = pending.decode_liquid(data);
+                self.state = GetLiquidArrayStateInner::Done(liquid);
+            }
+        }
+    }
+}
+
+/// State machine: predicate pushdown sans-IO
+#[derive(Debug)]
+pub struct GetWithPredicateState<'a> {
+    state: GetWithPredicateStateInner<'a>,
+}
+
+#[derive(Debug)]
+enum GetWithPredicateStateInner<'a> {
+    NeedBytes {
+        selection: &'a BooleanBuffer,
+        predicate: &'a Arc<dyn PhysicalExpr>,
+        pending: PendingIo,
+    },
+    Done(Result<PredicatePushdownResult, ArrowError>),
+}
+
+impl<'a> SansIoStateMachine for GetWithPredicateState<'a> {
+    type Output = Result<PredicatePushdownResult, ArrowError>;
+
+    fn try_get(self) -> TryGet<Result<PredicatePushdownResult, ArrowError>, Self> {
+        match self.state {
+            GetWithPredicateStateInner::Done(r) => TryGet::Ready(r),
+            GetWithPredicateStateInner::NeedBytes { ref pending, .. } => {
+                let io_request = pending.as_io_request();
+                TryGet::NeedIo((self, io_request))
+            }
+        }
+    }
+
+    fn feed(&mut self, data: Bytes) {
+        match &mut self.state {
+            GetWithPredicateStateInner::Done(_) => {}
+            GetWithPredicateStateInner::NeedBytes {
+                pending,
+                selection,
+                predicate,
+            } => match pending {
+                PendingIo::Arrow { .. } => {
+                    let array = pending.decode_arrow(data);
+                    let selection_array = BooleanArray::new(selection.clone(), None);
+                    let filtered = arrow::compute::filter(&array, &selection_array);
+                    let result = filtered.map(PredicatePushdownResult::Filtered);
+                    self.state = GetWithPredicateStateInner::Done(result);
+                }
+                PendingIo::Liquid { .. } => {
+                    let liquid = pending.decode_liquid(data);
+                    let result = liquid
+                        .try_eval_predicate(&predicate, &selection)
+                        .map(|opt| match opt {
+                            Some(buf) => PredicatePushdownResult::Evaluated(buf),
+                            None => {
+                                let filtered = liquid.filter_to_arrow(&selection);
+                                PredicatePushdownResult::Filtered(filtered)
+                            }
+                        });
+                    self.state = GetWithPredicateStateInner::Done(result);
+                }
+            },
         }
     }
 }
