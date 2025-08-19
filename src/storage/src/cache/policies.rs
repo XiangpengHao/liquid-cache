@@ -11,8 +11,8 @@ use std::{
 
 /// The cache policy that guides the replacement of LiquidCache
 pub trait CachePolicy: std::fmt::Debug + Send + Sync {
-    /// Give advice on what to do when cache is full.
-    fn advise(&self) -> CacheAdvice;
+    /// Give cnt amount of advice on what to do when cache is full.
+    fn advise(&self, cnt: usize) -> Vec<CacheAdvice>;
 
     /// Notify the cache policy that an entry was inserted.
     fn notify_insert(&self, _entry_id: &EntryID) {}
@@ -40,19 +40,19 @@ impl FiloPolicy {
         let mut queue = self.queue.lock().unwrap();
         queue.push_front(*entry_id);
     }
-
-    fn get_newest_entry(&self) -> Option<EntryID> {
-        let mut queue = self.queue.lock().unwrap();
-        queue.pop_front()
-    }
 }
 
 impl CachePolicy for FiloPolicy {
-    fn advise(&self) -> CacheAdvice {
-        if let Some(newest_entry) = self.get_newest_entry() {
-            return CacheAdvice::ToDisk(newest_entry);
+    fn advise(&self, cnt: usize) -> Vec<CacheAdvice> {
+        let mut queue = self.queue.lock().unwrap();
+        if cnt == 0 || queue.is_empty() {
+            return vec![];
         }
-        CacheAdvice::Discard
+        let k = cnt.min(queue.len());
+        queue
+            .drain(0..k)
+            .map(|entry| CacheAdvice::ToDisk(entry))
+            .collect()
     }
 
     fn notify_insert(&self, entry_id: &EntryID) {
@@ -138,9 +138,15 @@ unsafe impl Send for LruPolicy {}
 unsafe impl Sync for LruPolicy {}
 
 impl CachePolicy for LruPolicy {
-    fn advise(&self) -> CacheAdvice {
+    fn advise(&self, cnt: usize) -> Vec<CacheAdvice> {
         let mut state = self.state.lock().unwrap();
-        if let Some(tail_ptr) = state.tail {
+        if cnt == 0 {
+            return vec![];
+        }
+
+        let mut advices = Vec::with_capacity(cnt);
+        for _ in 0..cnt {
+            let Some(tail_ptr) = state.tail else { break };
             let tail_entry_id = unsafe { tail_ptr.as_ref().entry_id };
             let node_ptr = state
                 .map
@@ -150,10 +156,10 @@ impl CachePolicy for LruPolicy {
                 self.unlink_node(&mut state, node_ptr);
                 drop(Box::from_raw(node_ptr.as_ptr()));
             }
-            return CacheAdvice::TranscodeToDisk(tail_entry_id);
+            advices.push(CacheAdvice::ToDisk(tail_entry_id));
         }
-        // TODO: this should not happen, find a way to check it.
-        CacheAdvice::Discard
+
+        advices
     }
 
     fn notify_access(&self, entry_id: &EntryID) {
@@ -228,13 +234,8 @@ mod test {
 
     // Helper to assert eviction advice
     fn assert_evict_advice(policy: &LruPolicy, expect_evict: EntryID) {
-        let advice = policy.advise();
-        assert_eq!(advice, CacheAdvice::TranscodeToDisk(expect_evict));
-    }
-
-    fn assert_discard_advice(policy: &LruPolicy) {
-        let advice = policy.advise();
-        assert_eq!(advice, CacheAdvice::Discard);
+        let advice = policy.advise(1);
+        assert_eq!(advice, vec![CacheAdvice::ToDisk(expect_evict)]);
     }
 
     #[test]
@@ -287,7 +288,7 @@ mod test {
     #[test]
     fn test_lru_policy_advise_empty() {
         let policy = LruPolicy::new();
-        assert_discard_advice(&policy);
+        assert_eq!(policy.advise(1), vec![]);
     }
 
     #[test]
@@ -367,8 +368,8 @@ mod test {
         }
         policy.notify_access(&entry(2));
         policy.notify_access(&entry(5));
-        policy.advise();
-        policy.advise();
+        policy.advise(1);
+        policy.advise(1);
 
         let state = policy.state.lock().unwrap();
         state.check_integrity();
@@ -409,8 +410,8 @@ mod test {
             let advised_entries_clone = advised_entries.clone();
 
             let handle = thread::spawn(move || {
-                let advice = policy_clone.advise();
-                if let CacheAdvice::TranscodeToDisk(entry_id) = advice {
+                let advice = policy_clone.advise(1);
+                if let CacheAdvice::TranscodeToDisk(entry_id) = advice[0] {
                     let mut entries = advised_entries_clone.lock().unwrap();
                     entries.push(entry_id);
                 }
@@ -490,7 +491,7 @@ mod test {
                         2 => {
                             if i > 20 {
                                 // Evict some earlier entries we created
-                                policy_clone.advise();
+                                policy_clone.advise(1);
                                 total_evictions_clone.fetch_add(1, Ordering::SeqCst);
                             }
                         }

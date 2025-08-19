@@ -178,7 +178,7 @@ impl CacheStorageBuilder {
     }
 
     /// Set the cache policy for the cache.
-    /// Default is DiscardPolicy.
+    /// Default is FiloPolicy.
     pub fn with_policy(mut self, policy: Box<dyn CachePolicy>) -> Self {
         self.policy = policy;
         self
@@ -326,23 +326,10 @@ impl CacheStorage {
                 let Some(to_disk_batch) = self.index.get(&to_disk) else {
                     return;
                 };
-                match to_disk_batch {
-                    CachedBatch::MemoryArrow(array) => {
-                        self.write_arrow_to_disk(&to_disk, &array);
-                        self.try_insert(to_disk, CachedBatch::DiskArrow)
-                            .expect("failed to insert on disk arrow");
-                    }
-                    CachedBatch::MemoryLiquid(liquid_array) => {
-                        self.write_liquid_to_disk(&to_disk, &liquid_array);
-                        self.try_insert(to_disk, CachedBatch::DiskLiquid)
-                            .expect("failed to insert on disk liquid");
-                    }
-                    CachedBatch::DiskLiquid | CachedBatch::DiskArrow => {
-                        // Already on disk, nothing to do
-                    }
-                }
+                let written_batch = self.write_batch_to_disk(to_disk, to_disk_batch);
+                self.try_insert(to_disk, written_batch)
+                    .expect("failed to insert on disk batch");
             }
-            CacheAdvice::Discard => (),
         }
     }
 
@@ -385,6 +372,21 @@ impl CacheStorage {
         self.insert_inner(entry_id, batch);
     }
 
+    /// returns the batch that was written to disk
+    fn write_batch_to_disk(&self, entry_id: EntryID, batch: CachedBatch) -> CachedBatch {
+        match batch {
+            CachedBatch::MemoryArrow(array) => {
+                self.write_arrow_to_disk(&entry_id, &array);
+                CachedBatch::DiskArrow
+            }
+            CachedBatch::MemoryLiquid(liquid_array) => {
+                self.write_liquid_to_disk(&entry_id, &liquid_array);
+                CachedBatch::DiskLiquid
+            }
+            CachedBatch::DiskLiquid | CachedBatch::DiskArrow => batch,
+        }
+    }
+
     /// Insert a batch into the cache, it will run cache replacement policy until the batch is inserted.
     pub(crate) fn insert_inner(&self, entry_id: EntryID, mut batch_to_cache: CachedBatch) {
         let mut loop_count = 0;
@@ -394,8 +396,18 @@ impl CacheStorage {
                 return;
             };
 
-            let advice = self.policy.advise();
-            self.apply_advice(advice);
+            let advice = self.policy.advise(1);
+            if advice.is_empty() {
+                // no advice, because the cache is already empty
+                // this can happen if the entry to be inserted is too large, in that case,
+                // we write it to disk
+                let on_disk_batch = self.write_batch_to_disk(entry_id, not_inserted);
+                batch_to_cache = on_disk_batch;
+                continue;
+            }
+            for advice in advice {
+                self.apply_advice(advice);
+            }
 
             batch_to_cache = not_inserted;
             crate::utils::yield_now_if_shuttle();
@@ -531,16 +543,16 @@ mod tests {
     }
 
     impl CachePolicy for TestPolicy {
-        fn advise(&self) -> CacheAdvice {
+        fn advise(&self, _cnt: usize) -> Vec<CacheAdvice> {
             self.advice_count.fetch_add(1, Ordering::SeqCst);
             match self.advice_type {
                 AdviceType::Evict => {
                     let id_to_use = self.target_id.unwrap();
-                    CacheAdvice::TranscodeToDisk(id_to_use)
+                    vec![CacheAdvice::TranscodeToDisk(id_to_use)]
                 }
                 AdviceType::Transcode => {
                     let id_to_use = self.target_id.unwrap();
-                    CacheAdvice::Transcode(id_to_use)
+                    vec![CacheAdvice::Transcode(id_to_use)]
                 }
             }
         }
