@@ -260,11 +260,7 @@ impl CacheStorage {
         }
     }
 
-    fn try_insert(
-        &self,
-        entry_id: EntryID,
-        cached_batch: CachedBatch,
-    ) -> Result<(), (CacheAdvice, CachedBatch)> {
+    fn try_insert(&self, entry_id: EntryID, cached_batch: CachedBatch) -> Result<(), CachedBatch> {
         let new_memory_size = cached_batch.memory_usage_bytes();
         if let Some(entry) = self.index.get(&entry_id) {
             let old_memory_size = entry.memory_usage_bytes();
@@ -273,14 +269,12 @@ impl CacheStorage {
                 .try_update_memory_usage(old_memory_size, new_memory_size)
                 .is_err()
             {
-                let advice = self.policy.advise(&entry_id, self.config.cache_mode());
-                return Err((advice, cached_batch));
+                return Err(cached_batch);
             }
             self.index.insert(&entry_id, cached_batch);
         } else {
             if self.budget.try_reserve_memory(new_memory_size).is_err() {
-                let advice = self.policy.advise(&entry_id, self.config.cache_mode());
-                return Err((advice, cached_batch));
+                return Err(cached_batch);
             }
             self.index.insert(&entry_id, cached_batch);
         }
@@ -309,7 +303,7 @@ impl CacheStorage {
 
                 Some(not_inserted)
             }
-            CacheAdvice::Evict(to_evict) => {
+            CacheAdvice::TranscodeToDisk(to_evict) => {
                 let compressor_states = self.io_worker.get_compressor_for_entry(&to_evict);
                 let Some(to_evict_batch) = self.index.get(&to_evict) else {
                     return Some(not_inserted);
@@ -334,28 +328,11 @@ impl CacheStorage {
                     .expect("failed to insert on disk liquid");
                 Some(not_inserted)
             }
-            CacheAdvice::TranscodeToDisk(to_transcode) => {
-                let compressor_states = self.io_worker.get_compressor_for_entry(&to_transcode);
-                let liquid_array = match not_inserted {
-                    CachedBatch::MemoryArrow(array) => {
-                        transcode_liquid_inner(&array, compressor_states.as_ref())
-                            .expect("Failed to transcode to liquid array")
-                    }
-                    CachedBatch::MemoryLiquid(liquid_array) => liquid_array,
-                    CachedBatch::DiskLiquid => {
-                        return None;
-                    }
-                    CachedBatch::DiskArrow => {
-                        return None;
-                    }
-                };
-                self.write_liquid_to_disk(&to_transcode, &liquid_array);
-                self.try_insert(to_transcode, CachedBatch::DiskLiquid)
-                    .expect("failed to insert on disk liquid");
-                None
-            }
             CacheAdvice::ToDisk(to_disk) => {
-                match not_inserted {
+                let Some(to_disk_batch) = self.index.get(&to_disk) else {
+                    return Some(not_inserted);
+                };
+                match to_disk_batch {
                     CachedBatch::MemoryArrow(array) => {
                         self.write_arrow_to_disk(&to_disk, &array);
                         self.try_insert(to_disk, CachedBatch::DiskArrow)
@@ -368,10 +345,10 @@ impl CacheStorage {
                     }
                     CachedBatch::DiskLiquid | CachedBatch::DiskArrow => {
                         // Already on disk, nothing to do
-                        return None;
+                        return Some(not_inserted);
                     }
                 }
-                None
+                Some(not_inserted)
             }
             CacheAdvice::Discard => None,
         }
@@ -420,11 +397,12 @@ impl CacheStorage {
     pub(crate) fn insert_inner(&self, entry_id: EntryID, mut batch_to_cache: CachedBatch) {
         let mut loop_count = 0;
         loop {
-            let Err((advice, not_inserted)) = self.try_insert(entry_id, batch_to_cache) else {
+            let Err(not_inserted) = self.try_insert(entry_id, batch_to_cache) else {
                 self.policy.notify_insert(&entry_id);
                 return;
             };
 
+            let advice = self.policy.advise();
             let Some(not_inserted) = self.apply_advice(advice, not_inserted) else {
                 return;
             };
@@ -535,10 +513,8 @@ mod tests {
         utils::{create_cache_store, create_test_array, create_test_arrow_array},
     };
     use crate::sync::thread;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
     use arrow::array::Array;
-    use liquid_cache_common::LiquidCacheMode;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     // Unified advice type for more concise testing
     #[derive(Debug)]
@@ -552,8 +528,6 @@ mod tests {
     enum AdviceType {
         Evict,
         Transcode,
-        TranscodeToDisk,
-        ToDisk,
     }
 
     impl TestPolicy {
@@ -567,19 +541,17 @@ mod tests {
     }
 
     impl CachePolicy for TestPolicy {
-        fn advise(&self, entry_id: &EntryID, _cache_mode: &LiquidCacheMode) -> CacheAdvice {
+        fn advise(&self) -> CacheAdvice {
             self.advice_count.fetch_add(1, Ordering::SeqCst);
             match self.advice_type {
                 AdviceType::Evict => {
-                    let id_to_use = self.target_id.unwrap_or(*entry_id);
-                    CacheAdvice::Evict(id_to_use)
+                    let id_to_use = self.target_id.unwrap();
+                    CacheAdvice::TranscodeToDisk(id_to_use)
                 }
                 AdviceType::Transcode => {
-                    let id_to_use = self.target_id.unwrap_or(*entry_id);
+                    let id_to_use = self.target_id.unwrap();
                     CacheAdvice::Transcode(id_to_use)
                 }
-                AdviceType::TranscodeToDisk => CacheAdvice::TranscodeToDisk(*entry_id),
-                AdviceType::ToDisk => CacheAdvice::ToDisk(*entry_id),
             }
         }
     }
@@ -629,7 +601,6 @@ mod tests {
         // Create entry IDs we'll use throughout the test
         let entry_id1 = EntryID::from(1);
         let entry_id2 = EntryID::from(2);
-        let entry_id3 = EntryID::from(3);
 
         // 1. Test EVICT advice
         {
@@ -664,34 +635,6 @@ mod tests {
             match store.get(&entry_id1).unwrap().raw_data() {
                 CachedBatch::MemoryLiquid(_) => {}
                 other => panic!("Expected LiquidMemory after transcoding, got {other:?}"),
-            }
-        }
-
-        // 3. Test TRANSCODE_TO_DISK advice
-        {
-            let advisor = TestPolicy::new(AdviceType::TranscodeToDisk, None);
-            let store = create_cache_store(8000, Box::new(advisor)); // Tiny budget to force disk storage
-
-            store.insert_inner(entry_id1, create_test_array(800));
-            store.insert_inner(entry_id3, create_test_array(800));
-            match store.get(&entry_id3).unwrap().raw_data() {
-                CachedBatch::DiskLiquid => {}
-                other => panic!("Expected OnDiskLiquid, got {other:?}"),
-            }
-        }
-
-        // 4. Test TO_DISK advice - preserve format as-is
-        {
-            let advisor = TestPolicy::new(AdviceType::ToDisk, None);
-            let store = create_cache_store(8000, Box::new(advisor)); // Small budget to force disk storage
-
-            // Insert arrow data - should be written as DiskArrow (preserving format)
-            store.insert_inner(entry_id1, create_test_array(800));
-            store.insert_inner(entry_id2, create_test_array(800)); // This should trigger ToDisk advice
-
-            match store.get(&entry_id2).unwrap().raw_data() {
-                CachedBatch::DiskArrow => {}
-                other => panic!("Expected DiskArrow after ToDisk advice, got {other:?}"),
             }
         }
     }

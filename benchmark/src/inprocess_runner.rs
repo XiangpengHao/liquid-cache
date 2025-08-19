@@ -6,7 +6,7 @@ use datafusion::prelude::{SessionConfig, SessionContext};
 use liquid_cache_common::LiquidCacheMode;
 use liquid_cache_local::LiquidCacheLocalBuilder;
 use liquid_cache_parquet::{LiquidCacheRef, extract_execution_metrics};
-use liquid_cache_storage::policies::ToDiskPolicy;
+use liquid_cache_storage::policies::FiloPolicy;
 use log::info;
 use serde::Serialize;
 use std::{
@@ -150,7 +150,7 @@ impl InProcessBenchmarkRunner {
                     .with_max_cache_bytes(cache_size)
                     .with_cache_mode(LiquidCacheMode::Arrow)
                     .with_cache_dir(cache_dir)
-                    .with_cache_strategy(Box::new(ToDiskPolicy::new()))
+                    .with_cache_strategy(Box::new(FiloPolicy::new()))
                     .build(session_config)?;
                 (v.0, Some(v.1))
             }
@@ -159,7 +159,7 @@ impl InProcessBenchmarkRunner {
                     .with_max_cache_bytes(cache_size)
                     .with_cache_mode(LiquidCacheMode::Liquid)
                     .with_cache_dir(cache_dir)
-                    .with_cache_strategy(Box::new(ToDiskPolicy::new()))
+                    .with_cache_strategy(Box::new(FiloPolicy::new()))
                     .build(session_config)?;
                 (v.0, Some(v.1))
             }
@@ -168,7 +168,7 @@ impl InProcessBenchmarkRunner {
                     .with_max_cache_bytes(cache_size)
                     .with_cache_mode(LiquidCacheMode::LiquidBlocking)
                     .with_cache_dir(cache_dir)
-                    .with_cache_strategy(Box::new(ToDiskPolicy::new()))
+                    .with_cache_strategy(Box::new(FiloPolicy::new()))
                     .build(session_config)?;
                 (v.0, Some(v.1))
             }

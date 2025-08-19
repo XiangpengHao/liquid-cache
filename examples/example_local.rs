@@ -26,7 +26,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 pub struct CustomPolicy;
 
 impl CachePolicy for CustomPolicy {
-    fn advise(&self, _entry_id: &EntryID, _cache_mode: &LiquidCacheMode) -> CacheAdvice {
+    fn advise(&self) -> CacheAdvice {
         CacheAdvice::Discard
     }
 }

@@ -90,8 +90,6 @@ pub(crate) fn create_cache_store(
 #[derive(PartialEq, Eq, Debug)]
 pub enum CacheAdvice {
     /// Evict the entry with the given ID.
-    Evict(EntryID),
-    /// Transcode the entry to disk.
     TranscodeToDisk(EntryID),
     /// Transcode the entry to liquid memory.
     Transcode(EntryID),
