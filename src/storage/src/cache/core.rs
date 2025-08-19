@@ -14,7 +14,7 @@ use crate::cache::transcode::submit_background_transcoding_task;
 use crate::cache::utils::{CacheAdvice, LiquidCompressorStates, arrow_to_bytes};
 use crate::cache::{index::ArtIndex, utils::EntryID};
 use crate::liquid_array::LiquidArrayRef;
-use crate::policies::DiscardPolicy;
+use crate::policies::FiloPolicy;
 use crate::sync::Arc;
 use liquid_cache_common::LiquidCacheMode;
 
@@ -144,7 +144,7 @@ impl CacheStorageBuilder {
             max_cache_bytes: 1024 * 1024 * 1024,
             cache_dir: None,
             cache_mode: LiquidCacheMode::Liquid,
-            policy: Box::new(DiscardPolicy),
+            policy: Box::new(FiloPolicy::new()),
             io_worker: None,
         }
     }
@@ -282,15 +282,12 @@ impl CacheStorage {
         Ok(())
     }
 
-    /// Returns Some(CachedBatch) if need to retry the insert.
-    #[must_use]
-    fn apply_advice(&self, advice: CacheAdvice, not_inserted: CachedBatch) -> Option<CachedBatch> {
+    fn apply_advice(&self, advice: CacheAdvice) {
         match advice {
             CacheAdvice::Transcode(to_transcode) => {
                 let compressor_states = self.io_worker.get_compressor_for_entry(&to_transcode);
                 let Some(to_transcode_batch) = self.index.get(&to_transcode) else {
-                    // The batch is gone, no need to transcode
-                    return Some(not_inserted);
+                    return;
                 };
 
                 if let CachedBatch::MemoryArrow(array) = to_transcode_batch {
@@ -300,13 +297,11 @@ impl CacheStorage {
                     self.try_insert(to_transcode, liquid_array)
                         .expect("Failed to insert the transcoded batch");
                 }
-
-                Some(not_inserted)
             }
             CacheAdvice::TranscodeToDisk(to_evict) => {
                 let compressor_states = self.io_worker.get_compressor_for_entry(&to_evict);
                 let Some(to_evict_batch) = self.index.get(&to_evict) else {
-                    return Some(not_inserted);
+                    return;
                 };
                 let liquid_array = match to_evict_batch {
                     CachedBatch::MemoryArrow(array) => {
@@ -316,21 +311,20 @@ impl CacheStorage {
                     CachedBatch::MemoryLiquid(liquid_array) => liquid_array,
                     CachedBatch::DiskLiquid => {
                         // do nothing, already on disk
-                        return Some(not_inserted);
+                        return;
                     }
                     CachedBatch::DiskArrow => {
                         // do nothing, already on disk
-                        return Some(not_inserted);
+                        return;
                     }
                 };
                 self.write_liquid_to_disk(&to_evict, &liquid_array);
                 self.try_insert(to_evict, CachedBatch::DiskLiquid)
                     .expect("failed to insert on disk liquid");
-                Some(not_inserted)
             }
             CacheAdvice::ToDisk(to_disk) => {
                 let Some(to_disk_batch) = self.index.get(&to_disk) else {
-                    return Some(not_inserted);
+                    return;
                 };
                 match to_disk_batch {
                     CachedBatch::MemoryArrow(array) => {
@@ -345,12 +339,10 @@ impl CacheStorage {
                     }
                     CachedBatch::DiskLiquid | CachedBatch::DiskArrow => {
                         // Already on disk, nothing to do
-                        return Some(not_inserted);
                     }
                 }
-                Some(not_inserted)
             }
-            CacheAdvice::Discard => None,
+            CacheAdvice::Discard => (),
         }
     }
 
@@ -403,16 +395,14 @@ impl CacheStorage {
             };
 
             let advice = self.policy.advise();
-            let Some(not_inserted) = self.apply_advice(advice, not_inserted) else {
-                return;
-            };
+            self.apply_advice(advice);
 
             batch_to_cache = not_inserted;
             crate::utils::yield_now_if_shuttle();
 
             loop_count += 1;
             if loop_count > 20 {
-                log::warn!("Cache store insert looped {} times", loop_count);
+                log::warn!("Cache store insert looped {loop_count} times");
             }
         }
     }

@@ -6,7 +6,7 @@ use datafusion::{
     prelude::SessionContext,
 };
 use liquid_cache_common::CacheMode;
-use liquid_cache_storage::policies::DiscardPolicy;
+use liquid_cache_storage::policies::FiloPolicy;
 use uuid::Uuid;
 
 mod cases;
@@ -32,7 +32,7 @@ async fn run_sql(sql: &str, mode: CacheMode, cache_size_bytes: usize, file_path:
         Some(cache_size_bytes),
         tmp_dir.path().to_path_buf(),
         mode,
-        Box::new(DiscardPolicy),
+        Box::new(FiloPolicy::new()),
     );
     async fn get_result(service: &LiquidCacheServiceInner, sql: &str) -> String {
         let handle = Uuid::new_v4();

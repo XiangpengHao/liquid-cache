@@ -377,7 +377,7 @@ mod tests {
 
     use arrow::array::Int32Array;
     use liquid_cache_common::LiquidCacheMode;
-    use liquid_cache_storage::policies::DiscardPolicy;
+    use liquid_cache_storage::policies::FiloPolicy;
 
     use super::*;
     use crate::cache::LiquidCache;
@@ -446,7 +446,7 @@ mod tests {
             usize::MAX,
             tmp_dir.path().to_path_buf(),
             LiquidCacheMode::LiquidBlocking,
-            Box::new(DiscardPolicy),
+            Box::new(FiloPolicy::new()),
         ));
         let file = liquid_cache.register_or_get_file("test".to_string());
         let row_group = file.row_group(0);

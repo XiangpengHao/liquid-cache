@@ -301,7 +301,7 @@ mod tests {
     use super::*;
     use datafusion::{datasource::physical_plan::FileScanConfig, prelude::SessionContext};
     use liquid_cache_common::LiquidCacheMode;
-    use liquid_cache_storage::cache::policies::DiscardPolicy;
+    use liquid_cache_storage::policies::FiloPolicy;
     use std::{path::PathBuf, sync::Arc};
 
     #[test]
@@ -405,7 +405,7 @@ mod tests {
             1000000,
             PathBuf::from("test"),
             *cache_mode,
-            Box::new(DiscardPolicy),
+            Box::new(FiloPolicy::new()),
         ));
         let rewritten = rewrite_data_source_plan(plan, &liquid_cache);
 

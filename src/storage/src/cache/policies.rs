@@ -210,16 +210,6 @@ impl Drop for LruPolicy {
     }
 }
 
-/// The policy that discards entries when the cache is full.
-#[derive(Debug, Default)]
-pub struct DiscardPolicy;
-
-impl CachePolicy for DiscardPolicy {
-    fn advise(&self) -> CacheAdvice {
-        CacheAdvice::Discard
-    }
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
@@ -227,7 +217,7 @@ mod test {
     use crate::cache::utils::{create_cache_store, create_test_arrow_array};
 
     use super::super::cached_data::CachedBatch;
-    use super::{DiscardPolicy, FiloPolicy, LruInternalState, LruPolicy};
+    use super::{FiloPolicy, LruInternalState, LruPolicy};
     use crate::sync::{Arc, Barrier, thread};
     use std::sync::atomic::Ordering;
 
@@ -449,8 +439,6 @@ mod test {
     #[test]
     fn test_concurrent_invariant_advice_once() {
         concurrent_invariant_advice_once(Arc::new(LruPolicy::new()));
-
-        concurrent_invariant_advice_once(Arc::new(DiscardPolicy));
 
         concurrent_invariant_advice_once(Arc::new(FiloPolicy::new()));
     }

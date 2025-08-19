@@ -469,7 +469,7 @@ mod tests {
     use datafusion::physical_expr::expressions::{BinaryExpr, Literal};
     use datafusion::physical_plan::expressions::Column;
     use liquid_cache_common::LiquidCacheMode;
-    use liquid_cache_storage::policies::DiscardPolicy;
+    use liquid_cache_storage::policies::FiloPolicy;
     use parquet::arrow::ArrowWriter;
     use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
     use std::sync::Arc;
@@ -481,7 +481,7 @@ mod tests {
             usize::MAX,
             tmp_dir.path().to_path_buf(),
             LiquidCacheMode::LiquidBlocking,
-            Box::new(DiscardPolicy),
+            Box::new(FiloPolicy::new()),
         );
         let file = cache.register_or_get_file("test".to_string());
         file.row_group(0)

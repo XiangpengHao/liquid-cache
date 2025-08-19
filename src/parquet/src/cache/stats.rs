@@ -174,7 +174,7 @@ mod tests {
     };
     use bytes::Bytes;
     use liquid_cache_common::LiquidCacheMode;
-    use liquid_cache_storage::cache::policies::DiscardPolicy;
+    use liquid_cache_storage::policies::FiloPolicy;
     use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
     use tempfile::NamedTempFile;
 
@@ -186,7 +186,7 @@ mod tests {
             usize::MAX,
             tmp_dir.path().to_path_buf(),
             LiquidCacheMode::Arrow,
-            Box::new(DiscardPolicy),
+            Box::new(FiloPolicy::new()),
         );
         let array = Arc::new(arrow::array::Int32Array::from(vec![1, 2, 3]));
         let num_rows = 8 * 8 * 8 * 8;

@@ -435,7 +435,7 @@ mod tests {
     use arrow::datatypes::{DataType, Field};
     use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
     use liquid_cache_common::{LiquidCacheMode, ParquetReaderSchema};
-    use liquid_cache_storage::policies::DiscardPolicy;
+    use liquid_cache_storage::policies::FiloPolicy;
     use object_store::{ObjectStore, local::LocalFileSystem};
     use parquet::arrow::{
         ParquetRecordBatchStreamBuilder,
@@ -491,7 +491,7 @@ mod tests {
             batch_size,
             tmp_dir.path().to_path_buf(),
             LiquidCacheMode::LiquidBlocking,
-            Box::new(DiscardPolicy),
+            Box::new(FiloPolicy::new()),
         );
         let liquid_cache_file = liquid_cache.register_or_get_file("whatever".into());
 
@@ -552,7 +552,7 @@ mod tests {
             usize::MAX,
             tmp_dir.path().to_path_buf(),
             LiquidCacheMode::LiquidBlocking,
-            Box::new(DiscardPolicy),
+            Box::new(FiloPolicy::new()),
         );
         let liquid_cache_file = liquid_cache.register_or_get_file("test".to_string());
         let liquid_cache_rg = liquid_cache_file.row_group(0);
@@ -792,7 +792,7 @@ mod tests {
             usize::MAX,
             dir.to_path_buf(),
             LiquidCacheMode::LiquidBlocking,
-            Box::new(DiscardPolicy),
+            Box::new(FiloPolicy::new()),
         );
         let liquid_cache_file = liquid_cache.register_or_get_file("test_file".to_string());
         let liquid_cache_rg = liquid_cache_file.row_group(0);

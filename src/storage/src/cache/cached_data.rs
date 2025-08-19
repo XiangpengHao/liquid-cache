@@ -142,10 +142,12 @@ impl<'a> CachedData<'a> {
     /// Build a sans-IO state machine to evaluate a predicate with selection pushdown.
     pub fn get_with_predicate<'predicate, 'selection>(
         &self,
-        selection: &'predicate BooleanBuffer,
+        selection: &'selection BooleanBuffer,
         predicate: &'predicate Arc<dyn PhysicalExpr>,
-    ) -> SansIo<Result<PredicatePushdownResult, ArrowError>, GetWithPredicateState<'predicate>>
-    {
+    ) -> SansIo<
+        Result<PredicatePushdownResult, ArrowError>,
+        GetWithPredicateState<'predicate, 'selection>,
+    > {
         match &self.data {
             CachedBatch::MemoryArrow(array) => {
                 let selection_array = BooleanArray::new(selection.clone(), None);
@@ -461,21 +463,21 @@ impl IoStateMachine for GetLiquidArrayState {
 
 /// State machine: predicate pushdown sans-IO
 #[derive(Debug)]
-pub struct GetWithPredicateState<'a> {
-    state: GetWithPredicateStateInner<'a>,
+pub struct GetWithPredicateState<'a, 'b> {
+    state: GetWithPredicateStateInner<'a, 'b>,
 }
 
 #[derive(Debug)]
-enum GetWithPredicateStateInner<'a> {
+enum GetWithPredicateStateInner<'a, 'b> {
     NeedBytes {
-        selection: &'a BooleanBuffer,
+        selection: &'b BooleanBuffer,
         predicate: &'a Arc<dyn PhysicalExpr>,
         pending: PendingIo,
     },
     Done(Result<PredicatePushdownResult, ArrowError>),
 }
 
-impl<'a> IoStateMachine for GetWithPredicateState<'a> {
+impl<'a, 'b> IoStateMachine for GetWithPredicateState<'a, 'b> {
     type Output = Result<PredicatePushdownResult, ArrowError>;
 
     fn try_get(self) -> TryGet<Result<PredicatePushdownResult, ArrowError>, Self> {
@@ -505,15 +507,16 @@ impl<'a> IoStateMachine for GetWithPredicateState<'a> {
                 }
                 PendingIo::Liquid { .. } => {
                     let liquid = pending.decode_liquid(data);
-                    let result = liquid
-                        .try_eval_predicate(&predicate, &selection)
-                        .map(|opt| match opt {
-                            Some(buf) => PredicatePushdownResult::Evaluated(buf),
-                            None => {
-                                let filtered = liquid.filter_to_arrow(&selection);
-                                PredicatePushdownResult::Filtered(filtered)
-                            }
-                        });
+                    let result =
+                        liquid
+                            .try_eval_predicate(predicate, selection)
+                            .map(|opt| match opt {
+                                Some(buf) => PredicatePushdownResult::Evaluated(buf),
+                                None => {
+                                    let filtered = liquid.filter_to_arrow(selection);
+                                    PredicatePushdownResult::Filtered(filtered)
+                                }
+                            });
                     self.state = GetWithPredicateStateInner::Done(result);
                 }
             },
@@ -779,7 +782,8 @@ mod tests {
         let liquid_array =
             transcode_liquid_inner(&array, &LiquidCompressorStates::default()).unwrap();
         let cached = CachedData::new(CachedBatch::DiskLiquid, id, &io);
-        io.blocking_evict_liquid_to_disk(&id, &liquid_array).unwrap();
+        io.blocking_evict_liquid_to_disk(&id, &liquid_array)
+            .unwrap();
         test_get(&cached);
     }
 

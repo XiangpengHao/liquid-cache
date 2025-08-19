@@ -2,7 +2,7 @@ use arrow::buffer::BooleanBuffer;
 use divan::Bencher;
 use liquid_cache_parquet::cache::LiquidCachedColumn;
 use liquid_cache_parquet::{FilterCandidateBuilder, LiquidPredicate};
-use liquid_cache_storage::policies::DiscardPolicy;
+use liquid_cache_storage::policies::FiloPolicy;
 use std::sync::Arc;
 use tempfile::TempDir;
 
@@ -44,7 +44,7 @@ fn setup_cache(tmp_dir: &TempDir) -> Arc<LiquidCachedColumn> {
         1024 * 1024 * 1024, // max_cache_bytes (1GB)
         tmp_dir.path().to_path_buf(),
         LiquidCacheMode::LiquidBlocking,
-        Box::new(DiscardPolicy),
+        Box::new(FiloPolicy::new()),
     );
     let file = cache.register_or_get_file("test_file.parquet".to_string());
     let row_group = file.row_group(0);
