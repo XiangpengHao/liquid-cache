@@ -4,7 +4,7 @@ use std::{
 };
 
 use ahash::AHashMap;
-use liquid_cache_storage::cache::{EntryID, IoWorker, LiquidCompressorStates};
+use liquid_cache_storage::cache::{EntryID, IoContext, LiquidCompressorStates};
 
 use crate::{
     cache::id::{BatchID, ParquetArrayID},
@@ -26,7 +26,7 @@ impl ParquetIoWorker {
     }
 }
 
-impl IoWorker for ParquetIoWorker {
+impl IoContext for ParquetIoWorker {
     fn base_dir(&self) -> &Path {
         &self.base_dir
     }

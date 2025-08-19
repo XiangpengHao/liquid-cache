@@ -70,7 +70,7 @@ pub(crate) fn create_cache_store(
 ) -> Arc<super::core::CacheStorage> {
     use tempfile::tempdir;
 
-    use crate::cache::{CacheStorageBuilder, core::DefaultIoWorker};
+    use crate::cache::{CacheStorageBuilder, core::DefaultIoContext};
 
     let temp_dir = tempdir().unwrap();
     let base_dir = temp_dir.keep();
@@ -82,7 +82,7 @@ pub(crate) fn create_cache_store(
         .with_cache_dir(base_dir.clone())
         .with_cache_mode(LiquidCacheMode::LiquidBlocking)
         .with_policy(policy)
-        .with_io_worker(Arc::new(DefaultIoWorker::new(base_dir)));
+        .with_io_worker(Arc::new(DefaultIoContext::new(base_dir)));
     builder.build()
 }
 

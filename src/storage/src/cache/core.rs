@@ -1,9 +1,8 @@
 use arrow::array::ArrayRef;
-use arrow::ipc::reader::StreamReader;
 use arrow_schema::ArrowError;
 use bytes::Bytes;
 use std::fs::File;
-use std::io::{BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::{fmt::Debug, path::Path};
 
@@ -16,14 +15,13 @@ use crate::cache::cached_data::IoRequest;
 use crate::cache::transcode::submit_background_transcoding_task;
 use crate::cache::utils::{CacheAdvice, LiquidCompressorStates, arrow_to_bytes};
 use crate::cache::{index::ArtIndex, utils::EntryID};
-use crate::liquid_array::ipc::LiquidIPCContext;
-use crate::liquid_array::{LiquidArrayRef, ipc};
+use crate::liquid_array::LiquidArrayRef;
 use crate::policies::DiscardPolicy;
 use crate::sync::Arc;
 use liquid_cache_common::LiquidCacheMode;
 
 /// A trait for objects that can handle IO operations for the cache.
-pub trait IoWorker: Debug + Send + Sync {
+pub trait IoContext: Debug + Send + Sync {
     /// Get the base directory for the cache storage.
     fn base_dir(&self) -> &Path;
 
@@ -75,42 +73,16 @@ pub trait IoWorker: Debug + Send + Sync {
         file.write_all(&bytes)?;
         Ok(bytes.len())
     }
-
-    /// Read an arrow array from disk.
-    fn read_arrow_from_disk(&self, entry_id: &EntryID) -> Result<ArrayRef, ArrowError> {
-        let path = self.entry_arrow_path(entry_id);
-        let file = File::open(path)?;
-        let buf_reader = BufReader::new(file);
-        let mut stream_reader = StreamReader::try_new(buf_reader, None).unwrap();
-        let batch = stream_reader.next().unwrap()?;
-        Ok(batch.column(0).clone())
-    }
-
-    /// Read a liquid array from disk.
-    fn read_liquid_from_disk(&self, entry_id: &EntryID) -> Result<LiquidArrayRef, ArrowError> {
-        let path = self.entry_liquid_path(entry_id);
-        let mut file = File::open(path)?;
-
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)?;
-        let bytes = Bytes::from(bytes);
-        let compressor = self.get_compressor_for_entry(entry_id);
-        let compressor = compressor.fsst_compressor();
-        Ok(ipc::read_from_bytes(
-            bytes,
-            &LiquidIPCContext::new(compressor),
-        ))
-    }
 }
 
 /// A default implementation of IoWorker that uses the default compressor.
 #[derive(Debug)]
-pub struct DefaultIoWorker {
+pub struct DefaultIoContext {
     compressor_state: Arc<LiquidCompressorStates>,
     base_dir: PathBuf,
 }
 
-impl DefaultIoWorker {
+impl DefaultIoContext {
     /// Create a new instance of DefaultIoWorker.
     pub fn new(base_dir: PathBuf) -> Self {
         Self {
@@ -120,7 +92,7 @@ impl DefaultIoWorker {
     }
 }
 
-impl IoWorker for DefaultIoWorker {
+impl IoContext for DefaultIoContext {
     fn base_dir(&self) -> &Path {
         &self.base_dir
     }
@@ -166,7 +138,7 @@ pub struct CacheStorageBuilder {
     cache_dir: Option<PathBuf>,
     cache_mode: LiquidCacheMode,
     policy: Box<dyn CachePolicy>,
-    io_worker: Option<Arc<dyn IoWorker>>,
+    io_worker: Option<Arc<dyn IoContext>>,
 }
 
 impl Default for CacheStorageBuilder {
@@ -225,7 +197,7 @@ impl CacheStorageBuilder {
 
     /// Set the io worker for the cache.
     /// Default is [DefaultIoWorker].
-    pub fn with_io_worker(mut self, io_worker: Arc<dyn IoWorker>) -> Self {
+    pub fn with_io_worker(mut self, io_worker: Arc<dyn IoContext>) -> Self {
         self.io_worker = Some(io_worker);
         self
     }
@@ -239,7 +211,7 @@ impl CacheStorageBuilder {
             .unwrap_or_else(|| tempfile::tempdir().unwrap().keep());
         let io_worker = self
             .io_worker
-            .unwrap_or_else(|| Arc::new(DefaultIoWorker::new(cache_dir.clone())));
+            .unwrap_or_else(|| Arc::new(DefaultIoContext::new(cache_dir.clone())));
         Arc::new(CacheStorage::new(
             self.batch_size,
             self.max_cache_bytes,
@@ -275,7 +247,7 @@ pub struct CacheStorage {
     budget: BudgetAccounting,
     policy: Box<dyn CachePolicy>,
     tracer: CacheTracer,
-    io_worker: Arc<dyn IoWorker>,
+    io_worker: Arc<dyn IoContext>,
 }
 
 impl CacheStorage {
@@ -286,7 +258,7 @@ impl CacheStorage {
         cache_dir: PathBuf,
         cache_mode: LiquidCacheMode,
         policy: Box<dyn CachePolicy>,
-        io_worker: Arc<dyn IoWorker>,
+        io_worker: Arc<dyn IoContext>,
     ) -> Self {
         let config = CacheConfig::new(batch_size, max_cache_bytes, cache_dir, cache_mode);
         Self {
@@ -488,6 +460,14 @@ impl CacheStorage {
         self.policy.notify_access(entry_id);
 
         batch.map(|b| CachedData::new(b, *entry_id, self.io_worker.as_ref()))
+    }
+
+    /// Fulfill an IO request produced by a sans-IO cache operation.
+    pub fn fulfill_io_request(
+        &self,
+        request: &crate::cache::cached_data::IoRequest,
+    ) -> Result<Bytes, std::io::Error> {
+        self.io_worker.read_entry(request)
     }
 
     /// Iterate over all entries in the cache.

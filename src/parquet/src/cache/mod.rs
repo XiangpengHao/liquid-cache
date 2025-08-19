@@ -10,7 +10,9 @@ use arrow::buffer::BooleanBuffer;
 use arrow::compute::prep_null_mask_filter;
 use arrow_schema::{ArrowError, DataType, Field, Schema};
 use liquid_cache_common::{LiquidCacheMode, coerce_parquet_type_to_liquid_type};
+use liquid_cache_storage::cache::cached_data::IoStateMachine;
 use liquid_cache_storage::cache::cached_data::PredicatePushdownResult;
+use liquid_cache_storage::cache::cached_data::{IoRequest, SansIo, TryGet};
 use liquid_cache_storage::cache::{CachePolicy, CacheStorage, CacheStorageBuilder};
 use parquet::arrow::arrow_reader::ArrowPredicate;
 use std::path::{Path, PathBuf};
@@ -32,6 +34,34 @@ pub struct LiquidCachedColumn {
 }
 
 pub(crate) type LiquidCachedColumnRef = Arc<LiquidCachedColumn>;
+
+/// Resolve a sans-IO operation by repeatedly fulfilling IO requests until ready.
+fn resolve_sans_io<T, M>(store: &CacheStorage, sans: SansIo<T, M>) -> T
+where
+    M: IoStateMachine<Output = T>,
+{
+    match sans {
+        SansIo::Ready(v) => v,
+        SansIo::Pending((state, io_req)) => resolve_pending(store, state, io_req),
+    }
+}
+
+fn resolve_pending<T, M>(store: &CacheStorage, mut state: M, mut io_req: IoRequest) -> T
+where
+    M: IoStateMachine<Output = T>,
+{
+    loop {
+        let bytes = store.fulfill_io_request(&io_req).expect("IO failed");
+        state.feed(bytes);
+        match state.try_get() {
+            TryGet::Ready(out) => return out,
+            TryGet::NeedIo((s, req)) => {
+                state = s;
+                io_req = req;
+            }
+        }
+    }
+}
 
 /// Error type for inserting an arrow array into the cache.
 #[derive(Debug)]
@@ -89,8 +119,8 @@ impl LiquidCachedColumn {
         let cached_entry = self.cache_store.get(&self.entry_id(batch_id).into())?;
 
         let result = cached_entry
-            .get_with_predicate(filter, predicate.physical_expr_physical_column_index())
-            .ok()?;
+            .get_with_predicate_sans_io(filter, predicate.physical_expr_physical_column_index());
+        let result = resolve_sans_io(&self.cache_store, result).ok()?;
         match result {
             PredicatePushdownResult::Evaluated(buffer) => Some(Ok(buffer)),
             PredicatePushdownResult::Filtered(array) => {
@@ -112,13 +142,18 @@ impl LiquidCachedColumn {
         filter: &BooleanBuffer,
     ) -> Option<ArrayRef> {
         let inner_value = self.cache_store.get(&self.entry_id(batch_id).into())?;
-        inner_value.get_with_selection(filter).ok()
+        let result = resolve_sans_io(
+            &self.cache_store,
+            inner_value.get_with_selection_sans_io(filter),
+        );
+        result.ok()
     }
 
     #[cfg(test)]
     pub(crate) fn get_arrow_array_test_only(&self, batch_id: BatchID) -> Option<ArrayRef> {
         let cached_entry = self.cache_store.get(&self.entry_id(batch_id).into())?;
-        Some(cached_entry.get_arrow_array())
+        let result = resolve_sans_io(&self.cache_store, cached_entry.get_arrow_array_sans_io());
+        Some(result)
     }
 
     /// Insert an array into the cache.
@@ -232,12 +267,24 @@ impl LiquidCachedRowGroup {
                 for (col_idx, expr) in column_exprs {
                     let column = self.get_column(col_idx as u64)?;
                     let entry = self.cache_store.get(&column.entry_id(batch_id).into())?;
-                    let liquid_array = match entry.try_read_liquid() {
-                        Some(array) => array,
-                        _ => {
+                    let io_state = entry.try_read_liquid_sans_io();
+                    let liquid_array = match io_state {
+                        SansIo::Ready(None) => {
                             combined_buffer = None;
                             break;
                         }
+                        SansIo::Ready(Some(array)) => array,
+                        SansIo::Pending((mut state, mut io_req)) => loop {
+                            let bytes = self.cache_store.fulfill_io_request(&io_req).ok()?;
+                            state.feed(bytes);
+                            match state.try_get() {
+                                TryGet::Ready(array) => break array,
+                                TryGet::NeedIo((s, req)) => {
+                                    state = s;
+                                    io_req = req;
+                                }
+                            }
+                        },
                     };
                     let buffer = if let Ok(Some(buffer)) =
                         liquid_array.try_eval_predicate(&expr, selection)

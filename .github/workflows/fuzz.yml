@@ -74,12 +74,13 @@ jobs:
           "${LLVM_TOOLS_DIR}/llvm-cov" show "${BIN}" \
             --instr-profile "fuzz/coverage/${TARGET}/coverage.profdata" \
             --format html \
-            --ignore-filename-regex ".\\.cargo" \
+            --ignore-filename-regex '\.cargo' \
             > "fuzz/coverage/${TARGET}/html/index.html"
 
           # Produce text summary and add to job summary
           "${LLVM_TOOLS_DIR}/llvm-cov" report "${BIN}" \
             --instr-profile "fuzz/coverage/${TARGET}/coverage.profdata" \
+            --ignore-filename-regex '\.cargo' \
             > "fuzz/coverage/${TARGET}/coverage.txt"
 
           {
