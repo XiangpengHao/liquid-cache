@@ -1,8 +1,7 @@
 use arrow::array::ArrayRef;
 use arrow_schema::ArrowError;
-use bytes::Bytes;
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::PathBuf;
 use std::{fmt::Debug, path::Path};
 
@@ -11,7 +10,6 @@ use super::{
     policies::CachePolicy, tracer::CacheTracer, transcode::transcode_liquid_inner,
     utils::CacheConfig,
 };
-use crate::cache::cached_data::IoRequest;
 use crate::cache::transcode::submit_background_transcoding_task;
 use crate::cache::utils::{CacheAdvice, LiquidCompressorStates, arrow_to_bytes};
 use crate::cache::{index::ArtIndex, utils::EntryID};
@@ -22,7 +20,7 @@ use liquid_cache_common::LiquidCacheMode;
 
 /// A trait for objects that can handle IO operations for the cache.
 pub trait IoContext: Debug + Send + Sync {
-    /// Get the base directory for the cache storage.
+    /// Get the base directory for the cache eviction, i.e., evicted data will be written to this directory.
     fn base_dir(&self) -> &Path;
 
     /// Get the compressor for an entry.
@@ -34,17 +32,8 @@ pub trait IoContext: Debug + Send + Sync {
     /// Get the path to the liquid file for an entry.
     fn entry_liquid_path(&self, entry_id: &EntryID) -> PathBuf;
 
-    /// Read bytes from an entry.
-    fn read_entry(&self, request: &IoRequest) -> Result<Bytes, std::io::Error> {
-        let path = &request.path;
-        let mut file = File::open(path)?;
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)?;
-        Ok(Bytes::from(bytes))
-    }
-
-    /// Write an arrow array to disk.
-    fn write_arrow_to_disk(
+    /// Evict an arrow array to disk.
+    fn blocking_evict_arrow_to_disk(
         &self,
         entry_id: &EntryID,
         array: &ArrayRef,
@@ -62,7 +51,7 @@ pub trait IoContext: Debug + Send + Sync {
     }
 
     /// Write a liquid array to disk.
-    fn write_liquid_to_disk(
+    fn blocking_evict_liquid_to_disk(
         &self,
         entry_id: &EntryID,
         liquid_array: &LiquidArrayRef,
@@ -391,7 +380,7 @@ impl CacheStorage {
     fn write_liquid_to_disk(&self, entry_id: &EntryID, liquid_array: &LiquidArrayRef) {
         let disk_usage = self
             .io_worker
-            .write_liquid_to_disk(entry_id, liquid_array)
+            .blocking_evict_liquid_to_disk(entry_id, liquid_array)
             .expect("failed to write liquid to disk");
         self.budget.add_used_disk_bytes(disk_usage);
     }
@@ -399,7 +388,7 @@ impl CacheStorage {
     fn write_arrow_to_disk(&self, entry_id: &EntryID, array: &arrow::array::ArrayRef) {
         let disk_usage = self
             .io_worker
-            .write_arrow_to_disk(entry_id, array)
+            .blocking_evict_arrow_to_disk(entry_id, array)
             .expect("failed to write arrow to disk");
         self.budget.add_used_disk_bytes(disk_usage);
     }
@@ -445,7 +434,7 @@ impl CacheStorage {
 
             loop_count += 1;
             if loop_count > 20 {
-                log::warn!("Cache store insert looped 20 times");
+                log::warn!("Cache store insert looped {} times", loop_count);
             }
         }
     }
@@ -460,14 +449,6 @@ impl CacheStorage {
         self.policy.notify_access(entry_id);
 
         batch.map(|b| CachedData::new(b, *entry_id, self.io_worker.as_ref()))
-    }
-
-    /// Fulfill an IO request produced by a sans-IO cache operation.
-    pub fn fulfill_io_request(
-        &self,
-        request: &crate::cache::cached_data::IoRequest,
-    ) -> Result<Bytes, std::io::Error> {
-        self.io_worker.read_entry(request)
     }
 
     /// Iterate over all entries in the cache.

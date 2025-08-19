@@ -46,7 +46,7 @@ impl<'a> CachedData<'a> {
     }
 
     /// Build a sans-IO state machine to obtain an Arrow `ArrayRef` with selection pushdown.
-    pub fn get_with_selection_sans_io<'selection>(
+    pub fn get_with_selection<'selection>(
         &self,
         selection: &'selection BooleanBuffer,
     ) -> SansIo<Result<ArrayRef, ArrowError>, GetWithSelectionSansIo<'selection>> {
@@ -118,7 +118,7 @@ impl<'a> CachedData<'a> {
     /// Return None if the cached data is not a liquid array.
     ///
     /// Build a sans-IO state machine to obtain a `LiquidArrayRef` if the cached data is liquid.
-    pub fn try_read_liquid_sans_io(&self) -> SansIo<Option<LiquidArrayRef>, GetLiquidArrayState> {
+    pub fn try_read_liquid(&self) -> SansIo<Option<LiquidArrayRef>, GetLiquidArrayState> {
         match &self.data {
             CachedBatch::MemoryLiquid(array) => SansIo::Ready(Some(array.clone())),
             CachedBatch::DiskLiquid => SansIo::Pending(GetLiquidArrayState::new(
@@ -140,7 +140,7 @@ impl<'a> CachedData<'a> {
     /// - `PredicatePushdownResult::Filtered(array)`: the predicate is not evaluated (e.g., predicate is not supported or error happens) but data is filtered.
     ///
     /// Build a sans-IO state machine to evaluate a predicate with selection pushdown.
-    pub fn get_with_predicate_sans_io<'predicate, 'selection>(
+    pub fn get_with_predicate<'predicate, 'selection>(
         &self,
         selection: &'predicate BooleanBuffer,
         predicate: &'predicate Arc<dyn PhysicalExpr>,
@@ -207,7 +207,7 @@ pub enum TryGet<T, M> {
     /// The output is ready.
     Ready(T),
     /// The output is not ready. The second element is the state machine and the third element is the IO request.
-    NeedIo((M, IoRequest)),
+    NeedData((M, IoRequest)),
 }
 
 /// The result of a sans-IO operation.
@@ -345,7 +345,7 @@ impl IoStateMachine for GetArrowArrayState {
             GetArrowArrayStateInner::Ready(array) => TryGet::Ready(array),
             GetArrowArrayStateInner::NeedBytes(ref p) => {
                 let io_request = p.as_io_request();
-                TryGet::NeedIo((self, io_request))
+                TryGet::NeedData((self, io_request))
             }
         }
     }
@@ -384,7 +384,7 @@ impl<'a> IoStateMachine for GetWithSelectionSansIo<'a> {
             GetWithSelectionState::Done(r) => TryGet::Ready(r),
             GetWithSelectionState::NeedBytes { ref pending, .. } => {
                 let io_request = pending.as_io_request();
-                TryGet::NeedIo((self, io_request))
+                TryGet::NeedData((self, io_request))
             }
         }
     }
@@ -443,7 +443,7 @@ impl IoStateMachine for GetLiquidArrayState {
             GetLiquidArrayStateInner::Done(liq) => TryGet::Ready(liq.clone()),
             GetLiquidArrayStateInner::NeedBytes(p) => {
                 let io_request = p.as_io_request();
-                TryGet::NeedIo((self, io_request))
+                TryGet::NeedData((self, io_request))
             }
         }
     }
@@ -483,7 +483,7 @@ impl<'a> IoStateMachine for GetWithPredicateState<'a> {
             GetWithPredicateStateInner::Done(r) => TryGet::Ready(r),
             GetWithPredicateStateInner::NeedBytes { ref pending, .. } => {
                 let io_request = pending.as_io_request();
-                TryGet::NeedIo((self, io_request))
+                TryGet::NeedData((self, io_request))
             }
         }
     }
@@ -595,6 +595,19 @@ mod tests {
         store: RwLock<HashMap<PathBuf, Bytes>>,
     }
 
+    impl MockIoWorker {
+        fn read_entry(&self, request: &IoRequest) -> Result<Bytes, std::io::Error> {
+            let bytes = self
+                .store
+                .read()
+                .unwrap()
+                .get(&request.path)
+                .unwrap()
+                .clone();
+            Ok(bytes.clone())
+        }
+    }
+
     impl IoContext for MockIoWorker {
         fn base_dir(&self) -> &Path {
             &self.base_dir
@@ -614,18 +627,7 @@ mod tests {
                 .join(format!("{:016x}.liquid", usize::from(*entry_id)))
         }
 
-        fn read_entry(&self, request: &IoRequest) -> Result<Bytes, std::io::Error> {
-            let bytes = self
-                .store
-                .read()
-                .unwrap()
-                .get(&request.path)
-                .unwrap()
-                .clone();
-            Ok(bytes.clone())
-        }
-
-        fn write_arrow_to_disk(
+        fn blocking_evict_arrow_to_disk(
             &self,
             entry_id: &EntryID,
             array: &ArrayRef,
@@ -637,7 +639,7 @@ mod tests {
             Ok(len)
         }
 
-        fn write_liquid_to_disk(
+        fn blocking_evict_liquid_to_disk(
             &self,
             entry_id: &EntryID,
             liquid_array: &LiquidArrayRef,
@@ -692,11 +694,11 @@ mod tests {
         let (_tmp, io) = io_worker(Some(compressor));
         let in_memory = CachedData::new(CachedBatch::MemoryLiquid(liquid_ref.clone()), id, &io);
         let on_disk = CachedData::new(CachedBatch::DiskLiquid, id, &io);
-        io.write_liquid_to_disk(&id, &liquid_ref).unwrap();
+        io.blocking_evict_liquid_to_disk(&id, &liquid_ref).unwrap();
         let arrow_input: ArrayRef = Arc::new(input);
 
         {
-            let SansIo::Ready(Some(liquid)) = in_memory.try_read_liquid_sans_io() else {
+            let SansIo::Ready(Some(liquid)) = in_memory.try_read_liquid() else {
                 panic!("should be liquid");
             };
 
@@ -704,7 +706,7 @@ mod tests {
         }
 
         {
-            let SansIo::Pending((mut state, io_request)) = on_disk.try_read_liquid_sans_io() else {
+            let SansIo::Pending((mut state, io_request)) = on_disk.try_read_liquid() else {
                 panic!("should be pending");
             };
 
@@ -717,7 +719,7 @@ mod tests {
 
         // Try if non-liquid batch can be read as liquid
         let on_disk_non_liquid = CachedData::new(CachedBatch::DiskArrow, id, &io);
-        let SansIo::Ready(None) = on_disk_non_liquid.try_read_liquid_sans_io() else {
+        let SansIo::Ready(None) = on_disk_non_liquid.try_read_liquid() else {
             panic!("should be none");
         };
     }
@@ -731,7 +733,7 @@ mod tests {
         let (_tmp, io) = io_worker(None);
         let cached = CachedData::new(CachedBatch::MemoryArrow(array.clone()), id, &io);
 
-        let SansIo::Ready(Ok(filtered)) = cached.get_with_selection_sans_io(&selection) else {
+        let SansIo::Ready(Ok(filtered)) = cached.get_with_selection(&selection) else {
             panic!("should be ready");
         };
         let selection_array = BooleanArray::new(selection.clone(), None);
@@ -742,7 +744,7 @@ mod tests {
             transcode_liquid_inner(&array, &LiquidCompressorStates::default()).unwrap();
         let cached = CachedData::new(CachedBatch::MemoryLiquid(liquid_array), id, &io);
 
-        let SansIo::Ready(Ok(filtered)) = cached.get_with_selection_sans_io(&selection) else {
+        let SansIo::Ready(Ok(filtered)) = cached.get_with_selection(&selection) else {
             panic!("should be ready");
         };
         assert_eq!(filtered.as_ref(), expected.as_ref());
@@ -756,11 +758,10 @@ mod tests {
         let id = EntryID::from(3usize);
         let (_tmp, io) = io_worker(None);
         let cached = CachedData::new(CachedBatch::DiskArrow, id, &io);
-        io.write_arrow_to_disk(&id, &array).unwrap();
+        io.blocking_evict_arrow_to_disk(&id, &array).unwrap();
 
         let test_get = |cached: &CachedData| {
-            let SansIo::Pending((mut state, io_request)) =
-                cached.get_with_selection_sans_io(&selection)
+            let SansIo::Pending((mut state, io_request)) = cached.get_with_selection(&selection)
             else {
                 panic!("should be pending");
             };
@@ -778,7 +779,7 @@ mod tests {
         let liquid_array =
             transcode_liquid_inner(&array, &LiquidCompressorStates::default()).unwrap();
         let cached = CachedData::new(CachedBatch::DiskLiquid, id, &io);
-        io.write_liquid_to_disk(&id, &liquid_array).unwrap();
+        io.blocking_evict_liquid_to_disk(&id, &liquid_array).unwrap();
         test_get(&cached);
     }
 
@@ -793,8 +794,8 @@ mod tests {
         let disk_liquid = CachedData::new(CachedBatch::DiskLiquid, id, &io);
         let memory_arrow = CachedData::new(CachedBatch::MemoryArrow(arrow_array.clone()), id, &io);
         let disk_arrow = CachedData::new(CachedBatch::DiskArrow, id, &io);
-        io.write_liquid_to_disk(&id, &liquid_ref).unwrap();
-        io.write_arrow_to_disk(&id, &arrow_array).unwrap();
+        io.blocking_evict_liquid_to_disk(&id, &liquid_ref).unwrap();
+        io.blocking_evict_arrow_to_disk(&id, &arrow_array).unwrap();
 
         let mut seed_rng = StdRng::seed_from_u64(42);
         for _i in 0..100 {
@@ -833,8 +834,7 @@ mod tests {
 
             // memory arrow
             {
-                let SansIo::Ready(Ok(result)) =
-                    memory_arrow.get_with_predicate_sans_io(&selection, expr)
+                let SansIo::Ready(Ok(result)) = memory_arrow.get_with_predicate(&selection, expr)
                 else {
                     panic!("should be ready");
                 };
@@ -843,8 +843,7 @@ mod tests {
 
             // memory liquid
             {
-                let SansIo::Ready(Ok(result)) =
-                    memory_liquid.get_with_predicate_sans_io(&selection, expr)
+                let SansIo::Ready(Ok(result)) = memory_liquid.get_with_predicate(&selection, expr)
                 else {
                     panic!("should be ready");
                 };
@@ -854,7 +853,7 @@ mod tests {
             // disk arrow
             {
                 let SansIo::Pending((mut state, io_request)) =
-                    disk_arrow.get_with_predicate_sans_io(&selection, expr)
+                    disk_arrow.get_with_predicate(&selection, expr)
                 else {
                     panic!("should be ready");
                 };
@@ -869,7 +868,7 @@ mod tests {
             // disk liquid
             {
                 let SansIo::Pending((mut state, io_request)) =
-                    disk_liquid.get_with_predicate_sans_io(&selection, expr)
+                    disk_liquid.get_with_predicate(&selection, expr)
                 else {
                     panic!("should be ready");
                 };
