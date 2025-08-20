@@ -1,7 +1,7 @@
 //! This module contains the cache implementation for the Parquet reader.
 //!
 
-use crate::cache::io::{ColumnAccessPath, ParquetIoWorker};
+use crate::cache::io::{ColumnAccessPath, ParquetIoContext, blocking_reading_io, blocking_sans_io};
 use crate::reader::{LiquidPredicate, extract_multi_column_or};
 use crate::sync::{Mutex, RwLock};
 use ahash::AHashMap;
@@ -10,7 +10,9 @@ use arrow::buffer::BooleanBuffer;
 use arrow::compute::prep_null_mask_filter;
 use arrow_schema::{ArrowError, DataType, Field, Schema};
 use liquid_cache_common::{LiquidCacheMode, coerce_parquet_type_to_liquid_type};
+use liquid_cache_storage::cache::cached_data::IoStateMachine;
 use liquid_cache_storage::cache::cached_data::PredicatePushdownResult;
+use liquid_cache_storage::cache::cached_data::{SansIo, TryGet};
 use liquid_cache_storage::cache::{CachePolicy, CacheStorage, CacheStorageBuilder};
 use parquet::arrow::arrow_reader::ArrowPredicate;
 use std::path::{Path, PathBuf};
@@ -89,8 +91,8 @@ impl LiquidCachedColumn {
         let cached_entry = self.cache_store.get(&self.entry_id(batch_id).into())?;
 
         let result = cached_entry
-            .get_with_predicate(filter, predicate.physical_expr_physical_column_index())
-            .ok()?;
+            .get_with_predicate(filter, predicate.physical_expr_physical_column_index());
+        let result = blocking_sans_io(result).ok()?;
         match result {
             PredicatePushdownResult::Evaluated(buffer) => Some(Ok(buffer)),
             PredicatePushdownResult::Filtered(array) => {
@@ -112,13 +114,15 @@ impl LiquidCachedColumn {
         filter: &BooleanBuffer,
     ) -> Option<ArrayRef> {
         let inner_value = self.cache_store.get(&self.entry_id(batch_id).into())?;
-        inner_value.get_with_selection(filter).ok()
+        let result = blocking_sans_io(inner_value.get_with_selection(filter));
+        result.ok()
     }
 
     #[cfg(test)]
     pub(crate) fn get_arrow_array_test_only(&self, batch_id: BatchID) -> Option<ArrayRef> {
         let cached_entry = self.cache_store.get(&self.entry_id(batch_id).into())?;
-        Some(cached_entry.get_arrow_array())
+        let result = blocking_sans_io(cached_entry.get_arrow_array());
+        Some(result)
     }
 
     /// Insert an array into the cache.
@@ -232,12 +236,24 @@ impl LiquidCachedRowGroup {
                 for (col_idx, expr) in column_exprs {
                     let column = self.get_column(col_idx as u64)?;
                     let entry = self.cache_store.get(&column.entry_id(batch_id).into())?;
-                    let liquid_array = match entry.try_read_liquid() {
-                        Some(array) => array,
-                        _ => {
+                    let io_state = entry.try_read_liquid();
+                    let liquid_array = match io_state {
+                        SansIo::Ready(None) => {
                             combined_buffer = None;
                             break;
                         }
+                        SansIo::Ready(Some(array)) => array,
+                        SansIo::Pending((mut state, mut io_req)) => loop {
+                            let bytes = blocking_reading_io(&io_req).ok()?;
+                            state.feed(bytes);
+                            match state.try_get() {
+                                TryGet::Ready(array) => break array,
+                                TryGet::NeedData((s, req)) => {
+                                    state = s;
+                                    io_req = req;
+                                }
+                            }
+                        },
                     };
                     let buffer = if let Ok(Some(buffer)) =
                         liquid_array.try_eval_predicate(&expr, selection)
@@ -352,7 +368,7 @@ impl LiquidCache {
             .with_cache_dir(cache_dir.clone())
             .with_cache_mode(cache_mode)
             .with_policy(cache_policy)
-            .with_io_worker(Arc::new(ParquetIoWorker::new(cache_dir)));
+            .with_io_worker(Arc::new(ParquetIoContext::new(cache_dir)));
         let cache_storage = cache_storage_builder.build();
 
         LiquidCache {
@@ -453,7 +469,7 @@ mod tests {
     use datafusion::physical_expr::expressions::{BinaryExpr, Literal};
     use datafusion::physical_plan::expressions::Column;
     use liquid_cache_common::LiquidCacheMode;
-    use liquid_cache_storage::policies::DiscardPolicy;
+    use liquid_cache_storage::policies::FiloPolicy;
     use parquet::arrow::ArrowWriter;
     use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
     use std::sync::Arc;
@@ -465,7 +481,7 @@ mod tests {
             usize::MAX,
             tmp_dir.path().to_path_buf(),
             LiquidCacheMode::LiquidBlocking,
-            Box::new(DiscardPolicy),
+            Box::new(FiloPolicy::new()),
         );
         let file = cache.register_or_get_file("test".to_string());
         file.row_group(0)

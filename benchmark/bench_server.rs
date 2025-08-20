@@ -5,7 +5,7 @@ use fastrace_tonic::FastraceServerLayer;
 use liquid_cache_benchmarks::setup_observability;
 use liquid_cache_common::CacheMode;
 use liquid_cache_server::{LiquidCacheService, run_admin_server};
-use liquid_cache_storage::policies::DiscardPolicy;
+use liquid_cache_storage::policies::FiloPolicy;
 use log::info;
 use mimalloc::MiMalloc;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
@@ -96,7 +96,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 max_cache_bytes,
                 args.disk_cache_dir.clone(),
                 args.cache_mode,
-                Box::new(DiscardPolicy),
+                Box::new(FiloPolicy::new()),
             )?;
 
             let liquid_cache_server = Arc::new(liquid_cache_server);

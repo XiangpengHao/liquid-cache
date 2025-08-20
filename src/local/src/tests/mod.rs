@@ -1,4 +1,5 @@
 use arrow_schema::{DataType, Field, Schema};
+use liquid_cache_storage::policies::FiloPolicy;
 use std::sync::Arc;
 use tempfile::TempDir;
 
@@ -13,7 +14,6 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use liquid_cache_common::LiquidCacheMode;
-use liquid_cache_storage::policies::ToDiskPolicy;
 
 use crate::LiquidCacheLocalBuilder;
 
@@ -31,7 +31,7 @@ async fn create_session_context_with_liquid_cache(
         .with_max_cache_bytes(cache_size_bytes)
         .with_cache_dir(temp_dir.path().to_path_buf())
         .with_cache_mode(cache_mode)
-        .with_cache_strategy(Box::new(ToDiskPolicy))
+        .with_cache_strategy(Box::new(FiloPolicy::new()))
         .build(config)?;
 
     // Register the test parquet file

@@ -12,7 +12,7 @@ use futures::StreamExt;
 use liquid_cache_common::{
     LiquidCacheMode, ParquetReaderSchema, coerce_parquet_schema_to_liquid_schema,
 };
-use liquid_cache_storage::policies::DiscardPolicy;
+use liquid_cache_storage::policies::FiloPolicy;
 use object_store::ObjectMeta;
 use parquet::arrow::{
     ParquetRecordBatchStreamBuilder, ProjectionMask,
@@ -121,7 +121,7 @@ fn get_test_cache(
         usize::MAX,
         cache_dir,
         *cache_mode,
-        Box::new(DiscardPolicy),
+        Box::new(FiloPolicy::new()),
     );
 
     lq.register_or_get_file("".to_string())
@@ -250,7 +250,7 @@ async fn test_reading_with_full_cache() {
         1,
         tmp_dir.path().to_path_buf(),
         cache_mode,
-        Box::new(DiscardPolicy),
+        Box::new(FiloPolicy::new()),
     );
     let lq_file = lq.register_or_get_file("".to_string());
 

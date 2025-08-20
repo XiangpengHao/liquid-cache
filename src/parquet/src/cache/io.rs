@@ -1,10 +1,16 @@
 use std::{
+    fs::File,
+    io::Read,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 use ahash::AHashMap;
-use liquid_cache_storage::cache::{EntryID, IoWorker, LiquidCompressorStates};
+use bytes::Bytes;
+use liquid_cache_storage::cache::{
+    EntryID, IoContext, LiquidCompressorStates,
+    cached_data::{IoRequest, IoStateMachine, SansIo, TryGet},
+};
 
 use crate::{
     cache::id::{BatchID, ParquetArrayID},
@@ -12,12 +18,12 @@ use crate::{
 };
 
 #[derive(Debug)]
-pub(crate) struct ParquetIoWorker {
+pub(crate) struct ParquetIoContext {
     compressor_states: RwLock<AHashMap<ColumnAccessPath, Arc<LiquidCompressorStates>>>,
     base_dir: PathBuf,
 }
 
-impl ParquetIoWorker {
+impl ParquetIoContext {
     pub fn new(base_dir: PathBuf) -> Self {
         Self {
             compressor_states: RwLock::new(AHashMap::new()),
@@ -26,7 +32,7 @@ impl ParquetIoWorker {
     }
 }
 
-impl IoWorker for ParquetIoWorker {
+impl IoContext for ParquetIoContext {
     fn base_dir(&self) -> &Path {
         &self.base_dir
     }
@@ -113,6 +119,42 @@ impl From<ParquetArrayID> for ColumnAccessPath {
             file_id: value.file_id_inner() as u16,
             rg_id: value.row_group_id_inner() as u16,
             col_id: value.column_id_inner() as u16,
+        }
+    }
+}
+
+pub(crate) fn blocking_reading_io(request: &IoRequest) -> Result<Bytes, std::io::Error> {
+    let path = &request.path;
+    let mut file = File::open(path)?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(Bytes::from(bytes))
+}
+
+/// Resolve a sans-IO operation by repeatedly fulfilling IO requests until ready.
+pub(crate) fn blocking_sans_io<T, M>(sans: SansIo<T, M>) -> T
+where
+    M: IoStateMachine<Output = T>,
+{
+    match sans {
+        SansIo::Ready(v) => v,
+        SansIo::Pending((state, io_req)) => resolve_pending(state, io_req),
+    }
+}
+
+fn resolve_pending<T, M>(mut state: M, mut io_req: IoRequest) -> T
+where
+    M: IoStateMachine<Output = T>,
+{
+    loop {
+        let bytes = blocking_reading_io(&io_req).expect("IO failed");
+        state.feed(bytes);
+        match state.try_get() {
+            TryGet::Ready(out) => return out,
+            TryGet::NeedData((s, req)) => {
+                state = s;
+                io_req = req;
+            }
         }
     }
 }

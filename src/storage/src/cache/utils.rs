@@ -1,8 +1,9 @@
 #[cfg(test)]
 use crate::cache::cached_data::CachedBatch;
 use crate::sync::{Arc, RwLock};
-#[cfg(test)]
 use arrow::array::ArrayRef;
+use arrow_schema::ArrowError;
+use bytes::Bytes;
 use liquid_cache_common::LiquidCacheMode;
 use std::path::PathBuf;
 
@@ -69,7 +70,7 @@ pub(crate) fn create_cache_store(
 ) -> Arc<super::core::CacheStorage> {
     use tempfile::tempdir;
 
-    use crate::cache::{CacheStorageBuilder, core::DefaultIoWorker};
+    use crate::cache::{CacheStorageBuilder, core::DefaultIoContext};
 
     let temp_dir = tempdir().unwrap();
     let base_dir = temp_dir.keep();
@@ -81,7 +82,7 @@ pub(crate) fn create_cache_store(
         .with_cache_dir(base_dir.clone())
         .with_cache_mode(LiquidCacheMode::LiquidBlocking)
         .with_policy(policy)
-        .with_io_worker(Arc::new(DefaultIoWorker::new(base_dir)));
+        .with_io_worker(Arc::new(DefaultIoContext::new(base_dir)));
     builder.build()
 }
 
@@ -89,18 +90,11 @@ pub(crate) fn create_cache_store(
 #[derive(PartialEq, Eq, Debug)]
 pub enum CacheAdvice {
     /// Evict the entry with the given ID.
-    Evict(EntryID),
-    /// Transcode the entry to disk.
     TranscodeToDisk(EntryID),
     /// Transcode the entry to liquid memory.
     Transcode(EntryID),
     /// Write the entry to disk as-is (preserve format).
     ToDisk(EntryID),
-    /// Discard the incoming entry, do not cache.
-    // Note that discarding a previously cached entry is disallowed,
-    // as it creates race conditions when one thread reads that a entry is cached,
-    // and later only to find it is not cached.
-    Discard,
 }
 
 /// EntryID is a unique identifier for a batch of rows, i.e., the cache key.
@@ -162,4 +156,24 @@ impl LiquidCompressorStates {
     pub fn fsst_compressor_raw(&self) -> &RwLock<Option<Arc<fsst::Compressor>>> {
         &self.fsst_compressor
     }
+}
+
+pub(crate) fn arrow_to_bytes(array: &ArrayRef) -> Result<Bytes, ArrowError> {
+    use arrow::array::RecordBatch;
+    use arrow::ipc::writer::StreamWriter;
+
+    let mut bytes = Vec::new();
+
+    // Create a record batch with the single array
+    // We need to create a dummy field since we don't have the original field here
+    let field =
+        arrow_schema::Field::new("column", array.data_type().clone(), array.null_count() > 0);
+    let schema = std::sync::Arc::new(arrow_schema::Schema::new(vec![field]));
+    let batch = RecordBatch::try_new(schema.clone(), vec![array.clone()])?;
+
+    let mut stream_writer = StreamWriter::try_new(&mut bytes, &schema)?;
+    stream_writer.write(&batch)?;
+    stream_writer.finish()?;
+
+    Ok(Bytes::from(bytes))
 }

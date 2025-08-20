@@ -26,7 +26,7 @@ fn gen_parquet(dir: impl AsRef<Path>) -> PathBuf {
     temp_path
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_parquet_with_page_index() {
     let temp_dir = tempfile::tempdir().unwrap();
     let file = gen_parquet(&temp_dir);

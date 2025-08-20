@@ -1,6 +1,5 @@
 use datafusion::prelude::SessionConfig;
-use liquid_cache_local::storage::cache::{CacheAdvice, EntryID};
-use liquid_cache_local::storage::policies::{CachePolicy, DiscardPolicy};
+use liquid_cache_local::storage::policies::FiloPolicy;
 use liquid_cache_local::{LiquidCacheLocalBuilder, common::LiquidCacheMode};
 use tempfile::TempDir;
 
@@ -12,7 +11,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_max_cache_bytes(1024 * 1024 * 1024) // 1GB
         .with_cache_dir(temp_dir.path().to_path_buf())
         .with_cache_mode(LiquidCacheMode::Liquid)
-        .with_cache_strategy(Box::new(DiscardPolicy))
+        .with_cache_strategy(Box::new(FiloPolicy::new()))
         .build(SessionConfig::new())?;
 
     ctx.register_parquet("hits", "examples/nano_hits.parquet", Default::default())
@@ -20,13 +19,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     ctx.sql("SELECT COUNT(*) FROM hits").await?.show().await?;
     Ok(())
-}
-
-#[derive(Debug, Default)]
-pub struct CustomPolicy;
-
-impl CachePolicy for CustomPolicy {
-    fn advise(&self, _entry_id: &EntryID, _cache_mode: &LiquidCacheMode) -> CacheAdvice {
-        CacheAdvice::Discard
-    }
 }
