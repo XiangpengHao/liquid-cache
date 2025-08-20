@@ -33,7 +33,7 @@ pub trait IoContext: Debug + Send + Sync {
     fn entry_liquid_path(&self, entry_id: &EntryID) -> PathBuf;
 }
 
-/// A default implementation of IoWorker that uses the default compressor.
+/// A default implementation of [IoContext] that uses the default compressor.
 #[derive(Debug)]
 pub struct DefaultIoContext {
     compressor_state: Arc<LiquidCompressorStates>,
@@ -41,7 +41,7 @@ pub struct DefaultIoContext {
 }
 
 impl DefaultIoContext {
-    /// Create a new instance of DefaultIoWorker.
+    /// Create a new instance of [DefaultIoContext].
     pub fn new(base_dir: PathBuf) -> Self {
         Self {
             compressor_state: Arc::new(LiquidCompressorStates::new()),
@@ -149,7 +149,7 @@ impl CacheStorageBuilder {
     }
 
     /// Set the io worker for the cache.
-    /// Default is [DefaultIoWorker].
+    /// Default is [DefaultIoContext].
     pub fn with_io_worker(mut self, io_worker: Arc<dyn IoContext>) -> Self {
         self.io_worker = Some(io_worker);
         self

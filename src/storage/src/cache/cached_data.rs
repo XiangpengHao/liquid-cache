@@ -90,9 +90,9 @@ impl<'a> CachedData<'a> {
 
     /// Build a sans-IO state machine to obtain an Arrow `ArrayRef`.
     ///
-    /// This does not perform IO itself. Instead, it may request IO via [`GetArrowArraySansIo::need_io`].
-    /// The caller should fulfill the IO request and call [`GetArrowArraySansIo::feed`] with the bytes,
-    /// then consume the state machine with [`GetArrowArraySansIo::into_output`].
+    /// This does not perform IO itself. Instead, it may request IO via [`IoStateMachine::try_get`].
+    /// The caller should fulfill the IO request and call [`IoStateMachine::feed`] with the bytes,
+    /// then consume the state machine with [`IoStateMachine::try_get`].
     pub fn get_arrow_array(&self) -> SansIo<ArrayRef, GetArrowArrayState> {
         match &self.data {
             CachedBatch::MemoryArrow(array) => SansIo::Ready(array.clone()),
