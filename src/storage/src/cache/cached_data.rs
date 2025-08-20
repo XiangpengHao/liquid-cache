@@ -93,7 +93,7 @@ impl<'a> CachedData<'a> {
     /// This does not perform IO itself. Instead, it may request IO via [`GetArrowArraySansIo::need_io`].
     /// The caller should fulfill the IO request and call [`GetArrowArraySansIo::feed`] with the bytes,
     /// then consume the state machine with [`GetArrowArraySansIo::into_output`].
-    pub fn get_arrow_array_sans_io(&self) -> SansIo<ArrayRef, GetArrowArrayState> {
+    pub fn get_arrow_array(&self) -> SansIo<ArrayRef, GetArrowArrayState> {
         match &self.data {
             CachedBatch::MemoryArrow(array) => SansIo::Ready(array.clone()),
             CachedBatch::MemoryLiquid(array) => SansIo::Ready(array.to_best_arrow_array()),
@@ -609,26 +609,6 @@ mod tests {
                 .clone();
             Ok(bytes.clone())
         }
-    }
-
-    impl IoContext for MockIoWorker {
-        fn base_dir(&self) -> &Path {
-            &self.base_dir
-        }
-
-        fn get_compressor_for_entry(&self, _entry_id: &EntryID) -> Arc<LiquidCompressorStates> {
-            self.compressor_states.clone()
-        }
-
-        fn entry_arrow_path(&self, entry_id: &EntryID) -> PathBuf {
-            self.base_dir
-                .join(format!("{:016x}.arrow", usize::from(*entry_id)))
-        }
-
-        fn entry_liquid_path(&self, entry_id: &EntryID) -> PathBuf {
-            self.base_dir
-                .join(format!("{:016x}.liquid", usize::from(*entry_id)))
-        }
 
         fn blocking_evict_arrow_to_disk(
             &self,
@@ -657,6 +637,26 @@ mod tests {
         }
     }
 
+    impl IoContext for MockIoWorker {
+        fn base_dir(&self) -> &Path {
+            &self.base_dir
+        }
+
+        fn get_compressor_for_entry(&self, _entry_id: &EntryID) -> Arc<LiquidCompressorStates> {
+            self.compressor_states.clone()
+        }
+
+        fn entry_arrow_path(&self, entry_id: &EntryID) -> PathBuf {
+            self.base_dir
+                .join(format!("{:016x}.arrow", usize::from(*entry_id)))
+        }
+
+        fn entry_liquid_path(&self, entry_id: &EntryID) -> PathBuf {
+            self.base_dir
+                .join(format!("{:016x}.liquid", usize::from(*entry_id)))
+        }
+    }
+
     fn io_worker(compressor: Option<Arc<fsst::Compressor>>) -> (tempfile::TempDir, MockIoWorker) {
         let tmp = tempfile::tempdir().unwrap();
         let compressor_state = match compressor {
@@ -680,7 +680,7 @@ mod tests {
         let (_tmp, io) = io_worker(None);
         let cached = CachedData::new(CachedBatch::MemoryArrow(array.clone()), id, &io);
 
-        let SansIo::Ready(out) = cached.get_arrow_array_sans_io() else {
+        let SansIo::Ready(out) = cached.get_arrow_array() else {
             panic!("should be ready");
         };
         assert_eq!(out.as_ref(), array.as_ref());

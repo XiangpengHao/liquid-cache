@@ -121,7 +121,7 @@ impl LiquidCachedColumn {
     #[cfg(test)]
     pub(crate) fn get_arrow_array_test_only(&self, batch_id: BatchID) -> Option<ArrayRef> {
         let cached_entry = self.cache_store.get(&self.entry_id(batch_id).into())?;
-        let result = blocking_sans_io(cached_entry.get_arrow_array_sans_io());
+        let result = blocking_sans_io(cached_entry.get_arrow_array());
         Some(result)
     }
 

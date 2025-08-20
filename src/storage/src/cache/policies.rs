@@ -49,10 +49,7 @@ impl CachePolicy for FiloPolicy {
             return vec![];
         }
         let k = cnt.min(queue.len());
-        queue
-            .drain(0..k)
-            .map(|entry| CacheAdvice::ToDisk(entry))
-            .collect()
+        queue.drain(0..k).map(CacheAdvice::ToDisk).collect()
     }
 
     fn notify_insert(&self, entry_id: &EntryID) {
