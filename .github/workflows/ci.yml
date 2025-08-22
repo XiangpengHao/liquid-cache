@@ -77,6 +77,7 @@ jobs:
       # Sanitizers can only run on nightly
       - uses: dtolnay/rust-toolchain@nightly
         with:
+          toolchain: nightly-2025-08-01
           components: rust-src
 
       # Address sanitizers can't be cached: https://github.com/Swatinem/rust-cache/issues/161

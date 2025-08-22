@@ -3,7 +3,6 @@ use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
 use std::{fmt::Debug, path::Path};
-use tokio::io::AsyncWriteExt;
 
 use super::{
     budget::BudgetAccounting, cached_data::CachedBatch, cached_data::CachedData,
@@ -421,12 +420,24 @@ impl CacheStorage {
     }
 
     fn apply_advice(&self, advice: Vec<CacheAdvice>) {
-        for adv in advice {
-            self.apply_advice_inner(adv);
+        #[cfg(target_os = "linux")]
+        {
+            let mut executor = super::io::Executor::new();
+            for adv in advice {
+                executor.spawn(self.apply_advice_inner(adv));
+            }
+            executor.join();
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            for adv in advice {
+                self.apply_advice_inner_blocking(adv);
+            }
         }
     }
 
-    fn apply_advice_inner(&self, advice: CacheAdvice) {
+    #[cfg(not(target_os = "linux"))]
+    fn apply_advice_inner_blocking(&self, advice: CacheAdvice) {
         match advice {
             CacheAdvice::Transcode(to_transcode) => {
                 let compressor_states = self.io_context.get_compressor_for_entry(&to_transcode);
@@ -487,6 +498,67 @@ impl CacheStorage {
         }
     }
 
+    async fn apply_advice_inner(&self, advice: CacheAdvice) {
+        match advice {
+            CacheAdvice::Transcode(to_transcode) => {
+                let compressor_states = self.io_context.get_compressor_for_entry(&to_transcode);
+                let Some(to_transcode_batch) = self.index.get(&to_transcode) else {
+                    return;
+                };
+
+                if let CachedBatch::MemoryArrow(array) = to_transcode_batch {
+                    let liquid_array = transcode_liquid_inner(&array, compressor_states.as_ref())
+                        .expect("Failed to transcode to liquid array");
+                    let liquid_array = CachedBatch::MemoryLiquid(liquid_array);
+                    self.try_insert(to_transcode, liquid_array)
+                        .expect("Failed to insert the transcoded batch");
+                }
+            }
+            CacheAdvice::TranscodeToDisk(to_evict) => {
+                let compressor_states = self.io_context.get_compressor_for_entry(&to_evict);
+                let Some(to_evict_batch) = self.index.get(&to_evict) else {
+                    return;
+                };
+                let liquid_array = match to_evict_batch {
+                    CachedBatch::MemoryArrow(array) => {
+                        transcode_liquid_inner(&array, compressor_states.as_ref())
+                            .expect("Failed to transcode to liquid array")
+                    }
+                    CachedBatch::MemoryLiquid(liquid_array) => liquid_array,
+                    CachedBatch::DiskLiquid => {
+                        // do nothing, already on disk
+                        return;
+                    }
+                    CachedBatch::DiskArrow => {
+                        // do nothing, already on disk
+                        return;
+                    }
+                };
+                self.write_liquid_to_disk(&to_evict, &liquid_array).await;
+                self.try_insert(to_evict, CachedBatch::DiskLiquid)
+                    .expect("failed to insert on disk liquid");
+            }
+            CacheAdvice::ToDisk(to_disk) => {
+                let Some(to_disk_batch) = self.index.get(&to_disk) else {
+                    return;
+                };
+                let written_batch = match to_disk_batch {
+                    CachedBatch::MemoryArrow(array) => {
+                        self.write_arrow_to_disk(&to_disk, &array).await;
+                        CachedBatch::DiskArrow
+                    }
+                    CachedBatch::MemoryLiquid(liquid_array) => {
+                        self.write_liquid_to_disk(&to_disk, &liquid_array).await;
+                        CachedBatch::DiskLiquid
+                    }
+                    CachedBatch::DiskLiquid | CachedBatch::DiskArrow => to_disk_batch,
+                };
+                self.try_insert(to_disk, written_batch)
+                    .expect("failed to insert on disk batch");
+            }
+        }
+    }
+
     fn write_arrow_to_disk_blocking(&self, entry_id: &EntryID, array: &ArrayRef) {
         let file_path = self.io_context.entry_arrow_path(entry_id);
         let bytes = arrow_to_bytes(array).expect("failed to convert arrow to bytes");
@@ -506,10 +578,11 @@ impl CacheStorage {
     }
 
     #[allow(unused)]
+    #[cfg(target_os = "linux")]
     async fn write_liquid_to_disk(&self, entry_id: &EntryID, liquid_array: &LiquidArrayRef) {
         let path = self.io_context.entry_liquid_path(entry_id);
         let bytes = liquid_array.to_bytes();
-        let mut file = tokio::fs::File::create(&path)
+        let mut file = super::io::File::create(&path)
             .await
             .expect("failed to create file");
         file.write_all(&bytes)
@@ -519,13 +592,44 @@ impl CacheStorage {
         self.budget.add_used_disk_bytes(disk_usage);
     }
 
+    #[cfg(not(target_os = "linux"))]
+    async fn write_liquid_to_disk(&self, entry_id: &EntryID, liquid_array: &LiquidArrayRef) {
+        let path = self.io_context.entry_liquid_path(entry_id);
+        let bytes = liquid_array.to_bytes();
+        let mut file = tokio::fs::File::create(&path)
+            .await
+            .expect("failed to create file");
+        use tokio::io::AsyncWriteExt as _;
+        file.write_all(&bytes)
+            .await
+            .expect("failed to write to file");
+        let disk_usage = bytes.len();
+        self.budget.add_used_disk_bytes(disk_usage);
+    }
+
     #[allow(unused)]
+    #[cfg(target_os = "linux")]
     async fn write_arrow_to_disk(&self, entry_id: &EntryID, array: &arrow::array::ArrayRef) {
         let file_path = self.io_context.entry_arrow_path(entry_id);
         let bytes = arrow_to_bytes(array).expect("failed to convert arrow to bytes");
-        let mut file = tokio::fs::File::create(file_path)
+        let mut file = super::io::File::create(&file_path)
             .await
             .expect("failed to create file");
+        file.write_all(&bytes)
+            .await
+            .expect("failed to write to file");
+        let disk_usage = bytes.len();
+        self.budget.add_used_disk_bytes(disk_usage);
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    async fn write_arrow_to_disk(&self, entry_id: &EntryID, array: &arrow::array::ArrayRef) {
+        let file_path = self.io_context.entry_arrow_path(entry_id);
+        let bytes = arrow_to_bytes(array).expect("failed to convert arrow to bytes");
+        let mut file = tokio::fs::File::create(&file_path)
+            .await
+            .expect("failed to create file");
+        use tokio::io::AsyncWriteExt as _;
         file.write_all(&bytes)
             .await
             .expect("failed to write to file");
