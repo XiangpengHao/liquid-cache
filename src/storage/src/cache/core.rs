@@ -420,19 +420,23 @@ impl CacheStorage {
     }
 
     fn apply_advice(&self, advice: Vec<CacheAdvice>) {
-        if cfg!(target_os = "linux") {
+        #[cfg(target_os = "linux")]
+        {
             let mut executor = super::io::Executor::new();
             for adv in advice {
                 executor.spawn(self.apply_advice_inner(adv));
             }
             executor.join();
-        } else {
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
             for adv in advice {
                 self.apply_advice_inner_blocking(adv);
             }
         }
     }
 
+    #[cfg(not(target_os = "linux"))]
     fn apply_advice_inner_blocking(&self, advice: CacheAdvice) {
         match advice {
             CacheAdvice::Transcode(to_transcode) => {
