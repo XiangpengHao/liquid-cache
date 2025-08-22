@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::ffi::CString;
 use std::future::Future;
@@ -7,8 +8,8 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::RawFd;
 use std::path::Path;
 use std::pin::Pin;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 use io_uring::{IoUring, opcode, types};
@@ -157,7 +158,6 @@ pub struct WriteAll<'a> {
     file_fd: RawFd,
     buf: &'a [u8],
     written: usize,
-    offset: u64,
     in_flight: Option<UringID>,
 }
 
@@ -167,7 +167,6 @@ impl<'a> WriteAll<'a> {
             file_fd: file.fd,
             buf,
             written: 0,
-            offset: 0,
             in_flight: None,
         }
     }
@@ -193,12 +192,7 @@ impl Future for WriteAll<'_> {
                     if n == 0 {
                         return Poll::Ready(Err(io::ErrorKind::WriteZero.into()));
                     }
-                    let expected_len = me.buf.len() - me.written;
-                    if n != expected_len {
-                        return Poll::Ready(Err(io::Error::other("short write to file")));
-                    }
                     me.written += n;
-                    me.offset += n as u64;
                     if me.written >= me.buf.len() {
                         return Poll::Ready(Ok(()));
                     }
@@ -216,7 +210,7 @@ impl Future for WriteAll<'_> {
             let ptr = remaining.as_ptr();
             let len = remaining.len();
             let write_e = opcode::Write::new(types::Fd(me.file_fd), ptr, len as _)
-                .offset(me.offset)
+                .offset(u64::MAX) // u64::MAX is -1, so it will use the current file position
                 .build()
                 .user_data(new_uring_id.to_uring_user_data());
 
@@ -252,7 +246,7 @@ pub fn block_on<F: Future>(mut task: F) -> F::Output {
 
 struct Task<F: Future> {
     id: TaskId,
-    ring: Arc<Mutex<RingState>>,
+    ring: Rc<RefCell<RingState>>,
     future: Pin<Box<F>>,
 }
 
@@ -267,7 +261,7 @@ impl<F: Future> Task<F> {
 
 struct TaskContext {
     id: TaskId,
-    ring: Arc<Mutex<RingState>>,
+    ring: Rc<RefCell<RingState>>,
 }
 
 impl TaskContext {
@@ -280,7 +274,7 @@ impl TaskContext {
     }
 
     fn with_ring<T>(&self, f: impl FnOnce(&mut RingState) -> T) -> T {
-        let mut guard = self.ring.lock().unwrap();
+        let mut guard = self.ring.borrow_mut();
         let ring_state = guard.deref_mut();
         f(ring_state)
     }
@@ -289,7 +283,7 @@ impl TaskContext {
 pub struct Executor<F: Future> {
     ready_queue: VecDeque<Task<F>>,
     pending_tasks: HashMap<TaskId, Task<F>>,
-    ring: Arc<Mutex<RingState>>,
+    ring: Rc<RefCell<RingState>>,
 }
 
 impl<F: Future> Default for Executor<F> {
@@ -303,7 +297,7 @@ impl<F: Future> Executor<F> {
         Executor {
             ready_queue: VecDeque::new(),
             pending_tasks: HashMap::new(),
-            ring: Arc::new(Mutex::new(RingState {
+            ring: Rc::new(RefCell::new(RingState {
                 ring: IoUring::new(256).expect("io_uring init failed"),
                 completions: HashMap::new(),
             })),
@@ -338,7 +332,7 @@ impl<F: Future> Executor<F> {
 
             // Step 2: poll io_uring completions
             {
-                let mut guard = self.ring.lock().unwrap();
+                let mut guard = self.ring.borrow_mut();
                 let ring_state = guard.deref_mut();
                 for cqe in ring_state.ring.completion() {
                     let id = UringID::from_uring_user_data(cqe.user_data());
@@ -434,5 +428,75 @@ mod tests {
             let res = File::create(&bogus).await;
             assert!(res.is_err());
         });
+    }
+
+    #[test]
+    fn multiple_concurrent_file_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let num_tasks = 8usize;
+
+        let mut expected: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+        let mut executor = Executor::new();
+
+        for i in 0..num_tasks {
+            let path = dir.path().join(format!("f{i}.bin"));
+            let mut data = Vec::new();
+            data.extend_from_slice(format!("hello-{i}-").as_bytes());
+            data.extend(std::iter::repeat_n(b'a' + (i as u8 % 26), 10 + i));
+
+            expected.push((path.clone(), data.clone()));
+
+            executor.spawn(async move {
+                let mut f = File::create(&path).await.unwrap();
+                f.write_all(&data).await.unwrap();
+                i
+            });
+        }
+
+        let mut outputs = executor.join();
+        assert_eq!(outputs.len(), num_tasks);
+        outputs.sort_unstable();
+        assert_eq!(outputs, (0..num_tasks).collect::<Vec<_>>());
+
+        for (path, expected_data) in expected {
+            let actual = fs::read(&path).unwrap();
+            assert_eq!(actual, expected_data);
+        }
+    }
+
+    #[test]
+    fn multiple_writes_per_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let num_tasks = 4usize;
+
+        let mut expected: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+        let mut executor = Executor::new();
+
+        for i in 0..num_tasks {
+            let path = dir.path().join(format!("mw-{i}.bin"));
+            let part1 = vec![b'X' + (i as u8); 3 + i];
+            let part2 = vec![b'0' + (i as u8); 7 + 2 * i];
+
+            // With std-like behavior, second write appends after the first.
+            let mut all = Vec::new();
+            all.extend_from_slice(&part1);
+            all.extend_from_slice(&part2);
+            expected.push((path.clone(), all));
+
+            executor.spawn(async move {
+                let mut f = File::create(&path).await.unwrap();
+                f.write_all(&part1).await.unwrap();
+                f.write_all(&part2).await.unwrap();
+                path
+            });
+        }
+
+        let paths = executor.join();
+        assert_eq!(paths.len(), num_tasks);
+
+        for (path, expected_data) in expected {
+            let actual = fs::read(&path).unwrap();
+            assert_eq!(actual, expected_data);
+        }
     }
 }
