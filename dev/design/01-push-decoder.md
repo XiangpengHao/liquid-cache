@@ -10,3 +10,23 @@ Sans-io:
 - https://sans-io.readthedocs.io
 
 
+## Problem 1
+
+Modern SSDs needs 1000 inflight io requests to saturate bandwidth, two approaches:
+1. Create 1000 threads to fetch IO. This can easily thrash the CPU, cause excessive context switching, and excessive memory usage (each thread needs non-trivial amount of stack space).
+2. Thread-per-core, within each thread, we run an async runtime (user space scheduling) to fetch IO. Problems: user space scheduling (cooperative scheduling) has no fairness guarantee, caused numerous weird bugs and errors.
+
+
+## Problem 2
+
+PCIe 5 SSDs are very different from S3, in terms of pricing models, bandwidth, and latency. 
+For example:
+- S3 is billed by requests not traffic, i.e., one 10KB request costs the same as one 10 GB request.  
+- PCIe 5 SSDs usually have deep queue depth, requiring one big request to be split into multiple small requests to saturate bandwidth.
+
+There're two existing approaches:
+1. Treat them as the same. This is the most common approach in the industry.
+2. Rewrite different code for different storage types, for example, [zip2](https://github.com/zip-rs/zip2) and [async-zip](https://github.com/majored/rs-async-zip). Which means duplicate efforts, more bugs, and less maintainability. This is almost impossible for larger projects like Parquet.
+
+
+

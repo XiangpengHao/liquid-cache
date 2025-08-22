@@ -28,6 +28,10 @@ congee = { workspace = true }
 log = { workspace = true }
 parquet = { workspace = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+io-uring = "0.7.9"
+libc = "0.2.175"
+
 [dev-dependencies]
 tempfile = { workspace = true }
 paste = "1.0.15"

@@ -4,6 +4,10 @@ mod budget;
 pub mod cached_data;
 mod core;
 mod index;
+#[cfg(target_os = "linux")]
+mod io;
+#[cfg(not(target_os = "linux"))]
+mod io {}
 pub mod policies;
 mod tracer;
 mod transcode;
