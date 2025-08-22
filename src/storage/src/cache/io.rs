@@ -267,25 +267,8 @@ impl<F: Future> Executor<F> {
 
         while let Some(mut task) = self.task_queue.pop_front() {
             match task.as_mut().poll(&mut context) {
-                Poll::Ready(out) => {
-                    outputs.push(out);
-                }
-                Poll::Pending => {
-                    self.task_queue.push_back(task);
-                }
-            }
-
-            if self.task_queue.is_empty() {
-                break;
-            }
-        }
-
-        while !self.task_queue.is_empty() {
-            if let Some(mut task) = self.task_queue.pop_front() {
-                match task.as_mut().poll(&mut context) {
-                    Poll::Ready(out) => outputs.push(out),
-                    Poll::Pending => self.task_queue.push_back(task),
-                }
+                Poll::Ready(out) => outputs.push(out),
+                Poll::Pending => self.task_queue.push_back(task),
             }
         }
 
