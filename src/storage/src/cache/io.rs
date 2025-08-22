@@ -2,12 +2,13 @@ use std::collections::{HashMap, VecDeque};
 use std::ffi::CString;
 use std::future::Future;
 use std::io;
+use std::ops::DerefMut;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::RawFd;
 use std::path::Path;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 use io_uring::{IoUring, opcode, types};
@@ -15,46 +16,55 @@ use libc;
 
 struct RingState {
     ring: IoUring,
-    completions: HashMap<u64, i32>,
+    completions: HashMap<UringID, i32>,
 }
 
-static RING: OnceLock<Mutex<RingState>> = OnceLock::new();
-static NEXT_TOKEN: AtomicU64 = AtomicU64::new(1);
-
-fn with_ring<T>(f: impl FnOnce(&mut RingState) -> T) -> T {
-    let mutex = RING.get_or_init(|| {
-        let ring = IoUring::new(256).expect("io_uring init failed");
-        Mutex::new(RingState {
-            ring,
-            completions: HashMap::new(),
-        })
-    });
-    let mut guard = mutex.lock().expect("ring mutex poisoned");
-    f(&mut guard)
-}
-
-fn drain_completions(state: &mut RingState) {
-    for cqe in state.ring.completion() {
-        let token = cqe.user_data();
-        state.completions.insert(token, cqe.result());
-    }
-}
-
-#[inline]
-fn take_completion(state: &mut RingState, token: u64) -> Option<i32> {
-    if let Some(r) = state.completions.remove(&token) {
-        return Some(r);
-    }
-    drain_completions(state);
-    state.completions.remove(&token)
-}
+static NEXT_TASK_ID: AtomicU32 = AtomicU32::new(1);
+static NEXT_OP_ID: AtomicU32 = AtomicU32::new(1);
 
 fn submit_if_needed(state: &mut RingState) {
     let _ = state.ring.submit();
 }
 
-fn next_token() -> u64 {
-    NEXT_TOKEN.fetch_add(1, Ordering::Relaxed)
+fn next_task_id() -> TaskId {
+    TaskId(NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed))
+}
+
+fn next_op_id() -> u32 {
+    NEXT_OP_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+#[derive(Eq, PartialEq, Hash, Copy, Clone)]
+struct TaskId(u32);
+
+impl TaskId {
+    fn create_new_uring_id(&self) -> UringID {
+        UringID {
+            task_id: *self,
+            op_id: next_op_id(),
+        }
+    }
+}
+
+#[derive(Eq, PartialEq, Hash, Clone)]
+struct UringID {
+    task_id: TaskId,
+    op_id: u32,
+}
+
+impl UringID {
+    fn from_uring_user_data(data: u64) -> Self {
+        let task_id = (data >> 32) as u32;
+        let op_id = data as u32;
+        Self {
+            task_id: TaskId(task_id),
+            op_id,
+        }
+    }
+
+    fn to_uring_user_data(&self) -> u64 {
+        (self.task_id.0 as u64) << 32 | self.op_id as u64
+    }
 }
 
 pub struct File {
@@ -69,10 +79,19 @@ impl Drop for File {
     }
 }
 
+impl File {
+    pub fn create<P: AsRef<Path>>(path: P) -> CreateFile {
+        CreateFile::new(path.as_ref())
+    }
+
+    pub fn write_all<'a>(&'a mut self, buf: &'a [u8]) -> WriteAll<'a> {
+        WriteAll::new(self, buf)
+    }
+}
+
 pub struct CreateFile {
     c_path: CString,
-    token: u64,
-    submitted: bool,
+    in_flight: Option<UringID>,
 }
 
 impl CreateFile {
@@ -81,8 +100,7 @@ impl CreateFile {
         let c_path = CString::new(bytes.to_vec()).expect("path contains NUL byte");
         Self {
             c_path,
-            token: next_token(),
-            submitted: false,
+            in_flight: None,
         }
     }
 }
@@ -90,29 +108,36 @@ impl CreateFile {
 impl Future for CreateFile {
     type Output = io::Result<File>;
 
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
         let me = unsafe { self.get_unchecked_mut() };
+        let task = unsafe { TaskContext::from_waker_data(ctx.waker().data()) };
 
-        let res = with_ring(|state| {
-            if let Some(r) = take_completion(state, me.token) {
-                return Some(r);
-            }
-            if !me.submitted {
-                let flags = libc::O_CREAT | libc::O_WRONLY | libc::O_TRUNC;
-                let mode = 0o644u32;
-                let open_e = opcode::OpenAt::new(types::Fd(libc::AT_FDCWD), me.c_path.as_ptr())
-                    .flags(flags)
-                    .mode(mode)
-                    .build()
-                    .user_data(me.token);
-                let mut sq = state.ring.submission();
-                let ok = unsafe { sq.push(&open_e).is_ok() };
-                drop(sq);
-                if ok {
-                    me.submitted = true;
-                    submit_if_needed(state);
+        let res = task.with_ring(|state| {
+            match me.in_flight {
+                Some(ref uring_id) => {
+                    if let Some(r) = state.completions.remove(uring_id) {
+                        return Some(r);
+                    }
+                }
+                None => {
+                    let new_uring_id = task.id.create_new_uring_id();
+                    let flags = libc::O_CREAT | libc::O_WRONLY | libc::O_TRUNC;
+                    let mode = 0o644u32;
+                    let open_e = opcode::OpenAt::new(types::Fd(libc::AT_FDCWD), me.c_path.as_ptr())
+                        .flags(flags)
+                        .mode(mode)
+                        .build()
+                        .user_data(new_uring_id.to_uring_user_data());
+                    let mut sq = state.ring.submission();
+                    let ok = unsafe { sq.push(&open_e).is_ok() };
+                    drop(sq);
+                    if ok {
+                        me.in_flight = Some(new_uring_id);
+                        submit_if_needed(state);
+                    }
                 }
             }
+
             None
         });
 
@@ -133,8 +158,7 @@ pub struct WriteAll<'a> {
     buf: &'a [u8],
     written: usize,
     offset: u64,
-    token: u64,
-    in_flight: bool,
+    in_flight: Option<UringID>,
 }
 
 impl<'a> WriteAll<'a> {
@@ -144,8 +168,7 @@ impl<'a> WriteAll<'a> {
             buf,
             written: 0,
             offset: 0,
-            token: next_token(),
-            in_flight: false,
+            in_flight: None,
         }
     }
 }
@@ -153,14 +176,16 @@ impl<'a> WriteAll<'a> {
 impl Future for WriteAll<'_> {
     type Output = io::Result<()>;
 
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
         let me = unsafe { self.get_unchecked_mut() };
 
+        let task = unsafe { TaskContext::from_waker_data(ctx.waker().data()) };
+
         loop {
-            if me.in_flight {
-                let completed = with_ring(|state| take_completion(state, me.token));
+            if let Some(ref uring_id) = me.in_flight {
+                let completed = task.with_ring(|state| state.completions.remove(uring_id));
                 if let Some(r) = completed {
-                    me.in_flight = false;
+                    me.in_flight = None;
                     if r < 0 {
                         return Poll::Ready(Err(io::Error::from_raw_os_error(-r)));
                     }
@@ -187,14 +212,15 @@ impl Future for WriteAll<'_> {
                 return Poll::Ready(Ok(()));
             }
 
+            let new_uring_id = task.id.create_new_uring_id();
             let ptr = remaining.as_ptr();
             let len = remaining.len();
             let write_e = opcode::Write::new(types::Fd(me.file_fd), ptr, len as _)
                 .offset(me.offset)
                 .build()
-                .user_data(me.token);
+                .user_data(new_uring_id.to_uring_user_data());
 
-            let submitted = with_ring(|state| {
+            let submitted = task.with_ring(|state| {
                 let mut sq = state.ring.submission();
                 let ok = unsafe { sq.push(&write_e).is_ok() };
                 drop(sq);
@@ -207,7 +233,7 @@ impl Future for WriteAll<'_> {
             });
 
             if submitted.is_some() {
-                me.in_flight = true;
+                me.in_flight = Some(new_uring_id);
                 continue;
             } else {
                 return Poll::Pending;
@@ -216,31 +242,54 @@ impl Future for WriteAll<'_> {
     }
 }
 
-impl File {
-    pub fn create<P: AsRef<Path>>(path: P) -> CreateFile {
-        CreateFile::new(path.as_ref())
-    }
-
-    pub fn write_all<'a>(&'a mut self, buf: &'a [u8]) -> WriteAll<'a> {
-        WriteAll::new(self, buf)
-    }
-}
-
 #[allow(unused)]
 pub fn block_on<F: Future>(mut task: F) -> F::Output {
-    let waker = dummy_waker();
-    let mut context = Context::from_waker(&waker);
+    let mut executor = Executor::new();
+    executor.spawn(task);
+    let mut outputs = executor.join();
+    outputs.pop().expect("no output from task")
+}
 
-    loop {
-        let pinned_task = unsafe { Pin::new_unchecked(&mut task) };
-        if let Poll::Ready(out) = pinned_task.poll(&mut context) {
-            return out;
+struct Task<F: Future> {
+    id: TaskId,
+    ring: Arc<Mutex<RingState>>,
+    future: Pin<Box<F>>,
+}
+
+impl<F: Future> Task<F> {
+    fn context(&self) -> TaskContext {
+        TaskContext {
+            id: self.id,
+            ring: self.ring.clone(),
         }
     }
 }
 
+struct TaskContext {
+    id: TaskId,
+    ring: Arc<Mutex<RingState>>,
+}
+
+impl TaskContext {
+    unsafe fn from_waker_data<'a>(data: *const ()) -> &'a Self {
+        unsafe { &*(data as *const Self) }
+    }
+
+    fn to_waker_data(&self) -> *const () {
+        self as *const Self as *const ()
+    }
+
+    fn with_ring<T>(&self, f: impl FnOnce(&mut RingState) -> T) -> T {
+        let mut guard = self.ring.lock().unwrap();
+        let ring_state = guard.deref_mut();
+        f(ring_state)
+    }
+}
+
 pub struct Executor<F: Future> {
-    task_queue: VecDeque<Pin<Box<F>>>,
+    ready_queue: VecDeque<Task<F>>,
+    pending_tasks: HashMap<TaskId, Task<F>>,
+    ring: Arc<Mutex<RingState>>,
 }
 
 impl<F: Future> Default for Executor<F> {
@@ -252,23 +301,55 @@ impl<F: Future> Default for Executor<F> {
 impl<F: Future> Executor<F> {
     pub fn new() -> Self {
         Executor {
-            task_queue: VecDeque::new(),
+            ready_queue: VecDeque::new(),
+            pending_tasks: HashMap::new(),
+            ring: Arc::new(Mutex::new(RingState {
+                ring: IoUring::new(256).expect("io_uring init failed"),
+                completions: HashMap::new(),
+            })),
         }
     }
 
     pub fn spawn(&mut self, task: F) {
-        self.task_queue.push_back(Box::pin(task));
+        self.ready_queue.push_back(Task {
+            id: next_task_id(),
+            ring: self.ring.clone(),
+            future: Box::pin(task),
+        });
     }
 
     pub fn join(&mut self) -> Vec<F::Output> {
-        let waker = dummy_waker();
-        let mut context = Context::from_waker(&waker);
         let mut outputs: Vec<F::Output> = Vec::new();
 
-        while let Some(mut task) = self.task_queue.pop_front() {
-            match task.as_mut().poll(&mut context) {
-                Poll::Ready(out) => outputs.push(out),
-                Poll::Pending => self.task_queue.push_back(task),
+        loop {
+            // Step 1: poll ready tasks
+            while let Some(mut task) = self.ready_queue.pop_front() {
+                let task_id = task.id;
+                let context = task.context();
+                let waker = WakerWrapper::new(&context);
+                let mut context = Context::from_waker(&waker.waker);
+                match task.future.as_mut().poll(&mut context) {
+                    Poll::Ready(out) => outputs.push(out),
+                    Poll::Pending => {
+                        self.pending_tasks.insert(task_id, task);
+                    }
+                }
+            }
+
+            // Step 2: poll io_uring completions
+            {
+                let mut guard = self.ring.lock().unwrap();
+                let ring_state = guard.deref_mut();
+                for cqe in ring_state.ring.completion() {
+                    let id = UringID::from_uring_user_data(cqe.user_data());
+                    let task = self.pending_tasks.remove(&id.task_id).unwrap();
+                    self.ready_queue.push_back(task);
+                    ring_state.completions.insert(id, cqe.result());
+                }
+            }
+
+            if self.ready_queue.is_empty() && self.pending_tasks.is_empty() {
+                break;
             }
         }
 
@@ -276,17 +357,32 @@ impl<F: Future> Executor<F> {
     }
 }
 
-fn dummy_raw_waker() -> RawWaker {
-    fn no_op(_: *const ()) {}
-    fn clone(_: *const ()) -> RawWaker {
-        dummy_raw_waker()
+#[inline]
+fn raw_waker_from_task_id(task: &TaskContext) -> RawWaker {
+    unsafe fn clone(data: *const ()) -> RawWaker {
+        RawWaker::new(data, &TASK_WAKER_VTABLE)
     }
-    let vtable = &RawWakerVTable::new(clone, no_op, no_op, no_op);
-    RawWaker::new(std::ptr::null(), vtable)
+    unsafe fn wake(_: *const ()) {}
+    unsafe fn wake_by_ref(_: *const ()) {}
+    unsafe fn drop(_: *const ()) {}
+    static TASK_WAKER_VTABLE: RawWakerVTable = RawWakerVTable::new(clone, wake, wake_by_ref, drop);
+    let data_ptr = task.to_waker_data(); // Only safe if RawWaker does not outlive the `TaskContext`
+    RawWaker::new(data_ptr, &TASK_WAKER_VTABLE)
 }
 
-fn dummy_waker() -> Waker {
-    unsafe { Waker::from_raw(dummy_raw_waker()) }
+struct WakerWrapper<'a> {
+    waker: Waker,
+    _context: &'a TaskContext, // This is used to ensure the `Waker` can not outlive the `TaskContext`
+}
+
+impl<'a> WakerWrapper<'a> {
+    fn new(task: &'a TaskContext) -> Self {
+        let waker = unsafe { Waker::from_raw(raw_waker_from_task_id(task)) };
+        Self {
+            waker,
+            _context: task,
+        }
+    }
 }
 
 #[cfg(test)]
