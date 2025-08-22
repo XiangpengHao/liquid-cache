@@ -420,11 +420,78 @@ impl CacheStorage {
     }
 
     fn apply_advice(&self, advice: Vec<CacheAdvice>) {
-        let mut executor = super::io::Executor::new();
-        for adv in advice {
-            executor.spawn(self.apply_advice_inner(adv));
+        if cfg!(target_os = "linux") {
+            let mut executor = super::io::Executor::new();
+            for adv in advice {
+                executor.spawn(self.apply_advice_inner(adv));
+            }
+            executor.join();
+        } else {
+            for adv in advice {
+                self.apply_advice_inner_blocking(adv);
+            }
         }
-        executor.join();
+    }
+
+    fn apply_advice_inner_blocking(&self, advice: CacheAdvice) {
+        match advice {
+            CacheAdvice::Transcode(to_transcode) => {
+                let compressor_states = self.io_context.get_compressor_for_entry(&to_transcode);
+                let Some(to_transcode_batch) = self.index.get(&to_transcode) else {
+                    return;
+                };
+
+                if let CachedBatch::MemoryArrow(array) = to_transcode_batch {
+                    let liquid_array = transcode_liquid_inner(&array, compressor_states.as_ref())
+                        .expect("Failed to transcode to liquid array");
+                    let liquid_array = CachedBatch::MemoryLiquid(liquid_array);
+                    self.try_insert(to_transcode, liquid_array)
+                        .expect("Failed to insert the transcoded batch");
+                }
+            }
+            CacheAdvice::TranscodeToDisk(to_evict) => {
+                let compressor_states = self.io_context.get_compressor_for_entry(&to_evict);
+                let Some(to_evict_batch) = self.index.get(&to_evict) else {
+                    return;
+                };
+                let liquid_array = match to_evict_batch {
+                    CachedBatch::MemoryArrow(array) => {
+                        transcode_liquid_inner(&array, compressor_states.as_ref())
+                            .expect("Failed to transcode to liquid array")
+                    }
+                    CachedBatch::MemoryLiquid(liquid_array) => liquid_array,
+                    CachedBatch::DiskLiquid => {
+                        // do nothing, already on disk
+                        return;
+                    }
+                    CachedBatch::DiskArrow => {
+                        // do nothing, already on disk
+                        return;
+                    }
+                };
+                self.write_liquid_to_disk_blocking(&to_evict, &liquid_array);
+                self.try_insert(to_evict, CachedBatch::DiskLiquid)
+                    .expect("failed to insert on disk liquid");
+            }
+            CacheAdvice::ToDisk(to_disk) => {
+                let Some(to_disk_batch) = self.index.get(&to_disk) else {
+                    return;
+                };
+                let written_batch = match to_disk_batch {
+                    CachedBatch::MemoryArrow(array) => {
+                        self.write_arrow_to_disk_blocking(&to_disk, &array);
+                        CachedBatch::DiskArrow
+                    }
+                    CachedBatch::MemoryLiquid(liquid_array) => {
+                        self.write_liquid_to_disk_blocking(&to_disk, &liquid_array);
+                        CachedBatch::DiskLiquid
+                    }
+                    CachedBatch::DiskLiquid | CachedBatch::DiskArrow => to_disk_batch,
+                };
+                self.try_insert(to_disk, written_batch)
+                    .expect("failed to insert on disk batch");
+            }
+        }
     }
 
     async fn apply_advice_inner(&self, advice: CacheAdvice) {
