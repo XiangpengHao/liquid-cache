@@ -30,7 +30,7 @@ fn with_ring<T>(f: impl FnOnce(&mut RingState) -> T) -> T {
         })
     });
     let mut guard = mutex.lock().expect("ring mutex poisoned");
-    f(&mut *guard)
+    f(&mut guard)
 }
 
 fn drain_completions(state: &mut RingState) {
@@ -98,7 +98,7 @@ impl Future for CreateFile {
                 return Some(r);
             }
             if !me.submitted {
-                let flags = (libc::O_CREAT | libc::O_WRONLY | libc::O_TRUNC) as i32;
+                let flags = libc::O_CREAT | libc::O_WRONLY | libc::O_TRUNC;
                 let mode = 0o644u32;
                 let open_e = opcode::OpenAt::new(types::Fd(libc::AT_FDCWD), me.c_path.as_ptr())
                     .flags(flags)
@@ -170,10 +170,7 @@ impl Future for WriteAll<'_> {
                     }
                     let expected_len = me.buf.len() - me.written;
                     if n != expected_len {
-                        return Poll::Ready(Err(io::Error::new(
-                            io::ErrorKind::Other,
-                            "short write to file",
-                        )));
+                        return Poll::Ready(Err(io::Error::other("short write to file")));
                     }
                     me.written += n;
                     me.offset += n as u64;
@@ -302,7 +299,7 @@ fn dummy_raw_waker() -> RawWaker {
         dummy_raw_waker()
     }
     let vtable = &RawWakerVTable::new(clone, no_op, no_op, no_op);
-    RawWaker::new(std::ptr::null() as *const (), vtable)
+    RawWaker::new(std::ptr::null(), vtable)
 }
 
 fn dummy_waker() -> Waker {
