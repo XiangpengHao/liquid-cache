@@ -89,14 +89,14 @@ fn main() {
                 num_io += 1;
                 match state.try_get() {
                     TryGet::Ready(Ok(PredicatePushdownResult::Evaluated(_))) => evaluated += 1,
-                    e => panic!("unexpected result: {:?}", e),
+                    e => panic!("unexpected result: {e:?}"),
                 }
             }
         }
     }
     let scan_elapsed = t0.elapsed();
     let stats = storage.stats();
-    println!("Cache stats: {:?}", stats);
+    println!("Cache stats: {stats:?}");
     println!(
         "Cache scan (get_with_predicate) completed:\n  batches: {}\n  rows: {}\n  time: {:.3}s\n  evaluated: {}\n  num_io: {}",
         ids.len(),

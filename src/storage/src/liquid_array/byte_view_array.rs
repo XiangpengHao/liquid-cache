@@ -173,7 +173,7 @@ impl LiquidArray for LiquidByteViewArray {
     }
 
     fn to_bytes(&self) -> Vec<u8> {
-        todo!("I need to think more carefully about this")
+        self.to_bytes_inner()
     }
 
     fn data_type(&self) -> LiquidDataType {
@@ -281,17 +281,17 @@ fn try_eval_predicate_inner(
 #[derive(Clone)]
 pub struct LiquidByteViewArray {
     /// Dictionary keys (u16) - one per array element, using Arrow's UInt16Array for zero-copy
-    dictionary_keys: UInt16Array,
+    pub(crate) dictionary_keys: UInt16Array,
     /// Offset views containing offset (u32) and prefix (8 bytes) - one per unique value
-    offset_views: Vec<OffsetView>,
+    pub(crate) offset_views: Vec<OffsetView>,
     /// FSST-compressed buffer (can be in memory or on disk)
-    fsst_buffer: Arc<RwLock<FsstBufferStorage>>,
+    pub(crate) fsst_buffer: Arc<RwLock<FsstBufferStorage>>,
     /// Used to convert back to the original arrow type
-    original_arrow_type: ArrowByteType,
+    pub(crate) original_arrow_type: ArrowByteType,
     /// Shared prefix across all strings in the array
-    shared_prefix: Vec<u8>,
+    pub(crate) shared_prefix: Vec<u8>,
     /// Compressor for decompression
-    compressor: Arc<Compressor>,
+    pub(crate) compressor: Arc<Compressor>,
 }
 
 impl std::fmt::Debug for LiquidByteViewArray {
@@ -882,21 +882,22 @@ impl LiquidByteViewArray {
         }
     }
 
-    /// Evict the FSST buffer to disk
-    pub fn evict_to_disk(&self, path: PathBuf) -> Result<(), io::Error> {
+    /// Evict the FSST buffer to disk, returns bytes written
+    pub fn evict_to_disk(&self, path: PathBuf) -> Result<usize, io::Error> {
         let mut storage = self.fsst_buffer.write().unwrap();
 
         match &*storage {
             FsstBufferStorage::InMemory(raw_buffer) => {
                 let buffer = raw_buffer.to_bytes();
 
+                let len = buffer.len();
                 let mut file = File::create(&path)?;
                 file.write_all(&buffer)?;
 
                 *storage = FsstBufferStorage::OnDisk(path);
-                Ok(())
+                Ok(len)
             }
-            FsstBufferStorage::OnDisk(_) => Ok(()),
+            FsstBufferStorage::OnDisk(_) => Ok(0),
         }
     }
 
