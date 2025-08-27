@@ -95,7 +95,8 @@ fn main() {
         }
     }
     let scan_elapsed = t0.elapsed();
-
+    let stats = storage.stats();
+    println!("Cache stats: {:?}", stats);
     println!(
         "Cache scan (get_with_predicate) completed:\n  batches: {}\n  rows: {}\n  time: {:.3}s\n  evaluated: {}\n  num_io: {}",
         ids.len(),
