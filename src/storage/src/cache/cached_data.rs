@@ -136,8 +136,8 @@ impl<'a> CachedData<'a> {
     /// The return boolean buffer will be length of 3, each corresponding to the selected rows.
     ///
     /// Returns:
-    /// - `PredicatePushdownResult::Evaluated(buffer)`: the predicate is evaluated on the filtered data and the result is a boolean buffer.
-    /// - `PredicatePushdownResult::Filtered(array)`: the predicate is not evaluated (e.g., predicate is not supported or error happens) but data is filtered.
+    /// - `PredicatePushdownResult::Evaluated(buffer)`: the predicate is evaluated on the filtered data and the result is a boolean buffer. This only occurs for Liquid-backed string arrays that support predicate evaluation.
+    /// - `PredicatePushdownResult::Filtered(array)`: the predicate is not evaluated (e.g., when data is Arrow-backed, predicate is not supported, or an error happens) but data is filtered.
     ///
     /// Build a sans-IO state machine to evaluate a predicate with selection pushdown.
     pub fn get_with_predicate<'predicate, 'selection>(
@@ -785,6 +785,41 @@ mod tests {
         io.blocking_evict_liquid_to_disk(&id, &liquid_array)
             .unwrap();
         test_get(&cached);
+    }
+
+    #[test]
+    fn test_get_with_predicate_arrow_returns_filtered() {
+        // Build a simple Arrow string array
+        let data = StringArray::from(vec![Some("a"), Some(""), None, Some("b")]);
+        let arrow_array: ArrayRef = Arc::new(data);
+
+        // Build predicate: col == ""
+        let expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("col", 0)),
+            Operator::Eq,
+            Arc::new(Literal::new(ScalarValue::Utf8(Some("".to_string())))),
+        ));
+
+        // Cached as Arrow memory
+        let id = EntryID::from(42usize);
+        let (_tmp, io) = io_worker(None);
+        let cached = CachedData::new(CachedBatch::MemoryArrow(arrow_array.clone()), id, &io);
+
+        // Selection: all-true
+        let selection = BooleanBuffer::from(vec![true; arrow_array.len()]);
+
+        // Expect Filtered result for Arrow-backed data, not Evaluated
+        let SansIo::Ready(Ok(result)) = cached.get_with_predicate(&selection, &expr) else {
+            panic!("expected immediate result for in-memory arrow");
+        };
+        match result {
+            PredicatePushdownResult::Filtered(arr) => {
+                assert_eq!(arr.len(), arrow_array.len());
+            }
+            PredicatePushdownResult::Evaluated(_) => {
+                panic!("Arrow-backed get_with_predicate must not return Evaluated")
+            }
+        }
     }
 
     fn test_string_predicate(string_array: &StringArray, expr: &Arc<dyn PhysicalExpr>) {

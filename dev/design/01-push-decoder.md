@@ -30,3 +30,17 @@ There're two existing approaches:
 
 
 
+
+## Measure
+
+We first write a benchmark to measure the performance of existing cache.
+
+1. We take the existing CacheStorage and use the FILO policy to cache the data. Set the cache size to be small, e.g., 100 MB. 
+
+2. Then we keep inserting string data into the cache. The string data is from hits.parquet (benchmark/clickbench/data/hits.parquet), we need to read with projections. Some example string columns are: URL, Referer, Title, etc. For simplicity, we only read Referer.
+
+3. Once the data is inserted, we start to read from the cache. For simplicity, we only exercise the `get_with_predicate` method, where the selection is a boolean array with all true, and the predicate is whether this string is empty.
+
+4. We will read all previously inserted data (simulate a scan), and measure the time.
+
+5. The benchmark file will be in src/storage/study/cache_storage.rs. 

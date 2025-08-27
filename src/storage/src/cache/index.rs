@@ -1,13 +1,17 @@
 use congee::CongeeArc;
 use std::{
     fmt::{Debug, Formatter},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use crate::cache::{cached_data::CachedBatch, utils::EntryID};
 
 pub(crate) struct ArtIndex {
     art: CongeeArc<EntryID, CachedBatch>,
+    entry_count: AtomicUsize,
 }
 
 impl Debug for ArtIndex {
@@ -19,7 +23,10 @@ impl Debug for ArtIndex {
 impl ArtIndex {
     pub(crate) fn new() -> Self {
         let art: CongeeArc<EntryID, CachedBatch> = CongeeArc::new();
-        Self { art }
+        Self {
+            art,
+            entry_count: AtomicUsize::new(0),
+        }
     }
 
     pub(crate) fn get(&self, entry_id: &EntryID) -> Option<CachedBatch> {
@@ -35,10 +42,13 @@ impl ArtIndex {
 
     pub(crate) fn insert(&self, entry_id: &EntryID, batch: CachedBatch) {
         let guard = self.art.pin();
-        _ = self
+        let existing = self
             .art
             .insert(*entry_id, Arc::new(batch), &guard)
             .expect("Insertion failed");
+        if existing.is_none() {
+            self.entry_count.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     pub(crate) fn reset(&self) {
@@ -46,6 +56,7 @@ impl ArtIndex {
         self.art.keys().into_iter().for_each(|k| {
             _ = self.art.remove(k, &guard).unwrap();
         });
+        self.entry_count.store(0, Ordering::Relaxed);
     }
 
     pub(crate) fn for_each(&self, mut f: impl FnMut(&EntryID, &CachedBatch)) {
@@ -64,6 +75,10 @@ impl ArtIndex {
     #[cfg(test)]
     pub(crate) fn keys(&self) -> Vec<EntryID> {
         self.art.keys()
+    }
+
+    pub(crate) fn entry_count(&self) -> usize {
+        self.entry_count.load(Ordering::Relaxed)
     }
 }
 

@@ -69,6 +69,23 @@ impl IoContext for DefaultIoContext {
     }
 }
 
+/// Snapshot of cache statistics.
+#[derive(Debug, Clone)]
+pub struct CacheStats {
+    /// Total number of entries in the cache.
+    pub total_entries: usize,
+    /// Total memory usage of the cache.
+    pub memory_usage_bytes: usize,
+    /// Total disk usage of the cache.
+    pub disk_usage_bytes: usize,
+    /// Maximum cache size.
+    pub max_cache_bytes: usize,
+    /// Cache mode.
+    pub cache_mode: LiquidCacheMode,
+    /// Cache root directory.
+    pub cache_root_dir: PathBuf,
+}
+
 /// Builder for [CacheStorage].
 ///
 /// Example:
@@ -220,6 +237,24 @@ pub struct CacheStorage {
 }
 
 impl CacheStorage {
+    /// Return current cache statistics: counts and resource usage.
+    pub fn stats(&self) -> CacheStats {
+        // Count entries by residency/format
+        let total_entries = self.index.entry_count();
+
+        let memory_usage_bytes = self.budget.memory_usage_bytes();
+        let disk_usage_bytes = self.budget.disk_usage_bytes();
+
+        CacheStats {
+            total_entries,
+            memory_usage_bytes,
+            disk_usage_bytes,
+            max_cache_bytes: self.config.max_cache_bytes(),
+            cache_mode: *self.config.cache_mode(),
+            cache_root_dir: self.config.cache_root_dir().clone(),
+        }
+    }
+
     /// Insert a batch into the cache.
     pub fn insert(self: &Arc<Self>, entry_id: EntryID, batch_to_cache: ArrayRef) {
         let batch = {
@@ -646,7 +681,7 @@ mod tests {
         utils::{create_cache_store, create_test_array, create_test_arrow_array},
     };
     use crate::sync::thread;
-    use arrow::array::Array;
+    use arrow::array::{Array, Int32Array};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     // Unified advice type for more concise testing
@@ -817,5 +852,35 @@ mod tests {
 
         // Invariant 2: Number of entries matches number of insertions
         assert_eq!(store.index.keys().len(), num_threads * ops_per_thread);
+    }
+
+    #[test]
+    fn test_cache_stats_memory_and_disk_usage() {
+        // Build a small cache in blocking liquid mode to avoid background tasks
+        let storage = CacheStorageBuilder::new()
+            .with_max_cache_bytes(10 * 1024 * 1024)
+            .with_cache_mode(LiquidCacheMode::LiquidBlocking)
+            .build();
+
+        // Insert two small batches
+        let arr1: ArrayRef = Arc::new(Int32Array::from_iter_values(0..64));
+        let arr2: ArrayRef = Arc::new(Int32Array::from_iter_values(0..128));
+        storage.insert(EntryID::from(1usize), arr1);
+        storage.insert(EntryID::from(2usize), arr2);
+
+        // Stats after insert: 2 entries, memory usage > 0, disk usage == 0
+        let s = storage.stats();
+        assert_eq!(s.total_entries, 2);
+        assert!(s.memory_usage_bytes > 0);
+        assert_eq!(s.disk_usage_bytes, 0);
+        assert_eq!(s.max_cache_bytes, 10 * 1024 * 1024);
+
+        // Flush to disk and verify memory usage drops and disk usage increases
+        storage.flush_all_to_disk();
+        let s2 = storage.stats();
+        assert_eq!(s2.total_entries, 2);
+        assert!(s2.disk_usage_bytes > 0);
+        // In-memory usage should be reduced after moving to on-disk formats
+        assert!(s2.memory_usage_bytes <= s.memory_usage_bytes);
     }
 }
