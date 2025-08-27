@@ -72,3 +72,8 @@ harness = false
 name = "liquid_float_array"
 harness = false
 path = "bench/liquid_float_array.rs"
+
+[[bench]]
+name = "cache_storage"
+path = "study/cache_storage.rs"
+harness = false
