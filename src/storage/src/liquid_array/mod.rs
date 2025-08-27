@@ -164,7 +164,7 @@ pub trait LiquidArray: std::fmt::Debug + Send + Sync {
     }
 
     /// Try to evaluate a predicate on the Liquid array with a filter.
-    /// Returns `None` if the predicate is not supported.
+    /// Returns `Ok(None)` if the predicate is not supported.
     ///
     /// Note that the filter is a boolean buffer, not a boolean array, i.e., filter can't be nullable.
     /// The returned boolean mask is nullable if the the original array is nullable.

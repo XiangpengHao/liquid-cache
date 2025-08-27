@@ -364,6 +364,135 @@ impl LiquidByteViewArray {
         ))
     }
 
+    /// Convert to Arrow DictionaryArray
+    pub fn to_dict_arrow(&self) -> DictionaryArray<UInt16Type> {
+        let keys_array = self.dictionary_keys.clone();
+
+        // Convert raw FSST buffer to values using our offset views
+        let storage = self.fsst_buffer.read().unwrap();
+        let raw_buffer = storage.get_raw_buffer().unwrap();
+
+        let (values_buffer, offsets_buffer) =
+            raw_buffer.to_uncompressed(&self.compressor.decompressor(), &self.offset_views);
+
+        let values = if self.original_arrow_type == ArrowByteType::Utf8
+            || self.original_arrow_type == ArrowByteType::Utf8View
+            || self.original_arrow_type == ArrowByteType::Dict16Utf8
+        {
+            let string_array =
+                unsafe { StringArray::new_unchecked(offsets_buffer, values_buffer, None) };
+            Arc::new(string_array) as ArrayRef
+        } else {
+            let binary_array =
+                unsafe { BinaryArray::new_unchecked(offsets_buffer, values_buffer, None) };
+            Arc::new(binary_array) as ArrayRef
+        };
+
+        unsafe { DictionaryArray::<UInt16Type>::new_unchecked(keys_array, values) }
+    }
+
+    /// Convert to Arrow array with original type
+    pub fn to_arrow_array(&self) -> ArrayRef {
+        let dict = self.to_dict_arrow();
+        cast(&dict, &self.original_arrow_type.to_arrow_type()).unwrap()
+    }
+
+    /// Get the nulls buffer
+    pub fn nulls(&self) -> Option<&NullBuffer> {
+        self.dictionary_keys.nulls()
+    }
+
+    /// Compare with prefix optimization and fallback to Arrow operations
+    pub fn compare_with(&self, needle: &[u8], op: &Operator) -> Result<BooleanArray, ArrowError> {
+        match op {
+            // Handle equality operations with existing optimized methods
+            Operator::Eq => Ok(self.compare_equals(needle)),
+            Operator::NotEq => Ok(self.compare_not_equals(needle)),
+
+            // Handle ordering operations with prefix optimization
+            Operator::Lt | Operator::LtEq | Operator::Gt | Operator::GtEq => {
+                self.compare_with_inner(needle, op)
+            }
+
+            // For other operations, fall back to Arrow operations
+            _ => self.compare_with_arrow_fallback(needle, op),
+        }
+    }
+
+    /// Get detailed memory usage of the byte view array
+    pub fn get_detailed_memory_usage(&self) -> ByteViewArrayMemoryUsage {
+        ByteViewArrayMemoryUsage {
+            dictionary_key: self.dictionary_keys.get_array_memory_size(),
+            offsets: self.offset_views.len() * std::mem::size_of::<OffsetView>(),
+            fsst_buffer: self.fsst_buffer.read().unwrap().get_array_memory_size(),
+            shared_prefix: self.shared_prefix.len(),
+            struct_size: std::mem::size_of::<Self>(),
+        }
+    }
+
+    /// Sort the array and return indices that would sort the array
+    /// This implements efficient sorting as described in the design document:
+    /// 1. First sort the dictionary using prefixes to delay decompression
+    /// 2. If decompression is needed, decompress the entire array at once
+    /// 3. Use dictionary ranks to sort the final keys
+    pub fn sort_to_indices(&self) -> Result<UInt32Array, ArrowError> {
+        // if distinct ratio is more than 10%, use arrow sort.
+        if self.offset_views.len() > (self.dictionary_keys.len() / 10) {
+            let array = self.to_dict_arrow();
+            let sorted_array = sort_to_indices(&array, None, None)?;
+            Ok(sorted_array)
+        } else {
+            Ok(self.sort_to_indices_inner())
+        }
+    }
+
+    /// Evict the FSST buffer to disk, returns bytes written
+    pub fn evict_to_disk(&self, path: PathBuf) -> Result<usize, io::Error> {
+        let mut storage = self.fsst_buffer.write().unwrap();
+
+        match &*storage {
+            FsstBufferStorage::InMemory(raw_buffer) => {
+                let buffer = raw_buffer.to_bytes();
+
+                let len = buffer.len();
+                let mut file = File::create(&path)?;
+                file.write_all(&buffer)?;
+
+                *storage = FsstBufferStorage::OnDisk(path);
+                Ok(len)
+            }
+            FsstBufferStorage::OnDisk(_) => Ok(0),
+        }
+    }
+
+    /// Load the FSST buffer from disk into memory
+    pub fn load_from_disk(&self) -> Result<(), io::Error> {
+        let mut storage = self.fsst_buffer.write().unwrap();
+
+        match &*storage {
+            FsstBufferStorage::OnDisk(path) => {
+                let bytes = std::fs::read(path)?;
+                let bytes = bytes::Bytes::from(bytes);
+                let raw_buffer = RawFsstBuffer::from_bytes(bytes);
+                *storage = FsstBufferStorage::InMemory(Arc::new(raw_buffer));
+                Ok(())
+            }
+            FsstBufferStorage::InMemory(_) => Ok(()),
+        }
+    }
+
+    /// Check if the FSST buffer is currently stored on disk
+    pub fn is_fsst_buffer_on_disk(&self) -> bool {
+        self.fsst_buffer.read().unwrap().is_on_disk()
+    }
+
+    /// Check if the FSST buffer is currently stored in memory
+    pub fn is_fsst_buffer_in_memory(&self) -> bool {
+        self.fsst_buffer.read().unwrap().is_in_memory()
+    }
+}
+
+impl LiquidByteViewArray {
     /// Generic implementation for view arrays (StringViewArray and BinaryViewArray)
     fn from_view_array_inner<T>(
         array: &T,
@@ -506,44 +635,6 @@ impl LiquidByteViewArray {
         }
     }
 
-    /// Convert to Arrow DictionaryArray
-    pub fn to_dict_arrow(&self) -> DictionaryArray<UInt16Type> {
-        let keys_array = self.dictionary_keys.clone();
-
-        // Convert raw FSST buffer to values using our offset views
-        let storage = self.fsst_buffer.read().unwrap();
-        let raw_buffer = storage.get_raw_buffer().unwrap();
-
-        let (values_buffer, offsets_buffer) =
-            raw_buffer.to_uncompressed(&self.compressor.decompressor(), &self.offset_views);
-
-        let values = if self.original_arrow_type == ArrowByteType::Utf8
-            || self.original_arrow_type == ArrowByteType::Utf8View
-            || self.original_arrow_type == ArrowByteType::Dict16Utf8
-        {
-            let string_array =
-                unsafe { StringArray::new_unchecked(offsets_buffer, values_buffer, None) };
-            Arc::new(string_array) as ArrayRef
-        } else {
-            let binary_array =
-                unsafe { BinaryArray::new_unchecked(offsets_buffer, values_buffer, None) };
-            Arc::new(binary_array) as ArrayRef
-        };
-
-        unsafe { DictionaryArray::<UInt16Type>::new_unchecked(keys_array, values) }
-    }
-
-    /// Convert to Arrow array with original type
-    pub fn to_arrow_array(&self) -> ArrayRef {
-        let dict = self.to_dict_arrow();
-        cast(&dict, &self.original_arrow_type.to_arrow_type()).unwrap()
-    }
-
-    /// Get the nulls buffer
-    pub fn nulls(&self) -> Option<&NullBuffer> {
-        self.dictionary_keys.nulls()
-    }
-
     /// Compare equality with a byte needle
     fn compare_equals(&self, needle: &[u8]) -> BooleanArray {
         // Fast path 1: Check shared prefix
@@ -660,23 +751,6 @@ impl LiquidByteViewArray {
         let (values, nulls) = result.into_parts();
         let values = !&values;
         BooleanArray::new(values, nulls)
-    }
-
-    /// Compare with prefix optimization and fallback to Arrow operations
-    pub fn compare_with(&self, needle: &[u8], op: &Operator) -> Result<BooleanArray, ArrowError> {
-        match op {
-            // Handle equality operations with existing optimized methods
-            Operator::Eq => Ok(self.compare_equals(needle)),
-            Operator::NotEq => Ok(self.compare_not_equals(needle)),
-
-            // Handle ordering operations with prefix optimization
-            Operator::Lt | Operator::LtEq | Operator::Gt | Operator::GtEq => {
-                self.compare_with_inner(needle, op)
-            }
-
-            // For other operations, fall back to Arrow operations
-            _ => self.compare_with_arrow_fallback(needle, op),
-        }
     }
 
     /// Check if shared prefix comparison can short-circuit the entire operation
@@ -882,51 +956,6 @@ impl LiquidByteViewArray {
         }
     }
 
-    /// Evict the FSST buffer to disk, returns bytes written
-    pub fn evict_to_disk(&self, path: PathBuf) -> Result<usize, io::Error> {
-        let mut storage = self.fsst_buffer.write().unwrap();
-
-        match &*storage {
-            FsstBufferStorage::InMemory(raw_buffer) => {
-                let buffer = raw_buffer.to_bytes();
-
-                let len = buffer.len();
-                let mut file = File::create(&path)?;
-                file.write_all(&buffer)?;
-
-                *storage = FsstBufferStorage::OnDisk(path);
-                Ok(len)
-            }
-            FsstBufferStorage::OnDisk(_) => Ok(0),
-        }
-    }
-
-    /// Load the FSST buffer from disk into memory
-    pub fn load_from_disk(&self) -> Result<(), io::Error> {
-        let mut storage = self.fsst_buffer.write().unwrap();
-
-        match &*storage {
-            FsstBufferStorage::OnDisk(path) => {
-                let bytes = std::fs::read(path)?;
-                let bytes = bytes::Bytes::from(bytes);
-                let raw_buffer = RawFsstBuffer::from_bytes(bytes);
-                *storage = FsstBufferStorage::InMemory(Arc::new(raw_buffer));
-                Ok(())
-            }
-            FsstBufferStorage::InMemory(_) => Ok(()),
-        }
-    }
-
-    /// Check if the FSST buffer is currently stored on disk
-    pub fn is_fsst_buffer_on_disk(&self) -> bool {
-        self.fsst_buffer.read().unwrap().is_on_disk()
-    }
-
-    /// Check if the FSST buffer is currently stored in memory
-    pub fn is_fsst_buffer_in_memory(&self) -> bool {
-        self.fsst_buffer.read().unwrap().is_in_memory()
-    }
-
     /// Get disk read count for testing
     #[cfg(test)]
     pub fn get_disk_read_count(&self) -> usize {
@@ -937,33 +966,6 @@ impl LiquidByteViewArray {
     #[cfg(test)]
     pub fn reset_disk_read_count(&self) {
         reset_disk_read_counter()
-    }
-
-    /// Get detailed memory usage of the byte view array
-    pub fn get_detailed_memory_usage(&self) -> ByteViewArrayMemoryUsage {
-        ByteViewArrayMemoryUsage {
-            dictionary_key: self.dictionary_keys.get_array_memory_size(),
-            offsets: self.offset_views.len() * std::mem::size_of::<OffsetView>(),
-            fsst_buffer: self.fsst_buffer.read().unwrap().get_array_memory_size(),
-            shared_prefix: self.shared_prefix.len(),
-            struct_size: std::mem::size_of::<Self>(),
-        }
-    }
-
-    /// Sort the array and return indices that would sort the array
-    /// This implements efficient sorting as described in the design document:
-    /// 1. First sort the dictionary using prefixes to delay decompression
-    /// 2. If decompression is needed, decompress the entire array at once
-    /// 3. Use dictionary ranks to sort the final keys
-    pub fn sort_to_indices(&self) -> Result<UInt32Array, ArrowError> {
-        // if distinct ratio is more than 10%, use arrow sort.
-        if self.offset_views.len() > (self.dictionary_keys.len() / 10) {
-            let array = self.to_dict_arrow();
-            let sorted_array = sort_to_indices(&array, None, None)?;
-            Ok(sorted_array)
-        } else {
-            Ok(self.sort_to_indices_inner())
-        }
     }
 
     fn sort_to_indices_inner(&self) -> UInt32Array {
