@@ -159,17 +159,15 @@ let expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
 
 let cached = storage.get(&entry_id).unwrap();
 match cached.get_with_predicate(&selection, &expr) {
-    SansIo::Ready(Ok(result)) => {
+    SansIo::Ready(result) => {
         let expected = BooleanArray::from(vec![true, false, true, false]);
         assert_eq!(result, PredicatePushdownResult::Evaluated(expected));
     }
     SansIo::Pending((mut state, req)) => {
         state.feed(read_all(&req));
-        let TryGet::Ready(Ok(result)) = state.try_get() else { panic!("still pending") };
+        let TryGet::Ready(result) = state.try_get() else { panic!("still pending") };
         let expected = BooleanArray::from(vec![true, false, true, false]);
         assert_eq!(result, PredicatePushdownResult::Evaluated(expected));
     }
-    // Simplify example handling: treat errors as unreachable for this demo
-    SansIo::Ready(Err(_)) => panic!("unexpected error"),
 }
 ```

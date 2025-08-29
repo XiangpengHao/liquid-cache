@@ -8,7 +8,7 @@ use arrow::array::{
 use arrow::buffer::{BooleanBuffer, Buffer, NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::compute::{cast, kernels};
 use arrow::datatypes::{BinaryType, ByteArrayType, Utf8Type};
-use arrow_schema::{ArrowError, DataType};
+use arrow_schema::DataType;
 use datafusion::logical_expr::{ColumnarValue, Operator};
 use datafusion::physical_expr_common::datum::apply_cmp;
 use datafusion::physical_plan::PhysicalExpr;
@@ -57,7 +57,7 @@ impl LiquidArray for LiquidByteArray {
         &self,
         expr: &Arc<dyn PhysicalExpr>,
         filter: &BooleanBuffer,
-    ) -> Result<Option<BooleanArray>, ArrowError> {
+    ) -> Option<BooleanArray> {
         let filtered = filter_inner(self, filter);
         try_eval_predicate_inner(expr, &filtered)
     }
@@ -94,17 +94,17 @@ fn filter_inner(array: &LiquidByteArray, filter: &BooleanBuffer) -> LiquidByteAr
 fn try_eval_predicate_inner(
     expr: &Arc<dyn PhysicalExpr>,
     array: &LiquidByteArray,
-) -> Result<Option<BooleanArray>, ArrowError> {
+) -> Option<BooleanArray> {
     if let Some(binary_expr) = expr.as_any().downcast_ref::<BinaryExpr>() {
         if let Some(literal) = binary_expr.right().as_any().downcast_ref::<Literal>() {
             let op = binary_expr.op();
             if let Some(needle) = get_string_needle(literal.value()) {
                 if op == &Operator::Eq {
                     let result = array.compare_equals(needle);
-                    return Ok(Some(result));
+                    return Some(result);
                 } else if op == &Operator::NotEq {
                     let result = array.compare_not_equals(needle);
-                    return Ok(Some(result));
+                    return Some(result);
                 }
             }
 
@@ -123,11 +123,11 @@ fn try_eval_predicate_inner(
                 Operator::ILikeMatch => apply_cmp(&lhs, &rhs, arrow::compute::ilike),
                 Operator::NotLikeMatch => apply_cmp(&lhs, &rhs, arrow::compute::nlike),
                 Operator::NotILikeMatch => apply_cmp(&lhs, &rhs, arrow::compute::nilike),
-                _ => return Ok(None),
+                _ => return None,
             };
             if let Ok(result) = result {
-                let filtered = result.into_array(array.len())?.as_boolean().clone();
-                return Ok(Some(filtered));
+                let filtered = result.into_array(array.len()).unwrap().as_boolean().clone();
+                return Some(filtered);
             }
         }
     } else if let Some(like_expr) = expr.as_any().downcast_ref::<LikeExpr>()
@@ -150,11 +150,11 @@ fn try_eval_predicate_inner(
             (true, true) => apply_cmp(&lhs, &rhs, arrow::compute::nilike),
         };
         if let Ok(result) = result {
-            let filtered = result.into_array(array.len())?.as_boolean().clone();
-            return Ok(Some(filtered));
+            let filtered = result.into_array(array.len()).unwrap().as_boolean().clone();
+            return Some(filtered);
         }
     }
-    Ok(None)
+    None
 }
 
 /// Extract a string needle from a scalar value for string comparison operations.
@@ -1050,9 +1050,7 @@ mod tests {
         ));
 
         let result = try_eval_predicate_inner(&expr, &liquid_array).unwrap();
-        assert!(result.is_some());
-
-        let boolean_array = result.unwrap();
+        let boolean_array = result;
         assert_eq!(boolean_array.len(), 5);
 
         // Should match indices 0 and 3 (both "apple")
@@ -1079,7 +1077,7 @@ mod tests {
         ));
 
         let filter = BooleanBuffer::from(vec![true; liquid_ref.len()]);
-        let result = liquid_ref.try_eval_predicate(&expr, &filter).unwrap();
+        let result = liquid_ref.try_eval_predicate(&expr, &filter);
         // Numeric comparisons are not supported, should return None
         assert!(result.is_none());
 
@@ -1090,7 +1088,7 @@ mod tests {
             Arc::new(Literal::new(ScalarValue::Int32(Some(20)))),
         ));
 
-        let result = liquid_ref.try_eval_predicate(&eq_expr, &filter).unwrap();
+        let result = liquid_ref.try_eval_predicate(&eq_expr, &filter);
         assert!(result.is_none());
     }
 
@@ -1110,7 +1108,7 @@ mod tests {
         ));
 
         let filter = BooleanBuffer::from(vec![true; liquid_ref.len()]);
-        let result = liquid_ref.try_eval_predicate(&add_expr, &filter).unwrap();
+        let result = liquid_ref.try_eval_predicate(&add_expr, &filter);
         assert!(result.is_none());
 
         // Test another unsupported case: literal op column (wrong order)
@@ -1120,9 +1118,7 @@ mod tests {
             Arc::new(Column::new("test_col", 0)),
         ));
 
-        let result = liquid_ref
-            .try_eval_predicate(&wrong_order_expr, &filter)
-            .unwrap();
+        let result = liquid_ref.try_eval_predicate(&wrong_order_expr, &filter);
         assert!(result.is_none());
 
         // Test column-column comparison (not column-literal)
@@ -1132,9 +1128,7 @@ mod tests {
             Arc::new(Column::new("col2", 1)),
         ));
 
-        let result = liquid_ref
-            .try_eval_predicate(&col_col_expr, &filter)
-            .unwrap();
+        let result = liquid_ref.try_eval_predicate(&col_col_expr, &filter);
         assert!(result.is_none());
     }
 

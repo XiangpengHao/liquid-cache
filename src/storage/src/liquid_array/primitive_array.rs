@@ -11,14 +11,15 @@ use arrow::array::{
     },
 };
 use arrow::buffer::{BooleanBuffer, ScalarBuffer};
-use arrow_schema::ArrowError;
 use datafusion::physical_plan::PhysicalExpr;
 use fastlanes::BitPacking;
 use num_traits::{AsPrimitive, FromPrimitive};
 
 use super::LiquidDataType;
 use crate::liquid_array::raw::BitPackedArray;
-use crate::liquid_array::{LiquidArray, LiquidArrayRef, get_bit_width};
+use crate::liquid_array::{LiquidArray, LiquidArrayRef};
+use crate::utils::get_bit_width;
+
 mod private {
     pub trait Sealed {}
 }
@@ -230,9 +231,9 @@ where
         &self,
         _predicate: &Arc<dyn PhysicalExpr>,
         _filter: &BooleanBuffer,
-    ) -> Result<Option<BooleanArray>, ArrowError> {
+    ) -> Option<BooleanArray> {
         // primitive array is not supported for liquid predicate
-        Ok(None)
+        None
     }
 
     fn to_bytes(&self) -> Vec<u8> {

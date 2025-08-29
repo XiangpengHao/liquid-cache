@@ -167,7 +167,7 @@ impl LiquidArray for LiquidByteViewArray {
         &self,
         expr: &Arc<dyn PhysicalExpr>,
         filter: &BooleanBuffer,
-    ) -> Result<Option<BooleanArray>, ArrowError> {
+    ) -> Option<BooleanArray> {
         let filtered = filter_inner(self, filter);
         try_eval_predicate_inner(expr, &filtered)
     }
@@ -203,7 +203,7 @@ fn filter_inner(array: &LiquidByteViewArray, filter: &BooleanBuffer) -> LiquidBy
 fn try_eval_predicate_inner(
     expr: &Arc<dyn PhysicalExpr>,
     array: &LiquidByteViewArray,
-) -> Result<Option<BooleanArray>, ArrowError> {
+) -> Option<BooleanArray> {
     // Handle binary expressions (comparisons)
     if let Some(binary_expr) = expr.as_any().downcast_ref::<BinaryExpr>() {
         if let Some(literal) = binary_expr.right().as_any().downcast_ref::<Literal>() {
@@ -212,8 +212,8 @@ fn try_eval_predicate_inner(
             // Try to use string needle optimization first
             if let Some(needle) = get_string_needle(literal.value()) {
                 let needle_bytes = needle.as_bytes();
-                let result = array.compare_with(needle_bytes, op)?;
-                return Ok(Some(result));
+                let result = array.compare_with(needle_bytes, op).unwrap();
+                return Some(result);
             }
 
             // Fallback to Arrow operations
@@ -232,11 +232,11 @@ fn try_eval_predicate_inner(
                 Operator::ILikeMatch => apply_cmp(&lhs, &rhs, arrow::compute::ilike),
                 Operator::NotLikeMatch => apply_cmp(&lhs, &rhs, arrow::compute::nlike),
                 Operator::NotILikeMatch => apply_cmp(&lhs, &rhs, arrow::compute::nilike),
-                _ => return Ok(None),
+                _ => return None,
             };
             if let Ok(result) = result {
-                let filtered = result.into_array(array.len())?.as_boolean().clone();
-                return Ok(Some(filtered));
+                let filtered = result.into_array(array.len()).unwrap().as_boolean().clone();
+                return Some(filtered);
             }
         }
     }
@@ -261,11 +261,11 @@ fn try_eval_predicate_inner(
             (true, true) => apply_cmp(&lhs, &rhs, arrow::compute::nilike),
         };
         if let Ok(result) = result {
-            let filtered = result.into_array(array.len())?.as_boolean().clone();
-            return Ok(Some(filtered));
+            let filtered = result.into_array(array.len()).unwrap().as_boolean().clone();
+            return Some(filtered);
         }
     }
-    Ok(None)
+    None
 }
 
 /// An array that stores strings using the FSST view format:

@@ -80,7 +80,7 @@ fn main() {
         let selection = BooleanBuffer::new_set(len);
         match cached.get_with_predicate(&selection, &pred_expr) {
             SansIo::Ready(res) => match res {
-                Ok(PredicatePushdownResult::Evaluated(_)) => evaluated += 1,
+                PredicatePushdownResult::Evaluated(_) => evaluated += 1,
                 _ => panic!("unexpected result"),
             },
             SansIo::Pending((mut state, io_req)) => {
@@ -88,7 +88,7 @@ fn main() {
                 state.feed(Bytes::from(bytes));
                 num_io += 1;
                 match state.try_get() {
-                    TryGet::Ready(Ok(PredicatePushdownResult::Evaluated(_))) => evaluated += 1,
+                    TryGet::Ready(PredicatePushdownResult::Evaluated(_)) => evaluated += 1,
                     e => panic!("unexpected result: {e:?}"),
                 }
             }
