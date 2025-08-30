@@ -2,7 +2,7 @@
 //! You should not use this module directly.
 //! Instead, use `liquid_cache_server` or `liquid_cache_client` to interact with LiquidCache.
 mod byte_array;
-mod byte_view_array;
+pub mod byte_view_array;
 mod fix_len_byte_array;
 mod float_array;
 pub mod ipc;
@@ -10,15 +10,14 @@ mod primitive_array;
 pub mod raw;
 pub(crate) mod utils;
 
-use std::{any::Any, path::PathBuf, sync::Arc};
+use std::{any::Any, ops::Range, path::PathBuf, sync::Arc};
 
 use arrow::{
     array::{ArrayRef, BooleanArray},
     buffer::BooleanBuffer,
 };
-use arrow_schema::ArrowError;
 pub use byte_array::{LiquidByteArray, get_string_needle};
-pub use byte_view_array::{ByteViewArrayMemoryUsage, LiquidByteViewArray};
+pub use byte_view_array::LiquidByteViewArray;
 use datafusion::physical_plan::PhysicalExpr;
 pub use fix_len_byte_array::LiquidFixedLenByteArray;
 use float_array::LiquidFloatType;
@@ -28,6 +27,8 @@ pub use primitive_array::{
     LiquidI64Array, LiquidPrimitiveArray, LiquidPrimitiveType, LiquidU8Array, LiquidU16Array,
     LiquidU32Array, LiquidU64Array,
 };
+
+use crate::liquid_array::byte_view_array::MemoryBuffer;
 
 /// Liquid data type is only logical type
 #[derive(Debug, Clone, Copy)]
@@ -74,10 +75,10 @@ pub trait AsLiquidArray {
     }
 
     /// Get the underlying byte view array.
-    fn as_byte_view_array_opt(&self) -> Option<&LiquidByteViewArray>;
+    fn as_byte_view_array_opt(&self) -> Option<&LiquidByteViewArray<MemoryBuffer>>;
 
     /// Get the underlying byte view array.
-    fn as_byte_view(&self) -> &LiquidByteViewArray {
+    fn as_byte_view(&self) -> &LiquidByteViewArray<MemoryBuffer> {
         self.as_byte_view_array_opt()
             .expect("liquid byte view array")
     }
@@ -113,7 +114,7 @@ impl AsLiquidArray for dyn LiquidArray + '_ {
         self.as_any().downcast_ref()
     }
 
-    fn as_byte_view_array_opt(&self) -> Option<&LiquidByteViewArray> {
+    fn as_byte_view_array_opt(&self) -> Option<&LiquidByteViewArray<MemoryBuffer>> {
         self.as_any().downcast_ref()
     }
 
@@ -164,7 +165,7 @@ pub trait LiquidArray: std::fmt::Debug + Send + Sync {
     }
 
     /// Try to evaluate a predicate on the Liquid array with a filter.
-    /// Returns `Ok(None)` if the predicate is not supported.
+    /// Returns `None` if the predicate is not supported.
     ///
     /// Note that the filter is a boolean buffer, not a boolean array, i.e., filter can't be nullable.
     /// The returned boolean mask is nullable if the the original array is nullable.
@@ -175,46 +176,34 @@ pub trait LiquidArray: std::fmt::Debug + Send + Sync {
     ) -> Option<BooleanArray> {
         None
     }
+
+    /// Squeeze the Liquid array to a `LiquidHybridArrayRef` and a `bytes::Bytes`.
+    /// Return `None` if the Liquid array cannot be squeezed.
+    ///
+    /// This is the bridge from in-memory array to hybrid array.
+    /// The returned `bytes::Bytes` is the data that is stored on disk.
+    ///
+    /// If we `soak` the `LiquidHybridArrayRef` back with the bytes, we should get the same `LiquidArray`.
+    fn squeeze(&self) -> Option<(LiquidHybridArrayRef, bytes::Bytes)> {
+        None
+    }
 }
 
 /// A reference to a Liquid array.
 pub type LiquidArrayRef = Arc<dyn LiquidArray>;
 
-/// A wrapper around a value that may need IO to be read.
-pub enum MaybeIO<T> {
-    /// The value is ready.
-    Ok(T),
-    /// The value is not ready. The second element is the path to the IO.
-    NeedIo(PathBuf),
+/// A reference to a Liquid hybrid array.
+pub type LiquidHybridArrayRef = Arc<dyn LiquidHybridArray>;
+
+/// An IO request.
+#[derive(Debug, Clone)]
+pub struct IoRequest {
+    /// The path to the file that contains the data.
+    pub path: PathBuf,
 }
 
-impl<T> MaybeIO<T> {
-    /// Unwrap the value.
-    /// Panics if the value is not ready.
-    pub fn unwrap(self) -> T {
-        match self {
-            MaybeIO::Ok(t) => t,
-            MaybeIO::NeedIo(path) => {
-                panic!("Need IO: {}", path.display());
-            }
-        }
-    }
-
-    /// Map the value.
-    pub fn map<F, R>(self, f: F) -> MaybeIO<R>
-    where
-        F: FnOnce(T) -> R,
-    {
-        match self {
-            MaybeIO::Ok(t) => MaybeIO::Ok(f(t)),
-            MaybeIO::NeedIo(path) => MaybeIO::NeedIo(path),
-        }
-    }
-}
-
-type LiquidHybridArrayRef = Arc<dyn LiquidHybridArray>;
-
-/// A Liquid array.
+/// A Liquid hybrid array is a Liquid array that part of its data is stored on disk.
+/// `LiquidHybridArray` is more complex than in-memory `LiquidArray` because it needs to handle IO.
 pub trait LiquidHybridArray: std::fmt::Debug + Send + Sync {
     /// Get the underlying any type.
     fn as_any(&self) -> &dyn Any;
@@ -231,12 +220,12 @@ pub trait LiquidHybridArray: std::fmt::Debug + Send + Sync {
     }
 
     /// Convert the Liquid array to an Arrow array.
-    fn to_arrow_array(&self) -> MaybeIO<ArrayRef>;
+    fn to_arrow_array(&self) -> Result<ArrayRef, IoRequest>;
 
     /// Convert the Liquid array to an Arrow array.
     /// Except that it will pick the best encoding for the arrow array.
     /// Meaning that it may not obey the data type of the original arrow array.
-    fn to_best_arrow_array(&self) -> MaybeIO<ArrayRef> {
+    fn to_best_arrow_array(&self) -> Result<ArrayRef, IoRequest> {
         self.to_arrow_array()
     }
 
@@ -244,20 +233,15 @@ pub trait LiquidHybridArray: std::fmt::Debug + Send + Sync {
     fn data_type(&self) -> LiquidDataType;
 
     /// Serialize the Liquid array to a byte array.
-    fn to_bytes(&self) -> MaybeIO<Vec<u8>>;
+    fn to_bytes(&self) -> Result<Vec<u8>, IoRequest>;
 
     /// Filter the Liquid array with a boolean buffer.
-    fn filter(&self, selection: &BooleanBuffer) -> MaybeIO<LiquidHybridArrayRef>;
+    fn filter(&self, selection: &BooleanBuffer) -> Result<LiquidHybridArrayRef, IoRequest>;
 
     /// Filter the Liquid array with a boolean array and return an **arrow array**.
-    fn filter_to_arrow(&self, selection: &BooleanBuffer) -> MaybeIO<ArrayRef> {
-        match self.filter(selection) {
-            MaybeIO::Ok(filtered) => match filtered.to_best_arrow_array() {
-                MaybeIO::Ok(array) => MaybeIO::Ok(array),
-                MaybeIO::NeedIo(path) => MaybeIO::NeedIo(path),
-            },
-            MaybeIO::NeedIo(path) => MaybeIO::NeedIo(path),
-        }
+    fn filter_to_arrow(&self, selection: &BooleanBuffer) -> Result<ArrayRef, IoRequest> {
+        let filtered = self.filter(selection)?;
+        filtered.to_best_arrow_array()
     }
 
     /// Try to evaluate a predicate on the Liquid array with a filter.
@@ -269,7 +253,12 @@ pub trait LiquidHybridArray: std::fmt::Debug + Send + Sync {
         &self,
         _predicate: &Arc<dyn PhysicalExpr>,
         _filter: &BooleanBuffer,
-    ) -> Result<Option<BooleanArray>, ArrowError> {
+    ) -> Result<Option<BooleanArray>, IoRequest> {
         Ok(None)
     }
+
+    /// Feed IO data to the `LiquidHybridArray`.
+    /// Returns the in-memory `LiquidArray`.
+    /// This is the bridge from hybrid array to in-memory array.
+    fn soak(&self, data: bytes::Bytes, range: Range<u64>) -> LiquidArrayRef;
 }
