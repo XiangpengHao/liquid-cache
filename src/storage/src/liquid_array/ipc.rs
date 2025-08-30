@@ -48,7 +48,7 @@ const VERSION: u16 = 1;
     +--------------------------------------------------+
 */
 #[repr(C)]
-struct LiquidIPCHeader {
+pub(crate) struct LiquidIPCHeader {
     magic: [u8; 4],
     version: u16,
     logical_type_id: u16,
@@ -59,7 +59,7 @@ struct LiquidIPCHeader {
 const _: () = assert!(size_of::<LiquidIPCHeader>() == LiquidIPCHeader::size());
 
 impl LiquidIPCHeader {
-    const fn size() -> usize {
+    pub(crate) const fn size() -> usize {
         16
     }
 
@@ -588,7 +588,7 @@ impl LiquidByteArray {
 
 // Header for LiquidByteViewArray serialization
 #[repr(C)]
-struct ByteViewArrayHeader {
+pub(crate) struct ByteViewArrayHeader {
     keys_size: u32,
     offset_views_size: u32,
     shared_prefix_size: u32,
@@ -596,7 +596,9 @@ struct ByteViewArrayHeader {
 }
 
 impl ByteViewArrayHeader {
-    const fn size() -> usize {
+    pub(crate) const fn size() -> usize {
+        const _: () =
+            assert!(std::mem::size_of::<ByteViewArrayHeader>() == ByteViewArrayHeader::size());
         16
     }
 
@@ -645,6 +647,12 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
     +--------------------------------------------------+
     | ByteViewArrayHeader (16 bytes)                   |  // keys_size, offsets_size, prefix_size, fsst_size
     +--------------------------------------------------+
+    | Padding (to 8-byte alignment)                    |
+    +--------------------------------------------------+
+    | RawFsstBuffer bytes                              |
+    +--------------------------------------------------+
+    | Padding (to 8-byte alignment)                    |
+    +--------------------------------------------------+
     | BitPackedArray Data (dictionary_keys)            |
     +--------------------------------------------------+
     | [BitPackedArray Header & Values]                 |
@@ -657,17 +665,30 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
     +--------------------------------------------------+
     | Shared prefix bytes                              |
     +--------------------------------------------------+
-    | Padding (to 8-byte alignment)                    |
-    +--------------------------------------------------+
-    | RawFsstBuffer bytes                              |
-    +--------------------------------------------------+
     */
     pub(crate) fn to_bytes_inner(&self) -> Result<Vec<u8>, IoRequest> {
         let header_size = LiquidIPCHeader::size() + ByteViewArrayHeader::size();
         let mut result = Vec::with_capacity(header_size + 1024);
         result.resize(header_size, 0);
 
-        // 1) Serialize dictionary keys using BitPackedArray with 16-bit width
+        // A) Align and serialize RawFsstBuffer first (near the start)
+        while !result.len().is_multiple_of(8) {
+            result.push(0);
+        }
+        let fsst_start = result.len();
+        let fsst_raw_bytes = {
+            let raw = self.fsst_buffer.get_fsst_buffer()?;
+            raw.to_bytes()
+        };
+        result.extend_from_slice(&fsst_raw_bytes);
+        let fsst_raw_size = result.len() - fsst_start;
+
+        // B) Alignment before keys
+        while !result.len().is_multiple_of(8) {
+            result.push(0);
+        }
+
+        // C) Serialize dictionary keys
         let keys_start = result.len();
         {
             let bit_packed = BitPackedArray::<UInt16Type>::from_primitive(
@@ -678,15 +699,14 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
         }
         let keys_size = result.len() - keys_start;
 
-        // 2) Alignment before offset views
+        // D) Alignment before offset views
         while !result.len().is_multiple_of(8) {
             result.push(0);
         }
 
-        // 3) Serialize offset views
+        // E) Serialize offset views
         let offsets_start = result.len();
         {
-            // Each OffsetView is 12 bytes: u32 offset + [u8; 8] prefix
             for ov in &self.offset_views {
                 result.extend_from_slice(&ov.offset().to_le_bytes());
                 result.extend_from_slice(ov.prefix());
@@ -694,29 +714,15 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
         }
         let offset_views_size = result.len() - offsets_start;
 
-        // 4) Alignment before shared prefix
+        // F) Alignment before shared prefix
         while !result.len().is_multiple_of(8) {
             result.push(0);
         }
 
-        // 5) Serialize shared prefix
+        // G) Serialize shared prefix
         let prefix_start = result.len();
         result.extend_from_slice(&self.shared_prefix);
         let shared_prefix_size = result.len() - prefix_start;
-
-        // 6) Alignment before FSST raw buffer
-        while !result.len().is_multiple_of(8) {
-            result.push(0);
-        }
-
-        // 7) Serialize RawFsstBuffer
-        let fsst_start = result.len();
-        let fsst_raw_bytes = {
-            let raw = self.fsst_buffer.get_fsst_buffer()?;
-            raw.to_bytes()
-        };
-        result.extend_from_slice(&fsst_raw_bytes);
-        let fsst_raw_size = result.len() - fsst_start;
 
         // Prepare headers
         let ipc = LiquidIPCHeader {
@@ -755,7 +761,18 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
 
         let mut cursor = header_size;
 
-        // 1) Read keys as BitPackedArray and convert to UInt16Array
+        // A) Align and read FSST raw buffer first
+        cursor = align_up_8(cursor);
+        let fsst_end = cursor + view_header.fsst_raw_size as usize;
+        if fsst_end > bytes.len() {
+            panic!("FSST raw buffer extends beyond input buffer");
+        }
+        let fsst_raw = bytes.slice(cursor..fsst_end);
+        let raw_buffer = RawFsstBuffer::from_bytes(fsst_raw);
+        cursor = fsst_end;
+
+        // B) Align and read keys
+        cursor = align_up_8(cursor);
         let keys_end = cursor + view_header.keys_size as usize;
         if keys_end > bytes.len() {
             panic!("Keys data extends beyond input buffer");
@@ -765,10 +782,8 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
         let dictionary_keys = bit_packed.to_primitive();
         cursor = keys_end;
 
-        // Align
+        // C) Align and read offset views
         cursor = align_up_8(cursor);
-
-        // 2) Read offset views
         let offsets_end = cursor + view_header.offset_views_size as usize;
         if offsets_end > bytes.len() {
             panic!("Offset views data extends beyond input buffer");
@@ -791,27 +806,13 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
         }
         cursor = offsets_end;
 
-        // Align
+        // D) Align and read shared prefix
         cursor = align_up_8(cursor);
-
-        // 3) Read shared prefix
         let prefix_end = cursor + view_header.shared_prefix_size as usize;
         if prefix_end > bytes.len() {
             panic!("Shared prefix data extends beyond input buffer");
         }
         let shared_prefix = bytes[cursor..prefix_end].to_vec();
-        cursor = prefix_end;
-
-        // Align
-        cursor = align_up_8(cursor);
-
-        // 4) Read raw FSST buffer
-        let fsst_end = cursor + view_header.fsst_raw_size as usize;
-        if fsst_end > bytes.len() {
-            panic!("FSST raw buffer extends beyond input buffer");
-        }
-        let fsst_raw = bytes.slice(cursor..fsst_end);
-        let raw_buffer = RawFsstBuffer::from_bytes(fsst_raw);
 
         LiquidByteViewArray {
             dictionary_keys,

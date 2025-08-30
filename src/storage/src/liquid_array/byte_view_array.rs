@@ -6,7 +6,7 @@ use arrow::array::{
     DictionaryArray, GenericByteArray, StringArray, StringViewArray, UInt16Array, UInt32Array,
     cast::AsArray, types::UInt16Type,
 };
-use arrow::buffer::{BooleanBuffer, Buffer, NullBuffer};
+use arrow::buffer::{BooleanBuffer, NullBuffer};
 use arrow::compute::{cast, kernels, sort_to_indices};
 use arrow::datatypes::ByteArrayType;
 use datafusion::logical_expr::{ColumnarValue, Operator};
@@ -16,7 +16,6 @@ use datafusion::physical_plan::expressions::{BinaryExpr, LikeExpr, Literal};
 use fsst::Compressor;
 use std::any::Any;
 use std::fmt::Display;
-use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -43,6 +42,7 @@ use super::{
     LiquidArray, LiquidArrayRef, LiquidDataType, LiquidHybridArray,
     byte_array::{ArrowByteType, get_string_needle},
 };
+use crate::liquid_array::ipc::{ByteViewArrayHeader, LiquidIPCHeader};
 use crate::liquid_array::raw::fsst_array::{RawFsstBuffer, train_compressor};
 use crate::liquid_array::{IoRequest, LiquidHybridArrayRef};
 use crate::utils::CheckedDictionaryArray;
@@ -194,6 +194,50 @@ impl LiquidArray for LiquidByteViewArray<MemoryBuffer> {
     fn data_type(&self) -> LiquidDataType {
         LiquidDataType::ByteArray
     }
+
+    fn squeeze(&self) -> Option<(LiquidHybridArrayRef, (bytes::Bytes, std::ops::Range<u64>))> {
+        // Serialize full IPC bytes first
+        let bytes = match self.to_bytes_inner() {
+            Ok(b) => b,
+            Err(_) => return None,
+        };
+
+        const IPC_HEADER_SIZE: usize = LiquidIPCHeader::size();
+        const VIEW_HEADER_SIZE: usize = ByteViewArrayHeader::size();
+        let header_size = IPC_HEADER_SIZE + VIEW_HEADER_SIZE;
+
+        assert!(bytes.len() >= header_size);
+
+        let fsst_size = u32::from_le_bytes(
+            bytes[IPC_HEADER_SIZE + 12..IPC_HEADER_SIZE + 16]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+
+        // FSST starts at the first 8-byte boundary after headers
+        let fsst_start = (header_size + 7) & !7;
+        let fsst_end = fsst_start + fsst_size;
+
+        assert!(fsst_end <= bytes.len());
+
+        // Build the hybrid (disk-backed FSST) view
+        let disk = DiskBuffer::new(
+            std::path::PathBuf::new(),
+            self.fsst_buffer.uncompressed_bytes(),
+        );
+        let hybrid = LiquidByteViewArray::<DiskBuffer> {
+            dictionary_keys: self.dictionary_keys.clone(),
+            offset_views: self.offset_views.clone(),
+            fsst_buffer: disk,
+            original_arrow_type: self.original_arrow_type,
+            shared_prefix: self.shared_prefix.clone(),
+            compressor: self.compressor.clone(),
+        };
+
+        let range = (fsst_start as u64)..(fsst_end as u64);
+        let bytes = bytes::Bytes::from(bytes);
+        Some((Arc::new(hybrid) as LiquidHybridArrayRef, (bytes, range)))
+    }
 }
 
 impl LiquidHybridArray for LiquidByteViewArray<DiskBuffer> {
@@ -266,12 +310,9 @@ impl LiquidHybridArray for LiquidByteViewArray<DiskBuffer> {
     /// Feed IO data to the `LiquidHybridArray`.
     /// Returns the in-memory `LiquidArray`.
     /// This is the bridge from hybrid array to in-memory array.
-    fn soak(&self, data: bytes::Bytes, _range: Range<u64>) -> LiquidArrayRef {
-        let uncompressed_bytes = self.fsst_buffer.uncompressed_bytes();
-        let buffer = MemoryBuffer::new(Arc::new(RawFsstBuffer::from_parts(
-            Buffer::from(data),
-            uncompressed_bytes,
-        )));
+    fn soak(&self, data: bytes::Bytes) -> LiquidArrayRef {
+        // `data` is the raw FSST buffer bytes (no IPC header)
+        let buffer = MemoryBuffer::new(Arc::new(RawFsstBuffer::from_bytes(data)));
 
         let in_memory_array = LiquidByteViewArray::<MemoryBuffer> {
             dictionary_keys: self.dictionary_keys.clone(),
@@ -581,6 +622,11 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
     /// Get the length of the array
     pub fn len(&self) -> usize {
         self.dictionary_keys.len()
+    }
+
+    /// Is the array empty?
+    pub fn is_empty(&self) -> bool {
+        self.dictionary_keys.is_empty()
     }
 }
 
@@ -1930,5 +1976,44 @@ mod tests {
                 Some(false),
             ]),
         );
+    }
+
+    #[test]
+    fn test_squeeze_and_soak_roundtrip() {
+        // Build a small array
+        let input = StringArray::from(vec![
+            Some("hello"),
+            Some("world"),
+            Some("hello"),
+            None,
+            Some("byteview"),
+        ]);
+        let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
+        let liquid = LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
+
+        // Full IPC bytes as baseline
+        let baseline = liquid.to_bytes();
+
+        // Squeeze
+        let Some((hybrid, (bytes, range))) = liquid.squeeze() else {
+            panic!("squeeze should succeed");
+        };
+
+        // Sanity: range bounds are valid
+        assert!(range.start < range.end);
+        assert!(range.end as usize <= bytes.len());
+
+        // Soak back to memory with raw FSST bytes
+        let fsst_bytes = bytes.slice(range.start as usize..range.end as usize);
+        let restored = hybrid.soak(fsst_bytes);
+
+        // Arrow equality check
+        use crate::liquid_array::LiquidArray as _;
+        let a1 = LiquidArray::to_arrow_array(&liquid);
+        let a2 = restored.to_arrow_array();
+        assert_eq!(a1.as_ref(), a2.as_ref());
+
+        // IPC bytes should match as well
+        assert_eq!(baseline, restored.to_bytes());
     }
 }

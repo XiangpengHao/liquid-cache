@@ -184,7 +184,7 @@ pub trait LiquidArray: std::fmt::Debug + Send + Sync {
     /// The returned `bytes::Bytes` is the data that is stored on disk.
     ///
     /// If we `soak` the `LiquidHybridArrayRef` back with the bytes, we should get the same `LiquidArray`.
-    fn squeeze(&self) -> Option<(LiquidHybridArrayRef, bytes::Bytes)> {
+    fn squeeze(&self) -> Option<(LiquidHybridArrayRef, (bytes::Bytes, Range<u64>))> {
         None
     }
 }
@@ -257,8 +257,7 @@ pub trait LiquidHybridArray: std::fmt::Debug + Send + Sync {
         Ok(None)
     }
 
-    /// Feed IO data to the `LiquidHybridArray`.
-    /// Returns the in-memory `LiquidArray`.
-    /// This is the bridge from hybrid array to in-memory array.
-    fn soak(&self, data: bytes::Bytes, range: Range<u64>) -> LiquidArrayRef;
+    /// Feed IO data to the `LiquidHybridArray` and return the in-memory `LiquidArray`.
+    /// For byte-view arrays, `data` should be the raw FSST buffer bytes.
+    fn soak(&self, data: bytes::Bytes) -> LiquidArrayRef;
 }
