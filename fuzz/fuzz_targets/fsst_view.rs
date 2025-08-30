@@ -8,6 +8,7 @@ use arrow::error::ArrowError;
 use datafusion::logical_expr::Operator;
 use libfuzzer_sys::fuzz_target;
 use liquid_cache_storage::liquid_array::LiquidByteViewArray;
+use liquid_cache_storage::liquid_array::byte_view_array::MemoryBuffer;
 
 #[derive(Debug, Clone, Arbitrary)]
 struct FuzzInput {
@@ -62,15 +63,16 @@ fuzz_target!(|data: &[u8]| {
     test_compare_with(&liquid_array, &original_array, &input.compare_operations);
 });
 
-fn test_roundtrip(strings: &[Option<String>]) -> (LiquidByteViewArray, StringArray) {
+fn test_roundtrip(strings: &[Option<String>]) -> (LiquidByteViewArray<MemoryBuffer>, StringArray) {
     let original_array = StringArray::from(strings.to_vec());
 
     // Train compressor and create LiquidByteViewArray
-    let compressor = LiquidByteViewArray::train_compressor(original_array.iter());
-    let liquid_array = LiquidByteViewArray::from_string_array(&original_array, compressor);
+    let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(original_array.iter());
+    let liquid_array =
+        LiquidByteViewArray::<MemoryBuffer>::from_string_array(&original_array, compressor);
 
     // Convert back to StringArray
-    let roundtrip_array = liquid_array.to_arrow_array();
+    let roundtrip_array = liquid_array.to_arrow_array().unwrap();
     let roundtrip_string_array = roundtrip_array.as_string::<i32>();
 
     assert_eq!(&original_array, roundtrip_string_array);
@@ -79,7 +81,7 @@ fn test_roundtrip(strings: &[Option<String>]) -> (LiquidByteViewArray, StringArr
 }
 
 fn test_compare_with(
-    liquid_array: &LiquidByteViewArray,
+    liquid_array: &LiquidByteViewArray<MemoryBuffer>,
     arrow_array: &StringArray,
     operations: &[CompareOperation],
 ) {

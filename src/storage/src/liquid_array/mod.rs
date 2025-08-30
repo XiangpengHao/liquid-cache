@@ -2,7 +2,7 @@
 //! You should not use this module directly.
 //! Instead, use `liquid_cache_server` or `liquid_cache_client` to interact with LiquidCache.
 mod byte_array;
-mod byte_view_array;
+pub mod byte_view_array;
 mod fix_len_byte_array;
 mod float_array;
 pub mod ipc;
@@ -10,15 +10,14 @@ mod primitive_array;
 pub mod raw;
 pub(crate) mod utils;
 
-use std::{any::Any, num::NonZero, sync::Arc};
+use std::{any::Any, ops::Range, path::PathBuf, sync::Arc};
 
 use arrow::{
     array::{ArrayRef, BooleanArray},
     buffer::BooleanBuffer,
 };
-use arrow_schema::ArrowError;
 pub use byte_array::{LiquidByteArray, get_string_needle};
-pub use byte_view_array::{ByteViewArrayMemoryUsage, LiquidByteViewArray};
+pub use byte_view_array::LiquidByteViewArray;
 use datafusion::physical_plan::PhysicalExpr;
 pub use fix_len_byte_array::LiquidFixedLenByteArray;
 use float_array::LiquidFloatType;
@@ -28,6 +27,8 @@ pub use primitive_array::{
     LiquidI64Array, LiquidPrimitiveArray, LiquidPrimitiveType, LiquidU8Array, LiquidU16Array,
     LiquidU32Array, LiquidU64Array,
 };
+
+use crate::liquid_array::byte_view_array::MemoryBuffer;
 
 /// Liquid data type is only logical type
 #[derive(Debug, Clone, Copy)]
@@ -74,10 +75,10 @@ pub trait AsLiquidArray {
     }
 
     /// Get the underlying byte view array.
-    fn as_byte_view_array_opt(&self) -> Option<&LiquidByteViewArray>;
+    fn as_byte_view_array_opt(&self) -> Option<&LiquidByteViewArray<MemoryBuffer>>;
 
     /// Get the underlying byte view array.
-    fn as_byte_view(&self) -> &LiquidByteViewArray {
+    fn as_byte_view(&self) -> &LiquidByteViewArray<MemoryBuffer> {
         self.as_byte_view_array_opt()
             .expect("liquid byte view array")
     }
@@ -113,7 +114,7 @@ impl AsLiquidArray for dyn LiquidArray + '_ {
         self.as_any().downcast_ref()
     }
 
-    fn as_byte_view_array_opt(&self) -> Option<&LiquidByteViewArray> {
+    fn as_byte_view_array_opt(&self) -> Option<&LiquidByteViewArray<MemoryBuffer>> {
         self.as_any().downcast_ref()
     }
 
@@ -172,23 +173,91 @@ pub trait LiquidArray: std::fmt::Debug + Send + Sync {
         &self,
         _predicate: &Arc<dyn PhysicalExpr>,
         _filter: &BooleanBuffer,
-    ) -> Result<Option<BooleanArray>, ArrowError> {
-        Ok(None)
+    ) -> Option<BooleanArray> {
+        None
+    }
+
+    /// Squeeze the Liquid array to a `LiquidHybridArrayRef` and a `bytes::Bytes`.
+    /// Return `None` if the Liquid array cannot be squeezed.
+    ///
+    /// This is the bridge from in-memory array to hybrid array.
+    /// The returned `bytes::Bytes` is the data that is stored on disk.
+    ///
+    /// If we `soak` the `LiquidHybridArrayRef` back with the bytes, we should get the same `LiquidArray`.
+    fn squeeze(&self) -> Option<(LiquidHybridArrayRef, (bytes::Bytes, Range<u64>))> {
+        None
     }
 }
 
 /// A reference to a Liquid array.
 pub type LiquidArrayRef = Arc<dyn LiquidArray>;
 
-/// Get the bit width for a given max value.
-/// Returns 1 if the max value is 0.
-/// Returns 64 - max_value.leading_zeros() as u8 otherwise.
-pub(crate) fn get_bit_width(max_value: u64) -> NonZero<u8> {
-    if max_value == 0 {
-        // todo: here we actually should return 0, as we should just use constant encoding.
-        // but that's not implemented yet.
-        NonZero::new(1).unwrap()
-    } else {
-        NonZero::new(64 - max_value.leading_zeros() as u8).unwrap()
+/// A reference to a Liquid hybrid array.
+pub type LiquidHybridArrayRef = Arc<dyn LiquidHybridArray>;
+
+/// An IO request.
+#[derive(Debug, Clone)]
+pub struct IoRequest {
+    /// The path to the file that contains the data.
+    pub path: PathBuf,
+}
+
+/// A Liquid hybrid array is a Liquid array that part of its data is stored on disk.
+/// `LiquidHybridArray` is more complex than in-memory `LiquidArray` because it needs to handle IO.
+pub trait LiquidHybridArray: std::fmt::Debug + Send + Sync {
+    /// Get the underlying any type.
+    fn as_any(&self) -> &dyn Any;
+
+    /// Get the memory size of the Liquid array.
+    fn get_array_memory_size(&self) -> usize;
+
+    /// Get the length of the Liquid array.
+    fn len(&self) -> usize;
+
+    /// Check if the Liquid array is empty.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
     }
+
+    /// Convert the Liquid array to an Arrow array.
+    fn to_arrow_array(&self) -> Result<ArrayRef, IoRequest>;
+
+    /// Convert the Liquid array to an Arrow array.
+    /// Except that it will pick the best encoding for the arrow array.
+    /// Meaning that it may not obey the data type of the original arrow array.
+    fn to_best_arrow_array(&self) -> Result<ArrayRef, IoRequest> {
+        self.to_arrow_array()
+    }
+
+    /// Get the logical data type of the Liquid array.
+    fn data_type(&self) -> LiquidDataType;
+
+    /// Serialize the Liquid array to a byte array.
+    fn to_bytes(&self) -> Result<Vec<u8>, IoRequest>;
+
+    /// Filter the Liquid array with a boolean buffer.
+    fn filter(&self, selection: &BooleanBuffer) -> Result<LiquidHybridArrayRef, IoRequest>;
+
+    /// Filter the Liquid array with a boolean array and return an **arrow array**.
+    fn filter_to_arrow(&self, selection: &BooleanBuffer) -> Result<ArrayRef, IoRequest> {
+        let filtered = self.filter(selection)?;
+        filtered.to_best_arrow_array()
+    }
+
+    /// Try to evaluate a predicate on the Liquid array with a filter.
+    /// Returns `Ok(None)` if the predicate is not supported.
+    ///
+    /// Note that the filter is a boolean buffer, not a boolean array, i.e., filter can't be nullable.
+    /// The returned boolean mask is nullable if the the original array is nullable.
+    fn try_eval_predicate(
+        &self,
+        _predicate: &Arc<dyn PhysicalExpr>,
+        _filter: &BooleanBuffer,
+    ) -> Result<Option<BooleanArray>, IoRequest> {
+        Ok(None)
+    }
+
+    /// Feed IO data to the `LiquidHybridArray` and return the in-memory `LiquidArray`.
+    /// For byte-view arrays, `data` should be the raw FSST buffer bytes.
+    fn soak(&self, data: bytes::Bytes) -> LiquidArrayRef;
 }

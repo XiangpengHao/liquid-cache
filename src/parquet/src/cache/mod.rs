@@ -92,7 +92,7 @@ impl LiquidCachedColumn {
 
         let result = cached_entry
             .get_with_predicate(filter, predicate.physical_expr_physical_column_index());
-        let result = blocking_sans_io(result).ok()?;
+        let result = blocking_sans_io(result);
         match result {
             PredicatePushdownResult::Evaluated(buffer) => Some(Ok(buffer)),
             PredicatePushdownResult::Filtered(array) => {
@@ -255,14 +255,13 @@ impl LiquidCachedRowGroup {
                             }
                         },
                     };
-                    let buffer = if let Ok(Some(buffer)) =
-                        liquid_array.try_eval_predicate(&expr, selection)
-                    {
-                        buffer
-                    } else {
-                        combined_buffer = None;
-                        break;
-                    };
+                    let buffer =
+                        if let Some(buffer) = liquid_array.try_eval_predicate(&expr, selection) {
+                            buffer
+                        } else {
+                            combined_buffer = None;
+                            break;
+                        };
 
                     combined_buffer = Some(match combined_buffer {
                         None => buffer,

@@ -19,7 +19,8 @@ use num_traits::{AsPrimitive, Float, FromPrimitive};
 
 use super::LiquidDataType;
 use crate::liquid_array::raw::BitPackedArray;
-use crate::liquid_array::{LiquidArray, LiquidArrayRef, get_bit_width};
+use crate::liquid_array::{LiquidArray, LiquidArrayRef};
+use crate::utils::get_bit_width;
 
 mod private {
     use arrow::{

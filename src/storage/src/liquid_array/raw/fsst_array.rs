@@ -82,7 +82,7 @@ impl RawFsstBuffer {
         (raw_buffer, offsets)
     }
 
-    pub fn to_uncompressed(
+    pub(crate) fn to_uncompressed(
         &self,
         decompressor: &Decompressor<'_>,
         offset: &[OffsetView],
@@ -141,6 +141,10 @@ impl RawFsstBuffer {
         buffer.extend_from_slice(&(self.values.len() as u32).to_le_bytes());
         buffer.extend_from_slice(self.values.as_slice());
         buffer
+    }
+
+    pub fn uncompressed_bytes(&self) -> usize {
+        self.uncompressed_bytes
     }
 
     pub fn from_bytes(bytes: bytes::Bytes) -> Self {
