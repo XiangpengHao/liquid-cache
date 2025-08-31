@@ -18,4 +18,4 @@ pub use cache_policies::CachePolicy;
 pub use core::{CacheStats, CacheStorage, CacheStorageBuilder};
 pub use core::{DefaultIoContext, IoContext};
 pub use transcode::transcode_liquid_inner;
-pub use utils::{CacheAdvice, EntryID, LiquidCompressorStates};
+pub use utils::{EntryID, LiquidCompressorStates};

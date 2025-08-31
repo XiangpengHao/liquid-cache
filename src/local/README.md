@@ -10,7 +10,7 @@ This crate provides an in-process version of LiquidCache that doesn't require a 
 use liquid_cache_local::{
     common::LiquidCacheMode,
     LiquidCacheLocalBuilder,
-    storage::policies::FiloPolicy,
+    storage::cache_policies::FiloPolicy,
 };
 use datafusion::prelude::SessionConfig;
 use tempfile::TempDir;

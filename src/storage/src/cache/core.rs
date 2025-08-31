@@ -9,7 +9,7 @@ use super::{
     cached_data::CachedData, tracer::CacheTracer, transcode::transcode_liquid_inner,
     utils::CacheConfig,
 };
-use crate::cache::squeeze_policies::{SqueezePolicy, SqueezeToDiskPolicy};
+use crate::cache::squeeze_policies::{SqueezePolicy, SqueezeToDiskPolicy, SqueezeToLiquidPolicy};
 use crate::cache::transcode::submit_background_transcoding_task;
 use crate::cache::utils::{LiquidCompressorStates, arrow_to_bytes};
 use crate::cache::{index::ArtIndex, utils::EntryID};
@@ -98,7 +98,7 @@ pub struct CacheStats {
 ///     .with_batch_size(8192)
 ///     .with_max_cache_bytes(1024 * 1024 * 1024)
 ///     .with_cache_mode(LiquidCacheMode::Liquid)
-///     .with_policy(Box::new(liquid_cache_storage::policies::FiloPolicy::new()))
+///     .with_policy(Box::new(liquid_cache_storage::cache_policies::FiloPolicy::new()))
 ///     .build();
 /// ```
 pub struct CacheStorageBuilder {
@@ -435,14 +435,18 @@ impl CacheStorage {
         policy: Box<dyn CachePolicy>,
         io_worker: Arc<dyn IoContext>,
     ) -> Self {
-        let squeeze_policy = SqueezeToDiskPolicy::default();
+        let squeeze_policy: Box<dyn SqueezePolicy> = match cache_mode {
+            LiquidCacheMode::Arrow => Box::new(SqueezeToDiskPolicy),
+            LiquidCacheMode::Liquid => Box::new(SqueezeToLiquidPolicy),
+            LiquidCacheMode::LiquidBlocking => Box::new(SqueezeToLiquidPolicy),
+        };
         let config = CacheConfig::new(batch_size, max_cache_bytes, cache_dir, cache_mode);
         Self {
             index: ArtIndex::new(),
             budget: BudgetAccounting::new(config.max_cache_bytes()),
             config,
             cache_policy: policy,
-            squeeze_policy: Box::new(squeeze_policy),
+            squeeze_policy,
             tracer: CacheTracer::new(),
             io_context: io_worker,
         }
@@ -553,7 +557,10 @@ impl CacheStorage {
         let Some(to_squeeze_batch) = self.index.get(&to_squeeze) else {
             return;
         };
-        let (new_batch, bytes_to_write) = self.squeeze_policy.squeeze(to_squeeze_batch);
+        let compressor = self.io_context.get_compressor_for_entry(&to_squeeze);
+        let (new_batch, bytes_to_write) = self
+            .squeeze_policy
+            .squeeze(to_squeeze_batch, compressor.as_ref());
 
         if let Some(bytes_to_write) = bytes_to_write {
             match new_batch {
@@ -662,21 +669,13 @@ mod tests {
     // Unified advice type for more concise testing
     #[derive(Debug)]
     struct TestPolicy {
-        advice_type: AdviceType,
         target_id: Option<EntryID>,
         advice_count: AtomicUsize,
     }
 
-    #[derive(Debug, Clone, Copy)]
-    enum AdviceType {
-        Evict,
-        Transcode,
-    }
-
     impl TestPolicy {
-        fn new(advice_type: AdviceType, target_id: Option<EntryID>) -> Self {
+        fn new(target_id: Option<EntryID>) -> Self {
             Self {
-                advice_type,
                 target_id,
                 advice_count: AtomicUsize::new(0),
             }
@@ -686,16 +685,8 @@ mod tests {
     impl CachePolicy for TestPolicy {
         fn advise(&self, _cnt: usize) -> Vec<EntryID> {
             self.advice_count.fetch_add(1, Ordering::SeqCst);
-            match self.advice_type {
-                AdviceType::Evict => {
-                    let id_to_use = self.target_id.unwrap();
-                    vec![id_to_use]
-                }
-                AdviceType::Transcode => {
-                    let id_to_use = self.target_id.unwrap();
-                    vec![id_to_use]
-                }
-            }
+            let id_to_use = self.target_id.unwrap();
+            vec![id_to_use]
         }
     }
 
@@ -747,7 +738,7 @@ mod tests {
 
         // 1. Test EVICT advice
         {
-            let advisor = TestPolicy::new(AdviceType::Evict, Some(entry_id1));
+            let advisor = TestPolicy::new(Some(entry_id1));
             let store = create_cache_store(8000, Box::new(advisor)); // Small budget to force advice
 
             store.insert_inner(entry_id1, create_test_array(800));
@@ -758,26 +749,8 @@ mod tests {
 
             store.insert_inner(entry_id2, create_test_array(800));
             match store.get(&entry_id1).unwrap().raw_data() {
-                CachedBatch::DiskLiquid => {}
-                other => panic!("Expected OnDiskLiquid after eviction, got {other:?}"),
-            }
-        }
-
-        // 2. Test TRANSCODE advice
-        {
-            let advisor = TestPolicy::new(AdviceType::Transcode, Some(entry_id1));
-            let store = create_cache_store(8000, Box::new(advisor)); // Small budget
-
-            store.insert_inner(entry_id1, create_test_array(800));
-            match store.get(&entry_id1).unwrap().raw_data() {
-                CachedBatch::MemoryArrow(_) => {}
-                other => panic!("Expected ArrowMemory, got {other:?}"),
-            }
-
-            store.insert_inner(entry_id2, create_test_array(800));
-            match store.get(&entry_id1).unwrap().raw_data() {
                 CachedBatch::MemoryLiquid(_) => {}
-                other => panic!("Expected LiquidMemory after transcoding, got {other:?}"),
+                other => panic!("Expected LiquidMemory after eviction, got {other:?}"),
             }
         }
     }
