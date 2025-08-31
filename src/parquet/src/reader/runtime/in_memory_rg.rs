@@ -435,7 +435,7 @@ mod tests {
     use arrow::datatypes::{DataType, Field};
     use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
     use liquid_cache_common::{LiquidCacheMode, ParquetReaderSchema};
-    use liquid_cache_storage::policies::FiloPolicy;
+    use liquid_cache_storage::cache_policies::FiloPolicy;
     use object_store::{ObjectStore, local::LocalFileSystem};
     use parquet::arrow::{
         ParquetRecordBatchStreamBuilder,

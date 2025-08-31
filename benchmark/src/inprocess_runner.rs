@@ -6,7 +6,7 @@ use datafusion::prelude::{SessionConfig, SessionContext};
 use liquid_cache_common::LiquidCacheMode;
 use liquid_cache_local::LiquidCacheLocalBuilder;
 use liquid_cache_parquet::{LiquidCacheRef, extract_execution_metrics};
-use liquid_cache_storage::policies::FiloPolicy;
+use liquid_cache_storage::cache_policies::FiloPolicy;
 use log::info;
 use serde::Serialize;
 use std::{

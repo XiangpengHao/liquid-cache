@@ -14,8 +14,8 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use liquid_cache_common::LiquidCacheMode;
 use liquid_cache_parquet::{LiquidCache, LiquidCacheRef, rewrite_data_source_plan};
-use liquid_cache_storage::policies::CachePolicy;
-use liquid_cache_storage::policies::FiloPolicy;
+use liquid_cache_storage::cache_policies::CachePolicy;
+use liquid_cache_storage::cache_policies::FiloPolicy;
 
 pub use liquid_cache_common as common;
 pub use liquid_cache_storage as storage;

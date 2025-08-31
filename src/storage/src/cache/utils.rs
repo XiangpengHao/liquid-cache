@@ -66,7 +66,7 @@ pub(crate) fn create_test_arrow_array(size: usize) -> ArrayRef {
 #[cfg(test)]
 pub(crate) fn create_cache_store(
     max_cache_bytes: usize,
-    policy: Box<dyn super::policies::CachePolicy>,
+    policy: Box<dyn super::cache_policies::CachePolicy>,
 ) -> Arc<super::core::CacheStorage> {
     use tempfile::tempdir;
 

@@ -1,5 +1,5 @@
 use arrow_schema::{DataType, Field, Schema};
-use liquid_cache_storage::policies::FiloPolicy;
+use liquid_cache_storage::cache_policies::FiloPolicy;
 use std::sync::Arc;
 use tempfile::TempDir;
 

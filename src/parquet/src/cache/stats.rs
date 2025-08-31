@@ -128,12 +128,14 @@ impl LiquidCache {
             let row_count = match cached_batch {
                 CachedBatch::MemoryArrow(array) => Some(array.len() as u64),
                 CachedBatch::MemoryLiquid(array) => Some(array.len() as u64),
+                CachedBatch::MemoryHybridLiquid(array) => Some(array.len() as u64),
                 CachedBatch::DiskLiquid => None,
                 CachedBatch::DiskArrow => None, // We'd need to read it to get the count
             };
             let cache_type = match cached_batch {
                 CachedBatch::MemoryArrow(_) => "InMemory",
                 CachedBatch::MemoryLiquid(_) => "LiquidMemory",
+                CachedBatch::MemoryHybridLiquid(_) => "LiquidHybrid",
                 CachedBatch::DiskLiquid => "OnDiskLiquid",
                 CachedBatch::DiskArrow => "OnDiskArrow",
             };
@@ -174,7 +176,7 @@ mod tests {
     };
     use bytes::Bytes;
     use liquid_cache_common::LiquidCacheMode;
-    use liquid_cache_storage::policies::FiloPolicy;
+    use liquid_cache_storage::cache_policies::FiloPolicy;
     use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
     use tempfile::NamedTempFile;
 

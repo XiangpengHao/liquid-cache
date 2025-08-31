@@ -9,8 +9,8 @@ use arrow::{
 use arrow_schema::ArrowError;
 use datafusion::physical_plan::PhysicalExpr;
 
-use crate::cache::LiquidCompressorStates;
 use crate::{cache::EntryID, liquid_array::LiquidArrayRef};
+use crate::{cache::LiquidCompressorStates, liquid_array::LiquidHybridArrayRef};
 use bytes::Bytes;
 use std::path::PathBuf;
 
@@ -73,6 +73,25 @@ impl<'a> CachedData<'a> {
                     io_request,
                 ))
             }
+            CachedBatch::MemoryHybridLiquid(array) => {
+                let filtered = array.filter_to_arrow(selection);
+                match filtered {
+                    Ok(array) => SansIo::Ready(Ok(array)),
+                    Err(io_request) => {
+                        let pending = PendingIo::Liquid {
+                            path: io_request.path,
+                            compressor_states: self.io_context.get_compressor_for_entry(&self.id),
+                        };
+                        let io_request = pending.as_io_request();
+                        SansIo::Pending((
+                            GetWithSelectionSansIo {
+                                state: GetWithSelectionState::NeedBytes { selection, pending },
+                            },
+                            io_request,
+                        ))
+                    }
+                }
+            }
             CachedBatch::DiskArrow => {
                 let pending = PendingIo::Arrow {
                     path: self.io_context.entry_arrow_path(&self.id),
@@ -101,6 +120,19 @@ impl<'a> CachedData<'a> {
                 let path = self.io_context.entry_liquid_path(&self.id);
                 let compressor_states = self.io_context.get_compressor_for_entry(&self.id);
                 SansIo::Pending(GetArrowArrayState::new_liquid(path, compressor_states))
+            }
+            CachedBatch::MemoryHybridLiquid(array) => {
+                let array = array.to_arrow_array();
+                match array {
+                    Ok(array) => SansIo::Ready(array),
+                    Err(io_request) => {
+                        let compressor_states = self.io_context.get_compressor_for_entry(&self.id);
+                        SansIo::Pending(GetArrowArrayState::new_liquid(
+                            io_request.path,
+                            compressor_states,
+                        ))
+                    }
+                }
             }
             CachedBatch::DiskArrow => {
                 let path = self.io_context.entry_arrow_path(&self.id);
@@ -193,6 +225,53 @@ impl<'a> CachedData<'a> {
                     },
                     io_request,
                 ))
+            }
+            CachedBatch::MemoryHybridLiquid(array) => {
+                match array.try_eval_predicate(predicate, selection) {
+                    Ok(Some(buf)) => SansIo::Ready(PredicatePushdownResult::Evaluated(buf)),
+                    Ok(None) => {
+                        let filtered = array.filter_to_arrow(selection);
+                        match filtered {
+                            Ok(array) => SansIo::Ready(PredicatePushdownResult::Filtered(array)),
+                            Err(io_request) => {
+                                let pending = PendingIo::Liquid {
+                                    path: io_request.path,
+                                    compressor_states: self
+                                        .io_context
+                                        .get_compressor_for_entry(&self.id),
+                                };
+                                let io_request = pending.as_io_request();
+                                SansIo::Pending((
+                                    GetWithPredicateState {
+                                        state: GetWithPredicateStateInner::NeedBytes {
+                                            selection,
+                                            predicate,
+                                            pending,
+                                        },
+                                    },
+                                    io_request,
+                                ))
+                            }
+                        }
+                    }
+                    Err(io_request) => {
+                        let pending = PendingIo::Liquid {
+                            path: io_request.path,
+                            compressor_states: self.io_context.get_compressor_for_entry(&self.id),
+                        };
+                        let io_request = pending.as_io_request();
+                        SansIo::Pending((
+                            GetWithPredicateState {
+                                state: GetWithPredicateStateInner::NeedBytes {
+                                    selection,
+                                    predicate,
+                                    pending,
+                                },
+                            },
+                            io_request,
+                        ))
+                    }
+                }
             }
         }
     }
@@ -525,6 +604,8 @@ pub enum CachedBatch {
     MemoryArrow(ArrayRef),
     /// Cached batch in memory as liquid array.
     MemoryLiquid(LiquidArrayRef),
+    /// Cached batch in memory as hybrid liquid array.
+    MemoryHybridLiquid(LiquidHybridArrayRef),
     /// Cached batch on disk as liquid array.
     DiskLiquid,
     /// Cached batch on disk as Arrow array.
@@ -537,6 +618,7 @@ impl CachedBatch {
         match self {
             Self::MemoryArrow(array) => array.get_array_memory_size(),
             Self::MemoryLiquid(array) => array.get_array_memory_size(),
+            Self::MemoryHybridLiquid(array) => array.get_array_memory_size(),
             Self::DiskLiquid => 0,
             Self::DiskArrow => 0,
         }
@@ -547,6 +629,7 @@ impl CachedBatch {
         match self {
             Self::MemoryArrow(array) => Arc::strong_count(array),
             Self::MemoryLiquid(array) => Arc::strong_count(array),
+            Self::MemoryHybridLiquid(array) => Arc::strong_count(array),
             Self::DiskLiquid => 0,
             Self::DiskArrow => 0,
         }
@@ -558,6 +641,7 @@ impl Display for CachedBatch {
         match self {
             Self::MemoryArrow(_) => write!(f, "MemoryArrow"),
             Self::MemoryLiquid(_) => write!(f, "MemoryLiquid"),
+            Self::MemoryHybridLiquid(_) => write!(f, "MemoryHybridLiquid"),
             Self::DiskLiquid => write!(f, "DiskLiquid"),
             Self::DiskArrow => write!(f, "DiskArrow"),
         }

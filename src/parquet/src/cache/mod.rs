@@ -468,7 +468,7 @@ mod tests {
     use datafusion::physical_expr::expressions::{BinaryExpr, Literal};
     use datafusion::physical_plan::expressions::Column;
     use liquid_cache_common::LiquidCacheMode;
-    use liquid_cache_storage::policies::FiloPolicy;
+    use liquid_cache_storage::cache_policies::FiloPolicy;
     use parquet::arrow::ArrowWriter;
     use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
     use std::sync::Arc;

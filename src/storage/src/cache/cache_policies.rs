@@ -1,9 +1,6 @@
 //! Cache policies for liquid cache.
 
-use crate::{
-    cache::utils::{CacheAdvice, EntryID},
-    sync::Mutex,
-};
+use crate::{cache::utils::EntryID, sync::Mutex};
 use std::{
     collections::{HashMap, VecDeque},
     ptr::NonNull,
@@ -11,8 +8,8 @@ use std::{
 
 /// The cache policy that guides the replacement of LiquidCache
 pub trait CachePolicy: std::fmt::Debug + Send + Sync {
-    /// Give cnt amount of advice on what to do when cache is full.
-    fn advise(&self, cnt: usize) -> Vec<CacheAdvice>;
+    /// Give cnt amount of entries to evict when cache is full.
+    fn advise(&self, cnt: usize) -> Vec<EntryID>;
 
     /// Notify the cache policy that an entry was inserted.
     fn notify_insert(&self, _entry_id: &EntryID) {}
@@ -43,13 +40,13 @@ impl FiloPolicy {
 }
 
 impl CachePolicy for FiloPolicy {
-    fn advise(&self, cnt: usize) -> Vec<CacheAdvice> {
+    fn advise(&self, cnt: usize) -> Vec<EntryID> {
         let mut queue = self.queue.lock().unwrap();
         if cnt == 0 || queue.is_empty() {
             return vec![];
         }
         let k = cnt.min(queue.len());
-        queue.drain(0..k).map(CacheAdvice::ToDisk).collect()
+        queue.drain(0..k).collect()
     }
 
     fn notify_insert(&self, entry_id: &EntryID) {
@@ -135,7 +132,7 @@ unsafe impl Send for LruPolicy {}
 unsafe impl Sync for LruPolicy {}
 
 impl CachePolicy for LruPolicy {
-    fn advise(&self, cnt: usize) -> Vec<CacheAdvice> {
+    fn advise(&self, cnt: usize) -> Vec<EntryID> {
         let mut state = self.state.lock().unwrap();
         if cnt == 0 {
             return vec![];
@@ -153,7 +150,7 @@ impl CachePolicy for LruPolicy {
                 self.unlink_node(&mut state, node_ptr);
                 drop(Box::from_raw(node_ptr.as_ptr()));
             }
-            advices.push(CacheAdvice::ToDisk(tail_entry_id));
+            advices.push(tail_entry_id);
         }
 
         advices
@@ -232,7 +229,7 @@ mod test {
     // Helper to assert eviction advice
     fn assert_evict_advice(policy: &LruPolicy, expect_evict: EntryID) {
         let advice = policy.advise(1);
-        assert_eq!(advice, vec![CacheAdvice::ToDisk(expect_evict)]);
+        assert_eq!(advice, vec![expect_evict]);
     }
 
     #[test]
@@ -408,9 +405,9 @@ mod test {
 
             let handle = thread::spawn(move || {
                 let advice = policy_clone.advise(1);
-                if let CacheAdvice::TranscodeToDisk(entry_id) = advice[0] {
+                if let Some(entry_id) = advice.first() {
                     let mut entries = advised_entries_clone.lock().unwrap();
-                    entries.push(entry_id);
+                    entries.push(*entry_id);
                 }
             });
 

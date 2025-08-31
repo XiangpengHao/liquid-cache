@@ -60,7 +60,7 @@ pub use errors::{
 };
 pub use liquid_cache_common as common;
 pub use liquid_cache_storage as storage;
-use liquid_cache_storage::policies::{CachePolicy, LruPolicy};
+use liquid_cache_storage::cache_policies::{CachePolicy, LruPolicy};
 use object_store::path::Path;
 use object_store::{GetOptions, GetRange};
 
