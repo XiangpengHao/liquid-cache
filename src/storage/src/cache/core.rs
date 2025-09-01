@@ -195,14 +195,13 @@ impl CacheStorageBuilder {
 /// Example (sans-IO read):
 /// ```rust
 /// use liquid_cache_storage::cache::{CacheStorageBuilder, EntryID};
-/// use liquid_cache_storage::cache::cached_data::{SansIo, TryGet, IoRequest};
+/// use liquid_cache_storage::cache::io_state::{SansIo, TryGet, IoRequest, IoStateMachine};
 /// use arrow::array::UInt64Array;
 /// use std::sync::Arc;
-/// use liquid_cache_storage::cache::cached_data::IoStateMachine;
 ///
 /// // Tiny IO helper for sans-IO reads
 /// fn read_all(req: &IoRequest) -> bytes::Bytes {
-///     bytes::Bytes::from(std::fs::read(&req.path).unwrap())
+///     bytes::Bytes::from(std::fs::read(req.path()).unwrap())
 /// }
 ///
 /// let storage = CacheStorageBuilder::new().build();

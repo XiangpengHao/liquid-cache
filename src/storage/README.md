@@ -15,13 +15,13 @@ Below are four concise, runnable examples showcasing these core operations.
 ## 1) Insert
 
 ```rust
-use liquid_cache_storage::cache::{CacheStorageBuilder, EntryID, cached_data::IoRequest};
+use liquid_cache_storage::cache::{CacheStorageBuilder, EntryID, io_state::IoRequest};
 use arrow::array::UInt64Array;
 use std::sync::Arc;
 
 // Tiny IO helper for sans-IO reads
 fn read_all(req: &IoRequest) -> bytes::Bytes {
-    bytes::Bytes::from(std::fs::read(&req.path).unwrap())
+    bytes::Bytes::from(std::fs::read(req.path()).unwrap())
 }
 
 let storage = CacheStorageBuilder::new().build();
@@ -39,14 +39,13 @@ assert!(storage.is_cached(&entry_id));
 
 ```rust
 use liquid_cache_storage::cache::{CacheStorageBuilder, EntryID};
-use liquid_cache_storage::cache::cached_data::{SansIo, TryGet, IoRequest};
+use liquid_cache_storage::cache::io_state::{SansIo, TryGet, IoRequest, IoStateMachine};
 use arrow::array::UInt64Array;
 use std::sync::Arc;
-use liquid_cache_storage::cache::cached_data::IoStateMachine;
 
 // Tiny IO helper for sans-IO reads
 fn read_all(req: &IoRequest) -> bytes::Bytes {
-    bytes::Bytes::from(std::fs::read(&req.path).unwrap())
+    bytes::Bytes::from(std::fs::read(req.path()).unwrap())
 }
 
 let storage = CacheStorageBuilder::new().build();
@@ -77,15 +76,14 @@ match cached.get_arrow_array() {
 
 ```rust
 use liquid_cache_storage::cache::{CacheStorageBuilder, EntryID};
-use liquid_cache_storage::cache::cached_data::{SansIo, TryGet, IoRequest};
+use liquid_cache_storage::cache::io_state::{SansIo, TryGet, IoRequest, IoStateMachine};
 use arrow::array::UInt64Array;
 use arrow::buffer::BooleanBuffer;
 use std::sync::Arc;
-use liquid_cache_storage::cache::cached_data::IoStateMachine;
 
 // Tiny IO helper for sans-IO reads
 fn read_all(req: &IoRequest) -> bytes::Bytes {
-    bytes::Bytes::from(std::fs::read(&req.path).unwrap())
+    bytes::Bytes::from(std::fs::read(req.path()).unwrap())
 }
 
 let storage = CacheStorageBuilder::new().build();
@@ -120,8 +118,8 @@ match cached.get_with_selection(&filter) {
 ## 4) Read with predicate pushdown
 
 ```rust
-use liquid_cache_storage::cache::{CacheStorageBuilder, EntryID, cached_data::PredicatePushdownResult};
-use liquid_cache_storage::cache::cached_data::{SansIo, TryGet, IoRequest};
+use liquid_cache_storage::cache::{CacheStorageBuilder, EntryID, cached_data::GetWithPredicateResult};
+use liquid_cache_storage::cache::io_state::{SansIo, TryGet, IoRequest, IoStateMachine};
 use liquid_cache_storage::common::LiquidCacheMode;
 use arrow::array::{StringArray, BooleanArray};
 use arrow::buffer::BooleanBuffer;
@@ -130,11 +128,10 @@ use datafusion::physical_plan::expressions::{BinaryExpr, Column, Literal};
 use datafusion::physical_plan::PhysicalExpr;
 use datafusion::scalar::ScalarValue;
 use std::sync::Arc;
-use liquid_cache_storage::cache::cached_data::IoStateMachine;
 
 // Tiny IO helper for sans-IO reads
 fn read_all(req: &IoRequest) -> bytes::Bytes {
-    bytes::Bytes::from(std::fs::read(&req.path).unwrap())
+    bytes::Bytes::from(std::fs::read(req.path()).unwrap())
 }
 
 let storage = CacheStorageBuilder::new()
@@ -161,13 +158,13 @@ let cached = storage.get(&entry_id).unwrap();
 match cached.get_with_predicate(&selection, &expr) {
     SansIo::Ready(result) => {
         let expected = BooleanArray::from(vec![true, false, true, false]);
-        assert_eq!(result, PredicatePushdownResult::Evaluated(expected));
+        assert_eq!(result, GetWithPredicateResult::Evaluated(expected));
     }
     SansIo::Pending((mut state, req)) => {
         state.feed(read_all(&req));
         let TryGet::Ready(result) = state.try_get() else { panic!("still pending") };
         let expected = BooleanArray::from(vec![true, false, true, false]);
-        assert_eq!(result, PredicatePushdownResult::Evaluated(expected));
+        assert_eq!(result, GetWithPredicateResult::Evaluated(expected));
     }
 }
 ```
