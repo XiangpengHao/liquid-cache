@@ -494,7 +494,7 @@ impl CacheStorage {
     }
 
     #[cfg(not(target_os = "linux"))]
-    fn apply_advice_inner_blocking(&self, advice: CacheAdvice) {
+    fn apply_advice_inner_blocking(&self, to_squeeze: EntryID) {
         let Some(to_squeeze_batch) = self.index.get(&to_squeeze) else {
             return;
         };
