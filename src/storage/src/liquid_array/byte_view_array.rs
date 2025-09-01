@@ -1259,6 +1259,7 @@ mod tests {
     use rand::{Rng, SeedableRng};
 
     fn test_string_roundtrip(input: StringArray) {
+        // to_bytes roundtrip
         let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
         let liquid_array =
             LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor.clone());
@@ -1272,6 +1273,22 @@ mod tests {
                 .unwrap()
                 .as_string::<i32>()
         );
+
+        // squeeze and soak roundtrip
+        let baseline = liquid_array.to_bytes();
+        let (hybrid, bytes) = liquid_array.squeeze().unwrap();
+        let range = hybrid.to_liquid().range;
+        assert!(range.start < range.end);
+        assert!(range.end as usize <= bytes.len());
+
+        let fsst_bytes = bytes.slice(range.start as usize..range.end as usize);
+        let restored = hybrid.soak(fsst_bytes);
+
+        use crate::liquid_array::LiquidArray as _;
+        let a1 = LiquidArray::to_arrow_array(&liquid_array);
+        let a2 = restored.to_arrow_array();
+        assert_eq!(a1.as_ref(), a2.as_ref());
+        assert_eq!(baseline, restored.to_bytes());
     }
 
     #[test]
