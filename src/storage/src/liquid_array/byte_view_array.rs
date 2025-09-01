@@ -436,7 +436,8 @@ pub struct LiquidByteViewArray<B: FsstBuffer> {
     /// Dictionary keys (u16) - one per array element, using Arrow's UInt16Array for zero-copy
     pub(crate) dictionary_keys: UInt16Array,
     /// Offset views containing offset (u32) and prefix (8 bytes) - one per unique value
-    pub(crate) offset_views: Vec<OffsetView>,
+    /// Stored as `Arc<[OffsetView]>` for cheap clones when passing across layers (e.g., soak/squeeze).
+    pub(crate) offset_views: Arc<[OffsetView]>,
     /// FSST-compressed buffer (can be in memory or on disk)
     pub(crate) fsst_buffer: B,
     /// Used to convert back to the original arrow type
@@ -839,7 +840,7 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
 
         LiquidByteViewArray {
             dictionary_keys: keys,
-            offset_views,
+            offset_views: Arc::from(offset_views),
             fsst_buffer: MemoryBuffer {
                 buffer: Arc::new(raw_fsst_buffer),
             },
@@ -1557,7 +1558,7 @@ mod tests {
 
         assert_eq!(liquid_array.shared_prefix, b"identical");
         // All offset view prefixes should be empty
-        for offset_view in &liquid_array.offset_views {
+        for offset_view in liquid_array.offset_views.iter() {
             assert_eq!(offset_view.prefix(), &[0u8; 8]);
         }
 

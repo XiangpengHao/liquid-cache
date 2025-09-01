@@ -714,7 +714,7 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
         // E) Serialize offset views
         let offsets_start = result.len();
         {
-            for ov in &self.offset_views {
+            for ov in self.offset_views.iter() {
                 result.extend_from_slice(&ov.offset().to_le_bytes());
                 result.extend_from_slice(ov.prefix());
             }
@@ -823,7 +823,7 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
 
         LiquidByteViewArray {
             dictionary_keys,
-            offset_views,
+            offset_views: Arc::from(offset_views),
             fsst_buffer: MemoryBuffer::new(Arc::new(raw_buffer)),
             original_arrow_type,
             shared_prefix,
