@@ -17,7 +17,7 @@ use liquid_cache_storage::cache::EntryID;
 use liquid_cache_storage::cache::cached_data::{
     IoStateMachine, PredicatePushdownResult, SansIo, TryGet,
 };
-use liquid_cache_storage::policies::FiloPolicy;
+use liquid_cache_storage::cache_policies::FiloPolicy;
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;

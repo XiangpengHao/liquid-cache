@@ -1,5 +1,5 @@
 use datafusion::prelude::SessionConfig;
-use liquid_cache_local::storage::policies::FiloPolicy;
+use liquid_cache_local::storage::cache_policies::FiloPolicy;
 use liquid_cache_local::{LiquidCacheLocalBuilder, common::LiquidCacheMode};
 use tempfile::TempDir;
 

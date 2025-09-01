@@ -66,7 +66,7 @@ pub(crate) fn create_test_arrow_array(size: usize) -> ArrayRef {
 #[cfg(test)]
 pub(crate) fn create_cache_store(
     max_cache_bytes: usize,
-    policy: Box<dyn super::policies::CachePolicy>,
+    policy: Box<dyn super::cache_policies::CachePolicy>,
 ) -> Arc<super::core::CacheStorage> {
     use tempfile::tempdir;
 
@@ -84,17 +84,6 @@ pub(crate) fn create_cache_store(
         .with_policy(policy)
         .with_io_worker(Arc::new(DefaultIoContext::new(base_dir)));
     builder.build()
-}
-
-/// Advice given by the cache policy.
-#[derive(PartialEq, Eq, Debug)]
-pub enum CacheAdvice {
-    /// Evict the entry with the given ID.
-    TranscodeToDisk(EntryID),
-    /// Transcode the entry to liquid memory.
-    Transcode(EntryID),
-    /// Write the entry to disk as-is (preserve format).
-    ToDisk(EntryID),
 }
 
 /// EntryID is a unique identifier for a batch of rows, i.e., the cache key.

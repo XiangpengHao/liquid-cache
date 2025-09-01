@@ -377,7 +377,7 @@ mod tests {
 
     use arrow::array::Int32Array;
     use liquid_cache_common::LiquidCacheMode;
-    use liquid_cache_storage::policies::FiloPolicy;
+    use liquid_cache_storage::cache_policies::FiloPolicy;
 
     use super::*;
     use crate::cache::LiquidCache;

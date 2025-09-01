@@ -2,7 +2,7 @@ use arrow::buffer::BooleanBuffer;
 use divan::Bencher;
 use liquid_cache_parquet::cache::LiquidCachedColumn;
 use liquid_cache_parquet::{FilterCandidateBuilder, LiquidPredicate};
-use liquid_cache_storage::policies::FiloPolicy;
+use liquid_cache_storage::cache_policies::FiloPolicy;
 use std::sync::Arc;
 use tempfile::TempDir;
 

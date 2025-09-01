@@ -301,7 +301,7 @@ mod tests {
     use super::*;
     use datafusion::{datasource::physical_plan::FileScanConfig, prelude::SessionContext};
     use liquid_cache_common::LiquidCacheMode;
-    use liquid_cache_storage::policies::FiloPolicy;
+    use liquid_cache_storage::cache_policies::FiloPolicy;
     use std::{path::PathBuf, sync::Arc};
 
     #[test]

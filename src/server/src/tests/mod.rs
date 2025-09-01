@@ -6,7 +6,7 @@ use datafusion::{
     prelude::SessionContext,
 };
 use liquid_cache_common::CacheMode;
-use liquid_cache_storage::policies::FiloPolicy;
+use liquid_cache_storage::cache_policies::FiloPolicy;
 use uuid::Uuid;
 
 mod cases;
