@@ -1,6 +1,4 @@
 use arrow::array::ArrayRef;
-use std::fs::File;
-use std::io::Write;
 use std::path::PathBuf;
 use std::{fmt::Debug, path::Path};
 
@@ -197,14 +195,13 @@ impl CacheStorageBuilder {
 /// Example (sans-IO read):
 /// ```rust
 /// use liquid_cache_storage::cache::{CacheStorageBuilder, EntryID};
-/// use liquid_cache_storage::cache::cached_data::{SansIo, TryGet, IoRequest};
+/// use liquid_cache_storage::cache::io_state::{SansIo, TryGet, IoRequest, IoStateMachine};
 /// use arrow::array::UInt64Array;
 /// use std::sync::Arc;
-/// use liquid_cache_storage::cache::cached_data::IoStateMachine;
 ///
 /// // Tiny IO helper for sans-IO reads
 /// fn read_all(req: &IoRequest) -> bytes::Bytes {
-///     bytes::Bytes::from(std::fs::read(&req.path).unwrap())
+///     bytes::Bytes::from(std::fs::read(req.path()).unwrap())
 /// }
 ///
 /// let storage = CacheStorageBuilder::new().build();
@@ -352,13 +349,15 @@ impl CacheStorage {
             match batch {
                 CachedBatch::MemoryArrow(array) => {
                     let bytes = arrow_to_bytes(&array).expect("failed to convert arrow to bytes");
-                    self.write_arrow_to_disk_blocking(&entry_id, &bytes);
+                    let path = self.io_context.entry_arrow_path(&entry_id);
+                    self.write_to_disk_blocking(&path, &bytes);
                     self.try_insert(entry_id, CachedBatch::DiskArrow)
                         .expect("failed to insert disk arrow entry");
                 }
                 CachedBatch::MemoryLiquid(liquid_array) => {
                     let liquid_bytes = liquid_array.to_bytes();
-                    self.write_liquid_to_disk_blocking(&entry_id, &liquid_bytes);
+                    let path = self.io_context.entry_liquid_path(&entry_id);
+                    self.write_to_disk_blocking(&path, &liquid_bytes);
                     self.try_insert(entry_id, CachedBatch::DiskLiquid)
                         .expect("failed to insert disk liquid entry");
                 }
@@ -382,12 +381,14 @@ impl CacheStorage {
         match batch {
             CachedBatch::MemoryArrow(array) => {
                 let bytes = arrow_to_bytes(&array).expect("failed to convert arrow to bytes");
-                self.write_arrow_to_disk_blocking(&entry_id, &bytes);
+                let path = self.io_context.entry_arrow_path(&entry_id);
+                self.write_to_disk_blocking(&path, &bytes);
                 CachedBatch::DiskArrow
             }
             CachedBatch::MemoryLiquid(liquid_array) => {
                 let liquid_bytes = liquid_array.to_bytes();
-                self.write_liquid_to_disk_blocking(&entry_id, &liquid_bytes);
+                let path = self.io_context.entry_liquid_path(&entry_id);
+                self.write_to_disk_blocking(&path, &liquid_bytes);
                 CachedBatch::DiskLiquid
             }
             CachedBatch::DiskLiquid
@@ -506,10 +507,12 @@ impl CacheStorage {
         if let Some(bytes_to_write) = bytes_to_write {
             match new_batch {
                 CachedBatch::DiskArrow => {
-                    self.write_arrow_to_disk_blocking(&to_squeeze, &bytes_to_write);
+                    let path = self.io_context.entry_arrow_path(&to_squeeze);
+                    self.write_to_disk_blocking(&path, &bytes_to_write);
                 }
                 CachedBatch::DiskLiquid | CachedBatch::MemoryHybridLiquid(_) => {
-                    self.write_liquid_to_disk_blocking(&to_squeeze, &bytes_to_write);
+                    let path = self.io_context.entry_liquid_path(&to_squeeze);
+                    self.write_to_disk_blocking(&path, &bytes_to_write);
                 }
                 CachedBatch::MemoryArrow(_) | CachedBatch::MemoryLiquid(_) => {
                     unreachable!()
@@ -532,11 +535,12 @@ impl CacheStorage {
         if let Some(bytes_to_write) = bytes_to_write {
             match new_batch {
                 CachedBatch::DiskArrow => {
-                    self.write_arrow_to_disk(&to_squeeze, &bytes_to_write).await;
+                    let path = self.io_context.entry_arrow_path(&to_squeeze);
+                    self.write_to_disk(&path, &bytes_to_write).await;
                 }
                 CachedBatch::DiskLiquid | CachedBatch::MemoryHybridLiquid(_) => {
-                    self.write_liquid_to_disk(&to_squeeze, &bytes_to_write)
-                        .await;
+                    let path = self.io_context.entry_liquid_path(&to_squeeze);
+                    self.write_to_disk(&path, &bytes_to_write).await;
                 }
                 CachedBatch::MemoryArrow(_) | CachedBatch::MemoryLiquid(_) => {
                     unreachable!()
@@ -547,74 +551,34 @@ impl CacheStorage {
             .expect("failed to insert");
     }
 
-    fn write_arrow_to_disk_blocking(&self, entry_id: &EntryID, bytes: &[u8]) {
-        let file_path = self.io_context.entry_arrow_path(entry_id);
-        let mut file = File::create(file_path).expect("failed to create file");
+    fn write_to_disk_blocking(&self, path: impl AsRef<Path>, bytes: &[u8]) {
+        use std::io::Write;
+        let mut file = std::fs::File::create(&path).expect("failed to create file");
         file.write_all(bytes).expect("failed to write to file");
         let disk_usage = bytes.len();
         self.budget.add_used_disk_bytes(disk_usage);
     }
 
-    fn write_liquid_to_disk_blocking(&self, entry_id: &EntryID, bytes: &[u8]) {
-        let path = self.io_context.entry_liquid_path(entry_id);
-        let mut file = File::create(&path).expect("failed to create file");
-        file.write_all(bytes).expect("failed to write to file");
-        let disk_usage = bytes.len();
-        self.budget.add_used_disk_bytes(disk_usage);
-    }
-
-    #[allow(unused)]
-    #[cfg(target_os = "linux")]
-    async fn write_liquid_to_disk(&self, entry_id: &EntryID, liquid_bytes: &[u8]) {
-        let path = self.io_context.entry_liquid_path(entry_id);
-        let mut file = super::io::File::create(&path)
-            .await
-            .expect("failed to create file");
-        file.write_all(liquid_bytes)
-            .await
-            .expect("failed to write to file");
-        let disk_usage = liquid_bytes.len();
-        self.budget.add_used_disk_bytes(disk_usage);
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    async fn write_liquid_to_disk(&self, entry_id: &EntryID, liquid_bytes: &[u8]) {
-        let path = self.io_context.entry_liquid_path(entry_id);
-        let mut file = tokio::fs::File::create(&path)
-            .await
-            .expect("failed to create file");
-        use tokio::io::AsyncWriteExt as _;
-        file.write_all(liquid_bytes)
-            .await
-            .expect("failed to write to file");
-        let disk_usage = liquid_bytes.len();
-        self.budget.add_used_disk_bytes(disk_usage);
-    }
-
-    #[allow(unused)]
-    #[cfg(target_os = "linux")]
-    async fn write_arrow_to_disk(&self, entry_id: &EntryID, bytes: &[u8]) {
-        let file_path = self.io_context.entry_arrow_path(entry_id);
-        let mut file = super::io::File::create(&file_path)
-            .await
-            .expect("failed to create file");
-        file.write_all(bytes)
-            .await
-            .expect("failed to write to file");
-        let disk_usage = bytes.len();
-        self.budget.add_used_disk_bytes(disk_usage);
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    async fn write_arrow_to_disk(&self, entry_id: &EntryID, bytes: &[u8]) {
-        let file_path = self.io_context.entry_arrow_path(entry_id);
-        let mut file = tokio::fs::File::create(&file_path)
-            .await
-            .expect("failed to create file");
-        use tokio::io::AsyncWriteExt as _;
-        file.write_all(bytes)
-            .await
-            .expect("failed to write to file");
+    async fn write_to_disk(&self, path: impl AsRef<Path>, bytes: &[u8]) {
+        #[cfg(not(target_os = "linux"))]
+        {
+            use tokio::io::AsyncWriteExt as _;
+            let mut file = tokio::fs::File::create(&path)
+                .await
+                .expect("failed to create file");
+            file.write_all(bytes)
+                .await
+                .expect("failed to write to file");
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let mut file = super::io::File::create(&path)
+                .await
+                .expect("failed to create file");
+            file.write_all(bytes)
+                .await
+                .expect("failed to write to file");
+        }
         let disk_usage = bytes.len();
         self.budget.add_used_disk_bytes(disk_usage);
     }

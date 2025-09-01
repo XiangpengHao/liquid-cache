@@ -1,6 +1,6 @@
 use std::{
     fs::File,
-    io::Read,
+    io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -9,7 +9,7 @@ use ahash::AHashMap;
 use bytes::Bytes;
 use liquid_cache_storage::cache::{
     EntryID, IoContext, LiquidCompressorStates,
-    cached_data::{IoRequest, IoStateMachine, SansIo, TryGet},
+    io_state::{IoRequest, IoStateMachine, SansIo, TryGet},
 };
 
 use crate::{
@@ -124,11 +124,22 @@ impl From<ParquetArrayID> for ColumnAccessPath {
 }
 
 pub(crate) fn blocking_reading_io(request: &IoRequest) -> Result<Bytes, std::io::Error> {
-    let path = &request.path;
+    let path = &request.path();
     let mut file = File::open(path)?;
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
-    Ok(Bytes::from(bytes))
+    match request.range() {
+        Some(range) => {
+            let len = (range.range().end - range.range().start) as usize;
+            let mut bytes = vec![0u8; len];
+            file.seek(SeekFrom::Start(range.range().start))?;
+            file.read_exact(&mut bytes)?;
+            Ok(Bytes::from(bytes))
+        }
+        None => {
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes)?;
+            Ok(Bytes::from(bytes))
+        }
+    }
 }
 
 /// Resolve a sans-IO operation by repeatedly fulfilling IO requests until ready.

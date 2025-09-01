@@ -13,7 +13,7 @@ use arrow::datatypes::{
 use bytes::Bytes;
 use fsst::Compressor;
 
-use crate::liquid_array::LiquidPrimitiveType;
+use crate::liquid_array::LiquidPrimitiveArray;
 use crate::liquid_array::byte_array::ArrowByteType;
 use crate::liquid_array::byte_view_array::{
     FsstBuffer, LiquidByteViewArray, MemoryBuffer, OffsetView,
@@ -22,7 +22,7 @@ use crate::liquid_array::fix_len_byte_array::ArrowFixedLenByteArrayType;
 use crate::liquid_array::float_array::Exponents;
 use crate::liquid_array::raw::fsst_array::RawFsstBuffer;
 use crate::liquid_array::raw::{BitPackedArray, FsstArray};
-use crate::liquid_array::{IoRequest, LiquidPrimitiveArray};
+use crate::liquid_array::{IoRange, LiquidPrimitiveType};
 
 use super::float_array::LiquidFloatType;
 use super::{
@@ -135,6 +135,13 @@ pub fn read_from_bytes(bytes: Bytes, context: &LiquidIPCContext) -> LiquidArrayR
         LiquidDataType::ByteArray => {
             let compressor = context.compressor.as_ref().expect("Expected a compressor");
             Arc::new(LiquidByteArray::from_bytes(bytes, compressor.clone()))
+        }
+        LiquidDataType::ByteViewArray => {
+            let compressor = context.compressor.as_ref().expect("Expected a compressor");
+            Arc::new(LiquidByteViewArray::<MemoryBuffer>::from_bytes(
+                bytes,
+                compressor.clone(),
+            ))
         }
         LiquidDataType::Float => match header.physical_type_id {
             8 => Arc::new(LiquidFloatArray::<Float32Type>::from_bytes(bytes)),
@@ -666,7 +673,7 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
     | Shared prefix bytes                              |
     +--------------------------------------------------+
     */
-    pub(crate) fn to_bytes_inner(&self) -> Result<Vec<u8>, IoRequest> {
+    pub(crate) fn to_bytes_inner(&self) -> Result<Vec<u8>, IoRange> {
         let header_size = LiquidIPCHeader::size() + ByteViewArrayHeader::size();
         let mut result = Vec::with_capacity(header_size + 1024);
         result.resize(header_size, 0);
@@ -728,7 +735,7 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
         let ipc = LiquidIPCHeader {
             magic: MAGIC.to_le_bytes(),
             version: VERSION,
-            logical_type_id: LiquidDataType::ByteArray as u16,
+            logical_type_id: LiquidDataType::ByteViewArray as u16,
             physical_type_id: self.original_arrow_type as u16,
             __padding: [0; 6],
         };

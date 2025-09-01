@@ -9,6 +9,7 @@ mod io;
 #[cfg(not(target_os = "linux"))]
 mod io {}
 pub mod cache_policies;
+pub mod io_state;
 pub mod squeeze_policies;
 mod tracer;
 mod transcode;

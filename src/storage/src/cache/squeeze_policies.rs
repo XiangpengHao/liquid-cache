@@ -33,7 +33,7 @@ impl SqueezePolicy for SqueezeToDiskPolicy {
                 (CachedBatch::DiskArrow, Some(bytes))
             }
             CachedBatch::MemoryLiquid(liquid_array) => {
-                let (hybrid_array, (bytes, _range)) = match liquid_array.squeeze() {
+                let (hybrid_array, bytes) = match liquid_array.squeeze() {
                     Some(result) => result,
                     None => {
                         // not supported, evict to disk
@@ -66,7 +66,7 @@ impl SqueezePolicy for SqueezeToLiquidPolicy {
                 (CachedBatch::MemoryLiquid(liquid_array), None)
             }
             CachedBatch::MemoryLiquid(liquid_array) => {
-                let (hybrid_array, (bytes, _range)) = match liquid_array.squeeze() {
+                let (hybrid_array, bytes) = match liquid_array.squeeze() {
                     Some(result) => result,
                     None => {
                         let bytes = liquid_array.to_bytes();

@@ -14,9 +14,8 @@ use liquid_cache_common::LiquidCacheMode;
 use liquid_cache_storage::cache::CacheStorage;
 use liquid_cache_storage::cache::CacheStorageBuilder;
 use liquid_cache_storage::cache::EntryID;
-use liquid_cache_storage::cache::cached_data::{
-    IoStateMachine, PredicatePushdownResult, SansIo, TryGet,
-};
+use liquid_cache_storage::cache::cached_data::GetWithPredicateResult;
+use liquid_cache_storage::cache::io_state::{IoStateMachine, SansIo, TryGet};
 use liquid_cache_storage::cache_policies::FiloPolicy;
 
 #[global_allocator]
@@ -80,15 +79,15 @@ fn main() {
         let selection = BooleanBuffer::new_set(len);
         match cached.get_with_predicate(&selection, &pred_expr) {
             SansIo::Ready(res) => match res {
-                PredicatePushdownResult::Evaluated(_) => evaluated += 1,
+                GetWithPredicateResult::Evaluated(_) => evaluated += 1,
                 _ => panic!("unexpected result"),
             },
             SansIo::Pending((mut state, io_req)) => {
-                let bytes = std::fs::read(&io_req.path).expect("read cache file");
+                let bytes = std::fs::read(io_req.path()).expect("read cache file");
                 state.feed(Bytes::from(bytes));
                 num_io += 1;
                 match state.try_get() {
-                    TryGet::Ready(PredicatePushdownResult::Evaluated(_)) => evaluated += 1,
+                    TryGet::Ready(GetWithPredicateResult::Evaluated(_)) => evaluated += 1,
                     e => panic!("unexpected result: {e:?}"),
                 }
             }

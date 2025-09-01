@@ -1,6 +1,6 @@
 use arrow_schema::{DataType, Field, Schema};
 use liquid_cache_storage::cache_policies::FiloPolicy;
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 use tempfile::TempDir;
 
 use arrow::util::pretty::pretty_format_batches;
@@ -22,14 +22,13 @@ const TEST_FILE: &str = "../../examples/nano_hits.parquet";
 async fn create_session_context_with_liquid_cache(
     cache_mode: LiquidCacheMode,
     cache_size_bytes: usize,
+    cache_dir: &Path,
 ) -> Result<SessionContext> {
-    let temp_dir = TempDir::new().unwrap();
-
     let mut config = SessionConfig::new();
     config.options_mut().execution.target_partitions = 4;
     let (ctx, _) = LiquidCacheLocalBuilder::new()
         .with_max_cache_bytes(cache_size_bytes)
-        .with_cache_dir(temp_dir.path().to_path_buf())
+        .with_cache_dir(cache_dir.to_path_buf())
         .with_cache_mode(cache_mode)
         .with_cache_strategy(Box::new(FiloPolicy::new()))
         .build(config)?;
@@ -52,8 +51,9 @@ async fn run_sql_with_cache(
     sql: &str,
     cache_mode: LiquidCacheMode,
     cache_size_bytes: usize,
+    cache_dir: &Path,
 ) -> (String, String) {
-    let ctx = create_session_context_with_liquid_cache(cache_mode, cache_size_bytes)
+    let ctx = create_session_context_with_liquid_cache(cache_mode, cache_size_bytes, cache_dir)
         .await
         .unwrap();
 
@@ -75,7 +75,7 @@ async fn run_sql_with_cache(
     (first_run, plan_string)
 }
 
-async fn test_runner(sql: &str, reference: &str) {
+async fn test_runner(sql: &str, reference: &str, cache_dir: &Path) {
     let cache_modes = [
         LiquidCacheMode::Arrow,
         LiquidCacheMode::Liquid,
@@ -86,7 +86,7 @@ async fn test_runner(sql: &str, reference: &str) {
 
     for cache_mode in cache_modes {
         for cache_size in cache_sizes {
-            let (result, _plan) = run_sql_with_cache(sql, cache_mode, cache_size).await;
+            let (result, _plan) = run_sql_with_cache(sql, cache_mode, cache_size, cache_dir).await;
             assert_eq!(
                 result, reference,
                 "Results differ for cache_mode: {cache_mode:?}, cache_size: {cache_size}"
@@ -97,68 +97,104 @@ async fn test_runner(sql: &str, reference: &str) {
 
 #[tokio::test]
 async fn test_url_prefix_filtering() {
+    let cache_dir = TempDir::new().unwrap();
     let sql = r#"select COUNT(*) from hits where "URL" like 'https://%'"#;
 
-    let (reference, plan) =
-        run_sql_with_cache(sql, LiquidCacheMode::LiquidBlocking, 1024 * 1024).await;
+    let (reference, plan) = run_sql_with_cache(
+        sql,
+        LiquidCacheMode::LiquidBlocking,
+        1024 * 1024,
+        cache_dir.path(),
+    )
+    .await;
 
     insta::assert_snapshot!(format!("plan: \n{}\nvalues: \n{}", plan, reference));
-    test_runner(sql, &reference).await;
+    test_runner(sql, &reference, cache_dir.path()).await;
 }
 
 #[tokio::test]
 async fn test_url_selection_and_ordering() {
+    let cache_dir = TempDir::new().unwrap();
     let sql = r#"select "URL" from hits where "URL" like '%tours%' order by "URL" desc"#;
 
-    let (reference, plan) =
-        run_sql_with_cache(sql, LiquidCacheMode::LiquidBlocking, 1024 * 1024).await;
+    let (reference, plan) = run_sql_with_cache(
+        sql,
+        LiquidCacheMode::LiquidBlocking,
+        1024 * 1024,
+        cache_dir.path(),
+    )
+    .await;
 
     insta::assert_snapshot!(format!("plan: \n{}\nvalues: \n{}", plan, reference));
-    test_runner(sql, &reference).await;
+    test_runner(sql, &reference, cache_dir.path()).await;
 }
 
 #[tokio::test]
 async fn test_os_selection() {
+    let cache_dir = TempDir::new().unwrap();
     let sql = r#"select "OS" from hits where "URL" like '%tours%' order by "OS" desc"#;
 
-    let (reference, plan) =
-        run_sql_with_cache(sql, LiquidCacheMode::LiquidBlocking, 1024 * 1024).await;
+    let (reference, plan) = run_sql_with_cache(
+        sql,
+        LiquidCacheMode::LiquidBlocking,
+        1024 * 1024,
+        cache_dir.path(),
+    )
+    .await;
 
     insta::assert_snapshot!(format!("plan: \n{}\nvalues: \n{}", plan, reference));
 
-    test_runner(sql, &reference).await;
+    test_runner(sql, &reference, cache_dir.path()).await;
 }
 
 #[tokio::test]
 async fn test_referer_filtering() {
+    let cache_dir = TempDir::new().unwrap();
     let sql = r#"select "Referer" from hits where "Referer" <> '' AND "URL" like '%tours%' order by "Referer" desc"#;
 
-    let (reference, plan) =
-        run_sql_with_cache(sql, LiquidCacheMode::LiquidBlocking, 1024 * 1024).await;
+    let (reference, plan) = run_sql_with_cache(
+        sql,
+        LiquidCacheMode::LiquidBlocking,
+        1024 * 1024,
+        cache_dir.path(),
+    )
+    .await;
 
     insta::assert_snapshot!(format!("plan: \n{}\nvalues: \n{}", plan, reference));
 
-    test_runner(sql, &reference).await;
+    test_runner(sql, &reference, cache_dir.path()).await;
 }
 
 #[tokio::test]
 async fn test_single_column_filter_projection() {
+    let cache_dir = TempDir::new().unwrap();
     let sql = r#"select "WatchID" from hits where "WatchID" = 6978470580070504163"#;
 
-    let (reference, plan) =
-        run_sql_with_cache(sql, LiquidCacheMode::LiquidBlocking, 1024 * 1024).await;
+    let (reference, plan) = run_sql_with_cache(
+        sql,
+        LiquidCacheMode::LiquidBlocking,
+        1024 * 1024,
+        cache_dir.path(),
+    )
+    .await;
 
     insta::assert_snapshot!(format!("plan: \n{}\nvalues: \n{}", plan, reference));
 
-    test_runner(sql, &reference).await;
+    test_runner(sql, &reference, cache_dir.path()).await;
 }
 
 #[tokio::test]
 async fn test_provide_schema_with_filter() {
+    let cache_dir = TempDir::new().unwrap();
     let sql = r#"select "WatchID", "OS", "EventTime" from hits where "OS" <> 2 order by "WatchID" desc limit 10"#;
 
-    let (reference, plan) =
-        run_sql_with_cache(sql, LiquidCacheMode::LiquidBlocking, 1024 * 1024).await;
+    let (reference, plan) = run_sql_with_cache(
+        sql,
+        LiquidCacheMode::LiquidBlocking,
+        1024 * 1024,
+        cache_dir.path(),
+    )
+    .await;
 
     insta::assert_snapshot!(format!("plan: \n{}\nvalues: \n{}", plan, reference));
 
