@@ -506,3 +506,234 @@ impl<'a, 'b> IoStateMachine for GetWithPredicateState<'a, 'b> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cache::transcode::transcode_liquid_inner;
+    use crate::cache::utils::{LiquidCompressorStates, arrow_to_bytes};
+    use crate::liquid_array::AsLiquidArray;
+    use crate::liquid_array::LiquidArray;
+    use arrow::array::{Array, ArrayRef, BooleanArray, Int32Array, StringArray};
+    use arrow::buffer::BooleanBuffer;
+    use bytes::Bytes;
+    use datafusion::logical_expr::Operator;
+    use datafusion::physical_plan::expressions::{BinaryExpr, Column, Literal};
+    use datafusion::scalar::ScalarValue;
+    use tempfile::tempdir;
+
+    fn int_array(n: i32) -> ArrayRef {
+        Arc::new(Int32Array::from_iter_values(0..n))
+    }
+
+    fn arrow_ipc_bytes(arr: &ArrayRef) -> Bytes {
+        arrow_to_bytes(arr).expect("arrow to bytes")
+    }
+
+    fn liquid_bytes(arr: &ArrayRef, states: &LiquidCompressorStates) -> Bytes {
+        let liquid = transcode_liquid_inner(arr, states).unwrap();
+        Bytes::from(liquid.to_bytes())
+    }
+
+    #[test]
+    fn get_arrow_array_state_integer_arrow_and_liquid() {
+        let arr = int_array(16);
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("col.arrow");
+
+        // Arrow backend
+        let SansIo::Pending((mut s1, _)) = GetArrowArrayState::pending_arrow(path.clone()) else {
+            panic!("expected pending");
+        };
+        s1.feed(arrow_ipc_bytes(&arr));
+        let TryGet::Ready(out1) = s1.try_get() else {
+            panic!("ready");
+        };
+        assert_eq!(out1.as_ref(), arr.as_ref());
+
+        // Liquid backend
+        let states = LiquidCompressorStates::new();
+        let SansIo::Pending((mut s2, _)) =
+            GetArrowArrayState::pending_liquid(path, Arc::new(states))
+        else {
+            panic!("expected pending");
+        };
+        let states2 = LiquidCompressorStates::new();
+        s2.feed(liquid_bytes(&arr, &states2));
+        let TryGet::Ready(out2) = s2.try_get() else {
+            panic!("ready");
+        };
+        assert_eq!(out2.as_ref(), arr.as_ref());
+    }
+
+    #[test]
+    fn get_with_selection_state_integer_arrow_and_liquid() {
+        let arr = int_array(10);
+        let selection = BooleanBuffer::from((0..10).map(|i| i % 2 == 0).collect::<Vec<_>>());
+        let expected = {
+            let array = BooleanArray::new(selection.clone(), None);
+            arrow::compute::filter(&arr, &array).unwrap()
+        };
+
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("col");
+
+        // Arrow
+        let SansIo::Pending((mut s1, _)) =
+            GetWithSelectionState::pending_arrow(path.clone(), &selection)
+        else {
+            panic!("expected pending");
+        };
+        s1.feed(arrow_ipc_bytes(&arr));
+        let TryGet::Ready(Ok(out1)) = s1.try_get() else {
+            panic!("ready");
+        };
+        assert_eq!(out1.as_ref(), expected.as_ref());
+
+        // Liquid
+        let states = LiquidCompressorStates::new();
+        let SansIo::Pending((mut s2, _)) =
+            GetWithSelectionState::pending_liquid(path, &selection, Arc::new(states))
+        else {
+            panic!("expected pending");
+        };
+        let states2 = LiquidCompressorStates::new();
+        s2.feed(liquid_bytes(&arr, &states2));
+        let TryGet::Ready(Ok(out2)) = s2.try_get() else {
+            panic!("ready");
+        };
+        assert_eq!(out2.as_ref(), expected.as_ref());
+    }
+
+    #[test]
+    fn get_liquid_array_state_liquid_and_hybrid() {
+        // Use strings for hybrid coverage
+        let input = Arc::new(StringArray::from(vec!["a", "b", "c", "a"])) as ArrayRef;
+        let states = LiquidCompressorStates::new();
+        let liquid = transcode_liquid_inner(&input, &states).unwrap();
+
+        // Liquid bytes path
+        let SansIo::Pending((mut s1, _)) =
+            GetLiquidArrayState::pending_liquid("mem".into(), Arc::new(states))
+        else {
+            panic!("pending");
+        };
+        s1.feed(Bytes::from(liquid.to_bytes()));
+        let TryGet::Ready(out_liquid) = s1.try_get() else {
+            panic!("ready");
+        };
+        assert_eq!(out_liquid.to_arrow_array().as_ref(), input.as_ref());
+
+        // Hybrid path: squeeze and feed FSST slice
+        let (hybrid, full_bytes) = liquid.as_byte_view().squeeze().expect("squeeze");
+        let io_range = hybrid.to_liquid();
+        let fsst_bytes =
+            full_bytes.slice(io_range.range().start as usize..io_range.range().end as usize);
+        let io_req = IoRequest::from_path_and_range("disk".into(), io_range);
+        let SansIo::Pending((mut s2, _)) =
+            GetLiquidArrayState::pending_hybrid_liquid(io_req, hybrid)
+        else {
+            panic!("pending");
+        };
+        s2.feed(fsst_bytes);
+        let TryGet::Ready(out_liquid2) = s2.try_get() else {
+            panic!("ready");
+        };
+        assert_eq!(out_liquid2.to_arrow_array().as_ref(), input.as_ref());
+    }
+
+    #[test]
+    fn get_with_predicate_state_arrow_liquid_hybrid() {
+        // Small string data with an empty string and a null
+        let input = Arc::new(StringArray::from(vec![
+            Some("a"),
+            Some(""),
+            None,
+            Some("b"),
+        ])) as ArrayRef;
+        // selection keeps first three
+        let selection = BooleanBuffer::from(vec![true, true, true, false]);
+
+        // predicate: col == ""
+        let predicate: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("col", 0)),
+            Operator::Eq,
+            Arc::new(Literal::new(ScalarValue::Utf8(Some("".to_string())))),
+        ));
+
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("col");
+
+        // Arrow backend -> Filtered
+        let expected_filtered = {
+            let array = BooleanArray::new(selection.clone(), None);
+            arrow::compute::filter(&input, &array).unwrap()
+        };
+        let SansIo::Pending((mut s1, _)) =
+            GetWithPredicateState::pending_arrow(path.clone(), &selection, &predicate)
+        else {
+            panic!("pending");
+        };
+        s1.feed(arrow_ipc_bytes(&input));
+        let TryGet::Ready(out1) = s1.try_get() else {
+            panic!("ready");
+        };
+        match out1 {
+            GetWithPredicateResult::Filtered(a) => {
+                assert_eq!(a.as_ref(), expected_filtered.as_ref())
+            }
+            _ => panic!("expected filtered"),
+        }
+
+        // Liquid backend -> Evaluated (byte-view supports predicate)
+        let states = LiquidCompressorStates::new();
+        let bytes = liquid_bytes(&input, &states);
+        let SansIo::Pending((mut s2, _)) = GetWithPredicateState::pending_liquid(
+            path.clone(),
+            &selection,
+            &predicate,
+            Arc::new(states),
+        ) else {
+            panic!("pending");
+        };
+        s2.feed(bytes);
+        let TryGet::Ready(out2) = s2.try_get() else {
+            panic!("ready");
+        };
+        match out2 {
+            GetWithPredicateResult::Evaluated(buf) => {
+                assert_eq!(buf.len(), 3);
+                assert_eq!(buf.value(0), false);
+                assert_eq!(buf.value(1), true);
+                assert_eq!(buf.is_valid(2), false);
+            }
+            other => panic!("expected evaluated, got {other:?}"),
+        }
+
+        // Hybrid backend
+        let liquid = transcode_liquid_inner(&input, &LiquidCompressorStates::new()).unwrap();
+        let (hybrid, full_bytes) = liquid.as_byte_view().squeeze().unwrap();
+        let io_range = hybrid.to_liquid();
+        let fsst_bytes =
+            full_bytes.slice(io_range.range().start as usize..io_range.range().end as usize);
+        let io_req = IoRequest::from_path_and_range(path, io_range);
+        let SansIo::Pending((mut s3, _)) =
+            GetWithPredicateState::pending_hybrid_liquid(io_req, &selection, &predicate, hybrid)
+        else {
+            panic!("pending");
+        };
+        s3.feed(fsst_bytes);
+        let TryGet::Ready(out3) = s3.try_get() else {
+            panic!("ready");
+        };
+        match out3 {
+            GetWithPredicateResult::Evaluated(buf) => {
+                assert_eq!(buf.len(), 3);
+                assert_eq!(buf.value(0), false);
+                assert_eq!(buf.value(1), true);
+                assert_eq!(buf.is_valid(2), false);
+            }
+            other => panic!("expected evaluated, got {other:?}"),
+        }
+    }
+}
