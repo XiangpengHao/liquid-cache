@@ -703,9 +703,9 @@ mod tests {
         match out2 {
             GetWithPredicateResult::Evaluated(buf) => {
                 assert_eq!(buf.len(), 3);
-                assert_eq!(buf.value(0), false);
-                assert_eq!(buf.value(1), true);
-                assert_eq!(buf.is_valid(2), false);
+                assert!(!buf.value(0));
+                assert!(buf.value(1));
+                assert!(!buf.is_valid(2));
             }
             other => panic!("expected evaluated, got {other:?}"),
         }
@@ -729,9 +729,9 @@ mod tests {
         match out3 {
             GetWithPredicateResult::Evaluated(buf) => {
                 assert_eq!(buf.len(), 3);
-                assert_eq!(buf.value(0), false);
-                assert_eq!(buf.value(1), true);
-                assert_eq!(buf.is_valid(2), false);
+                assert!(!buf.value(0));
+                assert!(buf.value(1));
+                assert!(!buf.is_valid(2));
             }
             other => panic!("expected evaluated, got {other:?}"),
         }

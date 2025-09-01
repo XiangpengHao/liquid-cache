@@ -106,7 +106,7 @@ mod tests {
 
     #[test]
     fn test_squeeze_to_disk_policy() {
-        let disk = SqueezeToDiskPolicy::default();
+        let disk = SqueezeToDiskPolicy;
         let states = LiquidCompressorStates::new();
 
         // MemoryArrow -> DiskArrow + bytes (Arrow IPC)
@@ -151,7 +151,7 @@ mod tests {
 
     #[test]
     fn test_squeeze_to_liquid_policy() {
-        let to_liquid = SqueezeToLiquidPolicy::default();
+        let to_liquid = SqueezeToLiquidPolicy;
         let states = LiquidCompressorStates::new();
 
         // MemoryArrow -> MemoryLiquid, no bytes
