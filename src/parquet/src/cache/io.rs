@@ -9,7 +9,7 @@ use ahash::AHashMap;
 use bytes::Bytes;
 use liquid_cache_storage::cache::{
     EntryID, IoContext, LiquidCompressorStates,
-    cached_data::{IoRequest, IoStateMachine, SansIo, TryGet},
+    io_state::{IoRequest, IoStateMachine, SansIo, TryGet},
 };
 
 use crate::{

@@ -7,8 +7,9 @@ use tokio::runtime::Runtime;
 
 use crate::cache::utils::EntryID;
 use crate::cache::{CacheStorage, cached_data::CachedBatch};
+use crate::liquid_array::byte_view_array::MemoryBuffer;
 use crate::liquid_array::{
-    LiquidArrayRef, LiquidByteArray, LiquidFixedLenByteArray, LiquidFloatArray,
+    LiquidArrayRef, LiquidByteViewArray, LiquidFixedLenByteArray, LiquidFloatArray,
     LiquidPrimitiveArray,
 };
 
@@ -133,7 +134,7 @@ pub fn transcode_liquid_inner<'a>(
         DataType::Utf8View => {
             let compressor = state.fsst_compressor().clone();
             if let Some(compressor) = compressor.as_ref() {
-                let compressed = LiquidByteArray::from_string_view_array(
+                let compressed = LiquidByteViewArray::<MemoryBuffer>::from_string_view_array(
                     array.as_string_view(),
                     compressor.clone(),
                 );
@@ -142,14 +143,14 @@ pub fn transcode_liquid_inner<'a>(
             drop(compressor);
             let mut compressors = state.fsst_compressor_raw().write().unwrap();
             let (compressor, compressed) =
-                LiquidByteArray::train_from_string_view(array.as_string_view());
+                LiquidByteViewArray::<MemoryBuffer>::train_from_string_view(array.as_string_view());
             *compressors = Some(compressor);
             Ok(Arc::new(compressed))
         }
         DataType::BinaryView => {
             let compressor = state.fsst_compressor().clone();
             if let Some(compressor) = compressor.as_ref() {
-                let compressed = LiquidByteArray::from_binary_view_array(
+                let compressed = LiquidByteViewArray::<MemoryBuffer>::from_binary_view_array(
                     array.as_binary_view(),
                     compressor.clone(),
                 );
@@ -158,14 +159,14 @@ pub fn transcode_liquid_inner<'a>(
             drop(compressor);
             let mut compressors = state.fsst_compressor_raw().write().unwrap();
             let (compressor, compressed) =
-                LiquidByteArray::train_from_binary_view(array.as_binary_view());
+                LiquidByteViewArray::<MemoryBuffer>::train_from_binary_view(array.as_binary_view());
             *compressors = Some(compressor);
             Ok(Arc::new(compressed))
         }
         DataType::Utf8 => {
             let compressor = state.fsst_compressor().clone();
             if let Some(compressor) = compressor.as_ref() {
-                let compressed = LiquidByteArray::from_string_array(
+                let compressed = LiquidByteViewArray::<MemoryBuffer>::from_string_array(
                     array.as_string::<i32>(),
                     compressor.clone(),
                 );
@@ -174,7 +175,7 @@ pub fn transcode_liquid_inner<'a>(
             drop(compressor);
             let mut compressors = state.fsst_compressor_raw().write().unwrap();
             let (compressor, compressed) =
-                LiquidByteArray::train_from_arrow(array.as_string::<i32>());
+                LiquidByteViewArray::<MemoryBuffer>::train_from_arrow(array.as_string::<i32>());
             *compressors = Some(compressor);
             Ok(Arc::new(compressed))
         }
@@ -183,13 +184,17 @@ pub fn transcode_liquid_inner<'a>(
                 let compressor = state.fsst_compressor().clone();
                 if let Some(compressor) = compressor.as_ref() {
                     let liquid_array = unsafe {
-                        LiquidByteArray::from_unique_dict_array(dict_array, compressor.clone())
+                        LiquidByteViewArray::<MemoryBuffer>::from_unique_dict_array(
+                            dict_array,
+                            compressor.clone(),
+                        )
                     };
                     return Ok(Arc::new(liquid_array));
                 }
                 drop(compressor);
                 let mut compressors = state.fsst_compressor_raw().write().unwrap();
-                let (compressor, liquid_array) = LiquidByteArray::train_from_arrow_dict(dict_array);
+                let (compressor, liquid_array) =
+                    LiquidByteViewArray::<MemoryBuffer>::train_from_arrow_dict(dict_array);
                 *compressors = Some(compressor);
                 return Ok(Arc::new(liquid_array));
             }

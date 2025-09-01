@@ -14,9 +14,8 @@ use liquid_cache_common::LiquidCacheMode;
 use liquid_cache_storage::cache::CacheStorage;
 use liquid_cache_storage::cache::CacheStorageBuilder;
 use liquid_cache_storage::cache::EntryID;
-use liquid_cache_storage::cache::cached_data::{
-    IoStateMachine, PredicatePushdownResult, SansIo, TryGet,
-};
+use liquid_cache_storage::cache::cached_data::PredicatePushdownResult;
+use liquid_cache_storage::cache::io_state::{IoStateMachine, SansIo, TryGet};
 use liquid_cache_storage::cache_policies::FiloPolicy;
 
 #[global_allocator]

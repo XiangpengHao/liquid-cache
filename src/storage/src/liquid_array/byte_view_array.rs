@@ -9,6 +9,7 @@ use arrow::array::{
 use arrow::buffer::{BooleanBuffer, NullBuffer};
 use arrow::compute::{cast, kernels, sort_to_indices};
 use arrow::datatypes::ByteArrayType;
+use arrow_schema::DataType;
 use datafusion::logical_expr::{ColumnarValue, Operator};
 use datafusion::physical_expr_common::datum::apply_cmp;
 use datafusion::physical_plan::PhysicalExpr;
@@ -508,6 +509,77 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
             compressor.clone(),
             Self::from_view_array_inner(array, compressor, ArrowByteType::BinaryView),
         )
+    }
+
+    /// Train a compressor from an Arrow ByteArray.
+    pub fn train_from_arrow<T: ByteArrayType>(
+        array: &GenericByteArray<T>,
+    ) -> (Arc<Compressor>, LiquidByteViewArray<MemoryBuffer>) {
+        let dict = CheckedDictionaryArray::from_byte_array::<T>(array);
+        let value_type = dict.as_ref().values().data_type();
+
+        let compressor = if value_type == &DataType::Utf8 {
+            Self::train_compressor(dict.as_ref().values().as_string::<i32>().iter())
+        } else {
+            Self::train_compressor_bytes(dict.as_ref().values().as_binary::<i32>().iter())
+        };
+        (
+            compressor.clone(),
+            Self::from_dict_array_inner(
+                dict,
+                compressor,
+                ArrowByteType::from_arrow_type(&T::DATA_TYPE),
+            ),
+        )
+    }
+
+    /// Only used when the dictionary is read from a trusted parquet reader,
+    /// which reads a trusted parquet file, written by a trusted writer.
+    ///
+    /// # Safety
+    /// The caller must ensure that the values in the dictionary are unique.
+    pub unsafe fn from_unique_dict_array(
+        array: &DictionaryArray<UInt16Type>,
+        compressor: Arc<Compressor>,
+    ) -> LiquidByteViewArray<MemoryBuffer> {
+        let arrow_type = ArrowByteType::from_arrow_type(array.values().data_type());
+        Self::from_dict_array_inner(
+            unsafe { CheckedDictionaryArray::new_unchecked_i_know_what_i_am_doing(array) },
+            compressor,
+            arrow_type,
+        )
+    }
+
+    /// Train a compressor from an Arrow DictionaryArray.
+    pub fn train_from_arrow_dict(
+        array: &DictionaryArray<UInt16Type>,
+    ) -> (Arc<Compressor>, LiquidByteViewArray<MemoryBuffer>) {
+        if array.values().data_type() == &DataType::Utf8 {
+            let values = array.values().as_string::<i32>();
+
+            let compressor = Self::train_compressor(values.iter());
+            (
+                compressor.clone(),
+                Self::from_dict_array_inner(
+                    CheckedDictionaryArray::new_checked(array),
+                    compressor,
+                    ArrowByteType::Dict16Utf8,
+                ),
+            )
+        } else if array.values().data_type() == &DataType::Binary {
+            let values = array.values().as_binary::<i32>();
+            let compressor = Self::train_compressor_bytes(values.iter());
+            (
+                compressor.clone(),
+                Self::from_dict_array_inner(
+                    CheckedDictionaryArray::new_checked(array),
+                    compressor,
+                    ArrowByteType::Dict16Binary,
+                ),
+            )
+        } else {
+            panic!("Unsupported dictionary type: {:?}", array.data_type())
+        }
     }
 
     /// Train a compressor from an iterator of strings
