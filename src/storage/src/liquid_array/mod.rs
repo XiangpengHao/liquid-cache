@@ -36,6 +36,8 @@ use crate::liquid_array::byte_view_array::MemoryBuffer;
 pub enum LiquidDataType {
     /// A byte array.
     ByteArray = 0,
+    /// A byte-view array (dictionary + FSST raw + views).
+    ByteViewArray = 4,
     /// An integer.
     Integer = 1,
     /// A float.
@@ -48,6 +50,7 @@ impl From<u16> for LiquidDataType {
     fn from(value: u16) -> Self {
         match value {
             0 => LiquidDataType::ByteArray,
+            4 => LiquidDataType::ByteViewArray,
             1 => LiquidDataType::Integer,
             2 => LiquidDataType::Float,
             3 => LiquidDataType::FixedLenByteArray,

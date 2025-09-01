@@ -193,7 +193,7 @@ impl LiquidArray for LiquidByteViewArray<MemoryBuffer> {
     }
 
     fn data_type(&self) -> LiquidDataType {
-        LiquidDataType::ByteArray
+        LiquidDataType::ByteViewArray
     }
 
     fn squeeze(&self) -> Option<(LiquidHybridArrayRef, bytes::Bytes)> {
@@ -274,7 +274,7 @@ impl LiquidHybridArray for LiquidByteViewArray<DiskBuffer> {
 
     /// Get the logical data type of the Liquid array.
     fn data_type(&self) -> LiquidDataType {
-        LiquidDataType::ByteArray
+        LiquidDataType::ByteViewArray
     }
 
     /// Serialize the Liquid array to a byte array.
@@ -1682,7 +1682,7 @@ mod tests {
 
         // Just verify we can get the data type without errors
         let data_type = liquid_array.data_type();
-        assert!(matches!(data_type, LiquidDataType::ByteArray));
+        assert!(matches!(data_type, LiquidDataType::ByteViewArray));
     }
 
     #[test]

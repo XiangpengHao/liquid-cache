@@ -128,7 +128,8 @@ pub(crate) fn blocking_reading_io(request: &IoRequest) -> Result<Bytes, std::io:
     let mut file = File::open(path)?;
     match request.range() {
         Some(range) => {
-            let mut bytes = Vec::with_capacity((range.range().end - range.range().start) as usize);
+            let len = (range.range().end - range.range().start) as usize;
+            let mut bytes = vec![0u8; len];
             file.seek(SeekFrom::Start(range.range().start))?;
             file.read_exact(&mut bytes)?;
             Ok(Bytes::from(bytes))
