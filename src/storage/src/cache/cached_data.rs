@@ -96,9 +96,9 @@ impl<'a> CachedData<'a> {
 
     /// Build a sans-IO state machine to obtain an Arrow `ArrayRef`.
     ///
-    /// This does not perform IO itself. Instead, it may request IO via [`IoStateMachine::try_get`].
-    /// The caller should fulfill the IO request and call [`IoStateMachine::feed`] with the bytes,
-    /// then consume the state machine with [`IoStateMachine::try_get`].
+    /// This does not perform IO itself. Instead, it may request IO via [`crate::cache::io_state::IoStateMachine::try_get`].
+    /// The caller should fulfill the IO request and call [`crate::cache::io_state::IoStateMachine::feed`] with the bytes,
+    /// then consume the state machine with [`crate::cache::io_state::IoStateMachine::try_get`].
     pub fn get_arrow_array(&self) -> SansIo<ArrayRef, GetArrowArrayState> {
         match &self.data {
             CachedBatch::MemoryArrow(array) => SansIo::Ready(array.clone()),
