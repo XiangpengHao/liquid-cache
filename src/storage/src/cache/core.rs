@@ -351,7 +351,8 @@ impl CacheStorage {
         for (entry_id, batch) in entries_to_flush {
             match batch {
                 CachedBatch::MemoryArrow(array) => {
-                    self.write_arrow_to_disk_blocking(&entry_id, &array);
+                    let bytes = arrow_to_bytes(&array).expect("failed to convert arrow to bytes");
+                    self.write_arrow_to_disk_blocking(&entry_id, &bytes);
                     self.try_insert(entry_id, CachedBatch::DiskArrow)
                         .expect("failed to insert disk arrow entry");
                 }
@@ -380,7 +381,8 @@ impl CacheStorage {
     fn write_in_memory_batch_to_disk(&self, entry_id: EntryID, batch: CachedBatch) -> CachedBatch {
         match batch {
             CachedBatch::MemoryArrow(array) => {
-                self.write_arrow_to_disk_blocking(&entry_id, &array);
+                let bytes = arrow_to_bytes(&array).expect("failed to convert arrow to bytes");
+                self.write_arrow_to_disk_blocking(&entry_id, &bytes);
                 CachedBatch::DiskArrow
             }
             CachedBatch::MemoryLiquid(liquid_array) => {
@@ -545,21 +547,19 @@ impl CacheStorage {
             .expect("failed to insert");
     }
 
-    fn write_arrow_to_disk_blocking(&self, entry_id: &EntryID, array: &ArrayRef) {
+    fn write_arrow_to_disk_blocking(&self, entry_id: &EntryID, bytes: &[u8]) {
         let file_path = self.io_context.entry_arrow_path(entry_id);
-        let bytes = arrow_to_bytes(array).expect("failed to convert arrow to bytes");
         let mut file = File::create(file_path).expect("failed to create file");
-        file.write_all(&bytes).expect("failed to write to file");
+        file.write_all(bytes).expect("failed to write to file");
         let disk_usage = bytes.len();
         self.budget.add_used_disk_bytes(disk_usage);
     }
 
-    fn write_liquid_to_disk_blocking(&self, entry_id: &EntryID, liquid_bytes: &[u8]) {
+    fn write_liquid_to_disk_blocking(&self, entry_id: &EntryID, bytes: &[u8]) {
         let path = self.io_context.entry_liquid_path(entry_id);
         let mut file = File::create(&path).expect("failed to create file");
-        file.write_all(liquid_bytes)
-            .expect("failed to write to file");
-        let disk_usage = liquid_bytes.len();
+        file.write_all(bytes).expect("failed to write to file");
+        let disk_usage = bytes.len();
         self.budget.add_used_disk_bytes(disk_usage);
     }
 
