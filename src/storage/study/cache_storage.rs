@@ -14,7 +14,7 @@ use liquid_cache_common::LiquidCacheMode;
 use liquid_cache_storage::cache::CacheStorage;
 use liquid_cache_storage::cache::CacheStorageBuilder;
 use liquid_cache_storage::cache::EntryID;
-use liquid_cache_storage::cache::cached_data::PredicatePushdownResult;
+use liquid_cache_storage::cache::cached_data::GetWithPredicateResult;
 use liquid_cache_storage::cache::io_state::{IoStateMachine, SansIo, TryGet};
 use liquid_cache_storage::cache_policies::FiloPolicy;
 
@@ -79,7 +79,7 @@ fn main() {
         let selection = BooleanBuffer::new_set(len);
         match cached.get_with_predicate(&selection, &pred_expr) {
             SansIo::Ready(res) => match res {
-                PredicatePushdownResult::Evaluated(_) => evaluated += 1,
+                GetWithPredicateResult::Evaluated(_) => evaluated += 1,
                 _ => panic!("unexpected result"),
             },
             SansIo::Pending((mut state, io_req)) => {
@@ -87,7 +87,7 @@ fn main() {
                 state.feed(Bytes::from(bytes));
                 num_io += 1;
                 match state.try_get() {
-                    TryGet::Ready(PredicatePushdownResult::Evaluated(_)) => evaluated += 1,
+                    TryGet::Ready(GetWithPredicateResult::Evaluated(_)) => evaluated += 1,
                     e => panic!("unexpected result: {e:?}"),
                 }
             }

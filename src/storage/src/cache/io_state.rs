@@ -1,6 +1,6 @@
 //! Sans-IO state machines for IO operations.
 
-use std::{path::PathBuf, sync::Arc};
+use std::{ops::Range, path::PathBuf, sync::Arc};
 
 use arrow::{
     array::{ArrayRef, BooleanArray},
@@ -11,7 +11,7 @@ use bytes::Bytes;
 use datafusion::physical_plan::PhysicalExpr;
 
 use crate::{
-    cache::{LiquidCompressorStates, cached_data::PredicatePushdownResult},
+    cache::{LiquidCompressorStates, cached_data::GetWithPredicateResult},
     liquid_array::{LiquidArrayRef, LiquidHybridArrayRef},
 };
 
@@ -50,6 +50,8 @@ pub trait IoStateMachine: Sized {
 pub struct IoRequest {
     /// The path to read.
     pub path: PathBuf,
+    /// The range to read.
+    pub range: Option<Range<u64>>,
 }
 
 /// Reusable description of pending IO for Arrow or Liquid on-disk formats.
@@ -63,7 +65,7 @@ enum PendingIo {
         compressor_states: Arc<LiquidCompressorStates>,
     },
     LiquidHybrid {
-        path: PathBuf,
+        io_request: IoRequest,
         old: LiquidHybridArrayRef,
     },
 }
@@ -71,9 +73,15 @@ enum PendingIo {
 impl PendingIo {
     fn as_io_request(&self) -> IoRequest {
         match self {
-            PendingIo::Arrow { path } => IoRequest { path: path.clone() },
-            PendingIo::Liquid { path, .. } => IoRequest { path: path.clone() },
-            PendingIo::LiquidHybrid { path, .. } => IoRequest { path: path.clone() },
+            PendingIo::Arrow { path } => IoRequest {
+                path: path.clone(),
+                range: None,
+            },
+            PendingIo::Liquid { path, .. } => IoRequest {
+                path: path.clone(),
+                range: None,
+            },
+            PendingIo::LiquidHybrid { io_request, .. } => io_request.clone(),
         }
     }
 
@@ -155,10 +163,10 @@ impl GetArrowArrayState {
     }
 
     pub(crate) fn pending_hybrid_liquid(
-        path: PathBuf,
+        io_request: IoRequest,
         old: LiquidHybridArrayRef,
     ) -> SansIo<ArrayRef, Self> {
-        let pending = PendingIo::LiquidHybrid { path, old };
+        let pending = PendingIo::LiquidHybrid { io_request, old };
         let io_request = pending.as_io_request();
         let state = Self {
             state: GetArrowArrayStateInner::NeedBytes(pending),
@@ -199,12 +207,12 @@ impl IoStateMachine for GetArrowArrayState {
 
 /// State machine: selection pushdown sans-IO
 #[derive(Debug)]
-pub struct GetWithSelectionSansIo<'selection> {
-    state: GetWithSelectionState<'selection>,
+pub struct GetWithSelectionState<'selection> {
+    state: GetWithSelectionInner<'selection>,
 }
 
 #[derive(Debug)]
-enum GetWithSelectionState<'selection> {
+enum GetWithSelectionInner<'selection> {
     NeedBytes {
         selection: &'selection BooleanBuffer,
         pending: PendingIo,
@@ -212,7 +220,7 @@ enum GetWithSelectionState<'selection> {
     Done(Result<ArrayRef, ArrowError>),
 }
 
-impl<'selection> GetWithSelectionSansIo<'selection> {
+impl<'selection> GetWithSelectionState<'selection> {
     pub(crate) fn pending_arrow(
         path: PathBuf,
         selection: &'selection BooleanBuffer,
@@ -220,7 +228,7 @@ impl<'selection> GetWithSelectionSansIo<'selection> {
         let pending = PendingIo::Arrow { path };
         let io_request = pending.as_io_request();
         let state = Self {
-            state: GetWithSelectionState::NeedBytes { selection, pending },
+            state: GetWithSelectionInner::NeedBytes { selection, pending },
         };
         SansIo::Pending((state, io_request))
     }
@@ -236,33 +244,33 @@ impl<'selection> GetWithSelectionSansIo<'selection> {
         };
         let io_request = pending.as_io_request();
         let state = Self {
-            state: GetWithSelectionState::NeedBytes { selection, pending },
+            state: GetWithSelectionInner::NeedBytes { selection, pending },
         };
         SansIo::Pending((state, io_request))
     }
 
     pub(crate) fn pending_hybrid_liquid(
-        path: PathBuf,
+        io_request: IoRequest,
         selection: &'selection BooleanBuffer,
         old: LiquidHybridArrayRef,
     ) -> SansIo<Result<ArrayRef, ArrowError>, Self> {
-        let pending = PendingIo::LiquidHybrid { path, old };
+        let pending = PendingIo::LiquidHybrid { io_request, old };
 
         let io_request = pending.as_io_request();
         let state = Self {
-            state: GetWithSelectionState::NeedBytes { selection, pending },
+            state: GetWithSelectionInner::NeedBytes { selection, pending },
         };
         SansIo::Pending((state, io_request))
     }
 }
 
-impl<'a> IoStateMachine for GetWithSelectionSansIo<'a> {
+impl<'a> IoStateMachine for GetWithSelectionState<'a> {
     type Output = Result<ArrayRef, ArrowError>;
 
     fn try_get(self) -> TryGet<Result<ArrayRef, ArrowError>, Self> {
         match self.state {
-            GetWithSelectionState::Done(r) => TryGet::Ready(r),
-            GetWithSelectionState::NeedBytes { ref pending, .. } => {
+            GetWithSelectionInner::Done(r) => TryGet::Ready(r),
+            GetWithSelectionInner::NeedBytes { ref pending, .. } => {
                 let io_request = pending.as_io_request();
                 TryGet::NeedData((self, io_request))
             }
@@ -271,23 +279,23 @@ impl<'a> IoStateMachine for GetWithSelectionSansIo<'a> {
 
     fn feed(&mut self, data: Bytes) {
         match &mut self.state {
-            GetWithSelectionState::Done(_) => {}
-            GetWithSelectionState::NeedBytes { pending, selection } => match pending {
+            GetWithSelectionInner::Done(_) => {}
+            GetWithSelectionInner::NeedBytes { pending, selection } => match pending {
                 PendingIo::Arrow { .. } => {
                     let array = pending.decode_arrow(data);
                     let selection_array = BooleanArray::new(selection.clone(), None);
                     let filtered = arrow::compute::filter(&array, &selection_array);
-                    self.state = GetWithSelectionState::Done(filtered);
+                    self.state = GetWithSelectionInner::Done(filtered);
                 }
                 PendingIo::Liquid { .. } => {
                     let liquid = pending.decode_liquid(data);
                     let filtered = liquid.filter_to_arrow(selection);
-                    self.state = GetWithSelectionState::Done(Ok(filtered));
+                    self.state = GetWithSelectionInner::Done(Ok(filtered));
                 }
                 PendingIo::LiquidHybrid { .. } => {
                     let liquid = pending.decode_liquid(data);
                     let filtered = liquid.filter_to_arrow(selection);
-                    self.state = GetWithSelectionState::Done(Ok(filtered));
+                    self.state = GetWithSelectionInner::Done(Ok(filtered));
                 }
             },
         }
@@ -301,10 +309,10 @@ pub struct GetLiquidArrayState {
 }
 
 impl GetLiquidArrayState {
-    pub(crate) fn new(
+    pub(crate) fn pending_liquid(
         path: PathBuf,
         compressor_states: Arc<LiquidCompressorStates>,
-    ) -> (Self, IoRequest) {
+    ) -> SansIo<Option<LiquidArrayRef>, Self> {
         let pending = PendingIo::Liquid {
             path,
             compressor_states,
@@ -313,7 +321,19 @@ impl GetLiquidArrayState {
         let state = Self {
             state: GetLiquidArrayStateInner::NeedBytes(pending),
         };
-        (state, io_request)
+        SansIo::Pending((state, io_request))
+    }
+
+    pub(crate) fn pending_hybrid_liquid(
+        io_request: IoRequest,
+        old: LiquidHybridArrayRef,
+    ) -> SansIo<Option<LiquidArrayRef>, Self> {
+        let pending = PendingIo::LiquidHybrid { io_request, old };
+        let io_request = pending.as_io_request();
+        let state = Self {
+            state: GetLiquidArrayStateInner::NeedBytes(pending),
+        };
+        SansIo::Pending((state, io_request))
     }
 }
 
@@ -358,7 +378,7 @@ impl<'predicate, 'selection> GetWithPredicateState<'predicate, 'selection> {
         path: PathBuf,
         selection: &'selection BooleanBuffer,
         predicate: &'predicate Arc<dyn PhysicalExpr>,
-    ) -> SansIo<PredicatePushdownResult, Self> {
+    ) -> SansIo<GetWithPredicateResult, Self> {
         let pending = PendingIo::Arrow { path };
         let io_request = pending.as_io_request();
         let state = Self {
@@ -376,7 +396,7 @@ impl<'predicate, 'selection> GetWithPredicateState<'predicate, 'selection> {
         selection: &'selection BooleanBuffer,
         predicate: &'predicate Arc<dyn PhysicalExpr>,
         compressor_states: Arc<LiquidCompressorStates>,
-    ) -> SansIo<PredicatePushdownResult, Self> {
+    ) -> SansIo<GetWithPredicateResult, Self> {
         let pending = PendingIo::Liquid {
             path,
             compressor_states,
@@ -393,12 +413,12 @@ impl<'predicate, 'selection> GetWithPredicateState<'predicate, 'selection> {
     }
 
     pub(crate) fn pending_hybrid_liquid(
-        path: PathBuf,
+        io_request: IoRequest,
         selection: &'selection BooleanBuffer,
         predicate: &'predicate Arc<dyn PhysicalExpr>,
         old: LiquidHybridArrayRef,
-    ) -> SansIo<PredicatePushdownResult, Self> {
-        let pending = PendingIo::LiquidHybrid { path, old };
+    ) -> SansIo<GetWithPredicateResult, Self> {
+        let pending = PendingIo::LiquidHybrid { io_request, old };
         let io_request = pending.as_io_request();
         let state = Self {
             state: GetWithPredicateStateInner::NeedBytes {
@@ -418,13 +438,13 @@ enum GetWithPredicateStateInner<'a, 'b> {
         predicate: &'a Arc<dyn PhysicalExpr>,
         pending: PendingIo,
     },
-    Done(PredicatePushdownResult),
+    Done(GetWithPredicateResult),
 }
 
 impl<'a, 'b> IoStateMachine for GetWithPredicateState<'a, 'b> {
-    type Output = PredicatePushdownResult;
+    type Output = GetWithPredicateResult;
 
-    fn try_get(self) -> TryGet<PredicatePushdownResult, Self> {
+    fn try_get(self) -> TryGet<GetWithPredicateResult, Self> {
         match self.state {
             GetWithPredicateStateInner::Done(r) => TryGet::Ready(r),
             GetWithPredicateStateInner::NeedBytes { ref pending, .. } => {
@@ -447,17 +467,17 @@ impl<'a, 'b> IoStateMachine for GetWithPredicateState<'a, 'b> {
                     let selection_array = BooleanArray::new(selection.clone(), None);
                     let filtered = arrow::compute::filter(&array, &selection_array).unwrap();
                     self.state = GetWithPredicateStateInner::Done(
-                        PredicatePushdownResult::Filtered(filtered),
+                        GetWithPredicateResult::Filtered(filtered),
                     );
                 }
                 PendingIo::Liquid { .. } | PendingIo::LiquidHybrid { .. } => {
                     let liquid = pending.decode_liquid(data);
                     let result = liquid.try_eval_predicate(predicate, selection);
                     let result = match result {
-                        Some(buf) => PredicatePushdownResult::Evaluated(buf),
+                        Some(buf) => GetWithPredicateResult::Evaluated(buf),
                         None => {
                             let filtered = liquid.filter_to_arrow(selection);
-                            PredicatePushdownResult::Filtered(filtered)
+                            GetWithPredicateResult::Filtered(filtered)
                         }
                     };
                     self.state = GetWithPredicateStateInner::Done(result);

@@ -10,7 +10,7 @@ mod primitive_array;
 pub mod raw;
 pub(crate) mod utils;
 
-use std::{any::Any, ops::Range, path::PathBuf, sync::Arc};
+use std::{any::Any, ops::Range, sync::Arc};
 
 use arrow::{
     array::{ArrayRef, BooleanArray},
@@ -28,7 +28,7 @@ pub use primitive_array::{
     LiquidU32Array, LiquidU64Array,
 };
 
-use crate::liquid_array::byte_view_array::MemoryBuffer;
+use crate::{cache::io_state::IoRequest, liquid_array::byte_view_array::MemoryBuffer};
 
 /// Liquid data type is only logical type
 #[derive(Debug, Clone, Copy)]
@@ -195,13 +195,6 @@ pub type LiquidArrayRef = Arc<dyn LiquidArray>;
 /// A reference to a Liquid hybrid array.
 pub type LiquidHybridArrayRef = Arc<dyn LiquidHybridArray>;
 
-/// An IO request.
-#[derive(Debug, Clone)]
-pub struct IoRequest {
-    /// The path to the file that contains the data.
-    pub path: PathBuf,
-}
-
 /// A Liquid hybrid array is a Liquid array that part of its data is stored on disk.
 /// `LiquidHybridArray` is more complex than in-memory `LiquidArray` because it needs to handle IO.
 pub trait LiquidHybridArray: std::fmt::Debug + Send + Sync {
@@ -260,4 +253,7 @@ pub trait LiquidHybridArray: std::fmt::Debug + Send + Sync {
     /// Feed IO data to the `LiquidHybridArray` and return the in-memory `LiquidArray`.
     /// For byte-view arrays, `data` should be the raw FSST buffer bytes.
     fn soak(&self, data: bytes::Bytes) -> LiquidArrayRef;
+
+    /// Get the `IoRequest` to convert the `LiquidHybridArray` to a `LiquidArray`.
+    fn to_liquid(&self) -> IoRequest;
 }

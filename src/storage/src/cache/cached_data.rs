@@ -13,7 +13,7 @@ use crate::{cache::io_state::GetLiquidArrayState, liquid_array::LiquidHybridArra
 use crate::{
     cache::{
         EntryID,
-        io_state::{GetArrowArrayState, GetWithPredicateState, GetWithSelectionSansIo, SansIo},
+        io_state::{GetArrowArrayState, GetWithPredicateState, GetWithSelectionState, SansIo},
     },
     liquid_array::LiquidArrayRef,
 };
@@ -28,7 +28,7 @@ pub struct CachedData<'a> {
 
 /// The result of predicate pushdown.
 #[derive(Debug, PartialEq)]
-pub enum PredicatePushdownResult {
+pub enum GetWithPredicateResult {
     /// The predicate is evaluated on the filtered data and the result is a boolean buffer.
     Evaluated(BooleanArray),
 
@@ -53,7 +53,7 @@ impl<'a> CachedData<'a> {
     pub fn get_with_selection<'selection>(
         &self,
         selection: &'selection BooleanBuffer,
-    ) -> SansIo<Result<ArrayRef, ArrowError>, GetWithSelectionSansIo<'selection>> {
+    ) -> SansIo<Result<ArrayRef, ArrowError>, GetWithSelectionState<'selection>> {
         match &self.data {
             CachedBatch::MemoryArrow(array) => {
                 let selection_array = BooleanArray::new(selection.clone(), None);
@@ -64,7 +64,7 @@ impl<'a> CachedData<'a> {
                 let filtered = array.filter_to_arrow(selection);
                 SansIo::Ready(Ok(filtered))
             }
-            CachedBatch::DiskLiquid => GetWithSelectionSansIo::pending_liquid(
+            CachedBatch::DiskLiquid => GetWithSelectionState::pending_liquid(
                 self.io_context.entry_liquid_path(&self.id),
                 selection,
                 self.io_context.get_compressor_for_entry(&self.id),
@@ -73,14 +73,14 @@ impl<'a> CachedData<'a> {
                 let filtered = array.filter_to_arrow(selection);
                 match filtered {
                     Ok(array) => SansIo::Ready(Ok(array)),
-                    Err(io_request) => GetWithSelectionSansIo::pending_hybrid_liquid(
-                        io_request.path,
+                    Err(io_request) => GetWithSelectionState::pending_hybrid_liquid(
+                        io_request,
                         selection,
                         array.clone(),
                     ),
                 }
             }
-            CachedBatch::DiskArrow => GetWithSelectionSansIo::pending_arrow(
+            CachedBatch::DiskArrow => GetWithSelectionState::pending_arrow(
                 self.io_context.entry_arrow_path(&self.id),
                 selection,
             ),
@@ -106,7 +106,7 @@ impl<'a> CachedData<'a> {
                 match arrow_array {
                     Ok(array) => SansIo::Ready(array),
                     Err(io_request) => {
-                        GetArrowArrayState::pending_hybrid_liquid(io_request.path, array.clone())
+                        GetArrowArrayState::pending_hybrid_liquid(io_request, array.clone())
                     }
                 }
             }
@@ -129,11 +129,14 @@ impl<'a> CachedData<'a> {
     pub fn try_read_liquid(&self) -> SansIo<Option<LiquidArrayRef>, GetLiquidArrayState> {
         match &self.data {
             CachedBatch::MemoryLiquid(array) => SansIo::Ready(Some(array.clone())),
-            CachedBatch::DiskLiquid => SansIo::Pending(GetLiquidArrayState::new(
+            CachedBatch::DiskLiquid => GetLiquidArrayState::pending_liquid(
                 self.io_context.entry_liquid_path(&self.id),
                 self.io_context.get_compressor_for_entry(&self.id),
-            )),
-            _ => SansIo::Ready(None),
+            ),
+            CachedBatch::MemoryHybridLiquid(array) => {
+                GetLiquidArrayState::pending_hybrid_liquid(array.to_liquid(), array.clone())
+            }
+            CachedBatch::DiskArrow | CachedBatch::MemoryArrow(_) => SansIo::Ready(None),
         }
     }
 
@@ -152,12 +155,12 @@ impl<'a> CachedData<'a> {
         &self,
         selection: &'selection BooleanBuffer,
         predicate: &'predicate Arc<dyn PhysicalExpr>,
-    ) -> SansIo<PredicatePushdownResult, GetWithPredicateState<'predicate, 'selection>> {
+    ) -> SansIo<GetWithPredicateResult, GetWithPredicateState<'predicate, 'selection>> {
         match &self.data {
             CachedBatch::MemoryArrow(array) => {
                 let selection_array = BooleanArray::new(selection.clone(), None);
                 let selected = arrow::compute::filter(array, &selection_array).unwrap();
-                SansIo::Ready(PredicatePushdownResult::Filtered(selected))
+                SansIo::Ready(GetWithPredicateResult::Filtered(selected))
             }
             CachedBatch::DiskArrow => GetWithPredicateState::pending_arrow(
                 self.io_context.entry_arrow_path(&self.id),
@@ -166,10 +169,10 @@ impl<'a> CachedData<'a> {
             ),
             CachedBatch::MemoryLiquid(array) => {
                 let result = match array.try_eval_predicate(predicate, selection) {
-                    Some(buf) => PredicatePushdownResult::Evaluated(buf),
+                    Some(buf) => GetWithPredicateResult::Evaluated(buf),
                     None => {
                         let filtered = array.filter_to_arrow(selection);
-                        PredicatePushdownResult::Filtered(filtered)
+                        GetWithPredicateResult::Filtered(filtered)
                     }
                 };
                 SansIo::Ready(result)
@@ -185,13 +188,13 @@ impl<'a> CachedData<'a> {
             }
             CachedBatch::MemoryHybridLiquid(array) => {
                 match array.try_eval_predicate(predicate, selection) {
-                    Ok(Some(buf)) => SansIo::Ready(PredicatePushdownResult::Evaluated(buf)),
+                    Ok(Some(buf)) => SansIo::Ready(GetWithPredicateResult::Evaluated(buf)),
                     Ok(None) => {
                         let filtered = array.filter_to_arrow(selection);
                         match filtered {
-                            Ok(array) => SansIo::Ready(PredicatePushdownResult::Filtered(array)),
+                            Ok(array) => SansIo::Ready(GetWithPredicateResult::Filtered(array)),
                             Err(io_request) => GetWithPredicateState::pending_hybrid_liquid(
-                                io_request.path,
+                                io_request,
                                 selection,
                                 predicate,
                                 array.clone(),
@@ -199,7 +202,7 @@ impl<'a> CachedData<'a> {
                         }
                     }
                     Err(io_request) => GetWithPredicateState::pending_hybrid_liquid(
-                        io_request.path,
+                        io_request,
                         selection,
                         predicate,
                         array.clone(),
@@ -505,10 +508,10 @@ mod tests {
             panic!("expected immediate result for in-memory arrow");
         };
         match result {
-            PredicatePushdownResult::Filtered(arr) => {
+            GetWithPredicateResult::Filtered(arr) => {
                 assert_eq!(arr.len(), arrow_array.len());
             }
-            PredicatePushdownResult::Evaluated(_) => {
+            GetWithPredicateResult::Evaluated(_) => {
                 panic!("Arrow-backed get_with_predicate must not return Evaluated")
             }
         }
@@ -550,14 +553,14 @@ mod tests {
                 (filter_eval.as_boolean().clone(), filtered)
             };
 
-            let expect_filtered = |result: PredicatePushdownResult| match result {
-                PredicatePushdownResult::Filtered(array) => {
+            let expect_filtered = |result: GetWithPredicateResult| match result {
+                GetWithPredicateResult::Filtered(array) => {
                     assert_eq!(array.as_ref(), filter_expected.as_ref());
                 }
                 other => panic!("expected filtered, got {other:?}"),
             };
-            let expect_evaluated = |result: PredicatePushdownResult| match result {
-                PredicatePushdownResult::Evaluated(array) => {
+            let expect_evaluated = |result: GetWithPredicateResult| match result {
+                GetWithPredicateResult::Evaluated(array) => {
                     assert_eq!(array, eval_expected);
                 }
                 other => panic!("expected evaluated, got {other:?}"),

@@ -1,6 +1,6 @@
 use std::{
     fs::File,
-    io::Read,
+    io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -126,9 +126,19 @@ impl From<ParquetArrayID> for ColumnAccessPath {
 pub(crate) fn blocking_reading_io(request: &IoRequest) -> Result<Bytes, std::io::Error> {
     let path = &request.path;
     let mut file = File::open(path)?;
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
-    Ok(Bytes::from(bytes))
+    match &request.range {
+        Some(range) => {
+            let mut bytes = Vec::with_capacity((range.end - range.start) as usize);
+            file.seek(SeekFrom::Start(range.start))?;
+            file.read_exact(&mut bytes)?;
+            Ok(Bytes::from(bytes))
+        }
+        None => {
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes)?;
+            Ok(Bytes::from(bytes))
+        }
+    }
 }
 
 /// Resolve a sans-IO operation by repeatedly fulfilling IO requests until ready.

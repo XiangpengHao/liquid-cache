@@ -10,7 +10,7 @@ use arrow::buffer::BooleanBuffer;
 use arrow::compute::prep_null_mask_filter;
 use arrow_schema::{ArrowError, DataType, Field, Schema};
 use liquid_cache_common::{LiquidCacheMode, coerce_parquet_type_to_liquid_type};
-use liquid_cache_storage::cache::cached_data::PredicatePushdownResult;
+use liquid_cache_storage::cache::cached_data::GetWithPredicateResult;
 use liquid_cache_storage::cache::io_state::{IoStateMachine, SansIo, TryGet};
 use liquid_cache_storage::cache::{CachePolicy, CacheStorage, CacheStorageBuilder};
 use parquet::arrow::arrow_reader::ArrowPredicate;
@@ -93,8 +93,8 @@ impl LiquidCachedColumn {
             .get_with_predicate(filter, predicate.physical_expr_physical_column_index());
         let result = blocking_sans_io(result);
         match result {
-            PredicatePushdownResult::Evaluated(buffer) => Some(Ok(buffer)),
-            PredicatePushdownResult::Filtered(array) => {
+            GetWithPredicateResult::Evaluated(buffer) => Some(Ok(buffer)),
+            GetWithPredicateResult::Filtered(array) => {
                 let record_batch = self.arrow_array_to_record_batch(array, &self.field);
                 let boolean_array = predicate.evaluate(record_batch).unwrap();
                 let predicate_filter = match boolean_array.null_count() {

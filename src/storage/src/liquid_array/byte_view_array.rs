@@ -138,6 +138,7 @@ impl FsstBuffer for DiskBuffer {
     fn get_fsst_buffer(&self) -> Result<Arc<RawFsstBuffer>, IoRequest> {
         Err(IoRequest {
             path: self.path.clone(),
+            range: None,
         })
     }
 
@@ -324,6 +325,13 @@ impl LiquidHybridArray for LiquidByteViewArray<DiskBuffer> {
             compressor: self.compressor.clone(),
         };
         Arc::new(in_memory_array)
+    }
+
+    fn to_liquid(&self) -> IoRequest {
+        IoRequest {
+            path: self.fsst_buffer.path.clone(),
+            range: None,
+        }
     }
 }
 
