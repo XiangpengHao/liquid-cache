@@ -83,7 +83,7 @@ fn main() {
                 _ => panic!("unexpected result"),
             },
             SansIo::Pending((mut state, io_req)) => {
-                let bytes = std::fs::read(&io_req.path).expect("read cache file");
+                let bytes = std::fs::read(io_req.path()).expect("read cache file");
                 state.feed(Bytes::from(bytes));
                 num_io += 1;
                 match state.try_get() {

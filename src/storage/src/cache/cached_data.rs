@@ -9,7 +9,10 @@ use arrow::{
 use arrow_schema::ArrowError;
 use datafusion::physical_plan::PhysicalExpr;
 
-use crate::{cache::io_state::GetLiquidArrayState, liquid_array::LiquidHybridArrayRef};
+use crate::{
+    cache::io_state::{GetLiquidArrayState, IoRequest},
+    liquid_array::LiquidHybridArrayRef,
+};
 use crate::{
     cache::{
         EntryID,
@@ -73,11 +76,15 @@ impl<'a> CachedData<'a> {
                 let filtered = array.filter_to_arrow(selection);
                 match filtered {
                     Ok(array) => SansIo::Ready(Ok(array)),
-                    Err(io_request) => GetWithSelectionState::pending_hybrid_liquid(
-                        io_request,
-                        selection,
-                        array.clone(),
-                    ),
+                    Err(io_request) => {
+                        let path = self.io_context.entry_liquid_path(&self.id);
+                        let io_request = IoRequest::from_path_and_range(path, io_request);
+                        GetWithSelectionState::pending_hybrid_liquid(
+                            io_request,
+                            selection,
+                            array.clone(),
+                        )
+                    }
                 }
             }
             CachedBatch::DiskArrow => GetWithSelectionState::pending_arrow(
@@ -106,6 +113,8 @@ impl<'a> CachedData<'a> {
                 match arrow_array {
                     Ok(array) => SansIo::Ready(array),
                     Err(io_request) => {
+                        let path = self.io_context.entry_liquid_path(&self.id);
+                        let io_request = IoRequest::from_path_and_range(path, io_request);
                         GetArrowArrayState::pending_hybrid_liquid(io_request, array.clone())
                     }
                 }
@@ -134,7 +143,10 @@ impl<'a> CachedData<'a> {
                 self.io_context.get_compressor_for_entry(&self.id),
             ),
             CachedBatch::MemoryHybridLiquid(array) => {
-                GetLiquidArrayState::pending_hybrid_liquid(array.to_liquid(), array.clone())
+                let path = self.io_context.entry_liquid_path(&self.id);
+                let io_request = array.to_liquid();
+                let io_request = IoRequest::from_path_and_range(path, io_request);
+                GetLiquidArrayState::pending_hybrid_liquid(io_request, array.clone())
             }
             CachedBatch::DiskArrow | CachedBatch::MemoryArrow(_) => SansIo::Ready(None),
         }
@@ -193,20 +205,28 @@ impl<'a> CachedData<'a> {
                         let filtered = array.filter_to_arrow(selection);
                         match filtered {
                             Ok(array) => SansIo::Ready(GetWithPredicateResult::Filtered(array)),
-                            Err(io_request) => GetWithPredicateState::pending_hybrid_liquid(
-                                io_request,
-                                selection,
-                                predicate,
-                                array.clone(),
-                            ),
+                            Err(io_request) => {
+                                let path = self.io_context.entry_liquid_path(&self.id);
+                                let io_request = IoRequest::from_path_and_range(path, io_request);
+                                GetWithPredicateState::pending_hybrid_liquid(
+                                    io_request,
+                                    selection,
+                                    predicate,
+                                    array.clone(),
+                                )
+                            }
                         }
                     }
-                    Err(io_request) => GetWithPredicateState::pending_hybrid_liquid(
-                        io_request,
-                        selection,
-                        predicate,
-                        array.clone(),
-                    ),
+                    Err(io_request) => {
+                        let path = self.io_context.entry_liquid_path(&self.id);
+                        let io_request = IoRequest::from_path_and_range(path, io_request);
+                        GetWithPredicateState::pending_hybrid_liquid(
+                            io_request,
+                            selection,
+                            predicate,
+                            array.clone(),
+                        )
+                    }
                 }
             }
         }
@@ -299,7 +319,7 @@ mod tests {
                 .store
                 .read()
                 .unwrap()
-                .get(&request.path)
+                .get(request.path())
                 .unwrap()
                 .clone();
             Ok(bytes.clone())

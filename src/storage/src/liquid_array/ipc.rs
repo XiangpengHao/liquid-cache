@@ -13,7 +13,7 @@ use arrow::datatypes::{
 use bytes::Bytes;
 use fsst::Compressor;
 
-use crate::liquid_array::LiquidPrimitiveType;
+use crate::liquid_array::LiquidPrimitiveArray;
 use crate::liquid_array::byte_array::ArrowByteType;
 use crate::liquid_array::byte_view_array::{
     FsstBuffer, LiquidByteViewArray, MemoryBuffer, OffsetView,
@@ -22,7 +22,7 @@ use crate::liquid_array::fix_len_byte_array::ArrowFixedLenByteArrayType;
 use crate::liquid_array::float_array::Exponents;
 use crate::liquid_array::raw::fsst_array::RawFsstBuffer;
 use crate::liquid_array::raw::{BitPackedArray, FsstArray};
-use crate::liquid_array::{IoRequest, LiquidPrimitiveArray};
+use crate::liquid_array::{IoRange, LiquidPrimitiveType};
 
 use super::float_array::LiquidFloatType;
 use super::{
@@ -666,7 +666,7 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
     | Shared prefix bytes                              |
     +--------------------------------------------------+
     */
-    pub(crate) fn to_bytes_inner(&self) -> Result<Vec<u8>, IoRequest> {
+    pub(crate) fn to_bytes_inner(&self) -> Result<Vec<u8>, IoRange> {
         let header_size = LiquidIPCHeader::size() + ByteViewArrayHeader::size();
         let mut result = Vec::with_capacity(header_size + 1024);
         result.resize(header_size, 0);

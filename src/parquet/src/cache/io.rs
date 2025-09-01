@@ -124,12 +124,12 @@ impl From<ParquetArrayID> for ColumnAccessPath {
 }
 
 pub(crate) fn blocking_reading_io(request: &IoRequest) -> Result<Bytes, std::io::Error> {
-    let path = &request.path;
+    let path = &request.path();
     let mut file = File::open(path)?;
-    match &request.range {
+    match request.range() {
         Some(range) => {
-            let mut bytes = Vec::with_capacity((range.end - range.start) as usize);
-            file.seek(SeekFrom::Start(range.start))?;
+            let mut bytes = Vec::with_capacity((range.range().end - range.range().start) as usize);
+            file.seek(SeekFrom::Start(range.range().start))?;
             file.read_exact(&mut bytes)?;
             Ok(Bytes::from(bytes))
         }

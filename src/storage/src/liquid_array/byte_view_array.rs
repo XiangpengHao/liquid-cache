@@ -17,7 +17,7 @@ use datafusion::physical_plan::expressions::{BinaryExpr, LikeExpr, Literal};
 use fsst::Compressor;
 use std::any::Any;
 use std::fmt::Display;
-use std::path::PathBuf;
+use std::ops::Range;
 use std::sync::Arc;
 
 #[cfg(test)]
@@ -45,7 +45,7 @@ use super::{
 };
 use crate::liquid_array::ipc::{ByteViewArrayHeader, LiquidIPCHeader};
 use crate::liquid_array::raw::fsst_array::{RawFsstBuffer, train_compressor};
-use crate::liquid_array::{IoRequest, LiquidHybridArrayRef};
+use crate::liquid_array::{IoRange, LiquidHybridArrayRef};
 use crate::utils::CheckedDictionaryArray;
 
 #[derive(Debug, Clone, Copy)]
@@ -88,15 +88,15 @@ impl MemoryBuffer {
 /// Disk buffer for FSST buffer
 #[derive(Debug, Clone)]
 pub struct DiskBuffer {
-    path: PathBuf,
     uncompressed_bytes: usize,
+    disk_range: Range<u64>,
 }
 
 impl DiskBuffer {
-    pub(crate) fn new(path: PathBuf, uncompressed_bytes: usize) -> Self {
+    pub(crate) fn new(uncompressed_bytes: usize, disk_range: Range<u64>) -> Self {
         Self {
-            path,
             uncompressed_bytes,
+            disk_range,
         }
     }
 }
@@ -108,7 +108,7 @@ mod sealed {
 /// Trait for FSST buffer - can be in memory or on disk
 pub trait FsstBuffer: std::fmt::Debug + Clone + sealed::Sealed {
     /// Get the raw FSST buffer, loading from disk if necessary
-    fn get_fsst_buffer(&self) -> Result<Arc<RawFsstBuffer>, IoRequest>;
+    fn get_fsst_buffer(&self) -> Result<Arc<RawFsstBuffer>, IoRange>;
 
     /// Get the memory size of the FSST buffer
     fn get_array_memory_size(&self) -> usize;
@@ -121,7 +121,7 @@ impl sealed::Sealed for MemoryBuffer {}
 impl sealed::Sealed for DiskBuffer {}
 
 impl FsstBuffer for MemoryBuffer {
-    fn get_fsst_buffer(&self) -> Result<Arc<RawFsstBuffer>, IoRequest> {
+    fn get_fsst_buffer(&self) -> Result<Arc<RawFsstBuffer>, IoRange> {
         Ok(self.buffer.clone())
     }
 
@@ -135,10 +135,9 @@ impl FsstBuffer for MemoryBuffer {
 }
 
 impl FsstBuffer for DiskBuffer {
-    fn get_fsst_buffer(&self) -> Result<Arc<RawFsstBuffer>, IoRequest> {
-        Err(IoRequest {
-            path: self.path.clone(),
-            range: None,
+    fn get_fsst_buffer(&self) -> Result<Arc<RawFsstBuffer>, IoRange> {
+        Err(IoRange {
+            range: self.disk_range.clone(),
         })
     }
 
@@ -197,7 +196,7 @@ impl LiquidArray for LiquidByteViewArray<MemoryBuffer> {
         LiquidDataType::ByteArray
     }
 
-    fn squeeze(&self) -> Option<(LiquidHybridArrayRef, (bytes::Bytes, std::ops::Range<u64>))> {
+    fn squeeze(&self) -> Option<(LiquidHybridArrayRef, bytes::Bytes)> {
         // Serialize full IPC bytes first
         let bytes = match self.to_bytes_inner() {
             Ok(b) => b,
@@ -222,11 +221,10 @@ impl LiquidArray for LiquidByteViewArray<MemoryBuffer> {
 
         assert!(fsst_end <= bytes.len());
 
+        let disk_range = (fsst_start as u64)..(fsst_end as u64);
+
         // Build the hybrid (disk-backed FSST) view
-        let disk = DiskBuffer::new(
-            std::path::PathBuf::new(),
-            self.fsst_buffer.uncompressed_bytes(),
-        );
+        let disk = DiskBuffer::new(self.fsst_buffer.uncompressed_bytes(), disk_range);
         let hybrid = LiquidByteViewArray::<DiskBuffer> {
             dictionary_keys: self.dictionary_keys.clone(),
             offset_views: self.offset_views.clone(),
@@ -236,9 +234,8 @@ impl LiquidArray for LiquidByteViewArray<MemoryBuffer> {
             compressor: self.compressor.clone(),
         };
 
-        let range = (fsst_start as u64)..(fsst_end as u64);
         let bytes = bytes::Bytes::from(bytes);
-        Some((Arc::new(hybrid) as LiquidHybridArrayRef, (bytes, range)))
+        Some((Arc::new(hybrid) as LiquidHybridArrayRef, bytes))
     }
 }
 
@@ -264,14 +261,14 @@ impl LiquidHybridArray for LiquidByteViewArray<DiskBuffer> {
     }
 
     /// Convert the Liquid array to an Arrow array.
-    fn to_arrow_array(&self) -> Result<ArrayRef, IoRequest> {
+    fn to_arrow_array(&self) -> Result<ArrayRef, IoRange> {
         self.to_arrow_array()
     }
 
     /// Convert the Liquid array to an Arrow array.
     /// Except that it will pick the best encoding for the arrow array.
     /// Meaning that it may not obey the data type of the original arrow array.
-    fn to_best_arrow_array(&self) -> Result<ArrayRef, IoRequest> {
+    fn to_best_arrow_array(&self) -> Result<ArrayRef, IoRange> {
         self.to_arrow_array()
     }
 
@@ -281,17 +278,17 @@ impl LiquidHybridArray for LiquidByteViewArray<DiskBuffer> {
     }
 
     /// Serialize the Liquid array to a byte array.
-    fn to_bytes(&self) -> Result<Vec<u8>, IoRequest> {
+    fn to_bytes(&self) -> Result<Vec<u8>, IoRange> {
         self.to_bytes_inner()
     }
 
     /// Filter the Liquid array with a boolean buffer.
-    fn filter(&self, selection: &BooleanBuffer) -> Result<LiquidHybridArrayRef, IoRequest> {
+    fn filter(&self, selection: &BooleanBuffer) -> Result<LiquidHybridArrayRef, IoRange> {
         Ok(Arc::new(filter_inner(self, selection)))
     }
 
     /// Filter the Liquid array with a boolean array and return an **arrow array**.
-    fn filter_to_arrow(&self, selection: &BooleanBuffer) -> Result<ArrayRef, IoRequest> {
+    fn filter_to_arrow(&self, selection: &BooleanBuffer) -> Result<ArrayRef, IoRange> {
         let filtered = self.filter(selection)?;
         filtered.to_best_arrow_array()
     }
@@ -305,7 +302,7 @@ impl LiquidHybridArray for LiquidByteViewArray<DiskBuffer> {
         &self,
         _predicate: &Arc<dyn PhysicalExpr>,
         _filter: &BooleanBuffer,
-    ) -> Result<Option<BooleanArray>, IoRequest> {
+    ) -> Result<Option<BooleanArray>, IoRange> {
         Ok(None)
     }
 
@@ -327,10 +324,9 @@ impl LiquidHybridArray for LiquidByteViewArray<DiskBuffer> {
         Arc::new(in_memory_array)
     }
 
-    fn to_liquid(&self) -> IoRequest {
-        IoRequest {
-            path: self.fsst_buffer.path.clone(),
-            range: None,
+    fn to_liquid(&self) -> IoRange {
+        IoRange {
+            range: self.fsst_buffer.disk_range.clone(),
         }
     }
 }
@@ -360,7 +356,7 @@ fn filter_inner<B: FsstBuffer>(
 fn try_eval_predicate_inner<B: FsstBuffer>(
     expr: &Arc<dyn PhysicalExpr>,
     array: &LiquidByteViewArray<B>,
-) -> Result<Option<BooleanArray>, IoRequest> {
+) -> Result<Option<BooleanArray>, IoRange> {
     // Handle binary expressions (comparisons)
     if let Some(binary_expr) = expr.as_any().downcast_ref::<BinaryExpr>() {
         if let Some(literal) = binary_expr.right().as_any().downcast_ref::<Literal>() {
@@ -609,7 +605,7 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
     }
 
     /// Convert to Arrow DictionaryArray
-    pub fn to_dict_arrow(&self) -> Result<DictionaryArray<UInt16Type>, IoRequest> {
+    pub fn to_dict_arrow(&self) -> Result<DictionaryArray<UInt16Type>, IoRange> {
         let keys_array = self.dictionary_keys.clone();
 
         // Convert raw FSST buffer to values using our offset views
@@ -635,7 +631,7 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
     }
 
     /// Convert to Arrow array with original type
-    pub fn to_arrow_array(&self) -> Result<ArrayRef, IoRequest> {
+    pub fn to_arrow_array(&self) -> Result<ArrayRef, IoRange> {
         let dict = self.to_dict_arrow()?;
         Ok(cast(&dict, &self.original_arrow_type.to_arrow_type()).unwrap())
     }
@@ -646,7 +642,7 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
     }
 
     /// Compare with prefix optimization and fallback to Arrow operations
-    pub fn compare_with(&self, needle: &[u8], op: &Operator) -> Result<BooleanArray, IoRequest> {
+    pub fn compare_with(&self, needle: &[u8], op: &Operator) -> Result<BooleanArray, IoRange> {
         match op {
             // Handle equality operations with existing optimized methods
             Operator::Eq => self.compare_equals(needle),
@@ -678,7 +674,7 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
     /// 1. First sort the dictionary using prefixes to delay decompression
     /// 2. If decompression is needed, decompress the entire array at once
     /// 3. Use dictionary ranks to sort the final keys
-    pub fn sort_to_indices(&self) -> Result<UInt32Array, IoRequest> {
+    pub fn sort_to_indices(&self) -> Result<UInt32Array, IoRange> {
         // if distinct ratio is more than 10%, use arrow sort.
         if self.offset_views.len() > (self.dictionary_keys.len() / 10) {
             let array = self.to_dict_arrow()?;
@@ -854,7 +850,7 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
     }
 
     /// Compare equality with a byte needle
-    fn compare_equals(&self, needle: &[u8]) -> Result<BooleanArray, IoRequest> {
+    fn compare_equals(&self, needle: &[u8]) -> Result<BooleanArray, IoRange> {
         // Fast path 1: Check shared prefix
         let shared_prefix_len = self.shared_prefix.len();
         if needle.len() < shared_prefix_len || needle[..shared_prefix_len] != self.shared_prefix {
@@ -909,7 +905,7 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
     }
 
     /// Compare not equals with a byte needle
-    fn compare_not_equals(&self, needle: &[u8]) -> Result<BooleanArray, IoRequest> {
+    fn compare_not_equals(&self, needle: &[u8]) -> Result<BooleanArray, IoRange> {
         let result = self.compare_equals(needle)?;
         let (values, nulls) = result.into_parts();
         let values = !&values;
@@ -974,7 +970,7 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
     }
 
     /// Prefix optimization for ordering operations
-    fn compare_with_inner(&self, needle: &[u8], op: &Operator) -> Result<BooleanArray, IoRequest> {
+    fn compare_with_inner(&self, needle: &[u8], op: &Operator) -> Result<BooleanArray, IoRange> {
         // Try to short-circuit based on shared prefix comparison
         if let Some(result) = self.try_shared_prefix_short_circuit(needle, op) {
             return Ok(result);
@@ -1090,7 +1086,7 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
         &self,
         needle: &[u8],
         op: &Operator,
-    ) -> Result<BooleanArray, IoRequest> {
+    ) -> Result<BooleanArray, IoRange> {
         let dict_array = self.to_dict_arrow()?;
         let needle_scalar = datafusion::common::ScalarValue::Binary(Some(needle.to_vec()));
         let lhs = ColumnarValue::Array(Arc::new(dict_array));
@@ -1124,7 +1120,7 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
         reset_disk_read_counter()
     }
 
-    fn sort_to_indices_inner(&self) -> Result<UInt32Array, IoRequest> {
+    fn sort_to_indices_inner(&self) -> Result<UInt32Array, IoRange> {
         // Step 1: Get dictionary ranks using prefix optimization
         let dict_ranks = self.get_dictionary_ranks()?;
 
@@ -1153,7 +1149,7 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
 
     /// Get dictionary ranks using prefix optimization and lazy decompression
     /// Returns a mapping from dictionary key to its rank in sorted order
-    fn get_dictionary_ranks(&self) -> Result<Vec<u16>, IoRequest> {
+    fn get_dictionary_ranks(&self) -> Result<Vec<u16>, IoRange> {
         let num_unique = self.offset_views.len().saturating_sub(1);
         let mut dict_indices: Vec<u32> = (0..num_unique as u32).collect();
 
@@ -2075,10 +2071,11 @@ mod tests {
         let baseline = liquid.to_bytes();
 
         // Squeeze
-        let Some((hybrid, (bytes, range))) = liquid.squeeze() else {
+        let Some((hybrid, bytes)) = liquid.squeeze() else {
             panic!("squeeze should succeed");
         };
 
+        let range = hybrid.to_liquid().range;
         // Sanity: range bounds are valid
         assert!(range.start < range.end);
         assert!(range.end as usize <= bytes.len());

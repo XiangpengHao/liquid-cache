@@ -1,6 +1,9 @@
 //! Sans-IO state machines for IO operations.
 
-use std::{ops::Range, path::PathBuf, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use arrow::{
     array::{ArrayRef, BooleanArray},
@@ -12,7 +15,7 @@ use datafusion::physical_plan::PhysicalExpr;
 
 use crate::{
     cache::{LiquidCompressorStates, cached_data::GetWithPredicateResult},
-    liquid_array::{LiquidArrayRef, LiquidHybridArrayRef},
+    liquid_array::{IoRange, LiquidArrayRef, LiquidHybridArrayRef},
 };
 
 /// The result of a sans-IO operation.
@@ -48,10 +51,27 @@ pub trait IoStateMachine: Sized {
 /// Description of an IO request to satisfy a sans-IO operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IoRequest {
-    /// The path to read.
-    pub path: PathBuf,
-    /// The range to read.
-    pub range: Option<Range<u64>>,
+    path: PathBuf,
+    range: Option<IoRange>,
+}
+
+impl IoRequest {
+    /// Get the path of the IO request.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Get the range of the IO request.
+    pub fn range(&self) -> Option<&IoRange> {
+        self.range.as_ref()
+    }
+
+    pub(crate) fn from_path_and_range(path: PathBuf, range: IoRange) -> Self {
+        Self {
+            path,
+            range: Some(range),
+        }
+    }
 }
 
 /// Reusable description of pending IO for Arrow or Liquid on-disk formats.
