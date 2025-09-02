@@ -18,9 +18,12 @@ use fastlanes::BitPacking;
 use num_traits::{AsPrimitive, Float, FromPrimitive};
 
 use super::LiquidDataType;
+use crate::liquid_array::ipc::LiquidIPCHeader;
+use crate::liquid_array::ipc::get_physical_type_id;
 use crate::liquid_array::raw::BitPackedArray;
 use crate::liquid_array::{LiquidArray, LiquidArrayRef};
 use crate::utils::get_bit_width;
+use bytes::Bytes;
 
 mod private {
     use arrow::{
@@ -198,11 +201,11 @@ pub type LiquidFloat64Array = LiquidFloatArray<Float64Type>;
 /// An array that stores floats in ALP
 #[derive(Debug, Clone)]
 pub struct LiquidFloatArray<T: LiquidFloatType> {
-    pub(crate) exponent: Exponents,
-    pub(crate) bit_packed: BitPackedArray<T::UnsignedIntType>,
-    pub(crate) patch_indices: Vec<u64>,
-    pub(crate) patch_values: Vec<T::Native>,
-    pub(crate) reference_value: <T::SignedIntType as ArrowPrimitiveType>::Native,
+    exponent: Exponents,
+    bit_packed: BitPackedArray<T::UnsignedIntType>,
+    patch_indices: Vec<u64>,
+    patch_values: Vec<T::Native>,
+    reference_value: <T::SignedIntType as ArrowPrimitiveType>::Native,
 }
 
 impl<T> LiquidFloatArray<T>
@@ -299,6 +302,215 @@ where
 
     fn to_best_arrow_array(&self) -> ArrayRef {
         self.to_arrow_array()
+    }
+}
+
+impl<T> LiquidFloatArray<T>
+where
+    T: LiquidFloatType,
+{
+    /*
+    Serialized LiquidFloatArray Memory Layout:
+    +--------------------------------------------------+
+    | LiquidIPCHeader (16 bytes)                       |
+    +--------------------------------------------------+
+
+    +--------------------------------------------------+
+    | reference_value                                  |
+    | (size_of::<T::SignedIntType::Native> bytes)      |  // The reference value (e.g. minimum value)
+    +--------------------------------------------------+
+    | Padding (to 8-byte alignment)                    |  // Padding to ensure 8-byte alignment
+    +--------------------------------------------------+
+
+    +--------------------------------------------------+
+    | Exponents                                        |
+    +--------------------------------------------------+
+    | e (1 byte)                                       |
+    +--------------------------------------------------+
+    | f (1 byte)                                       |
+    +--------------------------------------------------+
+    | Padding (6 bytes)                                |
+    +--------------------------------------------------+
+
+    +--------------------------------------------------+
+    | Patch Data                                       |
+    +--------------------------------------------------+
+    | patch_length (8 bytes)                           |
+    +--------------------------------------------------+
+    | patch_indices (8 * patch_length btyes)           |
+    +--------------------------------------------------+
+    | patch_values (length *size_of::<T::Native> btyes;|
+    |               8-byte aligned)                    |
+    +--------------------------------------------------+
+
+    +--------------------------------------------------+
+    | BitPackedArray Data                              |
+    +--------------------------------------------------+
+    | [BitPackedArray Header & Bit-Packed Values]      |  // Written by self.bit_packed.to_bytes()
+    +--------------------------------------------------+
+    */
+    pub(crate) fn to_bytes_inner(&self) -> Vec<u8> {
+        // Determine type ID based on the type
+        let physical_type_id = get_physical_type_id::<T>();
+        let logical_type_id = LiquidDataType::Float as u16;
+        let header = LiquidIPCHeader::new(logical_type_id, physical_type_id);
+
+        let mut result = Vec::with_capacity(256); // Pre-allocate a reasonable size
+
+        // Write header
+        result.extend_from_slice(&header.to_bytes());
+
+        // Write reference value
+        let ref_value_bytes = unsafe {
+            std::slice::from_raw_parts(
+                &self.reference_value as *const <T::SignedIntType as ArrowPrimitiveType>::Native
+                    as *const u8,
+                std::mem::size_of::<<T::SignedIntType as ArrowPrimitiveType>::Native>(),
+            )
+        };
+        result.extend_from_slice(ref_value_bytes);
+
+        let exponents_starting_loc = (result.len() + 7) & !7;
+        // Insert padding before exponents start
+        while result.len() < exponents_starting_loc {
+            result.push(0);
+        }
+
+        let exponent_e_bytes =
+            unsafe { std::slice::from_raw_parts(&self.exponent.e as *const u8, 1) };
+        let exponent_f_bytes =
+            unsafe { std::slice::from_raw_parts(&self.exponent.f as *const u8, 1) };
+        // Write exponents and padding
+        result.extend_from_slice(exponent_e_bytes);
+        result.extend_from_slice(exponent_f_bytes);
+        for _i in 0..6 {
+            result.push(0);
+        }
+
+        // Number of bytes occupied by usize is target-dependent; use u64 instead
+        let patch_length = self.patch_indices.len() as u64;
+
+        let patch_length_bytes = unsafe {
+            std::slice::from_raw_parts(
+                &patch_length as *const u64 as *const u8,
+                std::mem::size_of::<u64>(),
+            )
+        };
+
+        // Write the patch length
+        result.extend_from_slice(patch_length_bytes);
+
+        if !self.patch_indices.is_empty() {
+            let patch_indices_bytes = unsafe {
+                std::slice::from_raw_parts(
+                    self.patch_indices.as_ptr() as *const u8,
+                    std::mem::size_of::<u64>() * self.patch_indices.len(),
+                )
+            };
+
+            // Write the patch indices
+            result.extend_from_slice(patch_indices_bytes);
+
+            // Write the patch values
+            let patch_values_bytes = unsafe {
+                std::slice::from_raw_parts(
+                    self.patch_values.as_ptr() as *const u8,
+                    std::mem::size_of::<T::Native>() * self.patch_indices.len(),
+                )
+            };
+            result.extend_from_slice(patch_values_bytes);
+        }
+        let padding = ((result.len() + 7) & !7) - result.len();
+
+        // Add padding before writing bit-packed array
+        for _i in 0..padding {
+            result.push(0);
+        }
+
+        // Serialize bit-packed values
+        self.bit_packed.to_bytes(&mut result);
+
+        result
+    }
+
+    /// Deserialize a LiquidFloatArray from bytes, using zero-copy where possible.
+    pub fn from_bytes(bytes: Bytes) -> Self {
+        let header = LiquidIPCHeader::from_bytes(&bytes);
+
+        // Verify the type id
+        let physical_id = header.physical_type_id;
+        assert_eq!(physical_id, get_physical_type_id::<T>());
+        let logical_id = header.logical_type_id;
+        assert_eq!(logical_id, LiquidDataType::Float as u16);
+
+        // Get the reference value
+        let ref_value_ptr = &bytes[LiquidIPCHeader::size()];
+        let reference_value = unsafe {
+            (ref_value_ptr as *const u8 as *const <T::SignedIntType as ArrowPrimitiveType>::Native)
+                .read_unaligned()
+        };
+
+        // Read exponents (e, f) & skip padding
+        let mut next = ((LiquidIPCHeader::size()
+            + std::mem::size_of::<<T::SignedIntType as ArrowPrimitiveType>::Native>())
+            + 7)
+            & !7;
+
+        // Read exponent fields (1 byte each) and skip 6 padding bytes
+        let exponent_e = bytes[next];
+        let exponent_f = bytes[next + 1];
+        next += 8;
+
+        // Read patch length (8 bytes)
+        let mut patch_length = 0u64;
+        patch_length |= bytes[next] as u64;
+        patch_length |= (bytes[next + 1] as u64) << 8;
+        patch_length |= (bytes[next + 2] as u64) << 16;
+        patch_length |= (bytes[next + 3] as u64) << 24;
+        patch_length |= (bytes[next + 4] as u64) << 32;
+        patch_length |= (bytes[next + 5] as u64) << 40;
+        patch_length |= (bytes[next + 6] as u64) << 48;
+        patch_length |= (bytes[next + 7] as u64) << 56;
+        next += 8;
+
+        // Read patch indices
+        let mut patch_indices = Vec::new();
+        let mut patch_values = Vec::new();
+        if patch_length > 0 {
+            let count = patch_length as usize;
+            let idx_bytes = count * std::mem::size_of::<u64>();
+            let val_bytes = count * std::mem::size_of::<T::Native>();
+
+            let indices_slice = bytes.slice(next..next + idx_bytes);
+            next += idx_bytes;
+            patch_indices = unsafe {
+                let ptr = indices_slice.as_ptr() as *const u64;
+                std::slice::from_raw_parts(ptr, count).to_vec()
+            };
+
+            let values_slice = bytes.slice(next..next + val_bytes);
+            next += val_bytes;
+            patch_values = unsafe {
+                let ptr = values_slice.as_ptr() as *const T::Native;
+                std::slice::from_raw_parts(ptr, count).to_vec()
+            };
+        }
+
+        // Align up to 8 bytes for bit-packed array
+        next = (next + 7) & !7;
+
+        let bit_packed = BitPackedArray::<T::UnsignedIntType>::from_bytes(bytes.slice(next..));
+
+        Self {
+            exponent: Exponents {
+                e: exponent_e,
+                f: exponent_f,
+            },
+            bit_packed,
+            patch_indices,
+            patch_values,
+            reference_value,
+        }
     }
 }
 

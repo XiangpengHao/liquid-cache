@@ -16,9 +16,12 @@ use fastlanes::BitPacking;
 use num_traits::{AsPrimitive, FromPrimitive};
 
 use super::LiquidDataType;
+use crate::liquid_array::ipc::LiquidIPCHeader;
+use crate::liquid_array::ipc::get_physical_type_id;
 use crate::liquid_array::raw::BitPackedArray;
 use crate::liquid_array::{LiquidArray, LiquidArrayRef};
 use crate::utils::get_bit_width;
+use bytes::Bytes;
 
 mod private {
     pub trait Sealed {}
@@ -93,8 +96,8 @@ pub type LiquidDate64Array = LiquidPrimitiveArray<Date64Type>;
 /// Liquid's primitive array
 #[derive(Debug, Clone)]
 pub struct LiquidPrimitiveArray<T: LiquidPrimitiveType> {
-    pub(crate) bit_packed: BitPackedArray<T::UnSignedType>,
-    pub(crate) reference_value: T::Native,
+    bit_packed: BitPackedArray<T::UnSignedType>,
+    reference_value: T::Native,
 }
 
 impl<T> LiquidPrimitiveArray<T>
@@ -242,6 +245,90 @@ where
 
     fn data_type(&self) -> LiquidDataType {
         LiquidDataType::Integer
+    }
+}
+
+impl<T> LiquidPrimitiveArray<T>
+where
+    T: LiquidPrimitiveType,
+{
+    fn bit_pack_starting_loc() -> usize {
+        let header_size = LiquidIPCHeader::size() + std::mem::size_of::<T::Native>();
+        (header_size + 7) & !7
+    }
+
+    /*
+    Serialized LiquidPrimitiveArray Memory Layout:
+    +--------------------------------------------------+
+    | LiquidIPCHeader (16 bytes)                       |
+    +--------------------------------------------------+
+
+    +--------------------------------------------------+
+    | reference_value (size_of::<T::Native> bytes)     |  // The reference value (e.g. minimum value)
+    +--------------------------------------------------+
+    | Padding (to 8-byte alignment)                    |  // Padding to ensure 8-byte alignment
+    +--------------------------------------------------+
+
+    +--------------------------------------------------+
+    | BitPackedArray Data                              |
+    +--------------------------------------------------+
+    | [BitPackedArray Header & Bit-Packed Values]      |  // Written by self.bit_packed.to_bytes()
+    +--------------------------------------------------+
+    */
+    pub(crate) fn to_bytes_inner(&self) -> Vec<u8> {
+        // Determine type ID based on the type
+        let physical_type_id = get_physical_type_id::<T>();
+        let logical_type_id = super::LiquidDataType::Integer as u16;
+        let header = LiquidIPCHeader::new(logical_type_id, physical_type_id);
+
+        let bit_pack_starting_loc = Self::bit_pack_starting_loc();
+        let mut result = Vec::with_capacity(bit_pack_starting_loc + 256); // Pre-allocate a reasonable size
+
+        // Write header
+        result.extend_from_slice(&header.to_bytes());
+
+        // Write reference value
+        let ref_value_bytes = unsafe {
+            std::slice::from_raw_parts(
+                &self.reference_value as *const T::Native as *const u8,
+                std::mem::size_of::<T::Native>(),
+            )
+        };
+        result.extend_from_slice(ref_value_bytes);
+        while result.len() < bit_pack_starting_loc {
+            result.push(0);
+        }
+
+        // Let BitPackedArray write the rest of the data
+        self.bit_packed.to_bytes(&mut result);
+
+        result
+    }
+
+    /// Deserialize a LiquidPrimitiveArray from bytes
+    pub fn from_bytes(bytes: Bytes) -> Self {
+        let header = LiquidIPCHeader::from_bytes(&bytes);
+
+        let physical_id = header.physical_type_id;
+        assert_eq!(physical_id, get_physical_type_id::<T>());
+        let logical_id = header.logical_type_id;
+        assert_eq!(logical_id, super::LiquidDataType::Integer as u16);
+
+        // Get the reference value
+        let ref_value_ptr = &bytes[LiquidIPCHeader::size()];
+        let reference_value =
+            unsafe { (ref_value_ptr as *const u8 as *const T::Native).read_unaligned() };
+
+        // Skip ahead to the BitPackedArray data
+        let bit_packed_data = bytes.slice(Self::bit_pack_starting_loc()..);
+        let bit_packed = crate::liquid_array::raw::BitPackedArray::<T::UnSignedType>::from_bytes(
+            bit_packed_data,
+        );
+
+        Self {
+            bit_packed,
+            reference_value,
+        }
     }
 }
 
