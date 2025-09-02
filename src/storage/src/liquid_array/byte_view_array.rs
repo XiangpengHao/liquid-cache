@@ -436,7 +436,8 @@ pub struct LiquidByteViewArray<B: FsstBuffer> {
     /// Dictionary keys (u16) - one per array element, using Arrow's UInt16Array for zero-copy
     pub(crate) dictionary_keys: UInt16Array,
     /// Offset views containing offset (u32) and prefix (8 bytes) - one per unique value
-    pub(crate) offset_views: Vec<OffsetView>,
+    /// Stored as `Arc<[OffsetView]>` for cheap clones when passing across layers (e.g., soak/squeeze).
+    pub(crate) offset_views: Arc<[OffsetView]>,
     /// FSST-compressed buffer (can be in memory or on disk)
     pub(crate) fsst_buffer: B,
     /// Used to convert back to the original arrow type
@@ -839,7 +840,7 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
 
         LiquidByteViewArray {
             dictionary_keys: keys,
-            offset_views,
+            offset_views: Arc::from(offset_views),
             fsst_buffer: MemoryBuffer {
                 buffer: Arc::new(raw_fsst_buffer),
             },
@@ -1258,6 +1259,7 @@ mod tests {
     use rand::{Rng, SeedableRng};
 
     fn test_string_roundtrip(input: StringArray) {
+        // to_bytes roundtrip
         let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
         let liquid_array =
             LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor.clone());
@@ -1271,6 +1273,22 @@ mod tests {
                 .unwrap()
                 .as_string::<i32>()
         );
+
+        // squeeze and soak roundtrip
+        let baseline = liquid_array.to_bytes();
+        let (hybrid, bytes) = liquid_array.squeeze().unwrap();
+        let range = hybrid.to_liquid().range;
+        assert!(range.start < range.end);
+        assert!(range.end as usize <= bytes.len());
+
+        let fsst_bytes = bytes.slice(range.start as usize..range.end as usize);
+        let restored = hybrid.soak(fsst_bytes);
+
+        use crate::liquid_array::LiquidArray as _;
+        let a1 = LiquidArray::to_arrow_array(&liquid_array);
+        let a2 = restored.to_arrow_array();
+        assert_eq!(a1.as_ref(), a2.as_ref());
+        assert_eq!(baseline, restored.to_bytes());
     }
 
     #[test]
@@ -1557,7 +1575,7 @@ mod tests {
 
         assert_eq!(liquid_array.shared_prefix, b"identical");
         // All offset view prefixes should be empty
-        for offset_view in &liquid_array.offset_views {
+        for offset_view in liquid_array.offset_views.iter() {
             assert_eq!(offset_view.prefix(), &[0u8; 8]);
         }
 
