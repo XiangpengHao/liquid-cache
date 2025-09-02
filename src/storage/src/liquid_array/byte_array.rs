@@ -9,6 +9,7 @@ use arrow::buffer::{BooleanBuffer, Buffer, NullBuffer, OffsetBuffer, ScalarBuffe
 use arrow::compute::{cast, kernels};
 use arrow::datatypes::{BinaryType, ByteArrayType, Utf8Type};
 use arrow_schema::DataType;
+use bytes::Bytes;
 use datafusion::logical_expr::{ColumnarValue, Operator};
 use datafusion::physical_expr_common::datum::apply_cmp;
 use datafusion::physical_plan::PhysicalExpr;
@@ -20,6 +21,7 @@ use std::mem::MaybeUninit;
 use std::sync::Arc;
 
 use super::{LiquidArray, LiquidArrayRef, LiquidDataType};
+use crate::liquid_array::ipc::LiquidIPCHeader;
 use crate::liquid_array::{raw::BitPackedArray, raw::FsstArray};
 use crate::utils::CheckedDictionaryArray;
 
@@ -68,6 +70,145 @@ impl LiquidArray for LiquidByteArray {
 
     fn data_type(&self) -> LiquidDataType {
         LiquidDataType::ByteArray
+    }
+}
+
+// Header for LiquidByteArray serialization
+#[repr(C)]
+struct ByteArrayHeader {
+    key_size: u32,
+    value_size: u32,
+}
+
+impl ByteArrayHeader {
+    const fn size() -> usize {
+        const _: () = assert!(std::mem::size_of::<ByteArrayHeader>() == ByteArrayHeader::size());
+        8
+    }
+
+    fn to_bytes(&self) -> [u8; Self::size()] {
+        let mut bytes = [0; Self::size()];
+        bytes[0..4].copy_from_slice(&self.key_size.to_le_bytes());
+        bytes[4..8].copy_from_slice(&self.value_size.to_le_bytes());
+        bytes
+    }
+
+    fn from_bytes(bytes: &[u8]) -> Self {
+        if bytes.len() < Self::size() {
+            panic!(
+                "value too small for ByteArrayHeader, expected at least {} bytes, got {}",
+                Self::size(),
+                bytes.len()
+            );
+        }
+        let key_size = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+        let value_size = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+        Self {
+            key_size,
+            value_size,
+        }
+    }
+}
+
+impl LiquidByteArray {
+    /*
+    Serialized LiquidByteArray Memory Layout:
+    +--------------------------------------------------+
+    | LiquidIPCHeader (16 bytes)                       |
+    +--------------------------------------------------+
+    | ByteArrayHeader (8 bytes)                        |  // Contains key_size and value_size
+    +--------------------------------------------------+
+    | BitPackedArray Data (keys)                       |
+    +--------------------------------------------------+
+    | [BitPackedArray Header & Bit-Packed Key Values]  |  // Written by keys.to_bytes()
+    +--------------------------------------------------+
+    | Padding (to 8-byte alignment)                    |  // Padding to ensure 8-byte alignment
+    +--------------------------------------------------+
+    | FsstArray Data (values)                          |
+    +--------------------------------------------------+
+    | [FsstArray Data]                                 |  // Written by values.to_bytes()
+    +--------------------------------------------------+
+    */
+    pub(crate) fn to_bytes_inner(&self) -> Vec<u8> {
+        // Create a buffer for the final output data, starting with the header
+        let header_size = LiquidIPCHeader::size() + ByteArrayHeader::size();
+        let mut result = Vec::with_capacity(header_size + 1024); // Pre-allocate a reasonable size
+
+        result.resize(header_size, 0);
+
+        // Serialize the BitPackedArray (keys)
+        let keys_start = result.len();
+        self.keys.to_bytes(&mut result);
+        let keys_size = result.len() - keys_start;
+
+        // Add padding to ensure FsstArray starts at an 8-byte aligned position
+        while !result.len().is_multiple_of(8) {
+            result.push(0);
+        }
+
+        // Serialize the FsstArray (values)
+        let values_start = result.len();
+        self.values.to_bytes(&mut result);
+        let values_size = result.len() - values_start;
+
+        // Go back and fill in the header
+        let ipc_header = LiquidIPCHeader::new(
+            LiquidDataType::ByteArray as u16,
+            self.original_arrow_type as u16,
+        );
+        let header = &mut result[0..header_size];
+        header[0..LiquidIPCHeader::size()].copy_from_slice(&ipc_header.to_bytes());
+
+        let byte_array_header = ByteArrayHeader {
+            key_size: keys_size as u32,
+            value_size: values_size as u32,
+        };
+        header[LiquidIPCHeader::size()..header_size].copy_from_slice(&byte_array_header.to_bytes());
+
+        result
+    }
+
+    /// Deserialize a LiquidByteArray from bytes, using zero-copy where possible.
+    pub fn from_bytes(bytes: Bytes, compressor: Arc<Compressor>) -> Self {
+        let header_size = LiquidIPCHeader::size() + ByteArrayHeader::size();
+        let header = LiquidIPCHeader::from_bytes(&bytes);
+
+        let byte_array_header =
+            ByteArrayHeader::from_bytes(&bytes[LiquidIPCHeader::size()..header_size]);
+
+        let original_arrow_type = ArrowByteType::from(header.physical_type_id);
+
+        let keys_size = byte_array_header.key_size as usize;
+        let values_size = byte_array_header.value_size as usize;
+
+        // Calculate offsets
+        let keys_start = header_size;
+        let keys_end = keys_start + keys_size;
+
+        if keys_end > bytes.len() {
+            panic!("Keys data extends beyond input buffer");
+        }
+
+        // Ensure values data starts at 8-byte aligned position
+        let values_start = (keys_end + 7) & !7; // Round up to next 8-byte boundary
+        let values_end = values_start + values_size;
+
+        if values_end > bytes.len() {
+            panic!("Values data extends beyond input buffer");
+        }
+
+        // Extract and deserialize components
+        let keys_data = bytes.slice(keys_start..keys_end);
+        let keys = BitPackedArray::<UInt16Type>::from_bytes(keys_data);
+
+        let values_data = bytes.slice(values_start..values_end);
+        let values = FsstArray::from_bytes(values_data, compressor);
+
+        Self {
+            keys,
+            values,
+            original_arrow_type,
+        }
     }
 }
 
@@ -250,11 +391,11 @@ impl ArrowByteType {
 /// An array that stores strings in a dictionary format, with a bit-packed array for the keys and a FSST array for the values.
 #[derive(Debug, Clone)]
 pub struct LiquidByteArray {
-    pub(crate) keys: BitPackedArray<UInt16Type>,
+    keys: BitPackedArray<UInt16Type>,
     /// TODO: we need to specify that the values in the FsstArray must be unique, this enables us some optimizations.
-    pub(crate) values: FsstArray,
+    values: FsstArray,
     /// Used to convert back to the original arrow type.
-    pub(crate) original_arrow_type: ArrowByteType,
+    original_arrow_type: ArrowByteType,
 }
 
 impl LiquidByteArray {
