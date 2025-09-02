@@ -11,9 +11,9 @@ use arrow::{
     datatypes::{Decimal128Type, Decimal256Type, DecimalType, UInt16Type},
 };
 use arrow_schema::DataType;
+use bytes::Bytes;
 use fsst::Compressor;
 use std::mem::MaybeUninit;
-use bytes::Bytes;
 
 use crate::utils::CheckedDictionaryArray;
 
@@ -145,7 +145,9 @@ struct FixedLenByteArrayHeader {
 }
 
 impl FixedLenByteArrayHeader {
-    const fn size() -> usize { 12 }
+    const fn size() -> usize {
+        12
+    }
 
     fn to_bytes(&self) -> [u8; Self::size()] {
         let mut bytes = [0; Self::size()];
@@ -170,7 +172,14 @@ impl FixedLenByteArrayHeader {
         let arrow_type = bytes[8];
         let precision = bytes[9];
         let scale = bytes[10] as i8;
-        Self { key_size, value_size, arrow_type, precision, scale, __padding: 0 }
+        Self {
+            key_size,
+            value_size,
+            arrow_type,
+            precision,
+            scale,
+            __padding: 0,
+        }
     }
 }
 
@@ -228,16 +237,28 @@ impl LiquidFixedLenByteArray {
         let header = LiquidIPCHeader::from_bytes(&bytes);
 
         // Verify the logical type
-        assert_eq!(header.logical_type_id, LiquidDataType::FixedLenByteArray as u16);
+        assert_eq!(
+            header.logical_type_id,
+            LiquidDataType::FixedLenByteArray as u16
+        );
 
         let fixed_len_header =
             FixedLenByteArrayHeader::from_bytes(&bytes[LiquidIPCHeader::size()..header_size]);
 
         // Parse arrow type based on the header
         let arrow_type = match fixed_len_header.arrow_type {
-            0 => ArrowFixedLenByteArrayType::Decimal128(fixed_len_header.precision, fixed_len_header.scale),
-            1 => ArrowFixedLenByteArrayType::Decimal256(fixed_len_header.precision, fixed_len_header.scale),
-            _ => panic!("Unsupported arrow type code: {}", fixed_len_header.arrow_type),
+            0 => ArrowFixedLenByteArrayType::Decimal128(
+                fixed_len_header.precision,
+                fixed_len_header.scale,
+            ),
+            1 => ArrowFixedLenByteArrayType::Decimal256(
+                fixed_len_header.precision,
+                fixed_len_header.scale,
+            ),
+            _ => panic!(
+                "Unsupported arrow type code: {}",
+                fixed_len_header.arrow_type
+            ),
         };
 
         // Calculate offsets

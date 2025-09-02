@@ -16,12 +16,12 @@ use fastlanes::BitPacking;
 use num_traits::{AsPrimitive, FromPrimitive};
 
 use super::LiquidDataType;
+use crate::liquid_array::ipc::LiquidIPCHeader;
+use crate::liquid_array::ipc::get_physical_type_id;
 use crate::liquid_array::raw::BitPackedArray;
 use crate::liquid_array::{LiquidArray, LiquidArrayRef};
 use crate::utils::get_bit_width;
 use bytes::Bytes;
-use crate::liquid_array::ipc::LiquidIPCHeader;
-use crate::liquid_array::ipc::get_physical_type_id;
 
 mod private {
     pub trait Sealed {}
@@ -316,9 +316,8 @@ where
 
         // Get the reference value
         let ref_value_ptr = &bytes[LiquidIPCHeader::size()];
-        let reference_value = unsafe {
-            (ref_value_ptr as *const u8 as *const T::Native).read_unaligned()
-        };
+        let reference_value =
+            unsafe { (ref_value_ptr as *const u8 as *const T::Native).read_unaligned() };
 
         // Skip ahead to the BitPackedArray data
         let bit_packed_data = bytes.slice(Self::bit_pack_starting_loc()..);

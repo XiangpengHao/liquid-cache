@@ -794,43 +794,7 @@ mod tests {
         assert_eq!(&input, output.as_dictionary());
     }
 
-    #[test]
-    fn test_roundtrip_with_nulls() {
-        let input = StringArray::from(vec![
-            Some("hello"),
-            None,
-            Some("world"),
-            None,
-            Some("hello"),
-        ]);
-        test_roundtrip(input);
-    }
-
-    #[test]
-    fn test_roundtrip_with_many_duplicates() {
-        let values = ["a", "b", "c"];
-        let input: Vec<&str> = (0..1000).map(|i| values[i % values.len()]).collect();
-        let input = StringArray::from(input);
-        test_roundtrip(input);
-    }
-
-    #[test]
-    fn test_roundtrip_with_long_strings() {
-        let input = StringArray::from(vec![
-            "This is a very long string that should be compressed well",
-            "Another long string with some common patterns",
-            "This is a very long string that should be compressed well",
-            "Some unique text here to mix things up",
-            "Another long string with some common patterns",
-        ]);
-        test_roundtrip(input);
-    }
-
-    #[test]
-    fn test_empty_strings() {
-        let input = StringArray::from(vec!["", "", "non-empty", ""]);
-        test_roundtrip(input);
-    }
+    // moved to shared tests in tests.rs: roundtrip with duplicates and long strings
 
     #[test]
     fn test_dictionary_roundtrip() {
@@ -956,57 +920,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_to_dict_arrow_preserves_type() {
-        // Test string type preservation
-        let input_str = StringArray::from(vec!["hello", "world", "test"]);
-        let (_compressor_str, liquid_str) = LiquidByteArray::train_from_arrow(&input_str);
-        let dict_str = liquid_str.to_dict_arrow();
-        assert_eq!(
-            dict_str.values().data_type(),
-            &DataType::Utf8,
-            "String values should be preserved as Utf8"
-        );
-
-        // Test binary type preservation
-        let input_bin = cast(&input_str, &DataType::Binary)
-            .unwrap()
-            .as_binary::<i32>()
-            .clone();
-        let (_compressor_bin, liquid_bin) = LiquidByteArray::train_from_arrow(&input_bin);
-        let dict_bin = liquid_bin.to_dict_arrow();
-        assert_eq!(
-            dict_bin.values().data_type(),
-            &DataType::Binary,
-            "Binary values should be preserved as Binary"
-        );
-
-        // Test dictionary-string array
-        let dict_array = DictionaryArray::<UInt16Type>::from_iter(input_str.iter());
-        let (_compressor_dict, liquid_dict) = LiquidByteArray::train_from_arrow_dict(&dict_array);
-        let dict_result = liquid_dict.to_dict_arrow();
-        assert_eq!(
-            dict_result.values().data_type(),
-            &DataType::Utf8,
-            "Dictionary with binary values should preserve Utf8 type"
-        );
-
-        // Test dictionary-binary array
-        let dict_array = DictionaryArray::<UInt16Type>::from_iter(input_str.iter());
-        let dict_array = cast(
-            &dict_array,
-            &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Binary)),
-        )
-        .unwrap();
-        let (_compressor_dict, liquid_dict) =
-            LiquidByteArray::train_from_arrow_dict(dict_array.as_dictionary());
-        let dict_result = liquid_dict.to_dict_arrow();
-        assert_eq!(
-            dict_result.values().data_type(),
-            &DataType::Binary,
-            "Dictionary with binary values should preserve Binary type"
-        );
-    }
+    // moved to shared tests in tests.rs: to_dict_arrow_preserves_value_type_shared
 
     #[test]
     fn test_decompress_keyed_all_same_value() {

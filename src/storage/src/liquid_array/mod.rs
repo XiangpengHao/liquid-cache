@@ -8,6 +8,8 @@ mod float_array;
 pub mod ipc;
 mod primitive_array;
 pub mod raw;
+#[cfg(test)]
+mod tests;
 pub(crate) mod utils;
 
 use std::{any::Any, ops::Range, sync::Arc};

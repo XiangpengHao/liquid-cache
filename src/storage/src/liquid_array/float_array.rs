@@ -18,12 +18,12 @@ use fastlanes::BitPacking;
 use num_traits::{AsPrimitive, Float, FromPrimitive};
 
 use super::LiquidDataType;
+use crate::liquid_array::ipc::LiquidIPCHeader;
+use crate::liquid_array::ipc::get_physical_type_id;
 use crate::liquid_array::raw::BitPackedArray;
 use crate::liquid_array::{LiquidArray, LiquidArrayRef};
 use crate::utils::get_bit_width;
 use bytes::Bytes;
-use crate::liquid_array::ipc::LiquidIPCHeader;
-use crate::liquid_array::ipc::get_physical_type_id;
 
 mod private {
     use arrow::{
@@ -376,8 +376,10 @@ where
             result.push(0);
         }
 
-        let exponent_e_bytes = unsafe { std::slice::from_raw_parts(&self.exponent.e as *const u8, 1) };
-        let exponent_f_bytes = unsafe { std::slice::from_raw_parts(&self.exponent.f as *const u8, 1) };
+        let exponent_e_bytes =
+            unsafe { std::slice::from_raw_parts(&self.exponent.e as *const u8, 1) };
+        let exponent_f_bytes =
+            unsafe { std::slice::from_raw_parts(&self.exponent.f as *const u8, 1) };
         // Write exponents and padding
         result.extend_from_slice(exponent_e_bytes);
         result.extend_from_slice(exponent_f_bytes);
@@ -389,7 +391,10 @@ where
         let patch_length = self.patch_indices.len() as u64;
 
         let patch_length_bytes = unsafe {
-            std::slice::from_raw_parts(&patch_length as *const u64 as *const u8, std::mem::size_of::<u64>())
+            std::slice::from_raw_parts(
+                &patch_length as *const u64 as *const u8,
+                std::mem::size_of::<u64>(),
+            )
         };
 
         // Write the patch length
@@ -441,13 +446,15 @@ where
         // Get the reference value
         let ref_value_ptr = &bytes[LiquidIPCHeader::size()];
         let reference_value = unsafe {
-            (ref_value_ptr as *const u8
-                as *const <T::SignedIntType as ArrowPrimitiveType>::Native)
+            (ref_value_ptr as *const u8 as *const <T::SignedIntType as ArrowPrimitiveType>::Native)
                 .read_unaligned()
         };
 
         // Read exponents (e, f) & skip padding
-        let mut next = ((LiquidIPCHeader::size() + std::mem::size_of::<<T::SignedIntType as ArrowPrimitiveType>::Native>()) + 7) & !7;
+        let mut next = ((LiquidIPCHeader::size()
+            + std::mem::size_of::<<T::SignedIntType as ArrowPrimitiveType>::Native>())
+            + 7)
+            & !7;
 
         // Read exponent fields (1 byte each) and skip 6 padding bytes
         let exponent_e = bytes[next];
@@ -495,7 +502,10 @@ where
         let bit_packed = BitPackedArray::<T::UnsignedIntType>::from_bytes(bytes.slice(next..));
 
         Self {
-            exponent: Exponents { e: exponent_e, f: exponent_f },
+            exponent: Exponents {
+                e: exponent_e,
+                f: exponent_f,
+            },
             bit_packed,
             patch_indices,
             patch_values,

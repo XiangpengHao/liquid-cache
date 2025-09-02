@@ -10,12 +10,12 @@ use arrow::buffer::{BooleanBuffer, NullBuffer};
 use arrow::compute::{cast, kernels, sort_to_indices};
 use arrow::datatypes::ByteArrayType;
 use arrow_schema::DataType;
+use bytes::Bytes;
 use datafusion::logical_expr::{ColumnarValue, Operator};
 use datafusion::physical_expr_common::datum::apply_cmp;
 use datafusion::physical_plan::PhysicalExpr;
 use datafusion::physical_plan::expressions::{BinaryExpr, LikeExpr, Literal};
 use fsst::Compressor;
-use bytes::Bytes;
 use std::any::Any;
 use std::fmt::Display;
 use std::ops::Range;
@@ -45,8 +45,8 @@ use super::{
     byte_array::{ArrowByteType, get_string_needle},
 };
 use crate::liquid_array::ipc::LiquidIPCHeader;
-use crate::liquid_array::raw::fsst_array::{RawFsstBuffer, train_compressor};
 use crate::liquid_array::raw::BitPackedArray;
+use crate::liquid_array::raw::fsst_array::{RawFsstBuffer, train_compressor};
 use crate::liquid_array::{IoRange, LiquidHybridArrayRef};
 use crate::utils::CheckedDictionaryArray;
 
@@ -61,7 +61,8 @@ struct ByteViewArrayHeader {
 
 impl ByteViewArrayHeader {
     const fn size() -> usize {
-        const _: () = assert!(std::mem::size_of::<ByteViewArrayHeader>() == ByteViewArrayHeader::size());
+        const _: () =
+            assert!(std::mem::size_of::<ByteViewArrayHeader>() == ByteViewArrayHeader::size());
         16
     }
 
@@ -209,12 +210,16 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
 
 impl LiquidByteViewArray<MemoryBuffer> {
     /// Deserialize a LiquidByteViewArray from bytes.
-    pub fn from_bytes(bytes: Bytes, compressor: Arc<Compressor>) -> LiquidByteViewArray<MemoryBuffer> {
+    pub fn from_bytes(
+        bytes: Bytes,
+        compressor: Arc<Compressor>,
+    ) -> LiquidByteViewArray<MemoryBuffer> {
         // 0) Read IPC header and our view header
         let ipc = LiquidIPCHeader::from_bytes(&bytes);
         let original_arrow_type = ArrowByteType::from(ipc.physical_type_id);
         let header_size = LiquidIPCHeader::size() + ByteViewArrayHeader::size();
-        let view_header = ByteViewArrayHeader::from_bytes(&bytes[LiquidIPCHeader::size()..header_size]);
+        let view_header =
+            ByteViewArrayHeader::from_bytes(&bytes[LiquidIPCHeader::size()..header_size]);
 
         let mut cursor = header_size;
 
@@ -1492,141 +1497,6 @@ mod tests {
     use arrow::array::Array;
     use rand::{Rng, SeedableRng};
 
-    fn test_string_roundtrip(input: StringArray) {
-        // to_bytes roundtrip
-        let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
-        let liquid_array =
-            LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor.clone());
-        let output = liquid_array.to_arrow_array().expect("InMemoryFsstBuffer");
-        assert_eq!(&input, output.as_string::<i32>());
-
-        let dict_output = liquid_array.to_dict_arrow().unwrap();
-        assert_eq!(
-            &input,
-            cast(&dict_output, input.data_type())
-                .unwrap()
-                .as_string::<i32>()
-        );
-
-        // squeeze and soak roundtrip
-        let baseline = liquid_array.to_bytes();
-        let (hybrid, bytes) = liquid_array.squeeze().unwrap();
-        let range = hybrid.to_liquid().range;
-        assert!(range.start < range.end);
-        assert!(range.end as usize <= bytes.len());
-
-        let fsst_bytes = bytes.slice(range.start as usize..range.end as usize);
-        let restored = hybrid.soak(fsst_bytes);
-
-        use crate::liquid_array::LiquidArray as _;
-        let a1 = LiquidArray::to_arrow_array(&liquid_array);
-        let a2 = restored.to_arrow_array();
-        assert_eq!(a1.as_ref(), a2.as_ref());
-        assert_eq!(baseline, restored.to_bytes());
-    }
-
-    #[test]
-    fn test_roundtrip_with_nulls() {
-        let input = StringArray::from(vec![
-            Some("hello"),
-            None,
-            Some("world"),
-            None,
-            Some("This is a very long string that should be compressed well"),
-            Some("hello"),
-            Some(""),
-            Some("This is a very long string that should be compressed well"),
-        ]);
-        test_string_roundtrip(input);
-    }
-    #[test]
-    fn test_string_view_roundtrip() {
-        let input = StringViewArray::from(vec![
-            Some("hello"),
-            Some("world"),
-            Some("hello"),
-            Some("rust"),
-            None,
-            Some("This is a very long string that should be compressed well"),
-            Some(""),
-            Some("This is a very long string that should be compressed well"),
-        ]);
-
-        let (_compressor, liquid_array) =
-            LiquidByteViewArray::<MemoryBuffer>::train_from_string_view(&input);
-        let output = liquid_array.to_arrow_array().unwrap();
-        assert_eq!(&input, output.as_string_view());
-    }
-
-    #[test]
-    fn test_binary_view_roundtrip() {
-        let input = BinaryViewArray::from(vec![
-            Some(b"hello".as_slice()),
-            Some(b"world".as_slice()),
-            Some(b"hello".as_slice()),
-            Some(b"rust\x00".as_slice()),
-            None,
-            Some(b"This is a very long string that should be compressed well"),
-            Some(b""),
-            Some(b"This is a very long string that should be compressed well"),
-        ]);
-
-        let (_compressor, liquid_array) =
-            LiquidByteViewArray::<MemoryBuffer>::train_from_binary_view(&input);
-        let output = liquid_array.to_arrow_array().unwrap();
-        assert_eq!(&input, output.as_binary_view());
-    }
-
-    #[test]
-    fn test_compare_equals_comprehensive() {
-        struct TestCase<'a> {
-            input: Vec<Option<&'a str>>,
-            needle: &'a str,
-            expected: Vec<Option<bool>>,
-        }
-
-        let test_cases = vec![
-            TestCase {
-                input: vec![Some("hello"), Some("world"), Some("hello"), Some("rust")],
-                needle: "hello",
-                expected: vec![Some(true), Some(false), Some(true), Some(false)],
-            },
-            TestCase {
-                input: vec![Some("hello"), Some("world"), Some("hello"), Some("rust")],
-                needle: "nonexistent",
-                expected: vec![Some(false), Some(false), Some(false), Some(false)],
-            },
-            TestCase {
-                input: vec![Some("hello"), None, Some("hello"), None, Some("world")],
-                needle: "hello",
-                expected: vec![Some(true), None, Some(true), None, Some(false)],
-            },
-            TestCase {
-                input: vec![Some(""), Some("hello"), Some(""), Some("world")],
-                needle: "",
-                expected: vec![Some(true), Some(false), Some(true), Some(false)],
-            },
-            TestCase {
-                input: vec![Some("short"), Some("longer"), Some("short"), Some("test")],
-                needle: "short",
-                expected: vec![Some(true), Some(false), Some(true), Some(false)],
-            },
-        ];
-
-        for case in test_cases {
-            let input_array = StringArray::from(case.input.clone());
-            let compressor =
-                LiquidByteViewArray::<MemoryBuffer>::train_compressor(input_array.iter());
-            let liquid_array =
-                LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input_array, compressor);
-
-            let result = liquid_array.compare_equals(case.needle.as_bytes()).unwrap();
-            let expected_array = BooleanArray::from(case.expected.clone());
-
-            assert_eq!(result, expected_array);
-        }
-    }
-
     #[test]
     fn test_dictionary_view_structure() {
         // Test OffsetView structure
@@ -2304,45 +2174,5 @@ mod tests {
                 Some(false),
             ]),
         );
-    }
-
-    #[test]
-    fn test_squeeze_and_soak_roundtrip() {
-        // Build a small array
-        let input = StringArray::from(vec![
-            Some("hello"),
-            Some("world"),
-            Some("hello"),
-            None,
-            Some("byteview"),
-        ]);
-        let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
-        let liquid = LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
-
-        // Full IPC bytes as baseline
-        let baseline = liquid.to_bytes();
-
-        // Squeeze
-        let Some((hybrid, bytes)) = liquid.squeeze() else {
-            panic!("squeeze should succeed");
-        };
-
-        let range = hybrid.to_liquid().range;
-        // Sanity: range bounds are valid
-        assert!(range.start < range.end);
-        assert!(range.end as usize <= bytes.len());
-
-        // Soak back to memory with raw FSST bytes
-        let fsst_bytes = bytes.slice(range.start as usize..range.end as usize);
-        let restored = hybrid.soak(fsst_bytes);
-
-        // Arrow equality check
-        use crate::liquid_array::LiquidArray as _;
-        let a1 = LiquidArray::to_arrow_array(&liquid);
-        let a2 = restored.to_arrow_array();
-        assert_eq!(a1.as_ref(), a2.as_ref());
-
-        // IPC bytes should match as well
-        assert_eq!(baseline, restored.to_bytes());
     }
 }
