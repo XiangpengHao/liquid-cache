@@ -72,6 +72,16 @@ impl IoContext for DefaultIoContext {
 pub struct CacheStats {
     /// Total number of entries in the cache.
     pub total_entries: usize,
+    /// Number of in-memory Arrow entries.
+    pub memory_arrow_entries: usize,
+    /// Number of in-memory Liquid entries.
+    pub memory_liquid_entries: usize,
+    /// Number of in-memory Hybrid-Liquid entries.
+    pub memory_hybrid_liquid_entries: usize,
+    /// Number of on-disk Liquid entries.
+    pub disk_liquid_entries: usize,
+    /// Number of on-disk Arrow entries.
+    pub disk_arrow_entries: usize,
     /// Total memory usage of the cache.
     pub memory_usage_bytes: usize,
     /// Total disk usage of the cache.
@@ -240,11 +250,30 @@ impl CacheStorage {
         // Count entries by residency/format
         let total_entries = self.index.entry_count();
 
+        let mut memory_arrow_entries = 0usize;
+        let mut memory_liquid_entries = 0usize;
+        let mut memory_hybrid_liquid_entries = 0usize;
+        let mut disk_liquid_entries = 0usize;
+        let mut disk_arrow_entries = 0usize;
+
+        self.index.for_each(|_, batch| match batch {
+            CachedBatch::MemoryArrow(_) => memory_arrow_entries += 1,
+            CachedBatch::MemoryLiquid(_) => memory_liquid_entries += 1,
+            CachedBatch::MemoryHybridLiquid(_) => memory_hybrid_liquid_entries += 1,
+            CachedBatch::DiskLiquid => disk_liquid_entries += 1,
+            CachedBatch::DiskArrow => disk_arrow_entries += 1,
+        });
+
         let memory_usage_bytes = self.budget.memory_usage_bytes();
         let disk_usage_bytes = self.budget.disk_usage_bytes();
 
         CacheStats {
             total_entries,
+            memory_arrow_entries,
+            memory_liquid_entries,
+            memory_hybrid_liquid_entries,
+            disk_liquid_entries,
+            disk_arrow_entries,
             memory_usage_bytes,
             disk_usage_bytes,
             max_cache_bytes: self.config.max_cache_bytes(),

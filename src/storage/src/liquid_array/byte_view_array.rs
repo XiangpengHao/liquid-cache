@@ -310,6 +310,10 @@ impl OffsetView {
     pub fn prefix(&self) -> &[u8; 8] {
         &self.prefix
     }
+
+    pub const fn prefix_len() -> usize {
+        8
+    }
 }
 
 /// Memory buffer for FSST buffer
@@ -539,9 +543,34 @@ impl LiquidHybridArray for LiquidByteViewArray<DiskBuffer> {
     /// The returned boolean mask is nullable if the the original array is nullable.
     fn try_eval_predicate(
         &self,
-        _predicate: &Arc<dyn PhysicalExpr>,
-        _filter: &BooleanBuffer,
+        expr: &Arc<dyn PhysicalExpr>,
+        filter: &BooleanBuffer,
     ) -> Result<Option<BooleanArray>, IoRange> {
+        // Reuse generic filter path first to reduce input rows if any
+        let filtered = filter_inner(self, filter);
+
+        // Handle binary expressions (equality/inequality) with prefix optimization
+        if let Some(binary_expr) = expr.as_any().downcast_ref::<BinaryExpr>() {
+            if let Some(literal) = binary_expr.right().as_any().downcast_ref::<Literal>() {
+                let op = binary_expr.op();
+
+                if matches!(op, Operator::Eq | Operator::NotEq) {
+                    if let Some(needle) = get_string_needle(literal.value()) {
+                        // Try prefix-based equality. On ambiguity, bubble up IoRange for fallback.
+                        let eq_mask = filtered
+                            .compare_equals_with_prefix(needle.as_bytes())
+                            .ok_or_else(|| self.to_liquid())?;
+                        if matches!(op, Operator::Eq) {
+                            return Ok(Some(eq_mask));
+                        } else {
+                            let (values, nulls) = eq_mask.into_parts();
+                            return Ok(Some(BooleanArray::new(!&values, nulls)));
+                        }
+                    }
+                }
+            }
+        }
+
         Ok(None)
     }
 
@@ -567,6 +596,37 @@ impl LiquidHybridArray for LiquidByteViewArray<DiskBuffer> {
         IoRange {
             range: self.fsst_buffer.disk_range.clone(),
         }
+    }
+}
+
+impl LiquidByteViewArray<DiskBuffer> {
+    /// Equality using prefix first; if ambiguous, fall back to full buffer comparison
+    fn compare_equals_with_prefix(&self, needle: &[u8]) -> Option<BooleanArray> {
+        // Quick shared prefix check identical to in-memory path
+        let shared_prefix_len = self.shared_prefix.len();
+        if needle.len() < shared_prefix_len || needle[..shared_prefix_len] != self.shared_prefix {
+            return Some(BooleanArray::new(
+                BooleanBuffer::new_unset(self.dictionary_keys.len()),
+                self.nulls().cloned(),
+            ));
+        }
+
+        let needle_suffix = &needle[shared_prefix_len..];
+        let needle_len = needle_suffix.len();
+
+        let num_unique = self.offset_views.len().saturating_sub(1);
+        let compare_len = std::cmp::min(OffsetView::prefix_len(), needle_len);
+        for i in 0..num_unique {
+            let prefix = self.offset_views[i].prefix();
+            if prefix[..compare_len] == needle_suffix[..compare_len] {
+                return None;
+            }
+        }
+
+        Some(BooleanArray::new(
+            BooleanBuffer::new_unset(self.dictionary_keys.len()),
+            self.nulls().cloned(),
+        ))
     }
 }
 
@@ -1101,7 +1161,7 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
         }
 
         let raw_buffer = self.fsst_buffer.get_fsst_buffer()?;
-        Ok(self.compare_equals_in_memory(needle, &raw_buffer))
+        Ok(self.compare_equals_with_raw_buffer(needle, &raw_buffer))
     }
 
     fn compare_equals_with_raw_buffer(
@@ -1134,14 +1194,6 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
 
         let to_compare = UInt16Array::new_scalar(matching_dict_key);
         arrow::compute::kernels::cmp::eq(&self.dictionary_keys, &to_compare).unwrap()
-    }
-
-    fn compare_equals_in_memory(
-        &self,
-        needle: &[u8],
-        raw_buffer: &Arc<RawFsstBuffer>,
-    ) -> BooleanArray {
-        self.compare_equals_with_raw_buffer(needle, raw_buffer)
     }
 
     /// Compare not equals with a byte needle
