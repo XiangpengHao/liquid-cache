@@ -1,3 +1,5 @@
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -15,6 +17,7 @@ use liquid_cache_storage::cache::CacheStorage;
 use liquid_cache_storage::cache::CacheStorageBuilder;
 use liquid_cache_storage::cache::EntryID;
 use liquid_cache_storage::cache::cached_data::GetWithPredicateResult;
+use liquid_cache_storage::cache::io_state::IoRequest;
 use liquid_cache_storage::cache::io_state::{IoStateMachine, SansIo, TryGet};
 use liquid_cache_storage::cache_policies::FiloPolicy;
 
@@ -38,13 +41,31 @@ struct CliArgs {
     bench: bool,
 }
 
+fn do_io(io_req: &IoRequest) -> Bytes {
+    match io_req.range() {
+        Some(range) => {
+            let r = range.range();
+            let len = (r.end - r.start) as usize;
+            let mut file = File::open(io_req.path()).expect("open cache file");
+            file.seek(SeekFrom::Start(r.start)).expect("seek start");
+            let mut buf = vec![0u8; len];
+            file.read_exact(&mut buf).expect("read exact range");
+            Bytes::from(buf)
+        }
+        None => {
+            let bytes = std::fs::read(io_req.path()).expect("read cache file");
+            Bytes::from(bytes)
+        }
+    }
+}
+
 fn main() {
     let args = CliArgs::parse();
 
     // 1) Build cache storage with FILO and a small budget (100 MB)
     let mut builder = CacheStorageBuilder::new()
-        .with_max_cache_bytes(100 * 1024 * 1024)
-        .with_cache_mode(LiquidCacheMode::LiquidBlocking)
+        .with_max_cache_bytes(500 * 1024 * 1024)
+        .with_cache_mode(LiquidCacheMode::Liquid)
         .with_policy(Box::new(FiloPolicy::new()));
     if let Some(dir) = args.cache_dir.clone() {
         builder = builder.with_cache_dir(dir);
@@ -73,6 +94,7 @@ fn main() {
     let t0 = Instant::now();
     let mut evaluated = 0usize;
     let mut num_io = 0usize;
+    let mut num_io_bytes = 0usize;
     for (i, id) in ids.iter().enumerate() {
         let cached = storage.get(id).expect("get cached data");
         let len = lens[i];
@@ -80,14 +102,16 @@ fn main() {
         match cached.get_with_predicate(&selection, &pred_expr) {
             SansIo::Ready(res) => match res {
                 GetWithPredicateResult::Evaluated(_) => evaluated += 1,
-                _ => panic!("unexpected result"),
+                GetWithPredicateResult::Filtered(_filtered) => {}
             },
             SansIo::Pending((mut state, io_req)) => {
-                let bytes = std::fs::read(io_req.path()).expect("read cache file");
-                state.feed(Bytes::from(bytes));
+                let bytes = do_io(&io_req);
+                num_io_bytes += bytes.len();
                 num_io += 1;
+                state.feed(bytes);
                 match state.try_get() {
                     TryGet::Ready(GetWithPredicateResult::Evaluated(_)) => evaluated += 1,
+                    TryGet::Ready(GetWithPredicateResult::Filtered(_filtered)) => {}
                     e => panic!("unexpected result: {e:?}"),
                 }
             }
@@ -95,14 +119,15 @@ fn main() {
     }
     let scan_elapsed = t0.elapsed();
     let stats = storage.stats();
-    println!("Cache stats: {stats:?}");
+    println!("Cache stats: {stats:#?}");
     println!(
-        "Cache scan (get_with_predicate) completed:\n  batches: {}\n  rows: {}\n  time: {:.3}s\n  evaluated: {}\n  num_io: {}",
+        "Cache scan (get_with_predicate) completed:\n  batches: {}\n  rows: {}\n  time: {:.3}s\n  evaluated: {}\n  num_io: {}\n  num_io_bytes: {}",
         ids.len(),
         total_rows,
         scan_elapsed.as_secs_f64(),
         evaluated,
         num_io,
+        num_io_bytes,
     );
 }
 

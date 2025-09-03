@@ -97,6 +97,23 @@ When comparing FSSTView with a string needle, we can skip the decompression by u
 Design discussion:
 - Sometimes it's faster to decompress the entire array and then do the comparison. But when?
 
+### Use prefix to skip disk io
+
+Currently, each string will have a inlined 8-byte prefix, along with its offset to the compressed FSST buffer.
+
+Let's say if we have a needle "hello", and the prefix is:
+| h | e | l | l | o |   |   |   |
+
+Can we skip the disk IO by using the prefix? The answer is no, because we don't know the length of the string -- we don't know whether the stored string is "hello" or just "hello" with some zero bytes.
+(this is less of a problem if we don't allow \0 in the middle of a string, but realistically, \0 is also a valid character.)
+
+To address this, we need to record the length of the string. Normally, this means an extra 4-byte for every string. As is done in StringView.
+
+Instead, we only borrow one byte from the prefix to store the length. 
+Nuance: how to handle long strings where the length is greater than 255?
+Answer: we don't. If the length is greater or equal to 255, we simply says "we don't know", and a disk IO is required. Our study shows that 99% of the real world string have length less than 100, so we can confidently determine the length for the most of the time.
+
+
 ### FSST buffer contains full strings
 Although the OffsetView contains the prefix (both shared and non-shared), the FSST buffer contains the full strings.
 This allows faster conversion to arrow StringViewArray, because we don't need to prepend the prefix to the decompressed strings.

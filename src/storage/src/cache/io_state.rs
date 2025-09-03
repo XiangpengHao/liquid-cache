@@ -145,7 +145,14 @@ impl PendingIo {
                     &crate::liquid_array::ipc::LiquidIPCContext::new(compressor),
                 )
             }
-            PendingIo::LiquidHybrid { old, .. } => old.soak(data),
+            PendingIo::LiquidHybrid { old, io_request } => {
+                if let Some(range) = io_request.range() {
+                    let range = range.range();
+                    let len = range.end - range.start;
+                    assert_eq!(len, data.len() as u64, "IO range length mismatch");
+                }
+                old.soak(data)
+            }
             PendingIo::Arrow { .. } => panic!("decode_liquid called on Arrow pending io"),
         }
     }
@@ -735,5 +742,29 @@ mod tests {
             }
             other => panic!("expected evaluated, got {other:?}"),
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "IO range length mismatch")]
+    fn hybrid_feed_mismatched_len_panics() {
+        // Build a small string array and transcode to liquid
+        let input = Arc::new(StringArray::from(vec!["a", "b", "a"])) as ArrayRef;
+        let states = LiquidCompressorStates::new();
+        let liquid = transcode_liquid_inner(&input, &states).unwrap();
+
+        // Squeeze to hybrid to obtain the FSST range
+        let (hybrid, full_bytes) = liquid.as_byte_view().squeeze().expect("squeeze");
+        let io_range = hybrid.to_liquid();
+
+        // Create a hybrid pending state that expects only the FSST slice
+        let io_req = IoRequest::from_path_and_range("disk".into(), io_range);
+        let SansIo::Pending((mut state, _)) =
+            GetLiquidArrayState::pending_hybrid_liquid(io_req, hybrid)
+        else {
+            panic!("expected pending");
+        };
+
+        // Feed the WRONG bytes (entire payload instead of requested slice) to trigger the assert
+        state.feed(full_bytes);
     }
 }

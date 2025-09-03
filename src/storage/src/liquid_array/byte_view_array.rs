@@ -172,7 +172,8 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
         {
             for ov in self.offset_views.iter() {
                 result.extend_from_slice(&ov.offset().to_le_bytes());
-                result.extend_from_slice(ov.prefix());
+                result.extend_from_slice(ov.prefix7());
+                result.push(ov.len_byte());
             }
         }
         let offset_views_size = result.len() - offsets_start;
@@ -261,9 +262,10 @@ impl LiquidByteViewArray<MemoryBuffer> {
             for i in 0..count {
                 let base = i * 12;
                 let off = u32::from_le_bytes(chunk[base..base + 4].try_into().unwrap());
-                let mut prefix: [u8; 8] = [0; 8];
-                prefix.copy_from_slice(&chunk[base + 4..base + 12]);
-                offset_views.push(OffsetView::new(off, prefix));
+                let mut prefix7: [u8; 7] = [0; 7];
+                prefix7.copy_from_slice(&chunk[base + 4..base + 11]);
+                let len = chunk[base + 11];
+                offset_views.push(OffsetView::from_parts(off, prefix7, len));
             }
         }
         cursor = offsets_end;
@@ -291,7 +293,8 @@ impl LiquidByteViewArray<MemoryBuffer> {
 #[repr(C)]
 pub(crate) struct OffsetView {
     offset: u32,
-    prefix: [u8; 8],
+    prefix7: [u8; 7],
+    len: u8,
 }
 
 const _: () = if std::mem::size_of::<OffsetView>() != 12 {
@@ -299,16 +302,63 @@ const _: () = if std::mem::size_of::<OffsetView>() != 12 {
 };
 
 impl OffsetView {
-    pub fn new(offset: u32, prefix: [u8; 8]) -> Self {
-        Self { offset, prefix }
+    /// Construct from offset and the full suffix bytes (after shared prefix).
+    /// Embeds up to `prefix_len()` bytes into `prefix7` and stores length (or 255 if >=255).
+    pub fn new(offset: u32, suffix_bytes: &[u8]) -> Self {
+        let mut prefix7 = [0u8; 7];
+        let copy_len = std::cmp::min(Self::prefix_len(), suffix_bytes.len());
+        if copy_len > 0 {
+            prefix7[..copy_len].copy_from_slice(&suffix_bytes[..copy_len]);
+        }
+        let len = if suffix_bytes.len() >= 255 {
+            255u8
+        } else {
+            suffix_bytes.len() as u8
+        };
+        Self {
+            offset,
+            prefix7,
+            len,
+        }
+    }
+
+    /// Construct directly from stored parts (used by deserialization only)
+    pub fn from_parts(offset: u32, prefix7: [u8; 7], len: u8) -> Self {
+        Self {
+            offset,
+            prefix7,
+            len,
+        }
     }
 
     pub fn offset(&self) -> u32 {
         self.offset
     }
 
-    pub fn prefix(&self) -> &[u8; 8] {
-        &self.prefix
+    /// Returns the 7-byte content prefix stored in the view
+    #[inline]
+    pub fn prefix7(&self) -> &[u8; 7] {
+        &self.prefix7
+    }
+
+    /// Returns Some(length) if known (<255), otherwise None for unknown (>=255)
+    #[inline]
+    pub fn known_suffix_len(&self) -> Option<usize> {
+        if self.len == 255 {
+            None
+        } else {
+            Some(self.len as usize)
+        }
+    }
+
+    #[inline]
+    pub fn len_byte(&self) -> u8 {
+        self.len
+    }
+
+    #[inline]
+    pub const fn prefix_len() -> usize {
+        7
     }
 }
 
@@ -539,9 +589,33 @@ impl LiquidHybridArray for LiquidByteViewArray<DiskBuffer> {
     /// The returned boolean mask is nullable if the the original array is nullable.
     fn try_eval_predicate(
         &self,
-        _predicate: &Arc<dyn PhysicalExpr>,
-        _filter: &BooleanBuffer,
+        expr: &Arc<dyn PhysicalExpr>,
+        filter: &BooleanBuffer,
     ) -> Result<Option<BooleanArray>, IoRange> {
+        // Reuse generic filter path first to reduce input rows if any
+        let filtered = filter_inner(self, filter);
+
+        // Handle binary expressions (equality/inequality) with prefix optimization
+        if let Some(binary_expr) = expr.as_any().downcast_ref::<BinaryExpr>()
+            && let Some(literal) = binary_expr.right().as_any().downcast_ref::<Literal>()
+        {
+            let op = binary_expr.op();
+            if matches!(op, Operator::Eq | Operator::NotEq)
+                && let Some(needle) = get_string_needle(literal.value())
+            {
+                // Try prefix-based equality. On ambiguity, bubble up IoRange for fallback.
+                let eq_mask = filtered
+                    .compare_equals_with_prefix(needle.as_bytes())
+                    .ok_or_else(|| self.to_liquid())?;
+                if matches!(op, Operator::Eq) {
+                    return Ok(Some(eq_mask));
+                } else {
+                    let (values, nulls) = eq_mask.into_parts();
+                    return Ok(Some(BooleanArray::new(!&values, nulls)));
+                }
+            }
+        }
+
         Ok(None)
     }
 
@@ -567,6 +641,81 @@ impl LiquidHybridArray for LiquidByteViewArray<DiskBuffer> {
         IoRange {
             range: self.fsst_buffer.disk_range.clone(),
         }
+    }
+}
+
+impl LiquidByteViewArray<DiskBuffer> {
+    /// Equality using prefix first; if ambiguous, fall back to full buffer comparison
+    fn compare_equals_with_prefix(&self, needle: &[u8]) -> Option<BooleanArray> {
+        // Quick shared prefix check identical to in-memory path
+        let shared_prefix_len = self.shared_prefix.len();
+        if needle.len() < shared_prefix_len || needle[..shared_prefix_len] != self.shared_prefix {
+            return Some(BooleanArray::new(
+                BooleanBuffer::new_unset(self.dictionary_keys.len()),
+                self.nulls().cloned(),
+            ));
+        }
+
+        let needle_suffix = &needle[shared_prefix_len..];
+        let needle_len = needle_suffix.len();
+        let prefix_len = OffsetView::prefix_len();
+
+        let num_unique = self.offset_views.len().saturating_sub(1);
+        let mut dict_results = vec![false; num_unique];
+
+        for (i, ov) in self.offset_views.iter().take(num_unique).enumerate() {
+            let known_len = ov.known_suffix_len();
+
+            // 1) Length gate
+            match known_len {
+                Some(l) => {
+                    if l != needle_len {
+                        continue; // definitively not equal
+                    }
+                }
+                None => {
+                    if needle_len < 255 {
+                        continue; // definitively not equal
+                    }
+                }
+            }
+
+            // 2) Compare by category
+            match known_len {
+                None => {
+                    // Long strings: need IO if prefix matches
+                    if ov.prefix7()[..prefix_len] == needle_suffix[..prefix_len] {
+                        return None; // ambiguous, requires IO
+                    }
+                    // else definitively not equal, leave false
+                }
+                Some(l) if l <= prefix_len => {
+                    // Small strings: exact compare on l bytes
+                    if ov.prefix7()[..l] == needle_suffix[..l] {
+                        dict_results[i] = true; // definitive match
+                    }
+                }
+                Some(_l) => {
+                    // Medium strings: prefix compare; equal means ambiguous
+                    if ov.prefix7()[..prefix_len] == needle_suffix[..prefix_len] {
+                        return None; // ambiguous
+                    }
+                }
+            }
+        }
+
+        // Map dict-level results to array-level mask
+        let mut builder = BooleanBuilder::with_capacity(self.dictionary_keys.len());
+        for &dict_key in self.dictionary_keys.values().iter() {
+            let matches = dict_results[dict_key as usize];
+            builder.append_value(matches);
+        }
+        let mut mask = builder.finish();
+        if let Some(nulls) = self.nulls() {
+            let (values, _) = mask.into_parts();
+            mask = BooleanArray::new(values, Some(nulls.clone()));
+        }
+        Some(mask)
     }
 }
 
@@ -1060,22 +1209,22 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
                 panic!("Unsupported dictionary value type")
             };
 
-            // Extract 8-byte prefix after removing shared prefix
+            // Build OffsetView from the suffix bytes directly to avoid leaking encoding details
             let remaining_bytes = if shared_prefix_len < value_bytes.len() {
                 &value_bytes[shared_prefix_len..]
             } else {
                 &[]
             };
 
-            let mut prefix = [0u8; 8];
-            let prefix_len = std::cmp::min(remaining_bytes.len(), 8);
-            prefix[..prefix_len].copy_from_slice(&remaining_bytes[..prefix_len]);
-
-            offset_views.push(OffsetView::new(*byte_offset, prefix));
+            offset_views.push(OffsetView::new(*byte_offset, remaining_bytes));
         }
 
         assert_eq!(values.len(), byte_offsets.len() - 1);
-        offset_views.push(OffsetView::new(byte_offsets[values.len()], [0u8; 8]));
+        offset_views.push(OffsetView::from_parts(
+            byte_offsets[values.len()],
+            [0u8; 7],
+            0,
+        ));
 
         LiquidByteViewArray {
             dictionary_keys: keys,
@@ -1101,7 +1250,7 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
         }
 
         let raw_buffer = self.fsst_buffer.get_fsst_buffer()?;
-        Ok(self.compare_equals_in_memory(needle, &raw_buffer))
+        Ok(self.compare_equals_with_raw_buffer(needle, &raw_buffer))
     }
 
     fn compare_equals_with_raw_buffer(
@@ -1134,14 +1283,6 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
 
         let to_compare = UInt16Array::new_scalar(matching_dict_key);
         arrow::compute::kernels::cmp::eq(&self.dictionary_keys, &to_compare).unwrap()
-    }
-
-    fn compare_equals_in_memory(
-        &self,
-        needle: &[u8],
-        raw_buffer: &Arc<RawFsstBuffer>,
-    ) -> BooleanArray {
-        self.compare_equals_with_raw_buffer(needle, raw_buffer)
     }
 
     /// Compare not equals with a byte needle
@@ -1223,11 +1364,11 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
 
         // Try prefix comparison for each unique value
         for i in 0..num_unique {
-            let prefix = self.offset_views[i].prefix();
+            let prefix7 = self.offset_views[i].prefix7();
 
             // Compare prefix with needle_suffix
-            let cmp_len = std::cmp::min(8, needle_suffix.len());
-            let prefix_slice = &prefix[..cmp_len];
+            let cmp_len = std::cmp::min(OffsetView::prefix_len(), needle_suffix.len());
+            let prefix_slice = &prefix7[..cmp_len];
             let needle_slice = &needle_suffix[..cmp_len];
 
             match prefix_slice.cmp(needle_slice) {
@@ -1399,8 +1540,8 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
         // Sort using prefix optimization first, then full strings when needed
         dict_indices.sort_unstable_by(|&a, &b| unsafe {
             // First try prefix comparison - no need to include shared_prefix since all strings have it
-            let prefix_a = self.offset_views.get_unchecked(a as usize).prefix();
-            let prefix_b = self.offset_views.get_unchecked(b as usize).prefix();
+            let prefix_a = self.offset_views.get_unchecked(a as usize).prefix7();
+            let prefix_b = self.offset_views.get_unchecked(b as usize).prefix7();
 
             let prefix_cmp = prefix_a.cmp(prefix_b);
 
@@ -1500,9 +1641,9 @@ mod tests {
     #[test]
     fn test_dictionary_view_structure() {
         // Test OffsetView structure
-        let offset_view = OffsetView::new(1024, [1, 2, 3, 4, 5, 6, 7, 8]);
+        let offset_view = OffsetView::from_parts(1024, [1, 2, 3, 4, 5, 6, 7], 7);
         assert_eq!(offset_view.offset(), 1024);
-        assert_eq!(offset_view.prefix(), &[1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(offset_view.prefix7(), &[1, 2, 3, 4, 5, 6, 7]);
 
         // Test UInt16Array creation (dictionary keys are now stored directly in UInt16Array)
         let keys = UInt16Array::from(vec![42, 100, 255]);
@@ -1518,11 +1659,11 @@ mod tests {
         let liquid_array =
             LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
 
-        // With no shared prefix, the offset view prefixes should be the original strings (truncated to 8 bytes)
+        // With no shared prefix, the offset view prefixes should be the original strings (truncated to 7 bytes)
         assert_eq!(liquid_array.shared_prefix, Vec::<u8>::new());
-        assert_eq!(liquid_array.offset_views[0].prefix(), b"hello\0\0\0");
-        assert_eq!(liquid_array.offset_views[1].prefix(), b"world\0\0\0");
-        assert_eq!(liquid_array.offset_views[2].prefix(), b"test\0\0\0\0");
+        assert_eq!(liquid_array.offset_views[0].prefix7(), b"hello\0\0");
+        assert_eq!(liquid_array.offset_views[1].prefix7(), b"world\0\0");
+        assert_eq!(liquid_array.offset_views[2].prefix7(), b"test\0\0\0");
     }
 
     #[test]
@@ -1541,11 +1682,11 @@ mod tests {
         // Should extract "hello_" as shared prefix
         assert_eq!(liquid_array.shared_prefix, b"hello_");
 
-        // Offset view prefixes should be the remaining parts after shared prefix (8 bytes)
-        assert_eq!(liquid_array.offset_views[0].prefix(), b"world\0\0\0");
-        assert_eq!(liquid_array.offset_views[1].prefix(), b"rust\0\0\0\0");
-        assert_eq!(liquid_array.offset_views[2].prefix(), b"test\0\0\0\0");
-        assert_eq!(liquid_array.offset_views[3].prefix(), b"code\0\0\0\0");
+        // Offset view prefixes (7 bytes) and lengths
+        assert_eq!(liquid_array.offset_views[0].prefix7(), b"world\0\0");
+        assert_eq!(liquid_array.offset_views[1].prefix7(), b"rust\0\0\0");
+        assert_eq!(liquid_array.offset_views[2].prefix7(), b"test\0\0\0");
+        assert_eq!(liquid_array.offset_views[3].prefix7(), b"code\0\0\0");
 
         // Test roundtrip - should reconstruct original strings correctly
         let output = liquid_array.to_arrow_array().unwrap();
@@ -1578,11 +1719,11 @@ mod tests {
         // Should extract "abc" as shared prefix
         assert_eq!(liquid_array.shared_prefix, b"abc");
 
-        // Offset view prefixes should be the remaining parts after shared prefix (8 bytes)
-        assert_eq!(liquid_array.offset_views[0].prefix(), &[0u8; 8]); // empty after "abc"
-        assert_eq!(liquid_array.offset_views[1].prefix(), b"de\0\0\0\0\0\0"); // "de" after "abc"
-        assert_eq!(liquid_array.offset_views[2].prefix(), b"def\0\0\0\0\0"); // "def" after "abc"
-        assert_eq!(liquid_array.offset_views[3].prefix(), b"defg\0\0\0\0"); // "defg" after "abc"
+        // Offset view prefixes should be the remaining parts after shared prefix (7 bytes)
+        assert_eq!(liquid_array.offset_views[0].prefix7(), &[0u8; 7]); // empty after "abc"
+        assert_eq!(liquid_array.offset_views[1].prefix7(), b"de\0\0\0\0\0"); // "de" after "abc"
+        assert_eq!(liquid_array.offset_views[2].prefix7(), b"def\0\0\0\0"); // "def" after "abc"
+        assert_eq!(liquid_array.offset_views[3].prefix7(), b"defg\0\0\0"); // "defg" after "abc"
 
         // Test roundtrip
         let output = liquid_array.to_arrow_array().unwrap();
@@ -1618,12 +1759,12 @@ mod tests {
         // Should extract "data" as shared prefix
         assert_eq!(liquid_array.shared_prefix, b"data");
 
-        // Offset view prefixes should be the remaining parts (8 bytes)
-        assert_eq!(liquid_array.offset_views[0].prefix(), &[0u8; 8]); // "data" - empty remainder
-        assert_eq!(liquid_array.offset_views[1].prefix(), b"base\0\0\0\0"); // "database" - "base" remainder
-        assert_eq!(liquid_array.offset_views[2].prefix(), b"_entry\0\0"); // "data_entry" - "_entry" remainder
-        assert_eq!(liquid_array.offset_views[3].prefix(), b"_\0\0\0\0\0\0\0"); // "data_" - "_" remainder
-        assert_eq!(liquid_array.offset_views[4].prefix(), b"type\0\0\0\0"); // "datatype" - "type" remainder
+        // Offset view prefixes should be the remaining parts (7 bytes)
+        assert_eq!(liquid_array.offset_views[0].prefix7(), &[0u8; 7]); // "data" - empty remainder
+        assert_eq!(liquid_array.offset_views[1].prefix7(), b"base\0\0\0"); // "database" - "base" remainder
+        assert_eq!(liquid_array.offset_views[2].prefix7(), b"_entry\0"); // "data_entry" - "_entry" remainder
+        assert_eq!(liquid_array.offset_views[3].prefix7(), b"_\0\0\0\0\0\0"); // "data_" - "_" remainder
+        assert_eq!(liquid_array.offset_views[4].prefix7(), b"type\0\0\0"); // "datatype" - "type" remainder
 
         // Test roundtrip
         let output = liquid_array.to_arrow_array().unwrap();
@@ -1680,7 +1821,7 @@ mod tests {
         assert_eq!(liquid_array.shared_prefix, b"identical");
         // All offset view prefixes should be empty
         for offset_view in liquid_array.offset_views.iter() {
-            assert_eq!(offset_view.prefix(), &[0u8; 8]);
+            assert_eq!(offset_view.prefix7(), &[0u8; 7]);
         }
 
         // Test roundtrip
@@ -1694,9 +1835,9 @@ mod tests {
             LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
 
         assert_eq!(liquid_array.shared_prefix, b"hello");
-        assert_eq!(liquid_array.offset_views[0].prefix(), &[0u8; 8]); // empty after "hello"
-        assert_eq!(liquid_array.offset_views[1].prefix(), b"_world\0\0");
-        assert_eq!(liquid_array.offset_views[2].prefix(), b"_test\0\0\0");
+        assert_eq!(liquid_array.offset_views[0].prefix7(), &[0u8; 7]); // empty after "hello"
+        assert_eq!(liquid_array.offset_views[1].prefix7(), b"_world\0");
+        assert_eq!(liquid_array.offset_views[2].prefix7(), b"_test\0\0");
 
         // Test roundtrip
         let output = liquid_array.to_arrow_array().unwrap();
@@ -1709,9 +1850,9 @@ mod tests {
             LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
 
         assert_eq!(liquid_array.shared_prefix, Vec::<u8>::new()); // empty shared prefix
-        assert_eq!(liquid_array.offset_views[0].prefix(), &[0u8; 8]);
-        assert_eq!(liquid_array.offset_views[1].prefix(), b"hello\0\0\0");
-        assert_eq!(liquid_array.offset_views[2].prefix(), b"hello_wo"); // "hello_world" truncated to 8 bytes
+        assert_eq!(liquid_array.offset_views[0].prefix7(), &[0u8; 7]);
+        assert_eq!(liquid_array.offset_views[1].prefix7(), b"hello\0\0");
+        assert_eq!(liquid_array.offset_views[2].prefix7(), b"hello_w"); // "hello_world" truncated to 7 bytes
 
         // Test roundtrip
         let output = liquid_array.to_arrow_array().unwrap();
@@ -2174,5 +2315,60 @@ mod tests {
                 Some(false),
             ]),
         );
+    }
+
+    #[test]
+    fn test_compare_equals_with_prefix_decidable_and_ambiguous() {
+        // Craft values so we cover:
+        // - decidable by small length (<= prefix_len): exact length + content match
+        // - ambiguous for medium length (>prefix_len and <255): same first 7 bytes, length equal
+        // - ambiguous for long length (>=255): same first 7 bytes, unknown stored len
+
+        // Build strings with a shared prefix to exercise suffix logic
+        let short_match = "pre_abc"; // after shared prefix: len<=7
+        let medium_value = "pre_1234567X"; // suffix len 8, first 7 are 1234567
+        let long_suffix: String = std::iter::repeat_n('a', 260).collect();
+        let long_value = format!("pre_{long_suffix}"); // suffix len >= 255
+
+        let input = StringArray::from(vec![
+            Some(short_match),         // index 0
+            Some(medium_value),        // index 1
+            Some(long_value.as_str()), // index 2
+        ]);
+
+        let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
+        let in_mem = LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
+
+        // Squeeze to disk-backed so we exercise compare_equals_with_prefix in DiskBuffer path
+        let (hybrid, _bytes) = in_mem.squeeze().unwrap();
+        let disk_view = hybrid
+            .as_any()
+            .downcast_ref::<LiquidByteViewArray<DiskBuffer>>()
+            .unwrap()
+            .clone();
+
+        // 1) Decidable case: needle equals short_match exactly
+        let decidable = disk_view.compare_equals_with_prefix(short_match.as_bytes());
+        assert!(decidable.is_some(), "should be decidable without IO");
+        let arr = decidable.unwrap();
+        assert_eq!(arr, BooleanArray::from(vec![true, false, false]));
+
+        // 2) Ambiguous medium: construct needle with same first 7 bytes as medium_value's suffix
+        // medium_value is pre_1234567X, needle is pre_1234567Y (same 7, differs at 8th)
+        let medium_needle = b"pre_1234567Y".to_vec();
+        let ambiguous_medium = disk_view.compare_equals_with_prefix(&medium_needle);
+        assert!(
+            ambiguous_medium.is_none(),
+            "medium case should be ambiguous"
+        );
+
+        // 3) Ambiguous long: build a needle with len>=255 and same first 7 suffix bytes as long_value
+        let long_needle = {
+            let mut s = String::from("pre_");
+            s.push_str(&std::iter::repeat_n('a', 300).collect::<String>());
+            s.into_bytes()
+        };
+        let ambiguous_long = disk_view.compare_equals_with_prefix(&long_needle);
+        assert!(ambiguous_long.is_none(), "long case should be ambiguous");
     }
 }
