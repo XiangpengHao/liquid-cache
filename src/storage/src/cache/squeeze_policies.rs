@@ -82,6 +82,32 @@ impl SqueezePolicy for SqueezeToLiquidPolicy {
     }
 }
 
+/// Squeeze the entry to liquid memory, but don't convert to hybrid.
+#[derive(Debug, Default)]
+pub struct SqueezeNoHybridPolicy;
+
+impl SqueezePolicy for SqueezeNoHybridPolicy {
+    fn squeeze(
+        &self,
+        entry: CachedBatch,
+        compressor: &LiquidCompressorStates,
+    ) -> (CachedBatch, Option<Bytes>) {
+        match entry {
+            CachedBatch::MemoryArrow(array) => {
+                let liquid_array = transcode_liquid_inner(&array, compressor).unwrap();
+                (CachedBatch::MemoryLiquid(liquid_array), None)
+            }
+            CachedBatch::MemoryLiquid(liquid_array) => {
+                let bytes = liquid_array.to_bytes();
+                let bytes = Bytes::from(bytes);
+                (CachedBatch::DiskLiquid, Some(bytes))
+            }
+            CachedBatch::MemoryHybridLiquid(_hybrid_array) => (CachedBatch::DiskLiquid, None),
+            CachedBatch::DiskLiquid | CachedBatch::DiskArrow => (entry, None),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

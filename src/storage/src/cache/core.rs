@@ -7,7 +7,9 @@ use super::{
     cached_data::CachedData, tracer::CacheTracer, transcode::transcode_liquid_inner,
     utils::CacheConfig,
 };
-use crate::cache::squeeze_policies::{SqueezePolicy, SqueezeToDiskPolicy, SqueezeToLiquidPolicy};
+use crate::cache::squeeze_policies::{
+    SqueezeNoHybridPolicy, SqueezePolicy, SqueezeToDiskPolicy, SqueezeToLiquidPolicy,
+};
 use crate::cache::transcode::submit_background_transcoding_task;
 use crate::cache::utils::{LiquidCompressorStates, arrow_to_bytes};
 use crate::cache::{index::ArtIndex, utils::EntryID};
@@ -470,7 +472,7 @@ impl CacheStorage {
         let squeeze_policy: Box<dyn SqueezePolicy> = match cache_mode {
             LiquidCacheMode::Arrow => Box::new(SqueezeToDiskPolicy),
             LiquidCacheMode::Liquid => Box::new(SqueezeToLiquidPolicy),
-            LiquidCacheMode::LiquidBlocking => Box::new(SqueezeToLiquidPolicy),
+            LiquidCacheMode::LiquidBlocking => Box::new(SqueezeNoHybridPolicy),
         };
         let config = CacheConfig::new(batch_size, max_cache_bytes, cache_dir, cache_mode);
         Self {

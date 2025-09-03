@@ -44,12 +44,10 @@ struct CliArgs {
 fn do_io(io_req: &IoRequest) -> Bytes {
     match io_req.range() {
         Some(range) => {
-            let r = range.range().clone();
-            let start = r.start as u64;
-            let end = r.end as u64;
-            let len = (end - start) as usize;
+            let r = range.range();
+            let len = (r.end - r.start) as usize;
             let mut file = File::open(io_req.path()).expect("open cache file");
-            file.seek(SeekFrom::Start(start)).expect("seek start");
+            file.seek(SeekFrom::Start(r.start)).expect("seek start");
             let mut buf = vec![0u8; len];
             file.read_exact(&mut buf).expect("read exact range");
             Bytes::from(buf)
@@ -66,8 +64,8 @@ fn main() {
 
     // 1) Build cache storage with FILO and a small budget (100 MB)
     let mut builder = CacheStorageBuilder::new()
-        .with_max_cache_bytes(100 * 1024 * 1024)
-        .with_cache_mode(LiquidCacheMode::LiquidBlocking)
+        .with_max_cache_bytes(500 * 1024 * 1024)
+        .with_cache_mode(LiquidCacheMode::Liquid)
         .with_policy(Box::new(FiloPolicy::new()));
     if let Some(dir) = args.cache_dir.clone() {
         builder = builder.with_cache_dir(dir);
@@ -104,7 +102,7 @@ fn main() {
         match cached.get_with_predicate(&selection, &pred_expr) {
             SansIo::Ready(res) => match res {
                 GetWithPredicateResult::Evaluated(_) => evaluated += 1,
-                _ => panic!("unexpected result"),
+                GetWithPredicateResult::Filtered(_filtered) => {}
             },
             SansIo::Pending((mut state, io_req)) => {
                 let bytes = do_io(&io_req);
@@ -113,6 +111,7 @@ fn main() {
                 state.feed(bytes);
                 match state.try_get() {
                     TryGet::Ready(GetWithPredicateResult::Evaluated(_)) => evaluated += 1,
+                    TryGet::Ready(GetWithPredicateResult::Filtered(_filtered)) => {}
                     e => panic!("unexpected result: {e:?}"),
                 }
             }
