@@ -2316,4 +2316,59 @@ mod tests {
             ]),
         );
     }
+
+    #[test]
+    fn test_compare_equals_with_prefix_decidable_and_ambiguous() {
+        // Craft values so we cover:
+        // - decidable by small length (<= prefix_len): exact length + content match
+        // - ambiguous for medium length (>prefix_len and <255): same first 7 bytes, length equal
+        // - ambiguous for long length (>=255): same first 7 bytes, unknown stored len
+
+        // Build strings with a shared prefix to exercise suffix logic
+        let short_match = "pre_abc"; // after shared prefix: len<=7
+        let medium_value = format!("pre_{}X", "1234567"); // suffix len 8, first 7 are 1234567
+        let long_suffix: String = std::iter::repeat('a').take(260).collect();
+        let long_value = format!("pre_{}", long_suffix); // suffix len >= 255
+
+        let input = StringArray::from(vec![
+            Some(short_match),       // index 0
+            Some(medium_value.as_str()), // index 1
+            Some(long_value.as_str()),   // index 2
+        ]);
+
+        let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
+        let in_mem = LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
+
+        // Squeeze to disk-backed so we exercise compare_equals_with_prefix in DiskBuffer path
+        let (hybrid, bytes) = in_mem.squeeze().unwrap();
+        let disk_view = hybrid
+            .as_any()
+            .downcast_ref::<LiquidByteViewArray<DiskBuffer>>()
+            .unwrap()
+            .clone();
+
+        // 1) Decidable case: needle equals short_match exactly
+        let decidable = disk_view.compare_equals_with_prefix(short_match.as_bytes());
+        assert!(decidable.is_some(), "should be decidable without IO");
+        let arr = decidable.unwrap();
+        assert_eq!(arr, BooleanArray::from(vec![true, false, false]));
+
+        // 2) Ambiguous medium: construct needle with same first 7 bytes as medium_value's suffix
+        // medium_value is pre_1234567X, needle is pre_1234567Y (same 7, differs at 8th)
+        let medium_needle = b"pre_1234567Y".to_vec();
+        let ambiguous_medium = disk_view.compare_equals_with_prefix(&medium_needle);
+        assert!(ambiguous_medium.is_none(), "medium case should be ambiguous");
+
+        // 3) Ambiguous long: build a needle with len>=255 and same first 7 suffix bytes as long_value
+        let long_needle = {
+            let mut s = String::from("pre_");
+            s.push_str(&std::iter::repeat('a').take(300).collect::<String>());
+            s.into_bytes()
+        };
+        let ambiguous_long = disk_view.compare_equals_with_prefix(&long_needle);
+        assert!(ambiguous_long.is_none(), "long case should be ambiguous");
+
+        // Silence unused bytes var warning
+        assert!(bytes.len() > 0);
+    }
 }
