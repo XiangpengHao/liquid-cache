@@ -6,6 +6,7 @@ pub mod byte_view_array;
 mod fix_len_byte_array;
 mod float_array;
 pub mod ipc;
+mod linear_integer_array;
 mod primitive_array;
 pub mod raw;
 #[cfg(test)]
@@ -24,6 +25,7 @@ use datafusion::physical_plan::PhysicalExpr;
 pub use fix_len_byte_array::LiquidFixedLenByteArray;
 use float_array::LiquidFloatType;
 pub use float_array::{LiquidFloat32Array, LiquidFloat64Array, LiquidFloatArray};
+pub use linear_integer_array::LiquidLinearI32Array;
 pub use primitive_array::{
     LiquidDate32Array, LiquidDate64Array, LiquidI8Array, LiquidI16Array, LiquidI32Array,
     LiquidI64Array, LiquidPrimitiveArray, LiquidPrimitiveType, LiquidU8Array, LiquidU16Array,
