@@ -6,7 +6,7 @@ use super::{LiquidArray, LiquidArrayRef, LiquidDataType, LiquidPrimitiveType};
 use crate::liquid_array::LiquidPrimitiveArray;
 use crate::liquid_array::ipc::{LiquidIPCHeader, get_physical_type_id};
 use arrow::array::{
-    Array, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType, BooleanArray, PrimitiveArray,
+    Array, ArrayRef, ArrowPrimitiveType, BooleanArray, PrimitiveArray,
     cast::AsArray,
     types::{
         Date32Type, Date64Type, Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt16Type,
@@ -22,15 +22,15 @@ use num_traits::{AsPrimitive, Bounded, FromPrimitive};
 ///
 /// Model: value[i] = intercept + round(slope * i) + residual[i]
 ///
-/// Residuals are computed as signed differences (two's-complement when stored in unsigned types)
-/// and stored using LiquidPrimitiveArray encoding of the same primitive type.
-#[derive(Debug, Clone)]
+/// Residuals are computed as signed differences and always stored as a signed array (i64)
+/// using `LiquidPrimitiveArray<Int64Type>`, regardless of the original type `T`.
+#[derive(Debug)]
 pub struct LiquidLinearArray<T: LiquidPrimitiveType>
 where
     T::Native: AsPrimitive<f64> + FromPrimitive + Bounded,
 {
-    // Residuals as a primitive array (with same nulls as the input array).
-    residuals: PrimitiveArray<T>,
+    // Signed residuals, bit-packed as a Liquid primitive array of i64.
+    residuals: LiquidPrimitiveArray<Int64Type>,
     // Intercept term of the linear model (rounded to native type domain).
     intercept: T::Native,
     // Slope term of the linear model.
@@ -71,8 +71,9 @@ where
         // All nulls
         if arrow_array.null_count() == len {
             // All nulls
+            let res = PrimitiveArray::<Int64Type>::new_null(len);
             return Self {
-                residuals: PrimitiveArray::<T>::new_null(len),
+                residuals: LiquidPrimitiveArray::<Int64Type>::from_arrow_array(res),
                 intercept: T::Native::min_value(), // arbitrary, unused since all nulls
                 slope: 0.0,
             };
@@ -92,20 +93,42 @@ where
             (max_f - min_f) / ((len - 1) as f64)
         };
 
-        // Compute residuals as signed values (two's complement when stored into unsigned types)
-        // in one pass (keep nulls, fill zero for null slots).
-        let mut residuals: Vec<T::Native> = Vec::with_capacity(len);
+        // Compute signed residuals as i64 in one pass (keep nulls, write 0 for nulls).
+        let mut residuals: Vec<i64> = Vec::with_capacity(len);
+        let phys_id = get_physical_type_id::<T>();
+        let is_unsigned = matches!(phys_id, 4 | 5 | 6 | 7);
         for (i, ov) in arrow_array.iter().enumerate() {
             if let Some(v) = ov {
                 let predicted = predict_value::<T>(intercept, slope, i as u32);
-                residuals.push(v.sub_wrapping(predicted));
+                let res = if is_unsigned {
+                    type U<TT> =
+                        <<TT as LiquidPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native;
+                    let v_u: U<T> = v.as_();
+                    let p_u: U<T> = predicted.as_();
+                    let v_u64: u64 = v_u.as_();
+                    let p_u64: u64 = p_u.as_();
+                    let (sign_pos, mag_u64) = if v_u64 >= p_u64 {
+                        (true, v_u64 - p_u64)
+                    } else {
+                        (false, p_u64 - v_u64)
+                    };
+                    debug_assert!(mag_u64 <= i64::MAX as u64);
+                    let m = mag_u64 as i64;
+                    if sign_pos { m } else { -m }
+                } else {
+                    let v_i64: i64 = v.as_();
+                    let p_i64: i64 = predicted.as_();
+                    v_i64 - p_i64
+                };
+                residuals.push(res);
             } else {
-                residuals.push(T::Native::ZERO);
+                residuals.push(0);
             }
         }
-        let residuals_buf: ScalarBuffer<T::Native> = ScalarBuffer::from(residuals);
+        let residuals_buf: ScalarBuffer<i64> = ScalarBuffer::from(residuals);
         let nulls = arrow_array.nulls().cloned();
-        let residuals = PrimitiveArray::<T>::new(residuals_buf, nulls);
+        let res_prim = PrimitiveArray::<Int64Type>::new(residuals_buf, nulls);
+        let residuals = LiquidPrimitiveArray::<Int64Type>::from_arrow_array(res_prim);
 
         Self {
             residuals,
@@ -149,9 +172,8 @@ where
             out.push(0);
         }
 
-        // Encode residuals using primitive array encoding
-        let lp = LiquidPrimitiveArray::<T>::from_arrow_array(self.residuals.clone());
-        out.extend_from_slice(&lp.to_bytes_inner());
+        // Encode residuals (already LiquidPrimitiveArray<Int64Type>)
+        out.extend_from_slice(&self.residuals.to_bytes_inner());
         out
     }
 
@@ -174,11 +196,10 @@ where
         // Decode residuals
         let start = Self::residual_starting_loc();
         let res_bytes = bytes.slice(start..);
-        let lp = LiquidPrimitiveArray::<T>::from_bytes(res_bytes);
-        let arr = lp.to_arrow_array().as_primitive::<T>().clone();
+        let residuals = LiquidPrimitiveArray::<Int64Type>::from_bytes(res_bytes);
 
         Self {
-            residuals: arr,
+            residuals,
             intercept,
             slope,
         }
@@ -205,13 +226,33 @@ where
     }
 
     fn to_arrow_array(&self) -> ArrayRef {
-        let (_dt, residuals, nulls) = self.residuals.clone().into_parts();
+        let arr = self.residuals.to_arrow_array();
+        let (_dt, residuals, nulls) = arr.as_primitive::<Int64Type>().clone().into_parts();
 
-        // Reconstruct final values: predicted(i) + residual_i
+        // Reconstruct final values: predicted(i) +/- |residual_i|
         let mut final_values = Vec::<T::Native>::with_capacity(self.len());
+        let phys_id = get_physical_type_id::<T>();
+        let is_unsigned = matches!(phys_id, 4 | 5 | 6 | 7);
         for (i, &e) in residuals.iter().enumerate() {
             let predicted = predict_value::<T>(self.intercept, self.slope, i as u32);
-            final_values.push(predicted.add_wrapping(e));
+            let val = if is_unsigned {
+                type U<TT> =
+                    <<TT as LiquidPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native;
+                let p_u: U<T> = predicted.as_();
+                let p_u64: u64 = p_u.as_();
+                let mag_u64 = e.unsigned_abs() as u64;
+                let sum_u64 = if e >= 0 {
+                    p_u64 + mag_u64
+                } else {
+                    p_u64 - mag_u64
+                };
+                T::Native::from_u64(sum_u64).unwrap()
+            } else {
+                let p_i64: i64 = predicted.as_();
+                let sum_i64 = p_i64 + e;
+                T::Native::from_i64(sum_i64).unwrap()
+            };
+            final_values.push(val);
         }
 
         let values_buf: ScalarBuffer<T::Native> = ScalarBuffer::from(final_values);
@@ -422,7 +463,7 @@ mod tests {
             vec![
                 Some(0),
                 Some(10_000_000_000),
-                Some(18_000_000_000_000_000_000u64),
+                Some(9_000_000_000_000_000_000u64),
                 None,
                 Some(42),
             ]
@@ -448,6 +489,33 @@ mod tests {
                 None,
                 Some(1_000_000_000_000),
             ]
+        );
+    }
+
+    #[test]
+    fn test_compression() {
+        let original = (0..1_000_000).step_by(100).collect::<Vec<_>>();
+
+        let original = PrimitiveArray::<Int32Type>::from_iter_values(original);
+        let arrow_size = original.get_array_memory_size();
+
+        let liquid_linear = LiquidLinearI32Array::from_arrow_array(original.clone());
+        let liquid_linear_size = liquid_linear.get_array_memory_size();
+
+        let liquid_primitive =
+            LiquidPrimitiveArray::<Int32Type>::from_arrow_array(original.clone());
+        let liquid_primitive_size = liquid_primitive.get_array_memory_size();
+
+        println!(
+            "arrow_size: {}, liquid_linear_size: {}, liquid_primitive_size: {}",
+            arrow_size, liquid_linear_size, liquid_primitive_size
+        );
+
+        let original: ArrayRef = Arc::new(original);
+        assert_eq!(original.as_ref(), liquid_linear.to_arrow_array().as_ref());
+        assert_eq!(
+            original.as_ref(),
+            liquid_primitive.to_arrow_array().as_ref()
         );
     }
 }
