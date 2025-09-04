@@ -45,6 +45,10 @@ Option 2:
 We use a linear regression model to calculate the slope and intercept.
 Later note: using linear regression is wrong, because we care about the largest error, not the sum of l2 distance of errors. Also, using linear regression does not guarantee the error term is smaller than the max value of the original array. 
 
+Option 3:
+We use a linear regression, but instead of minimizing the l2 distance, we minimize the max error, i.e., l-infinity distance.
+
+Later note: optimizing for l-infinity is too expensive. not really worth it.
 
 Once we have the linear model, we need to compute the error term.
 

@@ -18,9 +18,9 @@ use arrow::compute::kernels::filter;
 use bytes::Bytes;
 use num_traits::{AsPrimitive, Bounded, FromPrimitive};
 
-/// A linear-model based integer array, generic over Arrow integer-like types.
+/// A linear-model based integer array, **only use it when you know the array is monotonic**.
 ///
-/// Model: value[i] = intercept + round(slope * i) + residual[i]
+/// Model: value\[i\] = intercept + round(slope * i) + residual\[i\]
 ///
 /// Residuals are computed as signed differences and always stored as a signed array (i64)
 /// using `LiquidPrimitiveArray<Int64Type>`, regardless of the original type `T`.
@@ -96,7 +96,7 @@ where
         // Compute signed residuals as i64 in one pass (keep nulls, write 0 for nulls).
         let mut residuals: Vec<i64> = Vec::with_capacity(len);
         let phys_id = get_physical_type_id::<T>();
-        let is_unsigned = matches!(phys_id, 4 | 5 | 6 | 7);
+        let is_unsigned = matches!(phys_id, 4..=7);
         for (i, ov) in arrow_array.iter().enumerate() {
             if let Some(v) = ov {
                 let predicted = predict_value::<T>(intercept, slope, i as u32);
@@ -232,7 +232,7 @@ where
         // Reconstruct final values: predicted(i) +/- |residual_i|
         let mut final_values = Vec::<T::Native>::with_capacity(self.len());
         let phys_id = get_physical_type_id::<T>();
-        let is_unsigned = matches!(phys_id, 4 | 5 | 6 | 7);
+        let is_unsigned = matches!(phys_id, 4..=7);
         for (i, &e) in residuals.iter().enumerate() {
             let predicted = predict_value::<T>(self.intercept, self.slope, i as u32);
             let val = if is_unsigned {
@@ -240,7 +240,7 @@ where
                     <<TT as LiquidPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native;
                 let p_u: U<T> = predicted.as_();
                 let p_u64: u64 = p_u.as_();
-                let mag_u64 = e.unsigned_abs() as u64;
+                let mag_u64 = e.unsigned_abs();
                 let sum_u64 = if e >= 0 {
                     p_u64 + mag_u64
                 } else {
@@ -507,8 +507,7 @@ mod tests {
         let liquid_primitive_size = liquid_primitive.get_array_memory_size();
 
         println!(
-            "arrow_size: {}, liquid_linear_size: {}, liquid_primitive_size: {}",
-            arrow_size, liquid_linear_size, liquid_primitive_size
+            "arrow_size: {arrow_size}, liquid_linear_size: {liquid_linear_size}, liquid_primitive_size: {liquid_primitive_size}",
         );
 
         let original: ArrayRef = Arc::new(original);
