@@ -6,13 +6,17 @@ use super::{LiquidArray, LiquidArrayRef, LiquidDataType, LiquidPrimitiveType};
 use crate::liquid_array::LiquidPrimitiveArray;
 use crate::liquid_array::ipc::{LiquidIPCHeader, get_physical_type_id};
 use arrow::array::{
-    Array, ArrayRef, ArrowPrimitiveType, BooleanArray, PrimitiveArray, ArrowNativeTypeOp,
-    cast::AsArray, types::{Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt16Type, UInt32Type, UInt64Type, Date32Type, Date64Type},
+    Array, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType, BooleanArray, PrimitiveArray,
+    cast::AsArray,
+    types::{
+        Date32Type, Date64Type, Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt16Type,
+        UInt32Type, UInt64Type,
+    },
 };
 use arrow::buffer::{BooleanBuffer, ScalarBuffer};
 use arrow::compute::kernels::filter;
 use bytes::Bytes;
-use num_traits::{AsPrimitive, FromPrimitive, Bounded};
+use num_traits::{AsPrimitive, Bounded, FromPrimitive};
 
 /// A linear-regression based integer array, generic over Arrow integer-like types.
 ///
@@ -91,7 +95,11 @@ where
 
         let n_f = n as f64;
         let denom = n_f * sum_x2 - (sum_x * sum_x);
-        let slope = if denom.abs() < f64::EPSILON { 0.0 } else { (n_f * sum_xy - sum_x * sum_y) / denom };
+        let slope = if denom.abs() < f64::EPSILON {
+            0.0
+        } else {
+            (n_f * sum_xy - sum_x * sum_y) / denom
+        };
         // Compute and clamp intercept to native range, rounding to nearest.
         let intercept_f = (sum_y - slope * sum_x) / n_f;
         let min_f: f64 = T::Native::min_value().as_();
@@ -113,7 +121,11 @@ where
         let nulls = arrow_array.nulls().cloned();
         let residuals = PrimitiveArray::<T>::new(residuals_buf, nulls);
 
-        Self { residuals, intercept, slope }
+        Self {
+            residuals,
+            intercept,
+            slope,
+        }
     }
 
     fn len(&self) -> usize {
@@ -122,9 +134,8 @@ where
 
     fn residual_starting_loc() -> usize {
         // Header + intercept(native) + slope(f64), aligned to 8 bytes boundary
-        let header_size = LiquidIPCHeader::size()
-            + std::mem::size_of::<T::Native>()
-            + std::mem::size_of::<f64>();
+        let header_size =
+            LiquidIPCHeader::size() + std::mem::size_of::<T::Native>() + std::mem::size_of::<f64>();
         (header_size + 7) & !7
     }
 
@@ -180,7 +191,11 @@ where
         let lp = LiquidPrimitiveArray::<T>::from_bytes(res_bytes);
         let arr = lp.to_arrow_array().as_primitive::<T>().clone();
 
-        Self { residuals: arr, intercept, slope }
+        Self {
+            residuals: arr,
+            intercept,
+            slope,
+        }
     }
 }
 
@@ -251,7 +266,11 @@ where
 }
 
 #[inline]
-fn predict_value<T>(intercept: <T as ArrowPrimitiveType>::Native, slope: f64, index: u32) -> <T as ArrowPrimitiveType>::Native
+fn predict_value<T>(
+    intercept: <T as ArrowPrimitiveType>::Native,
+    slope: f64,
+    index: u32,
+) -> <T as ArrowPrimitiveType>::Native
 where
     T: ArrowPrimitiveType,
     T::Native: AsPrimitive<f64> + FromPrimitive + Bounded,
@@ -360,65 +379,89 @@ mod tests {
 
     #[test]
     fn test_roundtrip_i16() {
-        roundtrip_eq_t!(Int16Type, vec![Some(-1000), Some(0), Some(1000), None, Some(2000)]);
+        roundtrip_eq_t!(
+            Int16Type,
+            vec![Some(-1000), Some(0), Some(1000), None, Some(2000)]
+        );
     }
 
     #[test]
     fn test_roundtrip_i64() {
-        roundtrip_eq_t!(Int64Type, vec![
-            Some(-10_000_000_000),
-            Some(0),
-            Some(10_000_000_000),
-            None,
-            Some(20_000_000_000),
-        ]);
+        roundtrip_eq_t!(
+            Int64Type,
+            vec![
+                Some(-10_000_000_000),
+                Some(0),
+                Some(10_000_000_000),
+                None,
+                Some(20_000_000_000),
+            ]
+        );
     }
 
     #[test]
     fn test_roundtrip_u8() {
-        roundtrip_eq_t!(UInt8Type, vec![Some(0), Some(10), Some(200), None, Some(255)]);
+        roundtrip_eq_t!(
+            UInt8Type,
+            vec![Some(0), Some(10), Some(200), None, Some(255)]
+        );
     }
 
     #[test]
     fn test_roundtrip_u16() {
-        roundtrip_eq_t!(UInt16Type, vec![Some(0), Some(1000), Some(60000), None, Some(500)]);
+        roundtrip_eq_t!(
+            UInt16Type,
+            vec![Some(0), Some(1000), Some(60000), None, Some(500)]
+        );
     }
 
     #[test]
     fn test_roundtrip_u32() {
-        roundtrip_eq_t!(UInt32Type, vec![
-            Some(0),
-            Some(1_000_000),
-            Some(3_000_000_000),
-            None,
-            Some(123_456_789),
-        ]);
+        roundtrip_eq_t!(
+            UInt32Type,
+            vec![
+                Some(0),
+                Some(1_000_000),
+                Some(3_000_000_000),
+                None,
+                Some(123_456_789),
+            ]
+        );
     }
 
     #[test]
     fn test_roundtrip_u64() {
-        roundtrip_eq_t!(UInt64Type, vec![
-            Some(0),
-            Some(10_000_000_000),
-            Some(18_000_000_000_000_000_000u64),
-            None,
-            Some(42),
-        ]);
+        roundtrip_eq_t!(
+            UInt64Type,
+            vec![
+                Some(0),
+                Some(10_000_000_000),
+                Some(18_000_000_000_000_000_000u64),
+                None,
+                Some(42),
+            ]
+        );
     }
 
     #[test]
     fn test_roundtrip_date32() {
-        roundtrip_eq_t!(Date32Type, vec![Some(-365), Some(0), Some(365), None, Some(18262)]);
+        roundtrip_eq_t!(
+            Date32Type,
+            vec![Some(-365), Some(0), Some(365), None, Some(18262)]
+        );
     }
 
     #[test]
     fn test_roundtrip_date64() {
-        roundtrip_eq_t!(Date64Type, vec![
-            Some(-86_400_000),
-            Some(0),
-            Some(86_400_000),
-            None,
-            Some(1_000_000_000_000),
-        ]);
+        roundtrip_eq_t!(
+            Date64Type,
+            vec![
+                Some(-86_400_000),
+                Some(0),
+                Some(86_400_000),
+                None,
+                Some(1_000_000_000_000),
+            ]
+        );
     }
 }

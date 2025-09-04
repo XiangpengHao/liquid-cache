@@ -15,10 +15,10 @@ use crate::liquid_array::LiquidByteViewArray;
 use crate::liquid_array::LiquidPrimitiveArray;
 use crate::liquid_array::byte_view_array::MemoryBuffer;
 
+use super::linear_integer_array::LiquidLinearArray;
 use super::{
     LiquidArrayRef, LiquidByteArray, LiquidDataType, LiquidFixedLenByteArray, LiquidFloatArray,
 };
-use super::linear_integer_array::LiquidLinearArray;
 
 const MAGIC: u32 = 0x4C51_4441; // "LQDA" for LiQuid Data Array
 const VERSION: u16 = 1;
