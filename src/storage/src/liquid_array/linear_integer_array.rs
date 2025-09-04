@@ -20,7 +20,7 @@ use num_traits::{AsPrimitive, Bounded, FromPrimitive};
 
 /// A linear-regression based integer array, generic over Arrow integer-like types.
 ///
-/// Model: value[i] ≈ intercept + round(slope * i) + residual[i]
+/// Model: value\[i\] = intercept + round(slope * i) + residual\[i\]
 /// Residuals are stored using LiquidPrimitiveArray encoding of the same primitive type.
 #[derive(Debug, Clone)]
 pub struct LiquidLinearArray<T: LiquidPrimitiveType>
