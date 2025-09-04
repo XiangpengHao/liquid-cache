@@ -25,7 +25,12 @@ use datafusion::physical_plan::PhysicalExpr;
 pub use fix_len_byte_array::LiquidFixedLenByteArray;
 use float_array::LiquidFloatType;
 pub use float_array::{LiquidFloat32Array, LiquidFloat64Array, LiquidFloatArray};
-pub use linear_integer_array::LiquidLinearI32Array;
+pub use linear_integer_array::{
+    LiquidLinearArray,
+    LiquidLinearI8Array, LiquidLinearI16Array, LiquidLinearI32Array, LiquidLinearI64Array,
+    LiquidLinearU8Array, LiquidLinearU16Array, LiquidLinearU32Array, LiquidLinearU64Array,
+    LiquidLinearDate32Array, LiquidLinearDate64Array,
+};
 pub use primitive_array::{
     LiquidDate32Array, LiquidDate64Array, LiquidI8Array, LiquidI16Array, LiquidI32Array,
     LiquidI64Array, LiquidPrimitiveArray, LiquidPrimitiveType, LiquidU8Array, LiquidU16Array,

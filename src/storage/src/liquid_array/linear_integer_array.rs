@@ -2,39 +2,67 @@ use std::any::Any;
 use std::fmt::Debug;
 use std::sync::Arc;
 
-use super::{LiquidArray, LiquidArrayRef, LiquidDataType};
+use super::{LiquidArray, LiquidArrayRef, LiquidDataType, LiquidPrimitiveType};
 use crate::liquid_array::LiquidPrimitiveArray;
 use crate::liquid_array::ipc::{LiquidIPCHeader, get_physical_type_id};
 use arrow::array::{
-    Array, ArrayRef, BooleanArray, PrimitiveArray, cast::AsArray, types::Int32Type,
+    Array, ArrayRef, ArrowPrimitiveType, BooleanArray, PrimitiveArray, ArrowNativeTypeOp,
+    cast::AsArray, types::{Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt16Type, UInt32Type, UInt64Type, Date32Type, Date64Type},
 };
 use arrow::buffer::{BooleanBuffer, ScalarBuffer};
 use arrow::compute::kernels::filter;
 use bytes::Bytes;
+use num_traits::{AsPrimitive, FromPrimitive, Bounded};
 
-/// A linear-regression based integer array (first iteration for i32).
+/// A linear-regression based integer array, generic over Arrow integer-like types.
 ///
 /// Model: value[i] ≈ intercept + round(slope * i) + residual[i]
-/// We store residuals directly (no bit-packing or IPC yet).
+/// Residuals are stored using LiquidPrimitiveArray encoding of the same primitive type.
 #[derive(Debug, Clone)]
-pub struct LiquidLinearI32Array {
-    // Residuals as a primitive Int32 array (with same nulls as the input array).
-    residuals: PrimitiveArray<Int32Type>,
-    // Intercept term of the linear model.
-    intercept: i32,
+pub struct LiquidLinearArray<T: LiquidPrimitiveType>
+where
+    T::Native: AsPrimitive<f64> + FromPrimitive + Bounded,
+{
+    // Residuals as a primitive array (with same nulls as the input array).
+    residuals: PrimitiveArray<T>,
+    // Intercept term of the linear model (rounded to native type domain).
+    intercept: T::Native,
     // Slope term of the linear model.
     slope: f64,
 }
 
-impl LiquidLinearI32Array {
-    /// Build from an Arrow `PrimitiveArray<Int32Type>` by training a linear regression model
-    /// (least squares over non-null points) and storing residuals (no bit-packing yet).
-    pub fn from_arrow_array(arrow_array: PrimitiveArray<Int32Type>) -> Self {
+/// Backward-compatible alias for i32.
+pub type LiquidLinearI32Array = LiquidLinearArray<Int32Type>;
+/// Linear-regression array for `i8`.
+pub type LiquidLinearI8Array = LiquidLinearArray<Int8Type>;
+/// Linear-regression array for `i16`.
+pub type LiquidLinearI16Array = LiquidLinearArray<Int16Type>;
+/// Linear-regression array for `i64`.
+pub type LiquidLinearI64Array = LiquidLinearArray<Int64Type>;
+/// Linear-regression array for `u8`.
+pub type LiquidLinearU8Array = LiquidLinearArray<UInt8Type>;
+/// Linear-regression array for `u16`.
+pub type LiquidLinearU16Array = LiquidLinearArray<UInt16Type>;
+/// Linear-regression array for `u32`.
+pub type LiquidLinearU32Array = LiquidLinearArray<UInt32Type>;
+/// Linear-regression array for `u64`.
+pub type LiquidLinearU64Array = LiquidLinearArray<UInt64Type>;
+/// Linear-regression array for `Date32` (days since epoch).
+pub type LiquidLinearDate32Array = LiquidLinearArray<Date32Type>;
+/// Linear-regression array for `Date64` (ms since epoch).
+pub type LiquidLinearDate64Array = LiquidLinearArray<Date64Type>;
+
+impl<T> LiquidLinearArray<T>
+where
+    T: LiquidPrimitiveType,
+    T::Native: AsPrimitive<f64> + FromPrimitive + Bounded,
+{
+    /// Build from an Arrow `PrimitiveArray<T>` by training a linear regression model
+    /// (least squares over non-null points) and storing residuals.
+    pub fn from_arrow_array(arrow_array: PrimitiveArray<T>) -> Self {
         let len = arrow_array.len();
 
         // Compute slope and intercept using linear regression over non-null points.
-        // Accumulate sums for least-squares fit: m = (n*sum(xy) - sum(x)sum(y)) / (n*sum(x^2) - (sum(x))^2)
-        // b = (sum(y) - m*sum(x)) / n
         let mut n: i64 = 0;
         let mut sum_x: f64 = 0.0;
         let mut sum_y: f64 = 0.0;
@@ -43,53 +71,49 @@ impl LiquidLinearI32Array {
         for (i, oy) in arrow_array.iter().enumerate() {
             if let Some(y) = oy {
                 let x = i as f64;
+                let yf: f64 = y.as_();
                 n += 1;
                 sum_x += x;
-                sum_y += y as f64;
+                sum_y += yf;
                 sum_x2 += x * x;
-                sum_xy += x * (y as f64);
+                sum_xy += x * yf;
             }
         }
 
         if n == 0 {
             // All nulls
             return Self {
-                residuals: PrimitiveArray::<Int32Type>::new_null(len),
-                intercept: 0,
+                residuals: PrimitiveArray::<T>::new_null(len),
+                intercept: T::Native::min_value(), // arbitrary, unused since all nulls
                 slope: 0.0,
             };
         }
 
         let n_f = n as f64;
         let denom = n_f * sum_x2 - (sum_x * sum_x);
-        let slope = if denom.abs() < f64::EPSILON {
-            0.0
-        } else {
-            (n_f * sum_xy - sum_x * sum_y) / denom
-        };
-        // Store intercept as i32 (rounded) for reconstruction math.
+        let slope = if denom.abs() < f64::EPSILON { 0.0 } else { (n_f * sum_xy - sum_x * sum_y) / denom };
+        // Compute and clamp intercept to native range, rounding to nearest.
         let intercept_f = (sum_y - slope * sum_x) / n_f;
-        let intercept = intercept_f.round().clamp(i32::MIN as f64, i32::MAX as f64) as i32;
+        let min_f: f64 = T::Native::min_value().as_();
+        let max_f: f64 = T::Native::max_value().as_();
+        let clamped = intercept_f.round().clamp(min_f, max_f);
+        let intercept = T::Native::from_f64(clamped).unwrap();
 
         // Compute residuals in one pass (keep nulls, fill zero for null slots).
-        let mut residuals: Vec<i32> = Vec::with_capacity(len);
+        let mut residuals: Vec<T::Native> = Vec::with_capacity(len);
         for (i, ov) in arrow_array.iter().enumerate() {
             if let Some(v) = ov {
-                let predicted = predict_i32(intercept, slope, i as u32);
-                residuals.push(v.wrapping_sub(predicted));
+                let predicted = predict_value::<T>(intercept, slope, i as u32);
+                residuals.push(v.sub_wrapping(predicted));
             } else {
-                residuals.push(0);
+                residuals.push(T::Native::ZERO);
             }
         }
-        let residuals_buf: ScalarBuffer<i32> = ScalarBuffer::from(residuals);
+        let residuals_buf: ScalarBuffer<T::Native> = ScalarBuffer::from(residuals);
         let nulls = arrow_array.nulls().cloned();
-        let residuals = PrimitiveArray::<Int32Type>::new(residuals_buf, nulls);
+        let residuals = PrimitiveArray::<T>::new(residuals_buf, nulls);
 
-        Self {
-            residuals,
-            intercept,
-            slope,
-        }
+        Self { residuals, intercept, slope }
     }
 
     fn len(&self) -> usize {
@@ -97,16 +121,17 @@ impl LiquidLinearI32Array {
     }
 
     fn residual_starting_loc() -> usize {
-        // Header + intercept(i32) + slope(f64), aligned to 8 bytes boundary
-        let header_size =
-            LiquidIPCHeader::size() + std::mem::size_of::<i32>() + std::mem::size_of::<f64>();
+        // Header + intercept(native) + slope(f64), aligned to 8 bytes boundary
+        let header_size = LiquidIPCHeader::size()
+            + std::mem::size_of::<T::Native>()
+            + std::mem::size_of::<f64>();
         (header_size + 7) & !7
     }
 
     fn to_bytes_inner(&self) -> Vec<u8> {
         let header = LiquidIPCHeader::new(
             LiquidDataType::LinearInteger as u16,
-            get_physical_type_id::<Int32Type>(),
+            get_physical_type_id::<T>(),
         );
         let start = Self::residual_starting_loc();
         let mut out = Vec::with_capacity(start + 256);
@@ -114,7 +139,13 @@ impl LiquidLinearI32Array {
         // Header
         out.extend_from_slice(&header.to_bytes());
         // Model params
-        out.extend_from_slice(&self.intercept.to_le_bytes());
+        let intercept_bytes = unsafe {
+            std::slice::from_raw_parts(
+                &self.intercept as *const T::Native as *const u8,
+                std::mem::size_of::<T::Native>(),
+            )
+        };
+        out.extend_from_slice(intercept_bytes);
         out.extend_from_slice(&self.slope.to_le_bytes());
 
         while out.len() < start {
@@ -122,43 +153,49 @@ impl LiquidLinearI32Array {
         }
 
         // Encode residuals using primitive array encoding
-        let lp = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(self.residuals.clone());
+        let lp = LiquidPrimitiveArray::<T>::from_arrow_array(self.residuals.clone());
         out.extend_from_slice(&lp.to_bytes_inner());
         out
     }
 
-    /// Decode a `LiquidLinearI32Array` from bytes.
+    /// Decode a `LiquidLinearArray<T>` from bytes.
     pub fn from_bytes(bytes: Bytes) -> Self {
         let _hdr = LiquidIPCHeader::from_bytes(&bytes);
-        let intercept = i32::from_le_bytes(
-            bytes[LiquidIPCHeader::size()..LiquidIPCHeader::size() + 4]
-                .try_into()
-                .unwrap(),
-        );
-        let slope_off = LiquidIPCHeader::size() + 4;
+
+        // Read intercept of native size
+        let intercept_off = LiquidIPCHeader::size();
+        let intercept = unsafe {
+            (bytes[intercept_off..intercept_off + std::mem::size_of::<T::Native>()].as_ptr()
+                as *const T::Native)
+                .read_unaligned()
+        };
+
+        // Read slope
+        let slope_off = intercept_off + std::mem::size_of::<T::Native>();
         let slope = f64::from_le_bytes(bytes[slope_off..slope_off + 8].try_into().unwrap());
 
+        // Decode residuals
         let start = Self::residual_starting_loc();
         let res_bytes = bytes.slice(start..);
-        let lp = LiquidPrimitiveArray::<Int32Type>::from_bytes(res_bytes);
-        let arr = lp.to_arrow_array().as_primitive::<Int32Type>().clone();
+        let lp = LiquidPrimitiveArray::<T>::from_bytes(res_bytes);
+        let arr = lp.to_arrow_array().as_primitive::<T>().clone();
 
-        Self {
-            residuals: arr,
-            intercept,
-            slope,
-        }
+        Self { residuals: arr, intercept, slope }
     }
 }
 
-impl LiquidArray for LiquidLinearI32Array {
+impl<T> LiquidArray for LiquidLinearArray<T>
+where
+    T: LiquidPrimitiveType,
+    T::Native: AsPrimitive<f64> + FromPrimitive + Bounded,
+{
     fn as_any(&self) -> &dyn Any {
         self
     }
 
     fn get_array_memory_size(&self) -> usize {
         self.residuals.get_array_memory_size()
-            + std::mem::size_of::<i32>() // intercept
+            + std::mem::size_of::<T::Native>() // intercept
             + std::mem::size_of::<f64>() // slope
     }
 
@@ -170,22 +207,22 @@ impl LiquidArray for LiquidLinearI32Array {
         let (_dt, residuals, nulls) = self.residuals.clone().into_parts();
 
         // Reconstruct final values: predicted(i) + residual_i
-        let mut final_values = Vec::<i32>::with_capacity(self.len());
+        let mut final_values = Vec::<T::Native>::with_capacity(self.len());
         for (i, &e) in residuals.iter().enumerate() {
-            let predicted = predict_i32(self.intercept, self.slope, i as u32);
-            final_values.push(predicted.wrapping_add(e));
+            let predicted = predict_value::<T>(self.intercept, self.slope, i as u32);
+            final_values.push(predicted.add_wrapping(e));
         }
 
-        let values_buf: ScalarBuffer<i32> = ScalarBuffer::from(final_values);
-        Arc::new(PrimitiveArray::<Int32Type>::new(values_buf, nulls))
+        let values_buf: ScalarBuffer<T::Native> = ScalarBuffer::from(final_values);
+        Arc::new(PrimitiveArray::<T>::new(values_buf, nulls))
     }
 
     fn filter(&self, selection: &BooleanBuffer) -> LiquidArrayRef {
-        // Simpler and correct: materialize to Arrow, filter, and retrain a new linear array.
+        // Materialize to Arrow, filter, and retrain a new linear array.
         let arr = self.to_arrow_array();
         let selection = BooleanArray::new(selection.clone(), None);
         let filtered = filter::filter(&arr, &selection).unwrap();
-        let filtered = filtered.as_primitive::<Int32Type>().clone();
+        let filtered = filtered.as_primitive::<T>().clone();
         Arc::new(Self::from_arrow_array(filtered))
     }
 
@@ -214,17 +251,17 @@ impl LiquidArray for LiquidLinearI32Array {
 }
 
 #[inline]
-fn predict_i32(intercept: i32, slope: f64, index: u32) -> i32 {
-    // Round to nearest integer, clamped to i32 range for safety.
-    let pred = (slope * index as f64) + (intercept as f64);
-    let r = pred.round();
-    if r < i32::MIN as f64 {
-        i32::MIN
-    } else if r > i32::MAX as f64 {
-        i32::MAX
-    } else {
-        r as i32
-    }
+fn predict_value<T>(intercept: <T as ArrowPrimitiveType>::Native, slope: f64, index: u32) -> <T as ArrowPrimitiveType>::Native
+where
+    T: ArrowPrimitiveType,
+    T::Native: AsPrimitive<f64> + FromPrimitive + Bounded,
+{
+    let base: f64 = intercept.as_();
+    let pred = slope * index as f64 + base;
+    let min_f: f64 = T::Native::min_value().as_();
+    let max_f: f64 = T::Native::max_value().as_();
+    let r = pred.round().clamp(min_f, max_f);
+    T::Native::from_f64(r).unwrap()
 }
 
 #[cfg(test)]
@@ -241,6 +278,20 @@ mod tests {
         let decoded = LiquidLinearI32Array::from_bytes(bytes);
         let round = decoded.to_arrow_array();
         assert_eq!(round.as_ref(), &arr);
+    }
+
+    macro_rules! roundtrip_eq_t {
+        ($T:ty, $values:expr) => {{
+            let arr = PrimitiveArray::<$T>::from(($values).clone());
+            let linear = LiquidLinearArray::<$T>::from_arrow_array(arr.clone());
+            let decoded = linear.to_arrow_array();
+            assert_eq!(decoded.as_ref(), &arr);
+
+            let bytes = Bytes::from(linear.to_bytes());
+            let decoded = LiquidLinearArray::<$T>::from_bytes(bytes);
+            let round = decoded.to_arrow_array();
+            assert_eq!(round.as_ref(), &arr);
+        }};
     }
 
     #[test]
@@ -300,5 +351,74 @@ mod tests {
         let result = filtered.to_arrow_array();
         let expected = PrimitiveArray::<Int32Type>::from(vec![Some(1), Some(3), Some(5)]);
         assert_eq!(result.as_ref(), &expected);
+    }
+
+    #[test]
+    fn test_roundtrip_i8() {
+        roundtrip_eq_t!(Int8Type, vec![Some(-10), Some(0), Some(10), None, Some(20)]);
+    }
+
+    #[test]
+    fn test_roundtrip_i16() {
+        roundtrip_eq_t!(Int16Type, vec![Some(-1000), Some(0), Some(1000), None, Some(2000)]);
+    }
+
+    #[test]
+    fn test_roundtrip_i64() {
+        roundtrip_eq_t!(Int64Type, vec![
+            Some(-10_000_000_000),
+            Some(0),
+            Some(10_000_000_000),
+            None,
+            Some(20_000_000_000),
+        ]);
+    }
+
+    #[test]
+    fn test_roundtrip_u8() {
+        roundtrip_eq_t!(UInt8Type, vec![Some(0), Some(10), Some(200), None, Some(255)]);
+    }
+
+    #[test]
+    fn test_roundtrip_u16() {
+        roundtrip_eq_t!(UInt16Type, vec![Some(0), Some(1000), Some(60000), None, Some(500)]);
+    }
+
+    #[test]
+    fn test_roundtrip_u32() {
+        roundtrip_eq_t!(UInt32Type, vec![
+            Some(0),
+            Some(1_000_000),
+            Some(3_000_000_000),
+            None,
+            Some(123_456_789),
+        ]);
+    }
+
+    #[test]
+    fn test_roundtrip_u64() {
+        roundtrip_eq_t!(UInt64Type, vec![
+            Some(0),
+            Some(10_000_000_000),
+            Some(18_000_000_000_000_000_000u64),
+            None,
+            Some(42),
+        ]);
+    }
+
+    #[test]
+    fn test_roundtrip_date32() {
+        roundtrip_eq_t!(Date32Type, vec![Some(-365), Some(0), Some(365), None, Some(18262)]);
+    }
+
+    #[test]
+    fn test_roundtrip_date64() {
+        roundtrip_eq_t!(Date64Type, vec![
+            Some(-86_400_000),
+            Some(0),
+            Some(86_400_000),
+            None,
+            Some(1_000_000_000_000),
+        ]);
     }
 }
