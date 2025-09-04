@@ -18,10 +18,12 @@ use arrow::compute::kernels::filter;
 use bytes::Bytes;
 use num_traits::{AsPrimitive, Bounded, FromPrimitive};
 
-/// A linear-regression based integer array, generic over Arrow integer-like types.
+/// A linear-model based integer array, generic over Arrow integer-like types.
 ///
-/// Model: value\[i\] = intercept + round(slope * i) + residual\[i\]
-/// Residuals are stored using LiquidPrimitiveArray encoding of the same primitive type.
+/// Model: value[i] = intercept + round(slope * i) + residual[i]
+///
+/// Residuals are computed as signed differences (two's-complement when stored in unsigned types)
+/// and stored using LiquidPrimitiveArray encoding of the same primitive type.
 #[derive(Debug, Clone)]
 pub struct LiquidLinearArray<T: LiquidPrimitiveType>
 where
@@ -37,23 +39,23 @@ where
 
 /// Backward-compatible alias for i32.
 pub type LiquidLinearI32Array = LiquidLinearArray<Int32Type>;
-/// Linear-regression array for `i8`.
+/// Linear-model array for `i8`.
 pub type LiquidLinearI8Array = LiquidLinearArray<Int8Type>;
-/// Linear-regression array for `i16`.
+/// Linear-model array for `i16`.
 pub type LiquidLinearI16Array = LiquidLinearArray<Int16Type>;
-/// Linear-regression array for `i64`.
+/// Linear-model array for `i64`.
 pub type LiquidLinearI64Array = LiquidLinearArray<Int64Type>;
-/// Linear-regression array for `u8`.
+/// Linear-model array for `u8`.
 pub type LiquidLinearU8Array = LiquidLinearArray<UInt8Type>;
-/// Linear-regression array for `u16`.
+/// Linear-model array for `u16`.
 pub type LiquidLinearU16Array = LiquidLinearArray<UInt16Type>;
-/// Linear-regression array for `u32`.
+/// Linear-model array for `u32`.
 pub type LiquidLinearU32Array = LiquidLinearArray<UInt32Type>;
-/// Linear-regression array for `u64`.
+/// Linear-model array for `u64`.
 pub type LiquidLinearU64Array = LiquidLinearArray<UInt64Type>;
-/// Linear-regression array for `Date32` (days since epoch).
+/// Linear-model array for `Date32` (days since epoch).
 pub type LiquidLinearDate32Array = LiquidLinearArray<Date32Type>;
-/// Linear-regression array for `Date64` (ms since epoch).
+/// Linear-model array for `Date64` (ms since epoch).
 pub type LiquidLinearDate64Array = LiquidLinearArray<Date64Type>;
 
 impl<T> LiquidLinearArray<T>
@@ -61,30 +63,13 @@ where
     T: LiquidPrimitiveType,
     T::Native: AsPrimitive<f64> + FromPrimitive + Bounded,
 {
-    /// Build from an Arrow `PrimitiveArray<T>` by training a linear regression model
-    /// (least squares over non-null points) and storing residuals.
+    /// Build from an Arrow `PrimitiveArray<T>` by training a simple min/max linear model
+    /// (Option 1) and storing residuals.
     pub fn from_arrow_array(arrow_array: PrimitiveArray<T>) -> Self {
         let len = arrow_array.len();
 
-        // Compute slope and intercept using linear regression over non-null points.
-        let mut n: i64 = 0;
-        let mut sum_x: f64 = 0.0;
-        let mut sum_y: f64 = 0.0;
-        let mut sum_x2: f64 = 0.0;
-        let mut sum_xy: f64 = 0.0;
-        for (i, oy) in arrow_array.iter().enumerate() {
-            if let Some(y) = oy {
-                let x = i as f64;
-                let yf: f64 = y.as_();
-                n += 1;
-                sum_x += x;
-                sum_y += yf;
-                sum_x2 += x * x;
-                sum_xy += x * yf;
-            }
-        }
-
-        if n == 0 {
+        // All nulls
+        if arrow_array.null_count() == len {
             // All nulls
             return Self {
                 residuals: PrimitiveArray::<T>::new_null(len),
@@ -93,21 +78,22 @@ where
             };
         }
 
-        let n_f = n as f64;
-        let denom = n_f * sum_x2 - (sum_x * sum_x);
-        let slope = if denom.abs() < f64::EPSILON {
+        // Compute min and max over non-null points
+        let min_val = arrow::compute::kernels::aggregate::min(&arrow_array).unwrap();
+        let max_val = arrow::compute::kernels::aggregate::max(&arrow_array).unwrap();
+
+        // Option 1 parameters
+        let intercept = min_val;
+        let slope = if len <= 1 {
             0.0
         } else {
-            (n_f * sum_xy - sum_x * sum_y) / denom
+            let max_f: f64 = max_val.as_();
+            let min_f: f64 = min_val.as_();
+            (max_f - min_f) / ((len - 1) as f64)
         };
-        // Compute and clamp intercept to native range, rounding to nearest.
-        let intercept_f = (sum_y - slope * sum_x) / n_f;
-        let min_f: f64 = T::Native::min_value().as_();
-        let max_f: f64 = T::Native::max_value().as_();
-        let clamped = intercept_f.round().clamp(min_f, max_f);
-        let intercept = T::Native::from_f64(clamped).unwrap();
 
-        // Compute residuals in one pass (keep nulls, fill zero for null slots).
+        // Compute residuals as signed values (two's complement when stored into unsigned types)
+        // in one pass (keep nulls, fill zero for null slots).
         let mut residuals: Vec<T::Native> = Vec::with_capacity(len);
         for (i, ov) in arrow_array.iter().enumerate() {
             if let Some(v) = ov {
