@@ -15,6 +15,7 @@ use crate::liquid_array::LiquidByteViewArray;
 use crate::liquid_array::LiquidPrimitiveArray;
 use crate::liquid_array::byte_view_array::MemoryBuffer;
 
+use super::linear_integer_array::LiquidLinearArray;
 use super::{
     LiquidArrayRef, LiquidByteArray, LiquidDataType, LiquidFixedLenByteArray, LiquidFloatArray,
 };
@@ -155,6 +156,19 @@ pub fn read_from_bytes(bytes: Bytes, context: &LiquidIPCContext) -> LiquidArrayR
                 compressor.clone(),
             ))
         }
+        LiquidDataType::LinearInteger => match header.physical_type_id {
+            0 => Arc::new(LiquidLinearArray::<Int8Type>::from_bytes(bytes)),
+            1 => Arc::new(LiquidLinearArray::<Int16Type>::from_bytes(bytes)),
+            2 => Arc::new(LiquidLinearArray::<Int32Type>::from_bytes(bytes)),
+            3 => Arc::new(LiquidLinearArray::<Int64Type>::from_bytes(bytes)),
+            4 => Arc::new(LiquidLinearArray::<UInt8Type>::from_bytes(bytes)),
+            5 => Arc::new(LiquidLinearArray::<UInt16Type>::from_bytes(bytes)),
+            6 => Arc::new(LiquidLinearArray::<UInt32Type>::from_bytes(bytes)),
+            7 => Arc::new(LiquidLinearArray::<UInt64Type>::from_bytes(bytes)),
+            10 => Arc::new(LiquidLinearArray::<Date32Type>::from_bytes(bytes)),
+            11 => Arc::new(LiquidLinearArray::<Date64Type>::from_bytes(bytes)),
+            v => panic!("Unsupported linear-integer physical type: {v}"),
+        },
     }
 }
 
