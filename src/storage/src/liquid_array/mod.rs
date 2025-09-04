@@ -48,6 +48,8 @@ pub enum LiquidDataType {
     Float = 2,
     /// A fixed length byte array.
     FixedLenByteArray = 3,
+    /// A linear-regression based integer (i32 residuals + model params).
+    LinearInteger = 5,
 }
 
 impl From<u16> for LiquidDataType {
@@ -58,6 +60,7 @@ impl From<u16> for LiquidDataType {
             1 => LiquidDataType::Integer,
             2 => LiquidDataType::Float,
             3 => LiquidDataType::FixedLenByteArray,
+            5 => LiquidDataType::LinearInteger,
             _ => panic!("Invalid liquid data type: {value}"),
         }
     }

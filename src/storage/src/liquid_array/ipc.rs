@@ -17,6 +17,7 @@ use crate::liquid_array::byte_view_array::MemoryBuffer;
 
 use super::{
     LiquidArrayRef, LiquidByteArray, LiquidDataType, LiquidFixedLenByteArray, LiquidFloatArray,
+    LiquidLinearI32Array,
 };
 
 const MAGIC: u32 = 0x4C51_4441; // "LQDA" for LiQuid Data Array
@@ -155,6 +156,7 @@ pub fn read_from_bytes(bytes: Bytes, context: &LiquidIPCContext) -> LiquidArrayR
                 compressor.clone(),
             ))
         }
+        LiquidDataType::LinearInteger => Arc::new(LiquidLinearI32Array::from_bytes(bytes)),
     }
 }
 

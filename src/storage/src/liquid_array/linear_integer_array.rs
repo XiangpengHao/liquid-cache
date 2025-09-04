@@ -3,11 +3,14 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 use super::{LiquidArray, LiquidArrayRef, LiquidDataType};
+use crate::liquid_array::LiquidPrimitiveArray;
+use crate::liquid_array::ipc::{LiquidIPCHeader, get_physical_type_id};
 use arrow::array::{
     Array, ArrayRef, BooleanArray, PrimitiveArray, cast::AsArray, types::Int32Type,
 };
 use arrow::buffer::{BooleanBuffer, ScalarBuffer};
 use arrow::compute::kernels::filter;
+use bytes::Bytes;
 
 /// A linear-regression based integer array (first iteration for i32).
 ///
@@ -92,6 +95,60 @@ impl LiquidLinearI32Array {
     fn len(&self) -> usize {
         self.residuals.len()
     }
+
+    fn residual_starting_loc() -> usize {
+        // Header + intercept(i32) + slope(f64), aligned to 8 bytes boundary
+        let header_size =
+            LiquidIPCHeader::size() + std::mem::size_of::<i32>() + std::mem::size_of::<f64>();
+        (header_size + 7) & !7
+    }
+
+    fn to_bytes_inner(&self) -> Vec<u8> {
+        let header = LiquidIPCHeader::new(
+            LiquidDataType::LinearInteger as u16,
+            get_physical_type_id::<Int32Type>(),
+        );
+        let start = Self::residual_starting_loc();
+        let mut out = Vec::with_capacity(start + 256);
+
+        // Header
+        out.extend_from_slice(&header.to_bytes());
+        // Model params
+        out.extend_from_slice(&self.intercept.to_le_bytes());
+        out.extend_from_slice(&self.slope.to_le_bytes());
+
+        while out.len() < start {
+            out.push(0);
+        }
+
+        // Encode residuals using primitive array encoding
+        let lp = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(self.residuals.clone());
+        out.extend_from_slice(&lp.to_bytes_inner());
+        out
+    }
+
+    /// Decode a `LiquidLinearI32Array` from bytes.
+    pub fn from_bytes(bytes: Bytes) -> Self {
+        let _hdr = LiquidIPCHeader::from_bytes(&bytes);
+        let intercept = i32::from_le_bytes(
+            bytes[LiquidIPCHeader::size()..LiquidIPCHeader::size() + 4]
+                .try_into()
+                .unwrap(),
+        );
+        let slope_off = LiquidIPCHeader::size() + 4;
+        let slope = f64::from_le_bytes(bytes[slope_off..slope_off + 8].try_into().unwrap());
+
+        let start = Self::residual_starting_loc();
+        let res_bytes = bytes.slice(start..);
+        let lp = LiquidPrimitiveArray::<Int32Type>::from_bytes(res_bytes);
+        let arr = lp.to_arrow_array().as_primitive::<Int32Type>().clone();
+
+        Self {
+            residuals: arr,
+            intercept,
+            slope,
+        }
+    }
 }
 
 impl LiquidArray for LiquidLinearI32Array {
@@ -148,11 +205,11 @@ impl LiquidArray for LiquidLinearI32Array {
     }
 
     fn to_bytes(&self) -> Vec<u8> {
-        unimplemented!("LinearInteger: IPC not implemented yet")
+        self.to_bytes_inner()
     }
 
     fn data_type(&self) -> LiquidDataType {
-        LiquidDataType::Integer
+        LiquidDataType::LinearInteger
     }
 }
 
@@ -179,6 +236,11 @@ mod tests {
         let linear = LiquidLinearI32Array::from_arrow_array(arr.clone());
         let decoded = linear.to_arrow_array();
         assert_eq!(decoded.as_ref(), &arr);
+
+        let bytes = Bytes::from(linear.to_bytes());
+        let decoded = LiquidLinearI32Array::from_bytes(bytes);
+        let round = decoded.to_arrow_array();
+        assert_eq!(round.as_ref(), &arr);
     }
 
     #[test]
@@ -227,9 +289,6 @@ mod tests {
             Some(-25),
         ]);
     }
-
-    #[test]
-    fn test_roundtrip_bytes() {}
 
     #[test]
     fn test_filter_basic() {
