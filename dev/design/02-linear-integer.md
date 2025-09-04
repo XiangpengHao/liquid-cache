@@ -36,9 +36,14 @@ The idea is that error term is much smaller than the original values, so we will
 
 Given a integer array from Arrow, we want to compress it using a linear model.
 
-In the first iteration, we simply calculate the slope and intercept using simple approach:
+Option 1:
+We simply calculate the slope and intercept using simple approach:
 1. find the min and max value of the array.
 2. assuming min is at location 0, and max is at location `n`, then the slope is `(max - min) / n`, and the intercept is `min`.
+
+Option 2:
+We use a linear regression model to calculate the slope and intercept.
+
 
 Once we have the linear model, we need to compute the error term.
 
