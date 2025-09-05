@@ -48,7 +48,6 @@ Later note: using linear regression is wrong, because we care about the largest 
 Option 3:
 We use a linear regression, but instead of minimizing the l2 distance, we minimize the max error, i.e., l-infinity distance.
 
-Later note: optimizing for l-infinity is too expensive. not really worth it.
 
 Once we have the linear model, we need to compute the error term.
 

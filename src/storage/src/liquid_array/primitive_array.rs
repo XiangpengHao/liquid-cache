@@ -41,6 +41,8 @@ pub trait LiquidPrimitiveType:
                     + FromPrimitive
                     + Display,
     > + Debug
+    + Send
+    + Sync
     + private::Sealed
 {
     /// The unsigned type that can be used to represent the signed type.

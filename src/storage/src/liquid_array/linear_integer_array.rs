@@ -1,5 +1,6 @@
 use std::any::Any;
 use std::fmt::Debug;
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 use super::{LiquidArray, LiquidArrayRef, LiquidDataType, LiquidPrimitiveType};
@@ -18,12 +19,16 @@ use arrow::compute::kernels::filter;
 use bytes::Bytes;
 use num_traits::{AsPrimitive, Bounded, FromPrimitive};
 
-/// A linear-model based integer array, **only use it when you know the array is monotonic**.
+/// A linear-model based integer array, **only use it when you know the array is monotonic** and **you don't care about encoding speed!**.
 ///
-/// Model: value\[i\] = intercept + round(slope * i) + residual\[i\]
+/// Under the hood, it uses a linear model to predict the values and store the residuals:
+/// value\[i\] = intercept + round(slope * i) + residual\[i\]
 ///
-/// Residuals are computed as signed differences and always stored as a signed array (i64)
-/// using `LiquidPrimitiveArray<Int64Type>`, regardless of the original type `T`.
+/// Where `intercept` and `slope` are computed using a L-infinity linear fit, **this is time-consuming!**.
+///
+/// This array is only recommended if you know the array follows a linear model, e.g., kinetic values, offsets, etc.
+///
+/// Examples of not recommended use cases: random values like ids, categorical values, etc.
 #[derive(Debug)]
 pub struct LiquidLinearArray<T: LiquidPrimitiveType>
 where
@@ -31,10 +36,12 @@ where
 {
     // Signed residuals, bit-packed as a Liquid primitive array of i64.
     residuals: LiquidPrimitiveArray<Int64Type>,
-    // Intercept term of the linear model (rounded to native type domain).
-    intercept: T::Native,
+    // Intercept term stored as f64 for simpler math/IO.
+    intercept: f64,
     // Slope term of the linear model.
     slope: f64,
+    // Keep the logical type parameter.
+    _phantom: PhantomData<T>,
 }
 
 /// Backward-compatible alias for i32.
@@ -63,8 +70,8 @@ where
     T: LiquidPrimitiveType,
     T::Native: AsPrimitive<f64> + FromPrimitive + Bounded,
 {
-    /// Build from an Arrow `PrimitiveArray<T>` by training a simple min/max linear model
-    /// (Option 1) and storing residuals.
+    /// Build from an Arrow `PrimitiveArray<T>` by training a linear model
+    /// using a fast L-infinity fit (Option 3) and storing residuals.
     pub fn from_arrow_array(arrow_array: PrimitiveArray<T>) -> Self {
         let len = arrow_array.len();
 
@@ -74,55 +81,116 @@ where
             let res = PrimitiveArray::<Int64Type>::new_null(len);
             return Self {
                 residuals: LiquidPrimitiveArray::<Int64Type>::from_arrow_array(res),
-                intercept: T::Native::min_value(), // arbitrary, unused since all nulls
+                intercept: 0.0, // arbitrary, unused since all nulls
                 slope: 0.0,
+                _phantom: PhantomData,
             };
         }
 
-        // Compute min and max over non-null points
-        let min_val = arrow::compute::kernels::aggregate::min(&arrow_array).unwrap();
-        let max_val = arrow::compute::kernels::aggregate::max(&arrow_array).unwrap();
+        // Prepare compact non-null buffers for fast fitting (avoid iterator Option cost).
+        let (nn_values, nn_indices) = collect_non_null_f64_and_indices::<T>(&arrow_array);
 
-        // Option 1 parameters
-        let intercept = min_val;
-        let slope = if len <= 1 {
-            0.0
-        } else {
-            let max_f: f64 = max_val.as_();
-            let min_f: f64 = min_val.as_();
-            (max_f - min_f) / ((len - 1) as f64)
-        };
+        // Option 3 parameters: L-infinity (Chebyshev) regression.
+        let (intercept, slope) = fit_linf(&nn_values, &nn_indices);
 
-        // Compute signed residuals as i64 in one pass (keep nulls, write 0 for nulls).
+        // Compute signed residuals as i64 in one pass.
+        // Fast path when there are no nulls.
         let mut residuals: Vec<i64> = Vec::with_capacity(len);
         let phys_id = get_physical_type_id::<T>();
         let is_unsigned = matches!(phys_id, 4..=7);
-        for (i, ov) in arrow_array.iter().enumerate() {
-            if let Some(v) = ov {
-                let predicted = predict_value::<T>(intercept, slope, i as u32);
-                let res = if is_unsigned {
+        if arrow_array.null_count() == 0 {
+            let vals = arrow_array.values();
+            if is_unsigned {
+                // Unsigned residuals use magnitude difference with sign bit.
+                let max_u64: u64 = match phys_id {
+                    4 => u8::MAX as u64,
+                    5 => u16::MAX as u64,
+                    6 => u32::MAX as u64,
+                    7 => u64::MAX,
+                    _ => unreachable!(),
+                };
+                for i in 0..len {
+                    let pr = slope * (i as f64) + intercept;
+                    let p = predict_u64_saturated(pr, max_u64);
                     type U<TT> =
                         <<TT as LiquidPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native;
-                    let v_u: U<T> = v.as_();
-                    let p_u: U<T> = predicted.as_();
+                    let v_u: U<T> = vals[i].as_();
                     let v_u64: u64 = v_u.as_();
-                    let p_u64: u64 = p_u.as_();
-                    let (sign_pos, mag_u64) = if v_u64 >= p_u64 {
-                        (true, v_u64 - p_u64)
+                    let (pos, mag) = if v_u64 >= p {
+                        (true, v_u64 - p)
                     } else {
-                        (false, p_u64 - v_u64)
+                        (false, p - v_u64)
                     };
-                    debug_assert!(mag_u64 <= i64::MAX as u64);
-                    let m = mag_u64 as i64;
-                    if sign_pos { m } else { -m }
-                } else {
-                    let v_i64: i64 = v.as_();
-                    let p_i64: i64 = predicted.as_();
-                    v_i64 - p_i64
-                };
-                residuals.push(res);
+                    let m = (mag & (i64::MAX as u64)) as i64; // safe, mag <= type max range
+                    residuals.push(if pos { m } else { -m });
+                }
             } else {
-                residuals.push(0);
+                let (min_i64, max_i64): (i64, i64) = match phys_id {
+                    0 => (i8::MIN as i64, i8::MAX as i64),
+                    1 => (i16::MIN as i64, i16::MAX as i64),
+                    2 => (i32::MIN as i64, i32::MAX as i64),
+                    3 => (i64::MIN, i64::MAX),
+                    10 => (i32::MIN as i64, i32::MAX as i64),
+                    11 => (i64::MIN, i64::MAX),
+                    _ => unreachable!(),
+                };
+                for i in 0..len {
+                    let pr = slope * (i as f64) + intercept;
+                    let p = predict_i64_saturated(pr, min_i64, max_i64);
+                    let v_i64: i64 = vals[i].as_();
+                    residuals.push(v_i64 - p);
+                }
+            }
+        } else {
+            // With nulls: check bitmap and compute only for valid.
+            let nulls = arrow_array.nulls().unwrap();
+            let vals = arrow_array.values();
+            if is_unsigned {
+                let max_u64: u64 = match phys_id {
+                    4 => u8::MAX as u64,
+                    5 => u16::MAX as u64,
+                    6 => u32::MAX as u64,
+                    7 => u64::MAX,
+                    _ => unreachable!(),
+                };
+                for i in 0..len {
+                    if nulls.is_valid(i) {
+                        let pr = slope * (i as f64) + intercept;
+                        let p = predict_u64_saturated(pr, max_u64);
+                        type U<TT> = <<TT as LiquidPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native;
+                        let v_u: U<T> = vals[i].as_();
+                        let v_u64: u64 = v_u.as_();
+                        let (pos, mag) = if v_u64 >= p {
+                            (true, v_u64 - p)
+                        } else {
+                            (false, p - v_u64)
+                        };
+                        let m = (mag & (i64::MAX as u64)) as i64;
+                        residuals.push(if pos { m } else { -m });
+                    } else {
+                        residuals.push(0);
+                    }
+                }
+            } else {
+                let (min_i64, max_i64): (i64, i64) = match phys_id {
+                    0 => (i8::MIN as i64, i8::MAX as i64),
+                    1 => (i16::MIN as i64, i16::MAX as i64),
+                    2 => (i32::MIN as i64, i32::MAX as i64),
+                    3 => (i64::MIN, i64::MAX),
+                    10 => (i32::MIN as i64, i32::MAX as i64),
+                    11 => (i64::MIN, i64::MAX),
+                    _ => unreachable!(),
+                };
+                for i in 0..len {
+                    if nulls.is_valid(i) {
+                        let pr = slope * (i as f64) + intercept;
+                        let p = predict_i64_saturated(pr, min_i64, max_i64);
+                        let v_i64: i64 = vals[i].as_();
+                        residuals.push(v_i64 - p);
+                    } else {
+                        residuals.push(0);
+                    }
+                }
             }
         }
         let residuals_buf: ScalarBuffer<i64> = ScalarBuffer::from(residuals);
@@ -134,6 +202,7 @@ where
             residuals,
             intercept,
             slope,
+            _phantom: PhantomData,
         }
     }
 
@@ -144,7 +213,7 @@ where
     fn residual_starting_loc() -> usize {
         // Header + intercept(native) + slope(f64), aligned to 8 bytes boundary
         let header_size =
-            LiquidIPCHeader::size() + std::mem::size_of::<T::Native>() + std::mem::size_of::<f64>();
+            LiquidIPCHeader::size() + std::mem::size_of::<f64>() + std::mem::size_of::<f64>();
         (header_size + 7) & !7
     }
 
@@ -158,14 +227,8 @@ where
 
         // Header
         out.extend_from_slice(&header.to_bytes());
-        // Model params
-        let intercept_bytes = unsafe {
-            std::slice::from_raw_parts(
-                &self.intercept as *const T::Native as *const u8,
-                std::mem::size_of::<T::Native>(),
-            )
-        };
-        out.extend_from_slice(intercept_bytes);
+        // Model params (f64 intercept, then f64 slope)
+        out.extend_from_slice(&self.intercept.to_le_bytes());
         out.extend_from_slice(&self.slope.to_le_bytes());
 
         while out.len() < start {
@@ -181,16 +244,13 @@ where
     pub fn from_bytes(bytes: Bytes) -> Self {
         let _hdr = LiquidIPCHeader::from_bytes(&bytes);
 
-        // Read intercept of native size
+        // Read intercept as f64
         let intercept_off = LiquidIPCHeader::size();
-        let intercept = unsafe {
-            (bytes[intercept_off..intercept_off + std::mem::size_of::<T::Native>()].as_ptr()
-                as *const T::Native)
-                .read_unaligned()
-        };
+        let intercept =
+            f64::from_le_bytes(bytes[intercept_off..intercept_off + 8].try_into().unwrap());
 
         // Read slope
-        let slope_off = intercept_off + std::mem::size_of::<T::Native>();
+        let slope_off = intercept_off + std::mem::size_of::<f64>();
         let slope = f64::from_le_bytes(bytes[slope_off..slope_off + 8].try_into().unwrap());
 
         // Decode residuals
@@ -202,6 +262,7 @@ where
             residuals,
             intercept,
             slope,
+            _phantom: PhantomData,
         }
     }
 }
@@ -217,7 +278,7 @@ where
 
     fn get_array_memory_size(&self) -> usize {
         self.residuals.get_array_memory_size()
-            + std::mem::size_of::<T::Native>() // intercept
+            + std::mem::size_of::<f64>() // intercept
             + std::mem::size_of::<f64>() // slope
     }
 
@@ -233,26 +294,41 @@ where
         let mut final_values = Vec::<T::Native>::with_capacity(self.len());
         let phys_id = get_physical_type_id::<T>();
         let is_unsigned = matches!(phys_id, 4..=7);
-        for (i, &e) in residuals.iter().enumerate() {
-            let predicted = predict_value::<T>(self.intercept, self.slope, i as u32);
-            let val = if is_unsigned {
-                type U<TT> =
-                    <<TT as LiquidPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native;
-                let p_u: U<T> = predicted.as_();
-                let p_u64: u64 = p_u.as_();
-                let mag_u64 = e.unsigned_abs();
-                let sum_u64 = if e >= 0 {
-                    p_u64 + mag_u64
-                } else {
-                    p_u64 - mag_u64
-                };
-                T::Native::from_u64(sum_u64).unwrap()
-            } else {
-                let p_i64: i64 = predicted.as_();
-                let sum_i64 = p_i64 + e;
-                T::Native::from_i64(sum_i64).unwrap()
+        if is_unsigned {
+            let max_u64: u64 = match phys_id {
+                4 => u8::MAX as u64,
+                5 => u16::MAX as u64,
+                6 => u32::MAX as u64,
+                7 => u64::MAX,
+                _ => unreachable!(),
             };
-            final_values.push(val);
+            for (i, &e) in residuals.iter().enumerate() {
+                let pr = self.slope * (i as f64) + self.intercept;
+                let p = predict_u64_saturated(pr, max_u64);
+                let mag = e.unsigned_abs();
+                let sum = if e >= 0 {
+                    p.saturating_add(mag)
+                } else {
+                    p.saturating_sub(mag)
+                };
+                final_values.push(T::Native::from_u64(sum).unwrap());
+            }
+        } else {
+            let (min_i64, max_i64): (i64, i64) = match phys_id {
+                0 => (i8::MIN as i64, i8::MAX as i64),
+                1 => (i16::MIN as i64, i16::MAX as i64),
+                2 => (i32::MIN as i64, i32::MAX as i64),
+                3 => (i64::MIN, i64::MAX),
+                10 => (i32::MIN as i64, i32::MAX as i64),
+                11 => (i64::MIN, i64::MAX),
+                _ => unreachable!(),
+            };
+            for (i, &e) in residuals.iter().enumerate() {
+                let pr = self.slope * (i as f64) + self.intercept;
+                let p = predict_i64_saturated(pr, min_i64, max_i64);
+                let sum = p.saturating_add(e);
+                final_values.push(T::Native::from_i64(sum).unwrap());
+            }
         }
 
         let values_buf: ScalarBuffer<T::Native> = ScalarBuffer::from(final_values);
@@ -293,21 +369,145 @@ where
 }
 
 #[inline]
-fn predict_value<T>(
-    intercept: <T as ArrowPrimitiveType>::Native,
-    slope: f64,
-    index: u32,
-) -> <T as ArrowPrimitiveType>::Native
+fn predict_u64_saturated(pred: f64, max_u64: u64) -> u64 {
+    if !pred.is_finite() || pred <= 0.0 {
+        0
+    } else if pred >= max_u64 as f64 {
+        max_u64
+    } else {
+        pred.round() as u64
+    }
+}
+
+#[inline]
+fn predict_i64_saturated(pred: f64, min_i64: i64, max_i64: i64) -> i64 {
+    if !pred.is_finite() {
+        0
+    } else if pred <= min_i64 as f64 {
+        min_i64
+    } else if pred >= max_i64 as f64 {
+        max_i64
+    } else {
+        pred.round() as i64
+    }
+}
+
+/// L-infinity linear fit for y[i] ≈ intercept + slope * i (before rounding),
+/// minimizing the maximum absolute error over all non-null points.
+///
+/// Approach: minimize R(m) = max_i (y_i - m i) - min_i (y_i - m i), which is
+/// convex in m. Given m, the best intercept is b = (max_i s_i + min_i s_i)/2
+/// where s_i = y_i - m i. We find m by a few rounds of bisection using the
+/// subgradient sign derived from the argmax/argmin indices. O(n) per iteration.
+fn fit_linf(values: &[f64], idxs: &[u32]) -> (f64, f64) {
+    let n = values.len();
+    assert_eq!(values.len(), idxs.len());
+    if n == 0 {
+        return (0.0, 0.0);
+    }
+    if n == 1 {
+        return (values[0], 0.0);
+    }
+
+    let mut slope_min = f64::INFINITY;
+    let mut slope_max = f64::NEG_INFINITY;
+    for k in 1..n {
+        let di = (idxs[k] - idxs[k - 1]) as f64;
+        if di > 0.0 {
+            let dv = values[k] - values[k - 1];
+            let s = dv / di;
+            if s < slope_min {
+                slope_min = s;
+            }
+            if s > slope_max {
+                slope_max = s;
+            }
+        }
+    }
+    if !slope_min.is_finite() || !slope_max.is_finite() {
+        slope_min = 0.0;
+        slope_max = 0.0;
+    }
+
+    let mut lo = slope_min.min(slope_max);
+    let mut hi = slope_min.max(slope_max);
+    if (hi - lo).abs() < 1e-12 {
+        let pad = if hi.abs() < 1.0 { 1.0 } else { hi.abs() * 1e-6 };
+        lo -= pad;
+        hi += pad;
+    }
+
+    #[inline]
+    fn range_stats(values: &[f64], idxs: &[u32], m: f64) -> (f64, u32, f64, u32) {
+        let mut min_s = f64::INFINITY;
+        let mut max_s = f64::NEG_INFINITY;
+        let mut i_min = 0u32;
+        let mut i_max = 0u32;
+        for k in 0..values.len() {
+            let i = idxs[k] as f64;
+            let s = values[k] - m * i;
+            if s < min_s {
+                min_s = s;
+                i_min = idxs[k];
+            }
+            if s > max_s {
+                max_s = s;
+                i_max = idxs[k];
+            }
+        }
+        (min_s, i_min, max_s, i_max)
+    }
+
+    const MAX_ITERS: usize = 16;
+    for _ in 0..MAX_ITERS {
+        let m = 0.5 * (lo + hi);
+        let (_min_s, i_min, _max_s, i_max) = range_stats(values, idxs, m);
+        let g = (i_min as i64) - (i_max as i64);
+        if g > 0 {
+            hi = m;
+        } else if g < 0 {
+            lo = m;
+        } else {
+            lo = m;
+            hi = m;
+            break;
+        }
+        if (hi - lo).abs() < 1e-12 {
+            break;
+        }
+    }
+
+    let m = 0.5 * (lo + hi);
+    let (min_s, _i_min, max_s, _i_max) = range_stats(values, idxs, m);
+    let b = 0.5 * (max_s + min_s);
+    (b, m)
+}
+
+#[inline]
+fn collect_non_null_f64_and_indices<T>(arr: &PrimitiveArray<T>) -> (Vec<f64>, Vec<u32>)
 where
-    T: ArrowPrimitiveType,
-    T::Native: AsPrimitive<f64> + FromPrimitive + Bounded,
+    T: LiquidPrimitiveType,
+    T::Native: AsPrimitive<f64>,
 {
-    let base: f64 = intercept.as_();
-    let pred = slope * index as f64 + base;
-    let min_f: f64 = T::Native::min_value().as_();
-    let max_f: f64 = T::Native::max_value().as_();
-    let r = pred.round().clamp(min_f, max_f);
-    T::Native::from_f64(r).unwrap()
+    let nn = arr.len() - arr.null_count();
+    let mut values = Vec::with_capacity(nn);
+    let mut idxs = Vec::with_capacity(nn);
+    let vals = arr.values();
+    if arr.null_count() == 0 {
+        for (i, v) in vals.iter().enumerate() {
+            values.push(v.as_());
+            idxs.push(i as u32);
+        }
+    } else {
+        let nulls = arr.nulls().unwrap();
+        for (i, v) in vals.iter().enumerate() {
+            if nulls.is_valid(i) {
+                values.push(v.as_());
+                idxs.push(i as u32);
+            }
+        }
+    }
+    (values, idxs)
 }
 
 #[cfg(test)]
@@ -509,6 +709,10 @@ mod tests {
         println!(
             "arrow_size: {arrow_size}, liquid_linear_size: {liquid_linear_size}, liquid_primitive_size: {liquid_primitive_size}",
         );
+
+        assert!(liquid_linear_size < arrow_size);
+        assert!(liquid_primitive_size < arrow_size);
+        assert!(liquid_linear_size < liquid_primitive_size);
 
         let original: ArrayRef = Arc::new(original);
         assert_eq!(original.as_ref(), liquid_linear.to_arrow_array().as_ref());
