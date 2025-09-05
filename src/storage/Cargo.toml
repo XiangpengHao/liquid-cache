@@ -77,3 +77,8 @@ path = "bench/liquid_float_array.rs"
 name = "cache_storage"
 path = "study/cache_storage.rs"
 harness = false
+
+[[bench]]
+name = "linear_integer_study"
+path = "study/linear_integer.rs"
+harness = false

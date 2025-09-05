@@ -52,7 +52,7 @@ pub enum LiquidDataType {
     Float = 2,
     /// A fixed length byte array.
     FixedLenByteArray = 3,
-    /// A linear-regression based integer (i32 residuals + model params).
+    /// A linear-model based integer (signed residuals + model params).
     LinearInteger = 5,
 }
 

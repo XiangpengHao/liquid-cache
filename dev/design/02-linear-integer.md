@@ -43,6 +43,10 @@ We simply calculate the slope and intercept using simple approach:
 
 Option 2:
 We use a linear regression model to calculate the slope and intercept.
+Later note: using linear regression is wrong, because we care about the largest error, not the sum of l2 distance of errors. Also, using linear regression does not guarantee the error term is smaller than the max value of the original array. 
+
+Option 3:
+We use a linear regression, but instead of minimizing the l2 distance, we minimize the max error, i.e., l-infinity distance.
 
 
 Once we have the linear model, we need to compute the error term.
@@ -50,4 +54,15 @@ Once we have the linear model, we need to compute the error term.
 The error term is a signed integer array, initially using i32. We evaluate every element in the array and store the error term.
 
 Once we have the error term, we can use the existing bit-packing, i.e., `LiquidI32Array` to compress it, which will automatically use the narrowest bit-width and handle negative values.
+
+
+### Study
+
+We mainly concerns about the compression ratio.
+
+To do this, we'll create a study just like `study/cache_storage.rs`, which will:
+1. read integer columns from hits.parquet dataset.
+2. compress the integer columns using the linear model, and the existing bit-packing approach.
+3. Report: 1. arrow data size, 2. existing bit-packing size, 3. linear model size.
+4. Report: 1. existing bit-packing compress/decompress speed, 2. linear model compress/decompress speed.
 
