@@ -1,0 +1,3242 @@
+{
+  "args": {
+    "manifest": "benchmark/clickbench/benchmark_manifest.json",
+    "bench_mode": "LiquidEagerTranscode",
+    "iteration": 5,
+    "output": "benchmark_results/benchmark.json",
+    "reset_cache": false,
+    "partitions": null,
+    "max_cache_mb": null,
+    "flamegraph_dir": null,
+    "query_index": null
+  },
+  "results": [
+    {
+      "query": {
+        "id": 0,
+        "statement": [
+          "SELECT COUNT(*) FROM hits;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 4,
+          "cache_cpu_time": 0,
+          "cache_memory_usage": 0,
+          "liquid_cache_usage": 0,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 223218
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 0,
+          "cache_cpu_time": 0,
+          "cache_memory_usage": 0,
+          "liquid_cache_usage": 0,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 4705137
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 0,
+          "cache_cpu_time": 0,
+          "cache_memory_usage": 0,
+          "liquid_cache_usage": 0,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 5645708
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 0,
+          "cache_cpu_time": 0,
+          "cache_memory_usage": 0,
+          "liquid_cache_usage": 0,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 6602470
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 0,
+          "cache_cpu_time": 0,
+          "cache_memory_usage": 0,
+          "liquid_cache_usage": 0,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 7644470
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 1,
+        "statement": [
+          "SELECT COUNT(*) FROM hits WHERE \"AdvEngineID\" <> 0;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 15,
+          "cache_cpu_time": 23,
+          "cache_memory_usage": 1557490,
+          "liquid_cache_usage": 1428386,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 8683321
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 6,
+          "cache_cpu_time": 10,
+          "cache_memory_usage": 1428386,
+          "liquid_cache_usage": 1428386,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 25029112
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 6,
+          "cache_cpu_time": 10,
+          "cache_memory_usage": 1428386,
+          "liquid_cache_usage": 1428386,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 32619273
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 5,
+          "cache_cpu_time": 10,
+          "cache_memory_usage": 1428386,
+          "liquid_cache_usage": 1428386,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 39929397
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 6,
+          "cache_cpu_time": 10,
+          "cache_memory_usage": 1428386,
+          "liquid_cache_usage": 1428386,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 46668035
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 2,
+        "statement": [
+          "SELECT SUM(\"AdvEngineID\"), COUNT(*), AVG(\"ResolutionWidth\") FROM hits;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 15,
+          "cache_cpu_time": 30,
+          "cache_memory_usage": 8644103,
+          "liquid_cache_usage": 7061268,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 54048498
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 7,
+          "cache_cpu_time": 3,
+          "cache_memory_usage": 7061268,
+          "liquid_cache_usage": 7061268,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 70273871
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 7,
+          "cache_cpu_time": 3,
+          "cache_memory_usage": 7061268,
+          "liquid_cache_usage": 7061268,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 78658754
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 7,
+          "cache_cpu_time": 3,
+          "cache_memory_usage": 7061268,
+          "liquid_cache_usage": 7061268,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 86767951
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 7,
+          "cache_cpu_time": 3,
+          "cache_memory_usage": 7061268,
+          "liquid_cache_usage": 7061268,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 94778198
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 3,
+        "statement": [
+          "SELECT AVG(\"UserID\") FROM hits;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 24,
+          "cache_cpu_time": 55,
+          "cache_memory_usage": 48528290,
+          "liquid_cache_usage": 36946292,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 102816215
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 7,
+          "cache_cpu_time": 8,
+          "cache_memory_usage": 36946292,
+          "liquid_cache_usage": 36946292,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 128031055
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 5,
+          "cache_cpu_time": 6,
+          "cache_memory_usage": 36946292,
+          "liquid_cache_usage": 36946292,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 136019363
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 7,
+          "cache_cpu_time": 7,
+          "cache_memory_usage": 36946292,
+          "liquid_cache_usage": 36946292,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 142305376
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 6,
+          "cache_cpu_time": 8,
+          "cache_memory_usage": 36946292,
+          "liquid_cache_usage": 36946292,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 150481511
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 4,
+        "statement": [
+          "SELECT COUNT(DISTINCT \"UserID\") FROM hits;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 47,
+          "cache_cpu_time": 7,
+          "cache_memory_usage": 36946292,
+          "liquid_cache_usage": 36946292,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 157318269
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 41,
+          "cache_cpu_time": 7,
+          "cache_memory_usage": 36946292,
+          "liquid_cache_usage": 36946292,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 205584510
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 34,
+          "cache_cpu_time": 7,
+          "cache_memory_usage": 36946292,
+          "liquid_cache_usage": 36946292,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 248292621
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 32,
+          "cache_cpu_time": 6,
+          "cache_memory_usage": 36946292,
+          "liquid_cache_usage": 36946292,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 283688939
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 33,
+          "cache_cpu_time": 6,
+          "cache_memory_usage": 36946292,
+          "liquid_cache_usage": 36946292,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 317357753
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 5,
+        "statement": [
+          "SELECT COUNT(DISTINCT \"SearchPhrase\") FROM hits;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 205,
+          "cache_cpu_time": 398,
+          "cache_memory_usage": 91443806,
+          "liquid_cache_usage": 68008425,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 351752250
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 82,
+          "cache_cpu_time": 92,
+          "cache_memory_usage": 68008425,
+          "liquid_cache_usage": 68008425,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 558022834
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 71,
+          "cache_cpu_time": 75,
+          "cache_memory_usage": 68008425,
+          "liquid_cache_usage": 68008425,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 641127768
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 83,
+          "cache_cpu_time": 68,
+          "cache_memory_usage": 68008425,
+          "liquid_cache_usage": 68008425,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 713166063
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 71,
+          "cache_cpu_time": 68,
+          "cache_memory_usage": 68008425,
+          "liquid_cache_usage": 68008425,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 797507256
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 6,
+        "statement": [
+          "SELECT MIN(\"EventDate\"::INT::DATE), MAX(\"EventDate\"::INT::DATE) FROM hits;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 4,
+          "cache_cpu_time": 8,
+          "cache_memory_usage": 68662454,
+          "liquid_cache_usage": 68661363,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 869698569
+          },
+          "disk_bytes_read": 4096,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 2,
+          "cache_cpu_time": 1,
+          "cache_memory_usage": 68661363,
+          "liquid_cache_usage": 68661363,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 874889042
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 3,
+          "cache_cpu_time": 1,
+          "cache_memory_usage": 68661363,
+          "liquid_cache_usage": 68661363,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 877788026
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 2,
+          "cache_cpu_time": 1,
+          "cache_memory_usage": 68661363,
+          "liquid_cache_usage": 68661363,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 881126715
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 3,
+          "cache_cpu_time": 1,
+          "cache_memory_usage": 68661363,
+          "liquid_cache_usage": 68661363,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 884397155
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 7,
+        "statement": [
+          "SELECT \"AdvEngineID\", COUNT(*) FROM hits WHERE \"AdvEngineID\" <> 0 GROUP BY \"AdvEngineID\" ORDER BY COUNT(*) DESC;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 4,
+          "cache_cpu_time": 5,
+          "cache_memory_usage": 68661363,
+          "liquid_cache_usage": 68661363,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 887694365
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 4,
+          "cache_cpu_time": 5,
+          "cache_memory_usage": 68661363,
+          "liquid_cache_usage": 68661363,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 892123595
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 4,
+          "cache_cpu_time": 5,
+          "cache_memory_usage": 68661363,
+          "liquid_cache_usage": 68661363,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 897286698
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 4,
+          "cache_cpu_time": 5,
+          "cache_memory_usage": 68661363,
+          "liquid_cache_usage": 68661363,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 902194073
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 4,
+          "cache_cpu_time": 5,
+          "cache_memory_usage": 68661363,
+          "liquid_cache_usage": 68661363,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 906551924
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 8,
+        "statement": [
+          "SELECT \"RegionID\", COUNT(DISTINCT \"UserID\") AS u FROM hits GROUP BY \"RegionID\" ORDER BY u DESC LIMIT 10;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 69,
+          "cache_cpu_time": 25,
+          "cache_memory_usage": 79571991,
+          "liquid_cache_usage": 77184239,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 911684257
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 49,
+          "cache_cpu_time": 10,
+          "cache_memory_usage": 77184239,
+          "liquid_cache_usage": 77184239,
+          "starting_timestamp": {
+            "secs": 0,
+            "nanos": 982201446
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 57,
+          "cache_cpu_time": 13,
+          "cache_memory_usage": 77184239,
+          "liquid_cache_usage": 77184239,
+          "starting_timestamp": {
+            "secs": 1,
+            "nanos": 31907564
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 54,
+          "cache_cpu_time": 16,
+          "cache_memory_usage": 77184239,
+          "liquid_cache_usage": 77184239,
+          "starting_timestamp": {
+            "secs": 1,
+            "nanos": 89623769
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 54,
+          "cache_cpu_time": 12,
+          "cache_memory_usage": 77184239,
+          "liquid_cache_usage": 77184239,
+          "starting_timestamp": {
+            "secs": 1,
+            "nanos": 144974425
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 9,
+        "statement": [
+          "SELECT \"RegionID\", SUM(\"AdvEngineID\"), COUNT(*) AS c, AVG(\"ResolutionWidth\"), COUNT(DISTINCT \"UserID\") FROM hits GROUP BY \"RegionID\" ORDER BY c DESC LIMIT 10;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 53,
+          "cache_cpu_time": 8,
+          "cache_memory_usage": 77184239,
+          "liquid_cache_usage": 77184239,
+          "starting_timestamp": {
+            "secs": 1,
+            "nanos": 199596848
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 58,
+          "cache_cpu_time": 11,
+          "cache_memory_usage": 77184239,
+          "liquid_cache_usage": 77184239,
+          "starting_timestamp": {
+            "secs": 1,
+            "nanos": 253969224
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 57,
+          "cache_cpu_time": 11,
+          "cache_memory_usage": 77184239,
+          "liquid_cache_usage": 77184239,
+          "starting_timestamp": {
+            "secs": 1,
+            "nanos": 313204715
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 54,
+          "cache_cpu_time": 11,
+          "cache_memory_usage": 77184239,
+          "liquid_cache_usage": 77184239,
+          "starting_timestamp": {
+            "secs": 1,
+            "nanos": 370938900
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 53,
+          "cache_cpu_time": 8,
+          "cache_memory_usage": 77184239,
+          "liquid_cache_usage": 77184239,
+          "starting_timestamp": {
+            "secs": 1,
+            "nanos": 425973769
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 10,
+        "statement": [
+          "SELECT \"MobilePhoneModel\", COUNT(DISTINCT \"UserID\") AS u FROM hits WHERE \"MobilePhoneModel\" <> '' GROUP BY \"MobilePhoneModel\" ORDER BY u DESC LIMIT 10;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 64,
+          "cache_cpu_time": 161,
+          "cache_memory_usage": 85483100,
+          "liquid_cache_usage": 85306440,
+          "starting_timestamp": {
+            "secs": 1,
+            "nanos": 480548493
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 11,
+          "cache_cpu_time": 17,
+          "cache_memory_usage": 85306440,
+          "liquid_cache_usage": 85306440,
+          "starting_timestamp": {
+            "secs": 1,
+            "nanos": 545446333
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 11,
+          "cache_cpu_time": 16,
+          "cache_memory_usage": 85306440,
+          "liquid_cache_usage": 85306440,
+          "starting_timestamp": {
+            "secs": 1,
+            "nanos": 557428733
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 10,
+          "cache_cpu_time": 16,
+          "cache_memory_usage": 85306440,
+          "liquid_cache_usage": 85306440,
+          "starting_timestamp": {
+            "secs": 1,
+            "nanos": 568942649
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 11,
+          "cache_cpu_time": 14,
+          "cache_memory_usage": 85306440,
+          "liquid_cache_usage": 85306440,
+          "starting_timestamp": {
+            "secs": 1,
+            "nanos": 580137057
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 11,
+        "statement": [
+          "SELECT \"MobilePhone\", \"MobilePhoneModel\", COUNT(DISTINCT \"UserID\") AS u FROM hits WHERE \"MobilePhoneModel\" <> '' GROUP BY \"MobilePhone\", \"MobilePhoneModel\" ORDER BY u DESC LIMIT 10;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 19,
+          "cache_cpu_time": 37,
+          "cache_memory_usage": 88926923,
+          "liquid_cache_usage": 88691794,
+          "starting_timestamp": {
+            "secs": 1,
+            "nanos": 592025719
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 13,
+          "cache_cpu_time": 17,
+          "cache_memory_usage": 88691794,
+          "liquid_cache_usage": 88691794,
+          "starting_timestamp": {
+            "secs": 1,
+            "nanos": 611734099
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 12,
+          "cache_cpu_time": 17,
+          "cache_memory_usage": 88691794,
+          "liquid_cache_usage": 88691794,
+          "starting_timestamp": {
+            "secs": 1,
+            "nanos": 625235017
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 12,
+          "cache_cpu_time": 17,
+          "cache_memory_usage": 88691794,
+          "liquid_cache_usage": 88691794,
+          "starting_timestamp": {
+            "secs": 1,
+            "nanos": 638459227
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 12,
+          "cache_cpu_time": 17,
+          "cache_memory_usage": 88691794,
+          "liquid_cache_usage": 88691794,
+          "starting_timestamp": {
+            "secs": 1,
+            "nanos": 650984753
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 12,
+        "statement": [
+          "SELECT \"SearchPhrase\", COUNT(*) AS c FROM hits WHERE \"SearchPhrase\" <> '' GROUP BY \"SearchPhrase\" ORDER BY c DESC LIMIT 10;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 77,
+          "cache_cpu_time": 109,
+          "cache_memory_usage": 88691794,
+          "liquid_cache_usage": 88691794,
+          "starting_timestamp": {
+            "secs": 1,
+            "nanos": 663710377
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 73,
+          "cache_cpu_time": 94,
+          "cache_memory_usage": 88691794,
+          "liquid_cache_usage": 88691794,
+          "starting_timestamp": {
+            "secs": 1,
+            "nanos": 741848366
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 77,
+          "cache_cpu_time": 98,
+          "cache_memory_usage": 88691794,
+          "liquid_cache_usage": 88691794,
+          "starting_timestamp": {
+            "secs": 1,
+            "nanos": 815563836
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 82,
+          "cache_cpu_time": 113,
+          "cache_memory_usage": 88691794,
+          "liquid_cache_usage": 88691794,
+          "starting_timestamp": {
+            "secs": 1,
+            "nanos": 893282698
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 71,
+          "cache_cpu_time": 93,
+          "cache_memory_usage": 88691794,
+          "liquid_cache_usage": 88691794,
+          "starting_timestamp": {
+            "secs": 1,
+            "nanos": 976459282
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 13,
+        "statement": [
+          "SELECT \"SearchPhrase\", COUNT(DISTINCT \"UserID\") AS u FROM hits WHERE \"SearchPhrase\" <> '' GROUP BY \"SearchPhrase\" ORDER BY u DESC LIMIT 10;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 97,
+          "cache_cpu_time": 71,
+          "cache_memory_usage": 88691794,
+          "liquid_cache_usage": 88691794,
+          "starting_timestamp": {
+            "secs": 2,
+            "nanos": 48089420
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 102,
+          "cache_cpu_time": 75,
+          "cache_memory_usage": 88691794,
+          "liquid_cache_usage": 88691794,
+          "starting_timestamp": {
+            "secs": 2,
+            "nanos": 145844981
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 101,
+          "cache_cpu_time": 74,
+          "cache_memory_usage": 88691794,
+          "liquid_cache_usage": 88691794,
+          "starting_timestamp": {
+            "secs": 2,
+            "nanos": 248796025
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 96,
+          "cache_cpu_time": 79,
+          "cache_memory_usage": 88691794,
+          "liquid_cache_usage": 88691794,
+          "starting_timestamp": {
+            "secs": 2,
+            "nanos": 350904946
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 102,
+          "cache_cpu_time": 82,
+          "cache_memory_usage": 88691794,
+          "liquid_cache_usage": 88691794,
+          "starting_timestamp": {
+            "secs": 2,
+            "nanos": 447927644
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 14,
+        "statement": [
+          "SELECT \"SearchEngineID\", \"SearchPhrase\", COUNT(*) AS c FROM hits WHERE \"SearchPhrase\" <> '' GROUP BY \"SearchEngineID\", \"SearchPhrase\" ORDER BY c DESC LIMIT 10;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 79,
+          "cache_cpu_time": 115,
+          "cache_memory_usage": 93507790,
+          "liquid_cache_usage": 92484392,
+          "starting_timestamp": {
+            "secs": 2,
+            "nanos": 550622769
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 61,
+          "cache_cpu_time": 72,
+          "cache_memory_usage": 92498846,
+          "liquid_cache_usage": 92484392,
+          "starting_timestamp": {
+            "secs": 2,
+            "nanos": 630681361
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 66,
+          "cache_cpu_time": 71,
+          "cache_memory_usage": 92498846,
+          "liquid_cache_usage": 92484392,
+          "starting_timestamp": {
+            "secs": 2,
+            "nanos": 693013474
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 65,
+          "cache_cpu_time": 76,
+          "cache_memory_usage": 92498846,
+          "liquid_cache_usage": 92484392,
+          "starting_timestamp": {
+            "secs": 2,
+            "nanos": 759718657
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 59,
+          "cache_cpu_time": 76,
+          "cache_memory_usage": 92498846,
+          "liquid_cache_usage": 92484392,
+          "starting_timestamp": {
+            "secs": 2,
+            "nanos": 825303611
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 15,
+        "statement": [
+          "SELECT \"UserID\", COUNT(*) FROM hits GROUP BY \"UserID\" ORDER BY COUNT(*) DESC LIMIT 10;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 41,
+          "cache_cpu_time": 5,
+          "cache_memory_usage": 92484392,
+          "liquid_cache_usage": 92484392,
+          "starting_timestamp": {
+            "secs": 2,
+            "nanos": 885713211
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 44,
+          "cache_cpu_time": 6,
+          "cache_memory_usage": 92484392,
+          "liquid_cache_usage": 92484392,
+          "starting_timestamp": {
+            "secs": 2,
+            "nanos": 927910498
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 42,
+          "cache_cpu_time": 13,
+          "cache_memory_usage": 92484392,
+          "liquid_cache_usage": 92484392,
+          "starting_timestamp": {
+            "secs": 2,
+            "nanos": 972811409
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 39,
+          "cache_cpu_time": 11,
+          "cache_memory_usage": 92484392,
+          "liquid_cache_usage": 92484392,
+          "starting_timestamp": {
+            "secs": 3,
+            "nanos": 15911077
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 45,
+          "cache_cpu_time": 5,
+          "cache_memory_usage": 92484392,
+          "liquid_cache_usage": 92484392,
+          "starting_timestamp": {
+            "secs": 3,
+            "nanos": 55716845
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 16,
+        "statement": [
+          "SELECT \"UserID\", \"SearchPhrase\", COUNT(*) FROM hits GROUP BY \"UserID\", \"SearchPhrase\" ORDER BY COUNT(*) DESC LIMIT 10;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 141,
+          "cache_cpu_time": 76,
+          "cache_memory_usage": 92484392,
+          "liquid_cache_usage": 92484392,
+          "starting_timestamp": {
+            "secs": 3,
+            "nanos": 101737257
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 204800
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 129,
+          "cache_cpu_time": 72,
+          "cache_memory_usage": 92484392,
+          "liquid_cache_usage": 92484392,
+          "starting_timestamp": {
+            "secs": 3,
+            "nanos": 244222070
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 136,
+          "cache_cpu_time": 93,
+          "cache_memory_usage": 92484392,
+          "liquid_cache_usage": 92484392,
+          "starting_timestamp": {
+            "secs": 3,
+            "nanos": 373979140
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 124,
+          "cache_cpu_time": 65,
+          "cache_memory_usage": 92484392,
+          "liquid_cache_usage": 92484392,
+          "starting_timestamp": {
+            "secs": 3,
+            "nanos": 510692657
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 1462272
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 135,
+          "cache_cpu_time": 78,
+          "cache_memory_usage": 92484392,
+          "liquid_cache_usage": 92484392,
+          "starting_timestamp": {
+            "secs": 3,
+            "nanos": 635867318
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 41852928
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 17,
+        "statement": [
+          "SELECT \"UserID\", \"SearchPhrase\", COUNT(*) FROM hits GROUP BY \"UserID\", \"SearchPhrase\" LIMIT 10;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 94,
+          "cache_cpu_time": 58,
+          "cache_memory_usage": 92484392,
+          "liquid_cache_usage": 92484392,
+          "starting_timestamp": {
+            "secs": 3,
+            "nanos": 772082889
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 2830336
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 93,
+          "cache_cpu_time": 60,
+          "cache_memory_usage": 92484392,
+          "liquid_cache_usage": 92484392,
+          "starting_timestamp": {
+            "secs": 3,
+            "nanos": 867461611
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 93,
+          "cache_cpu_time": 59,
+          "cache_memory_usage": 92484392,
+          "liquid_cache_usage": 92484392,
+          "starting_timestamp": {
+            "secs": 3,
+            "nanos": 962363458
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 95,
+          "cache_cpu_time": 66,
+          "cache_memory_usage": 92484392,
+          "liquid_cache_usage": 92484392,
+          "starting_timestamp": {
+            "secs": 4,
+            "nanos": 56715170
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 94,
+          "cache_cpu_time": 58,
+          "cache_memory_usage": 92484392,
+          "liquid_cache_usage": 92484392,
+          "starting_timestamp": {
+            "secs": 4,
+            "nanos": 152553908
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 18,
+        "statement": [
+          "SELECT \"UserID\", extract(minute FROM to_timestamp_seconds(\"EventTime\")) AS m, \"SearchPhrase\", COUNT(*) FROM hits GROUP BY \"UserID\", m, \"SearchPhrase\" ORDER BY COUNT(*) DESC LIMIT 10;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 234,
+          "cache_cpu_time": 119,
+          "cache_memory_usage": 115909631,
+          "liquid_cache_usage": 101184392,
+          "starting_timestamp": {
+            "secs": 4,
+            "nanos": 247534174
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 222,
+          "cache_cpu_time": 65,
+          "cache_memory_usage": 101184392,
+          "liquid_cache_usage": 101184392,
+          "starting_timestamp": {
+            "secs": 4,
+            "nanos": 482553886
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 226,
+          "cache_cpu_time": 78,
+          "cache_memory_usage": 101184392,
+          "liquid_cache_usage": 101184392,
+          "starting_timestamp": {
+            "secs": 4,
+            "nanos": 705441069
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 230,
+          "cache_cpu_time": 96,
+          "cache_memory_usage": 101184392,
+          "liquid_cache_usage": 101184392,
+          "starting_timestamp": {
+            "secs": 4,
+            "nanos": 932277066
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 225,
+          "cache_cpu_time": 83,
+          "cache_memory_usage": 101184392,
+          "liquid_cache_usage": 101184392,
+          "starting_timestamp": {
+            "secs": 5,
+            "nanos": 163508803
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 19,
+        "statement": [
+          "SELECT \"UserID\" FROM hits WHERE \"UserID\" = 435090932899640449;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 3,
+          "cache_cpu_time": 7,
+          "cache_memory_usage": 101184392,
+          "liquid_cache_usage": 101184392,
+          "starting_timestamp": {
+            "secs": 5,
+            "nanos": 389993652
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 2,
+          "cache_cpu_time": 6,
+          "cache_memory_usage": 101184392,
+          "liquid_cache_usage": 101184392,
+          "starting_timestamp": {
+            "secs": 5,
+            "nanos": 393834777
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 2,
+          "cache_cpu_time": 6,
+          "cache_memory_usage": 101184392,
+          "liquid_cache_usage": 101184392,
+          "starting_timestamp": {
+            "secs": 5,
+            "nanos": 397088998
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 2,
+          "cache_cpu_time": 6,
+          "cache_memory_usage": 101184392,
+          "liquid_cache_usage": 101184392,
+          "starting_timestamp": {
+            "secs": 5,
+            "nanos": 400174510
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 2,
+          "cache_cpu_time": 6,
+          "cache_memory_usage": 101184392,
+          "liquid_cache_usage": 101184392,
+          "starting_timestamp": {
+            "secs": 5,
+            "nanos": 403236492
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 20,
+        "statement": [
+          "SELECT COUNT(*) FROM hits WHERE \"URL\" LIKE '%google%';"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 586,
+          "cache_cpu_time": 1650,
+          "cache_memory_usage": 396932912,
+          "liquid_cache_usage": 281557134,
+          "starting_timestamp": {
+            "secs": 5,
+            "nanos": 406268124
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 172,
+          "cache_cpu_time": 553,
+          "cache_memory_usage": 281557134,
+          "liquid_cache_usage": 281557134,
+          "starting_timestamp": {
+            "secs": 5,
+            "nanos": 994278026
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 162,
+          "cache_cpu_time": 494,
+          "cache_memory_usage": 281557134,
+          "liquid_cache_usage": 281557134,
+          "starting_timestamp": {
+            "secs": 6,
+            "nanos": 167685228
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 193,
+          "cache_cpu_time": 528,
+          "cache_memory_usage": 281557134,
+          "liquid_cache_usage": 281557134,
+          "starting_timestamp": {
+            "secs": 6,
+            "nanos": 330741425
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 169,
+          "cache_cpu_time": 510,
+          "cache_memory_usage": 281557134,
+          "liquid_cache_usage": 281557134,
+          "starting_timestamp": {
+            "secs": 6,
+            "nanos": 524827890
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 21,
+        "statement": [
+          "SELECT \"SearchPhrase\", MIN(\"URL\"), COUNT(*) AS c FROM hits WHERE \"URL\" LIKE '%google%' AND \"SearchPhrase\" <> '' GROUP BY \"SearchPhrase\" ORDER BY c DESC LIMIT 10;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 200,
+          "cache_cpu_time": 627,
+          "cache_memory_usage": 281557134,
+          "liquid_cache_usage": 281557134,
+          "starting_timestamp": {
+            "secs": 6,
+            "nanos": 695089611
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 200,
+          "cache_cpu_time": 640,
+          "cache_memory_usage": 281557134,
+          "liquid_cache_usage": 281557134,
+          "starting_timestamp": {
+            "secs": 6,
+            "nanos": 896062963
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 183,
+          "cache_cpu_time": 626,
+          "cache_memory_usage": 281557134,
+          "liquid_cache_usage": 281557134,
+          "starting_timestamp": {
+            "secs": 7,
+            "nanos": 97606650
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 192,
+          "cache_cpu_time": 542,
+          "cache_memory_usage": 281557134,
+          "liquid_cache_usage": 281557134,
+          "starting_timestamp": {
+            "secs": 7,
+            "nanos": 282111472
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 212,
+          "cache_cpu_time": 616,
+          "cache_memory_usage": 281557134,
+          "liquid_cache_usage": 281557134,
+          "starting_timestamp": {
+            "secs": 7,
+            "nanos": 475491122
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 22,
+        "statement": [
+          "SELECT \"SearchPhrase\", MIN(\"URL\"), MIN(\"Title\"), COUNT(*) AS c, COUNT(DISTINCT \"UserID\") FROM hits WHERE \"Title\" LIKE '%Google%' AND \"URL\" NOT LIKE '%.google.%' AND \"SearchPhrase\" <> '' GROUP BY \"SearchPhrase\" ORDER BY c DESC LIMIT 10;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 836,
+          "cache_cpu_time": 2440,
+          "cache_memory_usage": 550973667,
+          "liquid_cache_usage": 409336190,
+          "starting_timestamp": {
+            "secs": 7,
+            "nanos": 689074980
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 461,
+          "cache_cpu_time": 1119,
+          "cache_memory_usage": 409875745,
+          "liquid_cache_usage": 409336190,
+          "starting_timestamp": {
+            "secs": 8,
+            "nanos": 526113846
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 444,
+          "cache_cpu_time": 1192,
+          "cache_memory_usage": 409875745,
+          "liquid_cache_usage": 409336190,
+          "starting_timestamp": {
+            "secs": 8,
+            "nanos": 988338401
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 51494912
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 427,
+          "cache_cpu_time": 1129,
+          "cache_memory_usage": 409875745,
+          "liquid_cache_usage": 409336190,
+          "starting_timestamp": {
+            "secs": 9,
+            "nanos": 433786310
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 38998016
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 418,
+          "cache_cpu_time": 1213,
+          "cache_memory_usage": 409875745,
+          "liquid_cache_usage": 409336190,
+          "starting_timestamp": {
+            "secs": 9,
+            "nanos": 861860756
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 23,
+        "statement": [
+          "SELECT * FROM hits WHERE \"URL\" LIKE '%google%' ORDER BY to_timestamp_seconds(\"EventTime\") LIMIT 10;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 1430,
+          "cache_cpu_time": 4254,
+          "cache_memory_usage": 1255872811,
+          "liquid_cache_usage": 847383890,
+          "starting_timestamp": {
+            "secs": 10,
+            "nanos": 281388590
+          },
+          "disk_bytes_read": 4096,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 363,
+          "cache_cpu_time": 1041,
+          "cache_memory_usage": 1249726755,
+          "liquid_cache_usage": 847383890,
+          "starting_timestamp": {
+            "secs": 11,
+            "nanos": 714036439
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 331,
+          "cache_cpu_time": 954,
+          "cache_memory_usage": 1249726755,
+          "liquid_cache_usage": 847383890,
+          "starting_timestamp": {
+            "secs": 12,
+            "nanos": 79369776
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 346,
+          "cache_cpu_time": 988,
+          "cache_memory_usage": 1249726755,
+          "liquid_cache_usage": 847383890,
+          "starting_timestamp": {
+            "secs": 12,
+            "nanos": 412927491
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 348,
+          "cache_cpu_time": 1003,
+          "cache_memory_usage": 1249726755,
+          "liquid_cache_usage": 847383890,
+          "starting_timestamp": {
+            "secs": 12,
+            "nanos": 760861997
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 24,
+        "statement": [
+          "SELECT \"SearchPhrase\" FROM hits WHERE \"SearchPhrase\" <> '' ORDER BY to_timestamp_seconds(\"EventTime\") LIMIT 10;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 55,
+          "cache_cpu_time": 102,
+          "cache_memory_usage": 847383890,
+          "liquid_cache_usage": 847383890,
+          "starting_timestamp": {
+            "secs": 13,
+            "nanos": 110612185
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 36,
+          "cache_cpu_time": 78,
+          "cache_memory_usage": 847383890,
+          "liquid_cache_usage": 847383890,
+          "starting_timestamp": {
+            "secs": 13,
+            "nanos": 166720675
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 32,
+          "cache_cpu_time": 75,
+          "cache_memory_usage": 847383890,
+          "liquid_cache_usage": 847383890,
+          "starting_timestamp": {
+            "secs": 13,
+            "nanos": 203751148
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 42,
+          "cache_cpu_time": 77,
+          "cache_memory_usage": 847383890,
+          "liquid_cache_usage": 847383890,
+          "starting_timestamp": {
+            "secs": 13,
+            "nanos": 236805628
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 40,
+          "cache_cpu_time": 82,
+          "cache_memory_usage": 847383890,
+          "liquid_cache_usage": 847383890,
+          "starting_timestamp": {
+            "secs": 13,
+            "nanos": 280163553
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 25,
+        "statement": [
+          "SELECT \"SearchPhrase\" FROM hits WHERE \"SearchPhrase\" <> '' ORDER BY \"SearchPhrase\" LIMIT 10;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 40,
+          "cache_cpu_time": 104,
+          "cache_memory_usage": 847383890,
+          "liquid_cache_usage": 847383890,
+          "starting_timestamp": {
+            "secs": 13,
+            "nanos": 320808884
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 39,
+          "cache_cpu_time": 108,
+          "cache_memory_usage": 847383890,
+          "liquid_cache_usage": 847383890,
+          "starting_timestamp": {
+            "secs": 13,
+            "nanos": 362253446
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 40,
+          "cache_cpu_time": 111,
+          "cache_memory_usage": 847383890,
+          "liquid_cache_usage": 847383890,
+          "starting_timestamp": {
+            "secs": 13,
+            "nanos": 402606179
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 46,
+          "cache_cpu_time": 104,
+          "cache_memory_usage": 847383890,
+          "liquid_cache_usage": 847383890,
+          "starting_timestamp": {
+            "secs": 13,
+            "nanos": 444017313
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 38,
+          "cache_cpu_time": 95,
+          "cache_memory_usage": 847383890,
+          "liquid_cache_usage": 847383890,
+          "starting_timestamp": {
+            "secs": 13,
+            "nanos": 491052895
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 26,
+        "statement": [
+          "SELECT \"SearchPhrase\" FROM hits WHERE \"SearchPhrase\" <> '' ORDER BY to_timestamp_seconds(\"EventTime\"), \"SearchPhrase\" LIMIT 10;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 39,
+          "cache_cpu_time": 71,
+          "cache_memory_usage": 847383890,
+          "liquid_cache_usage": 847383890,
+          "starting_timestamp": {
+            "secs": 13,
+            "nanos": 530588705
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 41,
+          "cache_cpu_time": 70,
+          "cache_memory_usage": 847383890,
+          "liquid_cache_usage": 847383890,
+          "starting_timestamp": {
+            "secs": 13,
+            "nanos": 570536012
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 39,
+          "cache_cpu_time": 67,
+          "cache_memory_usage": 847383890,
+          "liquid_cache_usage": 847383890,
+          "starting_timestamp": {
+            "secs": 13,
+            "nanos": 612193293
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 40,
+          "cache_cpu_time": 67,
+          "cache_memory_usage": 847383890,
+          "liquid_cache_usage": 847383890,
+          "starting_timestamp": {
+            "secs": 13,
+            "nanos": 651873272
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 43,
+          "cache_cpu_time": 69,
+          "cache_memory_usage": 847383890,
+          "liquid_cache_usage": 847383890,
+          "starting_timestamp": {
+            "secs": 13,
+            "nanos": 693048958
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 27,
+        "statement": [
+          "SELECT \"CounterID\", AVG(length(\"URL\")) AS l, COUNT(*) AS c FROM hits WHERE \"URL\" <> '' GROUP BY \"CounterID\" HAVING COUNT(*) > 100000 ORDER BY l DESC LIMIT 25;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 189,
+          "cache_cpu_time": 395,
+          "cache_memory_usage": 847780574,
+          "liquid_cache_usage": 847779170,
+          "starting_timestamp": {
+            "secs": 13,
+            "nanos": 736958258
+          },
+          "disk_bytes_read": 49152,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 199,
+          "cache_cpu_time": 391,
+          "cache_memory_usage": 847779170,
+          "liquid_cache_usage": 847779170,
+          "starting_timestamp": {
+            "secs": 13,
+            "nanos": 926968650
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 207,
+          "cache_cpu_time": 395,
+          "cache_memory_usage": 847779170,
+          "liquid_cache_usage": 847779170,
+          "starting_timestamp": {
+            "secs": 14,
+            "nanos": 126669493
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 223,
+          "cache_cpu_time": 414,
+          "cache_memory_usage": 847779170,
+          "liquid_cache_usage": 847779170,
+          "starting_timestamp": {
+            "secs": 14,
+            "nanos": 334823150
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 209,
+          "cache_cpu_time": 441,
+          "cache_memory_usage": 847779170,
+          "liquid_cache_usage": 847779170,
+          "starting_timestamp": {
+            "secs": 14,
+            "nanos": 558865402
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 28,
+        "statement": [
+          "SELECT REGEXP_REPLACE(\"Referer\", '^https?://(?:www\\.)?([^/]+)/.*$', '\\1') AS k, AVG(length(\"Referer\")) AS l, COUNT(*) AS c, MIN(\"Referer\") FROM hits WHERE \"Referer\" <> '' GROUP BY k HAVING COUNT(*) > 100000 ORDER BY l DESC LIMIT 25;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 1924,
+          "cache_cpu_time": 1379,
+          "cache_memory_usage": 1091133537,
+          "liquid_cache_usage": 935161706,
+          "starting_timestamp": {
+            "secs": 14,
+            "nanos": 768459576
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 130392064
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 1587,
+          "cache_cpu_time": 409,
+          "cache_memory_usage": 935161706,
+          "liquid_cache_usage": 935161706,
+          "starting_timestamp": {
+            "secs": 16,
+            "nanos": 693105319
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 1534,
+          "cache_cpu_time": 415,
+          "cache_memory_usage": 935161706,
+          "liquid_cache_usage": 935161706,
+          "starting_timestamp": {
+            "secs": 18,
+            "nanos": 281064955
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 9248768
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 1572,
+          "cache_cpu_time": 408,
+          "cache_memory_usage": 935161706,
+          "liquid_cache_usage": 935161706,
+          "starting_timestamp": {
+            "secs": 19,
+            "nanos": 816023243
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 41627648
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 1653,
+          "cache_cpu_time": 427,
+          "cache_memory_usage": 935161706,
+          "liquid_cache_usage": 935161706,
+          "starting_timestamp": {
+            "secs": 21,
+            "nanos": 389293792
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 29,
+        "statement": [
+          "SELECT SUM(\"ResolutionWidth\"), SUM(\"ResolutionWidth\" + 1), SUM(\"ResolutionWidth\" + 2), SUM(\"ResolutionWidth\" + 3), SUM(\"ResolutionWidth\" + 4), SUM(\"ResolutionWidth\" + 5), SUM(\"ResolutionWidth\" + 6), SUM(\"ResolutionWidth\" + 7), SUM(\"ResolutionWidth\" + 8), SUM(\"ResolutionWidth\" + 9), SUM(\"ResolutionWidth\" + 10), SUM(\"ResolutionWidth\" + 11), SUM(\"ResolutionWidth\" + 12), SUM(\"ResolutionWidth\" + 13), SUM(\"ResolutionWidth\" + 14), SUM(\"ResolutionWidth\" + 15), SUM(\"ResolutionWidth\" + 16), SUM(\"ResolutionWidth\" + 17), SUM(\"ResolutionWidth\" + 18), SUM(\"ResolutionWidth\" + 19), SUM(\"ResolutionWidth\" + 20), SUM(\"ResolutionWidth\" + 21), SUM(\"ResolutionWidth\" + 22), SUM(\"ResolutionWidth\" + 23), SUM(\"ResolutionWidth\" + 24), SUM(\"ResolutionWidth\" + 25), SUM(\"ResolutionWidth\" + 26), SUM(\"ResolutionWidth\" + 27), SUM(\"ResolutionWidth\" + 28), SUM(\"ResolutionWidth\" + 29), SUM(\"ResolutionWidth\" + 30), SUM(\"ResolutionWidth\" + 31), SUM(\"ResolutionWidth\" + 32), SUM(\"ResolutionWidth\" + 33), SUM(\"ResolutionWidth\" + 34), SUM(\"ResolutionWidth\" + 35), SUM(\"ResolutionWidth\" + 36), SUM(\"ResolutionWidth\" + 37), SUM(\"ResolutionWidth\" + 38), SUM(\"ResolutionWidth\" + 39), SUM(\"ResolutionWidth\" + 40), SUM(\"ResolutionWidth\" + 41), SUM(\"ResolutionWidth\" + 42), SUM(\"ResolutionWidth\" + 43), SUM(\"ResolutionWidth\" + 44), SUM(\"ResolutionWidth\" + 45), SUM(\"ResolutionWidth\" + 46), SUM(\"ResolutionWidth\" + 47), SUM(\"ResolutionWidth\" + 48), SUM(\"ResolutionWidth\" + 49), SUM(\"ResolutionWidth\" + 50), SUM(\"ResolutionWidth\" + 51), SUM(\"ResolutionWidth\" + 52), SUM(\"ResolutionWidth\" + 53), SUM(\"ResolutionWidth\" + 54), SUM(\"ResolutionWidth\" + 55), SUM(\"ResolutionWidth\" + 56), SUM(\"ResolutionWidth\" + 57), SUM(\"ResolutionWidth\" + 58), SUM(\"ResolutionWidth\" + 59), SUM(\"ResolutionWidth\" + 60), SUM(\"ResolutionWidth\" + 61), SUM(\"ResolutionWidth\" + 62), SUM(\"ResolutionWidth\" + 63), SUM(\"ResolutionWidth\" + 64), SUM(\"ResolutionWidth\" + 65), SUM(\"ResolutionWidth\" + 66), SUM(\"ResolutionWidth\" + 67), SUM(\"ResolutionWidth\" + 68), SUM(\"ResolutionWidth\" + 69), SUM(\"ResolutionWidth\" + 70), SUM(\"ResolutionWidth\" + 71), SUM(\"ResolutionWidth\" + 72), SUM(\"ResolutionWidth\" + 73), SUM(\"ResolutionWidth\" + 74), SUM(\"ResolutionWidth\" + 75), SUM(\"ResolutionWidth\" + 76), SUM(\"ResolutionWidth\" + 77), SUM(\"ResolutionWidth\" + 78), SUM(\"ResolutionWidth\" + 79), SUM(\"ResolutionWidth\" + 80), SUM(\"ResolutionWidth\" + 81), SUM(\"ResolutionWidth\" + 82), SUM(\"ResolutionWidth\" + 83), SUM(\"ResolutionWidth\" + 84), SUM(\"ResolutionWidth\" + 85), SUM(\"ResolutionWidth\" + 86), SUM(\"ResolutionWidth\" + 87), SUM(\"ResolutionWidth\" + 88), SUM(\"ResolutionWidth\" + 89) FROM hits;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 85,
+          "cache_cpu_time": 2,
+          "cache_memory_usage": 935161706,
+          "liquid_cache_usage": 935161706,
+          "starting_timestamp": {
+            "secs": 23,
+            "nanos": 43724383
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 83,
+          "cache_cpu_time": 3,
+          "cache_memory_usage": 935161706,
+          "liquid_cache_usage": 935161706,
+          "starting_timestamp": {
+            "secs": 23,
+            "nanos": 129407594
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 87,
+          "cache_cpu_time": 3,
+          "cache_memory_usage": 935161706,
+          "liquid_cache_usage": 935161706,
+          "starting_timestamp": {
+            "secs": 23,
+            "nanos": 214568149
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 105,
+          "cache_cpu_time": 3,
+          "cache_memory_usage": 935161706,
+          "liquid_cache_usage": 935161706,
+          "starting_timestamp": {
+            "secs": 23,
+            "nanos": 303204443
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 98,
+          "cache_cpu_time": 3,
+          "cache_memory_usage": 935161706,
+          "liquid_cache_usage": 935161706,
+          "starting_timestamp": {
+            "secs": 23,
+            "nanos": 410266859
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 30,
+        "statement": [
+          "SELECT \"SearchEngineID\", \"ClientIP\", COUNT(*) AS c, SUM(\"IsRefresh\"), AVG(\"ResolutionWidth\") FROM hits WHERE \"SearchPhrase\" <> '' GROUP BY \"SearchEngineID\", \"ClientIP\" ORDER BY c DESC LIMIT 10;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 109,
+          "cache_cpu_time": 156,
+          "cache_memory_usage": 951099435,
+          "liquid_cache_usage": 943323922,
+          "starting_timestamp": {
+            "secs": 23,
+            "nanos": 510398708
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 63,
+          "cache_cpu_time": 68,
+          "cache_memory_usage": 943323922,
+          "liquid_cache_usage": 943323922,
+          "starting_timestamp": {
+            "secs": 23,
+            "nanos": 620425698
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 64,
+          "cache_cpu_time": 66,
+          "cache_memory_usage": 943323922,
+          "liquid_cache_usage": 943323922,
+          "starting_timestamp": {
+            "secs": 23,
+            "nanos": 684620394
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 52,
+          "cache_cpu_time": 55,
+          "cache_memory_usage": 943323922,
+          "liquid_cache_usage": 943323922,
+          "starting_timestamp": {
+            "secs": 23,
+            "nanos": 749898440
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 48,
+          "cache_cpu_time": 57,
+          "cache_memory_usage": 943323922,
+          "liquid_cache_usage": 943323922,
+          "starting_timestamp": {
+            "secs": 23,
+            "nanos": 802822268
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 31,
+        "statement": [
+          "SELECT \"WatchID\", \"ClientIP\", COUNT(*) AS c, SUM(\"IsRefresh\"), AVG(\"ResolutionWidth\") FROM hits WHERE \"SearchPhrase\" <> '' GROUP BY \"WatchID\", \"ClientIP\" ORDER BY c DESC LIMIT 10;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 85,
+          "cache_cpu_time": 116,
+          "cache_memory_usage": 993015770,
+          "liquid_cache_usage": 958628498,
+          "starting_timestamp": {
+            "secs": 23,
+            "nanos": 852177879
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 56,
+          "cache_cpu_time": 65,
+          "cache_memory_usage": 958628498,
+          "liquid_cache_usage": 958628498,
+          "starting_timestamp": {
+            "secs": 23,
+            "nanos": 937871450
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 59,
+          "cache_cpu_time": 69,
+          "cache_memory_usage": 958628498,
+          "liquid_cache_usage": 958628498,
+          "starting_timestamp": {
+            "secs": 23,
+            "nanos": 995453906
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 59,
+          "cache_cpu_time": 65,
+          "cache_memory_usage": 958628498,
+          "liquid_cache_usage": 958628498,
+          "starting_timestamp": {
+            "secs": 24,
+            "nanos": 55450470
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 57,
+          "cache_cpu_time": 69,
+          "cache_memory_usage": 958628498,
+          "liquid_cache_usage": 958628498,
+          "starting_timestamp": {
+            "secs": 24,
+            "nanos": 115026819
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 32,
+        "statement": [
+          "SELECT \"WatchID\", \"ClientIP\", COUNT(*) AS c, SUM(\"IsRefresh\"), AVG(\"ResolutionWidth\") FROM hits GROUP BY \"WatchID\", \"ClientIP\" ORDER BY c DESC LIMIT 10;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 185,
+          "cache_cpu_time": 16,
+          "cache_memory_usage": 958628498,
+          "liquid_cache_usage": 958628498,
+          "starting_timestamp": {
+            "secs": 24,
+            "nanos": 173148700
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 181,
+          "cache_cpu_time": 19,
+          "cache_memory_usage": 958628498,
+          "liquid_cache_usage": 958628498,
+          "starting_timestamp": {
+            "secs": 24,
+            "nanos": 359561904
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 184,
+          "cache_cpu_time": 14,
+          "cache_memory_usage": 958628498,
+          "liquid_cache_usage": 958628498,
+          "starting_timestamp": {
+            "secs": 24,
+            "nanos": 541567209
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 176,
+          "cache_cpu_time": 17,
+          "cache_memory_usage": 958628498,
+          "liquid_cache_usage": 958628498,
+          "starting_timestamp": {
+            "secs": 24,
+            "nanos": 727066712
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 183,
+          "cache_cpu_time": 27,
+          "cache_memory_usage": 958628498,
+          "liquid_cache_usage": 958628498,
+          "starting_timestamp": {
+            "secs": 24,
+            "nanos": 904164690
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 33,
+        "statement": [
+          "SELECT \"URL\", COUNT(*) AS c FROM hits GROUP BY \"URL\" ORDER BY c DESC LIMIT 10;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 321,
+          "cache_cpu_time": 226,
+          "cache_memory_usage": 958628498,
+          "liquid_cache_usage": 958628498,
+          "starting_timestamp": {
+            "secs": 25,
+            "nanos": 87785420
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 314,
+          "cache_cpu_time": 233,
+          "cache_memory_usage": 958628498,
+          "liquid_cache_usage": 958628498,
+          "starting_timestamp": {
+            "secs": 25,
+            "nanos": 409808651
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 300,
+          "cache_cpu_time": 243,
+          "cache_memory_usage": 958628498,
+          "liquid_cache_usage": 958628498,
+          "starting_timestamp": {
+            "secs": 25,
+            "nanos": 724894695
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 326,
+          "cache_cpu_time": 242,
+          "cache_memory_usage": 958628498,
+          "liquid_cache_usage": 958628498,
+          "starting_timestamp": {
+            "secs": 26,
+            "nanos": 25651080
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 23269376
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 290,
+          "cache_cpu_time": 220,
+          "cache_memory_usage": 958628498,
+          "liquid_cache_usage": 958628498,
+          "starting_timestamp": {
+            "secs": 26,
+            "nanos": 352982092
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 34,
+        "statement": [
+          "SELECT 1, \"URL\", COUNT(*) AS c FROM hits GROUP BY 1, \"URL\" ORDER BY c DESC LIMIT 10;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 301,
+          "cache_cpu_time": 235,
+          "cache_memory_usage": 958628498,
+          "liquid_cache_usage": 958628498,
+          "starting_timestamp": {
+            "secs": 26,
+            "nanos": 644780398
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 284,
+          "cache_cpu_time": 207,
+          "cache_memory_usage": 958628498,
+          "liquid_cache_usage": 958628498,
+          "starting_timestamp": {
+            "secs": 26,
+            "nanos": 946847970
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 303,
+          "cache_cpu_time": 237,
+          "cache_memory_usage": 958628498,
+          "liquid_cache_usage": 958628498,
+          "starting_timestamp": {
+            "secs": 27,
+            "nanos": 231808638
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 307,
+          "cache_cpu_time": 235,
+          "cache_memory_usage": 958628498,
+          "liquid_cache_usage": 958628498,
+          "starting_timestamp": {
+            "secs": 27,
+            "nanos": 536081230
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 283,
+          "cache_cpu_time": 233,
+          "cache_memory_usage": 958628498,
+          "liquid_cache_usage": 958628498,
+          "starting_timestamp": {
+            "secs": 27,
+            "nanos": 843928270
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 35,
+        "statement": [
+          "SELECT \"ClientIP\", \"ClientIP\" - 1, \"ClientIP\" - 2, \"ClientIP\" - 3, COUNT(*) AS c FROM hits GROUP BY \"ClientIP\", \"ClientIP\" - 1, \"ClientIP\" - 2, \"ClientIP\" - 3 ORDER BY c DESC LIMIT 10;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 93,
+          "cache_cpu_time": 7,
+          "cache_memory_usage": 958628498,
+          "liquid_cache_usage": 958628498,
+          "starting_timestamp": {
+            "secs": 28,
+            "nanos": 128204484
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 87,
+          "cache_cpu_time": 4,
+          "cache_memory_usage": 958628498,
+          "liquid_cache_usage": 958628498,
+          "starting_timestamp": {
+            "secs": 28,
+            "nanos": 222478147
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 96,
+          "cache_cpu_time": 7,
+          "cache_memory_usage": 958628498,
+          "liquid_cache_usage": 958628498,
+          "starting_timestamp": {
+            "secs": 28,
+            "nanos": 310875873
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 86,
+          "cache_cpu_time": 4,
+          "cache_memory_usage": 958628498,
+          "liquid_cache_usage": 958628498,
+          "starting_timestamp": {
+            "secs": 28,
+            "nanos": 407698132
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 86,
+          "cache_cpu_time": 9,
+          "cache_memory_usage": 958628498,
+          "liquid_cache_usage": 958628498,
+          "starting_timestamp": {
+            "secs": 28,
+            "nanos": 494533632
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 36,
+        "statement": [
+          "SELECT \"URL\", COUNT(*) AS PageViews FROM hits WHERE \"CounterID\" = 62 AND \"EventDate\"::INT::DATE >= '2013-07-01' AND \"EventDate\"::INT::DATE <= '2013-07-31' AND \"DontCountHits\" = 0 AND \"IsRefresh\" = 0 AND \"URL\" <> '' GROUP BY \"URL\" ORDER BY PageViews DESC LIMIT 10;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 169,
+          "cache_cpu_time": 82,
+          "cache_memory_usage": 958722579,
+          "liquid_cache_usage": 958664844,
+          "starting_timestamp": {
+            "secs": 28,
+            "nanos": 581485201
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 188,
+          "cache_cpu_time": 108,
+          "cache_memory_usage": 958722579,
+          "liquid_cache_usage": 958664844,
+          "starting_timestamp": {
+            "secs": 28,
+            "nanos": 751739083
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 202,
+          "cache_cpu_time": 113,
+          "cache_memory_usage": 958722579,
+          "liquid_cache_usage": 958664844,
+          "starting_timestamp": {
+            "secs": 28,
+            "nanos": 941141440
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 146,
+          "cache_cpu_time": 80,
+          "cache_memory_usage": 958722579,
+          "liquid_cache_usage": 958664844,
+          "starting_timestamp": {
+            "secs": 29,
+            "nanos": 143864426
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 154,
+          "cache_cpu_time": 81,
+          "cache_memory_usage": 958722579,
+          "liquid_cache_usage": 958664844,
+          "starting_timestamp": {
+            "secs": 29,
+            "nanos": 290950848
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 37,
+        "statement": [
+          "SELECT \"Title\", COUNT(*) AS PageViews FROM hits WHERE \"CounterID\" = 62 AND \"EventDate\"::INT::DATE >= '2013-07-01' AND \"EventDate\"::INT::DATE <= '2013-07-31' AND \"DontCountHits\" = 0 AND \"IsRefresh\" = 0 AND \"Title\" <> '' GROUP BY \"Title\" ORDER BY PageViews DESC LIMIT 10;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 39,
+          "cache_cpu_time": 20,
+          "cache_memory_usage": 958722579,
+          "liquid_cache_usage": 958664844,
+          "starting_timestamp": {
+            "secs": 29,
+            "nanos": 446503873
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 41,
+          "cache_cpu_time": 22,
+          "cache_memory_usage": 958722579,
+          "liquid_cache_usage": 958664844,
+          "starting_timestamp": {
+            "secs": 29,
+            "nanos": 487471020
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 86,
+          "cache_cpu_time": 45,
+          "cache_memory_usage": 958722579,
+          "liquid_cache_usage": 958664844,
+          "starting_timestamp": {
+            "secs": 29,
+            "nanos": 529469089
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 61,
+          "cache_cpu_time": 33,
+          "cache_memory_usage": 958722579,
+          "liquid_cache_usage": 958664844,
+          "starting_timestamp": {
+            "secs": 29,
+            "nanos": 616689785
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 49,
+          "cache_cpu_time": 24,
+          "cache_memory_usage": 958722579,
+          "liquid_cache_usage": 958664844,
+          "starting_timestamp": {
+            "secs": 29,
+            "nanos": 679104408
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 38,
+        "statement": [
+          "SELECT \"URL\", COUNT(*) AS PageViews FROM hits WHERE \"CounterID\" = 62 AND \"EventDate\"::INT::DATE >= '2013-07-01' AND \"EventDate\"::INT::DATE <= '2013-07-31' AND \"IsRefresh\" = 0 AND \"IsLink\" <> 0 AND \"IsDownload\" = 0 GROUP BY \"URL\" ORDER BY PageViews DESC LIMIT 10 OFFSET 1000;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 124,
+          "cache_cpu_time": 116,
+          "cache_memory_usage": 958789690,
+          "liquid_cache_usage": 958737536,
+          "starting_timestamp": {
+            "secs": 29,
+            "nanos": 728926904
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 125,
+          "cache_cpu_time": 116,
+          "cache_memory_usage": 958789690,
+          "liquid_cache_usage": 958737536,
+          "starting_timestamp": {
+            "secs": 29,
+            "nanos": 854110156
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 133,
+          "cache_cpu_time": 121,
+          "cache_memory_usage": 958789690,
+          "liquid_cache_usage": 958737536,
+          "starting_timestamp": {
+            "secs": 29,
+            "nanos": 980143029
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 128,
+          "cache_cpu_time": 114,
+          "cache_memory_usage": 958789690,
+          "liquid_cache_usage": 958737536,
+          "starting_timestamp": {
+            "secs": 30,
+            "nanos": 115204271
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 114,
+          "cache_cpu_time": 105,
+          "cache_memory_usage": 958789690,
+          "liquid_cache_usage": 958737536,
+          "starting_timestamp": {
+            "secs": 30,
+            "nanos": 244275697
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 39,
+        "statement": [
+          "SELECT \"TraficSourceID\", \"SearchEngineID\", \"AdvEngineID\", CASE WHEN (\"SearchEngineID\" = 0 AND \"AdvEngineID\" = 0) THEN \"Referer\" ELSE '' END AS Src, \"URL\" AS Dst, COUNT(*) AS PageViews FROM hits WHERE \"CounterID\" = 62 AND \"EventDate\"::INT::DATE >= '2013-07-01' AND \"EventDate\"::INT::DATE <= '2013-07-31' AND \"IsRefresh\" = 0 GROUP BY \"TraficSourceID\", \"SearchEngineID\", \"AdvEngineID\", Src, Dst ORDER BY PageViews DESC LIMIT 10 OFFSET 1000;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 327,
+          "cache_cpu_time": 129,
+          "cache_memory_usage": 959097836,
+          "liquid_cache_usage": 958866042,
+          "starting_timestamp": {
+            "secs": 30,
+            "nanos": 359811226
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 307,
+          "cache_cpu_time": 112,
+          "cache_memory_usage": 959097836,
+          "liquid_cache_usage": 958866042,
+          "starting_timestamp": {
+            "secs": 30,
+            "nanos": 687644274
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 380,
+          "cache_cpu_time": 121,
+          "cache_memory_usage": 959097836,
+          "liquid_cache_usage": 958866042,
+          "starting_timestamp": {
+            "secs": 30,
+            "nanos": 996080548
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 33554432
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 288,
+          "cache_cpu_time": 95,
+          "cache_memory_usage": 959097836,
+          "liquid_cache_usage": 958866042,
+          "starting_timestamp": {
+            "secs": 31,
+            "nanos": 377445769
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 81342464
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 284,
+          "cache_cpu_time": 95,
+          "cache_memory_usage": 959097836,
+          "liquid_cache_usage": 958866042,
+          "starting_timestamp": {
+            "secs": 31,
+            "nanos": 666877877
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 40,
+        "statement": [
+          "SELECT \"URLHash\", \"EventDate\"::INT::DATE, COUNT(*) AS PageViews FROM hits WHERE \"CounterID\" = 62 AND \"EventDate\"::INT::DATE >= '2013-07-01' AND \"EventDate\"::INT::DATE <= '2013-07-31' AND \"IsRefresh\" = 0 AND \"TraficSourceID\" IN (-1, 6) AND \"RefererHash\" = 3594120000172545465 GROUP BY \"URLHash\", \"EventDate\"::INT::DATE ORDER BY PageViews DESC LIMIT 10 OFFSET 100;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 58,
+          "cache_cpu_time": 45,
+          "cache_memory_usage": 973136588,
+          "liquid_cache_usage": 963325754,
+          "starting_timestamp": {
+            "secs": 31,
+            "nanos": 952345930
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 36,
+          "cache_cpu_time": 13,
+          "cache_memory_usage": 973136588,
+          "liquid_cache_usage": 963325754,
+          "starting_timestamp": {
+            "secs": 32,
+            "nanos": 12113036
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 32,
+          "cache_cpu_time": 15,
+          "cache_memory_usage": 973136588,
+          "liquid_cache_usage": 963325754,
+          "starting_timestamp": {
+            "secs": 32,
+            "nanos": 49204579
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 35,
+          "cache_cpu_time": 17,
+          "cache_memory_usage": 973136588,
+          "liquid_cache_usage": 963325754,
+          "starting_timestamp": {
+            "secs": 32,
+            "nanos": 82802144
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 29,
+          "cache_cpu_time": 13,
+          "cache_memory_usage": 973136588,
+          "liquid_cache_usage": 963325754,
+          "starting_timestamp": {
+            "secs": 32,
+            "nanos": 118424759
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 41,
+        "statement": [
+          "SELECT \"WindowClientWidth\", \"WindowClientHeight\", COUNT(*) AS PageViews FROM hits WHERE \"CounterID\" = 62 AND \"EventDate\"::INT::DATE >= '2013-07-01' AND \"EventDate\"::INT::DATE <= '2013-07-31' AND \"IsRefresh\" = 0 AND \"DontCountHits\" = 0 AND \"URLHash\" = 2868770270353813622 GROUP BY \"WindowClientWidth\", \"WindowClientHeight\" ORDER BY PageViews DESC LIMIT 10 OFFSET 10000;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 35,
+          "cache_cpu_time": 24,
+          "cache_memory_usage": 970242176,
+          "liquid_cache_usage": 964135726,
+          "starting_timestamp": {
+            "secs": 32,
+            "nanos": 147984580
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 27,
+          "cache_cpu_time": 14,
+          "cache_memory_usage": 970242176,
+          "liquid_cache_usage": 964135726,
+          "starting_timestamp": {
+            "secs": 32,
+            "nanos": 183931514
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 28,
+          "cache_cpu_time": 14,
+          "cache_memory_usage": 970242176,
+          "liquid_cache_usage": 964135726,
+          "starting_timestamp": {
+            "secs": 32,
+            "nanos": 212293936
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 28,
+          "cache_cpu_time": 14,
+          "cache_memory_usage": 970242176,
+          "liquid_cache_usage": 964135726,
+          "starting_timestamp": {
+            "secs": 32,
+            "nanos": 242011605
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 28,
+          "cache_cpu_time": 14,
+          "cache_memory_usage": 970242176,
+          "liquid_cache_usage": 964135726,
+          "starting_timestamp": {
+            "secs": 32,
+            "nanos": 271068371
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 42,
+        "statement": [
+          "SELECT DATE_TRUNC('minute', to_timestamp_seconds(\"EventTime\")) AS M, COUNT(*) AS PageViews FROM hits WHERE \"CounterID\" = 62 AND \"EventDate\"::INT::DATE >= '2013-07-14' AND \"EventDate\"::INT::DATE <= '2013-07-15' AND \"IsRefresh\" = 0 AND \"DontCountHits\" = 0 GROUP BY DATE_TRUNC('minute', to_timestamp_seconds(\"EventTime\")) ORDER BY DATE_TRUNC('minute', M) LIMIT 10 OFFSET 1000;"
+        ]
+      },
+      "iteration_results": [
+        {
+          "network_traffic": 0,
+          "time_millis": 102,
+          "cache_cpu_time": 12,
+          "cache_memory_usage": 964193461,
+          "liquid_cache_usage": 964135726,
+          "starting_timestamp": {
+            "secs": 32,
+            "nanos": 299881979
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 84,
+          "cache_cpu_time": 14,
+          "cache_memory_usage": 964193461,
+          "liquid_cache_usage": 964135726,
+          "starting_timestamp": {
+            "secs": 32,
+            "nanos": 403015841
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 83,
+          "cache_cpu_time": 14,
+          "cache_memory_usage": 964193461,
+          "liquid_cache_usage": 964135726,
+          "starting_timestamp": {
+            "secs": 32,
+            "nanos": 488524613
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 64,
+          "cache_cpu_time": 11,
+          "cache_memory_usage": 964193461,
+          "liquid_cache_usage": 964135726,
+          "starting_timestamp": {
+            "secs": 32,
+            "nanos": 572173752
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        },
+        {
+          "network_traffic": 0,
+          "time_millis": 78,
+          "cache_cpu_time": 13,
+          "cache_memory_usage": 964193461,
+          "liquid_cache_usage": 964135726,
+          "starting_timestamp": {
+            "secs": 32,
+            "nanos": 637182941
+          },
+          "disk_bytes_read": 0,
+          "disk_bytes_written": 0
+        }
+      ]
+    }
+  ],
+  "timestamp": "2025-09-05T20:54+00:00",
+  "commit": "d3a3a82b0ae918a0f7102963811bc3110ac6df38"
+}
