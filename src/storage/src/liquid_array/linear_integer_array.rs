@@ -91,102 +91,132 @@ where
         let (nn_values, nn_indices) = collect_non_null_f64_and_indices::<T>(&arrow_array);
 
         // Option 3 parameters: L-infinity (Chebyshev) regression.
-        let (intercept, slope) = fit_linf(&nn_values, &nn_indices);
+        let (mut intercept, mut slope) = fit_linf(&nn_values, &nn_indices);
 
-        // Compute signed residuals as i64 in one pass.
-        // Fast path when there are no nulls.
+        // Compute residuals in one unified loop; also track ranges for fallback decision.
         let mut residuals: Vec<i64> = Vec::with_capacity(len);
         let phys_id = get_physical_type_id::<T>();
         let is_unsigned = matches!(phys_id, 4..=7);
-        if arrow_array.null_count() == 0 {
-            let vals = arrow_array.values();
-            if is_unsigned {
-                // Unsigned residuals use magnitude difference with sign bit.
-                let max_u64: u64 = match phys_id {
-                    4 => u8::MAX as u64,
-                    5 => u16::MAX as u64,
-                    6 => u32::MAX as u64,
-                    7 => u64::MAX,
-                    _ => unreachable!(),
-                };
-                for i in 0..len {
-                    let pr = slope * (i as f64) + intercept;
-                    let p = predict_u64_saturated(pr, max_u64);
+        let vals = arrow_array.values();
+        let nulls_opt = arrow_array.nulls();
+
+        // Original value range
+        let mut orig_min_u64 = u64::MAX;
+        let mut orig_max_u64 = 0u64;
+        let mut orig_min_i64 = i64::MAX;
+        let mut orig_max_i64 = i64::MIN;
+        // Residual range
+        let mut res_min = i64::MAX;
+        let mut res_max = i64::MIN;
+
+        if is_unsigned {
+            let max_u64: u64 = match phys_id {
+                4 => u8::MAX as u64,
+                5 => u16::MAX as u64,
+                6 => u32::MAX as u64,
+                7 => u64::MAX,
+                _ => unreachable!(),
+            };
+            for i in 0..len {
+                let valid = nulls_opt.as_ref().is_none_or(|n| n.is_valid(i));
+                if valid {
                     type U<TT> =
                         <<TT as LiquidPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native;
                     let v_u: U<T> = vals[i].as_();
                     let v_u64: u64 = v_u.as_();
+                    if v_u64 < orig_min_u64 {
+                        orig_min_u64 = v_u64;
+                    }
+                    if v_u64 > orig_max_u64 {
+                        orig_max_u64 = v_u64;
+                    }
+                    let pr = slope * (i as f64) + intercept;
+                    let p = predict_u64_saturated(pr, max_u64);
                     let (pos, mag) = if v_u64 >= p {
                         (true, v_u64 - p)
                     } else {
                         (false, p - v_u64)
                     };
-                    let m = (mag & (i64::MAX as u64)) as i64; // safe, mag <= type max range
-                    residuals.push(if pos { m } else { -m });
-                }
-            } else {
-                let (min_i64, max_i64): (i64, i64) = match phys_id {
-                    0 => (i8::MIN as i64, i8::MAX as i64),
-                    1 => (i16::MIN as i64, i16::MAX as i64),
-                    2 => (i32::MIN as i64, i32::MAX as i64),
-                    3 => (i64::MIN, i64::MAX),
-                    10 => (i32::MIN as i64, i32::MAX as i64),
-                    11 => (i64::MIN, i64::MAX),
-                    _ => unreachable!(),
-                };
-                for i in 0..len {
-                    let pr = slope * (i as f64) + intercept;
-                    let p = predict_i64_saturated(pr, min_i64, max_i64);
-                    let v_i64: i64 = vals[i].as_();
-                    residuals.push(v_i64 - p);
+                    let m = (mag & (i64::MAX as u64)) as i64;
+                    let r = if pos { m } else { -m };
+                    if r < res_min {
+                        res_min = r;
+                    }
+                    if r > res_max {
+                        res_max = r;
+                    }
+                    residuals.push(r);
+                } else {
+                    residuals.push(0);
                 }
             }
         } else {
-            // With nulls: check bitmap and compute only for valid.
-            let nulls = arrow_array.nulls().unwrap();
-            let vals = arrow_array.values();
+            let (min_i64, max_i64): (i64, i64) = match phys_id {
+                0 => (i8::MIN as i64, i8::MAX as i64),
+                1 => (i16::MIN as i64, i16::MAX as i64),
+                2 => (i32::MIN as i64, i32::MAX as i64),
+                3 => (i64::MIN, i64::MAX),
+                10 => (i32::MIN as i64, i32::MAX as i64),
+                11 => (i64::MIN, i64::MAX),
+                _ => unreachable!(),
+            };
+            for i in 0..len {
+                let valid = nulls_opt.as_ref().is_none_or(|n| n.is_valid(i));
+                if valid {
+                    let v_i64: i64 = vals[i].as_();
+                    if v_i64 < orig_min_i64 {
+                        orig_min_i64 = v_i64;
+                    }
+                    if v_i64 > orig_max_i64 {
+                        orig_max_i64 = v_i64;
+                    }
+                    let pr = slope * (i as f64) + intercept;
+                    let p = predict_i64_saturated(pr, min_i64, max_i64);
+                    let r = v_i64 - p;
+                    if r < res_min {
+                        res_min = r;
+                    }
+                    if r > res_max {
+                        res_max = r;
+                    }
+                    residuals.push(r);
+                } else {
+                    residuals.push(0);
+                }
+            }
+        }
+
+        // Fallback: ensure residual range is strictly smaller than original range
+        let res_width: u128 = (res_max as i128 - res_min as i128) as u128;
+        let orig_width: u128 = if is_unsigned {
+            (orig_max_u64 as u128).saturating_sub(orig_min_u64 as u128)
+        } else {
+            (orig_max_i64 as i128 - orig_min_i64 as i128) as u128
+        };
+        if res_width >= orig_width {
+            // Rebuild residuals with zero model
+            intercept = 0.0;
+            slope = 0.0;
+            residuals.clear();
             if is_unsigned {
-                let max_u64: u64 = match phys_id {
-                    4 => u8::MAX as u64,
-                    5 => u16::MAX as u64,
-                    6 => u32::MAX as u64,
-                    7 => u64::MAX,
-                    _ => unreachable!(),
-                };
                 for i in 0..len {
-                    if nulls.is_valid(i) {
-                        let pr = slope * (i as f64) + intercept;
-                        let p = predict_u64_saturated(pr, max_u64);
+                    let valid = nulls_opt.as_ref().is_none_or(|n| n.is_valid(i));
+                    if valid {
                         type U<TT> = <<TT as LiquidPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native;
                         let v_u: U<T> = vals[i].as_();
                         let v_u64: u64 = v_u.as_();
-                        let (pos, mag) = if v_u64 >= p {
-                            (true, v_u64 - p)
-                        } else {
-                            (false, p - v_u64)
-                        };
-                        let m = (mag & (i64::MAX as u64)) as i64;
-                        residuals.push(if pos { m } else { -m });
+                        let r = (v_u64 & (i64::MAX as u64)) as i64;
+                        residuals.push(r);
                     } else {
                         residuals.push(0);
                     }
                 }
             } else {
-                let (min_i64, max_i64): (i64, i64) = match phys_id {
-                    0 => (i8::MIN as i64, i8::MAX as i64),
-                    1 => (i16::MIN as i64, i16::MAX as i64),
-                    2 => (i32::MIN as i64, i32::MAX as i64),
-                    3 => (i64::MIN, i64::MAX),
-                    10 => (i32::MIN as i64, i32::MAX as i64),
-                    11 => (i64::MIN, i64::MAX),
-                    _ => unreachable!(),
-                };
                 for i in 0..len {
-                    if nulls.is_valid(i) {
-                        let pr = slope * (i as f64) + intercept;
-                        let p = predict_i64_saturated(pr, min_i64, max_i64);
+                    let valid = nulls_opt.as_ref().is_none_or(|n| n.is_valid(i));
+                    if valid {
                         let v_i64: i64 = vals[i].as_();
-                        residuals.push(v_i64 - p);
+                        residuals.push(v_i64);
                     } else {
                         residuals.push(0);
                     }
@@ -458,7 +488,7 @@ fn fit_linf(values: &[f64], idxs: &[u32]) -> (f64, f64) {
         (min_s, i_min, max_s, i_max)
     }
 
-    const MAX_ITERS: usize = 16;
+    const MAX_ITERS: usize = 8;
     for _ in 0..MAX_ITERS {
         let m = 0.5 * (lo + hi);
         let (_min_s, i_min, _max_s, i_max) = range_stats(values, idxs, m);
