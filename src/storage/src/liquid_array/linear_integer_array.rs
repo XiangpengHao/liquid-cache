@@ -422,7 +422,7 @@ fn predict_i64_saturated(pred: f64, min_i64: i64, max_i64: i64) -> i64 {
     }
 }
 
-/// L-infinity linear fit for y[i] ≈ intercept + slope * i (before rounding),
+/// L-infinity linear fit for y\[i\] ≈ intercept + slope * i (before rounding),
 /// minimizing the maximum absolute error over all non-null points.
 ///
 /// Approach: minimize R(m) = max_i (y_i - m i) - min_i (y_i - m i), which is
