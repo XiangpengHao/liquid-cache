@@ -21,7 +21,10 @@ use crate::liquid_array::ipc::get_physical_type_id;
 use crate::liquid_array::raw::BitPackedArray;
 use crate::liquid_array::{LiquidArray, LiquidArrayRef};
 use crate::utils::get_bit_width;
+use arrow::datatypes::ArrowNativeType;
 use bytes::Bytes;
+use datafusion::logical_expr::Operator;
+use datafusion::physical_plan::expressions::{BinaryExpr, Literal};
 
 mod private {
     pub trait Sealed {}
@@ -248,6 +251,51 @@ where
     fn data_type(&self) -> LiquidDataType {
         LiquidDataType::Integer
     }
+
+    fn squeeze(&self) -> Option<(crate::liquid_array::LiquidHybridArrayRef, bytes::Bytes)> {
+        // Only squeeze if we have a concrete bit width and it is large enough
+        let Some(orig_bw) = self.bit_packed.bit_width() else {
+            return None;
+        };
+        if orig_bw.get() < 10 {
+            return None;
+        }
+
+        // New squeezed bit width is half of the original
+        let new_bw_u8 = std::num::NonZero::new((orig_bw.get() / 2).max(1)).unwrap();
+
+        // Decode original unsigned offsets
+        let unsigned_array = self.bit_packed.to_primitive();
+        let (_dt, values, nulls) = unsigned_array.into_parts();
+
+        // Sentinel is the max representable value with new_bw bits
+        type U<TT> = <<TT as LiquidPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native;
+        let sentinel: U<T> = U::<T>::usize_as(((1usize << new_bw_u8.get() as usize) - 1) as usize);
+
+        // Clamp values to the squeezed width; values >= sentinel become sentinel
+        let squeezed_values: ScalarBuffer<U<T>> = ScalarBuffer::from_iter(values.iter().map(
+            |&v| {
+                if v >= sentinel { sentinel } else { v }
+            },
+        ));
+        let squeezed_unsigned =
+            PrimitiveArray::<<T as LiquidPrimitiveType>::UnSignedType>::new(squeezed_values, nulls);
+        let squeezed_bitpacked = BitPackedArray::from_primitive(squeezed_unsigned, new_bw_u8);
+
+        // Full bytes (original format) are what we store to disk
+        let full_bytes = Bytes::from(self.to_bytes_inner());
+        let disk_range = 0u64..(full_bytes.len() as u64);
+
+        let hybrid = LiquidPrimitiveHybridArray::<T> {
+            squeezed: squeezed_bitpacked,
+            reference_value: self.reference_value,
+            disk_range,
+        };
+        Some((
+            Arc::new(hybrid) as crate::liquid_array::LiquidHybridArrayRef,
+            full_bytes,
+        ))
+    }
 }
 
 impl<T> LiquidPrimitiveArray<T>
@@ -330,6 +378,309 @@ where
         Self {
             bit_packed,
             reference_value,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct LiquidPrimitiveHybridArray<T: LiquidPrimitiveType> {
+    squeezed: BitPackedArray<T::UnSignedType>,
+    reference_value: T::Native,
+    // Range in the on-disk payload needed to reconstruct the full array (we use full bytes)
+    disk_range: std::ops::Range<u64>,
+}
+
+impl<T> LiquidPrimitiveHybridArray<T>
+where
+    T: LiquidPrimitiveType,
+{
+    #[inline]
+    fn len(&self) -> usize {
+        self.squeezed.len()
+    }
+
+    fn new_from_filtered(
+        &self,
+        filtered: PrimitiveArray<<T as LiquidPrimitiveType>::UnSignedType>,
+    ) -> Self {
+        let bit_width = self
+            .squeezed
+            .bit_width()
+            .expect("squeezed bit width must exist");
+        let squeezed = BitPackedArray::from_primitive(filtered, bit_width);
+        Self {
+            squeezed,
+            reference_value: self.reference_value,
+            disk_range: self.disk_range.clone(),
+        }
+    }
+
+    fn filter_inner(&self, selection: &BooleanBuffer) -> Self {
+        let unsigned_array: PrimitiveArray<T::UnSignedType> = self.squeezed.to_primitive();
+        let selection = BooleanArray::new(selection.clone(), None);
+        let filtered_values =
+            arrow::compute::kernels::filter::filter(&unsigned_array, &selection).unwrap();
+        let filtered_values = filtered_values.as_primitive::<T::UnSignedType>().clone();
+        self.new_from_filtered(filtered_values)
+    }
+
+    fn to_arrow_known_only(&self) -> Option<ArrayRef> {
+        // Convert squeezed to primitive and ensure no sentinel exists.
+        type U<TT> = <<TT as LiquidPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native;
+        let squeezed_prim = self.squeezed.to_primitive();
+        let (_dt, values, nulls) = squeezed_prim.into_parts();
+        let bw = self.squeezed.bit_width().expect("bit width").get();
+        let sentinel: U<T> = U::<T>::usize_as(((1usize << bw as usize) - 1) as usize);
+
+        // If any valid value equals sentinel, cannot fully materialize without disk
+        if let Some(n) = self.squeezed.nulls() {
+            for (i, v) in values.iter().enumerate() {
+                if n.is_valid(i) && *v == sentinel {
+                    return None;
+                }
+            }
+        } else {
+            if values.iter().any(|&v| v == sentinel) {
+                return None;
+            }
+        }
+
+        // All values are known; reconstruct to full Arrow by adding reference
+        let ref_u: U<T> = self.reference_value.as_();
+        let restored_vals: ScalarBuffer<T::Native> =
+            ScalarBuffer::from_iter(values.iter().map(|&u| {
+                let t_val: T::Native = u.add_wrapping(ref_u).as_();
+                t_val
+            }));
+        let arr = PrimitiveArray::<T>::new(restored_vals, nulls);
+        Some(Arc::new(arr))
+    }
+
+    // Evaluate a simple comparison if fully decidable without disk; otherwise return Err(IoRange)
+    fn try_eval_predicate_inner(
+        &self,
+        op: &Operator,
+        literal: &Literal,
+    ) -> Result<Option<BooleanArray>, crate::liquid_array::IoRange> {
+        use datafusion::common::ScalarValue;
+
+        // Extract scalar value as T::Native
+        let k_opt: Option<T::Native> = match literal.value() {
+            ScalarValue::Int8(Some(v)) => T::Native::from_i8(*v),
+            ScalarValue::Int16(Some(v)) => T::Native::from_i16(*v),
+            ScalarValue::Int32(Some(v)) => T::Native::from_i32(*v),
+            ScalarValue::Int64(Some(v)) => T::Native::from_i64(*v),
+            ScalarValue::UInt8(Some(v)) => T::Native::from_u8(*v),
+            ScalarValue::UInt16(Some(v)) => T::Native::from_u16(*v),
+            ScalarValue::UInt32(Some(v)) => T::Native::from_u32(*v),
+            ScalarValue::UInt64(Some(v)) => T::Native::from_u64(*v),
+            ScalarValue::Date32(Some(v)) => T::Native::from_i32(*v),
+            ScalarValue::Date64(Some(v)) => T::Native::from_i64(*v),
+            _ => None,
+        };
+        let Some(k) = k_opt else { return Ok(None) };
+
+        // Prepare squeezed data and thresholds
+        type U<TT> = <<TT as LiquidPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native;
+        let squeezed_prim = self.squeezed.to_primitive();
+        let (_dt, values, _nulls) = squeezed_prim.into_parts();
+        let bw = self.squeezed.bit_width().expect("bit width").get();
+        let sentinel: U<T> = U::<T>::usize_as(((1usize << bw as usize) - 1) as usize);
+
+        // Boundary value separating known and unknown region: ref + sentinel
+        // Compute as i128/u128 safely, based on signedness of T
+        let phys_id = get_physical_type_id::<T>();
+        let is_unsigned = matches!(phys_id, 4..=7);
+
+        // Check if any sentinel exists in the (non-null) set; if none, we can always evaluate
+        let mut has_sentinel = false;
+        if let Some(n) = self.squeezed.nulls() {
+            for (i, &v) in values.iter().enumerate() {
+                if n.is_valid(i) && v == sentinel {
+                    has_sentinel = true;
+                    break;
+                }
+            }
+        } else if values.iter().any(|&v| v == sentinel) {
+            has_sentinel = true;
+        }
+
+        // Decide if predicate is fully resolvable when sentinel rows exist
+        let resolvable_with_sentinel = if !has_sentinel {
+            true
+        } else if is_unsigned {
+            let ref_u: U<T> = self.reference_value.as_();
+            let k_u: U<T> = k.as_();
+            let ref_u64: u64 = num_traits::AsPrimitive::<u64>::as_(ref_u);
+            let sent_u64: u64 = num_traits::AsPrimitive::<u64>::as_(sentinel);
+            let k_u64: u64 = num_traits::AsPrimitive::<u64>::as_(k_u);
+            let sent_abs: u128 = (ref_u64 as u128) + (sent_u64 as u128);
+            let k_abs: u128 = k_u64 as u128;
+            match op {
+                Operator::Eq => k_abs < sent_abs,
+                Operator::NotEq => k_abs < sent_abs,
+                Operator::Lt => k_abs <= sent_abs,
+                Operator::LtEq => k_abs < sent_abs,
+                Operator::Gt => k_abs < sent_abs,
+                Operator::GtEq => k_abs <= sent_abs,
+                _ => false,
+            }
+        } else {
+            // signed types (including Date32/Date64)
+            let ref_i: i64 = self.reference_value.as_();
+            let k_i: i64 = k.as_();
+            let sent_abs: i128 =
+                (ref_i as i128) + (num_traits::AsPrimitive::<u64>::as_(sentinel) as i128);
+            let k_abs: i128 = k_i as i128;
+            match op {
+                Operator::Eq => k_abs < sent_abs,
+                Operator::NotEq => k_abs < sent_abs,
+                Operator::Lt => k_abs <= sent_abs,
+                Operator::LtEq => k_abs < sent_abs,
+                Operator::Gt => k_abs < sent_abs,
+                Operator::GtEq => k_abs <= sent_abs,
+                _ => false,
+            }
+        };
+
+        if !resolvable_with_sentinel {
+            return Err(crate::liquid_array::IoRange {
+                range: self.disk_range.clone(),
+            });
+        }
+
+        // Build boolean values for all rows (respect nulls)
+        let ref_u: U<T> = self.reference_value.as_();
+        let k_t: T::Native = k;
+        let values_bool = values.iter().enumerate().map(|(i, &u)| {
+            if let Some(n) = self.squeezed.nulls() {
+                if !n.is_valid(i) {
+                    return false; // actual value ignored; null handled via null buffer
+                }
+            }
+            if u == sentinel {
+                // When resolvable_with_sentinel, derive result based on operator and boundary
+                match op {
+                    Operator::Eq => false,
+                    Operator::NotEq => true,
+                    Operator::Lt => {
+                        // v >= ref+sentinel; v < k only if k > ref+sentinel; but we ensured k <= boundary
+                        false
+                    }
+                    Operator::LtEq => false,
+                    Operator::Gt => true,
+                    Operator::GtEq => true,
+                    _ => false,
+                }
+            } else {
+                // Exact value: ref + u
+                let actual: T::Native = u.add_wrapping(ref_u).as_();
+                match op {
+                    Operator::Eq => actual == k_t,
+                    Operator::NotEq => actual != k_t,
+                    Operator::Lt => actual < k_t,
+                    Operator::LtEq => actual <= k_t,
+                    Operator::Gt => actual > k_t,
+                    Operator::GtEq => actual >= k_t,
+                    _ => false,
+                }
+            }
+        });
+
+        let bool_buf = arrow::buffer::BooleanBuffer::from_iter(values_bool);
+        let out = BooleanArray::new(bool_buf, self.squeezed.nulls().cloned());
+        Ok(Some(out))
+    }
+}
+
+impl<T> crate::liquid_array::LiquidHybridArray for LiquidPrimitiveHybridArray<T>
+where
+    T: LiquidPrimitiveType,
+{
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn get_array_memory_size(&self) -> usize {
+        self.squeezed.get_array_memory_size() + std::mem::size_of::<T::Native>()
+    }
+
+    fn len(&self) -> usize {
+        self.len()
+    }
+
+    fn to_arrow_array(&self) -> Result<ArrayRef, crate::liquid_array::IoRange> {
+        if let Some(arr) = self.to_arrow_known_only() {
+            Ok(arr)
+        } else {
+            Err(crate::liquid_array::IoRange {
+                range: self.disk_range.clone(),
+            })
+        }
+    }
+
+    fn data_type(&self) -> LiquidDataType {
+        LiquidDataType::Integer
+    }
+
+    fn to_bytes(&self) -> Result<Vec<u8>, crate::liquid_array::IoRange> {
+        Err(crate::liquid_array::IoRange {
+            range: self.disk_range.clone(),
+        })
+    }
+
+    fn filter(
+        &self,
+        selection: &BooleanBuffer,
+    ) -> Result<crate::liquid_array::LiquidHybridArrayRef, crate::liquid_array::IoRange> {
+        let filtered = self.filter_inner(selection);
+        Ok(Arc::new(filtered) as crate::liquid_array::LiquidHybridArrayRef)
+    }
+
+    fn filter_to_arrow(
+        &self,
+        selection: &BooleanBuffer,
+    ) -> Result<ArrayRef, crate::liquid_array::IoRange> {
+        let filtered = self.filter_inner(selection);
+        filtered.to_arrow_array()
+    }
+
+    fn try_eval_predicate(
+        &self,
+        expr: &Arc<dyn PhysicalExpr>,
+        filter: &BooleanBuffer,
+    ) -> Result<Option<BooleanArray>, crate::liquid_array::IoRange> {
+        // Apply selection first to reduce input rows
+        let filtered = self.filter_inner(filter);
+
+        if let Some(binary_expr) = expr.as_any().downcast_ref::<BinaryExpr>()
+            && let Some(literal) = binary_expr.right().as_any().downcast_ref::<Literal>()
+        {
+            let op = binary_expr.op();
+            match op {
+                Operator::Eq
+                | Operator::NotEq
+                | Operator::Lt
+                | Operator::LtEq
+                | Operator::Gt
+                | Operator::GtEq => {
+                    return filtered.try_eval_predicate_inner(op, literal);
+                }
+                _ => {}
+            }
+        }
+        Ok(None)
+    }
+
+    fn soak(&self, data: bytes::Bytes) -> crate::liquid_array::LiquidArrayRef {
+        // `data` is the full IPC payload for primitive array
+        let arr = LiquidPrimitiveArray::<T>::from_bytes(data);
+        Arc::new(arr)
+    }
+
+    fn to_liquid(&self) -> crate::liquid_array::IoRange {
+        crate::liquid_array::IoRange {
+            range: self.disk_range.clone(),
         }
     }
 }
