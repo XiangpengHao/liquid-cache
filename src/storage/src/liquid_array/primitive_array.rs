@@ -30,18 +30,13 @@ use datafusion::physical_plan::expressions::{BinaryExpr, Literal};
 
 /// Squeeze policy for primitive integer arrays.
 /// Users can choose whether to clamp or quantize when squeezing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum IntegerSqueezePolicy {
     /// Clamp values above the squeezed range to a sentinel (recoverable for non-clamped rows).
+    #[default]
     Clamp = 0,
     /// Quantize values into buckets (good for coarse filtering; requires disk to recover values).
     Quantize = 1,
-}
-
-impl Default for IntegerSqueezePolicy {
-    fn default() -> Self {
-        IntegerSqueezePolicy::Clamp
-    }
 }
 
 mod private {
@@ -358,8 +353,7 @@ where
                 let bucket_count_u64 = 1u64 << (new_bw_u8.get() as u64);
                 let max_off_u64: u64 = num_traits::AsPrimitive::<u64>::as_(max_offset);
                 let range_size = max_off_u64.saturating_add(1);
-                let bucket_width_u64 =
-                    ((range_size + bucket_count_u64 - 1) / bucket_count_u64).max(1);
+                let bucket_width_u64 = (range_size.div_ceil(bucket_count_u64)).max(1);
 
                 let quantized_values: ScalarBuffer<U<T>> =
                     ScalarBuffer::from_iter(values.iter().map(|&v| {
@@ -860,11 +854,11 @@ where
             let k_u_native: U<T> = k.as_();
             let k_u: u64 = num_traits::AsPrimitive::<u64>::as_(k_u_native);
             for (i, &b) in values.iter().enumerate() {
-                if let Some(nulls) = self.quantized.nulls() {
-                    if !nulls.is_valid(i) {
-                        out_vals.push(false);
-                        continue;
-                    }
+                if let Some(nulls) = self.quantized.nulls()
+                    && !nulls.is_valid(i)
+                {
+                    out_vals.push(false);
+                    continue;
                 }
                 let b_u64: u64 = num_traits::AsPrimitive::<u64>::as_(b);
                 let lo = ref_u.saturating_add(b_u64.saturating_mul(self.bucket_width));
@@ -938,11 +932,11 @@ where
             let k_i: i128 = k_i64 as i128;
             let bw = self.bucket_width as i128;
             for (i, &b) in values.iter().enumerate() {
-                if let Some(nulls) = self.quantized.nulls() {
-                    if !nulls.is_valid(i) {
-                        out_vals.push(false);
-                        continue;
-                    }
+                if let Some(nulls) = self.quantized.nulls()
+                    && !nulls.is_valid(i)
+                {
+                    out_vals.push(false);
+                    continue;
                 }
                 let b_i: i128 = num_traits::AsPrimitive::<u64>::as_(b) as i128;
                 let lo = ref_i + b_i.saturating_mul(bw);
