@@ -57,3 +57,50 @@ The supported predicate is: eq, not eq, lt, lt eq, gt, gt eq.
 Get with selection will first check if the selected values are all full value, if so, return the data.
 If any of the value is clamped, we need to get data from disk. 
 
+
+
+## Quantize integer
+
+A different way to squeeze is to quantize the integer array.
+
+Let's say we have the following integer array:
+
+```
+[0, 32, 12, 90, 48, 368, 85, 13, 183]
+```
+
+The original array requires 9 bits.
+
+If we want to quantize it to 5 bits, then we'll have 32 buckets, each bucket has 512/32 = 16 values, the bucket range is like:
+
+```
+[0, 32)
+[32, 64)
+[64, 96)
+...
+[336, 352)
+[352, 368)
+[368, 384)
+...
+[496, 512)
+```
+
+The original array becomes:
+
+```
+[0, 1, 0, 5, 3, 23, 5, 0, 11]
+```
+
+Let's say we want to find `66 < i < 72`, which belongs to the 3rd bucket.
+Then we check if the quantized array contains 2, if not, we can evaluate the predicate, if yes, we need to read from disk. 
+
+### Pros and cons
+
+Squeeze:
+- Pros: can recover the original value without reading from disk.
+- Cons: most of the values are clamped, i.e., cutting the range by half will only save 1 bit. If we want to cut 10 bits, we shrink the range by 1024 times -- virtually every value is clamped.
+
+Quantize:
+- Pros: more tight approximation of the original value, good for predicate evaluation.
+- Cons: none of the values can be recovered without reading from disk.
+
