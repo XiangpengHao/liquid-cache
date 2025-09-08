@@ -104,3 +104,15 @@ Quantize:
 - Pros: more tight approximation of the original value, good for predicate evaluation.
 - Cons: none of the values can be recovered without reading from disk.
 
+
+## Study
+
+We mainly concerns about the io required for both clamp and quantize.
+
+To do this, we'll create a study just like `study/cache_storage.rs`, which will:
+1. read integer columns from hits.parquet dataset.
+2. Identify 10 representative integer filters and their corresponding columns.
+2. compress the integer columns using the clamp and quantize approach.
+3. Report: 1. arrow data size, 2. clamp size, 3. quantize size.
+4. Report: perform the 10 representative integer filters (get_with_predicate) on both clamp and quantize approach over the corresponding column, report the io required. In the meanwhile, check the result is correct.
+5. Report: use the bit-mask from above to perform get_with_selection, report the io required.

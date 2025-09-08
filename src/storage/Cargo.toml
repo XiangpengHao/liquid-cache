@@ -82,3 +82,8 @@ harness = false
 name = "linear_integer_study"
 path = "study/linear_integer.rs"
 harness = false
+
+[[bench]]
+name = "squeeze_integer_study"
+path = "study/squeeze_integer.rs"
+harness = false
