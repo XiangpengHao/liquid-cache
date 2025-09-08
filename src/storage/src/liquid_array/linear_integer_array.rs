@@ -3,6 +3,7 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+use super::PrimitiveKind;
 use super::{LiquidArray, LiquidArrayRef, LiquidDataType, LiquidPrimitiveType};
 use crate::liquid_array::LiquidPrimitiveArray;
 use crate::liquid_array::ipc::{LiquidIPCHeader, get_physical_type_id};
@@ -67,7 +68,7 @@ pub type LiquidLinearDate64Array = LiquidLinearArray<Date64Type>;
 
 impl<T> LiquidLinearArray<T>
 where
-    T: LiquidPrimitiveType,
+    T: LiquidPrimitiveType + PrimitiveKind,
     T::Native: AsPrimitive<f64> + FromPrimitive + Bounded,
 {
     /// Build from an Arrow `PrimitiveArray<T>` by training a linear model
@@ -95,8 +96,7 @@ where
 
         // Compute residuals in one unified loop; also track ranges for fallback decision.
         let mut residuals: Vec<i64> = Vec::with_capacity(len);
-        let phys_id = get_physical_type_id::<T>();
-        let is_unsigned = matches!(phys_id, 4..=7);
+        let is_unsigned = <T as PrimitiveKind>::IS_UNSIGNED;
         let vals = arrow_array.values();
         let nulls_opt = arrow_array.nulls();
 
@@ -110,13 +110,7 @@ where
         let mut res_max = i64::MIN;
 
         if is_unsigned {
-            let max_u64: u64 = match phys_id {
-                4 => u8::MAX as u64,
-                5 => u16::MAX as u64,
-                6 => u32::MAX as u64,
-                7 => u64::MAX,
-                _ => unreachable!(),
-            };
+            let max_u64: u64 = <T as PrimitiveKind>::MAX_U64;
             for i in 0..len {
                 let valid = nulls_opt.as_ref().is_none_or(|n| n.is_valid(i));
                 if valid {
@@ -151,15 +145,8 @@ where
                 }
             }
         } else {
-            let (min_i64, max_i64): (i64, i64) = match phys_id {
-                0 => (i8::MIN as i64, i8::MAX as i64),
-                1 => (i16::MIN as i64, i16::MAX as i64),
-                2 => (i32::MIN as i64, i32::MAX as i64),
-                3 => (i64::MIN, i64::MAX),
-                10 => (i32::MIN as i64, i32::MAX as i64),
-                11 => (i64::MIN, i64::MAX),
-                _ => unreachable!(),
-            };
+            let (min_i64, max_i64): (i64, i64) =
+                (<T as PrimitiveKind>::MIN_I64, <T as PrimitiveKind>::MAX_I64);
             for i in 0..len {
                 let valid = nulls_opt.as_ref().is_none_or(|n| n.is_valid(i));
                 if valid {
@@ -299,7 +286,7 @@ where
 
 impl<T> LiquidArray for LiquidLinearArray<T>
 where
-    T: LiquidPrimitiveType,
+    T: LiquidPrimitiveType + PrimitiveKind,
     T::Native: AsPrimitive<f64> + FromPrimitive + Bounded,
 {
     fn as_any(&self) -> &dyn Any {
@@ -318,20 +305,16 @@ where
 
     fn to_arrow_array(&self) -> ArrayRef {
         let arr = self.residuals.to_arrow_array();
+        if self.intercept == 0.0 && self.slope == 0.0 {
+            return arr;
+        }
         let (_dt, residuals, nulls) = arr.as_primitive::<Int64Type>().clone().into_parts();
 
         // Reconstruct final values: predicted(i) +/- |residual_i|
         let mut final_values = Vec::<T::Native>::with_capacity(self.len());
-        let phys_id = get_physical_type_id::<T>();
-        let is_unsigned = matches!(phys_id, 4..=7);
+        let is_unsigned = <T as PrimitiveKind>::IS_UNSIGNED;
         if is_unsigned {
-            let max_u64: u64 = match phys_id {
-                4 => u8::MAX as u64,
-                5 => u16::MAX as u64,
-                6 => u32::MAX as u64,
-                7 => u64::MAX,
-                _ => unreachable!(),
-            };
+            let max_u64: u64 = <T as PrimitiveKind>::MAX_U64;
             for (i, &e) in residuals.iter().enumerate() {
                 let pr = self.slope * (i as f64) + self.intercept;
                 let p = predict_u64_saturated(pr, max_u64);
@@ -344,15 +327,8 @@ where
                 final_values.push(T::Native::from_u64(sum).unwrap());
             }
         } else {
-            let (min_i64, max_i64): (i64, i64) = match phys_id {
-                0 => (i8::MIN as i64, i8::MAX as i64),
-                1 => (i16::MIN as i64, i16::MAX as i64),
-                2 => (i32::MIN as i64, i32::MAX as i64),
-                3 => (i64::MIN, i64::MAX),
-                10 => (i32::MIN as i64, i32::MAX as i64),
-                11 => (i64::MIN, i64::MAX),
-                _ => unreachable!(),
-            };
+            let (min_i64, max_i64): (i64, i64) =
+                (<T as PrimitiveKind>::MIN_I64, <T as PrimitiveKind>::MAX_I64);
             for (i, &e) in residuals.iter().enumerate() {
                 let pr = self.slope * (i as f64) + self.intercept;
                 let p = predict_i64_saturated(pr, min_i64, max_i64);

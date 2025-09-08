@@ -284,3 +284,57 @@ pub trait LiquidHybridArray: std::fmt::Debug + Send + Sync {
     /// Get the `IoRequest` to convert the `LiquidHybridArray` to a `LiquidArray`.
     fn to_liquid(&self) -> IoRange;
 }
+
+/// Compile-time info about primitive kind (signed vs unsigned) and bounds.
+/// Implemented for all Liquid-supported primitive integer and date types.
+pub trait PrimitiveKind {
+    /// Whether the logical type is unsigned (true for u8/u16/u32/u64).
+    const IS_UNSIGNED: bool;
+    /// Maximum representable value as u64 for unsigned types (unused for signed).
+    const MAX_U64: u64;
+    /// Minimum representable value as i64 for signed/date types (unused for unsigned).
+    const MIN_I64: i64;
+    /// Maximum representable value as i64 for signed/date types (unused for unsigned).
+    const MAX_I64: i64;
+}
+
+macro_rules! impl_unsigned_kind {
+    ($t:ty, $max:expr) => {
+        impl PrimitiveKind for $t {
+            const IS_UNSIGNED: bool = true;
+            const MAX_U64: u64 = $max as u64;
+            const MIN_I64: i64 = 0; // unused
+            const MAX_I64: i64 = 0; // unused
+        }
+    };
+}
+
+macro_rules! impl_signed_kind {
+    ($t:ty, $min:expr, $max:expr) => {
+        impl PrimitiveKind for $t {
+            const IS_UNSIGNED: bool = false;
+            const MAX_U64: u64 = 0; // unused
+            const MIN_I64: i64 = $min as i64;
+            const MAX_I64: i64 = $max as i64;
+        }
+    };
+}
+
+use arrow::datatypes::{
+    Date32Type, Date64Type, Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt16Type,
+    UInt32Type, UInt64Type,
+};
+
+impl_unsigned_kind!(UInt8Type, u8::MAX);
+impl_unsigned_kind!(UInt16Type, u16::MAX);
+impl_unsigned_kind!(UInt32Type, u32::MAX);
+impl_unsigned_kind!(UInt64Type, u64::MAX);
+
+impl_signed_kind!(Int8Type, i8::MIN, i8::MAX);
+impl_signed_kind!(Int16Type, i16::MIN, i16::MAX);
+impl_signed_kind!(Int32Type, i32::MIN, i32::MAX);
+impl_signed_kind!(Int64Type, i64::MIN, i64::MAX);
+
+// Dates are logically signed in Arrow (Date32: i32 days, Date64: i64 ms)
+impl_signed_kind!(Date32Type, i32::MIN, i32::MAX);
+impl_signed_kind!(Date64Type, i64::MIN, i64::MAX);

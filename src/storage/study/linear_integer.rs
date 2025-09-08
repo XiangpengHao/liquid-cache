@@ -6,7 +6,7 @@ use clap::Parser;
 use datafusion::prelude::*;
 use futures::StreamExt;
 use liquid_cache_storage::liquid_array::{
-    LiquidArray, LiquidLinearArray, LiquidPrimitiveArray, LiquidPrimitiveType,
+    LiquidArray, LiquidLinearArray, LiquidPrimitiveArray, LiquidPrimitiveType, PrimitiveKind,
 };
 
 #[global_allocator]
@@ -179,6 +179,7 @@ async fn run_for_column(ctx: &SessionContext, column: &str, limit: Option<usize>
 
 fn accumulate<T: LiquidPrimitiveType>(array: &ArrayRef, stats: &mut Stats)
 where
+    T: LiquidPrimitiveType + PrimitiveKind,
     <T as arrow::array::ArrowPrimitiveType>::Native: num_traits::cast::AsPrimitive<f64>
         + num_traits::FromPrimitive
         + num_traits::bounds::Bounded,
