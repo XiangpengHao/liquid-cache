@@ -30,6 +30,7 @@ pub use linear_integer_array::{
     LiquidLinearI16Array, LiquidLinearI32Array, LiquidLinearI64Array, LiquidLinearU8Array,
     LiquidLinearU16Array, LiquidLinearU32Array, LiquidLinearU64Array,
 };
+pub use primitive_array::IntegerSqueezePolicy;
 pub use primitive_array::{
     LiquidDate32Array, LiquidDate64Array, LiquidI8Array, LiquidI16Array, LiquidI32Array,
     LiquidI64Array, LiquidPrimitiveArray, LiquidPrimitiveType, LiquidU8Array, LiquidU16Array,

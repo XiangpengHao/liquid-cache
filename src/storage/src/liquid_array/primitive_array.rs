@@ -28,6 +28,17 @@ use bytes::Bytes;
 use datafusion::logical_expr::Operator as DFOperator;
 use datafusion::physical_plan::expressions::{BinaryExpr, Literal};
 
+/// Squeeze policy for primitive integer arrays.
+/// Users can choose whether to clamp or quantize when squeezing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IntegerSqueezePolicy {
+    /// Clamp values above the squeezed range to a sentinel (recoverable for non-clamped rows).
+    #[default]
+    Clamp = 0,
+    /// Quantize values into buckets (good for coarse filtering; requires disk to recover values).
+    Quantize = 1,
+}
+
 mod private {
     pub trait Sealed {}
 }
@@ -106,6 +117,7 @@ pub type LiquidDate64Array = LiquidPrimitiveArray<Date64Type>;
 pub struct LiquidPrimitiveArray<T: LiquidPrimitiveType> {
     bit_packed: BitPackedArray<T::UnSignedType>,
     reference_value: T::Native,
+    squeeze_policy: IntegerSqueezePolicy,
 }
 
 impl<T> LiquidPrimitiveArray<T>
@@ -114,7 +126,9 @@ where
 {
     /// Get the memory size of the Liquid primitive array.
     pub fn get_array_memory_size(&self) -> usize {
-        self.bit_packed.get_array_memory_size() + std::mem::size_of::<T::Native>()
+        self.bit_packed.get_array_memory_size()
+            + std::mem::size_of::<T::Native>()
+            + std::mem::size_of::<IntegerSqueezePolicy>()
     }
 
     /// Get the length of the Liquid primitive array.
@@ -136,6 +150,7 @@ where
                 return Self {
                     bit_packed: BitPackedArray::new_null_array(arrow_array.len()),
                     reference_value: T::Native::ZERO,
+                    squeeze_policy: IntegerSqueezePolicy::default(),
                 };
             }
         };
@@ -172,7 +187,24 @@ where
         Self {
             bit_packed: bit_packed_array,
             reference_value: min,
+            squeeze_policy: IntegerSqueezePolicy::default(),
         }
+    }
+
+    /// Get the current squeeze policy for this array.
+    pub fn squeeze_policy(&self) -> IntegerSqueezePolicy {
+        self.squeeze_policy
+    }
+
+    /// Set the squeeze policy for this array.
+    pub fn set_squeeze_policy(&mut self, policy: IntegerSqueezePolicy) {
+        self.squeeze_policy = policy;
+    }
+
+    /// Set the squeeze policy, returning self for chaining.
+    pub fn with_squeeze_policy(mut self, policy: IntegerSqueezePolicy) -> Self {
+        self.squeeze_policy = policy;
+        self
     }
 }
 
@@ -223,12 +255,14 @@ where
             return Arc::new(LiquidPrimitiveArray::<T> {
                 bit_packed: BitPackedArray::new_null_array(filtered_values.len()),
                 reference_value: self.reference_value,
+                squeeze_policy: self.squeeze_policy,
             });
         };
         let bit_packed = BitPackedArray::from_primitive(filtered_values, bit_width);
         Arc::new(LiquidPrimitiveArray::<T> {
             bit_packed,
             reference_value: self.reference_value,
+            squeeze_policy: self.squeeze_policy,
         })
     }
 
@@ -258,7 +292,7 @@ where
     fn squeeze(&self) -> Option<(crate::liquid_array::LiquidHybridArrayRef, bytes::Bytes)> {
         // Only squeeze if we have a concrete bit width and it is large enough
         let orig_bw = self.bit_packed.bit_width()?;
-        if orig_bw.get() < 10 {
+        if orig_bw.get() < 8 {
             return None;
         }
 
@@ -269,33 +303,85 @@ where
         let unsigned_array = self.bit_packed.to_primitive();
         let (_dt, values, nulls) = unsigned_array.into_parts();
 
-        // Sentinel is the max representable value with new_bw bits
-        type U<TT> = <<TT as LiquidPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native;
-        let sentinel: U<T> = U::<T>::usize_as((1usize << new_bw_u8.get()) - 1);
-
-        // Clamp values to the squeezed width; values >= sentinel become sentinel
-        let squeezed_values: ScalarBuffer<U<T>> = ScalarBuffer::from_iter(values.iter().map(
-            |&v| {
-                if v >= sentinel { sentinel } else { v }
-            },
-        ));
-        let squeezed_unsigned =
-            PrimitiveArray::<<T as LiquidPrimitiveType>::UnSignedType>::new(squeezed_values, nulls);
-        let squeezed_bitpacked = BitPackedArray::from_primitive(squeezed_unsigned, new_bw_u8);
-
         // Full bytes (original format) are what we store to disk
         let full_bytes = Bytes::from(self.to_bytes_inner());
         let disk_range = 0u64..(full_bytes.len() as u64);
 
-        let hybrid = LiquidPrimitiveHybridArray::<T> {
-            squeezed: squeezed_bitpacked,
-            reference_value: self.reference_value,
-            disk_range,
-        };
-        Some((
-            Arc::new(hybrid) as crate::liquid_array::LiquidHybridArrayRef,
-            full_bytes,
-        ))
+        match self.squeeze_policy {
+            IntegerSqueezePolicy::Clamp => {
+                // Sentinel is the max representable value with new_bw bits
+                type U<TT> =
+                    <<TT as LiquidPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native;
+                let sentinel: U<T> = U::<T>::usize_as((1usize << new_bw_u8.get()) - 1);
+
+                // Clamp values to the squeezed width; values >= sentinel become sentinel
+                let squeezed_values: ScalarBuffer<U<T>> = ScalarBuffer::from_iter(
+                    values
+                        .iter()
+                        .map(|&v| if v >= sentinel { sentinel } else { v }),
+                );
+                let squeezed_unsigned =
+                    PrimitiveArray::<<T as LiquidPrimitiveType>::UnSignedType>::new(
+                        squeezed_values,
+                        nulls,
+                    );
+                let squeezed_bitpacked =
+                    BitPackedArray::from_primitive(squeezed_unsigned, new_bw_u8);
+
+                let hybrid = LiquidPrimitiveClampedArray::<T> {
+                    squeezed: squeezed_bitpacked,
+                    reference_value: self.reference_value,
+                    disk_range,
+                };
+                Some((
+                    Arc::new(hybrid) as crate::liquid_array::LiquidHybridArrayRef,
+                    full_bytes,
+                ))
+            }
+            IntegerSqueezePolicy::Quantize => {
+                // Quantize value offsets into buckets of width W.
+                // Determine actual max offset value.
+                type U<TT> =
+                    <<TT as LiquidPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native;
+                let max_offset: U<T> = if let Some(m) = values.iter().copied().max() {
+                    m
+                } else {
+                    U::<T>::ZERO
+                };
+
+                // Compute bucket count and width: ceil((max_offset+1)/bucket_count)
+                let bucket_count_u64 = 1u64 << (new_bw_u8.get() as u64);
+                let max_off_u64: u64 = num_traits::AsPrimitive::<u64>::as_(max_offset);
+                let range_size = max_off_u64.saturating_add(1);
+                let bucket_width_u64 = (range_size.div_ceil(bucket_count_u64)).max(1);
+
+                let quantized_values: ScalarBuffer<U<T>> =
+                    ScalarBuffer::from_iter(values.iter().map(|&v| {
+                        // v / bucket_width, clamped to last bucket
+                        let v_u64: u64 = num_traits::AsPrimitive::<u64>::as_(v);
+                        let mut idx_u64 = v_u64 / bucket_width_u64;
+                        if idx_u64 >= bucket_count_u64 {
+                            idx_u64 = bucket_count_u64 - 1;
+                        }
+                        U::<T>::usize_as(idx_u64 as usize)
+                    }));
+                let quantized_unsigned =
+                    PrimitiveArray::<<T as LiquidPrimitiveType>::UnSignedType>::new(
+                        quantized_values,
+                        nulls,
+                    );
+                let quantized_bitpacked =
+                    BitPackedArray::from_primitive(quantized_unsigned, new_bw_u8);
+
+                let hybrid = LiquidPrimitiveQuantizedArray::<T> {
+                    quantized: quantized_bitpacked,
+                    reference_value: self.reference_value,
+                    bucket_width: bucket_width_u64,
+                    disk_range,
+                };
+                Some((Arc::new(hybrid) as LiquidHybridArrayRef, full_bytes))
+            }
+        }
     }
 }
 
@@ -372,19 +458,18 @@ where
 
         // Skip ahead to the BitPackedArray data
         let bit_packed_data = bytes.slice(Self::bit_pack_starting_loc()..);
-        let bit_packed = crate::liquid_array::raw::BitPackedArray::<T::UnSignedType>::from_bytes(
-            bit_packed_data,
-        );
+        let bit_packed = BitPackedArray::<T::UnSignedType>::from_bytes(bit_packed_data);
 
         Self {
             bit_packed,
             reference_value,
+            squeeze_policy: IntegerSqueezePolicy::default(),
         }
     }
 }
 
 #[derive(Debug, Clone)]
-struct LiquidPrimitiveHybridArray<T: LiquidPrimitiveType> {
+struct LiquidPrimitiveClampedArray<T: LiquidPrimitiveType> {
     squeezed: BitPackedArray<T::UnSignedType>,
     reference_value: T::Native,
     // Range in the on-disk payload needed to reconstruct the full array (we use full bytes)
@@ -415,7 +500,7 @@ impl Operator {
     }
 }
 
-impl<T> LiquidPrimitiveHybridArray<T>
+impl<T> LiquidPrimitiveClampedArray<T>
 where
     T: LiquidPrimitiveType + super::PrimitiveKind,
 {
@@ -610,7 +695,7 @@ where
     }
 }
 
-impl<T> LiquidHybridArray for LiquidPrimitiveHybridArray<T>
+impl<T> LiquidHybridArray for LiquidPrimitiveClampedArray<T>
 where
     T: LiquidPrimitiveType,
 {
@@ -623,7 +708,7 @@ where
     }
 
     fn len(&self) -> usize {
-        LiquidPrimitiveHybridArray::<T>::len(self)
+        LiquidPrimitiveClampedArray::<T>::len(self)
     }
 
     fn to_arrow_array(&self) -> Result<ArrayRef, IoRange> {
@@ -654,6 +739,311 @@ where
     fn filter_to_arrow(&self, selection: &BooleanBuffer) -> Result<ArrayRef, IoRange> {
         let filtered = self.filter_inner(selection);
         filtered.to_arrow_array()
+    }
+
+    fn try_eval_predicate(
+        &self,
+        expr: &Arc<dyn PhysicalExpr>,
+        filter: &BooleanBuffer,
+    ) -> Result<Option<BooleanArray>, IoRange> {
+        // Apply selection first to reduce input rows
+        let filtered = self.filter_inner(filter);
+
+        if let Some(binary_expr) = expr.as_any().downcast_ref::<BinaryExpr>()
+            && let Some(literal) = binary_expr.right().as_any().downcast_ref::<Literal>()
+        {
+            let op = binary_expr.op();
+            let supported_op = Operator::from_datafusion(op);
+            if let Some(supported_op) = supported_op {
+                return filtered.try_eval_predicate_inner(&supported_op, literal);
+            }
+        }
+        Ok(None)
+    }
+
+    fn soak(&self, data: bytes::Bytes) -> LiquidArrayRef {
+        // `data` is the full IPC payload for primitive array
+        let arr = LiquidPrimitiveArray::<T>::from_bytes(data);
+        Arc::new(arr)
+    }
+
+    fn to_liquid(&self) -> IoRange {
+        IoRange {
+            range: self.disk_range.clone(),
+        }
+    }
+}
+
+// Quantized hybrid array: stores bucket indices of value offsets
+#[derive(Debug, Clone)]
+struct LiquidPrimitiveQuantizedArray<T: LiquidPrimitiveType> {
+    quantized: BitPackedArray<T::UnSignedType>,
+    reference_value: T::Native,
+    // bucket width in terms of absolute offset units
+    bucket_width: u64,
+    disk_range: std::ops::Range<u64>,
+}
+
+impl<T> LiquidPrimitiveQuantizedArray<T>
+where
+    T: LiquidPrimitiveType + super::PrimitiveKind,
+{
+    #[inline]
+    fn len(&self) -> usize {
+        self.quantized.len()
+    }
+
+    fn new_from_filtered(
+        &self,
+        filtered: PrimitiveArray<<T as LiquidPrimitiveType>::UnSignedType>,
+    ) -> Self {
+        let bit_width = self
+            .quantized
+            .bit_width()
+            .expect("quantized bit width must exist");
+        let quantized = BitPackedArray::from_primitive(filtered, bit_width);
+        Self {
+            quantized,
+            reference_value: self.reference_value,
+            bucket_width: self.bucket_width,
+            disk_range: self.disk_range.clone(),
+        }
+    }
+
+    fn filter_inner(&self, selection: &BooleanBuffer) -> Self {
+        let q_prim: PrimitiveArray<T::UnSignedType> = self.quantized.to_primitive();
+        let selection = BooleanArray::new(selection.clone(), None);
+        let filtered = arrow::compute::kernels::filter::filter(&q_prim, &selection).unwrap();
+        let filtered = filtered.as_primitive::<T::UnSignedType>().clone();
+        self.new_from_filtered(filtered)
+    }
+
+    // Evaluate using bucket interval semantics; return Err if any ambiguous bucket is encountered
+    fn try_eval_predicate_inner(
+        &self,
+        op: &Operator,
+        literal: &Literal,
+    ) -> Result<Option<BooleanArray>, IoRange> {
+        use datafusion::common::ScalarValue;
+        type U<TT> = <<TT as LiquidPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native;
+
+        // Extract scalar value as T::Native
+        let k_opt: Option<T::Native> = match literal.value() {
+            ScalarValue::Int8(Some(v)) => T::Native::from_i8(*v),
+            ScalarValue::Int16(Some(v)) => T::Native::from_i16(*v),
+            ScalarValue::Int32(Some(v)) => T::Native::from_i32(*v),
+            ScalarValue::Int64(Some(v)) => T::Native::from_i64(*v),
+            ScalarValue::UInt8(Some(v)) => T::Native::from_u8(*v),
+            ScalarValue::UInt16(Some(v)) => T::Native::from_u16(*v),
+            ScalarValue::UInt32(Some(v)) => T::Native::from_u32(*v),
+            ScalarValue::UInt64(Some(v)) => T::Native::from_u64(*v),
+            ScalarValue::Date32(Some(v)) => T::Native::from_i32(*v),
+            ScalarValue::Date64(Some(v)) => T::Native::from_i64(*v),
+            _ => None,
+        };
+        let Some(k) = k_opt else { return Ok(None) };
+
+        let q_prim = self.quantized.to_primitive();
+        let (_dt, values, _nulls) = q_prim.into_parts();
+
+        let mut out_vals: Vec<bool> = Vec::with_capacity(values.len());
+
+        if T::IS_UNSIGNED {
+            let ref_u_native: U<T> = self.reference_value.as_();
+            let ref_u: u64 = num_traits::AsPrimitive::<u64>::as_(ref_u_native);
+            let k_u_native: U<T> = k.as_();
+            let k_u: u64 = num_traits::AsPrimitive::<u64>::as_(k_u_native);
+            for (i, &b) in values.iter().enumerate() {
+                if let Some(nulls) = self.quantized.nulls()
+                    && !nulls.is_valid(i)
+                {
+                    out_vals.push(false);
+                    continue;
+                }
+                let b_u64: u64 = num_traits::AsPrimitive::<u64>::as_(b);
+                let lo = ref_u.saturating_add(b_u64.saturating_mul(self.bucket_width));
+                let hi = ref_u
+                    .saturating_add((b_u64 + 1).saturating_mul(self.bucket_width))
+                    .saturating_sub(1);
+                let decided = match op {
+                    Operator::Eq => {
+                        if k_u < lo || k_u > hi {
+                            Some(false)
+                        } else {
+                            None
+                        }
+                    }
+                    Operator::NotEq => {
+                        if k_u < lo || k_u > hi {
+                            Some(true)
+                        } else {
+                            None
+                        }
+                    }
+                    Operator::Lt => {
+                        if hi < k_u {
+                            Some(true)
+                        } else if lo >= k_u {
+                            Some(false)
+                        } else {
+                            None
+                        }
+                    }
+                    Operator::LtEq => {
+                        if hi <= k_u {
+                            Some(true)
+                        } else if lo > k_u {
+                            Some(false)
+                        } else {
+                            None
+                        }
+                    }
+                    Operator::Gt => {
+                        if lo > k_u {
+                            Some(true)
+                        } else if hi <= k_u {
+                            Some(false)
+                        } else {
+                            None
+                        }
+                    }
+                    Operator::GtEq => {
+                        if lo >= k_u {
+                            Some(true)
+                        } else if hi < k_u {
+                            Some(false)
+                        } else {
+                            None
+                        }
+                    }
+                };
+                if let Some(v) = decided {
+                    out_vals.push(v);
+                } else {
+                    return Err(IoRange {
+                        range: self.disk_range.clone(),
+                    });
+                }
+            }
+        } else {
+            let ref_i64: i64 = self.reference_value.as_();
+            let ref_i: i128 = ref_i64 as i128;
+            let k_i64: i64 = k.as_();
+            let k_i: i128 = k_i64 as i128;
+            let bw = self.bucket_width as i128;
+            for (i, &b) in values.iter().enumerate() {
+                if let Some(nulls) = self.quantized.nulls()
+                    && !nulls.is_valid(i)
+                {
+                    out_vals.push(false);
+                    continue;
+                }
+                let b_i: i128 = num_traits::AsPrimitive::<u64>::as_(b) as i128;
+                let lo = ref_i + b_i.saturating_mul(bw);
+                let hi = ref_i + (b_i + 1).saturating_mul(bw) - 1;
+                let decided = match op {
+                    Operator::Eq => {
+                        if k_i < lo || k_i > hi {
+                            Some(false)
+                        } else {
+                            None
+                        }
+                    }
+                    Operator::NotEq => {
+                        if k_i < lo || k_i > hi {
+                            Some(true)
+                        } else {
+                            None
+                        }
+                    }
+                    Operator::Lt => {
+                        if hi < k_i {
+                            Some(true)
+                        } else if lo >= k_i {
+                            Some(false)
+                        } else {
+                            None
+                        }
+                    }
+                    Operator::LtEq => {
+                        if hi <= k_i {
+                            Some(true)
+                        } else if lo > k_i {
+                            Some(false)
+                        } else {
+                            None
+                        }
+                    }
+                    Operator::Gt => {
+                        if lo > k_i {
+                            Some(true)
+                        } else if hi <= k_i {
+                            Some(false)
+                        } else {
+                            None
+                        }
+                    }
+                    Operator::GtEq => {
+                        if lo >= k_i {
+                            Some(true)
+                        } else if hi < k_i {
+                            Some(false)
+                        } else {
+                            None
+                        }
+                    }
+                };
+                if let Some(v) = decided {
+                    out_vals.push(v);
+                } else {
+                    return Err(IoRange {
+                        range: self.disk_range.clone(),
+                    });
+                }
+            }
+        }
+
+        let bool_buf = arrow::buffer::BooleanBuffer::from_iter(out_vals);
+        let out = BooleanArray::new(bool_buf, self.quantized.nulls().cloned());
+        Ok(Some(out))
+    }
+}
+
+impl<T> LiquidHybridArray for LiquidPrimitiveQuantizedArray<T>
+where
+    T: LiquidPrimitiveType + super::PrimitiveKind,
+{
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn get_array_memory_size(&self) -> usize {
+        self.quantized.get_array_memory_size() + std::mem::size_of::<T::Native>()
+    }
+
+    fn len(&self) -> usize {
+        LiquidPrimitiveQuantizedArray::<T>::len(self)
+    }
+
+    fn to_arrow_array(&self) -> Result<ArrayRef, IoRange> {
+        Err(IoRange {
+            range: self.disk_range.clone(),
+        })
+    }
+
+    fn data_type(&self) -> LiquidDataType {
+        LiquidDataType::Integer
+    }
+
+    fn to_bytes(&self) -> Result<Vec<u8>, IoRange> {
+        Err(IoRange {
+            range: self.disk_range.clone(),
+        })
+    }
+
+    fn filter(&self, selection: &BooleanBuffer) -> Result<LiquidHybridArrayRef, IoRange> {
+        let filtered = self.filter_inner(selection);
+        Ok(Arc::new(filtered) as LiquidHybridArrayRef)
     }
 
     fn try_eval_predicate(
@@ -1128,7 +1518,8 @@ mod tests {
     fn hybrid_predicate_eval_u32_resolvable_and_unresolvable() {
         let mut rng = StdRng::seed_from_u64(0x51_74);
         let arr = make_u32_array_with_range(180, 1_000_000, 1 << 16, 0.15, &mut rng);
-        let liq = LiquidPrimitiveArray::<UInt32Type>::from_arrow_array(arr.clone());
+        let liq = LiquidPrimitiveArray::<UInt32Type>::from_arrow_array(arr.clone())
+            .with_squeeze_policy(IntegerSqueezePolicy::Clamp);
         let (hybrid, _bytes) = liq.squeeze().expect("squeezable");
 
         let boundary = compute_boundary_u32(&arr).unwrap();
@@ -1195,5 +1586,125 @@ mod tests {
                 .expect_err("should request IO");
             assert_eq!(err.range(), hybrid.to_liquid().range());
         }
+    }
+
+    #[test]
+    fn quantized_predicate_eval_u32_resolvable_and_unresolvable() {
+        let mut rng = StdRng::seed_from_u64(0x51_84);
+        let arr = make_u32_array_with_range(200, 1_000_000, 1 << 16, 0.2, &mut rng);
+        let liq = LiquidPrimitiveArray::<UInt32Type>::from_arrow_array(arr.clone())
+            .with_squeeze_policy(IntegerSqueezePolicy::Quantize);
+        let (hybrid, _bytes) = liq.squeeze().expect("squeezable");
+
+        let min = arrow::compute::kernels::aggregate::min(&arr).unwrap();
+
+        let mask = BooleanBuffer::from(vec![true; arr.len()]);
+        let build_expr =
+            |op: Operator, k: u32| -> Arc<dyn datafusion::physical_plan::PhysicalExpr> {
+                let lit = Arc::new(Literal::new(ScalarValue::UInt32(Some(k))));
+                Arc::new(BinaryExpr::new(lit.clone(), op, lit))
+            };
+
+        // Expect resolvable results without IO
+        let resolvable_cases: Vec<(Operator, u32, bool)> = vec![
+            (Operator::Eq, min.saturating_sub(1), false), // eq false everywhere
+            (Operator::NotEq, min.saturating_sub(1), true), // neq true everywhere
+            (Operator::Lt, min, false),                   // lt false everywhere
+            (Operator::LtEq, min.saturating_sub(1), false), // lte false everywhere
+            (Operator::Gt, min.saturating_sub(1), true),  // gt true everywhere
+            (Operator::GtEq, min, true),                  // gte true everywhere
+        ];
+        for (op, k, expected_const) in resolvable_cases {
+            let expr = build_expr(op, k);
+            let got = hybrid.try_eval_predicate(&expr, &mask).expect("no IO");
+            let expected = {
+                let vals: Vec<Option<bool>> = (0..arr.len())
+                    .map(|i| {
+                        if arr.is_null(i) {
+                            None
+                        } else {
+                            Some(expected_const)
+                        }
+                    })
+                    .collect();
+                BooleanArray::from(vals)
+            };
+            assert_eq!(got.unwrap(), expected);
+        }
+
+        // Unresolvable for Eq: pick a present value (ensures ambiguous bucket)
+        let k_present = (0..arr.len())
+            .find_map(|i| {
+                if arr.is_null(i) {
+                    None
+                } else {
+                    Some(arr.value(i))
+                }
+            })
+            .unwrap();
+        let expr_eq_present = build_expr(Operator::Eq, k_present);
+        let err = hybrid
+            .try_eval_predicate(&expr_eq_present, &mask)
+            .expect_err("quantized should request IO on ambiguous eq bucket");
+        assert_eq!(err.range(), hybrid.to_liquid().range());
+    }
+
+    #[test]
+    fn quantized_predicate_eval_i32_resolvable_and_unresolvable() {
+        let mut rng = StdRng::seed_from_u64(0x51_85);
+        let arr = make_i32_array_with_range(220, -1_000_000, 1 << 16, 0.2, &mut rng);
+        let liq = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(arr.clone())
+            .with_squeeze_policy(IntegerSqueezePolicy::Quantize);
+        let (hybrid, _bytes) = liq.squeeze().expect("squeezable");
+
+        let min = arrow::compute::kernels::aggregate::min(&arr).unwrap();
+        let mask = BooleanBuffer::from(vec![true; arr.len()]);
+        let build_expr =
+            |op: Operator, k: i32| -> Arc<dyn datafusion::physical_plan::PhysicalExpr> {
+                let lit = Arc::new(Literal::new(ScalarValue::Int32(Some(k))));
+                Arc::new(BinaryExpr::new(lit.clone(), op, lit))
+            };
+
+        let resolvable_cases: Vec<(Operator, i32, bool)> = vec![
+            (Operator::Eq, min - 1, false), // eq false everywhere
+            (Operator::NotEq, min - 1, true),
+            (Operator::Lt, min, false),
+            (Operator::LtEq, min - 1, false),
+            (Operator::Gt, min - 1, true),
+            (Operator::GtEq, min, true),
+        ];
+        for (op, k, expected_const) in resolvable_cases {
+            let expr = build_expr(op, k);
+            let got = hybrid.try_eval_predicate(&expr, &mask).expect("no IO");
+            let expected = {
+                let vals: Vec<Option<bool>> = (0..arr.len())
+                    .map(|i| {
+                        if arr.is_null(i) {
+                            None
+                        } else {
+                            Some(expected_const)
+                        }
+                    })
+                    .collect();
+                BooleanArray::from(vals)
+            };
+            assert_eq!(got.unwrap(), expected);
+        }
+
+        // Unresolvable for Eq: pick a present value
+        let k_present = (0..arr.len())
+            .find_map(|i| {
+                if arr.is_null(i) {
+                    None
+                } else {
+                    Some(arr.value(i))
+                }
+            })
+            .unwrap();
+        let expr_eq_present = build_expr(Operator::Eq, k_present);
+        let err = hybrid
+            .try_eval_predicate(&expr_eq_present, &mask)
+            .expect_err("quantized should request IO on ambiguous eq bucket");
+        assert_eq!(err.range(), hybrid.to_liquid().range());
     }
 }
