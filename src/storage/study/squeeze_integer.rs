@@ -76,26 +76,70 @@ fn representative_integer_filters() -> Vec<FilterCase> {
     use datafusion::logical_expr::Operator as Op;
     vec![
         // SELECT COUNT(*) FROM hits WHERE "AdvEngineID" <> 0;
-        FilterCase { column: "AdvEngineID".to_string(), op: Op::NotEq, scalar: ScalarValue::Int64(Some(0)) },
+        FilterCase {
+            column: "AdvEngineID".to_string(),
+            op: Op::NotEq,
+            scalar: ScalarValue::Int64(Some(0)),
+        },
         // SELECT "UserID" FROM hits WHERE "UserID" = 435090932899640449;
-        FilterCase { column: "UserID".to_string(), op: Op::Eq, scalar: ScalarValue::Int64(Some(435_090_932_899_640_449)) },
+        FilterCase {
+            column: "UserID".to_string(),
+            op: Op::Eq,
+            scalar: ScalarValue::Int64(Some(435_090_932_899_640_449)),
+        },
         // WHERE "CounterID" = 62
-        FilterCase { column: "CounterID".to_string(), op: Op::Eq, scalar: ScalarValue::Int64(Some(62)) },
+        FilterCase {
+            column: "CounterID".to_string(),
+            op: Op::Eq,
+            scalar: ScalarValue::Int64(Some(62)),
+        },
         // WHERE "IsRefresh" = 0
-        FilterCase { column: "IsRefresh".to_string(), op: Op::Eq, scalar: ScalarValue::Int64(Some(0)) },
+        FilterCase {
+            column: "IsRefresh".to_string(),
+            op: Op::Eq,
+            scalar: ScalarValue::Int64(Some(0)),
+        },
         // WHERE "DontCountHits" = 0
-        FilterCase { column: "DontCountHits".to_string(), op: Op::Eq, scalar: ScalarValue::Int64(Some(0)) },
+        FilterCase {
+            column: "DontCountHits".to_string(),
+            op: Op::Eq,
+            scalar: ScalarValue::Int64(Some(0)),
+        },
         // WHERE "IsLink" <> 0
-        FilterCase { column: "IsLink".to_string(), op: Op::NotEq, scalar: ScalarValue::Int64(Some(0)) },
+        FilterCase {
+            column: "IsLink".to_string(),
+            op: Op::NotEq,
+            scalar: ScalarValue::Int64(Some(0)),
+        },
         // WHERE "IsDownload" = 0
-        FilterCase { column: "IsDownload".to_string(), op: Op::Eq, scalar: ScalarValue::Int64(Some(0)) },
+        FilterCase {
+            column: "IsDownload".to_string(),
+            op: Op::Eq,
+            scalar: ScalarValue::Int64(Some(0)),
+        },
         // WHERE "TraficSourceID" IN (-1, 6)
-        FilterCase { column: "TraficSourceID".to_string(), op: Op::Eq, scalar: ScalarValue::Int64(Some(-1)) },
-        FilterCase { column: "TraficSourceID".to_string(), op: Op::Eq, scalar: ScalarValue::Int64(Some(6)) },
+        FilterCase {
+            column: "TraficSourceID".to_string(),
+            op: Op::Eq,
+            scalar: ScalarValue::Int64(Some(-1)),
+        },
+        FilterCase {
+            column: "TraficSourceID".to_string(),
+            op: Op::Eq,
+            scalar: ScalarValue::Int64(Some(6)),
+        },
         // WHERE "RefererHash" = 3594120000172545465
-        FilterCase { column: "RefererHash".to_string(), op: Op::Eq, scalar: ScalarValue::Int64(Some(3_594_120_000_172_545_465)) },
+        FilterCase {
+            column: "RefererHash".to_string(),
+            op: Op::Eq,
+            scalar: ScalarValue::Int64(Some(3_594_120_000_172_545_465)),
+        },
         // WHERE "URLHash" = 2868770270353813622
-        FilterCase { column: "URLHash".to_string(), op: Op::Eq, scalar: ScalarValue::Int64(Some(2_868_770_270_353_813_622)) },
+        FilterCase {
+            column: "URLHash".to_string(),
+            op: Op::Eq,
+            scalar: ScalarValue::Int64(Some(2_868_770_270_353_813_622)),
+        },
     ]
 }
 
@@ -393,8 +437,7 @@ fn filter_expected<T: arrow::array::ArrowPrimitiveType>(
         ));
     let mask = eval_on_arrow(&arr, &expr);
     // Apply mask to the original-typed array to keep dtype identical to hybrid’s result
-    let filtered = arrow::compute::kernels::filter::filter(&arr, &mask).unwrap();
-    filtered
+    arrow::compute::kernels::filter::filter(&arr, &mask).unwrap()
 }
 
 fn scalar_data_type(sv: &ScalarValue) -> Option<DataType> {
