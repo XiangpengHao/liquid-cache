@@ -297,7 +297,7 @@ where
     fn squeeze(&self) -> Option<(crate::liquid_array::LiquidHybridArrayRef, bytes::Bytes)> {
         // Only squeeze if we have a concrete bit width and it is large enough
         let orig_bw = self.bit_packed.bit_width()?;
-        if orig_bw.get() < 10 {
+        if orig_bw.get() < 8 {
             return None;
         }
 
@@ -792,17 +792,232 @@ struct LiquidPrimitiveQuantizedArray<T: LiquidPrimitiveType> {
 
 impl<T> LiquidPrimitiveQuantizedArray<T>
 where
-    T: LiquidPrimitiveType,
+    T: LiquidPrimitiveType + super::PrimitiveKind,
 {
     #[inline]
     fn len(&self) -> usize {
         self.quantized.len()
     }
+
+    fn new_from_filtered(
+        &self,
+        filtered: PrimitiveArray<<T as LiquidPrimitiveType>::UnSignedType>,
+    ) -> Self {
+        let bit_width = self
+            .quantized
+            .bit_width()
+            .expect("quantized bit width must exist");
+        let quantized = BitPackedArray::from_primitive(filtered, bit_width);
+        Self {
+            quantized,
+            reference_value: self.reference_value,
+            bucket_width: self.bucket_width,
+            disk_range: self.disk_range.clone(),
+        }
+    }
+
+    fn filter_inner(&self, selection: &BooleanBuffer) -> Self {
+        let q_prim: PrimitiveArray<T::UnSignedType> = self.quantized.to_primitive();
+        let selection = BooleanArray::new(selection.clone(), None);
+        let filtered = arrow::compute::kernels::filter::filter(&q_prim, &selection).unwrap();
+        let filtered = filtered.as_primitive::<T::UnSignedType>().clone();
+        self.new_from_filtered(filtered)
+    }
+
+    // Evaluate using bucket interval semantics; return Err if any ambiguous bucket is encountered
+    fn try_eval_predicate_inner(
+        &self,
+        op: &Operator,
+        literal: &Literal,
+    ) -> Result<Option<BooleanArray>, IoRange> {
+        use datafusion::common::ScalarValue;
+        type U<TT> = <<TT as LiquidPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native;
+
+        // Extract scalar value as T::Native
+        let k_opt: Option<T::Native> = match literal.value() {
+            ScalarValue::Int8(Some(v)) => T::Native::from_i8(*v),
+            ScalarValue::Int16(Some(v)) => T::Native::from_i16(*v),
+            ScalarValue::Int32(Some(v)) => T::Native::from_i32(*v),
+            ScalarValue::Int64(Some(v)) => T::Native::from_i64(*v),
+            ScalarValue::UInt8(Some(v)) => T::Native::from_u8(*v),
+            ScalarValue::UInt16(Some(v)) => T::Native::from_u16(*v),
+            ScalarValue::UInt32(Some(v)) => T::Native::from_u32(*v),
+            ScalarValue::UInt64(Some(v)) => T::Native::from_u64(*v),
+            ScalarValue::Date32(Some(v)) => T::Native::from_i32(*v),
+            ScalarValue::Date64(Some(v)) => T::Native::from_i64(*v),
+            _ => None,
+        };
+        let Some(k) = k_opt else { return Ok(None) };
+
+        let q_prim = self.quantized.to_primitive();
+        let (_dt, values, _nulls) = q_prim.into_parts();
+
+        let mut out_vals: Vec<bool> = Vec::with_capacity(values.len());
+
+        if T::IS_UNSIGNED {
+            let ref_u_native: U<T> = self.reference_value.as_();
+            let ref_u: u64 = num_traits::AsPrimitive::<u64>::as_(ref_u_native);
+            let k_u_native: U<T> = k.as_();
+            let k_u: u64 = num_traits::AsPrimitive::<u64>::as_(k_u_native);
+            for (i, &b) in values.iter().enumerate() {
+                if let Some(nulls) = self.quantized.nulls() {
+                    if !nulls.is_valid(i) {
+                        out_vals.push(false);
+                        continue;
+                    }
+                }
+                let b_u64: u64 = num_traits::AsPrimitive::<u64>::as_(b);
+                let lo = ref_u.saturating_add(b_u64.saturating_mul(self.bucket_width));
+                let hi = ref_u
+                    .saturating_add((b_u64 + 1).saturating_mul(self.bucket_width))
+                    .saturating_sub(1);
+                let decided = match op {
+                    Operator::Eq => {
+                        if k_u < lo || k_u > hi {
+                            Some(false)
+                        } else {
+                            None
+                        }
+                    }
+                    Operator::NotEq => {
+                        if k_u < lo || k_u > hi {
+                            Some(true)
+                        } else {
+                            None
+                        }
+                    }
+                    Operator::Lt => {
+                        if hi < k_u {
+                            Some(true)
+                        } else if lo >= k_u {
+                            Some(false)
+                        } else {
+                            None
+                        }
+                    }
+                    Operator::LtEq => {
+                        if hi <= k_u {
+                            Some(true)
+                        } else if lo > k_u {
+                            Some(false)
+                        } else {
+                            None
+                        }
+                    }
+                    Operator::Gt => {
+                        if lo > k_u {
+                            Some(true)
+                        } else if hi <= k_u {
+                            Some(false)
+                        } else {
+                            None
+                        }
+                    }
+                    Operator::GtEq => {
+                        if lo >= k_u {
+                            Some(true)
+                        } else if hi < k_u {
+                            Some(false)
+                        } else {
+                            None
+                        }
+                    }
+                };
+                if let Some(v) = decided {
+                    out_vals.push(v);
+                } else {
+                    return Err(IoRange {
+                        range: self.disk_range.clone(),
+                    });
+                }
+            }
+        } else {
+            let ref_i64: i64 = self.reference_value.as_();
+            let ref_i: i128 = ref_i64 as i128;
+            let k_i64: i64 = k.as_();
+            let k_i: i128 = k_i64 as i128;
+            let bw = self.bucket_width as i128;
+            for (i, &b) in values.iter().enumerate() {
+                if let Some(nulls) = self.quantized.nulls() {
+                    if !nulls.is_valid(i) {
+                        out_vals.push(false);
+                        continue;
+                    }
+                }
+                let b_i: i128 = num_traits::AsPrimitive::<u64>::as_(b) as i128;
+                let lo = ref_i + b_i.saturating_mul(bw);
+                let hi = ref_i + (b_i + 1).saturating_mul(bw) - 1;
+                let decided = match op {
+                    Operator::Eq => {
+                        if k_i < lo || k_i > hi {
+                            Some(false)
+                        } else {
+                            None
+                        }
+                    }
+                    Operator::NotEq => {
+                        if k_i < lo || k_i > hi {
+                            Some(true)
+                        } else {
+                            None
+                        }
+                    }
+                    Operator::Lt => {
+                        if hi < k_i {
+                            Some(true)
+                        } else if lo >= k_i {
+                            Some(false)
+                        } else {
+                            None
+                        }
+                    }
+                    Operator::LtEq => {
+                        if hi <= k_i {
+                            Some(true)
+                        } else if lo > k_i {
+                            Some(false)
+                        } else {
+                            None
+                        }
+                    }
+                    Operator::Gt => {
+                        if lo > k_i {
+                            Some(true)
+                        } else if hi <= k_i {
+                            Some(false)
+                        } else {
+                            None
+                        }
+                    }
+                    Operator::GtEq => {
+                        if lo >= k_i {
+                            Some(true)
+                        } else if hi < k_i {
+                            Some(false)
+                        } else {
+                            None
+                        }
+                    }
+                };
+                if let Some(v) = decided {
+                    out_vals.push(v);
+                } else {
+                    return Err(IoRange {
+                        range: self.disk_range.clone(),
+                    });
+                }
+            }
+        }
+
+        let bool_buf = arrow::buffer::BooleanBuffer::from_iter(out_vals);
+        let out = BooleanArray::new(bool_buf, self.quantized.nulls().cloned());
+        Ok(Some(out))
+    }
 }
 
 impl<T> LiquidHybridArray for LiquidPrimitiveQuantizedArray<T>
 where
-    T: LiquidPrimitiveType,
+    T: LiquidPrimitiveType + super::PrimitiveKind,
 {
     fn as_any(&self) -> &dyn Any {
         self
@@ -833,34 +1048,28 @@ where
     }
 
     fn filter(&self, selection: &BooleanBuffer) -> Result<LiquidHybridArrayRef, IoRange> {
-        let q_prim: PrimitiveArray<T::UnSignedType> = self.quantized.to_primitive();
-        let selection = BooleanArray::new(selection.clone(), None);
-        let filtered = arrow::compute::kernels::filter::filter(&q_prim, &selection).unwrap();
-        let filtered = filtered.as_primitive::<T::UnSignedType>().clone();
-        let bw = self
-            .quantized
-            .bit_width()
-            .expect("quantized bit width must exist");
-        let quantized = BitPackedArray::from_primitive(filtered, bw);
-        let out = LiquidPrimitiveQuantizedArray::<T> {
-            quantized,
-            reference_value: self.reference_value,
-            bucket_width: self.bucket_width,
-            disk_range: self.disk_range.clone(),
-        };
-        Ok(Arc::new(out) as LiquidHybridArrayRef)
+        let filtered = self.filter_inner(selection);
+        Ok(Arc::new(filtered) as LiquidHybridArrayRef)
     }
 
     fn try_eval_predicate(
         &self,
-        _predicate: &Arc<dyn PhysicalExpr>,
-        _filter: &BooleanBuffer,
+        expr: &Arc<dyn PhysicalExpr>,
+        filter: &BooleanBuffer,
     ) -> Result<Option<BooleanArray>, IoRange> {
-        // For now, quantized array defers to disk for exact evaluation.
-        // Future work: exploit bucket intervals to resolve predicates without IO.
-        Err(IoRange {
-            range: self.disk_range.clone(),
-        })
+        // Apply selection first to reduce input rows
+        let filtered = self.filter_inner(filter);
+
+        if let Some(binary_expr) = expr.as_any().downcast_ref::<BinaryExpr>()
+            && let Some(literal) = binary_expr.right().as_any().downcast_ref::<Literal>()
+        {
+            let op = binary_expr.op();
+            let supported_op = Operator::from_datafusion(op);
+            if let Some(supported_op) = supported_op {
+                return filtered.try_eval_predicate_inner(&supported_op, literal);
+            }
+        }
+        Ok(None)
     }
 
     fn soak(&self, data: bytes::Bytes) -> LiquidArrayRef {
@@ -1315,7 +1524,8 @@ mod tests {
     fn hybrid_predicate_eval_u32_resolvable_and_unresolvable() {
         let mut rng = StdRng::seed_from_u64(0x51_74);
         let arr = make_u32_array_with_range(180, 1_000_000, 1 << 16, 0.15, &mut rng);
-        let liq = LiquidPrimitiveArray::<UInt32Type>::from_arrow_array(arr.clone());
+        let liq = LiquidPrimitiveArray::<UInt32Type>::from_arrow_array(arr.clone())
+            .with_squeeze_policy(IntegerSqueezePolicy::Clamp);
         let (hybrid, _bytes) = liq.squeeze().expect("squeezable");
 
         let boundary = compute_boundary_u32(&arr).unwrap();
@@ -1382,5 +1592,125 @@ mod tests {
                 .expect_err("should request IO");
             assert_eq!(err.range(), hybrid.to_liquid().range());
         }
+    }
+
+    #[test]
+    fn quantized_predicate_eval_u32_resolvable_and_unresolvable() {
+        let mut rng = StdRng::seed_from_u64(0x51_84);
+        let arr = make_u32_array_with_range(200, 1_000_000, 1 << 16, 0.2, &mut rng);
+        let liq = LiquidPrimitiveArray::<UInt32Type>::from_arrow_array(arr.clone())
+            .with_squeeze_policy(IntegerSqueezePolicy::Quantize);
+        let (hybrid, _bytes) = liq.squeeze().expect("squeezable");
+
+        let min = arrow::compute::kernels::aggregate::min(&arr).unwrap();
+
+        let mask = BooleanBuffer::from(vec![true; arr.len()]);
+        let build_expr =
+            |op: Operator, k: u32| -> Arc<dyn datafusion::physical_plan::PhysicalExpr> {
+                let lit = Arc::new(Literal::new(ScalarValue::UInt32(Some(k))));
+                Arc::new(BinaryExpr::new(lit.clone(), op, lit))
+            };
+
+        // Expect resolvable results without IO
+        let resolvable_cases: Vec<(Operator, u32, bool)> = vec![
+            (Operator::Eq, min.saturating_sub(1), false), // eq false everywhere
+            (Operator::NotEq, min.saturating_sub(1), true), // neq true everywhere
+            (Operator::Lt, min, false),                   // lt false everywhere
+            (Operator::LtEq, min.saturating_sub(1), false), // lte false everywhere
+            (Operator::Gt, min.saturating_sub(1), true),  // gt true everywhere
+            (Operator::GtEq, min, true),                  // gte true everywhere
+        ];
+        for (op, k, expected_const) in resolvable_cases {
+            let expr = build_expr(op, k);
+            let got = hybrid.try_eval_predicate(&expr, &mask).expect("no IO");
+            let expected = {
+                let vals: Vec<Option<bool>> = (0..arr.len())
+                    .map(|i| {
+                        if arr.is_null(i) {
+                            None
+                        } else {
+                            Some(expected_const)
+                        }
+                    })
+                    .collect();
+                BooleanArray::from(vals)
+            };
+            assert_eq!(got.unwrap(), expected);
+        }
+
+        // Unresolvable for Eq: pick a present value (ensures ambiguous bucket)
+        let k_present = (0..arr.len())
+            .find_map(|i| {
+                if arr.is_null(i) {
+                    None
+                } else {
+                    Some(arr.value(i))
+                }
+            })
+            .unwrap();
+        let expr_eq_present = build_expr(Operator::Eq, k_present);
+        let err = hybrid
+            .try_eval_predicate(&expr_eq_present, &mask)
+            .expect_err("quantized should request IO on ambiguous eq bucket");
+        assert_eq!(err.range(), hybrid.to_liquid().range());
+    }
+
+    #[test]
+    fn quantized_predicate_eval_i32_resolvable_and_unresolvable() {
+        let mut rng = StdRng::seed_from_u64(0x51_85);
+        let arr = make_i32_array_with_range(220, -1_000_000, 1 << 16, 0.2, &mut rng);
+        let liq = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(arr.clone())
+            .with_squeeze_policy(IntegerSqueezePolicy::Quantize);
+        let (hybrid, _bytes) = liq.squeeze().expect("squeezable");
+
+        let min = arrow::compute::kernels::aggregate::min(&arr).unwrap();
+        let mask = BooleanBuffer::from(vec![true; arr.len()]);
+        let build_expr =
+            |op: Operator, k: i32| -> Arc<dyn datafusion::physical_plan::PhysicalExpr> {
+                let lit = Arc::new(Literal::new(ScalarValue::Int32(Some(k))));
+                Arc::new(BinaryExpr::new(lit.clone(), op, lit))
+            };
+
+        let resolvable_cases: Vec<(Operator, i32, bool)> = vec![
+            (Operator::Eq, min - 1, false), // eq false everywhere
+            (Operator::NotEq, min - 1, true),
+            (Operator::Lt, min, false),
+            (Operator::LtEq, min - 1, false),
+            (Operator::Gt, min - 1, true),
+            (Operator::GtEq, min, true),
+        ];
+        for (op, k, expected_const) in resolvable_cases {
+            let expr = build_expr(op, k);
+            let got = hybrid.try_eval_predicate(&expr, &mask).expect("no IO");
+            let expected = {
+                let vals: Vec<Option<bool>> = (0..arr.len())
+                    .map(|i| {
+                        if arr.is_null(i) {
+                            None
+                        } else {
+                            Some(expected_const)
+                        }
+                    })
+                    .collect();
+                BooleanArray::from(vals)
+            };
+            assert_eq!(got.unwrap(), expected);
+        }
+
+        // Unresolvable for Eq: pick a present value
+        let k_present = (0..arr.len())
+            .find_map(|i| {
+                if arr.is_null(i) {
+                    None
+                } else {
+                    Some(arr.value(i))
+                }
+            })
+            .unwrap();
+        let expr_eq_present = build_expr(Operator::Eq, k_present);
+        let err = hybrid
+            .try_eval_predicate(&expr_eq_present, &mask)
+            .expect_err("quantized should request IO on ambiguous eq bucket");
+        assert_eq!(err.range(), hybrid.to_liquid().range());
     }
 }
