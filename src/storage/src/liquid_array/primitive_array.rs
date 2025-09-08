@@ -257,9 +257,7 @@ where
 
     fn squeeze(&self) -> Option<(crate::liquid_array::LiquidHybridArrayRef, bytes::Bytes)> {
         // Only squeeze if we have a concrete bit width and it is large enough
-        let Some(orig_bw) = self.bit_packed.bit_width() else {
-            return None;
-        };
+        let orig_bw = self.bit_packed.bit_width()?;
         if orig_bw.get() < 10 {
             return None;
         }
@@ -273,7 +271,7 @@ where
 
         // Sentinel is the max representable value with new_bw bits
         type U<TT> = <<TT as LiquidPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native;
-        let sentinel: U<T> = U::<T>::usize_as(((1usize << new_bw_u8.get() as usize) - 1) as usize);
+        let sentinel: U<T> = U::<T>::usize_as((1usize << new_bw_u8.get()) - 1);
 
         // Clamp values to the squeezed width; values >= sentinel become sentinel
         let squeezed_values: ScalarBuffer<U<T>> = ScalarBuffer::from_iter(values.iter().map(
@@ -457,7 +455,7 @@ where
         let squeezed_prim = self.squeezed.to_primitive();
         let (_dt, values, nulls) = squeezed_prim.into_parts();
         let bw = self.squeezed.bit_width().expect("bit width").get();
-        let sentinel: U<T> = U::<T>::usize_as(((1usize << bw as usize) - 1) as usize);
+        let sentinel: U<T> = U::<T>::usize_as((1usize << bw) - 1);
 
         // If any valid value equals sentinel, cannot fully materialize without disk
         if let Some(n) = self.squeezed.nulls() {
@@ -466,10 +464,8 @@ where
                     return None;
                 }
             }
-        } else {
-            if values.iter().any(|&v| v == sentinel) {
-                return None;
-            }
+        } else if values.contains(&sentinel) {
+            return None;
         }
 
         // All values are known; reconstruct to full Arrow by adding reference
@@ -512,7 +508,7 @@ where
         let squeezed_prim = self.squeezed.to_primitive();
         let (_dt, values, _nulls) = squeezed_prim.into_parts();
         let bw = self.squeezed.bit_width().expect("bit width").get();
-        let sentinel: U<T> = U::<T>::usize_as(((1usize << bw as usize) - 1) as usize);
+        let sentinel: U<T> = U::<T>::usize_as((1usize << bw) - 1);
 
         // Precompute whether sentinel rows can be resolved under this operator and literal
         let is_unsigned = <T as super::PrimitiveKind>::IS_UNSIGNED;
@@ -531,8 +527,7 @@ where
             // signed types (including Date32/Date64)
             let ref_i: i64 = self.reference_value.as_();
             let k_i: i64 = k.as_();
-            let sent_abs: i64 =
-                (ref_i as i64) + (num_traits::AsPrimitive::<u64>::as_(sentinel) as i64);
+            let sent_abs: i64 = ref_i + (num_traits::AsPrimitive::<u64>::as_(sentinel) as i64);
             match op {
                 Operator::Eq | Operator::NotEq | Operator::Gt | Operator::LtEq => k_i < sent_abs,
                 Operator::Lt | Operator::GtEq => k_i <= sent_abs,
@@ -609,7 +604,7 @@ where
             }
         }
 
-        let bool_buf = arrow::buffer::BooleanBuffer::from_iter(out_vals.into_iter());
+        let bool_buf = arrow::buffer::BooleanBuffer::from_iter(out_vals);
         let out = BooleanArray::new(bool_buf, self.squeezed.nulls().cloned());
         Ok(Some(out))
     }
@@ -1036,14 +1031,13 @@ mod tests {
         let expected = {
             let vals: Vec<Option<i32>> = (0..arr.len())
                 .zip(mask_bits.iter())
-                .filter_map(|(i, &keep)| {
-                    keep.then(|| {
-                        if arr.is_null(i) {
-                            None
-                        } else {
-                            Some(arr.value(i))
-                        }
-                    })
+                .filter(|&(_, &keep)| keep)
+                .map(|(i, &_keep)| {
+                    if arr.is_null(i) {
+                        None
+                    } else {
+                        Some(arr.value(i))
+                    }
                 })
                 .collect();
             PrimitiveArray::<Int32Type>::from(vals)
@@ -1073,23 +1067,22 @@ mod tests {
         let expected_for = |op: Operator, k: i32| -> BooleanArray {
             let vals: Vec<Option<bool>> = (0..arr.len())
                 .zip(mask_bits.iter())
-                .filter_map(|(i, &keep)| {
-                    keep.then(|| {
-                        if arr.is_null(i) {
-                            None
-                        } else {
-                            let v = arr.value(i);
-                            Some(match op {
-                                Operator::Eq => v == k,
-                                Operator::NotEq => v != k,
-                                Operator::Lt => v < k,
-                                Operator::LtEq => v <= k,
-                                Operator::Gt => v > k,
-                                Operator::GtEq => v >= k,
-                                _ => unreachable!(),
-                            })
-                        }
-                    })
+                .filter(|&(_, &keep)| keep)
+                .map(|(i, &_keep)| {
+                    if arr.is_null(i) {
+                        None
+                    } else {
+                        let v = arr.value(i);
+                        Some(match op {
+                            Operator::Eq => v == k,
+                            Operator::NotEq => v != k,
+                            Operator::Lt => v < k,
+                            Operator::LtEq => v <= k,
+                            Operator::Gt => v > k,
+                            Operator::GtEq => v >= k,
+                            _ => unreachable!(),
+                        })
+                    }
                 })
                 .collect();
             BooleanArray::from(vals)
@@ -1106,7 +1099,7 @@ mod tests {
         ];
 
         for (op, k) in resolvable_cases {
-            let expr = build_expr(op.clone(), k);
+            let expr = build_expr(op, k);
             let got = hybrid.try_eval_predicate(&expr, &mask).expect("no IO");
             let expected = expected_for(op, k);
             assert_eq!(got.unwrap(), expected);
@@ -1125,8 +1118,7 @@ mod tests {
             let expr = build_expr(op, k);
             let err = hybrid
                 .try_eval_predicate(&expr, &mask)
-                .err()
-                .expect("should request IO");
+                .expect_err("should request IO");
             let io = hybrid.to_liquid();
             assert_eq!(err.range(), io.range());
         }
@@ -1152,23 +1144,22 @@ mod tests {
         let expected_for = |op: Operator, k: u32| -> BooleanArray {
             let vals: Vec<Option<bool>> = (0..arr.len())
                 .zip(mask_bits.iter())
-                .filter_map(|(i, &keep)| {
-                    keep.then(|| {
-                        if arr.is_null(i) {
-                            None
-                        } else {
-                            let v = arr.value(i);
-                            Some(match op {
-                                Operator::Eq => v == k,
-                                Operator::NotEq => v != k,
-                                Operator::Lt => v < k,
-                                Operator::LtEq => v <= k,
-                                Operator::Gt => v > k,
-                                Operator::GtEq => v >= k,
-                                _ => unreachable!(),
-                            })
-                        }
-                    })
+                .filter(|&(_, &keep)| keep)
+                .map(|(i, &_keep)| {
+                    if arr.is_null(i) {
+                        None
+                    } else {
+                        let v = arr.value(i);
+                        Some(match op {
+                            Operator::Eq => v == k,
+                            Operator::NotEq => v != k,
+                            Operator::Lt => v < k,
+                            Operator::LtEq => v <= k,
+                            Operator::Gt => v > k,
+                            Operator::GtEq => v >= k,
+                            _ => unreachable!(),
+                        })
+                    }
                 })
                 .collect();
             BooleanArray::from(vals)
@@ -1183,7 +1174,7 @@ mod tests {
             (Operator::GtEq, boundary),
         ];
         for (op, k) in resolvable_cases {
-            let expr = build_expr(op.clone(), k);
+            let expr = build_expr(op, k);
             let got = hybrid.try_eval_predicate(&expr, &mask).expect("no IO");
             let expected = expected_for(op, k);
             assert_eq!(got.unwrap(), expected);
@@ -1201,8 +1192,7 @@ mod tests {
             let expr = build_expr(op, k);
             let err = hybrid
                 .try_eval_predicate(&expr, &mask)
-                .err()
-                .expect("should request IO");
+                .expect_err("should request IO");
             assert_eq!(err.range(), hybrid.to_liquid().range());
         }
     }

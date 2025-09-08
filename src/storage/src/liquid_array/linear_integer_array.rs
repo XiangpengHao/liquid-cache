@@ -68,7 +68,7 @@ pub type LiquidLinearDate64Array = LiquidLinearArray<Date64Type>;
 
 impl<T> LiquidLinearArray<T>
 where
-    T: LiquidPrimitiveType + PrimitiveKind,
+    T: LiquidPrimitiveType,
     T::Native: AsPrimitive<f64> + FromPrimitive + Bounded,
 {
     /// Build from an Arrow `PrimitiveArray<T>` by training a linear model
@@ -286,7 +286,7 @@ where
 
 impl<T> LiquidArray for LiquidLinearArray<T>
 where
-    T: LiquidPrimitiveType + PrimitiveKind,
+    T: LiquidPrimitiveType,
     T::Native: AsPrimitive<f64> + FromPrimitive + Bounded,
 {
     fn as_any(&self) -> &dyn Any {
@@ -305,9 +305,6 @@ where
 
     fn to_arrow_array(&self) -> ArrayRef {
         let arr = self.residuals.to_arrow_array();
-        if self.intercept == 0.0 && self.slope == 0.0 {
-            return arr;
-        }
         let (_dt, residuals, nulls) = arr.as_primitive::<Int64Type>().clone().into_parts();
 
         // Reconstruct final values: predicted(i) +/- |residual_i|
