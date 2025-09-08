@@ -35,6 +35,7 @@ pub use primitive_array::{
     LiquidI64Array, LiquidPrimitiveArray, LiquidPrimitiveType, LiquidU8Array, LiquidU16Array,
     LiquidU32Array, LiquidU64Array,
 };
+pub use primitive_array::IntegerSqueezePolicy;
 
 use crate::liquid_array::byte_view_array::MemoryBuffer;
 
