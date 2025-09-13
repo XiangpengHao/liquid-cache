@@ -37,13 +37,12 @@ def format_memory(bytes_val: int) -> str:
 def get_cold_metrics(iteration_results: List[Dict[str, Any]]) -> Dict[str, float]:
     """Get metrics from the first (cold) iteration."""
     if not iteration_results:
-        return {"time_millis": 0, "cache_cpu_time": 0, "cache_memory_usage": 0}
+        return {"time_millis": 0, "cache_cpu_time": 0}
     
     first_result = iteration_results[0]
     return {
         "time_millis": first_result["time_millis"],
         "cache_cpu_time": first_result.get("cache_cpu_time", 0),
-        "cache_memory_usage": first_result.get("cache_memory_usage", 0),
     }
 
 
@@ -51,16 +50,15 @@ def get_warm_metrics(iteration_results: List[Dict[str, Any]]) -> Dict[str, float
     """Calculate average metrics from warm iterations (excluding first)."""
     warm_results = iteration_results[1:] if len(iteration_results) > 1 else iteration_results
     if not warm_results:
-        return {"time_millis": 0, "cache_cpu_time": 0, "cache_memory_usage": 0}
+        return {"time_millis": 0, "cache_cpu_time": 0}
 
     avg_time = sum(r["time_millis"] for r in warm_results) / len(warm_results)
     avg_cpu_time = sum(r.get("cache_cpu_time", 0) for r in warm_results) / len(warm_results)
-    avg_memory = sum(r.get("cache_memory_usage", 0) for r in warm_results) / len(warm_results)
+    # No memory column in report
     
     return {
         "time_millis": avg_time, 
         "cache_cpu_time": avg_cpu_time,
-        "cache_memory_usage": avg_memory
     }
 
 
@@ -138,7 +136,7 @@ def compare_benchmarks(
         cold_time_change = calculate_change(baseline_cold["time_millis"], curr_cold["time_millis"])
         warm_time_change = calculate_change(baseline_warm["time_millis"], curr_warm["time_millis"])
         cpu_time_change = calculate_change(baseline_warm["cache_cpu_time"], curr_warm["cache_cpu_time"])
-        memory_change = calculate_change(baseline_warm["cache_memory_usage"], curr_warm["cache_memory_usage"])
+        # Memory column removed from report
 
         comparison.append(
             {
@@ -152,13 +150,9 @@ def compare_benchmarks(
                 "curr_cpu_time": curr_warm["cache_cpu_time"],
                 "baseline_cpu_time": baseline_warm["cache_cpu_time"],
                 "cpu_time_change": cpu_time_change,
-                "curr_memory": curr_warm["cache_memory_usage"],
-                "baseline_memory": baseline_warm["cache_memory_usage"],
-                "memory_change": memory_change,
                 "cold_time_significant": is_significant_change(cold_time_change, threshold),
                 "warm_time_significant": is_significant_change(warm_time_change, threshold),
                 "cpu_time_significant": is_significant_change(cpu_time_change, threshold),
-                "memory_significant": is_significant_change(memory_change, threshold),
             }
         )
 
@@ -187,10 +181,10 @@ def compare_benchmarks(
     lines.append("")
 
     lines.append(
-        "| Query | Cold Time | Δ | Warm Time | Δ | CPU Time | Δ | Memory | Δ |"
+        "| Query | Cold Time | Δ | Warm Time | Δ | CPU Time | Δ |"
     )
     lines.append(
-        "|-------|-----------|---|-----------|---|----------|---|--------|---|"
+        "|-------|-----------|---|-----------|---|----------|---|"
     )
 
     for comp in comparison:
@@ -215,19 +209,11 @@ def compare_benchmarks(
             comp['curr_cpu_time'], comp['baseline_cpu_time']
         )
         
-        memory_str = format_metric_with_baseline(
-            comp['curr_memory'], comp['baseline_memory'], format_memory
-        )
-        memory_change_str = format_change_percentage(
-            comp['curr_memory'], comp['baseline_memory']
-        )
-
         lines.append(
             f"| Q{comp['query']} | "
             f"{cold_time_str} | {cold_change_str} | "
             f"{warm_time_str} | {warm_change_str} | "
-            f"{cpu_time_str} | {cpu_change_str} | "
-            f"{memory_str} | {memory_change_str} |"
+            f"{cpu_time_str} | {cpu_change_str} |"
         )
 
     # Summary focused on LiquidCache being slower than DataFusion (warm time)
@@ -253,7 +239,6 @@ def compare_benchmarks(
     lines.append("")
     lines.append(f"*Compared {current_mode} vs {baseline_mode} on the same runner*")
     lines.append("*Cold Time: first iteration; Warm Time: average of remaining iterations.*")
-    lines.append("*Memory = cache_memory_usage (LiquidCache memory + scanned bytes; DataFusion shows scanned bytes).*")
 
     return "\n".join(lines)
 
