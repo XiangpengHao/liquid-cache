@@ -5,9 +5,8 @@ use arrow::{
     buffer::{BooleanBuffer, MutableBuffer},
 };
 use datafusion::{
-    catalog::memory::DataSourceExec,
     common::tree_node::{Transformed, TreeNode, TreeNodeRecursion},
-    datasource::{physical_plan::ParquetSource, source::DataSource},
+    datasource::{physical_plan::ParquetSource, source::DataSource, source::DataSourceExec},
     physical_plan::{ExecutionPlan, metrics::MetricValue},
 };
 use liquid_cache_common::rpc::ExecutionMetricsResponse;

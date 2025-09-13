@@ -37,13 +37,12 @@ def format_memory(bytes_val: int) -> str:
 def get_cold_metrics(iteration_results: List[Dict[str, Any]]) -> Dict[str, float]:
     """Get metrics from the first (cold) iteration."""
     if not iteration_results:
-        return {"time_millis": 0, "cache_cpu_time": 0, "liquid_cache_usage": 0}
+        return {"time_millis": 0, "cache_cpu_time": 0}
     
     first_result = iteration_results[0]
     return {
         "time_millis": first_result["time_millis"],
         "cache_cpu_time": first_result.get("cache_cpu_time", 0),
-        "liquid_cache_usage": first_result["liquid_cache_usage"],
     }
 
 
@@ -51,16 +50,15 @@ def get_warm_metrics(iteration_results: List[Dict[str, Any]]) -> Dict[str, float
     """Calculate average metrics from warm iterations (excluding first)."""
     warm_results = iteration_results[1:] if len(iteration_results) > 1 else iteration_results
     if not warm_results:
-        return {"time_millis": 0, "cache_cpu_time": 0, "liquid_cache_usage": 0}
+        return {"time_millis": 0, "cache_cpu_time": 0}
 
     avg_time = sum(r["time_millis"] for r in warm_results) / len(warm_results)
     avg_cpu_time = sum(r.get("cache_cpu_time", 0) for r in warm_results) / len(warm_results)
-    avg_memory = sum(r["liquid_cache_usage"] for r in warm_results) / len(warm_results)
+    # No memory column in report
     
     return {
         "time_millis": avg_time, 
         "cache_cpu_time": avg_cpu_time,
-        "liquid_cache_usage": avg_memory
     }
 
 
@@ -81,14 +79,17 @@ def format_metric_with_baseline(current: float, baseline: float, formatter_func)
     return f"{formatter_func(current)} *({formatter_func(baseline)})*"
 
 
-def format_change_percentage(current: float, baseline: float) -> str:
-    """Format percentage change with bold for significant changes."""
+def format_change_percentage(current: float, baseline: float, highlight_mode: str = "none") -> str:
+    """Format percentage change and optionally highlight when slower.
+
+    highlight_mode:
+      - "none": never bold
+      - "slower_only": bold only if current > baseline (i.e., slower) and ≥15%
+    """
     change_pct = calculate_change(baseline, current)
-    
-    if abs(change_pct) >= 15.0:  # Significant change threshold
+    if highlight_mode == "slower_only" and change_pct > 0 and abs(change_pct) >= 15.0:
         return f"**{change_pct:+.1f}%**"
-    else:
-        return f"{change_pct:+.1f}%"
+    return f"{change_pct:+.1f}%"
 
 
 def load_benchmark_data(file_path: str) -> Dict[str, Any]:
@@ -138,7 +139,7 @@ def compare_benchmarks(
         cold_time_change = calculate_change(baseline_cold["time_millis"], curr_cold["time_millis"])
         warm_time_change = calculate_change(baseline_warm["time_millis"], curr_warm["time_millis"])
         cpu_time_change = calculate_change(baseline_warm["cache_cpu_time"], curr_warm["cache_cpu_time"])
-        memory_change = calculate_change(baseline_warm["liquid_cache_usage"], curr_warm["liquid_cache_usage"])
+        # Memory column removed from report
 
         comparison.append(
             {
@@ -152,15 +153,22 @@ def compare_benchmarks(
                 "curr_cpu_time": curr_warm["cache_cpu_time"],
                 "baseline_cpu_time": baseline_warm["cache_cpu_time"],
                 "cpu_time_change": cpu_time_change,
-                "curr_memory": curr_warm["liquid_cache_usage"],
-                "baseline_memory": baseline_warm["liquid_cache_usage"],
-                "memory_change": memory_change,
                 "cold_time_significant": is_significant_change(cold_time_change, threshold),
                 "warm_time_significant": is_significant_change(warm_time_change, threshold),
                 "cpu_time_significant": is_significant_change(cpu_time_change, threshold),
-                "memory_significant": is_significant_change(memory_change, threshold),
             }
         )
+
+    # Determine modes for clearer labeling
+    def extract_mode(d: Dict[str, Any]) -> str:
+        try:
+            # in_process encodes args.bench_mode as enum variant string
+            return d.get("args", {}).get("bench_mode", "unknown")
+        except Exception:
+            return "unknown"
+
+    current_mode = extract_mode(current)
+    baseline_mode = extract_mode(baseline)
 
     # Generate markdown report
     lines = []
@@ -171,15 +179,15 @@ def compare_benchmarks(
     current_commit = current.get("commit", "unknown")[:8]
     baseline_commit = baseline.get("commit", "unknown")[:8]
     lines.append(
-        f"**Current:** `{current_commit}` vs **Baseline:** `{baseline_commit}`"
+        f"**Current:** `{current_commit}` ({current_mode}) vs **Baseline:** `{baseline_commit}` ({baseline_mode})"
     )
     lines.append("")
 
     lines.append(
-        "| Query | Cold Time | Δ | Warm Time | Δ | CPU Time | Δ | Memory | Δ |"
+        "| Query | Cold Time | Δ | Warm Time | Δ | CPU Time | Δ |"
     )
     lines.append(
-        "|-------|-----------|---|-----------|---|----------|---|--------|---|"
+        "|-------|-----------|---|-----------|---|----------|---|"
     )
 
     for comp in comparison:
@@ -187,86 +195,53 @@ def compare_benchmarks(
             comp['curr_cold_time'], comp['baseline_cold_time'], format_time
         )
         cold_change_str = format_change_percentage(
-            comp['curr_cold_time'], comp['baseline_cold_time']
+            comp['curr_cold_time'], comp['baseline_cold_time'], highlight_mode="none"
         )
         
         warm_time_str = format_metric_with_baseline(
             comp['curr_warm_time'], comp['baseline_warm_time'], format_time
         )
         warm_change_str = format_change_percentage(
-            comp['curr_warm_time'], comp['baseline_warm_time']
+            comp['curr_warm_time'], comp['baseline_warm_time'], highlight_mode="slower_only"
         )
         
         cpu_time_str = format_metric_with_baseline(
             comp['curr_cpu_time'], comp['baseline_cpu_time'], format_time
         )
         cpu_change_str = format_change_percentage(
-            comp['curr_cpu_time'], comp['baseline_cpu_time']
+            comp['curr_cpu_time'], comp['baseline_cpu_time'], highlight_mode="none"
         )
         
-        memory_str = format_metric_with_baseline(
-            comp['curr_memory'], comp['baseline_memory'], format_memory
-        )
-        memory_change_str = format_change_percentage(
-            comp['curr_memory'], comp['baseline_memory']
-        )
-
         lines.append(
             f"| Q{comp['query']} | "
             f"{cold_time_str} | {cold_change_str} | "
             f"{warm_time_str} | {warm_change_str} | "
-            f"{cpu_time_str} | {cpu_change_str} | "
-            f"{memory_str} | {memory_change_str} |"
+            f"{cpu_time_str} | {cpu_change_str} |"
         )
 
-    # Summary
-    significant_changes = [
-        c for c in comparison 
-        if c["cold_time_significant"] or c["warm_time_significant"] 
-        or c["cpu_time_significant"] or c["memory_significant"]
-    ]
+    # Summary focused on LiquidCache being slower than DataFusion (warm time)
+    slower_warm = [c for c in comparison if c["warm_time_change"] > 0]
     lines.append("")
-    if significant_changes:
-        lines.append(
-            f"**⚠️ {len(significant_changes)} queries have significant performance changes (≥{threshold}%)**"
+    if slower_warm:
+        lines.append(f"**⚠️ LiquidCache is slower on {len(slower_warm)} queries (warm)**")
+        lines.append("")
+        # Sort by warm slowdown descending
+        slower_warm_sorted = sorted(
+            slower_warm, key=lambda x: x["warm_time_change"], reverse=True
         )
-
-        # List the most significant changes
-        most_significant = sorted(
-            significant_changes,
-            key=lambda x: max(
-                abs(x["cold_time_change"]), 
-                abs(x["warm_time_change"]),
-                abs(x["cpu_time_change"]), 
-                abs(x["memory_change"])
-            ),
-            reverse=True,
-        )[:3]
-
-        if most_significant:
-            lines.append("")
-            lines.append("**Most significant changes:**")
-            for change in most_significant:
-                change_desc = []
-                if change["cold_time_significant"]:
-                    change_desc.append(f"cold time {change['cold_time_change']:+.1f}%")
-                if change["warm_time_significant"]:
-                    change_desc.append(f"warm time {change['warm_time_change']:+.1f}%")
-                if change["cpu_time_significant"]:
-                    change_desc.append(f"CPU time {change['cpu_time_change']:+.1f}%")
-                if change["memory_significant"]:
-                    change_desc.append(f"memory {change['memory_change']:+.1f}%")
-                lines.append(f"- Q{change['query']}: {', '.join(change_desc)}")
+        for c in slower_warm_sorted:
+            curr = c["curr_warm_time"]; base = c["baseline_warm_time"]
+            pct = calculate_change(base, curr)
+            lines.append(
+                f"- Q{c['query']}: warm {pct:+.1f}% "
+                f"({format_time(curr)} vs {format_time(base)})"
+            )
     else:
-        lines.append("✅ No significant performance regressions detected")
+        lines.append("✅ LiquidCache is faster or equal on warm time for all queries")
 
     lines.append("")
-    lines.append(
-        f"*Benchmark ran {len(curr_results)} queries with liquid-eager-transcode mode*"
-    )
-    lines.append(
-        "*Cold Time: First iteration, Warm Time: Average of remaining iterations*"
-    )
+    lines.append(f"*Compared {current_mode} vs {baseline_mode} on the same runner*")
+    lines.append("*Cold Time: first iteration; Warm Time: average of remaining iterations.*")
 
     return "\n".join(lines)
 

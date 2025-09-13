@@ -196,108 +196,51 @@ jobs:
       - name: Build benchmark binary
         run: cargo build --release --bin in_process
 
-      - name: Run benchmark
+      - name: Run LiquidCache benchmark (in-process)
         run: |
           mkdir -p benchmark_results
           env RUST_LOG=info cargo run --release --bin in_process -- \
             --manifest benchmark/clickbench/benchmark_manifest.json \
-            --output benchmark_results/benchmark.json \
+            --output benchmark_results/liquid.json \
             --iteration 5 \
             --bench-mode liquid-eager-transcode
 
-      - name: Create timestamped benchmark result
+      - name: Run DataFusion benchmark (plain parquet)
+        run: |
+          env RUST_LOG=info cargo run --release --bin in_process -- \
+            --manifest benchmark/clickbench/benchmark_manifest.json \
+            --output benchmark_results/parquet.json \
+            --iteration 5 \
+            --bench-mode parquet
+
+      - name: Run DataFusion benchmark (default config)
+        run: |
+          env RUST_LOG=info cargo run --release --bin in_process -- \
+            --manifest benchmark/clickbench/benchmark_manifest.json \
+            --output benchmark_results/df_default.json \
+            --iteration 5 \
+            --bench-mode datafusion-default
+
+      - name: Annotate results with commit/timestamp
         run: |
           jq --arg timestamp "$(date -Iminutes)" --arg commit "${{ github.sha }}" \
              '. + {"timestamp": $timestamp, "commit": $commit}' \
-             benchmark_results/benchmark.json > benchmark_results/final.json
+             benchmark_results/liquid.json > benchmark_results/liquid_final.json
+          jq --arg timestamp "$(date -Iminutes)" --arg commit "${{ github.sha }}" \
+             '. + {"timestamp": $timestamp, "commit": $commit}' \
+             benchmark_results/parquet.json > benchmark_results/parquet_final.json
+          jq --arg timestamp "$(date -Iminutes)" --arg commit "${{ github.sha }}" \
+             '. + {"timestamp": $timestamp, "commit": $commit}' \
+             benchmark_results/df_default.json > benchmark_results/df_default_final.json
 
-      - name: Setup benchmark branch
-        if: github.ref == 'refs/heads/main'
-        run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          
-          # Try to fetch the benchmark branch
-          git fetch origin benchmark:benchmark 2>/dev/null || true
-          git checkout benchmark 2>/dev/null || git checkout -b benchmark
-
-      - name: Save benchmark results to branch
-        if: github.ref == 'refs/heads/main'
-        run: |
-          mkdir -p benchmarks
-          cp benchmark_results/final.json "benchmarks/${{ github.sha }}.json"
-          git add "benchmarks/${{ github.sha }}.json"
-          git commit -m "Add benchmark results for ${{ github.sha }}" || echo "No changes to commit"
-          git push origin benchmark || git push --set-upstream origin benchmark
-
-      - name: Compare with main branch baseline
+      - name: Compare LiquidCache vs DataFusion (same runner)
         id: compare
         run: |
-          # Fetch the benchmark branch to access existing benchmarks for comparison
-          git fetch origin benchmark:benchmark 2>/dev/null || true
-          
-          # Save the comparison script before switching branches
-          cp .github/compare_benchmarks.py /tmp/compare_benchmarks.py
-          
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            # For PRs, compare against the latest main branch commit benchmark
-            main_commit=$(git log origin/main --format="%H" -n 1)
-            baseline_benchmark="benchmarks/${main_commit}.json"
-            
-            # Switch to benchmark branch to check for baseline
-            git checkout benchmark 2>/dev/null || echo "Benchmark branch not found"
-            
-            if [ -f "$baseline_benchmark" ]; then
-              echo "Comparing with main branch commit: ${main_commit:0:8}"
-              
-              # Use the external Python script for comparison (from saved copy)
-              python3 /tmp/compare_benchmarks.py \
-                "benchmark_results/final.json" \
-                "$baseline_benchmark" \
-                --output comparison.md
-              
-              echo "COMPARISON_AVAILABLE=true" >> $GITHUB_OUTPUT
-            else
-              echo "No baseline benchmark found for main branch commit: ${main_commit:0:8}"
-              
-              # Find the most recent benchmark as fallback
-              if ls benchmarks/*.json >/dev/null 2>&1; then
-                baseline_benchmark=$(ls -t benchmarks/*.json | head -n 1)
-                baseline_commit=$(basename "$baseline_benchmark" .json)
-                
-                echo "Using most recent benchmark as baseline: ${baseline_commit:0:8}"
-                
-                # Use the external Python script for comparison (from saved copy)
-                python3 /tmp/compare_benchmarks.py \
-                  "benchmark_results/final.json" \
-                  "$baseline_benchmark" \
-                  --output comparison.md
-                
-                echo "COMPARISON_AVAILABLE=true" >> $GITHUB_OUTPUT
-              else
-                cat > comparison.md << 'EOF'
-          ## 📊 Benchmark Comparison
-          
-          **No baseline found** - This appears to be the first benchmark run.
-          
-          The benchmark results have been saved and will be used as a baseline for future comparisons.
-          
-          ✅ Benchmark completed successfully
-          EOF
-                echo "COMPARISON_AVAILABLE=true" >> $GITHUB_OUTPUT
-              fi
-            fi
-          else
-            # For main branch runs, just indicate successful completion
-            cat > comparison.md << 'EOF'
-          ## 📊 Benchmark Completed
-          
-          ✅ Benchmark completed successfully and results saved to benchmark branch.
-          
-          This baseline will be used for future PR comparisons.
-          EOF
-            echo "COMPARISON_AVAILABLE=true" >> $GITHUB_OUTPUT
-          fi
+          python3 .github/compare_benchmarks.py \
+            benchmark_results/liquid_final.json \
+            benchmark_results/df_default_final.json \
+            --output comparison.md
+          echo "COMPARISON_AVAILABLE=true" >> $GITHUB_OUTPUT
 
       - name: Comment PR with benchmark results
         if: steps.compare.outputs.COMPARISON_AVAILABLE == 'true' && github.event_name == 'pull_request'
