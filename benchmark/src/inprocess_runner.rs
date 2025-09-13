@@ -20,6 +20,8 @@ use sysinfo::Disks;
 #[derive(Clone, Debug, Default, Copy, PartialEq, Eq, Serialize)]
 pub enum InProcessBenchmarkMode {
     Parquet,
+    /// Plain DataFusion with default SessionConfig (no tweaks)
+    DataFusionDefault,
     Arrow,
     #[default]
     Liquid,
@@ -32,12 +34,13 @@ impl std::str::FromStr for InProcessBenchmarkMode {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s {
             "parquet" => InProcessBenchmarkMode::Parquet,
+            "datafusion-default" | "datafusion" => InProcessBenchmarkMode::DataFusionDefault,
             "arrow" => InProcessBenchmarkMode::Arrow,
             "liquid" => InProcessBenchmarkMode::Liquid,
             "liquid-eager-transcode" => InProcessBenchmarkMode::LiquidEagerTranscode,
             _ => {
                 return Err(format!(
-                    "Invalid in-process benchmark mode: {s}, must be one of: parquet, arrow, liquid, liquid-eager-transcode"
+                    "Invalid in-process benchmark mode: {s}, must be one of: parquet, datafusion-default, arrow, liquid, liquid-eager-transcode"
                 ));
             }
         })
@@ -113,16 +116,18 @@ impl InProcessBenchmarkRunner {
         manifest: &BenchmarkManifest,
     ) -> Result<(Arc<SessionContext>, Option<LiquidCacheRef>)> {
         let mut session_config = SessionConfig::from_env()?;
-
-        session_config
-            .options_mut()
-            .execution
-            .parquet
-            .pushdown_filters = true;
-        if let Some(partitions) = self.partitions {
-            session_config.options_mut().execution.target_partitions = partitions;
+        // Apply some helpful defaults for non-DataFusionDefault modes
+        if self.bench_mode != InProcessBenchmarkMode::DataFusionDefault {
+            session_config
+                .options_mut()
+                .execution
+                .parquet
+                .pushdown_filters = true;
+            if let Some(partitions) = self.partitions {
+                session_config.options_mut().execution.target_partitions = partitions;
+            }
+            session_config.options_mut().execution.batch_size = 8192 * 2;
         }
-        session_config.options_mut().execution.batch_size = 8192 * 2;
 
         let cache_size = self
             .max_cache_mb
@@ -144,6 +149,10 @@ impl InProcessBenchmarkRunner {
                     .parquet
                     .pushdown_filters = true;
                 (SessionContext::new_with_config(session_config), None)
+            }
+            InProcessBenchmarkMode::DataFusionDefault => {
+                // Use DataFusion's default SessionConfig without any custom tweaks
+                (SessionContext::new_with_config(SessionConfig::new()), None)
             }
             InProcessBenchmarkMode::Arrow => {
                 let v = LiquidCacheLocalBuilder::new()

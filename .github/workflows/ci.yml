@@ -213,6 +213,14 @@ jobs:
             --iteration 5 \
             --bench-mode parquet
 
+      - name: Run DataFusion benchmark (default config)
+        run: |
+          env RUST_LOG=info cargo run --release --bin in_process -- \
+            --manifest benchmark/clickbench/benchmark_manifest.json \
+            --output benchmark_results/df_default.json \
+            --iteration 5 \
+            --bench-mode datafusion-default
+
       - name: Annotate results with commit/timestamp
         run: |
           jq --arg timestamp "$(date -Iminutes)" --arg commit "${{ github.sha }}" \
@@ -221,13 +229,16 @@ jobs:
           jq --arg timestamp "$(date -Iminutes)" --arg commit "${{ github.sha }}" \
              '. + {"timestamp": $timestamp, "commit": $commit}' \
              benchmark_results/parquet.json > benchmark_results/parquet_final.json
+          jq --arg timestamp "$(date -Iminutes)" --arg commit "${{ github.sha }}" \
+             '. + {"timestamp": $timestamp, "commit": $commit}' \
+             benchmark_results/df_default.json > benchmark_results/df_default_final.json
 
       - name: Compare LiquidCache vs DataFusion (same runner)
         id: compare
         run: |
           python3 .github/compare_benchmarks.py \
             benchmark_results/liquid_final.json \
-            benchmark_results/parquet_final.json \
+            benchmark_results/df_default_final.json \
             --output comparison.md
           echo "COMPARISON_AVAILABLE=true" >> $GITHUB_OUTPUT
 
