@@ -162,6 +162,17 @@ def compare_benchmarks(
             }
         )
 
+    # Determine modes for clearer labeling
+    def extract_mode(d: Dict[str, Any]) -> str:
+        try:
+            # in_process encodes args.bench_mode as enum variant string
+            return d.get("args", {}).get("bench_mode", "unknown")
+        except Exception:
+            return "unknown"
+
+    current_mode = extract_mode(current)
+    baseline_mode = extract_mode(baseline)
+
     # Generate markdown report
     lines = []
     lines.append("## 📊 Benchmark Comparison")
@@ -171,7 +182,7 @@ def compare_benchmarks(
     current_commit = current.get("commit", "unknown")[:8]
     baseline_commit = baseline.get("commit", "unknown")[:8]
     lines.append(
-        f"**Current:** `{current_commit}` vs **Baseline:** `{baseline_commit}`"
+        f"**Current:** `{current_commit}` ({current_mode}) vs **Baseline:** `{baseline_commit}` ({baseline_mode})"
     )
     lines.append("")
 
@@ -261,12 +272,8 @@ def compare_benchmarks(
         lines.append("✅ No significant performance regressions detected")
 
     lines.append("")
-    lines.append(
-        f"*Benchmark ran {len(curr_results)} queries with liquid-eager-transcode mode*"
-    )
-    lines.append(
-        "*Cold Time: First iteration, Warm Time: Average of remaining iterations*"
-    )
+    lines.append(f"*Compared {current_mode} vs {baseline_mode} on the same runner*")
+    lines.append("*Cold Time: first iteration; Warm Time: average of remaining iterations.*")
 
     return "\n".join(lines)
 
