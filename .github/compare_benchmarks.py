@@ -37,13 +37,13 @@ def format_memory(bytes_val: int) -> str:
 def get_cold_metrics(iteration_results: List[Dict[str, Any]]) -> Dict[str, float]:
     """Get metrics from the first (cold) iteration."""
     if not iteration_results:
-        return {"time_millis": 0, "cache_cpu_time": 0, "liquid_cache_usage": 0}
+        return {"time_millis": 0, "cache_cpu_time": 0, "cache_memory_usage": 0}
     
     first_result = iteration_results[0]
     return {
         "time_millis": first_result["time_millis"],
         "cache_cpu_time": first_result.get("cache_cpu_time", 0),
-        "liquid_cache_usage": first_result["liquid_cache_usage"],
+        "cache_memory_usage": first_result.get("cache_memory_usage", 0),
     }
 
 
@@ -51,16 +51,16 @@ def get_warm_metrics(iteration_results: List[Dict[str, Any]]) -> Dict[str, float
     """Calculate average metrics from warm iterations (excluding first)."""
     warm_results = iteration_results[1:] if len(iteration_results) > 1 else iteration_results
     if not warm_results:
-        return {"time_millis": 0, "cache_cpu_time": 0, "liquid_cache_usage": 0}
+        return {"time_millis": 0, "cache_cpu_time": 0, "cache_memory_usage": 0}
 
     avg_time = sum(r["time_millis"] for r in warm_results) / len(warm_results)
     avg_cpu_time = sum(r.get("cache_cpu_time", 0) for r in warm_results) / len(warm_results)
-    avg_memory = sum(r["liquid_cache_usage"] for r in warm_results) / len(warm_results)
+    avg_memory = sum(r.get("cache_memory_usage", 0) for r in warm_results) / len(warm_results)
     
     return {
         "time_millis": avg_time, 
         "cache_cpu_time": avg_cpu_time,
-        "liquid_cache_usage": avg_memory
+        "cache_memory_usage": avg_memory
     }
 
 
@@ -138,7 +138,7 @@ def compare_benchmarks(
         cold_time_change = calculate_change(baseline_cold["time_millis"], curr_cold["time_millis"])
         warm_time_change = calculate_change(baseline_warm["time_millis"], curr_warm["time_millis"])
         cpu_time_change = calculate_change(baseline_warm["cache_cpu_time"], curr_warm["cache_cpu_time"])
-        memory_change = calculate_change(baseline_warm["liquid_cache_usage"], curr_warm["liquid_cache_usage"])
+        memory_change = calculate_change(baseline_warm["cache_memory_usage"], curr_warm["cache_memory_usage"])
 
         comparison.append(
             {
@@ -152,8 +152,8 @@ def compare_benchmarks(
                 "curr_cpu_time": curr_warm["cache_cpu_time"],
                 "baseline_cpu_time": baseline_warm["cache_cpu_time"],
                 "cpu_time_change": cpu_time_change,
-                "curr_memory": curr_warm["liquid_cache_usage"],
-                "baseline_memory": baseline_warm["liquid_cache_usage"],
+                "curr_memory": curr_warm["cache_memory_usage"],
+                "baseline_memory": baseline_warm["cache_memory_usage"],
                 "memory_change": memory_change,
                 "cold_time_significant": is_significant_change(cold_time_change, threshold),
                 "warm_time_significant": is_significant_change(warm_time_change, threshold),
@@ -230,50 +230,30 @@ def compare_benchmarks(
             f"{memory_str} | {memory_change_str} |"
         )
 
-    # Summary
-    significant_changes = [
-        c for c in comparison 
-        if c["cold_time_significant"] or c["warm_time_significant"] 
-        or c["cpu_time_significant"] or c["memory_significant"]
-    ]
+    # Summary focused on LiquidCache being slower than DataFusion (warm time)
+    slower_warm = [c for c in comparison if c["warm_time_change"] > 0]
     lines.append("")
-    if significant_changes:
-        lines.append(
-            f"**⚠️ {len(significant_changes)} queries have significant performance changes (≥{threshold}%)**"
+    if slower_warm:
+        lines.append(f"**⚠️ LiquidCache is slower on {len(slower_warm)} queries (warm)**")
+        lines.append("")
+        # Sort by warm slowdown descending
+        slower_warm_sorted = sorted(
+            slower_warm, key=lambda x: x["warm_time_change"], reverse=True
         )
-
-        # List the most significant changes
-        most_significant = sorted(
-            significant_changes,
-            key=lambda x: max(
-                abs(x["cold_time_change"]), 
-                abs(x["warm_time_change"]),
-                abs(x["cpu_time_change"]), 
-                abs(x["memory_change"])
-            ),
-            reverse=True,
-        )[:3]
-
-        if most_significant:
-            lines.append("")
-            lines.append("**Most significant changes:**")
-            for change in most_significant:
-                change_desc = []
-                if change["cold_time_significant"]:
-                    change_desc.append(f"cold time {change['cold_time_change']:+.1f}%")
-                if change["warm_time_significant"]:
-                    change_desc.append(f"warm time {change['warm_time_change']:+.1f}%")
-                if change["cpu_time_significant"]:
-                    change_desc.append(f"CPU time {change['cpu_time_change']:+.1f}%")
-                if change["memory_significant"]:
-                    change_desc.append(f"memory {change['memory_change']:+.1f}%")
-                lines.append(f"- Q{change['query']}: {', '.join(change_desc)}")
+        for c in slower_warm_sorted:
+            curr = c["curr_warm_time"]; base = c["baseline_warm_time"]
+            pct = calculate_change(base, curr)
+            lines.append(
+                f"- Q{c['query']}: warm {pct:+.1f}% "
+                f"({format_time(curr)} vs {format_time(base)})"
+            )
     else:
-        lines.append("✅ No significant performance regressions detected")
+        lines.append("✅ LiquidCache is faster or equal on warm time for all queries")
 
     lines.append("")
     lines.append(f"*Compared {current_mode} vs {baseline_mode} on the same runner*")
     lines.append("*Cold Time: first iteration; Warm Time: average of remaining iterations.*")
+    lines.append("*Memory = cache_memory_usage (LiquidCache memory + scanned bytes; DataFusion shows scanned bytes).*")
 
     return "\n".join(lines)
 
