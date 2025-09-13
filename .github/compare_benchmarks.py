@@ -79,14 +79,17 @@ def format_metric_with_baseline(current: float, baseline: float, formatter_func)
     return f"{formatter_func(current)} *({formatter_func(baseline)})*"
 
 
-def format_change_percentage(current: float, baseline: float) -> str:
-    """Format percentage change with bold for significant changes."""
+def format_change_percentage(current: float, baseline: float, highlight_mode: str = "none") -> str:
+    """Format percentage change and optionally highlight when slower.
+
+    highlight_mode:
+      - "none": never bold
+      - "slower_only": bold only if current > baseline (i.e., slower) and ≥15%
+    """
     change_pct = calculate_change(baseline, current)
-    
-    if abs(change_pct) >= 15.0:  # Significant change threshold
+    if highlight_mode == "slower_only" and change_pct > 0 and abs(change_pct) >= 15.0:
         return f"**{change_pct:+.1f}%**"
-    else:
-        return f"{change_pct:+.1f}%"
+    return f"{change_pct:+.1f}%"
 
 
 def load_benchmark_data(file_path: str) -> Dict[str, Any]:
@@ -192,21 +195,21 @@ def compare_benchmarks(
             comp['curr_cold_time'], comp['baseline_cold_time'], format_time
         )
         cold_change_str = format_change_percentage(
-            comp['curr_cold_time'], comp['baseline_cold_time']
+            comp['curr_cold_time'], comp['baseline_cold_time'], highlight_mode="none"
         )
         
         warm_time_str = format_metric_with_baseline(
             comp['curr_warm_time'], comp['baseline_warm_time'], format_time
         )
         warm_change_str = format_change_percentage(
-            comp['curr_warm_time'], comp['baseline_warm_time']
+            comp['curr_warm_time'], comp['baseline_warm_time'], highlight_mode="slower_only"
         )
         
         cpu_time_str = format_metric_with_baseline(
             comp['curr_cpu_time'], comp['baseline_cpu_time'], format_time
         )
         cpu_change_str = format_change_percentage(
-            comp['curr_cpu_time'], comp['baseline_cpu_time']
+            comp['curr_cpu_time'], comp['baseline_cpu_time'], highlight_mode="none"
         )
         
         lines.append(
