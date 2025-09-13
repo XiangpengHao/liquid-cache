@@ -1,7 +1,7 @@
 use clap::Parser;
 use datafusion::arrow::array::RecordBatch;
-use datafusion::datasource::source::DataSourceExec;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
+use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::collect;
 use datafusion::{error::Result, physical_plan::ExecutionPlan};
