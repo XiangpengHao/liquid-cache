@@ -287,7 +287,7 @@ impl SievePolicy {
                 None => state.tail = node.prev,
             }
             if state.hand == Some(node_ptr) {
-                state.hand = node.prev
+                state.hand = node.prev;
             }
             node.prev = None;
             node.next = None;
@@ -351,15 +351,16 @@ impl CachePolicy for SievePolicy {
         state.map.insert(*entry_id, node_ptr);
         unsafe {
             self.push_front(&mut state, node_ptr);
-        }
+        };
         state.total_size += self.entry_size(entry_id);
     }
+
     fn notify_access(&self, entry_id: &EntryID) {
         let state = self.state.lock().unwrap();
         if let Some(mut node_ptr) = state.map.get(entry_id).copied() {
             unsafe {
                 node_ptr.as_mut().visited = true;
-            }
+            };
         }
     }
 }
@@ -797,9 +798,11 @@ mod test {
 
     #[test]
     fn test_sieve_with_sizeof_closure_defined() {
-        let policy = SievePolicy::new(Some(Arc::new(|id: &EntryID| {
-            return if id.gt(&entry(10)) { 100 } else { 1 };
-        })));
+        let policy = SievePolicy::new(Some(Arc::new(
+            |id: &EntryID| {
+                if id.gt(&entry(10)) { 100 } else { 1 }
+            },
+        )));
 
         let e1 = entry(1); // size 1
         let e2 = entry(2); // size 1
