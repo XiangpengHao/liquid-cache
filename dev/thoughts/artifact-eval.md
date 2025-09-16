@@ -26,7 +26,7 @@ env RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS='-C target-cpu=native' cargo run --
 
 3. Run client with:
 ```bash
-env RUST_LOG=info,clickbench_client=debug RUST_BACKTRACE=1 RUSTFLAGS='-C target-cpu=native' cargo run --release --bin clickbench_client -- --query-path benchmark/query_select.sql --file benchmark/data/hits.parquet --bench-mode liquid-eager-transcode --server http://127.0.0.1:5001 --iteration 5 --output benchmark/data/liquid_eager_transcode.json --reset-cache
+env RUST_LOG=info,clickbench_client=debug RUST_BACKTRACE=1 RUSTFLAGS='-C target-cpu=native' cargo run --release --bin clickbench_client -- --manifest benchmark/clickbench/manifest.json --bench-mode liquid-eager-transcode --server http://127.0.0.1:5001 --iteration 5 --output benchmark/data/liquid_eager_transcode.json --reset-cache
 ```
 
 
@@ -48,12 +48,17 @@ export AWS_REGION=us-west-2
 
 aws s3 cp benchmark/clickbench/data/hits.parquet s3://liquid-cache-test-s3express--usw2-az1--x-s3/hits.parquet --region us-west-2
 ```
-Then you can run benchmark by setting the `--file` to the S3 url. 
+Then you can run the benchmark by updating the manifest to point to that S3 URL:
 
 ```bash
-env RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS='-C target
--cpu=native' cargo run --release --bin clickbench_client -- --query-path benchmark/click
-bench/queries/queries.sql --file s3://liquid-cache-test-s3express--usw2-az1--x-s3/hits.parquet --iteration 5 --query 20 --output benchmark/clickbench/data/results/liquid_blocking.minio.json
+sed 's|"benchmark/clickbench/data/hits.parquet"|"s3://liquid-cache-test-s3express--usw2-az1--x-s3/hits.parquet"|' \
+  benchmark/clickbench/manifest.json > benchmark/clickbench/manifest.s3.json
+
+env RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS='-C target-cpu=native' \
+  cargo run --release --bin clickbench_client -- \
+  --manifest benchmark/clickbench/manifest.s3.json \
+  --iteration 5 --query 20 \
+  --output benchmark/clickbench/data/results/liquid_blocking.minio.json
 ```
 
 For S3-express, you additionally need to configure bucket policy (in web ui) to allow create sessions.
@@ -93,4 +98,4 @@ export AWS_SECRET_ACCESS_KEY=minioadmin
 aws s3 cp benchmark/clickbench/data/hits.parquet s3://liquid-cache-minio/hits.parquet --endpoint-url http://amd182.utah.cloudlab.us:9000
 ```
 
-Then you can run the benchmark by passing the `--file` to the minio bucket url.
+Then you can run the benchmark by updating the manifest table path to the MinIO bucket URL and passing it via `--manifest`.
