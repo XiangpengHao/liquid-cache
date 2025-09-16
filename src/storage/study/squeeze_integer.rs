@@ -71,7 +71,7 @@ impl Stats {
     }
 }
 
-// Hardcoded representative integer filters based on benchmark/clickbench/queries/queries.sql
+// Hardcoded representative integer filters based on ClickBench queries
 fn representative_integer_filters() -> Vec<FilterCase> {
     use datafusion::logical_expr::Operator as Op;
     vec![
@@ -156,7 +156,7 @@ async fn main() {
         .await
         .expect("register parquet");
 
-    // Hardcoded representative integer filters inspired by ClickBench queries.sql
+    // Hardcoded representative integer filters inspired by ClickBench queries
     let cases = representative_integer_filters();
 
     println!("Squeeze Integer Study over {} case(s)", cases.len());
