@@ -554,6 +554,7 @@ impl CacheStorage {
             .expect("failed to insert");
     }
 
+    #[allow(dead_code)]
     async fn apply_advice_inner(&self, to_squeeze: EntryID) {
         let Some(to_squeeze_batch) = self.index.get(&to_squeeze) else {
             return;
@@ -590,6 +591,7 @@ impl CacheStorage {
         self.budget.add_used_disk_bytes(disk_usage);
     }
 
+    #[allow(dead_code)]
     async fn write_to_disk(&self, path: impl AsRef<Path>, bytes: &[u8]) {
         #[cfg(not(target_os = "linux"))]
         {
