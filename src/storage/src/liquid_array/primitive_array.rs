@@ -142,53 +142,124 @@ where
     }
 
     /// Create a Liquid primitive array from an Arrow primitive array.
-    pub fn from_arrow_array(arrow_array: PrimitiveArray<T>) -> LiquidPrimitiveArray<T> {
-        let min = match arrow::compute::kernels::aggregate::min(&arrow_array) {
-            Some(v) => v,
-            None => {
-                // entire array is null
+    pub fn from_arrow_array(
+        arrow_array: PrimitiveArray<T>,
+        encoding: u8,
+    ) -> LiquidPrimitiveArray<T> {
+        if encoding == 0 {
+            let min = match arrow::compute::kernels::aggregate::min(&arrow_array) {
+                Some(v) => v,
+                None => {
+                    // entire array is null
+                    return Self {
+                        bit_packed: BitPackedArray::new_null_array(arrow_array.len()),
+                        reference_value: T::Native::ZERO,
+                    };
+                }
+            };
+            let max = arrow::compute::kernels::aggregate::max(&arrow_array).unwrap();
+            // FoR Encoding
+            // be careful of overflow:
+            // Want: 127i8 - (-128i8) -> 255u64,
+            // but we get -1i8
+            // (-1i8) as u8 as u64 -> 255u64
+            let sub = max.sub_wrapping(min) as <T as ArrowPrimitiveType>::Native;
+            let sub: <<T as LiquidPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native =
+                sub.as_();
+            let bit_width = get_bit_width(sub.as_());
+
+            let (_data_type, values, nulls) = arrow_array.clone().into_parts();
+            let values = if min != T::Native::ZERO {
+                ScalarBuffer::from_iter(values.iter().map(|v| {
+                    let k: <<T as LiquidPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native =
+                        v.sub_wrapping(min).as_();
+                    k
+                }))
+            } else {
+                #[allow(clippy::missing_transmute_annotations)]
+                unsafe {
+                    std::mem::transmute(values)
+                }
+            };
+
+            let unsigned_array =
+                PrimitiveArray::<<T as LiquidPrimitiveType>::UnSignedType>::new(values, nulls);
+
+            let bit_packed_array = BitPackedArray::from_primitive(unsigned_array, bit_width);
+
+            Self {
+                bit_packed: bit_packed_array,
+                reference_value: min,
+            }
+        } else {
+            // Delta Encoding
+            let len = arrow_array.len();
+            // check if entire array is already null
+            if arrow_array.null_count() == len {
                 return Self {
-                    bit_packed: BitPackedArray::new_null_array(arrow_array.len()),
+                    bit_packed: BitPackedArray::new_null_array(len),
                     reference_value: T::Native::ZERO,
-                    squeeze_policy: IntegerSqueezePolicy::default(),
                 };
             }
-        };
-        let max = arrow::compute::kernels::aggregate::max(&arrow_array).unwrap();
 
-        // be careful of overflow:
-        // Want: 127i8 - (-128i8) -> 255u64,
-        // but we get -1i8
-        // (-1i8) as u8 as u64 -> 255u64
-        let sub = max.sub_wrapping(min) as <T as ArrowPrimitiveType>::Native;
-        let sub: <<T as LiquidPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native =
-            sub.as_();
-        let bit_width = get_bit_width(sub.as_());
+            let (_dt, values, nulls) = arrow_array.clone().into_parts();
+            let vals = values.as_slice();
 
-        let (_data_type, values, nulls) = arrow_array.clone().into_parts();
-        let values = if min != T::Native::ZERO {
-            ScalarBuffer::from_iter(values.iter().map(|v| {
-                let k: <<T as LiquidPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native =
-                    v.sub_wrapping(min).as_();
-                k
-            }))
-        } else {
-            #[allow(clippy::missing_transmute_annotations)]
-            unsafe {
-                std::mem::transmute(values)
+            let mut out: Vec<u32> = Vec::with_capacity(len);
+            let mut max_value: u64 = 0;
+            let mut anchor: u32 = 0;
+
+            if nulls.is_none() {
+                // No nulls: first value is anchor, remainder are deltas with their previous values
+                anchor = vals[0];
+                let mut prev: u32 = anchor;
+                out.push(0); // anchor will have a differnce of 0
+                for i in 1..len {
+                    let cur = vals[i];
+                    let d: i64 = (cur as i64) - (prev as i64);
+                    let u: u64 = ((d << 1) ^ (d >> 63)) as u64; // zigzag encoding
+                    if u > max_value { max_value = u; }
+                    out.push(u as u32);
+                    prev = cur;
+                }
+            } else {
+                // Nulls present: write 0 for nulls; prev will the last prev non-null value
+                let nb = nulls.as_ref().unwrap();
+                let mut have_prev = false;
+                let mut prev: u32 = 0;
+
+                for i in 0..len {
+                    if !nb.is_valid(i) {
+                        out.push(0);
+                        continue;
+                    }
+                    let cur = vals[i];
+                    if !have_prev {
+                        anchor = cur;
+                        prev = cur;
+                        have_prev = true;
+                        out.push(0);
+                        continue;
+                    }
+                    let d: i64 = (cur as i64) - (prev as i64);
+                    let u: u64 = ((d << 1) ^ (d >> 63)) as u64; // zigzag encoding
+                    if u > max_value { max_value = u; }
+                    out.push(u as u32);
+                    prev = cur;
+                }
             }
-        };
 
-        let unsigned_array =
-            PrimitiveArray::<<T as LiquidPrimitiveType>::UnSignedType>::new(values, nulls);
+            let bit_width: u8 = get_bit_width(max_value);
+            let values = arrow_buffer::ScalarBuffer::from_iter(out.into_iter());
+            let unsigned_array =arrow_array::PrimitiveArray::<arrow_array::types::UInt32Type>::new(values, nulls);
+            let bit_packed_array = BitPackedArray::from_primitive(unsigned_array, bit_width);
 
-        let bit_packed_array = BitPackedArray::from_primitive(unsigned_array, bit_width);
-
-        Self {
-            bit_packed: bit_packed_array,
-            reference_value: min,
-            squeeze_policy: IntegerSqueezePolicy::default(),
-        }
+            return Self {
+                bit_packed: bit_packed_array,
+                reference_value: anchor,
+            };
+        
+    }
     }
 
     /// Get the current squeeze policy for this array.
