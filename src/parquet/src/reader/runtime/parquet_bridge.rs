@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use arrow_schema::{DataType, Field, SchemaRef};
 use parquet::arrow::array_reader::ArrayReader;
+use parquet::arrow::arrow_reader::metrics::ArrowReaderMetrics;
 use parquet::arrow::arrow_reader::{ArrowReaderBuilder, RowFilter, RowSelection, RowSelector};
 use parquet::file::metadata::ParquetMetaData;
 use parquet::schema::types::TypePtr;
@@ -173,6 +174,10 @@ pub struct ArrowReaderBuilderBridge {
     pub(crate) limit: Option<usize>,
 
     pub(crate) offset: Option<usize>,
+
+    pub(crate) metrics: ArrowReaderMetrics,
+
+    pub(crate) max_predicate_cache_size: usize,
 }
 
 impl ArrowReaderBuilderBridge {

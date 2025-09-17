@@ -29,19 +29,19 @@ liquid-cache-parquet = { path = "src/parquet", version = "0.1.8" }
 liquid-cache-common = { path = "src/common", version = "0.1.8" }
 liquid-cache-storage = { path = "src/storage", version = "0.1.8" }
 liquid-cache-local = { path = "src/local", version = "0.1.8" }
-arrow = { version = "=55.1.0", default-features = false, features = [
+arrow = { version = "56.1.0", default-features = false, features = [
 	"prettyprint",
 ] }
-arrow-flight = { version = "=55.1.0", features = ["flight-sql-experimental"] }
-arrow-schema = { version = "=55.1.0", features = ["serde"] }
-parquet = { version = "=55.1.0", features = ["async", "experimental"] }
-datafusion = { version = "47.0.0" }
-datafusion-proto = { version = "47.0.0" }
+arrow-flight = { version = "56.1.0", features = ["flight-sql-experimental"] }
+arrow-schema = { version = "56.1.0", features = ["serde"] }
+parquet = { version = "56.1.0", features = ["async", "experimental"] }
+datafusion = { version = "50.0.0" }
+datafusion-proto = { version = "50.0.0" }
 async-trait = "0.1.89"
 futures = { version = "0.3.31", default-features = false, features = ["std"] }
 tokio = { version = "1.47.1", features = ["rt-multi-thread"] }
 log = "0.4.28"
-tonic = { version = "0.12" }
+tonic = { version = "0.13" }
 url = "2.5.7"
 bytes = { version = "1.10.1", default-features = false }
 ahash = "0.8.12"
