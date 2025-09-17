@@ -7,10 +7,11 @@ use crate::{
         runtime::ArrowReaderBuilderBridge,
     },
 };
-use arrow_schema::{ArrowError, SchemaRef};
+use arrow_schema::SchemaRef;
 use datafusion::{
     common::exec_err,
     datasource::{
+        listing::PartitionedFile,
         physical_plan::{
             FileMeta, FileOpenFuture, FileOpener, ParquetFileMetrics,
             parquet::{PagePruningAccessPlanFilter, ParquetAccessPlan},
@@ -258,7 +259,7 @@ impl FileOpener for LiquidParquetOpener {
             let stream = liquid_builder.build(liquid_cache)?;
 
             let adapted = stream
-                .map_err(|e| ArrowError::ExternalError(Box::new(e)))
+                .map_err(|e| DataFusionError::External(Box::new(e)))
                 .map(move |batch| {
                     batch.and_then(|batch| schema_mapping.map_batch(batch).map_err(Into::into))
                 });
