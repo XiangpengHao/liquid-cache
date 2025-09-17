@@ -264,9 +264,7 @@ impl FileOpener for LiquidParquetOpener {
 
             let adapted = stream
                 .map_err(|e| DataFusionError::External(Box::new(e)))
-                .map(move |batch| {
-                    batch.and_then(|batch| schema_mapping.map_batch(batch).map_err(Into::into))
-                });
+                .map(move |batch| batch.and_then(|batch| schema_mapping.map_batch(batch)));
 
             Ok(adapted.boxed())
         }))
