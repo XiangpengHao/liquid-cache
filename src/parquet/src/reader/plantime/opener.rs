@@ -84,7 +84,11 @@ impl LiquidParquetOpener {
 }
 
 impl FileOpener for LiquidParquetOpener {
-    fn open(&self, file_meta: FileMeta) -> Result<FileOpenFuture, DataFusionError> {
+    fn open(
+        &self,
+        file_meta: FileMeta,
+        _file: PartitionedFile,
+    ) -> Result<FileOpenFuture, DataFusionError> {
         let file_range = file_meta.range.clone();
         let extensions = file_meta.extensions.clone();
         let file_name = file_meta.location().to_string();

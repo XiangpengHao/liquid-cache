@@ -325,7 +325,7 @@ impl From<&Arc<dyn ExecutionPlan>> for ExecutionPlanWithStats {
 
         let mut column_statistics = Vec::new();
         for (i, cs) in plan
-            .statistics()
+            .partition_statistics(None)
             .unwrap()
             .column_statistics
             .iter()
@@ -378,8 +378,16 @@ impl From<&Arc<dyn ExecutionPlan>> for ExecutionPlanWithStats {
                 })
                 .collect(),
             statistics: Statistics {
-                num_rows: plan.statistics().unwrap().num_rows.to_string(),
-                total_byte_size: plan.statistics().unwrap().total_byte_size.to_string(),
+                num_rows: plan
+                    .partition_statistics(None)
+                    .unwrap()
+                    .num_rows
+                    .to_string(),
+                total_byte_size: plan
+                    .partition_statistics(None)
+                    .unwrap()
+                    .total_byte_size
+                    .to_string(),
                 column_statistics,
             },
             metrics: metric_values,
