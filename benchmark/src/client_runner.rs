@@ -59,7 +59,6 @@ impl BenchmarkRunner {
 
         setup_observability(
             benchmark.benchmark_name(),
-            opentelemetry::trace::SpanKind::Client,
             common.openobserve_auth.as_deref(),
         );
 

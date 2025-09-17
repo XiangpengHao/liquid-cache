@@ -129,11 +129,7 @@ impl TpchInProcessBenchmark {
 
 #[tokio::main]
 pub async fn main() -> Result<()> {
-    setup_observability(
-        "tpch-inprocess",
-        opentelemetry::trace::SpanKind::Client,
-        None,
-    );
+    setup_observability("tpch-inprocess", None);
     let benchmark = TpchInProcessBenchmark::parse();
     benchmark.run().await?;
     Ok(())

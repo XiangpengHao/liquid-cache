@@ -3,7 +3,6 @@ use logforth::append::opentelemetry::OpentelemetryLogBuilder;
 use logforth::filter::EnvFilter;
 use opentelemetry::InstrumentationScope;
 use opentelemetry::KeyValue;
-use opentelemetry::trace::SpanKind;
 use opentelemetry_otlp::LogExporter;
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_otlp::{SpanExporter, WithTonicConfig};
@@ -44,9 +43,7 @@ pub fn setup_observability(service_name: &str, auth: Option<&str>) {
                 .append(logforth::append::Stdout::default())
         })
         .dispatch(|d| {
-            let otl_appender = OpentelemetryLogBuilder::new(service_name, log_exporter)
-                .build()
-                .unwrap();
+            let otl_appender = OpentelemetryLogBuilder::new(service_name, log_exporter).build();
             d.filter(EnvFilter::from_default_env()).append(otl_appender)
         })
         .apply();
