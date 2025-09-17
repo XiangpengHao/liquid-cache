@@ -33,14 +33,14 @@ done
 
 ```bash
 cargo run --release --bin bench_server
-cargo run --release --bin clickbench_client -- --query-path benchmark/clickbench/queries/queries.sql --file benchmark/clickbench/data/hits.parquet
+cargo run --release --bin clickbench_client -- --manifest benchmark/clickbench/manifest.json
 ```
 
 #### Advanced
 
 ```bash
 env RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS='-C target-cpu=native' cargo run --release --bin bench_server -- --cache-mode liquid_eager_transcode
-env RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS='-C target-cpu=native' cargo run --release --bin clickbench_client -- --query-path benchmark/clickbench/queries/queries.sql --file benchmark/clickbench/data/hits.parquet --query 42
+env RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS='-C target-cpu=native' cargo run --release --bin clickbench_client -- --manifest benchmark/clickbench/manifest.json --query 42
 ```
 
 ## TPCH
@@ -134,7 +134,7 @@ You can use [`parquet-viewer`](https://parquet-viewer.xiangpeng.systems) to view
 
 To collect cache trace, simply add `--cache-trace-dir benchmark/data/cache_trace` to the client command, for example:
 ```bash
-env RUST_LOG=info cargo run --bin clickbench_client --release -- --query-path benchmark/clickbench/queries/queries.sql --file benchmark/clickbench/data/hits.parquet --query 20 --iteration 2 --partitions 8 --cache-trace-dir benchmark/data/
+env RUST_LOG=info cargo run --bin clickbench_client --release -- --manifest benchmark/clickbench/manifest.json --query 20 --iteration 2 --partitions 8 --cache-trace-dir benchmark/data/
 ```
 It will generate a parquet file that contains the cache trace for each query that the server executed.
 
