@@ -94,6 +94,23 @@ expression: displayable.tree_render().to_string()
 │       mode: Partial       │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
+│      RepartitionExec      │
+│    --------------------   │
+│ partition_count(in->out): │
+│           1 -> 8          │
+│                           │
+│    partitioning_scheme:   │
+│     RoundRobinBatch(8)    │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       ProjectionExec      │
+│    --------------------   │
+│    c_custkey: c_custkey   │
+│                           │
+│        o_orderkey:        │
+│         o_orderkey        │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
 │    CoalesceBatchesExec    │
 │    --------------------   │
 │     target_batch_size:    │
@@ -102,10 +119,10 @@ expression: displayable.tree_render().to_string()
 ┌─────────────┴─────────────┐
 │        HashJoinExec       │
 │    --------------------   │
-│      join_type: Left      │
+│      join_type: Right     │
 │                           ├──────────────┐
 │            on:            │              │
-│  (c_custkey = o_custkey)  │              │
+│  (o_custkey = c_custkey)  │              │
 └─────────────┬─────────────┘              │
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
 │   LiquidCacheClientExec   ││   LiquidCacheClientExec   │
@@ -115,21 +132,12 @@ expression: displayable.tree_render().to_string()
 │      object_stores=[]     ││      object_stores=[]     │
 └─────────────┬─────────────┘└─────────────┬─────────────┘
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-│       DataSourceExec      ││      RepartitionExec      │
+│       DataSourceExec      ││       DataSourceExec      │
 │    --------------------   ││    --------------------   │
-│          files: 1         ││ partition_count(in->out): │
-│      format: parquet      ││           1 -> 8          │
+│          files: 1         ││          files: 1         │
+│      format: parquet      ││      format: parquet      │
 │                           ││                           │
-│                           ││    partitioning_scheme:   │
-│                           ││     RoundRobinBatch(8)    │
-└───────────────────────────┘└─────────────┬─────────────┘
-                             ┌─────────────┴─────────────┐
-                             │       DataSourceExec      │
-                             │    --------------------   │
-                             │          files: 1         │
-                             │      format: parquet      │
-                             │                           │
-                             │         predicate:        │
-                             │    o_comment NOT LIKE     │
-                             │     %special%requests%    │
-                             └───────────────────────────┘
+│         predicate:        ││                           │
+│    o_comment NOT LIKE     ││                           │
+│     %special%requests%    ││                           │
+└───────────────────────────┘└───────────────────────────┘

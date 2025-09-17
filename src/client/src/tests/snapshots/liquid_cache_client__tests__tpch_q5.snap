@@ -26,7 +26,11 @@ expression: displayable.tree_render().to_string()
 ┌─────────────┴─────────────┐
 │       AggregateExec       │
 │    --------------------   │
-│            aggr           │
+│           aggr:           │
+│        sum(lineitem       │
+│        .l_extendedp       │
+│ rice * Int64(1) - lineitem│
+│        .l_discount)       │
 │                           │
 │      group_by: n_name     │
 │                           │
@@ -51,7 +55,11 @@ expression: displayable.tree_render().to_string()
 ┌─────────────┴─────────────┐
 │       AggregateExec       │
 │    --------------------   │
-│            aggr           │
+│           aggr:           │
+│        sum(lineitem       │
+│        .l_extendedp       │
+│ rice * Int64(1) - lineitem│
+│        .l_discount)       │
 │                           │
 │      group_by: n_name     │
 │       mode: Partial       │
@@ -114,6 +122,7 @@ expression: displayable.tree_render().to_string()
                              │    --------------------   ││    --------------------   │
                              │          files: 1         ││     target_batch_size:    │
                              │      format: parquet      ││           16384           │
+                             │      predicate: true      ││                           │
                              └───────────────────────────┘└─────────────┬─────────────┘
                                                           ┌─────────────┴─────────────┐
                                                           │        HashJoinExec       │
@@ -137,6 +146,7 @@ expression: displayable.tree_render().to_string()
                                                           │    --------------------   ││    --------------------   │
                                                           │          files: 1         ││     target_batch_size:    │
                                                           │      format: parquet      ││           16384           │
+                                                          │      predicate: true      ││                           │
                                                           └───────────────────────────┘└─────────────┬─────────────┘
                                                                                        ┌─────────────┴─────────────┐
                                                                                        │        HashJoinExec       │
@@ -145,23 +155,26 @@ expression: displayable.tree_render().to_string()
                                                                                        │ (o_orderkey = l_orderkey) │                                           │
                                                                                        └─────────────┬─────────────┘                                           │
                                                                                        ┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
-                                                                                       │   CoalescePartitionsExec  │                             │   LiquidCacheClientExec   │
-                                                                                       │                           │                             │    --------------------   │
-                                                                                       │                           │                             │          server:          │
-                                                                                       │                           │                             │  http://localhost:50051,  │
-                                                                                       │                           │                             │      object_stores=[]     │
+                                                                                       │       ProjectionExec      │                             │   LiquidCacheClientExec   │
+                                                                                       │    --------------------   │                             │    --------------------   │
+                                                                                       │        c_nationkey:       │                             │          server:          │
+                                                                                       │        c_nationkey        │                             │  http://localhost:50051,  │
+                                                                                       │                           │                             │        mode=liquid,       │
+                                                                                       │        o_orderkey:        │                             │      object_stores=[]     │
+                                                                                       │         o_orderkey        │                             │                           │
                                                                                        └─────────────┬─────────────┘                             └─────────────┬─────────────┘
                                                                                        ┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
                                                                                        │    CoalesceBatchesExec    │                             │       DataSourceExec      │
                                                                                        │    --------------------   │                             │    --------------------   │
                                                                                        │     target_batch_size:    │                             │          files: 1         │
                                                                                        │           16384           │                             │      format: parquet      │
+                                                                                       │                           │                             │      predicate: true      │
                                                                                        └─────────────┬─────────────┘                             └───────────────────────────┘
                                                                                        ┌─────────────┴─────────────┐
                                                                                        │        HashJoinExec       │
                                                                                        │    --------------------   │
                                                                                        │            on:            ├──────────────┐
-                                                                                       │  (c_custkey = o_custkey)  │              │
+                                                                                       │  (o_custkey = c_custkey)  │              │
                                                                                        └─────────────┬─────────────┘              │
                                                                                        ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
                                                                                        │   LiquidCacheClientExec   ││   LiquidCacheClientExec   │
@@ -171,22 +184,13 @@ expression: displayable.tree_render().to_string()
                                                                                        │      object_stores=[]     ││      object_stores=[]     │
                                                                                        └─────────────┬─────────────┘└─────────────┬─────────────┘
                                                                                        ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-                                                                                       │       DataSourceExec      ││      RepartitionExec      │
+                                                                                       │       DataSourceExec      ││       DataSourceExec      │
                                                                                        │    --------------------   ││    --------------------   │
-                                                                                       │          files: 1         ││ partition_count(in->out): │
-                                                                                       │      format: parquet      ││           1 -> 8          │
-                                                                                       │                           ││                           │
-                                                                                       │                           ││    partitioning_scheme:   │
-                                                                                       │                           ││     RoundRobinBatch(8)    │
-                                                                                       └───────────────────────────┘└─────────────┬─────────────┘
-                                                                                                                    ┌─────────────┴─────────────┐
-                                                                                                                    │       DataSourceExec      │
-                                                                                                                    │    --------------------   │
-                                                                                                                    │          files: 1         │
-                                                                                                                    │      format: parquet      │
-                                                                                                                    │                           │
-                                                                                                                    │         predicate:        │
-                                                                                                                    │ o_orderdate >= 1994-01-01 │
-                                                                                                                    │   AND o_orderdate < 1995  │
-                                                                                                                    │           -01-01          │
-                                                                                                                    └───────────────────────────┘
+                                                                                       │          files: 1         ││          files: 1         │
+                                                                                       │      format: parquet      ││      format: parquet      │
+                                                                                       │                           ││      predicate: true      │
+                                                                                       │         predicate:        ││                           │
+                                                                                       │ o_orderdate >= 1994-01-01 ││                           │
+                                                                                       │   AND o_orderdate < 1995  ││                           │
+                                                                                       │           -01-01          ││                           │
+                                                                                       └───────────────────────────┘└───────────────────────────┘

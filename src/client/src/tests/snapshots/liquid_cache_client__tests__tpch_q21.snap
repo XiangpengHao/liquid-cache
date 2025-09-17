@@ -62,8 +62,11 @@ expression: displayable.tree_render().to_string()
 ┌─────────────┴─────────────┐
 │        HashJoinExec       │
 │    --------------------   │
-│    join_type: LeftAnti    │
+│          filter:          │
+│   l_suppkey != l_suppkey  │
 │                           ├──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│    join_type: LeftAnti    │                                                                                                                                  │
+│                           │                                                                                                                                  │
 │            on:            │                                                                                                                                  │
 │ (l_orderkey = l_orderkey) │                                                                                                                                  │
 └─────────────┬─────────────┘                                                                                                                                  │
@@ -77,11 +80,13 @@ expression: displayable.tree_render().to_string()
 ┌─────────────┴─────────────┐                                                                                                                    ┌─────────────┴─────────────┐
 │        HashJoinExec       │                                                                                                                    │      RepartitionExec      │
 │    --------------------   │                                                                                                                    │    --------------------   │
-│    join_type: LeftSemi    │                                                                                                                    │ partition_count(in->out): │
-│                           ├─────────────────────────────────────────────────────────────────────────────────────────────────────┐              │           1 -> 8          │
-│            on:            │                                                                                                     │              │                           │
-│ (l_orderkey = l_orderkey) │                                                                                                     │              │    partitioning_scheme:   │
+│          filter:          │                                                                                                                    │ partition_count(in->out): │
+│   l_suppkey != l_suppkey  │                                                                                                                    │           1 -> 8          │
+│                           ├─────────────────────────────────────────────────────────────────────────────────────────────────────┐              │                           │
+│    join_type: LeftSemi    │                                                                                                     │              │    partitioning_scheme:   │
 │                           │                                                                                                     │              │     RoundRobinBatch(8)    │
+│            on:            │                                                                                                     │              │                           │
+│ (l_orderkey = l_orderkey) │                                                                                                     │              │                           │
 └─────────────┬─────────────┘                                                                                                     │              └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐                                                                                       ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
 │   CoalescePartitionsExec  │                                                                                       │   LiquidCacheClientExec   ││       DataSourceExec      │
@@ -149,7 +154,7 @@ expression: displayable.tree_render().to_string()
                                                           │    --------------------   ││    --------------------   │
                                                           │          files: 1         ││ partition_count(in->out): │
                                                           │      format: parquet      ││           1 -> 8          │
-                                                          │                           ││                           │
+                                                          │      predicate: true      ││                           │
                                                           │                           ││    partitioning_scheme:   │
                                                           │                           ││     RoundRobinBatch(8)    │
                                                           └───────────────────────────┘└─────────────┬─────────────┘
@@ -162,4 +167,5 @@ expression: displayable.tree_render().to_string()
                                                                                        │         predicate:        │
                                                                                        │      l_receiptdate >      │
                                                                                        │        l_commitdate       │
+                                                                                       │      AND true AND true    │
                                                                                        └───────────────────────────┘

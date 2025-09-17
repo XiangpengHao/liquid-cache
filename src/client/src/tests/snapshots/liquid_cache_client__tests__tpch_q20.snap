@@ -27,62 +27,68 @@ expression: displayable.tree_render().to_string()
 │  (s_suppkey = ps_suppkey) │                                           │
 └─────────────┬─────────────┘                                           │
 ┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
-│   CoalescePartitionsExec  │                             │    CoalesceBatchesExec    │
-│                           │                             │    --------------------   │
-│                           │                             │     target_batch_size:    │
-│                           │                             │           16384           │
+│    CoalesceBatchesExec    │                             │    CoalesceBatchesExec    │
+│    --------------------   │                             │    --------------------   │
+│     target_batch_size:    │                             │     target_batch_size:    │
+│           16384           │                             │           16384           │
 └─────────────┬─────────────┘                             └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
-│    CoalesceBatchesExec    │                             │        HashJoinExec       │
+│        HashJoinExec       │                             │        HashJoinExec       │
 │    --------------------   │                             │    --------------------   │
-│     target_batch_size:    │                             │            on:            ├───────────────────────────────────────────┐
-│           16384           │                             │ (ps_partkey = l_partkey), │                                           │
-│                           │                             │  (ps_suppkey = l_suppkey) │                                           │
-└─────────────┬─────────────┘                             └─────────────┬─────────────┘                                           │
-┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
-│        HashJoinExec       │                             │    CoalesceBatchesExec    │                             │       ProjectionExec      │
-│    --------------------   │                             │    --------------------   │                             │    --------------------   │
-│            on:            │                             │     target_batch_size:    │                             │     Float64(0.5) * sum    │
-│(s_nationkey = n_nationkey)│                             │           16384           │                             │         (lineitem         │
-│                           │                             │                           │                             │       .l_quantity):       │
-│                           ├──────────────┐              │                           │                             │  0.5 * CAST(sum(lineitem  │
-│                           │              │              │                           │                             │      .l_quantity) AS      │
-│                           │              │              │                           │                             │          Float64)         │
-│                           │              │              │                           │                             │                           │
-│                           │              │              │                           │                             │    l_partkey: l_partkey   │
-│                           │              │              │                           │                             │    l_suppkey: l_suppkey   │
-└─────────────┬─────────────┘              │              └─────────────┬─────────────┘                             └─────────────┬─────────────┘
+│            on:            │                             │          filter:          │
+│(n_nationkey = s_nationkey)│                             │    CAST(ps_availqty AS    │
+│                           │                             │         Float64) >        │
+│                           │                             │       Float64(0.5) *      │
+│                           ├──────────────┐              │        sum(lineitem       ├───────────────────────────────────────────┐
+│                           │              │              │        .l_quantity)       │                                           │
+│                           │              │              │                           │                                           │
+│                           │              │              │            on:            │                                           │
+│                           │              │              │ (ps_partkey = l_partkey), │                                           │
+│                           │              │              │  (ps_suppkey = l_suppkey) │                                           │
+└─────────────┬─────────────┘              │              └─────────────┬─────────────┘                                           │
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
-│   LiquidCacheClientExec   ││   LiquidCacheClientExec   ││        HashJoinExec       │                             │       AggregateExec       │
+│   LiquidCacheClientExec   ││   LiquidCacheClientExec   ││    CoalesceBatchesExec    │                             │       ProjectionExec      │
 │    --------------------   ││    --------------------   ││    --------------------   │                             │    --------------------   │
-│          server:          ││          server:          ││    join_type: RightSemi   │                             │           aggr:           │
-│  http://localhost:50051,  ││  http://localhost:50051,  ││                           │                             │  sum(lineitem.l_quantity) │
-│      object_stores=[]     ││      object_stores=[]     ││            on:            │                             │                           │
-│                           ││                           ││  (p_partkey = ps_partkey) ├──────────────┐              │         group_by:         │
-│                           ││                           ││                           │              │              │    l_partkey, l_suppkey   │
+│          server:          ││          server:          ││     target_batch_size:    │                             │     Float64(0.5) * sum    │
+│  http://localhost:50051,  ││  http://localhost:50051,  ││           16384           │                             │         (lineitem         │
+│        mode=liquid,       ││        mode=liquid,       ││                           │                             │       .l_quantity):       │
+│      object_stores=[]     ││      object_stores=[]     ││                           │                             │  0.5 * CAST(sum(lineitem  │
+│                           ││                           ││                           │                             │      .l_quantity) AS      │
+│                           ││                           ││                           │                             │          Float64)         │
+│                           ││                           ││                           │                             │                           │
+│                           ││                           ││                           │                             │    l_partkey: l_partkey   │
+│                           ││                           ││                           │                             │    l_suppkey: l_suppkey   │
+└─────────────┬─────────────┘└─────────────┬─────────────┘└─────────────┬─────────────┘                             └─────────────┬─────────────┘
+┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
+│       DataSourceExec      ││       DataSourceExec      ││        HashJoinExec       │                             │       AggregateExec       │
+│    --------------------   ││    --------------------   ││    --------------------   │                             │    --------------------   │
+│          files: 1         ││          files: 1         ││    join_type: RightSemi   │                             │           aggr:           │
+│      format: parquet      ││      format: parquet      ││                           │                             │  sum(lineitem.l_quantity) │
+│                           ││      predicate: true      ││            on:            │                             │                           │
+│         predicate:        ││                           ││  (p_partkey = ps_partkey) ├──────────────┐              │         group_by:         │
+│      n_name = CANADA      ││                           ││                           │              │              │    l_partkey, l_suppkey   │
 │                           ││                           ││                           │              │              │                           │
 │                           ││                           ││                           │              │              │           mode:           │
 │                           ││                           ││                           │              │              │      FinalPartitioned     │
-└─────────────┬─────────────┘└─────────────┬─────────────┘└─────────────┬─────────────┘              │              └─────────────┬─────────────┘
-┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-│       DataSourceExec      ││      RepartitionExec      ││   LiquidCacheClientExec   ││   LiquidCacheClientExec   ││    CoalesceBatchesExec    │
-│    --------------------   ││    --------------------   ││    --------------------   ││    --------------------   ││    --------------------   │
-│          files: 1         ││ partition_count(in->out): ││          server:          ││          server:          ││     target_batch_size:    │
-│      format: parquet      ││           1 -> 8          ││  http://localhost:50051,  ││  http://localhost:50051,  ││           16384           │
-│                           ││                           ││      object_stores=[]     ││      object_stores=[]     ││                           │
-│                           ││    partitioning_scheme:   ││                           ││                           ││                           │
-│                           ││     RoundRobinBatch(8)    ││                           ││                           ││                           │
-└───────────────────────────┘└─────────────┬─────────────┘└─────────────┬─────────────┘└─────────────┬─────────────┘└─────────────┬─────────────┘
-                             ┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-                             │       DataSourceExec      ││       DataSourceExec      ││       DataSourceExec      ││      RepartitionExec      │
-                             │    --------------------   ││    --------------------   ││    --------------------   ││    --------------------   │
-                             │          files: 1         ││          files: 1         ││          files: 1         ││ partition_count(in->out): │
-                             │      format: parquet      ││      format: parquet      ││      format: parquet      ││           8 -> 8          │
-                             │                           ││                           ││                           ││                           │
-                             │         predicate:        ││         predicate:        ││                           ││    partitioning_scheme:   │
-                             │      n_name = CANADA      ││    p_name LIKE forest%    ││                           ││     Hash([l_partkey@0,    │
-                             │                           ││                           ││                           ││      l_suppkey@1], 8)     │
-                             └───────────────────────────┘└───────────────────────────┘└───────────────────────────┘└─────────────┬─────────────┘
+└───────────────────────────┘└───────────────────────────┘└─────────────┬─────────────┘              │              └─────────────┬─────────────┘
+                                                          ┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+                                                          │   LiquidCacheClientExec   ││   LiquidCacheClientExec   ││    CoalesceBatchesExec    │
+                                                          │    --------------------   ││    --------------------   ││    --------------------   │
+                                                          │          server:          ││          server:          ││     target_batch_size:    │
+                                                          │  http://localhost:50051,  ││  http://localhost:50051,  ││           16384           │
+                                                          │        mode=liquid,       ││        mode=liquid,       ││                           │
+                                                          │      object_stores=[]     ││      object_stores=[]     ││                           │
+                                                          └─────────────┬─────────────┘└─────────────┬─────────────┘└─────────────┬─────────────┘
+                                                          ┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+                                                          │       DataSourceExec      ││       DataSourceExec      ││      RepartitionExec      │
+                                                          │    --------------------   ││    --------------------   ││    --------------------   │
+                                                          │          files: 1         ││          files: 1         ││ partition_count(in->out): │
+                                                          │      format: parquet      ││      format: parquet      ││           8 -> 8          │
+                                                          │                           ││                           ││                           │
+                                                          │         predicate:        ││                           ││    partitioning_scheme:   │
+                                                          │    p_name LIKE forest%    ││                           ││     Hash([l_partkey@0,    │
+                                                          │                           ││                           ││      l_suppkey@1], 8)     │
+                                                          └───────────────────────────┘└───────────────────────────┘└─────────────┬─────────────┘
                                                                                                                     ┌─────────────┴─────────────┐
                                                                                                                     │       AggregateExec       │
                                                                                                                     │    --------------------   │

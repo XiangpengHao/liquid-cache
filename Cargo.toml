@@ -64,3 +64,5 @@ insta.opt-level = 3
 [patch.crates-io]
 # datafusion = { path = "../datafusion/datafusion/core" }
 # datafusion-proto = { path = "../datafusion/datafusion/proto" }
+datafusion = { git = "https://github.com/apache/datafusion.git", branch = "branch-50" }
+datafusion-proto = { git = "https://github.com/apache/datafusion.git", branch = "branch-50" }
