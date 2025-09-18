@@ -69,10 +69,10 @@ expression: displayable.tree_render().to_string()
 ┌─────────────┴─────────────┐
 │        HashJoinExec       │
 │    --------------------   │
-│    join_type: LeftSemi    │
+│    join_type: RightSemi   │
 │                           ├──────────────┐
 │            on:            │              │
-│ (o_orderkey = l_orderkey) │              │
+│ (l_orderkey = o_orderkey) │              │
 └─────────────┬─────────────┘              │
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
 │   LiquidCacheClientExec   ││   LiquidCacheClientExec   │
@@ -89,9 +89,8 @@ expression: displayable.tree_render().to_string()
 │      format: parquet      ││           1 -> 8          │
 │                           ││                           │
 │         predicate:        ││    partitioning_scheme:   │
-│ o_orderdate >= 1993-07-01 ││     RoundRobinBatch(8)    │
-│   AND o_orderdate < 1993  ││                           │
-│           -10-01          ││                           │
+│      l_receiptdate >      ││     RoundRobinBatch(8)    │
+│        l_commitdate       ││                           │
 └───────────────────────────┘└─────────────┬─────────────┘
                              ┌─────────────┴─────────────┐
                              │       DataSourceExec      │
@@ -100,6 +99,7 @@ expression: displayable.tree_render().to_string()
                              │      format: parquet      │
                              │                           │
                              │         predicate:        │
-                             │      l_receiptdate >      │
-                             │        l_commitdate       │
+                             │ o_orderdate >= 1993-07-01 │
+                             │   AND o_orderdate < 1993  │
+                             │           -10-01          │
                              └───────────────────────────┘

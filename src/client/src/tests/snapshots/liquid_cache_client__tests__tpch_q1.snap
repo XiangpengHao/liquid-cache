@@ -57,11 +57,19 @@ expression: displayable.tree_render().to_string()
 │ sum(lineitem.l_quantity), │
 │        sum(lineitem       │
 │      .l_extendedpric      │
-│    e), , , avg(lineitem   │
-│     .l_quantity), avg     │
+│      e), sum(lineitem     │
+│      .l_extendedprice     │
+│    * Int64(1) - lineitem  │
+│     .l_discount), sum     │
 │         (lineitem         │
-│        .l_extendedp       │
-│    rice), avg(lineitem    │
+│       .l_extendedpri      │
+│  ce * Int64(1) - lineitem │
+│  .l_discount * Int64(1)   │
+│   + lineitem.l_tax), avg  │
+│   (lineitem.l_quantity),  │
+│        avg(lineitem       │
+│       .l_extendedpri      │
+│     ce), avg(lineitem     │
 │       .l_discount),       │
 │          count(1)         │
 │                           │
@@ -94,11 +102,19 @@ expression: displayable.tree_render().to_string()
 │ sum(lineitem.l_quantity), │
 │        sum(lineitem       │
 │      .l_extendedpric      │
-│    e), , , avg(lineitem   │
-│     .l_quantity), avg     │
+│      e), sum(lineitem     │
+│      .l_extendedprice     │
+│    * Int64(1) - lineitem  │
+│     .l_discount), sum     │
 │         (lineitem         │
-│        .l_extendedp       │
-│    rice), avg(lineitem    │
+│       .l_extendedpri      │
+│  ce * Int64(1) - lineitem │
+│  .l_discount * Int64(1)   │
+│   + lineitem.l_tax), avg  │
+│   (lineitem.l_quantity),  │
+│        avg(lineitem       │
+│       .l_extendedpri      │
+│     ce), avg(lineitem     │
 │       .l_discount),       │
 │          count(1)         │
 │                           │

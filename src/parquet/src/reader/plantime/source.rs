@@ -27,7 +27,7 @@ use parquet::{
         arrow_reader::ArrowReaderOptions,
         async_reader::{AsyncFileReader, ParquetObjectReader},
     },
-    file::metadata::{ParquetMetaData, ParquetMetaDataReader},
+    file::metadata::{PageIndexPolicy, ParquetMetaData, ParquetMetaDataReader},
 };
 use std::{
     any::Any,
@@ -143,7 +143,7 @@ impl AsyncFileReader for ParquetMetadataCacheReader {
                     let meta = self.inner.get_metadata(options.as_ref()).await?;
                     let meta = Arc::try_unwrap(meta).unwrap_or_else(|e| e.as_ref().clone());
                     let mut reader = ParquetMetaDataReader::new_with_metadata(meta.clone())
-                        .with_page_indexes(true);
+                        .with_page_index_policy(PageIndexPolicy::Optional);
                     reader.load_page_index(&mut self.inner).await?;
                     let meta = Arc::new(reader.finish()?);
                     entry.insert(meta.clone());
