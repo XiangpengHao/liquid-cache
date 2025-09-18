@@ -14,43 +14,24 @@ struct Node {
 }
 
 #[derive(Debug, Default)]
-struct LruInternalState {
+struct HashList {
     map: HashMap<EntryID, NonNull<Node>>,
     head: Option<NonNull<Node>>,
     tail: Option<NonNull<Node>>,
 }
 
-/// The policy that implement the LRU algorithm using a HashMap and a doubly linked list.
-#[derive(Debug, Default)]
-pub struct LruPolicy {
-    state: Mutex<LruInternalState>,
-}
-
-impl LruPolicy {
-    /// Create a new [`LruPolicy`].
-    pub fn new() -> Self {
-        Self {
-            state: Mutex::new(LruInternalState {
-                map: HashMap::new(),
-                head: None,
-                tail: None,
-            }),
-        }
-    }
-
-    /// Unlinks the node from the doubly linked list.
-    /// Must be called within the lock.
-    unsafe fn unlink_node(&self, state: &mut LruInternalState, mut node_ptr: NonNull<Node>) {
+impl HashList {
+    unsafe fn unlink_node(&mut self, mut node_ptr: NonNull<Node>) {
         let node = unsafe { node_ptr.as_mut() };
 
         match node.prev {
             Some(mut prev) => unsafe { prev.as_mut().next = node.next },
-            None => state.head = node.next,
+            None => self.head = node.next,
         }
 
         match node.next {
             Some(mut next) => unsafe { next.as_mut().prev = node.prev },
-            None => state.tail = node.prev,
+            None => self.tail = node.prev,
         }
 
         node.prev = None;
@@ -59,18 +40,37 @@ impl LruPolicy {
 
     /// Pushes the node to the front (head) of the list.
     /// Must be called within the lock.
-    unsafe fn push_front(&self, state: &mut LruInternalState, mut node_ptr: NonNull<Node>) {
+    unsafe fn push_front(&mut self, mut node_ptr: NonNull<Node>) {
         let node = unsafe { node_ptr.as_mut() };
 
-        node.next = state.head;
+        node.next = self.head;
         node.prev = None;
 
-        match state.head {
+        match self.head {
             Some(mut head) => unsafe { head.as_mut().prev = Some(node_ptr) },
-            None => state.tail = Some(node_ptr),
+            None => self.tail = Some(node_ptr),
         }
 
-        state.head = Some(node_ptr);
+        self.head = Some(node_ptr);
+    }
+}
+
+/// The policy that implement the LRU algorithm using a HashMap and a doubly linked list.
+#[derive(Debug, Default)]
+pub struct LruPolicy {
+    state: Mutex<HashList>,
+}
+
+impl LruPolicy {
+    /// Create a new [`LruPolicy`].
+    pub fn new() -> Self {
+        Self {
+            state: Mutex::new(HashList {
+                map: HashMap::new(),
+                head: None,
+                tail: None,
+            }),
+        }
     }
 }
 
@@ -96,7 +96,7 @@ impl CachePolicy for LruPolicy {
                 .remove(&tail_entry_id)
                 .expect("tail node not found");
             unsafe {
-                self.unlink_node(&mut state, node_ptr);
+                state.unlink_node(node_ptr);
                 drop(Box::from_raw(node_ptr.as_ptr()));
             }
             advices.push(tail_entry_id);
@@ -109,8 +109,8 @@ impl CachePolicy for LruPolicy {
         let mut state = self.state.lock().unwrap();
         if let Some(node_ptr) = state.map.get(entry_id).copied() {
             unsafe {
-                self.unlink_node(&mut state, node_ptr);
-                self.push_front(&mut state, node_ptr);
+                state.unlink_node(node_ptr);
+                state.push_front(node_ptr);
             }
         }
     }
@@ -120,8 +120,8 @@ impl CachePolicy for LruPolicy {
 
         if let Some(existing_node_ptr) = state.map.get(entry_id).copied() {
             unsafe {
-                self.unlink_node(&mut state, existing_node_ptr);
-                self.push_front(&mut state, existing_node_ptr);
+                state.unlink_node(existing_node_ptr);
+                state.push_front(existing_node_ptr);
             }
             return;
         }
@@ -138,7 +138,7 @@ impl CachePolicy for LruPolicy {
 
         state.map.insert(*entry_id, node_ptr);
         unsafe {
-            self.push_front(&mut state, node_ptr);
+            state.push_front(node_ptr);
         }
     }
 }
@@ -256,7 +256,7 @@ mod tests {
         assert_evict_advice(&policy, e1);
     }
 
-    impl LruInternalState {
+    impl HashList {
         fn check_integrity(&self) {
             let map_count = self.map.len();
             let forward_count = count_nodes_in_list(self);
@@ -267,7 +267,7 @@ mod tests {
         }
     }
 
-    fn count_nodes_in_list(state: &LruInternalState) -> usize {
+    fn count_nodes_in_list(state: &HashList) -> usize {
         let mut count = 0;
         let mut current = state.head;
 
@@ -279,7 +279,7 @@ mod tests {
         count
     }
 
-    fn count_nodes_reverse(state: &LruInternalState) -> usize {
+    fn count_nodes_reverse(state: &HashList) -> usize {
         let mut count = 0;
         let mut current = state.tail;
 
