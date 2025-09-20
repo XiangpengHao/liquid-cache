@@ -180,7 +180,7 @@ impl CachePolicy for S3FifoPolicy {
             state.inc_frequency(entry_id);
         } else if state.ghost_set.contains(entry_id) {
             state.ghost_set.remove(entry_id);
-            state.ghost_set.retain(|x| *x != *entry_id);
+            state.ghost.retain(|x| *x != *entry_id);
             state.main.push_front(*entry_id);
             state.inc_main_queue_size(entry_size);
         } else {
