@@ -46,7 +46,7 @@
               kaniVerifier
               llvmPackages.bintools
               cargo-fuzz
-              rustup
+              # rustup
               (rust-bin.selectLatestNightlyWith (toolchain: toolchain.default.override {
                 extensions = [ "rust-src" "llvm-tools-preview" ];
               }))

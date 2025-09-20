@@ -34,8 +34,7 @@ impl HashList {
             None => self.tail = node.prev,
         }
 
-        node.prev = None;
-        node.next = None;
+        unsafe { drop(Box::from_raw(node_ptr.as_ptr())) };
     }
 
     /// Pushes the node to the front (head) of the list.
@@ -52,6 +51,16 @@ impl HashList {
         }
 
         self.head = Some(node_ptr);
+    }
+}
+
+impl Drop for HashList {
+    fn drop(&mut self) {
+        while let Some(node_ptr) = self.head {
+            unsafe {
+                self.unlink_node(node_ptr);
+            }
+        }
     }
 }
 
@@ -143,18 +152,6 @@ impl CachePolicy for LruPolicy {
     }
 }
 
-impl Drop for LruPolicy {
-    fn drop(&mut self) {
-        let mut state = self.state.lock().unwrap();
-        for (_, node_ptr) in state.map.drain() {
-            unsafe {
-                drop(Box::from_raw(node_ptr.as_ptr()));
-            }
-        }
-        state.head = None;
-        state.tail = None;
-    }
-}
 
 #[cfg(test)]
 mod tests {

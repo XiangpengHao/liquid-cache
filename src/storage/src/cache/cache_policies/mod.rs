@@ -6,6 +6,7 @@ mod clock;
 mod filo;
 mod lru;
 mod sieve;
+mod hash_list;
 
 pub use clock::ClockPolicy;
 pub use filo::FiloPolicy;

@@ -55,7 +55,6 @@ fastrace = "0.7"
 fastrace-tonic = "0.1"
 congee = "0.4.1"
 
-
 [profile.dev.package]
 insta.opt-level = 3
 
