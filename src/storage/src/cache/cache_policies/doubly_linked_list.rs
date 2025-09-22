@@ -121,3 +121,65 @@ impl<T> DoublyLinkedList<T> {
 pub(crate) unsafe fn drop_boxed_node<T>(ptr: NonNull<DoublyLinkedNode<T>>) {
     unsafe { drop(Box::from_raw(ptr.as_ptr())) }
 }
+
+#[cfg_attr(not(rust_analyzer), cfg(kani))]
+mod proofs {
+    use super::*;
+    use kani::any;
+    use std::ptr::NonNull;
+
+    #[cfg_attr(not(rust_analyzer), kani::proof)]
+    #[cfg_attr(not(rust_analyzer), kani::unwind(12))]
+    fn kani_linked_list_push_front() {
+        let mut list = DoublyLinkedList::<u8>::new();
+
+        // Choose n in [0, 3] non-deterministically
+        let n_raw: u8 = any();
+        kani::assume(n_raw < 4);
+        let n: usize = n_raw as usize;
+
+        // Track first (future tail) and last (future head) inserted nodes
+        let mut first_inserted: Option<NonNull<DoublyLinkedNode<u8>>> = None;
+        let mut last_inserted: Option<NonNull<DoublyLinkedNode<u8>>> = None;
+
+        for i in 0..n {
+            let value: u8 = any();
+            let boxed = DoublyLinkedNode::new(value);
+            let ptr = NonNull::from(Box::leak(boxed));
+            if i == 0 {
+                first_inserted = Some(ptr);
+            }
+            last_inserted = Some(ptr);
+            unsafe { list.push_front(ptr) };
+        }
+
+        match n {
+            0 => {
+                assert!(list.head().is_none());
+                assert!(list.tail().is_none());
+            }
+            _ => {
+                let head_ptr = list.head().expect("non-empty list must have head");
+                let tail_ptr = list.tail().expect("non-empty list must have tail");
+                assert_eq!(head_ptr.as_ptr(), last_inserted.unwrap().as_ptr());
+                assert_eq!(tail_ptr.as_ptr(), first_inserted.unwrap().as_ptr());
+
+                let head_ref = unsafe { head_ptr.as_ref() };
+                assert!(head_ref.prev.is_none());
+                let tail_ref = unsafe { tail_ptr.as_ref() };
+                assert!(tail_ref.next.is_none());
+            }
+        }
+
+        // Count entries by traversing from head using next pointers
+        let mut count: usize = 0;
+        let mut current = list.head();
+        while let Some(node_ptr) = current {
+            count += 1;
+            current = unsafe { node_ptr.as_ref().next };
+        }
+        assert_eq!(count, n);
+
+        unsafe { list.drop_all() };
+    }
+}
