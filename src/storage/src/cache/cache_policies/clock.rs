@@ -26,23 +26,12 @@ struct ClockNode {
 
 type NodePtr = NonNull<DoublyLinkedNode<ClockNode>>;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct ClockInternalState {
     map: HashMap<EntryID, NodePtr>,
     list: DoublyLinkedList<ClockNode>,
     hand: Option<NodePtr>,
     total_size: usize,
-}
-
-impl Default for ClockInternalState {
-    fn default() -> Self {
-        Self {
-            map: HashMap::new(),
-            list: DoublyLinkedList::new(),
-            hand: None,
-            total_size: 0,
-        }
-    }
 }
 
 impl fmt::Debug for ClockPolicy {

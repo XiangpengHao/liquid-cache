@@ -16,19 +16,10 @@ struct LruNode {
 
 type NodePtr = NonNull<DoublyLinkedNode<LruNode>>;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct HashList {
     map: HashMap<EntryID, NodePtr>,
     list: DoublyLinkedList<LruNode>,
-}
-
-impl Default for HashList {
-    fn default() -> Self {
-        Self {
-            map: HashMap::new(),
-            list: DoublyLinkedList::new(),
-        }
-    }
 }
 
 impl HashList {

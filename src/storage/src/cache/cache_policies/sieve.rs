@@ -17,23 +17,12 @@ struct SieveNode {
 
 type NodePtr = NonNull<DoublyLinkedNode<SieveNode>>;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct SieveInternalState {
     map: HashMap<EntryID, NodePtr>,
     list: DoublyLinkedList<SieveNode>,
     hand: Option<NodePtr>,
     total_size: usize,
-}
-
-impl Default for SieveInternalState {
-    fn default() -> Self {
-        Self {
-            map: HashMap::new(),
-            list: DoublyLinkedList::new(),
-            hand: None,
-            total_size: 0,
-        }
-    }
 }
 
 type SieveEntrySizeFn = Option<Arc<dyn Fn(&EntryID) -> usize + Send + Sync>>;
