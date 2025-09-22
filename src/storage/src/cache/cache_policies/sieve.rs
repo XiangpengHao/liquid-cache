@@ -4,23 +4,36 @@ use std::{collections::HashMap, fmt, ptr::NonNull, sync::Arc};
 
 use crate::{cache::utils::EntryID, sync::Mutex};
 
-use super::CachePolicy;
+use super::{
+    CachePolicy,
+    doubly_linked_list::{DoublyLinkedList, DoublyLinkedNode, drop_boxed_node},
+};
 
 #[derive(Debug)]
 struct SieveNode {
     entry_id: EntryID,
     visited: bool,
-    prev: Option<NonNull<SieveNode>>,
-    next: Option<NonNull<SieveNode>>,
 }
 
-#[derive(Debug, Default)]
+type NodePtr = NonNull<DoublyLinkedNode<SieveNode>>;
+
+#[derive(Debug)]
 struct SieveInternalState {
-    map: HashMap<EntryID, NonNull<SieveNode>>,
-    head: Option<NonNull<SieveNode>>,
-    tail: Option<NonNull<SieveNode>>,
-    hand: Option<NonNull<SieveNode>>,
+    map: HashMap<EntryID, NodePtr>,
+    list: DoublyLinkedList<SieveNode>,
+    hand: Option<NodePtr>,
     total_size: usize,
+}
+
+impl Default for SieveInternalState {
+    fn default() -> Self {
+        Self {
+            map: HashMap::new(),
+            list: DoublyLinkedList::new(),
+            hand: None,
+            total_size: 0,
+        }
+    }
 }
 
 type SieveEntrySizeFn = Option<Arc<dyn Fn(&EntryID) -> usize + Send + Sync>>;
@@ -52,38 +65,6 @@ impl SievePolicy {
     fn entry_size(&self, entry_id: &EntryID) -> usize {
         self.size_of.as_ref().map(|f| f(entry_id)).unwrap_or(1)
     }
-
-    unsafe fn push_front(&self, state: &mut SieveInternalState, mut node_ptr: NonNull<SieveNode>) {
-        let node = unsafe { node_ptr.as_mut() };
-        node.prev = None;
-        node.next = state.head;
-        if let Some(mut head) = state.head {
-            unsafe { head.as_mut().prev = Some(node_ptr) };
-        } else {
-            state.tail = Some(node_ptr);
-            state.hand = Some(node_ptr);
-        }
-        state.head = Some(node_ptr);
-    }
-
-    unsafe fn unlink_node(&self, state: &mut SieveInternalState, mut node_ptr: NonNull<SieveNode>) {
-        unsafe {
-            let node = node_ptr.as_mut();
-            match node.prev {
-                Some(mut prev) => prev.as_mut().next = node.next,
-                None => state.head = node.next,
-            }
-            match node.next {
-                Some(mut next) => next.as_mut().prev = node.prev,
-                None => state.tail = node.prev,
-            }
-            if state.hand == Some(node_ptr) {
-                state.hand = node.prev;
-            }
-            node.prev = None;
-            node.next = None;
-        }
-    }
 }
 
 unsafe impl Send for SievePolicy {}
@@ -94,26 +75,34 @@ impl CachePolicy for SievePolicy {
         let mut state = self.state.lock().unwrap();
         let mut advices = Vec::with_capacity(cnt);
         for _ in 0..cnt {
-            let mut hand_ptr = match state.hand.or(state.tail) {
+            let hand_ptr = match state.hand {
+                Some(ptr) => Some(ptr),
+                None => state.list.tail(),
+            };
+            let mut hand_ptr = match hand_ptr {
                 Some(p) => p,
                 None => break,
             };
             loop {
-                let node = unsafe { hand_ptr.as_mut() };
-                if node.visited {
-                    node.visited = false;
-                    hand_ptr = node.prev.unwrap_or(state.tail.unwrap());
-                    state.hand = Some(hand_ptr);
+                if unsafe { hand_ptr.as_ref() }.data.visited {
+                    unsafe { hand_ptr.as_mut() }.data.visited = false;
+                    let prev = unsafe { hand_ptr.as_ref().prev };
+                    let next_hand = prev
+                        .or(state.list.tail())
+                        .expect("non-empty list must have a tail");
+                    hand_ptr = next_hand;
+                    state.hand = Some(next_hand);
                 } else {
-                    let victim_id = node.entry_id;
+                    let victim_id = unsafe { hand_ptr.as_ref().data.entry_id };
+                    let prev = unsafe { hand_ptr.as_ref().prev };
                     let node_ptr = state.map.remove(&victim_id).unwrap();
                     unsafe {
-                        self.unlink_node(&mut state, node_ptr);
-                        drop(Box::from_raw(node_ptr.as_ptr()));
+                        state.list.unlink(node_ptr);
+                        drop_boxed_node(node_ptr);
                     }
                     state.total_size -= self.entry_size(&victim_id);
                     advices.push(victim_id);
-                    state.hand = node.prev.or(state.tail);
+                    state.hand = prev.or(state.list.tail());
                     break;
                 }
             }
@@ -126,23 +115,25 @@ impl CachePolicy for SievePolicy {
         if state.map.contains_key(entry_id) {
             if let Some(mut node_ptr) = state.map.get(entry_id).copied() {
                 unsafe {
-                    node_ptr.as_mut().visited = true;
+                    node_ptr.as_mut().data.visited = true;
                 }
             }
             return;
         }
 
-        let node = SieveNode {
+        let was_empty = state.list.head().is_none();
+        let node = DoublyLinkedNode::new(SieveNode {
             entry_id: *entry_id,
-            prev: None,
-            next: None,
             visited: false,
-        };
-        let node_ptr = NonNull::new(Box::into_raw(Box::new(node))).unwrap();
+        });
+        let node_ptr = NonNull::from(Box::leak(node));
         state.map.insert(*entry_id, node_ptr);
         unsafe {
-            self.push_front(&mut state, node_ptr);
-        };
+            state.list.push_front(node_ptr);
+        }
+        if was_empty {
+            state.hand = Some(node_ptr);
+        }
         state.total_size += self.entry_size(entry_id);
     }
 
@@ -150,8 +141,8 @@ impl CachePolicy for SievePolicy {
         let state = self.state.lock().unwrap();
         if let Some(mut node_ptr) = state.map.get(entry_id).copied() {
             unsafe {
-                node_ptr.as_mut().visited = true;
-            };
+                node_ptr.as_mut().data.visited = true;
+            }
         }
     }
 }
@@ -159,14 +150,18 @@ impl CachePolicy for SievePolicy {
 impl Drop for SievePolicy {
     fn drop(&mut self) {
         let mut state = self.state.lock().unwrap();
-        for (_, node_ptr) in state.map.drain() {
+        let handles: Vec<_> = state.map.drain().map(|(_, ptr)| ptr).collect();
+        for node_ptr in handles {
             unsafe {
-                drop(Box::from_raw(node_ptr.as_ptr()));
+                state.list.unlink(node_ptr);
+                drop_boxed_node(node_ptr);
             }
         }
-        state.head = None;
-        state.tail = None;
+        unsafe {
+            state.list.drop_all();
+        }
         state.hand = None;
+        state.total_size = 0;
     }
 }
 

@@ -3,10 +3,10 @@
 use crate::cache::utils::EntryID;
 
 mod clock;
+mod doubly_linked_list;
 mod filo;
 mod lru;
 mod sieve;
-mod hash_list;
 
 pub use clock::ClockPolicy;
 pub use filo::FiloPolicy;
