@@ -4,7 +4,10 @@ use std::{collections::HashMap, fmt, ptr::NonNull, sync::Arc};
 
 use crate::{cache::utils::EntryID, sync::Mutex};
 
-use super::CachePolicy;
+use super::{
+    CachePolicy,
+    doubly_linked_list::{DoublyLinkedList, DoublyLinkedNode, drop_boxed_node},
+};
 
 type ClockEntrySizeFn = Option<Arc<dyn Fn(&EntryID) -> usize + Send + Sync>>;
 
@@ -19,16 +22,15 @@ pub struct ClockPolicy {
 struct ClockNode {
     entry_id: EntryID,
     referenced: bool,
-    prev: Option<NonNull<ClockNode>>,
-    next: Option<NonNull<ClockNode>>,
 }
+
+type NodePtr = NonNull<DoublyLinkedNode<ClockNode>>;
 
 #[derive(Debug, Default)]
 struct ClockInternalState {
-    map: HashMap<EntryID, NonNull<ClockNode>>,
-    head: Option<NonNull<ClockNode>>,
-    tail: Option<NonNull<ClockNode>>,
-    hand: Option<NonNull<ClockNode>>,
+    map: HashMap<EntryID, NodePtr>,
+    list: DoublyLinkedList<ClockNode>,
+    hand: Option<NodePtr>,
     total_size: usize,
 }
 
@@ -57,54 +59,6 @@ impl ClockPolicy {
     fn entry_size(&self, entry_id: &EntryID) -> usize {
         self.size_of.as_ref().map(|f| f(entry_id)).unwrap_or(1)
     }
-
-    unsafe fn unlink_node(&self, state: &mut ClockInternalState, mut node_ptr: NonNull<ClockNode>) {
-        unsafe {
-            let node = node_ptr.as_mut();
-
-            if let Some(mut p) = node.prev {
-                p.as_mut().next = node.next;
-            } else {
-                state.head = node.next;
-            }
-
-            if let Some(mut n) = node.next {
-                n.as_mut().prev = node.prev;
-            } else {
-                state.tail = node.prev;
-            }
-
-            if state.hand == Some(node_ptr) {
-                state.hand = node.next.or(node.prev);
-            }
-
-            node.prev = None;
-            node.next = None;
-        }
-    }
-
-    unsafe fn insert_after(
-        &self,
-        state: &mut ClockInternalState,
-        mut new_ptr: NonNull<ClockNode>,
-        mut existing_ptr: NonNull<ClockNode>,
-    ) {
-        unsafe {
-            let new_node = new_ptr.as_mut();
-            let existing_node = existing_ptr.as_mut();
-
-            new_node.prev = Some(existing_ptr);
-            new_node.next = existing_node.next;
-
-            if let Some(mut next) = existing_node.next {
-                next.as_mut().prev = Some(new_ptr);
-            } else {
-                state.tail = Some(new_ptr);
-            }
-
-            existing_node.next = Some(new_ptr);
-        }
-    }
 }
 
 unsafe impl Send for ClockPolicy {}
@@ -118,33 +72,40 @@ impl CachePolicy for ClockPolicy {
         }
 
         let mut evicted = Vec::with_capacity(cnt);
-        let mut cursor = state.hand.or(state.head);
+        let mut cursor = match state.hand {
+            Some(ptr) => Some(ptr),
+            None => state.list.head(),
+        };
+
         for _ in 0..cnt {
             loop {
-                let Some(ptr) = cursor else {
+                let Some(handle) = cursor else {
                     state.hand = None;
                     break;
                 };
 
-                unsafe {
-                    let node = ptr.as_ref();
-                    if node.referenced {
-                        let mut_mut = ptr.as_ptr();
-                        (*mut_mut).referenced = false;
-                        cursor = node.next.or(state.head);
-                        state.hand = cursor;
-                    } else {
-                        let victim_id = (*ptr.as_ptr()).entry_id;
-                        let succ = (*ptr.as_ptr()).next;
-                        self.unlink_node(&mut state, ptr);
-                        state.map.remove(&victim_id);
-                        state.total_size -= self.entry_size(&victim_id);
-                        state.hand = succ.or(state.head);
-                        evicted.push(victim_id);
-                        drop(Box::from_raw(ptr.as_ptr()));
-                        cursor = state.hand;
-                        break;
+                let mut handle_ptr = handle;
+                if unsafe { handle_ptr.as_ref() }.data.referenced {
+                    unsafe { handle_ptr.as_mut() }.data.referenced = false;
+                    let next = unsafe { handle_ptr.as_ref().next }.or(state.list.head());
+                    cursor = next;
+                    state.hand = next;
+                } else {
+                    let victim_id = unsafe { handle_ptr.as_ref().data.entry_id };
+                    let succ = unsafe { handle_ptr.as_ref().next };
+                    state
+                        .map
+                        .remove(&victim_id)
+                        .expect("pointer must exist in map");
+                    unsafe {
+                        state.list.unlink(handle_ptr);
+                        drop_boxed_node(handle_ptr);
                     }
+                    state.total_size -= self.entry_size(&victim_id);
+                    state.hand = succ.or(state.list.head());
+                    evicted.push(victim_id);
+                    cursor = state.hand;
+                    break;
                 }
             }
 
@@ -161,30 +122,19 @@ impl CachePolicy for ClockPolicy {
 
         if let Some(mut existing) = state.map.get(entry_id).copied() {
             unsafe {
-                existing.as_mut().referenced = true;
+                existing.as_mut().data.referenced = true;
             }
             return;
         }
 
-        let node = ClockNode {
+        let node = DoublyLinkedNode::new(ClockNode {
             entry_id: *entry_id,
             referenced: true,
-            prev: None,
-            next: None,
-        };
-        let new_ptr = match NonNull::new(Box::into_raw(Box::new(node))) {
-            Some(ptr) => ptr,
-            None => panic!("Failed to allocate memory for CLOCK node"),
-        };
+        });
+        let new_ptr = NonNull::from(Box::leak(node));
 
-        if let Some(tail_ptr) = state.tail {
-            unsafe { self.insert_after(&mut state, new_ptr, tail_ptr) };
-            if state.hand.is_none() {
-                state.hand = Some(new_ptr);
-            }
-        } else {
-            state.head = Some(new_ptr);
-            state.tail = Some(new_ptr);
+        unsafe { state.list.push_back(new_ptr) };
+        if state.hand.is_none() {
             state.hand = Some(new_ptr);
         }
 
@@ -194,9 +144,9 @@ impl CachePolicy for ClockPolicy {
 
     fn notify_access(&self, entry_id: &EntryID) {
         let state = self.state.lock().unwrap();
-        if let Some(&ptr) = state.map.get(entry_id) {
+        if let Some(mut handle) = state.map.get(entry_id).copied() {
             unsafe {
-                (*ptr.as_ptr()).referenced = true;
+                handle.as_mut().data.referenced = true;
             }
         }
     }
@@ -205,13 +155,16 @@ impl CachePolicy for ClockPolicy {
 impl Drop for ClockPolicy {
     fn drop(&mut self) {
         if let Ok(mut state) = self.state.lock() {
-            for (_, ptr) in state.map.drain() {
+            let handles: Vec<_> = state.map.drain().map(|(_, ptr)| ptr).collect();
+            for ptr in handles {
                 unsafe {
-                    drop(Box::from_raw(ptr.as_ptr()));
+                    state.list.unlink(ptr);
+                    drop_boxed_node(ptr);
                 }
             }
-            state.head = None;
-            state.tail = None;
+            unsafe {
+                state.list.drop_all();
+            }
             state.hand = None;
             state.total_size = 0;
         }

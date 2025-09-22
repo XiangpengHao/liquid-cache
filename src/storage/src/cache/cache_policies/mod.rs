@@ -3,6 +3,7 @@
 use crate::cache::utils::EntryID;
 
 mod clock;
+mod doubly_linked_list;
 mod filo;
 mod lru;
 mod sieve;
