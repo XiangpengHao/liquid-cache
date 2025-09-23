@@ -1,6 +1,7 @@
 use datafusion::prelude::SessionConfig;
+use liquid_cache_local::LiquidCacheLocalBuilder;
+use liquid_cache_local::storage::cache::squeeze_policies::TranscodeSqueezeEvict;
 use liquid_cache_local::storage::cache_policies::FiloPolicy;
-use liquid_cache_local::{LiquidCacheLocalBuilder, common::LiquidCacheMode};
 use tempfile::TempDir;
 
 #[tokio::main]
@@ -10,8 +11,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (ctx, _) = LiquidCacheLocalBuilder::new()
         .with_max_cache_bytes(1024 * 1024 * 1024) // 1GB
         .with_cache_dir(temp_dir.path().to_path_buf())
-        .with_cache_mode(LiquidCacheMode::Liquid)
-        .with_cache_strategy(Box::new(FiloPolicy::new()))
+        .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+        .with_cache_policy(Box::new(FiloPolicy::new()))
         .build(SessionConfig::new())?;
 
     ctx.register_parquet("hits", "examples/nano_hits.parquet", Default::default())

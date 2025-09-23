@@ -12,13 +12,13 @@ use datafusion::logical_expr::Operator;
 use datafusion::prelude::*;
 use datafusion::scalar::ScalarValue;
 use futures::StreamExt;
-use liquid_cache_common::LiquidCacheMode;
 use liquid_cache_storage::cache::CacheStorage;
 use liquid_cache_storage::cache::CacheStorageBuilder;
 use liquid_cache_storage::cache::EntryID;
 use liquid_cache_storage::cache::cached_data::GetWithPredicateResult;
 use liquid_cache_storage::cache::io_state::IoRequest;
 use liquid_cache_storage::cache::io_state::{IoStateMachine, SansIo, TryGet};
+use liquid_cache_storage::cache::squeeze_policies::TranscodeSqueezeEvict;
 use liquid_cache_storage::cache_policies::FiloPolicy;
 
 #[global_allocator]
@@ -65,8 +65,8 @@ fn main() {
     // 1) Build cache storage with FILO and a small budget (100 MB)
     let mut builder = CacheStorageBuilder::new()
         .with_max_cache_bytes(500 * 1024 * 1024)
-        .with_cache_mode(LiquidCacheMode::Liquid)
-        .with_policy(Box::new(FiloPolicy::new()));
+        .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+        .with_cache_policy(Box::new(FiloPolicy::new()));
     if let Some(dir) = args.cache_dir.clone() {
         builder = builder.with_cache_dir(dir);
     }

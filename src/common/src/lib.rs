@@ -1,63 +1,12 @@
 #![doc = include_str!("../README.md")]
 
-use std::str::FromStr;
-use std::{fmt::Display, sync::Arc};
+use std::sync::Arc;
 
 use arrow::array::ArrayRef;
 use arrow_schema::{DataType, Field, FieldRef, Schema, SchemaRef};
 pub mod mock_store;
 pub mod rpc;
 pub mod utils;
-/// Specify how LiquidCache should cache the data
-#[derive(Clone, Debug, Default, Copy, PartialEq, Eq)]
-pub enum CacheMode {
-    /// Cache parquet files
-    Parquet,
-    /// Cache LiquidArray, transcode happens in background
-    #[default]
-    Liquid,
-    /// Transcode blocks query execution
-    LiquidEagerTranscode,
-    /// Cache Arrow, transcode happens in background
-    Arrow,
-    /// Static file server mode
-    StaticFileServer,
-}
-
-impl Display for CacheMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                CacheMode::Parquet => "parquet",
-                CacheMode::Liquid => "liquid",
-                CacheMode::LiquidEagerTranscode => "liquid_eager_transcode",
-                CacheMode::Arrow => "arrow",
-                CacheMode::StaticFileServer => "static_file_server",
-            }
-        )
-    }
-}
-
-impl FromStr for CacheMode {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(match s {
-            "parquet" => CacheMode::Parquet,
-            "liquid" => CacheMode::Liquid,
-            "liquid_eager_transcode" => CacheMode::LiquidEagerTranscode,
-            "arrow" => CacheMode::Arrow,
-            "static_file_server" => CacheMode::StaticFileServer,
-            _ => {
-                return Err(format!(
-                    "Invalid cache mode: {s}, must be one of: parquet, liquid, liquid_eager_transcode, arrow, static_file_server"
-                ));
-            }
-        })
-    }
-}
 
 /// The mode of the cache.
 #[derive(Debug, Copy, Clone)]
@@ -74,18 +23,6 @@ pub enum LiquidCacheMode {
 impl Default for LiquidCacheMode {
     fn default() -> Self {
         Self::Liquid
-    }
-}
-
-impl From<CacheMode> for LiquidCacheMode {
-    fn from(value: CacheMode) -> Self {
-        match value {
-            CacheMode::Liquid => LiquidCacheMode::Liquid,
-            CacheMode::Arrow => LiquidCacheMode::Arrow,
-            CacheMode::LiquidEagerTranscode => LiquidCacheMode::LiquidBlocking,
-            CacheMode::Parquet => unreachable!(),
-            CacheMode::StaticFileServer => unreachable!(),
-        }
     }
 }
 

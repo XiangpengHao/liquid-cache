@@ -233,7 +233,6 @@ impl LiquidStreamBuilder {
             .batch_size
             .min(self.metadata.file_metadata().num_rows() as usize);
 
-        let liquid_cache_mode = *liquid_cache.cache_mode();
         let reader = ReaderFactory {
             input: self.input,
             filter: self.filter,
@@ -254,10 +253,6 @@ impl LiquidStreamBuilder {
             _ => unreachable!("Must be Struct for root type"),
         };
         let schema = Arc::new(Schema::new(projected_fields));
-        let schema = Arc::new(coerce_parquet_schema_to_liquid_schema(
-            &schema,
-            &liquid_cache_mode,
-        ));
         Ok(LiquidStream {
             metadata: self.metadata,
             schema,

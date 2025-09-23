@@ -36,10 +36,7 @@ use datafusion::{
 use datafusion_proto::bytes::physical_plan_from_bytes;
 use fastrace::prelude::SpanContext;
 use futures::{Stream, TryStreamExt};
-use liquid_cache_common::{
-    CacheMode,
-    rpc::{FetchResults, LiquidCacheActions},
-};
+use liquid_cache_common::rpc::{FetchResults, LiquidCacheActions};
 use liquid_cache_parquet::cache::LiquidCacheRef;
 use log::info;
 use prost::bytes::Bytes;
@@ -60,7 +57,10 @@ pub use errors::{
 };
 pub use liquid_cache_common as common;
 pub use liquid_cache_storage as storage;
-use liquid_cache_storage::cache_policies::{CachePolicy, LruPolicy};
+use liquid_cache_storage::{
+    cache::squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict},
+    cache_policies::{CachePolicy, FiloPolicy},
+};
 use object_store::path::Path;
 use object_store::{GetOptions, GetRange};
 
@@ -102,8 +102,8 @@ impl LiquidCacheService {
             ctx,
             None,
             None,
-            CacheMode::LiquidEagerTranscode,
-            Box::new(LruPolicy::new()),
+            Box::new(FiloPolicy::new()),
+            Box::new(TranscodeSqueezeEvict),
         )
     }
 
@@ -119,8 +119,8 @@ impl LiquidCacheService {
         ctx: SessionContext,
         max_cache_bytes: Option<usize>,
         disk_cache_dir: Option<PathBuf>,
-        cache_mode: CacheMode,
         cache_policy: Box<dyn CachePolicy>,
+        squeeze_policy: Box<dyn SqueezePolicy>,
     ) -> anyhow::Result<Self> {
         let disk_cache_dir = match disk_cache_dir {
             Some(dir) => dir,
@@ -135,14 +135,14 @@ impl LiquidCacheService {
                 Arc::new(ctx),
                 max_cache_bytes,
                 disk_cache_dir,
-                cache_mode,
                 cache_policy,
+                squeeze_policy,
             ),
         })
     }
 
     /// Get a reference to the cache
-    pub fn cache(&self) -> &Option<LiquidCacheRef> {
+    pub fn cache(&self) -> &LiquidCacheRef {
         self.inner.cache()
     }
 

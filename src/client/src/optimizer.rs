@@ -6,7 +6,6 @@ use datafusion::{
     physical_plan::ExecutionPlan, physical_plan::aggregates::AggregateExec,
     physical_plan::aggregates::AggregateMode, physical_plan::repartition::RepartitionExec,
 };
-use liquid_cache_common::CacheMode;
 
 use crate::client_exec::LiquidCacheClientExec;
 
@@ -14,7 +13,6 @@ use crate::client_exec::LiquidCacheClientExec;
 #[derive(Debug)]
 pub struct PushdownOptimizer {
     cache_server: String,
-    cache_mode: CacheMode,
     object_stores: Vec<(ObjectStoreUrl, HashMap<String, String>)>,
 }
 
@@ -24,18 +22,16 @@ impl PushdownOptimizer {
     /// # Arguments
     ///
     /// * `cache_server` - The address of the liquid cache server
-    /// * `cache_mode` - The cache mode to use
+    /// * `object_stores` - The object stores to use
     ///
     /// # Returns
     ///
     pub fn new(
         cache_server: String,
-        cache_mode: CacheMode,
         object_stores: Vec<(ObjectStoreUrl, HashMap<String, String>)>,
     ) -> Self {
         Self {
             cache_server,
-            cache_mode,
             object_stores,
         }
     }
@@ -58,7 +54,6 @@ impl PushdownOptimizer {
                 return Ok(Arc::new(LiquidCacheClientExec::new(
                     plan,
                     self.cache_server.clone(),
-                    self.cache_mode,
                     self.object_stores.clone(),
                 )));
             }
@@ -179,7 +174,6 @@ mod tests {
         },
         prelude::{SessionConfig, SessionContext},
     };
-    use liquid_cache_common::CacheMode;
 
     use super::*;
 
@@ -191,7 +185,6 @@ mod tests {
             .with_default_features()
             .with_physical_optimizer_rule(Arc::new(PushdownOptimizer::new(
                 "localhost:15214".to_string(),
-                CacheMode::Liquid,
                 vec![],
             )));
         let state = builder.build();
@@ -272,8 +265,7 @@ mod tests {
 
     // Apply the PushdownOptimizer to a plan and get the result as a string for comparison
     fn apply_optimizer(plan: Arc<dyn ExecutionPlan>) -> String {
-        let optimizer =
-            PushdownOptimizer::new("localhost:15214".to_string(), CacheMode::Liquid, vec![]);
+        let optimizer = PushdownOptimizer::new("localhost:15214".to_string(), vec![]);
 
         let optimized = optimizer.optimize(plan, &ConfigOptions::default()).unwrap();
         let display_plan = DisplayableExecutionPlan::new(optimized.as_ref());

@@ -5,13 +5,13 @@ use datafusion::{
     physical_plan::{ExecutionPlan, display::DisplayableExecutionPlan},
     prelude::SessionContext,
 };
-use liquid_cache_common::{CacheMode, rpc::ExecutionMetricsResponse};
+use liquid_cache_common::rpc::ExecutionMetricsResponse;
 use liquid_cache_parquet::{
     cache::{LiquidCache, LiquidCacheRef},
     extract_execution_metrics, rewrite_data_source_plan,
 };
-use liquid_cache_storage::ByteCache;
 use liquid_cache_storage::cache_policies::CachePolicy;
+use liquid_cache_storage::{ByteCache, cache::squeeze_policies::SqueezePolicy};
 use log::{debug, info};
 use object_store::ObjectStore;
 use std::sync::RwLock;
@@ -38,7 +38,7 @@ pub(crate) struct LiquidCacheServiceInner {
     execution_plans: RwLock<HashMap<Uuid, ExecutionPlanEntry>>,
     execution_stats: RwLock<Vec<ExecutionStats>>,
     default_ctx: Arc<SessionContext>,
-    liquid_cache: Option<LiquidCacheRef>,
+    liquid_cache: LiquidCacheRef,
     parquet_cache_dir: PathBuf,
 }
 
@@ -47,24 +47,21 @@ impl LiquidCacheServiceInner {
         default_ctx: Arc<SessionContext>,
         max_cache_bytes: Option<usize>,
         disk_cache_dir: PathBuf,
-        cache_mode: CacheMode,
         cache_policy: Box<dyn CachePolicy>,
+        squeeze_policy: Box<dyn SqueezePolicy>,
     ) -> Self {
         let batch_size = default_ctx.state().config().batch_size();
 
         let parquet_cache_dir = disk_cache_dir.join("parquet");
         let liquid_cache_dir = disk_cache_dir.join("liquid");
 
-        let liquid_cache = match cache_mode {
-            CacheMode::Parquet => None,
-            _ => Some(Arc::new(LiquidCache::new(
-                batch_size,
-                max_cache_bytes.unwrap_or(usize::MAX),
-                liquid_cache_dir,
-                cache_mode.into(),
-                cache_policy,
-            ))),
-        };
+        let liquid_cache = Arc::new(LiquidCache::new(
+            batch_size,
+            max_cache_bytes.unwrap_or(usize::MAX),
+            liquid_cache_dir,
+            cache_policy,
+            squeeze_policy,
+        ));
 
         Self {
             execution_plans: Default::default(),
@@ -75,7 +72,7 @@ impl LiquidCacheServiceInner {
         }
     }
 
-    pub(crate) fn cache(&self) -> &Option<LiquidCacheRef> {
+    pub(crate) fn cache(&self) -> &LiquidCacheRef {
         &self.liquid_cache
     }
 
@@ -140,20 +137,11 @@ impl LiquidCacheServiceInner {
     }
 
     pub(crate) fn register_plan(&self, handle: Uuid, plan: Arc<dyn ExecutionPlan>) {
-        match self.cache() {
-            Some(cache) => {
-                self.execution_plans.write().unwrap().insert(
-                    handle,
-                    ExecutionPlanEntry::new(rewrite_data_source_plan(plan, cache)),
-                );
-            }
-            None => {
-                self.execution_plans
-                    .write()
-                    .unwrap()
-                    .insert(handle, ExecutionPlanEntry::new(plan));
-            }
-        }
+        let cache = self.cache();
+        self.execution_plans.write().unwrap().insert(
+            handle,
+            ExecutionPlanEntry::new(rewrite_data_source_plan(plan, cache)),
+        );
     }
 
     pub(crate) async fn execute_plan(
@@ -189,7 +177,7 @@ impl LiquidCacheServiceInner {
             .plan
             .clone();
 
-        let response = extract_execution_metrics(&plan, self.cache().as_ref());
+        let response = extract_execution_metrics(&plan, Some(self.cache()));
         Some(response)
     }
 
@@ -217,15 +205,18 @@ impl LiquidCacheServiceInner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use liquid_cache_storage::cache_policies::LruPolicy;
+    use liquid_cache_storage::{
+        cache::squeeze_policies::TranscodeSqueezeEvict,
+        cache_policies::{FiloPolicy, LruPolicy},
+    };
     #[tokio::test]
     async fn test_register_object_store() {
         let server = LiquidCacheServiceInner::new(
             Arc::new(SessionContext::new()),
             None,
             PathBuf::from("test"),
-            CacheMode::LiquidEagerTranscode,
-            Box::new(LruPolicy::new()),
+            Box::new(FiloPolicy::new()),
+            Box::new(TranscodeSqueezeEvict),
         );
         let url = Url::parse("file:///").unwrap();
         server

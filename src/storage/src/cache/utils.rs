@@ -4,7 +4,6 @@ use crate::sync::{Arc, RwLock};
 use arrow::array::ArrayRef;
 use arrow_schema::ArrowError;
 use bytes::Bytes;
-use liquid_cache_common::LiquidCacheMode;
 use std::path::PathBuf;
 
 #[derive(Debug)]
@@ -12,21 +11,14 @@ pub struct CacheConfig {
     batch_size: usize,
     max_cache_bytes: usize,
     cache_root_dir: PathBuf,
-    cache_mode: LiquidCacheMode,
 }
 
 impl CacheConfig {
-    pub(super) fn new(
-        batch_size: usize,
-        max_cache_bytes: usize,
-        cache_root_dir: PathBuf,
-        cache_mode: LiquidCacheMode,
-    ) -> Self {
+    pub(super) fn new(batch_size: usize, max_cache_bytes: usize, cache_root_dir: PathBuf) -> Self {
         Self {
             batch_size,
             max_cache_bytes,
             cache_root_dir,
-            cache_mode,
         }
     }
 
@@ -40,10 +32,6 @@ impl CacheConfig {
 
     pub fn cache_root_dir(&self) -> &PathBuf {
         &self.cache_root_dir
-    }
-
-    pub fn cache_mode(&self) -> &LiquidCacheMode {
-        &self.cache_mode
     }
 }
 
@@ -70,7 +58,9 @@ pub(crate) fn create_cache_store(
 ) -> Arc<super::core::CacheStorage> {
     use tempfile::tempdir;
 
-    use crate::cache::{CacheStorageBuilder, core::DefaultIoContext};
+    use crate::cache::{
+        CacheStorageBuilder, core::DefaultIoContext, squeeze_policies::TranscodeSqueezeEvict,
+    };
 
     let temp_dir = tempdir().unwrap();
     let base_dir = temp_dir.keep();
@@ -80,8 +70,8 @@ pub(crate) fn create_cache_store(
         .with_batch_size(batch_size)
         .with_max_cache_bytes(max_cache_bytes)
         .with_cache_dir(base_dir.clone())
-        .with_cache_mode(LiquidCacheMode::LiquidBlocking)
-        .with_policy(policy)
+        .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+        .with_cache_policy(policy)
         .with_io_worker(Arc::new(DefaultIoContext::new(base_dir)));
     builder.build()
 }

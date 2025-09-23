@@ -12,7 +12,10 @@ use futures::StreamExt;
 use liquid_cache_common::{
     LiquidCacheMode, ParquetReaderSchema, coerce_parquet_schema_to_liquid_schema,
 };
-use liquid_cache_storage::cache_policies::FiloPolicy;
+use liquid_cache_storage::{
+    cache::squeeze_policies::{Evict, SqueezePolicy, TranscodeEvict, TranscodeSqueezeEvict},
+    cache_policies::FiloPolicy,
+};
 use object_store::ObjectMeta;
 use parquet::arrow::{
     ParquetRecordBatchStreamBuilder, ProjectionMask,
@@ -22,14 +25,10 @@ use std::{fs::File, path::PathBuf, sync::Arc};
 
 const TEST_FILE_PATH: &str = "../../examples/nano_hits.parquet";
 
-fn test_output_schema(cache_mode: &LiquidCacheMode) -> SchemaRef {
+fn test_output_schema() -> SchemaRef {
     let file = File::open(TEST_FILE_PATH).unwrap();
     let builder = ArrowReaderMetadata::load(&file, Default::default()).unwrap();
-    let schema = builder.schema().clone();
-    Arc::new(coerce_parquet_schema_to_liquid_schema(
-        schema.as_ref(),
-        cache_mode,
-    ))
+    builder.schema().clone()
 }
 
 pub fn generate_test_parquet() -> (File, String) {
@@ -114,27 +113,27 @@ fn assert_batch_eq(left: &RecordBatch, right: &RecordBatch) {
 fn get_test_cache(
     bath_size: usize,
     cache_dir: PathBuf,
-    cache_mode: &LiquidCacheMode,
+    squeeze_policy: Box<dyn SqueezePolicy>,
 ) -> LiquidCachedFileRef {
     let lq = LiquidCache::new(
         bath_size,
         usize::MAX,
         cache_dir,
-        *cache_mode,
         Box::new(FiloPolicy::new()),
+        squeeze_policy,
     );
 
     lq.register_or_get_file("".to_string())
 }
 
-async fn basic_stuff(cache_mode: &LiquidCacheMode) {
+async fn basic_stuff(squeeze_policy: Box<dyn SqueezePolicy>) {
     let tmp_dir = tempfile::tempdir().unwrap();
     let (builder, _file) = get_test_reader().await;
     let batch_size = builder.batch_size;
-    let liquid_cache = get_test_cache(batch_size, tmp_dir.path().to_path_buf(), cache_mode);
+    let liquid_cache = get_test_cache(batch_size, tmp_dir.path().to_path_buf(), squeeze_policy);
     let reader = builder.build(liquid_cache).unwrap();
 
-    let schema = test_output_schema(cache_mode);
+    let schema = test_output_schema();
 
     let projection = (0..schema.fields().len()).collect::<Vec<_>>();
 
@@ -152,20 +151,14 @@ async fn basic_stuff(cache_mode: &LiquidCacheMode) {
     }
 }
 
-const CACHE_MODES: &[LiquidCacheMode] = &[
-    LiquidCacheMode::Arrow,
-    LiquidCacheMode::Liquid,
-    LiquidCacheMode::LiquidBlocking,
-];
-
 #[tokio::test]
 async fn test_basic() {
-    for cache_mode in CACHE_MODES {
-        basic_stuff(cache_mode).await;
+    for squeeze_policy in squeeze_policies() {
+        basic_stuff(squeeze_policy).await;
     }
 }
 
-async fn read_with_projection(cache_mode: &LiquidCacheMode) {
+async fn read_with_projection(squeeze_policy: Box<dyn SqueezePolicy>) {
     let tmp_dir = tempfile::tempdir().unwrap();
     let column_projections = vec![0, 3, 6, 8];
     let (mut builder, _file) = get_test_reader().await;
@@ -174,7 +167,7 @@ async fn read_with_projection(cache_mode: &LiquidCacheMode) {
         column_projections.iter().cloned(),
     );
     let batch_size = builder.batch_size;
-    let liquid_cache = get_test_cache(batch_size, tmp_dir.path().to_path_buf(), cache_mode);
+    let liquid_cache = get_test_cache(batch_size, tmp_dir.path().to_path_buf(), squeeze_policy);
     let reader = builder.build(liquid_cache).unwrap();
 
     let batches = reader
@@ -190,19 +183,27 @@ async fn read_with_projection(cache_mode: &LiquidCacheMode) {
     }
 }
 
+fn squeeze_policies() -> Vec<Box<dyn SqueezePolicy>> {
+    vec![
+        Box::new(Evict),
+        Box::new(TranscodeSqueezeEvict),
+        Box::new(TranscodeEvict),
+    ]
+}
+
 #[tokio::test]
 async fn test_read_with_projection() {
-    for cache_mode in CACHE_MODES {
+    for cache_mode in squeeze_policies() {
         read_with_projection(cache_mode).await;
     }
 }
 
-async fn read_warm(cache_mode: &LiquidCacheMode) {
+async fn read_warm(squeeze_policy: Box<dyn SqueezePolicy>) {
     let tmp_dir = tempfile::tempdir().unwrap();
     let column_projections = vec![0, 3, 6, 8];
     let (mut builder, _file) = get_test_reader().await;
     let batch_size = builder.batch_size;
-    let liquid_cache = get_test_cache(batch_size, tmp_dir.path().to_path_buf(), cache_mode);
+    let liquid_cache = get_test_cache(batch_size, tmp_dir.path().to_path_buf(), squeeze_policy);
     builder.projection = ProjectionMask::roots(
         builder.metadata.file_metadata().schema_descr(),
         column_projections.iter().cloned(),
@@ -232,15 +233,14 @@ async fn read_warm(cache_mode: &LiquidCacheMode) {
 
 #[tokio::test]
 async fn test_reading_warm() {
-    for cache_mode in CACHE_MODES {
-        read_warm(cache_mode).await;
+    for squeeze_policy in squeeze_policies() {
+        read_warm(squeeze_policy).await;
     }
 }
 
 #[tokio::test]
 async fn test_reading_with_full_cache() {
     let column_projections = vec![0, 3, 6, 8];
-    let cache_mode = LiquidCacheMode::LiquidBlocking;
     let (mut builder, _file) = get_test_reader().await;
     let batch_size = builder.batch_size;
     let tmp_dir = tempfile::tempdir().unwrap();
@@ -249,8 +249,8 @@ async fn test_reading_with_full_cache() {
         batch_size,
         1,
         tmp_dir.path().to_path_buf(),
-        cache_mode,
         Box::new(FiloPolicy::new()),
+        Box::new(TranscodeSqueezeEvict),
     );
     let lq_file = lq.register_or_get_file("".to_string());
 

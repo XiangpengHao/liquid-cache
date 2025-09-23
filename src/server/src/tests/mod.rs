@@ -5,8 +5,10 @@ use datafusion::{
     physical_plan::{ExecutionPlan, collect},
     prelude::SessionContext,
 };
-use liquid_cache_common::CacheMode;
-use liquid_cache_storage::cache_policies::FiloPolicy;
+use liquid_cache_storage::{
+    cache::squeeze_policies::{Evict, SqueezePolicy, TranscodeEvict, TranscodeSqueezeEvict},
+    cache_policies::FiloPolicy,
+};
 use uuid::Uuid;
 
 mod cases;
@@ -21,7 +23,12 @@ async fn get_physical_plan(sql: &str, ctx: &SessionContext) -> Arc<dyn Execution
     state.create_physical_plan(&plan).await.unwrap()
 }
 
-async fn run_sql(sql: &str, mode: CacheMode, cache_size_bytes: usize, file_path: &str) -> String {
+async fn run_sql(
+    sql: &str,
+    squeeze_policy: Box<dyn SqueezePolicy>,
+    cache_size_bytes: usize,
+    file_path: &str,
+) -> String {
     let ctx = Arc::new(LiquidCacheService::context().unwrap());
     ctx.register_parquet("hits", file_path, Default::default())
         .await
@@ -31,8 +38,8 @@ async fn run_sql(sql: &str, mode: CacheMode, cache_size_bytes: usize, file_path:
         ctx.clone(),
         Some(cache_size_bytes),
         tmp_dir.path().to_path_buf(),
-        mode,
         Box::new(FiloPolicy::new()),
+        squeeze_policy,
     );
     async fn get_result(service: &LiquidCacheServiceInner, sql: &str) -> String {
         let handle = Uuid::new_v4();
@@ -53,18 +60,17 @@ async fn run_sql(sql: &str, mode: CacheMode, cache_size_bytes: usize, file_path:
 }
 
 async fn test_runner(sql: &str, reference: &str) {
-    let modes = [
-        CacheMode::LiquidEagerTranscode,
-        CacheMode::Arrow,
-        CacheMode::Liquid,
-    ];
-
     // 573960 is the first batch size of URL
     let sizes = [10, 573960, usize::MAX];
 
-    for mode in modes {
-        for size in sizes {
-            let result = run_sql(sql, mode, size, TEST_FILE).await;
+    for size in sizes {
+        let policies: [Box<dyn SqueezePolicy>; 3] = [
+            Box::new(TranscodeSqueezeEvict),
+            Box::new(Evict),
+            Box::new(TranscodeEvict),
+        ];
+        for policy in policies {
+            let result = run_sql(sql, policy, size, TEST_FILE).await;
             assert_eq!(result, reference);
         }
     }
@@ -73,7 +79,7 @@ async fn test_runner(sql: &str, reference: &str) {
 #[tokio::test]
 async fn test_url_prefix() {
     let sql = r#"select COUNT(*) from hits where "URL" like 'https://%'"#;
-    let reference = run_sql(sql, CacheMode::LiquidEagerTranscode, 573960, TEST_FILE).await;
+    let reference = run_sql(sql, Box::new(TranscodeSqueezeEvict), 573960, TEST_FILE).await;
     insta::assert_snapshot!(reference);
     test_runner(sql, &reference).await;
 }
@@ -81,7 +87,7 @@ async fn test_url_prefix() {
 #[tokio::test]
 async fn test_url() {
     let sql = r#"select "URL" from hits where "URL" like '%tours%' order by "URL" desc"#;
-    let reference = run_sql(sql, CacheMode::LiquidEagerTranscode, 573960, TEST_FILE).await;
+    let reference = run_sql(sql, Box::new(TranscodeSqueezeEvict), 573960, TEST_FILE).await;
     insta::assert_snapshot!(reference);
     test_runner(sql, &reference).await;
 }
@@ -89,7 +95,7 @@ async fn test_url() {
 #[tokio::test]
 async fn test_os() {
     let sql = r#"select "OS" from hits where "URL" like '%tours%' order by "OS" desc"#;
-    let reference = run_sql(sql, CacheMode::LiquidEagerTranscode, 573960, TEST_FILE).await;
+    let reference = run_sql(sql, Box::new(TranscodeSqueezeEvict), 573960, TEST_FILE).await;
     insta::assert_snapshot!(reference);
     test_runner(sql, &reference).await;
 }
@@ -97,7 +103,7 @@ async fn test_os() {
 #[tokio::test]
 async fn test_referer() {
     let sql = r#"select "Referer" from hits where "Referer" <> '' AND "URL" like '%tours%' order by "Referer" desc"#;
-    let reference = run_sql(sql, CacheMode::LiquidEagerTranscode, 573960, TEST_FILE).await;
+    let reference = run_sql(sql, Box::new(TranscodeSqueezeEvict), 573960, TEST_FILE).await;
     insta::assert_snapshot!(reference);
     test_runner(sql, &reference).await;
 }
@@ -105,7 +111,7 @@ async fn test_referer() {
 #[tokio::test]
 async fn test_min_max() {
     let sql = r#"select min("Referer"), max("Referer") from hits where "Referer" <> '' AND "URL" like '%tours%'"#;
-    let reference = run_sql(sql, CacheMode::LiquidEagerTranscode, 573960, TEST_FILE).await;
+    let reference = run_sql(sql, Box::new(TranscodeSqueezeEvict), 573960, TEST_FILE).await;
     insta::assert_snapshot!(reference);
     test_runner(sql, &reference).await;
 }
