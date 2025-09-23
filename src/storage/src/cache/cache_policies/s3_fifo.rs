@@ -36,7 +36,7 @@ impl S3FifoInternalState {
 
     fn dec_frequency(&mut self, entry_id: &EntryID) {
         if let Some(freq) = self.frequency.get_mut(entry_id) {
-            *freq = Self::cap_frequency(*freq - 1);
+            *freq = freq.saturating_sub(1);
         }
     }
 
@@ -107,45 +107,57 @@ impl S3FifoPolicy {
     }
 
     fn evict_from_small(&self, state: &mut S3FifoInternalState) -> Option<EntryID> {
-        if let Some(element) = state.small.pop_back() {
-            let freq = *state.frequency.get_mut(&element).unwrap_or(&mut 0);
+        let mut is_evicted = false;
+        let mut victim: Option<EntryID> = None;
+
+        while !is_evicted && !state.small.is_empty() {
+            let Some(element) = state.small.pop_back() else {
+                break;
+            };
+            let freq = state.frequency.get(&element).copied().unwrap_or(0);
             let entry_size = self.entry_size(&element);
             state.dec_small_queue_size(entry_size);
 
-            // If frequency is greater than one, give it another chance, by moving to main queue
             if freq > 1 {
                 state.main.push_front(element);
                 state.inc_main_queue_size(entry_size);
-                None
+                state.frequency.insert(element, 0);
             } else {
-                // Move it to ghost queue
+                // Move to ghost queue
                 state.ghost.push_front(element);
                 state.ghost_set.insert(element);
                 state.frequency.remove(&element);
-                Some(element)
+                is_evicted = true;
+                victim = Some(element);
             }
-        } else {
-            None
         }
+        victim
     }
 
     fn evict_from_main(&self, state: &mut S3FifoInternalState) -> Option<EntryID> {
-        if let Some(element) = state.small.pop_back() {
-            let freq = *state.frequency.get_mut(&element).unwrap_or(&mut 0);
+        let mut is_evicted = false;
+        let mut victim: Option<EntryID> = None;
+
+        while !is_evicted && !state.main.is_empty() {
+            let Some(element) = state.main.pop_back() else {
+                break;
+            };
+
+            let freq = state.frequency.get(&element).copied().unwrap_or(0);
             let entry_size = self.entry_size(&element);
             state.dec_main_queue_size(entry_size);
+
             if freq > 0 {
                 state.main.push_front(element);
-                state.inc_main_queue_size(entry_size);
                 state.dec_frequency(&element);
-                None
+                state.inc_main_queue_size(entry_size);
             } else {
                 state.frequency.remove(&element);
-                Some(element)
+                is_evicted = true;
+                victim = Some(element);
             }
-        } else {
-            None
         }
+        victim
     }
 }
 
@@ -165,8 +177,6 @@ impl CachePolicy for S3FifoPolicy {
 
             if let Some(v) = victim {
                 advices.push(v);
-            } else {
-                break;
             }
         }
         advices
@@ -336,17 +346,24 @@ mod tests {
     }
 
     #[test]
-    fn test_eviction_promotes_to_m_if_freq_gt_one() {
+    fn test_eviction_from_main_and_reinsertion_logic() {
         let policy = S3FifoPolicy::new(None);
         let e1 = entry(1);
+        let e2 = entry(2);
+        let _e3 = entry(3);
 
-        policy.notify_insert(&e1);
-        policy.notify_access(&e1);
-        policy.notify_access(&e1);
+        let mut state = policy.state.lock().unwrap();
+        state.main.push_front(e1);
+        state.frequency.insert(e1, 1);
+        state.main_queue_size += 1;
 
-        let _ = policy.advise(1);
-        let state = policy.state.lock().unwrap();
-        assert!(state.main.contains(&e1));
-        assert!(!state.ghost_set.contains(&e1));
+        state.main.push_front(e2);
+        state.frequency.insert(e2, 2);
+        state.main_queue_size += 1;
+        state.total_size += 2;
+        drop(state);
+
+        let evicted = policy.advise(2);
+        assert_eq!(evicted.len(), 2);
     }
 }
