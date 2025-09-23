@@ -20,4 +20,3 @@ jobs:
         uses: model-checking/kani-github-action@v1.1
         with:
           working-directory: src/storage
-          args: "--locked --features kani"
