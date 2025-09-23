@@ -2601,15 +2601,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kani"
-version = "0.65.0"
-source = "git+https://github.com/model-checking/kani?tag=kani-0.65.0#677c791e8a3e6b59da3616f4323d8f3ce989bc51"
-dependencies = [
- "kani_core",
- "kani_macros",
-]
-
-[[package]]
 name = "kani-verifier"
 version = "0.65.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2618,27 +2609,6 @@ dependencies = [
  "anyhow",
  "home",
  "os_info",
-]
-
-[[package]]
-name = "kani_core"
-version = "0.65.0"
-source = "git+https://github.com/model-checking/kani?tag=kani-0.65.0#677c791e8a3e6b59da3616f4323d8f3ce989bc51"
-dependencies = [
- "kani_macros",
-]
-
-[[package]]
-name = "kani_macros"
-version = "0.65.0"
-source = "git+https://github.com/model-checking/kani?tag=kani-0.65.0#677c791e8a3e6b59da3616f4323d8f3ce989bc51"
-dependencies = [
- "proc-macro-error2",
- "proc-macro2",
- "quote",
- "strum",
- "strum_macros",
- "syn",
 ]
 
 [[package]]
@@ -2938,7 +2908,6 @@ dependencies = [
  "fsst-rs",
  "futures",
  "io-uring",
- "kani",
  "kani-verifier",
  "libc",
  "liquid-cache-common",
@@ -4395,24 +4364,6 @@ name = "strsim"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
-
-[[package]]
-name = "strum"
-version = "0.27.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af23d6f6c1a224baef9d3f61e287d2761385a5b88fdab4eb4c6f11aeb54c4bcf"
-
-[[package]]
-name = "strum_macros"
-version = "0.27.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7695ce3845ea4b33927c055a39dc438a45b059f7c1b3d91d38d10355fb8cbca7"
-dependencies = [
- "heck",
- "proc-macro2",
- "quote",
- "syn",
-]
 
 [[package]]
 name = "subtle"

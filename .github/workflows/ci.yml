@@ -31,7 +31,7 @@ jobs:
           RUSTDOCFLAGS: -D warnings
 
       - name: Run clippy
-        run: cargo clippy --all-targets --features "shuttle" -- -D warnings
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Install cargo-shear
         run: cargo install cargo-shear --locked
