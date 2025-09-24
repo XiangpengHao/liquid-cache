@@ -118,7 +118,7 @@ jobs:
           echo "=== Server logs ==="
           cat server.log || echo "No server log found"
           curl http://localhost:53703/shutdown
-          env RUST_LOG=info cargo run --bin in_process -- --manifest benchmark/clickbench/benchmark_manifest.json
+          env RUST_LOG=info cargo run --bin in_process -- --manifest benchmark/clickbench/benchmark_manifest.json --bench-mode liquid --max-cache-mb 256
           cargo llvm-cov report --codecov --output-path codecov_clickbench.json
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
@@ -154,7 +154,7 @@ jobs:
           echo "=== Server logs ==="
           cat server.log || echo "No server log found"
           curl http://localhost:53703/shutdown
-          env RUST_LOG=info cargo run --bin tpch_inprocess -- --query-dir benchmark/tpch/queries --data-dir benchmark/tpch/data/sf0.1
+          env RUST_LOG=info cargo run --bin tpch_inprocess -- --query-dir benchmark/tpch/queries --data-dir benchmark/tpch/data/sf0.1 --bench-mode liquid --max-cache-mb 256
           cargo llvm-cov report --codecov --output-path codecov_tpch.json
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
@@ -203,7 +203,7 @@ jobs:
             --manifest benchmark/clickbench/benchmark_manifest.json \
             --output benchmark_results/liquid.json \
             --iteration 5 \
-            --bench-mode liquid
+            --bench-mode liquid \
             --max-cache-mb 256 
 
       - name: Run DataFusion benchmark (plain parquet)

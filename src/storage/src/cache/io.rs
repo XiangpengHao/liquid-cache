@@ -31,7 +31,7 @@ impl RingState {
 }
 
 thread_local! {
-    static SHARED_RING_STATE: RefCell<Option<Rc<RefCell<RingState>>>> = RefCell::new(None);
+    static SHARED_RING_STATE: RefCell<Option<Rc<RefCell<RingState>>>> = const { RefCell::new(None) };
 }
 
 fn acquire_ring_state() -> Rc<RefCell<RingState>> {
