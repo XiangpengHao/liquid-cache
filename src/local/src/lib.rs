@@ -28,7 +28,7 @@ pub use liquid_cache_storage as storage;
 /// # Example
 /// ```rust
 /// use liquid_cache_local::{
-///     common::{LiquidCacheMode},
+///     storage::cache_policies::FiloPolicy,
 ///     LiquidCacheLocalBuilder,
 /// };
 /// use datafusion::prelude::{SessionConfig, SessionContext};
@@ -36,14 +36,12 @@ pub use liquid_cache_storage as storage;
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-///     use liquid_cache_local::storage::cache_policies::FiloPolicy;
 ///     let temp_dir = TempDir::new().unwrap();
 ///
 ///     let (ctx, _) = LiquidCacheLocalBuilder::new()
 ///         .with_max_cache_bytes(1024 * 1024 * 1024) // 1GB
 ///         .with_cache_dir(temp_dir.path().to_path_buf())
-///         .with_cache_mode(LiquidCacheMode::Liquid)
-///         .with_cache_strategy(Box::new(FiloPolicy::new()))
+///         .with_cache_policy(Box::new(FiloPolicy::new()))
 ///         .build(SessionConfig::new())?;
 ///
 ///     // Register the test parquet file

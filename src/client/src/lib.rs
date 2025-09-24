@@ -27,6 +27,8 @@ mod tests;
 /// # Example
 ///
 /// ```ignore
+/// use datafusion::execution::object_store::ObjectStoreUrl;
+/// use datafusion::prelude::SessionConfig;
 /// use liquid_cache_client::LiquidCacheBuilder;
 /// use std::collections::HashMap;
 ///
@@ -36,8 +38,7 @@ mod tests;
 /// s3_options.insert("region".to_string(), "us-east-1".to_string());
 ///
 /// let ctx = LiquidCacheBuilder::new("localhost:15214")
-///     .with_object_store("s3://my_bucket", Some(s3_options))
-///     .with_cache_mode(CacheMode::Liquid)
+///     .with_object_store(ObjectStoreUrl::parse("s3://my_bucket").unwrap(), Some(s3_options))
 ///     .build(SessionConfig::from_env().unwrap())
 ///     .unwrap();
 ///

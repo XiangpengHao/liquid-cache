@@ -94,14 +94,13 @@ pub struct CacheStats {
 /// Example:
 /// ```rust
 /// use liquid_cache_storage::cache::CacheStorageBuilder;
-/// use liquid_cache_storage::common::LiquidCacheMode;
+/// use liquid_cache_storage::cache_policies::FiloPolicy;
 ///
 ///
 /// let _storage = CacheStorageBuilder::new()
 ///     .with_batch_size(8192)
 ///     .with_max_cache_bytes(1024 * 1024 * 1024)
-///     .with_cache_mode(LiquidCacheMode::Liquid)
-///     .with_policy(Box::new(liquid_cache_storage::cache_policies::FiloPolicy::new()))
+///     .with_cache_policy(Box::new(FiloPolicy::new()))
 ///     .build();
 /// ```
 pub struct CacheStorageBuilder {

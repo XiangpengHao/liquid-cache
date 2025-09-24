@@ -75,9 +75,17 @@ mod tests;
 /// use arrow_flight::flight_service_server::FlightServiceServer;
 /// use datafusion::prelude::SessionContext;
 /// use liquid_cache_server::LiquidCacheService;
+/// use liquid_cache_server::storage::cache::squeeze_policies::TranscodeSqueezeEvict;
+/// use liquid_cache_server::storage::cache_policies::FiloPolicy;
 /// use tonic::transport::Server;
-/// use liquid_cache_server::storage::cache_policies::LruPolicy;
-/// let liquid_cache = LiquidCacheService::new(SessionContext::new(), None, None, Default::default(), Box::new(LruPolicy::new())).unwrap();
+/// let liquid_cache = LiquidCacheService::new(
+///     SessionContext::new(),
+///     None,
+///     None,
+///     Box::new(FiloPolicy::new()),
+///     Box::new(TranscodeSqueezeEvict),
+/// )
+/// .unwrap();
 /// let flight = FlightServiceServer::new(liquid_cache);
 /// Server::builder()
 ///     .add_service(flight)
