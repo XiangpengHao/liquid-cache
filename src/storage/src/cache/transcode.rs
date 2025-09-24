@@ -152,6 +152,22 @@ pub fn transcode_liquid_inner<'a>(
             *compressors = Some(compressor);
             Ok(Arc::new(compressed))
         }
+        DataType::Binary => {
+            let compressor = state.fsst_compressor().clone();
+            if let Some(compressor) = compressor.as_ref() {
+                let compressed = LiquidByteViewArray::<MemoryBuffer>::from_binary_array(
+                    array.as_binary::<i32>(),
+                    compressor.clone(),
+                );
+                return Ok(Arc::new(compressed));
+            }
+            drop(compressor);
+            let mut compressors = state.fsst_compressor_raw().write().unwrap();
+            let (compressor, compressed) =
+                LiquidByteViewArray::<MemoryBuffer>::train_from_arrow(array.as_binary::<i32>());
+            *compressors = Some(compressor);
+            Ok(Arc::new(compressed))
+        }
         DataType::Dictionary(_, _) => {
             if let Some(dict_array) = array.as_dictionary_opt::<UInt16Type>() {
                 let compressor = state.fsst_compressor().clone();
