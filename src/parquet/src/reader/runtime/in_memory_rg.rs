@@ -434,7 +434,6 @@ mod tests {
     use arrow::array::{AsArray, Int32Array};
     use arrow::datatypes::{DataType, Field};
     use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
-    use liquid_cache_common::{LiquidCacheMode, ParquetReaderSchema};
     use liquid_cache_storage::{
         cache::squeeze_policies::TranscodeSqueezeEvict, cache_policies::FiloPolicy,
     };
@@ -470,8 +469,7 @@ mod tests {
         let reader_metadata = ArrowReaderMetadata::load_async(&mut reader, options)
             .await
             .unwrap();
-        let mut physical_file_schema = Arc::clone(reader_metadata.schema());
-        physical_file_schema = ParquetReaderSchema::from(&physical_file_schema);
+        let physical_file_schema = Arc::clone(reader_metadata.schema());
         let mut options = ArrowReaderOptions::new().with_page_index(true);
         options = options.with_schema(Arc::clone(&physical_file_schema));
         let reader_metadata =
@@ -836,14 +834,8 @@ mod tests {
         // ===== Now  insert some arrays to the cache =====
         let (_liquid_cache, liquid_cache_rg) = setup_test_lq_cache(batch_size, tmp_dir.path());
         let mut builder = get_test_stream_builder(batch_size).await;
-        let column = liquid_cache_rg.create_column(
-            2,
-            Arc::new(Field::new(
-                "Title",
-                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-                false,
-            )),
-        );
+        let column =
+            liquid_cache_rg.create_column(2, Arc::new(Field::new("Title", DataType::Utf8, false)));
         for i in (0..value_cnt).step_by(2 * batch_size) {
             let batch_id = BatchID::from_row_id(i, batch_size);
             let array = baseline_results[i / batch_size].clone();

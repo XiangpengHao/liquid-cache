@@ -9,10 +9,9 @@ use arrow::array::{Array, ArrayRef, BooleanArray, RecordBatch};
 use arrow::buffer::BooleanBuffer;
 use arrow::compute::prep_null_mask_filter;
 use arrow_schema::{ArrowError, Field, Schema};
-use liquid_cache_common::LiquidCacheMode;
 use liquid_cache_storage::cache::cached_data::GetWithPredicateResult;
 use liquid_cache_storage::cache::io_state::{IoStateMachine, SansIo, TryGet};
-use liquid_cache_storage::cache::squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict};
+use liquid_cache_storage::cache::squeeze_policies::SqueezePolicy;
 use liquid_cache_storage::cache::{CachePolicy, CacheStorage, CacheStorageBuilder};
 use parquet::arrow::arrow_reader::ArrowPredicate;
 use std::path::{Path, PathBuf};
@@ -438,6 +437,7 @@ mod tests {
     use datafusion::physical_expr::PhysicalExpr;
     use datafusion::physical_expr::expressions::{BinaryExpr, Literal};
     use datafusion::physical_plan::expressions::Column;
+    use liquid_cache_storage::cache::squeeze_policies::TranscodeSqueezeEvict;
     use liquid_cache_storage::cache_policies::FiloPolicy;
     use parquet::arrow::ArrowWriter;
     use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
@@ -645,12 +645,14 @@ mod tests {
         let expr_name: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
             Arc::new(Column::new("name", 0)),
             Operator::Eq,
-            Arc::new(Literal::new(ScalarValue::Utf8(Some("Bob".to_string())))),
+            Arc::new(Literal::new(ScalarValue::Utf8View(Some("Bob".to_string())))),
         ));
         let expr_city: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
             Arc::new(Column::new("city", 1)),
             Operator::Eq,
-            Arc::new(Literal::new(ScalarValue::Utf8(Some("Tokyo".to_string())))),
+            Arc::new(Literal::new(ScalarValue::Utf8View(Some(
+                "Tokyo".to_string(),
+            )))),
         ));
         let expr: Arc<dyn PhysicalExpr> =
             Arc::new(BinaryExpr::new(expr_name, Operator::Or, expr_city));

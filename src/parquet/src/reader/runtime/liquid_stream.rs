@@ -8,7 +8,6 @@ use arrow_schema::{DataType, Fields, Schema, SchemaRef};
 use fastrace::Event;
 use fastrace::local::LocalSpan;
 use futures::{FutureExt, Stream, future::BoxFuture, ready};
-use liquid_cache_common::coerce_parquet_schema_to_liquid_schema;
 use parquet::arrow::arrow_reader::ArrowPredicate;
 use parquet::{
     arrow::{

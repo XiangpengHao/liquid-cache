@@ -1,15 +1,13 @@
 use clap::Parser;
 use datafusion::prelude::SessionConfig;
 use datafusion::{arrow::array::RecordBatch, error::Result, prelude::SessionContext};
+use liquid_cache_benchmarks::BenchmarkRunner;
 use liquid_cache_benchmarks::{Benchmark, BenchmarkManifest, ClientBenchmarkArgs, run_query, tpch};
-use liquid_cache_benchmarks::{BenchmarkMode, BenchmarkRunner};
 use liquid_cache_client::LiquidCacheBuilder;
 use log::info;
 use mimalloc::MiMalloc;
-use object_store::ClientConfigKey;
 use serde::Serialize;
 use std::{path::PathBuf, sync::Arc};
-use url::Url;
 use uuid::Uuid;
 
 #[global_allocator]

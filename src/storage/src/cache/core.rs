@@ -523,33 +523,39 @@ impl CacheStorage {
             .expect("failed to insert");
     }
 
-    #[allow(dead_code)]
+    #[cfg(target_os = "linux")]
     async fn apply_advice_inner(&self, to_squeeze: EntryID) {
-        let Some(to_squeeze_batch) = self.index.get(&to_squeeze) else {
+        let Some(mut to_squeeze_batch) = self.index.get(&to_squeeze) else {
             return;
         };
         let compressor = self.io_context.get_compressor_for_entry(&to_squeeze);
-        let (new_batch, bytes_to_write) = self
-            .squeeze_policy
-            .squeeze(to_squeeze_batch, compressor.as_ref());
+        loop {
+            let (new_batch, bytes_to_write) = self
+                .squeeze_policy
+                .squeeze(to_squeeze_batch, compressor.as_ref());
 
-        if let Some(bytes_to_write) = bytes_to_write {
-            match new_batch {
-                CachedBatch::DiskArrow => {
-                    let path = self.io_context.entry_arrow_path(&to_squeeze);
-                    self.write_to_disk(&path, &bytes_to_write).await;
+            if let Some(bytes_to_write) = bytes_to_write {
+                match new_batch {
+                    CachedBatch::DiskArrow => {
+                        let path = self.io_context.entry_arrow_path(&to_squeeze);
+                        self.write_to_disk(&path, &bytes_to_write).await;
+                    }
+                    CachedBatch::DiskLiquid | CachedBatch::MemoryHybridLiquid(_) => {
+                        let path = self.io_context.entry_liquid_path(&to_squeeze);
+                        self.write_to_disk(&path, &bytes_to_write).await;
+                    }
+                    CachedBatch::MemoryArrow(_) | CachedBatch::MemoryLiquid(_) => {
+                        unreachable!()
+                    }
                 }
-                CachedBatch::DiskLiquid | CachedBatch::MemoryHybridLiquid(_) => {
-                    let path = self.io_context.entry_liquid_path(&to_squeeze);
-                    self.write_to_disk(&path, &bytes_to_write).await;
-                }
-                CachedBatch::MemoryArrow(_) | CachedBatch::MemoryLiquid(_) => {
-                    unreachable!()
+            }
+            match self.try_insert(to_squeeze, new_batch) {
+                Ok(()) => break,
+                Err(batch) => {
+                    to_squeeze_batch = batch;
                 }
             }
         }
-        self.try_insert(to_squeeze, new_batch)
-            .expect("failed to insert");
     }
 
     fn write_to_disk_blocking(&self, path: impl AsRef<Path>, bytes: &[u8]) {

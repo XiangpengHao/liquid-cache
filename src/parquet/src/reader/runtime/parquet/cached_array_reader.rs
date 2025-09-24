@@ -3,7 +3,6 @@ use std::any::Any;
 use ahash::AHashMap;
 use arrow::array::{ArrayRef, BooleanArray, BooleanBufferBuilder, new_empty_array};
 use arrow_schema::{DataType, Field, Fields};
-use liquid_cache_common::{cast_from_parquet_to_liquid_type, coerce_parquet_type_to_liquid_type};
 use parquet::{
     arrow::{
         array_reader::{ArrayReader, StructArrayReader},
@@ -376,7 +375,6 @@ mod tests {
     use std::sync::Arc;
 
     use arrow::array::Int32Array;
-    use liquid_cache_common::LiquidCacheMode;
     use liquid_cache_storage::{
         cache::squeeze_policies::TranscodeSqueezeEvict, cache_policies::FiloPolicy,
     };

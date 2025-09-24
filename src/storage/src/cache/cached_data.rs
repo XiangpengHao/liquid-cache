@@ -102,7 +102,7 @@ impl<'a> CachedData<'a> {
     pub fn get_arrow_array(&self) -> SansIo<ArrayRef, GetArrowArrayState> {
         match &self.data {
             CachedBatch::MemoryArrow(array) => SansIo::Ready(array.clone()),
-            CachedBatch::MemoryLiquid(array) => SansIo::Ready(array.to_best_arrow_array()),
+            CachedBatch::MemoryLiquid(array) => SansIo::Ready(array.to_arrow_array()),
             CachedBatch::DiskLiquid => {
                 let path = self.io_context.entry_liquid_path(&self.id);
                 let compressor_states = self.io_context.get_compressor_for_entry(&self.id);

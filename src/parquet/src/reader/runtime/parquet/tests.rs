@@ -9,9 +9,6 @@ use arrow::record_batch::RecordBatch;
 use arrow_schema::SchemaRef;
 use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
 use futures::StreamExt;
-use liquid_cache_common::{
-    LiquidCacheMode, ParquetReaderSchema, coerce_parquet_schema_to_liquid_schema,
-};
 use liquid_cache_storage::{
     cache::squeeze_policies::{Evict, SqueezePolicy, TranscodeEvict, TranscodeSqueezeEvict},
     cache_policies::FiloPolicy,
@@ -78,8 +75,7 @@ async fn get_test_reader() -> (LiquidStreamBuilder, File) {
     let reader_metadata = ArrowReaderMetadata::load_async(&mut async_reader, Default::default())
         .await
         .unwrap();
-    let mut physical_file_schema = Arc::clone(reader_metadata.schema());
-    physical_file_schema = ParquetReaderSchema::from(&physical_file_schema);
+    let physical_file_schema = Arc::clone(reader_metadata.schema());
 
     let options = ArrowReaderOptions::new().with_schema(Arc::clone(&physical_file_schema));
     let metadata =

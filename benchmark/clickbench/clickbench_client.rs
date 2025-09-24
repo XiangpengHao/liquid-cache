@@ -12,18 +12,16 @@ use datafusion::{error::Result, prelude::SessionConfig};
 use liquid_cache_benchmarks::{
     Benchmark, BenchmarkManifest, ClientBenchmarkArgs, utils::assert_batch_eq,
 };
-use liquid_cache_benchmarks::{BenchmarkMode, BenchmarkRunner, Query, run_query};
+use liquid_cache_benchmarks::{BenchmarkRunner, Query, run_query};
 use liquid_cache_client::LiquidCacheBuilder;
 use log::info;
 use mimalloc::MiMalloc;
-use object_store::ClientConfigKey;
 use serde::Serialize;
 use std::{
     fs::File,
     path::{Path, PathBuf},
     sync::Arc,
 };
-use url::Url;
 use uuid::Uuid;
 
 #[global_allocator]

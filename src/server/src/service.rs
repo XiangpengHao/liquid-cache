@@ -206,8 +206,7 @@ impl LiquidCacheServiceInner {
 mod tests {
     use super::*;
     use liquid_cache_storage::{
-        cache::squeeze_policies::TranscodeSqueezeEvict,
-        cache_policies::{FiloPolicy, LruPolicy},
+        cache::squeeze_policies::TranscodeSqueezeEvict, cache_policies::FiloPolicy,
     };
     #[tokio::test]
     async fn test_register_object_store() {

@@ -16,7 +16,6 @@ use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr::expressions::{BinaryExpr, Literal};
 use datafusion::physical_plan::expressions::Column;
 use datafusion::physical_plan::metrics;
-use liquid_cache_common::LiquidCacheMode;
 use liquid_cache_parquet::cache::{BatchID, LiquidCache};
 use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
