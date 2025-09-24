@@ -11,6 +11,7 @@ use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+use std::thread_local;
 
 use io_uring::{IoUring, opcode, types};
 use libc;
@@ -18,6 +19,29 @@ use libc;
 struct RingState {
     ring: IoUring,
     completions: HashMap<UringID, i32>,
+}
+
+impl RingState {
+    fn new() -> Self {
+        Self {
+            ring: IoUring::new(256).expect("io_uring init failed"),
+            completions: HashMap::new(),
+        }
+    }
+}
+
+thread_local! {
+    static SHARED_RING_STATE: RefCell<Option<Rc<RefCell<RingState>>>> = RefCell::new(None);
+}
+
+fn acquire_ring_state() -> Rc<RefCell<RingState>> {
+    SHARED_RING_STATE.with(|cell| {
+        let mut borrowed = cell.borrow_mut();
+        if borrowed.is_none() {
+            *borrowed = Some(Rc::new(RefCell::new(RingState::new())));
+        }
+        borrowed.as_ref().unwrap().clone()
+    })
 }
 
 static NEXT_TASK_ID: AtomicU32 = AtomicU32::new(1);
@@ -297,10 +321,7 @@ impl<F: Future> Executor<F> {
         Executor {
             ready_queue: VecDeque::new(),
             pending_tasks: HashMap::new(),
-            ring: Rc::new(RefCell::new(RingState {
-                ring: IoUring::new(256).expect("io_uring init failed"),
-                completions: HashMap::new(),
-            })),
+            ring: acquire_ring_state(),
         }
     }
 

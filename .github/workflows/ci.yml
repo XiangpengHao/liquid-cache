@@ -112,7 +112,7 @@ jobs:
           cargo llvm-cov clean --workspace
           cargo build --bin bench_server
           cargo build --bin clickbench_client
-          env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic --cache-mode liquid_eager_transcode &> server.log &
+          env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic --cache-mode liquid --max-cache-mb 256 &> server.log &
           sleep 2  # Wait for server to start up
           env RUST_LOG=info cargo run --bin clickbench_client -- --manifest benchmark/clickbench/benchmark_manifest.json
           echo "=== Server logs ==="
@@ -148,7 +148,7 @@ jobs:
           cargo llvm-cov clean --workspace
           cargo build --bin bench_server
           cargo build --bin tpch_client
-          env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic --cache-mode liquid_eager_transcode &> server.log &
+          env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic --cache-mode liquid --max-cache-mb 256 &> server.log &
           sleep 2  # Wait for server to start up
           env RUST_LOG=info cargo run --bin tpch_client -- --manifest benchmark/tpch/manifest.json --answer-dir benchmark/tpch/answers/sf0.1
           echo "=== Server logs ==="
@@ -203,7 +203,8 @@ jobs:
             --manifest benchmark/clickbench/benchmark_manifest.json \
             --output benchmark_results/liquid.json \
             --iteration 5 \
-            --bench-mode liquid-eager-transcode
+            --bench-mode liquid
+            --max-cache-mb 256 
 
       - name: Run DataFusion benchmark (plain parquet)
         run: |
