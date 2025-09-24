@@ -70,6 +70,7 @@ pub enum LiquidCacheMode {
     LiquidBlocking,
 }
 
+#[allow(clippy::derivable_impls)]
 impl Default for LiquidCacheMode {
     fn default() -> Self {
         Self::Liquid

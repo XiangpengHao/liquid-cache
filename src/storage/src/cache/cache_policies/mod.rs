@@ -6,11 +6,13 @@ mod clock;
 mod doubly_linked_list;
 mod filo;
 mod lru;
+mod s3_fifo;
 mod sieve;
 
 pub use clock::ClockPolicy;
 pub use filo::FiloPolicy;
 pub use lru::LruPolicy;
+pub use s3_fifo::S3FifoPolicy;
 pub use sieve::SievePolicy;
 
 /// The cache policy that guides the replacement of LiquidCache
