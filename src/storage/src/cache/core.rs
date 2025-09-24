@@ -2,6 +2,8 @@ use arrow::array::ArrayRef;
 use std::path::PathBuf;
 use std::{fmt::Debug, path::Path};
 
+#[cfg(target_os = "linux")]
+use super::io::{DEFAULT_RING_ENTRIES, IoUringPool};
 use super::{
     budget::BudgetAccounting, cache_policies::CachePolicy, cached_data::CachedBatch,
     cached_data::CachedData, tracer::CacheTracer, utils::CacheConfig,
@@ -236,6 +238,8 @@ pub struct CacheStorage {
     squeeze_policy: Box<dyn SqueezePolicy>,
     tracer: CacheTracer,
     io_context: Arc<dyn IoContext>,
+    #[cfg(target_os = "linux")]
+    io_pool: IoUringPool,
 }
 
 impl CacheStorage {
@@ -443,6 +447,8 @@ impl CacheStorage {
         io_worker: Arc<dyn IoContext>,
     ) -> Self {
         let config = CacheConfig::new(batch_size, max_cache_bytes, cache_dir);
+        #[cfg(target_os = "linux")]
+        let io_pool = IoUringPool::new(DEFAULT_RING_ENTRIES);
         Self {
             index: ArtIndex::new(),
             budget: BudgetAccounting::new(config.max_cache_bytes()),
@@ -451,6 +457,8 @@ impl CacheStorage {
             squeeze_policy,
             tracer: CacheTracer::new(),
             io_context: io_worker,
+            #[cfg(target_os = "linux")]
+            io_pool,
         }
     }
 
@@ -479,7 +487,7 @@ impl CacheStorage {
     fn apply_advice(&self, advice: Vec<EntryID>) {
         #[cfg(target_os = "linux")]
         {
-            let mut executor = super::io::Executor::new();
+            let mut executor = super::io::Executor::new(&self.io_pool);
             for adv in advice {
                 executor.spawn(self.apply_advice_inner(adv));
             }
