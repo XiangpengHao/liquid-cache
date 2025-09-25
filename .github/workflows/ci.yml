@@ -20,6 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
       
       - name: Check formatting
@@ -340,3 +341,15 @@ jobs:
           cat server.log || echo "No server log found"
           pkill -F server.pid || true
           rm -f server.pid
+
+  kani:
+    name: Run Kani proofs
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify storage crate with Kani
+        uses: model-checking/kani-github-action@v1.1
+        with:
+          working-directory: src/storage
