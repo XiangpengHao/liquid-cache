@@ -28,7 +28,6 @@ use fastrace::Span;
 use fastrace::future::FutureExt;
 use fastrace::prelude::*;
 use futures::{Stream, TryStreamExt, future::BoxFuture, ready};
-use liquid_cache_common::CacheMode;
 use liquid_cache_common::rpc::{
     FetchResults, LiquidCacheActions, RegisterObjectStoreRequest, RegisterPlanRequest,
 };
@@ -49,7 +48,6 @@ enum PlanRegisterState {
 pub struct LiquidCacheClientExec {
     remote_plan: Arc<dyn ExecutionPlan>,
     cache_server: String,
-    cache_mode: CacheMode,
     object_stores: Vec<(ObjectStoreUrl, HashMap<String, String>)>,
     metrics: ExecutionPlanMetricsSet,
     uuid: Uuid,
@@ -66,7 +64,6 @@ impl LiquidCacheClientExec {
     pub(crate) fn new(
         remote_plan: Arc<dyn ExecutionPlan>,
         cache_server: String,
-        cache_mode: CacheMode,
         object_stores: Vec<(ObjectStoreUrl, HashMap<String, String>)>,
     ) -> Self {
         let uuid = Uuid::new_v4();
@@ -74,7 +71,6 @@ impl LiquidCacheClientExec {
             remote_plan,
             cache_server,
             plan_registered: Arc::new(AtomicUsize::new(PlanRegisterState::NotRegistered as usize)),
-            cache_mode,
             object_stores,
             uuid,
             metrics: ExecutionPlanMetricsSet::new(),
@@ -93,15 +89,15 @@ impl DisplayAs for LiquidCacheClientExec {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
                 write!(
                     f,
-                    "LiquidCacheClientExec: server={}, mode={}, object_stores={:?}",
-                    self.cache_server, self.cache_mode, self.object_stores
+                    "LiquidCacheClientExec: server={}, object_stores={:?}",
+                    self.cache_server, self.object_stores
                 )
             }
             DisplayFormatType::TreeRender => {
                 write!(
                     f,
-                    "server={}, mode={}, object_stores={:?}",
-                    self.cache_server, self.cache_mode, self.object_stores
+                    "server={}, object_stores={:?}",
+                    self.cache_server, self.object_stores
                 )
             }
         }
@@ -133,7 +129,6 @@ impl ExecutionPlan for LiquidCacheClientExec {
             remote_plan: children.first().unwrap().clone(),
             cache_server: self.cache_server.clone(),
             plan_registered: self.plan_registered.clone(),
-            cache_mode: self.cache_mode,
             object_stores: self.object_stores.clone(),
             metrics: self.metrics.clone(),
             uuid: self.uuid,

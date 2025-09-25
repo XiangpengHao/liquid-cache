@@ -12,19 +12,16 @@ use datafusion::{error::Result, prelude::SessionConfig};
 use liquid_cache_benchmarks::{
     Benchmark, BenchmarkManifest, ClientBenchmarkArgs, utils::assert_batch_eq,
 };
-use liquid_cache_benchmarks::{BenchmarkMode, BenchmarkRunner, Query, run_query};
+use liquid_cache_benchmarks::{BenchmarkRunner, Query, run_query};
 use liquid_cache_client::LiquidCacheBuilder;
-use liquid_cache_common::CacheMode;
 use log::info;
 use mimalloc::MiMalloc;
-use object_store::ClientConfigKey;
 use serde::Serialize;
 use std::{
     fs::File,
     path::{Path, PathBuf},
     sync::Arc,
 };
-use url::Url;
 use uuid::Uuid;
 
 #[global_allocator]
@@ -149,46 +146,12 @@ impl Benchmark for ClickBench {
     #[fastrace::trace]
     async fn setup_context(&self) -> Result<Arc<SessionContext>> {
         // Load the manifest
-        let mode = match self.common_args.bench_mode {
-            BenchmarkMode::ParquetFileserver => {
-                let mut session_config = SessionConfig::from_env()?;
-                if let Some(partitions) = self.common_args.partitions {
-                    session_config.options_mut().execution.target_partitions = partitions;
-                }
-                let ctx = Arc::new(SessionContext::new_with_config(session_config));
-                let base_url = Url::parse(&self.common_args.server).unwrap();
-
-                let object_store = object_store::http::HttpBuilder::new()
-                    .with_url(base_url.clone())
-                    .with_config(ClientConfigKey::AllowHttp, "true")
-                    .build()
-                    .unwrap();
-                ctx.register_object_store(&base_url, Arc::new(object_store));
-
-                // Register tables from manifest
-                for (table_name, table_path) in &self.manifest.tables {
-                    ctx.register_parquet(
-                        table_name,
-                        format!("{}/{}", self.common_args.server, table_path),
-                        Default::default(),
-                    )
-                    .await?;
-                }
-                return Ok(ctx);
-            }
-            BenchmarkMode::ParquetPushdown => CacheMode::Parquet,
-            BenchmarkMode::ArrowPushdown => CacheMode::Arrow,
-            BenchmarkMode::LiquidCache => CacheMode::Liquid,
-            BenchmarkMode::LiquidEagerTranscode => CacheMode::LiquidEagerTranscode,
-        };
-
         let mut session_config = SessionConfig::from_env()?;
         if let Some(partitions) = self.common_args.partitions {
             session_config.options_mut().execution.target_partitions = partitions;
         }
 
-        let liquid_cache_builder =
-            LiquidCacheBuilder::new(&self.common_args.server).with_cache_mode(mode);
+        let liquid_cache_builder = LiquidCacheBuilder::new(&self.common_args.server);
         let ctx = liquid_cache_builder.build(session_config)?;
 
         self.manifest.register_object_stores(&ctx).await.unwrap();

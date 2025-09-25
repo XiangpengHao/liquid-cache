@@ -83,8 +83,8 @@ expression: displayable.tree_render().to_string()
 │    --------------------   ││    --------------------   │                             │    --------------------   ││    --------------------   │
 │          server:          ││ partition_count(in->out): │                             │          server:          ││        ps_availqty:       │
 │  http://localhost:50051,  ││           1 -> 8          │                             │  http://localhost:50051,  ││        ps_availqty        │
-│        mode=liquid,       ││                           │                             │        mode=liquid,       ││                           │
-│      object_stores=[]     ││    partitioning_scheme:   │                             │      object_stores=[]     ││        ps_partkey:        │
+│      object_stores=[]     ││                           │                             │      object_stores=[]     ││                           │
+│                           ││    partitioning_scheme:   │                             │                           ││        ps_partkey:        │
 │                           ││     RoundRobinBatch(8)    │                             │                           ││         ps_partkey        │
 │                           ││                           │                             │                           ││                           │
 │                           ││                           │                             │                           ││       ps_supplycost:      │
@@ -114,9 +114,8 @@ expression: displayable.tree_render().to_string()
                              ┌─────────────┴─────────────┐                                                          ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
                              │        HashJoinExec       │                                                          │   LiquidCacheClientExec   ││   LiquidCacheClientExec   │
                              │    --------------------   │                                                          │    --------------------   ││    --------------------   │
-                             │            on:            │                                                          │          server:          ││          server:          │
-                             │  (s_suppkey = ps_suppkey) ├──────────────┐                                           │  http://localhost:50051,  ││  http://localhost:50051,  │
-                             │                           │              │                                           │        mode=liquid,       ││        mode=liquid,       │
+                             │            on:            ├──────────────┐                                           │          server:          ││          server:          │
+                             │  (s_suppkey = ps_suppkey) │              │                                           │  http://localhost:50051,  ││  http://localhost:50051,  │
                              │                           │              │                                           │      object_stores=[]     ││      object_stores=[]     │
                              └─────────────┬─────────────┘              │                                           └─────────────┬─────────────┘└─────────────┬─────────────┘
                              ┌─────────────┴─────────────┐┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
@@ -124,8 +123,8 @@ expression: displayable.tree_render().to_string()
                              │    --------------------   ││    --------------------   │                             │    --------------------   ││    --------------------   │
                              │          server:          ││          server:          │                             │          files: 1         ││ partition_count(in->out): │
                              │  http://localhost:50051,  ││  http://localhost:50051,  │                             │      format: parquet      ││           1 -> 8          │
-                             │        mode=liquid,       ││        mode=liquid,       │                             │                           ││                           │
-                             │      object_stores=[]     ││      object_stores=[]     │                             │                           ││    partitioning_scheme:   │
+                             │      object_stores=[]     ││      object_stores=[]     │                             │                           ││                           │
+                             │                           ││                           │                             │                           ││    partitioning_scheme:   │
                              │                           ││                           │                             │                           ││     RoundRobinBatch(8)    │
                              └─────────────┬─────────────┘└─────────────┬─────────────┘                             └───────────────────────────┘└─────────────┬─────────────┘
                              ┌─────────────┴─────────────┐┌─────────────┴─────────────┐                                                          ┌─────────────┴─────────────┐
