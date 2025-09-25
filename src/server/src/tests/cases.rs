@@ -2,7 +2,7 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use liquid_cache_common::CacheMode;
+use liquid_cache_storage::cache::squeeze_policies::TranscodeSqueezeEvict;
 
 use crate::tests::run_sql;
 
@@ -34,7 +34,7 @@ async fn test_parquet_with_page_index() {
 
     let result = run_sql(
         "SELECT * FROM hits WHERE id = 0",
-        CacheMode::LiquidEagerTranscode,
+        Box::new(TranscodeSqueezeEvict),
         1000,
         file_path,
     )

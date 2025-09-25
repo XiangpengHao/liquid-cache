@@ -90,8 +90,8 @@ expression: displayable.tree_render().to_string()
 │    --------------------   ││    --------------------   │
 │          server:          ││        l_discount:        │
 │  http://localhost:50051,  ││         l_discount        │
-│        mode=liquid,       ││                           │
-│      object_stores=[]     ││      l_extendedprice:     │
+│      object_stores=[]     ││                           │
+│                           ││      l_extendedprice:     │
 │                           ││      l_extendedprice      │
 │                           ││                           │
 │                           ││       n_name: n_name      │
@@ -122,8 +122,8 @@ expression: displayable.tree_render().to_string()
                              │    --------------------   ││    --------------------   │
                              │          server:          ││        l_discount:        │
                              │  http://localhost:50051,  ││         l_discount        │
-                             │        mode=liquid,       ││                           │
-                             │      object_stores=[]     ││      l_extendedprice:     │
+                             │      object_stores=[]     ││                           │
+                             │                           ││      l_extendedprice:     │
                              │                           ││      l_extendedprice      │
                              │                           ││                           │
                              │                           ││        n_regionkey:       │
@@ -152,8 +152,8 @@ expression: displayable.tree_render().to_string()
                                                           │    --------------------   ││    --------------------   │
                                                           │          server:          ││        c_nationkey:       │
                                                           │  http://localhost:50051,  ││        c_nationkey        │
-                                                          │        mode=liquid,       ││                           │
-                                                          │      object_stores=[]     ││        l_discount:        │
+                                                          │      object_stores=[]     ││                           │
+                                                          │                           ││        l_discount:        │
                                                           │                           ││         l_discount        │
                                                           │                           ││                           │
                                                           │                           ││      l_extendedprice:     │
@@ -182,8 +182,8 @@ expression: displayable.tree_render().to_string()
                                                                                        │    --------------------   ││    --------------------   │
                                                                                        │          server:          ││        l_discount:        │
                                                                                        │  http://localhost:50051,  ││         l_discount        │
-                                                                                       │        mode=liquid,       ││                           │
-                                                                                       │      object_stores=[]     ││      l_extendedprice:     │
+                                                                                       │      object_stores=[]     ││                           │
+                                                                                       │                           ││      l_extendedprice:     │
                                                                                        │                           ││      l_extendedprice      │
                                                                                        │                           ││                           │
                                                                                        │                           ││    o_custkey: o_custkey   │
@@ -211,8 +211,8 @@ expression: displayable.tree_render().to_string()
                                                                                                                     │    --------------------   ││    --------------------   │
                                                                                                                     │          server:          ││        l_discount:        │
                                                                                                                     │  http://localhost:50051,  ││         l_discount        │
-                                                                                                                    │        mode=liquid,       ││                           │
-                                                                                                                    │      object_stores=[]     ││      l_extendedprice:     │
+                                                                                                                    │      object_stores=[]     ││                           │
+                                                                                                                    │                           ││      l_extendedprice:     │
                                                                                                                     │                           ││      l_extendedprice      │
                                                                                                                     │                           ││                           │
                                                                                                                     │                           ││        l_orderkey:        │
@@ -243,8 +243,8 @@ expression: displayable.tree_render().to_string()
                                                                                                                                                  │    --------------------   ││    --------------------   │
                                                                                                                                                  │          server:          ││ partition_count(in->out): │
                                                                                                                                                  │  http://localhost:50051,  ││           1 -> 8          │
-                                                                                                                                                 │        mode=liquid,       ││                           │
-                                                                                                                                                 │      object_stores=[]     ││    partitioning_scheme:   │
+                                                                                                                                                 │      object_stores=[]     ││                           │
+                                                                                                                                                 │                           ││    partitioning_scheme:   │
                                                                                                                                                  │                           ││     RoundRobinBatch(8)    │
                                                                                                                                                  └─────────────┬─────────────┘└─────────────┬─────────────┘
                                                                                                                                                  ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
@@ -264,7 +264,6 @@ expression: displayable.tree_render().to_string()
                                                                                                                                                                               │    --------------------   ││    --------------------   │
                                                                                                                                                                               │          server:          ││          server:          │
                                                                                                                                                                               │  http://localhost:50051,  ││  http://localhost:50051,  │
-                                                                                                                                                                              │        mode=liquid,       ││        mode=liquid,       │
                                                                                                                                                                               │      object_stores=[]     ││      object_stores=[]     │
                                                                                                                                                                               └─────────────┬─────────────┘└─────────────┬─────────────┘
                                                                                                                                                                               ┌─────────────┴─────────────┐┌─────────────┴─────────────┐

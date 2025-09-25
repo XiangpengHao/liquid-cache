@@ -174,7 +174,10 @@ impl Drop for ClockPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::utils::{EntryID, create_cache_store, create_test_arrow_array};
+    use crate::cache::{
+        cached_data::CachedBatch,
+        utils::{EntryID, create_cache_store, create_test_arrow_array},
+    };
 
     fn entry(id: usize) -> EntryID {
         id.into()
@@ -246,10 +249,7 @@ mod tests {
         store.insert(entry_id4, create_test_arrow_array(100));
 
         if let Some(data) = store.get(&entry_id1) {
-            match data.raw_data() {
-                crate::cache::cached_data::CachedBatch::DiskLiquid => {}
-                _ => panic!("Expected OnDiskLiquid, got {:?}", data.raw_data()),
-            }
+            assert!(matches!(data.raw_data(), CachedBatch::MemoryLiquid(_)));
         }
         assert!(store.get(&entry_id2).is_some());
         assert!(store.get(&entry_id3).is_some());

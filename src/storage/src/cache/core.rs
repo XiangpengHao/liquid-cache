@@ -2,20 +2,17 @@ use arrow::array::ArrayRef;
 use std::path::PathBuf;
 use std::{fmt::Debug, path::Path};
 
+#[cfg(target_os = "linux")]
+use super::io::{DEFAULT_RING_ENTRIES, IoUringPool};
 use super::{
     budget::BudgetAccounting, cache_policies::CachePolicy, cached_data::CachedBatch,
-    cached_data::CachedData, tracer::CacheTracer, transcode::transcode_liquid_inner,
-    utils::CacheConfig,
+    cached_data::CachedData, tracer::CacheTracer, utils::CacheConfig,
 };
-use crate::cache::squeeze_policies::{
-    SqueezeNoHybridPolicy, SqueezePolicy, SqueezeToDiskPolicy, SqueezeToLiquidPolicy,
-};
-use crate::cache::transcode::submit_background_transcoding_task;
+use crate::cache::squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict};
 use crate::cache::utils::{LiquidCompressorStates, arrow_to_bytes};
 use crate::cache::{index::ArtIndex, utils::EntryID};
 use crate::cache_policies::FiloPolicy;
 use crate::sync::Arc;
-use liquid_cache_common::LiquidCacheMode;
 
 /// A trait for objects that can handle IO operations for the cache.
 pub trait IoContext: Debug + Send + Sync {
@@ -90,8 +87,6 @@ pub struct CacheStats {
     pub disk_usage_bytes: usize,
     /// Maximum cache size.
     pub max_cache_bytes: usize,
-    /// Cache mode.
-    pub cache_mode: LiquidCacheMode,
     /// Cache root directory.
     pub cache_root_dir: PathBuf,
 }
@@ -101,22 +96,21 @@ pub struct CacheStats {
 /// Example:
 /// ```rust
 /// use liquid_cache_storage::cache::CacheStorageBuilder;
-/// use liquid_cache_storage::common::LiquidCacheMode;
+/// use liquid_cache_storage::cache_policies::FiloPolicy;
 ///
 ///
 /// let _storage = CacheStorageBuilder::new()
 ///     .with_batch_size(8192)
 ///     .with_max_cache_bytes(1024 * 1024 * 1024)
-///     .with_cache_mode(LiquidCacheMode::Liquid)
-///     .with_policy(Box::new(liquid_cache_storage::cache_policies::FiloPolicy::new()))
+///     .with_cache_policy(Box::new(FiloPolicy::new()))
 ///     .build();
 /// ```
 pub struct CacheStorageBuilder {
     batch_size: usize,
     max_cache_bytes: usize,
     cache_dir: Option<PathBuf>,
-    cache_mode: LiquidCacheMode,
-    policy: Box<dyn CachePolicy>,
+    cache_policy: Box<dyn CachePolicy>,
+    squeeze_policy: Box<dyn SqueezePolicy>,
     io_worker: Option<Arc<dyn IoContext>>,
 }
 
@@ -133,8 +127,8 @@ impl CacheStorageBuilder {
             batch_size: 8192,
             max_cache_bytes: 1024 * 1024 * 1024,
             cache_dir: None,
-            cache_mode: LiquidCacheMode::Liquid,
-            policy: Box::new(FiloPolicy::new()),
+            cache_policy: Box::new(FiloPolicy::new()),
+            squeeze_policy: Box::new(TranscodeSqueezeEvict),
             io_worker: None,
         }
     }
@@ -160,17 +154,17 @@ impl CacheStorageBuilder {
         self
     }
 
-    /// Set the cache mode for the cache.
-    /// Default is LiquidCacheMode::Liquid.
-    pub fn with_cache_mode(mut self, cache_mode: LiquidCacheMode) -> Self {
-        self.cache_mode = cache_mode;
+    /// Set the cache policy for the cache.
+    /// Default is [FiloPolicy].
+    pub fn with_cache_policy(mut self, policy: Box<dyn CachePolicy>) -> Self {
+        self.cache_policy = policy;
         self
     }
 
-    /// Set the cache policy for the cache.
-    /// Default is FiloPolicy.
-    pub fn with_policy(mut self, policy: Box<dyn CachePolicy>) -> Self {
-        self.policy = policy;
+    /// Set the squeeze policy for the cache.
+    /// Default is [TranscodeSqueezeEvict].
+    pub fn with_squeeze_policy(mut self, policy: Box<dyn SqueezePolicy>) -> Self {
+        self.squeeze_policy = policy;
         self
     }
 
@@ -195,8 +189,8 @@ impl CacheStorageBuilder {
             self.batch_size,
             self.max_cache_bytes,
             cache_dir,
-            self.cache_mode,
-            self.policy,
+            self.squeeze_policy,
+            self.cache_policy,
             io_worker,
         ))
     }
@@ -244,6 +238,8 @@ pub struct CacheStorage {
     squeeze_policy: Box<dyn SqueezePolicy>,
     tracer: CacheTracer,
     io_context: Arc<dyn IoContext>,
+    #[cfg(target_os = "linux")]
+    io_pool: IoUringPool,
 }
 
 impl CacheStorage {
@@ -279,32 +275,13 @@ impl CacheStorage {
             memory_usage_bytes,
             disk_usage_bytes,
             max_cache_bytes: self.config.max_cache_bytes(),
-            cache_mode: *self.config.cache_mode(),
             cache_root_dir: self.config.cache_root_dir().clone(),
         }
     }
 
     /// Insert a batch into the cache.
     pub fn insert(self: &Arc<Self>, entry_id: EntryID, batch_to_cache: ArrayRef) {
-        let batch = {
-            match self.config.cache_mode() {
-                LiquidCacheMode::Arrow => CachedBatch::MemoryArrow(batch_to_cache),
-                LiquidCacheMode::Liquid => {
-                    let original_batch = batch_to_cache.clone();
-                    submit_background_transcoding_task(batch_to_cache, self.clone(), entry_id);
-                    CachedBatch::MemoryArrow(original_batch)
-                }
-                LiquidCacheMode::LiquidBlocking => {
-                    let compressor_states = self.io_context.get_compressor_for_entry(&entry_id);
-                    let liquid_array =
-                        transcode_liquid_inner(&batch_to_cache, compressor_states.as_ref())
-                            .expect("Failed to transcode to liquid array");
-                    CachedBatch::MemoryLiquid(liquid_array)
-                }
-            }
-        };
-
-        self.insert_inner(entry_id, batch);
+        self.insert_inner(entry_id, CachedBatch::MemoryArrow(batch_to_cache));
     }
 
     /// Get a batch from the cache.
@@ -465,24 +442,23 @@ impl CacheStorage {
         batch_size: usize,
         max_cache_bytes: usize,
         cache_dir: PathBuf,
-        cache_mode: LiquidCacheMode,
-        policy: Box<dyn CachePolicy>,
+        squeeze_policy: Box<dyn SqueezePolicy>,
+        cache_policy: Box<dyn CachePolicy>,
         io_worker: Arc<dyn IoContext>,
     ) -> Self {
-        let squeeze_policy: Box<dyn SqueezePolicy> = match cache_mode {
-            LiquidCacheMode::Arrow => Box::new(SqueezeToDiskPolicy),
-            LiquidCacheMode::Liquid => Box::new(SqueezeToLiquidPolicy),
-            LiquidCacheMode::LiquidBlocking => Box::new(SqueezeNoHybridPolicy),
-        };
-        let config = CacheConfig::new(batch_size, max_cache_bytes, cache_dir, cache_mode);
+        let config = CacheConfig::new(batch_size, max_cache_bytes, cache_dir);
+        #[cfg(target_os = "linux")]
+        let io_pool = IoUringPool::new(DEFAULT_RING_ENTRIES);
         Self {
             index: ArtIndex::new(),
             budget: BudgetAccounting::new(config.max_cache_bytes()),
             config,
-            cache_policy: policy,
+            cache_policy,
             squeeze_policy,
             tracer: CacheTracer::new(),
             io_context: io_worker,
+            #[cfg(target_os = "linux")]
+            io_pool,
         }
     }
 
@@ -511,7 +487,7 @@ impl CacheStorage {
     fn apply_advice(&self, advice: Vec<EntryID>) {
         #[cfg(target_os = "linux")]
         {
-            let mut executor = super::io::Executor::new();
+            let mut executor = super::io::Executor::new(&self.io_pool);
             for adv in advice {
                 executor.spawn(self.apply_advice_inner(adv));
             }
@@ -527,60 +503,74 @@ impl CacheStorage {
 
     #[cfg(not(target_os = "linux"))]
     fn apply_advice_inner_blocking(&self, to_squeeze: EntryID) {
-        let Some(to_squeeze_batch) = self.index.get(&to_squeeze) else {
+        let Some(mut to_squeeze_batch) = self.index.get(&to_squeeze) else {
             return;
         };
         let compressor = self.io_context.get_compressor_for_entry(&to_squeeze);
-        let (new_batch, bytes_to_write) = self
-            .squeeze_policy
-            .squeeze(to_squeeze_batch, compressor.as_ref());
 
-        if let Some(bytes_to_write) = bytes_to_write {
-            match new_batch {
-                CachedBatch::DiskArrow => {
-                    let path = self.io_context.entry_arrow_path(&to_squeeze);
-                    self.write_to_disk_blocking(&path, &bytes_to_write);
+        loop {
+            let (new_batch, bytes_to_write) = self
+                .squeeze_policy
+                .squeeze(to_squeeze_batch, compressor.as_ref());
+
+            if let Some(bytes_to_write) = bytes_to_write {
+                match new_batch {
+                    CachedBatch::DiskArrow => {
+                        let path = self.io_context.entry_arrow_path(&to_squeeze);
+                        self.write_to_disk_blocking(&path, &bytes_to_write);
+                    }
+                    CachedBatch::DiskLiquid | CachedBatch::MemoryHybridLiquid(_) => {
+                        let path = self.io_context.entry_liquid_path(&to_squeeze);
+                        self.write_to_disk_blocking(&path, &bytes_to_write);
+                    }
+                    CachedBatch::MemoryArrow(_) | CachedBatch::MemoryLiquid(_) => {
+                        unreachable!()
+                    }
                 }
-                CachedBatch::DiskLiquid | CachedBatch::MemoryHybridLiquid(_) => {
-                    let path = self.io_context.entry_liquid_path(&to_squeeze);
-                    self.write_to_disk_blocking(&path, &bytes_to_write);
-                }
-                CachedBatch::MemoryArrow(_) | CachedBatch::MemoryLiquid(_) => {
-                    unreachable!()
+            }
+
+            match self.try_insert(to_squeeze, new_batch) {
+                Ok(()) => break,
+                Err(batch) => {
+                    to_squeeze_batch = batch;
                 }
             }
         }
-        self.try_insert(to_squeeze, new_batch)
-            .expect("failed to insert");
     }
 
-    #[allow(dead_code)]
+    #[cfg(target_os = "linux")]
     async fn apply_advice_inner(&self, to_squeeze: EntryID) {
-        let Some(to_squeeze_batch) = self.index.get(&to_squeeze) else {
+        let Some(mut to_squeeze_batch) = self.index.get(&to_squeeze) else {
             return;
         };
         let compressor = self.io_context.get_compressor_for_entry(&to_squeeze);
-        let (new_batch, bytes_to_write) = self
-            .squeeze_policy
-            .squeeze(to_squeeze_batch, compressor.as_ref());
+        loop {
+            let (new_batch, bytes_to_write) = self
+                .squeeze_policy
+                .squeeze(to_squeeze_batch, compressor.as_ref());
 
-        if let Some(bytes_to_write) = bytes_to_write {
-            match new_batch {
-                CachedBatch::DiskArrow => {
-                    let path = self.io_context.entry_arrow_path(&to_squeeze);
-                    self.write_to_disk(&path, &bytes_to_write).await;
+            if let Some(bytes_to_write) = bytes_to_write {
+                match new_batch {
+                    CachedBatch::DiskArrow => {
+                        let path = self.io_context.entry_arrow_path(&to_squeeze);
+                        self.write_to_disk(&path, &bytes_to_write).await;
+                    }
+                    CachedBatch::DiskLiquid | CachedBatch::MemoryHybridLiquid(_) => {
+                        let path = self.io_context.entry_liquid_path(&to_squeeze);
+                        self.write_to_disk(&path, &bytes_to_write).await;
+                    }
+                    CachedBatch::MemoryArrow(_) | CachedBatch::MemoryLiquid(_) => {
+                        unreachable!()
+                    }
                 }
-                CachedBatch::DiskLiquid | CachedBatch::MemoryHybridLiquid(_) => {
-                    let path = self.io_context.entry_liquid_path(&to_squeeze);
-                    self.write_to_disk(&path, &bytes_to_write).await;
-                }
-                CachedBatch::MemoryArrow(_) | CachedBatch::MemoryLiquid(_) => {
-                    unreachable!()
+            }
+            match self.try_insert(to_squeeze, new_batch) {
+                Ok(()) => break,
+                Err(batch) => {
+                    to_squeeze_batch = batch;
                 }
             }
         }
-        self.try_insert(to_squeeze, new_batch)
-            .expect("failed to insert");
     }
 
     fn write_to_disk_blocking(&self, path: impl AsRef<Path>, bytes: &[u8]) {
@@ -769,7 +759,7 @@ mod tests {
         // Build a small cache in blocking liquid mode to avoid background tasks
         let storage = CacheStorageBuilder::new()
             .with_max_cache_bytes(10 * 1024 * 1024)
-            .with_cache_mode(LiquidCacheMode::LiquidBlocking)
+            .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
             .build();
 
         // Insert two small batches

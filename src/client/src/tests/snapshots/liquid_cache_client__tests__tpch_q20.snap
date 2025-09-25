@@ -57,8 +57,8 @@ expression: displayable.tree_render().to_string()
 │    --------------------   ││    --------------------   ││    --------------------   │                             │    --------------------   │
 │          server:          ││          server:          ││    join_type: RightSemi   │                             │           aggr:           │
 │  http://localhost:50051,  ││  http://localhost:50051,  ││                           │                             │  sum(lineitem.l_quantity) │
-│        mode=liquid,       ││        mode=liquid,       ││            on:            │                             │                           │
-│      object_stores=[]     ││      object_stores=[]     ││  (p_partkey = ps_partkey) ├──────────────┐              │         group_by:         │
+│      object_stores=[]     ││      object_stores=[]     ││            on:            │                             │                           │
+│                           ││                           ││  (p_partkey = ps_partkey) ├──────────────┐              │         group_by:         │
 │                           ││                           ││                           │              │              │    l_partkey, l_suppkey   │
 │                           ││                           ││                           │              │              │                           │
 │                           ││                           ││                           │              │              │           mode:           │
@@ -69,8 +69,8 @@ expression: displayable.tree_render().to_string()
 │    --------------------   ││    --------------------   ││    --------------------   ││    --------------------   ││    --------------------   │
 │          files: 1         ││ partition_count(in->out): ││          server:          ││          server:          ││     target_batch_size:    │
 │      format: parquet      ││           1 -> 8          ││  http://localhost:50051,  ││  http://localhost:50051,  ││           16384           │
-│                           ││                           ││        mode=liquid,       ││        mode=liquid,       ││                           │
-│                           ││    partitioning_scheme:   ││      object_stores=[]     ││      object_stores=[]     ││                           │
+│                           ││                           ││      object_stores=[]     ││      object_stores=[]     ││                           │
+│                           ││    partitioning_scheme:   ││                           ││                           ││                           │
 │                           ││     RoundRobinBatch(8)    ││                           ││                           ││                           │
 └───────────────────────────┘└─────────────┬─────────────┘└─────────────┬─────────────┘└─────────────┬─────────────┘└─────────────┬─────────────┘
                              ┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐
@@ -99,7 +99,6 @@ expression: displayable.tree_render().to_string()
                                                                                                                     │    --------------------   │
                                                                                                                     │          server:          │
                                                                                                                     │  http://localhost:50051,  │
-                                                                                                                    │        mode=liquid,       │
                                                                                                                     │      object_stores=[]     │
                                                                                                                     └─────────────┬─────────────┘
                                                                                                                     ┌─────────────┴─────────────┐
