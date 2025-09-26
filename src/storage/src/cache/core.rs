@@ -8,6 +8,7 @@ use super::{
     budget::BudgetAccounting, cache_policies::CachePolicy, cached_data::CachedBatch,
     cached_data::CachedData, tracer::CacheTracer, utils::CacheConfig,
 };
+use crate::cache::cached_data::CachedBatchType;
 use crate::cache::squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict};
 use crate::cache::utils::{LiquidCompressorStates, arrow_to_bytes};
 use crate::cache::{index::ArtIndex, utils::EntryID};
@@ -290,10 +291,13 @@ impl CacheStorage {
         let batch_size = batch.as_ref().map(|b| b.memory_usage_bytes()).unwrap_or(0);
         self.tracer
             .trace_get(*entry_id, self.budget.memory_usage_bytes(), batch_size);
-        // Notify the advisor that this entry was accessed
-        self.cache_policy.notify_access(entry_id);
 
-        batch.map(|b| CachedData::new(b, *entry_id, self.io_context.as_ref()))
+        let batch = batch?;
+        // Notify the advisor that this entry was accessed
+        self.cache_policy
+            .notify_access(entry_id, CachedBatchType::from(&batch));
+
+        Some(CachedData::new(batch, *entry_id, self.io_context.as_ref()))
     }
 
     /// Iterate over all entries in the cache.
@@ -410,8 +414,9 @@ impl CacheStorage {
     /// Insert a batch into the cache, it will run cache replacement policy until the batch is inserted.
     pub(crate) fn insert_inner(&self, entry_id: EntryID, mut batch_to_cache: CachedBatch) {
         loop {
+            let batch_type = CachedBatchType::from(&batch_to_cache);
             let Err(not_inserted) = self.try_insert(entry_id, batch_to_cache) else {
-                self.cache_policy.notify_insert(&entry_id);
+                self.cache_policy.notify_insert(&entry_id, batch_type);
                 return;
             };
 
@@ -561,9 +566,10 @@ impl CacheStorage {
                     }
                 }
             }
+            let batch_type = CachedBatchType::from(&new_batch);
             match self.try_insert(to_squeeze, new_batch) {
                 Ok(()) => {
-                    self.cache_policy.notify_insert(&to_squeeze);
+                    self.cache_policy.notify_insert(&to_squeeze, batch_type);
                     break;
                 }
                 Err(batch) => {

@@ -1,5 +1,6 @@
 //! Cache policies for liquid cache.
 
+use crate::cache::cached_data::CachedBatchType;
 use crate::cache::utils::EntryID;
 
 mod clock;
@@ -22,10 +23,10 @@ pub trait CachePolicy: std::fmt::Debug + Send + Sync {
     fn find_victim(&self, cnt: usize) -> Vec<EntryID>;
 
     /// Notify the cache policy that an entry was inserted.
-    fn notify_insert(&self, _entry_id: &EntryID) {}
+    fn notify_insert(&self, _entry_id: &EntryID, _batch_type: CachedBatchType) {}
 
     /// Notify the cache policy that an entry was accessed.
-    fn notify_access(&self, _entry_id: &EntryID) {}
+    fn notify_access(&self, _entry_id: &EntryID, _batch_type: CachedBatchType) {}
 }
 
 #[cfg(test)]
@@ -42,7 +43,7 @@ mod tests {
         let num_threads = 4;
 
         for i in 0..100 {
-            policy.notify_insert(&entry(i));
+            policy.notify_insert(&entry(i), CachedBatchType::MemoryArrow);
         }
 
         let advised_entries = Arc::new(Mutex::new(Vec::new()));

@@ -2,7 +2,10 @@
 
 use std::{collections::HashMap, ptr::NonNull};
 
-use crate::{cache::utils::EntryID, sync::Mutex};
+use crate::{
+    cache::{cached_data::CachedBatchType, utils::EntryID},
+    sync::Mutex,
+};
 
 use super::{
     CachePolicy,
@@ -105,14 +108,14 @@ impl CachePolicy for LruPolicy {
         advices
     }
 
-    fn notify_access(&self, entry_id: &EntryID) {
+    fn notify_access(&self, entry_id: &EntryID, _batch_type: CachedBatchType) {
         let mut state = self.state.lock().unwrap();
         if let Some(node_ptr) = state.map.get(entry_id).copied() {
             unsafe { state.move_to_front(node_ptr) };
         }
     }
 
-    fn notify_insert(&self, entry_id: &EntryID) {
+    fn notify_insert(&self, entry_id: &EntryID, _batch_type: CachedBatchType) {
         let mut state = self.state.lock().unwrap();
 
         if let Some(existing_node_ptr) = state.map.get(entry_id).copied() {
@@ -155,9 +158,9 @@ mod tests {
         let e2 = entry(2);
         let e3 = entry(3);
 
-        policy.notify_insert(&e1);
-        policy.notify_insert(&e2);
-        policy.notify_insert(&e3);
+        policy.notify_insert(&e1, CachedBatchType::MemoryArrow);
+        policy.notify_insert(&e2, CachedBatchType::MemoryArrow);
+        policy.notify_insert(&e3, CachedBatchType::MemoryArrow);
 
         assert_evict_advice(&policy, e1);
     }
@@ -169,13 +172,13 @@ mod tests {
         let e2 = entry(2);
         let e3 = entry(3);
 
-        policy.notify_insert(&e1);
-        policy.notify_insert(&e2);
-        policy.notify_insert(&e3);
+        policy.notify_insert(&e1, CachedBatchType::MemoryArrow);
+        policy.notify_insert(&e2, CachedBatchType::MemoryArrow);
+        policy.notify_insert(&e3, CachedBatchType::MemoryArrow);
 
-        policy.notify_access(&e1);
+        policy.notify_access(&e1, CachedBatchType::MemoryArrow);
         assert_evict_advice(&policy, e2);
-        policy.notify_access(&e2);
+        policy.notify_access(&e2, CachedBatchType::MemoryArrow);
         assert_evict_advice(&policy, e3);
     }
 
@@ -186,11 +189,11 @@ mod tests {
         let e2 = entry(2);
         let e3 = entry(3);
 
-        policy.notify_insert(&e1);
-        policy.notify_insert(&e2);
-        policy.notify_insert(&e3);
+        policy.notify_insert(&e1, CachedBatchType::MemoryArrow);
+        policy.notify_insert(&e2, CachedBatchType::MemoryArrow);
+        policy.notify_insert(&e3, CachedBatchType::MemoryArrow);
 
-        policy.notify_insert(&e1);
+        policy.notify_insert(&e1, CachedBatchType::MemoryArrow);
         assert_evict_advice(&policy, e2);
     }
 
@@ -204,7 +207,7 @@ mod tests {
     fn test_lru_policy_advise_single_item_self() {
         let policy = LruPolicy::new();
         let e1 = entry(1);
-        policy.notify_insert(&e1);
+        policy.notify_insert(&e1, CachedBatchType::MemoryArrow);
 
         assert_evict_advice(&policy, e1);
     }
@@ -213,7 +216,7 @@ mod tests {
     fn test_lru_policy_advise_single_item_other() {
         let policy = LruPolicy::new();
         let e1 = entry(1);
-        policy.notify_insert(&e1);
+        policy.notify_insert(&e1, CachedBatchType::MemoryArrow);
         assert_evict_advice(&policy, e1);
     }
 
@@ -223,10 +226,10 @@ mod tests {
         let e1 = entry(1);
         let e2 = entry(2);
 
-        policy.notify_insert(&e1);
-        policy.notify_insert(&e2);
+        policy.notify_insert(&e1, CachedBatchType::MemoryArrow);
+        policy.notify_insert(&e2, CachedBatchType::MemoryArrow);
 
-        policy.notify_access(&entry(99));
+        policy.notify_access(&entry(99), CachedBatchType::MemoryArrow);
 
         assert_evict_advice(&policy, e1);
     }
@@ -271,10 +274,10 @@ mod tests {
         let policy = LruPolicy::new();
 
         for i in 0..10 {
-            policy.notify_insert(&entry(i));
+            policy.notify_insert(&entry(i), CachedBatchType::MemoryArrow);
         }
-        policy.notify_access(&entry(2));
-        policy.notify_access(&entry(5));
+        policy.notify_access(&entry(2), CachedBatchType::MemoryArrow);
+        policy.notify_access(&entry(5), CachedBatchType::MemoryArrow);
         policy.find_victim(1);
         policy.find_victim(1);
 
@@ -328,11 +331,11 @@ mod tests {
 
                     match op_type {
                         0 => {
-                            policy_clone.notify_insert(&entry_id);
+                            policy_clone.notify_insert(&entry_id, CachedBatchType::MemoryArrow);
                             total_inserts_clone.fetch_add(1, Ordering::SeqCst);
                         }
                         1 => {
-                            policy_clone.notify_access(&entry_id);
+                            policy_clone.notify_access(&entry_id, CachedBatchType::MemoryArrow);
                         }
                         _ => {
                             let advised = policy_clone.find_victim(1);

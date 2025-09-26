@@ -2,7 +2,10 @@
 
 use std::collections::VecDeque;
 
-use crate::{cache::utils::EntryID, sync::Mutex};
+use crate::{
+    cache::{cached_data::CachedBatchType, utils::EntryID},
+    sync::Mutex,
+};
 
 use super::CachePolicy;
 
@@ -41,7 +44,7 @@ impl CachePolicy for FiloPolicy {
         out
     }
 
-    fn notify_insert(&self, entry_id: &EntryID) {
+    fn notify_insert(&self, entry_id: &EntryID, _batch_type: CachedBatchType) {
         self.add_entry(entry_id);
     }
 }
@@ -81,7 +84,7 @@ impl CachePolicy for FifoPolicy {
         out
     }
 
-    fn notify_insert(&self, entry_id: &EntryID) {
+    fn notify_insert(&self, entry_id: &EntryID, _batch_type: CachedBatchType) {
         self.add_entry(entry_id);
     }
 }
@@ -89,7 +92,7 @@ impl CachePolicy for FifoPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::cached_data::CachedBatch;
+    use crate::cache::cached_data::{CachedBatch, CachedBatchType};
     use crate::cache::utils::{EntryID, create_cache_store, create_test_arrow_array};
 
     fn entry(id: usize) -> EntryID {
@@ -137,8 +140,8 @@ mod tests {
         let e1 = entry(1);
         let e2 = entry(2);
 
-        policy.notify_insert(&e1);
-        policy.notify_insert(&e2);
+        policy.notify_insert(&e1, CachedBatchType::MemoryArrow);
+        policy.notify_insert(&e2, CachedBatchType::MemoryArrow);
 
         assert_eq!(policy.find_victim(1), vec![e2]);
         assert_eq!(policy.find_victim(1), vec![e1]);
