@@ -21,8 +21,8 @@ use arrow::{
 };
 pub use byte_array::{LiquidByteArray, get_string_needle};
 pub use byte_view_array::LiquidByteViewArray;
-use datafusion::physical_plan::PhysicalExpr;
 use datafusion::logical_expr::Operator as DFOperator;
+use datafusion::physical_plan::PhysicalExpr;
 pub use fix_len_byte_array::LiquidFixedLenByteArray;
 use float_array::LiquidFloatType;
 pub use float_array::{LiquidFloat32Array, LiquidFloat64Array, LiquidFloatArray};

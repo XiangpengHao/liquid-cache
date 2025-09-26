@@ -20,7 +20,8 @@ use crate::liquid_array::ipc::LiquidIPCHeader;
 use crate::liquid_array::ipc::get_physical_type_id;
 use crate::liquid_array::raw::BitPackedArray;
 use crate::liquid_array::{
-    IoRange, LiquidArray, LiquidArrayRef, LiquidHybridArray, LiquidHybridArrayRef, Operator, PrimitiveKind
+    IoRange, LiquidArray, LiquidArrayRef, LiquidHybridArray, LiquidHybridArrayRef, Operator,
+    PrimitiveKind,
 };
 use crate::utils::get_bit_width;
 use arrow::datatypes::ArrowNativeType;

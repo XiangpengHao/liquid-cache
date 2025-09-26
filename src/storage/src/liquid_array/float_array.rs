@@ -2,25 +2,40 @@
 /// Acknowledgement:
 /// The ALP compression implemented in this file is based on the Rust implementation available at https://github.com/spiraldb/alp
 ///
-use std::{any::Any, fmt::Debug, num::NonZero, ops::{Mul, Shr, Shl}, sync::Arc};
+use std::{
+    any::Any,
+    fmt::Debug,
+    num::NonZero,
+    ops::{Mul, Shl, Shr},
+    sync::Arc,
+};
 
 use arrow::{
     array::{
-        Array, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType, AsArray, BooleanArray, PrimitiveArray
+        Array, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType, AsArray, BooleanArray,
+        PrimitiveArray,
     },
     buffer::{BooleanBuffer, ScalarBuffer},
     datatypes::{
         ArrowNativeType, Float32Type, Float64Type, Int32Type, Int64Type, UInt32Type, UInt64Type,
     },
 };
-use datafusion::{physical_plan::{expressions::{BinaryExpr, Literal}, PhysicalExpr}, scalar::ScalarValue};
+use datafusion::{
+    physical_plan::{
+        PhysicalExpr,
+        expressions::{BinaryExpr, Literal},
+    },
+    scalar::ScalarValue,
+};
 use fastlanes::BitPacking;
 use num_traits::{AsPrimitive, Float, FromPrimitive};
 
 use super::LiquidDataType;
-use crate::liquid_array::{ipc::LiquidIPCHeader, IoRange, LiquidHybridArray, LiquidHybridArrayRef, Operator};
 use crate::liquid_array::ipc::get_physical_type_id;
 use crate::liquid_array::raw::BitPackedArray;
+use crate::liquid_array::{
+    IoRange, LiquidHybridArray, LiquidHybridArrayRef, Operator, ipc::LiquidIPCHeader,
+};
 use crate::liquid_array::{LiquidArray, LiquidArrayRef};
 use crate::utils::get_bit_width;
 use bytes::Bytes;
@@ -339,19 +354,22 @@ where
                 let shift = orig_bw.get() - new_bw;
                 let quantized_min = self.reference_value.shr(shift);
                 // let quantized_max = values
-                let quantized_values: ScalarBuffer<<T::UnsignedIntType as ArrowPrimitiveType>::Native> = ScalarBuffer::from_iter(
-                    values.iter().map(|&v| {
-                        let signed_val: <T::SignedIntType as ArrowPrimitiveType>::Native = v.as_(); 
-                        let v_signed = self.reference_value.add_wrapping(signed_val);
-                        let v_quantized: <T::SignedIntType as ArrowPrimitiveType>::Native  = v_signed.shr(shift as u8);
-                        v_quantized.sub_wrapping(quantized_min).as_()
-                    })
-                );
-                let quantized_array = PrimitiveArray::<<T as LiquidFloatType>::UnsignedIntType>::new(
-                    quantized_values,
-                    nulls.clone(),
-                );
-                let quantized_bitpacked = BitPackedArray::from_primitive(quantized_array, NonZero::new(new_bw).unwrap());
+                let quantized_values: ScalarBuffer<
+                    <T::UnsignedIntType as ArrowPrimitiveType>::Native,
+                > = ScalarBuffer::from_iter(values.iter().map(|&v| {
+                    let signed_val: <T::SignedIntType as ArrowPrimitiveType>::Native = v.as_();
+                    let v_signed = self.reference_value.add_wrapping(signed_val);
+                    let v_quantized: <T::SignedIntType as ArrowPrimitiveType>::Native =
+                        v_signed.shr(shift as u8);
+                    v_quantized.sub_wrapping(quantized_min).as_()
+                }));
+                let quantized_array =
+                    PrimitiveArray::<<T as LiquidFloatType>::UnsignedIntType>::new(
+                        quantized_values,
+                        nulls.clone(),
+                    );
+                let quantized_bitpacked =
+                    BitPackedArray::from_primitive(quantized_array, NonZero::new(new_bw).unwrap());
                 let hybrid = LiquidFloatQuantizedArray::<T> {
                     exponent: self.exponent,
                     quantized: quantized_bitpacked,
@@ -721,15 +739,15 @@ struct LiquidFloatQuantizedArray<T: LiquidFloatType> {
     exponent: Exponents,
     quantized: BitPackedArray<T::UnsignedIntType>,
     reference_value: <T::SignedIntType as ArrowPrimitiveType>::Native,
-    bucket_width: u8,  // Width of each bucket (in bits)
+    bucket_width: u8, // Width of each bucket (in bits)
     disk_range: std::ops::Range<u64>,
     patch_indices: Vec<u64>,
     patch_values: Vec<T::Native>,
 }
 
 impl<T> LiquidFloatQuantizedArray<T>
-where 
-    T: LiquidFloatType 
+where
+    T: LiquidFloatType,
 {
     #[allow(dead_code)]
     fn as_any(&self) -> &dyn Any {
@@ -771,20 +789,12 @@ where
 
     #[inline]
     fn handle_eq(lo: T::Native, hi: T::Native, k: T::Native) -> Option<bool> {
-        if k < lo || k > hi {
-            Some(false)
-        } else {
-            None
-        }
+        if k < lo || k > hi { Some(false) } else { None }
     }
 
     #[inline]
     fn handle_neq(lo: T::Native, hi: T::Native, k: T::Native) -> Option<bool> {
-        if k < lo || k > hi {
-            Some(true)
-        } else {
-            None
-        }
+        if k < lo || k > hi { Some(true) } else { None }
     }
 
     #[inline]
@@ -863,28 +873,18 @@ where
             ignore_patches = true;
         }
         let comp_fn = match op {
-            Operator::Eq => {
-                Self::handle_eq
-            }
-            Operator::NotEq => {
-                Self::handle_neq
-            }
-            Operator::Lt => {
-                Self::handle_lt
-            }
-            Operator::LtEq => {
-                Self::handle_lteq
-            }
-            Operator::Gt => {
-                Self::handle_gt
-            }
-            Operator::GtEq => {
-                Self::handle_gteq
-            }
+            Operator::Eq => Self::handle_eq,
+            Operator::NotEq => Self::handle_neq,
+            Operator::Lt => Self::handle_lt,
+            Operator::LtEq => Self::handle_lteq,
+            Operator::Gt => Self::handle_gt,
+            Operator::GtEq => Self::handle_gteq,
         };
         // TODO(): This might not be very vectorization-friendly right now. Figure out optimizations
         for (i, &b) in values.iter().enumerate() {
-            if let Some(nulls) = self.quantized.nulls() && !nulls.is_valid(i) {
+            if let Some(nulls) = self.quantized.nulls()
+                && !nulls.is_valid(i)
+            {
                 out_vals.push(false);
                 continue;
             }
@@ -896,13 +896,14 @@ where
                 out_vals.push(false);
                 continue;
             }
-            
+
             let val: <T::SignedIntType as ArrowPrimitiveType>::Native = b.as_();
             let lo = (val << self.bucket_width).add_wrapping(self.reference_value);
-            let hi = ((val.add_wrapping(1i32.into())) << self.bucket_width).add_wrapping(self.reference_value);
+            let hi = ((val.add_wrapping(1i32.into())) << self.bucket_width)
+                .add_wrapping(self.reference_value);
             let val_lower = T::decode_single(&lo, &self.exponent);
             let val_higher = T::decode_single(&hi, &self.exponent);
-            
+
             let decided = comp_fn(val_lower, val_higher, k);
             if let Some(v) = decided {
                 out_vals.push(v);
@@ -931,18 +932,19 @@ where
         let out = BooleanArray::new(bool_buf, self.quantized.nulls().cloned());
         Ok(Some(out))
     }
-
 }
 
 impl<T> LiquidHybridArray for LiquidFloatQuantizedArray<T>
-where T: LiquidFloatType
+where
+    T: LiquidFloatType,
 {
     fn as_any(&self) -> &dyn Any {
         self
     }
 
     fn get_array_memory_size(&self) -> usize {
-        self.quantized.get_array_memory_size() + size_of::<Exponents>()
+        self.quantized.get_array_memory_size()
+            + size_of::<Exponents>()
             + self.patch_indices.capacity() * size_of::<u64>()
             + self.patch_values.capacity() * size_of::<T::Native>()
             + size_of::<<T::SignedIntType as ArrowPrimitiveType>::Native>()
@@ -1009,7 +1011,7 @@ where T: LiquidFloatType
 #[cfg(test)]
 mod tests {
     use datafusion::logical_expr::Operator;
-    use rand::{distr::uniform::SampleUniform, rngs::StdRng, Rng as _, SeedableRng as _};
+    use rand::{Rng as _, SeedableRng as _, distr::uniform::SampleUniform, rngs::StdRng};
 
     use super::*;
     macro_rules! test_roundtrip {
@@ -1168,7 +1170,7 @@ mod tests {
     where
         T: LiquidFloatType,
         <T as arrow::array::ArrowPrimitiveType>::Native: SampleUniform,
-        PrimitiveArray<T>: From<Vec<Option<<T as ArrowPrimitiveType>::Native>>>
+        PrimitiveArray<T>: From<Vec<Option<<T as ArrowPrimitiveType>::Native>>>,
     {
         let mut vals: Vec<Option<T::Native>> = Vec::with_capacity(len);
         for _ in 0..len {
@@ -1192,13 +1194,22 @@ mod tests {
     #[test]
     fn hybrid_squeeze_and_soak_roundtrip_f32() {
         let mut rng = StdRng::seed_from_u64(0x51_72);
-        let arr = make_f_array_with_range::<Float32Type>(2000, -50_000.0, (1 << 16) as f32, 0.1, &mut rng);
+        let arr = make_f_array_with_range::<Float32Type>(
+            2000,
+            -50_000.0,
+            (1 << 16) as f32,
+            0.1,
+            &mut rng,
+        );
         let liq = LiquidFloatArray::<Float32Type>::from_arrow_array(arr.clone());
         let bytes_baseline = liq.to_bytes();
         let (hybrid, bytes) = liq.squeeze().expect("squeezable");
         // ensure we can recover the original using soak
         let recovered = hybrid.soak(bytes.clone());
-        assert_eq!(recovered.to_arrow_array().as_primitive::<Float32Type>(), &arr);
+        assert_eq!(
+            recovered.to_arrow_array().as_primitive::<Float32Type>(),
+            &arr
+        );
         assert_eq!(bytes_baseline, recovered.to_bytes());
 
         let min = arrow::compute::kernels::aggregate::min(&arr).unwrap();
@@ -1208,15 +1219,15 @@ mod tests {
                 let lit = Arc::new(Literal::new(ScalarValue::Float32(Some(k))));
                 Arc::new(BinaryExpr::new(lit.clone(), op, lit))
             };
-        
+
         // Expect resolvable results without IO
         let resolvable_cases: Vec<(Operator, f32, bool)> = vec![
-            (Operator::Eq, min - 1.0, false), // eq false everywhere
+            (Operator::Eq, min - 1.0, false),   // eq false everywhere
             (Operator::NotEq, min - 1.0, true), // neq true everywhere
-            (Operator::Lt, min, false),                   // lt false everywhere
+            (Operator::Lt, min, false),         // lt false everywhere
             (Operator::LtEq, min - 1.0, false), // lte false everywhere
-            (Operator::Gt, min - 1.0, true),  // gt true everywhere
-            (Operator::GtEq, min, true),                  // gte true everywhere
+            (Operator::Gt, min - 1.0, true),    // gt true everywhere
+            (Operator::GtEq, min, true),        // gte true everywhere
         ];
 
         for (op, k, expected_const) in resolvable_cases {
@@ -1257,13 +1268,22 @@ mod tests {
     #[test]
     fn hybrid_squeeze_and_soak_roundtrip_f64() {
         let mut rng = StdRng::seed_from_u64(0x51_72);
-        let arr = make_f_array_with_range::<Float64Type>(2000, -50_000.0f64, (1 << 16) as f64, 0.1, &mut rng);
+        let arr = make_f_array_with_range::<Float64Type>(
+            2000,
+            -50_000.0f64,
+            (1 << 16) as f64,
+            0.1,
+            &mut rng,
+        );
         let liq = LiquidFloatArray::<Float64Type>::from_arrow_array(arr.clone());
         let bytes_baseline = liq.to_bytes();
         let (hybrid, bytes) = liq.squeeze().expect("squeezable");
         // ensure we can recover the original using soak
         let recovered = hybrid.soak(bytes.clone());
-        assert_eq!(recovered.to_arrow_array().as_primitive::<Float64Type>(), &arr);
+        assert_eq!(
+            recovered.to_arrow_array().as_primitive::<Float64Type>(),
+            &arr
+        );
         assert_eq!(bytes_baseline, recovered.to_bytes());
 
         let min = arrow::compute::kernels::aggregate::min(&arr).unwrap();
@@ -1273,15 +1293,15 @@ mod tests {
                 let lit = Arc::new(Literal::new(ScalarValue::Float64(Some(k))));
                 Arc::new(BinaryExpr::new(lit.clone(), op, lit))
             };
-        
+
         // Expect resolvable results without IO
         let resolvable_cases: Vec<(Operator, f64, bool)> = vec![
-            (Operator::Eq, min - 1.0, false), // eq false everywhere
+            (Operator::Eq, min - 1.0, false),   // eq false everywhere
             (Operator::NotEq, min - 1.0, true), // neq true everywhere
-            (Operator::Lt, min, false),                   // lt false everywhere
+            (Operator::Lt, min, false),         // lt false everywhere
             (Operator::LtEq, min - 1.0, false), // lte false everywhere
-            (Operator::Gt, min - 1.0, true),  // gt true everywhere
-            (Operator::GtEq, min, true),                  // gte true everywhere
+            (Operator::Gt, min - 1.0, true),    // gt true everywhere
+            (Operator::GtEq, min, true),        // gte true everywhere
         ];
 
         for (op, k, expected_const) in resolvable_cases {
