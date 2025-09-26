@@ -65,7 +65,7 @@ unsafe impl Send for ClockPolicy {}
 unsafe impl Sync for ClockPolicy {}
 
 impl CachePolicy for ClockPolicy {
-    fn advise(&self, cnt: usize) -> Vec<EntryID> {
+    fn find_victim(&self, cnt: usize) -> Vec<EntryID> {
         let mut state = self.state.lock().unwrap();
         if cnt == 0 {
             return Vec::new();
@@ -195,7 +195,7 @@ mod tests {
         advisor.notify_insert(&entry_id2);
         advisor.notify_insert(&entry_id3);
 
-        assert_eq!(advisor.advise(1), vec![entry_id1]);
+        assert_eq!(advisor.find_victim(1), vec![entry_id1]);
     }
 
     #[test]
@@ -210,9 +210,9 @@ mod tests {
         advisor.notify_insert(&entry_id2);
         advisor.notify_insert(&entry_id3);
 
-        assert_eq!(advisor.advise(1), vec![entry_id1]);
-        assert_eq!(advisor.advise(1), vec![entry_id2]);
-        assert_eq!(advisor.advise(1), vec![entry_id3]);
+        assert_eq!(advisor.find_victim(1), vec![entry_id1]);
+        assert_eq!(advisor.find_victim(1), vec![entry_id2]);
+        assert_eq!(advisor.find_victim(1), vec![entry_id3]);
     }
 
     #[test]
@@ -222,14 +222,14 @@ mod tests {
         let entry_id1 = EntryID::from(1);
         advisor.notify_insert(&entry_id1);
 
-        assert_eq!(advisor.advise(1), vec![entry_id1]);
+        assert_eq!(advisor.find_victim(1), vec![entry_id1]);
     }
 
     #[test]
     fn test_clock_policy_advise_empty() {
         let advisor = ClockPolicy::new();
 
-        assert_eq!(advisor.advise(1), vec![]);
+        assert_eq!(advisor.find_victim(1), vec![]);
     }
 
     #[test]
@@ -315,7 +315,7 @@ mod tests {
             assert_eq!(state.total_size, 102);
         }
 
-        let evicted = policy.advise(1);
+        let evicted = policy.find_victim(1);
         assert_eq!(evicted, vec![e1]);
 
         {
@@ -323,7 +323,7 @@ mod tests {
             assert_eq!(state.total_size, 101);
         }
 
-        let evicted = policy.advise(1);
+        let evicted = policy.find_victim(1);
         assert_eq!(evicted, vec![e2]);
 
         {

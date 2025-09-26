@@ -162,7 +162,7 @@ impl S3FifoPolicy {
 }
 
 impl CachePolicy for S3FifoPolicy {
-    fn advise(&self, cnt: usize) -> Vec<EntryID> {
+    fn find_victim(&self, cnt: usize) -> Vec<EntryID> {
         let mut state = self.state.lock().unwrap();
         let mut advices = Vec::with_capacity(cnt);
         let threshold_for_small_eviction = 0.1;
@@ -242,7 +242,7 @@ mod tests {
         policy.notify_insert(&e2);
         policy.notify_insert(&e3);
 
-        let evicted = policy.advise(1);
+        let evicted = policy.find_victim(1);
         assert_eq!(evicted.len(), 1);
     }
 
@@ -266,7 +266,7 @@ mod tests {
         policy.notify_insert(&e1);
         policy.notify_insert(&e2);
 
-        let evicted = policy.advise(1);
+        let evicted = policy.find_victim(1);
         assert_eq!(evicted[0], e1);
     }
 
@@ -276,7 +276,7 @@ mod tests {
         let e1 = entry(1);
 
         policy.notify_insert(&e1);
-        let evicted = policy.advise(1);
+        let evicted = policy.find_victim(1);
         assert_eq!(evicted[0], e1);
 
         // Re-insert evicted entry from ghost
@@ -337,7 +337,7 @@ mod tests {
         let e1 = entry(1);
 
         policy.notify_insert(&e1);
-        let evicted = policy.advise(1);
+        let evicted = policy.find_victim(1);
 
         assert_eq!(evicted[0], e1);
         let state = policy.state.lock().unwrap();
@@ -363,7 +363,7 @@ mod tests {
         state.total_size += 2;
         drop(state);
 
-        let evicted = policy.advise(2);
+        let evicted = policy.find_victim(2);
         assert_eq!(evicted.len(), 2);
     }
 }

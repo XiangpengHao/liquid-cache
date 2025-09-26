@@ -19,7 +19,7 @@ pub use sieve::SievePolicy;
 /// The cache policy that guides the replacement of LiquidCache
 pub trait CachePolicy: std::fmt::Debug + Send + Sync {
     /// Give cnt amount of entries to evict when cache is full.
-    fn advise(&self, cnt: usize) -> Vec<EntryID>;
+    fn find_victim(&self, cnt: usize) -> Vec<EntryID>;
 
     /// Notify the cache policy that an entry was inserted.
     fn notify_insert(&self, _entry_id: &EntryID) {}
@@ -53,7 +53,7 @@ mod tests {
             let advised_entries_clone = advised_entries.clone();
 
             let handle = thread::spawn(move || {
-                let advice = policy_clone.advise(1);
+                let advice = policy_clone.find_victim(1);
                 if let Some(entry_id) = advice.first() {
                     let mut entries = advised_entries_clone.lock().unwrap();
                     entries.push(*entry_id);

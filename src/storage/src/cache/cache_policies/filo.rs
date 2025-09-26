@@ -28,7 +28,7 @@ impl FiloPolicy {
 }
 
 impl CachePolicy for FiloPolicy {
-    fn advise(&self, cnt: usize) -> Vec<EntryID> {
+    fn find_victim(&self, cnt: usize) -> Vec<EntryID> {
         let mut queue = self.queue.lock().unwrap();
         if cnt == 0 || queue.is_empty() {
             return vec![];
@@ -68,7 +68,7 @@ impl FifoPolicy {
 }
 
 impl CachePolicy for FifoPolicy {
-    fn advise(&self, cnt: usize) -> Vec<EntryID> {
+    fn find_victim(&self, cnt: usize) -> Vec<EntryID> {
         let mut queue = self.queue.lock().unwrap();
         if cnt == 0 || queue.is_empty() {
             return vec![];
@@ -128,7 +128,7 @@ mod tests {
     #[test]
     fn test_filo_advise_empty() {
         let policy = FiloPolicy::new();
-        assert!(policy.advise(1).is_empty());
+        assert!(policy.find_victim(1).is_empty());
     }
 
     #[test]
@@ -140,7 +140,7 @@ mod tests {
         policy.notify_insert(&e1);
         policy.notify_insert(&e2);
 
-        assert_eq!(policy.advise(1), vec![e2]);
-        assert_eq!(policy.advise(1), vec![e1]);
+        assert_eq!(policy.find_victim(1), vec![e2]);
+        assert_eq!(policy.find_victim(1), vec![e1]);
     }
 }

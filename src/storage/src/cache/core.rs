@@ -415,8 +415,8 @@ impl CacheStorage {
                 return;
             };
 
-            let advice = self.cache_policy.advise(8);
-            if advice.is_empty() {
+            let victims = self.cache_policy.find_victim(8);
+            if victims.is_empty() {
                 // no advice, because the cache is already empty
                 // this can happen if the entry to be inserted is too large, in that case,
                 // we write it to disk
@@ -424,7 +424,7 @@ impl CacheStorage {
                 batch_to_cache = on_disk_batch;
                 continue;
             }
-            self.apply_advice(advice);
+            self.squeeze_victims(victims);
 
             batch_to_cache = not_inserted;
             crate::utils::yield_now_if_shuttle();
@@ -478,25 +478,25 @@ impl CacheStorage {
         Ok(())
     }
 
-    fn apply_advice(&self, advice: Vec<EntryID>) {
+    fn squeeze_victims(&self, victims: Vec<EntryID>) {
         #[cfg(target_os = "linux")]
         {
             let mut executor = super::io::Executor::new(&self.io_pool);
-            for adv in advice {
-                executor.spawn(self.apply_advice_inner(adv));
+            for adv in victims {
+                executor.spawn(self.squeeze_victim_inner(adv));
             }
             executor.join();
         }
         #[cfg(not(target_os = "linux"))]
         {
-            for adv in advice {
-                self.apply_advice_inner_blocking(adv);
+            for adv in victims {
+                self.squeeze_victim_inner_blocking(adv);
             }
         }
     }
 
     #[cfg(not(target_os = "linux"))]
-    fn apply_advice_inner_blocking(&self, to_squeeze: EntryID) {
+    fn squeeze_victim_inner_blocking(&self, to_squeeze: EntryID) {
         let Some(mut to_squeeze_batch) = self.index.get(&to_squeeze) else {
             return;
         };
@@ -536,7 +536,7 @@ impl CacheStorage {
     }
 
     #[cfg(target_os = "linux")]
-    async fn apply_advice_inner(&self, to_squeeze: EntryID) {
+    async fn squeeze_victim_inner(&self, to_squeeze: EntryID) {
         let Some(mut to_squeeze_batch) = self.index.get(&to_squeeze) else {
             return;
         };
@@ -635,7 +635,7 @@ mod tests {
     }
 
     impl CachePolicy for TestPolicy {
-        fn advise(&self, _cnt: usize) -> Vec<EntryID> {
+        fn find_victim(&self, _cnt: usize) -> Vec<EntryID> {
             self.advice_count.fetch_add(1, Ordering::SeqCst);
             let id_to_use = self.target_id.unwrap();
             vec![id_to_use]

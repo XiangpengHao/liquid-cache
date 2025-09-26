@@ -80,7 +80,7 @@ unsafe impl Send for LruPolicy {}
 unsafe impl Sync for LruPolicy {}
 
 impl CachePolicy for LruPolicy {
-    fn advise(&self, cnt: usize) -> Vec<EntryID> {
+    fn find_victim(&self, cnt: usize) -> Vec<EntryID> {
         let mut state = self.state.lock().unwrap();
         if cnt == 0 {
             return vec![];
@@ -144,7 +144,7 @@ mod tests {
     }
 
     fn assert_evict_advice(policy: &LruPolicy, expect_evict: EntryID) {
-        let advice = policy.advise(1);
+        let advice = policy.find_victim(1);
         assert_eq!(advice, vec![expect_evict]);
     }
 
@@ -197,7 +197,7 @@ mod tests {
     #[test]
     fn test_lru_policy_advise_empty() {
         let policy = LruPolicy::new();
-        assert_eq!(policy.advise(1), vec![]);
+        assert_eq!(policy.find_victim(1), vec![]);
     }
 
     #[test]
@@ -275,8 +275,8 @@ mod tests {
         }
         policy.notify_access(&entry(2));
         policy.notify_access(&entry(5));
-        policy.advise(1);
-        policy.advise(1);
+        policy.find_victim(1);
+        policy.find_victim(1);
 
         let state = policy.state.lock().unwrap();
         state.check_integrity();
@@ -335,7 +335,7 @@ mod tests {
                             policy_clone.notify_access(&entry_id);
                         }
                         _ => {
-                            let advised = policy_clone.advise(1);
+                            let advised = policy_clone.find_victim(1);
                             if !advised.is_empty() {
                                 total_evictions_clone.fetch_add(1, Ordering::SeqCst);
                             }

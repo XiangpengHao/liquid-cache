@@ -60,7 +60,7 @@ unsafe impl Send for SievePolicy {}
 unsafe impl Sync for SievePolicy {}
 
 impl CachePolicy for SievePolicy {
-    fn advise(&self, cnt: usize) -> Vec<EntryID> {
+    fn find_victim(&self, cnt: usize) -> Vec<EntryID> {
         let mut state = self.state.lock().unwrap();
         let mut advices = Vec::with_capacity(cnt);
         for _ in 0..cnt {
@@ -164,7 +164,7 @@ mod tests {
     }
 
     fn assert_evict_advice(policy: &SievePolicy, expect_evict: EntryID) {
-        let advice = policy.advise(1);
+        let advice = policy.find_victim(1);
         assert_eq!(advice, vec![expect_evict]);
     }
 
@@ -214,7 +214,7 @@ mod tests {
     #[test]
     fn test_sieve_advise_empty() {
         let policy = SievePolicy::new(None);
-        assert_eq!(policy.advise(1), vec![]);
+        assert_eq!(policy.find_victim(1), vec![]);
     }
 
     #[test]
