@@ -20,12 +20,11 @@ use crate::liquid_array::ipc::LiquidIPCHeader;
 use crate::liquid_array::ipc::get_physical_type_id;
 use crate::liquid_array::raw::BitPackedArray;
 use crate::liquid_array::{
-    IoRange, LiquidArray, LiquidArrayRef, LiquidHybridArray, LiquidHybridArrayRef, PrimitiveKind,
+    IoRange, LiquidArray, LiquidArrayRef, LiquidHybridArray, LiquidHybridArrayRef, Operator, PrimitiveKind
 };
 use crate::utils::get_bit_width;
 use arrow::datatypes::ArrowNativeType;
 use bytes::Bytes;
-use datafusion::logical_expr::Operator as DFOperator;
 use datafusion::physical_plan::expressions::{BinaryExpr, Literal};
 
 /// Squeeze policy for primitive integer arrays.
@@ -474,30 +473,6 @@ struct LiquidPrimitiveClampedArray<T: LiquidPrimitiveType> {
     reference_value: T::Native,
     // Range in the on-disk payload needed to reconstruct the full array (we use full bytes)
     disk_range: std::ops::Range<u64>,
-}
-
-enum Operator {
-    Eq,
-    NotEq,
-    Lt,
-    LtEq,
-    Gt,
-    GtEq,
-}
-
-impl Operator {
-    fn from_datafusion(op: &DFOperator) -> Option<Self> {
-        let op = match op {
-            DFOperator::Eq => Operator::Eq,
-            DFOperator::NotEq => Operator::NotEq,
-            DFOperator::Lt => Operator::Lt,
-            DFOperator::LtEq => Operator::LtEq,
-            DFOperator::Gt => Operator::Gt,
-            DFOperator::GtEq => Operator::GtEq,
-            _ => return None,
-        };
-        Some(op)
-    }
 }
 
 impl<T> LiquidPrimitiveClampedArray<T>
