@@ -8,7 +8,6 @@ use arrow_schema::{DataType, Fields, Schema, SchemaRef};
 use fastrace::Event;
 use fastrace::local::LocalSpan;
 use futures::{FutureExt, Stream, future::BoxFuture, ready};
-use liquid_cache_common::coerce_parquet_schema_to_liquid_schema;
 use parquet::arrow::arrow_reader::ArrowPredicate;
 use parquet::{
     arrow::{
@@ -233,7 +232,6 @@ impl LiquidStreamBuilder {
             .batch_size
             .min(self.metadata.file_metadata().num_rows() as usize);
 
-        let liquid_cache_mode = *liquid_cache.cache_mode();
         let reader = ReaderFactory {
             input: self.input,
             filter: self.filter,
@@ -254,10 +252,6 @@ impl LiquidStreamBuilder {
             _ => unreachable!("Must be Struct for root type"),
         };
         let schema = Arc::new(Schema::new(projected_fields));
-        let schema = Arc::new(coerce_parquet_schema_to_liquid_schema(
-            &schema,
-            &liquid_cache_mode,
-        ));
         Ok(LiquidStream {
             metadata: self.metadata,
             schema,

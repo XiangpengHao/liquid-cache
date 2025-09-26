@@ -3,9 +3,9 @@ use crate::{BenchmarkResult, IterationResult, Query, QueryResult, run_query};
 use anyhow::Result;
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::prelude::{SessionConfig, SessionContext};
-use liquid_cache_common::LiquidCacheMode;
 use liquid_cache_local::LiquidCacheLocalBuilder;
 use liquid_cache_parquet::{LiquidCacheRef, extract_execution_metrics};
+use liquid_cache_storage::cache::squeeze_policies::{Evict, TranscodeEvict, TranscodeSqueezeEvict};
 use liquid_cache_storage::cache_policies::FiloPolicy;
 use log::info;
 use serde::Serialize;
@@ -25,7 +25,7 @@ pub enum InProcessBenchmarkMode {
     Arrow,
     #[default]
     Liquid,
-    LiquidEagerTranscode,
+    LiquidNoSqueeze,
 }
 
 impl std::str::FromStr for InProcessBenchmarkMode {
@@ -37,10 +37,10 @@ impl std::str::FromStr for InProcessBenchmarkMode {
             "datafusion-default" | "datafusion" => InProcessBenchmarkMode::DataFusionDefault,
             "arrow" => InProcessBenchmarkMode::Arrow,
             "liquid" => InProcessBenchmarkMode::Liquid,
-            "liquid-eager-transcode" => InProcessBenchmarkMode::LiquidEagerTranscode,
+            "liquid-no-squeeze" => InProcessBenchmarkMode::LiquidNoSqueeze,
             _ => {
                 return Err(format!(
-                    "Invalid in-process benchmark mode: {s}, must be one of: parquet, datafusion-default, arrow, liquid, liquid-eager-transcode"
+                    "Invalid in-process benchmark mode: {s}, must be one of: parquet, datafusion-default, arrow, liquid, liquid-no-squeeze"
                 ));
             }
         })
@@ -157,27 +157,27 @@ impl InProcessBenchmarkRunner {
             InProcessBenchmarkMode::Arrow => {
                 let v = LiquidCacheLocalBuilder::new()
                     .with_max_cache_bytes(cache_size)
-                    .with_cache_mode(LiquidCacheMode::Arrow)
                     .with_cache_dir(cache_dir)
-                    .with_cache_strategy(Box::new(FiloPolicy::new()))
+                    .with_cache_policy(Box::new(FiloPolicy::new()))
+                    .with_squeeze_policy(Box::new(Evict))
                     .build(session_config)?;
                 (v.0, Some(v.1))
             }
             InProcessBenchmarkMode::Liquid => {
                 let v = LiquidCacheLocalBuilder::new()
                     .with_max_cache_bytes(cache_size)
-                    .with_cache_mode(LiquidCacheMode::Liquid)
                     .with_cache_dir(cache_dir)
-                    .with_cache_strategy(Box::new(FiloPolicy::new()))
+                    .with_cache_policy(Box::new(FiloPolicy::new()))
+                    .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
                     .build(session_config)?;
                 (v.0, Some(v.1))
             }
-            InProcessBenchmarkMode::LiquidEagerTranscode => {
+            InProcessBenchmarkMode::LiquidNoSqueeze => {
                 let v = LiquidCacheLocalBuilder::new()
                     .with_max_cache_bytes(cache_size)
-                    .with_cache_mode(LiquidCacheMode::LiquidBlocking)
                     .with_cache_dir(cache_dir)
-                    .with_cache_strategy(Box::new(FiloPolicy::new()))
+                    .with_cache_policy(Box::new(FiloPolicy::new()))
+                    .with_squeeze_policy(Box::new(TranscodeEvict))
                     .build(session_config)?;
                 (v.0, Some(v.1))
             }

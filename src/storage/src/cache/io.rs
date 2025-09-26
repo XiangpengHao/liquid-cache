@@ -1,23 +1,164 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::ffi::CString;
+use std::fmt;
 use std::future::Future;
 use std::io;
-use std::ops::DerefMut;
+use std::mem::ManuallyDrop;
+use std::ops::{Deref, DerefMut};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::RawFd;
 use std::path::Path;
 use std::pin::Pin;
+use std::ptr;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 use io_uring::{IoUring, opcode, types};
 use libc;
 
-struct RingState {
-    ring: IoUring,
+use crate::sync::Mutex;
+
+pub(crate) const DEFAULT_RING_ENTRIES: u32 = 32;
+
+/// In an ideal world, we'd never need to care about pooling IoUring instances,
+/// because OS will automatically do it for us, we just create as needed.
+/// However, in practice, creating IoUring consumes user's memory lock,
+/// which by default has a very low 8192KB limit on Linux.
+///
+/// One way to workaround this is to ask all our dependent to set unlimited memory lock,
+/// which is not always possible, and ugly design.
+///
+/// Instead, we pool IoUring instances within the storage, taking care of the work
+/// that OS should have done for us.
+pub(crate) struct IoUringPool {
+    rings: Mutex<VecDeque<IoUring>>,
+    entries: u32,
+    created: AtomicUsize,
+}
+
+impl IoUringPool {
+    pub(crate) fn new(entries: u32) -> Self {
+        Self {
+            rings: Mutex::new(VecDeque::new()),
+            entries,
+            created: AtomicUsize::new(0),
+        }
+    }
+
+    fn acquire(&self) -> PooledRing<'_> {
+        if let Some(ring) = self.try_take_ring() {
+            return PooledRing::new(ring, self);
+        }
+
+        let ring = IoUring::new(self.entries).expect("io_uring init failed");
+        self.created.fetch_add(1, Ordering::Relaxed);
+        PooledRing::new(ring, self)
+    }
+
+    fn try_take_ring(&self) -> Option<IoUring> {
+        let mut guard = self.rings.lock().unwrap();
+        guard.pop_front()
+    }
+
+    fn release(&self, ring: IoUring) {
+        let mut guard = self.rings.lock().unwrap();
+        guard.push_back(ring);
+    }
+
+    #[cfg(test)]
+    fn created_count(&self) -> usize {
+        self.created.load(Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    fn available_for_tests(&self) -> usize {
+        let guard = self.rings.lock().unwrap();
+        guard.len()
+    }
+
+    #[cfg(test)]
+    fn reset_for_tests(&self) {
+        let mut guard = self.rings.lock().unwrap();
+        guard.clear();
+        self.created.store(0, Ordering::SeqCst);
+    }
+}
+
+impl fmt::Debug for IoUringPool {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let available = match self.rings.lock() {
+            Ok(rings) => rings.len(),
+            Err(_) => 0,
+        };
+        f.debug_struct("IoUringPool")
+            .field("entries", &self.entries)
+            .field("created", &self.created.load(Ordering::SeqCst))
+            .field("available", &available)
+            .finish()
+    }
+}
+
+struct PooledRing<'pool> {
+    ring: ManuallyDrop<IoUring>,
+    pool: &'pool IoUringPool,
+}
+
+impl<'pool> PooledRing<'pool> {
+    fn new(ring: IoUring, pool: &'pool IoUringPool) -> Self {
+        Self {
+            ring: ManuallyDrop::new(ring),
+            pool,
+        }
+    }
+}
+
+impl Deref for PooledRing<'_> {
+    type Target = IoUring;
+
+    fn deref(&self) -> &Self::Target {
+        &self.ring
+    }
+}
+
+impl DerefMut for PooledRing<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.ring
+    }
+}
+
+impl Drop for PooledRing<'_> {
+    fn drop(&mut self) {
+        // Move the ring out without dropping it so we can return it to the pool.
+        let ring_ptr: *mut IoUring = &mut *self.ring;
+        let ring = unsafe { ptr::read(ring_ptr) };
+        self.pool.release(ring);
+    }
+}
+
+struct RingState<'pool> {
+    ring: PooledRing<'pool>,
     completions: HashMap<UringID, i32>,
+}
+
+impl<'pool> RingState<'pool> {
+    fn new(pool: &'pool IoUringPool) -> Self {
+        Self {
+            ring: pool.acquire(),
+            completions: HashMap::new(),
+        }
+    }
+}
+
+impl Drop for RingState<'_> {
+    fn drop(&mut self) {
+        self.completions.clear();
+        {
+            let mut cq = self.ring.completion();
+            for _ in &mut cq {}
+        }
+    }
 }
 
 static NEXT_TASK_ID: AtomicU32 = AtomicU32::new(1);
@@ -238,20 +379,21 @@ impl Future for WriteAll<'_> {
 
 #[allow(unused)]
 pub fn block_on<F: Future>(mut task: F) -> F::Output {
-    let mut executor = Executor::new();
+    let pool = IoUringPool::new(DEFAULT_RING_ENTRIES);
+    let mut executor = Executor::new(&pool);
     executor.spawn(task);
     let mut outputs = executor.join();
     outputs.pop().expect("no output from task")
 }
 
-struct Task<F: Future> {
+struct Task<'pool, F: Future> {
     id: TaskId,
-    ring: Rc<RefCell<RingState>>,
+    ring: Rc<RefCell<RingState<'pool>>>,
     future: Pin<Box<F>>,
 }
 
-impl<F: Future> Task<F> {
-    fn context(&self) -> TaskContext {
+impl<'pool, F: Future> Task<'pool, F> {
+    fn context(&self) -> TaskContext<'pool> {
         TaskContext {
             id: self.id,
             ring: self.ring.clone(),
@@ -259,55 +401,47 @@ impl<F: Future> Task<F> {
     }
 }
 
-struct TaskContext {
+struct TaskContext<'pool> {
     id: TaskId,
-    ring: Rc<RefCell<RingState>>,
+    ring: Rc<RefCell<RingState<'pool>>>,
 }
 
-impl TaskContext {
-    unsafe fn from_waker_data<'a>(data: *const ()) -> &'a Self {
-        unsafe { &*(data as *const Self) }
+impl<'pool> TaskContext<'pool> {
+    unsafe fn from_waker_data<'a>(data: *const ()) -> &'a TaskContext<'pool> {
+        unsafe { &*(data as *const TaskContext<'pool>) }
     }
 
     fn to_waker_data(&self) -> *const () {
         self as *const Self as *const ()
     }
 
-    fn with_ring<T>(&self, f: impl FnOnce(&mut RingState) -> T) -> T {
+    fn with_ring<T>(&self, f: impl FnOnce(&mut RingState<'pool>) -> T) -> T {
         let mut guard = self.ring.borrow_mut();
         let ring_state = guard.deref_mut();
         f(ring_state)
     }
 }
 
-pub struct Executor<F: Future> {
-    ready_queue: VecDeque<Task<F>>,
-    pending_tasks: HashMap<TaskId, Task<F>>,
-    ring: Rc<RefCell<RingState>>,
+pub struct Executor<'pool, F: Future> {
+    ring: Rc<RefCell<RingState<'pool>>>,
+    pending_tasks: HashMap<TaskId, Task<'pool, F>>,
+    ready_queue: VecDeque<Task<'pool, F>>,
 }
 
-impl<F: Future> Default for Executor<F> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<F: Future> Executor<F> {
-    pub fn new() -> Self {
+impl<'pool, F: Future> Executor<'pool, F> {
+    pub fn new(pool: &'pool IoUringPool) -> Self {
         Executor {
-            ready_queue: VecDeque::new(),
+            ring: Rc::new(RefCell::new(RingState::new(pool))),
             pending_tasks: HashMap::new(),
-            ring: Rc::new(RefCell::new(RingState {
-                ring: IoUring::new(256).expect("io_uring init failed"),
-                completions: HashMap::new(),
-            })),
+            ready_queue: VecDeque::new(),
         }
     }
 
     pub fn spawn(&mut self, task: F) {
+        let ring = Rc::clone(&self.ring);
         self.ready_queue.push_back(Task {
             id: next_task_id(),
-            ring: self.ring.clone(),
+            ring,
             future: Box::pin(task),
         });
     }
@@ -352,7 +486,7 @@ impl<F: Future> Executor<F> {
 }
 
 #[inline]
-fn raw_waker_from_task_id(task: &TaskContext) -> RawWaker {
+fn raw_waker_from_task_id<'pool>(task: &TaskContext<'pool>) -> RawWaker {
     unsafe fn clone(data: *const ()) -> RawWaker {
         RawWaker::new(data, &TASK_WAKER_VTABLE)
     }
@@ -364,13 +498,13 @@ fn raw_waker_from_task_id(task: &TaskContext) -> RawWaker {
     RawWaker::new(data_ptr, &TASK_WAKER_VTABLE)
 }
 
-struct WakerWrapper<'a> {
+struct WakerWrapper<'pool, 'a> {
     waker: Waker,
-    _context: &'a TaskContext, // This is used to ensure the `Waker` can not outlive the `TaskContext`
+    _context: &'a TaskContext<'pool>, // Ensure `Waker` lifetime bound to context
 }
 
-impl<'a> WakerWrapper<'a> {
-    fn new(task: &'a TaskContext) -> Self {
+impl<'pool, 'a> WakerWrapper<'pool, 'a> {
+    fn new(task: &'a TaskContext<'pool>) -> Self {
         let waker = unsafe { Waker::from_raw(raw_waker_from_task_id(task)) };
         Self {
             waker,
@@ -436,7 +570,8 @@ mod tests {
         let num_tasks = 8usize;
 
         let mut expected: Vec<(PathBuf, Vec<u8>)> = Vec::new();
-        let mut executor = Executor::new();
+        let pool = IoUringPool::new(DEFAULT_RING_ENTRIES);
+        let mut executor = Executor::new(&pool);
 
         for i in 0..num_tasks {
             let path = dir.path().join(format!("f{i}.bin"));
@@ -470,7 +605,8 @@ mod tests {
         let num_tasks = 4usize;
 
         let mut expected: Vec<(PathBuf, Vec<u8>)> = Vec::new();
-        let mut executor = Executor::new();
+        let pool = IoUringPool::new(DEFAULT_RING_ENTRIES);
+        let mut executor = Executor::new(&pool);
 
         for i in 0..num_tasks {
             let path = dir.path().join(format!("mw-{i}.bin"));
@@ -498,5 +634,34 @@ mod tests {
             let actual = fs::read(&path).unwrap();
             assert_eq!(actual, expected_data);
         }
+    }
+
+    #[test]
+    fn executor_reuses_io_uring_instances() {
+        let pool = IoUringPool::new(DEFAULT_RING_ENTRIES);
+        pool.reset_for_tests();
+        assert_eq!(pool.created_count(), 0);
+        assert_eq!(pool.available_for_tests(), 0);
+
+        {
+            let mut executor = Executor::new(&pool);
+            executor.spawn(async {});
+            executor.join();
+            assert_eq!(pool.created_count(), 1);
+            assert_eq!(pool.available_for_tests(), 0);
+        }
+
+        assert_eq!(pool.available_for_tests(), 1);
+        assert_eq!(pool.created_count(), 1);
+
+        {
+            let mut executor = Executor::new(&pool);
+            executor.spawn(async {});
+            executor.join();
+            assert_eq!(pool.created_count(), 1);
+            assert_eq!(pool.available_for_tests(), 0);
+        }
+
+        assert_eq!(pool.available_for_tests(), 1);
     }
 }

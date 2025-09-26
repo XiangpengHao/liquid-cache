@@ -1,12 +1,9 @@
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
 use arrow::array::types::*;
 use arrow::array::{ArrayRef, AsArray};
 use arrow_schema::DataType;
-use tokio::runtime::Runtime;
 
-use crate::cache::utils::EntryID;
-use crate::cache::{CacheStorage, cached_data::CachedBatch};
 use crate::liquid_array::byte_view_array::MemoryBuffer;
 use crate::liquid_array::{
     LiquidArrayRef, LiquidByteViewArray, LiquidFixedLenByteArray, LiquidFloatArray,
@@ -14,30 +11,6 @@ use crate::liquid_array::{
 };
 
 use super::utils::LiquidCompressorStates;
-
-/// A dedicated Tokio thread pool for background transcoding tasks.
-/// This pool is built with 4 worker threads.
-pub(crate) static TRANSCODE_THREAD_POOL: LazyLock<Runtime> = LazyLock::new(|| {
-    tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(4)
-        .thread_name("transcode-worker")
-        .enable_all()
-        .build()
-        .unwrap()
-});
-
-pub fn submit_background_transcoding_task(
-    array: ArrayRef,
-    cache: Arc<CacheStorage>,
-    entry_id: EntryID,
-) {
-    let compressor_states = cache.compressor_states(&entry_id);
-    TRANSCODE_THREAD_POOL.spawn(async move {
-        let array = Arc::clone(&array);
-        let liquid_array = transcode_liquid_inner(&array, compressor_states.as_ref()).unwrap();
-        cache.insert_inner(entry_id, CachedBatch::MemoryLiquid(liquid_array));
-    });
-}
 
 /// This method is used to transcode an arrow array into a liquid array.
 ///
@@ -176,6 +149,22 @@ pub fn transcode_liquid_inner<'a>(
             let mut compressors = state.fsst_compressor_raw().write().unwrap();
             let (compressor, compressed) =
                 LiquidByteViewArray::<MemoryBuffer>::train_from_arrow(array.as_string::<i32>());
+            *compressors = Some(compressor);
+            Ok(Arc::new(compressed))
+        }
+        DataType::Binary => {
+            let compressor = state.fsst_compressor().clone();
+            if let Some(compressor) = compressor.as_ref() {
+                let compressed = LiquidByteViewArray::<MemoryBuffer>::from_binary_array(
+                    array.as_binary::<i32>(),
+                    compressor.clone(),
+                );
+                return Ok(Arc::new(compressed));
+            }
+            drop(compressor);
+            let mut compressors = state.fsst_compressor_raw().write().unwrap();
+            let (compressor, compressed) =
+                LiquidByteViewArray::<MemoryBuffer>::train_from_arrow(array.as_binary::<i32>());
             *compressors = Some(compressor);
             Ok(Arc::new(compressed))
         }

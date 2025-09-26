@@ -18,7 +18,7 @@ struct InProcessBenchmark {
     pub manifest: PathBuf,
 
     /// Benchmark mode to use
-    #[arg(long = "bench-mode", default_value = "liquid-eager-transcode")]
+    #[arg(long = "bench-mode", default_value = "liquid")]
     pub bench_mode: InProcessBenchmarkMode,
 
     /// Number of times to run each query

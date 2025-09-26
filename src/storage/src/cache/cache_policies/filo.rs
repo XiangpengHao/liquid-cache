@@ -62,6 +62,10 @@ mod tests {
         let entry_id3 = EntryID::from(3);
 
         store.insert(entry_id1, create_test_arrow_array(100));
+
+        let data = store.get(&entry_id1).unwrap();
+        let data = data.raw_data();
+        assert!(matches!(data, CachedBatch::MemoryArrow(_)));
         store.insert(entry_id2, create_test_arrow_array(100));
         store.insert(entry_id3, create_test_arrow_array(100));
 
@@ -73,10 +77,7 @@ mod tests {
         assert!(store.get(&entry_id4).is_some());
 
         if let Some(data) = store.get(&entry_id3) {
-            match data.raw_data() {
-                CachedBatch::DiskLiquid => {}
-                _ => panic!("Expected OnDiskLiquid, got {:?}", data.raw_data()),
-            }
+            assert!(matches!(data.raw_data(), CachedBatch::MemoryLiquid(_)));
         }
     }
 
