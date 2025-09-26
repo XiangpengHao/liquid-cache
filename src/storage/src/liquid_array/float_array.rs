@@ -360,7 +360,7 @@ where
                     let signed_val: <T::SignedIntType as ArrowPrimitiveType>::Native = v.as_();
                     let v_signed = self.reference_value.add_wrapping(signed_val);
                     let v_quantized: <T::SignedIntType as ArrowPrimitiveType>::Native =
-                        v_signed.shr(shift as u8);
+                        v_signed.shr(shift);
                     v_quantized.sub_wrapping(quantized_min).as_()
                 }));
                 let quantized_array =
@@ -375,7 +375,7 @@ where
                     quantized: quantized_bitpacked,
                     reference_value: self.reference_value,
                     bucket_width: shift,
-                    disk_range: disk_range,
+                    disk_range,
                     patch_indices: self.patch_indices.clone(),
                     patch_values: self.patch_values.clone(),
                 };
@@ -769,7 +769,7 @@ where
             .expect("quantized bit width must exist");
         let quantized = BitPackedArray::from_primitive(filtered, bit_width);
         Self {
-            exponent: self.exponent.clone(),
+            exponent: self.exponent,
             quantized,
             reference_value: self.reference_value,
             bucket_width: self.bucket_width,
@@ -869,7 +869,7 @@ where
         let mut out_vals: Vec<bool> = Vec::with_capacity(values.len());
         let mut next_patch_index = 0;
         let mut ignore_patches = false;
-        if self.patch_indices.len() == 0 {
+        if self.patch_indices.is_empty() {
             ignore_patches = true;
         }
         let comp_fn = match op {
