@@ -127,7 +127,13 @@
 			},
 			"args": [
 				"--manifest",
-				"benchmark/data/clickbench.json",
+				"benchmark/clickbench/manifest.json",
+				"--max-cache-mb",
+				"100",
+				"--bench-mode",
+				"liquid",
+				"--query-index",
+				"30"
 			],
 			"cwd": "${workspaceFolder}"
 		},

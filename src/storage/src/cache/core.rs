@@ -409,7 +409,6 @@ impl CacheStorage {
 
     /// Insert a batch into the cache, it will run cache replacement policy until the batch is inserted.
     pub(crate) fn insert_inner(&self, entry_id: EntryID, mut batch_to_cache: CachedBatch) {
-        let mut loop_count = 0;
         loop {
             let Err(not_inserted) = self.try_insert(entry_id, batch_to_cache) else {
                 self.cache_policy.notify_insert(&entry_id);
@@ -429,11 +428,6 @@ impl CacheStorage {
 
             batch_to_cache = not_inserted;
             crate::utils::yield_now_if_shuttle();
-
-            loop_count += 1;
-            if loop_count > 20 {
-                log::warn!("Cache store insert looped {loop_count} times");
-            }
         }
     }
 
@@ -530,7 +524,10 @@ impl CacheStorage {
             }
 
             match self.try_insert(to_squeeze, new_batch) {
-                Ok(()) => break,
+                Ok(()) => {
+                    self.cache_policy.notify_insert(&to_squeeze);
+                    break;
+                }
                 Err(batch) => {
                     to_squeeze_batch = batch;
                 }
@@ -565,7 +562,10 @@ impl CacheStorage {
                 }
             }
             match self.try_insert(to_squeeze, new_batch) {
-                Ok(()) => break,
+                Ok(()) => {
+                    self.cache_policy.notify_insert(&to_squeeze);
+                    break;
+                }
                 Err(batch) => {
                     to_squeeze_batch = batch;
                 }

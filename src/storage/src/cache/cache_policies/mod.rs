@@ -10,6 +10,7 @@ mod s3_fifo;
 mod sieve;
 
 pub use clock::ClockPolicy;
+pub use filo::FifoPolicy;
 pub use filo::FiloPolicy;
 pub use lru::LruPolicy;
 pub use s3_fifo::S3FifoPolicy;

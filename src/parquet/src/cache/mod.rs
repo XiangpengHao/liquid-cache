@@ -420,6 +420,11 @@ impl LiquidCache {
     pub fn flush_data(&self) {
         self.cache_store.flush_all_to_disk();
     }
+
+    /// Get the storage of the cache.
+    pub fn storage(&self) -> &Arc<CacheStorage> {
+        &self.cache_store
+    }
 }
 
 #[cfg(test)]

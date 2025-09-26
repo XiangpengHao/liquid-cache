@@ -8,6 +8,7 @@ use fastrace::Span;
 use fastrace::future::FutureExt as _;
 use liquid_cache_common::rpc::ExecutionMetricsResponse;
 use liquid_cache_server::{ApiResponse, ExecutionStats};
+use liquid_cache_storage::cache::CacheStats;
 use liquid_cache_storage::cache::squeeze_policies::{
     Evict, SqueezePolicy, TranscodeEvict, TranscodeSqueezeEvict,
 };
@@ -364,6 +365,27 @@ impl QueryResult {
     }
 }
 
+#[derive(Serialize, Debug)]
+pub struct SerializableCacheStats {
+    pub total_entries: usize,
+    pub memory_arrow_entries: usize,
+    pub memory_liquid_entries: usize,
+    pub memory_hybrid_liquid_entries: usize,
+    pub disk_liquid_entries: usize,
+}
+
+impl SerializableCacheStats {
+    pub fn from(cache_stats: CacheStats) -> Self {
+        Self {
+            total_entries: cache_stats.total_entries,
+            memory_arrow_entries: cache_stats.memory_arrow_entries,
+            memory_liquid_entries: cache_stats.memory_liquid_entries,
+            memory_hybrid_liquid_entries: cache_stats.memory_hybrid_liquid_entries,
+            disk_liquid_entries: cache_stats.disk_liquid_entries,
+        }
+    }
+}
+
 #[derive(Serialize)]
 pub struct IterationResult {
     pub network_traffic: u64,
@@ -374,13 +396,14 @@ pub struct IterationResult {
     pub starting_timestamp: Duration,
     pub disk_bytes_read: u64,
     pub disk_bytes_written: u64,
+    pub cache_stats: Option<SerializableCacheStats>,
 }
 
 impl Display for IterationResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Query time: {} ms\n network: {} bytes\n cache cpu time: {} ms\n cache memory: {} bytes, liquid cache memory: {} bytes\n disk read: {} bytes, disk written: {} bytes",
+            "Query time: {} ms\n network: {} bytes\n cache cpu time: {} ms\n cache memory: {} bytes, liquid cache memory: {} bytes\n disk read: {} bytes, disk written: {} bytes\n",
             self.time_millis,
             self.network_traffic,
             self.cache_cpu_time,
@@ -388,6 +411,19 @@ impl Display for IterationResult {
             self.liquid_cache_usage,
             self.disk_bytes_read,
             self.disk_bytes_written,
-        )
+        )?;
+        if let Some(cache_stats) = &self.cache_stats {
+            write!(
+                f,
+                " cache stats: total_entries: {}, memory_arrow_entries: {}, memory_liquid_entries: {}, memory_hybrid_liquid_entries: {}, disk_liquid_entries: {}",
+                cache_stats.total_entries,
+                cache_stats.memory_arrow_entries,
+                cache_stats.memory_liquid_entries,
+                cache_stats.memory_hybrid_liquid_entries,
+                cache_stats.disk_liquid_entries,
+            )
+        } else {
+            Ok(())
+        }
     }
 }

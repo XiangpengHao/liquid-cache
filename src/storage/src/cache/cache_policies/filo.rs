@@ -34,7 +34,51 @@ impl CachePolicy for FiloPolicy {
             return vec![];
         }
         let k = cnt.min(queue.len());
-        queue.drain(0..k).collect()
+        let mut out = vec![];
+        for _i in 0..k {
+            out.push(queue.pop_front().unwrap());
+        }
+        out
+    }
+
+    fn notify_insert(&self, entry_id: &EntryID) {
+        self.add_entry(entry_id);
+    }
+}
+
+/// The policy that implements the FIFO (First In, First Out) algorithm.
+/// Oldest entries are evicted first.
+#[derive(Debug, Default)]
+pub struct FifoPolicy {
+    queue: Mutex<VecDeque<EntryID>>,
+}
+
+impl FifoPolicy {
+    /// Create a new [`FiloPolicy`].
+    pub fn new() -> Self {
+        Self {
+            queue: Mutex::new(VecDeque::new()),
+        }
+    }
+
+    fn add_entry(&self, entry_id: &EntryID) {
+        let mut queue = self.queue.lock().unwrap();
+        queue.push_back(*entry_id);
+    }
+}
+
+impl CachePolicy for FifoPolicy {
+    fn advise(&self, cnt: usize) -> Vec<EntryID> {
+        let mut queue = self.queue.lock().unwrap();
+        if cnt == 0 || queue.is_empty() {
+            return vec![];
+        }
+        let k = cnt.min(queue.len());
+        let mut out = vec![];
+        for _i in 0..k {
+            out.push(queue.pop_front().unwrap());
+        }
+        out
     }
 
     fn notify_insert(&self, entry_id: &EntryID) {
