@@ -20,7 +20,7 @@ struct LiquidQueueInternalState {
 }
 
 impl LiquidPolicy {
-    /// Create a new [`ThreeQueuePolicy`].
+    /// Create a new [`LiquidPolicy`].
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(LiquidQueueInternalState::default()),

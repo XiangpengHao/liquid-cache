@@ -156,7 +156,7 @@ impl CacheStorageBuilder {
     }
 
     /// Set the cache policy for the cache.
-    /// Default is [ThreeQueuePolicy].
+    /// Default is [LiquidPolicy].
     pub fn with_cache_policy(mut self, policy: Box<dyn CachePolicy>) -> Self {
         self.cache_policy = policy;
         self
@@ -527,10 +527,10 @@ impl CacheStorage {
                     }
                 }
             }
-
+            let batch_type = CachedBatchType::from(&new_batch);
             match self.try_insert(to_squeeze, new_batch) {
                 Ok(()) => {
-                    self.cache_policy.notify_insert(&to_squeeze);
+                    self.cache_policy.notify_insert(&to_squeeze, batch_type);
                     break;
                 }
                 Err(batch) => {
