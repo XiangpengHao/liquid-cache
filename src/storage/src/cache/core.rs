@@ -12,7 +12,7 @@ use crate::cache::cached_data::CachedBatchType;
 use crate::cache::squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict};
 use crate::cache::utils::{LiquidCompressorStates, arrow_to_bytes};
 use crate::cache::{index::ArtIndex, utils::EntryID};
-use crate::cache_policies::FiloPolicy;
+use crate::cache_policies::LiquidPolicy;
 use crate::sync::Arc;
 
 /// A trait for objects that can handle IO operations for the cache.
@@ -97,13 +97,13 @@ pub struct CacheStats {
 /// Example:
 /// ```rust
 /// use liquid_cache_storage::cache::CacheStorageBuilder;
-/// use liquid_cache_storage::cache_policies::FiloPolicy;
+/// use liquid_cache_storage::cache_policies::LiquidPolicy;
 ///
 ///
 /// let _storage = CacheStorageBuilder::new()
 ///     .with_batch_size(8192)
 ///     .with_max_cache_bytes(1024 * 1024 * 1024)
-///     .with_cache_policy(Box::new(FiloPolicy::new()))
+///     .with_cache_policy(Box::new(LiquidPolicy::new()))
 ///     .build();
 /// ```
 pub struct CacheStorageBuilder {
@@ -128,7 +128,7 @@ impl CacheStorageBuilder {
             batch_size: 8192,
             max_cache_bytes: 1024 * 1024 * 1024,
             cache_dir: None,
-            cache_policy: Box::new(FiloPolicy::new()),
+            cache_policy: Box::new(LiquidPolicy::new()),
             squeeze_policy: Box::new(TranscodeSqueezeEvict),
             io_worker: None,
         }
@@ -156,7 +156,7 @@ impl CacheStorageBuilder {
     }
 
     /// Set the cache policy for the cache.
-    /// Default is [FiloPolicy].
+    /// Default is [ThreeQueuePolicy].
     pub fn with_cache_policy(mut self, policy: Box<dyn CachePolicy>) -> Self {
         self.cache_policy = policy;
         self

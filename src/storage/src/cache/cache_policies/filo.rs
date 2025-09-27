@@ -39,7 +39,10 @@ impl CachePolicy for FiloPolicy {
         let k = cnt.min(queue.len());
         let mut out = vec![];
         for _i in 0..k {
-            out.push(queue.pop_front().unwrap());
+            let Some(entry) = queue.pop_front() else {
+                break;
+            };
+            out.push(entry);
         }
         out
     }
@@ -124,7 +127,7 @@ mod tests {
         assert!(store.get(&entry_id4).is_some());
 
         if let Some(data) = store.get(&entry_id3) {
-            assert!(matches!(data.raw_data(), CachedBatch::MemoryLiquid(_)));
+            assert!(matches!(data.raw_data(), CachedBatch::DiskLiquid));
         }
     }
 

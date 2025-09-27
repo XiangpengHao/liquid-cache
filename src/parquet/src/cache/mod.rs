@@ -443,7 +443,7 @@ mod tests {
     use datafusion::physical_expr::expressions::{BinaryExpr, Literal};
     use datafusion::physical_plan::expressions::Column;
     use liquid_cache_storage::cache::squeeze_policies::TranscodeSqueezeEvict;
-    use liquid_cache_storage::cache_policies::FiloPolicy;
+    use liquid_cache_storage::cache_policies::LiquidPolicy;
     use parquet::arrow::ArrowWriter;
     use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
     use std::sync::Arc;
@@ -454,7 +454,7 @@ mod tests {
             batch_size,
             usize::MAX,
             tmp_dir.path().to_path_buf(),
-            Box::new(FiloPolicy::new()),
+            Box::new(LiquidPolicy::new()),
             Box::new(TranscodeSqueezeEvict),
         );
         let file = cache.register_or_get_file("test".to_string());

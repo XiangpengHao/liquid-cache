@@ -9,6 +9,7 @@ mod filo;
 mod lru;
 mod s3_fifo;
 mod sieve;
+mod three_queue;
 
 pub use clock::ClockPolicy;
 pub use filo::FifoPolicy;
@@ -16,6 +17,7 @@ pub use filo::FiloPolicy;
 pub use lru::LruPolicy;
 pub use s3_fifo::S3FifoPolicy;
 pub use sieve::SievePolicy;
+pub use three_queue::LiquidPolicy;
 
 /// The cache policy that guides the replacement of LiquidCache
 pub trait CachePolicy: std::fmt::Debug + Send + Sync {

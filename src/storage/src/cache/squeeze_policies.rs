@@ -76,8 +76,9 @@ impl SqueezePolicy for TranscodeSqueezeEvict {
                 };
                 (CachedBatch::MemoryHybridLiquid(hybrid_array), Some(bytes))
             }
-            CachedBatch::MemoryHybridLiquid(hybrid_array) => {
-                (CachedBatch::MemoryHybridLiquid(hybrid_array), None)
+            CachedBatch::MemoryHybridLiquid(_hybrid_array) => {
+                // the full data of hybrid array is already on disk
+                (CachedBatch::DiskLiquid, None)
             }
             CachedBatch::DiskLiquid | CachedBatch::DiskArrow => (entry, None),
         }

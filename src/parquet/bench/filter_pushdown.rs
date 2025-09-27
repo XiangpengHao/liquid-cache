@@ -3,7 +3,7 @@ use divan::Bencher;
 use liquid_cache_parquet::cache::LiquidCachedColumn;
 use liquid_cache_parquet::{FilterCandidateBuilder, LiquidPredicate};
 use liquid_cache_storage::cache::squeeze_policies::TranscodeSqueezeEvict;
-use liquid_cache_storage::cache_policies::FiloPolicy;
+use liquid_cache_storage::cache_policies::LiquidPolicy;
 use std::sync::Arc;
 use tempfile::TempDir;
 
@@ -43,7 +43,7 @@ fn setup_cache(tmp_dir: &TempDir) -> Arc<LiquidCachedColumn> {
         BATCH_SIZE,
         1024 * 1024 * 1024, // max_cache_bytes (1GB)
         tmp_dir.path().to_path_buf(),
-        Box::new(FiloPolicy::new()),
+        Box::new(LiquidPolicy::new()),
         Box::new(TranscodeSqueezeEvict),
     );
     let file = cache.register_or_get_file("test_file.parquet".to_string());

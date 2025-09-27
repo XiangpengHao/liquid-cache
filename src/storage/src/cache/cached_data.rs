@@ -285,6 +285,7 @@ impl Display for CachedBatch {
 }
 
 /// The type of the cached batch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CachedBatchType {
     /// Cached batch in memory as Arrow array.
     MemoryArrow,

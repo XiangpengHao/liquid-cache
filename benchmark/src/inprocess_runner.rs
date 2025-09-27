@@ -282,9 +282,7 @@ impl InProcessBenchmarkRunner {
         };
 
         let s = sysinfo::System::new_all();
-        let process = s
-            .process(sysinfo::Pid::from(sysinfo::get_current_pid().unwrap()))
-            .unwrap();
+        let process = s.process(sysinfo::get_current_pid().unwrap()).unwrap();
 
         let now = Instant::now();
         let starting_timestamp = bench_start_time.elapsed();
