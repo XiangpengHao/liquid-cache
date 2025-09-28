@@ -14,7 +14,7 @@ use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
 use liquid_cache_local::LiquidCacheLocalBuilder;
 use liquid_cache_parquet::LiquidCacheRef;
 use liquid_cache_storage::cache::squeeze_policies::TranscodeSqueezeEvict;
-use liquid_cache_storage::cache_policies::FiloPolicy;
+use liquid_cache_storage::cache_policies::LiquidPolicy;
 use tempfile::TempDir;
 
 #[derive(Debug)]
@@ -152,7 +152,7 @@ async fn run_cache_behavior_benchmark() -> Result<(), Box<dyn std::error::Error>
         .with_max_cache_bytes(10 * 1024 * 1024 * 1024) // 10GB
         .with_cache_dir(temp_dir.path().to_path_buf())
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
-        .with_cache_policy(Box::new(FiloPolicy::new()))
+        .with_cache_policy(Box::new(LiquidPolicy::new()))
         .build(SessionConfig::new())?;
 
     // Register the benchmark parquet file

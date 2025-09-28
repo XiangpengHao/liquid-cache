@@ -11,7 +11,7 @@ use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
 use futures::StreamExt;
 use liquid_cache_storage::{
     cache::squeeze_policies::{Evict, SqueezePolicy, TranscodeEvict, TranscodeSqueezeEvict},
-    cache_policies::FiloPolicy,
+    cache_policies::LiquidPolicy,
 };
 use object_store::ObjectMeta;
 use parquet::arrow::{
@@ -115,7 +115,7 @@ fn get_test_cache(
         bath_size,
         usize::MAX,
         cache_dir,
-        Box::new(FiloPolicy::new()),
+        Box::new(LiquidPolicy::new()),
         squeeze_policy,
     );
 
@@ -245,7 +245,7 @@ async fn test_reading_with_full_cache() {
         batch_size,
         1,
         tmp_dir.path().to_path_buf(),
-        Box::new(FiloPolicy::new()),
+        Box::new(LiquidPolicy::new()),
         Box::new(TranscodeSqueezeEvict),
     );
     let lq_file = lq.register_or_get_file("".to_string());

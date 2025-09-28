@@ -284,6 +284,33 @@ impl Display for CachedBatch {
     }
 }
 
+/// The type of the cached batch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CachedBatchType {
+    /// Cached batch in memory as Arrow array.
+    MemoryArrow,
+    /// Cached batch in memory as liquid array.
+    MemoryLiquid,
+    /// Cached batch in memory as hybrid liquid array.
+    MemoryHybridLiquid,
+    /// Cached batch on disk as liquid array.
+    DiskLiquid,
+    /// Cached batch on disk as Arrow array.
+    DiskArrow,
+}
+
+impl From<&CachedBatch> for CachedBatchType {
+    fn from(batch: &CachedBatch) -> Self {
+        match batch {
+            CachedBatch::MemoryArrow(_) => Self::MemoryArrow,
+            CachedBatch::MemoryLiquid(_) => Self::MemoryLiquid,
+            CachedBatch::MemoryHybridLiquid(_) => Self::MemoryHybridLiquid,
+            CachedBatch::DiskLiquid => Self::DiskLiquid,
+            CachedBatch::DiskArrow => Self::DiskArrow,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};

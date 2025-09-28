@@ -2,7 +2,10 @@
 
 use std::{collections::HashMap, fmt, ptr::NonNull, sync::Arc};
 
-use crate::{cache::utils::EntryID, sync::Mutex};
+use crate::{
+    cache::{cached_data::CachedBatchType, utils::EntryID},
+    sync::Mutex,
+};
 
 use super::{
     CachePolicy,
@@ -60,7 +63,7 @@ unsafe impl Send for SievePolicy {}
 unsafe impl Sync for SievePolicy {}
 
 impl CachePolicy for SievePolicy {
-    fn advise(&self, cnt: usize) -> Vec<EntryID> {
+    fn find_victim(&self, cnt: usize) -> Vec<EntryID> {
         let mut state = self.state.lock().unwrap();
         let mut advices = Vec::with_capacity(cnt);
         for _ in 0..cnt {
@@ -99,7 +102,7 @@ impl CachePolicy for SievePolicy {
         advices
     }
 
-    fn notify_insert(&self, entry_id: &EntryID) {
+    fn notify_insert(&self, entry_id: &EntryID, _batch_type: CachedBatchType) {
         let mut state = self.state.lock().unwrap();
         if state.map.contains_key(entry_id) {
             if let Some(mut node_ptr) = state.map.get(entry_id).copied() {
@@ -126,7 +129,7 @@ impl CachePolicy for SievePolicy {
         state.total_size += self.entry_size(entry_id);
     }
 
-    fn notify_access(&self, entry_id: &EntryID) {
+    fn notify_access(&self, entry_id: &EntryID, _batch_type: CachedBatchType) {
         let state = self.state.lock().unwrap();
         if let Some(mut node_ptr) = state.map.get(entry_id).copied() {
             unsafe {
@@ -157,14 +160,17 @@ impl Drop for SievePolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::utils::{EntryID, create_cache_store, create_test_arrow_array};
+    use crate::cache::{
+        cached_data::CachedBatchType,
+        utils::{EntryID, create_cache_store, create_test_arrow_array},
+    };
 
     fn entry(id: usize) -> EntryID {
         id.into()
     }
 
     fn assert_evict_advice(policy: &SievePolicy, expect_evict: EntryID) {
-        let advice = policy.advise(1);
+        let advice = policy.find_victim(1);
         assert_eq!(advice, vec![expect_evict]);
     }
 
@@ -175,9 +181,9 @@ mod tests {
         let e2 = entry(2);
         let e3 = entry(3);
 
-        policy.notify_insert(&e1);
-        policy.notify_insert(&e2);
-        policy.notify_insert(&e3);
+        policy.notify_insert(&e1, CachedBatchType::MemoryArrow);
+        policy.notify_insert(&e2, CachedBatchType::MemoryArrow);
+        policy.notify_insert(&e3, CachedBatchType::MemoryArrow);
 
         assert_evict_advice(&policy, e1);
     }
@@ -189,11 +195,11 @@ mod tests {
         let e2 = entry(2);
         let e3 = entry(3);
 
-        policy.notify_insert(&e1);
-        policy.notify_insert(&e2);
-        policy.notify_insert(&e3);
+        policy.notify_insert(&e1, CachedBatchType::MemoryArrow);
+        policy.notify_insert(&e2, CachedBatchType::MemoryArrow);
+        policy.notify_insert(&e3, CachedBatchType::MemoryArrow);
 
-        policy.notify_access(&e1);
+        policy.notify_access(&e1, CachedBatchType::MemoryArrow);
         assert_evict_advice(&policy, e2);
     }
 
@@ -203,10 +209,10 @@ mod tests {
         let e1 = entry(1);
         let e2 = entry(2);
 
-        policy.notify_insert(&e1);
-        policy.notify_insert(&e2);
+        policy.notify_insert(&e1, CachedBatchType::MemoryArrow);
+        policy.notify_insert(&e2, CachedBatchType::MemoryArrow);
 
-        policy.notify_insert(&e1);
+        policy.notify_insert(&e1, CachedBatchType::MemoryArrow);
 
         assert_evict_advice(&policy, e2);
     }
@@ -214,7 +220,7 @@ mod tests {
     #[test]
     fn test_sieve_advise_empty() {
         let policy = SievePolicy::new(None);
-        assert_eq!(policy.advise(1), vec![]);
+        assert_eq!(policy.find_victim(1), vec![]);
     }
 
     #[test]
@@ -229,9 +235,9 @@ mod tests {
         let e2 = entry(2);
         let e3 = entry(11);
 
-        policy.notify_insert(&e1);
-        policy.notify_insert(&e2);
-        policy.notify_insert(&e3);
+        policy.notify_insert(&e1, CachedBatchType::MemoryArrow);
+        policy.notify_insert(&e2, CachedBatchType::MemoryArrow);
+        policy.notify_insert(&e3, CachedBatchType::MemoryArrow);
 
         let state = policy.state.lock().unwrap();
         assert_eq!(state.total_size, 102);
@@ -245,9 +251,9 @@ mod tests {
         let e2 = entry(2);
         let e3 = entry(11);
 
-        policy.notify_insert(&e1);
-        policy.notify_insert(&e2);
-        policy.notify_insert(&e3);
+        policy.notify_insert(&e1, CachedBatchType::MemoryArrow);
+        policy.notify_insert(&e2, CachedBatchType::MemoryArrow);
+        policy.notify_insert(&e3, CachedBatchType::MemoryArrow);
 
         let state = policy.state.lock().unwrap();
         assert_eq!(state.total_size, 3);

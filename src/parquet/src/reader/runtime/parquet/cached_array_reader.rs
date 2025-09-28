@@ -376,7 +376,7 @@ mod tests {
 
     use arrow::array::Int32Array;
     use liquid_cache_storage::{
-        cache::squeeze_policies::TranscodeSqueezeEvict, cache_policies::FiloPolicy,
+        cache::squeeze_policies::TranscodeSqueezeEvict, cache_policies::LiquidPolicy,
     };
 
     use super::*;
@@ -445,7 +445,7 @@ mod tests {
             BATCH_SIZE,
             usize::MAX,
             tmp_dir.path().to_path_buf(),
-            Box::new(FiloPolicy::new()),
+            Box::new(LiquidPolicy::new()),
             Box::new(TranscodeSqueezeEvict),
         ));
         let file = liquid_cache.register_or_get_file("test".to_string());

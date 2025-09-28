@@ -7,7 +7,7 @@ use datafusion::{
 };
 use liquid_cache_storage::{
     cache::squeeze_policies::{Evict, SqueezePolicy, TranscodeEvict, TranscodeSqueezeEvict},
-    cache_policies::FiloPolicy,
+    cache_policies::LiquidPolicy,
 };
 use uuid::Uuid;
 
@@ -38,7 +38,7 @@ async fn run_sql(
         ctx.clone(),
         Some(cache_size_bytes),
         tmp_dir.path().to_path_buf(),
-        Box::new(FiloPolicy::new()),
+        Box::new(LiquidPolicy::new()),
         squeeze_policy,
     );
     async fn get_result(service: &LiquidCacheServiceInner, sql: &str) -> String {

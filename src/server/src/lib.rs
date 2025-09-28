@@ -59,7 +59,7 @@ pub use liquid_cache_common as common;
 pub use liquid_cache_storage as storage;
 use liquid_cache_storage::{
     cache::squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict},
-    cache_policies::{CachePolicy, FiloPolicy},
+    cache_policies::{CachePolicy, LiquidPolicy},
 };
 use object_store::path::Path;
 use object_store::{GetOptions, GetRange};
@@ -76,13 +76,13 @@ mod tests;
 /// use datafusion::prelude::SessionContext;
 /// use liquid_cache_server::LiquidCacheService;
 /// use liquid_cache_server::storage::cache::squeeze_policies::TranscodeSqueezeEvict;
-/// use liquid_cache_server::storage::cache_policies::FiloPolicy;
+/// use liquid_cache_server::storage::cache_policies::LiquidPolicy;
 /// use tonic::transport::Server;
 /// let liquid_cache = LiquidCacheService::new(
 ///     SessionContext::new(),
 ///     None,
 ///     None,
-///     Box::new(FiloPolicy::new()),
+///     Box::new(LiquidPolicy::new()),
 ///     Box::new(TranscodeSqueezeEvict),
 /// )
 /// .unwrap();
@@ -110,7 +110,7 @@ impl LiquidCacheService {
             ctx,
             None,
             None,
-            Box::new(FiloPolicy::new()),
+            Box::new(LiquidPolicy::new()),
             Box::new(TranscodeSqueezeEvict),
         )
     }
