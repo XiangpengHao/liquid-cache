@@ -8,10 +8,11 @@ use super::{
     budget::BudgetAccounting, cache_policies::CachePolicy, cached_data::CachedBatch,
     cached_data::CachedData, tracer::CacheTracer, utils::CacheConfig,
 };
+use crate::cache::cached_data::CachedBatchType;
 use crate::cache::squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict};
 use crate::cache::utils::{LiquidCompressorStates, arrow_to_bytes};
 use crate::cache::{index::ArtIndex, utils::EntryID};
-use crate::cache_policies::FiloPolicy;
+use crate::cache_policies::LiquidPolicy;
 use crate::sync::Arc;
 
 /// A trait for objects that can handle IO operations for the cache.
@@ -96,13 +97,13 @@ pub struct CacheStats {
 /// Example:
 /// ```rust
 /// use liquid_cache_storage::cache::CacheStorageBuilder;
-/// use liquid_cache_storage::cache_policies::FiloPolicy;
+/// use liquid_cache_storage::cache_policies::LiquidPolicy;
 ///
 ///
 /// let _storage = CacheStorageBuilder::new()
 ///     .with_batch_size(8192)
 ///     .with_max_cache_bytes(1024 * 1024 * 1024)
-///     .with_cache_policy(Box::new(FiloPolicy::new()))
+///     .with_cache_policy(Box::new(LiquidPolicy::new()))
 ///     .build();
 /// ```
 pub struct CacheStorageBuilder {
@@ -127,7 +128,7 @@ impl CacheStorageBuilder {
             batch_size: 8192,
             max_cache_bytes: 1024 * 1024 * 1024,
             cache_dir: None,
-            cache_policy: Box::new(FiloPolicy::new()),
+            cache_policy: Box::new(LiquidPolicy::new()),
             squeeze_policy: Box::new(TranscodeSqueezeEvict),
             io_worker: None,
         }
@@ -155,7 +156,7 @@ impl CacheStorageBuilder {
     }
 
     /// Set the cache policy for the cache.
-    /// Default is [FiloPolicy].
+    /// Default is [LiquidPolicy].
     pub fn with_cache_policy(mut self, policy: Box<dyn CachePolicy>) -> Self {
         self.cache_policy = policy;
         self
@@ -290,10 +291,13 @@ impl CacheStorage {
         let batch_size = batch.as_ref().map(|b| b.memory_usage_bytes()).unwrap_or(0);
         self.tracer
             .trace_get(*entry_id, self.budget.memory_usage_bytes(), batch_size);
-        // Notify the advisor that this entry was accessed
-        self.cache_policy.notify_access(entry_id);
 
-        batch.map(|b| CachedData::new(b, *entry_id, self.io_context.as_ref()))
+        let batch = batch?;
+        // Notify the advisor that this entry was accessed
+        self.cache_policy
+            .notify_access(entry_id, CachedBatchType::from(&batch));
+
+        Some(CachedData::new(batch, *entry_id, self.io_context.as_ref()))
     }
 
     /// Iterate over all entries in the cache.
@@ -409,15 +413,15 @@ impl CacheStorage {
 
     /// Insert a batch into the cache, it will run cache replacement policy until the batch is inserted.
     pub(crate) fn insert_inner(&self, entry_id: EntryID, mut batch_to_cache: CachedBatch) {
-        let mut loop_count = 0;
         loop {
+            let batch_type = CachedBatchType::from(&batch_to_cache);
             let Err(not_inserted) = self.try_insert(entry_id, batch_to_cache) else {
-                self.cache_policy.notify_insert(&entry_id);
+                self.cache_policy.notify_insert(&entry_id, batch_type);
                 return;
             };
 
-            let advice = self.cache_policy.advise(8);
-            if advice.is_empty() {
+            let victims = self.cache_policy.find_victim(8);
+            if victims.is_empty() {
                 // no advice, because the cache is already empty
                 // this can happen if the entry to be inserted is too large, in that case,
                 // we write it to disk
@@ -425,15 +429,10 @@ impl CacheStorage {
                 batch_to_cache = on_disk_batch;
                 continue;
             }
-            self.apply_advice(advice);
+            self.squeeze_victims(victims);
 
             batch_to_cache = not_inserted;
             crate::utils::yield_now_if_shuttle();
-
-            loop_count += 1;
-            if loop_count > 20 {
-                log::warn!("Cache store insert looped {loop_count} times");
-            }
         }
     }
 
@@ -484,25 +483,25 @@ impl CacheStorage {
         Ok(())
     }
 
-    fn apply_advice(&self, advice: Vec<EntryID>) {
+    fn squeeze_victims(&self, victims: Vec<EntryID>) {
         #[cfg(target_os = "linux")]
         {
             let mut executor = super::io::Executor::new(&self.io_pool);
-            for adv in advice {
-                executor.spawn(self.apply_advice_inner(adv));
+            for adv in victims {
+                executor.spawn(self.squeeze_victim_inner(adv));
             }
             executor.join();
         }
         #[cfg(not(target_os = "linux"))]
         {
-            for adv in advice {
-                self.apply_advice_inner_blocking(adv);
+            for adv in victims {
+                self.squeeze_victim_inner_blocking(adv);
             }
         }
     }
 
     #[cfg(not(target_os = "linux"))]
-    fn apply_advice_inner_blocking(&self, to_squeeze: EntryID) {
+    fn squeeze_victim_inner_blocking(&self, to_squeeze: EntryID) {
         let Some(mut to_squeeze_batch) = self.index.get(&to_squeeze) else {
             return;
         };
@@ -528,9 +527,12 @@ impl CacheStorage {
                     }
                 }
             }
-
+            let batch_type = CachedBatchType::from(&new_batch);
             match self.try_insert(to_squeeze, new_batch) {
-                Ok(()) => break,
+                Ok(()) => {
+                    self.cache_policy.notify_insert(&to_squeeze, batch_type);
+                    break;
+                }
                 Err(batch) => {
                     to_squeeze_batch = batch;
                 }
@@ -539,7 +541,7 @@ impl CacheStorage {
     }
 
     #[cfg(target_os = "linux")]
-    async fn apply_advice_inner(&self, to_squeeze: EntryID) {
+    async fn squeeze_victim_inner(&self, to_squeeze: EntryID) {
         let Some(mut to_squeeze_batch) = self.index.get(&to_squeeze) else {
             return;
         };
@@ -564,8 +566,12 @@ impl CacheStorage {
                     }
                 }
             }
+            let batch_type = CachedBatchType::from(&new_batch);
             match self.try_insert(to_squeeze, new_batch) {
-                Ok(()) => break,
+                Ok(()) => {
+                    self.cache_policy.notify_insert(&to_squeeze, batch_type);
+                    break;
+                }
                 Err(batch) => {
                     to_squeeze_batch = batch;
                 }
@@ -635,7 +641,7 @@ mod tests {
     }
 
     impl CachePolicy for TestPolicy {
-        fn advise(&self, _cnt: usize) -> Vec<EntryID> {
+        fn find_victim(&self, _cnt: usize) -> Vec<EntryID> {
             self.advice_count.fetch_add(1, Ordering::SeqCst);
             let id_to_use = self.target_id.unwrap();
             vec![id_to_use]

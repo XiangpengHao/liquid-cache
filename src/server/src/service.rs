@@ -206,7 +206,7 @@ impl LiquidCacheServiceInner {
 mod tests {
     use super::*;
     use liquid_cache_storage::{
-        cache::squeeze_policies::TranscodeSqueezeEvict, cache_policies::FiloPolicy,
+        cache::squeeze_policies::TranscodeSqueezeEvict, cache_policies::LiquidPolicy,
     };
     #[tokio::test]
     async fn test_register_object_store() {
@@ -214,7 +214,7 @@ mod tests {
             Arc::new(SessionContext::new()),
             None,
             PathBuf::from("test"),
-            Box::new(FiloPolicy::new()),
+            Box::new(LiquidPolicy::new()),
             Box::new(TranscodeSqueezeEvict),
         );
         let url = Url::parse("file:///").unwrap();

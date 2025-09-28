@@ -300,7 +300,7 @@ mod tests {
     use super::*;
     use datafusion::{datasource::physical_plan::FileScanConfig, prelude::SessionContext};
     use liquid_cache_storage::{
-        cache::squeeze_policies::TranscodeSqueezeEvict, cache_policies::FiloPolicy,
+        cache::squeeze_policies::TranscodeSqueezeEvict, cache_policies::LiquidPolicy,
     };
     use std::{path::PathBuf, sync::Arc};
 
@@ -404,7 +404,7 @@ mod tests {
             8192,
             1000000,
             PathBuf::from("test"),
-            Box::new(FiloPolicy::new()),
+            Box::new(LiquidPolicy::new()),
             Box::new(TranscodeSqueezeEvict),
         ));
         let rewritten = rewrite_data_source_plan(plan, &liquid_cache);

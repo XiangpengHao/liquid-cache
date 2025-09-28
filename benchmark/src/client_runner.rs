@@ -196,6 +196,7 @@ impl BenchmarkRunner {
             starting_timestamp,
             disk_bytes_read: disk_read,
             disk_bytes_written: disk_written,
+            cache_stats: None,
         };
 
         info!("\n{result}");

@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
-use crate::cache::EntryID;
+use crate::cache::{cached_data::CachedBatchType, utils::EntryID};
 use crate::cache_policies::CachePolicy;
 
 type EntryFreq = u8;
@@ -162,7 +162,7 @@ impl S3FifoPolicy {
 }
 
 impl CachePolicy for S3FifoPolicy {
-    fn advise(&self, cnt: usize) -> Vec<EntryID> {
+    fn find_victim(&self, cnt: usize) -> Vec<EntryID> {
         let mut state = self.state.lock().unwrap();
         let mut advices = Vec::with_capacity(cnt);
         let threshold_for_small_eviction = 0.1;
@@ -182,7 +182,7 @@ impl CachePolicy for S3FifoPolicy {
         advices
     }
 
-    fn notify_insert(&self, entry_id: &EntryID) {
+    fn notify_insert(&self, entry_id: &EntryID, _batch_type: CachedBatchType) {
         let mut state = self.state.lock().unwrap();
         let entry_size = self.entry_size(entry_id);
 
@@ -200,7 +200,7 @@ impl CachePolicy for S3FifoPolicy {
         }
     }
 
-    fn notify_access(&self, entry_id: &EntryID) {
+    fn notify_access(&self, entry_id: &EntryID, _batch_type: CachedBatchType) {
         let mut state = self.state.lock().unwrap();
         if state.check_if_entry_exists_in_small_or_main(entry_id) {
             state.inc_frequency(entry_id);
@@ -238,11 +238,11 @@ mod tests {
         let e2 = entry(2);
         let e3 = entry(3);
 
-        policy.notify_insert(&e1);
-        policy.notify_insert(&e2);
-        policy.notify_insert(&e3);
+        policy.notify_insert(&e1, CachedBatchType::MemoryArrow);
+        policy.notify_insert(&e2, CachedBatchType::MemoryArrow);
+        policy.notify_insert(&e3, CachedBatchType::MemoryArrow);
 
-        let evicted = policy.advise(1);
+        let evicted = policy.find_victim(1);
         assert_eq!(evicted.len(), 1);
     }
 
@@ -250,8 +250,8 @@ mod tests {
     fn test_s3fifo_frequency_increase() {
         let policy = S3FifoPolicy::new(None);
         let e1 = entry(1);
-        policy.notify_insert(&e1);
-        policy.notify_access(&e1);
+        policy.notify_insert(&e1, CachedBatchType::MemoryArrow);
+        policy.notify_access(&e1, CachedBatchType::MemoryArrow);
 
         let state = policy.state.lock().unwrap();
         assert_eq!(*state.frequency.get(&e1).unwrap(), 1);
@@ -263,10 +263,10 @@ mod tests {
         let e1 = entry(1);
         let e2 = entry(2);
 
-        policy.notify_insert(&e1);
-        policy.notify_insert(&e2);
+        policy.notify_insert(&e1, CachedBatchType::MemoryArrow);
+        policy.notify_insert(&e2, CachedBatchType::MemoryArrow);
 
-        let evicted = policy.advise(1);
+        let evicted = policy.find_victim(1);
         assert_eq!(evicted[0], e1);
     }
 
@@ -275,12 +275,12 @@ mod tests {
         let policy = S3FifoPolicy::new(None);
         let e1 = entry(1);
 
-        policy.notify_insert(&e1);
-        let evicted = policy.advise(1);
+        policy.notify_insert(&e1, CachedBatchType::MemoryArrow);
+        let evicted = policy.find_victim(1);
         assert_eq!(evicted[0], e1);
 
         // Re-insert evicted entry from ghost
-        policy.notify_insert(&e1);
+        policy.notify_insert(&e1, CachedBatchType::MemoryArrow);
         let state = policy.state.lock().unwrap();
         assert!(state.main.contains(&e1));
         assert!(!state.ghost_set.contains(&e1));
@@ -296,8 +296,8 @@ mod tests {
         let e1 = entry(20);
         let e2 = entry(30);
 
-        policy.notify_insert(&e1);
-        policy.notify_insert(&e2);
+        policy.notify_insert(&e1, CachedBatchType::MemoryArrow);
+        policy.notify_insert(&e2, CachedBatchType::MemoryArrow);
 
         let state = policy.state.lock().unwrap();
         assert_eq!(state.small_queue_size, 200);
@@ -309,9 +309,9 @@ mod tests {
         let policy = S3FifoPolicy::new(None);
         let e1 = entry(1);
 
-        policy.notify_insert(&e1);
-        policy.notify_access(&e1);
-        policy.notify_access(&e1);
+        policy.notify_insert(&e1, CachedBatchType::MemoryArrow);
+        policy.notify_access(&e1, CachedBatchType::MemoryArrow);
+        policy.notify_access(&e1, CachedBatchType::MemoryArrow);
 
         let state = policy.state.lock().unwrap();
         assert_eq!(*state.frequency.get(&e1).unwrap(), 2); // capped at 3
@@ -322,9 +322,9 @@ mod tests {
         let policy = S3FifoPolicy::new(None);
         let e1 = entry(1);
 
-        policy.notify_insert(&e1);
+        policy.notify_insert(&e1, CachedBatchType::MemoryArrow);
         for _ in 0..10 {
-            policy.notify_access(&e1);
+            policy.notify_access(&e1, CachedBatchType::MemoryArrow);
         }
 
         let state = policy.state.lock().unwrap();
@@ -336,8 +336,8 @@ mod tests {
         let policy = S3FifoPolicy::new(None);
         let e1 = entry(1);
 
-        policy.notify_insert(&e1);
-        let evicted = policy.advise(1);
+        policy.notify_insert(&e1, CachedBatchType::MemoryArrow);
+        let evicted = policy.find_victim(1);
 
         assert_eq!(evicted[0], e1);
         let state = policy.state.lock().unwrap();
@@ -363,7 +363,7 @@ mod tests {
         state.total_size += 2;
         drop(state);
 
-        let evicted = policy.advise(2);
+        let evicted = policy.find_victim(2);
         assert_eq!(evicted.len(), 2);
     }
 }

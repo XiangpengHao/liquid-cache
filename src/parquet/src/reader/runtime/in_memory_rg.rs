@@ -435,7 +435,7 @@ mod tests {
     use arrow::datatypes::{DataType, Field};
     use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
     use liquid_cache_storage::{
-        cache::squeeze_policies::TranscodeSqueezeEvict, cache_policies::FiloPolicy,
+        cache::squeeze_policies::TranscodeSqueezeEvict, cache_policies::LiquidPolicy,
     };
     use object_store::{ObjectStore, local::LocalFileSystem};
     use parquet::arrow::{
@@ -490,7 +490,7 @@ mod tests {
             batch_size,
             batch_size,
             tmp_dir.path().to_path_buf(),
-            Box::new(FiloPolicy::new()),
+            Box::new(LiquidPolicy::new()),
             Box::new(TranscodeSqueezeEvict),
         );
         let liquid_cache_file = liquid_cache.register_or_get_file("whatever".into());
@@ -551,7 +551,7 @@ mod tests {
             batch_size,
             usize::MAX,
             tmp_dir.path().to_path_buf(),
-            Box::new(FiloPolicy::new()),
+            Box::new(LiquidPolicy::new()),
             Box::new(TranscodeSqueezeEvict),
         );
         let liquid_cache_file = liquid_cache.register_or_get_file("test".to_string());
@@ -791,7 +791,7 @@ mod tests {
             batch_size,
             usize::MAX,
             dir.to_path_buf(),
-            Box::new(FiloPolicy::new()),
+            Box::new(LiquidPolicy::new()),
             Box::new(TranscodeSqueezeEvict),
         );
         let liquid_cache_file = liquid_cache.register_or_get_file("test_file".to_string());
