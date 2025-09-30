@@ -12,6 +12,7 @@ liquid-cache-storage = { workspace = true }
 liquid-cache-common = { workspace = true }
 liquid-cache-local = { workspace = true }
 datafusion = { workspace = true }
+datafusion-sql = { version = "47.0.0", features=["unparser"] }
 tokio = { workspace = true }
 log = { workspace = true }
 arrow-flight = { workspace = true }
@@ -64,3 +65,7 @@ path = "cache_behavior.rs"
 [[bin]]
 name = "in_process"
 path = "in_process.rs"
+
+[[bin]]
+name = "simplify_query"
+path = "src/simplify_query.rs"
