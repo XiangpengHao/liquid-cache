@@ -175,7 +175,7 @@ mod tests {
         datatypes::UInt64Type,
     };
     use bytes::Bytes;
-    use liquid_cache_storage::{cache::squeeze_policies::Evict, cache_policies::FiloPolicy};
+    use liquid_cache_storage::{cache::squeeze_policies::Evict, cache_policies::LiquidPolicy};
     use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
     use tempfile::NamedTempFile;
 
@@ -186,7 +186,7 @@ mod tests {
             1024,
             usize::MAX,
             tmp_dir.path().to_path_buf(),
-            Box::new(FiloPolicy::new()),
+            Box::new(LiquidPolicy::new()),
             Box::new(Evict),
         );
         let array = Arc::new(arrow::array::Int32Array::from(vec![1, 2, 3]));

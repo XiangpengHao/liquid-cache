@@ -3,7 +3,7 @@ use clap::Parser;
 use fastrace_tonic::FastraceServerLayer;
 use liquid_cache_benchmarks::{BenchmarkMode, setup_observability};
 use liquid_cache_server::{LiquidCacheService, run_admin_server};
-use liquid_cache_storage::cache_policies::FiloPolicy;
+use liquid_cache_storage::cache_policies::LiquidPolicy;
 use log::info;
 use mimalloc::MiMalloc;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
@@ -76,7 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ctx,
         max_cache_bytes,
         args.disk_cache_dir.clone(),
-        Box::new(FiloPolicy::new()),
+        Box::new(LiquidPolicy::new()),
         squeeze_policy,
     )?;
 

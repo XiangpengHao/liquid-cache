@@ -15,7 +15,7 @@ use datafusion::prelude::{SessionConfig, SessionContext};
 use liquid_cache_parquet::{LiquidCache, LiquidCacheRef, rewrite_data_source_plan};
 use liquid_cache_storage::cache::squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict};
 use liquid_cache_storage::cache_policies::CachePolicy;
-use liquid_cache_storage::cache_policies::FiloPolicy;
+use liquid_cache_storage::cache_policies::LiquidPolicy;
 
 pub use liquid_cache_common as common;
 pub use liquid_cache_storage as storage;
@@ -28,7 +28,7 @@ pub use liquid_cache_storage as storage;
 /// # Example
 /// ```rust
 /// use liquid_cache_local::{
-///     storage::cache_policies::FiloPolicy,
+///     storage::cache_policies::LiquidPolicy,
 ///     LiquidCacheLocalBuilder,
 /// };
 /// use datafusion::prelude::{SessionConfig, SessionContext};
@@ -41,7 +41,7 @@ pub use liquid_cache_storage as storage;
 ///     let (ctx, _) = LiquidCacheLocalBuilder::new()
 ///         .with_max_cache_bytes(1024 * 1024 * 1024) // 1GB
 ///         .with_cache_dir(temp_dir.path().to_path_buf())
-///         .with_cache_policy(Box::new(FiloPolicy::new()))
+///         .with_cache_policy(Box::new(LiquidPolicy::new()))
 ///         .build(SessionConfig::new())?;
 ///
 ///     // Register the test parquet file
@@ -72,7 +72,7 @@ impl Default for LiquidCacheLocalBuilder {
             batch_size: 8192 * 2,
             max_cache_bytes: 1024 * 1024 * 1024, // 1GB
             cache_dir: std::env::temp_dir().join("liquid_cache"),
-            cache_policy: Box::new(FiloPolicy::new()),
+            cache_policy: Box::new(LiquidPolicy::new()),
             squeeze_policy: Box::new(TranscodeSqueezeEvict),
         }
     }

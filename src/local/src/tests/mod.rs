@@ -1,7 +1,7 @@
 use arrow_schema::{DataType, Field, Schema};
 use liquid_cache_storage::{
     cache::squeeze_policies::{Evict, SqueezePolicy, TranscodeEvict, TranscodeSqueezeEvict},
-    cache_policies::FiloPolicy,
+    cache_policies::LiquidPolicy,
 };
 use std::{path::Path, sync::Arc};
 use tempfile::TempDir;
@@ -32,7 +32,7 @@ async fn create_session_context_with_liquid_cache(
         .with_max_cache_bytes(cache_size_bytes)
         .with_cache_dir(cache_dir.to_path_buf())
         .with_squeeze_policy(squeeze_policy)
-        .with_cache_policy(Box::new(FiloPolicy::new()))
+        .with_cache_policy(Box::new(LiquidPolicy::new()))
         .build(config)?;
 
     // Register the test parquet file
