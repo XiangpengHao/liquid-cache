@@ -21,6 +21,7 @@ use arrow::{
 };
 pub use byte_array::{LiquidByteArray, get_string_needle};
 pub use byte_view_array::LiquidByteViewArray;
+use datafusion::logical_expr::Operator as DFOperator;
 use datafusion::physical_plan::PhysicalExpr;
 pub use fix_len_byte_array::LiquidFixedLenByteArray;
 use float_array::LiquidFloatType;
@@ -220,6 +221,30 @@ impl IoRange {
     /// Get the range of bytes on disk.
     pub fn range(&self) -> &Range<u64> {
         &self.range
+    }
+}
+
+enum Operator {
+    Eq,
+    NotEq,
+    Lt,
+    LtEq,
+    Gt,
+    GtEq,
+}
+
+impl Operator {
+    fn from_datafusion(op: &DFOperator) -> Option<Self> {
+        let op = match op {
+            DFOperator::Eq => Operator::Eq,
+            DFOperator::NotEq => Operator::NotEq,
+            DFOperator::Lt => Operator::Lt,
+            DFOperator::LtEq => Operator::LtEq,
+            DFOperator::Gt => Operator::Gt,
+            DFOperator::GtEq => Operator::GtEq,
+            _ => return None,
+        };
+        Some(op)
     }
 }
 
