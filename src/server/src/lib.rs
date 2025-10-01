@@ -36,10 +36,7 @@ use datafusion::{
 use datafusion_proto::bytes::physical_plan_from_bytes;
 use fastrace::prelude::SpanContext;
 use futures::{Stream, TryStreamExt};
-use liquid_cache_common::{
-    CacheMode,
-    rpc::{FetchResults, LiquidCacheActions},
-};
+use liquid_cache_common::rpc::{FetchResults, LiquidCacheActions};
 use liquid_cache_parquet::cache::LiquidCacheRef;
 use log::info;
 use prost::bytes::Bytes;
@@ -60,7 +57,10 @@ pub use errors::{
 };
 pub use liquid_cache_common as common;
 pub use liquid_cache_storage as storage;
-use liquid_cache_storage::cache_policies::{CachePolicy, LruPolicy};
+use liquid_cache_storage::{
+    cache::squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict},
+    cache_policies::{CachePolicy, LiquidPolicy},
+};
 use object_store::path::Path;
 use object_store::{GetOptions, GetRange};
 
@@ -75,9 +75,17 @@ mod tests;
 /// use arrow_flight::flight_service_server::FlightServiceServer;
 /// use datafusion::prelude::SessionContext;
 /// use liquid_cache_server::LiquidCacheService;
+/// use liquid_cache_server::storage::cache::squeeze_policies::TranscodeSqueezeEvict;
+/// use liquid_cache_server::storage::cache_policies::LiquidPolicy;
 /// use tonic::transport::Server;
-/// use liquid_cache_server::storage::cache_policies::LruPolicy;
-/// let liquid_cache = LiquidCacheService::new(SessionContext::new(), None, None, Default::default(), Box::new(LruPolicy::new())).unwrap();
+/// let liquid_cache = LiquidCacheService::new(
+///     SessionContext::new(),
+///     None,
+///     None,
+///     Box::new(LiquidPolicy::new()),
+///     Box::new(TranscodeSqueezeEvict),
+/// )
+/// .unwrap();
 /// let flight = FlightServiceServer::new(liquid_cache);
 /// Server::builder()
 ///     .add_service(flight)
@@ -102,8 +110,8 @@ impl LiquidCacheService {
             ctx,
             None,
             None,
-            CacheMode::LiquidEagerTranscode,
-            Box::new(LruPolicy::new()),
+            Box::new(LiquidPolicy::new()),
+            Box::new(TranscodeSqueezeEvict),
         )
     }
 
@@ -114,13 +122,12 @@ impl LiquidCacheService {
     /// * `ctx` - The [SessionContext] to use
     /// * `max_cache_bytes` - The maximum number of bytes to cache in memory
     /// * `disk_cache_dir` - The directory to store the disk cache
-    /// * `cache_mode` - The [CacheMode] to use
     pub fn new(
         ctx: SessionContext,
         max_cache_bytes: Option<usize>,
         disk_cache_dir: Option<PathBuf>,
-        cache_mode: CacheMode,
         cache_policy: Box<dyn CachePolicy>,
+        squeeze_policy: Box<dyn SqueezePolicy>,
     ) -> anyhow::Result<Self> {
         let disk_cache_dir = match disk_cache_dir {
             Some(dir) => dir,
@@ -135,14 +142,14 @@ impl LiquidCacheService {
                 Arc::new(ctx),
                 max_cache_bytes,
                 disk_cache_dir,
-                cache_mode,
                 cache_policy,
+                squeeze_policy,
             ),
         })
     }
 
     /// Get a reference to the cache
-    pub fn cache(&self) -> &Option<LiquidCacheRef> {
+    pub fn cache(&self) -> &LiquidCacheRef {
         self.inner.cache()
     }
 

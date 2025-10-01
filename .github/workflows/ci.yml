@@ -20,6 +20,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
       
       - name: Check formatting
@@ -112,13 +114,13 @@ jobs:
           cargo llvm-cov clean --workspace
           cargo build --bin bench_server
           cargo build --bin clickbench_client
-          env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic --cache-mode liquid_eager_transcode &> server.log &
+          env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic --cache-mode liquid --max-cache-mb 256 &> server.log &
           sleep 2  # Wait for server to start up
           env RUST_LOG=info cargo run --bin clickbench_client -- --manifest benchmark/clickbench/benchmark_manifest.json
           echo "=== Server logs ==="
           cat server.log || echo "No server log found"
           curl http://localhost:53703/shutdown
-          env RUST_LOG=info cargo run --bin in_process -- --manifest benchmark/clickbench/benchmark_manifest.json
+          env RUST_LOG=info cargo run --bin in_process -- --manifest benchmark/clickbench/benchmark_manifest.json --bench-mode liquid --max-cache-mb 256
           cargo llvm-cov report --codecov --output-path codecov_clickbench.json
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
@@ -148,13 +150,13 @@ jobs:
           cargo llvm-cov clean --workspace
           cargo build --bin bench_server
           cargo build --bin tpch_client
-          env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic --cache-mode liquid_eager_transcode &> server.log &
+          env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic --cache-mode liquid --max-cache-mb 256 &> server.log &
           sleep 2  # Wait for server to start up
           env RUST_LOG=info cargo run --bin tpch_client -- --manifest benchmark/tpch/manifest.json --answer-dir benchmark/tpch/answers/sf0.1
           echo "=== Server logs ==="
           cat server.log || echo "No server log found"
           curl http://localhost:53703/shutdown
-          env RUST_LOG=info cargo run --bin tpch_inprocess -- --query-dir benchmark/tpch/queries --data-dir benchmark/tpch/data/sf0.1
+          env RUST_LOG=info cargo run --bin tpch_inprocess -- --query-dir benchmark/tpch/queries --data-dir benchmark/tpch/data/sf0.1 --bench-mode liquid --max-cache-mb 256
           cargo llvm-cov report --codecov --output-path codecov_tpch.json
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
@@ -203,7 +205,8 @@ jobs:
             --manifest benchmark/clickbench/benchmark_manifest.json \
             --output benchmark_results/liquid.json \
             --iteration 5 \
-            --bench-mode liquid-eager-transcode
+            --bench-mode liquid \
+            --max-cache-mb 256 
 
       - name: Run DataFusion benchmark (plain parquet)
         run: |
@@ -339,3 +342,15 @@ jobs:
           cat server.log || echo "No server log found"
           pkill -F server.pid || true
           rm -f server.pid
+
+  kani:
+    name: Run Kani proofs
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify storage crate with Kani
+        uses: model-checking/kani-github-action@v1.1
+        with:
+          working-directory: src/storage

@@ -12,10 +12,10 @@ use datafusion::error::Result;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
-use liquid_cache_common::LiquidCacheMode;
 use liquid_cache_parquet::{LiquidCache, LiquidCacheRef, rewrite_data_source_plan};
+use liquid_cache_storage::cache::squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict};
 use liquid_cache_storage::cache_policies::CachePolicy;
-use liquid_cache_storage::cache_policies::FiloPolicy;
+use liquid_cache_storage::cache_policies::LiquidPolicy;
 
 pub use liquid_cache_common as common;
 pub use liquid_cache_storage as storage;
@@ -28,7 +28,7 @@ pub use liquid_cache_storage as storage;
 /// # Example
 /// ```rust
 /// use liquid_cache_local::{
-///     common::{LiquidCacheMode},
+///     storage::cache_policies::LiquidPolicy,
 ///     LiquidCacheLocalBuilder,
 /// };
 /// use datafusion::prelude::{SessionConfig, SessionContext};
@@ -36,14 +36,12 @@ pub use liquid_cache_storage as storage;
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-///     use liquid_cache_local::storage::cache_policies::FiloPolicy;
 ///     let temp_dir = TempDir::new().unwrap();
 ///
 ///     let (ctx, _) = LiquidCacheLocalBuilder::new()
 ///         .with_max_cache_bytes(1024 * 1024 * 1024) // 1GB
 ///         .with_cache_dir(temp_dir.path().to_path_buf())
-///         .with_cache_mode(LiquidCacheMode::Liquid)
-///         .with_cache_strategy(Box::new(FiloPolicy::new()))
+///         .with_cache_policy(Box::new(LiquidPolicy::new()))
 ///         .build(SessionConfig::new())?;
 ///
 ///     // Register the test parquet file
@@ -62,10 +60,10 @@ pub struct LiquidCacheLocalBuilder {
     max_cache_bytes: usize,
     /// Directory for disk cache
     cache_dir: PathBuf,
-    /// Cache mode (`LiquidCacheMode::Arrow` or `LiquidCacheMode::Liquid`)
-    cache_mode: LiquidCacheMode,
-    /// Cache eviction strategy
-    cache_strategy: Box<dyn CachePolicy>,
+    /// Cache policy
+    cache_policy: Box<dyn CachePolicy>,
+    /// Squeeze policy
+    squeeze_policy: Box<dyn SqueezePolicy>,
 }
 
 impl Default for LiquidCacheLocalBuilder {
@@ -74,8 +72,8 @@ impl Default for LiquidCacheLocalBuilder {
             batch_size: 8192 * 2,
             max_cache_bytes: 1024 * 1024 * 1024, // 1GB
             cache_dir: std::env::temp_dir().join("liquid_cache"),
-            cache_mode: LiquidCacheMode::default(),
-            cache_strategy: Box::new(FiloPolicy::new()),
+            cache_policy: Box::new(LiquidPolicy::new()),
+            squeeze_policy: Box::new(TranscodeSqueezeEvict),
         }
     }
 }
@@ -104,15 +102,15 @@ impl LiquidCacheLocalBuilder {
         self
     }
 
-    /// Set cache mode
-    pub fn with_cache_mode(mut self, cache_mode: LiquidCacheMode) -> Self {
-        self.cache_mode = cache_mode;
+    /// Set squeeze policy
+    pub fn with_squeeze_policy(mut self, squeeze_policy: Box<dyn SqueezePolicy>) -> Self {
+        self.squeeze_policy = squeeze_policy;
         self
     }
 
     /// Set cache strategy
-    pub fn with_cache_strategy(mut self, cache_strategy: Box<dyn CachePolicy>) -> Self {
-        self.cache_strategy = cache_strategy;
+    pub fn with_cache_policy(mut self, cache_policy: Box<dyn CachePolicy>) -> Self {
+        self.cache_policy = cache_policy;
         self
     }
 
@@ -131,8 +129,8 @@ impl LiquidCacheLocalBuilder {
             self.batch_size,
             self.max_cache_bytes,
             self.cache_dir,
-            self.cache_mode,
-            self.cache_strategy,
+            self.cache_policy,
+            self.squeeze_policy,
         );
         let cache_ref = Arc::new(cache);
 
@@ -241,7 +239,7 @@ mod local_tests {
         let df_ctx = SessionContext::new();
         let liquid_ctx = {
             let (ctx, _) = LiquidCacheLocalBuilder::new()
-                .with_cache_mode(LiquidCacheMode::LiquidBlocking)
+                .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
                 .build(SessionConfig::new())?;
             ctx
         };

@@ -102,7 +102,7 @@ impl<'a> CachedData<'a> {
     pub fn get_arrow_array(&self) -> SansIo<ArrayRef, GetArrowArrayState> {
         match &self.data {
             CachedBatch::MemoryArrow(array) => SansIo::Ready(array.clone()),
-            CachedBatch::MemoryLiquid(array) => SansIo::Ready(array.to_best_arrow_array()),
+            CachedBatch::MemoryLiquid(array) => SansIo::Ready(array.to_arrow_array()),
             CachedBatch::DiskLiquid => {
                 let path = self.io_context.entry_liquid_path(&self.id);
                 let compressor_states = self.io_context.get_compressor_for_entry(&self.id);
@@ -280,6 +280,33 @@ impl Display for CachedBatch {
             Self::MemoryHybridLiquid(_) => write!(f, "MemoryHybridLiquid"),
             Self::DiskLiquid => write!(f, "DiskLiquid"),
             Self::DiskArrow => write!(f, "DiskArrow"),
+        }
+    }
+}
+
+/// The type of the cached batch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CachedBatchType {
+    /// Cached batch in memory as Arrow array.
+    MemoryArrow,
+    /// Cached batch in memory as liquid array.
+    MemoryLiquid,
+    /// Cached batch in memory as hybrid liquid array.
+    MemoryHybridLiquid,
+    /// Cached batch on disk as liquid array.
+    DiskLiquid,
+    /// Cached batch on disk as Arrow array.
+    DiskArrow,
+}
+
+impl From<&CachedBatch> for CachedBatchType {
+    fn from(batch: &CachedBatch) -> Self {
+        match batch {
+            CachedBatch::MemoryArrow(_) => Self::MemoryArrow,
+            CachedBatch::MemoryLiquid(_) => Self::MemoryLiquid,
+            CachedBatch::MemoryHybridLiquid(_) => Self::MemoryHybridLiquid,
+            CachedBatch::DiskLiquid => Self::DiskLiquid,
+            CachedBatch::DiskArrow => Self::DiskArrow,
         }
     }
 }

@@ -177,7 +177,7 @@ pub trait LiquidArray: std::fmt::Debug + Send + Sync {
     /// Filter the Liquid array with a boolean array and return an **arrow array**.
     fn filter_to_arrow(&self, selection: &BooleanBuffer) -> ArrayRef {
         let filtered = self.filter(selection);
-        filtered.to_best_arrow_array()
+        filtered.to_arrow_array()
     }
 
     /// Try to evaluate a predicate on the Liquid array with a filter.

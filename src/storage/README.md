@@ -120,8 +120,7 @@ match cached.get_with_selection(&filter) {
 ```rust
 use liquid_cache_storage::cache::{CacheStorageBuilder, EntryID, cached_data::GetWithPredicateResult};
 use liquid_cache_storage::cache::io_state::{SansIo, TryGet, IoRequest, IoStateMachine};
-use liquid_cache_storage::common::LiquidCacheMode;
-use arrow::array::{StringArray, BooleanArray};
+use arrow::array::{ArrayRef, StringArray};
 use arrow::buffer::BooleanBuffer;
 use datafusion::logical_expr::Operator;
 use datafusion::physical_plan::expressions::{BinaryExpr, Column, Literal};
@@ -134,9 +133,7 @@ fn read_all(req: &IoRequest) -> bytes::Bytes {
     bytes::Bytes::from(std::fs::read(req.path()).unwrap())
 }
 
-let storage = CacheStorageBuilder::new()
-    .with_cache_mode(LiquidCacheMode::LiquidBlocking)
-    .build();
+let storage = CacheStorageBuilder::new().build();
 
 let entry_id = EntryID::from(9);
 let data = Arc::new(StringArray::from(vec![
@@ -155,16 +152,21 @@ let expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
 ));
 
 let cached = storage.get(&entry_id).unwrap();
+let expected_filtered: ArrayRef = Arc::new(StringArray::from(vec![
+    Some("apple"),
+    Some("banana"),
+    Some("apple"),
+    Some("cherry"),
+])) as ArrayRef;
+
 match cached.get_with_predicate(&selection, &expr) {
     SansIo::Ready(result) => {
-        let expected = BooleanArray::from(vec![true, false, true, false]);
-        assert_eq!(result, GetWithPredicateResult::Evaluated(expected));
+        assert_eq!(result, GetWithPredicateResult::Filtered(expected_filtered.clone()));
     }
     SansIo::Pending((mut state, req)) => {
         state.feed(read_all(&req));
         let TryGet::Ready(result) = state.try_get() else { panic!("still pending") };
-        let expected = BooleanArray::from(vec![true, false, true, false]);
-        assert_eq!(result, GetWithPredicateResult::Evaluated(expected));
+        assert_eq!(result, GetWithPredicateResult::Filtered(expected_filtered));
     }
 }
 ```

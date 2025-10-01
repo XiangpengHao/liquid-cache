@@ -18,10 +18,10 @@ pub trait SqueezePolicy: std::fmt::Debug + Send + Sync {
 }
 
 /// Squeeze the entry to disk.
-#[derive(Debug, Default)]
-pub struct SqueezeToDiskPolicy;
+#[derive(Debug, Default, Clone)]
+pub struct Evict;
 
-impl SqueezePolicy for SqueezeToDiskPolicy {
+impl SqueezePolicy for Evict {
     fn squeeze(
         &self,
         entry: CachedBatch,
@@ -51,10 +51,10 @@ impl SqueezePolicy for SqueezeToDiskPolicy {
 }
 
 /// Squeeze the entry to liquid memory.
-#[derive(Debug, Default)]
-pub struct SqueezeToLiquidPolicy;
+#[derive(Debug, Default, Clone)]
+pub struct TranscodeSqueezeEvict;
 
-impl SqueezePolicy for SqueezeToLiquidPolicy {
+impl SqueezePolicy for TranscodeSqueezeEvict {
     fn squeeze(
         &self,
         entry: CachedBatch,
@@ -76,17 +76,20 @@ impl SqueezePolicy for SqueezeToLiquidPolicy {
                 };
                 (CachedBatch::MemoryHybridLiquid(hybrid_array), Some(bytes))
             }
-            CachedBatch::MemoryHybridLiquid(_hybrid_array) => (CachedBatch::DiskLiquid, None),
+            CachedBatch::MemoryHybridLiquid(_hybrid_array) => {
+                // the full data of hybrid array is already on disk
+                (CachedBatch::DiskLiquid, None)
+            }
             CachedBatch::DiskLiquid | CachedBatch::DiskArrow => (entry, None),
         }
     }
 }
 
 /// Squeeze the entry to liquid memory, but don't convert to hybrid.
-#[derive(Debug, Default)]
-pub struct SqueezeNoHybridPolicy;
+#[derive(Debug, Default, Clone)]
+pub struct TranscodeEvict;
 
-impl SqueezePolicy for SqueezeNoHybridPolicy {
+impl SqueezePolicy for TranscodeEvict {
     fn squeeze(
         &self,
         entry: CachedBatch,
@@ -132,7 +135,7 @@ mod tests {
 
     #[test]
     fn test_squeeze_to_disk_policy() {
-        let disk = SqueezeToDiskPolicy;
+        let disk = Evict;
         let states = LiquidCompressorStates::new();
 
         // MemoryArrow -> DiskArrow + bytes (Arrow IPC)
@@ -177,7 +180,7 @@ mod tests {
 
     #[test]
     fn test_squeeze_to_liquid_policy() {
-        let to_liquid = SqueezeToLiquidPolicy;
+        let to_liquid = TranscodeSqueezeEvict;
         let states = LiquidCompressorStates::new();
 
         // MemoryArrow -> MemoryLiquid, no bytes

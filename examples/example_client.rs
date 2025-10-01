@@ -1,7 +1,6 @@
 use clap::{Parser, command};
 use datafusion::{error::Result, execution::object_store::ObjectStoreUrl, prelude::*};
 use liquid_cache_client::LiquidCacheBuilder;
-use liquid_cache_client::common::CacheMode;
 use std::path::Path;
 use std::sync::Arc;
 use url::Url;
@@ -36,7 +35,6 @@ pub async fn main() -> Result<()> {
 
     let ctx = LiquidCacheBuilder::new(args.cache_server.clone())
         .with_object_store(ObjectStoreUrl::parse(object_store_url.as_str())?, None)
-        .with_cache_mode(CacheMode::Liquid)
         .build(SessionConfig::from_env()?)?;
     let ctx = Arc::new(ctx);
 

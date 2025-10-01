@@ -1,15 +1,17 @@
 use clap::Parser;
 use datafusion::arrow::array::RecordBatch;
-use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
-use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::collect;
+use datafusion::prelude::SessionContext;
 use datafusion::{error::Result, physical_plan::ExecutionPlan};
-use datafusion::{physical_plan::metrics::MetricValue, prelude::SessionContext};
 use fastrace::Span;
 use fastrace::future::FutureExt as _;
 use liquid_cache_common::rpc::ExecutionMetricsResponse;
 use liquid_cache_server::{ApiResponse, ExecutionStats};
+use liquid_cache_storage::cache::CacheStats;
+use liquid_cache_storage::cache::squeeze_policies::{
+    Evict, SqueezePolicy, TranscodeEvict, TranscodeSqueezeEvict,
+};
 use log::info;
 use serde::Serialize;
 use std::path::PathBuf;
@@ -70,10 +72,6 @@ pub struct ClientBenchmarkArgs {
     /// Path to the answer directory
     #[arg(long = "answer-dir")]
     pub answer_dir: Option<PathBuf>,
-
-    /// Benchmark mode to use
-    #[arg(long = "bench-mode", default_value = "liquid-eager-transcode")]
-    pub bench_mode: BenchmarkMode,
 
     /// Reset the cache before running a new query
     #[arg(long = "reset-cache", default_value = "false")]
@@ -196,95 +194,38 @@ impl ClientBenchmarkArgs {
         &self,
         execution_plan: &Arc<dyn ExecutionPlan>,
     ) -> ExecutionMetricsResponse {
-        match self.bench_mode {
-            BenchmarkMode::ParquetFileserver => {
-                // for parquet fileserver, the memory usage is the bytes scanned.
-                // It's not easy to get the memory usage as it is cached in the kernel's page cache.
-                // So the bytes scanned is the minimum cache memory usage, actual usage is slightly higher.
-
-                // Collect metrics from all DataSourceExec nodes using TreeNode traversal
-                let mut total_bytes_scanned = 0;
-                let _ = execution_plan.apply(|plan| {
-                    if plan.as_any().downcast_ref::<DataSourceExec>().is_some() {
-                        let metrics = plan
-                            .metrics()
-                            .unwrap()
-                            .aggregate_by_name()
-                            .sorted_for_display()
-                            .timestamps_removed();
-
-                        for metric in metrics.iter() {
-                            if let MetricValue::Count { name, count } = metric.value()
-                                && name == "bytes_scanned"
-                            {
-                                total_bytes_scanned += count.value();
-                            }
-                        }
-                    }
-                    Ok(TreeNodeRecursion::Continue)
-                });
-
-                if total_bytes_scanned == 0 {
-                    // the scan is completely pruned, so the memory usage is 0
-                    return ExecutionMetricsResponse {
-                        pushdown_eval_time: 0,
-                        cache_memory_usage: 0,
-                        liquid_cache_usage: 0,
-                    };
-                }
-
-                ExecutionMetricsResponse {
-                    pushdown_eval_time: 0,
-                    cache_memory_usage: total_bytes_scanned as u64,
-                    liquid_cache_usage: 0,
-                }
-            }
-            BenchmarkMode::ParquetPushdown
-            | BenchmarkMode::ArrowPushdown
-            | BenchmarkMode::LiquidCache
-            | BenchmarkMode::LiquidEagerTranscode => {
-                let uuids = utils::get_plan_uuids(execution_plan);
-                let mut metrics = Vec::new();
-                for uuid in uuids {
-                    let response = reqwest::Client::new()
-                        .get(format!(
-                            "{}/execution_metrics?plan_id={uuid}",
-                            self.admin_server
-                        ))
-                        .send()
-                        .await
-                        .unwrap();
-                    let v = response.json::<ExecutionMetricsResponse>().await.unwrap();
-                    metrics.push(v);
-                }
-                let metric =
-                    metrics
-                        .iter()
-                        .fold(None, |acc: Option<ExecutionMetricsResponse>, m| {
-                            if let Some(acc) = acc {
-                                Some(ExecutionMetricsResponse {
-                                    pushdown_eval_time: acc.pushdown_eval_time
-                                        + m.pushdown_eval_time,
-                                    cache_memory_usage: acc.cache_memory_usage
-                                        + m.cache_memory_usage,
-                                    liquid_cache_usage: acc.liquid_cache_usage
-                                        + m.liquid_cache_usage,
-                                })
-                            } else {
-                                Some(m.clone())
-                            }
-                        });
-                // If the query plan does not scan any data, the metrics will be empty
-                metric.unwrap_or_else(ExecutionMetricsResponse::zero)
-            }
+        let uuids = utils::get_plan_uuids(execution_plan);
+        let mut metrics = Vec::new();
+        for uuid in uuids {
+            let response = reqwest::Client::new()
+                .get(format!(
+                    "{}/execution_metrics?plan_id={uuid}",
+                    self.admin_server
+                ))
+                .send()
+                .await
+                .unwrap();
+            let v = response.json::<ExecutionMetricsResponse>().await.unwrap();
+            metrics.push(v);
         }
+        let metric = metrics
+            .iter()
+            .fold(None, |acc: Option<ExecutionMetricsResponse>, m| {
+                if let Some(acc) = acc {
+                    Some(ExecutionMetricsResponse {
+                        pushdown_eval_time: acc.pushdown_eval_time + m.pushdown_eval_time,
+                        cache_memory_usage: acc.cache_memory_usage + m.cache_memory_usage,
+                        liquid_cache_usage: acc.liquid_cache_usage + m.liquid_cache_usage,
+                    })
+                } else {
+                    Some(m.clone())
+                }
+            });
+        // If the query plan does not scan any data, the metrics will be empty
+        metric.unwrap_or_else(ExecutionMetricsResponse::zero)
     }
 
     pub async fn reset_cache(&self) -> Result<()> {
-        if self.bench_mode == BenchmarkMode::ParquetFileserver {
-            // File server relies on OS page cache, so we don't need to reset it
-            return Ok(());
-        }
         let client = reqwest::Client::new();
         client
             .get(format!("{}/reset_cache", self.admin_server))
@@ -326,12 +267,20 @@ impl ClientBenchmarkArgs {
 
 #[derive(Clone, Debug, Default, Copy, PartialEq, Eq, Serialize)]
 pub enum BenchmarkMode {
-    ParquetFileserver,
-    ParquetPushdown,
-    ArrowPushdown,
-    LiquidCache,
+    Arrow,
     #[default]
-    LiquidEagerTranscode,
+    Liquid,
+    LiquidNoSqueeze,
+}
+
+impl BenchmarkMode {
+    pub fn to_squeeze_policy(&self) -> Box<dyn SqueezePolicy> {
+        match self {
+            BenchmarkMode::Arrow => Box::new(Evict),
+            BenchmarkMode::Liquid => Box::new(TranscodeSqueezeEvict),
+            BenchmarkMode::LiquidNoSqueeze => Box::new(TranscodeEvict),
+        }
+    }
 }
 
 impl Display for BenchmarkMode {
@@ -340,11 +289,9 @@ impl Display for BenchmarkMode {
             f,
             "{}",
             match self {
-                BenchmarkMode::ParquetFileserver => "parquet-fileserver",
-                BenchmarkMode::ParquetPushdown => "parquet-pushdown",
-                BenchmarkMode::LiquidCache => "liquid-cache",
-                BenchmarkMode::ArrowPushdown => "arrow-pushdown",
-                BenchmarkMode::LiquidEagerTranscode => "liquid-eager-transcode",
+                BenchmarkMode::Arrow => "arrow",
+                BenchmarkMode::Liquid => "liquid",
+                BenchmarkMode::LiquidNoSqueeze => "liquid-no-squeeze",
             }
         )
     }
@@ -355,11 +302,9 @@ impl FromStr for BenchmarkMode {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s {
-            "parquet-fileserver" => BenchmarkMode::ParquetFileserver,
-            "parquet-pushdown" => BenchmarkMode::ParquetPushdown,
-            "arrow-pushdown" => BenchmarkMode::ArrowPushdown,
-            "liquid-cache" => BenchmarkMode::LiquidCache,
-            "liquid-eager-transcode" => BenchmarkMode::LiquidEagerTranscode,
+            "arrow" => BenchmarkMode::Arrow,
+            "liquid" => BenchmarkMode::Liquid,
+            "liquid-no-squeeze" => BenchmarkMode::LiquidNoSqueeze,
             _ => return Err(format!("Invalid benchmark mode: {s}")),
         })
     }
@@ -420,6 +365,27 @@ impl QueryResult {
     }
 }
 
+#[derive(Serialize, Debug)]
+pub struct SerializableCacheStats {
+    pub total_entries: usize,
+    pub memory_arrow_entries: usize,
+    pub memory_liquid_entries: usize,
+    pub memory_hybrid_liquid_entries: usize,
+    pub disk_liquid_entries: usize,
+}
+
+impl SerializableCacheStats {
+    pub fn from(cache_stats: CacheStats) -> Self {
+        Self {
+            total_entries: cache_stats.total_entries,
+            memory_arrow_entries: cache_stats.memory_arrow_entries,
+            memory_liquid_entries: cache_stats.memory_liquid_entries,
+            memory_hybrid_liquid_entries: cache_stats.memory_hybrid_liquid_entries,
+            disk_liquid_entries: cache_stats.disk_liquid_entries,
+        }
+    }
+}
+
 #[derive(Serialize)]
 pub struct IterationResult {
     pub network_traffic: u64,
@@ -430,13 +396,14 @@ pub struct IterationResult {
     pub starting_timestamp: Duration,
     pub disk_bytes_read: u64,
     pub disk_bytes_written: u64,
+    pub cache_stats: Option<SerializableCacheStats>,
 }
 
 impl Display for IterationResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Query time: {} ms\n network: {} bytes\n cache cpu time: {} ms\n cache memory: {} bytes, liquid cache memory: {} bytes\n disk read: {} bytes, disk written: {} bytes",
+            "Query time: {} ms\n network: {} bytes\n cache cpu time: {} ms\n cache memory: {} bytes, liquid cache memory: {} bytes\n disk read: {} bytes, disk written: {} bytes\n",
             self.time_millis,
             self.network_traffic,
             self.cache_cpu_time,
@@ -444,6 +411,19 @@ impl Display for IterationResult {
             self.liquid_cache_usage,
             self.disk_bytes_read,
             self.disk_bytes_written,
-        )
+        )?;
+        if let Some(cache_stats) = &self.cache_stats {
+            write!(
+                f,
+                " cache stats: total_entries: {}, memory_arrow_entries: {}, memory_liquid_entries: {}, memory_hybrid_liquid_entries: {}, disk_liquid_entries: {}",
+                cache_stats.total_entries,
+                cache_stats.memory_arrow_entries,
+                cache_stats.memory_liquid_entries,
+                cache_stats.memory_hybrid_liquid_entries,
+                cache_stats.disk_liquid_entries,
+            )
+        } else {
+            Ok(())
+        }
     }
 }

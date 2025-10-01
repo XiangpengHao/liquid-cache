@@ -76,7 +76,6 @@ Then, create a new DataFusion context with LiquidCache:
 pub async fn main() -> Result<()> {
     let ctx = LiquidCacheBuilder::new(cache_server)
         .with_object_store(ObjectStoreUrl::parse(object_store_url.as_str())?, None)
-        .with_cache_mode(CacheMode::Liquid)
         .build(SessionConfig::from_env()?)?;
 
     let ctx: Arc<SessionContext> = Arc::new(ctx);
@@ -89,28 +88,25 @@ pub async fn main() -> Result<()> {
 
 ## In-process mode 
 
-If you are uncomfortable with a dedicated server, LiquidCache also provides an in-process mode.
+If you are uncomfortable with a dedicated server, LiquidCache also provides an in-process mode via the
+`liquid-cache-local` crate.
 
 ```rust
 use datafusion::prelude::SessionConfig;
-use liquid_cache_parquet::{
-    LiquidCacheInProcessBuilder,
-    common::{LiquidCacheMode},
-};
-use liquid_cache_parquet::policies::{CachePolicy, DiscardPolicy};
+use liquid_cache_local::storage::cache::squeeze_policies::TranscodeSqueezeEvict;
+use liquid_cache_local::storage::cache_policies::FiloPolicy;
+use liquid_cache_local::LiquidCacheLocalBuilder;
 use tempfile::TempDir;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new().unwrap();
 
-    let (ctx, _) = LiquidCacheInProcessBuilder::new()
+    let (ctx, _cache) = LiquidCacheLocalBuilder::new()
         .with_max_cache_bytes(1024 * 1024 * 1024) // 1GB
         .with_cache_dir(temp_dir.path().to_path_buf())
-        .with_cache_mode(LiquidCacheMode::Liquid {
-            transcode_in_background: true,
-        })
-        .with_cache_strategy(Box::new(DiscardPolicy))
+        .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+        .with_cache_policy(Box::new(FiloPolicy::new()))
         .build(SessionConfig::new())?;
 
     ctx.register_parquet("hits", "examples/nano_hits.parquet", Default::default())
@@ -139,7 +135,7 @@ LiquidCache requires a few non-default DataFusion configurations:
 
 **ListingTable:**
 ```rust
-let (ctx, _) = LiquidCacheInProcessBuilder::new().build(config)?;
+let (ctx, _) = LiquidCacheLocalBuilder::new().build(config)?;
 
 let listing_options = ParquetReadOptions::default()
     .to_listing_options(&ctx.copied_config(), ctx.copied_table_options());
@@ -149,7 +145,7 @@ ctx.register_listing_table("default", &table_path, listing_options, None, None)
 
 **Or register Parquet directly:**
 ```rust
-let (ctx, _) = LiquidCacheInProcessBuilder::new().build(config)?;
+let (ctx, _) = LiquidCacheLocalBuilder::new().build(config)?;
 ctx.register_parquet("default", "examples/nano_hits.parquet", Default::default())
     .await?;
 ```
@@ -159,10 +155,10 @@ ctx.register_parquet("default", "examples/nano_hits.parquet", Default::default()
 For performance testing, disable background transcoding:
 
 ```rust
-let (ctx, _) = LiquidCacheInProcessBuilder::new()
-    .with_cache_mode(LiquidCacheMode::Liquid {
-        transcode_in_background: false,
-    })
+let (ctx, _) = LiquidCacheLocalBuilder::new()
+    .with_squeeze_policy(Box::new(
+        squeeze_policies::Evict,
+    ))
     .build(config)?;
 ```
 

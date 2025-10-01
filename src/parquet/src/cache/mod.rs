@@ -8,10 +8,10 @@ use ahash::AHashMap;
 use arrow::array::{Array, ArrayRef, BooleanArray, RecordBatch};
 use arrow::buffer::BooleanBuffer;
 use arrow::compute::prep_null_mask_filter;
-use arrow_schema::{ArrowError, DataType, Field, Schema};
-use liquid_cache_common::{LiquidCacheMode, coerce_parquet_type_to_liquid_type};
+use arrow_schema::{ArrowError, Field, Schema};
 use liquid_cache_storage::cache::cached_data::GetWithPredicateResult;
 use liquid_cache_storage::cache::io_state::{IoStateMachine, SansIo, TryGet};
+use liquid_cache_storage::cache::squeeze_policies::SqueezePolicy;
 use liquid_cache_storage::cache::{CachePolicy, CacheStorage, CacheStorageBuilder};
 use parquet::arrow::arrow_reader::ArrowPredicate;
 use std::path::{Path, PathBuf};
@@ -61,10 +61,6 @@ impl LiquidCachedColumn {
     /// row_id must be on a batch boundary.
     fn entry_id(&self, batch_id: BatchID) -> ParquetArrayID {
         self.column_path.entry_id(batch_id)
-    }
-
-    pub(crate) fn cache_mode(&self) -> &LiquidCacheMode {
-        self.cache_store.config().cache_mode()
     }
 
     pub(crate) fn batch_size(&self) -> usize {
@@ -168,21 +164,6 @@ impl LiquidCachedRowGroup {
     pub fn create_column(&self, column_id: u64, field: Arc<Field>) -> LiquidCachedColumnRef {
         use std::collections::hash_map::Entry;
         let mut columns = self.columns.write().unwrap();
-
-        let field = match field.data_type() {
-            DataType::Utf8View | DataType::BinaryView => {
-                let field: Field = Field::clone(&field);
-                let new_data_type = coerce_parquet_type_to_liquid_type(
-                    field.data_type(),
-                    self.cache_store.config().cache_mode(),
-                );
-                Arc::new(field.with_data_type(new_data_type))
-            }
-            DataType::Utf8 | DataType::LargeUtf8 | DataType::Binary | DataType::LargeBinary => {
-                unreachable!()
-            }
-            _ => field,
-        };
 
         let column = columns.entry(column_id);
 
@@ -326,11 +307,6 @@ impl LiquidCachedFile {
     fn reset(&self) {
         self.cache_store.reset();
     }
-
-    /// Get the cache mode of the cache.
-    pub fn cache_mode(&self) -> &LiquidCacheMode {
-        self.cache_store.config().cache_mode()
-    }
 }
 
 /// A reference to a cached file.
@@ -356,16 +332,16 @@ impl LiquidCache {
         batch_size: usize,
         max_cache_bytes: usize,
         cache_dir: PathBuf,
-        cache_mode: LiquidCacheMode,
         cache_policy: Box<dyn CachePolicy>,
+        squeeze_policy: Box<dyn SqueezePolicy>,
     ) -> Self {
         assert!(batch_size.is_power_of_two());
         let cache_storage_builder = CacheStorageBuilder::new()
             .with_batch_size(batch_size)
             .with_max_cache_bytes(max_cache_bytes)
             .with_cache_dir(cache_dir.clone())
-            .with_cache_mode(cache_mode)
-            .with_policy(cache_policy)
+            .with_squeeze_policy(squeeze_policy)
+            .with_cache_policy(cache_policy)
             .with_io_worker(Arc::new(ParquetIoContext::new(cache_dir)));
         let cache_storage = cache_storage_builder.build();
 
@@ -445,9 +421,9 @@ impl LiquidCache {
         self.cache_store.flush_all_to_disk();
     }
 
-    /// Get the cache mode of the cache.
-    pub fn cache_mode(&self) -> &LiquidCacheMode {
-        self.cache_store.config().cache_mode()
+    /// Get the storage of the cache.
+    pub fn storage(&self) -> &Arc<CacheStorage> {
+        &self.cache_store
     }
 }
 
@@ -466,8 +442,8 @@ mod tests {
     use datafusion::physical_expr::PhysicalExpr;
     use datafusion::physical_expr::expressions::{BinaryExpr, Literal};
     use datafusion::physical_plan::expressions::Column;
-    use liquid_cache_common::LiquidCacheMode;
-    use liquid_cache_storage::cache_policies::FiloPolicy;
+    use liquid_cache_storage::cache::squeeze_policies::TranscodeSqueezeEvict;
+    use liquid_cache_storage::cache_policies::LiquidPolicy;
     use parquet::arrow::ArrowWriter;
     use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
     use std::sync::Arc;
@@ -478,8 +454,8 @@ mod tests {
             batch_size,
             usize::MAX,
             tmp_dir.path().to_path_buf(),
-            LiquidCacheMode::LiquidBlocking,
-            Box::new(FiloPolicy::new()),
+            Box::new(LiquidPolicy::new()),
+            Box::new(TranscodeSqueezeEvict),
         );
         let file = cache.register_or_get_file("test".to_string());
         file.row_group(0)
@@ -674,12 +650,14 @@ mod tests {
         let expr_name: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
             Arc::new(Column::new("name", 0)),
             Operator::Eq,
-            Arc::new(Literal::new(ScalarValue::Utf8(Some("Bob".to_string())))),
+            Arc::new(Literal::new(ScalarValue::Utf8View(Some("Bob".to_string())))),
         ));
         let expr_city: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
             Arc::new(Column::new("city", 1)),
             Operator::Eq,
-            Arc::new(Literal::new(ScalarValue::Utf8(Some("Tokyo".to_string())))),
+            Arc::new(Literal::new(ScalarValue::Utf8View(Some(
+                "Tokyo".to_string(),
+            )))),
         ));
         let expr: Arc<dyn PhysicalExpr> =
             Arc::new(BinaryExpr::new(expr_name, Operator::Or, expr_city));

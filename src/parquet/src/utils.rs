@@ -299,8 +299,9 @@ mod tests {
 
     use super::*;
     use datafusion::{datasource::physical_plan::FileScanConfig, prelude::SessionContext};
-    use liquid_cache_common::LiquidCacheMode;
-    use liquid_cache_storage::cache_policies::FiloPolicy;
+    use liquid_cache_storage::{
+        cache::squeeze_policies::TranscodeSqueezeEvict, cache_policies::LiquidPolicy,
+    };
     use std::{path::PathBuf, sync::Arc};
 
     #[test]
@@ -397,14 +398,14 @@ mod tests {
         }
     }
 
-    fn rewrite_plan_inner(plan: Arc<dyn ExecutionPlan>, cache_mode: &LiquidCacheMode) {
+    fn rewrite_plan_inner(plan: Arc<dyn ExecutionPlan>) {
         let expected_schema = plan.schema();
         let liquid_cache = Arc::new(LiquidCache::new(
             8192,
             1000000,
             PathBuf::from("test"),
-            *cache_mode,
-            Box::new(FiloPolicy::new()),
+            Box::new(LiquidPolicy::new()),
+            Box::new(TranscodeSqueezeEvict),
         ));
         let rewritten = rewrite_data_source_plan(plan, &liquid_cache);
 
@@ -442,8 +443,6 @@ mod tests {
             .await
             .unwrap();
         let plan = df.create_physical_plan().await.unwrap();
-        rewrite_plan_inner(plan.clone(), &LiquidCacheMode::Arrow);
-        rewrite_plan_inner(plan.clone(), &LiquidCacheMode::LiquidBlocking);
-        rewrite_plan_inner(plan.clone(), &LiquidCacheMode::Liquid);
+        rewrite_plan_inner(plan.clone());
     }
 }

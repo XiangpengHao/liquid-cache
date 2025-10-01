@@ -18,7 +18,7 @@ struct InProcessBenchmark {
     pub manifest: PathBuf,
 
     /// Benchmark mode to use
-    #[arg(long = "bench-mode", default_value = "liquid-eager-transcode")]
+    #[arg(long = "bench-mode", default_value = "liquid")]
     pub bench_mode: InProcessBenchmarkMode,
 
     /// Number of times to run each query
@@ -48,6 +48,10 @@ struct InProcessBenchmark {
     /// Query index to run (0-based), if not provided, all queries will be run
     #[arg(long)]
     pub query_index: Option<usize>,
+
+    /// Directory to save the cache
+    #[arg(long = "cache-dir")]
+    pub cache_dir: Option<PathBuf>,
 }
 
 impl InProcessBenchmark {
@@ -62,6 +66,7 @@ impl InProcessBenchmark {
             .with_partitions(self.partitions)
             .with_max_cache_mb(self.max_cache_mb)
             .with_flamegraph_dir(self.flamegraph_dir.clone())
+            .with_cache_dir(self.cache_dir.clone())
             .with_query_filter(self.query_index);
 
         runner.run(manifest, self, output).await?;

@@ -1,12 +1,14 @@
 use crate::manifest::BenchmarkManifest;
-use crate::{BenchmarkResult, IterationResult, Query, QueryResult, run_query};
+use crate::{
+    BenchmarkResult, IterationResult, Query, QueryResult, SerializableCacheStats, run_query,
+};
 use anyhow::Result;
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::prelude::{SessionConfig, SessionContext};
-use liquid_cache_common::LiquidCacheMode;
 use liquid_cache_local::LiquidCacheLocalBuilder;
 use liquid_cache_parquet::{LiquidCacheRef, extract_execution_metrics};
-use liquid_cache_storage::cache_policies::FiloPolicy;
+use liquid_cache_storage::cache::squeeze_policies::{Evict, TranscodeEvict, TranscodeSqueezeEvict};
+use liquid_cache_storage::cache_policies::FifoPolicy;
 use log::info;
 use serde::Serialize;
 use std::{
@@ -15,7 +17,6 @@ use std::{
     sync::Arc,
     time::Instant,
 };
-use sysinfo::Disks;
 
 #[derive(Clone, Debug, Default, Copy, PartialEq, Eq, Serialize)]
 pub enum InProcessBenchmarkMode {
@@ -25,7 +26,7 @@ pub enum InProcessBenchmarkMode {
     Arrow,
     #[default]
     Liquid,
-    LiquidEagerTranscode,
+    LiquidNoSqueeze,
 }
 
 impl std::str::FromStr for InProcessBenchmarkMode {
@@ -37,10 +38,10 @@ impl std::str::FromStr for InProcessBenchmarkMode {
             "datafusion-default" | "datafusion" => InProcessBenchmarkMode::DataFusionDefault,
             "arrow" => InProcessBenchmarkMode::Arrow,
             "liquid" => InProcessBenchmarkMode::Liquid,
-            "liquid-eager-transcode" => InProcessBenchmarkMode::LiquidEagerTranscode,
+            "liquid-no-squeeze" => InProcessBenchmarkMode::LiquidNoSqueeze,
             _ => {
                 return Err(format!(
-                    "Invalid in-process benchmark mode: {s}, must be one of: parquet, datafusion-default, arrow, liquid, liquid-eager-transcode"
+                    "Invalid in-process benchmark mode: {s}, must be one of: parquet, datafusion-default, arrow, liquid, liquid-no-squeeze"
                 ));
             }
         })
@@ -55,6 +56,7 @@ pub struct InProcessBenchmarkRunner {
     pub max_cache_mb: Option<usize>,
     pub flamegraph_dir: Option<PathBuf>,
     pub query_filter: Option<usize>,
+    pub cache_dir: Option<PathBuf>,
 }
 
 impl Default for InProcessBenchmarkRunner {
@@ -73,6 +75,7 @@ impl InProcessBenchmarkRunner {
             max_cache_mb: None,
             flamegraph_dir: None,
             query_filter: None,
+            cache_dir: None,
         }
     }
 
@@ -111,6 +114,11 @@ impl InProcessBenchmarkRunner {
         self
     }
 
+    pub fn with_cache_dir(mut self, cache_dir: Option<PathBuf>) -> Self {
+        self.cache_dir = cache_dir;
+        self
+    }
+
     async fn setup_context(
         &self,
         manifest: &BenchmarkManifest,
@@ -134,7 +142,10 @@ impl InProcessBenchmarkRunner {
             .map(|size| size * 1024 * 1024)
             .unwrap_or(usize::MAX);
 
-        let cache_dir = std::env::current_dir()?.join("benchmark/data/cache");
+        let cache_dir = self
+            .cache_dir
+            .clone()
+            .unwrap_or(std::env::current_dir()?.join("benchmark/data/cache"));
         if cache_dir.exists() {
             std::fs::remove_dir_all(&cache_dir)?;
         }
@@ -157,27 +168,27 @@ impl InProcessBenchmarkRunner {
             InProcessBenchmarkMode::Arrow => {
                 let v = LiquidCacheLocalBuilder::new()
                     .with_max_cache_bytes(cache_size)
-                    .with_cache_mode(LiquidCacheMode::Arrow)
                     .with_cache_dir(cache_dir)
-                    .with_cache_strategy(Box::new(FiloPolicy::new()))
+                    .with_cache_policy(Box::new(FifoPolicy::new()))
+                    .with_squeeze_policy(Box::new(Evict))
                     .build(session_config)?;
                 (v.0, Some(v.1))
             }
             InProcessBenchmarkMode::Liquid => {
                 let v = LiquidCacheLocalBuilder::new()
                     .with_max_cache_bytes(cache_size)
-                    .with_cache_mode(LiquidCacheMode::Liquid)
                     .with_cache_dir(cache_dir)
-                    .with_cache_strategy(Box::new(FiloPolicy::new()))
+                    .with_cache_policy(Box::new(FifoPolicy::new()))
+                    .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
                     .build(session_config)?;
                 (v.0, Some(v.1))
             }
-            InProcessBenchmarkMode::LiquidEagerTranscode => {
+            InProcessBenchmarkMode::LiquidNoSqueeze => {
                 let v = LiquidCacheLocalBuilder::new()
                     .with_max_cache_bytes(cache_size)
-                    .with_cache_mode(LiquidCacheMode::LiquidBlocking)
                     .with_cache_dir(cache_dir)
-                    .with_cache_strategy(Box::new(FiloPolicy::new()))
+                    .with_cache_policy(Box::new(FifoPolicy::new()))
+                    .with_squeeze_policy(Box::new(TranscodeEvict))
                     .build(session_config)?;
                 (v.0, Some(v.1))
             }
@@ -270,8 +281,8 @@ impl InProcessBenchmarkRunner {
             None
         };
 
-        // Capture disk I/O metrics before query execution
-        let mut disk_info = Disks::new_with_refreshed_list();
+        let s = sysinfo::System::new_all();
+        let process = s.process(sysinfo::get_current_pid().unwrap()).unwrap();
 
         let now = Instant::now();
         let starting_timestamp = bench_start_time.elapsed();
@@ -287,12 +298,11 @@ impl InProcessBenchmarkRunner {
         };
         let elapsed = now.elapsed();
 
-        disk_info.refresh(true);
-        let disk_read: u64 = disk_info.iter().map(|disk| disk.usage().read_bytes).sum();
-        let disk_written: u64 = disk_info
-            .iter()
-            .map(|disk| disk.usage().written_bytes)
-            .sum();
+        let disk_usage = process.disk_usage();
+        let disk_read: u64 = disk_usage.read_bytes;
+        let disk_written: u64 = disk_usage.written_bytes;
+
+        let cache_stats = cache.as_ref().map(|cache| cache.storage().stats());
 
         // Stop flamegraph profiling and write to file if enabled
         if let Some(profiler) = profiler_guard {
@@ -311,6 +321,7 @@ impl InProcessBenchmarkRunner {
             disk_bytes_read: disk_read,
             disk_bytes_written: disk_written,
             starting_timestamp,
+            cache_stats: cache_stats.map(SerializableCacheStats::from),
         };
 
         println!("{}", pretty_format_batches(&results).unwrap());

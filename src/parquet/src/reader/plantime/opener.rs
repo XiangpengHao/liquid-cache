@@ -23,7 +23,6 @@ use datafusion::{
 };
 use futures::StreamExt;
 use futures::TryStreamExt;
-use liquid_cache_common::ParquetReaderSchema;
 use log::debug;
 use parquet::arrow::{
     ParquetRecordBatchStreamBuilder, ProjectionMask,
@@ -137,8 +136,7 @@ impl FileOpener for LiquidParquetOpener {
             // - The logical file schema: this is the table schema minus any hive partition columns and projections.
             //   This is what the physical file schema is coerced to.
             // - The physical file schema: this is the schema as defined by the parquet file. This is what the parquet file actually contains.
-            let mut physical_file_schema = Arc::clone(reader_metadata.schema());
-            physical_file_schema = ParquetReaderSchema::from(&physical_file_schema);
+            let physical_file_schema = Arc::clone(reader_metadata.schema());
             options = options.with_schema(Arc::clone(&physical_file_schema));
             reader_metadata =
                 ArrowReaderMetadata::try_new(Arc::clone(reader_metadata.metadata()), options)?;

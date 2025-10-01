@@ -111,7 +111,6 @@ expression: displayable.tree_render().to_string()
 │    --------------------   ││    --------------------   │
 │          server:          ││     target_batch_size:    │
 │  http://localhost:50051,  ││           16384           │
-│        mode=liquid,       ││                           │
 │      object_stores=[]     ││                           │
 └─────────────┬─────────────┘└─────────────┬─────────────┘
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
@@ -125,7 +124,6 @@ expression: displayable.tree_render().to_string()
                              │                           │                             │    --------------------   │
                              │                           │                             │          server:          │
                              │                           │                             │  http://localhost:50051,  │
-                             │                           │                             │        mode=liquid,       │
                              │                           │                             │      object_stores=[]     │
                              └─────────────┬─────────────┘                             └─────────────┬─────────────┘
                              ┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
@@ -151,7 +149,6 @@ expression: displayable.tree_render().to_string()
                              │    --------------------   ││    --------------------   │
                              │          server:          ││          server:          │
                              │  http://localhost:50051,  ││  http://localhost:50051,  │
-                             │        mode=liquid,       ││        mode=liquid,       │
                              │      object_stores=[]     ││      object_stores=[]     │
                              └─────────────┬─────────────┘└─────────────┬─────────────┘
                              ┌─────────────┴─────────────┐┌─────────────┴─────────────┐

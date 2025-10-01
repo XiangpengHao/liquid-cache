@@ -91,16 +91,16 @@ expression: displayable.tree_render().to_string()
 │    --------------------   ││    --------------------   │
 │          server:          ││    join_type: LeftAnti    │
 │  http://localhost:50051,  ││                           ├──────────────┐
-│        mode=liquid,       ││            on:            │              │
-│      object_stores=[]     ││  (c_custkey = o_custkey)  │              │
+│      object_stores=[]     ││            on:            │              │
+│                           ││  (c_custkey = o_custkey)  │              │
 └─────────────┬─────────────┘└─────────────┬─────────────┘              │
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐
 │       AggregateExec       ││   LiquidCacheClientExec   ││   LiquidCacheClientExec   │
 │    --------------------   ││    --------------------   ││    --------------------   │
 │           aggr:           ││          server:          ││          server:          │
 │  avg(customer.c_acctbal)  ││  http://localhost:50051,  ││  http://localhost:50051,  │
-│                           ││        mode=liquid,       ││        mode=liquid,       │
-│       mode: Partial       ││      object_stores=[]     ││      object_stores=[]     │
+│                           ││      object_stores=[]     ││      object_stores=[]     │
+│       mode: Partial       ││                           ││                           │
 └─────────────┬─────────────┘└─────────────┬─────────────┘└─────────────┬─────────────┘
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐
 │      RepartitionExec      ││       DataSourceExec      ││       DataSourceExec      │

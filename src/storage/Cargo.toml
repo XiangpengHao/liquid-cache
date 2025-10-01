@@ -28,6 +28,7 @@ congee = { workspace = true }
 log = { workspace = true }
 parquet = { workspace = true }
 
+
 [target.'cfg(target_os = "linux")'.dependencies]
 io-uring = "0.7.9"
 libc = "0.2.175"
@@ -43,10 +44,17 @@ serde_json = { workspace = true }
 mimalloc = "0.1.47"
 clap = { version = "4.5.45", features = ["derive"] }
 divan = "0.1.21"
+kani-verifier = "0.65.0"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+	'cfg(rust_analyzer)',
+	'cfg(kani)',
+] }
+
 
 [features]
 shuttle = []
-
 
 [[bench]]
 name = "fsst_view_study"

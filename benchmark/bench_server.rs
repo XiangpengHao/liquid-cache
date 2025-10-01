@@ -1,17 +1,13 @@
 use arrow_flight::flight_service_server::FlightServiceServer;
-use axum::Router;
 use clap::Parser;
 use fastrace_tonic::FastraceServerLayer;
-use liquid_cache_benchmarks::setup_observability;
-use liquid_cache_common::CacheMode;
+use liquid_cache_benchmarks::{BenchmarkMode, setup_observability};
 use liquid_cache_server::{LiquidCacheService, run_admin_server};
-use liquid_cache_storage::cache_policies::FiloPolicy;
+use liquid_cache_storage::cache_policies::LiquidPolicy;
 use log::info;
 use mimalloc::MiMalloc;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
-use tokio::net::TcpListener;
 use tonic::transport::Server;
-use tower_http::services::ServeDir;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -40,8 +36,8 @@ struct CliArgs {
     disk_cache_dir: Option<PathBuf>,
 
     /// Cache mode
-    #[arg(long = "cache-mode", default_value = "liquid_eager_transcode")]
-    cache_mode: CacheMode,
+    #[arg(long = "cache-mode", default_value = "liquid")]
+    cache_mode: BenchmarkMode,
 
     /// Static files directory (only used in static_file_server mode)
     #[arg(long = "static-dir", default_value = "static")]
@@ -72,52 +68,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(1);
         }));
     }
+    let squeeze_policy = args.cache_mode.to_squeeze_policy();
 
-    match args.cache_mode {
-        CacheMode::StaticFileServer => {
-            // Static file server mode
-            let serve_dir = ServeDir::new(&args.static_dir);
-            let app = Router::new().fallback_service(serve_dir);
+    // LiquidCache server mode
+    let ctx = LiquidCacheService::context()?;
+    let liquid_cache_server = LiquidCacheService::new(
+        ctx,
+        max_cache_bytes,
+        args.disk_cache_dir.clone(),
+        Box::new(LiquidPolicy::new()),
+        squeeze_policy,
+    )?;
 
-            info!("Static file server listening on http://{}", args.address);
-            info!("Serving files from directory: {:?}", args.static_dir);
+    let liquid_cache_server = Arc::new(liquid_cache_server);
+    let flight = FlightServiceServer::from_arc(liquid_cache_server.clone());
 
-            axum::serve(
-                TcpListener::bind(args.address).await?,
-                app.into_make_service(),
-            )
-            .await?;
-        }
-        _ => {
-            // LiquidCache server mode
-            let ctx = LiquidCacheService::context()?;
-            let liquid_cache_server = LiquidCacheService::new(
-                ctx,
-                max_cache_bytes,
-                args.disk_cache_dir.clone(),
-                args.cache_mode,
-                Box::new(FiloPolicy::new()),
-            )?;
+    info!("LiquidCache server listening on {}", args.address);
+    info!("Admin server listening on {}", args.admin_address);
+    info!(
+        "Dashboard: https://liquid-cache-admin.xiangpeng.systems/?host=http://{}",
+        args.admin_address
+    );
 
-            let liquid_cache_server = Arc::new(liquid_cache_server);
-            let flight = FlightServiceServer::from_arc(liquid_cache_server.clone());
-
-            info!("LiquidCache server listening on {}", args.address);
-            info!("Admin server listening on {}", args.admin_address);
-            info!(
-                "Dashboard: https://liquid-cache-admin.xiangpeng.systems/?host=http://{}",
-                args.admin_address
-            );
-
-            // Run both servers concurrently
-            tokio::select! {
-                result = Server::builder().layer(FastraceServerLayer).add_service(flight).serve(args.address) => {
-                    result?;
-                },
-                result = run_admin_server(args.admin_address, liquid_cache_server) => {
-                    result?;
-                },
-            }
+    // Run both servers concurrently
+    tokio::select! {
+        result = Server::builder().layer(FastraceServerLayer).add_service(flight).serve(args.address) => {
+            result?;
+        },
+        result = run_admin_server(args.admin_address, liquid_cache_server) => {
+            result?;
         }
     }
 

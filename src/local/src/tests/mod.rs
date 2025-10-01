@@ -1,5 +1,8 @@
 use arrow_schema::{DataType, Field, Schema};
-use liquid_cache_storage::cache_policies::FiloPolicy;
+use liquid_cache_storage::{
+    cache::squeeze_policies::{Evict, SqueezePolicy, TranscodeEvict, TranscodeSqueezeEvict},
+    cache_policies::LiquidPolicy,
+};
 use std::{path::Path, sync::Arc};
 use tempfile::TempDir;
 
@@ -13,14 +16,13 @@ use datafusion::{
     physical_plan::{ExecutionPlan, collect, display::DisplayableExecutionPlan},
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
-use liquid_cache_common::LiquidCacheMode;
 
 use crate::LiquidCacheLocalBuilder;
 
 const TEST_FILE: &str = "../../examples/nano_hits.parquet";
 
 async fn create_session_context_with_liquid_cache(
-    cache_mode: LiquidCacheMode,
+    squeeze_policy: Box<dyn SqueezePolicy>,
     cache_size_bytes: usize,
     cache_dir: &Path,
 ) -> Result<SessionContext> {
@@ -29,8 +31,8 @@ async fn create_session_context_with_liquid_cache(
     let (ctx, _) = LiquidCacheLocalBuilder::new()
         .with_max_cache_bytes(cache_size_bytes)
         .with_cache_dir(cache_dir.to_path_buf())
-        .with_cache_mode(cache_mode)
-        .with_cache_strategy(Box::new(FiloPolicy::new()))
+        .with_squeeze_policy(squeeze_policy)
+        .with_cache_policy(Box::new(LiquidPolicy::new()))
         .build(config)?;
 
     // Register the test parquet file
@@ -49,11 +51,11 @@ async fn get_physical_plan(sql: &str, ctx: &SessionContext) -> Arc<dyn Execution
 
 async fn run_sql_with_cache(
     sql: &str,
-    cache_mode: LiquidCacheMode,
+    squeeze_policy: Box<dyn SqueezePolicy>,
     cache_size_bytes: usize,
     cache_dir: &Path,
 ) -> (String, String) {
-    let ctx = create_session_context_with_liquid_cache(cache_mode, cache_size_bytes, cache_dir)
+    let ctx = create_session_context_with_liquid_cache(squeeze_policy, cache_size_bytes, cache_dir)
         .await
         .unwrap();
 
@@ -76,20 +78,20 @@ async fn run_sql_with_cache(
 }
 
 async fn test_runner(sql: &str, reference: &str, cache_dir: &Path) {
-    let cache_modes = [
-        LiquidCacheMode::Arrow,
-        LiquidCacheMode::Liquid,
-        LiquidCacheMode::LiquidBlocking,
-    ];
-
     let cache_sizes = [10 * 1024, 1024 * 1024, usize::MAX]; // 10KB, 1MB, unlimited
 
-    for cache_mode in cache_modes {
-        for cache_size in cache_sizes {
-            let (result, _plan) = run_sql_with_cache(sql, cache_mode, cache_size, cache_dir).await;
+    for cache_size in cache_sizes {
+        let squeeze_policies: Vec<Box<dyn SqueezePolicy>> = vec![
+            Box::new(TranscodeSqueezeEvict),
+            Box::new(Evict),
+            Box::new(TranscodeEvict),
+        ];
+        for squeeze_policy in squeeze_policies {
+            let (result, _plan) =
+                run_sql_with_cache(sql, squeeze_policy, cache_size, cache_dir).await;
             assert_eq!(
                 result, reference,
-                "Results differ for cache_mode: {cache_mode:?}, cache_size: {cache_size}"
+                "Results differ, cache_size: {cache_size}"
             );
         }
     }
@@ -102,7 +104,7 @@ async fn test_url_prefix_filtering() {
 
     let (reference, plan) = run_sql_with_cache(
         sql,
-        LiquidCacheMode::LiquidBlocking,
+        Box::new(TranscodeSqueezeEvict),
         1024 * 1024,
         cache_dir.path(),
     )
@@ -119,7 +121,7 @@ async fn test_url_selection_and_ordering() {
 
     let (reference, plan) = run_sql_with_cache(
         sql,
-        LiquidCacheMode::LiquidBlocking,
+        Box::new(TranscodeSqueezeEvict),
         1024 * 1024,
         cache_dir.path(),
     )
@@ -136,7 +138,7 @@ async fn test_os_selection() {
 
     let (reference, plan) = run_sql_with_cache(
         sql,
-        LiquidCacheMode::LiquidBlocking,
+        Box::new(TranscodeSqueezeEvict),
         1024 * 1024,
         cache_dir.path(),
     )
@@ -154,7 +156,7 @@ async fn test_referer_filtering() {
 
     let (reference, plan) = run_sql_with_cache(
         sql,
-        LiquidCacheMode::LiquidBlocking,
+        Box::new(TranscodeSqueezeEvict),
         1024 * 1024,
         cache_dir.path(),
     )
@@ -172,7 +174,7 @@ async fn test_single_column_filter_projection() {
 
     let (reference, plan) = run_sql_with_cache(
         sql,
-        LiquidCacheMode::LiquidBlocking,
+        Box::new(TranscodeSqueezeEvict),
         1024 * 1024,
         cache_dir.path(),
     )
@@ -190,7 +192,7 @@ async fn test_provide_schema_with_filter() {
 
     let (reference, plan) = run_sql_with_cache(
         sql,
-        LiquidCacheMode::LiquidBlocking,
+        Box::new(TranscodeSqueezeEvict),
         1024 * 1024,
         cache_dir.path(),
     )
@@ -199,7 +201,7 @@ async fn test_provide_schema_with_filter() {
     insta::assert_snapshot!(format!("plan: \n{}\nvalues: \n{}", plan, reference));
 
     let (ctx, _) = LiquidCacheLocalBuilder::new()
-        .with_cache_mode(LiquidCacheMode::LiquidBlocking)
+        .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
         .build(SessionConfig::new())
         .unwrap();
 

@@ -3,7 +3,6 @@ use std::any::Any;
 use ahash::AHashMap;
 use arrow::array::{ArrayRef, BooleanArray, BooleanBufferBuilder, new_empty_array};
 use arrow_schema::{DataType, Field, Fields};
-use liquid_cache_common::{cast_from_parquet_to_liquid_type, coerce_parquet_type_to_liquid_type};
 use parquet::{
     arrow::{
         array_reader::{ArrayReader, StructArrayReader},
@@ -45,12 +44,12 @@ struct CachedArrayReader {
 
 impl CachedArrayReader {
     fn new(inner: Box<dyn ArrayReader>, liquid_cache: LiquidCachedColumnRef) -> Self {
-        let inner_type = inner.get_data_type();
-        let data_type = coerce_parquet_type_to_liquid_type(inner_type, liquid_cache.cache_mode());
+        let inner_type = inner.get_data_type().clone();
+        // let data_type = coerce_parquet_type_to_liquid_type(inner_type, liquid_cache.cache_mode());
 
         Self {
             inner,
-            data_type,
+            data_type: inner_type,
             current_row: 0,
             inner_row_id: 0,
             selection_buffer: BooleanBufferBuilder::new(0),
@@ -78,7 +77,7 @@ impl CachedArrayReader {
 
         // This is a special case for the Utf8View type, because parquet read string as Utf8View.
         // But the reader reads as Dictionary or Utf8 type, depending on the cache mode.
-        let array = cast_from_parquet_to_liquid_type(array, self.liquid_cache.cache_mode());
+        // let array = cast_from_parquet_to_liquid_type(array, self.liquid_cache.cache_mode());
 
         _ = self.liquid_cache.insert(batch_id, array.clone());
         self.reader_local_cache.insert(batch_id, array);
@@ -376,8 +375,9 @@ mod tests {
     use std::sync::Arc;
 
     use arrow::array::Int32Array;
-    use liquid_cache_common::LiquidCacheMode;
-    use liquid_cache_storage::cache_policies::FiloPolicy;
+    use liquid_cache_storage::{
+        cache::squeeze_policies::TranscodeSqueezeEvict, cache_policies::LiquidPolicy,
+    };
 
     use super::*;
     use crate::cache::LiquidCache;
@@ -445,8 +445,8 @@ mod tests {
             BATCH_SIZE,
             usize::MAX,
             tmp_dir.path().to_path_buf(),
-            LiquidCacheMode::LiquidBlocking,
-            Box::new(FiloPolicy::new()),
+            Box::new(LiquidPolicy::new()),
+            Box::new(TranscodeSqueezeEvict),
         ));
         let file = liquid_cache.register_or_get_file("test".to_string());
         let row_group = file.row_group(0);

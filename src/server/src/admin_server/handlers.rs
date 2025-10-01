@@ -49,10 +49,9 @@ pub(crate) async fn shutdown_handler() -> Json<ApiResponse> {
 
 pub(crate) async fn reset_cache_handler(State(state): State<Arc<AppState>>) -> Json<ApiResponse> {
     info!("Resetting cache...");
-    if let Some(cache) = state.liquid_cache.cache() {
-        unsafe {
-            cache.reset();
-        }
+    let cache = state.liquid_cache.cache();
+    unsafe {
+        cache.reset();
     }
 
     Json(ApiResponse {
@@ -129,14 +128,7 @@ pub(crate) struct CacheInfo {
 
 pub(crate) async fn get_cache_info_handler(State(state): State<Arc<AppState>>) -> Json<CacheInfo> {
     info!("Getting cache info...");
-    let Some(cache) = state.liquid_cache.cache() else {
-        return Json(CacheInfo {
-            batch_size: 0,
-            max_cache_bytes: 0,
-            memory_usage_bytes: 0,
-            disk_usage_bytes: 0,
-        });
-    };
+    let cache = state.liquid_cache.cache();
     let batch_size = cache.batch_size();
     let max_cache_bytes = cache.max_cache_bytes() as u64;
     let memory_usage_bytes = cache.memory_usage_bytes() as u64;
@@ -204,9 +196,8 @@ pub(crate) struct CacheStatsParams {
 
 pub(crate) async fn start_trace_handler(State(state): State<Arc<AppState>>) -> Json<ApiResponse> {
     info!("Starting cache trace collection...");
-    if let Some(cache) = state.liquid_cache.cache() {
-        cache.enable_trace();
-    }
+    let cache = state.liquid_cache.cache();
+    cache.enable_trace();
 
     Json(ApiResponse {
         message: "Cache trace collection started".to_string(),
@@ -255,10 +246,9 @@ pub(crate) fn save_trace_to_file(
     }
 
     let file_path = save_dir.join(filename);
-    if let Some(cache) = state.liquid_cache.cache() {
-        cache.disable_trace();
-        cache.flush_trace(&file_path);
-    }
+    let cache = state.liquid_cache.cache();
+    cache.disable_trace();
+    cache.flush_trace(&file_path);
     Ok(())
 }
 
@@ -295,12 +285,7 @@ pub(crate) async fn get_cache_stats_handler(
     State(state): State<Arc<AppState>>,
     Query(params): Query<CacheStatsParams>,
 ) -> Json<ApiResponse> {
-    let Some(cache) = state.liquid_cache.cache() else {
-        return Json(ApiResponse {
-            message: "Cache not enabled".to_string(),
-            status: "error".to_string(),
-        });
-    };
+    let cache = state.liquid_cache.cache();
     match get_cache_stats_inner(cache, &params.path, &state) {
         Ok(file_path) => {
             info!("Cache stats saved to {}", file_path.display());

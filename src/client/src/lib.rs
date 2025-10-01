@@ -14,7 +14,6 @@ use datafusion::{
     prelude::*,
 };
 use fastrace_tonic::FastraceClientService;
-use liquid_cache_common::CacheMode;
 pub use optimizer::PushdownOptimizer;
 use tonic::transport::Channel;
 
@@ -28,6 +27,8 @@ mod tests;
 /// # Example
 ///
 /// ```ignore
+/// use datafusion::execution::object_store::ObjectStoreUrl;
+/// use datafusion::prelude::SessionConfig;
 /// use liquid_cache_client::LiquidCacheBuilder;
 /// use std::collections::HashMap;
 ///
@@ -37,8 +38,7 @@ mod tests;
 /// s3_options.insert("region".to_string(), "us-east-1".to_string());
 ///
 /// let ctx = LiquidCacheBuilder::new("localhost:15214")
-///     .with_object_store("s3://my_bucket", Some(s3_options))
-///     .with_cache_mode(CacheMode::Liquid)
+///     .with_object_store(ObjectStoreUrl::parse("s3://my_bucket").unwrap(), Some(s3_options))
 ///     .build(SessionConfig::from_env().unwrap())
 ///     .unwrap();
 ///
@@ -49,7 +49,6 @@ mod tests;
 /// ```
 pub struct LiquidCacheBuilder {
     object_stores: Vec<(ObjectStoreUrl, HashMap<String, String>)>,
-    cache_mode: CacheMode,
     cache_server: String,
 }
 
@@ -58,7 +57,6 @@ impl LiquidCacheBuilder {
     pub fn new(cache_server: impl AsRef<str>) -> Self {
         Self {
             object_stores: vec![],
-            cache_mode: CacheMode::Liquid,
             cache_server: cache_server.as_ref().to_string(),
         }
     }
@@ -72,12 +70,6 @@ impl LiquidCacheBuilder {
     ) -> Self {
         self.object_stores
             .push((url, object_store_options.unwrap_or_default()));
-        self
-    }
-
-    /// Set the cache mode for the builder.
-    pub fn with_cache_mode(mut self, cache_mode: CacheMode) -> Self {
-        self.cache_mode = cache_mode;
         self
     }
 
@@ -117,7 +109,6 @@ impl LiquidCacheBuilder {
             .with_default_features()
             .with_physical_optimizer_rule(Arc::new(PushdownOptimizer::new(
                 self.cache_server.clone(),
-                self.cache_mode,
                 self.object_stores.clone(),
             )))
             .build();

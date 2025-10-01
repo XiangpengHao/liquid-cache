@@ -9,8 +9,6 @@ repository = { workspace = true }
 
 [dependencies]
 arrow-flight = { workspace = true }
-arrow-schema = { workspace = true }
-arrow = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 chrono = "0.4.41"
