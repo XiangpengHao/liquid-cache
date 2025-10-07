@@ -76,7 +76,7 @@ impl InProcessBenchmark {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    setup_observability("inprocess", opentelemetry::trace::SpanKind::Client, None);
+    setup_observability("inprocess", None);
     let benchmark = InProcessBenchmark::parse();
     benchmark.run().await?;
     Ok(())

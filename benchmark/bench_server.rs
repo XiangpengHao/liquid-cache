@@ -51,11 +51,7 @@ struct CliArgs {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = CliArgs::parse();
-    setup_observability(
-        "liquid-cache-server",
-        opentelemetry::trace::SpanKind::Server,
-        args.openobserve_auth.as_deref(),
-    );
+    setup_observability("liquid-cache-server", args.openobserve_auth.as_deref());
 
     let max_cache_bytes = args.max_cache_mb.map(|size| size * 1024 * 1024);
 
