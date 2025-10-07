@@ -20,4 +20,4 @@ tokio = { workspace = true }
 
 [dev-dependencies]
 insta = { version = "1.43.2" }
-tempfile = "3.22.0"
+tempfile = "3.23.0"

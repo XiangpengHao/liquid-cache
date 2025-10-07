@@ -16,17 +16,17 @@ tokio = { workspace = true }
 log = { workspace = true }
 arrow-flight = { workspace = true }
 tonic = { workspace = true }
-clap = { version = "4.5.47", features = ["derive"] }
+clap = { version = "4.5.48", features = ["derive"] }
 url = { workspace = true }
 mimalloc = "0.1.48"
 serde_json.workspace = true
 serde.workspace = true
-sysinfo = { version = "0.37.0", default-features = false, features = [
+sysinfo = { version = "0.37.2", default-features = false, features = [
 	"network",
 	"disk",
 ] }
 object_store = { workspace = true, features = ["http"] }
-fsst-rs = "0.5.3"
+fsst-rs = "0.5.4"
 parquet = { workspace = true }
 fastrace = { version = "0.7.14", features = ["enable"] }
 fastrace-tonic = { workspace = true }
