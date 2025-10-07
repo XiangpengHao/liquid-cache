@@ -159,8 +159,8 @@ expression: displayable.tree_render().to_string()
                                                                                        │    --------------------   │                             │    --------------------   │
                                                                                        │        c_nationkey:       │                             │          server:          │
                                                                                        │        c_nationkey        │                             │  http://localhost:50051,  │
-                                                                                       │                           │                             │        mode=liquid,       │
-                                                                                       │        o_orderkey:        │                             │      object_stores=[]     │
+                                                                                       │                           │                             │      object_stores=[]     │
+                                                                                       │        o_orderkey:        │                             │                           │
                                                                                        │         o_orderkey        │                             │                           │
                                                                                        └─────────────┬─────────────┘                             └─────────────┬─────────────┘
                                                                                        ┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐

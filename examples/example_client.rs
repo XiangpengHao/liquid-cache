@@ -1,4 +1,4 @@
-use clap::{Parser, command};
+use clap::Parser;
 use datafusion::{error::Result, execution::object_store::ObjectStoreUrl, prelude::*};
 use liquid_cache_client::LiquidCacheBuilder;
 use std::path::Path;

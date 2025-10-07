@@ -132,8 +132,8 @@ expression: displayable.tree_render().to_string()
                              │    --------------------   │                             │    --------------------   │
                              │    c_acctbal: c_acctbal   │                             │          server:          │
                              │    c_address: c_address   │                             │  http://localhost:50051,  │
-                             │    c_comment: c_comment   │                             │        mode=liquid,       │
-                             │    c_custkey: c_custkey   │                             │      object_stores=[]     │
+                             │    c_comment: c_comment   │                             │      object_stores=[]     │
+                             │    c_custkey: c_custkey   │                             │                           │
                              │       c_name: c_name      │                             │                           │
                              │                           │                             │                           │
                              │        c_nationkey:       │                             │                           │

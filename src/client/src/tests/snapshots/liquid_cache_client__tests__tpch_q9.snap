@@ -127,8 +127,8 @@ expression: displayable.tree_render().to_string()
                              │    --------------------   ││    --------------------   │
                              │          server:          ││ partition_count(in->out): │
                              │  http://localhost:50051,  ││           1 -> 8          │
-                             │        mode=liquid,       ││                           │
-                             │      object_stores=[]     ││    partitioning_scheme:   │
+                             │      object_stores=[]     ││                           │
+                             │                           ││    partitioning_scheme:   │
                              │                           ││     RoundRobinBatch(8)    │
                              └─────────────┬─────────────┘└─────────────┬─────────────┘
                              ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
@@ -149,7 +149,6 @@ expression: displayable.tree_render().to_string()
                                                           │                           │                                                          │    --------------------   │
                                                           │                           │                                                          │          server:          │
                                                           │                           │                                                          │  http://localhost:50051,  │
-                                                          │                           │                                                          │        mode=liquid,       │
                                                           │                           │                                                          │      object_stores=[]     │
                                                           └─────────────┬─────────────┘                                                          └─────────────┬─────────────┘
                                                           ┌─────────────┴─────────────┐                                                          ┌─────────────┴─────────────┐
@@ -191,8 +190,8 @@ expression: displayable.tree_render().to_string()
                                                           │    --------------------   ││    --------------------   │
                                                           │          server:          ││ partition_count(in->out): │
                                                           │  http://localhost:50051,  ││           1 -> 8          │
-                                                          │        mode=liquid,       ││                           │
-                                                          │      object_stores=[]     ││    partitioning_scheme:   │
+                                                          │      object_stores=[]     ││                           │
+                                                          │                           ││    partitioning_scheme:   │
                                                           │                           ││     RoundRobinBatch(8)    │
                                                           └─────────────┬─────────────┘└─────────────┬─────────────┘
                                                           ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
@@ -212,7 +211,6 @@ expression: displayable.tree_render().to_string()
                                                                                        │    --------------------   ││    --------------------   │
                                                                                        │          server:          ││          server:          │
                                                                                        │  http://localhost:50051,  ││  http://localhost:50051,  │
-                                                                                       │        mode=liquid,       ││        mode=liquid,       │
                                                                                        │      object_stores=[]     ││      object_stores=[]     │
                                                                                        └─────────────┬─────────────┘└─────────────┬─────────────┘
                                                                                        ┌─────────────┴─────────────┐┌─────────────┴─────────────┐

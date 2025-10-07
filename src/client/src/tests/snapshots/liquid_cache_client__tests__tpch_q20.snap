@@ -51,8 +51,8 @@ expression: displayable.tree_render().to_string()
 │    --------------------   ││    --------------------   ││    --------------------   │                             │    --------------------   │
 │          server:          ││          server:          ││     target_batch_size:    │                             │     Float64(0.5) * sum    │
 │  http://localhost:50051,  ││  http://localhost:50051,  ││           16384           │                             │         (lineitem         │
-│        mode=liquid,       ││        mode=liquid,       ││                           │                             │       .l_quantity):       │
-│      object_stores=[]     ││      object_stores=[]     ││                           │                             │  0.5 * CAST(sum(lineitem  │
+│      object_stores=[]     ││      object_stores=[]     ││                           │                             │       .l_quantity):       │
+│                           ││                           ││                           │                             │  0.5 * CAST(sum(lineitem  │
 │                           ││                           ││                           │                             │      .l_quantity) AS      │
 │                           ││                           ││                           │                             │          Float64)         │
 │                           ││                           ││                           │                             │                           │
@@ -76,7 +76,6 @@ expression: displayable.tree_render().to_string()
                                                           │    --------------------   ││    --------------------   ││    --------------------   │
                                                           │          server:          ││          server:          ││     target_batch_size:    │
                                                           │  http://localhost:50051,  ││  http://localhost:50051,  ││           16384           │
-                                                          │        mode=liquid,       ││        mode=liquid,       ││                           │
                                                           │      object_stores=[]     ││      object_stores=[]     ││                           │
                                                           └─────────────┬─────────────┘└─────────────┬─────────────┘└─────────────┬─────────────┘
                                                           ┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐
