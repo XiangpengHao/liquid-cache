@@ -11,8 +11,6 @@ use url::Url;
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
-const RELEVANT_QUERIES: &[u32] = &[4, 6, 11, 12, 14, 15, 16, 20];
-
 #[derive(Parser, Serialize, Clone)]
 #[command(name = "TPCH In-Process Benchmark")]
 struct TpchInProcessBenchmark {
@@ -25,7 +23,7 @@ struct TpchInProcessBenchmark {
     pub data_dir: PathBuf,
 
     /// Benchmark mode to use
-    #[arg(long = "bench-mode", default_value = "liquid-eager-transcode")]
+    #[arg(long = "bench-mode", default_value = "liquid")]
     pub bench_mode: InProcessBenchmarkMode,
 
     /// Number of times to run each query
@@ -100,7 +98,7 @@ impl TpchInProcessBenchmark {
         // Convert query number to query index for the runner
         let query_filter = if let Some(query_num) = self.query {
             // Find the index of the requested query in the relevant queries
-            RELEVANT_QUERIES.iter().position(|&q| q == query_num)
+            Some(query_num as usize - 1)
         } else {
             None
         };
