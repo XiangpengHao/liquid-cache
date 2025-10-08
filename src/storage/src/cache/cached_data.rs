@@ -6,7 +6,7 @@ use arrow::{
     array::{ArrayRef, BooleanArray},
     buffer::BooleanBuffer,
 };
-use arrow_schema::ArrowError;
+use arrow_schema::{ArrowError, DataType};
 use datafusion::physical_plan::PhysicalExpr;
 
 use crate::{
@@ -67,12 +67,25 @@ impl<'a> CachedData<'a> {
                 let filtered = array.filter_to_arrow(selection);
                 SansIo::Ready(Ok(filtered))
             }
-            CachedBatch::DiskLiquid => GetWithSelectionState::pending_liquid(
-                self.io_context.entry_liquid_path(&self.id),
-                selection,
-                self.io_context.get_compressor_for_entry(&self.id),
-            ),
+            CachedBatch::DiskLiquid(data_type) => {
+                let select_any = selection.count_set_bits() > 0;
+                if !select_any {
+                    let empty_array = arrow::array::new_empty_array(data_type);
+                    return SansIo::Ready(Ok(empty_array));
+                }
+                GetWithSelectionState::pending_liquid(
+                    self.io_context.entry_liquid_path(&self.id),
+                    selection,
+                    self.io_context.get_compressor_for_entry(&self.id),
+                )
+            }
             CachedBatch::MemoryHybridLiquid(array) => {
+                let select_any = selection.count_set_bits() > 0;
+                if !select_any {
+                    let arrow_type = array.original_arrow_data_type();
+                    let empty_array = arrow::array::new_empty_array(&arrow_type);
+                    return SansIo::Ready(Ok(empty_array));
+                }
                 let filtered = array.filter_to_arrow(selection);
                 match filtered {
                     Ok(array) => SansIo::Ready(Ok(array)),
@@ -87,7 +100,7 @@ impl<'a> CachedData<'a> {
                     }
                 }
             }
-            CachedBatch::DiskArrow => GetWithSelectionState::pending_arrow(
+            CachedBatch::DiskArrow(_) => GetWithSelectionState::pending_arrow(
                 self.io_context.entry_arrow_path(&self.id),
                 selection,
             ),
@@ -103,7 +116,7 @@ impl<'a> CachedData<'a> {
         match &self.data {
             CachedBatch::MemoryArrow(array) => SansIo::Ready(array.clone()),
             CachedBatch::MemoryLiquid(array) => SansIo::Ready(array.to_arrow_array()),
-            CachedBatch::DiskLiquid => {
+            CachedBatch::DiskLiquid(_) => {
                 let path = self.io_context.entry_liquid_path(&self.id);
                 let compressor_states = self.io_context.get_compressor_for_entry(&self.id);
                 GetArrowArrayState::pending_liquid(path, compressor_states)
@@ -119,7 +132,7 @@ impl<'a> CachedData<'a> {
                     }
                 }
             }
-            CachedBatch::DiskArrow => {
+            CachedBatch::DiskArrow(_) => {
                 let path = self.io_context.entry_arrow_path(&self.id);
                 GetArrowArrayState::pending_arrow(path)
             }
@@ -138,7 +151,7 @@ impl<'a> CachedData<'a> {
     pub fn try_read_liquid(&self) -> SansIo<Option<LiquidArrayRef>, GetLiquidArrayState> {
         match &self.data {
             CachedBatch::MemoryLiquid(array) => SansIo::Ready(Some(array.clone())),
-            CachedBatch::DiskLiquid => GetLiquidArrayState::pending_liquid(
+            CachedBatch::DiskLiquid(_) => GetLiquidArrayState::pending_liquid(
                 self.io_context.entry_liquid_path(&self.id),
                 self.io_context.get_compressor_for_entry(&self.id),
             ),
@@ -148,7 +161,7 @@ impl<'a> CachedData<'a> {
                 let io_request = IoRequest::from_path_and_range(path, io_request);
                 GetLiquidArrayState::pending_hybrid_liquid(io_request, array.clone())
             }
-            CachedBatch::DiskArrow | CachedBatch::MemoryArrow(_) => SansIo::Ready(None),
+            CachedBatch::DiskArrow(_) | CachedBatch::MemoryArrow(_) => SansIo::Ready(None),
         }
     }
 
@@ -174,7 +187,7 @@ impl<'a> CachedData<'a> {
                 let selected = arrow::compute::filter(array, &selection_array).unwrap();
                 SansIo::Ready(GetWithPredicateResult::Filtered(selected))
             }
-            CachedBatch::DiskArrow => GetWithPredicateState::pending_arrow(
+            CachedBatch::DiskArrow(_) => GetWithPredicateState::pending_arrow(
                 self.io_context.entry_arrow_path(&self.id),
                 selection,
                 predicate,
@@ -189,7 +202,7 @@ impl<'a> CachedData<'a> {
                 };
                 SansIo::Ready(result)
             }
-            CachedBatch::DiskLiquid => {
+            CachedBatch::DiskLiquid(_) => {
                 let compressor_states = self.io_context.get_compressor_for_entry(&self.id);
                 GetWithPredicateState::pending_liquid(
                     self.io_context.entry_liquid_path(&self.id),
@@ -243,9 +256,9 @@ pub enum CachedBatch {
     /// Cached batch in memory as hybrid liquid array.
     MemoryHybridLiquid(LiquidHybridArrayRef),
     /// Cached batch on disk as liquid array.
-    DiskLiquid,
+    DiskLiquid(DataType),
     /// Cached batch on disk as Arrow array.
-    DiskArrow,
+    DiskArrow(DataType),
 }
 
 impl CachedBatch {
@@ -255,8 +268,8 @@ impl CachedBatch {
             Self::MemoryArrow(array) => array.get_array_memory_size(),
             Self::MemoryLiquid(array) => array.get_array_memory_size(),
             Self::MemoryHybridLiquid(array) => array.get_array_memory_size(),
-            Self::DiskLiquid => 0,
-            Self::DiskArrow => 0,
+            Self::DiskLiquid(_) => 0,
+            Self::DiskArrow(_) => 0,
         }
     }
 
@@ -266,8 +279,8 @@ impl CachedBatch {
             Self::MemoryArrow(array) => Arc::strong_count(array),
             Self::MemoryLiquid(array) => Arc::strong_count(array),
             Self::MemoryHybridLiquid(array) => Arc::strong_count(array),
-            Self::DiskLiquid => 0,
-            Self::DiskArrow => 0,
+            Self::DiskLiquid(_) => 0,
+            Self::DiskArrow(_) => 0,
         }
     }
 }
@@ -278,8 +291,8 @@ impl Display for CachedBatch {
             Self::MemoryArrow(_) => write!(f, "MemoryArrow"),
             Self::MemoryLiquid(_) => write!(f, "MemoryLiquid"),
             Self::MemoryHybridLiquid(_) => write!(f, "MemoryHybridLiquid"),
-            Self::DiskLiquid => write!(f, "DiskLiquid"),
-            Self::DiskArrow => write!(f, "DiskArrow"),
+            Self::DiskLiquid(_) => write!(f, "DiskLiquid"),
+            Self::DiskArrow(_) => write!(f, "DiskArrow"),
         }
     }
 }
@@ -305,8 +318,8 @@ impl From<&CachedBatch> for CachedBatchType {
             CachedBatch::MemoryArrow(_) => Self::MemoryArrow,
             CachedBatch::MemoryLiquid(_) => Self::MemoryLiquid,
             CachedBatch::MemoryHybridLiquid(_) => Self::MemoryHybridLiquid,
-            CachedBatch::DiskLiquid => Self::DiskLiquid,
-            CachedBatch::DiskArrow => Self::DiskArrow,
+            CachedBatch::DiskLiquid(_) => Self::DiskLiquid,
+            CachedBatch::DiskArrow(_) => Self::DiskArrow,
         }
     }
 }
@@ -332,6 +345,65 @@ mod tests {
     use datafusion::scalar::ScalarValue;
     use rand::rngs::StdRng;
     use rand::{Rng, SeedableRng};
+
+    #[derive(Debug)]
+    struct PanicIo;
+
+    impl IoContext for PanicIo {
+        fn base_dir(&self) -> &Path {
+            panic!("IoContext.base_dir should not be called for empty selection");
+        }
+
+        fn get_compressor_for_entry(&self, _entry_id: &EntryID) -> Arc<LiquidCompressorStates> {
+            panic!("IoContext.get_compressor_for_entry should not be called for empty selection");
+        }
+
+        fn entry_arrow_path(&self, _entry_id: &EntryID) -> PathBuf {
+            panic!("IoContext.entry_arrow_path should not be called for empty selection");
+        }
+
+        fn entry_liquid_path(&self, _entry_id: &EntryID) -> PathBuf {
+            panic!("IoContext.entry_liquid_path should not be called for empty selection");
+        }
+    }
+
+    #[test]
+    fn test_get_with_selection_disk_liquid_empty_selection_no_io() {
+        let id = EntryID::from(100usize);
+        let io = PanicIo;
+        let cached = CachedData::new(CachedBatch::DiskLiquid(DataType::Utf8), id, &io);
+
+        // All-false selection mask
+        let selection = BooleanBuffer::new_unset(16);
+
+        let SansIo::Ready(Ok(out)) = cached.get_with_selection(&selection) else {
+            panic!("expected immediate Ready for empty selection");
+        };
+        assert_eq!(out.len(), 0);
+        assert_eq!(out.data_type(), &DataType::Utf8);
+    }
+
+    #[test]
+    fn test_get_with_selection_memory_hybrid_liquid_empty_selection_no_io() {
+        // Build a small Liquid string array that can be squeezed into a Hybrid array
+        let input = StringArray::from(vec!["a", "b", "c", "d"]);
+        let (_compressor, liquid) = LiquidByteArray::train_from_arrow(&input);
+        let liquid_ref: LiquidArrayRef = Arc::new(liquid);
+        let hybrid = liquid_ref.squeeze().expect("squeeze should succeed").0;
+
+        let id = EntryID::from(101usize);
+        let io = PanicIo;
+        let cached = CachedData::new(CachedBatch::MemoryHybridLiquid(hybrid), id, &io);
+
+        // All-false selection mask
+        let selection = BooleanBuffer::new_unset(input.len());
+
+        let SansIo::Ready(Ok(out)) = cached.get_with_selection(&selection) else {
+            panic!("expected immediate Ready for empty selection");
+        };
+        assert_eq!(out.len(), 0);
+        assert_eq!(out.data_type(), &DataType::Utf8);
+    }
 
     #[derive(Debug)]
     struct MockIoWorker {
@@ -438,7 +510,7 @@ mod tests {
         let id = EntryID::from(2usize);
         let (_tmp, io) = io_worker(Some(compressor));
         let in_memory = CachedData::new(CachedBatch::MemoryLiquid(liquid_ref.clone()), id, &io);
-        let on_disk = CachedData::new(CachedBatch::DiskLiquid, id, &io);
+        let on_disk = CachedData::new(CachedBatch::DiskLiquid(DataType::Utf8), id, &io);
         io.blocking_evict_liquid_to_disk(&id, &liquid_ref).unwrap();
         let arrow_input: ArrayRef = Arc::new(input);
 
@@ -463,7 +535,7 @@ mod tests {
         }
 
         // Try if non-liquid batch can be read as liquid
-        let on_disk_non_liquid = CachedData::new(CachedBatch::DiskArrow, id, &io);
+        let on_disk_non_liquid = CachedData::new(CachedBatch::DiskArrow(DataType::Utf8), id, &io);
         let SansIo::Ready(None) = on_disk_non_liquid.try_read_liquid() else {
             panic!("should be none");
         };
@@ -502,7 +574,7 @@ mod tests {
 
         let id = EntryID::from(3usize);
         let (_tmp, io) = io_worker(None);
-        let cached = CachedData::new(CachedBatch::DiskArrow, id, &io);
+        let cached = CachedData::new(CachedBatch::DiskArrow(DataType::Utf8), id, &io);
         io.blocking_evict_arrow_to_disk(&id, &array).unwrap();
 
         let test_get = |cached: &CachedData| {
@@ -523,7 +595,7 @@ mod tests {
 
         let liquid_array =
             transcode_liquid_inner(&array, &LiquidCompressorStates::default()).unwrap();
-        let cached = CachedData::new(CachedBatch::DiskLiquid, id, &io);
+        let cached = CachedData::new(CachedBatch::DiskLiquid(DataType::Utf8), id, &io);
         io.blocking_evict_liquid_to_disk(&id, &liquid_array)
             .unwrap();
         test_get(&cached);
@@ -572,9 +644,9 @@ mod tests {
         let (_tmp, io) = io_worker(Some(compressor));
         let arrow_array: ArrayRef = Arc::new(string_array.clone());
         let memory_liquid = CachedData::new(CachedBatch::MemoryLiquid(liquid_ref.clone()), id, &io);
-        let disk_liquid = CachedData::new(CachedBatch::DiskLiquid, id, &io);
+        let disk_liquid = CachedData::new(CachedBatch::DiskLiquid(DataType::Utf8), id, &io);
         let memory_arrow = CachedData::new(CachedBatch::MemoryArrow(arrow_array.clone()), id, &io);
-        let disk_arrow = CachedData::new(CachedBatch::DiskArrow, id, &io);
+        let disk_arrow = CachedData::new(CachedBatch::DiskArrow(DataType::Utf8), id, &io);
         io.blocking_evict_liquid_to_disk(&id, &liquid_ref).unwrap();
         io.blocking_evict_arrow_to_disk(&id, &arrow_array).unwrap();
 

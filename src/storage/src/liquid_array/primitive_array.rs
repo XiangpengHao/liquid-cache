@@ -11,6 +11,7 @@ use arrow::array::{
     },
 };
 use arrow::buffer::{BooleanBuffer, ScalarBuffer};
+use arrow_schema::DataType;
 use datafusion::physical_plan::PhysicalExpr;
 use fastlanes::BitPacking;
 use num_traits::{AsPrimitive, FromPrimitive};
@@ -218,6 +219,10 @@ where
 
     fn len(&self) -> usize {
         self.len()
+    }
+
+    fn original_arrow_data_type(&self) -> DataType {
+        T::DATA_TYPE.clone()
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -701,6 +706,10 @@ where
         LiquidDataType::Integer
     }
 
+    fn original_arrow_data_type(&self) -> DataType {
+        T::DATA_TYPE.clone()
+    }
+
     fn to_bytes(&self) -> Result<Vec<u8>, IoRange> {
         Err(IoRange {
             range: self.disk_range.clone(),
@@ -1011,6 +1020,10 @@ where
         LiquidDataType::Integer
     }
 
+    fn original_arrow_data_type(&self) -> DataType {
+        T::DATA_TYPE.clone()
+    }
+
     fn to_bytes(&self) -> Result<Vec<u8>, IoRange> {
         Err(IoRange {
             range: self.disk_range.clone(),
@@ -1260,6 +1273,13 @@ mod tests {
         let expected = PrimitiveArray::<Int32Type>::from(vec![Some(1), Some(3), Some(5)]);
 
         assert_eq!(result_array.as_ref(), &expected);
+    }
+
+    #[test]
+    fn test_original_arrow_data_type_returns_int32() {
+        let array = PrimitiveArray::<Int32Type>::from(vec![Some(1), Some(2)]);
+        let liquid = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(array);
+        assert_eq!(liquid.original_arrow_data_type(), DataType::Int32);
     }
 
     #[test]

@@ -481,6 +481,10 @@ impl LiquidArray for LiquidByteViewArray<MemoryBuffer> {
         self.to_bytes_inner().expect("InMemoryFsstBuffer")
     }
 
+    fn original_arrow_data_type(&self) -> DataType {
+        self.original_arrow_type.to_arrow_type()
+    }
+
     fn data_type(&self) -> LiquidDataType {
         LiquidDataType::ByteViewArray
     }
@@ -564,6 +568,10 @@ impl LiquidHybridArray for LiquidByteViewArray<DiskBuffer> {
     /// Get the logical data type of the Liquid array.
     fn data_type(&self) -> LiquidDataType {
         LiquidDataType::ByteViewArray
+    }
+
+    fn original_arrow_data_type(&self) -> DataType {
+        self.original_arrow_type.to_arrow_type()
     }
 
     /// Serialize the Liquid array to a byte array.
@@ -1650,6 +1658,27 @@ mod tests {
         assert_eq!(keys.value(0), 42);
         assert_eq!(keys.value(1), 100);
         assert_eq!(keys.value(2), 255);
+    }
+
+    #[test]
+    fn test_original_arrow_data_type_returns_utf8() {
+        let input = StringArray::from(vec!["foo", "bar"]);
+        let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
+        let array = LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
+        assert_eq!(array.original_arrow_data_type(), DataType::Utf8);
+    }
+
+    #[test]
+    fn test_hybrid_original_arrow_data_type_returns_utf8() {
+        let input = StringArray::from(vec!["foo", "bar"]);
+        let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
+        let in_memory = LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
+        let (hybrid, _) = in_memory.squeeze().expect("squeeze should succeed");
+        let disk_view = hybrid
+            .as_any()
+            .downcast_ref::<LiquidByteViewArray<DiskBuffer>>()
+            .expect("should downcast to disk array");
+        assert_eq!(disk_view.original_arrow_data_type(), DataType::Utf8);
     }
 
     #[test]

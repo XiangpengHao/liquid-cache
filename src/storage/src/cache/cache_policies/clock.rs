@@ -252,7 +252,7 @@ mod tests {
         store.insert(entry_id4, create_test_arrow_array(100));
 
         if let Some(data) = store.get(&entry_id1) {
-            assert!(matches!(data.raw_data(), CachedBatch::DiskLiquid));
+            assert!(matches!(data.raw_data(), CachedBatch::DiskLiquid(_)));
         }
         assert!(store.get(&entry_id2).is_some());
         assert!(store.get(&entry_id3).is_some());

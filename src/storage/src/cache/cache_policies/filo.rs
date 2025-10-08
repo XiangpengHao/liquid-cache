@@ -225,7 +225,7 @@ mod tests {
         assert!(store.get(&entry_id4).is_some());
 
         if let Some(data) = store.get(&entry_id3) {
-            assert!(matches!(data.raw_data(), CachedBatch::DiskLiquid));
+            assert!(matches!(data.raw_data(), CachedBatch::DiskLiquid(_)));
         }
     }
 

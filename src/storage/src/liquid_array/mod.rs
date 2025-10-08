@@ -19,6 +19,7 @@ use arrow::{
     array::{ArrayRef, BooleanArray},
     buffer::BooleanBuffer,
 };
+use arrow_schema::DataType;
 pub use byte_array::{LiquidByteArray, get_string_needle};
 pub use byte_view_array::LiquidByteViewArray;
 use datafusion::logical_expr::Operator as DFOperator;
@@ -168,6 +169,9 @@ pub trait LiquidArray: std::fmt::Debug + Send + Sync {
     /// Get the logical data type of the Liquid array.
     fn data_type(&self) -> LiquidDataType;
 
+    /// Get the original arrow data type of the Liquid array.
+    fn original_arrow_data_type(&self) -> DataType;
+
     /// Serialize the Liquid array to a byte array.
     fn to_bytes(&self) -> Vec<u8>;
 
@@ -277,6 +281,9 @@ pub trait LiquidHybridArray: std::fmt::Debug + Send + Sync {
 
     /// Get the logical data type of the Liquid array.
     fn data_type(&self) -> LiquidDataType;
+
+    /// Get the original arrow data type of the Liquid hybrid array.
+    fn original_arrow_data_type(&self) -> DataType;
 
     /// Serialize the Liquid array to a byte array.
     fn to_bytes(&self) -> Result<Vec<u8>, IoRange>;

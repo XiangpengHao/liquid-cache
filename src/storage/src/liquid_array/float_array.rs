@@ -20,6 +20,7 @@ use arrow::{
         ArrowNativeType, Float32Type, Float64Type, Int32Type, Int64Type, UInt32Type, UInt64Type,
     },
 };
+use arrow_schema::DataType;
 use datafusion::{
     physical_plan::{
         PhysicalExpr,
@@ -308,6 +309,10 @@ where
             ScalarBuffer::<<T as ArrowPrimitiveType>::Native>::from(decoded_values),
             nulls.cloned(),
         ))
+    }
+
+    fn original_arrow_data_type(&self) -> DataType {
+        T::DATA_TYPE.clone()
     }
 
     fn data_type(&self) -> LiquidDataType {
@@ -964,6 +969,10 @@ where
         LiquidDataType::Float
     }
 
+    fn original_arrow_data_type(&self) -> DataType {
+        T::DATA_TYPE.clone()
+    }
+
     fn to_bytes(&self) -> Result<Vec<u8>, super::IoRange> {
         Err(IoRange {
             range: self.disk_range.clone(),
@@ -1094,6 +1103,13 @@ mod tests {
         let expected = PrimitiveArray::<Float32Type>::from(vec![Some(1.0), Some(3.2), Some(5.5)]);
 
         assert_eq!(result_array.as_ref(), &expected);
+    }
+
+    #[test]
+    fn test_original_arrow_data_type_returns_float32() {
+        let array = PrimitiveArray::<Float32Type>::from(vec![Some(1.0), Some(2.5)]);
+        let liquid = LiquidFloatArray::<Float32Type>::from_arrow_array(array);
+        assert_eq!(liquid.original_arrow_data_type(), DataType::Float32);
     }
 
     #[test]
