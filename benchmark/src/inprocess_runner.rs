@@ -8,7 +8,7 @@ use datafusion::prelude::{SessionConfig, SessionContext};
 use liquid_cache_local::LiquidCacheLocalBuilder;
 use liquid_cache_parquet::{LiquidCacheRef, extract_execution_metrics};
 use liquid_cache_storage::cache::squeeze_policies::{Evict, TranscodeEvict, TranscodeSqueezeEvict};
-use liquid_cache_storage::cache_policies::FifoPolicy;
+use liquid_cache_storage::cache_policies::LiquidPolicy;
 use log::info;
 use serde::Serialize;
 use std::{
@@ -169,7 +169,7 @@ impl InProcessBenchmarkRunner {
                 let v = LiquidCacheLocalBuilder::new()
                     .with_max_cache_bytes(cache_size)
                     .with_cache_dir(cache_dir)
-                    .with_cache_policy(Box::new(FifoPolicy::new()))
+                    .with_cache_policy(Box::new(LiquidPolicy::new()))
                     .with_squeeze_policy(Box::new(Evict))
                     .build(session_config)?;
                 (v.0, Some(v.1))
@@ -178,7 +178,7 @@ impl InProcessBenchmarkRunner {
                 let v = LiquidCacheLocalBuilder::new()
                     .with_max_cache_bytes(cache_size)
                     .with_cache_dir(cache_dir)
-                    .with_cache_policy(Box::new(FifoPolicy::new()))
+                    .with_cache_policy(Box::new(LiquidPolicy::new()))
                     .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
                     .build(session_config)?;
                 (v.0, Some(v.1))
@@ -187,7 +187,7 @@ impl InProcessBenchmarkRunner {
                 let v = LiquidCacheLocalBuilder::new()
                     .with_max_cache_bytes(cache_size)
                     .with_cache_dir(cache_dir)
-                    .with_cache_policy(Box::new(FifoPolicy::new()))
+                    .with_cache_policy(Box::new(LiquidPolicy::new()))
                     .with_squeeze_policy(Box::new(TranscodeEvict))
                     .build(session_config)?;
                 (v.0, Some(v.1))

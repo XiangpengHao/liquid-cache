@@ -334,4 +334,29 @@ mod tests {
             assert_eq!(state.total_size, 100);
         }
     }
+
+    #[test]
+    fn test_clock_policy_reinsert_sets_reference_bit() {
+        let policy = ClockPolicy::new();
+        let entry_id = entry(42);
+
+        policy.notify_insert(&entry_id, CachedBatchType::MemoryArrow);
+
+        {
+            let state = policy.state.lock().unwrap();
+            let mut node_ptr = state.map.get(&entry_id).copied().unwrap();
+            unsafe {
+                node_ptr.as_mut().data.referenced = false;
+            }
+        }
+
+        policy.notify_insert(&entry_id, CachedBatchType::MemoryArrow);
+
+        let state = policy.state.lock().unwrap();
+        let node_ptr = state.map.get(&entry_id).copied().unwrap();
+        unsafe {
+            assert!(node_ptr.as_ref().data.referenced);
+        }
+        assert_eq!(state.map.len(), 1);
+    }
 }
