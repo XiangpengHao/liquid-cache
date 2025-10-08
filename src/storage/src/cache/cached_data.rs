@@ -331,7 +331,8 @@ mod tests {
 
     use crate::cache::utils::arrow_to_bytes;
     use crate::cache::{IoContext, LiquidCompressorStates, transcode_liquid_inner};
-    use crate::liquid_array::LiquidByteArray;
+    use crate::liquid_array::byte_view_array::MemoryBuffer;
+    use crate::liquid_array::{LiquidByteArray, LiquidByteViewArray};
 
     use super::*;
     use crate::cache::io_state::{IoRequest, IoStateMachine, TryGet};
@@ -387,7 +388,7 @@ mod tests {
     fn test_get_with_selection_memory_hybrid_liquid_empty_selection_no_io() {
         // Build a small Liquid string array that can be squeezed into a Hybrid array
         let input = StringArray::from(vec!["a", "b", "c", "d"]);
-        let (_compressor, liquid) = LiquidByteArray::train_from_arrow(&input);
+        let (_compressor, liquid) = LiquidByteViewArray::<MemoryBuffer>::train_from_arrow(&input);
         let liquid_ref: LiquidArrayRef = Arc::new(liquid);
         let hybrid = liquid_ref.squeeze().expect("squeeze should succeed").0;
 

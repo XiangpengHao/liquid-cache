@@ -520,11 +520,11 @@ impl CacheStorage {
 
             if let Some(bytes_to_write) = bytes_to_write {
                 match new_batch {
-                    CachedBatch::DiskArrow => {
+                    CachedBatch::DiskArrow(_) => {
                         let path = self.io_context.entry_arrow_path(&to_squeeze);
                         self.write_to_disk_blocking(&path, &bytes_to_write);
                     }
-                    CachedBatch::DiskLiquid | CachedBatch::MemoryHybridLiquid(_) => {
+                    CachedBatch::DiskLiquid(_) | CachedBatch::MemoryHybridLiquid(_) => {
                         let path = self.io_context.entry_liquid_path(&to_squeeze);
                         self.write_to_disk_blocking(&path, &bytes_to_write);
                     }
