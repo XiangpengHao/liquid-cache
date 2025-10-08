@@ -164,6 +164,7 @@ impl InProcessBenchmarkRunner {
         self
     }
 
+    #[fastrace::trace]
     async fn setup_context(
         &self,
         manifest: &BenchmarkManifest,
@@ -299,6 +300,7 @@ impl InProcessBenchmarkRunner {
         Ok(())
     }
 
+    #[fastrace::trace]
     async fn run_single_iteration(
         &self,
         ctx: &Arc<SessionContext>,

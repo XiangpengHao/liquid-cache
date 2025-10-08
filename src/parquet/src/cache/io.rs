@@ -123,6 +123,7 @@ impl From<ParquetArrayID> for ColumnAccessPath {
     }
 }
 
+#[fastrace::trace]
 pub(crate) fn blocking_reading_io(request: &IoRequest) -> Result<Bytes, std::io::Error> {
     let path = &request.path();
     let mut file = File::open(path)?;

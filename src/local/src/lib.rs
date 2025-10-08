@@ -52,7 +52,6 @@ pub use liquid_cache_storage as storage;
 ///     Ok(())
 /// }
 /// ```
-#[derive(Debug)]
 pub struct LiquidCacheLocalBuilder {
     /// Size of batches for caching
     batch_size: usize,
@@ -64,6 +63,8 @@ pub struct LiquidCacheLocalBuilder {
     cache_policy: Box<dyn CachePolicy>,
     /// Squeeze policy
     squeeze_policy: Box<dyn SqueezePolicy>,
+
+    span: fastrace::Span,
 }
 
 impl Default for LiquidCacheLocalBuilder {
@@ -74,6 +75,7 @@ impl Default for LiquidCacheLocalBuilder {
             cache_dir: std::env::temp_dir().join("liquid_cache"),
             cache_policy: Box::new(LiquidPolicy::new()),
             squeeze_policy: Box::new(TranscodeSqueezeEvict),
+            span: fastrace::Span::enter_with_local_parent("liquid_cache_local_builder"),
         }
     }
 }
@@ -111,6 +113,12 @@ impl LiquidCacheLocalBuilder {
     /// Set cache strategy
     pub fn with_cache_policy(mut self, cache_policy: Box<dyn CachePolicy>) -> Self {
         self.cache_policy = cache_policy;
+        self
+    }
+
+    /// Set fastrace span
+    pub fn with_span(mut self, span: fastrace::Span) -> Self {
+        self.span = span;
         self
     }
 

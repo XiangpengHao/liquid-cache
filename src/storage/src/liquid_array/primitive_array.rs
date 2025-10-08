@@ -34,9 +34,9 @@ use datafusion::physical_plan::expressions::{BinaryExpr, Literal};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum IntegerSqueezePolicy {
     /// Clamp values above the squeezed range to a sentinel (recoverable for non-clamped rows).
-    #[default]
     Clamp = 0,
     /// Quantize values into buckets (good for coarse filtering; requires disk to recover values).
+    #[default]
     Quantize = 1,
 }
 

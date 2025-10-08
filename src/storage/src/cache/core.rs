@@ -489,6 +489,7 @@ impl CacheStorage {
         Ok(())
     }
 
+    #[fastrace::trace]
     fn squeeze_victims(&self, victims: Vec<EntryID>) {
         #[cfg(target_os = "linux")]
         {

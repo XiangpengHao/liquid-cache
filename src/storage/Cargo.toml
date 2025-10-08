@@ -27,7 +27,7 @@ tempfile = { workspace = true }
 congee = { workspace = true }
 log = { workspace = true }
 parquet = { workspace = true }
-
+fastrace = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 io-uring = "0.7.10"

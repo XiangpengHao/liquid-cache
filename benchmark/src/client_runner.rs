@@ -59,7 +59,7 @@ impl BenchmarkRunner {
 
         setup_observability(
             benchmark.benchmark_name(),
-            common.openobserve_auth.as_deref(),
+            common.jaeger_endpoint.as_deref(),
         );
 
         let ctx = benchmark.setup_context().await?;

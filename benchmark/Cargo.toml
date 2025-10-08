@@ -40,6 +40,8 @@ uuid = { version = "1.18.1", features = ["v4"] }
 tempfile = { workspace = true }
 pprof = { version = "0.15.0", features = ["flamegraph"] }
 anyhow = "1.0"
+fastrace-futures = "0.7"
+futures = { workspace = true }
 
 [[bin]]
 name = "clickbench_client"

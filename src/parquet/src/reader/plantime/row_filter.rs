@@ -153,6 +153,12 @@ pub struct LiquidPredicate {
     schema_mapper: Arc<dyn SchemaMapper>,
 }
 
+impl std::fmt::Display for LiquidPredicate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.physical_expr.as_ref().to_string())
+    }
+}
+
 impl LiquidPredicate {
     /// Create a new `LiquidPredicate` from a `FilterCandidate`
     pub fn try_new_with_metrics(

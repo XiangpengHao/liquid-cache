@@ -87,9 +87,9 @@ pub struct ClientBenchmarkArgs {
     #[arg(long)]
     pub query: Option<u32>,
 
-    /// Openobserve auth token
-    #[arg(long)]
-    pub openobserve_auth: Option<String>,
+    /// Jaeger OTLP gRPC endpoint (for example: http://localhost:4317)
+    #[arg(long = "jaeger-endpoint")]
+    pub jaeger_endpoint: Option<String>,
 
     /// Path to save the cache trace
     /// It tells the **server** to collect the cache trace.
@@ -309,7 +309,6 @@ impl FromStr for BenchmarkMode {
     }
 }
 
-#[fastrace::trace]
 pub async fn run_query(
     ctx: &Arc<SessionContext>,
     query: &str,
@@ -333,9 +332,13 @@ pub async fn run_query(
         .with_extension(Arc::new(Span::enter_with_local_parent(
             "poll_physical_plan",
         )));
+    let traced_plan: Arc<dyn ExecutionPlan> = Arc::new(TracedExecutionPlan::new(
+        physical_plan.clone(),
+        Span::enter_with_local_parent("traced_execution_plan"),
+    ));
     let ctx = ctx.with_session_config(cfg);
-    let results = collect(physical_plan.clone(), Arc::new(ctx)).await.unwrap();
-    let plan_uuids = utils::get_plan_uuids(&physical_plan);
+    let results = collect(traced_plan.clone(), Arc::new(ctx)).await.unwrap();
+    let plan_uuids = utils::get_plan_uuids(&traced_plan);
     (results, physical_plan, plan_uuids)
 }
 

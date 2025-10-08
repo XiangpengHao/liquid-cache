@@ -156,7 +156,7 @@ impl AsyncFileReader for ParquetMetadataCacheReader {
 }
 
 /// The data source for LiquidCache
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct LiquidParquetSource {
     metrics: ExecutionPlanMetricsSet,
     predicate: Option<Arc<dyn PhysicalExpr>>,
@@ -173,30 +173,23 @@ impl LiquidParquetSource {
         self.table_parquet_options.global.reorder_filters
     }
 
-    fn with_metrics(mut self, metrics: ExecutionPlanMetricsSet) -> Self {
-        self.metrics = metrics;
-        self
-    }
-
     /// Set predicate information, also sets pruning_predicate and page_pruning_predicate attributes
     pub fn with_predicate(
-        &self,
+        mut self,
         file_schema: Arc<Schema>,
         predicate: Arc<dyn PhysicalExpr>,
     ) -> Self {
-        let mut conf = self.clone();
-
         let metrics = ExecutionPlanMetricsSet::new();
         let predicate_creation_errors =
             MetricBuilder::new(&metrics).global_counter("num_predicate_creation_errors");
 
-        conf = conf.with_metrics(metrics);
-        conf.predicate = Some(Arc::clone(&predicate));
+        self.metrics = metrics;
+        self.predicate = Some(Arc::clone(&predicate));
 
         match PruningPredicate::try_new(Arc::clone(&predicate), Arc::clone(&file_schema)) {
             Ok(pruning_predicate) => {
                 if !pruning_predicate.always_true() {
-                    conf.pruning_predicate = Some(Arc::new(pruning_predicate));
+                    self.pruning_predicate = Some(Arc::new(pruning_predicate));
                 }
             }
             Err(e) => {
@@ -209,9 +202,9 @@ impl LiquidParquetSource {
             &predicate,
             Arc::clone(&file_schema),
         ));
-        conf.page_pruning_predicate = Some(page_pruning_predicate);
+        self.page_pruning_predicate = Some(page_pruning_predicate);
 
-        conf
+        self
     }
 
     /// Create a new LiquidParquetSource from a ParquetSource
