@@ -18,6 +18,51 @@ use std::{
     time::Instant,
 };
 
+struct DiskIoGuard {
+    system: sysinfo::System,
+    pid: sysinfo::Pid,
+    start_read_total: u64,
+    start_written_total: u64,
+}
+
+impl DiskIoGuard {
+    fn new() -> Self {
+        let mut system = sysinfo::System::new();
+        let pid = sysinfo::get_current_pid().unwrap();
+        system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::Some(&[pid]),
+            true,
+            sysinfo::ProcessRefreshKind::nothing().with_disk_usage(),
+        );
+        let p = system.process(pid).unwrap();
+        let du = p.disk_usage();
+        Self {
+            system,
+            pid,
+            start_read_total: du.total_read_bytes,
+            start_written_total: du.total_written_bytes,
+        }
+    }
+
+    fn stop(mut self) -> (u64, u64) {
+        self.system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::Some(&[self.pid]),
+            true,
+            sysinfo::ProcessRefreshKind::nothing().with_disk_usage(),
+        );
+        if let Some(p) = self.system.process(self.pid) {
+            let du = p.disk_usage();
+            (
+                du.total_read_bytes.saturating_sub(self.start_read_total),
+                du.total_written_bytes
+                    .saturating_sub(self.start_written_total),
+            )
+        } else {
+            (0, 0)
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Copy, PartialEq, Eq, Serialize)]
 pub enum InProcessBenchmarkMode {
     Parquet,
@@ -281,8 +326,7 @@ impl InProcessBenchmarkRunner {
             None
         };
 
-        let s = sysinfo::System::new_all();
-        let process = s.process(sysinfo::get_current_pid().unwrap()).unwrap();
+        let io_guard = DiskIoGuard::new();
 
         let now = Instant::now();
         let starting_timestamp = bench_start_time.elapsed();
@@ -298,9 +342,7 @@ impl InProcessBenchmarkRunner {
         };
         let elapsed = now.elapsed();
 
-        let disk_usage = process.disk_usage();
-        let disk_read: u64 = disk_usage.read_bytes;
-        let disk_written: u64 = disk_usage.written_bytes;
+        let (disk_read, disk_written) = io_guard.stop();
 
         let cache_stats = cache.as_ref().map(|cache| cache.storage().stats());
 

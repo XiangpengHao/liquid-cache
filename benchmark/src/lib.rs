@@ -23,7 +23,6 @@ pub mod client_runner;
 pub mod inprocess_runner;
 mod manifest;
 mod observability;
-pub mod tpch;
 pub mod utils;
 
 pub use client_runner::*;
@@ -421,8 +420,12 @@ impl Display for IterationResult {
         write_kv_row(
             f,
             INNER,
-            "Cache Memory:",
-            &format_bytes(self.cache_memory_usage),
+            "Cache Memory (total/liquid):",
+            &format!(
+                "{} / {}",
+                format_bytes(self.cache_memory_usage),
+                format_bytes(self.liquid_cache_usage)
+            ),
         )?;
         write_kv_row(
             f,
@@ -437,15 +440,15 @@ impl Display for IterationResult {
 
         if let Some(cache_stats) = &self.cache_stats {
             write_border_sep(f, INNER)?;
+            let total_value = format!("{}", cache_stats.total_entries);
             let stats_value = format!(
-                "{} (Arrow:{} Liquid:{} Hybrid:{} Disk:{})",
-                cache_stats.total_entries,
+                "(Arrow:{} Liquid:{} Hybrid:{} Disk:{})",
                 cache_stats.memory_arrow_entries,
                 cache_stats.memory_liquid_entries,
                 cache_stats.memory_hybrid_liquid_entries,
                 cache_stats.disk_liquid_entries
             );
-            write_kv_row(f, INNER, "Cache Stats:", "")?;
+            write_kv_row(f, INNER, "Cache Stats:", &total_value)?;
             write_kv_row(f, INNER, "", &stats_value)?;
         }
 
@@ -474,13 +477,13 @@ fn format_bytes(bytes: u64) -> String {
     const GB: u64 = MB * 1024;
 
     if bytes >= GB {
-        format!("{:.2}GB", bytes as f64 / GB as f64)
+        format!("{:.1} GB", bytes as f64 / GB as f64)
     } else if bytes >= MB {
-        format!("{:.2}MB", bytes as f64 / MB as f64)
+        format!("{:.1} MB", bytes as f64 / MB as f64)
     } else if bytes >= KB {
-        format!("{:.2}KB", bytes as f64 / KB as f64)
+        format!("{:.1} KB", bytes as f64 / KB as f64)
     } else {
-        format!("{}B", bytes)
+        format!("{} B", bytes)
     }
 }
 
