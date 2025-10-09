@@ -491,19 +491,13 @@ impl Display for IterationResult {
                 f,
                 INNER,
                 "hybrid_success",
-                &format!(
-                    "{}",
-                    format_number(cache_stats.get_predicate_hybrid_success)
-                ),
+                &format_number(cache_stats.get_predicate_hybrid_success),
             )?;
             write_kv_row(
                 f,
                 INNER,
                 "hybrid_needs_io",
-                &format!(
-                    "{}",
-                    format_number(cache_stats.get_predicate_hybrid_needs_io),
-                ),
+                &format_number(cache_stats.get_predicate_hybrid_needs_io),
             )?;
             write_kv_row(
                 f,
@@ -529,7 +523,7 @@ fn format_number(n: u64) -> String {
     let mut result = String::new();
 
     for (i, ch) in chars.iter().enumerate() {
-        if i > 0 && (chars.len() - i) % 3 == 0 {
+        if i > 0 && (chars.len() - i).is_multiple_of(3) {
             result.push(',');
         }
         result.push(*ch);

@@ -34,9 +34,9 @@ use datafusion::physical_plan::expressions::{BinaryExpr, Literal};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum IntegerSqueezePolicy {
     /// Clamp values above the squeezed range to a sentinel (recoverable for non-clamped rows).
+    #[default]
     Clamp = 0,
     /// Quantize values into buckets (good for coarse filtering; requires disk to recover values).
-    #[default]
     Quantize = 1,
 }
 
@@ -302,7 +302,7 @@ where
         }
 
         // New squeezed bit width is half of the original
-        let new_bw_u8 = std::num::NonZero::new((orig_bw.get() / 4 * 3).max(1)).unwrap();
+        let new_bw_u8 = std::num::NonZero::new((orig_bw.get() / 2).max(1)).unwrap();
 
         // Decode original unsigned offsets
         let unsigned_array = self.bit_packed.to_primitive();
@@ -1435,7 +1435,8 @@ mod tests {
     fn hybrid_predicate_eval_i32_resolvable_and_unresolvable() {
         let mut rng = StdRng::seed_from_u64(0x51_73);
         let arr = make_i32_array_with_range(200, -1_000_000, 1 << 16, 0.2, &mut rng);
-        let liq = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(arr.clone());
+        let liq = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(arr.clone())
+            .with_squeeze_policy(IntegerSqueezePolicy::Clamp);
         let (hybrid, _bytes) = liq.squeeze().expect("squeezable");
 
         let boundary = compute_boundary_i32(&arr).unwrap();

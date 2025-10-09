@@ -84,12 +84,6 @@ impl<'a> CachedData<'a> {
                 )
             }
             CachedBatch::MemoryHybridLiquid(array) => {
-                let select_any = selection.count_set_bits() > 0;
-                if !select_any {
-                    let arrow_type = array.original_arrow_data_type();
-                    let empty_array = arrow::array::new_empty_array(&arrow_type);
-                    return SansIo::Ready(Ok(empty_array));
-                }
                 let filtered = array.filter_to_arrow(selection);
                 match filtered {
                     Ok(array) => SansIo::Ready(Ok(array)),
@@ -210,13 +204,6 @@ impl<'a> CachedData<'a> {
                 SansIo::Ready(result)
             }
             CachedBatch::DiskLiquid(_) => {
-                let select_any = selection.count_set_bits() > 0;
-                if !select_any {
-                    return SansIo::Ready(GetWithPredicateResult::Evaluated(BooleanArray::new(
-                        selection.clone(),
-                        None,
-                    )));
-                }
                 let compressor_states = self.io_context.get_compressor_for_entry(&self.id);
                 GetWithPredicateState::pending_liquid(
                     self.io_context.entry_liquid_path(&self.id),
@@ -226,13 +213,6 @@ impl<'a> CachedData<'a> {
                 )
             }
             CachedBatch::MemoryHybridLiquid(array) => {
-                let select_any = selection.count_set_bits() > 0;
-                if !select_any {
-                    return SansIo::Ready(GetWithPredicateResult::Evaluated(BooleanArray::new(
-                        selection.clone(),
-                        None,
-                    )));
-                }
                 match array.try_eval_predicate(predicate, selection) {
                     Ok(Some(buf)) => {
                         self.stats.incr_get_predicate_hybrid_success();
@@ -766,7 +746,7 @@ mod tests {
                 let SansIo::Pending((mut state, io_request)) =
                     disk_arrow.get_with_predicate(&selection, expr)
                 else {
-                    panic!("should be ready");
+                    panic!("should be pending");
                 };
 
                 state.feed(io.read_entry(&io_request).unwrap());
@@ -781,7 +761,7 @@ mod tests {
                 let SansIo::Pending((mut state, io_request)) =
                     disk_liquid.get_with_predicate(&selection, expr)
                 else {
-                    panic!("should be ready");
+                    panic!("should be pending");
                 };
 
                 state.feed(io.read_entry(&io_request).unwrap());

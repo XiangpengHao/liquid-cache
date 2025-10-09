@@ -3,10 +3,10 @@
 mod budget;
 pub mod cached_data;
 mod core;
-mod stats;
 mod index;
 #[cfg(target_os = "linux")]
 mod io;
+mod stats;
 #[cfg(not(target_os = "linux"))]
 mod io {}
 pub mod cache_policies;

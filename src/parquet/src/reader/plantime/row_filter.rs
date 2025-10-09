@@ -155,7 +155,7 @@ pub struct LiquidPredicate {
 
 impl std::fmt::Display for LiquidPredicate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.physical_expr.as_ref().to_string())
+        write!(f, "{}", self.physical_expr.as_ref())
     }
 }
 
