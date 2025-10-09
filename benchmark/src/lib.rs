@@ -374,6 +374,13 @@ pub struct SerializableCacheStats {
     pub memory_liquid_entries: usize,
     pub memory_hybrid_liquid_entries: usize,
     pub disk_liquid_entries: usize,
+    pub get_arrow_array_calls: u64,
+    pub get_with_selection_calls: u64,
+    pub get_with_predicate_calls: u64,
+    pub get_predicate_hybrid_success: u64,
+    pub get_predicate_hybrid_needs_io: u64,
+    pub get_predicate_hybrid_unsupported: u64,
+    pub try_read_liquid_calls: u64,
 }
 
 impl SerializableCacheStats {
@@ -384,6 +391,13 @@ impl SerializableCacheStats {
             memory_liquid_entries: cache_stats.memory_liquid_entries,
             memory_hybrid_liquid_entries: cache_stats.memory_hybrid_liquid_entries,
             disk_liquid_entries: cache_stats.disk_liquid_entries,
+            get_arrow_array_calls: cache_stats.runtime.get_arrow_array_calls,
+            get_with_selection_calls: cache_stats.runtime.get_with_selection_calls,
+            get_with_predicate_calls: cache_stats.runtime.get_with_predicate_calls,
+            get_predicate_hybrid_success: cache_stats.runtime.get_predicate_hybrid_success,
+            get_predicate_hybrid_needs_io: cache_stats.runtime.get_predicate_hybrid_needs_io,
+            get_predicate_hybrid_unsupported: cache_stats.runtime.get_predicate_hybrid_unsupported,
+            try_read_liquid_calls: cache_stats.runtime.try_read_liquid_calls,
         }
     }
 }
@@ -453,6 +467,56 @@ impl Display for IterationResult {
             );
             write_kv_row(f, INNER, "Cache Stats:", &total_value)?;
             write_kv_row(f, INNER, "", &stats_value)?;
+
+            // Runtime counters
+            write_kv_row(
+                f,
+                INNER,
+                "get_arrow",
+                &format_number(cache_stats.get_arrow_array_calls),
+            )?;
+            write_kv_row(
+                f,
+                INNER,
+                "get_with_selection",
+                &format_number(cache_stats.get_with_selection_calls),
+            )?;
+            write_kv_row(
+                f,
+                INNER,
+                "get_with_predicate",
+                &format_number(cache_stats.get_with_predicate_calls),
+            )?;
+            write_kv_row(
+                f,
+                INNER,
+                "hybrid_success",
+                &format!(
+                    "{}",
+                    format_number(cache_stats.get_predicate_hybrid_success)
+                ),
+            )?;
+            write_kv_row(
+                f,
+                INNER,
+                "hybrid_needs_io",
+                &format!(
+                    "{}",
+                    format_number(cache_stats.get_predicate_hybrid_needs_io),
+                ),
+            )?;
+            write_kv_row(
+                f,
+                INNER,
+                "hybrid_unsupported",
+                &format_number(cache_stats.get_predicate_hybrid_unsupported),
+            )?;
+            write_kv_row(
+                f,
+                INNER,
+                "try_read_liquid",
+                &format_number(cache_stats.try_read_liquid_calls),
+            )?;
         }
 
         write_border_bottom(f, INNER)

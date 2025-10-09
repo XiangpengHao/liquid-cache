@@ -77,7 +77,6 @@ impl LiquidCachedColumn {
     }
 
     /// Evaluates a predicate on a cached column.
-    #[fastrace::trace(properties = { "predicate": "{predicate}" })]
     pub fn eval_predicate_with_filter(
         &self,
         batch_id: BatchID,

@@ -180,7 +180,7 @@ impl InProcessBenchmarkRunner {
             if let Some(partitions) = self.partitions {
                 session_config.options_mut().execution.target_partitions = partitions;
             }
-            session_config.options_mut().execution.batch_size = 8192 * 2;
+            // session_config.options_mut().execution.batch_size = 8192 * 2;
         }
 
         let cache_size = self

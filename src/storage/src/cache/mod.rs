@@ -3,6 +3,7 @@
 mod budget;
 pub mod cached_data;
 mod core;
+mod stats;
 mod index;
 #[cfg(target_os = "linux")]
 mod io;
@@ -16,7 +17,8 @@ mod transcode;
 mod utils;
 
 pub use cache_policies::CachePolicy;
-pub use core::{CacheStats, CacheStorage, CacheStorageBuilder};
+pub use core::{CacheStorage, CacheStorageBuilder};
 pub use core::{DefaultIoContext, IoContext};
+pub use stats::{CacheStats, RuntimeStats, RuntimeStatsSnapshot};
 pub use transcode::transcode_liquid_inner;
 pub use utils::{EntryID, LiquidCompressorStates};

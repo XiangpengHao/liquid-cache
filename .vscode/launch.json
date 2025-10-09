@@ -129,13 +129,13 @@
 				"--manifest",
 				"benchmark/tpch/data/tpch-10.json",
 				"--max-cache-mb",
-				"256",
+				"4",
 				"--bench-mode",
 				"liquid",
 				"--query-index",
 				"5",
 				"--partitions",
-				"1"
+				"8"
 			],
 			"cwd": "${workspaceFolder}"
 		},

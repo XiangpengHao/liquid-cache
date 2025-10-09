@@ -70,7 +70,7 @@ pub struct LiquidCacheLocalBuilder {
 impl Default for LiquidCacheLocalBuilder {
     fn default() -> Self {
         Self {
-            batch_size: 8192 * 2,
+            batch_size: 8192,
             max_cache_bytes: 1024 * 1024 * 1024, // 1GB
             cache_dir: std::env::temp_dir().join("liquid_cache"),
             cache_policy: Box::new(LiquidPolicy::new()),

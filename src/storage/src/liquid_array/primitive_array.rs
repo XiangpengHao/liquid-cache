@@ -302,7 +302,7 @@ where
         }
 
         // New squeezed bit width is half of the original
-        let new_bw_u8 = std::num::NonZero::new((orig_bw.get() / 2).max(1)).unwrap();
+        let new_bw_u8 = std::num::NonZero::new((orig_bw.get() / 4 * 3).max(1)).unwrap();
 
         // Decode original unsigned offsets
         let unsigned_array = self.bit_packed.to_primitive();

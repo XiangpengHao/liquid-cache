@@ -28,7 +28,7 @@ sysinfo = { version = "0.37.2", default-features = false, features = [
 object_store = { workspace = true, features = ["http"] }
 fsst-rs = "0.5.4"
 parquet = { workspace = true }
-fastrace = { version = "0.7.14", features = ["enable"] }
+fastrace = { version = "0.7.14" }
 fastrace-tonic = { workspace = true }
 fastrace-opentelemetry = "0.13"
 opentelemetry = "0.30.0"
@@ -42,6 +42,9 @@ pprof = { version = "0.15.0", features = ["flamegraph"] }
 anyhow = "1.0"
 fastrace-futures = "0.7"
 futures = { workspace = true }
+
+[features]
+trace = ["fastrace/enable"]
 
 [[bin]]
 name = "clickbench_client"
