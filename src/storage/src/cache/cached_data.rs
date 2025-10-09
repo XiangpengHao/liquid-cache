@@ -27,6 +27,7 @@ pub struct CachedData<'a> {
     data: CachedBatch,
     id: EntryID,
     io_context: &'a dyn super::core::IoContext,
+    stats: &'a super::stats::RuntimeStats,
 }
 
 /// The result of predicate pushdown.
@@ -44,11 +45,13 @@ impl<'a> CachedData<'a> {
         data: CachedBatch,
         id: EntryID,
         io_context: &'a dyn super::core::IoContext,
+        runtime: &'a super::stats::RuntimeStats,
     ) -> Self {
         Self {
             data,
             id,
             io_context,
+            stats: runtime,
         }
     }
 
@@ -57,6 +60,7 @@ impl<'a> CachedData<'a> {
         &self,
         selection: &'selection BooleanBuffer,
     ) -> SansIo<Result<ArrayRef, ArrowError>, GetWithSelectionState<'selection>> {
+        self.stats.incr_get_with_selection();
         match &self.data {
             CachedBatch::MemoryArrow(array) => {
                 let selection_array = BooleanArray::new(selection.clone(), None);
@@ -80,12 +84,6 @@ impl<'a> CachedData<'a> {
                 )
             }
             CachedBatch::MemoryHybridLiquid(array) => {
-                let select_any = selection.count_set_bits() > 0;
-                if !select_any {
-                    let arrow_type = array.original_arrow_data_type();
-                    let empty_array = arrow::array::new_empty_array(&arrow_type);
-                    return SansIo::Ready(Ok(empty_array));
-                }
                 let filtered = array.filter_to_arrow(selection);
                 match filtered {
                     Ok(array) => SansIo::Ready(Ok(array)),
@@ -113,6 +111,7 @@ impl<'a> CachedData<'a> {
     /// The caller should fulfill the IO request and call [`crate::cache::io_state::IoStateMachine::feed`] with the bytes,
     /// then consume the state machine with [`crate::cache::io_state::IoStateMachine::try_get`].
     pub fn get_arrow_array(&self) -> SansIo<ArrayRef, GetArrowArrayState> {
+        self.stats.incr_get_arrow_array();
         match &self.data {
             CachedBatch::MemoryArrow(array) => SansIo::Ready(array.clone()),
             CachedBatch::MemoryLiquid(array) => SansIo::Ready(array.to_arrow_array()),
@@ -149,6 +148,7 @@ impl<'a> CachedData<'a> {
     ///
     /// Build a sans-IO state machine to obtain a `LiquidArrayRef` if the cached data is liquid.
     pub fn try_read_liquid(&self) -> SansIo<Option<LiquidArrayRef>, GetLiquidArrayState> {
+        self.stats.incr_try_read_liquid();
         match &self.data {
             CachedBatch::MemoryLiquid(array) => SansIo::Ready(Some(array.clone())),
             CachedBatch::DiskLiquid(_) => GetLiquidArrayState::pending_liquid(
@@ -181,6 +181,7 @@ impl<'a> CachedData<'a> {
         selection: &'selection BooleanBuffer,
         predicate: &'predicate Arc<dyn PhysicalExpr>,
     ) -> SansIo<GetWithPredicateResult, GetWithPredicateState<'predicate, 'selection>> {
+        self.stats.incr_get_with_predicate();
         match &self.data {
             CachedBatch::MemoryArrow(array) => {
                 let selection_array = BooleanArray::new(selection.clone(), None);
@@ -213,12 +214,17 @@ impl<'a> CachedData<'a> {
             }
             CachedBatch::MemoryHybridLiquid(array) => {
                 match array.try_eval_predicate(predicate, selection) {
-                    Ok(Some(buf)) => SansIo::Ready(GetWithPredicateResult::Evaluated(buf)),
+                    Ok(Some(buf)) => {
+                        self.stats.incr_get_predicate_hybrid_success();
+                        SansIo::Ready(GetWithPredicateResult::Evaluated(buf))
+                    }
                     Ok(None) => {
+                        self.stats.incr_get_predicate_hybrid_unsupported();
                         let filtered = array.filter_to_arrow(selection);
                         match filtered {
                             Ok(array) => SansIo::Ready(GetWithPredicateResult::Filtered(array)),
                             Err(io_request) => {
+                                self.stats.incr_get_predicate_hybrid_needs_io();
                                 let path = self.io_context.entry_liquid_path(&self.id);
                                 let io_request = IoRequest::from_path_and_range(path, io_request);
                                 GetWithPredicateState::pending_hybrid_liquid(
@@ -231,6 +237,7 @@ impl<'a> CachedData<'a> {
                         }
                     }
                     Err(io_request) => {
+                        self.stats.incr_get_predicate_hybrid_needs_io();
                         let path = self.io_context.entry_liquid_path(&self.id);
                         let io_request = IoRequest::from_path_and_range(path, io_request);
                         GetWithPredicateState::pending_hybrid_liquid(
@@ -335,6 +342,7 @@ mod tests {
     use crate::liquid_array::{LiquidByteArray, LiquidByteViewArray};
 
     use super::*;
+    use crate::cache::RuntimeStats;
     use crate::cache::io_state::{IoRequest, IoStateMachine, TryGet};
     use ahash::HashMap;
     use arrow::array::{Array, AsArray, Int64Array, RecordBatch, StringArray};
@@ -370,9 +378,10 @@ mod tests {
 
     #[test]
     fn test_get_with_selection_disk_liquid_empty_selection_no_io() {
+        let stats = RuntimeStats::default();
         let id = EntryID::from(100usize);
         let io = PanicIo;
-        let cached = CachedData::new(CachedBatch::DiskLiquid(DataType::Utf8), id, &io);
+        let cached = CachedData::new(CachedBatch::DiskLiquid(DataType::Utf8), id, &io, &stats);
 
         // All-false selection mask
         let selection = BooleanBuffer::new_unset(16);
@@ -386,6 +395,7 @@ mod tests {
 
     #[test]
     fn test_get_with_selection_memory_hybrid_liquid_empty_selection_no_io() {
+        let stats = RuntimeStats::default();
         // Build a small Liquid string array that can be squeezed into a Hybrid array
         let input = StringArray::from(vec!["a", "b", "c", "d"]);
         let (_compressor, liquid) = LiquidByteViewArray::<MemoryBuffer>::train_from_arrow(&input);
@@ -394,7 +404,7 @@ mod tests {
 
         let id = EntryID::from(101usize);
         let io = PanicIo;
-        let cached = CachedData::new(CachedBatch::MemoryHybridLiquid(hybrid), id, &io);
+        let cached = CachedData::new(CachedBatch::MemoryHybridLiquid(hybrid), id, &io, &stats);
 
         // All-false selection mask
         let selection = BooleanBuffer::new_unset(input.len());
@@ -490,10 +500,11 @@ mod tests {
 
     #[test]
     fn test_get_arrow_array_memory_arrow() {
+        let stats = RuntimeStats::default();
         let array: ArrayRef = Arc::new(Int64Array::from_iter_values(0..8));
         let id = EntryID::from(1usize);
         let (_tmp, io) = io_worker(None);
-        let cached = CachedData::new(CachedBatch::MemoryArrow(array.clone()), id, &io);
+        let cached = CachedData::new(CachedBatch::MemoryArrow(array.clone()), id, &io, &stats);
 
         let SansIo::Ready(out) = cached.get_arrow_array() else {
             panic!("should be ready");
@@ -503,6 +514,7 @@ mod tests {
 
     #[test]
     fn test_try_read_liquid() {
+        let stats = RuntimeStats::default();
         // Build a small liquid string array
         let input = StringArray::from(vec!["a", "b", "a", "c"]);
         let (compressor, etc) = crate::liquid_array::LiquidByteArray::train_from_arrow(&input);
@@ -510,8 +522,13 @@ mod tests {
 
         let id = EntryID::from(2usize);
         let (_tmp, io) = io_worker(Some(compressor));
-        let in_memory = CachedData::new(CachedBatch::MemoryLiquid(liquid_ref.clone()), id, &io);
-        let on_disk = CachedData::new(CachedBatch::DiskLiquid(DataType::Utf8), id, &io);
+        let in_memory = CachedData::new(
+            CachedBatch::MemoryLiquid(liquid_ref.clone()),
+            id,
+            &io,
+            &stats,
+        );
+        let on_disk = CachedData::new(CachedBatch::DiskLiquid(DataType::Utf8), id, &io, &stats);
         io.blocking_evict_liquid_to_disk(&id, &liquid_ref).unwrap();
         let arrow_input: ArrayRef = Arc::new(input);
 
@@ -536,7 +553,8 @@ mod tests {
         }
 
         // Try if non-liquid batch can be read as liquid
-        let on_disk_non_liquid = CachedData::new(CachedBatch::DiskArrow(DataType::Utf8), id, &io);
+        let on_disk_non_liquid =
+            CachedData::new(CachedBatch::DiskArrow(DataType::Utf8), id, &io, &stats);
         let SansIo::Ready(None) = on_disk_non_liquid.try_read_liquid() else {
             panic!("should be none");
         };
@@ -544,12 +562,13 @@ mod tests {
 
     #[test]
     fn test_get_with_selection_memory() {
+        let stats = RuntimeStats::default();
         let array: ArrayRef = Arc::new(Int64Array::from_iter_values(0..10));
         let selection = BooleanBuffer::from((0..10).map(|i| i % 2 == 0).collect::<Vec<_>>());
 
         let id = EntryID::from(3usize);
         let (_tmp, io) = io_worker(None);
-        let cached = CachedData::new(CachedBatch::MemoryArrow(array.clone()), id, &io);
+        let cached = CachedData::new(CachedBatch::MemoryArrow(array.clone()), id, &io, &stats);
 
         let SansIo::Ready(Ok(filtered)) = cached.get_with_selection(&selection) else {
             panic!("should be ready");
@@ -560,7 +579,7 @@ mod tests {
 
         let liquid_array =
             transcode_liquid_inner(&array, &LiquidCompressorStates::default()).unwrap();
-        let cached = CachedData::new(CachedBatch::MemoryLiquid(liquid_array), id, &io);
+        let cached = CachedData::new(CachedBatch::MemoryLiquid(liquid_array), id, &io, &stats);
 
         let SansIo::Ready(Ok(filtered)) = cached.get_with_selection(&selection) else {
             panic!("should be ready");
@@ -570,12 +589,13 @@ mod tests {
 
     #[test]
     fn test_get_with_selection_disk() {
+        let stats = RuntimeStats::default();
         let array: ArrayRef = Arc::new(Int64Array::from_iter_values(0..10));
         let selection = BooleanBuffer::from((0..10).map(|i| i % 2 == 0).collect::<Vec<_>>());
 
         let id = EntryID::from(3usize);
         let (_tmp, io) = io_worker(None);
-        let cached = CachedData::new(CachedBatch::DiskArrow(DataType::Utf8), id, &io);
+        let cached = CachedData::new(CachedBatch::DiskArrow(DataType::Utf8), id, &io, &stats);
         io.blocking_evict_arrow_to_disk(&id, &array).unwrap();
 
         let test_get = |cached: &CachedData| {
@@ -596,7 +616,7 @@ mod tests {
 
         let liquid_array =
             transcode_liquid_inner(&array, &LiquidCompressorStates::default()).unwrap();
-        let cached = CachedData::new(CachedBatch::DiskLiquid(DataType::Utf8), id, &io);
+        let cached = CachedData::new(CachedBatch::DiskLiquid(DataType::Utf8), id, &io, &stats);
         io.blocking_evict_liquid_to_disk(&id, &liquid_array)
             .unwrap();
         test_get(&cached);
@@ -604,6 +624,7 @@ mod tests {
 
     #[test]
     fn test_get_with_predicate_arrow_returns_filtered() {
+        let stats = RuntimeStats::default();
         // Build a simple Arrow string array
         let data = StringArray::from(vec![Some("a"), Some(""), None, Some("b")]);
         let arrow_array: ArrayRef = Arc::new(data);
@@ -618,7 +639,12 @@ mod tests {
         // Cached as Arrow memory
         let id = EntryID::from(42usize);
         let (_tmp, io) = io_worker(None);
-        let cached = CachedData::new(CachedBatch::MemoryArrow(arrow_array.clone()), id, &io);
+        let cached = CachedData::new(
+            CachedBatch::MemoryArrow(arrow_array.clone()),
+            id,
+            &io,
+            &stats,
+        );
 
         // Selection: all-true
         let selection = BooleanBuffer::from(vec![true; arrow_array.len()]);
@@ -638,16 +664,27 @@ mod tests {
     }
 
     fn test_string_predicate(string_array: &StringArray, expr: &Arc<dyn PhysicalExpr>) {
+        let stats = RuntimeStats::default();
         let (compressor, liquid) = LiquidByteArray::train_from_arrow(string_array);
         let liquid_ref: LiquidArrayRef = Arc::new(liquid);
 
         let id = EntryID::from(9usize);
         let (_tmp, io) = io_worker(Some(compressor));
         let arrow_array: ArrayRef = Arc::new(string_array.clone());
-        let memory_liquid = CachedData::new(CachedBatch::MemoryLiquid(liquid_ref.clone()), id, &io);
-        let disk_liquid = CachedData::new(CachedBatch::DiskLiquid(DataType::Utf8), id, &io);
-        let memory_arrow = CachedData::new(CachedBatch::MemoryArrow(arrow_array.clone()), id, &io);
-        let disk_arrow = CachedData::new(CachedBatch::DiskArrow(DataType::Utf8), id, &io);
+        let memory_liquid = CachedData::new(
+            CachedBatch::MemoryLiquid(liquid_ref.clone()),
+            id,
+            &io,
+            &stats,
+        );
+        let disk_liquid = CachedData::new(CachedBatch::DiskLiquid(DataType::Utf8), id, &io, &stats);
+        let memory_arrow = CachedData::new(
+            CachedBatch::MemoryArrow(arrow_array.clone()),
+            id,
+            &io,
+            &stats,
+        );
+        let disk_arrow = CachedData::new(CachedBatch::DiskArrow(DataType::Utf8), id, &io, &stats);
         io.blocking_evict_liquid_to_disk(&id, &liquid_ref).unwrap();
         io.blocking_evict_arrow_to_disk(&id, &arrow_array).unwrap();
 
@@ -709,7 +746,7 @@ mod tests {
                 let SansIo::Pending((mut state, io_request)) =
                     disk_arrow.get_with_predicate(&selection, expr)
                 else {
-                    panic!("should be ready");
+                    panic!("should be pending");
                 };
 
                 state.feed(io.read_entry(&io_request).unwrap());
@@ -724,7 +761,7 @@ mod tests {
                 let SansIo::Pending((mut state, io_request)) =
                     disk_liquid.get_with_predicate(&selection, expr)
                 else {
-                    panic!("should be ready");
+                    panic!("should be pending");
                 };
 
                 state.feed(io.read_entry(&io_request).unwrap());

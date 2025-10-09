@@ -10,6 +10,7 @@ use super::{
 };
 use crate::cache::cached_data::CachedBatchType;
 use crate::cache::squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict};
+use crate::cache::stats::{CacheStats, RuntimeStats};
 use crate::cache::utils::{LiquidCompressorStates, arrow_to_bytes};
 use crate::cache::{index::ArtIndex, utils::EntryID};
 use crate::cache_policies::LiquidPolicy;
@@ -67,30 +68,7 @@ impl IoContext for DefaultIoContext {
     }
 }
 
-/// Snapshot of cache statistics.
-#[derive(Debug, Clone)]
-pub struct CacheStats {
-    /// Total number of entries in the cache.
-    pub total_entries: usize,
-    /// Number of in-memory Arrow entries.
-    pub memory_arrow_entries: usize,
-    /// Number of in-memory Liquid entries.
-    pub memory_liquid_entries: usize,
-    /// Number of in-memory Hybrid-Liquid entries.
-    pub memory_hybrid_liquid_entries: usize,
-    /// Number of on-disk Liquid entries.
-    pub disk_liquid_entries: usize,
-    /// Number of on-disk Arrow entries.
-    pub disk_arrow_entries: usize,
-    /// Total memory usage of the cache.
-    pub memory_usage_bytes: usize,
-    /// Total disk usage of the cache.
-    pub disk_usage_bytes: usize,
-    /// Maximum cache size.
-    pub max_cache_bytes: usize,
-    /// Cache root directory.
-    pub cache_root_dir: PathBuf,
-}
+// CacheStats and RuntimeStats moved to stats.rs
 
 /// Builder for [CacheStorage].
 ///
@@ -239,6 +217,7 @@ pub struct CacheStorage {
     squeeze_policy: Box<dyn SqueezePolicy>,
     tracer: CacheTracer,
     io_context: Arc<dyn IoContext>,
+    runtime_stats: RuntimeStats,
     #[cfg(target_os = "linux")]
     io_pool: IoUringPool,
 }
@@ -265,6 +244,7 @@ impl CacheStorage {
 
         let memory_usage_bytes = self.budget.memory_usage_bytes();
         let disk_usage_bytes = self.budget.disk_usage_bytes();
+        let runtime = self.runtime_stats.consume_snapshot();
 
         CacheStats {
             total_entries,
@@ -277,6 +257,7 @@ impl CacheStorage {
             disk_usage_bytes,
             max_cache_bytes: self.config.max_cache_bytes(),
             cache_root_dir: self.config.cache_root_dir().clone(),
+            runtime,
         }
     }
 
@@ -297,7 +278,12 @@ impl CacheStorage {
         self.cache_policy
             .notify_access(entry_id, CachedBatchType::from(&batch));
 
-        Some(CachedData::new(batch, *entry_id, self.io_context.as_ref()))
+        Some(CachedData::new(
+            batch,
+            *entry_id,
+            self.io_context.as_ref(),
+            &self.runtime_stats,
+        ))
     }
 
     /// Iterate over all entries in the cache.
@@ -462,6 +448,7 @@ impl CacheStorage {
             squeeze_policy,
             tracer: CacheTracer::new(),
             io_context: io_worker,
+            runtime_stats: RuntimeStats::default(),
             #[cfg(target_os = "linux")]
             io_pool,
         }
@@ -489,6 +476,7 @@ impl CacheStorage {
         Ok(())
     }
 
+    #[fastrace::trace]
     fn squeeze_victims(&self, victims: Vec<EntryID>) {
         #[cfg(target_os = "linux")]
         {

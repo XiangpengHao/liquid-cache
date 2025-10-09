@@ -586,6 +586,12 @@ impl LiquidHybridArray for LiquidByteViewArray<DiskBuffer> {
 
     /// Filter the Liquid array with a boolean array and return an **arrow array**.
     fn filter_to_arrow(&self, selection: &BooleanBuffer) -> Result<ArrayRef, IoRange> {
+        let select_any = selection.count_set_bits() > 0;
+        if !select_any {
+            return Ok(arrow::array::new_empty_array(
+                &self.original_arrow_data_type(),
+            ));
+        }
         let filtered = self.filter(selection)?;
         filtered.to_best_arrow_array()
     }

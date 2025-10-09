@@ -1435,7 +1435,8 @@ mod tests {
     fn hybrid_predicate_eval_i32_resolvable_and_unresolvable() {
         let mut rng = StdRng::seed_from_u64(0x51_73);
         let arr = make_i32_array_with_range(200, -1_000_000, 1 << 16, 0.2, &mut rng);
-        let liq = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(arr.clone());
+        let liq = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(arr.clone())
+            .with_squeeze_policy(IntegerSqueezePolicy::Clamp);
         let (hybrid, _bytes) = liq.squeeze().expect("squeezable");
 
         let boundary = compute_boundary_i32(&arr).unwrap();

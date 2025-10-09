@@ -127,13 +127,15 @@
 			},
 			"args": [
 				"--manifest",
-				"benchmark/clickbench/manifest.json",
+				"benchmark/tpch/data/tpch-10.json",
 				"--max-cache-mb",
-				"100",
+				"4",
 				"--bench-mode",
 				"liquid",
 				"--query-index",
-				"30"
+				"5",
+				"--partitions",
+				"8"
 			],
 			"cwd": "${workspaceFolder}"
 		},
