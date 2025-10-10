@@ -17,6 +17,7 @@ use std::sync::Arc;
 use crate::liquid_array::{
     byte_view_array::OffsetView, fix_len_byte_array::ArrowFixedLenByteArrayType,
 };
+use crate::liquid_array::byte_view_array_v2::OffsetView as OffsetViewV2;
 
 /// Raw FSST buffer that stores compressed data using Arrow Buffer
 /// Offsets are managed externally in OffsetView array
@@ -122,6 +123,45 @@ impl RawFsstBuffer {
         (buffer, offsets.finish())
     }
 
+    pub(crate) fn to_uncompressed_v2(
+        &self,
+        decompressor: &Decompressor<'_>,
+        offset: &[OffsetViewV2],
+    ) -> (Buffer, OffsetBuffer<i32>) {
+        let mut value_buffer: Vec<u8> = Vec::with_capacity(self.uncompressed_bytes + 8);
+        let mut offsets: OffsetBufferBuilder<i32> = OffsetBufferBuilder::new(offset.len());
+
+        for i in 0..offset.len().saturating_sub(1) {
+            let start_offset = offset[i].offset();
+            let end_offset = offset[i + 1].offset();
+
+            if start_offset != end_offset {
+                // Get the compressed slice
+                let compressed_slice = self.get_compressed_slice(start_offset, end_offset);
+
+                // Decompress into the value buffer
+                let slice = unsafe {
+                    std::slice::from_raw_parts_mut(
+                        value_buffer.as_mut_ptr().add(value_buffer.len()) as *mut MaybeUninit<u8>,
+                        value_buffer.capacity() - value_buffer.len(),
+                    )
+                };
+                let decompressed_len = decompressor.decompress_into(compressed_slice, slice);
+
+                let new_len = value_buffer.len() + decompressed_len;
+                debug_assert!(new_len <= value_buffer.capacity());
+                unsafe {
+                    value_buffer.set_len(new_len);
+                }
+                offsets.push_length(decompressed_len);
+            } else {
+                offsets.push_length(0);
+            }
+        }
+
+        let buffer = Buffer::from(value_buffer);
+        (buffer, offsets.finish())
+    }
     /// Get compressed data slice using byte offsets
     pub fn get_compressed_slice(&self, start_offset: u32, end_offset: u32) -> &[u8] {
         let start = start_offset as usize;
