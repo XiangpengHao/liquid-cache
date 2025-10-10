@@ -248,8 +248,12 @@ impl InProcessBenchmarkRunner {
 
         // Register tables from manifest
         for (table_name, table_path_str) in &manifest.tables {
-            ctx.register_parquet(table_name, table_path_str, Default::default())
-                .await?;
+            ctx.register_parquet(
+                format!("\"{table_name}\""),
+                table_path_str,
+                Default::default(),
+            )
+            .await?;
             info!("Registered table '{table_name}' from {table_path_str}");
         }
 

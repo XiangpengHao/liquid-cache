@@ -45,6 +45,7 @@
               fd
               kaniVerifier
               llvmPackages.bintools
+              lldb
               cargo-fuzz
               # rustup
               (rust-bin.selectLatestNightlyWith (toolchain: toolchain.default.override {
