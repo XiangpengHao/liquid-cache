@@ -5,9 +5,9 @@ mod byte_array;
 pub mod byte_view_array;
 mod fix_len_byte_array;
 mod float_array;
+mod hybrid_primitive_array;
 pub mod ipc;
 mod linear_integer_array;
-mod hybrid_primitive_array;
 mod primitive_array;
 pub mod raw;
 #[cfg(test)]

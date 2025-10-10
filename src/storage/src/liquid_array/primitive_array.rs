@@ -710,5 +710,4 @@ mod tests {
 
         assert_eq!(result_array.len(), 0);
     }
-
 }

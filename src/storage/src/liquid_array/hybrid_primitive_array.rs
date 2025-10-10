@@ -377,158 +377,149 @@ where
         let (_dt, values, _nulls) = q_prim.into_parts();
 
         let mut out_vals: Vec<bool> = Vec::with_capacity(values.len());
+        let nulls_opt = self.quantized.nulls();
 
-        if T::IS_UNSIGNED {
+        // Common fast-path constants when literal is below the minimum (reference)
+        let push_const_for_below = |op: &Operator| -> bool {
+            match op {
+                Operator::Eq => false,
+                Operator::NotEq => true,
+                Operator::Lt => false,
+                Operator::LtEq => false,
+                Operator::Gt => true,
+                Operator::GtEq => true,
+            }
+        };
+
+        // Minimal signed/unsigned split: only to compute below_ref and relative offset
+        let (below_ref, rel_opt): (bool, Option<u64>) = if T::IS_UNSIGNED {
             let ref_u_native: U<T> = self.reference_value.as_();
             let ref_u: u64 = num_traits::AsPrimitive::<u64>::as_(ref_u_native);
             let k_u_native: U<T> = k.as_();
             let k_u: u64 = num_traits::AsPrimitive::<u64>::as_(k_u_native);
-            for (i, &b) in values.iter().enumerate() {
-                if let Some(nulls) = self.quantized.nulls()
-                    && !nulls.is_valid(i)
-                {
-                    out_vals.push(false);
-                    continue;
-                }
-                let b_u64: u64 = num_traits::AsPrimitive::<u64>::as_(b);
-                let lo = ref_u.saturating_add(b_u64.saturating_mul(self.bucket_width));
-                let hi = ref_u
-                    .saturating_add((b_u64 + 1).saturating_mul(self.bucket_width))
-                    .saturating_sub(1);
-                let decided = match op {
-                    Operator::Eq => {
-                        if k_u < lo || k_u > hi {
-                            Some(false)
-                        } else {
-                            None
-                        }
-                    }
-                    Operator::NotEq => {
-                        if k_u < lo || k_u > hi {
-                            Some(true)
-                        } else {
-                            None
-                        }
-                    }
-                    Operator::Lt => {
-                        if hi < k_u {
-                            Some(true)
-                        } else if lo >= k_u {
-                            Some(false)
-                        } else {
-                            None
-                        }
-                    }
-                    Operator::LtEq => {
-                        if hi <= k_u {
-                            Some(true)
-                        } else if lo > k_u {
-                            Some(false)
-                        } else {
-                            None
-                        }
-                    }
-                    Operator::Gt => {
-                        if lo > k_u {
-                            Some(true)
-                        } else if hi <= k_u {
-                            Some(false)
-                        } else {
-                            None
-                        }
-                    }
-                    Operator::GtEq => {
-                        if lo >= k_u {
-                            Some(true)
-                        } else if hi < k_u {
-                            Some(false)
-                        } else {
-                            None
-                        }
-                    }
-                };
-                if let Some(v) = decided {
-                    out_vals.push(v);
-                } else {
-                    return Err(IoRange {
-                        range: self.disk_range.clone(),
-                    });
-                }
+            if k_u < ref_u {
+                (true, None)
+            } else {
+                (false, Some(k_u - ref_u))
             }
         } else {
-            let ref_i64: i64 = self.reference_value.as_();
-            let ref_i: i128 = ref_i64 as i128;
-            let k_i64: i64 = k.as_();
-            let k_i: i128 = k_i64 as i128;
-            let bw = self.bucket_width as i128;
-            for (i, &b) in values.iter().enumerate() {
-                if let Some(nulls) = self.quantized.nulls()
-                    && !nulls.is_valid(i)
-                {
-                    out_vals.push(false);
-                    continue;
+            let ref_i: i64 = self.reference_value.as_();
+            let k_i: i64 = k.as_();
+            if k_i < ref_i {
+                (true, None)
+            } else {
+                (false, Some((k_i - ref_i) as u64))
+            }
+        };
+
+        if below_ref {
+            let const_val = push_const_for_below(op);
+            if let Some(n) = nulls_opt {
+                for (i, _b) in values.iter().enumerate() {
+                    out_vals.push(n.is_valid(i) && const_val);
                 }
-                let b_i: i128 = num_traits::AsPrimitive::<u64>::as_(b) as i128;
-                let lo = ref_i + b_i.saturating_mul(bw);
-                let hi = ref_i + (b_i + 1).saturating_mul(bw) - 1;
-                let decided = match op {
-                    Operator::Eq => {
-                        if k_i < lo || k_i > hi {
-                            Some(false)
-                        } else {
-                            None
-                        }
-                    }
-                    Operator::NotEq => {
-                        if k_i < lo || k_i > hi {
-                            Some(true)
-                        } else {
-                            None
-                        }
-                    }
+            } else {
+                out_vals.resize(values.len(), const_val);
+            }
+        } else {
+            let rel = rel_opt.expect("rel must exist when not below_ref");
+            let bw: u64 = self.bucket_width;
+            debug_assert!(bw > 0, "bucket_width must be > 0");
+            let q = rel / bw; // target bucket index for k
+            let r = rel % bw; // position of k within its bucket
+
+            // Precompute decisions outside the loop
+            let less_side: bool = match op {
+                Operator::Eq => false,
+                Operator::NotEq => true,
+                Operator::Lt => true,
+                Operator::LtEq => true,
+                Operator::Gt => false,
+                Operator::GtEq => false,
+            };
+            let greater_side: bool = match op {
+                Operator::Eq => false,
+                Operator::NotEq => true,
+                Operator::Lt => false,
+                Operator::LtEq => false,
+                Operator::Gt => true,
+                Operator::GtEq => true,
+            };
+            let on_equal_bucket = |r: u64, bw: u64| -> Option<bool> {
+                match op {
+                    Operator::Eq | Operator::NotEq => None,
                     Operator::Lt => {
-                        if hi < k_i {
-                            Some(true)
-                        } else if lo >= k_i {
+                        if r == 0 {
                             Some(false)
                         } else {
                             None
                         }
                     }
                     Operator::LtEq => {
-                        if hi <= k_i {
+                        if r + 1 == bw {
                             Some(true)
-                        } else if lo > k_i {
-                            Some(false)
                         } else {
                             None
                         }
                     }
                     Operator::Gt => {
-                        if lo > k_i {
-                            Some(true)
-                        } else if hi <= k_i {
+                        if r + 1 == bw {
                             Some(false)
                         } else {
                             None
                         }
                     }
                     Operator::GtEq => {
-                        if lo >= k_i {
+                        if r == 0 {
                             Some(true)
-                        } else if hi < k_i {
-                            Some(false)
                         } else {
                             None
                         }
                     }
-                };
-                if let Some(v) = decided {
+                }
+            };
+
+            if let Some(n) = nulls_opt {
+                for (i, &b_native) in values.iter().enumerate() {
+                    if !n.is_valid(i) {
+                        out_vals.push(false);
+                        continue;
+                    }
+                    let b: u64 = num_traits::AsPrimitive::<u64>::as_(b_native);
+                    let v = if b < q {
+                        less_side
+                    } else if b > q {
+                        greater_side
+                    } else {
+                        match on_equal_bucket(r, bw) {
+                            Some(val) => val,
+                            None => {
+                                return Err(IoRange {
+                                    range: self.disk_range.clone(),
+                                });
+                            }
+                        }
+                    };
                     out_vals.push(v);
-                } else {
-                    return Err(IoRange {
-                        range: self.disk_range.clone(),
-                    });
+                }
+            } else {
+                for &b_native in values.iter() {
+                    let b: u64 = num_traits::AsPrimitive::<u64>::as_(b_native);
+                    let v = if b < q {
+                        less_side
+                    } else if b > q {
+                        greater_side
+                    } else {
+                        match on_equal_bucket(r, bw) {
+                            Some(val) => val,
+                            None => {
+                                return Err(IoRange {
+                                    range: self.disk_range.clone(),
+                                });
+                            }
+                        }
+                    };
+                    out_vals.push(v);
                 }
             }
         }
@@ -692,19 +683,21 @@ mod tests {
     }
 
     #[test]
-    fn hybrid_squeeze_unsqueezable_small_range() {
+    fn clamp_unsqueezable_small_range() {
         // range < 512 -> bit width < 10 => None
         let mut rng = StdRng::seed_from_u64(0x51_71);
         let arr = make_i32_array_with_range(64, 10_000, 100, 0.1, &mut rng);
-        let liquid = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(arr);
+        let liquid = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(arr)
+            .with_squeeze_policy(IntegerSqueezePolicy::Clamp);
         assert!(liquid.squeeze().is_none());
     }
 
     #[test]
-    fn hybrid_squeeze_and_soak_roundtrip_i32() {
+    fn clamp_squeeze_and_soak_roundtrip_i32() {
         let mut rng = StdRng::seed_from_u64(0x51_72);
         let arr = make_i32_array_with_range(128, -50_000, 1 << 16, 0.1, &mut rng);
-        let liq = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(arr.clone());
+        let liq = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(arr.clone())
+            .with_squeeze_policy(IntegerSqueezePolicy::Clamp);
         let bytes_baseline = liq.to_bytes();
         let (hybrid, bytes) = liq.squeeze().expect("squeezable");
         // ensure we can recover the original using soak
@@ -746,7 +739,7 @@ mod tests {
     }
 
     #[test]
-    fn hybrid_predicate_eval_i32_resolvable_and_unresolvable() {
+    fn clamp_predicate_eval_i32_resolvable_and_unresolvable() {
         let mut rng = StdRng::seed_from_u64(0x51_73);
         let arr = make_i32_array_with_range(200, -1_000_000, 1 << 16, 0.2, &mut rng);
         let liq = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(arr.clone())
@@ -826,7 +819,7 @@ mod tests {
     }
 
     #[test]
-    fn hybrid_predicate_eval_u32_resolvable_and_unresolvable() {
+    fn clamp_predicate_eval_u32_resolvable_and_unresolvable() {
         let mut rng = StdRng::seed_from_u64(0x51_74);
         let arr = make_u32_array_with_range(180, 1_000_000, 1 << 16, 0.15, &mut rng);
         let liq = LiquidPrimitiveArray::<UInt32Type>::from_arrow_array(arr.clone())
@@ -900,7 +893,7 @@ mod tests {
     }
 
     #[test]
-    fn quantized_predicate_eval_u32_resolvable_and_unresolvable() {
+    fn quantize_predicate_eval_u32_resolvable_and_unresolvable() {
         let mut rng = StdRng::seed_from_u64(0x51_84);
         let arr = make_u32_array_with_range(200, 1_000_000, 1 << 16, 0.2, &mut rng);
         let liq = LiquidPrimitiveArray::<UInt32Type>::from_arrow_array(arr.clone())
@@ -961,7 +954,7 @@ mod tests {
     }
 
     #[test]
-    fn quantized_predicate_eval_i32_resolvable_and_unresolvable() {
+    fn quantize_predicate_eval_i32_resolvable_and_unresolvable() {
         let mut rng = StdRng::seed_from_u64(0x51_85);
         let arr = make_i32_array_with_range(220, -1_000_000, 1 << 16, 0.2, &mut rng);
         let liq = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(arr.clone())
@@ -1017,5 +1010,16 @@ mod tests {
             .try_eval_predicate(&expr_eq_present, &mask)
             .expect_err("quantized should request IO on ambiguous eq bucket");
         assert_eq!(err.range(), hybrid.to_liquid().range());
+    }
+
+    #[test]
+    fn quantize_to_arrow_is_err() {
+        let mut rng = StdRng::seed_from_u64(0x51_86);
+        let arr = make_u32_array_with_range(64, 1000, 1 << 12, 0.0, &mut rng);
+        let liq = LiquidPrimitiveArray::<UInt32Type>::from_arrow_array(arr)
+            .with_squeeze_policy(IntegerSqueezePolicy::Quantize);
+        let (hybrid, _bytes) = liq.squeeze().expect("squeezable");
+        // Quantized hybrid cannot materialize to Arrow without IO
+        assert!(hybrid.to_arrow_array().is_err());
     }
 }
