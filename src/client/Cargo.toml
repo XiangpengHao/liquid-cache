@@ -25,4 +25,4 @@ tokio = { workspace = true }
 object_store = { workspace = true }
 
 [dev-dependencies]
-insta = { version = "1.43.1" }
+insta = { version = "1.43.2" }

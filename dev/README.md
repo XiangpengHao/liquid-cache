@@ -17,33 +17,28 @@ cargo test
 
 ### Observability
 
-LiquidCache exports opentelemetry metrics.
-
-First, start a [openobserve](https://openobserve.ai/) instance:
+LiquidCache exports OpenTelemetry traces. Spin up a Jaeger v2
+`opentelemetry-all-in-one` instance (works with either Docker or Podman):
 ```bash
-docker run -d \
-      --name openobserve \
-      -v $PWD/data:/data \
-      -p 5080:5080 \
-      -p 5081:5081 \
-      -e ZO_ROOT_USER_EMAIL="root@example.com" \
-      -e ZO_ROOT_USER_PASSWORD="Complexpass#123" \
-      public.ecr.aws/zinclabs/openobserve:latest
+docker run  \
+      --name jaeger \
+      -e COLLECTOR_OTLP_ENABLED=true \
+      -p 16686:16686 \
+      -p 4317:4317 \
+      -p 4318:4318 \
+      cr.jaegertracing.io/jaegertracing/jaeger:2.11.0
 ```
 
-Then, get the auth token from the instance: http://localhost:5080/web/ingestion/recommended/traces
+This image contains the Jaeger v2 distribution. Port 16686 exposes the UI; 4317
+and 4318 expose OTLP over gRPC and HTTP respectively.
 
-You will see a token like this:
-```
-cm9vdEBleGFtcGxlLmNvbTpGT01qZ3NRUlNmelNoNzJQ
-```
-
-Then, run the server/client with the auth token:
+Once the collector is running, point the benchmark binaries at the OTLP gRPC
+endpoint (defaults to `http://localhost:4317`):
 ```bash
-cargo run --release --bin bench_server -- --openobserve-auth cm9vdEBleGFtcGxlLmNvbTpGT01qZ3NRUlNmelNoNzJQ
+cargo run --release --bin bench_server -- --jaeger-endpoint http://localhost:4317
 ```
 
-Then open http://localhost:5080 to view the traces.
+The Jaeger UI will be available at http://localhost:16686.
 
 
 ### Deploy a LiquidCache server with Docker

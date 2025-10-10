@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
+use fastrace::prelude::*;
 use liquid_cache_benchmarks::{
     BenchmarkManifest, InProcessBenchmarkMode, InProcessBenchmarkRunner, setup_observability,
 };
@@ -52,6 +53,10 @@ struct InProcessBenchmark {
     /// Directory to save the cache
     #[arg(long = "cache-dir")]
     pub cache_dir: Option<PathBuf>,
+
+    /// Jaeger OTLP gRPC endpoint (for example: http://localhost:4317)
+    #[arg(long = "jaeger-endpoint")]
+    pub jaeger_endpoint: Option<String>,
 }
 
 impl InProcessBenchmark {
@@ -76,8 +81,12 @@ impl InProcessBenchmark {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    setup_observability("inprocess", opentelemetry::trace::SpanKind::Client, None);
     let benchmark = InProcessBenchmark::parse();
+    setup_observability("inprocess", benchmark.jaeger_endpoint.as_deref());
+    let root = Span::root("worker-loop", SpanContext::random());
+    let _guard = root.set_local_parent();
+
     benchmark.run().await?;
+    fastrace::flush();
     Ok(())
 }

@@ -1,6 +1,6 @@
-//! Size-aware SIEVE cache policy implementation.
+//! SIEVE cache policy implementation.
 
-use std::{collections::HashMap, fmt, ptr::NonNull, sync::Arc};
+use std::{collections::HashMap, fmt, ptr::NonNull};
 
 use crate::{
     cache::{cached_data::CachedBatchType, utils::EntryID},
@@ -28,13 +28,10 @@ struct SieveInternalState {
     total_size: usize,
 }
 
-type SieveEntrySizeFn = Option<Arc<dyn Fn(&EntryID) -> usize + Send + Sync>>;
-
 /// The policy that implements object size aware SIEVE algorithm using a HashMap and a doubly linked list.
 #[derive(Default)]
 pub struct SievePolicy {
     state: Mutex<SieveInternalState>,
-    size_of: SieveEntrySizeFn,
 }
 
 impl fmt::Debug for SievePolicy {
@@ -47,15 +44,14 @@ impl fmt::Debug for SievePolicy {
 
 impl SievePolicy {
     /// Create a new [`SievePolicy`].
-    pub fn new(size_of: SieveEntrySizeFn) -> Self {
+    pub fn new() -> Self {
         Self {
             state: Mutex::new(SieveInternalState::default()),
-            size_of,
         }
     }
 
-    fn entry_size(&self, entry_id: &EntryID) -> usize {
-        self.size_of.as_ref().map(|f| f(entry_id)).unwrap_or(1)
+    fn entry_size(&self, _entry_id: &EntryID) -> usize {
+        1
     }
 }
 
@@ -176,7 +172,7 @@ mod tests {
 
     #[test]
     fn test_sieve_insert_order() {
-        let policy = SievePolicy::new(None);
+        let policy = SievePolicy::new();
         let e1 = entry(1);
         let e2 = entry(2);
         let e3 = entry(3);
@@ -190,7 +186,7 @@ mod tests {
 
     #[test]
     fn test_sieve_access_sets_visited() {
-        let policy = SievePolicy::new(None);
+        let policy = SievePolicy::new();
         let e1 = entry(1);
         let e2 = entry(2);
         let e3 = entry(3);
@@ -205,7 +201,7 @@ mod tests {
 
     #[test]
     fn test_sieve_reinsert_marks_visited() {
-        let policy = SievePolicy::new(None);
+        let policy = SievePolicy::new();
         let e1 = entry(1);
         let e2 = entry(2);
 
@@ -218,18 +214,39 @@ mod tests {
     }
 
     #[test]
+    fn test_sieve_reinsert_sets_visited_flag() {
+        let policy = SievePolicy::new();
+        let e1 = entry(1);
+
+        policy.notify_insert(&e1, CachedBatchType::MemoryArrow);
+
+        {
+            let state = policy.state.lock().unwrap();
+            let mut node_ptr = state.map.get(&e1).copied().unwrap();
+            unsafe {
+                node_ptr.as_mut().data.visited = false;
+            }
+        }
+
+        policy.notify_insert(&e1, CachedBatchType::MemoryArrow);
+
+        let state = policy.state.lock().unwrap();
+        let node_ptr = state.map.get(&e1).copied().unwrap();
+        unsafe {
+            assert!(node_ptr.as_ref().data.visited);
+        }
+        assert_eq!(state.map.len(), 1);
+    }
+
+    #[test]
     fn test_sieve_advise_empty() {
-        let policy = SievePolicy::new(None);
+        let policy = SievePolicy::new();
         assert_eq!(policy.find_victim(1), vec![]);
     }
 
     #[test]
     fn test_sieve_with_sizeof_closure_defined() {
-        let policy = SievePolicy::new(Some(Arc::new(
-            |id: &EntryID| {
-                if id.gt(&entry(10)) { 100 } else { 1 }
-            },
-        )));
+        let policy = SievePolicy::new();
 
         let e1 = entry(1);
         let e2 = entry(2);
@@ -240,12 +257,12 @@ mod tests {
         policy.notify_insert(&e3, CachedBatchType::MemoryArrow);
 
         let state = policy.state.lock().unwrap();
-        assert_eq!(state.total_size, 102);
+        assert_eq!(state.total_size, 3);
     }
 
     #[test]
     fn test_sieve_sizeof_without_closure() {
-        let policy = SievePolicy::new(None);
+        let policy = SievePolicy::new();
 
         let e1 = entry(1);
         let e2 = entry(2);
@@ -261,7 +278,7 @@ mod tests {
 
     #[test]
     fn test_sieve_integration() {
-        let advisor = SievePolicy::new(None);
+        let advisor = SievePolicy::new();
         let store = create_cache_store(3000, Box::new(advisor));
 
         let entry_id1 = EntryID::from(1);

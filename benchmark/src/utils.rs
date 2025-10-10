@@ -1,3 +1,5 @@
+use std::fs::File;
+use std::path::Path;
 use std::sync::Arc;
 
 use datafusion::arrow;
@@ -12,6 +14,7 @@ use datafusion::common::tree_node::TreeNode;
 use datafusion::physical_plan::ExecutionPlan;
 use liquid_cache_client::LiquidCacheClientExec;
 use log::warn;
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use uuid::Uuid;
 
 pub(crate) fn get_plan_uuids(plan: &Arc<dyn ExecutionPlan>) -> Vec<Uuid> {
@@ -98,6 +101,30 @@ pub fn assert_batch_eq(expected: &RecordBatch, actual: &RecordBatch) {
             sorted_actual
         );
     }
+}
+
+/// Check query results against expected answers stored in parquet files
+pub fn check_tpch_result(results: &[RecordBatch], answer_dir: &Path, query_id: u32) {
+    let baseline_path = format!("{}/q{}.parquet", answer_dir.display(), query_id);
+    let baseline_file = File::open(baseline_path).unwrap();
+    let mut baseline_batches = Vec::new();
+    let reader = ParquetRecordBatchReaderBuilder::try_new(baseline_file)
+        .unwrap()
+        .build()
+        .unwrap();
+    for batch in reader {
+        baseline_batches.push(batch.unwrap());
+    }
+
+    // Compare answers and result
+    let result_batch =
+        datafusion::arrow::compute::concat_batches(&results[0].schema(), results).unwrap();
+    let answer_batch = datafusion::arrow::compute::concat_batches(
+        &baseline_batches[0].schema(),
+        &baseline_batches,
+    )
+    .unwrap();
+    assert_batch_eq(&answer_batch, &result_batch);
 }
 
 #[cfg(test)]

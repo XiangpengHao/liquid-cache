@@ -1,22 +1,132 @@
-use std::collections::VecDeque;
+use std::{collections::HashMap, ptr::NonNull};
 
 use crate::{
     cache::{CachePolicy, EntryID, cached_data::CachedBatchType},
     sync::Mutex,
 };
 
+use super::doubly_linked_list::{DoublyLinkedList, DoublyLinkedNode, drop_boxed_node};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum QueueKind {
+    Arrow,
+    Liquid,
+    Hybrid,
+    Disk,
+}
+
+#[derive(Debug)]
+struct QueueNode {
+    entry_id: EntryID,
+    queue: QueueKind,
+}
+
+type NodePtr = NonNull<DoublyLinkedNode<QueueNode>>;
+
+#[derive(Default, Debug)]
+struct LiquidQueueInternalState {
+    map: HashMap<EntryID, NodePtr>,
+    arrow: DoublyLinkedList<QueueNode>,
+    liquid: DoublyLinkedList<QueueNode>,
+    hybrid: DoublyLinkedList<QueueNode>,
+    disk: DoublyLinkedList<QueueNode>,
+}
+
+impl LiquidQueueInternalState {
+    unsafe fn list_mut(&mut self, queue: QueueKind) -> &mut DoublyLinkedList<QueueNode> {
+        match queue {
+            QueueKind::Arrow => &mut self.arrow,
+            QueueKind::Liquid => &mut self.liquid,
+            QueueKind::Hybrid => &mut self.hybrid,
+            QueueKind::Disk => &mut self.disk,
+        }
+    }
+
+    unsafe fn push_back(&mut self, queue: QueueKind, mut node_ptr: NodePtr) {
+        unsafe {
+            node_ptr.as_mut().data.queue = queue;
+            self.list_mut(queue).push_back(node_ptr);
+        }
+    }
+
+    unsafe fn detach(&mut self, node_ptr: NodePtr) {
+        unsafe {
+            let queue = node_ptr.as_ref().data.queue;
+            self.list_mut(queue).unlink(node_ptr);
+        }
+    }
+
+    fn upsert_into_queue(&mut self, entry_id: EntryID, target: QueueKind) {
+        if let Some(node_ptr) = self.map.get(&entry_id).copied() {
+            unsafe {
+                self.detach(node_ptr);
+                self.push_back(target, node_ptr);
+            }
+            return;
+        }
+
+        let node = DoublyLinkedNode::new(QueueNode {
+            entry_id,
+            queue: target,
+        });
+        let node_ptr = NonNull::from(Box::leak(node));
+
+        self.map.insert(entry_id, node_ptr);
+        unsafe {
+            self.push_back(target, node_ptr);
+        }
+    }
+
+    fn pop_front(&mut self, queue: QueueKind) -> Option<EntryID> {
+        let list = match queue {
+            QueueKind::Arrow => &mut self.arrow,
+            QueueKind::Liquid => &mut self.liquid,
+            QueueKind::Hybrid => &mut self.hybrid,
+            QueueKind::Disk => &mut self.disk,
+        };
+
+        let head_ptr = list.head()?;
+        let entry_id = unsafe { head_ptr.as_ref().data.entry_id };
+        let node_ptr = self
+            .map
+            .remove(&entry_id)
+            .expect("list head must exist in map");
+        unsafe {
+            list.unlink(node_ptr);
+            drop_boxed_node(node_ptr);
+        }
+        Some(entry_id)
+    }
+}
+
+impl Drop for LiquidQueueInternalState {
+    fn drop(&mut self) {
+        let nodes: Vec<_> = self.map.drain().map(|(_, ptr)| ptr).collect();
+        for node_ptr in nodes {
+            unsafe {
+                match node_ptr.as_ref().data.queue {
+                    QueueKind::Arrow => self.arrow.unlink(node_ptr),
+                    QueueKind::Liquid => self.liquid.unlink(node_ptr),
+                    QueueKind::Hybrid => self.hybrid.unlink(node_ptr),
+                    QueueKind::Disk => self.disk.unlink(node_ptr),
+                }
+                drop_boxed_node(node_ptr);
+            }
+        }
+
+        unsafe {
+            self.arrow.drop_all();
+            self.liquid.drop_all();
+            self.hybrid.drop_all();
+            self.disk.drop_all();
+        }
+    }
+}
+
 /// Cache policy that keeps independent FIFO queues per batch type.
 #[derive(Debug, Default)]
 pub struct LiquidPolicy {
     inner: Mutex<LiquidQueueInternalState>,
-}
-
-#[derive(Default, Debug)]
-struct LiquidQueueInternalState {
-    arrow: VecDeque<EntryID>,
-    liquid: VecDeque<EntryID>,
-    hybrid: VecDeque<EntryID>,
-    disk: VecDeque<EntryID>,
 }
 
 impl LiquidPolicy {
@@ -28,7 +138,23 @@ impl LiquidPolicy {
     }
 }
 
+// SAFETY: Access to raw pointers is protected by the internal `Mutex`.
+unsafe impl Send for LiquidPolicy {}
+unsafe impl Sync for LiquidPolicy {}
+
 impl CachePolicy for LiquidPolicy {
+    fn notify_insert(&self, entry_id: &EntryID, batch_type: CachedBatchType) {
+        let mut inner = self.inner.lock().unwrap();
+        let target = match batch_type {
+            CachedBatchType::MemoryArrow => QueueKind::Arrow,
+            CachedBatchType::MemoryLiquid => QueueKind::Liquid,
+            CachedBatchType::MemoryHybridLiquid => QueueKind::Hybrid,
+            CachedBatchType::DiskLiquid | CachedBatchType::DiskArrow => QueueKind::Disk,
+        };
+
+        inner.upsert_into_queue(*entry_id, target);
+    }
+
     fn find_victim(&self, cnt: usize) -> Vec<EntryID> {
         if cnt == 0 {
             return vec![];
@@ -38,17 +164,17 @@ impl CachePolicy for LiquidPolicy {
         let mut victims = Vec::with_capacity(cnt);
 
         while victims.len() < cnt {
-            if let Some(entry) = inner.arrow.pop_front() {
+            if let Some(entry) = inner.pop_front(QueueKind::Arrow) {
                 victims.push(entry);
                 continue;
             }
 
-            if let Some(entry) = inner.liquid.pop_front() {
+            if let Some(entry) = inner.pop_front(QueueKind::Liquid) {
                 victims.push(entry);
                 continue;
             }
 
-            if let Some(entry) = inner.hybrid.pop_front() {
+            if let Some(entry) = inner.pop_front(QueueKind::Hybrid) {
                 victims.push(entry);
                 continue;
             }
@@ -57,25 +183,6 @@ impl CachePolicy for LiquidPolicy {
         }
 
         victims
-    }
-
-    fn notify_insert(&self, entry_id: &EntryID, batch_type: CachedBatchType) {
-        let mut inner = self.inner.lock().unwrap();
-
-        match batch_type {
-            CachedBatchType::MemoryArrow => {
-                inner.arrow.push_back(*entry_id);
-            }
-            CachedBatchType::MemoryLiquid => {
-                inner.liquid.push_back(*entry_id);
-            }
-            CachedBatchType::MemoryHybridLiquid => {
-                inner.hybrid.push_back(*entry_id);
-            }
-            CachedBatchType::DiskLiquid | CachedBatchType::DiskArrow => {
-                inner.disk.push_back(*entry_id);
-            }
-        }
     }
 
     fn notify_access(&self, _entry_id: &EntryID, _batch_type: CachedBatchType) {}
@@ -151,5 +258,35 @@ mod tests {
 
         // Only the disk entry remains and should still not be evicted.
         assert!(policy.find_victim(1).is_empty());
+    }
+
+    #[test]
+    fn test_reinsert_moves_entry_to_back_of_queue() {
+        let policy = LiquidPolicy::new();
+
+        let first = entry(1);
+        let second = entry(2);
+
+        policy.notify_insert(&first, CachedBatchType::MemoryArrow);
+        policy.notify_insert(&second, CachedBatchType::MemoryArrow);
+
+        // Reinserting should refresh the entry as the newest arrow batch.
+        policy.notify_insert(&first, CachedBatchType::MemoryArrow);
+
+        assert_eq!(policy.find_victim(1), vec![second]);
+        assert_eq!(policy.find_victim(1), vec![first]);
+    }
+
+    #[test]
+    fn test_reinsert_handles_cross_queue_move() {
+        let policy = LiquidPolicy::new();
+
+        let entry_id = entry(42);
+
+        policy.notify_insert(&entry_id, CachedBatchType::MemoryArrow);
+        policy.notify_insert(&entry_id, CachedBatchType::MemoryLiquid);
+
+        let victims = policy.find_victim(2);
+        assert_eq!(victims, vec![entry_id]);
     }
 }
