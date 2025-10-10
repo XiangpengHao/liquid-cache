@@ -227,8 +227,7 @@ unsafe fn boolean_buffer_and_then_bmi2(
             let dst_off = full_words * 8;
             unsafe {
                 let dst = core::slice::from_raw_parts_mut(out_ptr, byte_len);
-                dst[dst_off..dst_off + tail_bytes]
-                    .copy_from_slice(&result_bytes[..tail_bytes]);
+                dst[dst_off..dst_off + tail_bytes].copy_from_slice(&result_bytes[..tail_bytes]);
             }
         }
     }
