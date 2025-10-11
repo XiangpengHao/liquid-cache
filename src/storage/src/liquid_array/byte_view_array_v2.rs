@@ -207,6 +207,27 @@ impl<B: FsstBuffer> LiquidByteViewArrayV2<B> {
 
         Ok(result)
     }
+
+    /// Create LiquidByteViewArrayV2 from parts
+    pub(crate) fn from_parts(
+        dictionary_keys: UInt16Array,
+        offset_views: &[OffsetView],
+        fsst_buffer: B,
+        original_arrow_type: ArrowByteType,
+        shared_prefix: Vec<u8>,
+        compressor: Arc<Compressor>,
+    ) -> Self {
+        let compact_offset_views = CompactOffsetViewGroup::from_offset_views(offset_views);
+        
+        Self {
+            dictionary_keys,
+            compact_offset_views,
+            fsst_buffer,
+            original_arrow_type,
+            shared_prefix,
+            compressor,
+        }
+    }
 }
 
 impl LiquidByteViewArrayV2<MemoryBuffer> {
@@ -253,7 +274,7 @@ impl LiquidByteViewArrayV2<MemoryBuffer> {
         }
 
         // TODO: Convert directly to compact offset view 
-        let mut offset_views: Vec<CompactOffsetView> = Vec::new();
+        let mut offset_views: Vec<OffsetView> = Vec::new();
         if view_header.offset_views_size > 0 {
             let chunk = bytes.slice(cursor..offsets_end);
             if !chunk.len().is_multiple_of(12) {
@@ -267,7 +288,7 @@ impl LiquidByteViewArrayV2<MemoryBuffer> {
                 let mut prefix7: [u8; 7] = [0; 7];
                 prefix7.copy_from_slice(&chunk[base + 4..base + 11]);
                 let len = chunk[base + 11];
-                offset_views.push(CompactOffsetView::from_parts(off, prefix7, len));
+                offset_views.push(OffsetView::from_parts(off, prefix7, len));
             }
         }
         cursor = offsets_end;
@@ -291,27 +312,116 @@ impl LiquidByteViewArrayV2<MemoryBuffer> {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub(crate) struct OffsetView {
+    offset: u32,
+    prefix7: [u8; 7],
+    len: u8,
+}
+
+
+#[derive(Debug, Clone, Copy)]
 #[repr(C)]
 struct CompactOffsetViewHeader {
     slope: u32,    
     intercept: u32,
     offset_bytes: u8,         // 1, 2, or 4 bytes per offset
-    padding: [u8; 3],
+    // padding: [u8; 3],
 }
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
-pub(crate) struct CompactOffsetView<const N: usize> {
-    offset_residual: [u8; N],
-    prefix7: [u8; 7],
-    len: u8,
+pub enum CompactOffsetView {
+    OneByte {
+        offset_residual: u8,
+        prefix7: [u8; 7],
+        len: u8,
+    },
+    TwoBytes {
+        offset_residual: u16,
+        prefix7: [u8; 7],
+        len: u8,
+    },
+    FourBytes {
+        offset_residual: u32,
+        prefix7: [u8; 7],
+        len: u8,
+    },
 }
 
-const _: () = if std::mem::size_of::<CompactOffsetView>() != 12 {
-    panic!("CompactOffsetView must be 12 bytes")
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+struct CompactOffsetViewGroup{
+    header: CompactOffsetViewHeader,
+    offset_residuals: Arc<[CompactOffsetView]>
+}
+
+const _: () = if std::mem::size_of::<OffsetView>() != 12 {
+    panic!("OffsetView must be 12 bytes")
 };
 
-impl CompactOffsetView {
+impl CompactOffsetViewGroup {
+    fn from_offset_views(offset_views: &[OffsetView]) -> Self {
+
+        let offsets = offset_views.iter().map(|offset_view| offset_view.offset()).collect();
+
+        let min_offset = offsets.iter().min().unwrap();
+        let max_offset = offsets.iter().max().unwrap();
+
+        let slope = (max_offset - min_offset) / offset_views.len();
+        let intercept = min_offset;
+
+        let offset_residuals: Vec<i32>  = Vec::new();
+        for (index, offset) in offsets.iter().enumerate() {
+            let y = slope * index + intercept;
+            offset_residuals.push(offset - y);
+        }
+
+        let min_residual = offset_residuals.iter().min().unwrap();
+        let max_residual = offset_residuals.iter().min().unwrap();
+
+        let offset_bytes = if *min_residual >= i32::from(i8::MIN) && max_residual <= i32::from(i8::MAX) {
+            1
+        }
+        else if min_residual >= i32::from(i16::MIN) && max_residual <= i32::from(i16::MAX){
+            2
+        }
+        else {
+            4
+        };
+
+        let header = CompactOffsetViewHeader {
+            slope,    
+            intercept,
+            offset_bytes,
+        };
+
+        let compact_offset_residuals = Vec::new();
+
+        for (index,residual) in offset_residuals.iter().enumerate() {
+            
+            if offset_bytes == 1 {
+                let compact_offset_view = CompactOffsetView {
+                    OneByte {
+                        offset_residuals., //convert from i32 to i8
+                        offset_views[index].prefix().clone(),
+                        offset_views[index].len()
+                    }
+                };
+                compact_offset_residuals.push(compact_offset_view);
+            }
+        };
+
+        CompactOffsetViewGroup { 
+            header, 
+            offset_residuals.into()
+        }
+
+    }
+}
+
+impl OffsetView {
     /// Construct from offset and the full suffix bytes (after shared prefix).
     /// Embeds up to `prefix_len()` bytes into `prefix7` and stores length (or 255 if >=255).
     pub fn new(offset: u32, suffix_bytes: &[u8]) -> Self {
@@ -668,7 +778,7 @@ impl LiquidByteViewArrayV2<DiskBuffer> {
 
         let needle_suffix = &needle[shared_prefix_len..];
         let needle_len = needle_suffix.len();
-        let prefix_len = CompactOffsetView::prefix_len();
+        let prefix_len = OffsetView::prefix_len();
 
         let num_unique = self.offset_views.len().saturating_sub(1);
         let mut dict_results = vec![false; num_unique];
@@ -835,7 +945,8 @@ pub struct LiquidByteViewArrayV2<B: FsstBuffer> {
     dictionary_keys: UInt16Array,
     /// Offset views containing offset (u32) and prefix (8 bytes) - one per unique value
     /// Stored as `Arc<[CompactOffsetView]>` for cheap clones when passing across layers (e.g., soak/squeeze).
-    offset_views: Arc<[CompactOffsetView]>,
+    // TODO: Use the correct data structure
+    compact_offset_views: CompactOffsetViewGroup,
     /// FSST-compressed buffer (can be in memory or on disk)
     fsst_buffer: B,
     /// Used to convert back to the original arrow type
@@ -1061,6 +1172,7 @@ impl<B: FsstBuffer> LiquidByteViewArrayV2<B> {
     pub fn get_detailed_memory_usage(&self) -> ByteViewArrayMemoryUsage {
         ByteViewArrayMemoryUsage {
             dictionary_key: self.dictionary_keys.get_array_memory_size(),
+            // TODO: Update memory usage for compact offset views
             offsets: self.offset_views.len() * std::mem::size_of::<CompactOffsetView>(),
             fsst_buffer: self.fsst_buffer.get_array_memory_size(),
             shared_prefix: self.shared_prefix.len(),
@@ -1219,24 +1331,25 @@ impl<B: FsstBuffer> LiquidByteViewArrayV2<B> {
                 panic!("Unsupported dictionary value type")
             };
 
-            // Build CompactOffsetView from the suffix bytes directly to avoid leaking encoding details
+            // Build OffsetView from the suffix bytes directly to avoid leaking encoding details
             let remaining_bytes = if shared_prefix_len < value_bytes.len() {
                 &value_bytes[shared_prefix_len..]
             } else {
                 &[]
             };
 
-            offset_views.push(CompactOffsetView::new(*byte_offset, remaining_bytes));
+            offset_views.push(OffsetView::new(*byte_offset, remaining_bytes));
         }
 
         assert_eq!(values.len(), byte_offsets.len() - 1);
-        offset_views.push(CompactOffsetView::from_parts(
+        offset_views.push(OffsetView::from_parts(
             byte_offsets[values.len()],
             [0u8; 7],
             0,
         ));
 
-        // TODO: Convert to compact offset view 
+        // TODO: Convert to compact offset view here
+
         LiquidByteViewArrayV2 {
             dictionary_keys: keys,
             offset_views: Arc::from(offset_views),
@@ -1378,7 +1491,7 @@ impl<B: FsstBuffer> LiquidByteViewArrayV2<B> {
             let prefix7 = self.offset_views[i].prefix7();
 
             // Compare prefix with needle_suffix
-            let cmp_len = std::cmp::min(CompactOffsetView::prefix_len(), needle_suffix.len());
+            let cmp_len = std::cmp::min(OffsetView::prefix_len(), needle_suffix.len());
             let prefix_slice = &prefix7[..cmp_len];
             let needle_slice = &needle_suffix[..cmp_len];
 
@@ -1651,8 +1764,8 @@ mod tests {
 
     #[test]
     fn test_dictionary_view_structure() {
-        // Test CompactOffsetView structure
-        let offset_view = CompactOffsetView::from_parts(1024, [1, 2, 3, 4, 5, 6, 7], 7);
+        // Test OffsetView structure
+        let offset_view = OffsetView::from_parts(1024, [1, 2, 3, 4, 5, 6, 7], 7);
         assert_eq!(offset_view.offset(), 1024);
         assert_eq!(offset_view.prefix7(), &[1, 2, 3, 4, 5, 6, 7]);
 
