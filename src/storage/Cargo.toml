@@ -28,6 +28,7 @@ congee = { workspace = true }
 log = { workspace = true }
 parquet = { workspace = true }
 fastrace = { workspace = true }
+rand = "0.8"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 io-uring = "0.7.10"
