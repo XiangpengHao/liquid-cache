@@ -17,6 +17,7 @@ use fastlanes::BitPacking;
 use num_traits::{AsPrimitive, FromPrimitive};
 
 use super::LiquidDataType;
+use super::squeezed_date32_array::{Date32Field, SqueezedDate32Array};
 use crate::liquid_array::hybrid_primitive_array::{
     LiquidPrimitiveClampedArray, LiquidPrimitiveQuantizedArray,
 };
@@ -27,7 +28,6 @@ use crate::liquid_array::{LiquidArray, LiquidArrayRef, LiquidHybridArrayRef, Pri
 use crate::utils::get_bit_width;
 use arrow::datatypes::ArrowNativeType;
 use bytes::Bytes;
-use super::squeezed_date32_array::{Date32Field, SqueezedDate32Array};
 
 /// Squeeze policy for primitive integer arrays.
 /// Users can choose whether to clamp or quantize when squeezing.

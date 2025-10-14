@@ -52,18 +52,20 @@ impl SqueezedDate32Array {
         let mut max_component: i32 = i32::MIN;
 
         // Fast path: if all nulls, return a null bit-packed array of the same length.
-        if let Some(nulls_buf) = &nulls {
-            if nulls_buf.null_count() == values.len() {
-                return Self {
-                    field,
-                    bit_packed: BitPackedArray::new_null_array(values.len()),
-                    reference_value: 0,
-                };
-            }
+        if let Some(nulls_buf) = &nulls
+            && nulls_buf.null_count() == values.len()
+        {
+            return Self {
+                field,
+                bit_packed: BitPackedArray::new_null_array(values.len()),
+                reference_value: 0,
+            };
         }
 
         for (idx, &days) in values.iter().enumerate() {
-            if nulls.as_ref().is_some_and(|n| n.is_null(idx)) {
+            if let Some(nulls_buf) = &nulls
+                && nulls_buf.is_null(idx)
+            {
                 continue;
             }
             let (year, month, day) = ymd_from_epoch_days(days);
@@ -198,7 +200,7 @@ fn ymd_from_epoch_days(days_since_epoch: i32) -> (i32, u32, u32) {
     } else {
         (z - 146_096) / 146_097
     };
-    let doe = (z - era * 146_097) as i64; // [0, 146096]
+    let doe = z - era * 146_097; // [0, 146096]
     let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
     let mut y = yoe + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
