@@ -27,6 +27,7 @@ use crate::liquid_array::{LiquidArray, LiquidArrayRef, LiquidHybridArrayRef, Pri
 use crate::utils::get_bit_width;
 use arrow::datatypes::ArrowNativeType;
 use bytes::Bytes;
+use super::squeezed_date32_array::{Date32Field, SqueezedDate32Array};
 
 /// Squeeze policy for primitive integer arrays.
 /// Users can choose whether to clamp or quantize when squeezing.
@@ -383,6 +384,13 @@ where
                 Some((Arc::new(hybrid) as LiquidHybridArrayRef, full_bytes))
             }
         }
+    }
+}
+
+impl LiquidPrimitiveArray<Date32Type> {
+    /// Convenience: build a `SqueezedDate32Array` by extracting the specified field.
+    pub fn squeeze_date32_component(&self, field: Date32Field) -> SqueezedDate32Array {
+        SqueezedDate32Array::from_liquid_date32(self, field)
     }
 }
 

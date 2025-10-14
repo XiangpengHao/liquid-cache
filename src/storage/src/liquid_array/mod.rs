@@ -10,6 +10,7 @@ pub mod ipc;
 mod linear_integer_array;
 mod primitive_array;
 pub mod raw;
+mod squeezed_date32_array;
 #[cfg(test)]
 mod tests;
 pub(crate) mod utils;
@@ -39,6 +40,7 @@ pub use primitive_array::{
     LiquidI64Array, LiquidPrimitiveArray, LiquidPrimitiveType, LiquidU8Array, LiquidU16Array,
     LiquidU32Array, LiquidU64Array,
 };
+pub use squeezed_date32_array::{Date32Field, SqueezedDate32Array};
 
 use crate::liquid_array::byte_view_array::MemoryBuffer;
 
