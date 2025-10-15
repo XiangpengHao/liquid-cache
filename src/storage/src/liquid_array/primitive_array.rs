@@ -237,7 +237,7 @@ where
     /// Create a Liquid primitive delta array from an Arrow primitive array.
     pub fn from_arrow_array(arrow_array: PrimitiveArray<T>) -> LiquidPrimitiveDeltaArray<T> {
         use arrow::array::Array;
-        
+
         let len = arrow_array.len();
         // check if entire array is already null
         if arrow_array.null_count() == len {
@@ -250,7 +250,8 @@ where
         let (_dt, values, nulls) = arrow_array.clone().into_parts();
         let vals: Vec<T::Native> = values.to_vec();
 
-        type UnsignedNative<TT> = <<TT as LiquidPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native;
+        type UnsignedNative<TT> =
+            <<TT as LiquidPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native;
         let mut out: Vec<UnsignedNative<T>> = Vec::with_capacity(len);
         let mut max_value: UnsignedNative<T> = UnsignedNative::<T>::ZERO;
         let mut anchor: T::Native = T::Native::ZERO;
@@ -266,8 +267,11 @@ where
                 // zig zag encoding
                 let delta_i64: i64 = delta.as_();
                 let zigzag: u64 = ((delta_i64 << 1) ^ (delta_i64 >> 63)) as u64;
-                let delta_unsigned: UnsignedNative<T> = UnsignedNative::<T>::usize_as(zigzag as usize);
-                if delta_unsigned > max_value { max_value = delta_unsigned; }
+                let delta_unsigned: UnsignedNative<T> =
+                    UnsignedNative::<T>::usize_as(zigzag as usize);
+                if delta_unsigned > max_value {
+                    max_value = delta_unsigned;
+                }
                 out.push(delta_unsigned);
                 prev = cur;
             }
@@ -294,8 +298,11 @@ where
                 // zig zag encoding
                 let delta_i64: i64 = delta.as_();
                 let zigzag: u64 = ((delta_i64 << 1) ^ (delta_i64 >> 63)) as u64;
-                let delta_unsigned: UnsignedNative<T> = UnsignedNative::<T>::usize_as(zigzag as usize);
-                if delta_unsigned > max_value { max_value = delta_unsigned; }
+                let delta_unsigned: UnsignedNative<T> =
+                    UnsignedNative::<T>::usize_as(zigzag as usize);
+                if delta_unsigned > max_value {
+                    max_value = delta_unsigned;
+                }
                 out.push(delta_unsigned);
                 prev = cur;
             }
@@ -303,9 +310,10 @@ where
 
         let bit_width = get_bit_width(max_value.as_());
         let values = ScalarBuffer::from_iter(out.into_iter());
-        let unsigned_array = PrimitiveArray::<<T as LiquidPrimitiveType>::UnSignedType>::new(values, nulls);
+        let unsigned_array =
+            PrimitiveArray::<<T as LiquidPrimitiveType>::UnSignedType>::new(values, nulls);
         let bit_packed_array = BitPackedArray::from_primitive(unsigned_array, bit_width);
-    
+
         Self {
             bit_packed: bit_packed_array,
             reference_value: anchor,
@@ -517,11 +525,11 @@ where
         let unsigned_array = self.bit_packed.to_primitive();
         let (_data_type, delta_values, _nulls) = unsigned_array.into_parts();
         let nulls = self.bit_packed.nulls();
-        
+
         // Reconstruct original values by applying deltas
         let mut reconstructed = Vec::with_capacity(delta_values.len());
         let mut current_value = self.reference_value; // anchor
-        
+
         if let Some(nulls) = nulls {
             let mut have_prev = false;
             for (i, &delta_unsigned) in delta_values.iter().enumerate() {
@@ -999,10 +1007,10 @@ mod tests {
     fn test_delta_encoding_basic_roundtrip() {
         let original = vec![Some(1), Some(3), Some(6), Some(10), Some(15)];
         let array = PrimitiveArray::<Int32Type>::from(original.clone());
-        
+
         let liquid_delta = LiquidPrimitiveDeltaArray::<Int32Type>::from_arrow_array(array.clone());
         let result_array = liquid_delta.to_arrow_array();
-        
+
         assert_eq!(result_array.as_ref(), &array);
     }
 
@@ -1010,10 +1018,10 @@ mod tests {
     fn test_delta_encoding_with_nulls() {
         let original = vec![Some(1), None, Some(4), Some(7), None, Some(12)];
         let array = PrimitiveArray::<Int32Type>::from(original.clone());
-        
+
         let liquid_delta = LiquidPrimitiveDeltaArray::<Int32Type>::from_arrow_array(array.clone());
         let result_array = liquid_delta.to_arrow_array();
-        
+
         assert_eq!(result_array.as_ref(), &array);
     }
 
@@ -1021,12 +1029,12 @@ mod tests {
     fn test_delta_encoding_serialization() {
         let original = vec![Some(1), Some(3), Some(6), Some(10), Some(15)];
         let array = PrimitiveArray::<Int32Type>::from(original.clone());
-        
+
         let liquid_delta = LiquidPrimitiveDeltaArray::<Int32Type>::from_arrow_array(array.clone());
         let bytes = liquid_delta.to_bytes();
         let reconstructed = LiquidPrimitiveDeltaArray::<Int32Type>::from_bytes(bytes.into());
         let result_array = reconstructed.to_arrow_array();
-        
+
         assert_eq!(result_array.as_ref(), &array);
     }
 
@@ -1035,14 +1043,20 @@ mod tests {
         // Sequential data: delta encoding performs better
         let sequential_data: Vec<Option<i32>> = (0..1000).map(Some).collect();
         let array = PrimitiveArray::<Int32Type>::from(sequential_data);
-        
+
         let liquid_regular = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(array.clone());
         let liquid_delta = LiquidPrimitiveDeltaArray::<Int32Type>::from_arrow_array(array);
-        
+
         let regular_size = liquid_regular.get_array_memory_size();
         let delta_size = liquid_delta.get_array_memory_size();
-        
-        println!("Sequential data - Regular: {} bytes, Delta: {} bytes", regular_size, delta_size);
-        assert!(delta_size <= regular_size, "Delta encoding should be more efficient for sequential data");
+
+        println!(
+            "Sequential data - Regular: {} bytes, Delta: {} bytes",
+            regular_size, delta_size
+        );
+        assert!(
+            delta_size <= regular_size,
+            "Delta encoding should be more efficient for sequential data"
+        );
     }
 }

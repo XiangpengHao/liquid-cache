@@ -28,7 +28,6 @@ congee = { workspace = true }
 log = { workspace = true }
 parquet = { workspace = true }
 fastrace = { workspace = true }
-rand = "0.8"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 io-uring = "0.7.10"
@@ -95,4 +94,9 @@ harness = false
 [[bench]]
 name = "squeeze_integer_study"
 path = "study/squeeze_integer.rs"
+harness = false
+
+[[bench]]
+name = "primitive_encoding"
+path = "bench/primitive_encoding.rs"
 harness = false

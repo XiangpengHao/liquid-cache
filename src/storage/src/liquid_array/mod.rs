@@ -8,7 +8,7 @@ mod float_array;
 mod hybrid_primitive_array;
 pub mod ipc;
 mod linear_integer_array;
-mod primitive_array;
+pub mod primitive_array;
 pub mod raw;
 #[cfg(test)]
 mod tests;
