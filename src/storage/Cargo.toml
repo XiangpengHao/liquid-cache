@@ -97,6 +97,6 @@ path = "study/squeeze_integer.rs"
 harness = false
 
 [[bench]]
-name = "primitive_encoding"
-path = "bench/primitive_encoding.rs"
+name = "squeeze_date32"
+path = "bench/squeeze_date32.rs"
 harness = false
