@@ -1,6 +1,7 @@
 #![warn(missing_docs)]
 #![doc = include_str!("../README.md")]
 
+mod date_extract_opt;
 #[cfg(test)]
 mod tests;
 
