@@ -256,37 +256,17 @@ where
         let mut max_value: UnsignedNative<T> = UnsignedNative::<T>::ZERO;
         let mut anchor: T::Native = T::Native::ZERO;
 
-        if nulls.is_none() {
-            // No nulls: first value is anchor, remainder are deltas with their previous values
-            anchor = vals[0];
-            let mut prev: T::Native = anchor;
-            out.push(UnsignedNative::<T>::ZERO); // anchor will have a difference of 0
-            for i in 1..len {
-                let cur = vals[i];
-                let delta: T::Native = cur.sub_wrapping(prev);
-                // zig zag encoding
-                let delta_i64: i64 = delta.as_();
-                let zigzag: u64 = ((delta_i64 << 1) ^ (delta_i64 >> 63)) as u64;
-                let delta_unsigned: UnsignedNative<T> =
-                    UnsignedNative::<T>::usize_as(zigzag as usize);
-                if delta_unsigned > max_value {
-                    max_value = delta_unsigned;
-                }
-                out.push(delta_unsigned);
-                prev = cur;
-            }
-        } else {
+        if let Some(_nb) = &nulls {
             // Nulls present: write 0 for nulls; prev will the last prev non-null value
             let nb = nulls.as_ref().unwrap();
             let mut have_prev = false;
             let mut prev: T::Native = T::Native::ZERO;
 
-            for i in 0..len {
+            for (i, &cur) in vals.iter().enumerate() {
                 if !nb.is_valid(i) {
                     out.push(UnsignedNative::<T>::ZERO);
                     continue;
                 }
-                let cur = vals[i];
                 if !have_prev {
                     anchor = cur;
                     prev = cur;
@@ -306,10 +286,28 @@ where
                 out.push(delta_unsigned);
                 prev = cur;
             }
+        } else {
+             // No nulls: first value is anchor, remainder are deltas with their previous values
+            anchor = vals[0];
+            let mut prev: T::Native = anchor;
+            out.push(UnsignedNative::<T>::ZERO); // anchor will have a difference of 0
+            for &cur in vals.iter().skip(1) {
+                let delta: T::Native = cur.sub_wrapping(prev);
+                // zig zag encoding
+                let delta_i64: i64 = delta.as_();
+                let zigzag: u64 = ((delta_i64 << 1) ^ (delta_i64 >> 63)) as u64;
+                let delta_unsigned: UnsignedNative<T> =
+                    UnsignedNative::<T>::usize_as(zigzag as usize);
+                if delta_unsigned > max_value {
+                    max_value = delta_unsigned;
+                }
+                out.push(delta_unsigned);
+                prev = cur;
+            }
         }
 
         let bit_width = get_bit_width(max_value.as_());
-        let values = ScalarBuffer::from_iter(out.into_iter());
+        let values = ScalarBuffer::from_iter(out);
         let unsigned_array =
             PrimitiveArray::<<T as LiquidPrimitiveType>::UnSignedType>::new(values, nulls);
         let bit_packed_array = BitPackedArray::from_primitive(unsigned_array, bit_width);
@@ -562,7 +560,7 @@ where
             }
         }
 
-        let values = ScalarBuffer::from_iter(reconstructed.into_iter());
+        let values = ScalarBuffer::from_iter(reconstructed);
         Arc::new(PrimitiveArray::<T>::new(values, nulls.cloned()))
     }
 

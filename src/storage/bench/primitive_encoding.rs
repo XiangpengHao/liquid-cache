@@ -19,7 +19,7 @@ fn main() {
         (
             "Random",
             (0..size)
-                .map(|_| rng.gen_range(0..1_000_000))
+                .map(|_| rng.random_range(0..1_000_000))
                 .collect::<Vec<i32>>(),
         ),
     ];
