@@ -1,6 +1,7 @@
 #![warn(missing_docs)]
 #![doc = include_str!("../README.md")]
 
+mod date_extract_opt;
 #[cfg(test)]
 mod tests;
 
@@ -16,6 +17,8 @@ use liquid_cache_parquet::{LiquidCache, LiquidCacheRef, rewrite_data_source_plan
 use liquid_cache_storage::cache::squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict};
 use liquid_cache_storage::cache_policies::CachePolicy;
 use liquid_cache_storage::cache_policies::LiquidPolicy;
+
+pub use date_extract_opt::DateExtractOptimizer;
 
 pub use liquid_cache_common as common;
 pub use liquid_cache_storage as storage;

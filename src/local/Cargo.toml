@@ -21,4 +21,5 @@ fastrace = { workspace = true }
 
 [dev-dependencies]
 insta = { version = "1.43.2" }
+parquet = { workspace = true }
 tempfile = "3.23.0"
