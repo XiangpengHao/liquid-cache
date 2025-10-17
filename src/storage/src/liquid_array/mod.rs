@@ -8,7 +8,7 @@ mod float_array;
 mod hybrid_primitive_array;
 pub mod ipc;
 mod linear_integer_array;
-pub mod primitive_array;
+mod primitive_array;
 pub mod raw;
 mod squeezed_date32_array;
 #[cfg(test)]
@@ -37,8 +37,8 @@ pub use linear_integer_array::{
 pub use primitive_array::IntegerSqueezePolicy;
 pub use primitive_array::{
     LiquidDate32Array, LiquidDate64Array, LiquidI8Array, LiquidI16Array, LiquidI32Array,
-    LiquidI64Array, LiquidPrimitiveArray, LiquidPrimitiveType, LiquidU8Array, LiquidU16Array,
-    LiquidU32Array, LiquidU64Array,
+    LiquidI64Array, LiquidPrimitiveArray, LiquidPrimitiveDeltaArray, LiquidPrimitiveType,
+    LiquidU8Array, LiquidU16Array, LiquidU32Array, LiquidU64Array,
 };
 pub use squeezed_date32_array::{Date32Field, SqueezedDate32Array};
 

@@ -1,7 +1,6 @@
 use datafusion::arrow::{array::PrimitiveArray, buffer::ScalarBuffer, datatypes::Int32Type};
-use liquid_cache_storage::liquid_array::LiquidArray;
-use liquid_cache_storage::liquid_array::primitive_array::{
-    LiquidPrimitiveArray, LiquidPrimitiveDeltaArray,
+use liquid_cache_storage::liquid_array::{
+    LiquidArray, LiquidPrimitiveArray, LiquidPrimitiveDeltaArray,
 };
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use std::time::Instant;
