@@ -287,7 +287,7 @@ where
                 prev = cur;
             }
         } else {
-             // No nulls: first value is anchor, remainder are deltas with their previous values
+            // No nulls: first value is anchor, remainder are deltas with their previous values
             anchor = vals[0];
             let mut prev: T::Native = anchor;
             out.push(UnsignedNative::<T>::ZERO); // anchor will have a difference of 0
