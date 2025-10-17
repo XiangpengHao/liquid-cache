@@ -17,7 +17,6 @@ use fastlanes::BitPacking;
 use num_traits::{AsPrimitive, FromPrimitive};
 
 use super::LiquidDataType;
-use super::squeezed_date32_array::{Date32Field, SqueezedDate32Array};
 use crate::liquid_array::hybrid_primitive_array::{
     LiquidPrimitiveClampedArray, LiquidPrimitiveQuantizedArray,
 };
@@ -121,6 +120,13 @@ pub struct LiquidPrimitiveArray<T: LiquidPrimitiveType> {
     squeeze_policy: IntegerSqueezePolicy,
 }
 
+/// Liquid's primitive array which uses delta encoding for compression
+#[derive(Debug, Clone)]
+pub struct LiquidPrimitiveDeltaArray<T: LiquidPrimitiveType> {
+    bit_packed: BitPackedArray<T::UnSignedType>,
+    reference_value: T::Native,
+}
+
 impl<T> LiquidPrimitiveArray<T>
 where
     T: LiquidPrimitiveType,
@@ -206,6 +212,110 @@ where
     pub fn with_squeeze_policy(mut self, policy: IntegerSqueezePolicy) -> Self {
         self.squeeze_policy = policy;
         self
+    }
+}
+
+impl<T> LiquidPrimitiveDeltaArray<T>
+where
+    T: LiquidPrimitiveType,
+{
+    /// Get the memory size of the Liquid primitive delta array.
+    pub fn get_array_memory_size(&self) -> usize {
+        self.bit_packed.get_array_memory_size() + std::mem::size_of::<T::Native>()
+    }
+
+    /// Get the length of the Liquid primitive delta array.
+    pub fn len(&self) -> usize {
+        self.bit_packed.len()
+    }
+
+    /// Check if the Liquid primitive delta array is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Create a Liquid primitive delta array from an Arrow primitive array.
+    pub fn from_arrow_array(arrow_array: PrimitiveArray<T>) -> LiquidPrimitiveDeltaArray<T> {
+        use arrow::array::Array;
+
+        let len = arrow_array.len();
+        // check if entire array is already null
+        if arrow_array.null_count() == len {
+            return Self {
+                bit_packed: BitPackedArray::new_null_array(len),
+                reference_value: T::Native::ZERO,
+            };
+        }
+
+        let (_dt, values, nulls) = arrow_array.clone().into_parts();
+        let vals: Vec<T::Native> = values.to_vec();
+
+        type UnsignedNative<TT> =
+            <<TT as LiquidPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native;
+        let mut out: Vec<UnsignedNative<T>> = Vec::with_capacity(len);
+        let mut max_value: UnsignedNative<T> = UnsignedNative::<T>::ZERO;
+        let mut anchor: T::Native = T::Native::ZERO;
+
+        if let Some(_nb) = &nulls {
+            // Nulls present: write 0 for nulls; prev will the last prev non-null value
+            let nb = nulls.as_ref().unwrap();
+            let mut have_prev = false;
+            let mut prev: T::Native = T::Native::ZERO;
+
+            for (i, &cur) in vals.iter().enumerate() {
+                if !nb.is_valid(i) {
+                    out.push(UnsignedNative::<T>::ZERO);
+                    continue;
+                }
+                if !have_prev {
+                    anchor = cur;
+                    prev = cur;
+                    have_prev = true;
+                    out.push(UnsignedNative::<T>::ZERO);
+                    continue;
+                }
+                let delta: T::Native = cur.sub_wrapping(prev);
+                // zig zag encoding
+                let delta_i64: i64 = delta.as_();
+                let zigzag: u64 = ((delta_i64 << 1) ^ (delta_i64 >> 63)) as u64;
+                let delta_unsigned: UnsignedNative<T> =
+                    UnsignedNative::<T>::usize_as(zigzag as usize);
+                if delta_unsigned > max_value {
+                    max_value = delta_unsigned;
+                }
+                out.push(delta_unsigned);
+                prev = cur;
+            }
+        } else {
+            // No nulls: first value is anchor, remainder are deltas with their previous values
+            anchor = vals[0];
+            let mut prev: T::Native = anchor;
+            out.push(UnsignedNative::<T>::ZERO); // anchor will have a difference of 0
+            for &cur in vals.iter().skip(1) {
+                let delta: T::Native = cur.sub_wrapping(prev);
+                // zig zag encoding
+                let delta_i64: i64 = delta.as_();
+                let zigzag: u64 = ((delta_i64 << 1) ^ (delta_i64 >> 63)) as u64;
+                let delta_unsigned: UnsignedNative<T> =
+                    UnsignedNative::<T>::usize_as(zigzag as usize);
+                if delta_unsigned > max_value {
+                    max_value = delta_unsigned;
+                }
+                out.push(delta_unsigned);
+                prev = cur;
+            }
+        }
+
+        let bit_width = get_bit_width(max_value.as_());
+        let values = ScalarBuffer::from_iter(out);
+        let unsigned_array =
+            PrimitiveArray::<<T as LiquidPrimitiveType>::UnSignedType>::new(values, nulls);
+        let bit_packed_array = BitPackedArray::from_primitive(unsigned_array, bit_width);
+
+        Self {
+            bit_packed: bit_packed_array,
+            reference_value: anchor,
+        }
     }
 }
 
@@ -387,10 +497,118 @@ where
     }
 }
 
-impl LiquidPrimitiveArray<Date32Type> {
-    /// Convenience: build a `SqueezedDate32Array` by extracting the specified field.
-    pub fn squeeze_date32_component(&self, field: Date32Field) -> SqueezedDate32Array {
-        SqueezedDate32Array::from_liquid_date32(self, field)
+impl<T> LiquidArray for LiquidPrimitiveDeltaArray<T>
+where
+    T: LiquidPrimitiveType + super::PrimitiveKind,
+{
+    fn get_array_memory_size(&self) -> usize {
+        self.get_array_memory_size()
+    }
+
+    fn len(&self) -> usize {
+        self.len()
+    }
+
+    fn original_arrow_data_type(&self) -> DataType {
+        T::DATA_TYPE.clone()
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    #[inline]
+    fn to_arrow_array(&self) -> ArrayRef {
+        // Reconstruct original values from deltas
+        let unsigned_array = self.bit_packed.to_primitive();
+        let (_data_type, delta_values, _nulls) = unsigned_array.into_parts();
+        let nulls = self.bit_packed.nulls();
+
+        // Reconstruct original values by applying deltas
+        let mut reconstructed = Vec::with_capacity(delta_values.len());
+        let mut current_value = self.reference_value; // anchor
+
+        if let Some(nulls) = nulls {
+            let mut have_prev = false;
+            for (i, &delta_unsigned) in delta_values.iter().enumerate() {
+                if !nulls.is_valid(i) {
+                    reconstructed.push(T::Native::ZERO); // Will be masked out by nulls
+                    continue;
+                }
+                if !have_prev {
+                    // First non-null value is the anchor
+                    reconstructed.push(current_value);
+                    have_prev = true;
+                } else {
+                    // Apply delta to get next value
+                    let zigzag: u64 = delta_unsigned.as_();
+                    let delta_i64 = (zigzag >> 1) as i64 ^ -((zigzag & 1) as i64);
+                    let delta: T::Native = T::Native::from_i64(delta_i64).unwrap();
+                    current_value = current_value.add_wrapping(delta);
+                    reconstructed.push(current_value);
+                }
+            }
+        } else {
+            // No nulls case
+            reconstructed.push(current_value); // First value is anchor
+            for &delta_unsigned in delta_values.iter().skip(1) {
+                let zigzag: u64 = delta_unsigned.as_();
+                let delta_i64 = (zigzag >> 1) as i64 ^ -((zigzag & 1) as i64);
+                let delta: T::Native = T::Native::from_i64(delta_i64).unwrap();
+                current_value = current_value.add_wrapping(delta);
+                reconstructed.push(current_value);
+            }
+        }
+
+        let values = ScalarBuffer::from_iter(reconstructed);
+        Arc::new(PrimitiveArray::<T>::new(values, nulls.cloned()))
+    }
+
+    fn filter(&self, selection: &BooleanBuffer) -> LiquidArrayRef {
+        let unsigned_array: PrimitiveArray<T::UnSignedType> = self.bit_packed.to_primitive();
+        let selection = BooleanArray::new(selection.clone(), None);
+        let filtered_values =
+            arrow::compute::kernels::filter::filter(&unsigned_array, &selection).unwrap();
+        let filtered_values = filtered_values.as_primitive::<T::UnSignedType>().clone();
+        let Some(bit_width) = self.bit_packed.bit_width() else {
+            return Arc::new(LiquidPrimitiveDeltaArray::<T> {
+                bit_packed: BitPackedArray::new_null_array(filtered_values.len()),
+                reference_value: self.reference_value,
+            });
+        };
+        let bit_packed = BitPackedArray::from_primitive(filtered_values, bit_width);
+        Arc::new(LiquidPrimitiveDeltaArray::<T> {
+            bit_packed,
+            reference_value: self.reference_value,
+        })
+    }
+
+    fn filter_to_arrow(&self, selection: &BooleanBuffer) -> ArrayRef {
+        let arrow_array = self.to_arrow_array();
+        let selection = BooleanArray::new(selection.clone(), None);
+        arrow::compute::kernels::filter::filter(&arrow_array, &selection).unwrap()
+    }
+
+    fn try_eval_predicate(
+        &self,
+        _predicate: &Arc<dyn PhysicalExpr>,
+        _filter: &BooleanBuffer,
+    ) -> Option<BooleanArray> {
+        // primitive delta array is not supported for liquid predicate
+        None
+    }
+
+    fn to_bytes(&self) -> Vec<u8> {
+        self.to_bytes_inner()
+    }
+
+    fn data_type(&self) -> LiquidDataType {
+        LiquidDataType::Integer
+    }
+
+    fn squeeze(&self) -> Option<(crate::liquid_array::LiquidHybridArrayRef, bytes::Bytes)> {
+        // Not implemented for delta arrays
+        None
     }
 }
 
@@ -473,6 +691,70 @@ where
             bit_packed,
             reference_value,
             squeeze_policy: IntegerSqueezePolicy::default(),
+        }
+    }
+}
+
+impl<T> LiquidPrimitiveDeltaArray<T>
+where
+    T: LiquidPrimitiveType,
+{
+    fn bit_pack_starting_loc() -> usize {
+        let header_size = LiquidIPCHeader::size() + std::mem::size_of::<T::Native>();
+        (header_size + 7) & !7
+    }
+
+    pub(crate) fn to_bytes_inner(&self) -> Vec<u8> {
+        // Determine type ID based on the type
+        let physical_type_id = get_physical_type_id::<T>();
+        let logical_type_id = 1u16; // Delta encoding type ID
+        let header = LiquidIPCHeader::new(logical_type_id, physical_type_id);
+
+        let bit_pack_starting_loc = Self::bit_pack_starting_loc();
+        let mut result = Vec::with_capacity(bit_pack_starting_loc + 256);
+
+        // Write header
+        result.extend_from_slice(&header.to_bytes());
+
+        // Write anchor value (reference_value)
+        let ref_value_bytes = unsafe {
+            std::slice::from_raw_parts(
+                &self.reference_value as *const T::Native as *const u8,
+                std::mem::size_of::<T::Native>(),
+            )
+        };
+        result.extend_from_slice(ref_value_bytes);
+        while result.len() < bit_pack_starting_loc {
+            result.push(0);
+        }
+
+        // Let BitPackedArray write the rest of the data
+        self.bit_packed.to_bytes(&mut result);
+
+        result
+    }
+
+    /// Deserialize a LiquidPrimitiveDeltaArray from bytes
+    pub fn from_bytes(bytes: Bytes) -> Self {
+        let header = LiquidIPCHeader::from_bytes(&bytes);
+
+        let physical_id = header.physical_type_id;
+        assert_eq!(physical_id, get_physical_type_id::<T>());
+        let logical_id = header.logical_type_id;
+        assert_eq!(logical_id, 1u16); // Delta encoding type ID
+
+        // Get the anchor value
+        let ref_value_ptr = &bytes[LiquidIPCHeader::size()];
+        let reference_value =
+            unsafe { (ref_value_ptr as *const u8 as *const T::Native).read_unaligned() };
+
+        // Skip ahead to the BitPackedArray data
+        let bit_packed_data = bytes.slice(Self::bit_pack_starting_loc()..);
+        let bit_packed = BitPackedArray::<T::UnSignedType>::from_bytes(bit_packed_data);
+
+        Self {
+            bit_packed,
+            reference_value,
         }
     }
 }
@@ -717,5 +999,62 @@ mod tests {
         let result_array = filtered.to_arrow_array();
 
         assert_eq!(result_array.len(), 0);
+    }
+
+    #[test]
+    fn test_delta_encoding_basic_roundtrip() {
+        let original = vec![Some(1), Some(3), Some(6), Some(10), Some(15)];
+        let array = PrimitiveArray::<Int32Type>::from(original.clone());
+
+        let liquid_delta = LiquidPrimitiveDeltaArray::<Int32Type>::from_arrow_array(array.clone());
+        let result_array = liquid_delta.to_arrow_array();
+
+        assert_eq!(result_array.as_ref(), &array);
+    }
+
+    #[test]
+    fn test_delta_encoding_with_nulls() {
+        let original = vec![Some(1), None, Some(4), Some(7), None, Some(12)];
+        let array = PrimitiveArray::<Int32Type>::from(original.clone());
+
+        let liquid_delta = LiquidPrimitiveDeltaArray::<Int32Type>::from_arrow_array(array.clone());
+        let result_array = liquid_delta.to_arrow_array();
+
+        assert_eq!(result_array.as_ref(), &array);
+    }
+
+    #[test]
+    fn test_delta_encoding_serialization() {
+        let original = vec![Some(1), Some(3), Some(6), Some(10), Some(15)];
+        let array = PrimitiveArray::<Int32Type>::from(original.clone());
+
+        let liquid_delta = LiquidPrimitiveDeltaArray::<Int32Type>::from_arrow_array(array.clone());
+        let bytes = liquid_delta.to_bytes();
+        let reconstructed = LiquidPrimitiveDeltaArray::<Int32Type>::from_bytes(bytes.into());
+        let result_array = reconstructed.to_arrow_array();
+
+        assert_eq!(result_array.as_ref(), &array);
+    }
+
+    #[test]
+    fn test_memory_comparison_sequential_data() {
+        // Sequential data: delta encoding performs better
+        let sequential_data: Vec<Option<i32>> = (0..1000).map(Some).collect();
+        let array = PrimitiveArray::<Int32Type>::from(sequential_data);
+
+        let liquid_regular = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(array.clone());
+        let liquid_delta = LiquidPrimitiveDeltaArray::<Int32Type>::from_arrow_array(array);
+
+        let regular_size = liquid_regular.get_array_memory_size();
+        let delta_size = liquid_delta.get_array_memory_size();
+
+        println!(
+            "Sequential data - Regular: {} bytes, Delta: {} bytes",
+            regular_size, delta_size
+        );
+        assert!(
+            delta_size <= regular_size,
+            "Delta encoding should be more efficient for sequential data"
+        );
     }
 }
