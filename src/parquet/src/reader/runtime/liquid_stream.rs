@@ -355,14 +355,13 @@ fn insert_batches_into_cache(
                 column_meta.column_idx as u64,
                 Arc::clone(&column_meta.field),
             );
-            if let Err(err) = column.insert(*batch_id, array) {
-                if !matches!(err, InsertArrowArrayError::AlreadyCached) {
+            if let Err(err) = column.insert(*batch_id, array)
+                && !matches!(err, InsertArrowArrayError::AlreadyCached) {
                     return Err(ParquetError::General(format!(
                         "Failed to insert batch {} for column {} into cache: {err:?}",
                         batch_idx, column_meta.column_idx
                     )));
                 }
-            }
             debug_assert!(column.is_cached(*batch_id));
         }
 

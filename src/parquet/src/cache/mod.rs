@@ -70,10 +70,6 @@ impl LiquidCachedColumn {
         self.column_path.entry_id(batch_id)
     }
 
-    pub(crate) fn batch_size(&self) -> usize {
-        self.cache_store.config().batch_size()
-    }
-
     pub(crate) fn is_cached(&self, batch_id: BatchID) -> bool {
         self.cache_store.is_cached(&self.entry_id(batch_id).into())
     }
