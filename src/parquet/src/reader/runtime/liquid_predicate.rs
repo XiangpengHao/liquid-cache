@@ -6,16 +6,16 @@ use datafusion::physical_expr::expressions::{BinaryExpr, LikeExpr, Literal};
 use datafusion::physical_plan::expressions::Column;
 
 /// Extract multiple column-literal expressions from a nested OR structure.
-/// Returns a vector of (column_index, expression) pairs if all leaf expressions
+/// Returns a vector of (column_name, expression) pairs if all leaf expressions
 /// are column-literal expressions connected by OR operators.
 pub(crate) fn extract_multi_column_or(
     expr: &Arc<dyn PhysicalExpr>,
-) -> Option<Vec<(usize, Arc<dyn PhysicalExpr>)>> {
+) -> Option<Vec<(&str, Arc<dyn PhysicalExpr>)>> {
     let mut result = Vec::new();
 
-    fn collect_or_expressions(
-        expr: &Arc<dyn PhysicalExpr>,
-        result: &mut Vec<(usize, Arc<dyn PhysicalExpr>)>,
+    fn collect_or_expressions<'a>(
+        expr: &'a Arc<dyn PhysicalExpr>,
+        result: &mut Vec<(&'a str, Arc<dyn PhysicalExpr>)>,
     ) -> bool {
         if let Some(binary) = expr.as_any().downcast_ref::<BinaryExpr>()
             && binary.op() == &Operator::Or
@@ -41,13 +41,13 @@ pub(crate) fn extract_multi_column_or(
     }
 }
 
-fn extract_column_literal(expr: &Arc<dyn PhysicalExpr>) -> Option<(usize, Arc<dyn PhysicalExpr>)> {
+fn extract_column_literal(expr: &Arc<dyn PhysicalExpr>) -> Option<(&str, Arc<dyn PhysicalExpr>)> {
     if let Some(binary) = expr.as_any().downcast_ref::<BinaryExpr>() {
         if binary.right().as_any().downcast_ref::<Literal>().is_some()
             && binary.left().as_any().downcast_ref::<Column>().is_some()
         {
             let column = binary.left().as_any().downcast_ref::<Column>().unwrap();
-            return Some((column.index(), Arc::clone(expr)));
+            return Some((column.name(), Arc::clone(expr)));
         }
     } else if let Some(like_expr) = expr.as_any().downcast_ref::<LikeExpr>()
         && like_expr
@@ -58,51 +58,9 @@ fn extract_column_literal(expr: &Arc<dyn PhysicalExpr>) -> Option<(usize, Arc<dy
         && like_expr.expr().as_any().downcast_ref::<Column>().is_some()
     {
         let column = like_expr.expr().as_any().downcast_ref::<Column>().unwrap();
-        return Some((column.index(), Arc::clone(expr)));
+        return Some((column.name(), Arc::clone(expr)));
     }
     None
-}
-
-/// Check if a predicate is supported by the liquid array predicate evaluation.
-/// This includes BinaryExpr (column op literal) and LikeExpr patterns, but only for string literals
-pub(crate) fn is_predicate_supported_by_liquid(expr: &Arc<dyn PhysicalExpr>) -> bool {
-    use datafusion::common::ScalarValue;
-
-    if let Some(binary_expr) = expr.as_any().downcast_ref::<BinaryExpr>() {
-        // Check if it's column op literal pattern
-        if binary_expr
-            .left()
-            .as_any()
-            .downcast_ref::<Column>()
-            .is_some()
-            && let Some(literal) = binary_expr.right().as_any().downcast_ref::<Literal>()
-        {
-            // Only support string literals, not primitive literals
-            return matches!(
-                literal.value(),
-                ScalarValue::Utf8(_)
-                    | ScalarValue::LargeUtf8(_)
-                    | ScalarValue::Utf8View(_)
-                    | ScalarValue::Dictionary(_, _)
-            );
-        }
-    } else if let Some(like_expr) = expr.as_any().downcast_ref::<LikeExpr>() {
-        // Check if it's column LIKE literal pattern
-        if like_expr.expr().as_any().downcast_ref::<Column>().is_some()
-            && let Some(literal) = like_expr.pattern().as_any().downcast_ref::<Literal>()
-        {
-            // LIKE operations are only supported with string literals
-            return matches!(
-                literal.value(),
-                ScalarValue::Utf8(_)
-                    | ScalarValue::LargeUtf8(_)
-                    | ScalarValue::Utf8View(_)
-                    | ScalarValue::Dictionary(_, _)
-            );
-        }
-    }
-
-    false
 }
 
 #[cfg(test)]
@@ -147,10 +105,10 @@ mod tests {
         let column_exprs = result.unwrap();
         assert_eq!(column_exprs.len(), 3);
 
-        // Verify we got the correct column indices
-        let mut column_indices: Vec<usize> = column_exprs.iter().map(|(idx, _)| *idx).collect();
-        column_indices.sort();
-        assert_eq!(column_indices, vec![0, 1, 2]);
+        // Verify we got the correct column names
+        let mut column_names: Vec<&str> = column_exprs.iter().map(|(name, _)| *name).collect();
+        column_names.sort();
+        assert_eq!(column_names, vec!["a", "b", "c"]);
     }
 
     #[test]
