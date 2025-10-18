@@ -1,11 +1,11 @@
-use std::{collections::VecDeque, sync::Arc};
+use std::collections::VecDeque;
 
 use arrow::array::{Array, RecordBatch};
 use arrow::buffer::BooleanBuffer;
 use arrow::compute::prep_null_mask_filter;
 use arrow::record_batch::{RecordBatchOptions, RecordBatchReader};
-use arrow_schema::{ArrowError, Field, Schema, SchemaRef};
-use parquet::arrow::arrow_reader::{ArrowPredicate, RowSelection, RowSelector};
+use arrow_schema::{ArrowError, SchemaRef};
+use parquet::arrow::arrow_reader::{RowSelection, RowSelector};
 
 use crate::cache::{BatchID, LiquidCachedRowGroupRef};
 use crate::reader::plantime::LiquidRowFilter;
