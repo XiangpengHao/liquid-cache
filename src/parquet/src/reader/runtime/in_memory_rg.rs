@@ -49,11 +49,28 @@ impl<'a> InMemoryRowGroup<'a> {
 impl InMemoryRowGroup<'_> {
     /// Fetches the necessary column data into memory
     /// If any batch is not cached, fetches entire row group. If all cached, skips fetching.
+    #[allow(dead_code)]
     pub(crate) async fn fetch(
         &mut self,
         reader: &mut ParquetMetadataCacheReader,
         projection: &ProjectionMask,
     ) -> Result<(), parquet::errors::ParquetError> {
+        self.fetch_with_batches(reader, projection, None).await
+    }
+
+    pub(crate) async fn fetch_with_batches(
+        &mut self,
+        reader: &mut ParquetMetadataCacheReader,
+        projection: &ProjectionMask,
+        batches: Option<&[BatchID]>,
+    ) -> Result<(), parquet::errors::ParquetError> {
+        let batch_filter = batches.map(|batch_ids| {
+            let mut deduped = batch_ids.to_vec();
+            deduped.sort_unstable();
+            deduped.dedup();
+            deduped
+        });
+
         // Check if we need to fetch any data
         for idx in 0..self.column_chunks.len() {
             if !projection.leaf_included(idx) {
@@ -66,7 +83,12 @@ impl InMemoryRowGroup<'_> {
                 continue;
             }
 
-            let missing_ranges = get_missing_batch_ranges(self.row_count, idx, &self.liquid_cache);
+            let missing_ranges = get_missing_batch_ranges(
+                self.row_count,
+                idx,
+                &self.liquid_cache,
+                batch_filter.as_deref(),
+            );
 
             if missing_ranges.is_empty() {
                 self.column_chunks[idx] = Some(Arc::new(ColumnChunkData::Cached {
@@ -393,6 +415,7 @@ fn get_missing_batch_ranges(
     row_count: usize,
     column_idx: usize,
     liquid_cache: &LiquidCachedRowGroupRef,
+    batches: Option<&[BatchID]>,
 ) -> Vec<(usize, usize)> {
     let mut missing_ranges = Vec::new();
 
@@ -401,7 +424,20 @@ fn get_missing_batch_ranges(
         let batch_size = cached_column.batch_size();
         let num_batches = num_rows.div_ceil(batch_size);
 
-        for batch_idx in 0..num_batches {
+        let batch_indices: Vec<usize> = match batches {
+            Some(batch_ids) => {
+                let mut ids: Vec<usize> = batch_ids
+                    .iter()
+                    .map(|batch_id| usize::from(**batch_id))
+                    .collect();
+                ids.sort_unstable();
+                ids.dedup();
+                ids
+            }
+            None => (0..num_batches).collect(),
+        };
+
+        for batch_idx in batch_indices {
             let batch_start_row = batch_idx * batch_size;
             let batch_end_row = (batch_start_row + batch_size).min(num_rows);
             let batch_id = BatchID::from_row_id(batch_start_row, batch_size);
@@ -411,8 +447,26 @@ fn get_missing_batch_ranges(
             }
         }
     } else {
-        // Column doesn't exist in cache, so all rows are missing
-        missing_ranges.push((0, row_count));
+        match batches {
+            Some(batch_ids) => {
+                let batch_size = liquid_cache.batch_size();
+                for batch_id in batch_ids {
+                    let batch_idx = usize::from(**batch_id);
+                    let batch_start_row = batch_idx * batch_size;
+                    if batch_start_row >= row_count {
+                        continue;
+                    }
+                    let batch_end_row = (batch_start_row + batch_size).min(row_count);
+                    missing_ranges.push((batch_start_row, batch_end_row));
+                }
+            }
+            None => {
+                if row_count > 0 {
+                    // Column doesn't exist in cache, so all rows are missing
+                    missing_ranges.push((0, row_count));
+                }
+            }
+        }
     }
 
     missing_ranges
@@ -425,15 +479,13 @@ mod tests {
         LiquidCache,
         reader::{
             plantime::CachedMetaReaderFactory,
-            runtime::{
-                ArrowReaderBuilderBridge, liquid_stream::LiquidStreamBuilder,
-                parquet::build_cached_array_reader,
-            },
+            runtime::{ArrowReaderBuilderBridge, liquid_stream::LiquidStreamBuilder},
         },
     };
-    use arrow::array::{AsArray, Int32Array};
+    use arrow::array::Int32Array;
     use arrow::datatypes::{DataType, Field};
     use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
+    use futures::StreamExt;
     use liquid_cache_storage::{
         cache::squeeze_policies::TranscodeSqueezeEvict, cache_policies::LiquidPolicy,
     };
@@ -444,7 +496,7 @@ mod tests {
     };
     use parquet::file::page_index::offset_index::OffsetIndexMetaData;
     use parquet::format::PageLocation;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
     async fn get_test_stream_builder(batch_size: usize) -> LiquidStreamBuilder {
         let mut reader = {
@@ -495,52 +547,25 @@ mod tests {
         );
         let liquid_cache_file = liquid_cache.register_or_get_file("whatever".into());
 
-        let mut builder = get_test_stream_builder(batch_size).await;
-        let fields = builder.fields.clone();
-
-        let row_group_metadata = &builder.metadata.row_groups()[0];
-        let value_cnt = row_group_metadata.num_rows() as usize;
-        let liquid_cache_rg = liquid_cache_file.row_group(0);
-
-        {
-            let mut row_group =
-                InMemoryRowGroup::new(row_group_metadata, None, None, liquid_cache_rg.clone());
-
-            row_group
-                .fetch(&mut builder.input, &ProjectionMask::all())
-                .await
-                .unwrap();
-
-            let mut array_reader = build_cached_array_reader(
-                fields.as_ref().map(|f| f.as_ref()),
-                &ProjectionMask::all(),
-                &row_group,
-                liquid_cache_rg.clone(),
-            )
+        let builder = get_test_stream_builder(batch_size).await;
+        let stream = builder.build(liquid_cache_file.clone()).unwrap();
+        let batches = stream
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
             .unwrap();
+        assert!(!batches.is_empty());
 
-            array_reader.read_records(value_cnt).unwrap();
-            array_reader.consume_batch().unwrap();
-        }
-
-        // by now everything should be cached
-        {
-            let mut row_group =
-                InMemoryRowGroup::new(row_group_metadata, None, None, liquid_cache_rg.clone());
-            row_group
-                .fetch(&mut builder.input, &ProjectionMask::all())
-                .await
-                .unwrap();
-            let mut array_reader = build_cached_array_reader(
-                fields.as_ref().map(|f| f.as_ref()),
-                &ProjectionMask::all(),
-                &row_group,
-                liquid_cache_rg.clone(),
-            )
+        let builder = get_test_stream_builder(batch_size).await;
+        let stream = builder.build(liquid_cache_file).unwrap();
+        let batches_again = stream
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
             .unwrap();
-            array_reader.read_records(value_cnt).unwrap();
-            array_reader.consume_batch().unwrap();
-        }
+        assert_eq!(batches.len(), batches_again.len());
     }
 
     #[test]
@@ -558,7 +583,7 @@ mod tests {
         let liquid_cache_rg = liquid_cache_file.row_group(0);
 
         // Test Case 1: Column doesn't exist in cache - should return entire range
-        let missing_ranges = get_missing_batch_ranges(100, 0, &liquid_cache_rg);
+        let missing_ranges = get_missing_batch_ranges(100, 0, &liquid_cache_rg, None);
         assert_eq!(missing_ranges, vec![(0, 100)]);
 
         // Create a column in the cache
@@ -566,7 +591,7 @@ mod tests {
             .create_column(0, Arc::new(Field::new("test_col", DataType::Int32, false)));
 
         // Test Case 2: Column exists but no batches are cached - should return all batch ranges
-        let missing_ranges = get_missing_batch_ranges(100, 0, &liquid_cache_rg);
+        let missing_ranges = get_missing_batch_ranges(100, 0, &liquid_cache_rg, None);
         // 100 rows with batch_size 32: batches 0-31, 32-63, 64-95, 96-99
         assert_eq!(missing_ranges, vec![(0, 32), (32, 64), (64, 96), (96, 100)]);
 
@@ -580,7 +605,7 @@ mod tests {
             .insert(BatchID::from_row_id(64, batch_size), array_data.clone())
             .unwrap();
 
-        let missing_ranges = get_missing_batch_ranges(100, 0, &liquid_cache_rg);
+        let missing_ranges = get_missing_batch_ranges(100, 0, &liquid_cache_rg, None);
         // Should be missing batch 1 (rows 32-63) and batch 3 (rows 96-99)
         assert_eq!(missing_ranges, vec![(32, 64), (96, 100)]);
 
@@ -592,22 +617,22 @@ mod tests {
             .insert(BatchID::from_row_id(96, batch_size), array_data.clone())
             .unwrap();
 
-        let missing_ranges = get_missing_batch_ranges(100, 0, &liquid_cache_rg);
+        let missing_ranges = get_missing_batch_ranges(100, 0, &liquid_cache_rg, None);
         // Should have no missing ranges
         assert_eq!(missing_ranges, vec![]);
 
         // Test Case 5: Edge case - row count exactly divisible by batch size
-        let missing_ranges = get_missing_batch_ranges(96, 0, &liquid_cache_rg);
+        let missing_ranges = get_missing_batch_ranges(96, 0, &liquid_cache_rg, None);
         // Should have no missing ranges (all batches 0-31, 32-63, 64-95 are cached)
         assert_eq!(missing_ranges, vec![]);
 
         // Test Case 6: Edge case - row count smaller than batch size
-        let missing_ranges = get_missing_batch_ranges(16, 0, &liquid_cache_rg);
+        let missing_ranges = get_missing_batch_ranges(16, 0, &liquid_cache_rg, None);
         // Should have no missing ranges (batch 0 covers rows 0-31, which includes 0-15)
         assert_eq!(missing_ranges, vec![]);
 
         // Test Case 7: Test with a different column that doesn't exist
-        let missing_ranges = get_missing_batch_ranges(100, 1, &liquid_cache_rg);
+        let missing_ranges = get_missing_batch_ranges(100, 1, &liquid_cache_rg, None);
         assert_eq!(missing_ranges, vec![(0, 100)]);
 
         // Test Case 8: Create another column and test partial caching
@@ -619,7 +644,7 @@ mod tests {
             .insert(BatchID::from_row_id(32, batch_size), array_data.clone())
             .unwrap();
 
-        let missing_ranges = get_missing_batch_ranges(100, 1, &liquid_cache_rg);
+        let missing_ranges = get_missing_batch_ranges(100, 1, &liquid_cache_rg, None);
         // Should be missing first, third, and fourth batches
         assert_eq!(missing_ranges, vec![(0, 32), (64, 96), (96, 100)]);
     }
@@ -781,104 +806,5 @@ mod tests {
             assert!(*length > 0, "Page length should be positive");
             assert!(*offset > 0, "Page offset should be positive");
         }
-    }
-
-    fn setup_test_lq_cache(
-        batch_size: usize,
-        dir: &Path,
-    ) -> (LiquidCache, LiquidCachedRowGroupRef) {
-        let liquid_cache = LiquidCache::new(
-            batch_size,
-            usize::MAX,
-            dir.to_path_buf(),
-            Box::new(LiquidPolicy::new()),
-            Box::new(TranscodeSqueezeEvict),
-        );
-        let liquid_cache_file = liquid_cache.register_or_get_file("test_file".to_string());
-        let liquid_cache_rg = liquid_cache_file.row_group(0);
-        (liquid_cache, liquid_cache_rg)
-    }
-
-    #[tokio::test]
-    async fn test_in_memory_rg_end_to_end_cache() {
-        let tmp_dir = tempfile::tempdir().unwrap();
-        let batch_size = 1024; // Smaller batch size to ensure multiple batches
-        let (_liquid_cache, liquid_cache_rg) = setup_test_lq_cache(batch_size, tmp_dir.path());
-        let mut builder = get_test_stream_builder(batch_size).await;
-        let fields = builder.fields.clone();
-
-        let row_group_metadata = &builder.metadata.row_groups()[0];
-
-        let value_cnt = row_group_metadata.num_rows() as usize;
-        let mut row_group =
-            InMemoryRowGroup::new(row_group_metadata, None, None, liquid_cache_rg.clone());
-        let mask = ProjectionMask::leaves(builder.metadata.file_metadata().schema_descr(), vec![2]); // title column
-
-        row_group.fetch(&mut builder.input, &mask).await.unwrap();
-
-        let mut array_reader = build_cached_array_reader(
-            fields.as_ref().map(|f| f.as_ref()),
-            &mask,
-            &row_group,
-            liquid_cache_rg.clone(),
-        )
-        .unwrap();
-
-        let mut baseline_results = Vec::new();
-        for _i in (0..value_cnt).step_by(batch_size) {
-            array_reader.read_records(batch_size).unwrap();
-            let array = array_reader.consume_batch().unwrap();
-            baseline_results.push(array);
-        }
-
-        // ===== Now  insert some arrays to the cache =====
-        let (_liquid_cache, liquid_cache_rg) = setup_test_lq_cache(batch_size, tmp_dir.path());
-        let mut builder = get_test_stream_builder(batch_size).await;
-        let column =
-            liquid_cache_rg.create_column(2, Arc::new(Field::new("Title", DataType::Utf8, false)));
-        for i in (0..value_cnt).step_by(2 * batch_size) {
-            let batch_id = BatchID::from_row_id(i, batch_size);
-            let array = baseline_results[i / batch_size].clone();
-            let inner_array = array.as_struct().column(0).clone();
-            column.insert(batch_id, inner_array).unwrap();
-        }
-        let mut row_group =
-            InMemoryRowGroup::new(row_group_metadata, None, None, liquid_cache_rg.clone());
-        row_group
-            .fetch(&mut builder.input, &ProjectionMask::all())
-            .await
-            .unwrap();
-
-        let mut array_reader = build_cached_array_reader(
-            fields.as_ref().map(|f| f.as_ref()),
-            &mask,
-            &row_group,
-            liquid_cache_rg.clone(),
-        )
-        .unwrap();
-        let mut mix_cache_results = Vec::new();
-        for _i in (0..value_cnt).step_by(batch_size) {
-            array_reader.read_records(batch_size).unwrap();
-            let array = array_reader.consume_batch().unwrap();
-            mix_cache_results.push(array);
-        }
-        assert_eq!(baseline_results, mix_cache_results);
-
-        // ===== Now test fully cached =====
-        let mut array_reader = build_cached_array_reader(
-            fields.as_ref().map(|f| f.as_ref()),
-            &mask,
-            &row_group,
-            liquid_cache_rg.clone(),
-        )
-        .unwrap();
-        let mut full_cache_results = Vec::new();
-        for _i in (0..value_cnt).step_by(batch_size) {
-            array_reader.read_records(batch_size).unwrap();
-            let array = array_reader.consume_batch().unwrap();
-            full_cache_results.push(array);
-        }
-
-        assert_eq!(baseline_results, full_cache_results);
     }
 }

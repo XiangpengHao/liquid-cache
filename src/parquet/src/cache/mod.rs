@@ -76,6 +76,11 @@ impl LiquidCachedColumn {
         RecordBatch::try_new(schema, vec![array]).unwrap()
     }
 
+    /// Returns the Arrow field metadata for this cached column.
+    pub fn field(&self) -> Arc<Field> {
+        self.field.clone()
+    }
+
     /// Evaluates a predicate on a cached column.
     pub fn eval_predicate_with_filter(
         &self,
@@ -185,6 +190,11 @@ impl LiquidCachedRowGroup {
                 column
             }
         }
+    }
+
+    /// Returns the batch size configured for this cached row group.
+    pub fn batch_size(&self) -> usize {
+        self.cache_store.config().batch_size()
     }
 
     /// Get a column from the row group.

@@ -65,6 +65,7 @@ fn extract_column_literal(expr: &Arc<dyn PhysicalExpr>) -> Option<(usize, Arc<dy
 
 /// Check if a predicate is supported by the liquid array predicate evaluation.
 /// This includes BinaryExpr (column op literal) and LikeExpr patterns, but only for string literals
+#[allow(dead_code)]
 pub(crate) fn is_predicate_supported_by_liquid(expr: &Arc<dyn PhysicalExpr>) -> bool {
     use datafusion::common::ScalarValue;
 
