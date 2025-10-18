@@ -1,8 +1,6 @@
-use in_memory_rg::InMemoryRowGroup;
 pub(crate) use liquid_predicate::extract_multi_column_or;
 pub(crate) use parquet_bridge::ArrowReaderBuilderBridge;
 
-mod in_memory_rg;
 mod liquid_batch_reader;
 mod liquid_predicate;
 mod liquid_stream;

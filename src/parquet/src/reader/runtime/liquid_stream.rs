@@ -3,15 +3,15 @@ use crate::reader::plantime::{LiquidRowFilter, ParquetMetadataCacheReader};
 use crate::reader::runtime::parquet_bridge::{
     ParquetField, limit_row_selection, offset_row_selection,
 };
-use arrow::array::{AsArray, RecordBatch};
-use arrow_schema::{ArrowError, DataType, Fields, Schema, SchemaRef};
+use arrow::array::RecordBatch;
+use arrow_schema::{DataType, Fields, Schema, SchemaRef};
 use fastrace::Event;
 use fastrace::local::LocalSpan;
-use futures::{FutureExt, Stream, future::BoxFuture, ready};
-use parquet::arrow::arrow_reader::ArrowPredicate;
+use futures::{FutureExt, Stream, StreamExt, future::BoxFuture, ready};
+use parquet::arrow::arrow_reader::{ArrowPredicate, ArrowReaderMetadata, ArrowReaderOptions};
 use parquet::{
     arrow::{
-        ProjectionMask,
+        ParquetRecordBatchStreamBuilder, ProjectionMask,
         arrow_reader::{RowSelection, RowSelector},
     },
     errors::ParquetError,
@@ -25,14 +25,37 @@ use std::{
     task::{Context, Poll},
 };
 
-use super::InMemoryRowGroup;
 use super::liquid_batch_reader::LiquidBatchReader;
-use super::parquet::{
-    ArrayReaderColumn, PlainArrayReader, build_plain_array_reader, get_column_ids,
-};
+use super::parquet::{ArrayReaderColumn, get_column_ids};
 
 type PlanResult = Option<PlanningContext>;
 type FillCacheResult = Result<(ReaderFactory, PlanningContext), ParquetError>;
+
+/// Build column metadata from projection, fields, and record batch schema for cache insertion
+///
+/// The record batch schema contains the projected fields in order, and we use get_column_ids
+/// to get the original column indices in the same order.
+fn build_column_metadata_from_batch(
+    projection: &ProjectionMask,
+    fields: Option<&ParquetField>,
+    record_batch: &RecordBatch,
+) -> Result<Vec<ArrayReaderColumn>, ParquetError> {
+    // Get the original column indices in projection order
+    let column_ids = get_column_ids(fields, projection);
+
+    // The record batch schema has projected fields in the same order as column_ids
+    // Zip them together to create ArrayReaderColumn with correct indices and field names
+    let columns = column_ids
+        .into_iter()
+        .zip(record_batch.schema().fields().iter())
+        .map(|(column_idx, field)| ArrayReaderColumn {
+            column_idx,
+            field: Arc::clone(field),
+        })
+        .collect();
+
+    Ok(columns)
+}
 
 struct ReaderFactory {
     metadata: Arc<ParquetMetaData>,
@@ -130,7 +153,6 @@ impl ReaderFactory {
         let context = PlanningContext {
             row_group_idx,
             selection,
-            projection,
             batch_size,
             cached_row_group,
             cache_projection,
@@ -142,74 +164,58 @@ impl ReaderFactory {
         Some(context)
     }
 
-    /// Fills the cache by reading missing batches from parquet
-    async fn fill_cache_from_parquet(mut self, context: PlanningContext) -> FillCacheResult {
-        let meta = self.metadata.row_group(context.row_group_idx);
-        let row_count = meta.num_rows() as usize;
+    /// Fills the cache by reading missing batches from parquet using official parquet reader
+    async fn fill_cache_from_parquet(self, context: PlanningContext) -> FillCacheResult {
+        let row_count = self.metadata.row_group(context.row_group_idx).num_rows() as usize;
         let cache_batch_size = context.cached_row_group.batch_size();
 
-        if !context.cache_column_ids.is_empty() {
-            // Recreate the offset_index and projection_to_cache
-            let offset_index = self
-                .metadata
-                .offset_index()
-                .filter(|index| index.first().map(|v| !v.is_empty()).unwrap_or(false))
-                .map(|x| x[context.row_group_idx].as_slice());
+        if !context.cache_column_ids.is_empty() && !context.missing_batches.is_empty() {
+            // Build row selection for the missing batches
+            let backfill_selection =
+                build_selection_for_batches(&context.missing_batches, cache_batch_size, row_count);
 
-            let mut predicate_projection: Option<ProjectionMask> = None;
-            if let Some(filter) = self.filter.as_mut() {
-                for predicate in filter.predicates_mut() {
-                    let p_projection = predicate.projection();
-                    if let Some(ref mut p) = predicate_projection {
-                        p.union(p_projection);
-                    } else {
-                        predicate_projection = Some(p_projection.clone());
-                    }
-                }
-            }
-            let projection_to_cache = predicate_projection.as_ref().map(|pred| {
-                let mut p = pred.clone();
-                p.intersect(&context.projection);
-                p
-            });
+            if backfill_selection.selects_any() {
+                // Clone the reader for this operation (cheap since it's Arc-based)
+                let reader_clone: ParquetMetadataCacheReader = self.input.clone();
 
-            // Recreate the InMemoryRowGroup
-            let mut row_group = InMemoryRowGroup::new(
-                meta,
-                offset_index,
-                projection_to_cache,
-                context.cached_row_group.clone(),
-            );
+                // Use official parquet async reader
+                let options = ArrowReaderOptions::new();
+                let reader_metadata =
+                    ArrowReaderMetadata::try_new(Arc::clone(&self.metadata), options)?;
 
-            row_group
-                .fetch_with_batches(
-                    &mut self.input,
-                    &context.cache_projection,
-                    Some(&context.missing_batches),
+                let mut stream = ParquetRecordBatchStreamBuilder::new_with_metadata(
+                    reader_clone,
+                    reader_metadata,
                 )
-                .await?;
+                .with_projection(context.cache_projection.clone())
+                .with_row_groups(vec![context.row_group_idx])
+                .with_row_selection(backfill_selection)
+                .build()?;
 
-            if !context.missing_batches.is_empty() {
-                let PlainArrayReader {
-                    mut reader,
-                    columns,
-                } = build_plain_array_reader(
-                    self.fields.as_deref(),
-                    &context.cache_projection,
-                    &row_group,
-                )?;
+                // Read all batches from the stream
+                let mut record_batches: Vec<RecordBatch> = Vec::new();
+                while let Some(batch_result) = stream.next().await {
+                    record_batches.push(batch_result?);
+                }
 
-                let backfill_selection = build_selection_for_batches(
-                    &context.missing_batches,
-                    cache_batch_size,
-                    row_count,
-                );
+                if !record_batches.is_empty() {
+                    // Concatenate all batches into a single record batch
+                    let record_batch = if record_batches.len() == 1 {
+                        record_batches.into_iter().next().unwrap()
+                    } else {
+                        let schema = record_batches[0].schema();
+                        arrow::compute::concat_batches(&schema, &record_batches)
+                            .map_err(|e| ParquetError::ArrowError(e.to_string()))?
+                    };
 
-                if backfill_selection.selects_any() {
-                    let record_batch =
-                        read_record_batch_from_plain_reader(&mut reader, &backfill_selection)
-                            .map_err(|e| ParquetError::ArrowError(e.to_string()))?;
+                    // Build column metadata for insertion using the record batch schema
+                    let columns = build_column_metadata_from_batch(
+                        &context.cache_projection,
+                        self.fields.as_deref(),
+                        &record_batch,
+                    )?;
 
+                    // Insert the batches into liquid cache
                     insert_batches_into_cache(
                         &record_batch,
                         &columns,
@@ -319,22 +325,6 @@ fn build_selection_for_batches(
     RowSelection::from(selectors)
 }
 
-fn read_record_batch_from_plain_reader(
-    reader: &mut Box<dyn parquet::arrow::array_reader::ArrayReader>,
-    selection: &RowSelection,
-) -> Result<RecordBatch, ArrowError> {
-    let selectors: Vec<RowSelector> = selection.clone().into();
-    for selector in &selectors {
-        if selector.skip {
-            reader.skip_records(selector.row_count)?;
-        } else {
-            reader.read_records(selector.row_count)?;
-        }
-    }
-    let array = reader.consume_batch()?;
-    Ok(RecordBatch::from(array.as_struct()))
-}
-
 fn insert_batches_into_cache(
     record_batch: &RecordBatch,
     columns: &[ArrayReaderColumn],
@@ -386,7 +376,6 @@ fn insert_batches_into_cache(
 struct PlanningContext {
     row_group_idx: usize,
     selection: RowSelection,
-    projection: ProjectionMask,
     batch_size: usize,
     cached_row_group: LiquidCachedRowGroupRef,
     cache_projection: ProjectionMask,

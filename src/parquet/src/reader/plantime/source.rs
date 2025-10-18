@@ -97,6 +97,7 @@ impl MetadataCache {
     }
 }
 
+#[derive(Clone)]
 pub struct ParquetMetadataCacheReader {
     file_metrics: ParquetFileMetrics,
     inner: ParquetObjectReader,
