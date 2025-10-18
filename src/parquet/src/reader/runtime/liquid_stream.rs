@@ -31,14 +31,13 @@ use super::parquet::{
     ArrayReaderColumn, PlainArrayReader, build_plain_array_reader, get_column_ids,
 };
 
-type ReadResult = Result<(ReaderFactory, Option<LiquidBatchReader>), ParquetError>;
+type PlanResult = Option<PlanningContext>;
+type FillCacheResult = Result<(ReaderFactory, PlanningContext), ParquetError>;
 
 struct ReaderFactory {
     metadata: Arc<ParquetMetaData>,
 
     fields: Option<Arc<ParquetField>>,
-
-    schema: SchemaRef,
 
     input: ParquetMetadataCacheReader,
 
@@ -52,22 +51,15 @@ struct ReaderFactory {
 }
 
 impl ReaderFactory {
-    /// Reads the next row group with the provided `selection`, `projection` and `batch_size`
-    ///
-    /// Note: this captures self so that the resulting future has a static lifetime
-    async fn read_row_group(
-        mut self,
+    /// Plans what to read from cache vs parquet for the next row group
+    fn plan_row_group(
+        &mut self,
         row_group_idx: usize,
         selection: Option<RowSelection>,
         projection: ProjectionMask,
         batch_size: usize,
-    ) -> ReadResult {
+    ) -> PlanResult {
         let meta = self.metadata.row_group(row_group_idx);
-        let offset_index = self
-            .metadata
-            .offset_index()
-            .filter(|index| index.first().map(|v| !v.is_empty()).unwrap_or(false))
-            .map(|x| x[row_group_idx].as_slice());
 
         let mut predicate_projection: Option<ProjectionMask> = None;
         if let Some(filter) = self.filter.as_mut() {
@@ -80,19 +72,8 @@ impl ReaderFactory {
                 }
             }
         }
-        let projection_to_cache = predicate_projection.as_ref().map(|pred| {
-            let mut p = pred.clone();
-            p.intersect(&projection);
-            p
-        });
 
         let cached_row_group = self.liquid_cache.row_group(row_group_idx as u64);
-        let mut row_group = InMemoryRowGroup::new(
-            meta,
-            offset_index,
-            projection_to_cache,
-            cached_row_group.clone(),
-        );
 
         let mut selection =
             selection.unwrap_or_else(|| vec![RowSelector::select(meta.num_rows() as usize)].into());
@@ -100,7 +81,7 @@ impl ReaderFactory {
         let rows_before = selection.row_count();
 
         if rows_before == 0 {
-            return Ok((self, None));
+            return None;
         }
 
         if let Some(offset) = self.offset {
@@ -121,7 +102,7 @@ impl ReaderFactory {
         }
 
         if rows_after == 0 {
-            return Ok((self, None));
+            return None;
         }
 
         if let Some(limit) = &mut self.limit {
@@ -146,47 +127,102 @@ impl ReaderFactory {
         let missing_batches =
             compute_missing_batches(&cached_row_group, &cache_column_ids, &selection_batches);
 
-        if !cache_column_ids.is_empty() {
+        let context = PlanningContext {
+            row_group_idx,
+            selection,
+            projection,
+            batch_size,
+            cached_row_group,
+            cache_projection,
+            projection_column_ids,
+            cache_column_ids,
+            missing_batches,
+        };
+
+        Some(context)
+    }
+
+    /// Fills the cache by reading missing batches from parquet
+    async fn fill_cache_from_parquet(mut self, context: PlanningContext) -> FillCacheResult {
+        let meta = self.metadata.row_group(context.row_group_idx);
+        let row_count = meta.num_rows() as usize;
+        let cache_batch_size = context.cached_row_group.batch_size();
+
+        if !context.cache_column_ids.is_empty() {
+            // Recreate the offset_index and projection_to_cache
+            let offset_index = self
+                .metadata
+                .offset_index()
+                .filter(|index| index.first().map(|v| !v.is_empty()).unwrap_or(false))
+                .map(|x| x[context.row_group_idx].as_slice());
+
+            let mut predicate_projection: Option<ProjectionMask> = None;
+            if let Some(filter) = self.filter.as_mut() {
+                for predicate in filter.predicates_mut() {
+                    let p_projection = predicate.projection();
+                    if let Some(ref mut p) = predicate_projection {
+                        p.union(p_projection);
+                    } else {
+                        predicate_projection = Some(p_projection.clone());
+                    }
+                }
+            }
+            let projection_to_cache = predicate_projection.as_ref().map(|pred| {
+                let mut p = pred.clone();
+                p.intersect(&context.projection);
+                p
+            });
+
+            // Recreate the InMemoryRowGroup
+            let mut row_group = InMemoryRowGroup::new(
+                meta,
+                offset_index,
+                projection_to_cache,
+                context.cached_row_group.clone(),
+            );
+
             row_group
-                .fetch_with_batches(&mut self.input, &cache_projection, Some(&missing_batches))
+                .fetch_with_batches(
+                    &mut self.input,
+                    &context.cache_projection,
+                    Some(&context.missing_batches),
+                )
                 .await?;
-        }
 
-        if !missing_batches.is_empty() && !cache_column_ids.is_empty() {
-            let PlainArrayReader {
-                mut reader,
-                columns,
-            } = build_plain_array_reader(self.fields.as_deref(), &cache_projection, &row_group)?;
+            if !context.missing_batches.is_empty() {
+                let PlainArrayReader {
+                    mut reader,
+                    columns,
+                } = build_plain_array_reader(
+                    self.fields.as_deref(),
+                    &context.cache_projection,
+                    &row_group,
+                )?;
 
-            let backfill_selection =
-                build_selection_for_batches(&missing_batches, cache_batch_size, row_count);
-
-            if backfill_selection.selects_any() {
-                let record_batch =
-                    read_record_batch_from_plain_reader(&mut reader, &backfill_selection)
-                        .map_err(|e| ParquetError::ArrowError(e.to_string()))?;
-
-                insert_batches_into_cache(
-                    &record_batch,
-                    &columns,
-                    &missing_batches,
+                let backfill_selection = build_selection_for_batches(
+                    &context.missing_batches,
                     cache_batch_size,
                     row_count,
-                    &cached_row_group,
-                )?;
+                );
+
+                if backfill_selection.selects_any() {
+                    let record_batch =
+                        read_record_batch_from_plain_reader(&mut reader, &backfill_selection)
+                            .map_err(|e| ParquetError::ArrowError(e.to_string()))?;
+
+                    insert_batches_into_cache(
+                        &record_batch,
+                        &columns,
+                        &context.missing_batches,
+                        cache_batch_size,
+                        row_count,
+                        &context.cached_row_group,
+                    )?;
+                }
             }
         }
 
-        let reader = LiquidBatchReader::new(
-            batch_size,
-            selection,
-            self.filter.take(),
-            cached_row_group,
-            projection_column_ids,
-            self.schema.clone(),
-        );
-
-        Ok((self, Some(reader)))
+        Ok((self, context))
     }
 }
 
@@ -346,21 +382,34 @@ fn insert_batches_into_cache(
     Ok(())
 }
 
+/// Context for planning what to read from cache vs parquet
+struct PlanningContext {
+    row_group_idx: usize,
+    selection: RowSelection,
+    projection: ProjectionMask,
+    batch_size: usize,
+    cached_row_group: LiquidCachedRowGroupRef,
+    cache_projection: ProjectionMask,
+    projection_column_ids: Vec<usize>,
+    cache_column_ids: Vec<usize>,
+    missing_batches: Vec<BatchID>,
+}
+
 enum StreamState {
     /// At the start of a new row group, or the end of the parquet stream
     Init,
-    /// Decoding a batch
+    /// Reading from parquet and filling cache
+    FillingCache(BoxFuture<'static, FillCacheResult>),
+    /// Decoding a batch from cache
     Decoding(LiquidBatchReader),
-    /// Reading data from input
-    Reading(BoxFuture<'static, ReadResult>),
 }
 
 impl std::fmt::Debug for StreamState {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             StreamState::Init => write!(f, "StreamState::Init"),
+            StreamState::FillingCache(_) => write!(f, "StreamState::FillingCache"),
             StreamState::Decoding(_) => write!(f, "StreamState::Decoding"),
-            StreamState::Reading(_) => write!(f, "StreamState::Reading"),
         }
     }
 }
@@ -426,7 +475,6 @@ impl LiquidStreamBuilder {
         let reader = ReaderFactory {
             metadata: Arc::clone(&self.metadata),
             fields: self.fields,
-            schema: Arc::clone(&schema),
             input: self.input,
             filter: self.filter,
             limit: self.limit,
@@ -504,36 +552,68 @@ impl Stream for LiquidStream {
                         None => return Poll::Ready(None),
                     };
 
-                    let reader = self.reader.take().expect("lost reader");
-
                     let row_count = self.metadata.row_group(row_group_idx).num_rows() as usize;
 
                     let selection = self.selection.as_mut().map(|s| s.split_off(row_count));
 
-                    LocalSpan::add_event(Event::new("LiquidStream::read_row_group"));
-                    let fut = reader
-                        .read_row_group(
-                            row_group_idx,
-                            selection,
-                            self.projection.clone(),
-                            self.batch_size,
-                        )
-                        .boxed();
-
-                    self.state = StreamState::Reading(fut)
-                }
-                StreamState::Reading(f) => match ready!(f.poll_unpin(cx)) {
-                    Ok((reader_factory, maybe_reader)) => {
-                        self.reader = Some(reader_factory);
-                        match maybe_reader {
-                            // Read records from [`ParquetRecordBatchReader`]
-                            Some(reader) => self.state = StreamState::Decoding(reader),
-                            // All rows skipped, read next row group
-                            None => self.state = StreamState::Init,
+                    LocalSpan::add_event(Event::new("LiquidStream::plan_row_group"));
+                    let projection = self.projection.clone();
+                    let batch_size = self.batch_size;
+                    let maybe_context = self.reader.as_mut().expect("lost reader").plan_row_group(
+                        row_group_idx,
+                        selection,
+                        projection,
+                        batch_size,
+                    );
+                    match maybe_context {
+                        Some(context) => {
+                            // Check if we need to fill cache from parquet
+                            if !context.missing_batches.is_empty()
+                                && !context.cache_column_ids.is_empty()
+                            {
+                                // Need to read from parquet
+                                LocalSpan::add_event(Event::new("LiquidStream::fill_cache"));
+                                let reader = self.reader.take().expect("lost reader");
+                                let fut = reader.fill_cache_from_parquet(context).boxed();
+                                self.state = StreamState::FillingCache(fut);
+                            } else {
+                                // All data in cache, go directly to decoding
+                                LocalSpan::add_event(Event::new("LiquidStream::read_from_cache"));
+                                let reader_factory = self.reader.as_mut().unwrap();
+                                let batch_reader = LiquidBatchReader::new(
+                                    context.batch_size,
+                                    context.selection,
+                                    reader_factory.filter.take(),
+                                    context.cached_row_group,
+                                    context.projection_column_ids,
+                                    self.schema.clone(),
+                                );
+                                self.state = StreamState::Decoding(batch_reader);
+                            }
                         }
+                        // All rows skipped, read next row group
+                        None => self.state = StreamState::Init,
+                    }
+                }
+                StreamState::FillingCache(f) => match ready!(f.poll_unpin(cx)) {
+                    Ok((reader_factory, context)) => {
+                        self.reader = Some(reader_factory);
+
+                        // Now that cache is filled, create reader from cache
+                        LocalSpan::add_event(Event::new("LiquidStream::read_from_cache"));
+                        let reader_factory = self.reader.as_mut().unwrap();
+                        let batch_reader = LiquidBatchReader::new(
+                            context.batch_size,
+                            context.selection,
+                            reader_factory.filter.take(),
+                            context.cached_row_group,
+                            context.projection_column_ids,
+                            self.schema.clone(),
+                        );
+                        self.state = StreamState::Decoding(batch_reader);
                     }
                     Err(e) => {
-                        panic!("Reading next batch error: {e:?}");
+                        panic!("Filling cache error: {e:?}");
                     }
                 },
             }
