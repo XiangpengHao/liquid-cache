@@ -121,7 +121,7 @@ impl<B: FsstBuffer> LiquidByteViewArrayV2<B> {
     +--------------------------------------------------+
     | Padding (to 8-byte alignment)                    |
     +--------------------------------------------------+
-    | CompactOffsetView bytes (len * 12)                      |
+    | CompactOffsetViewGroup bytes (header + residuals)|
     +--------------------------------------------------+
     | Padding (to 8-byte alignment)                    |
     +--------------------------------------------------+
@@ -217,17 +217,40 @@ impl<B: FsstBuffer> LiquidByteViewArrayV2<B> {
         shared_prefix: Vec<u8>,
         compressor: Arc<Compressor>,
     ) -> Self {
-        let compact_offset_views = CompactOffsetViewGroup::from_offset_views(offset_views);
-        
+        let offset_views = Arc::<[OffsetView]>::from(offset_views.to_vec());
+
         Self {
             dictionary_keys,
-            compact_offset_views,
+            offset_views,
             fsst_buffer,
             original_arrow_type,
             shared_prefix,
             compressor,
         }
     }
+
+    fn offset_views(&self) -> Vec<OffsetView> {
+        let mut offset_views: Vec<OffsetView> = Vec::new();
+        
+        let header = self.compact_offset_views.header();
+
+        for (index, residual_offset) in self.compact_offset_views.offset_residuals().iter().enumerate() {
+            let offset = header.slope * index as u32 + header.intercept + residual_offset.offset_residual as u32;
+
+            let offset_view = OffsetView {
+                offset: offset,
+                prefix7: residual_offset.prefix7().clone(),
+                len: residual_offset.len_byte(),
+            };
+            offset_views.push(offset_view);
+        }
+
+        offset_views
+    }
+
+    // fn offset_views(&self) -> Vec<OffsetView> {
+    //     self.offset_views.iter().copied().collect()
+    // }
 }
 
 impl LiquidByteViewArrayV2<MemoryBuffer> {
@@ -327,34 +350,34 @@ struct CompactOffsetViewHeader {
     slope: u32,    
     intercept: u32,
     offset_bytes: u8,         // 1, 2, or 4 bytes per offset
-    // padding: [u8; 3],
 }
 
 #[derive(Debug, Clone, Copy)]
-#[repr(C)]
-pub enum CompactOffsetView {
+#[repr(C, packed)]
+struct CompactOffsetView<T> {
+    offset_residual: T,
+    prefix7: [u8; 7],
+    len: u8
+}
+
+type CompactOffsetViewOneByte = CompactOffsetView<u8>;
+type CompactOffsetViewTwoBytes = CompactOffsetView<u16>;
+type CompactOffsetViewFourBytes = CompactOffsetView<u32>;
+
+#[derive(Debug, Clone)]
+enum CompactOffsetViewGroup {
     OneByte {
-        offset_residual: u8,
-        prefix7: [u8; 7],
-        len: u8,
+        header: CompactOffsetViewHeader,
+        residuals: Arc<[CompactOffsetViewOneByte]>,
     },
     TwoBytes {
-        offset_residual: u16,
-        prefix7: [u8; 7],
-        len: u8,
+        header: CompactOffsetViewHeader,
+        residuals: Arc<[CompactOffsetViewTwoBytes]>
     },
     FourBytes {
-        offset_residual: u32,
-        prefix7: [u8; 7],
-        len: u8,
+        header: CompactOffsetViewHeader,
+        residuals: Arc<[CompactOffsetViewFourBytes]>
     },
-}
-
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
-struct CompactOffsetViewGroup{
-    header: CompactOffsetViewHeader,
-    offset_residuals: Arc<[CompactOffsetView]>
 }
 
 const _: () = if std::mem::size_of::<OffsetView>() != 12 {
@@ -363,31 +386,49 @@ const _: () = if std::mem::size_of::<OffsetView>() != 12 {
 
 impl CompactOffsetViewGroup {
     fn from_offset_views(offset_views: &[OffsetView]) -> Self {
+        if offset_views.is_empty() {
+            return Self::OneByte {
+                header: CompactOffsetViewHeader {
+                    slope: 0,
+                    intercept: 0,
+                    offset_bytes: 1,
+                },
+                residuals: Arc::new([]),
+            };
+        }
 
-        let offsets = offset_views.iter().map(|offset_view| offset_view.offset()).collect();
+        let offsets: Vec<u32> = offset_views.iter().map(|offset_view| offset_view.offset()).collect();
 
-        let min_offset = offsets.iter().min().unwrap();
-        let max_offset = offsets.iter().max().unwrap();
+        let min_offset = *offsets.iter().min().unwrap();
+        let max_offset = *offsets.iter().max().unwrap();
 
-        let slope = (max_offset - min_offset) / offset_views.len();
+        // Simple linear regression: slope = (max - min) / (n - 1)
+        let slope = if offset_views.len() > 1 {
+            (max_offset - min_offset) / (offset_views.len() - 1) as u32
+        } else {
+            0
+        };
         let intercept = min_offset;
 
-        let offset_residuals: Vec<i32>  = Vec::new();
-        for (index, offset) in offsets.iter().enumerate() {
-            let y = slope * index + intercept;
-            offset_residuals.push(offset - y);
+        // Calculate residuals
+        let mut offset_residuals: Vec<i32> = Vec::new();
+        let mut min_residual = i32::MAX;
+        let mut max_residual = i32::MIN;
+        for (index, &offset) in offsets.iter().enumerate() {
+            let predicted = slope * index as u32 + intercept;
+            offset_residuals.push(offset as i32 - predicted as i32);
+            min_residual = min_residual.min(*offset_residuals.last().unwrap());
+            max_residual = max_residual.max(*offset_residuals.last().unwrap());
         }
 
-        let min_residual = offset_residuals.iter().min().unwrap();
-        let max_residual = offset_residuals.iter().min().unwrap();
+        assert!(min_residual <= max_residual);
 
-        let offset_bytes = if *min_residual >= i32::from(i8::MIN) && max_residual <= i32::from(i8::MAX) {
+        // determine bytes needed for residuals
+        let offset_bytes = if min_residual >= i8::MIN as i32 && max_residual <= i8::MAX as i32 {
             1
-        }
-        else if min_residual >= i32::from(i16::MIN) && max_residual <= i32::from(i16::MAX){
+        } else if min_residual >= i16::MIN as i32 && max_residual <= i16::MAX as i32 {
             2
-        }
-        else {
+        } else {
             4
         };
 
@@ -397,27 +438,71 @@ impl CompactOffsetViewGroup {
             offset_bytes,
         };
 
-        let compact_offset_residuals = Vec::new();
-
-        for (index,residual) in offset_residuals.iter().enumerate() {
-            
-            if offset_bytes == 1 {
-                let compact_offset_view = CompactOffsetView {
-                    OneByte {
-                        offset_residuals., //convert from i32 to i8
-                        offset_views[index].prefix().clone(),
-                        offset_views[index].len()
-                    }
-                };
-                compact_offset_residuals.push(compact_offset_view);
-            }
-        };
-
-        CompactOffsetViewGroup { 
-            header, 
-            offset_residuals.into()
+        match header.offset_bytes {
+            1 => {
+                let mut residuals = Vec::new();
+                for (index, offset) in offset_views.iter().enumerate() {
+                    let compact_residual = CompactOffsetViewOneByte {
+                        offset_residual: *offset_residuals.get(index).unwrap() as u8,
+                        prefix7: offset.prefix7().clone(),
+                        len: offset.len_byte(),
+                    };
+                    residuals.push(compact_residual);
+                }
+                Self::OneByte {
+                    header,
+                    residuals: residuals.into(),
+                }
+            },
+            2 => {
+                let mut residuals = Vec::new();
+                for (index, offset) in offset_views.iter().enumerate() {
+                    let compact_residual = CompactOffsetViewTwoBytes {
+                        offset_residual: *offset_residuals.get(index).unwrap() as u16,
+                        prefix7: offset.prefix7().clone(),
+                        len: offset.len_byte(),
+                    };
+                    residuals.push(compact_residual);
+                }
+                    
+                Self::TwoBytes {
+                    header,
+                    residuals: residuals.into(),
+                }
+            },
+            4 => {
+                let mut residuals = Vec::new();
+                for (index, offset) in offset_views.iter().enumerate() {
+                    let compact_residual = CompactOffsetViewFourBytes {
+                        offset_residual: *offset_residuals.get(index).unwrap() as u32,
+                        prefix7: offset.prefix7().clone(),
+                        len: offset.len_byte(),
+                    };
+                    residuals.push(compact_residual);
+                }
+                Self::FourBytes {
+                    header,
+                    residuals: residuals.into(),
+                }
+            },
+            _ => panic!("Invalid offset_bytes value"),
         }
+    }
 
+    fn header(&self) -> &CompactOffsetViewHeader {
+        match self {
+            Self::OneByte { header, .. } => header,
+            Self::TwoBytes { header, .. } => header,
+            Self::FourBytes { header, .. } => header,
+        }
+    }
+
+    fn offset_residuals(&self) -> &[CompactOffsetView] {
+        match self {
+            Self::OneByte { residuals, .. } => residuals.as_ref(),
+            Self::TwoBytes { residuals, .. } => residuals.as_ref(),
+            Self::FourBytes { residuals, .. } => residuals.as_ref(),
+        }
     }
 }
 
@@ -446,7 +531,7 @@ impl OffsetView {
     pub fn from_parts(offset: u32, prefix7: [u8; 7], len: u8) -> Self {
         Self {
             offset,
-            prefix7,7 
+            prefix7,
             len,
         }
     }
@@ -469,6 +554,51 @@ impl OffsetView {
         } else {
             Some(self.len as usize)
         }
+    }
+
+    #[inline]
+    pub fn len_byte(&self) -> u8 {
+        self.len
+    }
+
+    #[inline]
+    pub const fn prefix_len() -> usize {
+        7
+    }
+}
+
+impl<T> CompactOffsetView<T> {
+    /// Construct from offset and the full suffix bytes (after shared prefix).
+    /// Embeds up to `prefix_len()` bytes into `prefix7` and stores length (or 255 if >=255).
+    // pub fn new(offset: u32, suffix_bytes: &[u8]) -> Self {
+    //     let mut prefix7 = [0u8; 7];
+    //     let copy_len = std::cmp::min(Self::prefix_len(), suffix_bytes.len());
+    //     if copy_len > 0 {
+    //         prefix7[..copy_len].copy_from_slice(&suffix_bytes[..copy_len]);
+    //     }
+    //     let len = if suffix_bytes.len() >= 255 {
+    //         255u8
+    //     } else {
+    //         suffix_bytes.len() as u8
+    //     };
+    //     Self {
+    //         offset,
+    //         prefix7,
+    //         len,
+    //     }
+    // }
+
+    /// Construct directly from stored parts (used by deserialization only)
+    // pub fn from_parts(offset_residual: T, prefix7: [u8; 7], len: u8) -> Self {
+    //     Self {
+    //         offset_residual,
+    //         prefix7,
+    //         len,
+    //     }
+    // }
+
+    pub fn offset_residual(&self) -> &T {
+        self.offset_residual as &T 
     }
 
     #[inline]
@@ -945,8 +1075,8 @@ pub struct LiquidByteViewArrayV2<B: FsstBuffer> {
     dictionary_keys: UInt16Array,
     /// Offset views containing offset (u32) and prefix (8 bytes) - one per unique value
     /// Stored as `Arc<[CompactOffsetView]>` for cheap clones when passing across layers (e.g., soak/squeeze).
-    // TODO: Use the correct data structure
     compact_offset_views: CompactOffsetViewGroup,
+    // offset_views: Arc<[OffsetView]>,
     /// FSST-compressed buffer (can be in memory or on disk)
     fsst_buffer: B,
     /// Used to convert back to the original arrow type
@@ -1173,7 +1303,7 @@ impl<B: FsstBuffer> LiquidByteViewArrayV2<B> {
         ByteViewArrayMemoryUsage {
             dictionary_key: self.dictionary_keys.get_array_memory_size(),
             // TODO: Update memory usage for compact offset views
-            offsets: self.offset_views.len() * std::mem::size_of::<CompactOffsetView>(),
+            offsets: self.offset_views.len() * std::mem::size_of::<OffsetView>(),
             fsst_buffer: self.fsst_buffer.get_array_memory_size(),
             shared_prefix: self.shared_prefix.len(),
             struct_size: std::mem::size_of::<Self>(),
@@ -1709,6 +1839,7 @@ impl<B: FsstBuffer> LiquidByteViewArrayV2<B> {
 }
 
 /// Detailed memory usage of the byte view array
+/// TODO: Update memory usage for compact offset views
 pub struct ByteViewArrayMemoryUsage {
     /// Memory usage of the dictionary key
     pub dictionary_key: usize,
