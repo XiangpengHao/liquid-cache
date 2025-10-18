@@ -21,7 +21,6 @@ object_store = { workspace = true, features = ["http"] }
 liquid-cache-common = { workspace = true }
 liquid-cache-storage = { workspace = true }
 fastrace = { workspace = true }
-thrift = { version = "0.17.0", default-features = false }
 
 [dev-dependencies]
 tempfile = "3.23.0"
