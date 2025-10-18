@@ -4,7 +4,7 @@ use arrow_schema::{DataType, Field};
 
 use super::super::parquet_bridge::{ParquetField, ParquetFieldType};
 
-/// Metadata describing a column produced by [`PlainArrayReader`].
+/// Metadata describing a column.
 #[derive(Debug)]
 pub(crate) struct ArrayReaderColumn {
     pub(crate) column_idx: usize,
