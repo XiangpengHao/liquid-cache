@@ -61,45 +61,14 @@ impl LiquidBatchReader {
                 break;
             }
 
-            let column_ids = predicate.predicate_column_ids();
-
-            let boolean_array = if column_ids.is_empty() {
-                let options = RecordBatchOptions::new().with_row_count(Some(input_selection.len()));
-                let empty_batch = RecordBatch::try_new_with_options(
-                    Arc::new(Schema::new(Vec::<Field>::new())),
-                    Vec::new(),
-                    &options,
-                )?;
-                predicate.evaluate(empty_batch)?
-            } else {
-                let mut arrays = Vec::with_capacity(column_ids.len());
-                let mut fields = Vec::with_capacity(column_ids.len());
-
-                for column_id in column_ids {
-                    let column =
-                        self.liquid_cache
-                            .get_column(column_id as u64)
-                            .ok_or_else(|| {
-                                ArrowError::ComputeError(format!(
-                                    "predicate column {column_id} not present in liquid cache"
-                                ))
-                            })?;
-                    let array = column
-                        .get_arrow_array_with_filter(self.current_batch_id, &input_selection)
-                        .ok_or_else(|| {
-                            ArrowError::ComputeError(format!(
-                                "predicate column {column_id} batch {} not cached",
-                                *self.current_batch_id as usize
-                            ))
-                        })?;
-                    arrays.push(array);
-                    fields.push(column.field());
-                }
-
-                let schema = Arc::new(Schema::new(fields));
-                let record_batch = RecordBatch::try_new(schema, arrays)?;
-                predicate.evaluate(record_batch)?
-            };
+            let boolean_array = self
+                .liquid_cache
+                .evaluate_selection_with_predicate(
+                    self.current_batch_id,
+                    &input_selection,
+                    predicate,
+                )
+                .expect("item must be in cache")?;
 
             let boolean_mask = if boolean_array.null_count() == 0 {
                 boolean_array.into_parts().0
