@@ -17,12 +17,23 @@ use crate::reader::runtime::utils::take_next_batch;
 use crate::utils::{boolean_buffer_and_then, row_selector_to_boolean_buffer};
 
 pub(crate) struct LiquidCacheReader {
-    inner: Option<LiquidCacheReaderInner>,
-    pending: Option<ReaderPending>,
+    state: ReaderState,
+    row_filter: Option<LiquidRowFilter>,
 }
 
-enum ReaderPending {
-    Process(BoxFuture<'static, (LiquidCacheReaderInner, ProcessResult)>),
+enum ReaderState {
+    Ready(LiquidCacheReaderInner),
+    Processing(
+        BoxFuture<
+            'static,
+            (
+                LiquidCacheReaderInner,
+                Option<LiquidRowFilter>,
+                ProcessResult,
+            ),
+        >,
+    ),
+    Finished,
 }
 
 enum ProcessResult {
@@ -36,7 +47,6 @@ struct LiquidCacheReaderInner {
     selection: VecDeque<RowSelector>,
     schema: SchemaRef,
     batch_size: usize,
-    row_filter: Option<LiquidRowFilter>,
     projection_columns: Vec<usize>,
 }
 
@@ -52,23 +62,22 @@ impl LiquidCacheReader {
         let inner = LiquidCacheReaderInner::new(
             batch_size,
             selection,
-            row_filter,
             liquid_cache,
             projection_columns,
             Arc::clone(&schema),
         );
         Self {
-            inner: Some(inner),
-            pending: None,
+            state: ReaderState::Ready(inner),
+            row_filter,
         }
     }
 
-    pub(crate) fn take_filter(&mut self) -> Option<LiquidRowFilter> {
+    pub(crate) fn into_filter(self) -> Option<LiquidRowFilter> {
         debug_assert!(
-            self.pending.is_none(),
-            "cannot take filter while pending work exists"
+            matches!(self.state, ReaderState::Finished),
+            "cannot extract filter before reader completes"
         );
-        self.inner.as_mut().and_then(|inner| inner.take_filter())
+        self.row_filter
     }
 }
 
@@ -77,34 +86,39 @@ impl Stream for LiquidCacheReader {
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         loop {
-            if let Some(pending) = self.pending.as_mut() {
-                match pending {
-                    ReaderPending::Process(fut) => match fut.as_mut().poll(cx) {
-                        Poll::Pending => return Poll::Pending,
-                        Poll::Ready((inner, result)) => {
-                            self.inner = Some(inner);
-                            self.pending = None;
+            let state = std::mem::replace(&mut self.state, ReaderState::Finished);
 
-                            match result {
-                                ProcessResult::Emit(item) => return Poll::Ready(Some(item)),
-                                ProcessResult::Skip => continue,
-                            }
+            match state {
+                ReaderState::Processing(mut fut) => match fut.as_mut().poll(cx) {
+                    Poll::Pending => {
+                        self.state = ReaderState::Processing(fut);
+                        return Poll::Pending;
+                    }
+                    Poll::Ready((inner, row_filter, result)) => {
+                        self.row_filter = row_filter;
+                        self.state = ReaderState::Ready(inner);
+                        match result {
+                            ProcessResult::Emit(item) => return Poll::Ready(Some(item)),
+                            ProcessResult::Skip => continue,
                         }
-                    },
+                    }
+                },
+                ReaderState::Ready(mut inner) => {
+                    match take_next_batch(&mut inner.selection, inner.batch_size) {
+                        Some(selection) => {
+                            let future = inner.next_batch(self.row_filter.take(), selection);
+                            self.state = ReaderState::Processing(future);
+                            continue;
+                        }
+                        None => {
+                            self.state = ReaderState::Finished;
+                            return Poll::Ready(None);
+                        }
+                    }
                 }
-            } else {
-                let mut inner = self.inner.take().expect("reader state should be available");
-
-                match take_next_batch(&mut inner.selection, inner.batch_size) {
-                    Some(selection) => {
-                        let future = inner.process_selection(selection);
-                        self.pending = Some(ReaderPending::Process(future));
-                        continue;
-                    }
-                    None => {
-                        self.inner = Some(inner);
-                        return Poll::Ready(None);
-                    }
+                ReaderState::Finished => {
+                    self.state = ReaderState::Finished;
+                    return Poll::Ready(None);
                 }
             }
         }
@@ -115,7 +129,6 @@ impl LiquidCacheReaderInner {
     fn new(
         batch_size: usize,
         selection: RowSelection,
-        row_filter: Option<LiquidRowFilter>,
         liquid_cache: LiquidCachedRowGroupRef,
         projection_columns: Vec<usize>,
         schema: SchemaRef,
@@ -126,23 +139,23 @@ impl LiquidCacheReaderInner {
             selection: selection.into(),
             schema,
             batch_size,
-            row_filter,
             projection_columns,
         }
     }
 
-    fn take_filter(&mut self) -> Option<LiquidRowFilter> {
-        self.row_filter.take()
-    }
-
-    fn process_selection(
+    fn next_batch(
         self,
+        row_filter: Option<LiquidRowFilter>,
         selection: Vec<RowSelector>,
-    ) -> BoxFuture<'static, (Self, ProcessResult)> {
+    ) -> BoxFuture<'static, (Self, Option<LiquidRowFilter>, ProcessResult)> {
         Box::pin(async move {
             let mut inner = self;
+            let mut row_filter = row_filter;
 
-            let result = match inner.build_predicate_filter(selection).await {
+            let result = match inner
+                .build_predicate_filter(&mut row_filter, selection)
+                .await
+            {
                 Ok(buffer) => match inner.read_from_cache(&buffer).await {
                     Ok(Some(batch)) => {
                         inner.current_batch_id.inc();
@@ -157,17 +170,18 @@ impl LiquidCacheReaderInner {
                 Err(e) => ProcessResult::Emit(Err(e)),
             };
 
-            (inner, result)
+            (inner, row_filter, result)
         })
     }
 
     async fn build_predicate_filter(
         &mut self,
+        row_filter: &mut Option<LiquidRowFilter>,
         selection: Vec<RowSelector>,
     ) -> Result<BooleanBuffer, ArrowError> {
         let mut input_selection = row_selector_to_boolean_buffer(&selection);
 
-        let Some(filter) = &mut self.row_filter else {
+        let Some(filter) = row_filter.as_mut() else {
             return Ok(input_selection);
         };
 
@@ -412,10 +426,10 @@ mod tests {
     }
 
     #[test]
-    fn take_filter_returns_stored_filter() {
+    fn into_filter_returns_stored_filter_after_completion() {
         let batch_size = 2;
         let (row_group, schema) = make_row_group(batch_size, &[vec![1, 2]]);
-        let selection = RowSelection::from(vec![RowSelector::select(2)]);
+        let selection = RowSelection::from(Vec::<RowSelector>::new());
         let filter = LiquidRowFilter::new(Vec::new());
 
         let mut reader = LiquidCacheReader::new(
@@ -427,8 +441,14 @@ mod tests {
             schema,
         );
 
-        assert!(reader.take_filter().is_some());
-        assert!(reader.take_filter().is_none());
+        let waker = futures::task::noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        assert!(matches!(
+            Pin::new(&mut reader).poll_next(&mut cx),
+            Poll::Ready(None)
+        ));
+
+        assert!(reader.into_filter().is_some());
     }
 
     #[test]

@@ -7,7 +7,7 @@ use arrow::array::RecordBatch;
 use arrow_schema::{DataType, Fields, Schema, SchemaRef};
 use fastrace::Event;
 use fastrace::local::LocalSpan;
-use futures::{FutureExt, Stream, StreamExt, future::BoxFuture, ready};
+use futures::{FutureExt, Stream, StreamExt, future::BoxFuture};
 use parquet::arrow::arrow_reader::{ArrowPredicate, ArrowReaderMetadata, ArrowReaderOptions};
 use parquet::{
     arrow::{
@@ -577,22 +577,27 @@ impl Stream for LiquidStream {
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         loop {
-            match &mut self.state {
-                StreamState::ReadFromCache(batch_reader) => {
-                    match Pin::new(&mut *batch_reader).poll_next(cx) {
+            let state = std::mem::replace(&mut self.state, StreamState::Init);
+
+            match state {
+                StreamState::ReadFromCache(mut batch_reader) => {
+                    match Pin::new(&mut batch_reader).poll_next(cx) {
                         Poll::Ready(Some(Ok(batch))) => {
+                            self.state = StreamState::ReadFromCache(batch_reader);
                             return Poll::Ready(Some(Ok(batch)));
                         }
                         Poll::Ready(Some(Err(e))) => {
                             panic!("Decoding next batch error: {e:?}");
                         }
                         Poll::Ready(None) => {
-                            // this is ugly, but works for now.
-                            let filter = batch_reader.take_filter();
+                            let filter = batch_reader.into_filter();
                             self.reader.as_mut().unwrap().filter = filter;
-                            self.state = StreamState::Init;
+                            // state left as Init, continue loop to plan next row group
                         }
-                        Poll::Pending => return Poll::Pending,
+                        Poll::Pending => {
+                            self.state = StreamState::ReadFromCache(batch_reader);
+                            return Poll::Pending;
+                        }
                     }
                 }
                 StreamState::Init => {
@@ -616,17 +621,14 @@ impl Stream for LiquidStream {
                     );
                     match maybe_context {
                         Some(context) => {
-                            // Check if we need to fill cache from parquet
                             if !context.missing_batches.is_empty()
                                 && !context.cache_column_ids.is_empty()
                             {
-                                // Need to read from parquet
                                 LocalSpan::add_event(Event::new("LiquidStream::fill_cache"));
                                 let reader = self.reader.take().expect("lost reader");
                                 let fut = reader.fill_cache_from_parquet(context).boxed();
                                 self.state = StreamState::FillCache(fut);
                             } else {
-                                // All data in cache, go directly to decoding
                                 LocalSpan::add_event(Event::new("LiquidStream::read_from_cache"));
                                 let reader_factory = self.reader.as_mut().unwrap();
                                 let batch_reader = LiquidCacheReader::new(
@@ -640,30 +642,35 @@ impl Stream for LiquidStream {
                                 self.state = StreamState::ReadFromCache(batch_reader);
                             }
                         }
-                        // All rows skipped, read next row group
-                        None => self.state = StreamState::Init,
+                        None => {
+                            self.state = StreamState::Init;
+                        }
                     }
                 }
-                StreamState::FillCache(f) => match ready!(f.poll_unpin(cx)) {
-                    Ok((reader_factory, context)) => {
-                        self.reader = Some(reader_factory);
-
-                        // Now that cache is filled, create reader from cache
-                        LocalSpan::add_event(Event::new("LiquidStream::read_from_cache"));
-                        let reader_factory = self.reader.as_mut().unwrap();
-                        let batch_reader = LiquidCacheReader::new(
-                            context.batch_size,
-                            context.selection,
-                            reader_factory.filter.take(),
-                            context.cached_row_group,
-                            context.projection_column_ids,
-                            self.schema.clone(),
-                        );
-                        self.state = StreamState::ReadFromCache(batch_reader);
+                StreamState::FillCache(mut f) => match f.as_mut().poll(cx) {
+                    Poll::Pending => {
+                        self.state = StreamState::FillCache(f);
+                        return Poll::Pending;
                     }
-                    Err(e) => {
-                        panic!("Filling cache error: {e:?}");
-                    }
+                    Poll::Ready(result) => match result {
+                        Ok((reader_factory, context)) => {
+                            self.reader = Some(reader_factory);
+                            LocalSpan::add_event(Event::new("LiquidStream::read_from_cache"));
+                            let reader_factory = self.reader.as_mut().unwrap();
+                            let batch_reader = LiquidCacheReader::new(
+                                context.batch_size,
+                                context.selection,
+                                reader_factory.filter.take(),
+                                context.cached_row_group,
+                                context.projection_column_ids,
+                                self.schema.clone(),
+                            );
+                            self.state = StreamState::ReadFromCache(batch_reader);
+                        }
+                        Err(e) => {
+                            panic!("Filling cache error: {e:?}");
+                        }
+                    },
                 },
             }
         }
