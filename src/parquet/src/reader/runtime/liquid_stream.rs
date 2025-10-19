@@ -26,7 +26,7 @@ use std::{
 };
 
 use super::liquid_batch_reader::LiquidBatchReader;
-use super::parquet::{ArrayReaderColumn, get_column_ids};
+use super::utils::{ArrayReaderColumn, get_column_ids};
 
 type PlanResult = Option<PlanningContext>;
 type FillCacheResult = Result<(ReaderFactory, PlanningContext), ParquetError>;
@@ -205,18 +205,18 @@ impl ReaderFactory {
                 continue;
             }
 
-            if column_metadata.is_none() {
+            if let Some(column_metadata) = &column_metadata {
+                debug_assert_eq!(
+                    record_batch.num_columns(),
+                    column_metadata.len(),
+                    "record batch schema changed while filling cache"
+                );
+            } else {
                 column_metadata = Some(build_column_metadata_from_batch(
                     &context.cache_projection,
                     self.fields.as_deref(),
                     &record_batch,
                 )?);
-            } else {
-                debug_assert_eq!(
-                    record_batch.num_columns(),
-                    column_metadata.as_ref().unwrap().len(),
-                    "record batch schema changed while filling cache"
-                );
             }
 
             let Some(batch_id) = context.missing_batches.get(processed_batches) else {
@@ -724,6 +724,30 @@ mod tests {
     }
 
     #[test]
+    fn collect_selection_batches_handles_empty_selection() {
+        let selection = RowSelection::from(vec![]);
+        let batches = collect_selection_batches(&selection, 4, 10);
+        let expected: Vec<BatchID> = vec![];
+        assert_eq!(batches, expected);
+    }
+
+    #[test]
+    fn collect_selection_batches_handles_selection_beyond_row_count() {
+        let selection = RowSelection::from(vec![
+            RowSelector::select(5),  // Select 5 rows
+            RowSelector::skip(2),    // Skip 2 rows
+            RowSelector::select(10), // Select 10 rows (but only 3 rows left)
+        ]);
+        let batches = collect_selection_batches(&selection, 4, 8);
+        // Total rows: 8
+        // First selector: select 5 rows (rows 0-4) -> batches 0, 1
+        // Skip 2 rows (rows 5-6)
+        // Third selector: select 10 rows from row 7, but only 1 row left -> batch 1
+        let expected = vec![BatchID::from_raw(0), BatchID::from_raw(1)];
+        assert_eq!(batches, expected);
+    }
+
+    #[test]
     fn compute_missing_batches_identifies_partial_columns() {
         let row_group = make_cache(4);
         insert_batches(&row_group, 0, &[(0, &[1, 2, 3, 4]), (2, &[9, 9, 9, 9])]);
@@ -768,6 +792,49 @@ mod tests {
                 RowSelector::skip(4),
                 RowSelector::select(4),
             ]
+        );
+    }
+
+    #[test]
+    fn build_selection_for_batches_handles_empty_batches() {
+        let selection = build_selection_for_batches(&[], 4, 20);
+        let selectors: Vec<RowSelector> = selection.into();
+        assert_eq!(selectors, vec![]);
+    }
+
+    #[test]
+    fn build_selection_for_batches_handles_batch_beyond_row_count() {
+        let selection =
+            build_selection_for_batches(&[BatchID::from_raw(5), BatchID::from_raw(6)], 4, 16);
+        let selectors: Vec<RowSelector> = selection.into();
+        // Total rows: 16, so valid batches are 0-3 (rows 0-15)
+        // Batch 5: start=20, end=min(24,16)=16, but 20 >= 16, so skipped
+        // Batch 6: start=24, end=min(28,16)=16, but 24 >= 16, so skipped
+        // Result should be empty selection
+        assert_eq!(selectors, vec![]);
+    }
+
+    #[test]
+    fn build_selection_for_batches_handles_single_batch() {
+        let selection = build_selection_for_batches(&[BatchID::from_raw(2)], 4, 20);
+        let selectors: Vec<RowSelector> = selection.into();
+        // Batch 2: rows 8-11
+        // Should skip 8 rows then select 4 rows
+        assert_eq!(
+            selectors,
+            vec![RowSelector::skip(8), RowSelector::select(4),]
+        );
+    }
+
+    #[test]
+    fn build_selection_for_batches_handles_partial_last_batch() {
+        let selection = build_selection_for_batches(&[BatchID::from_raw(4)], 4, 18);
+        let selectors: Vec<RowSelector> = selection.into();
+        // Batch 4: start=16, end=min(20,18)=18
+        // Should skip 16 rows then select 2 rows (18-16=2)
+        assert_eq!(
+            selectors,
+            vec![RowSelector::skip(16), RowSelector::select(2),]
         );
     }
 }
