@@ -445,17 +445,17 @@ enum StreamState {
     /// At the start of a new row group, or the end of the parquet stream
     Init,
     /// Reading from parquet and filling cache
-    FillingCache(BoxFuture<'static, FillCacheResult>),
+    FillCache(BoxFuture<'static, FillCacheResult>),
     /// Decoding a batch from cache
-    Decoding(LiquidBatchReader),
+    ReadFromCache(LiquidBatchReader),
 }
 
 impl std::fmt::Debug for StreamState {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             StreamState::Init => write!(f, "StreamState::Init"),
-            StreamState::FillingCache(_) => write!(f, "StreamState::FillingCache"),
-            StreamState::Decoding(_) => write!(f, "StreamState::Decoding"),
+            StreamState::FillCache(_) => write!(f, "StreamState::FillingCache"),
+            StreamState::ReadFromCache(_) => write!(f, "StreamState::Decoding"),
         }
     }
 }
@@ -578,7 +578,7 @@ impl Stream for LiquidStream {
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         loop {
             match &mut self.state {
-                StreamState::Decoding(batch_reader) => match batch_reader.next() {
+                StreamState::ReadFromCache(batch_reader) => match batch_reader.next() {
                     Some(Ok(batch)) => {
                         return Poll::Ready(Some(Ok(batch)));
                     }
@@ -621,7 +621,7 @@ impl Stream for LiquidStream {
                                 LocalSpan::add_event(Event::new("LiquidStream::fill_cache"));
                                 let reader = self.reader.take().expect("lost reader");
                                 let fut = reader.fill_cache_from_parquet(context).boxed();
-                                self.state = StreamState::FillingCache(fut);
+                                self.state = StreamState::FillCache(fut);
                             } else {
                                 // All data in cache, go directly to decoding
                                 LocalSpan::add_event(Event::new("LiquidStream::read_from_cache"));
@@ -634,14 +634,14 @@ impl Stream for LiquidStream {
                                     context.projection_column_ids,
                                     self.schema.clone(),
                                 );
-                                self.state = StreamState::Decoding(batch_reader);
+                                self.state = StreamState::ReadFromCache(batch_reader);
                             }
                         }
                         // All rows skipped, read next row group
                         None => self.state = StreamState::Init,
                     }
                 }
-                StreamState::FillingCache(f) => match ready!(f.poll_unpin(cx)) {
+                StreamState::FillCache(f) => match ready!(f.poll_unpin(cx)) {
                     Ok((reader_factory, context)) => {
                         self.reader = Some(reader_factory);
 
@@ -656,7 +656,7 @@ impl Stream for LiquidStream {
                             context.projection_column_ids,
                             self.schema.clone(),
                         );
-                        self.state = StreamState::Decoding(batch_reader);
+                        self.state = StreamState::ReadFromCache(batch_reader);
                     }
                     Err(e) => {
                         panic!("Filling cache error: {e:?}");
