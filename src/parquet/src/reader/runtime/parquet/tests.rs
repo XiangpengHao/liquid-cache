@@ -1,5 +1,5 @@
 use crate::{
-    cache::{LiquidCache, LiquidCachedFileRef},
+    cache::{LiquidCache, LiquidCacheRef, LiquidCachedFileRef},
     reader::{
         plantime::CachedMetaReaderFactory,
         runtime::{ArrowReaderBuilderBridge, liquid_stream::LiquidStreamBuilder},
@@ -110,24 +110,26 @@ fn get_test_cache(
     bath_size: usize,
     cache_dir: PathBuf,
     squeeze_policy: Box<dyn SqueezePolicy>,
-) -> LiquidCachedFileRef {
-    let lq = LiquidCache::new(
+) -> (LiquidCacheRef, LiquidCachedFileRef) {
+    let cache: LiquidCacheRef = Arc::new(LiquidCache::new(
         bath_size,
         usize::MAX,
         cache_dir,
         Box::new(LiquidPolicy::new()),
         squeeze_policy,
-    );
+    ));
 
-    lq.register_or_get_file("".to_string())
+    let cache_file = cache.register_or_get_file("".to_string());
+    (cache, cache_file)
 }
 
 async fn basic_stuff(squeeze_policy: Box<dyn SqueezePolicy>) {
     let tmp_dir = tempfile::tempdir().unwrap();
     let (builder, _file) = get_test_reader().await;
     let batch_size = builder.batch_size;
-    let liquid_cache = get_test_cache(batch_size, tmp_dir.path().to_path_buf(), squeeze_policy);
-    let reader = builder.build(liquid_cache).unwrap();
+    let (_cache, cache_file) =
+        get_test_cache(batch_size, tmp_dir.path().to_path_buf(), squeeze_policy);
+    let reader = builder.build(cache_file).unwrap();
 
     let schema = test_output_schema();
 
@@ -163,8 +165,9 @@ async fn read_with_projection(squeeze_policy: Box<dyn SqueezePolicy>) {
         column_projections.iter().cloned(),
     );
     let batch_size = builder.batch_size;
-    let liquid_cache = get_test_cache(batch_size, tmp_dir.path().to_path_buf(), squeeze_policy);
-    let reader = builder.build(liquid_cache).unwrap();
+    let (_cache, cache_file) =
+        get_test_cache(batch_size, tmp_dir.path().to_path_buf(), squeeze_policy);
+    let reader = builder.build(cache_file).unwrap();
 
     let batches = reader
         .collect::<Vec<_>>()
@@ -199,20 +202,27 @@ async fn read_warm(squeeze_policy: Box<dyn SqueezePolicy>) {
     let column_projections = vec![0, 3, 6, 8];
     let (mut builder, _file) = get_test_reader().await;
     let batch_size = builder.batch_size;
-    let liquid_cache = get_test_cache(batch_size, tmp_dir.path().to_path_buf(), squeeze_policy);
+    let (cache, cache_file) =
+        get_test_cache(batch_size, tmp_dir.path().to_path_buf(), squeeze_policy);
     builder.projection = ProjectionMask::roots(
         builder.metadata.file_metadata().schema_descr(),
         column_projections.iter().cloned(),
     );
-    let reader = builder.build(liquid_cache.clone()).unwrap();
+    let reader = builder.build(cache_file.clone()).unwrap();
     let _batches = reader.collect::<Vec<_>>().await;
+
+    let cold_stats = cache.storage().stats();
+    assert!(
+        cold_stats.total_entries > 0,
+        "expected cache to contain entries after warming read"
+    );
 
     let (mut builder, _file) = get_test_reader().await;
     builder.projection = ProjectionMask::roots(
         builder.metadata.file_metadata().schema_descr(),
         column_projections.iter().cloned(),
     );
-    let reader = builder.build(liquid_cache.clone()).unwrap();
+    let reader = builder.build(cache_file.clone()).unwrap();
 
     let batches = reader
         .collect::<Vec<_>>()
@@ -225,6 +235,29 @@ async fn read_warm(squeeze_policy: Box<dyn SqueezePolicy>) {
     for (i, batch) in batches.iter().enumerate() {
         assert_batch_eq(&baseline_batches[i], batch);
     }
+
+    let warm_stats = cache.storage().stats();
+    let expected_calls = (batches.len() * column_projections.len()) as u64;
+    assert_eq!(
+        warm_stats.total_entries, cold_stats.total_entries,
+        "cache entries should not change during warm read"
+    );
+    assert_eq!(
+        warm_stats.memory_liquid_entries, cold_stats.memory_liquid_entries,
+        "cache residency should remain stable during warm read"
+    );
+    assert_eq!(
+        warm_stats.runtime.get_with_selection_calls, expected_calls,
+        "warm read should pull all projected columns from cache"
+    );
+    assert_eq!(
+        warm_stats.runtime.get_arrow_array_calls, 0,
+        "warm read should not require direct Arrow array access"
+    );
+    assert_eq!(
+        warm_stats.runtime.try_read_liquid_calls, 0,
+        "warm read should not need to reconstruct liquid arrays"
+    );
 }
 
 #[tokio::test]

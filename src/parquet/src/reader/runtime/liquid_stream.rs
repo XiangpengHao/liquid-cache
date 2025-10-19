@@ -18,7 +18,7 @@ use parquet::{
     file::metadata::ParquetMetaData,
 };
 use std::{
-    collections::{BTreeSet, VecDeque},
+    collections::VecDeque,
     fmt::Formatter,
     pin::Pin,
     sync::Arc,
@@ -169,63 +169,64 @@ impl ReaderFactory {
         let row_count = self.metadata.row_group(context.row_group_idx).num_rows() as usize;
         let cache_batch_size = context.cached_row_group.batch_size();
 
-        if !context.cache_column_ids.is_empty() && !context.missing_batches.is_empty() {
-            // Build row selection for the missing batches
-            let backfill_selection =
-                build_selection_for_batches(&context.missing_batches, cache_batch_size, row_count);
+        if context.cache_column_ids.is_empty() || context.missing_batches.is_empty() {
+            return Ok((self, context));
+        }
 
-            if backfill_selection.selects_any() {
-                // Clone the reader for this operation (cheap since it's Arc-based)
-                let reader_clone: ParquetMetadataCacheReader = self.input.clone();
+        // Build row selection for the missing batches
+        let backfill_selection =
+            build_selection_for_batches(&context.missing_batches, cache_batch_size, row_count);
 
-                // Use official parquet async reader
-                let options = ArrowReaderOptions::new();
-                let reader_metadata =
-                    ArrowReaderMetadata::try_new(Arc::clone(&self.metadata), options)?;
+        if !backfill_selection.selects_any() {
+            return Ok((self, context));
+        }
 
-                let mut stream = ParquetRecordBatchStreamBuilder::new_with_metadata(
-                    reader_clone,
-                    reader_metadata,
-                )
+        // Clone the reader for this operation (cheap since it's Arc-based)
+        let reader_clone: ParquetMetadataCacheReader = self.input.clone();
+
+        // Use official parquet async reader
+        let options = ArrowReaderOptions::new();
+        let reader_metadata = ArrowReaderMetadata::try_new(Arc::clone(&self.metadata), options)?;
+
+        let mut stream =
+            ParquetRecordBatchStreamBuilder::new_with_metadata(reader_clone, reader_metadata)
                 .with_projection(context.cache_projection.clone())
                 .with_row_groups(vec![context.row_group_idx])
                 .with_row_selection(backfill_selection)
                 .build()?;
 
-                // Read all batches from the stream
-                let mut record_batches: Vec<RecordBatch> = Vec::new();
-                while let Some(batch_result) = stream.next().await {
-                    record_batches.push(batch_result?);
-                }
+        // Read all batches from the stream
+        let mut record_batches: Vec<RecordBatch> = Vec::new();
+        while let Some(batch_result) = stream.next().await {
+            record_batches.push(batch_result?);
+        }
 
-                if !record_batches.is_empty() {
-                    // Concatenate all batches into a single record batch
-                    let record_batch = if record_batches.len() == 1 {
-                        record_batches.into_iter().next().unwrap()
-                    } else {
-                        let schema = record_batches[0].schema();
-                        arrow::compute::concat_batches(&schema, &record_batches)
-                            .map_err(|e| ParquetError::ArrowError(e.to_string()))?
-                    };
+        if !record_batches.is_empty() {
+            // Concatenate all batches into a single record batch
+            let record_batch = if record_batches.len() == 1 {
+                record_batches.into_iter().next().unwrap()
+            } else {
+                let schema = record_batches[0].schema();
+                arrow::compute::concat_batches(&schema, &record_batches)
+                    .map_err(|e| ParquetError::ArrowError(e.to_string()))?
+            };
 
-                    // Build column metadata for insertion using the record batch schema
-                    let columns = build_column_metadata_from_batch(
-                        &context.cache_projection,
-                        self.fields.as_deref(),
-                        &record_batch,
-                    )?;
+            // Build column metadata for insertion using the record batch schema
+            let columns = build_column_metadata_from_batch(
+                &context.cache_projection,
+                self.fields.as_deref(),
+                &record_batch,
+            )?;
 
-                    // Insert the batches into liquid cache
-                    insert_batches_into_cache(
-                        &record_batch,
-                        &columns,
-                        &context.missing_batches,
-                        cache_batch_size,
-                        row_count,
-                        &context.cached_row_group,
-                    )?;
-                }
-            }
+            // Insert the batches into liquid cache
+            insert_batches_into_cache(
+                &record_batch,
+                &columns,
+                &context.missing_batches,
+                cache_batch_size,
+                row_count,
+                &context.cached_row_group,
+            )?;
         }
 
         Ok((self, context))
@@ -236,8 +237,8 @@ fn collect_selection_batches(
     selection: &RowSelection,
     batch_size: usize,
     row_count: usize,
-) -> BTreeSet<BatchID> {
-    let mut batches = BTreeSet::new();
+) -> Vec<BatchID> {
+    let mut batches = Vec::new();
     let mut current_row = 0usize;
     let selectors: Vec<RowSelector> = selection.clone().into();
 
@@ -257,7 +258,11 @@ fn collect_selection_batches(
         let start_batch = start / batch_size;
         let end_batch = (end - 1) / batch_size;
         for batch_idx in start_batch..=end_batch {
-            batches.insert(BatchID::from_raw(batch_idx as u16));
+            let batch_id = BatchID::from_raw(batch_idx as u16);
+            let is_duplicate = batches.last().is_some_and(|last| last == &batch_id);
+            if !is_duplicate {
+                batches.push(batch_id);
+            }
         }
         current_row += selector.row_count;
     }
@@ -268,30 +273,43 @@ fn collect_selection_batches(
 fn compute_missing_batches(
     cached_row_group: &LiquidCachedRowGroupRef,
     column_ids: &[usize],
-    selection_batches: &BTreeSet<BatchID>,
+    selection_batches: &[BatchID],
 ) -> Vec<BatchID> {
     if column_ids.is_empty() || selection_batches.is_empty() {
         return Vec::new();
     }
 
-    let mut missing = BTreeSet::new();
-
+    let mut columns = Vec::with_capacity(column_ids.len());
     for &column_idx in column_ids {
-        match cached_row_group.get_column(column_idx as u64) {
-            Some(column) => {
-                for batch_id in selection_batches {
-                    if !column.is_cached(*batch_id) {
-                        missing.insert(*batch_id);
+        columns.push(cached_row_group.get_column(column_idx as u64));
+    }
+
+    let mut missing = Vec::new();
+
+    'batch: for &batch_id in selection_batches {
+        for column in &columns {
+            match column {
+                Some(column) => {
+                    if !column.is_cached(batch_id) {
+                        if missing.last().is_some_and(|last| last == &batch_id) {
+                            continue 'batch;
+                        }
+                        missing.push(batch_id);
+                        continue 'batch;
                     }
                 }
-            }
-            None => {
-                missing.extend(selection_batches.iter().copied());
+                None => {
+                    if missing.last().is_some_and(|last| last == &batch_id) {
+                        continue 'batch;
+                    }
+                    missing.push(batch_id);
+                    continue 'batch;
+                }
             }
         }
     }
 
-    missing.into_iter().collect()
+    missing
 }
 
 fn build_selection_for_batches(
@@ -607,5 +625,110 @@ impl Stream for LiquidStream {
                 },
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cache::LiquidCache;
+    use arrow::array::{ArrayRef, Int32Array};
+    use liquid_cache_storage::cache::squeeze_policies::Evict;
+    use liquid_cache_storage::cache_policies::LiquidPolicy;
+    use parquet::arrow::arrow_reader::RowSelection;
+    use std::sync::Arc;
+
+    fn make_cache(batch_size: usize) -> LiquidCachedRowGroupRef {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let cache = LiquidCache::new(
+            batch_size,
+            usize::MAX,
+            tmp_dir.path().to_path_buf(),
+            Box::new(LiquidPolicy::new()),
+            Box::new(Evict),
+        );
+        let file = cache.register_or_get_file("test.parquet".to_string());
+        file.row_group(0)
+    }
+
+    fn insert_batches(
+        row_group: &LiquidCachedRowGroupRef,
+        column_id: usize,
+        batch_payloads: &[(u16, &[i32])],
+    ) {
+        let field = Arc::new(arrow_schema::Field::new(
+            format!("col_{column_id}"),
+            arrow_schema::DataType::Int32,
+            false,
+        ));
+        let column = row_group.create_column(column_id as u64, field);
+        for (batch_idx, values) in batch_payloads.iter() {
+            let array: ArrayRef = Arc::new(Int32Array::from(values.to_vec()));
+            column.insert(BatchID::from_raw(*batch_idx), array).unwrap();
+        }
+    }
+
+    #[test]
+    fn collect_selection_batches_marks_all_selected_batches() {
+        let selection = RowSelection::from(vec![
+            RowSelector::select(3),
+            RowSelector::skip(2),
+            RowSelector::select(5),
+        ]);
+        let batches = collect_selection_batches(&selection, 4, 10);
+        let expected = vec![
+            BatchID::from_raw(0),
+            BatchID::from_raw(1),
+            BatchID::from_raw(2),
+        ];
+        assert_eq!(batches, expected);
+    }
+
+    #[test]
+    fn compute_missing_batches_identifies_partial_columns() {
+        let row_group = make_cache(4);
+        insert_batches(&row_group, 0, &[(0, &[1, 2, 3, 4]), (2, &[9, 9, 9, 9])]);
+        insert_batches(&row_group, 2, &[(0, &[5, 6, 7, 8])]);
+
+        let selection_batches = vec![
+            BatchID::from_raw(0),
+            BatchID::from_raw(1),
+            BatchID::from_raw(2),
+        ];
+
+        let missing_for_col0 = compute_missing_batches(&row_group, &[0], &selection_batches);
+        assert_eq!(missing_for_col0, vec![BatchID::from_raw(1)]);
+
+        let missing_for_col2 = compute_missing_batches(&row_group, &[2], &selection_batches);
+        assert_eq!(
+            missing_for_col2,
+            vec![BatchID::from_raw(1), BatchID::from_raw(2),]
+        );
+
+        let missing_for_col1 = compute_missing_batches(&row_group, &[1], &selection_batches);
+        assert_eq!(
+            missing_for_col1,
+            vec![
+                BatchID::from_raw(0),
+                BatchID::from_raw(1),
+                BatchID::from_raw(2),
+            ]
+        );
+    }
+
+    #[test]
+    fn build_selection_for_batches_generates_sparse_selectors() {
+        let selection =
+            build_selection_for_batches(&[BatchID::from_raw(1), BatchID::from_raw(3)], 4, 20);
+        let selectors: Vec<RowSelector> = selection.into();
+        assert_eq!(
+            selectors,
+            vec![
+                RowSelector::skip(4),
+                RowSelector::select(4),
+                RowSelector::skip(4),
+                RowSelector::select(4),
+            ]
+        );
     }
 }
