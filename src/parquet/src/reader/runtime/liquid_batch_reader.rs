@@ -219,9 +219,9 @@ mod tests {
         batches.iter().flat_map(|b| b.iter().copied()).collect()
     }
 
-    fn collect_batches(mut reader: LiquidBatchReader) -> Vec<RecordBatch> {
+    fn collect_batches(reader: LiquidBatchReader) -> Vec<RecordBatch> {
         let mut batches = Vec::new();
-        while let Some(batch) = reader.next() {
+        for batch in reader {
             batches.push(batch.expect("valid record batch"));
         }
         batches
