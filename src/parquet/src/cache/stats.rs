@@ -203,8 +203,10 @@ mod tests {
             for rg in 0..8 {
                 let row_group = file.row_group(rg);
                 for col in 0..8 {
-                    let column = row_group
-                        .create_column(col, Arc::new(Field::new("test", DataType::Int32, false)));
+                    let column = row_group.create_column(
+                        col,
+                        Arc::new(Field::new(format!("test_{col}"), DataType::Int32, false)),
+                    );
                     for batch in 0..8 {
                         let batch_id = BatchID::from_raw(batch);
                         assert!(column.insert(batch_id, array.clone()).is_ok());

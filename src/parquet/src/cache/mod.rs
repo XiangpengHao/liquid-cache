@@ -34,6 +34,13 @@ pub struct LiquidCachedColumn {
 
 pub(crate) type LiquidCachedColumnRef = Arc<LiquidCachedColumn>;
 
+#[derive(Default, Debug)]
+struct ColumnMaps {
+    // invariant: Arc::ptr_eq(map[field.name()], map[field.id()])
+    by_id: AHashMap<u64, LiquidCachedColumnRef>,
+    by_name: AHashMap<String, LiquidCachedColumnRef>,
+}
+
 /// Error type for inserting an arrow array into the cache.
 #[derive(Debug)]
 pub enum InsertArrowArrayError {
@@ -63,10 +70,6 @@ impl LiquidCachedColumn {
         self.column_path.entry_id(batch_id)
     }
 
-    pub(crate) fn batch_size(&self) -> usize {
-        self.cache_store.config().batch_size()
-    }
-
     pub(crate) fn is_cached(&self, batch_id: BatchID) -> bool {
         self.cache_store.is_cached(&self.entry_id(batch_id).into())
     }
@@ -74,6 +77,11 @@ impl LiquidCachedColumn {
     fn arrow_array_to_record_batch(&self, array: ArrayRef, field: &Arc<Field>) -> RecordBatch {
         let schema = Arc::new(Schema::new(vec![field.clone()]));
         RecordBatch::try_new(schema, vec![array]).unwrap()
+    }
+
+    /// Returns the Arrow field metadata for this cached column.
+    pub fn field(&self) -> Arc<Field> {
+        self.field.clone()
     }
 
     /// Evaluates a predicate on a cached column.
@@ -138,7 +146,7 @@ impl LiquidCachedColumn {
 /// A row group in the cache.
 #[derive(Debug)]
 pub struct LiquidCachedRowGroup {
-    columns: RwLock<AHashMap<u64, Arc<LiquidCachedColumn>>>,
+    columns: RwLock<ColumnMaps>,
     cache_store: Arc<CacheStorage>,
     row_group_id: u64,
     file_id: u64,
@@ -153,7 +161,7 @@ impl LiquidCachedRowGroup {
             .join(format!("rg_{row_group_id}"));
         std::fs::create_dir_all(&cache_dir).expect("Failed to create cache directory");
         Self {
-            columns: RwLock::new(AHashMap::new()),
+            columns: RwLock::new(ColumnMaps::default()),
             cache_store,
             row_group_id,
             file_id,
@@ -165,12 +173,14 @@ impl LiquidCachedRowGroup {
         use std::collections::hash_map::Entry;
         let mut columns = self.columns.write().unwrap();
 
-        let column = columns.entry(column_id);
-
-        match column {
+        match columns.by_id.entry(column_id) {
             Entry::Occupied(entry) => {
                 let v = entry.get().clone();
                 assert_eq!(v.field, field);
+                columns
+                    .by_name
+                    .entry(v.field.name().to_string())
+                    .or_insert_with(|| v.clone());
                 v
             }
             Entry::Vacant(entry) => {
@@ -181,15 +191,34 @@ impl LiquidCachedRowGroup {
                     self.row_group_id,
                     self.file_id,
                 ));
+                let field_name = column.field.name().to_string();
                 entry.insert(column.clone());
+                if let Some(existing) = columns.by_name.insert(field_name, column.clone()) {
+                    assert!(Arc::ptr_eq(&existing, &column), "column name collision");
+                }
                 column
             }
         }
     }
 
+    /// Returns the batch size configured for this cached row group.
+    pub fn batch_size(&self) -> usize {
+        self.cache_store.config().batch_size()
+    }
+
     /// Get a column from the row group.
     pub fn get_column(&self, column_id: u64) -> Option<LiquidCachedColumnRef> {
-        self.columns.read().unwrap().get(&column_id).cloned()
+        self.columns.read().unwrap().by_id.get(&column_id).cloned()
+    }
+
+    /// Get a column from the row group by its field name.
+    pub fn get_column_by_name(&self, column_name: &str) -> Option<LiquidCachedColumnRef> {
+        self.columns
+            .read()
+            .unwrap()
+            .by_name
+            .get(column_name)
+            .cloned()
     }
 
     /// Evaluate a predicate on a row group.
@@ -213,8 +242,8 @@ impl LiquidCachedRowGroup {
             {
                 let mut combined_buffer: Option<BooleanArray> = None;
 
-                for (col_idx, expr) in column_exprs {
-                    let column = self.get_column(col_idx as u64)?;
+                for (col_name, expr) in column_exprs {
+                    let column = self.get_column_by_name(col_name)?;
                     let entry = self.cache_store.get(&column.entry_id(batch_id).into())?;
                     let io_state = entry.try_read_liquid();
                     let liquid_array = match io_state {

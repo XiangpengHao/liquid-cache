@@ -2868,7 +2868,6 @@ dependencies = [
  "rand 0.9.2",
  "shuttle",
  "tempfile",
- "thrift",
  "tokio",
 ]
 
