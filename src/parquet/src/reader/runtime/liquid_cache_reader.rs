@@ -1,10 +1,14 @@
 use std::collections::VecDeque;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context, Poll};
 
 use arrow::array::{Array, RecordBatch};
 use arrow::buffer::BooleanBuffer;
 use arrow::compute::prep_null_mask_filter;
-use arrow::record_batch::{RecordBatchOptions, RecordBatchReader};
+use arrow::record_batch::RecordBatchOptions;
 use arrow_schema::{ArrowError, SchemaRef};
+use futures::{Stream, future::BoxFuture};
 use parquet::arrow::arrow_reader::{RowSelection, RowSelector};
 
 use crate::cache::{BatchID, LiquidCachedRowGroupRef};
@@ -12,7 +16,21 @@ use crate::reader::plantime::LiquidRowFilter;
 use crate::reader::runtime::utils::take_next_batch;
 use crate::utils::{boolean_buffer_and_then, row_selector_to_boolean_buffer};
 
-pub(crate) struct LiquidBatchReader {
+pub(crate) struct LiquidCacheReader {
+    inner: Option<LiquidCacheReaderInner>,
+    pending: Option<ReaderPending>,
+}
+
+enum ReaderPending {
+    Process(BoxFuture<'static, (LiquidCacheReaderInner, ProcessResult)>),
+}
+
+enum ProcessResult {
+    Emit(Result<RecordBatch, ArrowError>),
+    Skip,
+}
+
+struct LiquidCacheReaderInner {
     liquid_cache: LiquidCachedRowGroupRef,
     current_batch_id: BatchID,
     selection: VecDeque<RowSelector>,
@@ -22,8 +40,79 @@ pub(crate) struct LiquidBatchReader {
     projection_columns: Vec<usize>,
 }
 
-impl LiquidBatchReader {
+impl LiquidCacheReader {
     pub(crate) fn new(
+        batch_size: usize,
+        selection: RowSelection,
+        row_filter: Option<LiquidRowFilter>,
+        liquid_cache: LiquidCachedRowGroupRef,
+        projection_columns: Vec<usize>,
+        schema: SchemaRef,
+    ) -> Self {
+        let inner = LiquidCacheReaderInner::new(
+            batch_size,
+            selection,
+            row_filter,
+            liquid_cache,
+            projection_columns,
+            Arc::clone(&schema),
+        );
+        Self {
+            inner: Some(inner),
+            pending: None,
+        }
+    }
+
+    pub(crate) fn take_filter(&mut self) -> Option<LiquidRowFilter> {
+        debug_assert!(
+            self.pending.is_none(),
+            "cannot take filter while pending work exists"
+        );
+        self.inner.as_mut().and_then(|inner| inner.take_filter())
+    }
+}
+
+impl Stream for LiquidCacheReader {
+    type Item = Result<RecordBatch, ArrowError>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        loop {
+            if let Some(pending) = self.pending.as_mut() {
+                match pending {
+                    ReaderPending::Process(fut) => match fut.as_mut().poll(cx) {
+                        Poll::Pending => return Poll::Pending,
+                        Poll::Ready((inner, result)) => {
+                            self.inner = Some(inner);
+                            self.pending = None;
+
+                            match result {
+                                ProcessResult::Emit(item) => return Poll::Ready(Some(item)),
+                                ProcessResult::Skip => continue,
+                            }
+                        }
+                    },
+                }
+            } else {
+                let mut inner = self.inner.take().expect("reader state should be available");
+
+                match take_next_batch(&mut inner.selection, inner.batch_size) {
+                    Some(selection) => {
+                        let future = inner.process_selection(selection);
+                        self.pending = Some(ReaderPending::Process(future));
+                        continue;
+                    }
+                    None => {
+                        self.inner = Some(inner);
+                        return Poll::Ready(None);
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl LiquidCacheReaderInner {
+    fn new(
         batch_size: usize,
         selection: RowSelection,
         row_filter: Option<LiquidRowFilter>,
@@ -42,11 +131,37 @@ impl LiquidBatchReader {
         }
     }
 
-    pub(crate) fn take_filter(&mut self) -> Option<LiquidRowFilter> {
+    fn take_filter(&mut self) -> Option<LiquidRowFilter> {
         self.row_filter.take()
     }
 
-    fn build_predicate_filter(
+    fn process_selection(
+        self,
+        selection: Vec<RowSelector>,
+    ) -> BoxFuture<'static, (Self, ProcessResult)> {
+        Box::pin(async move {
+            let mut inner = self;
+
+            let result = match inner.build_predicate_filter(selection).await {
+                Ok(buffer) => match inner.read_from_cache(&buffer).await {
+                    Ok(Some(batch)) => {
+                        inner.current_batch_id.inc();
+                        ProcessResult::Emit(Ok(batch))
+                    }
+                    Ok(None) => {
+                        inner.current_batch_id.inc();
+                        ProcessResult::Skip
+                    }
+                    Err(e) => ProcessResult::Emit(Err(e)),
+                },
+                Err(e) => ProcessResult::Emit(Err(e)),
+            };
+
+            (inner, result)
+        })
+    }
+
+    async fn build_predicate_filter(
         &mut self,
         selection: Vec<RowSelector>,
     ) -> Result<BooleanBuffer, ArrowError> {
@@ -82,7 +197,7 @@ impl LiquidBatchReader {
         Ok(input_selection)
     }
 
-    fn read_from_cache(
+    async fn read_from_cache(
         &self,
         selection: &BooleanBuffer,
     ) -> Result<Option<RecordBatch>, ArrowError> {
@@ -125,37 +240,6 @@ impl LiquidBatchReader {
     }
 }
 
-impl Iterator for LiquidBatchReader {
-    type Item = Result<RecordBatch, ArrowError>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        while let Some(selection) = take_next_batch(&mut self.selection, self.batch_size) {
-            let filtered_selection = match self.build_predicate_filter(selection) {
-                Ok(buffer) => buffer,
-                Err(e) => return Some(Err(e)),
-            };
-
-            match self.read_from_cache(&filtered_selection) {
-                Ok(Some(batch)) => {
-                    self.current_batch_id.inc();
-                    return Some(Ok(batch));
-                }
-                Ok(None) => {
-                    self.current_batch_id.inc();
-                    continue;
-                }
-                Err(e) => return Some(Err(e)),
-            }
-        }
-        None
-    }
-}
-
-impl RecordBatchReader for LiquidBatchReader {
-    fn schema(&self) -> SchemaRef {
-        self.schema.clone()
-    }
-}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,6 +257,7 @@ mod tests {
         physical_expr::expressions::{BinaryExpr, Column, Literal},
         scalar::ScalarValue,
     };
+    use futures::{StreamExt, pin_mut};
     use liquid_cache_storage::cache::squeeze_policies::Evict;
     use liquid_cache_storage::cache_policies::LiquidPolicy;
     use parquet::arrow::{
@@ -219,12 +304,12 @@ mod tests {
         batches.iter().flat_map(|b| b.iter().copied()).collect()
     }
 
-    fn collect_batches(reader: LiquidBatchReader) -> Vec<RecordBatch> {
-        let mut batches = Vec::new();
-        for batch in reader {
-            batches.push(batch.expect("valid record batch"));
-        }
-        batches
+    fn collect_batches(reader: LiquidCacheReader) -> Vec<RecordBatch> {
+        futures::executor::block_on(
+            reader
+                .map(|batch| batch.expect("valid record batch"))
+                .collect::<Vec<_>>(),
+        )
     }
 
     fn as_i32_values(batch: &RecordBatch) -> Vec<i32> {
@@ -282,7 +367,7 @@ mod tests {
         let selection = RowSelection::from(vec![RowSelector::select(4)]);
 
         let reader =
-            LiquidBatchReader::new(batch_size, selection, None, row_group, vec![0], schema);
+            LiquidCacheReader::new(batch_size, selection, None, row_group, vec![0], schema);
 
         let batches = collect_batches(reader);
         assert_eq!(batches.len(), 2);
@@ -297,7 +382,7 @@ mod tests {
         let selection = RowSelection::from(vec![RowSelector::skip(2), RowSelector::select(2)]);
 
         let reader =
-            LiquidBatchReader::new(batch_size, selection, None, row_group, vec![0], schema);
+            LiquidCacheReader::new(batch_size, selection, None, row_group, vec![0], schema);
 
         let batches = collect_batches(reader);
         assert_eq!(batches.len(), 1);
@@ -310,7 +395,7 @@ mod tests {
         let (row_group, _) = make_row_group(batch_size, &[vec![10, 11]]);
         let selection = RowSelection::from(vec![RowSelector::select(2)]);
 
-        let mut reader = LiquidBatchReader::new(
+        let reader = LiquidCacheReader::new(
             batch_size,
             selection,
             None,
@@ -319,10 +404,11 @@ mod tests {
             Arc::new(Schema::new(Vec::<Field>::new())),
         );
 
-        let batch = reader.next().expect("one batch").expect("ok batch");
+        let batches = collect_batches(reader);
+        assert_eq!(batches.len(), 1);
+        let batch = &batches[0];
         assert_eq!(batch.num_columns(), 0);
         assert_eq!(batch.num_rows(), 2);
-        assert!(reader.next().is_none());
     }
 
     #[test]
@@ -332,7 +418,7 @@ mod tests {
         let selection = RowSelection::from(vec![RowSelector::select(2)]);
         let filter = LiquidRowFilter::new(Vec::new());
 
-        let mut reader = LiquidBatchReader::new(
+        let mut reader = LiquidCacheReader::new(
             batch_size,
             selection,
             Some(filter),
@@ -354,7 +440,7 @@ mod tests {
         let filter = make_gt_filter(Arc::clone(&schema), &all_values, 2);
         let selection = RowSelection::from(vec![RowSelector::select(4)]);
 
-        let reader = LiquidBatchReader::new(
+        let reader = LiquidCacheReader::new(
             batch_size,
             selection,
             Some(filter),
@@ -397,7 +483,7 @@ mod tests {
         let filter = make_or_filter(Arc::clone(&schema), &all_values, 4, 2);
         let selection = RowSelection::from(vec![RowSelector::select(6)]);
 
-        let reader = LiquidBatchReader::new(
+        let reader = LiquidCacheReader::new(
             batch_size,
             selection,
             Some(filter),
@@ -425,7 +511,7 @@ mod tests {
             RowSelector::skip(1),
         ]);
 
-        let reader = LiquidBatchReader::new(
+        let reader = LiquidCacheReader::new(
             batch_size,
             selection,
             Some(filter),
@@ -448,7 +534,7 @@ mod tests {
         let filter = make_gt_filter(Arc::clone(&schema), &all_values, 10);
         let selection = RowSelection::from(vec![RowSelector::select(2)]);
 
-        let mut reader = LiquidBatchReader::new(
+        let reader = LiquidCacheReader::new(
             batch_size,
             selection,
             Some(filter),
@@ -457,6 +543,11 @@ mod tests {
             schema,
         );
 
-        assert!(reader.next().is_none());
+        let next_batch = futures::executor::block_on(async {
+            pin_mut!(reader);
+            reader.next().await
+        });
+
+        assert!(next_batch.is_none());
     }
 }

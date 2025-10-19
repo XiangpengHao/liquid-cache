@@ -25,7 +25,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use super::liquid_batch_reader::LiquidBatchReader;
+use super::liquid_cache_reader::LiquidCacheReader;
 use super::utils::{ArrayReaderColumn, get_column_ids};
 
 type PlanResult = Option<PlanningContext>;
@@ -447,7 +447,7 @@ enum StreamState {
     /// Reading from parquet and filling cache
     FillCache(BoxFuture<'static, FillCacheResult>),
     /// Decoding a batch from cache
-    ReadFromCache(LiquidBatchReader),
+    ReadFromCache(LiquidCacheReader),
 }
 
 impl std::fmt::Debug for StreamState {
@@ -578,20 +578,23 @@ impl Stream for LiquidStream {
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         loop {
             match &mut self.state {
-                StreamState::ReadFromCache(batch_reader) => match batch_reader.next() {
-                    Some(Ok(batch)) => {
-                        return Poll::Ready(Some(Ok(batch)));
+                StreamState::ReadFromCache(batch_reader) => {
+                    match Pin::new(&mut *batch_reader).poll_next(cx) {
+                        Poll::Ready(Some(Ok(batch))) => {
+                            return Poll::Ready(Some(Ok(batch)));
+                        }
+                        Poll::Ready(Some(Err(e))) => {
+                            panic!("Decoding next batch error: {e:?}");
+                        }
+                        Poll::Ready(None) => {
+                            // this is ugly, but works for now.
+                            let filter = batch_reader.take_filter();
+                            self.reader.as_mut().unwrap().filter = filter;
+                            self.state = StreamState::Init;
+                        }
+                        Poll::Pending => return Poll::Pending,
                     }
-                    Some(Err(e)) => {
-                        panic!("Decoding next batch error: {e:?}");
-                    }
-                    None => {
-                        // this is ugly, but works for now.
-                        let filter = batch_reader.take_filter();
-                        self.reader.as_mut().unwrap().filter = filter;
-                        self.state = StreamState::Init
-                    }
-                },
+                }
                 StreamState::Init => {
                     let row_group_idx = match self.row_groups.pop_front() {
                         Some(idx) => idx,
@@ -626,7 +629,7 @@ impl Stream for LiquidStream {
                                 // All data in cache, go directly to decoding
                                 LocalSpan::add_event(Event::new("LiquidStream::read_from_cache"));
                                 let reader_factory = self.reader.as_mut().unwrap();
-                                let batch_reader = LiquidBatchReader::new(
+                                let batch_reader = LiquidCacheReader::new(
                                     context.batch_size,
                                     context.selection,
                                     reader_factory.filter.take(),
@@ -648,7 +651,7 @@ impl Stream for LiquidStream {
                         // Now that cache is filled, create reader from cache
                         LocalSpan::add_event(Event::new("LiquidStream::read_from_cache"));
                         let reader_factory = self.reader.as_mut().unwrap();
-                        let batch_reader = LiquidBatchReader::new(
+                        let batch_reader = LiquidCacheReader::new(
                             context.batch_size,
                             context.selection,
                             reader_factory.filter.take(),
