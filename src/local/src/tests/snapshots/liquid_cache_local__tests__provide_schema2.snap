@@ -98,7 +98,7 @@ plan:
 │      RepartitionExec      │
 │    --------------------   │
 │ partition_count(in->out): │
-│          24 -> 24         │
+│           4 -> 4          │
 │                           │
 │    partitioning_scheme:   │
 │       Hash([date_bin      │
@@ -112,7 +112,7 @@ plan:
 │    (default._timestamp)   │
 │    ,to_timestamp(Utf8(    │
 │  "2001-01-01T00:00:00"))) │
-│          @0], 24)         │
+│          @0], 4)          │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
 │       AggregateExec       │
@@ -145,10 +145,10 @@ plan:
 │      RepartitionExec      │
 │    --------------------   │
 │ partition_count(in->out): │
-│          1 -> 24          │
+│           1 -> 4          │
 │                           │
 │    partitioning_scheme:   │
-│    RoundRobinBatch(24)    │
+│     RoundRobinBatch(4)    │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
 │       DataSourceExec      │

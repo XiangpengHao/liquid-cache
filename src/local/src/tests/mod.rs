@@ -387,11 +387,13 @@ async fn test_provide_schema2() {
 
     let cache_dir = TempDir::new().unwrap();
     let df_ctx = SessionContext::new();
+    let mut config = SessionConfig::new();
+    config.options_mut().execution.target_partitions = 4;
     let (liquid_ctx, cache) = LiquidCacheLocalBuilder::new()
         .with_cache_dir(cache_dir.path().to_path_buf())
         .with_max_cache_bytes(1024 * 1024)
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
-        .build(SessionConfig::new())
+        .build(config)
         .unwrap();
 
     let file_format = ParquetFormat::default().with_enable_pruning(true);
