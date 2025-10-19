@@ -193,40 +193,73 @@ impl ReaderFactory {
                 .with_projection(context.cache_projection.clone())
                 .with_row_groups(vec![context.row_group_idx])
                 .with_row_selection(backfill_selection)
+                .with_batch_size(cache_batch_size)
                 .build()?;
 
-        // Read all batches from the stream
-        let mut record_batches: Vec<RecordBatch> = Vec::new();
-        while let Some(batch_result) = stream.next().await {
-            record_batches.push(batch_result?);
-        }
+        let mut processed_batches = 0usize;
+        let mut column_metadata: Option<Vec<ArrayReaderColumn>> = None;
 
-        if !record_batches.is_empty() {
-            // Concatenate all batches into a single record batch
-            let record_batch = if record_batches.len() == 1 {
-                record_batches.into_iter().next().unwrap()
+        while let Some(batch_result) = stream.next().await {
+            let record_batch = batch_result?;
+            if record_batch.num_rows() == 0 {
+                continue;
+            }
+
+            if column_metadata.is_none() {
+                column_metadata = Some(build_column_metadata_from_batch(
+                    &context.cache_projection,
+                    self.fields.as_deref(),
+                    &record_batch,
+                )?);
             } else {
-                let schema = record_batches[0].schema();
-                arrow::compute::concat_batches(&schema, &record_batches)
-                    .map_err(|e| ParquetError::ArrowError(e.to_string()))?
+                debug_assert_eq!(
+                    record_batch.num_columns(),
+                    column_metadata.as_ref().unwrap().len(),
+                    "record batch schema changed while filling cache"
+                );
+            }
+
+            let Some(batch_id) = context.missing_batches.get(processed_batches) else {
+                return Err(ParquetError::General(
+                    "parquet stream produced more batches than expected".to_string(),
+                ));
             };
 
-            // Build column metadata for insertion using the record batch schema
-            let columns = build_column_metadata_from_batch(
-                &context.cache_projection,
-                self.fields.as_deref(),
-                &record_batch,
-            )?;
+            let batch_index = usize::from(**batch_id);
+            let batch_start = batch_index * cache_batch_size;
+            let expected_len = ((batch_index + 1) * cache_batch_size)
+                .min(row_count)
+                .saturating_sub(batch_start.min(row_count));
 
-            // Insert the batches into liquid cache
-            insert_batches_into_cache(
+            debug_assert!(
+                record_batch.num_rows() <= cache_batch_size,
+                "parquet batch larger than cache batch size"
+            );
+            debug_assert_eq!(
+                record_batch.num_rows(),
+                expected_len,
+                "parquet batch length does not match expected cache slice"
+            );
+
+            let batch_id = *batch_id;
+            insert_batch_into_cache(
                 &record_batch,
-                &columns,
-                &context.missing_batches,
+                column_metadata.as_ref().unwrap(),
+                batch_id,
                 cache_batch_size,
                 row_count,
                 &context.cached_row_group,
             )?;
+
+            processed_batches += 1;
+        }
+
+        if processed_batches != context.missing_batches.len() {
+            return Err(ParquetError::General(format!(
+                "expected {} batches from parquet stream, received {}",
+                context.missing_batches.len(),
+                processed_batches
+            )));
         }
 
         Ok((self, context))
@@ -343,48 +376,54 @@ fn build_selection_for_batches(
     RowSelection::from(selectors)
 }
 
-fn insert_batches_into_cache(
+fn insert_batch_into_cache(
     record_batch: &RecordBatch,
     columns: &[ArrayReaderColumn],
-    batches: &[BatchID],
+    batch_id: BatchID,
     batch_size: usize,
     row_count: usize,
     cached_row_group: &LiquidCachedRowGroupRef,
 ) -> Result<(), ParquetError> {
-    if batches.is_empty() || columns.is_empty() || record_batch.num_rows() == 0 {
+    if columns.is_empty() || record_batch.num_rows() == 0 {
         return Ok(());
     }
 
     debug_assert_eq!(record_batch.num_columns(), columns.len());
 
-    let mut offset = 0usize;
-    for batch_id in batches {
-        let batch_idx = usize::from(**batch_id);
-        let start = batch_idx * batch_size;
-        if start >= row_count {
-            continue;
-        }
-        let end = ((batch_idx + 1) * batch_size).min(row_count);
-        let len = end - start;
+    let batch_idx = usize::from(*batch_id);
+    let start = batch_idx * batch_size;
+    if start >= row_count {
+        return Ok(());
+    }
+    let end = ((batch_idx + 1) * batch_size).min(row_count);
+    let len = end - start;
 
-        for (col_idx, column_meta) in columns.iter().enumerate() {
-            let array = record_batch.column(col_idx).slice(offset, len);
-            let column = cached_row_group.create_column(
-                column_meta.column_idx as u64,
-                Arc::clone(&column_meta.field),
-            );
-            if let Err(err) = column.insert(*batch_id, array)
-                && !matches!(err, InsertArrowArrayError::AlreadyCached)
-            {
-                return Err(ParquetError::General(format!(
-                    "Failed to insert batch {} for column {} into cache: {err:?}",
-                    batch_idx, column_meta.column_idx
-                )));
-            }
-            debug_assert!(column.is_cached(*batch_id));
-        }
+    debug_assert!(
+        len <= batch_size,
+        "cache batch length exceeded configured batch size"
+    );
+    debug_assert_eq!(
+        record_batch.num_rows(),
+        len,
+        "record batch length does not match cache batch window"
+    );
 
-        offset += len;
+    for (col_idx, column_meta) in columns.iter().enumerate() {
+        let column = cached_row_group.create_column(
+            column_meta.column_idx as u64,
+            Arc::clone(&column_meta.field),
+        );
+        let array = Arc::clone(record_batch.column(col_idx));
+
+        if let Err(err) = column.insert(batch_id, array)
+            && !matches!(err, InsertArrowArrayError::AlreadyCached)
+        {
+            return Err(ParquetError::General(format!(
+                "Failed to insert batch {} for column {} into cache: {err:?}",
+                batch_idx, column_meta.column_idx
+            )));
+        }
+        debug_assert!(column.is_cached(batch_id));
     }
 
     Ok(())
