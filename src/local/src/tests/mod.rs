@@ -24,6 +24,7 @@ use datafusion::{
 use crate::LiquidCacheLocalBuilder;
 
 const TEST_FILE: &str = "../../examples/nano_hits.parquet";
+const OPENOBSERVE_FILE: &str = "../../dev/test_parquet/openobserve.parquet";
 
 #[derive(Debug, Clone)]
 struct QueryOutcome {
@@ -378,6 +379,101 @@ async fn test_single_column_filter_projection() {
     ));
 
     test_runner(sql, &reference, cache_dir.path()).await;
+}
+
+#[tokio::test]
+async fn test_provide_schema2() {
+    use std::fmt::Write as _;
+
+    let cache_dir = TempDir::new().unwrap();
+    let df_ctx = SessionContext::new();
+    let (liquid_ctx, cache) = LiquidCacheLocalBuilder::new()
+        .with_cache_dir(cache_dir.path().to_path_buf())
+        .with_max_cache_bytes(1024 * 1024)
+        .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+        .build(SessionConfig::new())
+        .unwrap();
+
+    let file_format = ParquetFormat::default().with_enable_pruning(true);
+    let listing_options =
+        ListingOptions::new(Arc::new(file_format)).with_file_extension(".parquet");
+    let table_path = ListingTableUrl::parse(OPENOBSERVE_FILE).unwrap();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("_timestamp", DataType::Int64, false),
+        Field::new("log", DataType::Utf8, true),
+        Field::new("message", DataType::Utf8, true),
+        Field::new("kubernetes_namespace_name", DataType::Utf8, false),
+    ]));
+
+    df_ctx
+        .register_listing_table(
+            "default",
+            &table_path,
+            listing_options.clone(),
+            Some(schema.clone()),
+            None,
+        )
+        .await
+        .unwrap();
+    liquid_ctx
+        .register_listing_table("default", &table_path, listing_options, Some(schema), None)
+        .await
+        .unwrap();
+
+    let queries = [
+        "SELECT * from default where log like '%hhj%' order by _timestamp",
+        "SELECT date_bin(interval '10 second', to_timestamp_micros(_timestamp), to_timestamp('2001-01-01T00:00:00')) AS zo_sql_key, count(*) AS zo_sql_num from default WHERE log like '%hhj%' or message like '%hhj%' GROUP BY zo_sql_key ORDER BY zo_sql_key",
+        "SELECT _timestamp, kubernetes_namespace_name from default order by _timestamp desc limit 100",
+    ];
+
+    let mut snapshot = String::new();
+
+    for (idx, sql) in queries.iter().enumerate() {
+        let df_results = df_ctx.sql(sql).await.unwrap().collect().await.unwrap();
+
+        let plan = get_physical_plan(sql, &liquid_ctx).await;
+        let displayable = DisplayableExecutionPlan::new(plan.as_ref());
+        let plan_string = format!("{}", displayable.tree_render());
+
+        // Reset runtime counters so we measure hits from the warm run onwards.
+        cache.storage().stats();
+
+        let first_liquid_run = liquid_ctx.sql(sql).await.unwrap().collect().await.unwrap();
+        assert_eq!(
+            df_results, first_liquid_run,
+            "reference mismatch on first run for query[{idx}]"
+        );
+
+        let entries_after_first_run = cache.storage().stats().total_entries;
+        let second_liquid_run = liquid_ctx.sql(sql).await.unwrap().collect().await.unwrap();
+        assert_eq!(
+            df_results, second_liquid_run,
+            "reference mismatch on warmed run for query[{idx}]"
+        );
+
+        let stats = CacheStatsSummary::from_stats(cache.storage().stats(), entries_after_first_run);
+
+        assert!(
+            stats.has_cache_hits(),
+            "expected warmed cache to report hits for query[{idx}]: {sql}\nstats:\n{}",
+            &stats
+        );
+        assert!(
+            stats.entries_reused(),
+            "expected warmed cache to reuse entries for query[{idx}]: {sql}\nstats:\n{}",
+            &stats
+        );
+
+        writeln!(snapshot, "query[{idx}]: {sql}").unwrap();
+        writeln!(snapshot, "plan: \n{}", plan_string).unwrap();
+        writeln!(snapshot, "stats:\n{}", stats).unwrap();
+
+        if idx + 1 != queries.len() {
+            snapshot.push('\n');
+        }
+    }
+
+    insta::assert_snapshot!(snapshot);
 }
 
 #[tokio::test]

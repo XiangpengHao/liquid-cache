@@ -1,0 +1,214 @@
+---
+source: src/local/src/tests/mod.rs
+expression: snapshot
+---
+query[0]: SELECT * from default where log like '%hhj%' order by _timestamp
+plan: 
+┌───────────────────────────┐
+│          SortExec         │
+│    --------------------   │
+│_timestamp@0 ASC NULLS LAST│
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       DataSourceExec      │
+│    --------------------   │
+│          files: 1         │
+│                           │
+│          format:          │
+│       liquid_parquet      │
+└───────────────────────────┘
+
+stats:
+entries.total: 8
+entries.after_first_run: 8
+entries.memory.arrow: 3
+entries.memory.liquid: 5
+entries.memory.hybrid_liquid: 0
+entries.disk.liquid: 0
+entries.disk.arrow: 0
+usage.memory_bytes: 1026482
+usage.disk_bytes: 0
+runtime.get_arrow_array_calls: 0
+runtime.get_with_selection_calls: 4
+runtime.get_with_predicate_calls: 2
+runtime.get_predicate_hybrid_success: 0
+runtime.get_predicate_hybrid_needs_io: 0
+runtime.get_predicate_hybrid_unsupported: 0
+runtime.try_read_liquid_calls: 0
+
+query[1]: SELECT date_bin(interval '10 second', to_timestamp_micros(_timestamp), to_timestamp('2001-01-01T00:00:00')) AS zo_sql_key, count(*) AS zo_sql_num from default WHERE log like '%hhj%' or message like '%hhj%' GROUP BY zo_sql_key ORDER BY zo_sql_key
+plan: 
+┌───────────────────────────┐
+│  SortPreservingMergeExec  │
+│    --------------------   │
+│ zo_sql_key ASC NULLS LAST │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│          SortExec         │
+│    --------------------   │
+│zo_sql_key@0 ASC NULLS LAST│
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       ProjectionExec      │
+│    --------------------   │
+│        zo_sql_key:        │
+│          date_bin         │
+│          (Interva         │
+│       lMonthDayNano(      │
+│       "IntervalMonth      │
+│ DayNano { months: 0, days:│
+│       0, nanoseconds:     │
+│       10000000000 }")     │
+│    ,to_timestamp_micros   │
+│    (default._timestamp)   │
+│  ,to_timestamp(Utf8("2001 │
+│    -01-01T00:00:00")))    │
+│                           │
+│        zo_sql_num:        │
+│      count(Int64(1))      │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       AggregateExec       │
+│    --------------------   │
+│       aggr: count(1)      │
+│                           │
+│         group_by:         │
+│          date_bin         │
+│          (Interva         │
+│       lMonthDayNano(      │
+│       "IntervalMonth      │
+│ DayNano { months: 0, days:│
+│       0, nanoseconds:     │
+│       10000000000 }")     │
+│    ,to_timestamp_micros   │
+│    (default._timestamp)   │
+│  ,to_timestamp(Utf8("2001 │
+│    -01-01T00:00:00")))    │
+│                           │
+│           mode:           │
+│      FinalPartitioned     │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│    CoalesceBatchesExec    │
+│    --------------------   │
+│     target_batch_size:    │
+│            8192           │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│      RepartitionExec      │
+│    --------------------   │
+│ partition_count(in->out): │
+│          24 -> 24         │
+│                           │
+│    partitioning_scheme:   │
+│       Hash([date_bin      │
+│       (IntervalMonth      │
+│          DayNano(         │
+│          "Interva         │
+│ lMonthDayNano { months: 0,│
+│    days: 0, nanoseconds:  │
+│       10000000000 }")     │
+│    ,to_timestamp_micros   │
+│    (default._timestamp)   │
+│    ,to_timestamp(Utf8(    │
+│  "2001-01-01T00:00:00"))) │
+│          @0], 24)         │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       AggregateExec       │
+│    --------------------   │
+│       aggr: count(1)      │
+│                           │
+│         group_by:         │
+│          date_bin         │
+│          (Interva         │
+│ lMonthDayNano { months: 0,│
+│    days: 0, nanoseconds:  │
+│       10000000000 },      │
+│     to_timestamp_micro    │
+│       s(_timestamp),      │
+│        9783072000000      │
+│     00000) as date_bin    │
+│     (IntervalMonthDayN    │
+│ ano("IntervalMonthDayNano │
+│   { months: 0, days: 0,   │
+│        nanoseconds:       │
+│       10000000000 }")     │
+│    ,to_timestamp_micros   │
+│    (default._timestamp)   │
+│  ,to_timestamp(Utf8("2001 │
+│    -01-01T00:00:00")))    │
+│                           │
+│       mode: Partial       │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│      RepartitionExec      │
+│    --------------------   │
+│ partition_count(in->out): │
+│          1 -> 24          │
+│                           │
+│    partitioning_scheme:   │
+│    RoundRobinBatch(24)    │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       DataSourceExec      │
+│    --------------------   │
+│          files: 1         │
+│                           │
+│          format:          │
+│       liquid_parquet      │
+└───────────────────────────┘
+
+stats:
+entries.total: 8
+entries.after_first_run: 8
+entries.memory.arrow: 3
+entries.memory.liquid: 5
+entries.memory.hybrid_liquid: 0
+entries.disk.liquid: 0
+entries.disk.arrow: 0
+usage.memory_bytes: 1026482
+usage.disk_bytes: 0
+runtime.get_arrow_array_calls: 0
+runtime.get_with_selection_calls: 3
+runtime.get_with_predicate_calls: 0
+runtime.get_predicate_hybrid_success: 0
+runtime.get_predicate_hybrid_needs_io: 0
+runtime.get_predicate_hybrid_unsupported: 0
+runtime.try_read_liquid_calls: 3
+
+query[2]: SELECT _timestamp, kubernetes_namespace_name from default order by _timestamp desc limit 100
+plan: 
+┌───────────────────────────┐
+│       SortExec(TopK)      │
+│    --------------------   │
+│     _timestamp@0 DESC     │
+│                           │
+│         limit: 100        │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       DataSourceExec      │
+│    --------------------   │
+│          files: 1         │
+│                           │
+│          format:          │
+│       liquid_parquet      │
+└───────────────────────────┘
+
+stats:
+entries.total: 8
+entries.after_first_run: 8
+entries.memory.arrow: 3
+entries.memory.liquid: 5
+entries.memory.hybrid_liquid: 0
+entries.disk.liquid: 0
+entries.disk.arrow: 0
+usage.memory_bytes: 1026482
+usage.disk_bytes: 0
+runtime.get_arrow_array_calls: 0
+runtime.get_with_selection_calls: 2
+runtime.get_with_predicate_calls: 2
+runtime.get_predicate_hybrid_success: 0
+runtime.get_predicate_hybrid_needs_io: 0
+runtime.get_predicate_hybrid_unsupported: 0
+runtime.try_read_liquid_calls: 0
