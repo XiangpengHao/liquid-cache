@@ -1,6 +1,6 @@
 ---
-source: src/liquid_parquet/src/tests/mod.rs
-expression: "format!(\"plan: \\n{}\\nvalues: \\n{}\", plan, reference)"
+source: src/local/src/tests/mod.rs
+expression: "format!(\"plan: \\n{}\\nvalues: \\n{}\\nstats:\\n{}\", plan, values, stats)"
 ---
 plan: 
 ┌───────────────────────────┐
@@ -32,3 +32,20 @@ values:
 | http://tambov.irr.ru/avtoma-gorod55.ru/cars/micros/out-of-town                                          |
 | http://tambov.irr.ru/avtoma-gorod55.ru/cars/micros/out-of-town                                          |
 +---------------------------------------------------------------------------------------------------------+
+stats:
+entries.total: 8
+entries.after_first_run: 8
+entries.memory.arrow: 3
+entries.memory.liquid: 0
+entries.memory.hybrid_liquid: 1
+entries.disk.liquid: 3
+entries.disk.arrow: 1
+usage.memory_bytes: 1045880
+usage.disk_bytes: 1276848
+runtime.get_arrow_array_calls: 0
+runtime.get_with_selection_calls: 2
+runtime.get_with_predicate_calls: 8
+runtime.get_predicate_hybrid_success: 0
+runtime.get_predicate_hybrid_needs_io: 1
+runtime.get_predicate_hybrid_unsupported: 1
+runtime.try_read_liquid_calls: 0
