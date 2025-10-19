@@ -7,7 +7,7 @@ use arrow::array::RecordBatch;
 use arrow_schema::{DataType, Fields, Schema, SchemaRef};
 use fastrace::Event;
 use fastrace::local::LocalSpan;
-use futures::{FutureExt, Stream, StreamExt, future::BoxFuture, ready};
+use futures::{FutureExt, Stream, StreamExt, future::BoxFuture};
 use parquet::arrow::arrow_reader::{ArrowPredicate, ArrowReaderMetadata, ArrowReaderOptions};
 use parquet::{
     arrow::{
@@ -18,15 +18,15 @@ use parquet::{
     file::metadata::ParquetMetaData,
 };
 use std::{
-    collections::{BTreeSet, VecDeque},
+    collections::VecDeque,
     fmt::Formatter,
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
 };
 
-use super::liquid_batch_reader::LiquidBatchReader;
-use super::parquet::{ArrayReaderColumn, get_column_ids};
+use super::liquid_cache_reader::LiquidCacheReader;
+use super::utils::{ArrayReaderColumn, get_column_ids};
 
 type PlanResult = Option<PlanningContext>;
 type FillCacheResult = Result<(ReaderFactory, PlanningContext), ParquetError>;
@@ -169,63 +169,97 @@ impl ReaderFactory {
         let row_count = self.metadata.row_group(context.row_group_idx).num_rows() as usize;
         let cache_batch_size = context.cached_row_group.batch_size();
 
-        if !context.cache_column_ids.is_empty() && !context.missing_batches.is_empty() {
-            // Build row selection for the missing batches
-            let backfill_selection =
-                build_selection_for_batches(&context.missing_batches, cache_batch_size, row_count);
+        if context.cache_column_ids.is_empty() || context.missing_batches.is_empty() {
+            return Ok((self, context));
+        }
 
-            if backfill_selection.selects_any() {
-                // Clone the reader for this operation (cheap since it's Arc-based)
-                let reader_clone: ParquetMetadataCacheReader = self.input.clone();
+        // Build row selection for the missing batches
+        let backfill_selection =
+            build_selection_for_batches(&context.missing_batches, cache_batch_size, row_count);
 
-                // Use official parquet async reader
-                let options = ArrowReaderOptions::new();
-                let reader_metadata =
-                    ArrowReaderMetadata::try_new(Arc::clone(&self.metadata), options)?;
+        if !backfill_selection.selects_any() {
+            return Ok((self, context));
+        }
 
-                let mut stream = ParquetRecordBatchStreamBuilder::new_with_metadata(
-                    reader_clone,
-                    reader_metadata,
-                )
+        // Clone the reader for this operation (cheap since it's Arc-based)
+        let reader_clone: ParquetMetadataCacheReader = self.input.clone();
+
+        // Use official parquet async reader
+        let options = ArrowReaderOptions::new();
+        let reader_metadata = ArrowReaderMetadata::try_new(Arc::clone(&self.metadata), options)?;
+
+        let mut stream =
+            ParquetRecordBatchStreamBuilder::new_with_metadata(reader_clone, reader_metadata)
                 .with_projection(context.cache_projection.clone())
                 .with_row_groups(vec![context.row_group_idx])
                 .with_row_selection(backfill_selection)
+                .with_batch_size(cache_batch_size)
                 .build()?;
 
-                // Read all batches from the stream
-                let mut record_batches: Vec<RecordBatch> = Vec::new();
-                while let Some(batch_result) = stream.next().await {
-                    record_batches.push(batch_result?);
-                }
+        let mut processed_batches = 0usize;
+        let mut column_metadata: Option<Vec<ArrayReaderColumn>> = None;
 
-                if !record_batches.is_empty() {
-                    // Concatenate all batches into a single record batch
-                    let record_batch = if record_batches.len() == 1 {
-                        record_batches.into_iter().next().unwrap()
-                    } else {
-                        let schema = record_batches[0].schema();
-                        arrow::compute::concat_batches(&schema, &record_batches)
-                            .map_err(|e| ParquetError::ArrowError(e.to_string()))?
-                    };
-
-                    // Build column metadata for insertion using the record batch schema
-                    let columns = build_column_metadata_from_batch(
-                        &context.cache_projection,
-                        self.fields.as_deref(),
-                        &record_batch,
-                    )?;
-
-                    // Insert the batches into liquid cache
-                    insert_batches_into_cache(
-                        &record_batch,
-                        &columns,
-                        &context.missing_batches,
-                        cache_batch_size,
-                        row_count,
-                        &context.cached_row_group,
-                    )?;
-                }
+        while let Some(batch_result) = stream.next().await {
+            let record_batch = batch_result?;
+            if record_batch.num_rows() == 0 {
+                continue;
             }
+
+            if let Some(column_metadata) = &column_metadata {
+                debug_assert_eq!(
+                    record_batch.num_columns(),
+                    column_metadata.len(),
+                    "record batch schema changed while filling cache"
+                );
+            } else {
+                column_metadata = Some(build_column_metadata_from_batch(
+                    &context.cache_projection,
+                    self.fields.as_deref(),
+                    &record_batch,
+                )?);
+            }
+
+            let Some(batch_id) = context.missing_batches.get(processed_batches) else {
+                return Err(ParquetError::General(
+                    "parquet stream produced more batches than expected".to_string(),
+                ));
+            };
+
+            let batch_index = usize::from(**batch_id);
+            let batch_start = batch_index * cache_batch_size;
+            let expected_len = ((batch_index + 1) * cache_batch_size)
+                .min(row_count)
+                .saturating_sub(batch_start.min(row_count));
+
+            debug_assert!(
+                record_batch.num_rows() <= cache_batch_size,
+                "parquet batch larger than cache batch size"
+            );
+            debug_assert_eq!(
+                record_batch.num_rows(),
+                expected_len,
+                "parquet batch length does not match expected cache slice"
+            );
+
+            let batch_id = *batch_id;
+            insert_batch_into_cache(
+                &record_batch,
+                column_metadata.as_ref().unwrap(),
+                batch_id,
+                cache_batch_size,
+                row_count,
+                &context.cached_row_group,
+            )?;
+
+            processed_batches += 1;
+        }
+
+        if processed_batches != context.missing_batches.len() {
+            return Err(ParquetError::General(format!(
+                "expected {} batches from parquet stream, received {}",
+                context.missing_batches.len(),
+                processed_batches
+            )));
         }
 
         Ok((self, context))
@@ -236,8 +270,8 @@ fn collect_selection_batches(
     selection: &RowSelection,
     batch_size: usize,
     row_count: usize,
-) -> BTreeSet<BatchID> {
-    let mut batches = BTreeSet::new();
+) -> Vec<BatchID> {
+    let mut batches = Vec::new();
     let mut current_row = 0usize;
     let selectors: Vec<RowSelector> = selection.clone().into();
 
@@ -257,7 +291,11 @@ fn collect_selection_batches(
         let start_batch = start / batch_size;
         let end_batch = (end - 1) / batch_size;
         for batch_idx in start_batch..=end_batch {
-            batches.insert(BatchID::from_raw(batch_idx as u16));
+            let batch_id = BatchID::from_raw(batch_idx as u16);
+            let is_duplicate = batches.last().is_some_and(|last| last == &batch_id);
+            if !is_duplicate {
+                batches.push(batch_id);
+            }
         }
         current_row += selector.row_count;
     }
@@ -268,30 +306,43 @@ fn collect_selection_batches(
 fn compute_missing_batches(
     cached_row_group: &LiquidCachedRowGroupRef,
     column_ids: &[usize],
-    selection_batches: &BTreeSet<BatchID>,
+    selection_batches: &[BatchID],
 ) -> Vec<BatchID> {
     if column_ids.is_empty() || selection_batches.is_empty() {
         return Vec::new();
     }
 
-    let mut missing = BTreeSet::new();
-
+    let mut columns = Vec::with_capacity(column_ids.len());
     for &column_idx in column_ids {
-        match cached_row_group.get_column(column_idx as u64) {
-            Some(column) => {
-                for batch_id in selection_batches {
-                    if !column.is_cached(*batch_id) {
-                        missing.insert(*batch_id);
+        columns.push(cached_row_group.get_column(column_idx as u64));
+    }
+
+    let mut missing = Vec::new();
+
+    'batch: for &batch_id in selection_batches {
+        for column in &columns {
+            match column {
+                Some(column) => {
+                    if !column.is_cached(batch_id) {
+                        if missing.last().is_some_and(|last| last == &batch_id) {
+                            continue 'batch;
+                        }
+                        missing.push(batch_id);
+                        continue 'batch;
                     }
                 }
-            }
-            None => {
-                missing.extend(selection_batches.iter().copied());
+                None => {
+                    if missing.last().is_some_and(|last| last == &batch_id) {
+                        continue 'batch;
+                    }
+                    missing.push(batch_id);
+                    continue 'batch;
+                }
             }
         }
     }
 
-    missing.into_iter().collect()
+    missing
 }
 
 fn build_selection_for_batches(
@@ -325,48 +376,54 @@ fn build_selection_for_batches(
     RowSelection::from(selectors)
 }
 
-fn insert_batches_into_cache(
+fn insert_batch_into_cache(
     record_batch: &RecordBatch,
     columns: &[ArrayReaderColumn],
-    batches: &[BatchID],
+    batch_id: BatchID,
     batch_size: usize,
     row_count: usize,
     cached_row_group: &LiquidCachedRowGroupRef,
 ) -> Result<(), ParquetError> {
-    if batches.is_empty() || columns.is_empty() || record_batch.num_rows() == 0 {
+    if columns.is_empty() || record_batch.num_rows() == 0 {
         return Ok(());
     }
 
     debug_assert_eq!(record_batch.num_columns(), columns.len());
 
-    let mut offset = 0usize;
-    for batch_id in batches {
-        let batch_idx = usize::from(**batch_id);
-        let start = batch_idx * batch_size;
-        if start >= row_count {
-            continue;
-        }
-        let end = ((batch_idx + 1) * batch_size).min(row_count);
-        let len = end - start;
+    let batch_idx = usize::from(*batch_id);
+    let start = batch_idx * batch_size;
+    if start >= row_count {
+        return Ok(());
+    }
+    let end = ((batch_idx + 1) * batch_size).min(row_count);
+    let len = end - start;
 
-        for (col_idx, column_meta) in columns.iter().enumerate() {
-            let array = record_batch.column(col_idx).slice(offset, len);
-            let column = cached_row_group.create_column(
-                column_meta.column_idx as u64,
-                Arc::clone(&column_meta.field),
-            );
-            if let Err(err) = column.insert(*batch_id, array)
-                && !matches!(err, InsertArrowArrayError::AlreadyCached)
-            {
-                return Err(ParquetError::General(format!(
-                    "Failed to insert batch {} for column {} into cache: {err:?}",
-                    batch_idx, column_meta.column_idx
-                )));
-            }
-            debug_assert!(column.is_cached(*batch_id));
-        }
+    debug_assert!(
+        len <= batch_size,
+        "cache batch length exceeded configured batch size"
+    );
+    debug_assert_eq!(
+        record_batch.num_rows(),
+        len,
+        "record batch length does not match cache batch window"
+    );
 
-        offset += len;
+    for (col_idx, column_meta) in columns.iter().enumerate() {
+        let column = cached_row_group.create_column(
+            column_meta.column_idx as u64,
+            Arc::clone(&column_meta.field),
+        );
+        let array = Arc::clone(record_batch.column(col_idx));
+
+        if let Err(err) = column.insert(batch_id, array)
+            && !matches!(err, InsertArrowArrayError::AlreadyCached)
+        {
+            return Err(ParquetError::General(format!(
+                "Failed to insert batch {} for column {} into cache: {err:?}",
+                batch_idx, column_meta.column_idx
+            )));
+        }
+        debug_assert!(column.is_cached(batch_id));
     }
 
     Ok(())
@@ -388,17 +445,17 @@ enum StreamState {
     /// At the start of a new row group, or the end of the parquet stream
     Init,
     /// Reading from parquet and filling cache
-    FillingCache(BoxFuture<'static, FillCacheResult>),
+    FillCache(BoxFuture<'static, FillCacheResult>),
     /// Decoding a batch from cache
-    Decoding(LiquidBatchReader),
+    ReadFromCache(LiquidCacheReader),
 }
 
 impl std::fmt::Debug for StreamState {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             StreamState::Init => write!(f, "StreamState::Init"),
-            StreamState::FillingCache(_) => write!(f, "StreamState::FillingCache"),
-            StreamState::Decoding(_) => write!(f, "StreamState::Decoding"),
+            StreamState::FillCache(_) => write!(f, "StreamState::FillingCache"),
+            StreamState::ReadFromCache(_) => write!(f, "StreamState::Decoding"),
         }
     }
 }
@@ -520,21 +577,29 @@ impl Stream for LiquidStream {
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         loop {
-            match &mut self.state {
-                StreamState::Decoding(batch_reader) => match batch_reader.next() {
-                    Some(Ok(batch)) => {
-                        return Poll::Ready(Some(Ok(batch)));
+            let state = std::mem::replace(&mut self.state, StreamState::Init);
+
+            match state {
+                StreamState::ReadFromCache(mut batch_reader) => {
+                    match Pin::new(&mut batch_reader).poll_next(cx) {
+                        Poll::Ready(Some(Ok(batch))) => {
+                            self.state = StreamState::ReadFromCache(batch_reader);
+                            return Poll::Ready(Some(Ok(batch)));
+                        }
+                        Poll::Ready(Some(Err(e))) => {
+                            panic!("Decoding next batch error: {e:?}");
+                        }
+                        Poll::Ready(None) => {
+                            let filter = batch_reader.into_filter();
+                            self.reader.as_mut().unwrap().filter = filter;
+                            // state left as Init, continue loop to plan next row group
+                        }
+                        Poll::Pending => {
+                            self.state = StreamState::ReadFromCache(batch_reader);
+                            return Poll::Pending;
+                        }
                     }
-                    Some(Err(e)) => {
-                        panic!("Decoding next batch error: {e:?}");
-                    }
-                    None => {
-                        // this is ugly, but works for now.
-                        let filter = batch_reader.take_filter();
-                        self.reader.as_mut().unwrap().filter = filter;
-                        self.state = StreamState::Init
-                    }
-                },
+                }
                 StreamState::Init => {
                     let row_group_idx = match self.row_groups.pop_front() {
                         Some(idx) => idx,
@@ -556,20 +621,17 @@ impl Stream for LiquidStream {
                     );
                     match maybe_context {
                         Some(context) => {
-                            // Check if we need to fill cache from parquet
                             if !context.missing_batches.is_empty()
                                 && !context.cache_column_ids.is_empty()
                             {
-                                // Need to read from parquet
                                 LocalSpan::add_event(Event::new("LiquidStream::fill_cache"));
                                 let reader = self.reader.take().expect("lost reader");
                                 let fut = reader.fill_cache_from_parquet(context).boxed();
-                                self.state = StreamState::FillingCache(fut);
+                                self.state = StreamState::FillCache(fut);
                             } else {
-                                // All data in cache, go directly to decoding
                                 LocalSpan::add_event(Event::new("LiquidStream::read_from_cache"));
                                 let reader_factory = self.reader.as_mut().unwrap();
-                                let batch_reader = LiquidBatchReader::new(
+                                let batch_reader = LiquidCacheReader::new(
                                     context.batch_size,
                                     context.selection,
                                     reader_factory.filter.take(),
@@ -577,35 +639,212 @@ impl Stream for LiquidStream {
                                     context.projection_column_ids,
                                     self.schema.clone(),
                                 );
-                                self.state = StreamState::Decoding(batch_reader);
+                                self.state = StreamState::ReadFromCache(batch_reader);
                             }
                         }
-                        // All rows skipped, read next row group
-                        None => self.state = StreamState::Init,
+                        None => {
+                            self.state = StreamState::Init;
+                        }
                     }
                 }
-                StreamState::FillingCache(f) => match ready!(f.poll_unpin(cx)) {
-                    Ok((reader_factory, context)) => {
-                        self.reader = Some(reader_factory);
-
-                        // Now that cache is filled, create reader from cache
-                        LocalSpan::add_event(Event::new("LiquidStream::read_from_cache"));
-                        let reader_factory = self.reader.as_mut().unwrap();
-                        let batch_reader = LiquidBatchReader::new(
-                            context.batch_size,
-                            context.selection,
-                            reader_factory.filter.take(),
-                            context.cached_row_group,
-                            context.projection_column_ids,
-                            self.schema.clone(),
-                        );
-                        self.state = StreamState::Decoding(batch_reader);
+                StreamState::FillCache(mut f) => match f.as_mut().poll(cx) {
+                    Poll::Pending => {
+                        self.state = StreamState::FillCache(f);
+                        return Poll::Pending;
                     }
-                    Err(e) => {
-                        panic!("Filling cache error: {e:?}");
-                    }
+                    Poll::Ready(result) => match result {
+                        Ok((reader_factory, context)) => {
+                            self.reader = Some(reader_factory);
+                            LocalSpan::add_event(Event::new("LiquidStream::read_from_cache"));
+                            let reader_factory = self.reader.as_mut().unwrap();
+                            let batch_reader = LiquidCacheReader::new(
+                                context.batch_size,
+                                context.selection,
+                                reader_factory.filter.take(),
+                                context.cached_row_group,
+                                context.projection_column_ids,
+                                self.schema.clone(),
+                            );
+                            self.state = StreamState::ReadFromCache(batch_reader);
+                        }
+                        Err(e) => {
+                            panic!("Filling cache error: {e:?}");
+                        }
+                    },
                 },
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cache::LiquidCache;
+    use arrow::array::{ArrayRef, Int32Array};
+    use liquid_cache_storage::cache::squeeze_policies::Evict;
+    use liquid_cache_storage::cache_policies::LiquidPolicy;
+    use parquet::arrow::arrow_reader::RowSelection;
+    use std::sync::Arc;
+
+    fn make_cache(batch_size: usize) -> LiquidCachedRowGroupRef {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let cache = LiquidCache::new(
+            batch_size,
+            usize::MAX,
+            tmp_dir.path().to_path_buf(),
+            Box::new(LiquidPolicy::new()),
+            Box::new(Evict),
+        );
+        let file = cache.register_or_get_file("test.parquet".to_string());
+        file.row_group(0)
+    }
+
+    fn insert_batches(
+        row_group: &LiquidCachedRowGroupRef,
+        column_id: usize,
+        batch_payloads: &[(u16, &[i32])],
+    ) {
+        let field = Arc::new(arrow_schema::Field::new(
+            format!("col_{column_id}"),
+            arrow_schema::DataType::Int32,
+            false,
+        ));
+        let column = row_group.create_column(column_id as u64, field);
+        for (batch_idx, values) in batch_payloads.iter() {
+            let array: ArrayRef = Arc::new(Int32Array::from(values.to_vec()));
+            column.insert(BatchID::from_raw(*batch_idx), array).unwrap();
+        }
+    }
+
+    #[test]
+    fn collect_selection_batches_marks_all_selected_batches() {
+        let selection = RowSelection::from(vec![
+            RowSelector::select(3),
+            RowSelector::skip(2),
+            RowSelector::select(5),
+        ]);
+        let batches = collect_selection_batches(&selection, 4, 10);
+        let expected = vec![
+            BatchID::from_raw(0),
+            BatchID::from_raw(1),
+            BatchID::from_raw(2),
+        ];
+        assert_eq!(batches, expected);
+    }
+
+    #[test]
+    fn collect_selection_batches_handles_empty_selection() {
+        let selection = RowSelection::from(vec![]);
+        let batches = collect_selection_batches(&selection, 4, 10);
+        let expected: Vec<BatchID> = vec![];
+        assert_eq!(batches, expected);
+    }
+
+    #[test]
+    fn collect_selection_batches_handles_selection_beyond_row_count() {
+        let selection = RowSelection::from(vec![
+            RowSelector::select(5),  // Select 5 rows
+            RowSelector::skip(2),    // Skip 2 rows
+            RowSelector::select(10), // Select 10 rows (but only 3 rows left)
+        ]);
+        let batches = collect_selection_batches(&selection, 4, 8);
+        // Total rows: 8
+        // First selector: select 5 rows (rows 0-4) -> batches 0, 1
+        // Skip 2 rows (rows 5-6)
+        // Third selector: select 10 rows from row 7, but only 1 row left -> batch 1
+        let expected = vec![BatchID::from_raw(0), BatchID::from_raw(1)];
+        assert_eq!(batches, expected);
+    }
+
+    #[test]
+    fn compute_missing_batches_identifies_partial_columns() {
+        let row_group = make_cache(4);
+        insert_batches(&row_group, 0, &[(0, &[1, 2, 3, 4]), (2, &[9, 9, 9, 9])]);
+        insert_batches(&row_group, 2, &[(0, &[5, 6, 7, 8])]);
+
+        let selection_batches = vec![
+            BatchID::from_raw(0),
+            BatchID::from_raw(1),
+            BatchID::from_raw(2),
+        ];
+
+        let missing_for_col0 = compute_missing_batches(&row_group, &[0], &selection_batches);
+        assert_eq!(missing_for_col0, vec![BatchID::from_raw(1)]);
+
+        let missing_for_col2 = compute_missing_batches(&row_group, &[2], &selection_batches);
+        assert_eq!(
+            missing_for_col2,
+            vec![BatchID::from_raw(1), BatchID::from_raw(2),]
+        );
+
+        let missing_for_col1 = compute_missing_batches(&row_group, &[1], &selection_batches);
+        assert_eq!(
+            missing_for_col1,
+            vec![
+                BatchID::from_raw(0),
+                BatchID::from_raw(1),
+                BatchID::from_raw(2),
+            ]
+        );
+    }
+
+    #[test]
+    fn build_selection_for_batches_generates_sparse_selectors() {
+        let selection =
+            build_selection_for_batches(&[BatchID::from_raw(1), BatchID::from_raw(3)], 4, 20);
+        let selectors: Vec<RowSelector> = selection.into();
+        assert_eq!(
+            selectors,
+            vec![
+                RowSelector::skip(4),
+                RowSelector::select(4),
+                RowSelector::skip(4),
+                RowSelector::select(4),
+            ]
+        );
+    }
+
+    #[test]
+    fn build_selection_for_batches_handles_empty_batches() {
+        let selection = build_selection_for_batches(&[], 4, 20);
+        let selectors: Vec<RowSelector> = selection.into();
+        assert_eq!(selectors, vec![]);
+    }
+
+    #[test]
+    fn build_selection_for_batches_handles_batch_beyond_row_count() {
+        let selection =
+            build_selection_for_batches(&[BatchID::from_raw(5), BatchID::from_raw(6)], 4, 16);
+        let selectors: Vec<RowSelector> = selection.into();
+        // Total rows: 16, so valid batches are 0-3 (rows 0-15)
+        // Batch 5: start=20, end=min(24,16)=16, but 20 >= 16, so skipped
+        // Batch 6: start=24, end=min(28,16)=16, but 24 >= 16, so skipped
+        // Result should be empty selection
+        assert_eq!(selectors, vec![]);
+    }
+
+    #[test]
+    fn build_selection_for_batches_handles_single_batch() {
+        let selection = build_selection_for_batches(&[BatchID::from_raw(2)], 4, 20);
+        let selectors: Vec<RowSelector> = selection.into();
+        // Batch 2: rows 8-11
+        // Should skip 8 rows then select 4 rows
+        assert_eq!(
+            selectors,
+            vec![RowSelector::skip(8), RowSelector::select(4),]
+        );
+    }
+
+    #[test]
+    fn build_selection_for_batches_handles_partial_last_batch() {
+        let selection = build_selection_for_batches(&[BatchID::from_raw(4)], 4, 18);
+        let selectors: Vec<RowSelector> = selection.into();
+        // Batch 4: start=16, end=min(20,18)=18
+        // Should skip 16 rows then select 2 rows (18-16=2)
+        assert_eq!(
+            selectors,
+            vec![RowSelector::skip(16), RowSelector::select(2),]
+        );
     }
 }
