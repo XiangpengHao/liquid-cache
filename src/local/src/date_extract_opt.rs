@@ -1,18 +1,23 @@
 use std::collections::HashMap;
 use std::str::FromStr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use arrow::compute::kernels::cast_utils::IntervalUnit;
-use arrow_schema::DataType;
+use arrow_schema::{DataType, Schema, SchemaRef};
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{
     Column, DFSchema, DataFusionError, ExprSchema, Result, ScalarValue, TableReference,
 };
-use datafusion::logical_expr::Expr;
+use datafusion::datasource::listing::ListingTable;
+use datafusion::datasource::schema_adapter::{
+    DefaultSchemaAdapterFactory, SchemaAdapter, SchemaAdapterFactory, SchemaMapper,
+};
+use datafusion::datasource::{TableProvider, provider_as_source, source_as_provider};
 use datafusion::logical_expr::logical_plan::{
     Aggregate, Distinct, DistinctOn, Filter, Join, Limit, LogicalPlan, Partitioning, Projection,
     Repartition, Sort, SubqueryAlias, TableScan, Union, Window,
 };
+use datafusion::logical_expr::{Expr, TableSource};
 use datafusion::optimizer::{OptimizerConfig, OptimizerRule};
 
 /// Supported components for `EXTRACT` clauses.
@@ -21,6 +26,16 @@ pub(crate) enum SupportedIntervalUnit {
     Year,
     Month,
     Day,
+}
+
+impl SupportedIntervalUnit {
+    fn metadata_value(self) -> &'static str {
+        match self {
+            SupportedIntervalUnit::Year => "YEAR",
+            SupportedIntervalUnit::Month => "MONTH",
+            SupportedIntervalUnit::Day => "DAY",
+        }
+    }
 }
 
 /// Metadata describing a Date32 column that participates in an `EXTRACT`.
@@ -64,8 +79,10 @@ impl OptimizerRule for DateExtractOptimizer {
         let _ = analyzer.analyze_plan(&plan)?;
         let mut findings = analyzer.finish();
         findings.sort_by(|a, b| a.column.flat_name().cmp(&b.column.flat_name()));
+        let annotations = build_annotation_map(&findings);
+        let transformed_plan = annotate_plan_with_extractions(plan, &annotations)?;
         *self.extractions.lock().unwrap() = findings;
-        Ok(Transformed::no(plan))
+        Ok(transformed_plan)
     }
 }
 
@@ -78,6 +95,13 @@ struct ColumnKey {
 }
 
 impl ColumnKey {
+    fn new(relation: Option<TableReference>, name: impl Into<String>) -> Self {
+        Self {
+            relation,
+            name: name.into(),
+        }
+    }
+
     fn from_column(column: &Column) -> Self {
         Self {
             relation: column.relation.clone(),
@@ -488,6 +512,182 @@ impl LineageAnalyzer {
     }
 }
 
+fn build_annotation_map(findings: &[DateExtraction]) -> HashMap<ColumnKey, SupportedIntervalUnit> {
+    findings
+        .iter()
+        .map(|extraction| {
+            (
+                ColumnKey::from_column(&extraction.column),
+                extraction.component,
+            )
+        })
+        .collect()
+}
+
+fn annotate_plan_with_extractions(
+    plan: LogicalPlan,
+    annotations: &HashMap<ColumnKey, SupportedIntervalUnit>,
+) -> Result<Transformed<LogicalPlan>, DataFusionError> {
+    if annotations.is_empty() {
+        return Ok(Transformed::no(plan));
+    }
+
+    plan.transform_up(|logical_plan| match logical_plan {
+        LogicalPlan::TableScan(mut scan) => {
+            let table_annotations = annotations_for_table_scan(&scan, annotations);
+            let mut changed = false;
+
+            if let Some(source) = annotate_listing_table_source(&scan.source, &table_annotations)? {
+                scan.source = source;
+                changed = true;
+            }
+
+            if changed {
+                Ok(Transformed::yes(LogicalPlan::TableScan(scan)))
+            } else {
+                Ok(Transformed::no(LogicalPlan::TableScan(scan)))
+            }
+        }
+        other => Ok(Transformed::no(other)),
+    })
+}
+
+fn annotations_for_table_scan(
+    scan: &TableScan,
+    annotations: &HashMap<ColumnKey, SupportedIntervalUnit>,
+) -> HashMap<String, SupportedIntervalUnit> {
+    let mut table_annotations = HashMap::new();
+
+    for (qualifier_opt, field_ref) in scan.projected_schema.iter() {
+        let qualifier_owned = qualifier_opt.cloned();
+        let name = field_ref.name().clone();
+        if let Some(unit) = annotations
+            .get(&ColumnKey::new(qualifier_owned.clone(), name.clone()))
+            .copied()
+            .or_else(|| {
+                annotations
+                    .get(&ColumnKey::new(None, name.clone()))
+                    .copied()
+            })
+        {
+            table_annotations.insert(name, unit);
+        }
+    }
+
+    table_annotations
+}
+
+fn annotate_listing_table_source(
+    source: &Arc<dyn TableSource>,
+    annotations: &HashMap<String, SupportedIntervalUnit>,
+) -> Result<Option<Arc<dyn TableSource>>, DataFusionError> {
+    if annotations.is_empty() {
+        return Ok(None);
+    }
+
+    let provider = match source_as_provider(source) {
+        Ok(provider) => provider,
+        Err(_) => return Ok(None),
+    };
+
+    let Some(listing) = provider.as_any().downcast_ref::<ListingTable>() else {
+        return Ok(None);
+    };
+
+    let base_factory = listing
+        .schema_adapter_factory()
+        .map(|factory| Arc::clone(factory));
+
+    let encoded_annotations: HashMap<String, String> = annotations
+        .iter()
+        .map(|(name, unit)| (name.clone(), unit.metadata_value().to_string()))
+        .collect();
+
+    let metadata_copy = encoded_annotations.clone();
+    let new_factory: Arc<dyn SchemaAdapterFactory> = Arc::new(
+        DateExtractSchemaAdapterFactory::new(base_factory, encoded_annotations),
+    );
+    register_factory_metadata(&new_factory, metadata_copy);
+    let new_listing = listing.clone().with_schema_adapter_factory(new_factory);
+
+    let new_provider: Arc<dyn TableProvider> = Arc::new(new_listing);
+    Ok(Some(provider_as_source(new_provider)))
+}
+
+#[derive(Debug)]
+struct DateExtractSchemaAdapterFactory {
+    base: Option<Arc<dyn SchemaAdapterFactory>>,
+    _annotations: HashMap<String, String>,
+}
+
+impl DateExtractSchemaAdapterFactory {
+    fn new(
+        base: Option<Arc<dyn SchemaAdapterFactory>>,
+        annotations: HashMap<String, String>,
+    ) -> Self {
+        Self {
+            base,
+            _annotations: annotations,
+        }
+    }
+}
+
+impl SchemaAdapterFactory for DateExtractSchemaAdapterFactory {
+    fn create(
+        &self,
+        projected_table_schema: SchemaRef,
+        table_schema: SchemaRef,
+    ) -> Box<dyn SchemaAdapter> {
+        let inner = match &self.base {
+            Some(base) => base.create(projected_table_schema, table_schema),
+            None => {
+                DefaultSchemaAdapterFactory::default().create(projected_table_schema, table_schema)
+            }
+        };
+        Box::new(DateExtractSchemaAdapter { inner })
+    }
+}
+
+struct DateExtractSchemaAdapter {
+    inner: Box<dyn SchemaAdapter>,
+}
+
+impl SchemaAdapter for DateExtractSchemaAdapter {
+    fn map_column_index(&self, index: usize, file_schema: &Schema) -> Option<usize> {
+        self.inner.map_column_index(index, file_schema)
+    }
+
+    fn map_schema(
+        &self,
+        file_schema: &Schema,
+    ) -> datafusion::common::Result<(Arc<dyn SchemaMapper>, Vec<usize>)> {
+        self.inner.map_schema(file_schema)
+    }
+}
+
+fn factory_registry() -> &'static Mutex<HashMap<usize, HashMap<String, String>>> {
+    static REGISTRY: OnceLock<Mutex<HashMap<usize, HashMap<String, String>>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn register_factory_metadata(
+    factory: &Arc<dyn SchemaAdapterFactory>,
+    metadata: HashMap<String, String>,
+) {
+    let key = Arc::as_ptr(factory) as *const () as usize;
+    factory_registry().lock().unwrap().insert(key, metadata);
+}
+
+#[cfg(test)]
+fn metadata_from_factory(factory: &Arc<dyn SchemaAdapterFactory>, column: &str) -> Option<String> {
+    let key = Arc::as_ptr(factory) as *const () as usize;
+    factory_registry()
+        .lock()
+        .unwrap()
+        .get(&key)
+        .and_then(|map| map.get(column).cloned())
+}
+
 fn merge_lineage_maps(mut base: LineageMap, other: LineageMap) -> LineageMap {
     for (key, usages) in other {
         base.entry(key).or_default().extend(usages);
@@ -605,7 +805,10 @@ mod tests {
     use super::*;
     use arrow::array::{ArrayRef, Date32Array, TimestampMicrosecondArray};
     use arrow_schema::{Field, Schema, TimeUnit};
+    use datafusion::catalog::memory::DataSourceExec;
+    use datafusion::datasource::physical_plan::FileScanConfig;
     use datafusion::execution::SessionStateBuilder;
+    use datafusion::physical_plan::ExecutionPlan;
     use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
     use parquet::arrow::ArrowWriter;
     use tempfile::TempDir;
@@ -664,6 +867,109 @@ mod tests {
         ctx
     }
 
+    fn extract_date_metadata_from_logical_plan(
+        plan: &LogicalPlan,
+    ) -> HashMap<String, Option<String>> {
+        let mut date_metadata = HashMap::new();
+        plan.apply(|node| {
+            let LogicalPlan::TableScan(scan) = node else {
+                return Ok(TreeNodeRecursion::Continue);
+            };
+            let source = &scan.source;
+            let provider = match source_as_provider(source) {
+                Ok(provider) => provider,
+                Err(_) => return Ok(TreeNodeRecursion::Continue),
+            };
+            let Some(listing) = provider.as_any().downcast_ref::<ListingTable>() else {
+                return Ok(TreeNodeRecursion::Continue);
+            };
+            let Some(factory) = listing.schema_adapter_factory() else {
+                return Ok(TreeNodeRecursion::Continue);
+            };
+            let metadata = metadata_from_factory(&factory, "date");
+            date_metadata.insert(scan.table_name.table().to_string(), metadata);
+            Ok(TreeNodeRecursion::Continue)
+        })
+        .unwrap();
+        date_metadata
+    }
+
+    fn extract_date_metadata_from_physical_plan(plan: &Arc<dyn ExecutionPlan>) -> Option<String> {
+        let mut date_metadata = None;
+
+        plan.apply(|node| {
+            let Some(data_source) = node.as_any().downcast_ref::<DataSourceExec>() else {
+                return Ok(TreeNodeRecursion::Continue);
+            };
+            let Some(file_scan_config) = data_source
+                .data_source()
+                .as_any()
+                .downcast_ref::<FileScanConfig>()
+            else {
+                return Ok(TreeNodeRecursion::Continue);
+            };
+
+            let Some(factory) = file_scan_config.file_source().schema_adapter_factory() else {
+                return Ok(TreeNodeRecursion::Continue);
+            };
+
+            date_metadata = metadata_from_factory(&factory, "date");
+            if date_metadata.is_some() {
+                Ok(TreeNodeRecursion::Stop)
+            } else {
+                Ok(TreeNodeRecursion::Continue)
+            }
+        })
+        .unwrap();
+        date_metadata
+    }
+
+    #[tokio::test]
+    async fn multi_table_extracts() {
+        let temp_dir = TempDir::new().unwrap();
+        let table_a = temp_dir.path().join("table_a.parquet");
+        let table_b = temp_dir.path().join("table_b.parquet");
+
+        let optimizer = Arc::new(DateExtractOptimizer::new());
+        let ctx = create_test_ctx(
+            table_a.to_str().unwrap(),
+            table_b.to_str().unwrap(),
+            optimizer.clone(),
+        )
+        .await;
+
+        let statements = vec![
+            "SELECT EXTRACT(YEAR FROM table_a.date) AS year, EXTRACT(DAY FROM table_b.date) AS day FROM table_a INNER JOIN table_b ON table_a.event_ts = table_b.event_ts",
+        ];
+
+        for sql in statements {
+            let df = ctx.sql(sql).await.unwrap();
+            let (state, plan) = df.into_parts();
+            let optimized = state.optimize(&plan).unwrap();
+            let date_metadata = extract_date_metadata_from_logical_plan(&optimized);
+            assert_eq!(
+                date_metadata.get("table_a").unwrap().as_ref(),
+                Some(&"YEAR".to_string()),
+            );
+            assert_eq!(
+                date_metadata.get("table_b").unwrap().as_ref(),
+                Some(&"DAY".to_string()),
+            );
+            assert_eq!(date_metadata.len(), 2);
+
+            let extractions = optimizer.extractions();
+            assert_eq!(extractions.len(), 2);
+            assert!(matches!(
+                extractions[0].component,
+                SupportedIntervalUnit::Year
+            ));
+            assert!(matches!(
+                extractions[1].component,
+                SupportedIntervalUnit::Day
+            ));
+        }
+    }
+
     #[tokio::test]
     async fn detects_consistent_extracts_for_date32() {
         let temp_dir = TempDir::new().unwrap();
@@ -682,7 +988,6 @@ mod tests {
             "SELECT EXTRACT(DAY FROM date) AS day FROM table_a",
             "SELECT EXTRACT(day FROM date) AS day FROM table_a",
             "SELECT EXTRACT(DAY FROM table_a.date) FROM table_a",
-            // "SELECT EXTRACT(DAY FROM sub.order_date) FROM (SELECT date AS order_date FROM table_a) sub",
             "SELECT EXTRACT(YEAR FROM event_ts) AS year, EXTRACT(DAY FROM date) AS day FROM table_a",
         ];
 
@@ -690,14 +995,15 @@ mod tests {
             let df = ctx.sql(sql).await.unwrap();
             let (state, plan) = df.into_parts();
             let optimized = state.optimize(&plan).unwrap();
-            let _ = state.create_physical_plan(&optimized).await.unwrap();
-
-            let extractions = optimizer.extractions();
+            let date_metadata = extract_date_metadata_from_logical_plan(&optimized);
+            println!("date_metadata: {:?}", date_metadata);
             assert_eq!(
-                extractions.len(),
-                1,
-                "expected one extraction for query `{sql}`"
+                date_metadata.get("table_a").unwrap().as_ref(),
+                Some(&"DAY".to_string()),
             );
+            assert!(date_metadata.get("table_b").is_none());
+            let extractions = optimizer.extractions();
+            assert_eq!(extractions.len(), 1);
             let extraction = &extractions[0];
             assert_eq!(extraction.component, SupportedIntervalUnit::Day);
             assert_eq!(extraction.column.name(), "date");
@@ -708,8 +1014,11 @@ mod tests {
                     .as_ref()
                     .map(|r| r.table().to_string()),
                 Some("table_a".to_string()),
-                "expected base column relation for query `{sql}`"
             );
+
+            let physical_plan = state.create_physical_plan(&optimized).await.unwrap();
+            let date_metadata = extract_date_metadata_from_physical_plan(&physical_plan);
+            assert_eq!(date_metadata, Some("DAY".to_string()));
         }
     }
 
@@ -738,13 +1047,10 @@ mod tests {
             let df = ctx.sql(sql).await.unwrap();
             let (state, plan) = df.into_parts();
             let optimized = state.optimize(&plan).unwrap();
-            let _ = state.create_physical_plan(&optimized).await.unwrap();
-
+            let date_metadata = extract_date_metadata_from_logical_plan(&optimized);
             let extractions = optimizer.extractions();
-            assert!(
-                extractions.is_empty(),
-                "expected no extraction for query `{sql}`, found {extractions:?}"
-            );
+            assert!(extractions.is_empty());
+            assert!(date_metadata.get("table_a").unwrap().is_none());
         }
     }
 }
