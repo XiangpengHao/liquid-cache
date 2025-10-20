@@ -594,9 +594,7 @@ fn annotate_listing_table_source(
         return Ok(None);
     };
 
-    let base_factory = listing
-        .schema_adapter_factory()
-        .map(|factory| Arc::clone(factory));
+    let base_factory = listing.schema_adapter_factory().map(Arc::clone);
 
     let encoded_annotations: HashMap<String, String> = annotations
         .iter()
@@ -640,9 +638,7 @@ impl SchemaAdapterFactory for DateExtractSchemaAdapterFactory {
     ) -> Box<dyn SchemaAdapter> {
         let inner = match &self.base {
             Some(base) => base.create(projected_table_schema, table_schema),
-            None => {
-                DefaultSchemaAdapterFactory::default().create(projected_table_schema, table_schema)
-            }
+            None => DefaultSchemaAdapterFactory.create(projected_table_schema, table_schema),
         };
         Box::new(DateExtractSchemaAdapter { inner })
     }
@@ -886,7 +882,7 @@ mod tests {
             let Some(factory) = listing.schema_adapter_factory() else {
                 return Ok(TreeNodeRecursion::Continue);
             };
-            let metadata = metadata_from_factory(&factory, "date");
+            let metadata = metadata_from_factory(factory, "date");
             date_metadata.insert(scan.table_name.table().to_string(), metadata);
             Ok(TreeNodeRecursion::Continue)
         })
@@ -1001,7 +997,7 @@ mod tests {
                 date_metadata.get("table_a").unwrap().as_ref(),
                 Some(&"DAY".to_string()),
             );
-            assert!(date_metadata.get("table_b").is_none());
+            assert!(!date_metadata.contains_key("table_b"));
             let extractions = optimizer.extractions();
             assert_eq!(extractions.len(), 1);
             let extraction = &extractions[0];

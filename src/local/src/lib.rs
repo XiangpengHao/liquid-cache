@@ -1,7 +1,6 @@
 #![warn(missing_docs)]
 #![doc = include_str!("../README.md")]
 
-mod date_extract_opt;
 #[cfg(test)]
 mod tests;
 
@@ -13,12 +12,11 @@ use datafusion::error::Result;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
-use liquid_cache_parquet::{LiquidCache, LiquidCacheRef, rewrite_data_source_plan};
+use liquid_cache_parquet::optimizers::DateExtractOptimizer;
+use liquid_cache_parquet::{LiquidCache, LiquidCacheRef, optimizers::rewrite_data_source_plan};
 use liquid_cache_storage::cache::squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict};
 use liquid_cache_storage::cache_policies::CachePolicy;
 use liquid_cache_storage::cache_policies::LiquidPolicy;
-
-pub use date_extract_opt::DateExtractOptimizer;
 
 pub use liquid_cache_common as common;
 pub use liquid_cache_storage as storage;
@@ -145,11 +143,14 @@ impl LiquidCacheLocalBuilder {
         );
         let cache_ref = Arc::new(cache);
 
+        let date_extract_optimizer = Arc::new(DateExtractOptimizer::new());
+
         let optimizer = LocalModeOptimizer::with_cache(cache_ref.clone());
 
         let state = datafusion::execution::SessionStateBuilder::new()
             .with_config(config)
             .with_default_features()
+            .with_optimizer_rule(date_extract_optimizer)
             .with_physical_optimizer_rule(Arc::new(optimizer))
             .build();
 
