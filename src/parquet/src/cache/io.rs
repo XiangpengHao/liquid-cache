@@ -1,8 +1,5 @@
 use std::{
-    fs::File,
-    io::{Read, Seek, SeekFrom},
-    path::{Path, PathBuf},
-    sync::Arc,
+    fs::File, io::{Read, Seek, SeekFrom}, path::{Path, PathBuf}, sync::Arc
 };
 
 use ahash::AHashMap;
@@ -123,6 +120,7 @@ impl From<ParquetArrayID> for ColumnAccessPath {
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn blocking_reading_io(request: &IoRequest) -> Result<Bytes, std::io::Error> {
     let path = &request.path();
     let mut file = File::open(path)?;
@@ -142,23 +140,62 @@ pub(crate) fn blocking_reading_io(request: &IoRequest) -> Result<Bytes, std::io:
     }
 }
 
+#[cfg(target_os = "linux")]
+pub(crate) async fn non_blocking_reading_io(request: &IoRequest) -> Result<Bytes, std::io::Error> {
+    use std::{fs::OpenOptions, ops::Range, os::{fd::AsRawFd, unix::fs::OpenOptionsExt as _}};
+
+    use liquid_cache_storage::cache::new_io::{get_io_mode, IoMode};
+
+    use super::super::storage::cache::new_io::{FileReadTask, UringFuture};
+
+    let path = &request.path();
+    let flags = if get_io_mode() == IoMode::Direct {
+        libc::O_DIRECT
+    } else {
+        0
+    };
+    let file = OpenOptions::new().read(true)
+                .custom_flags(flags)
+                .open(path)
+                .expect("failed to create file");
+    
+    let range = match request.range() {
+        Some(r) => r.range().clone(),
+        None => {
+            Range::<u64> {start: 0, end: file.metadata()?.len()}
+        },
+    };
+    let task = Arc::new(
+        FileReadTask::new(
+            range, file.as_raw_fd()
+        )
+    );
+    let uring_fut = UringFuture::new(task.clone());
+    uring_fut.await;
+
+    Ok(task.get_bytes())
+}
+
 /// Resolve a sans-IO operation by repeatedly fulfilling IO requests until ready.
-pub(crate) fn blocking_sans_io<T, M>(sans: SansIo<T, M>) -> T
+pub(crate) async fn blocking_sans_io<T, M>(sans: SansIo<T, M>) -> T
 where
     M: IoStateMachine<Output = T>,
 {
     match sans {
         SansIo::Ready(v) => v,
-        SansIo::Pending((state, io_req)) => resolve_pending(state, io_req),
+        SansIo::Pending((state, io_req)) => resolve_pending(state, io_req).await,
     }
 }
 
-fn resolve_pending<T, M>(mut state: M, mut io_req: IoRequest) -> T
+async fn resolve_pending<T, M>(mut state: M, mut io_req: IoRequest) -> T
 where
     M: IoStateMachine<Output = T>,
 {
     loop {
+        #[cfg(any(not(target_os = "linux"), test))]
         let bytes = blocking_reading_io(&io_req).expect("IO failed");
+        #[cfg(all(target_os = "linux", not(test)))]
+        let bytes = non_blocking_reading_io(&io_req).await.expect("IO failed");
         state.feed(bytes);
         match state.try_get() {
             TryGet::Ready(out) => return out,

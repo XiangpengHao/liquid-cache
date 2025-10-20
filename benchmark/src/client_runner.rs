@@ -128,6 +128,7 @@ impl BenchmarkRunner {
 
         common.start_trace().await;
         common.start_flamegraph().await;
+        common.start_disk_usage_monitor().await;
 
         let root = Span::root(
             format!("{}-{}-{}", benchmark.benchmark_name(), query.id, iteration),
@@ -156,6 +157,7 @@ impl BenchmarkRunner {
             None
         };
         common.stop_trace().await;
+        common.stop_disk_usage_monitor().await;
 
         let physical_plan_with_metrics =
             DisplayableExecutionPlan::with_metrics(physical_plan.as_ref());

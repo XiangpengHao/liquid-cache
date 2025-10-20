@@ -162,7 +162,7 @@ fn load_and_insert_referer(
             let id = EntryID::from(idx);
             ids.push(id);
             total_size += array.get_array_memory_size();
-            storage.insert(id, array);
+            storage.insert(id, array).await;
             idx += 1;
         }
 

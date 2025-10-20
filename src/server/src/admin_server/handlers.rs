@@ -495,6 +495,28 @@ pub(crate) async fn add_execution_stats_handler(
     })
 }
 
+pub(crate) async fn start_disk_usage_monitor_handler(
+    State(state): State<Arc<AppState>>,
+) -> Json<ApiResponse> {
+    state.disk_monitor.clone().start_recording();
+    let message = "Successfully started disk usage monitoring";
+    Json(ApiResponse {
+        message: message.to_string(),
+        status: "success".to_string(),
+    })
+}
+
+pub(crate) async fn stop_disk_usage_monitor_handler(
+    State(state): State<Arc<AppState>>,
+) -> Json<ApiResponse> {
+    state.disk_monitor.clone().stop_recording();
+    let message = "Stopped disk usage monitoring";
+    Json(ApiResponse {
+        message: message.to_string(),
+        status: "success".to_string(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::{io::Write, path::PathBuf};

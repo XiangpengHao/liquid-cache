@@ -38,6 +38,7 @@ fastrace = { workspace = true }
 pprof = { version = "0.15.0", features = ["flamegraph"] }
 anyhow = "1.0"
 liquid-cache-storage = { workspace = true }
+hdrhistogram = "7.5.4"
 
 [dev-dependencies]
 insta = { version = "1.43.2" }

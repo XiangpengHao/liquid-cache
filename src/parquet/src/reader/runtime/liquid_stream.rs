@@ -249,7 +249,7 @@ impl ReaderFactory {
                 cache_batch_size,
                 row_count,
                 &context.cached_row_group,
-            )?;
+            ).await?;
 
             processed_batches += 1;
         }
@@ -376,7 +376,7 @@ fn build_selection_for_batches(
     RowSelection::from(selectors)
 }
 
-fn insert_batch_into_cache(
+async fn insert_batch_into_cache(
     record_batch: &RecordBatch,
     columns: &[ArrayReaderColumn],
     batch_id: BatchID,
@@ -415,7 +415,7 @@ fn insert_batch_into_cache(
         );
         let array = Arc::clone(record_batch.column(col_idx));
 
-        if let Err(err) = column.insert(batch_id, array)
+        if let Err(err) = column.insert(batch_id, array).await
             && !matches!(err, InsertArrowArrayError::AlreadyCached)
         {
             return Err(ParquetError::General(format!(
@@ -700,7 +700,7 @@ mod tests {
         file.row_group(0)
     }
 
-    fn insert_batches(
+    async fn insert_batches(
         row_group: &LiquidCachedRowGroupRef,
         column_id: usize,
         batch_payloads: &[(u16, &[i32])],
@@ -713,7 +713,7 @@ mod tests {
         let column = row_group.create_column(column_id as u64, field);
         for (batch_idx, values) in batch_payloads.iter() {
             let array: ArrayRef = Arc::new(Int32Array::from(values.to_vec()));
-            column.insert(BatchID::from_raw(*batch_idx), array).unwrap();
+            column.insert(BatchID::from_raw(*batch_idx), array).await.unwrap();
         }
     }
 
@@ -757,11 +757,11 @@ mod tests {
         assert_eq!(batches, expected);
     }
 
-    #[test]
-    fn compute_missing_batches_identifies_partial_columns() {
+    #[tokio::test]
+    async fn compute_missing_batches_identifies_partial_columns() {
         let row_group = make_cache(4);
-        insert_batches(&row_group, 0, &[(0, &[1, 2, 3, 4]), (2, &[9, 9, 9, 9])]);
-        insert_batches(&row_group, 2, &[(0, &[5, 6, 7, 8])]);
+        insert_batches(&row_group, 0, &[(0, &[1, 2, 3, 4]), (2, &[9, 9, 9, 9])]).await;
+        insert_batches(&row_group, 2, &[(0, &[5, 6, 7, 8])]).await;
 
         let selection_batches = vec![
             BatchID::from_raw(0),

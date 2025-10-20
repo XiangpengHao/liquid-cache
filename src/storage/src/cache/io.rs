@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::ffi::CString;

@@ -172,6 +172,33 @@ impl ClientBenchmarkArgs {
         }
     }
 
+    pub async fn start_disk_usage_monitor(&self) {
+        let client = reqwest::Client::new();
+        let response = client
+            .get(format!(
+                "{}/start_disk_usage_monitor?",
+                self.admin_server,
+            ))
+            .send()
+            .await
+            .unwrap();
+        if response.status().is_success() {
+            info!("Disk usage monitoring started");
+        }
+    }
+
+    pub async fn stop_disk_usage_monitor(&self) {
+        let client = reqwest::Client::new();
+        let response = client
+            .get(format!("{}/stop_disk_usage_monitor", self.admin_server))
+            .send()
+            .await
+            .unwrap();
+        if response.status().is_success() {
+            info!("Disk usage monitoring stopped");
+        }
+    }
+
     pub async fn get_cache_stats(&self) {
         if let Some(cache_stats_dir) = &self.cache_stats_dir {
             let response = reqwest::Client::new()

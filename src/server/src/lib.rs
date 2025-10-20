@@ -58,7 +58,7 @@ pub use errors::{
 pub use liquid_cache_common as common;
 pub use liquid_cache_storage as storage;
 use liquid_cache_storage::{
-    cache::squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict},
+    cache::{new_io::{initialize_uring_pool, IoMode}, squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict}},
     cache_policies::{CachePolicy, LiquidPolicy},
 };
 use object_store::path::Path;
@@ -84,6 +84,7 @@ mod tests;
 ///     None,
 ///     Box::new(LiquidPolicy::new()),
 ///     Box::new(TranscodeSqueezeEvict),
+///     None,
 /// )
 /// .unwrap();
 /// let flight = FlightServiceServer::new(liquid_cache);
@@ -112,6 +113,7 @@ impl LiquidCacheService {
             None,
             Box::new(LiquidPolicy::new()),
             Box::new(TranscodeSqueezeEvict),
+            None,
         )
     }
 
@@ -122,12 +124,14 @@ impl LiquidCacheService {
     /// * `ctx` - The [SessionContext] to use
     /// * `max_cache_bytes` - The maximum number of bytes to cache in memory
     /// * `disk_cache_dir` - The directory to store the disk cache
+    /// * `io_mode` - Whether reads and writes should go through the OS page cache
     pub fn new(
         ctx: SessionContext,
         max_cache_bytes: Option<usize>,
         disk_cache_dir: Option<PathBuf>,
         cache_policy: Box<dyn CachePolicy>,
         squeeze_policy: Box<dyn SqueezePolicy>,
+        io_mode: Option<IoMode>,
     ) -> anyhow::Result<Self> {
         let disk_cache_dir = match disk_cache_dir {
             Some(dir) => dir,
@@ -137,6 +141,11 @@ impl LiquidCacheService {
                 dir
             }
         };
+        let io_mode = match io_mode {
+            Some(io) => io,
+            None => IoMode::Buffered,
+        };
+        initialize_uring_pool(io_mode);
         Ok(Self {
             inner: LiquidCacheServiceInner::new(
                 Arc::new(ctx),
