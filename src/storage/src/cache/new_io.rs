@@ -6,6 +6,9 @@ use io_uring::{cqueue, opcode, squeue, IoUring};
 
 const BLOCK_ALIGN: usize = 4096;
 
+/**
+ Represents an IO request to the uring worker thread
+ */
 pub trait IoTask: Send + Sync {
     #[inline]
     fn set_waker(self: &Self, waker: Waker) {
@@ -13,12 +16,21 @@ pub trait IoTask: Send + Sync {
         *guard = Some(waker);
     }
 
+    /**
+    Get the waker associated with this IO request
+     */ 
     fn waker(self: &Self) -> &Mutex<Option<Waker>>;
 
+    /**
+     Converts the IO request to an IO uring submission queue entry
+     */
     fn get_sqe(&self, user_data: u64) -> squeue::Entry;
 
     fn completed(&self) -> &AtomicBool;
 
+    /**
+    Wake the future that submitted this IO request
+     */
     #[inline]
     fn notify_waker(&self) {
         self.completed().store(true, Ordering::Relaxed);
@@ -31,6 +43,9 @@ pub trait IoTask: Send + Sync {
     fn debug_print(&self);
 }
 
+/**
+ Represents a request to read from a file
+ */
 #[allow(unused)]
 pub struct FileReadTask {
     base_ptr: *mut u8,
@@ -67,11 +82,15 @@ impl FileReadTask {
         self.base_ptr as *const u8
     }
 
+    /**
+    Return a bytes object holding the result of the read operation
+     */
     #[inline]
     pub fn get_bytes(&self) -> Bytes {
         let total_bytes = (self.range.end - self.range.start) as usize + self.start_padding + self.end_padding;
         unsafe {
             let vec = Vec::from_raw_parts(self.base_ptr, total_bytes, total_bytes);
+            // Convert to vec in order to transfer ownership of underlying pointer
             let owned_slice: Box<[u8]> = vec.into_boxed_slice();
             // The below slice operation removes the padding. This is a no-op in case of buffered IO
             Bytes::from(owned_slice).slice(self.start_padding as usize..(self.range.end as usize - self.range.start as usize + self.start_padding))
@@ -114,6 +133,9 @@ impl IoTask for FileReadTask {
 unsafe impl Send for FileReadTask {}
 unsafe impl Sync for FileReadTask {}
 
+/**
+ Represents a request to write to a file
+ */
 pub struct FileWriteTask {
     base_ptr: *const u8,
     num_bytes: usize,
@@ -207,6 +229,10 @@ impl FromStr for IoMode {
     }
 }
 
+/**
+ * Represents a pool of worker threads responsible for submitting IO requests to the
+ * kernel via io-uring.
+ */
 pub struct IoUringThreadpool {
     sender: crossbeam_channel::Sender<Arc<dyn IoTask>>,
     worker: Option<thread::JoinHandle<()>>,
@@ -221,9 +247,6 @@ pub(crate) static IO_URING_THREAD_POOL_INST: OnceLock<IoUringThreadpool> = OnceL
  * Intializes the global io-uring threadpool. This function must be called before submitting any IO to the pool.
  */
 pub fn initialize_uring_pool(io_mode: IoMode) {
-    // if IO_URING_THREAD_POOL_INST.get().is_none() {
-    //     IO_URING_THREAD_POOL_INST.set(IoUringThreadpool::new(io_mode)).expect("Uring thread pool already initialized");
-    // }
     IO_URING_THREAD_POOL_INST.get_or_init(|| IoUringThreadpool::new(io_mode));
 }
 
@@ -240,13 +263,9 @@ impl IoUringThreadpool {
 
         let mut builder = IoUring::<squeue::Entry, cqueue::Entry>::builder();
         if io_type == IoMode::Direct {
-            println!("Using direct io");
             // Polled IO is only supported for direct IO requests 
             builder.setup_iopoll();
-        } else {
-            println!("Using buffered io");
         }
-        // Add a similar argument to the worker thread as well to sleep when not busy
         builder.setup_sqpoll(50000);
         let ring = builder
             .build(Self::NUM_ENTRIES)
@@ -294,6 +313,12 @@ impl std::fmt::Debug for IoUringThreadpool {
     }
 }
 
+/**
+ Represents a single worker thread. The worker thread busy loops through 3 phases:
+ * Receives new requests from the application via a crossbeam channel
+ * Converts the requests to submission queue entries and submits them to the ring
+ * Polls the ring for completions and notifies the application
+ */
 struct UringWorker {
     channel: crossbeam_channel::Receiver<Arc<dyn IoTask>>,
     ring: io_uring::IoUring,
