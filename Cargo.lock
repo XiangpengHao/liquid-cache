@@ -2843,7 +2843,6 @@ dependencies = [
  "liquid-cache-common",
  "liquid-cache-parquet",
  "liquid-cache-storage",
- "parquet",
  "tempfile",
  "tokio",
 ]
