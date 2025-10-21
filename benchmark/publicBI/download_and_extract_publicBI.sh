@@ -15,6 +15,7 @@ echo "Downloading .bz2 files from $BASE_URL ..."
 wget -r -np -nd -A ".bz2" -P "$RAW_DIR" "$BASE_URL"
 
 # Extract all .bz2 files to CSV - MAKE SURE BUNZIP2 IS INSTALLED
+# SKIP IF YOU WANT TO USE PYTHON TO CONVERT TO CSV
 echo "Extracting .bz2 files to CSV ..."
 for f in "$RAW_DIR"/*.bz2; do
     [ -e "$f" ] || continue   # skip if no .bz2 files
