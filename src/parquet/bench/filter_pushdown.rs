@@ -133,11 +133,13 @@ fn get_arrow_array_with_filter_liquid_cache(bencher: Bencher, selectivity: f64) 
         .with_inputs(|| (&column, batch_id, &filter))
         .bench_values(|(column, batch_id, filter)| {
             let mut predicate = predicate.clone();
-            std::hint::black_box(column.eval_predicate_with_filter(
-                batch_id,
-                filter,
-                &mut predicate,
-            ))
+            tokio::task::block_in_place(|| async move {
+                std::hint::black_box(
+                    column
+                        .eval_predicate_with_filter(batch_id, filter, &mut predicate)
+                        .await,
+                )
+            })
         });
 }
 

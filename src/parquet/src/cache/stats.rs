@@ -179,8 +179,8 @@ mod tests {
     use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
     use tempfile::NamedTempFile;
 
-    #[test]
-    fn test_stats_writer() -> Result<(), ParquetError> {
+    #[tokio::test]
+    async fn test_stats_writer() -> Result<(), ParquetError> {
         let tmp_dir = tempfile::tempdir().unwrap();
         let cache = LiquidCache::new(
             1024,
@@ -217,7 +217,7 @@ mod tests {
                         memory_size_sum += array.get_array_memory_size();
 
                         if batch.is_multiple_of(2) {
-                            _ = column.get_arrow_array_test_only(batch_id).unwrap();
+                            _ = column.get_arrow_array_test_only(batch_id).await.unwrap();
                         }
                     }
                 }

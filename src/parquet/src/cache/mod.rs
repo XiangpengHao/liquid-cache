@@ -85,7 +85,7 @@ impl LiquidCachedColumn {
     }
 
     /// Evaluates a predicate on a cached column.
-    pub fn eval_predicate_with_filter(
+    pub async fn eval_predicate_with_filter(
         &self,
         batch_id: BatchID,
         filter: &BooleanBuffer,
@@ -95,7 +95,7 @@ impl LiquidCachedColumn {
 
         let result = cached_entry
             .get_with_predicate(filter, predicate.physical_expr_physical_column_index());
-        let result = blocking_sans_io(result);
+        let result = blocking_sans_io(result).await;
         match result {
             GetWithPredicateResult::Evaluated(buffer) => Some(Ok(buffer)),
             GetWithPredicateResult::Filtered(array) => {
@@ -111,20 +111,20 @@ impl LiquidCachedColumn {
     }
 
     /// Get an arrow array with a filter applied.
-    pub fn get_arrow_array_with_filter(
+    pub async fn get_arrow_array_with_filter(
         &self,
         batch_id: BatchID,
         filter: &BooleanBuffer,
     ) -> Option<ArrayRef> {
         let inner_value = self.cache_store.get(&self.entry_id(batch_id).into())?;
         let result = blocking_sans_io(inner_value.get_with_selection(filter));
-        result.ok()
+        result.await.ok()
     }
 
     #[cfg(test)]
-    pub(crate) fn get_arrow_array_test_only(&self, batch_id: BatchID) -> Option<ArrayRef> {
+    pub(crate) async fn get_arrow_array_test_only(&self, batch_id: BatchID) -> Option<ArrayRef> {
         let cached_entry = self.cache_store.get(&self.entry_id(batch_id).into())?;
-        let result = blocking_sans_io(cached_entry.get_arrow_array());
+        let result = blocking_sans_io(cached_entry.get_arrow_array()).await;
         Some(result)
     }
 
@@ -222,7 +222,7 @@ impl LiquidCachedRowGroup {
     }
 
     /// Evaluate a predicate on a row group.
-    pub fn evaluate_selection_with_predicate(
+    pub async fn evaluate_selection_with_predicate(
         &self,
         batch_id: BatchID,
         selection: &BooleanBuffer,
@@ -234,7 +234,9 @@ impl LiquidCachedRowGroup {
             // If we only have one column, we can short-circuit and try to evaluate the predicate on encoded data.
             let column_id = column_ids[0];
             let cache = self.get_column(column_id as u64)?;
-            return cache.eval_predicate_with_filter(batch_id, selection, predicate);
+            return cache
+                .eval_predicate_with_filter(batch_id, selection, predicate)
+                .await;
         } else if column_ids.len() >= 2 {
             // Try to extract multiple column-literal expressions from OR structure
             if let Some(column_exprs) =
@@ -253,7 +255,7 @@ impl LiquidCachedRowGroup {
                         }
                         SansIo::Ready(Some(array)) => array,
                         SansIo::Pending((mut state, mut io_req)) => loop {
-                            let bytes = blocking_reading_io(&io_req).ok()?;
+                            let bytes = blocking_reading_io(&io_req).await.ok()?;
                             state.feed(bytes);
                             match state.try_get() {
                                 TryGet::Ready(array) => break array,
@@ -290,7 +292,9 @@ impl LiquidCachedRowGroup {
         let mut fields = Vec::new();
         for column_id in column_ids {
             let column = self.get_column(column_id as u64)?;
-            let array = column.get_arrow_array_with_filter(batch_id, selection)?;
+            let array = column
+                .get_arrow_array_with_filter(batch_id, selection)
+                .await?;
             arrays.push(array);
             fields.push(column.field.clone());
         }
@@ -490,8 +494,8 @@ mod tests {
         file.row_group(0)
     }
 
-    #[test]
-    fn evaluate_or_on_cached_columns() {
+    #[tokio::test]
+    async fn evaluate_or_on_cached_columns() {
         let batch_size = 4;
         let row_group = setup_cache(batch_size);
 
@@ -548,6 +552,7 @@ mod tests {
         let selection = BooleanBuffer::new_set(batch_size);
         let result = row_group
             .evaluate_selection_with_predicate(batch_id, &selection, &mut predicate)
+            .await
             .unwrap()
             .unwrap();
 
@@ -555,8 +560,8 @@ mod tests {
         assert_eq!(result, expected);
     }
 
-    #[test]
-    fn evaluate_three_column_or() {
+    #[tokio::test]
+    async fn evaluate_three_column_or() {
         let batch_size = 8;
         let row_group = setup_cache(batch_size);
 
@@ -628,6 +633,7 @@ mod tests {
         let selection = BooleanBuffer::new_set(batch_size);
         let result = row_group
             .evaluate_selection_with_predicate(batch_id, &selection, &mut predicate)
+            .await
             .unwrap()
             .unwrap();
 
@@ -637,8 +643,8 @@ mod tests {
         assert_eq!(result, expected);
     }
 
-    #[test]
-    fn evaluate_string_column_or() {
+    #[tokio::test]
+    async fn evaluate_string_column_or() {
         let batch_size = 8;
         let row_group = setup_cache(batch_size);
 
@@ -705,6 +711,7 @@ mod tests {
         let selection = BooleanBuffer::new_set(batch_size);
         let result = row_group
             .evaluate_selection_with_predicate(batch_id, &selection, &mut predicate)
+            .await
             .unwrap()
             .unwrap();
 

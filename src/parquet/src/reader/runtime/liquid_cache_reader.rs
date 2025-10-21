@@ -197,6 +197,7 @@ impl LiquidCacheReaderInner {
                     &input_selection,
                     predicate,
                 )
+                .await
                 .expect("item must be in cache")?;
 
             let boolean_mask = if boolean_array.null_count() == 0 {
@@ -240,6 +241,7 @@ impl LiquidCacheReaderInner {
 
             let array = column
                 .get_arrow_array_with_filter(self.current_batch_id, selection)
+                .await
                 .ok_or_else(|| {
                     ArrowError::ComputeError(format!(
                         "column {column_idx} batch {} not cached",

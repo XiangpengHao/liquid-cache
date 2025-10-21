@@ -1,6 +1,4 @@
 use std::{
-    fs::File,
-    io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -11,6 +9,7 @@ use liquid_cache_storage::cache::{
     EntryID, IoContext, LiquidCompressorStates,
     io_state::{IoRequest, IoStateMachine, SansIo, TryGet},
 };
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 use crate::{
     cache::id::{BatchID, ParquetArrayID},
@@ -123,42 +122,43 @@ impl From<ParquetArrayID> for ColumnAccessPath {
     }
 }
 
-pub(crate) fn blocking_reading_io(request: &IoRequest) -> Result<Bytes, std::io::Error> {
+pub(crate) async fn blocking_reading_io(request: &IoRequest) -> Result<Bytes, std::io::Error> {
     let path = &request.path();
-    let mut file = File::open(path)?;
+    let mut file = tokio::fs::File::open(path).await?;
     match request.range() {
         Some(range) => {
             let len = (range.range().end - range.range().start) as usize;
             let mut bytes = vec![0u8; len];
-            file.seek(SeekFrom::Start(range.range().start))?;
-            file.read_exact(&mut bytes)?;
+            file.seek(tokio::io::SeekFrom::Start(range.range().start))
+                .await?;
+            file.read_exact(&mut bytes).await?;
             Ok(Bytes::from(bytes))
         }
         None => {
             let mut bytes = Vec::new();
-            file.read_to_end(&mut bytes)?;
+            file.read_to_end(&mut bytes).await?;
             Ok(Bytes::from(bytes))
         }
     }
 }
 
 /// Resolve a sans-IO operation by repeatedly fulfilling IO requests until ready.
-pub(crate) fn blocking_sans_io<T, M>(sans: SansIo<T, M>) -> T
+pub(crate) async fn blocking_sans_io<T, M>(sans: SansIo<T, M>) -> T
 where
     M: IoStateMachine<Output = T>,
 {
     match sans {
         SansIo::Ready(v) => v,
-        SansIo::Pending((state, io_req)) => resolve_pending(state, io_req),
+        SansIo::Pending((state, io_req)) => resolve_pending(state, io_req).await,
     }
 }
 
-fn resolve_pending<T, M>(mut state: M, mut io_req: IoRequest) -> T
+async fn resolve_pending<T, M>(mut state: M, mut io_req: IoRequest) -> T
 where
     M: IoStateMachine<Output = T>,
 {
     loop {
-        let bytes = blocking_reading_io(&io_req).expect("IO failed");
+        let bytes = blocking_reading_io(&io_req).await.expect("IO failed");
         state.feed(bytes);
         match state.try_get() {
             TryGet::Ready(out) => return out,
