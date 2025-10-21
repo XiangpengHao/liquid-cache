@@ -71,7 +71,7 @@ def process_table(table_name=None):
     
     print("All done!")
 
-# === CLI support ===
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Load CSVs into DuckDB and write Parquet")
