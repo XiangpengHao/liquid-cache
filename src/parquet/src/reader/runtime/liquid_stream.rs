@@ -249,7 +249,8 @@ impl ReaderFactory {
                 cache_batch_size,
                 row_count,
                 &context.cached_row_group,
-            ).await?;
+            )
+            .await?;
 
             processed_batches += 1;
         }
@@ -713,7 +714,10 @@ mod tests {
         let column = row_group.create_column(column_id as u64, field);
         for (batch_idx, values) in batch_payloads.iter() {
             let array: ArrayRef = Arc::new(Int32Array::from(values.to_vec()));
-            column.insert(BatchID::from_raw(*batch_idx), array).await.unwrap();
+            column
+                .insert(BatchID::from_raw(*batch_idx), array)
+                .await
+                .unwrap();
         }
     }
 

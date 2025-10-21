@@ -175,10 +175,7 @@ impl ClientBenchmarkArgs {
     pub async fn start_disk_usage_monitor(&self) {
         let client = reqwest::Client::new();
         let response = client
-            .get(format!(
-                "{}/start_disk_usage_monitor?",
-                self.admin_server,
-            ))
+            .get(format!("{}/start_disk_usage_monitor?", self.admin_server,))
             .send()
             .await
             .unwrap();

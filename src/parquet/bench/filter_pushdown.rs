@@ -65,8 +65,9 @@ fn get_arrow_array_with_filter_arrow_cache(bencher: Bencher, selectivity: f64) {
         handle.block_on(async {
             column
                 .insert(batch_id, test_data.clone())
-                .await.expect("Failed to insert data");
-        })                
+                .await
+                .expect("Failed to insert data");
+        })
     });
 
     let filter = create_boolean_filter(BATCH_SIZE, selectivity);
@@ -91,8 +92,9 @@ fn get_arrow_array_with_filter_liquid_cache(bencher: Bencher, selectivity: f64) 
         handle.block_on(async {
             column
                 .insert(batch_id, test_data.clone())
-                .await.expect("Failed to insert data");
-        })                
+                .await
+                .expect("Failed to insert data");
+        })
     });
 
     let filter = create_boolean_filter(BATCH_SIZE, selectivity);
@@ -140,14 +142,15 @@ fn get_arrow_array_with_filter_liquid_cache(bencher: Bencher, selectivity: f64) 
     .unwrap();
 
     bencher
-        .with_inputs(|| (&column, batch_id, &filter))
-        .bench_values(|(column, batch_id, filter)| {
-            let mut predicate = predicate.clone();
-            std::hint::black_box(column.eval_predicate_with_filter(
-                batch_id,
-                filter,
-                &mut predicate,
-            ))
+        .with_inputs(|| (&column, batch_id, &filter, predicate.clone()))
+        .bench_values(|(column, batch_id, filter, mut predicate)| {
+            std::hint::black_box(
+                tokio::runtime::Handle::current().block_on(column.eval_predicate_with_filter(
+                    batch_id,
+                    filter,
+                    &mut predicate,
+                )),
+            )
         });
 }
 

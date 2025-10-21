@@ -57,8 +57,10 @@ pub use errors::{
 };
 pub use liquid_cache_common as common;
 pub use liquid_cache_storage as storage;
+#[cfg(target_os = "linux")]
+use liquid_cache_storage::cache::io_backend::{IoMode, initialize_uring_pool};
 use liquid_cache_storage::{
-    cache::{new_io::{initialize_uring_pool, IoMode}, squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict}},
+    cache::squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict},
     cache_policies::{CachePolicy, LiquidPolicy},
 };
 use object_store::path::Path;

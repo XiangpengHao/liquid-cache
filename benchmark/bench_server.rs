@@ -3,7 +3,7 @@ use clap::Parser;
 use fastrace_tonic::FastraceServerLayer;
 use liquid_cache_benchmarks::{BenchmarkMode, setup_observability};
 use liquid_cache_server::{LiquidCacheService, run_admin_server};
-use liquid_cache_storage::{cache::new_io::IoMode, cache_policies::LiquidPolicy};
+use liquid_cache_storage::{cache::io_backend::IoMode, cache_policies::LiquidPolicy};
 use log::info;
 use mimalloc::MiMalloc;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};

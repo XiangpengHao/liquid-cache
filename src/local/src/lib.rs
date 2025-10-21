@@ -13,7 +13,8 @@ use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use liquid_cache_parquet::{LiquidCache, LiquidCacheRef, rewrite_data_source_plan};
-use liquid_cache_storage::cache::new_io::{initialize_uring_pool, IoMode};
+#[cfg(target_os = "linux")]
+use liquid_cache_storage::cache::io_backend::{IoMode, initialize_uring_pool};
 use liquid_cache_storage::cache::squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict};
 use liquid_cache_storage::cache_policies::CachePolicy;
 use liquid_cache_storage::cache_policies::LiquidPolicy;
@@ -84,6 +85,7 @@ impl Default for LiquidCacheLocalBuilder {
 impl LiquidCacheLocalBuilder {
     /// Create a new builder with defaults
     pub fn new() -> Self {
+        #[cfg(target_os = "linux")]
         initialize_uring_pool(IoMode::Buffered);
         Self::default()
     }

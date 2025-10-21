@@ -1,10 +1,10 @@
 //! This module contains the cache implementation for the Parquet reader.
 //!
 
-#[cfg(target_os = "linux")]
-use crate::cache::io::non_blocking_reading_io;
 #[cfg(not(target_os = "linux"))]
 use crate::cache::io::blocking_reading_io;
+#[cfg(target_os = "linux")]
+use crate::cache::io::non_blocking_reading_io;
 use crate::cache::io::{ColumnAccessPath, ParquetIoContext, blocking_sans_io};
 use crate::reader::{LiquidPredicate, extract_multi_column_or};
 use crate::sync::{Mutex, RwLock};
@@ -142,7 +142,8 @@ impl LiquidCachedColumn {
             return Err(InsertArrowArrayError::AlreadyCached);
         }
         self.cache_store
-            .insert(self.entry_id(batch_id).into(), array).await;
+            .insert(self.entry_id(batch_id).into(), array)
+            .await;
         Ok(())
     }
 }
@@ -238,7 +239,9 @@ impl LiquidCachedRowGroup {
             // If we only have one column, we can short-circuit and try to evaluate the predicate on encoded data.
             let column_id = column_ids[0];
             let cache = self.get_column(column_id as u64)?;
-            return cache.eval_predicate_with_filter(batch_id, selection, predicate).await;
+            return cache
+                .eval_predicate_with_filter(batch_id, selection, predicate)
+                .await;
         } else if column_ids.len() >= 2 {
             // Try to extract multiple column-literal expressions from OR structure
             if let Some(column_exprs) =
@@ -297,7 +300,9 @@ impl LiquidCachedRowGroup {
         let mut fields = Vec::new();
         for column_id in column_ids {
             let column = self.get_column(column_id as u64)?;
-            let array = column.get_arrow_array_with_filter(batch_id, selection).await?;
+            let array = column
+                .get_arrow_array_with_filter(batch_id, selection)
+                .await?;
             arrays.push(array);
             fields.push(column.field.clone());
         }

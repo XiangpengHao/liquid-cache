@@ -1,5 +1,8 @@
 use std::{
-    fs::File, io::{Read, Seek, SeekFrom}, path::{Path, PathBuf}, sync::Arc
+    fs::File,
+    io::{Read, Seek, SeekFrom},
+    path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use ahash::AHashMap;
@@ -142,11 +145,15 @@ pub(crate) fn blocking_reading_io(request: &IoRequest) -> Result<Bytes, std::io:
 
 #[cfg(target_os = "linux")]
 pub(crate) async fn non_blocking_reading_io(request: &IoRequest) -> Result<Bytes, std::io::Error> {
-    use std::{fs::OpenOptions, ops::Range, os::{fd::AsRawFd, unix::fs::OpenOptionsExt as _}};
+    use std::{
+        fs::OpenOptions,
+        ops::Range,
+        os::{fd::AsRawFd, unix::fs::OpenOptionsExt as _},
+    };
 
-    use liquid_cache_storage::cache::new_io::{get_io_mode, IoMode};
+    use liquid_cache_storage::cache::io_backend::{IoMode, get_io_mode};
 
-    use super::super::storage::cache::new_io::{FileReadTask, UringFuture};
+    use super::super::storage::cache::io_backend::{FileReadTask, UringFuture};
 
     let path = &request.path();
     let flags = if get_io_mode() == IoMode::Direct {
@@ -154,22 +161,20 @@ pub(crate) async fn non_blocking_reading_io(request: &IoRequest) -> Result<Bytes
     } else {
         0
     };
-    let file = OpenOptions::new().read(true)
-                .custom_flags(flags)
-                .open(path)
-                .expect("failed to create file");
-    
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(flags)
+        .open(path)
+        .expect("failed to create file");
+
     let range = match request.range() {
         Some(r) => r.range().clone(),
-        None => {
-            Range::<u64> {start: 0, end: file.metadata()?.len()}
+        None => Range::<u64> {
+            start: 0,
+            end: file.metadata()?.len(),
         },
     };
-    let task = Arc::new(
-        FileReadTask::new(
-            range, file.as_raw_fd()
-        )
-    );
+    let task = Arc::new(FileReadTask::new(range, file.as_raw_fd()));
     let uring_fut = UringFuture::new(task.clone());
     uring_fut.await;
 

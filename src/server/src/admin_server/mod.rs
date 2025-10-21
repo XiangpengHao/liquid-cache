@@ -12,13 +12,13 @@ use std::sync::atomic::AtomicU32;
 use std::{net::SocketAddr, sync::Arc};
 use tower_http::cors::CorsLayer;
 
+mod disk_monitor;
 mod flamegraph;
 mod handlers;
-mod disk_monitor;
 pub(crate) mod models;
 
-use crate::admin_server::disk_monitor::DiskMonitor;
 use crate::LiquidCacheService;
+use crate::admin_server::disk_monitor::DiskMonitor;
 
 pub(crate) struct AppState {
     liquid_cache: Arc<LiquidCacheService>,
@@ -77,8 +77,14 @@ pub async fn run_admin_server(
             "/set_execution_stats",
             post(handlers::add_execution_stats_handler),
         )
-        .route("/start_disk_usage_monitor", get(handlers::start_disk_usage_monitor_handler))
-        .route("/stop_disk_usage_monitor", get(handlers::stop_disk_usage_monitor_handler))
+        .route(
+            "/start_disk_usage_monitor",
+            get(handlers::start_disk_usage_monitor_handler),
+        )
+        .route(
+            "/stop_disk_usage_monitor",
+            get(handlers::stop_disk_usage_monitor_handler),
+        )
         .with_state(state)
         .layer(cors);
 

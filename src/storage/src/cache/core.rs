@@ -261,7 +261,8 @@ impl CacheStorage {
 
     /// Insert a batch into the cache.
     pub async fn insert(self: &Arc<Self>, entry_id: EntryID, batch_to_cache: ArrayRef) {
-        self.insert_inner(entry_id, CachedBatch::MemoryArrow(batch_to_cache)).await;
+        self.insert_inner(entry_id, CachedBatch::MemoryArrow(batch_to_cache))
+            .await;
     }
 
     /// Get a batch from the cache.
@@ -587,26 +588,28 @@ impl CacheStorage {
         }
         #[cfg(all(target_os = "linux", not(test)))]
         {
-            use std::{fs::OpenOptions, os::unix::fs::OpenOptionsExt as _};
+            use crate::cache::io_backend::{FileWriteTask, IoMode, get_io_mode};
             use std::os::fd::AsRawFd;
-            use crate::cache::new_io::{get_io_mode, FileWriteTask, IoMode};
+            use std::{fs::OpenOptions, os::unix::fs::OpenOptionsExt as _};
 
             let flags = if get_io_mode() == IoMode::Direct {
                 libc::O_DIRECT
             } else {
                 0
             };
-            let file = OpenOptions::new().create(true).write(true)
+            let file = OpenOptions::new()
+                .create(true)
+                .write(true)
                 .custom_flags(flags)
                 .open(path)
                 .expect("failed to create file");
-            let task = Arc::new(
-                FileWriteTask::new(
-                    bytes.as_ptr(), bytes.len(), file.as_raw_fd()
-                )
-            );
+            let task = Arc::new(FileWriteTask::new(
+                bytes.as_ptr(),
+                bytes.len(),
+                file.as_raw_fd(),
+            ));
             // UringFuture will be responsible for submitting and driving the future to completion
-            let uring_fut = super::new_io::UringFuture::new(task);
+            let uring_fut = super::io_backend::UringFuture::new(task);
             uring_fut.await;
         }
         let disk_usage = bytes.len();
@@ -722,7 +725,11 @@ mod tests {
     #[cfg(feature = "shuttle")]
     #[tokio::test]
     async fn shuttle_cache_operations() {
-        crate::utils::shuttle_test(concurrent_cache_operations);
+        crate::utils::shuttle_test(|| {
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(concurrent_cache_operations());
+        });
     }
 
     async fn concurrent_cache_operations() {

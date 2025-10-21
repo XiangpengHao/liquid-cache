@@ -25,8 +25,7 @@ impl DiskMonitor {
     const SAMPLING_INTERVAL: u64 = 100;
 
     pub(crate) fn new() -> DiskMonitor {
-        let histogram =
-            Histogram::<u64>::new(5).expect("Failed to create histogram instance");
+        let histogram = Histogram::<u64>::new(5).expect("Failed to create histogram instance");
         DiskMonitor {
             server_pid: Pid::from(std::process::id() as usize),
             enabled: AtomicBool::new(false),
@@ -78,7 +77,11 @@ impl DiskMonitor {
         let histogram = self.histogram.lock().unwrap();
         for i in (20..=80).step_by(15) {
             let quantile = i as f64 / 100.0;
-            log::info!("p{} disk usage: {}", i, histogram.value_at_quantile(quantile));
+            log::info!(
+                "p{} disk usage: {}",
+                i,
+                histogram.value_at_quantile(quantile)
+            );
         }
         log::info!("Mean disk usage: {}", histogram.mean());
 

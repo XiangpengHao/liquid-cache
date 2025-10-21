@@ -9,9 +9,9 @@ mod io;
 mod stats;
 #[cfg(not(target_os = "linux"))]
 mod io {}
-#[cfg(target_os = "linux")]
-pub mod new_io;
 pub mod cache_policies;
+#[cfg(target_os = "linux")]
+pub mod io_backend;
 pub mod io_state;
 pub mod squeeze_policies;
 mod tracer;
