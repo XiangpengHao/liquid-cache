@@ -5,7 +5,7 @@ use tokio;
 
 #[tokio::main]
 async fn main() -> datafusion::error::Result<()> {
-    let input_path = "C:\\Users\\saesh\\Downloads\\Arade_1.csv";
+    let input_path = "";   # <-- change this to your input .csv or .tsv path
 
     convert_to_parquet(input_path).await
 }
