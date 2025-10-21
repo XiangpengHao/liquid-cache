@@ -674,8 +674,10 @@ fn register_factory_metadata(
     factory_registry().lock().unwrap().insert(key, metadata);
 }
 
-#[cfg(test)]
-fn metadata_from_factory(factory: &Arc<dyn SchemaAdapterFactory>, column: &str) -> Option<String> {
+pub(crate) fn metadata_from_factory(
+    factory: &Arc<dyn SchemaAdapterFactory>,
+    column: &str,
+) -> Option<String> {
     let key = Arc::as_ptr(factory) as *const () as usize;
     factory_registry()
         .lock()
@@ -798,6 +800,11 @@ fn part_to_unit(expr: &Expr) -> Option<SupportedIntervalUnit> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
+    use crate::LiquidCache;
+    use crate::optimizers::{DATE_MAPPING_METADATA_KEY, LocalModeOptimizer};
+
     use super::*;
     use arrow::array::{ArrayRef, Date32Array, TimestampMicrosecondArray};
     use arrow_schema::{Field, Schema, TimeUnit};
@@ -806,6 +813,8 @@ mod tests {
     use datafusion::execution::SessionStateBuilder;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
+    use liquid_cache_storage::cache::squeeze_policies::TranscodeSqueezeEvict;
+    use liquid_cache_storage::cache_policies::LiquidPolicy;
     use parquet::arrow::ArrowWriter;
     use tempfile::TempDir;
 
@@ -847,10 +856,19 @@ mod tests {
         writer.write(&batch).unwrap();
         writer.close().unwrap();
 
+        let physical_optimizer = LocalModeOptimizer::with_cache(Arc::new(LiquidCache::new(
+            1024,
+            1024 * 1024 * 1024,
+            PathBuf::from("test"),
+            Box::new(LiquidPolicy::new()),
+            Box::new(TranscodeSqueezeEvict),
+        )));
+
         let state = SessionStateBuilder::new()
             .with_config(SessionConfig::new())
             .with_default_features()
             .with_optimizer_rule(optimizer as Arc<dyn OptimizerRule + Send + Sync>)
+            .with_physical_optimizer_rule(Arc::new(physical_optimizer))
             .build();
         let ctx = SessionContext::new_with_state(state);
 
@@ -890,8 +908,10 @@ mod tests {
         date_metadata
     }
 
-    fn extract_date_metadata_from_physical_plan(plan: &Arc<dyn ExecutionPlan>) -> Option<String> {
-        let mut date_metadata = None;
+    fn extract_field_metadata_from_physical_plan(
+        plan: &Arc<dyn ExecutionPlan>,
+    ) -> HashMap<String, String> {
+        let mut field_metadata_map = HashMap::new();
 
         plan.apply(|node| {
             let Some(data_source) = node.as_any().downcast_ref::<DataSourceExec>() else {
@@ -905,19 +925,17 @@ mod tests {
                 return Ok(TreeNodeRecursion::Continue);
             };
 
-            let Some(factory) = file_scan_config.file_source().schema_adapter_factory() else {
-                return Ok(TreeNodeRecursion::Continue);
-            };
-
-            date_metadata = metadata_from_factory(&factory, "date");
-            if date_metadata.is_some() {
-                Ok(TreeNodeRecursion::Stop)
-            } else {
-                Ok(TreeNodeRecursion::Continue)
+            // Extract metadata from all fields in file_schema
+            let file_schema = &file_scan_config.file_schema;
+            for field in file_schema.fields() {
+                if let Some(metadata_value) = field.metadata().get(DATE_MAPPING_METADATA_KEY) {
+                    field_metadata_map.insert(field.name().to_string(), metadata_value.clone());
+                }
             }
+            Ok(TreeNodeRecursion::Continue)
         })
         .unwrap();
-        date_metadata
+        field_metadata_map
     }
 
     #[tokio::test]
@@ -963,6 +981,14 @@ mod tests {
                 extractions[1].component,
                 SupportedIntervalUnit::Day
             ));
+
+            let physical_plan = state.create_physical_plan(&optimized).await.unwrap();
+            let field_metadata_map = extract_field_metadata_from_physical_plan(&physical_plan);
+
+            assert!(field_metadata_map.contains_key("date"),);
+            let date_metadata = field_metadata_map.get("date").unwrap();
+            assert!(date_metadata == "YEAR" || date_metadata == "DAY",);
+            assert!(!field_metadata_map.contains_key("event_ts"),);
         }
     }
 
@@ -1013,9 +1039,101 @@ mod tests {
             );
 
             let physical_plan = state.create_physical_plan(&optimized).await.unwrap();
-            let date_metadata = extract_date_metadata_from_physical_plan(&physical_plan);
-            assert_eq!(date_metadata, Some("DAY".to_string()));
+
+            let field_metadata_map = extract_field_metadata_from_physical_plan(&physical_plan);
+            assert_eq!(field_metadata_map.get("date"), Some(&"DAY".to_string()),);
+            assert!(!field_metadata_map.contains_key("event_ts"),);
+            assert_eq!(field_metadata_map.len(), 1,);
         }
+    }
+
+    #[tokio::test]
+    async fn field_metadata_correctly_tagged() {
+        let temp_dir = TempDir::new().unwrap();
+        let table_a = temp_dir.path().join("table_a.parquet");
+        let table_b = temp_dir.path().join("table_b.parquet");
+
+        let optimizer = Arc::new(DateExtractOptimizer::new());
+        let ctx = create_test_ctx(
+            table_a.to_str().unwrap(),
+            table_b.to_str().unwrap(),
+            optimizer.clone(),
+        )
+        .await;
+
+        // Test YEAR extraction
+        let df = ctx
+            .sql("SELECT EXTRACT(YEAR FROM date) AS year FROM table_a")
+            .await
+            .unwrap();
+        let (state, plan) = df.into_parts();
+        let optimized = state.optimize(&plan).unwrap();
+        let physical_plan = state.create_physical_plan(&optimized).await.unwrap();
+        let field_metadata_map = extract_field_metadata_from_physical_plan(&physical_plan);
+        assert_eq!(field_metadata_map.get("date"), Some(&"YEAR".to_string()),);
+        assert!(!field_metadata_map.contains_key("event_ts"),);
+        assert_eq!(field_metadata_map.len(), 1,);
+
+        // Test MONTH extraction
+        let df = ctx
+            .sql("SELECT EXTRACT(MONTH FROM date) AS month FROM table_a")
+            .await
+            .unwrap();
+        let (state, plan) = df.into_parts();
+        let optimized = state.optimize(&plan).unwrap();
+        let physical_plan = state.create_physical_plan(&optimized).await.unwrap();
+        let field_metadata_map = extract_field_metadata_from_physical_plan(&physical_plan);
+        assert_eq!(field_metadata_map.get("date"), Some(&"MONTH".to_string()),);
+        assert!(!field_metadata_map.contains_key("event_ts"),);
+        assert_eq!(field_metadata_map.len(), 1,);
+
+        // Test DAY extraction
+        let df = ctx
+            .sql("SELECT EXTRACT(DAY FROM date) AS day FROM table_a")
+            .await
+            .unwrap();
+        let (state, plan) = df.into_parts();
+        let optimized = state.optimize(&plan).unwrap();
+        let physical_plan = state.create_physical_plan(&optimized).await.unwrap();
+        let field_metadata_map = extract_field_metadata_from_physical_plan(&physical_plan);
+        assert_eq!(field_metadata_map.get("date"), Some(&"DAY".to_string()),);
+        assert!(!field_metadata_map.contains_key("event_ts"),);
+        assert_eq!(field_metadata_map.len(), 1,);
+    }
+
+    #[tokio::test]
+    async fn test_no_metadata_on_unused_fields() {
+        let temp_dir = TempDir::new().unwrap();
+        let table_a = temp_dir.path().join("table_a.parquet");
+        let table_b = temp_dir.path().join("table_b.parquet");
+
+        let optimizer = Arc::new(DateExtractOptimizer::new());
+        let ctx = create_test_ctx(
+            table_a.to_str().unwrap(),
+            table_b.to_str().unwrap(),
+            optimizer.clone(),
+        )
+        .await;
+
+        // Query that extracts from date but doesn't use event_ts for extraction
+        let df = ctx
+            .sql("SELECT EXTRACT(YEAR FROM date) AS year, event_ts FROM table_a")
+            .await
+            .unwrap();
+        let (state, plan) = df.into_parts();
+        let optimized = state.optimize(&plan).unwrap();
+        let physical_plan = state.create_physical_plan(&optimized).await.unwrap();
+        let field_metadata_map = extract_field_metadata_from_physical_plan(&physical_plan);
+
+        assert_eq!(field_metadata_map.get("date"), Some(&"YEAR".to_string()),);
+
+        assert!(!field_metadata_map.contains_key("event_ts"));
+
+        assert_eq!(field_metadata_map.len(), 1);
+
+        let expected_keys: Vec<&str> = vec!["date"];
+        let actual_keys: Vec<&str> = field_metadata_map.keys().map(|s| s.as_str()).collect();
+        assert_eq!(actual_keys, expected_keys);
     }
 
     #[tokio::test]
@@ -1046,7 +1164,14 @@ mod tests {
             let date_metadata = extract_date_metadata_from_logical_plan(&optimized);
             let extractions = optimizer.extractions();
             assert!(extractions.is_empty());
-            assert!(date_metadata.get("table_a").unwrap().is_none());
+            assert!(date_metadata.get("table_a").is_none());
+
+            // Verify no field metadata is set in physical plan for inconsistent extracts
+            let physical_plan = state.create_physical_plan(&optimized).await.unwrap();
+            let field_metadata_map = extract_field_metadata_from_physical_plan(&physical_plan);
+            assert!(field_metadata_map.is_empty(),);
+            assert!(!field_metadata_map.contains_key("date"));
+            assert!(!field_metadata_map.contains_key("event_ts"));
         }
     }
 }
