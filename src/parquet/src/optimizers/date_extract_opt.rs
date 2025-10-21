@@ -1164,9 +1164,8 @@ mod tests {
             let date_metadata = extract_date_metadata_from_logical_plan(&optimized);
             let extractions = optimizer.extractions();
             assert!(extractions.is_empty());
-            assert!(date_metadata.get("table_a").is_none());
+            assert!(!date_metadata.contains_key("table_a"));
 
-            // Verify no field metadata is set in physical plan for inconsistent extracts
             let physical_plan = state.create_physical_plan(&optimized).await.unwrap();
             let field_metadata_map = extract_field_metadata_from_physical_plan(&physical_plan);
             assert!(field_metadata_map.is_empty(),);
