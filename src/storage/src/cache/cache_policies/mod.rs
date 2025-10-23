@@ -1,6 +1,6 @@
 //! Cache policies for liquid cache.
 
-use crate::cache::cached_data::CachedBatchType;
+use crate::cache::cached_batch::CachedBatchType;
 use crate::cache::utils::EntryID;
 
 mod clock;

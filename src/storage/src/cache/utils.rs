@@ -1,5 +1,5 @@
 #[cfg(test)]
-use crate::cache::cached_data::CachedBatch;
+use crate::cache::cached_batch::CachedBatch;
 use crate::sync::{Arc, RwLock};
 use arrow::array::ArrayRef;
 use arrow_schema::ArrowError;

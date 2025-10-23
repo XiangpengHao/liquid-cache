@@ -3,7 +3,7 @@
 use bytes::Bytes;
 
 use crate::cache::{
-    LiquidCompressorStates, cached_data::CachedBatch, transcode_liquid_inner, utils::arrow_to_bytes,
+    LiquidCompressorStates, cached_batch::CachedBatch, transcode_liquid_inner, utils::arrow_to_bytes,
 };
 
 /// What to do when we need to squeeze an entry?
@@ -135,7 +135,7 @@ impl SqueezePolicy for TranscodeEvict {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::cached_data::CachedBatch;
+    use crate::cache::cached_batch::CachedBatch;
     use arrow::array::{ArrayRef, Int32Array, StringArray};
     use arrow_schema::DataType;
     use std::sync::Arc;

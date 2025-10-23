@@ -317,7 +317,7 @@ pub trait LiquidHybridArray: std::fmt::Debug + Send + Sync {
     /// For byte-view arrays, `data` should be the raw FSST buffer bytes.
     fn soak(&self, data: bytes::Bytes) -> LiquidArrayRef;
 
-    /// Get the `IoRequest` to convert the `LiquidHybridArray` to a `LiquidArray`.
+    /// Get the `IoRange` to convert the `LiquidHybridArray` to a `LiquidArray`.
     fn to_liquid(&self) -> IoRange;
 }
 

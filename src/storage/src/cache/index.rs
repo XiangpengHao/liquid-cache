@@ -7,7 +7,7 @@ use std::{
     },
 };
 
-use crate::cache::{cached_data::CachedBatch, utils::EntryID};
+use crate::cache::{cached_batch::CachedBatch, utils::EntryID};
 
 pub(crate) struct ArtIndex {
     art: CongeeArc<EntryID, CachedBatch>,

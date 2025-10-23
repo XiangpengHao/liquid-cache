@@ -7,7 +7,6 @@ use ahash::AHashMap;
 use bytes::Bytes;
 use liquid_cache_storage::cache::{
     EntryID, IoContext, LiquidCompressorStates,
-    io_state::{IoRequest, IoStateMachine, SansIo, TryGet},
 };
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
@@ -31,6 +30,7 @@ impl ParquetIoContext {
     }
 }
 
+#[async_trait::async_trait]
 impl IoContext for ParquetIoContext {
     fn base_dir(&self) -> &Path {
         &self.base_dir
@@ -53,6 +53,22 @@ impl IoContext for ParquetIoContext {
     fn entry_liquid_path(&self, entry_id: &EntryID) -> PathBuf {
         let parquet_array_id = ParquetArrayID::from(*entry_id);
         parquet_array_id.on_disk_path(self.base_dir())
+    }
+
+    async fn read_entire_file(&self, path: &Path) -> Result<Bytes, std::io::Error> {
+        let mut file = tokio::fs::File::open(path).await?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).await?;
+        Ok(Bytes::from(bytes))
+    }
+
+    async fn read_range(&self, path: &Path, range: std::ops::Range<u64>) -> Result<Bytes, std::io::Error> {
+        let mut file = tokio::fs::File::open(path).await?;
+        let len = (range.end - range.start) as usize;
+        let mut bytes = vec![0u8; len];
+        file.seek(tokio::io::SeekFrom::Start(range.start)).await?;
+        file.read_exact(&mut bytes).await?;
+        Ok(Bytes::from(bytes))
     }
 }
 
@@ -118,54 +134,6 @@ impl From<ParquetArrayID> for ColumnAccessPath {
             file_id: value.file_id_inner() as u16,
             rg_id: value.row_group_id_inner() as u16,
             col_id: value.column_id_inner() as u16,
-        }
-    }
-}
-
-pub(crate) async fn blocking_reading_io(request: &IoRequest) -> Result<Bytes, std::io::Error> {
-    let path = &request.path();
-    let mut file = tokio::fs::File::open(path).await?;
-    match request.range() {
-        Some(range) => {
-            let len = (range.range().end - range.range().start) as usize;
-            let mut bytes = vec![0u8; len];
-            file.seek(tokio::io::SeekFrom::Start(range.range().start))
-                .await?;
-            file.read_exact(&mut bytes).await?;
-            Ok(Bytes::from(bytes))
-        }
-        None => {
-            let mut bytes = Vec::new();
-            file.read_to_end(&mut bytes).await?;
-            Ok(Bytes::from(bytes))
-        }
-    }
-}
-
-/// Resolve a sans-IO operation by repeatedly fulfilling IO requests until ready.
-pub(crate) async fn blocking_sans_io<T, M>(sans: SansIo<T, M>) -> T
-where
-    M: IoStateMachine<Output = T>,
-{
-    match sans {
-        SansIo::Ready(v) => v,
-        SansIo::Pending((state, io_req)) => resolve_pending(state, io_req).await,
-    }
-}
-
-async fn resolve_pending<T, M>(mut state: M, mut io_req: IoRequest) -> T
-where
-    M: IoStateMachine<Output = T>,
-{
-    loop {
-        let bytes = blocking_reading_io(&io_req).await.expect("IO failed");
-        state.feed(bytes);
-        match state.try_get() {
-            TryGet::Ready(out) => return out,
-            TryGet::NeedData((s, req)) => {
-                state = s;
-                io_req = req;
-            }
         }
     }
 }

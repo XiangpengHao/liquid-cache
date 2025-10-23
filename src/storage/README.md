@@ -7,22 +7,16 @@ This library provides one way to insert into the cache and three ways to read fr
 - read with selection pushdown
 - read with predicate pushdown
 
-All reads use a sans-IO API: the library may request IO and you fulfill it.
-Each example includes a tiny helper to perform the requested IO.
+All reads use async APIs that handle I/O internally.
 
 Below are four concise, runnable examples showcasing these core operations.
 
 ## 1) Insert
 
 ```rust
-use liquid_cache_storage::cache::{CacheStorageBuilder, EntryID, io_state::IoRequest};
+use liquid_cache_storage::cache::{CacheStorageBuilder, EntryID};
 use arrow::array::UInt64Array;
 use std::sync::Arc;
-
-// Tiny IO helper for sans-IO reads
-fn read_all(req: &IoRequest) -> bytes::Bytes {
-    bytes::Bytes::from(std::fs::read(req.path()).unwrap())
-}
 
 let storage = CacheStorageBuilder::new().build();
 
@@ -39,87 +33,57 @@ assert!(storage.is_cached(&entry_id));
 
 ```rust
 use liquid_cache_storage::cache::{CacheStorageBuilder, EntryID};
-use liquid_cache_storage::cache::io_state::{SansIo, TryGet, IoRequest, IoStateMachine};
 use arrow::array::UInt64Array;
 use std::sync::Arc;
 
-// Tiny IO helper for sans-IO reads
-fn read_all(req: &IoRequest) -> bytes::Bytes {
-    bytes::Bytes::from(std::fs::read(req.path()).unwrap())
-}
-
+tokio_test::block_on(async {
 let storage = CacheStorageBuilder::new().build();
 
 let entry_id = EntryID::from(7);
 let arrow_array = Arc::new(UInt64Array::from_iter_values(0..16));
 storage.insert(entry_id, arrow_array.clone());
 
-// Move data to disk so the read will demonstrate the sans-IO flow
+// Move data to disk so the read will demonstrate async I/O
 storage.flush_all_to_disk();
 
-let cached = storage.get(&entry_id).unwrap();
-match cached.get_arrow_array() {
-    SansIo::Ready(out) => {
-        // If already in memory
-        assert_eq!(out.as_ref(), arrow_array.as_ref());
-    }
-    SansIo::Pending((mut state, req)) => {
-        // Fulfill the requested IO and feed the state machine
-        state.feed(read_all(&req));
-        let TryGet::Ready(out) = state.try_get() else { panic!("still pending") };
-        assert_eq!(out.as_ref(), arrow_array.as_ref());
-    }
-}
+// Read asynchronously
+let retrieved = storage.get_arrow_array(&entry_id).await.unwrap();
+assert_eq!(retrieved.as_ref(), arrow_array.as_ref());
+});
 ```
 
 ## 3) Read with selection pushdown
 
 ```rust
 use liquid_cache_storage::cache::{CacheStorageBuilder, EntryID};
-use liquid_cache_storage::cache::io_state::{SansIo, TryGet, IoRequest, IoStateMachine};
 use arrow::array::UInt64Array;
 use arrow::buffer::BooleanBuffer;
 use std::sync::Arc;
 
-// Tiny IO helper for sans-IO reads
-fn read_all(req: &IoRequest) -> bytes::Bytes {
-    bytes::Bytes::from(std::fs::read(req.path()).unwrap())
-}
-
+tokio_test::block_on(async {
 let storage = CacheStorageBuilder::new().build();
 
 let entry_id = EntryID::from(8);
 let data = Arc::new(UInt64Array::from_iter_values(0..10));
 storage.insert(entry_id, data.clone());
 
-// Move data to disk so the read will demonstrate the sans-IO flow
+// Move data to disk so the read will demonstrate async I/O
 storage.flush_all_to_disk();
 
 // Keep even indices
 let filter = BooleanBuffer::from((0..10).map(|i| i % 2 == 0).collect::<Vec<_>>());
 
-let cached = storage.get(&entry_id).unwrap();
-match cached.get_with_selection(&filter) {
-    SansIo::Ready(Ok(filtered)) => {
-        let expected = Arc::new(UInt64Array::from_iter_values((0..10).filter(|i| i % 2 == 0)));
-        assert_eq!(filtered.as_ref(), expected.as_ref());
-    }
-    SansIo::Pending((mut state, req)) => {
-        state.feed(read_all(&req));
-        let TryGet::Ready(Ok(filtered)) = state.try_get() else { panic!("still pending") };
-        let expected = Arc::new(UInt64Array::from_iter_values((0..10).filter(|i| i % 2 == 0)));
-        assert_eq!(filtered.as_ref(), expected.as_ref());
-    }
-    // Simplify example handling: treat errors as unreachable for this demo
-    SansIo::Ready(Err(_)) => panic!("unexpected error"),
-}
+// Read with selection pushdown
+let filtered = storage.get_with_selection(&entry_id, &filter).await.unwrap().unwrap();
+let expected = Arc::new(UInt64Array::from_iter_values((0..10).filter(|i| i % 2 == 0)));
+assert_eq!(filtered.as_ref(), expected.as_ref());
+});
 ```
 
 ## 4) Read with predicate pushdown
 
 ```rust
-use liquid_cache_storage::cache::{CacheStorageBuilder, EntryID, cached_data::GetWithPredicateResult};
-use liquid_cache_storage::cache::io_state::{SansIo, TryGet, IoRequest, IoStateMachine};
+use liquid_cache_storage::cache::{CacheStorageBuilder, EntryID, GetWithPredicateResult};
 use arrow::array::{ArrayRef, StringArray};
 use arrow::buffer::BooleanBuffer;
 use datafusion::logical_expr::Operator;
@@ -128,11 +92,7 @@ use datafusion::physical_plan::PhysicalExpr;
 use datafusion::scalar::ScalarValue;
 use std::sync::Arc;
 
-// Tiny IO helper for sans-IO reads
-fn read_all(req: &IoRequest) -> bytes::Bytes {
-    bytes::Bytes::from(std::fs::read(req.path()).unwrap())
-}
-
+tokio_test::block_on(async {
 let storage = CacheStorageBuilder::new().build();
 
 let entry_id = EntryID::from(9);
@@ -141,7 +101,7 @@ let data = Arc::new(StringArray::from(vec![
 ]));
 storage.insert(entry_id, data.clone());
 
-// Move data to disk so the read will demonstrate the sans-IO flow
+// Move data to disk so the read will demonstrate async I/O
 storage.flush_all_to_disk();
 
 let selection = BooleanBuffer::from(vec![true, true, false, true, true]);
@@ -151,7 +111,6 @@ let expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
     Arc::new(Literal::new(ScalarValue::Utf8(Some("apple".to_string())))),
 ));
 
-let cached = storage.get(&entry_id).unwrap();
 let expected_filtered: ArrayRef = Arc::new(StringArray::from(vec![
     Some("apple"),
     Some("banana"),
@@ -159,14 +118,8 @@ let expected_filtered: ArrayRef = Arc::new(StringArray::from(vec![
     Some("cherry"),
 ])) as ArrayRef;
 
-match cached.get_with_predicate(&selection, &expr) {
-    SansIo::Ready(result) => {
-        assert_eq!(result, GetWithPredicateResult::Filtered(expected_filtered.clone()));
-    }
-    SansIo::Pending((mut state, req)) => {
-        state.feed(read_all(&req));
-        let TryGet::Ready(result) = state.try_get() else { panic!("still pending") };
-        assert_eq!(result, GetWithPredicateResult::Filtered(expected_filtered));
-    }
-}
+// Read with predicate pushdown
+let result = storage.get_with_predicate(&entry_id, &selection, &expr).await.unwrap();
+assert_eq!(result, GetWithPredicateResult::Filtered(expected_filtered));
+});
 ```

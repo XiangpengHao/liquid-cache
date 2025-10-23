@@ -3,7 +3,7 @@
 use std::{collections::HashMap, fmt, ptr::NonNull};
 
 use crate::{
-    cache::{cached_data::CachedBatchType, utils::EntryID},
+    cache::{cached_batch::CachedBatchType, utils::EntryID},
     sync::Mutex,
 };
 
@@ -157,7 +157,7 @@ impl Drop for SievePolicy {
 mod tests {
     use super::*;
     use crate::cache::{
-        cached_data::CachedBatchType,
+        cached_batch::CachedBatchType,
         utils::{EntryID, create_cache_store, create_test_arrow_array},
     };
 
@@ -289,8 +289,8 @@ mod tests {
         store.insert(entry_id2, create_test_arrow_array(100));
         store.insert(entry_id3, create_test_arrow_array(100));
 
-        assert!(store.get(&entry_id1).is_some());
-        assert!(store.get(&entry_id2).is_some());
-        assert!(store.get(&entry_id3).is_some());
+        assert!(store.index().get(&entry_id1).is_some());
+        assert!(store.index().get(&entry_id2).is_some());
+        assert!(store.index().get(&entry_id3).is_some());
     }
 }

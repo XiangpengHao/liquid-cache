@@ -1,14 +1,19 @@
 use arrow::array::ArrayRef;
+use arrow::buffer::BooleanBuffer;
+use arrow_schema::ArrowError;
+use datafusion::physical_plan::PhysicalExpr;
 use std::path::PathBuf;
 use std::{fmt::Debug, path::Path};
 
 #[cfg(target_os = "linux")]
 use super::io::{DEFAULT_RING_ENTRIES, IoUringPool};
 use super::{
-    budget::BudgetAccounting, cache_policies::CachePolicy, cached_data::CachedBatch,
-    cached_data::CachedData, tracer::CacheTracer, utils::CacheConfig,
+    budget::BudgetAccounting,
+    cache_policies::CachePolicy,
+    cached_batch::{CachedBatch, CachedBatchType, GetWithPredicateResult},
+    tracer::CacheTracer,
+    utils::CacheConfig,
 };
-use crate::cache::cached_data::CachedBatchType;
 use crate::cache::squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict};
 use crate::cache::stats::{CacheStats, RuntimeStats};
 use crate::cache::utils::{LiquidCompressorStates, arrow_to_bytes};
@@ -16,7 +21,11 @@ use crate::cache::{index::ArtIndex, utils::EntryID};
 use crate::cache_policies::LiquidPolicy;
 use crate::sync::Arc;
 
+use bytes::Bytes;
+use std::ops::Range;
+
 /// A trait for objects that can handle IO operations for the cache.
+#[async_trait::async_trait]
 pub trait IoContext: Debug + Send + Sync {
     /// Get the base directory for the cache eviction, i.e., evicted data will be written to this directory.
     fn base_dir(&self) -> &Path;
@@ -29,6 +38,12 @@ pub trait IoContext: Debug + Send + Sync {
 
     /// Get the path to the liquid file for an entry.
     fn entry_liquid_path(&self, entry_id: &EntryID) -> PathBuf;
+
+    /// Read the entire file at the given path.
+    async fn read_entire_file(&self, path: &Path) -> Result<Bytes, std::io::Error>;
+
+    /// Read a range of bytes from a file at the given path.
+    async fn read_range(&self, path: &Path, range: Range<u64>) -> Result<Bytes, std::io::Error>;
 }
 
 /// A default implementation of [IoContext] that uses the default compressor.
@@ -48,6 +63,7 @@ impl DefaultIoContext {
     }
 }
 
+#[async_trait::async_trait]
 impl IoContext for DefaultIoContext {
     fn base_dir(&self) -> &Path {
         &self.base_dir
@@ -65,6 +81,24 @@ impl IoContext for DefaultIoContext {
     fn entry_liquid_path(&self, entry_id: &EntryID) -> PathBuf {
         self.base_dir()
             .join(format!("{:016x}.liquid", usize::from(*entry_id)))
+    }
+
+    async fn read_entire_file(&self, path: &Path) -> Result<Bytes, std::io::Error> {
+        use tokio::io::AsyncReadExt;
+        let mut file = tokio::fs::File::open(path).await?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).await?;
+        Ok(Bytes::from(bytes))
+    }
+
+    async fn read_range(&self, path: &Path, range: Range<u64>) -> Result<Bytes, std::io::Error> {
+        use tokio::io::{AsyncReadExt, AsyncSeekExt};
+        let mut file = tokio::fs::File::open(path).await?;
+        let len = (range.end - range.start) as usize;
+        let mut bytes = vec![0u8; len];
+        file.seek(tokio::io::SeekFrom::Start(range.start)).await?;
+        file.read_exact(&mut bytes).await?;
+        Ok(Bytes::from(bytes))
     }
 }
 
@@ -177,36 +211,23 @@ impl CacheStorageBuilder {
 
 /// Cache storage for liquid cache.
 ///
-/// Example (sans-IO read):
+/// Example (async read):
 /// ```rust
 /// use liquid_cache_storage::cache::{CacheStorageBuilder, EntryID};
-/// use liquid_cache_storage::cache::io_state::{SansIo, TryGet, IoRequest, IoStateMachine};
 /// use arrow::array::UInt64Array;
 /// use std::sync::Arc;
 ///
-/// // Tiny IO helper for sans-IO reads
-/// fn read_all(req: &IoRequest) -> bytes::Bytes {
-///     bytes::Bytes::from(std::fs::read(req.path()).unwrap())
-/// }
-///
+/// tokio_test::block_on(async {
 /// let storage = CacheStorageBuilder::new().build();
 ///
 /// let entry_id = EntryID::from(0);
 /// let arrow_array = Arc::new(UInt64Array::from_iter_values(0..32));
 /// storage.insert(entry_id, arrow_array.clone());
 ///
-/// // Move to disk so we can see the Pending path too
-/// storage.flush_all_to_disk();
-///
-/// let batch = storage.get(&entry_id).unwrap();
-/// match batch.get_arrow_array() {
-///     SansIo::Ready(out) => assert_eq!(out.as_ref(), arrow_array.as_ref()),
-///     SansIo::Pending((mut state, req)) => {
-///         state.feed(read_all(&req));
-///         let TryGet::Ready(out) = state.try_get() else { panic!("still pending") };
-///         assert_eq!(out.as_ref(), arrow_array.as_ref());
-///     }
-/// }
+/// // Get the arrow array back asynchronously
+/// let retrieved = storage.get_arrow_array(&entry_id).await.unwrap();
+/// assert_eq!(retrieved.as_ref(), arrow_array.as_ref());
+/// });
 /// ```
 #[derive(Debug)]
 pub struct CacheStorage {
@@ -266,24 +287,256 @@ impl CacheStorage {
         self.insert_inner(entry_id, CachedBatch::MemoryArrow(batch_to_cache));
     }
 
-    /// Get a batch from the cache.
-    pub fn get(&self, entry_id: &EntryID) -> Option<CachedData<'_>> {
-        let batch = self.index.get(entry_id);
-        let batch_size = batch.as_ref().map(|b| b.memory_usage_bytes()).unwrap_or(0);
-        self.tracer
-            .trace_get(*entry_id, self.budget.memory_usage_bytes(), batch_size);
-
-        let batch = batch?;
-        // Notify the advisor that this entry was accessed
+    /// Get an Arrow array from the cache asynchronously.
+    pub async fn get_arrow_array(&self, entry_id: &EntryID) -> Option<ArrayRef> {
+        self.runtime_stats.incr_get_arrow_array();
+        let batch = self.index.get(entry_id)?;
         self.cache_policy
             .notify_access(entry_id, CachedBatchType::from(&batch));
 
-        Some(CachedData::new(
-            batch,
-            *entry_id,
-            self.io_context.as_ref(),
-            &self.runtime_stats,
-        ))
+        match batch {
+            CachedBatch::MemoryArrow(array) => Some(array),
+            CachedBatch::MemoryLiquid(array) => Some(array.to_arrow_array()),
+            CachedBatch::DiskLiquid(_) => {
+                let path = self.io_context.entry_liquid_path(entry_id);
+                let bytes = self.io_context.read_entire_file(&path).await.ok()?;
+                let compressor_states = self.io_context.get_compressor_for_entry(entry_id);
+                let compressor = compressor_states.fsst_compressor();
+                let liquid = crate::liquid_array::ipc::read_from_bytes(
+                    bytes,
+                    &crate::liquid_array::ipc::LiquidIPCContext::new(compressor),
+                );
+                Some(liquid.to_arrow_array())
+            }
+            CachedBatch::MemoryHybridLiquid(array) => match array.to_arrow_array() {
+                Ok(arr) => Some(arr),
+                Err(io_range) => {
+                    let path = self.io_context.entry_liquid_path(entry_id);
+                    let bytes = self
+                        .io_context
+                        .read_range(&path, io_range.range().clone())
+                        .await
+                        .ok()?;
+                    let new_array = array.soak(bytes);
+                    Some(new_array.to_arrow_array())
+                }
+            },
+            CachedBatch::DiskArrow(_) => {
+                let path = self.io_context.entry_arrow_path(entry_id);
+                let bytes = self.io_context.read_entire_file(&path).await.ok()?;
+                let cursor = std::io::Cursor::new(bytes.to_vec());
+                let mut reader = arrow::ipc::reader::StreamReader::try_new(cursor, None).ok()?;
+                let batch = reader.next()?.ok()?;
+                Some(batch.column(0).clone())
+            }
+        }
+    }
+
+    /// Get an Arrow array with selection pushdown.
+    pub async fn get_with_selection(
+        &self,
+        entry_id: &EntryID,
+        selection: &BooleanBuffer,
+    ) -> Option<Result<ArrayRef, ArrowError>> {
+        use arrow::array::BooleanArray;
+
+        self.runtime_stats.incr_get_with_selection();
+        let batch = self.index.get(entry_id)?;
+        self.cache_policy
+            .notify_access(entry_id, CachedBatchType::from(&batch));
+
+        Some(match batch {
+            CachedBatch::MemoryArrow(array) => {
+                let selection_array = BooleanArray::new(selection.clone(), None);
+                arrow::compute::filter(&array, &selection_array)
+            }
+            CachedBatch::MemoryLiquid(array) => Ok(array.filter_to_arrow(selection)),
+            CachedBatch::DiskLiquid(data_type) => {
+                let select_any = selection.count_set_bits() > 0;
+                if !select_any {
+                    let empty_array = arrow::array::new_empty_array(&data_type);
+                    return Some(Ok(empty_array));
+                }
+                let path = self.io_context.entry_liquid_path(entry_id);
+                let bytes = self.io_context.read_entire_file(&path).await.ok()?;
+                let compressor_states = self.io_context.get_compressor_for_entry(entry_id);
+                let compressor = compressor_states.fsst_compressor();
+                let liquid = crate::liquid_array::ipc::read_from_bytes(
+                    bytes,
+                    &crate::liquid_array::ipc::LiquidIPCContext::new(compressor),
+                );
+                Ok(liquid.filter_to_arrow(selection))
+            }
+            CachedBatch::MemoryHybridLiquid(array) => match array.filter_to_arrow(selection) {
+                Ok(arr) => Ok(arr),
+                Err(io_range) => {
+                    let path = self.io_context.entry_liquid_path(entry_id);
+                    let bytes = self
+                        .io_context
+                        .read_range(&path, io_range.range().clone())
+                        .await
+                        .ok()?;
+                    let new_array = array.soak(bytes);
+                    Ok(new_array.filter_to_arrow(selection))
+                }
+            },
+            CachedBatch::DiskArrow(_) => {
+                let path = self.io_context.entry_arrow_path(entry_id);
+                let bytes = self.io_context.read_entire_file(&path).await.ok()?;
+                let cursor = std::io::Cursor::new(bytes.to_vec());
+                let mut reader = arrow::ipc::reader::StreamReader::try_new(cursor, None).ok()?;
+                let batch = reader.next()?.ok()?;
+                let array = batch.column(0).clone();
+                let selection_array = BooleanArray::new(selection.clone(), None);
+                arrow::compute::filter(&array, &selection_array)
+            }
+        })
+    }
+
+    /// Get with predicate pushdown.
+    pub async fn get_with_predicate(
+        &self,
+        entry_id: &EntryID,
+        selection: &BooleanBuffer,
+        predicate: &Arc<dyn PhysicalExpr>,
+    ) -> Option<GetWithPredicateResult> {
+        use arrow::array::BooleanArray;
+
+        self.runtime_stats.incr_get_with_predicate();
+        let batch = self.index.get(entry_id)?;
+        self.cache_policy
+            .notify_access(entry_id, CachedBatchType::from(&batch));
+
+        Some(match batch {
+            CachedBatch::MemoryArrow(array) => {
+                let selection_array = BooleanArray::new(selection.clone(), None);
+                let selected = arrow::compute::filter(&array, &selection_array).ok()?;
+                GetWithPredicateResult::Filtered(selected)
+            }
+            CachedBatch::DiskArrow(_) => {
+                let path = self.io_context.entry_arrow_path(entry_id);
+                let bytes = self.io_context.read_entire_file(&path).await.ok()?;
+                let cursor = std::io::Cursor::new(bytes.to_vec());
+                let mut reader = arrow::ipc::reader::StreamReader::try_new(cursor, None).ok()?;
+                let batch = reader.next()?.ok()?;
+                let array = batch.column(0).clone();
+                let selection_array = BooleanArray::new(selection.clone(), None);
+                let filtered = arrow::compute::filter(&array, &selection_array).ok()?;
+                GetWithPredicateResult::Filtered(filtered)
+            }
+            CachedBatch::MemoryLiquid(array) => {
+                match array.try_eval_predicate(predicate, selection) {
+                    Some(buf) => GetWithPredicateResult::Evaluated(buf),
+                    None => {
+                        let filtered = array.filter_to_arrow(selection);
+                        GetWithPredicateResult::Filtered(filtered)
+                    }
+                }
+            }
+            CachedBatch::DiskLiquid(_) => {
+                let path = self.io_context.entry_liquid_path(entry_id);
+                let bytes = self.io_context.read_entire_file(&path).await.ok()?;
+                let compressor_states = self.io_context.get_compressor_for_entry(entry_id);
+                let compressor = compressor_states.fsst_compressor();
+                let liquid = crate::liquid_array::ipc::read_from_bytes(
+                    bytes,
+                    &crate::liquid_array::ipc::LiquidIPCContext::new(compressor),
+                );
+                match liquid.try_eval_predicate(predicate, selection) {
+                    Some(buf) => GetWithPredicateResult::Evaluated(buf),
+                    None => {
+                        let filtered = liquid.filter_to_arrow(selection);
+                        GetWithPredicateResult::Filtered(filtered)
+                    }
+                }
+            }
+            CachedBatch::MemoryHybridLiquid(array) => {
+                match array.try_eval_predicate(predicate, selection) {
+                    Ok(Some(buf)) => {
+                        self.runtime_stats.incr_get_predicate_hybrid_success();
+                        GetWithPredicateResult::Evaluated(buf)
+                    }
+                    Ok(None) => {
+                        self.runtime_stats.incr_get_predicate_hybrid_unsupported();
+                        match array.filter_to_arrow(selection) {
+                            Ok(arr) => GetWithPredicateResult::Filtered(arr),
+                            Err(io_range) => {
+                                self.runtime_stats.incr_get_predicate_hybrid_needs_io();
+                                let path = self.io_context.entry_liquid_path(entry_id);
+                                let bytes = self
+                                    .io_context
+                                    .read_range(&path, io_range.range().clone())
+                                    .await
+                                    .ok()?;
+                                let new_array = array.soak(bytes);
+                                match new_array.try_eval_predicate(predicate, selection) {
+                                    Some(buf) => GetWithPredicateResult::Evaluated(buf),
+                                    None => {
+                                        let filtered = new_array.filter_to_arrow(selection);
+                                        GetWithPredicateResult::Filtered(filtered)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(io_range) => {
+                        self.runtime_stats.incr_get_predicate_hybrid_needs_io();
+                        let path = self.io_context.entry_liquid_path(entry_id);
+                        let bytes = self
+                            .io_context
+                            .read_range(&path, io_range.range().clone())
+                            .await
+                            .ok()?;
+                        let new_array = array.soak(bytes);
+                        match new_array.try_eval_predicate(predicate, selection) {
+                            Some(buf) => GetWithPredicateResult::Evaluated(buf),
+                            None => {
+                                let filtered = new_array.filter_to_arrow(selection);
+                                GetWithPredicateResult::Filtered(filtered)
+                            }
+                        }
+                    }
+                }
+            }
+        })
+    }
+
+    /// Try to read a liquid array from the cache.
+    /// Returns None if the cached data is not in liquid format.
+    pub async fn try_read_liquid(
+        &self,
+        entry_id: &EntryID,
+    ) -> Option<crate::liquid_array::LiquidArrayRef> {
+        self.runtime_stats.incr_try_read_liquid();
+        let batch = self.index.get(entry_id)?;
+        self.cache_policy
+            .notify_access(entry_id, CachedBatchType::from(&batch));
+
+        match batch {
+            CachedBatch::MemoryLiquid(array) => Some(array),
+            CachedBatch::DiskLiquid(_) => {
+                let path = self.io_context.entry_liquid_path(entry_id);
+                let bytes = self.io_context.read_entire_file(&path).await.ok()?;
+                let compressor_states = self.io_context.get_compressor_for_entry(entry_id);
+                let compressor = compressor_states.fsst_compressor();
+                let liquid = crate::liquid_array::ipc::read_from_bytes(
+                    bytes,
+                    &crate::liquid_array::ipc::LiquidIPCContext::new(compressor),
+                );
+                Some(liquid)
+            }
+            CachedBatch::MemoryHybridLiquid(array) => {
+                let io_range = array.to_liquid();
+                let path = self.io_context.entry_liquid_path(entry_id);
+                let bytes = self
+                    .io_context
+                    .read_range(&path, io_range.range().clone())
+                    .await
+                    .ok()?;
+                Some(array.soak(bytes))
+            }
+            CachedBatch::DiskArrow(_) | CachedBatch::MemoryArrow(_) => None,
+        }
     }
 
     /// Iterate over all entries in the cache.
@@ -317,6 +570,11 @@ impl CacheStorage {
     /// Get the tracer of the cache.
     pub fn tracer(&self) -> &CacheTracer {
         &self.tracer
+    }
+
+    /// Get the index of the cache.
+    pub(crate) fn index(&self) -> &ArtIndex {
+        &self.index
     }
 
     /// Get the compressor states of the cache.
@@ -659,8 +917,8 @@ mod tests {
 
         // Verify budget usage and data correctness
         assert_eq!(store.budget.memory_usage_bytes(), size1);
-        let retrieved1 = store.get(&entry_id1).unwrap();
-        match retrieved1.raw_data() {
+        let retrieved1 = store.index().get(&entry_id1).unwrap();
+        match retrieved1 {
             CachedBatch::MemoryArrow(arr) => assert_eq!(arr.len(), 100),
             _ => panic!("Expected ArrowMemory"),
         }
@@ -677,7 +935,7 @@ mod tests {
         store.insert_inner(entry_id1, array3);
 
         assert_eq!(store.budget.memory_usage_bytes(), size3 + size2);
-        assert!(store.get(&EntryID::from(999)).is_none());
+        assert!(store.index().get(&EntryID::from(999)).is_none());
     }
 
     #[test]
@@ -694,13 +952,13 @@ mod tests {
             let store = create_cache_store(8000, Box::new(advisor)); // Small budget to force advice
 
             store.insert_inner(entry_id1, create_test_array(800));
-            match store.get(&entry_id1).unwrap().raw_data() {
+            match store.index().get(&entry_id1).unwrap() {
                 CachedBatch::MemoryArrow(_) => {}
                 other => panic!("Expected ArrowMemory, got {other:?}"),
             }
 
             store.insert_inner(entry_id2, create_test_array(800));
-            match store.get(&entry_id1).unwrap().raw_data() {
+            match store.index().get(&entry_id1).unwrap() {
                 CachedBatch::MemoryLiquid(_) => {}
                 other => panic!("Expected LiquidMemory after eviction, got {other:?}"),
             }
@@ -746,12 +1004,12 @@ mod tests {
             for i in 0..ops_per_thread {
                 let unique_id = thread_id * ops_per_thread + i;
                 let entry_id: EntryID = EntryID::from(unique_id);
-                assert!(store.get(&entry_id).is_some());
+                assert!(store.index().get(&entry_id).is_some());
             }
         }
 
         // Invariant 2: Number of entries matches number of insertions
-        assert_eq!(store.index.keys().len(), num_threads * ops_per_thread);
+        assert_eq!(store.index().keys().len(), num_threads * ops_per_thread);
     }
 
     #[test]
