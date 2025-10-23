@@ -110,6 +110,67 @@ impl IoContext for DefaultIoContext {
     }
 }
 
+/// A blocking implementation of [IoContext] that uses the default compressor.
+/// This is used for testing purposes as all io operations are blocking.
+#[derive(Debug)]
+pub struct BlockingIoContext {
+    compressor_state: Arc<LiquidCompressorStates>,
+    base_dir: PathBuf,
+}
+
+impl BlockingIoContext {
+    /// Create a new instance of [BlockingIoContext].
+    pub fn new(base_dir: PathBuf) -> Self {
+        Self {
+            compressor_state: Arc::new(LiquidCompressorStates::new()),
+            base_dir,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl IoContext for BlockingIoContext {
+    fn base_dir(&self) -> &Path {
+        &self.base_dir
+    }
+
+    fn get_compressor_for_entry(&self, _entry_id: &EntryID) -> Arc<LiquidCompressorStates> {
+        self.compressor_state.clone()
+    }
+
+    fn entry_arrow_path(&self, entry_id: &EntryID) -> PathBuf {
+        self.base_dir()
+            .join(format!("{:016x}.arrow", usize::from(*entry_id)))
+    }
+
+    fn entry_liquid_path(&self, entry_id: &EntryID) -> PathBuf {
+        self.base_dir()
+            .join(format!("{:016x}.liquid", usize::from(*entry_id)))
+    }
+
+    async fn read_entire_file(&self, path: &Path) -> Result<Bytes, std::io::Error> {
+        let mut file = std::fs::File::open(path)?;
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut file, &mut bytes)?;
+        Ok(Bytes::from(bytes))
+    }
+
+    async fn read_range(&self, path: &Path, range: Range<u64>) -> Result<Bytes, std::io::Error> {
+        let mut file = std::fs::File::open(path)?;
+        let len = (range.end - range.start) as usize;
+        let mut bytes = vec![0u8; len];
+        std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(range.start))?;
+        std::io::Read::read_exact(&mut file, &mut bytes)?;
+        Ok(Bytes::from(bytes))
+    }
+
+    async fn write_entire_file(&self, path: &Path, data: &[u8]) -> Result<(), std::io::Error> {
+        let mut file = std::fs::File::create(path)?;
+        std::io::Write::write_all(&mut file, data)?;
+        Ok(())
+    }
+}
+
 // CacheStats and RuntimeStats moved to stats.rs
 
 /// Builder for [CacheStorage].
@@ -910,6 +971,16 @@ mod tests {
     fn shuttle_cache_operations() {
         crate::utils::shuttle_test(concurrent_cache_operations);
     }
+    pub fn block_on<F: Future>(future: F) -> F::Output {
+        #[cfg(feature = "shuttle")]
+        {
+            shuttle::future::block_on(future)
+        }
+        #[cfg(not(feature = "shuttle"))]
+        {
+            tokio_test::block_on(future)
+        }
+    }
 
     fn concurrent_cache_operations() {
         let num_threads = 3;
@@ -922,8 +993,7 @@ mod tests {
         for thread_id in 0..num_threads {
             let store = store.clone();
             handles.push(thread::spawn(move || {
-                let rt = tokio::runtime::Runtime::new().unwrap();
-                rt.block_on(async {
+                block_on(async {
                     for i in 0..ops_per_thread {
                         let unique_id = thread_id * ops_per_thread + i;
                         let entry_id: EntryID = EntryID::from(unique_id);
