@@ -573,6 +573,7 @@ impl CacheStorage {
     }
 
     /// Get the index of the cache.
+    #[cfg(test)]
     pub(crate) fn index(&self) -> &ArtIndex {
         &self.index
     }
