@@ -200,34 +200,32 @@ mod tests {
         id.into()
     }
 
-    #[test]
-    fn test_filo_advisor() {
-        tokio_test::block_on(async {
-            let advisor = FiloPolicy::new();
-            let store = create_cache_store(3000, Box::new(advisor));
+    #[tokio::test]
+    async fn test_filo_advisor() {
+        let advisor = FiloPolicy::new();
+        let store = create_cache_store(3000, Box::new(advisor));
 
-            let entry_id1 = EntryID::from(1);
-            let entry_id2 = EntryID::from(2);
-            let entry_id3 = EntryID::from(3);
+        let entry_id1 = EntryID::from(1);
+        let entry_id2 = EntryID::from(2);
+        let entry_id3 = EntryID::from(3);
 
-            store.insert(entry_id1, create_test_arrow_array(100)).await;
+        store.insert(entry_id1, create_test_arrow_array(100)).await;
 
-            let data = store.index().get(&entry_id1).unwrap();
-            assert!(matches!(data, CachedBatch::MemoryArrow(_)));
-            store.insert(entry_id2, create_test_arrow_array(100)).await;
-            store.insert(entry_id3, create_test_arrow_array(100)).await;
+        let data = store.index().get(&entry_id1).unwrap();
+        assert!(matches!(data, CachedBatch::MemoryArrow(_)));
+        store.insert(entry_id2, create_test_arrow_array(100)).await;
+        store.insert(entry_id3, create_test_arrow_array(100)).await;
 
-            let entry_id4: EntryID = EntryID::from(4);
-            store.insert(entry_id4, create_test_arrow_array(100)).await;
+        let entry_id4: EntryID = EntryID::from(4);
+        store.insert(entry_id4, create_test_arrow_array(100)).await;
 
-            assert!(store.index().get(&entry_id1).is_some());
-            assert!(store.index().get(&entry_id2).is_some());
-            assert!(store.index().get(&entry_id4).is_some());
+        assert!(store.index().get(&entry_id1).is_some());
+        assert!(store.index().get(&entry_id2).is_some());
+        assert!(store.index().get(&entry_id4).is_some());
 
-            if let Some(data) = store.index().get(&entry_id3) {
-                assert!(matches!(data, CachedBatch::DiskLiquid(_)));
-            }
-        });
+        if let Some(data) = store.index().get(&entry_id3) {
+            assert!(matches!(data, CachedBatch::DiskLiquid(_)));
+        }
     }
 
     #[test]

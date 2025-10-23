@@ -235,30 +235,28 @@ mod tests {
         assert_eq!(advisor.find_victim(1), vec![]);
     }
 
-    #[test]
-    fn test_clock_policy_integration_with_store() {
-        tokio_test::block_on(async {
-            let advisor = ClockPolicy::new();
-            let store = create_cache_store(3000, Box::new(advisor));
+    #[tokio::test]
+    async fn test_clock_policy_integration_with_store() {
+        let advisor = ClockPolicy::new();
+        let store = create_cache_store(3000, Box::new(advisor));
 
-            let entry_id1 = EntryID::from(1);
-            let entry_id2 = EntryID::from(2);
-            let entry_id3 = EntryID::from(3);
+        let entry_id1 = EntryID::from(1);
+        let entry_id2 = EntryID::from(2);
+        let entry_id3 = EntryID::from(3);
 
-            store.insert(entry_id1, create_test_arrow_array(100)).await;
-            store.insert(entry_id2, create_test_arrow_array(100)).await;
-            store.insert(entry_id3, create_test_arrow_array(100)).await;
+        store.insert(entry_id1, create_test_arrow_array(100)).await;
+        store.insert(entry_id2, create_test_arrow_array(100)).await;
+        store.insert(entry_id3, create_test_arrow_array(100)).await;
 
-            let entry_id4 = EntryID::from(4);
-            store.insert(entry_id4, create_test_arrow_array(100)).await;
+        let entry_id4 = EntryID::from(4);
+        store.insert(entry_id4, create_test_arrow_array(100)).await;
 
-            if let Some(data) = store.index().get(&entry_id1) {
-                assert!(matches!(data, CachedBatch::DiskLiquid(_)));
-            }
-            assert!(store.index().get(&entry_id2).is_some());
-            assert!(store.index().get(&entry_id3).is_some());
-            assert!(store.index().get(&entry_id4).is_some());
-        });
+        if let Some(data) = store.index().get(&entry_id1) {
+            assert!(matches!(data, CachedBatch::DiskLiquid(_)));
+        }
+        assert!(store.index().get(&entry_id2).is_some());
+        assert!(store.index().get(&entry_id3).is_some());
+        assert!(store.index().get(&entry_id4).is_some());
     }
 
     #[test]

@@ -835,73 +835,69 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_basic_cache_operations() {
-        tokio_test::block_on(async {
-            // Test basic insert, get, and size tracking in one test
-            let budget_size = 10 * 1024;
-            let store = create_cache_store(budget_size, Box::new(LruPolicy::new()));
+    #[tokio::test]
+    async fn test_basic_cache_operations() {
+        // Test basic insert, get, and size tracking in one test
+        let budget_size = 10 * 1024;
+        let store = create_cache_store(budget_size, Box::new(LruPolicy::new()));
 
-            // 1. Initial budget should be empty
-            assert_eq!(store.budget.memory_usage_bytes(), 0);
+        // 1. Initial budget should be empty
+        assert_eq!(store.budget.memory_usage_bytes(), 0);
 
-            // 2. Insert and verify first entry
-            let entry_id1: EntryID = EntryID::from(1);
-            let array1 = create_test_array(100);
-            let size1 = array1.memory_usage_bytes();
-            store.insert_inner(entry_id1, array1).await;
+        // 2. Insert and verify first entry
+        let entry_id1: EntryID = EntryID::from(1);
+        let array1 = create_test_array(100);
+        let size1 = array1.memory_usage_bytes();
+        store.insert_inner(entry_id1, array1).await;
 
-            // Verify budget usage and data correctness
-            assert_eq!(store.budget.memory_usage_bytes(), size1);
-            let retrieved1 = store.index().get(&entry_id1).unwrap();
-            match retrieved1 {
-                CachedBatch::MemoryArrow(arr) => assert_eq!(arr.len(), 100),
-                _ => panic!("Expected ArrowMemory"),
-            }
+        // Verify budget usage and data correctness
+        assert_eq!(store.budget.memory_usage_bytes(), size1);
+        let retrieved1 = store.index().get(&entry_id1).unwrap();
+        match retrieved1 {
+            CachedBatch::MemoryArrow(arr) => assert_eq!(arr.len(), 100),
+            _ => panic!("Expected ArrowMemory"),
+        }
 
-            let entry_id2: EntryID = EntryID::from(2);
-            let array2 = create_test_array(200);
-            let size2 = array2.memory_usage_bytes();
-            store.insert_inner(entry_id2, array2).await;
+        let entry_id2: EntryID = EntryID::from(2);
+        let array2 = create_test_array(200);
+        let size2 = array2.memory_usage_bytes();
+        store.insert_inner(entry_id2, array2).await;
 
-            assert_eq!(store.budget.memory_usage_bytes(), size1 + size2);
+        assert_eq!(store.budget.memory_usage_bytes(), size1 + size2);
 
-            let array3 = create_test_array(150);
-            let size3 = array3.memory_usage_bytes();
-            store.insert_inner(entry_id1, array3).await;
+        let array3 = create_test_array(150);
+        let size3 = array3.memory_usage_bytes();
+        store.insert_inner(entry_id1, array3).await;
 
-            assert_eq!(store.budget.memory_usage_bytes(), size3 + size2);
-            assert!(store.index().get(&EntryID::from(999)).is_none());
-        });
+        assert_eq!(store.budget.memory_usage_bytes(), size3 + size2);
+        assert!(store.index().get(&EntryID::from(999)).is_none());
     }
 
-    #[test]
-    fn test_cache_advice_strategies() {
-        tokio_test::block_on(async {
-            // Comprehensive test of all three advice types
+    #[tokio::test]
+    async fn test_cache_advice_strategies() {
+        // Comprehensive test of all three advice types
 
-            // Create entry IDs we'll use throughout the test
-            let entry_id1 = EntryID::from(1);
-            let entry_id2 = EntryID::from(2);
+        // Create entry IDs we'll use throughout the test
+        let entry_id1 = EntryID::from(1);
+        let entry_id2 = EntryID::from(2);
 
-            // 1. Test EVICT advice
-            {
-                let advisor = TestPolicy::new(Some(entry_id1));
-                let store = create_cache_store(8000, Box::new(advisor)); // Small budget to force advice
+        // 1. Test EVICT advice
+        {
+            let advisor = TestPolicy::new(Some(entry_id1));
+            let store = create_cache_store(8000, Box::new(advisor)); // Small budget to force advice
 
-                store.insert_inner(entry_id1, create_test_array(800)).await;
-                match store.index().get(&entry_id1).unwrap() {
-                    CachedBatch::MemoryArrow(_) => {}
-                    other => panic!("Expected ArrowMemory, got {other:?}"),
-                }
-
-                store.insert_inner(entry_id2, create_test_array(800)).await;
-                match store.index().get(&entry_id1).unwrap() {
-                    CachedBatch::MemoryLiquid(_) => {}
-                    other => panic!("Expected LiquidMemory after eviction, got {other:?}"),
-                }
+            store.insert_inner(entry_id1, create_test_array(800)).await;
+            match store.index().get(&entry_id1).unwrap() {
+                CachedBatch::MemoryArrow(_) => {}
+                other => panic!("Expected ArrowMemory, got {other:?}"),
             }
-        });
+
+            store.insert_inner(entry_id2, create_test_array(800)).await;
+            match store.index().get(&entry_id1).unwrap() {
+                CachedBatch::MemoryLiquid(_) => {}
+                other => panic!("Expected LiquidMemory after eviction, got {other:?}"),
+            }
+        }
     }
 
     #[test]
@@ -954,35 +950,33 @@ mod tests {
         assert_eq!(store.index().keys().len(), num_threads * ops_per_thread);
     }
 
-    #[test]
-    fn test_cache_stats_memory_and_disk_usage() {
-        tokio_test::block_on(async {
-            // Build a small cache in blocking liquid mode to avoid background tasks
-            let storage = CacheStorageBuilder::new()
-                .with_max_cache_bytes(10 * 1024 * 1024)
-                .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
-                .build();
+    #[tokio::test]
+    async fn test_cache_stats_memory_and_disk_usage() {
+        // Build a small cache in blocking liquid mode to avoid background tasks
+        let storage = CacheStorageBuilder::new()
+            .with_max_cache_bytes(10 * 1024 * 1024)
+            .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+            .build();
 
-            // Insert two small batches
-            let arr1: ArrayRef = Arc::new(Int32Array::from_iter_values(0..64));
-            let arr2: ArrayRef = Arc::new(Int32Array::from_iter_values(0..128));
-            storage.insert(EntryID::from(1usize), arr1).await;
-            storage.insert(EntryID::from(2usize), arr2).await;
+        // Insert two small batches
+        let arr1: ArrayRef = Arc::new(Int32Array::from_iter_values(0..64));
+        let arr2: ArrayRef = Arc::new(Int32Array::from_iter_values(0..128));
+        storage.insert(EntryID::from(1usize), arr1).await;
+        storage.insert(EntryID::from(2usize), arr2).await;
 
-            // Stats after insert: 2 entries, memory usage > 0, disk usage == 0
-            let s = storage.stats();
-            assert_eq!(s.total_entries, 2);
-            assert!(s.memory_usage_bytes > 0);
-            assert_eq!(s.disk_usage_bytes, 0);
-            assert_eq!(s.max_cache_bytes, 10 * 1024 * 1024);
+        // Stats after insert: 2 entries, memory usage > 0, disk usage == 0
+        let s = storage.stats();
+        assert_eq!(s.total_entries, 2);
+        assert!(s.memory_usage_bytes > 0);
+        assert_eq!(s.disk_usage_bytes, 0);
+        assert_eq!(s.max_cache_bytes, 10 * 1024 * 1024);
 
-            // Flush to disk and verify memory usage drops and disk usage increases
-            storage.flush_all_to_disk();
-            let s2 = storage.stats();
-            assert_eq!(s2.total_entries, 2);
-            assert!(s2.disk_usage_bytes > 0);
-            // In-memory usage should be reduced after moving to on-disk formats
-            assert!(s2.memory_usage_bytes <= s.memory_usage_bytes);
-        });
+        // Flush to disk and verify memory usage drops and disk usage increases
+        storage.flush_all_to_disk();
+        let s2 = storage.stats();
+        assert_eq!(s2.total_entries, 2);
+        assert!(s2.disk_usage_bytes > 0);
+        // In-memory usage should be reduced after moving to on-disk formats
+        assert!(s2.memory_usage_bytes <= s.memory_usage_bytes);
     }
 }
