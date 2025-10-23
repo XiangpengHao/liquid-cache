@@ -29,22 +29,22 @@ pub trait IoContext: Debug + Send + Sync {
     fn base_dir(&self) -> &Path;
 
     /// Get the compressor for an entry.
-    fn get_compressor_for_entry(&self, entry_id: &EntryID) -> Arc<LiquidCompressorStates>;
+    fn get_compressor(&self, entry_id: &EntryID) -> Arc<LiquidCompressorStates>;
 
     /// Get the path to the arrow file for an entry.
-    fn entry_arrow_path(&self, entry_id: &EntryID) -> PathBuf;
+    fn arrow_path(&self, entry_id: &EntryID) -> PathBuf;
 
     /// Get the path to the liquid file for an entry.
-    fn entry_liquid_path(&self, entry_id: &EntryID) -> PathBuf;
+    fn liquid_path(&self, entry_id: &EntryID) -> PathBuf;
 
     /// Read the entire file at the given path.
-    async fn read_entire_file(&self, path: &Path) -> Result<Bytes, std::io::Error>;
+    async fn read_file(&self, path: PathBuf) -> Result<Bytes, std::io::Error>;
 
     /// Read a range of bytes from a file at the given path.
-    async fn read_range(&self, path: &Path, range: Range<u64>) -> Result<Bytes, std::io::Error>;
+    async fn read_range(&self, path: PathBuf, range: Range<u64>) -> Result<Bytes, std::io::Error>;
 
     /// Write the entire buffer to a file at the given path.
-    async fn write_entire_file(&self, path: &Path, data: &[u8]) -> Result<(), std::io::Error>;
+    async fn write_file(&self, path: PathBuf, data: Bytes) -> Result<(), std::io::Error>;
 }
 
 /// A default implementation of [IoContext] that uses the default compressor.
@@ -70,21 +70,21 @@ impl IoContext for DefaultIoContext {
         &self.base_dir
     }
 
-    fn get_compressor_for_entry(&self, _entry_id: &EntryID) -> Arc<LiquidCompressorStates> {
+    fn get_compressor(&self, _entry_id: &EntryID) -> Arc<LiquidCompressorStates> {
         self.compressor_state.clone()
     }
 
-    fn entry_arrow_path(&self, entry_id: &EntryID) -> PathBuf {
+    fn arrow_path(&self, entry_id: &EntryID) -> PathBuf {
         self.base_dir()
             .join(format!("{:016x}.arrow", usize::from(*entry_id)))
     }
 
-    fn entry_liquid_path(&self, entry_id: &EntryID) -> PathBuf {
+    fn liquid_path(&self, entry_id: &EntryID) -> PathBuf {
         self.base_dir()
             .join(format!("{:016x}.liquid", usize::from(*entry_id)))
     }
 
-    async fn read_entire_file(&self, path: &Path) -> Result<Bytes, std::io::Error> {
+    async fn read_file(&self, path: PathBuf) -> Result<Bytes, std::io::Error> {
         use tokio::io::AsyncReadExt;
         let mut file = tokio::fs::File::open(path).await?;
         let mut bytes = Vec::new();
@@ -92,7 +92,7 @@ impl IoContext for DefaultIoContext {
         Ok(Bytes::from(bytes))
     }
 
-    async fn read_range(&self, path: &Path, range: Range<u64>) -> Result<Bytes, std::io::Error> {
+    async fn read_range(&self, path: PathBuf, range: Range<u64>) -> Result<Bytes, std::io::Error> {
         use tokio::io::{AsyncReadExt, AsyncSeekExt};
         let mut file = tokio::fs::File::open(path).await?;
         let len = (range.end - range.start) as usize;
@@ -102,10 +102,10 @@ impl IoContext for DefaultIoContext {
         Ok(Bytes::from(bytes))
     }
 
-    async fn write_entire_file(&self, path: &Path, data: &[u8]) -> Result<(), std::io::Error> {
+    async fn write_file(&self, path: PathBuf, data: Bytes) -> Result<(), std::io::Error> {
         use tokio::io::AsyncWriteExt;
         let mut file = tokio::fs::File::create(path).await?;
-        file.write_all(data).await?;
+        file.write_all(&data).await?;
         Ok(())
     }
 }
@@ -134,28 +134,28 @@ impl IoContext for BlockingIoContext {
         &self.base_dir
     }
 
-    fn get_compressor_for_entry(&self, _entry_id: &EntryID) -> Arc<LiquidCompressorStates> {
+    fn get_compressor(&self, _entry_id: &EntryID) -> Arc<LiquidCompressorStates> {
         self.compressor_state.clone()
     }
 
-    fn entry_arrow_path(&self, entry_id: &EntryID) -> PathBuf {
+    fn arrow_path(&self, entry_id: &EntryID) -> PathBuf {
         self.base_dir()
             .join(format!("{:016x}.arrow", usize::from(*entry_id)))
     }
 
-    fn entry_liquid_path(&self, entry_id: &EntryID) -> PathBuf {
+    fn liquid_path(&self, entry_id: &EntryID) -> PathBuf {
         self.base_dir()
             .join(format!("{:016x}.liquid", usize::from(*entry_id)))
     }
 
-    async fn read_entire_file(&self, path: &Path) -> Result<Bytes, std::io::Error> {
+    async fn read_file(&self, path: PathBuf) -> Result<Bytes, std::io::Error> {
         let mut file = std::fs::File::open(path)?;
         let mut bytes = Vec::new();
         std::io::Read::read_to_end(&mut file, &mut bytes)?;
         Ok(Bytes::from(bytes))
     }
 
-    async fn read_range(&self, path: &Path, range: Range<u64>) -> Result<Bytes, std::io::Error> {
+    async fn read_range(&self, path: PathBuf, range: Range<u64>) -> Result<Bytes, std::io::Error> {
         let mut file = std::fs::File::open(path)?;
         let len = (range.end - range.start) as usize;
         let mut bytes = vec![0u8; len];
@@ -164,9 +164,9 @@ impl IoContext for BlockingIoContext {
         Ok(Bytes::from(bytes))
     }
 
-    async fn write_entire_file(&self, path: &Path, data: &[u8]) -> Result<(), std::io::Error> {
+    async fn write_file(&self, path: PathBuf, data: Bytes) -> Result<(), std::io::Error> {
         let mut file = std::fs::File::create(path)?;
-        std::io::Write::write_all(&mut file, data)?;
+        std::io::Write::write_all(&mut file, &data)?;
         Ok(())
     }
 }
@@ -366,9 +366,9 @@ impl CacheStorage {
             CachedBatch::MemoryArrow(array) => Some(array),
             CachedBatch::MemoryLiquid(array) => Some(array.to_arrow_array()),
             CachedBatch::DiskLiquid(_) => {
-                let path = self.io_context.entry_liquid_path(entry_id);
-                let bytes = self.io_context.read_entire_file(&path).await.ok()?;
-                let compressor_states = self.io_context.get_compressor_for_entry(entry_id);
+                let path = self.io_context.liquid_path(entry_id);
+                let bytes = self.io_context.read_file(path).await.ok()?;
+                let compressor_states = self.io_context.get_compressor(entry_id);
                 let compressor = compressor_states.fsst_compressor();
                 let liquid = crate::liquid_array::ipc::read_from_bytes(
                     bytes,
@@ -379,10 +379,10 @@ impl CacheStorage {
             CachedBatch::MemoryHybridLiquid(array) => match array.to_arrow_array() {
                 Ok(arr) => Some(arr),
                 Err(io_range) => {
-                    let path = self.io_context.entry_liquid_path(entry_id);
+                    let path = self.io_context.liquid_path(entry_id);
                     let bytes = self
                         .io_context
-                        .read_range(&path, io_range.range().clone())
+                        .read_range(path, io_range.range().clone())
                         .await
                         .ok()?;
                     let new_array = array.soak(bytes);
@@ -390,8 +390,8 @@ impl CacheStorage {
                 }
             },
             CachedBatch::DiskArrow(_) => {
-                let path = self.io_context.entry_arrow_path(entry_id);
-                let bytes = self.io_context.read_entire_file(&path).await.ok()?;
+                let path = self.io_context.arrow_path(entry_id);
+                let bytes = self.io_context.read_file(path).await.ok()?;
                 let cursor = std::io::Cursor::new(bytes.to_vec());
                 let mut reader = arrow::ipc::reader::StreamReader::try_new(cursor, None).ok()?;
                 let batch = reader.next()?.ok()?;
@@ -425,9 +425,9 @@ impl CacheStorage {
                     let empty_array = arrow::array::new_empty_array(&data_type);
                     return Some(Ok(empty_array));
                 }
-                let path = self.io_context.entry_liquid_path(entry_id);
-                let bytes = self.io_context.read_entire_file(&path).await.ok()?;
-                let compressor_states = self.io_context.get_compressor_for_entry(entry_id);
+                let path = self.io_context.liquid_path(entry_id);
+                let bytes = self.io_context.read_file(path).await.ok()?;
+                let compressor_states = self.io_context.get_compressor(entry_id);
                 let compressor = compressor_states.fsst_compressor();
                 let liquid = crate::liquid_array::ipc::read_from_bytes(
                     bytes,
@@ -438,10 +438,10 @@ impl CacheStorage {
             CachedBatch::MemoryHybridLiquid(array) => match array.filter_to_arrow(selection) {
                 Ok(arr) => Ok(arr),
                 Err(io_range) => {
-                    let path = self.io_context.entry_liquid_path(entry_id);
+                    let path = self.io_context.liquid_path(entry_id);
                     let bytes = self
                         .io_context
-                        .read_range(&path, io_range.range().clone())
+                        .read_range(path, io_range.range().clone())
                         .await
                         .ok()?;
                     let new_array = array.soak(bytes);
@@ -449,8 +449,8 @@ impl CacheStorage {
                 }
             },
             CachedBatch::DiskArrow(_) => {
-                let path = self.io_context.entry_arrow_path(entry_id);
-                let bytes = self.io_context.read_entire_file(&path).await.ok()?;
+                let path = self.io_context.arrow_path(entry_id);
+                let bytes = self.io_context.read_file(path).await.ok()?;
                 let cursor = std::io::Cursor::new(bytes.to_vec());
                 let mut reader = arrow::ipc::reader::StreamReader::try_new(cursor, None).ok()?;
                 let batch = reader.next()?.ok()?;
@@ -482,8 +482,8 @@ impl CacheStorage {
                 GetWithPredicateResult::Filtered(selected)
             }
             CachedBatch::DiskArrow(_) => {
-                let path = self.io_context.entry_arrow_path(entry_id);
-                let bytes = self.io_context.read_entire_file(&path).await.ok()?;
+                let path = self.io_context.arrow_path(entry_id);
+                let bytes = self.io_context.read_file(path).await.ok()?;
                 let cursor = std::io::Cursor::new(bytes.to_vec());
                 let mut reader = arrow::ipc::reader::StreamReader::try_new(cursor, None).ok()?;
                 let batch = reader.next()?.ok()?;
@@ -502,9 +502,9 @@ impl CacheStorage {
                 }
             }
             CachedBatch::DiskLiquid(_) => {
-                let path = self.io_context.entry_liquid_path(entry_id);
-                let bytes = self.io_context.read_entire_file(&path).await.ok()?;
-                let compressor_states = self.io_context.get_compressor_for_entry(entry_id);
+                let path = self.io_context.liquid_path(entry_id);
+                let bytes = self.io_context.read_file(path).await.ok()?;
+                let compressor_states = self.io_context.get_compressor(entry_id);
                 let compressor = compressor_states.fsst_compressor();
                 let liquid = crate::liquid_array::ipc::read_from_bytes(
                     bytes,
@@ -530,10 +530,10 @@ impl CacheStorage {
                             Ok(arr) => GetWithPredicateResult::Filtered(arr),
                             Err(io_range) => {
                                 self.runtime_stats.incr_get_predicate_hybrid_needs_io();
-                                let path = self.io_context.entry_liquid_path(entry_id);
+                                let path = self.io_context.liquid_path(entry_id);
                                 let bytes = self
                                     .io_context
-                                    .read_range(&path, io_range.range().clone())
+                                    .read_range(path, io_range.range().clone())
                                     .await
                                     .ok()?;
                                 let new_array = array.soak(bytes);
@@ -549,10 +549,10 @@ impl CacheStorage {
                     }
                     Err(io_range) => {
                         self.runtime_stats.incr_get_predicate_hybrid_needs_io();
-                        let path = self.io_context.entry_liquid_path(entry_id);
+                        let path = self.io_context.liquid_path(entry_id);
                         let bytes = self
                             .io_context
-                            .read_range(&path, io_range.range().clone())
+                            .read_range(path, io_range.range().clone())
                             .await
                             .ok()?;
                         let new_array = array.soak(bytes);
@@ -583,9 +583,9 @@ impl CacheStorage {
         match batch {
             CachedBatch::MemoryLiquid(array) => Some(array),
             CachedBatch::DiskLiquid(_) => {
-                let path = self.io_context.entry_liquid_path(entry_id);
-                let bytes = self.io_context.read_entire_file(&path).await.ok()?;
-                let compressor_states = self.io_context.get_compressor_for_entry(entry_id);
+                let path = self.io_context.liquid_path(entry_id);
+                let bytes = self.io_context.read_file(path).await.ok()?;
+                let compressor_states = self.io_context.get_compressor(entry_id);
                 let compressor = compressor_states.fsst_compressor();
                 let liquid = crate::liquid_array::ipc::read_from_bytes(
                     bytes,
@@ -595,10 +595,10 @@ impl CacheStorage {
             }
             CachedBatch::MemoryHybridLiquid(array) => {
                 let io_range = array.to_liquid();
-                let path = self.io_context.entry_liquid_path(entry_id);
+                let path = self.io_context.liquid_path(entry_id);
                 let bytes = self
                     .io_context
-                    .read_range(&path, io_range.range().clone())
+                    .read_range(path, io_range.range().clone())
                     .await
                     .ok()?;
                 Some(array.soak(bytes))
@@ -648,7 +648,7 @@ impl CacheStorage {
 
     /// Get the compressor states of the cache.
     pub fn compressor_states(&self, entry_id: &EntryID) -> Arc<LiquidCompressorStates> {
-        self.io_context.get_compressor_for_entry(entry_id)
+        self.io_context.get_compressor(entry_id)
     }
 
     /// Flush all entries to disk.
@@ -674,14 +674,14 @@ impl CacheStorage {
             match batch {
                 CachedBatch::MemoryArrow(array) => {
                     let bytes = arrow_to_bytes(&array).expect("failed to convert arrow to bytes");
-                    let path = self.io_context.entry_arrow_path(&entry_id);
+                    let path = self.io_context.arrow_path(&entry_id);
                     self.write_to_disk_blocking(&path, &bytes);
                     self.try_insert(entry_id, CachedBatch::DiskArrow(array.data_type().clone()))
                         .expect("failed to insert disk arrow entry");
                 }
                 CachedBatch::MemoryLiquid(liquid_array) => {
                     let liquid_bytes = liquid_array.to_bytes();
-                    let path = self.io_context.entry_liquid_path(&entry_id);
+                    let path = self.io_context.liquid_path(&entry_id);
                     self.write_to_disk_blocking(&path, &liquid_bytes);
                     self.try_insert(
                         entry_id,
@@ -712,13 +712,13 @@ impl CacheStorage {
         match batch {
             CachedBatch::MemoryArrow(array) => {
                 let bytes = arrow_to_bytes(&array).expect("failed to convert arrow to bytes");
-                let path = self.io_context.entry_arrow_path(&entry_id);
+                let path = self.io_context.arrow_path(&entry_id);
                 self.write_to_disk_blocking(&path, &bytes);
                 CachedBatch::DiskArrow(array.data_type().clone())
             }
             CachedBatch::MemoryLiquid(liquid_array) => {
                 let liquid_bytes = liquid_array.to_bytes();
-                let path = self.io_context.entry_liquid_path(&entry_id);
+                let path = self.io_context.liquid_path(&entry_id);
                 self.write_to_disk_blocking(&path, &liquid_bytes);
                 CachedBatch::DiskLiquid(liquid_array.original_arrow_data_type())
             }
@@ -811,7 +811,7 @@ impl CacheStorage {
         let Some(mut to_squeeze_batch) = self.index.get(&to_squeeze) else {
             return;
         };
-        let compressor = self.io_context.get_compressor_for_entry(&to_squeeze);
+        let compressor = self.io_context.get_compressor(&to_squeeze);
 
         loop {
             let (new_batch, bytes_to_write) = self
@@ -820,18 +820,18 @@ impl CacheStorage {
 
             if let Some(bytes_to_write) = bytes_to_write {
                 let path = match new_batch {
-                    CachedBatch::DiskArrow(_) => self.io_context.entry_arrow_path(&to_squeeze),
+                    CachedBatch::DiskArrow(_) => self.io_context.arrow_path(&to_squeeze),
                     CachedBatch::DiskLiquid(_) | CachedBatch::MemoryHybridLiquid(_) => {
-                        self.io_context.entry_liquid_path(&to_squeeze)
+                        self.io_context.liquid_path(&to_squeeze)
                     }
                     CachedBatch::MemoryArrow(_) | CachedBatch::MemoryLiquid(_) => {
                         unreachable!()
                     }
                 };
-                // Use IoContext's write_entire_file for async I/O
+                // Use IoContext's write_file for async I/O
                 if let Err(e) = self
                     .io_context
-                    .write_entire_file(&path, &bytes_to_write)
+                    .write_file(path, bytes_to_write.clone())
                     .await
                 {
                     eprintln!("Failed to write to disk: {}", e);
