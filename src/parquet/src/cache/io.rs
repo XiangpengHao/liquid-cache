@@ -5,9 +5,7 @@ use std::{
 
 use ahash::AHashMap;
 use bytes::Bytes;
-use liquid_cache_storage::cache::{
-    EntryID, IoContext, LiquidCompressorStates,
-};
+use liquid_cache_storage::cache::{EntryID, IoContext, LiquidCompressorStates};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 use crate::{
@@ -62,13 +60,24 @@ impl IoContext for ParquetIoContext {
         Ok(Bytes::from(bytes))
     }
 
-    async fn read_range(&self, path: &Path, range: std::ops::Range<u64>) -> Result<Bytes, std::io::Error> {
+    async fn read_range(
+        &self,
+        path: &Path,
+        range: std::ops::Range<u64>,
+    ) -> Result<Bytes, std::io::Error> {
         let mut file = tokio::fs::File::open(path).await?;
         let len = (range.end - range.start) as usize;
         let mut bytes = vec![0u8; len];
         file.seek(tokio::io::SeekFrom::Start(range.start)).await?;
         file.read_exact(&mut bytes).await?;
         Ok(Bytes::from(bytes))
+    }
+
+    async fn write_entire_file(&self, path: &Path, data: &[u8]) -> Result<(), std::io::Error> {
+        use tokio::io::AsyncWriteExt;
+        let mut file = tokio::fs::File::create(path).await?;
+        file.write_all(data).await?;
+        Ok(())
     }
 }
 

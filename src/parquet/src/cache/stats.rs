@@ -209,7 +209,7 @@ mod tests {
                     );
                     for batch in 0..8 {
                         let batch_id = BatchID::from_raw(batch);
-                        assert!(column.insert(batch_id, array.clone()).is_ok());
+                        assert!(column.insert(batch_id, array.clone()).await.is_ok());
                         row_group_id_sum += rg;
                         column_id_sum += col;
                         row_start_id_sum += *batch_id as u64 * cache.batch_size() as u64;

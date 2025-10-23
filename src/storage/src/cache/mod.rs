@@ -1,16 +1,12 @@
 //! Cache layer for liquid cache.
 
 mod budget;
+pub mod cache_policies;
 mod cached_batch;
 mod core;
 mod index;
-#[cfg(target_os = "linux")]
-mod io;
-mod stats;
-#[cfg(not(target_os = "linux"))]
-mod io {}
-pub mod cache_policies;
 pub mod squeeze_policies;
+mod stats;
 mod tracer;
 mod transcode;
 mod utils;

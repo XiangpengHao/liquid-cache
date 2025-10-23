@@ -3,7 +3,8 @@
 use bytes::Bytes;
 
 use crate::cache::{
-    LiquidCompressorStates, cached_batch::CachedBatch, transcode_liquid_inner, utils::arrow_to_bytes,
+    LiquidCompressorStates, cached_batch::CachedBatch, transcode_liquid_inner,
+    utils::arrow_to_bytes,
 };
 
 /// What to do when we need to squeeze an entry?

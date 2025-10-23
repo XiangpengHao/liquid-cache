@@ -2869,6 +2869,7 @@ dependencies = [
  "shuttle",
  "tempfile",
  "tokio",
+ "tokio-test",
 ]
 
 [[package]]

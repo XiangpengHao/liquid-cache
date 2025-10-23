@@ -91,8 +91,13 @@ impl LiquidCachedColumn {
         predicate: &mut LiquidPredicate,
     ) -> Option<Result<BooleanArray, ArrowError>> {
         let entry_id = self.entry_id(batch_id).into();
-        let result = self.cache_store
-            .get_with_predicate(&entry_id, filter, predicate.physical_expr_physical_column_index())
+        let result = self
+            .cache_store
+            .get_with_predicate(
+                &entry_id,
+                filter,
+                predicate.physical_expr_physical_column_index(),
+            )
             .await?;
 
         match result {
@@ -116,7 +121,10 @@ impl LiquidCachedColumn {
         filter: &BooleanBuffer,
     ) -> Option<ArrayRef> {
         let entry_id = self.entry_id(batch_id).into();
-        let result = self.cache_store.get_with_selection(&entry_id, filter).await?;
+        let result = self
+            .cache_store
+            .get_with_selection(&entry_id, filter)
+            .await?;
         result.ok()
     }
 
@@ -127,7 +135,7 @@ impl LiquidCachedColumn {
     }
 
     /// Insert an array into the cache.
-    pub fn insert(
+    pub async fn insert(
         self: &Arc<Self>,
         batch_id: BatchID,
         array: ArrayRef,
@@ -136,7 +144,8 @@ impl LiquidCachedColumn {
             return Err(InsertArrowArrayError::AlreadyCached);
         }
         self.cache_store
-            .insert(self.entry_id(batch_id).into(), array);
+            .insert(self.entry_id(batch_id).into(), array)
+            .await;
         Ok(())
     }
 }
@@ -499,8 +508,8 @@ mod tests {
         let array_a = Arc::new(Int32Array::from(vec![1, 2, 3, 4]));
         let array_b = Arc::new(Int32Array::from(vec![10, 20, 30, 40]));
 
-        assert!(col_a.insert(batch_id, array_a.clone()).is_ok());
-        assert!(col_b.insert(batch_id, array_b.clone()).is_ok());
+        assert!(col_a.insert(batch_id, array_a.clone()).await.is_ok());
+        assert!(col_b.insert(batch_id, array_b.clone()).await.is_ok());
 
         // build parquet metadata for predicate construction
         let tmp_meta = tempfile::NamedTempFile::new().unwrap();
@@ -570,9 +579,9 @@ mod tests {
             100, 200, 300, 400, 500, 600, 700, 800,
         ]));
 
-        assert!(col_a.insert(batch_id, array_a.clone()).is_ok());
-        assert!(col_b.insert(batch_id, array_b.clone()).is_ok());
-        assert!(col_c.insert(batch_id, array_c.clone()).is_ok());
+        assert!(col_a.insert(batch_id, array_a.clone()).await.is_ok());
+        assert!(col_b.insert(batch_id, array_b.clone()).await.is_ok());
+        assert!(col_c.insert(batch_id, array_c.clone()).await.is_ok());
 
         // build parquet metadata for predicate construction
         let tmp_meta = tempfile::NamedTempFile::new().unwrap();
@@ -654,8 +663,8 @@ mod tests {
             "New York", "London", "Paris", "Tokyo", "Berlin", "Sydney", "Madrid", "Rome",
         ]));
 
-        assert!(col_name.insert(batch_id, array_name.clone()).is_ok());
-        assert!(col_city.insert(batch_id, array_city.clone()).is_ok());
+        assert!(col_name.insert(batch_id, array_name.clone()).await.is_ok());
+        assert!(col_city.insert(batch_id, array_city.clone()).await.is_ok());
 
         // build parquet metadata for predicate construction
         let tmp_meta = tempfile::NamedTempFile::new().unwrap();

@@ -18,15 +18,17 @@ use liquid_cache_storage::cache::{CacheStorageBuilder, EntryID};
 use arrow::array::UInt64Array;
 use std::sync::Arc;
 
+tokio_test::block_on(async {
 let storage = CacheStorageBuilder::new().build();
 
 let entry_id = EntryID::from(42);
 let arrow_array = Arc::new(UInt64Array::from_iter_values(0..1000));
 
 // Insert once; replacement/placement is handled by the cache policy
-storage.insert(entry_id, arrow_array.clone());
+storage.insert(entry_id, arrow_array.clone()).await;
 
 assert!(storage.is_cached(&entry_id));
+});
 ```
 
 ## 2) Read as Arrow
@@ -41,7 +43,7 @@ let storage = CacheStorageBuilder::new().build();
 
 let entry_id = EntryID::from(7);
 let arrow_array = Arc::new(UInt64Array::from_iter_values(0..16));
-storage.insert(entry_id, arrow_array.clone());
+storage.insert(entry_id, arrow_array.clone()).await;
 
 // Move data to disk so the read will demonstrate async I/O
 storage.flush_all_to_disk();
@@ -65,7 +67,7 @@ let storage = CacheStorageBuilder::new().build();
 
 let entry_id = EntryID::from(8);
 let data = Arc::new(UInt64Array::from_iter_values(0..10));
-storage.insert(entry_id, data.clone());
+storage.insert(entry_id, data.clone()).await;
 
 // Move data to disk so the read will demonstrate async I/O
 storage.flush_all_to_disk();
@@ -99,7 +101,7 @@ let entry_id = EntryID::from(9);
 let data = Arc::new(StringArray::from(vec![
     Some("apple"), Some("banana"), None, Some("apple"), Some("cherry"),
 ]));
-storage.insert(entry_id, data.clone());
+storage.insert(entry_id, data.clone()).await;
 
 // Move data to disk so the read will demonstrate async I/O
 storage.flush_all_to_disk();

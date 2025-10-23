@@ -5,8 +5,6 @@ use datafusion::physical_plan::PhysicalExpr;
 use std::path::PathBuf;
 use std::{fmt::Debug, path::Path};
 
-#[cfg(target_os = "linux")]
-use super::io::{DEFAULT_RING_ENTRIES, IoUringPool};
 use super::{
     budget::BudgetAccounting,
     cache_policies::CachePolicy,
@@ -44,6 +42,9 @@ pub trait IoContext: Debug + Send + Sync {
 
     /// Read a range of bytes from a file at the given path.
     async fn read_range(&self, path: &Path, range: Range<u64>) -> Result<Bytes, std::io::Error>;
+
+    /// Write the entire buffer to a file at the given path.
+    async fn write_entire_file(&self, path: &Path, data: &[u8]) -> Result<(), std::io::Error>;
 }
 
 /// A default implementation of [IoContext] that uses the default compressor.
@@ -99,6 +100,13 @@ impl IoContext for DefaultIoContext {
         file.seek(tokio::io::SeekFrom::Start(range.start)).await?;
         file.read_exact(&mut bytes).await?;
         Ok(Bytes::from(bytes))
+    }
+
+    async fn write_entire_file(&self, path: &Path, data: &[u8]) -> Result<(), std::io::Error> {
+        use tokio::io::AsyncWriteExt;
+        let mut file = tokio::fs::File::create(path).await?;
+        file.write_all(data).await?;
+        Ok(())
     }
 }
 
@@ -222,7 +230,7 @@ impl CacheStorageBuilder {
 ///
 /// let entry_id = EntryID::from(0);
 /// let arrow_array = Arc::new(UInt64Array::from_iter_values(0..32));
-/// storage.insert(entry_id, arrow_array.clone());
+/// storage.insert(entry_id, arrow_array.clone()).await;
 ///
 /// // Get the arrow array back asynchronously
 /// let retrieved = storage.get_arrow_array(&entry_id).await.unwrap();
@@ -239,8 +247,6 @@ pub struct CacheStorage {
     tracer: CacheTracer,
     io_context: Arc<dyn IoContext>,
     runtime_stats: RuntimeStats,
-    #[cfg(target_os = "linux")]
-    io_pool: IoUringPool,
 }
 
 impl CacheStorage {
@@ -283,8 +289,9 @@ impl CacheStorage {
     }
 
     /// Insert a batch into the cache.
-    pub fn insert(self: &Arc<Self>, entry_id: EntryID, batch_to_cache: ArrayRef) {
-        self.insert_inner(entry_id, CachedBatch::MemoryArrow(batch_to_cache));
+    pub async fn insert(self: &Arc<Self>, entry_id: EntryID, batch_to_cache: ArrayRef) {
+        self.insert_inner(entry_id, CachedBatch::MemoryArrow(batch_to_cache))
+            .await;
     }
 
     /// Get an Arrow array from the cache asynchronously.
@@ -663,7 +670,7 @@ impl CacheStorage {
     }
 
     /// Insert a batch into the cache, it will run cache replacement policy until the batch is inserted.
-    pub(crate) fn insert_inner(&self, entry_id: EntryID, mut batch_to_cache: CachedBatch) {
+    pub(crate) async fn insert_inner(&self, entry_id: EntryID, mut batch_to_cache: CachedBatch) {
         loop {
             let batch_type = CachedBatchType::from(&batch_to_cache);
             let Err(not_inserted) = self.try_insert(entry_id, batch_to_cache) else {
@@ -680,7 +687,7 @@ impl CacheStorage {
                 batch_to_cache = on_disk_batch;
                 continue;
             }
-            self.squeeze_victims(victims);
+            self.squeeze_victims(victims).await;
 
             batch_to_cache = not_inserted;
             crate::utils::yield_now_if_shuttle();
@@ -697,8 +704,6 @@ impl CacheStorage {
         io_worker: Arc<dyn IoContext>,
     ) -> Self {
         let config = CacheConfig::new(batch_size, max_cache_bytes, cache_dir);
-        #[cfg(target_os = "linux")]
-        let io_pool = IoUringPool::new(DEFAULT_RING_ENTRIES);
         Self {
             index: ArtIndex::new(),
             budget: BudgetAccounting::new(config.max_cache_bytes()),
@@ -708,8 +713,6 @@ impl CacheStorage {
             tracer: CacheTracer::new(),
             io_context: io_worker,
             runtime_stats: RuntimeStats::default(),
-            #[cfg(target_os = "linux")]
-            io_pool,
         }
     }
 
@@ -736,88 +739,44 @@ impl CacheStorage {
     }
 
     #[fastrace::trace]
-    fn squeeze_victims(&self, victims: Vec<EntryID>) {
-        #[cfg(target_os = "linux")]
-        {
-            let mut executor = super::io::Executor::new(&self.io_pool);
-            for adv in victims {
-                executor.spawn(self.squeeze_victim_inner(adv));
-            }
-            executor.join();
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            for adv in victims {
-                self.squeeze_victim_inner_blocking(adv);
-            }
+    async fn squeeze_victims(&self, victims: Vec<EntryID>) {
+        // Run squeeze operations sequentially using async I/O
+        for victim in victims {
+            self.squeeze_victim_inner(victim).await;
         }
     }
 
-    #[cfg(not(target_os = "linux"))]
-    fn squeeze_victim_inner_blocking(&self, to_squeeze: EntryID) {
-        let Some(mut to_squeeze_batch) = self.index.get(&to_squeeze) else {
-            return;
-        };
-        let compressor = self.io_context.get_compressor_for_entry(&to_squeeze);
-
-        loop {
-            let (new_batch, bytes_to_write) = self
-                .squeeze_policy
-                .squeeze(to_squeeze_batch, compressor.as_ref());
-
-            if let Some(bytes_to_write) = bytes_to_write {
-                match new_batch {
-                    CachedBatch::DiskArrow(_) => {
-                        let path = self.io_context.entry_arrow_path(&to_squeeze);
-                        self.write_to_disk_blocking(&path, &bytes_to_write);
-                    }
-                    CachedBatch::DiskLiquid(_) | CachedBatch::MemoryHybridLiquid(_) => {
-                        let path = self.io_context.entry_liquid_path(&to_squeeze);
-                        self.write_to_disk_blocking(&path, &bytes_to_write);
-                    }
-                    CachedBatch::MemoryArrow(_) | CachedBatch::MemoryLiquid(_) => {
-                        unreachable!()
-                    }
-                }
-            }
-            let batch_type = CachedBatchType::from(&new_batch);
-            match self.try_insert(to_squeeze, new_batch) {
-                Ok(()) => {
-                    self.cache_policy.notify_insert(&to_squeeze, batch_type);
-                    break;
-                }
-                Err(batch) => {
-                    to_squeeze_batch = batch;
-                }
-            }
-        }
-    }
-
-    #[cfg(target_os = "linux")]
     async fn squeeze_victim_inner(&self, to_squeeze: EntryID) {
         let Some(mut to_squeeze_batch) = self.index.get(&to_squeeze) else {
             return;
         };
         let compressor = self.io_context.get_compressor_for_entry(&to_squeeze);
+
         loop {
             let (new_batch, bytes_to_write) = self
                 .squeeze_policy
                 .squeeze(to_squeeze_batch, compressor.as_ref());
 
             if let Some(bytes_to_write) = bytes_to_write {
-                match new_batch {
-                    CachedBatch::DiskArrow(_) => {
-                        let path = self.io_context.entry_arrow_path(&to_squeeze);
-                        self.write_to_disk(&path, &bytes_to_write).await;
-                    }
+                let path = match new_batch {
+                    CachedBatch::DiskArrow(_) => self.io_context.entry_arrow_path(&to_squeeze),
                     CachedBatch::DiskLiquid(_) | CachedBatch::MemoryHybridLiquid(_) => {
-                        let path = self.io_context.entry_liquid_path(&to_squeeze);
-                        self.write_to_disk(&path, &bytes_to_write).await;
+                        self.io_context.entry_liquid_path(&to_squeeze)
                     }
                     CachedBatch::MemoryArrow(_) | CachedBatch::MemoryLiquid(_) => {
                         unreachable!()
                     }
+                };
+                // Use IoContext's write_entire_file for async I/O
+                if let Err(e) = self
+                    .io_context
+                    .write_entire_file(&path, &bytes_to_write)
+                    .await
+                {
+                    eprintln!("Failed to write to disk: {}", e);
+                    return;
                 }
+                self.budget.add_used_disk_bytes(bytes_to_write.len());
             }
             let batch_type = CachedBatchType::from(&new_batch);
             match self.try_insert(to_squeeze, new_batch) {
@@ -836,31 +795,6 @@ impl CacheStorage {
         use std::io::Write;
         let mut file = std::fs::File::create(&path).expect("failed to create file");
         file.write_all(bytes).expect("failed to write to file");
-        let disk_usage = bytes.len();
-        self.budget.add_used_disk_bytes(disk_usage);
-    }
-
-    #[allow(dead_code)]
-    async fn write_to_disk(&self, path: impl AsRef<Path>, bytes: &[u8]) {
-        #[cfg(not(target_os = "linux"))]
-        {
-            use tokio::io::AsyncWriteExt as _;
-            let mut file = tokio::fs::File::create(&path)
-                .await
-                .expect("failed to create file");
-            file.write_all(bytes)
-                .await
-                .expect("failed to write to file");
-        }
-        #[cfg(target_os = "linux")]
-        {
-            let mut file = super::io::File::create(&path)
-                .await
-                .expect("failed to create file");
-            file.write_all(bytes)
-                .await
-                .expect("failed to write to file");
-        }
         let disk_usage = bytes.len();
         self.budget.add_used_disk_bytes(disk_usage);
     }
@@ -903,67 +837,71 @@ mod tests {
 
     #[test]
     fn test_basic_cache_operations() {
-        // Test basic insert, get, and size tracking in one test
-        let budget_size = 10 * 1024;
-        let store = create_cache_store(budget_size, Box::new(LruPolicy::new()));
+        tokio_test::block_on(async {
+            // Test basic insert, get, and size tracking in one test
+            let budget_size = 10 * 1024;
+            let store = create_cache_store(budget_size, Box::new(LruPolicy::new()));
 
-        // 1. Initial budget should be empty
-        assert_eq!(store.budget.memory_usage_bytes(), 0);
+            // 1. Initial budget should be empty
+            assert_eq!(store.budget.memory_usage_bytes(), 0);
 
-        // 2. Insert and verify first entry
-        let entry_id1: EntryID = EntryID::from(1);
-        let array1 = create_test_array(100);
-        let size1 = array1.memory_usage_bytes();
-        store.insert_inner(entry_id1, array1);
+            // 2. Insert and verify first entry
+            let entry_id1: EntryID = EntryID::from(1);
+            let array1 = create_test_array(100);
+            let size1 = array1.memory_usage_bytes();
+            store.insert_inner(entry_id1, array1).await;
 
-        // Verify budget usage and data correctness
-        assert_eq!(store.budget.memory_usage_bytes(), size1);
-        let retrieved1 = store.index().get(&entry_id1).unwrap();
-        match retrieved1 {
-            CachedBatch::MemoryArrow(arr) => assert_eq!(arr.len(), 100),
-            _ => panic!("Expected ArrowMemory"),
-        }
+            // Verify budget usage and data correctness
+            assert_eq!(store.budget.memory_usage_bytes(), size1);
+            let retrieved1 = store.index().get(&entry_id1).unwrap();
+            match retrieved1 {
+                CachedBatch::MemoryArrow(arr) => assert_eq!(arr.len(), 100),
+                _ => panic!("Expected ArrowMemory"),
+            }
 
-        let entry_id2: EntryID = EntryID::from(2);
-        let array2 = create_test_array(200);
-        let size2 = array2.memory_usage_bytes();
-        store.insert_inner(entry_id2, array2);
+            let entry_id2: EntryID = EntryID::from(2);
+            let array2 = create_test_array(200);
+            let size2 = array2.memory_usage_bytes();
+            store.insert_inner(entry_id2, array2).await;
 
-        assert_eq!(store.budget.memory_usage_bytes(), size1 + size2);
+            assert_eq!(store.budget.memory_usage_bytes(), size1 + size2);
 
-        let array3 = create_test_array(150);
-        let size3 = array3.memory_usage_bytes();
-        store.insert_inner(entry_id1, array3);
+            let array3 = create_test_array(150);
+            let size3 = array3.memory_usage_bytes();
+            store.insert_inner(entry_id1, array3).await;
 
-        assert_eq!(store.budget.memory_usage_bytes(), size3 + size2);
-        assert!(store.index().get(&EntryID::from(999)).is_none());
+            assert_eq!(store.budget.memory_usage_bytes(), size3 + size2);
+            assert!(store.index().get(&EntryID::from(999)).is_none());
+        });
     }
 
     #[test]
     fn test_cache_advice_strategies() {
-        // Comprehensive test of all three advice types
+        tokio_test::block_on(async {
+            // Comprehensive test of all three advice types
 
-        // Create entry IDs we'll use throughout the test
-        let entry_id1 = EntryID::from(1);
-        let entry_id2 = EntryID::from(2);
+            // Create entry IDs we'll use throughout the test
+            let entry_id1 = EntryID::from(1);
+            let entry_id2 = EntryID::from(2);
 
-        // 1. Test EVICT advice
-        {
-            let advisor = TestPolicy::new(Some(entry_id1));
-            let store = create_cache_store(8000, Box::new(advisor)); // Small budget to force advice
+            // 1. Test EVICT advice
+            {
+                let advisor = TestPolicy::new(Some(entry_id1));
+                let store = create_cache_store(8000, Box::new(advisor)); // Small budget to force advice
 
-            store.insert_inner(entry_id1, create_test_array(800));
-            match store.index().get(&entry_id1).unwrap() {
-                CachedBatch::MemoryArrow(_) => {}
-                other => panic!("Expected ArrowMemory, got {other:?}"),
+                store.insert_inner(entry_id1, create_test_array(800)).await;
+                match store.index().get(&entry_id1).unwrap() {
+                    CachedBatch::MemoryArrow(_) => {}
+                    other => panic!("Expected ArrowMemory, got {other:?}"),
+                }
+
+                store.insert_inner(entry_id2, create_test_array(800)).await;
+                match store.index().get(&entry_id1).unwrap() {
+                    CachedBatch::MemoryLiquid(_) => {}
+                    other => panic!("Expected LiquidMemory after eviction, got {other:?}"),
+                }
             }
-
-            store.insert_inner(entry_id2, create_test_array(800));
-            match store.index().get(&entry_id1).unwrap() {
-                CachedBatch::MemoryLiquid(_) => {}
-                other => panic!("Expected LiquidMemory after eviction, got {other:?}"),
-            }
-        }
+        });
     }
 
     #[test]
@@ -988,12 +926,15 @@ mod tests {
         for thread_id in 0..num_threads {
             let store = store.clone();
             handles.push(thread::spawn(move || {
-                for i in 0..ops_per_thread {
-                    let unique_id = thread_id * ops_per_thread + i;
-                    let entry_id: EntryID = EntryID::from(unique_id);
-                    let array = create_test_arrow_array(100);
-                    store.insert(entry_id, array);
-                }
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(async {
+                    for i in 0..ops_per_thread {
+                        let unique_id = thread_id * ops_per_thread + i;
+                        let entry_id: EntryID = EntryID::from(unique_id);
+                        let array = create_test_arrow_array(100);
+                        store.insert(entry_id, array).await;
+                    }
+                });
             }));
         }
         for handle in handles {
@@ -1015,31 +956,33 @@ mod tests {
 
     #[test]
     fn test_cache_stats_memory_and_disk_usage() {
-        // Build a small cache in blocking liquid mode to avoid background tasks
-        let storage = CacheStorageBuilder::new()
-            .with_max_cache_bytes(10 * 1024 * 1024)
-            .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
-            .build();
+        tokio_test::block_on(async {
+            // Build a small cache in blocking liquid mode to avoid background tasks
+            let storage = CacheStorageBuilder::new()
+                .with_max_cache_bytes(10 * 1024 * 1024)
+                .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+                .build();
 
-        // Insert two small batches
-        let arr1: ArrayRef = Arc::new(Int32Array::from_iter_values(0..64));
-        let arr2: ArrayRef = Arc::new(Int32Array::from_iter_values(0..128));
-        storage.insert(EntryID::from(1usize), arr1);
-        storage.insert(EntryID::from(2usize), arr2);
+            // Insert two small batches
+            let arr1: ArrayRef = Arc::new(Int32Array::from_iter_values(0..64));
+            let arr2: ArrayRef = Arc::new(Int32Array::from_iter_values(0..128));
+            storage.insert(EntryID::from(1usize), arr1).await;
+            storage.insert(EntryID::from(2usize), arr2).await;
 
-        // Stats after insert: 2 entries, memory usage > 0, disk usage == 0
-        let s = storage.stats();
-        assert_eq!(s.total_entries, 2);
-        assert!(s.memory_usage_bytes > 0);
-        assert_eq!(s.disk_usage_bytes, 0);
-        assert_eq!(s.max_cache_bytes, 10 * 1024 * 1024);
+            // Stats after insert: 2 entries, memory usage > 0, disk usage == 0
+            let s = storage.stats();
+            assert_eq!(s.total_entries, 2);
+            assert!(s.memory_usage_bytes > 0);
+            assert_eq!(s.disk_usage_bytes, 0);
+            assert_eq!(s.max_cache_bytes, 10 * 1024 * 1024);
 
-        // Flush to disk and verify memory usage drops and disk usage increases
-        storage.flush_all_to_disk();
-        let s2 = storage.stats();
-        assert_eq!(s2.total_entries, 2);
-        assert!(s2.disk_usage_bytes > 0);
-        // In-memory usage should be reduced after moving to on-disk formats
-        assert!(s2.memory_usage_bytes <= s.memory_usage_bytes);
+            // Flush to disk and verify memory usage drops and disk usage increases
+            storage.flush_all_to_disk();
+            let s2 = storage.stats();
+            assert_eq!(s2.total_entries, 2);
+            assert!(s2.disk_usage_bytes > 0);
+            // In-memory usage should be reduced after moving to on-disk formats
+            assert!(s2.memory_usage_bytes <= s.memory_usage_bytes);
+        });
     }
 }
