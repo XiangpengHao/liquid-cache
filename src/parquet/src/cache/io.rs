@@ -6,7 +6,6 @@ use std::{
 use ahash::AHashMap;
 use bytes::Bytes;
 use liquid_cache_storage::cache::{EntryID, IoContext, LiquidCompressorStates};
-use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 use crate::{
     cache::id::{BatchID, ParquetArrayID},
@@ -34,7 +33,7 @@ impl IoContext for ParquetIoContext {
         &self.base_dir
     }
 
-    fn get_compressor_for_entry(&self, entry_id: &EntryID) -> Arc<LiquidCompressorStates> {
+    fn get_compressor(&self, entry_id: &EntryID) -> Arc<LiquidCompressorStates> {
         let column_path = ColumnAccessPath::from(ParquetArrayID::from(*entry_id));
         let mut states = self.compressor_states.write().unwrap();
         states
@@ -43,41 +42,63 @@ impl IoContext for ParquetIoContext {
             .clone()
     }
 
-    fn entry_arrow_path(&self, entry_id: &EntryID) -> PathBuf {
+    fn arrow_path(&self, entry_id: &EntryID) -> PathBuf {
         let parquet_array_id = ParquetArrayID::from(*entry_id);
         parquet_array_id.on_disk_arrow_path(self.base_dir())
     }
 
-    fn entry_liquid_path(&self, entry_id: &EntryID) -> PathBuf {
+    fn liquid_path(&self, entry_id: &EntryID) -> PathBuf {
         let parquet_array_id = ParquetArrayID::from(*entry_id);
         parquet_array_id.on_disk_path(self.base_dir())
     }
 
-    async fn read_entire_file(&self, path: &Path) -> Result<Bytes, std::io::Error> {
-        let mut file = tokio::fs::File::open(path).await?;
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes).await?;
-        Ok(Bytes::from(bytes))
+    async fn read_file(&self, path: PathBuf) -> Result<Bytes, std::io::Error> {
+        maybe_spawn_blocking(move || {
+            use std::io::Read;
+            let mut file = std::fs::File::open(path)?;
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes)?;
+            Ok(Bytes::from(bytes))
+        })
+        .await
     }
 
     async fn read_range(
         &self,
-        path: &Path,
+        path: PathBuf,
         range: std::ops::Range<u64>,
     ) -> Result<Bytes, std::io::Error> {
-        let mut file = tokio::fs::File::open(path).await?;
-        let len = (range.end - range.start) as usize;
-        let mut bytes = vec![0u8; len];
-        file.seek(tokio::io::SeekFrom::Start(range.start)).await?;
-        file.read_exact(&mut bytes).await?;
-        Ok(Bytes::from(bytes))
+        maybe_spawn_blocking(move || {
+            use std::io::{Read, Seek};
+            let mut file = std::fs::File::open(path)?;
+            let len = (range.end - range.start) as usize;
+            let mut bytes = vec![0u8; len];
+            file.seek(std::io::SeekFrom::Start(range.start))?;
+            file.read_exact(&mut bytes)?;
+            Ok(Bytes::from(bytes))
+        })
+        .await
     }
 
-    async fn write_entire_file(&self, path: &Path, data: &[u8]) -> Result<(), std::io::Error> {
-        use tokio::io::AsyncWriteExt;
-        let mut file = tokio::fs::File::create(path).await?;
-        file.write_all(data).await?;
-        Ok(())
+    async fn write_file(&self, path: PathBuf, data: Bytes) -> Result<(), std::io::Error> {
+        maybe_spawn_blocking(move || {
+            use std::io::Write;
+            let mut file = std::fs::File::create(path)?;
+            file.write_all(&data)?;
+            Ok(())
+        })
+        .await
+    }
+}
+
+pub(crate) async fn maybe_spawn_blocking<F, T>(f: F) -> Result<T, std::io::Error>
+where
+    F: FnOnce() -> Result<T, std::io::Error> + Send + 'static,
+    T: Send + 'static,
+{
+    match tokio::runtime::Handle::try_current() {
+        Ok(runtime) => runtime.spawn_blocking(f).await?,
+        Err(_) => f(),
     }
 }
 
