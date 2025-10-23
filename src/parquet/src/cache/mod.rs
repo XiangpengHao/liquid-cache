@@ -1,7 +1,7 @@
 //! This module contains the cache implementation for the Parquet reader.
 //!
 
-use crate::cache::io::{ColumnAccessPath, ParquetIoContext, blocking_reading_io, blocking_sans_io};
+use crate::cache::io::{ColumnAccessPath, ParquetIoContext};
 use crate::reader::{LiquidPredicate, extract_multi_column_or};
 use crate::sync::{Mutex, RwLock};
 use ahash::AHashMap;
@@ -9,8 +9,7 @@ use arrow::array::{Array, ArrayRef, BooleanArray, RecordBatch};
 use arrow::buffer::BooleanBuffer;
 use arrow::compute::prep_null_mask_filter;
 use arrow_schema::{ArrowError, Field, Schema};
-use liquid_cache_storage::cache::cached_data::GetWithPredicateResult;
-use liquid_cache_storage::cache::io_state::{IoStateMachine, SansIo, TryGet};
+use liquid_cache_storage::cache::GetWithPredicateResult;
 use liquid_cache_storage::cache::squeeze_policies::SqueezePolicy;
 use liquid_cache_storage::cache::{CachePolicy, CacheStorage, CacheStorageBuilder};
 use parquet::arrow::arrow_reader::ArrowPredicate;
@@ -85,17 +84,22 @@ impl LiquidCachedColumn {
     }
 
     /// Evaluates a predicate on a cached column.
-    pub fn eval_predicate_with_filter(
+    pub async fn eval_predicate_with_filter(
         &self,
         batch_id: BatchID,
         filter: &BooleanBuffer,
         predicate: &mut LiquidPredicate,
     ) -> Option<Result<BooleanArray, ArrowError>> {
-        let cached_entry = self.cache_store.get(&self.entry_id(batch_id).into())?;
+        let entry_id = self.entry_id(batch_id).into();
+        let result = self
+            .cache_store
+            .get_with_predicate(
+                &entry_id,
+                filter,
+                predicate.physical_expr_physical_column_index(),
+            )
+            .await?;
 
-        let result = cached_entry
-            .get_with_predicate(filter, predicate.physical_expr_physical_column_index());
-        let result = blocking_sans_io(result);
         match result {
             GetWithPredicateResult::Evaluated(buffer) => Some(Ok(buffer)),
             GetWithPredicateResult::Filtered(array) => {
@@ -111,25 +115,27 @@ impl LiquidCachedColumn {
     }
 
     /// Get an arrow array with a filter applied.
-    pub fn get_arrow_array_with_filter(
+    pub async fn get_arrow_array_with_filter(
         &self,
         batch_id: BatchID,
         filter: &BooleanBuffer,
     ) -> Option<ArrayRef> {
-        let inner_value = self.cache_store.get(&self.entry_id(batch_id).into())?;
-        let result = blocking_sans_io(inner_value.get_with_selection(filter));
+        let entry_id = self.entry_id(batch_id).into();
+        let result = self
+            .cache_store
+            .get_with_selection(&entry_id, filter)
+            .await?;
         result.ok()
     }
 
     #[cfg(test)]
-    pub(crate) fn get_arrow_array_test_only(&self, batch_id: BatchID) -> Option<ArrayRef> {
-        let cached_entry = self.cache_store.get(&self.entry_id(batch_id).into())?;
-        let result = blocking_sans_io(cached_entry.get_arrow_array());
-        Some(result)
+    pub(crate) async fn get_arrow_array_test_only(&self, batch_id: BatchID) -> Option<ArrayRef> {
+        let entry_id = self.entry_id(batch_id).into();
+        self.cache_store.get_arrow_array(&entry_id).await
     }
 
     /// Insert an array into the cache.
-    pub fn insert(
+    pub async fn insert(
         self: &Arc<Self>,
         batch_id: BatchID,
         array: ArrayRef,
@@ -138,7 +144,8 @@ impl LiquidCachedColumn {
             return Err(InsertArrowArrayError::AlreadyCached);
         }
         self.cache_store
-            .insert(self.entry_id(batch_id).into(), array);
+            .insert(self.entry_id(batch_id).into(), array)
+            .await;
         Ok(())
     }
 }
@@ -222,7 +229,7 @@ impl LiquidCachedRowGroup {
     }
 
     /// Evaluate a predicate on a row group.
-    pub fn evaluate_selection_with_predicate(
+    pub async fn evaluate_selection_with_predicate(
         &self,
         batch_id: BatchID,
         selection: &BooleanBuffer,
@@ -234,7 +241,9 @@ impl LiquidCachedRowGroup {
             // If we only have one column, we can short-circuit and try to evaluate the predicate on encoded data.
             let column_id = column_ids[0];
             let cache = self.get_column(column_id as u64)?;
-            return cache.eval_predicate_with_filter(batch_id, selection, predicate);
+            return cache
+                .eval_predicate_with_filter(batch_id, selection, predicate)
+                .await;
         } else if column_ids.len() >= 2 {
             // Try to extract multiple column-literal expressions from OR structure
             if let Some(column_exprs) =
@@ -244,25 +253,14 @@ impl LiquidCachedRowGroup {
 
                 for (col_name, expr) in column_exprs {
                     let column = self.get_column_by_name(col_name)?;
-                    let entry = self.cache_store.get(&column.entry_id(batch_id).into())?;
-                    let io_state = entry.try_read_liquid();
-                    let liquid_array = match io_state {
-                        SansIo::Ready(None) => {
+                    let entry_id = column.entry_id(batch_id).into();
+                    let liquid_array = self.cache_store.try_read_liquid(&entry_id).await;
+                    let liquid_array = match liquid_array {
+                        None => {
                             combined_buffer = None;
                             break;
                         }
-                        SansIo::Ready(Some(array)) => array,
-                        SansIo::Pending((mut state, mut io_req)) => loop {
-                            let bytes = blocking_reading_io(&io_req).ok()?;
-                            state.feed(bytes);
-                            match state.try_get() {
-                                TryGet::Ready(array) => break array,
-                                TryGet::NeedData((s, req)) => {
-                                    state = s;
-                                    io_req = req;
-                                }
-                            }
-                        },
+                        Some(array) => array,
                     };
                     let buffer =
                         if let Some(buffer) = liquid_array.try_eval_predicate(&expr, selection) {
@@ -290,7 +288,9 @@ impl LiquidCachedRowGroup {
         let mut fields = Vec::new();
         for column_id in column_ids {
             let column = self.get_column(column_id as u64)?;
-            let array = column.get_arrow_array_with_filter(batch_id, selection)?;
+            let array = column
+                .get_arrow_array_with_filter(batch_id, selection)
+                .await?;
             arrays.push(array);
             fields.push(column.field.clone());
         }
@@ -490,8 +490,8 @@ mod tests {
         file.row_group(0)
     }
 
-    #[test]
-    fn evaluate_or_on_cached_columns() {
+    #[tokio::test]
+    async fn evaluate_or_on_cached_columns() {
         let batch_size = 4;
         let row_group = setup_cache(batch_size);
 
@@ -508,8 +508,8 @@ mod tests {
         let array_a = Arc::new(Int32Array::from(vec![1, 2, 3, 4]));
         let array_b = Arc::new(Int32Array::from(vec![10, 20, 30, 40]));
 
-        assert!(col_a.insert(batch_id, array_a.clone()).is_ok());
-        assert!(col_b.insert(batch_id, array_b.clone()).is_ok());
+        assert!(col_a.insert(batch_id, array_a.clone()).await.is_ok());
+        assert!(col_b.insert(batch_id, array_b.clone()).await.is_ok());
 
         // build parquet metadata for predicate construction
         let tmp_meta = tempfile::NamedTempFile::new().unwrap();
@@ -548,6 +548,7 @@ mod tests {
         let selection = BooleanBuffer::new_set(batch_size);
         let result = row_group
             .evaluate_selection_with_predicate(batch_id, &selection, &mut predicate)
+            .await
             .unwrap()
             .unwrap();
 
@@ -555,8 +556,8 @@ mod tests {
         assert_eq!(result, expected);
     }
 
-    #[test]
-    fn evaluate_three_column_or() {
+    #[tokio::test]
+    async fn evaluate_three_column_or() {
         let batch_size = 8;
         let row_group = setup_cache(batch_size);
 
@@ -578,9 +579,9 @@ mod tests {
             100, 200, 300, 400, 500, 600, 700, 800,
         ]));
 
-        assert!(col_a.insert(batch_id, array_a.clone()).is_ok());
-        assert!(col_b.insert(batch_id, array_b.clone()).is_ok());
-        assert!(col_c.insert(batch_id, array_c.clone()).is_ok());
+        assert!(col_a.insert(batch_id, array_a.clone()).await.is_ok());
+        assert!(col_b.insert(batch_id, array_b.clone()).await.is_ok());
+        assert!(col_c.insert(batch_id, array_c.clone()).await.is_ok());
 
         // build parquet metadata for predicate construction
         let tmp_meta = tempfile::NamedTempFile::new().unwrap();
@@ -628,6 +629,7 @@ mod tests {
         let selection = BooleanBuffer::new_set(batch_size);
         let result = row_group
             .evaluate_selection_with_predicate(batch_id, &selection, &mut predicate)
+            .await
             .unwrap()
             .unwrap();
 
@@ -637,8 +639,8 @@ mod tests {
         assert_eq!(result, expected);
     }
 
-    #[test]
-    fn evaluate_string_column_or() {
+    #[tokio::test]
+    async fn evaluate_string_column_or() {
         let batch_size = 8;
         let row_group = setup_cache(batch_size);
 
@@ -661,8 +663,8 @@ mod tests {
             "New York", "London", "Paris", "Tokyo", "Berlin", "Sydney", "Madrid", "Rome",
         ]));
 
-        assert!(col_name.insert(batch_id, array_name.clone()).is_ok());
-        assert!(col_city.insert(batch_id, array_city.clone()).is_ok());
+        assert!(col_name.insert(batch_id, array_name.clone()).await.is_ok());
+        assert!(col_city.insert(batch_id, array_city.clone()).await.is_ok());
 
         // build parquet metadata for predicate construction
         let tmp_meta = tempfile::NamedTempFile::new().unwrap();
@@ -705,6 +707,7 @@ mod tests {
         let selection = BooleanBuffer::new_set(batch_size);
         let result = row_group
             .evaluate_selection_with_predicate(batch_id, &selection, &mut predicate)
+            .await
             .unwrap()
             .unwrap();
 

@@ -2,7 +2,7 @@ use super::LiquidCache;
 use crate::{cache::id::ParquetArrayID, sync::Arc};
 use arrow::array::{ArrayBuilder, RecordBatch, StringBuilder, UInt64Builder};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
-use liquid_cache_storage::cache::cached_data::CachedBatch;
+use liquid_cache_storage::cache::CachedBatch;
 use parquet::{
     arrow::ArrowWriter, basic::Compression, errors::ParquetError,
     file::properties::WriterProperties,
@@ -179,8 +179,8 @@ mod tests {
     use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
     use tempfile::NamedTempFile;
 
-    #[test]
-    fn test_stats_writer() -> Result<(), ParquetError> {
+    #[tokio::test]
+    async fn test_stats_writer() -> Result<(), ParquetError> {
         let tmp_dir = tempfile::tempdir().unwrap();
         let cache = LiquidCache::new(
             1024,
@@ -209,7 +209,7 @@ mod tests {
                     );
                     for batch in 0..8 {
                         let batch_id = BatchID::from_raw(batch);
-                        assert!(column.insert(batch_id, array.clone()).is_ok());
+                        assert!(column.insert(batch_id, array.clone()).await.is_ok());
                         row_group_id_sum += rg;
                         column_id_sum += col;
                         row_start_id_sum += *batch_id as u64 * cache.batch_size() as u64;
@@ -217,7 +217,7 @@ mod tests {
                         memory_size_sum += array.get_array_memory_size();
 
                         if batch.is_multiple_of(2) {
-                            _ = column.get_arrow_array_test_only(batch_id).unwrap();
+                            _ = column.get_arrow_array_test_only(batch_id).await.unwrap();
                         }
                     }
                 }

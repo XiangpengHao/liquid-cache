@@ -197,6 +197,7 @@ impl LiquidCacheReaderInner {
                     &input_selection,
                     predicate,
                 )
+                .await
                 .expect("item must be in cache")?;
 
             let boolean_mask = if boolean_array.null_count() == 0 {
@@ -240,6 +241,7 @@ impl LiquidCacheReaderInner {
 
             let array = column
                 .get_arrow_array_with_filter(self.current_batch_id, selection)
+                .await
                 .ok_or_else(|| {
                     ArrowError::ComputeError(format!(
                         "column {column_idx} batch {} not cached",
@@ -300,9 +302,12 @@ mod tests {
 
         for (idx, values) in batches.iter().enumerate() {
             let array: ArrayRef = Arc::new(Int32Array::from(values.clone()));
-            column
-                .insert(BatchID::from_raw(idx as u16), array)
-                .expect("cache insert");
+            tokio_test::block_on(async {
+                column
+                    .insert(BatchID::from_raw(idx as u16), array)
+                    .await
+                    .expect("cache insert");
+            });
         }
 
         let schema = Arc::new(Schema::new(vec![Field::new(
