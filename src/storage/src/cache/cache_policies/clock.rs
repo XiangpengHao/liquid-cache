@@ -3,7 +3,7 @@
 use std::{collections::HashMap, fmt, ptr::NonNull, sync::Arc};
 
 use crate::{
-    cache::{cached_data::CachedBatchType, utils::EntryID},
+    cache::{cached_batch::CachedBatchType, utils::EntryID},
     sync::Mutex,
 };
 
@@ -178,7 +178,7 @@ impl Drop for ClockPolicy {
 mod tests {
     use super::*;
     use crate::cache::{
-        cached_data::CachedBatch,
+        cached_batch::CachedBatch,
         utils::{EntryID, create_cache_store, create_test_arrow_array},
     };
 
@@ -251,12 +251,12 @@ mod tests {
         let entry_id4 = EntryID::from(4);
         store.insert(entry_id4, create_test_arrow_array(100)).await;
 
-        if let Some(data) = store.get(&entry_id1) {
-            assert!(matches!(data.raw_data(), CachedBatch::DiskLiquid(_)));
+        if let Some(data) = store.index().get(&entry_id1) {
+            assert!(matches!(data, CachedBatch::DiskLiquid(_)));
         }
-        assert!(store.get(&entry_id2).is_some());
-        assert!(store.get(&entry_id3).is_some());
-        assert!(store.get(&entry_id4).is_some());
+        assert!(store.index().get(&entry_id2).is_some());
+        assert!(store.index().get(&entry_id3).is_some());
+        assert!(store.index().get(&entry_id4).is_some());
     }
 
     #[test]

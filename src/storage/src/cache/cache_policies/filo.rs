@@ -3,7 +3,7 @@
 use std::{collections::HashMap, ptr::NonNull};
 
 use crate::{
-    cache::{cached_data::CachedBatchType, utils::EntryID},
+    cache::{cached_batch::CachedBatchType, utils::EntryID},
     sync::Mutex,
 };
 
@@ -193,7 +193,7 @@ impl CachePolicy for FifoPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::cached_data::{CachedBatch, CachedBatchType};
+    use crate::cache::cached_batch::{CachedBatch, CachedBatchType};
     use crate::cache::utils::{EntryID, create_cache_store, create_test_arrow_array};
 
     fn entry(id: usize) -> EntryID {
@@ -211,8 +211,7 @@ mod tests {
 
         store.insert(entry_id1, create_test_arrow_array(100)).await;
 
-        let data = store.get(&entry_id1).unwrap();
-        let data = data.raw_data();
+        let data = store.index().get(&entry_id1).unwrap();
         assert!(matches!(data, CachedBatch::MemoryArrow(_)));
         store.insert(entry_id2, create_test_arrow_array(100)).await;
         store.insert(entry_id3, create_test_arrow_array(100)).await;
@@ -220,12 +219,12 @@ mod tests {
         let entry_id4: EntryID = EntryID::from(4);
         store.insert(entry_id4, create_test_arrow_array(100)).await;
 
-        assert!(store.get(&entry_id1).is_some());
-        assert!(store.get(&entry_id2).is_some());
-        assert!(store.get(&entry_id4).is_some());
+        assert!(store.index().get(&entry_id1).is_some());
+        assert!(store.index().get(&entry_id2).is_some());
+        assert!(store.index().get(&entry_id4).is_some());
 
-        if let Some(data) = store.get(&entry_id3) {
-            assert!(matches!(data.raw_data(), CachedBatch::DiskLiquid(_)));
+        if let Some(data) = store.index().get(&entry_id3) {
+            assert!(matches!(data, CachedBatch::DiskLiquid(_)));
         }
     }
 

@@ -60,14 +60,8 @@ fn get_arrow_array_with_filter_arrow_cache(bencher: Bencher, selectivity: f64) {
     // Create and insert test data
     let test_data = create_test_data(BATCH_SIZE);
     let batch_id = BatchID::from_row_id(0, BATCH_SIZE);
-    tokio::task::block_in_place(|| {
-        let handle = tokio::runtime::Handle::current();
-        handle.block_on(async {
-            column
-                .insert(batch_id, test_data.clone())
-                .await
-                .expect("Failed to insert data");
-        })
+    tokio_test::block_on(async {
+        column.insert(batch_id, test_data.clone()).await.unwrap();
     });
 
     let filter = create_boolean_filter(BATCH_SIZE, selectivity);
@@ -87,14 +81,8 @@ fn get_arrow_array_with_filter_liquid_cache(bencher: Bencher, selectivity: f64) 
     // Create and insert test data
     let test_data = create_test_data(BATCH_SIZE);
     let batch_id = BatchID::from_row_id(0, BATCH_SIZE);
-    tokio::task::block_in_place(|| {
-        let handle = tokio::runtime::Handle::current();
-        handle.block_on(async {
-            column
-                .insert(batch_id, test_data.clone())
-                .await
-                .expect("Failed to insert data");
-        })
+    tokio_test::block_on(async {
+        column.insert(batch_id, test_data.clone()).await.unwrap();
     });
 
     let filter = create_boolean_filter(BATCH_SIZE, selectivity);
@@ -142,15 +130,16 @@ fn get_arrow_array_with_filter_liquid_cache(bencher: Bencher, selectivity: f64) 
     .unwrap();
 
     bencher
-        .with_inputs(|| (&column, batch_id, &filter, predicate.clone()))
-        .bench_values(|(column, batch_id, filter, mut predicate)| {
-            std::hint::black_box(
-                tokio::runtime::Handle::current().block_on(column.eval_predicate_with_filter(
-                    batch_id,
-                    filter,
-                    &mut predicate,
-                )),
-            )
+        .with_inputs(|| (&column, batch_id, &filter))
+        .bench_values(|(column, batch_id, filter)| {
+            let mut predicate = predicate.clone();
+            tokio::task::block_in_place(|| async move {
+                std::hint::black_box(
+                    column
+                        .eval_predicate_with_filter(batch_id, filter, &mut predicate)
+                        .await,
+                )
+            })
         });
 }
 

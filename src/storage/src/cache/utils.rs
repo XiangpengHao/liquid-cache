@@ -1,5 +1,5 @@
 #[cfg(test)]
-use crate::cache::cached_data::CachedBatch;
+use crate::cache::cached_batch::CachedBatch;
 use crate::sync::{Arc, RwLock};
 use arrow::array::ArrayRef;
 use arrow_schema::ArrowError;
@@ -59,7 +59,7 @@ pub(crate) fn create_cache_store(
     use tempfile::tempdir;
 
     use crate::cache::{
-        CacheStorageBuilder, core::DefaultIoContext, squeeze_policies::TranscodeSqueezeEvict,
+        CacheStorageBuilder, core::BlockingIoContext, squeeze_policies::TranscodeSqueezeEvict,
     };
 
     let temp_dir = tempdir().unwrap();
@@ -72,7 +72,7 @@ pub(crate) fn create_cache_store(
         .with_cache_dir(base_dir.clone())
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
         .with_cache_policy(policy)
-        .with_io_worker(Arc::new(DefaultIoContext::new(base_dir)));
+        .with_io_worker(Arc::new(BlockingIoContext::new(base_dir)));
     builder.build()
 }
 

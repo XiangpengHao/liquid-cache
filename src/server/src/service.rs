@@ -8,7 +8,8 @@ use datafusion::{
 use liquid_cache_common::rpc::ExecutionMetricsResponse;
 use liquid_cache_parquet::{
     cache::{LiquidCache, LiquidCacheRef},
-    extract_execution_metrics, rewrite_data_source_plan,
+    extract_execution_metrics,
+    optimizers::rewrite_data_source_plan,
 };
 use liquid_cache_storage::cache_policies::CachePolicy;
 use liquid_cache_storage::{ByteCache, cache::squeeze_policies::SqueezePolicy};

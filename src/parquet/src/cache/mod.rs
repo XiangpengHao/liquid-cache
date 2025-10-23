@@ -1,11 +1,7 @@
 //! This module contains the cache implementation for the Parquet reader.
 //!
 
-#[cfg(not(target_os = "linux"))]
-use crate::cache::io::blocking_reading_io;
-#[cfg(target_os = "linux")]
-use crate::cache::io::non_blocking_reading_io;
-use crate::cache::io::{ColumnAccessPath, ParquetIoContext, blocking_sans_io};
+use crate::cache::io::{ColumnAccessPath, ParquetIoContext};
 use crate::reader::{LiquidPredicate, extract_multi_column_or};
 use crate::sync::{Mutex, RwLock};
 use ahash::AHashMap;
@@ -13,8 +9,7 @@ use arrow::array::{Array, ArrayRef, BooleanArray, RecordBatch};
 use arrow::buffer::BooleanBuffer;
 use arrow::compute::prep_null_mask_filter;
 use arrow_schema::{ArrowError, Field, Schema};
-use liquid_cache_storage::cache::cached_data::GetWithPredicateResult;
-use liquid_cache_storage::cache::io_state::{IoStateMachine, SansIo, TryGet};
+use liquid_cache_storage::cache::GetWithPredicateResult;
 use liquid_cache_storage::cache::squeeze_policies::SqueezePolicy;
 use liquid_cache_storage::cache::{CachePolicy, CacheStorage, CacheStorageBuilder};
 use parquet::arrow::arrow_reader::ArrowPredicate;
@@ -95,11 +90,16 @@ impl LiquidCachedColumn {
         filter: &BooleanBuffer,
         predicate: &mut LiquidPredicate,
     ) -> Option<Result<BooleanArray, ArrowError>> {
-        let cached_entry = self.cache_store.get(&self.entry_id(batch_id).into())?;
+        let entry_id = self.entry_id(batch_id).into();
+        let result = self
+            .cache_store
+            .get_with_predicate(
+                &entry_id,
+                filter,
+                predicate.physical_expr_physical_column_index(),
+            )
+            .await?;
 
-        let result = cached_entry
-            .get_with_predicate(filter, predicate.physical_expr_physical_column_index());
-        let result = blocking_sans_io(result).await;
         match result {
             GetWithPredicateResult::Evaluated(buffer) => Some(Ok(buffer)),
             GetWithPredicateResult::Filtered(array) => {
@@ -120,16 +120,18 @@ impl LiquidCachedColumn {
         batch_id: BatchID,
         filter: &BooleanBuffer,
     ) -> Option<ArrayRef> {
-        let inner_value = self.cache_store.get(&self.entry_id(batch_id).into())?;
-        let result = blocking_sans_io(inner_value.get_with_selection(filter)).await;
+        let entry_id = self.entry_id(batch_id).into();
+        let result = self
+            .cache_store
+            .get_with_selection(&entry_id, filter)
+            .await?;
         result.ok()
     }
 
     #[cfg(test)]
     pub(crate) async fn get_arrow_array_test_only(&self, batch_id: BatchID) -> Option<ArrayRef> {
-        let cached_entry = self.cache_store.get(&self.entry_id(batch_id).into())?;
-        let result = blocking_sans_io(cached_entry.get_arrow_array()).await;
-        Some(result)
+        let entry_id = self.entry_id(batch_id).into();
+        self.cache_store.get_arrow_array(&entry_id).await
     }
 
     /// Insert an array into the cache.
@@ -251,28 +253,14 @@ impl LiquidCachedRowGroup {
 
                 for (col_name, expr) in column_exprs {
                     let column = self.get_column_by_name(col_name)?;
-                    let entry = self.cache_store.get(&column.entry_id(batch_id).into())?;
-                    let io_state = entry.try_read_liquid();
-                    let liquid_array = match io_state {
-                        SansIo::Ready(None) => {
+                    let entry_id = column.entry_id(batch_id).into();
+                    let liquid_array = self.cache_store.try_read_liquid(&entry_id).await;
+                    let liquid_array = match liquid_array {
+                        None => {
                             combined_buffer = None;
                             break;
                         }
-                        SansIo::Ready(Some(array)) => array,
-                        SansIo::Pending((mut state, mut io_req)) => loop {
-                            #[cfg(not(target_os = "linux"))]
-                            let bytes = blocking_reading_io(&io_req).ok()?;
-                            #[cfg(target_os = "linux")]
-                            let bytes = non_blocking_reading_io(&io_req).await.ok()?;
-                            state.feed(bytes);
-                            match state.try_get() {
-                                TryGet::Ready(array) => break array,
-                                TryGet::NeedData((s, req)) => {
-                                    state = s;
-                                    io_req = req;
-                                }
-                            }
-                        },
+                        Some(array) => array,
                     };
                     let buffer =
                         if let Some(buffer) = liquid_array.try_eval_predicate(&expr, selection) {

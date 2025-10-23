@@ -56,6 +56,7 @@ impl CacheTracer {
         self.enabled.load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    #[allow(unused)]
     pub(super) fn trace_get(
         &self,
         entry_id: EntryID,

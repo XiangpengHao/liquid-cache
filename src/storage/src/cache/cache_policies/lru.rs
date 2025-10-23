@@ -3,7 +3,7 @@
 use std::{collections::HashMap, ptr::NonNull};
 
 use crate::{
-    cache::{cached_data::CachedBatchType, utils::EntryID},
+    cache::{cached_batch::CachedBatchType, utils::EntryID},
     sync::Mutex,
 };
 
@@ -375,8 +375,8 @@ mod tests {
         store.insert(entry_id2, create_test_arrow_array(100)).await;
         store.insert(entry_id3, create_test_arrow_array(100)).await;
 
-        assert!(store.get(&entry_id1).is_some());
-        assert!(store.get(&entry_id2).is_some());
-        assert!(store.get(&entry_id3).is_some());
+        assert!(store.index().get(&entry_id1).is_some());
+        assert!(store.index().get(&entry_id2).is_some());
+        assert!(store.index().get(&entry_id3).is_some());
     }
 }

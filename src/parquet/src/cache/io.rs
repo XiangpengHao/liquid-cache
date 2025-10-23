@@ -1,16 +1,11 @@
 use std::{
-    fs::File,
-    io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 use ahash::AHashMap;
 use bytes::Bytes;
-use liquid_cache_storage::cache::{
-    EntryID, IoContext, LiquidCompressorStates,
-    io_state::{IoRequest, IoStateMachine, SansIo, TryGet},
-};
+use liquid_cache_storage::cache::{EntryID, IoContext, LiquidCompressorStates};
 
 use crate::{
     cache::id::{BatchID, ParquetArrayID},
@@ -32,12 +27,13 @@ impl ParquetIoContext {
     }
 }
 
+#[async_trait::async_trait]
 impl IoContext for ParquetIoContext {
     fn base_dir(&self) -> &Path {
         &self.base_dir
     }
 
-    fn get_compressor_for_entry(&self, entry_id: &EntryID) -> Arc<LiquidCompressorStates> {
+    fn get_compressor(&self, entry_id: &EntryID) -> Arc<LiquidCompressorStates> {
         let column_path = ColumnAccessPath::from(ParquetArrayID::from(*entry_id));
         let mut states = self.compressor_states.write().unwrap();
         states
@@ -46,14 +42,63 @@ impl IoContext for ParquetIoContext {
             .clone()
     }
 
-    fn entry_arrow_path(&self, entry_id: &EntryID) -> PathBuf {
+    fn arrow_path(&self, entry_id: &EntryID) -> PathBuf {
         let parquet_array_id = ParquetArrayID::from(*entry_id);
         parquet_array_id.on_disk_arrow_path(self.base_dir())
     }
 
-    fn entry_liquid_path(&self, entry_id: &EntryID) -> PathBuf {
+    fn liquid_path(&self, entry_id: &EntryID) -> PathBuf {
         let parquet_array_id = ParquetArrayID::from(*entry_id);
         parquet_array_id.on_disk_path(self.base_dir())
+    }
+
+    async fn read_file(&self, path: PathBuf) -> Result<Bytes, std::io::Error> {
+        maybe_spawn_blocking(move || {
+            use std::io::Read;
+            let mut file = std::fs::File::open(path)?;
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes)?;
+            Ok(Bytes::from(bytes))
+        })
+        .await
+    }
+
+    async fn read_range(
+        &self,
+        path: PathBuf,
+        range: std::ops::Range<u64>,
+    ) -> Result<Bytes, std::io::Error> {
+        maybe_spawn_blocking(move || {
+            use std::io::{Read, Seek};
+            let mut file = std::fs::File::open(path)?;
+            let len = (range.end - range.start) as usize;
+            let mut bytes = vec![0u8; len];
+            file.seek(std::io::SeekFrom::Start(range.start))?;
+            file.read_exact(&mut bytes)?;
+            Ok(Bytes::from(bytes))
+        })
+        .await
+    }
+
+    async fn write_file(&self, path: PathBuf, data: Bytes) -> Result<(), std::io::Error> {
+        maybe_spawn_blocking(move || {
+            use std::io::Write;
+            let mut file = std::fs::File::create(path)?;
+            file.write_all(&data)?;
+            Ok(())
+        })
+        .await
+    }
+}
+
+pub(crate) async fn maybe_spawn_blocking<F, T>(f: F) -> Result<T, std::io::Error>
+where
+    F: FnOnce() -> Result<T, std::io::Error> + Send + 'static,
+    T: Send + 'static,
+{
+    match tokio::runtime::Handle::try_current() {
+        Ok(runtime) => runtime.spawn_blocking(f).await?,
+        Err(_) => f(),
     }
 }
 
@@ -119,95 +164,6 @@ impl From<ParquetArrayID> for ColumnAccessPath {
             file_id: value.file_id_inner() as u16,
             rg_id: value.row_group_id_inner() as u16,
             col_id: value.column_id_inner() as u16,
-        }
-    }
-}
-
-#[allow(dead_code)]
-pub(crate) fn blocking_reading_io(request: &IoRequest) -> Result<Bytes, std::io::Error> {
-    let path = &request.path();
-    let mut file = File::open(path)?;
-    match request.range() {
-        Some(range) => {
-            let len = (range.range().end - range.range().start) as usize;
-            let mut bytes = vec![0u8; len];
-            file.seek(SeekFrom::Start(range.range().start))?;
-            file.read_exact(&mut bytes)?;
-            Ok(Bytes::from(bytes))
-        }
-        None => {
-            let mut bytes = Vec::new();
-            file.read_to_end(&mut bytes)?;
-            Ok(Bytes::from(bytes))
-        }
-    }
-}
-
-#[cfg(target_os = "linux")]
-pub(crate) async fn non_blocking_reading_io(request: &IoRequest) -> Result<Bytes, std::io::Error> {
-    use std::{
-        fs::OpenOptions,
-        ops::Range,
-        os::{fd::AsRawFd, unix::fs::OpenOptionsExt as _},
-    };
-
-    use liquid_cache_storage::cache::io_backend::{IoMode, get_io_mode};
-
-    use super::super::storage::cache::io_backend::{FileReadTask, UringFuture};
-
-    let path = &request.path();
-    let flags = if get_io_mode() == IoMode::Direct {
-        libc::O_DIRECT
-    } else {
-        0
-    };
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(flags)
-        .open(path)
-        .expect("failed to create file");
-
-    let range = match request.range() {
-        Some(r) => r.range().clone(),
-        None => Range::<u64> {
-            start: 0,
-            end: file.metadata()?.len(),
-        },
-    };
-    let task = Arc::new(FileReadTask::new(range, file.as_raw_fd()));
-    let uring_fut = UringFuture::new(task.clone());
-    uring_fut.await;
-
-    Ok(task.get_bytes())
-}
-
-/// Resolve a sans-IO operation by repeatedly fulfilling IO requests until ready.
-pub(crate) async fn blocking_sans_io<T, M>(sans: SansIo<T, M>) -> T
-where
-    M: IoStateMachine<Output = T>,
-{
-    match sans {
-        SansIo::Ready(v) => v,
-        SansIo::Pending((state, io_req)) => resolve_pending(state, io_req).await,
-    }
-}
-
-async fn resolve_pending<T, M>(mut state: M, mut io_req: IoRequest) -> T
-where
-    M: IoStateMachine<Output = T>,
-{
-    loop {
-        #[cfg(any(not(target_os = "linux"), test))]
-        let bytes = blocking_reading_io(&io_req).expect("IO failed");
-        #[cfg(all(target_os = "linux", not(test)))]
-        let bytes = non_blocking_reading_io(&io_req).await.expect("IO failed");
-        state.feed(bytes);
-        match state.try_get() {
-            TryGet::Ready(out) => return out,
-            TryGet::NeedData((s, req)) => {
-                state = s;
-                io_req = req;
-            }
         }
     }
 }

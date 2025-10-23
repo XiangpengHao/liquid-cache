@@ -7,14 +7,10 @@ mod tests;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use datafusion::config::ConfigOptions;
 use datafusion::error::Result;
-use datafusion::physical_optimizer::PhysicalOptimizerRule;
-use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
-use liquid_cache_parquet::{LiquidCache, LiquidCacheRef, rewrite_data_source_plan};
-#[cfg(target_os = "linux")]
-use liquid_cache_storage::cache::io_backend::{IoMode, initialize_uring_pool};
+use liquid_cache_parquet::optimizers::{DateExtractOptimizer, LocalModeOptimizer};
+use liquid_cache_parquet::{LiquidCache, LiquidCacheRef};
 use liquid_cache_storage::cache::squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict};
 use liquid_cache_storage::cache_policies::CachePolicy;
 use liquid_cache_storage::cache_policies::LiquidPolicy;
@@ -86,7 +82,9 @@ impl LiquidCacheLocalBuilder {
     /// Create a new builder with defaults
     pub fn new() -> Self {
         #[cfg(target_os = "linux")]
-        initialize_uring_pool(IoMode::Buffered);
+        storage::cache::io_backend::initialize_uring_pool(
+            storage::cache::io_backend::IoMode::Buffered,
+        );
         Self::default()
     }
 
@@ -146,49 +144,18 @@ impl LiquidCacheLocalBuilder {
         );
         let cache_ref = Arc::new(cache);
 
+        let date_extract_optimizer = Arc::new(DateExtractOptimizer::new());
+
         let optimizer = LocalModeOptimizer::with_cache(cache_ref.clone());
 
         let state = datafusion::execution::SessionStateBuilder::new()
             .with_config(config)
             .with_default_features()
+            .with_optimizer_rule(date_extract_optimizer)
             .with_physical_optimizer_rule(Arc::new(optimizer))
             .build();
 
         Ok((SessionContext::new_with_state(state), cache_ref))
-    }
-}
-
-/// Physical optimizer rule for local mode liquid cache
-///
-/// This optimizer rewrites DataSourceExec nodes that read Parquet files
-/// to use LiquidParquetSource instead of the default ParquetSource
-#[derive(Debug)]
-struct LocalModeOptimizer {
-    cache: LiquidCacheRef,
-}
-
-impl LocalModeOptimizer {
-    /// Create an optimizer with an existing cache instance
-    fn with_cache(cache: LiquidCacheRef) -> Self {
-        Self { cache }
-    }
-}
-
-impl PhysicalOptimizerRule for LocalModeOptimizer {
-    fn optimize(
-        &self,
-        plan: Arc<dyn ExecutionPlan>,
-        _config: &ConfigOptions,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
-        Ok(rewrite_data_source_plan(plan, &self.cache))
-    }
-
-    fn name(&self) -> &str {
-        "LocalModeLiquidCacheOptimizer"
-    }
-
-    fn schema_check(&self) -> bool {
-        true
     }
 }
 
