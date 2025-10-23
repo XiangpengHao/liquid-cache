@@ -178,7 +178,7 @@ pub struct FileWriteTask {
 
 impl FileWriteTask {
     #[allow(dead_code)]
-    pub(crate) fn new(base_ptr: *const u8, num_bytes: usize, fd: RawFd) -> FileWriteTask {
+    pub fn new(base_ptr: *const u8, num_bytes: usize, fd: RawFd) -> FileWriteTask {
         let mut padding = 0;
         if get_io_mode() == IoMode::Direct && (num_bytes & 4095) > 0 {
             padding = 4096 - num_bytes % 4096;
