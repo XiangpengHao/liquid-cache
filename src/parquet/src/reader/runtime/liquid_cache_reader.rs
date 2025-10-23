@@ -302,12 +302,10 @@ mod tests {
 
         for (idx, values) in batches.iter().enumerate() {
             let array: ArrayRef = Arc::new(Int32Array::from(values.clone()));
-            tokio_test::block_on(async {
-                column
-                    .insert(BatchID::from_raw(idx as u16), array)
-                    .await
-                    .expect("cache insert");
-            });
+            column
+                .insert(BatchID::from_raw(idx as u16), array)
+                .await
+                .expect("cache insert");
         }
 
         let schema = Arc::new(Schema::new(vec![Field::new(
