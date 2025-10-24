@@ -5,6 +5,7 @@ pub mod cache_policies;
 mod cached_batch;
 mod core;
 mod index;
+#[cfg(target_os = "linux")]
 pub mod io_backend;
 pub mod squeeze_policies;
 mod stats;
