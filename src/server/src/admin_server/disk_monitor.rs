@@ -46,8 +46,7 @@ impl DiskMonitor {
 
     fn thread_loop(self: Arc<Self>) {
         let mut sys = System::new_all();
-        // let device_name = "nvme1n1p3";
-        // let mut inflight_samples = Vec::new();
+        let mut total_bytes_read = 0;
         loop {
             if !self.enabled.load(Ordering::Relaxed) {
                 break;
@@ -64,8 +63,8 @@ impl DiskMonitor {
             let usage = disk_usage.read_bytes + disk_usage.written_bytes;
             let usage_bytes = (usage as f64) * 1000.0 / (Self::SAMPLING_INTERVAL as f64);
             let usage_mb = usage_bytes / (1024f64 * 1024f64);
-            // let inflight = get_inflight_requests(&device_name).unwrap_or(0);
-            // inflight_samples.push(inflight);
+            total_bytes_read += disk_usage.read_bytes as usize; 
+
             {
                 let mut histogram = self.histogram.lock().unwrap();
                 (*histogram)
@@ -75,7 +74,7 @@ impl DiskMonitor {
             thread::sleep(Duration::from_millis(Self::SAMPLING_INTERVAL));
         }
         let histogram = self.histogram.lock().unwrap();
-        for i in (20..=80).step_by(15) {
+        for i in (0..=80).step_by(20) {
             let quantile = i as f64 / 100.0;
             log::info!(
                 "p{} disk usage: {}",
@@ -84,16 +83,7 @@ impl DiskMonitor {
             );
         }
         log::info!("Mean disk usage: {}", histogram.mean());
-
-        // if !inflight_samples.is_empty() {
-        //     inflight_samples.sort_unstable();
-        //     let percentiles = [50, 60, 70, 80, 90, 99];
-        //     for &p in &percentiles {
-        //         let idx = ((p as f64 / 100.0) * (inflight_samples.len() as f64 - 1.0)).round() as usize;
-        //         let val = inflight_samples[idx];
-        //         log::info!("p{} inflight requests: {}", p, val);
-        //     }
-        // }
+        log::info!("Total bytes read: {}", total_bytes_read as f64 / (1024f64 * 1024f64));
     }
 
     pub(crate) fn stop_recording(self: Arc<Self>) {
@@ -106,20 +96,3 @@ impl DiskMonitor {
         histogram.reset();
     }
 }
-
-// Returns the number of in-flight requests for a given device by parsing /proc/diskstats.
-// fn get_inflight_requests(device: &str) -> Option<u64> {
-//     let file = File::open("/proc/diskstats").ok()?;
-//     let reader = BufReader::new(file);
-//     for line in reader.lines() {
-//         let line = line.ok()?;
-//         if line.contains(&format!(" {}", device)) {
-//             let fields: Vec<&str> = line.split_whitespace().collect();
-//             // io_in_progress is the 12th field (index 11) in /proc/diskstats
-//             if fields.len() > 11 {
-//                 return fields[11].parse().ok();
-//             }
-//         }
-//     }
-//     None
-// }
