@@ -1,8 +1,18 @@
 #![allow(missing_docs)]
 use std::{
-    alloc::Layout, collections::VecDeque, fmt::Display, ops::Range, os::fd::RawFd, pin::Pin, str::FromStr, sync::{
-        atomic::{AtomicBool, Ordering}, Arc, Mutex, OnceLock
-    }, task::{Context, Poll, Waker}, thread
+    alloc::Layout,
+    collections::VecDeque,
+    fmt::Display,
+    ops::Range,
+    os::fd::RawFd,
+    pin::Pin,
+    str::FromStr,
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
+    task::{Context, Poll, Waker},
+    thread,
 };
 
 use bytes::Bytes;

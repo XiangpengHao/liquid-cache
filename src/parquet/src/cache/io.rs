@@ -113,11 +113,14 @@ impl IoContext for ParquetIoContext {
 }
 
 #[cfg(target_os = "linux")]
-async fn read_range_from_uring(path: PathBuf, mut range: Option<std::ops::Range::<u64>>) -> Result<Bytes, std::io::Error> {
+async fn read_range_from_uring(
+    path: PathBuf,
+    mut range: Option<std::ops::Range<u64>>,
+) -> Result<Bytes, std::io::Error> {
     use std::os::fd::AsRawFd;
     use std::{fs::OpenOptions, os::unix::fs::OpenOptionsExt as _};
 
-    use liquid_cache_storage::cache::io_backend::{IoMode, get_io_mode, FileReadTask, UringFuture};
+    use liquid_cache_storage::cache::io_backend::{FileReadTask, IoMode, UringFuture, get_io_mode};
 
     let flags = if get_io_mode() == IoMode::Direct {
         libc::O_DIRECT
@@ -146,7 +149,9 @@ async fn read_range_from_uring(path: PathBuf, mut range: Option<std::ops::Range:
 
 #[cfg(target_os = "linux")]
 async fn write_to_uring(path: PathBuf, data: &Bytes) -> Result<(), std::io::Error> {
-    use liquid_cache_storage::cache::io_backend::{FileWriteTask, IoMode, get_io_mode, UringFuture};
+    use liquid_cache_storage::cache::io_backend::{
+        FileWriteTask, IoMode, UringFuture, get_io_mode,
+    };
     use std::os::fd::AsRawFd;
     use std::{fs::OpenOptions, os::unix::fs::OpenOptionsExt as _};
 

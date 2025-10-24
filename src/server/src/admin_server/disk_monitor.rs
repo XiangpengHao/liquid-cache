@@ -63,7 +63,7 @@ impl DiskMonitor {
             let usage = disk_usage.read_bytes + disk_usage.written_bytes;
             let usage_bytes = (usage as f64) * 1000.0 / (Self::SAMPLING_INTERVAL as f64);
             let usage_mb = usage_bytes / (1024f64 * 1024f64);
-            total_bytes_read += disk_usage.read_bytes as usize; 
+            total_bytes_read += disk_usage.read_bytes as usize;
 
             {
                 let mut histogram = self.histogram.lock().unwrap();
@@ -83,7 +83,10 @@ impl DiskMonitor {
             );
         }
         log::info!("Mean disk usage: {}", histogram.mean());
-        log::info!("Total bytes read: {}", total_bytes_read as f64 / (1024f64 * 1024f64));
+        log::info!(
+            "Total bytes read: {}",
+            total_bytes_read as f64 / (1024f64 * 1024f64)
+        );
     }
 
     pub(crate) fn stop_recording(self: Arc<Self>) {

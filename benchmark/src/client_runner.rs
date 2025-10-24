@@ -14,20 +14,6 @@ use std::{fs, fs::File, path::PathBuf, sync::Arc, time::Instant};
 use sysinfo::{Disks, Networks};
 use uuid::Uuid;
 
-fn write_flamegraph_to_disk(flamegraph: &String, path: PathBuf) {
-    let file_path = path.join("flamegraph.svg");
-
-    // Write the flamegraph SVG content to the file
-    match fs::write(&file_path, flamegraph) {
-        Ok(_) => {
-            info!("Flamegraph written to: {}", file_path.display());
-        }
-        Err(e) => {
-            eprintln!("Failed to write flamegraph to {}: {}", file_path.display(), e);
-        }
-    }
-}
-
 /// Trait that benchmarks must implement
 #[allow(async_fn_in_trait)]
 pub trait Benchmark: Serialize + Clone {
@@ -186,9 +172,6 @@ impl BenchmarkRunner {
         let network_traffic = network_info.received();
 
         if !plan_uuid.is_empty() {
-            if flamegraph.is_some() {
-                write_flamegraph_to_disk(flamegraph.as_ref().unwrap(), std::env::current_dir().unwrap());
-            }
             common
                 .set_execution_stats(
                     plan_uuid,
