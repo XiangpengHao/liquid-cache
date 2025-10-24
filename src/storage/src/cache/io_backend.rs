@@ -44,7 +44,7 @@ pub trait IoTask: Send + Sync {
         }
     }
 
-    fn debug_print(&self);
+    fn process_completion(&self, cqe: &cqueue::Entry);
 }
 
 /**
@@ -53,12 +53,14 @@ Represents a request to read from a file
 #[allow(unused)]
 pub struct FileReadTask {
     base_ptr: *mut u8,
+    layout: Layout,
     fd: RawFd,
     completed: AtomicBool,
     waker: Mutex<Option<Waker>>,
     range: Range<u64>,
     start_padding: usize,
     end_padding: usize,
+    error: Mutex<Option<std::io::Error>>,
 }
 
 impl FileReadTask {
@@ -83,12 +85,14 @@ impl FileReadTask {
         let base_ptr = unsafe { std::alloc::alloc(layout) };
         FileReadTask {
             base_ptr,
+            layout,
             fd,
             completed: AtomicBool::new(false),
             waker: Mutex::<Option<Waker>>::new(None),
             range,
             start_padding,
             end_padding,
+            error: Mutex::new(None),
         }
     }
 
@@ -101,7 +105,14 @@ impl FileReadTask {
     Return a bytes object holding the result of the read operation
      */
     #[inline]
-    pub fn get_bytes(&self) -> Bytes {
+    pub fn get_result(&self) -> Result<Bytes, std::io::Error> {
+        let mut err = self.error.lock().unwrap();
+        if err.is_some() {
+            unsafe {
+                std::alloc::dealloc(self.base_ptr, self.layout);
+            }
+            return Err(err.take().unwrap());
+        }
         let total_bytes =
             (self.range.end - self.range.start) as usize + self.start_padding + self.end_padding;
         unsafe {
@@ -109,10 +120,10 @@ impl FileReadTask {
             // Convert to vec in order to transfer ownership of underlying pointer
             let owned_slice: Box<[u8]> = vec.into_boxed_slice();
             // The below slice operation removes the padding. This is a no-op in case of buffered IO
-            Bytes::from(owned_slice).slice(
+            Ok(Bytes::from(owned_slice).slice(
                 self.start_padding
                     ..(self.range.end as usize - self.range.start as usize + self.start_padding),
-            )
+            ))
         }
     }
 }
@@ -143,11 +154,12 @@ impl IoTask for FileReadTask {
         &self.completed
     }
 
-    fn debug_print(&self) {
-        println!(
-            "Read op, range: ({}, {}), start_padding: {}, end_padding: {}",
-            self.range.start, self.range.end, self.start_padding, self.end_padding
-        );
+    fn process_completion(&self, cqe: &cqueue::Entry) {
+        if cqe.result() < 0 {
+            let mut error = self.error.lock().unwrap();
+            *error = Some(std::io::Error::from_raw_os_error(-cqe.result()));
+        }
+        self.notify_waker();
     }
 }
 
@@ -164,6 +176,7 @@ pub struct FileWriteTask {
     fd: RawFd,
     completed: AtomicBool,
     waker: Mutex<Option<Waker>>,
+    error: Mutex<Option<std::io::Error>>,
 }
 
 impl FileWriteTask {
@@ -180,7 +193,16 @@ impl FileWriteTask {
             fd,
             completed: AtomicBool::new(false),
             waker: Mutex::<Option<Waker>>::new(None),
+            error: Mutex::new(None),
         }
+    }
+
+    pub fn get_result(&self) -> Result<(), std::io::Error> {
+        let mut err = self.error.lock().unwrap();
+        if err.is_some() {
+            return Err(err.take().unwrap());
+        }
+        Ok(())
     }
 }
 
@@ -207,8 +229,12 @@ impl IoTask for FileWriteTask {
         &self.completed
     }
 
-    fn debug_print(&self) {
-        println!("Write op, num bytes: {}", self.num_bytes);
+    fn process_completion(&self, cqe: &cqueue::Entry) {
+        if cqe.result() < 0 {
+            let mut error = self.error.lock().unwrap();
+            *error = Some(std::io::Error::from_raw_os_error(-cqe.result()));
+        }
+        self.notify_waker();
     }
 }
 
@@ -404,18 +430,11 @@ impl UringWorker {
             cq.sync();
             match cq.next() {
                 Some(cqe) => {
-                    let errno = -cqe.result();
-                    let err = std::io::Error::from_raw_os_error(errno);
                     let token = cqe.user_data() as usize;
-                    if cqe.result() < 0 {
-                        // TODO(): Send an error to the requestor
-                        self.submitted_tasks[token].as_ref().unwrap().debug_print();
-                        panic!("Cqe indicates IO error: {}", err);
-                    }
                     self.submitted_tasks[token]
                         .as_ref()
                         .unwrap()
-                        .notify_waker();
+                        .process_completion(&cqe);
                     self.tokens.push_back(token as u16);
                 }
                 None => {

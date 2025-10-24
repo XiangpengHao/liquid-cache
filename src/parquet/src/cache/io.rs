@@ -141,7 +141,7 @@ async fn read_range_from_uring(path: PathBuf, mut range: Option<std::ops::Range:
     // UringFuture will be responsible for submitting and driving the future to completion
     let uring_fut = UringFuture::new(task.clone());
     uring_fut.await;
-    Ok(task.get_bytes())
+    task.get_result()
 }
 
 #[cfg(target_os = "linux")]
@@ -168,9 +168,9 @@ async fn write_to_uring(path: PathBuf, data: &Bytes) -> Result<(), std::io::Erro
         file.as_raw_fd(),
     ));
     // UringFuture will be responsible for submitting and driving the future to completion
-    let uring_fut = UringFuture::new(task);
+    let uring_fut = UringFuture::new(task.clone());
     uring_fut.await;
-    Ok(())
+    task.get_result()
 }
 
 #[allow(dead_code)]
