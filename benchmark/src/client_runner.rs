@@ -10,9 +10,23 @@ use datafusion::{
 use fastrace::prelude::*;
 use log::{debug, info};
 use serde::Serialize;
-use std::{fs::File, sync::Arc, time::Instant};
+use std::{fs, fs::File, path::PathBuf, sync::Arc, time::Instant};
 use sysinfo::{Disks, Networks};
 use uuid::Uuid;
+
+fn write_flamegraph_to_disk(flamegraph: &String, path: PathBuf) {
+    let file_path = path.join("/flamegraph.svg");
+
+    // Write the flamegraph SVG content to the file
+    match fs::write(&file_path, flamegraph) {
+        Ok(_) => {
+            info!("Flamegraph written to: {}", file_path.display());
+        }
+        Err(e) => {
+            eprintln!("Failed to write flamegraph to {}: {}", file_path.display(), e);
+        }
+    }
+}
 
 /// Trait that benchmarks must implement
 #[allow(async_fn_in_trait)]
@@ -174,6 +188,7 @@ impl BenchmarkRunner {
         let network_traffic = network_info.received();
 
         if !plan_uuid.is_empty() {
+            write_flamegraph_to_disk(flamegraph.as_ref().unwrap(), common.cache_stats_dir.clone().unwrap());
             common
                 .set_execution_stats(
                     plan_uuid,
