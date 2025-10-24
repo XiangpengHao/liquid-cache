@@ -120,7 +120,8 @@ async fn read_range_from_uring(
     use std::os::fd::AsRawFd;
     use std::{fs::OpenOptions, os::unix::fs::OpenOptionsExt as _};
 
-    use liquid_cache_storage::cache::io_backend::{FileReadTask, IoMode, UringFuture, get_io_mode};
+    use liquid_cache_storage::cache::io_backend::{FileReadTask, UringFuture, get_io_mode};
+    use liquid_cache_storage::cache::io_mode::IoMode;
 
     let flags = if get_io_mode() == IoMode::Direct {
         libc::O_DIRECT
@@ -149,9 +150,8 @@ async fn read_range_from_uring(
 
 #[cfg(target_os = "linux")]
 async fn write_to_uring(path: PathBuf, data: &Bytes) -> Result<(), std::io::Error> {
-    use liquid_cache_storage::cache::io_backend::{
-        FileWriteTask, IoMode, UringFuture, get_io_mode,
-    };
+    use liquid_cache_storage::cache::io_backend::{FileWriteTask, UringFuture, get_io_mode};
+    use liquid_cache_storage::cache::io_mode::IoMode;
     use std::os::fd::AsRawFd;
     use std::{fs::OpenOptions, os::unix::fs::OpenOptionsExt as _};
 

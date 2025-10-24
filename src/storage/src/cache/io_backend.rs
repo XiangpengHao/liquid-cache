@@ -2,11 +2,9 @@
 use std::{
     alloc::Layout,
     collections::VecDeque,
-    fmt::Display,
     ops::Range,
     os::fd::RawFd,
     pin::Pin,
-    str::FromStr,
     sync::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
@@ -15,9 +13,9 @@ use std::{
     thread,
 };
 
+use crate::cache::io_mode::IoMode;
 use bytes::Bytes;
 use io_uring::{IoUring, cqueue, opcode, squeue};
-use serde::Serialize;
 
 const BLOCK_ALIGN: usize = 4096;
 
@@ -253,38 +251,6 @@ unsafe impl Send for FileWriteTask {}
 unsafe impl Sync for FileWriteTask {}
 
 static ENABLED: AtomicBool = AtomicBool::new(true);
-
-#[derive(Debug, Clone, PartialEq, Default, Serialize)]
-pub enum IoMode {
-    Direct,
-    #[default]
-    Buffered,
-}
-
-impl Display for IoMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                IoMode::Buffered => "buffered",
-                IoMode::Direct => "direct",
-            }
-        )
-    }
-}
-
-impl FromStr for IoMode {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(match s {
-            "direct" => IoMode::Direct,
-            "buffered" => IoMode::Buffered,
-            _ => return Err(format!("Invalid IO mode: {s}")),
-        })
-    }
-}
 
 /**
  * Represents a pool of worker threads responsible for submitting IO requests to the

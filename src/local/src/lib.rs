@@ -11,7 +11,7 @@ use datafusion::error::Result;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use liquid_cache_parquet::optimizers::{DateExtractOptimizer, LocalModeOptimizer};
 use liquid_cache_parquet::{LiquidCache, LiquidCacheRef};
-use liquid_cache_storage::cache::io_backend::IoMode;
+use liquid_cache_storage::cache::io_mode::IoMode;
 use liquid_cache_storage::cache::squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict};
 use liquid_cache_storage::cache_policies::CachePolicy;
 use liquid_cache_storage::cache_policies::LiquidPolicy;
