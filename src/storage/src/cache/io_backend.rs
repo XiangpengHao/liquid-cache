@@ -1,17 +1,8 @@
 #![allow(missing_docs)]
 use std::{
-    alloc::Layout,
-    fmt::Display,
-    ops::Range,
-    os::fd::RawFd,
-    pin::Pin,
-    str::FromStr,
-    sync::{
-        Arc, Mutex, OnceLock,
-        atomic::{AtomicBool, Ordering},
-    },
-    task::{Context, Poll, Waker},
-    thread,
+    alloc::Layout, collections::VecDeque, fmt::Display, ops::Range, os::fd::RawFd, pin::Pin, str::FromStr, sync::{
+        atomic::{AtomicBool, Ordering}, Arc, Mutex, OnceLock
+    }, task::{Context, Poll, Waker}, thread
 };
 
 use bytes::Bytes;
@@ -37,7 +28,7 @@ pub trait IoTask: Send + Sync {
     /**
     Converts the IO request to an IO uring submission queue entry
     */
-    fn get_sqe(&self, user_data: u64) -> squeue::Entry;
+    fn get_sqe(&self) -> squeue::Entry;
 
     fn completed(&self) -> &AtomicBool;
 
@@ -46,7 +37,7 @@ pub trait IoTask: Send + Sync {
      */
     #[inline]
     fn notify_waker(&self) {
-        self.completed().store(true, Ordering::Relaxed);
+        self.completed().store(true, Ordering::Release);
         let mut guard = self.waker().lock().unwrap();
         if let Some(waker) = guard.take() {
             waker.wake();
@@ -133,7 +124,7 @@ impl IoTask for FileReadTask {
     }
 
     #[inline]
-    fn get_sqe(&self, user_data: u64) -> squeue::Entry {
+    fn get_sqe(&self) -> squeue::Entry {
         let num_bytes = (self.range.end - self.range.start) as usize;
         let num_bytes_aligned = num_bytes + self.start_padding + self.end_padding;
         let read_op = opcode::Read::new(
@@ -145,7 +136,6 @@ impl IoTask for FileReadTask {
         read_op
             .offset(self.range.start - self.start_padding as u64)
             .build()
-            .user_data(user_data)
     }
 
     #[inline]
@@ -201,7 +191,7 @@ impl IoTask for FileWriteTask {
     }
 
     #[inline]
-    fn get_sqe(&self, user_data: u64) -> squeue::Entry {
+    fn get_sqe(&self) -> squeue::Entry {
         let num_bytes_aligned = self.num_bytes + self.padding;
         let write_op = opcode::Write::new(
             io_uring::types::Fd(self.fd),
@@ -209,7 +199,7 @@ impl IoTask for FileWriteTask {
             num_bytes_aligned as u32,
         );
 
-        write_op.offset(0u64).build().user_data(user_data)
+        write_op.offset(0u64).build()
     }
 
     #[inline]
@@ -357,11 +347,8 @@ Represents a single worker thread. The worker thread busy loops through 3 phases
 struct UringWorker {
     channel: crossbeam_channel::Receiver<Arc<dyn IoTask>>,
     ring: io_uring::IoUring,
-    // Assumption: There wont be more than 2^16 tasks on-the-fly at once
-    op_counter: u16,
-    completions_array: Vec<usize>,
+    tokens: VecDeque<u16>,
     submitted_tasks: Vec<Option<Arc<dyn IoTask>>>,
-    inflight_requests: u32,
 }
 
 impl UringWorker {
@@ -369,17 +356,14 @@ impl UringWorker {
         channel: crossbeam_channel::Receiver<Arc<dyn IoTask>>,
         ring: io_uring::IoUring,
     ) -> UringWorker {
-        let completions_array = vec![0; 1 << 16];
-
+        let tokens = (0..IoUringThreadpool::NUM_ENTRIES as u16).collect();
         let mut tasks = Vec::<Option<Arc<dyn IoTask>>>::new();
         tasks.resize(IoUringThreadpool::NUM_ENTRIES as usize, None);
         UringWorker {
             channel,
             ring,
-            op_counter: 0,
-            completions_array,
+            tokens,
             submitted_tasks: tasks,
-            inflight_requests: 0,
         }
     }
 
@@ -389,28 +373,25 @@ impl UringWorker {
                 break;
             }
 
-            while self.inflight_requests < IoUringThreadpool::NUM_ENTRIES {
+            while !self.tokens.is_empty() {
                 let res = self.channel.try_recv();
                 if res.is_err() {
                     break;
                 }
+                let token = self.tokens.pop_front().unwrap();
                 let task = res.unwrap();
                 // Consume tasks from channel and submit them to the ring
                 {
                     let sq = &mut (self.ring.submission());
-                    let sqe = task.get_sqe((self.op_counter as u64) << 48);
+                    let sqe = task.get_sqe().user_data(token as u64);
 
                     unsafe {
                         sq.push(&sqe).expect("Failed to push to submission queue");
                     }
                     sq.sync();
-                    self.submitted_tasks[self.op_counter as usize] = Some(task);
-                    self.completions_array[self.op_counter as usize] = 1;
-                    self.op_counter = (self.op_counter + 1) & 63;
+                    self.submitted_tasks[token as usize] = Some(task);
                 }
                 self.ring.submit().expect("Failed to submit");
-
-                self.inflight_requests += 1;
             }
 
             self.poll_completions();
@@ -423,24 +404,19 @@ impl UringWorker {
             cq.sync();
             match cq.next() {
                 Some(cqe) => {
-                    self.inflight_requests -= 1;
                     let errno = -cqe.result();
                     let err = std::io::Error::from_raw_os_error(errno);
-                    let opcode = (cqe.user_data() >> 48) as usize;
+                    let token = cqe.user_data() as usize;
                     if cqe.result() < 0 {
                         // TODO(): Send an error to the requestor
-                        self.submitted_tasks[opcode].as_ref().unwrap().debug_print();
+                        self.submitted_tasks[token].as_ref().unwrap().debug_print();
                         panic!("Cqe indicates IO error: {}", err);
                     }
-
-                    let remaining = &mut self.completions_array[opcode];
-                    *remaining -= 1;
-                    if *remaining == 0 {
-                        self.submitted_tasks[opcode]
-                            .as_ref()
-                            .unwrap()
-                            .notify_waker();
-                    }
+                    self.submitted_tasks[token]
+                        .as_ref()
+                        .unwrap()
+                        .notify_waker();
+                    self.tokens.push_back(token as u16);
                 }
                 None => {
                     break;
