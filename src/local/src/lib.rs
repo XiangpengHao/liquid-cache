@@ -134,9 +134,7 @@ impl LiquidCacheLocalBuilder {
     /// Returns the SessionContext and the liquid cache reference
     pub fn build(self, mut config: SessionConfig) -> Result<(SessionContext, LiquidCacheRef)> {
         #[cfg(target_os = "linux")]
-        storage::cache::io_backend::initialize_uring_pool(
-            storage::cache::io_backend::IoMode::Buffered,
-        );
+        storage::cache::io_backend::initialize_uring_pool(self.io_mode);
         config.options_mut().execution.parquet.pushdown_filters = true;
         config
             .options_mut()
