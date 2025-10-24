@@ -148,6 +148,7 @@ impl LiquidCacheService {
             Some(io) => io,
             None => IoMode::Buffered,
         };
+        #[cfg(target_os = "linux")]
         initialize_uring_pool(io_mode);
         Ok(Self {
             inner: LiquidCacheServiceInner::new(
