@@ -167,13 +167,38 @@ impl<B: FsstBuffer> LiquidByteViewArrayV2<B> {
             result.push(0);
         }
 
-        // E) Serialize offset views
+        // e) serialize compact offset views (header + residuals)
         let offsets_start = result.len();
         {
-            for ov in self.offset_views.iter() {
-                result.extend_from_slice(&ov.offset().to_le_bytes());
-                result.extend_from_slice(ov.prefix7());
-                result.push(ov.len_byte());
+            let header = self.compact_offset_views.header();
+            // serialize header
+            result.extend_from_slice(&header.slope.to_le_bytes());
+            result.extend_from_slice(&header.intercept.to_le_bytes());
+            result.push(header.offset_bytes);
+            
+            // serialize residuals based on type
+            match &self.compact_offset_views {
+                CompactOffsetViewGroup::OneByte { residuals, .. } => {
+                    for residual in residuals.iter() {
+                        result.push(*residual.offset_residual());
+                        result.extend_from_slice(residual.prefix7());
+                        result.push(residual.len_byte());
+                    }
+                },
+                CompactOffsetViewGroup::TwoBytes { residuals, .. } => {
+                    for residual in residuals.iter() {
+                        result.extend_from_slice(&residual.offset_residual().to_le_bytes());
+                        result.extend_from_slice(residual.prefix7());
+                        result.push(residual.len_byte());
+                    }
+                },
+                CompactOffsetViewGroup::FourBytes { residuals, .. } => {
+                    for residual in residuals.iter() {
+                        result.extend_from_slice(&residual.offset_residual().to_le_bytes());
+                        result.extend_from_slice(residual.prefix7());
+                        result.push(residual.len_byte());
+                    }
+                },
             }
         }
         let offset_views_size = result.len() - offsets_start;
@@ -219,9 +244,11 @@ impl<B: FsstBuffer> LiquidByteViewArrayV2<B> {
     ) -> Self {
         let offset_views = Arc::<[OffsetView]>::from(offset_views.to_vec());
 
+        let compact_offset_views = CompactOffsetViewGroup::from_offset_views(&offset_views);
+        
         Self {
             dictionary_keys,
-            offset_views,
+            compact_offset_views,
             fsst_buffer,
             original_arrow_type,
             shared_prefix,
@@ -234,15 +261,40 @@ impl<B: FsstBuffer> LiquidByteViewArrayV2<B> {
         
         let header = self.compact_offset_views.header();
 
-        for (index, residual_offset) in self.compact_offset_views.offset_residuals().iter().enumerate() {
-            let offset = header.slope * index as u32 + header.intercept + residual_offset.offset_residual as u32;
-
-            let offset_view = OffsetView {
-                offset: offset,
-                prefix7: residual_offset.prefix7().clone(),
-                len: residual_offset.len_byte(),
-            };
-            offset_views.push(offset_view);
+        match &self.compact_offset_views {
+            CompactOffsetViewGroup::OneByte { residuals, .. } => {
+                for (index, residual_offset) in residuals.iter().enumerate() {
+                    let offset = header.slope * index as u32 + header.intercept + *residual_offset.offset_residual() as u32;
+                    let offset_view = OffsetView {
+                        offset,
+                        prefix7: *residual_offset.prefix7(),
+                        len: residual_offset.len_byte(),
+                    };
+                    offset_views.push(offset_view);
+                }
+            },
+            CompactOffsetViewGroup::TwoBytes { residuals, .. } => {
+                for (index, residual_offset) in residuals.iter().enumerate() {
+                    let offset = header.slope * index as u32 + header.intercept + *residual_offset.offset_residual() as u32;
+                    let offset_view = OffsetView {
+                        offset,
+                        prefix7: *residual_offset.prefix7(),
+                        len: residual_offset.len_byte(),
+                    };
+                    offset_views.push(offset_view);
+                }
+            },
+            CompactOffsetViewGroup::FourBytes { residuals, .. } => {
+                for (index, residual_offset) in residuals.iter().enumerate() {
+                    let offset = header.slope * index as u32 + header.intercept + *residual_offset.offset_residual();
+                    let offset_view = OffsetView {
+                        offset,
+                        prefix7: *residual_offset.prefix7(),
+                        len: residual_offset.len_byte(),
+                    };
+                    offset_views.push(offset_view);
+                }
+            },
         }
 
         offset_views
@@ -324,14 +376,14 @@ impl LiquidByteViewArrayV2<MemoryBuffer> {
         }
         let shared_prefix = bytes[cursor..prefix_end].to_vec();
 
-        LiquidByteViewArrayV2 {
+        LiquidByteViewArrayV2::from_parts(
             dictionary_keys,
-            offset_views: Arc::from(offset_views),
-            fsst_buffer: MemoryBuffer::new(Arc::new(raw_buffer)),
+            &offset_views,
+            MemoryBuffer::new(Arc::new(raw_buffer)),
             original_arrow_type,
             shared_prefix,
             compressor,
-        }
+        )
     }
 }
 
@@ -497,11 +549,11 @@ impl CompactOffsetViewGroup {
         }
     }
 
-    fn offset_residuals(&self) -> &[CompactOffsetView] {
+    fn len(&self) -> usize {
         match self {
-            Self::OneByte { residuals, .. } => residuals.as_ref(),
-            Self::TwoBytes { residuals, .. } => residuals.as_ref(),
-            Self::FourBytes { residuals, .. } => residuals.as_ref(),
+            Self::OneByte { residuals, .. } => residuals.len(),
+            Self::TwoBytes { residuals, .. } => residuals.len(),
+            Self::FourBytes { residuals, .. } => residuals.len(),
         }
     }
 }
@@ -598,7 +650,20 @@ impl<T> CompactOffsetView<T> {
     // }
 
     pub fn offset_residual(&self) -> &T {
-        self.offset_residual as &T 
+        &self.offset_residual
+    }
+
+    pub fn known_suffix_len(&self) -> Option<usize> {
+        if self.len == 255 {
+            None
+        } else {
+            Some(self.len as usize)
+        }
+    }
+
+    #[inline]
+    pub fn prefix7(&self) -> &[u8; 7] {
+        &self.prefix7
     }
 
     #[inline]
@@ -766,7 +831,7 @@ impl LiquidArray for LiquidByteViewArrayV2<MemoryBuffer> {
         let disk = DiskBuffer::new(self.fsst_buffer.uncompressed_bytes(), disk_range);
         let hybrid = LiquidByteViewArrayV2::<DiskBuffer> {
             dictionary_keys: self.dictionary_keys.clone(),
-            offset_views: self.offset_views.clone(),
+            compact_offset_views: self.compact_offset_views.clone(),
             fsst_buffer: disk,
             original_arrow_type: self.original_arrow_type,
             shared_prefix: self.shared_prefix.clone(),
@@ -878,7 +943,7 @@ impl LiquidHybridArray for LiquidByteViewArrayV2<DiskBuffer> {
 
         let in_memory_array = LiquidByteViewArrayV2::<MemoryBuffer> {
             dictionary_keys: self.dictionary_keys.clone(),
-            offset_views: self.offset_views.clone(),
+            compact_offset_views: self.compact_offset_views.clone(),
             fsst_buffer: buffer,
             original_arrow_type: self.original_arrow_type,
             shared_prefix: self.shared_prefix.clone(),
@@ -910,45 +975,54 @@ impl LiquidByteViewArrayV2<DiskBuffer> {
         let needle_len = needle_suffix.len();
         let prefix_len = OffsetView::prefix_len();
 
-        let num_unique = self.offset_views.len().saturating_sub(1);
+        let num_unique = self.compact_offset_views.len().saturating_sub(1);
         let mut dict_results = vec![false; num_unique];
 
-        for (i, ov) in self.offset_views.iter().take(num_unique).enumerate() {
-            let known_len = ov.known_suffix_len();
+        match self.compact_offset_views {
+            CompactOffsetViewGroup::OneByte { header, residuals } 
+            | CompactOffsetViewGroup::TwoBytes { header, residuals } 
+            | CompactOffsetViewGroup::FourBytes { header, residuals } => {
 
-            // 1) Length gate
-            match known_len {
-                Some(l) => {
-                    if l != needle_len {
-                        continue; // definitively not equal
-                    }
-                }
-                None => {
-                    if needle_len < 255 {
-                        continue; // definitively not equal
-                    }
-                }
-            }
+                    for (i, residual) in residuals.iter().take(num_unique).enumerate() {
 
-            // 2) Compare by category
-            match known_len {
-                None => {
-                    // Long strings: need IO if prefix matches
-                    if ov.prefix7()[..prefix_len] == needle_suffix[..prefix_len] {
-                        return None; // ambiguous, requires IO
+                    let ov = 
+                    let known_len = ov.known_suffix_len();
+
+                    // 1) Length gate
+                    match known_len {
+                        Some(l) => {
+                            if l != needle_len {
+                                continue; // definitively not equal
+                            }
+                        }
+                        None => {
+                            if needle_len < 255 {
+                                continue; // definitively not equal
+                            }
+                        }
                     }
-                    // else definitively not equal, leave false
-                }
-                Some(l) if l <= prefix_len => {
-                    // Small strings: exact compare on l bytes
-                    if ov.prefix7()[..l] == needle_suffix[..l] {
-                        dict_results[i] = true; // definitive match
-                    }
-                }
-                Some(_l) => {
-                    // Medium strings: prefix compare; equal means ambiguous
-                    if ov.prefix7()[..prefix_len] == needle_suffix[..prefix_len] {
-                        return None; // ambiguous
+
+                    // 2) Compare by category
+                    match known_len {
+                        None => {
+                            // Long strings: need IO if prefix matches
+                            if ov.prefix7()[..prefix_len] == needle_suffix[..prefix_len] {
+                                return None; // ambiguous, requires IO
+                            }
+                            // else definitively not equal, leave false
+                        }
+                        Some(l) if l <= prefix_len => {
+                            // Small strings: exact compare on l bytes
+                            if ov.prefix7()[..l] == needle_suffix[..l] {
+                                dict_results[i] = true; // definitive match
+                            }
+                        }
+                        Some(_l) => {
+                            // Medium strings: prefix compare; equal means ambiguous
+                            if ov.prefix7()[..prefix_len] == needle_suffix[..prefix_len] {
+                                return None; // ambiguous
+                            }
+                        }
                     }
                 }
             }
@@ -983,7 +1057,7 @@ fn filter_inner<B: FsstBuffer>(
 
     LiquidByteViewArrayV2 {
         dictionary_keys: filtered_keys,
-        offset_views: array.offset_views.clone(), // Keep original offset views - they reference unique values
+        compact_offset_views: array.compact_offset_views.clone(), // Keep original offset views - they reference unique values
         fsst_buffer: array.fsst_buffer.clone(),
         original_arrow_type: array.original_arrow_type,
         shared_prefix: array.shared_prefix.clone(),
@@ -1251,8 +1325,9 @@ impl<B: FsstBuffer> LiquidByteViewArrayV2<B> {
         // Convert raw FSST buffer to values using our offset views
         let raw_buffer = self.fsst_buffer.get_fsst_buffer()?;
 
+        let offset_views = self.offset_views();
         let (values_buffer, offsets_buffer) =
-            raw_buffer.to_uncompressed_v2(&self.compressor.decompressor(), &self.offset_views);
+            raw_buffer.to_uncompressed_v2(&self.compressor.decompressor(), &offset_views);
 
         let values = if self.original_arrow_type == ArrowByteType::Utf8
             || self.original_arrow_type == ArrowByteType::Utf8View
@@ -1302,8 +1377,8 @@ impl<B: FsstBuffer> LiquidByteViewArrayV2<B> {
     pub fn get_detailed_memory_usage(&self) -> ByteViewArrayMemoryUsage {
         ByteViewArrayMemoryUsage {
             dictionary_key: self.dictionary_keys.get_array_memory_size(),
-            // TODO: Update memory usage for compact offset views
-            offsets: self.offset_views.len() * std::mem::size_of::<OffsetView>(),
+            // TODO: Verify calculation
+            offsets: self.compact_offset_views.len() * std::mem::size_of::<CompactOffsetView<u8>>() + std::mem::size_of::<CompactOffsetViewHeader>,  
             fsst_buffer: self.fsst_buffer.get_array_memory_size(),
             shared_prefix: self.shared_prefix.len(),
             struct_size: std::mem::size_of::<Self>(),
