@@ -11,6 +11,7 @@ use datafusion::error::Result;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use liquid_cache_parquet::optimizers::{DateExtractOptimizer, LocalModeOptimizer};
 use liquid_cache_parquet::{LiquidCache, LiquidCacheRef};
+use liquid_cache_storage::cache::io_backend::IoMode;
 use liquid_cache_storage::cache::squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict};
 use liquid_cache_storage::cache_policies::CachePolicy;
 use liquid_cache_storage::cache_policies::LiquidPolicy;
@@ -63,6 +64,8 @@ pub struct LiquidCacheLocalBuilder {
     squeeze_policy: Box<dyn SqueezePolicy>,
 
     span: fastrace::Span,
+
+    io_mode: IoMode,
 }
 
 impl Default for LiquidCacheLocalBuilder {
@@ -74,6 +77,7 @@ impl Default for LiquidCacheLocalBuilder {
             cache_policy: Box::new(LiquidPolicy::new()),
             squeeze_policy: Box::new(TranscodeSqueezeEvict),
             span: fastrace::Span::enter_with_local_parent("liquid_cache_local_builder"),
+            io_mode: IoMode::Buffered,
         }
     }
 }
@@ -81,10 +85,6 @@ impl Default for LiquidCacheLocalBuilder {
 impl LiquidCacheLocalBuilder {
     /// Create a new builder with defaults
     pub fn new() -> Self {
-        #[cfg(target_os = "linux")]
-        storage::cache::io_backend::initialize_uring_pool(
-            storage::cache::io_backend::IoMode::Buffered,
-        );
         Self::default()
     }
 
@@ -124,9 +124,19 @@ impl LiquidCacheLocalBuilder {
         self
     }
 
+    /// Set IO mode
+    pub fn with_io_mode(mut self, io_mode: IoMode) -> Self {
+        self.io_mode = io_mode;
+        self
+    }
+
     /// Build a SessionContext with liquid cache configured
     /// Returns the SessionContext and the liquid cache reference
     pub fn build(self, mut config: SessionConfig) -> Result<(SessionContext, LiquidCacheRef)> {
+        #[cfg(target_os = "linux")]
+        storage::cache::io_backend::initialize_uring_pool(
+            storage::cache::io_backend::IoMode::Buffered,
+        );
         config.options_mut().execution.parquet.pushdown_filters = true;
         config
             .options_mut()

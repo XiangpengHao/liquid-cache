@@ -10,7 +10,7 @@ use datafusion::{
 use fastrace::prelude::*;
 use log::{debug, info};
 use serde::Serialize;
-use std::{fs, fs::File, path::PathBuf, sync::Arc, time::Instant};
+use std::{fs::File, sync::Arc, time::Instant};
 use sysinfo::{Disks, Networks};
 use uuid::Uuid;
 

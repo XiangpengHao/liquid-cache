@@ -29,6 +29,7 @@ log = { workspace = true }
 parquet = { workspace = true }
 fastrace = { workspace = true }
 crossbeam-channel = "0.5.15"
+serde.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 io-uring = "0.7.10"
 

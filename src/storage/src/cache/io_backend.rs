@@ -17,6 +17,7 @@ use std::{
 
 use bytes::Bytes;
 use io_uring::{IoUring, cqueue, opcode, squeue};
+use serde::Serialize;
 
 const BLOCK_ALIGN: usize = 4096;
 
@@ -253,7 +254,7 @@ unsafe impl Sync for FileWriteTask {}
 
 static ENABLED: AtomicBool = AtomicBool::new(true);
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize)]
 pub enum IoMode {
     Direct,
     #[default]

@@ -7,6 +7,7 @@ use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use liquid_cache_local::LiquidCacheLocalBuilder;
 use liquid_cache_parquet::{LiquidCacheRef, extract_execution_metrics};
+use liquid_cache_storage::cache::io_backend::IoMode;
 use liquid_cache_storage::cache::squeeze_policies::{Evict, TranscodeEvict, TranscodeSqueezeEvict};
 use liquid_cache_storage::cache_policies::LiquidPolicy;
 use log::info;
@@ -102,6 +103,7 @@ pub struct InProcessBenchmarkRunner {
     pub flamegraph_dir: Option<PathBuf>,
     pub query_filter: Option<usize>,
     pub cache_dir: Option<PathBuf>,
+    pub io_mode: IoMode,
 }
 
 impl Default for InProcessBenchmarkRunner {
@@ -121,6 +123,7 @@ impl InProcessBenchmarkRunner {
             flamegraph_dir: None,
             query_filter: None,
             cache_dir: None,
+            io_mode: IoMode::default(),
         }
     }
 
@@ -161,6 +164,11 @@ impl InProcessBenchmarkRunner {
 
     pub fn with_cache_dir(mut self, cache_dir: Option<PathBuf>) -> Self {
         self.cache_dir = cache_dir;
+        self
+    }
+
+    pub fn with_io_mode(mut self, io_mode: IoMode) -> Self {
+        self.io_mode = io_mode;
         self
     }
 
@@ -226,6 +234,7 @@ impl InProcessBenchmarkRunner {
                     .with_cache_dir(cache_dir)
                     .with_cache_policy(Box::new(LiquidPolicy::new()))
                     .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+                    .with_io_mode(self.io_mode.clone())
                     .build(session_config)?;
                 (v.0, Some(v.1))
             }
@@ -235,6 +244,7 @@ impl InProcessBenchmarkRunner {
                     .with_cache_dir(cache_dir)
                     .with_cache_policy(Box::new(LiquidPolicy::new()))
                     .with_squeeze_policy(Box::new(TranscodeEvict))
+                    .with_io_mode(self.io_mode.clone())
                     .build(session_config)?;
                 (v.0, Some(v.1))
             }
