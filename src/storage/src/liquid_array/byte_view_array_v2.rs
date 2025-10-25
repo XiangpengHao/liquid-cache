@@ -167,7 +167,7 @@ impl<B: FsstBuffer> LiquidByteViewArrayV2<B> {
             result.push(0);
         }
 
-        // e) serialize compact offset views (header + residuals)
+        // e) Serialize compact offset views (header + residuals)
         let offsets_start = result.len();
         {
             let header = self.compact_offset_views.header();
@@ -302,10 +302,6 @@ impl<B: FsstBuffer> LiquidByteViewArrayV2<B> {
 
         offset_views
     }
-
-    // fn offset_views(&self) -> Vec<OffsetView> {
-    //     self.offset_views.iter().copied().collect()
-    // }
 }
 
 impl LiquidByteViewArrayV2<MemoryBuffer> {
@@ -453,7 +449,7 @@ impl CompactOffsetViewGroup {
         let min_offset = *offsets.iter().min().unwrap();
         let max_offset = *offsets.iter().max().unwrap();
 
-        // Simple linear regression: slope = (max - min) / (n - 1)
+        // simple linear regression: slope = (max - min) / (n - 1)
         let slope = if offset_views.len() > 1 {
             (max_offset as i32 - min_offset as i32) / (offset_views.len() - 1) as i32
         } else {
@@ -461,7 +457,7 @@ impl CompactOffsetViewGroup {
         };
         let intercept = min_offset as i32;
 
-        // Calculate residuals
+        // calculate residuals
         let mut offset_residuals: Vec<i32> = Vec::new();
         let mut min_residual = i32::MAX;
         let mut max_residual = i32::MIN;
@@ -600,6 +596,8 @@ impl CompactOffsetViewGroup {
             Self::TwoBytes { residuals, .. } => residuals.len() * std::mem::size_of::<CompactOffsetViewTwoBytes>(),
             Self::FourBytes { residuals, .. } => residuals.len() * std::mem::size_of::<CompactOffsetViewFourBytes>(),
         };
+        
+        // TODO: delete
         println!("header_size: {}, residuals_size: {}", header_size, residuals_size);
         header_size + residuals_size
     }
@@ -772,35 +770,7 @@ impl OffsetView {
 }
 
 impl<T> CompactOffsetView<T> {
-    /// Construct from offset and the full suffix bytes (after shared prefix).
-    /// Embeds up to `prefix_len()` bytes into `prefix7` and stores length (or 255 if >=255).
-    // pub fn new(offset: u32, suffix_bytes: &[u8]) -> Self {
-    //     let mut prefix7 = [0u8; 7];
-    //     let copy_len = std::cmp::min(Self::prefix_len(), suffix_bytes.len());
-    //     if copy_len > 0 {
-    //         prefix7[..copy_len].copy_from_slice(&suffix_bytes[..copy_len]);
-    //     }
-    //     let len = if suffix_bytes.len() >= 255 {
-    //         255u8
-    //     } else {
-    //         suffix_bytes.len() as u8
-    //     };
-    //     Self {
-    //         offset,
-    //         prefix7,
-    //         len,
-    //     }
-    // }
-
-    /// Construct directly from stored parts (used by deserialization only)
-    // pub fn from_parts(offset_residual: T, prefix7: [u8; 7], len: u8) -> Self {
-    //     Self {
-    //         offset_residual,
-    //         prefix7,
-    //         len,
-    //     }
-    // }
-
+    
     #[inline]
     pub fn offset_residual(&self) -> T
     where 
@@ -1705,8 +1675,6 @@ impl<B: FsstBuffer> LiquidByteViewArrayV2<B> {
             0,
         ));
 
-        // TODO: Convert to compact offset view here
-
         LiquidByteViewArrayV2::from_parts(
             keys,
             &offset_views,
@@ -2067,7 +2035,6 @@ impl<B: FsstBuffer> LiquidByteViewArrayV2<B> {
 }
 
 /// Detailed memory usage of the byte view array
-/// TODO: Update memory usage for compact offset views
 pub struct ByteViewArrayMemoryUsage {
     /// Memory usage of the dictionary key
     pub dictionary_key: usize,
