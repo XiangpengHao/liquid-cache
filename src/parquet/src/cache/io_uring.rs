@@ -3,6 +3,7 @@ use std::{
     collections::VecDeque,
     ops::Range,
     os::fd::RawFd,
+    path::PathBuf,
     pin::Pin,
     sync::{
         Arc, Mutex, OnceLock,
@@ -74,7 +75,7 @@ impl FileReadTask {
     pub fn new(range: Range<u64>, fd: RawFd) -> FileReadTask {
         let mut start_padding: usize = 0;
         let mut end_padding: usize = 0;
-        if get_io_mode() == IoMode::Direct {
+        if get_io_mode() == IoMode::DirectIO {
             // Padding must be applied to ensure that starting and ending addresses are block-aligned
             start_padding = range.start as usize & (BLOCK_ALIGN - 1);
             end_padding = if range.end as usize & (BLOCK_ALIGN - 1) == 0 {
@@ -183,7 +184,7 @@ pub struct FileWriteTask {
 impl FileWriteTask {
     pub fn new(base_ptr: *const u8, num_bytes: usize, fd: RawFd) -> FileWriteTask {
         let mut padding = 0;
-        if get_io_mode() == IoMode::Direct && (num_bytes & 4095) > 0 {
+        if get_io_mode() == IoMode::DirectIO && (num_bytes & 4095) > 0 {
             padding = 4096 - num_bytes % 4096;
         }
         FileWriteTask {
@@ -279,7 +280,7 @@ impl IoUringThreadpool {
         let (sender, receiver) = crossbeam_channel::unbounded::<Arc<dyn IoTask>>();
 
         let mut builder = IoUring::<squeue::Entry, cqueue::Entry>::builder();
-        if io_type == IoMode::Direct {
+        if io_type == IoMode::DirectIO {
             // Polled IO is only supported for direct IO requests
             builder.setup_iopoll();
         }
@@ -464,4 +465,68 @@ where
             },
         }
     }
+}
+
+pub(crate) async fn read_range_from_uring(
+    path: PathBuf,
+    mut range: Option<std::ops::Range<u64>>,
+) -> Result<Bytes, std::io::Error> {
+    use std::os::fd::AsRawFd;
+    use std::{fs::OpenOptions, os::unix::fs::OpenOptionsExt as _};
+
+    use crate::cache::io_uring::{FileReadTask, UringFuture, get_io_mode};
+    use liquid_cache_common::IoMode;
+
+    let flags = if get_io_mode() == IoMode::DirectIO {
+        libc::O_DIRECT
+    } else {
+        0
+    };
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(flags)
+        .open(path)
+        .expect("failed to open file");
+
+    if range.is_none() {
+        range = Some(std::ops::Range::<u64> {
+            start: 0,
+            end: file.metadata()?.len(),
+        });
+    }
+
+    let task = Arc::new(FileReadTask::new(range.unwrap(), file.as_raw_fd()));
+    // UringFuture will be responsible for submitting and driving the future to completion
+    let uring_fut = UringFuture::new(task.clone());
+    uring_fut.await;
+    task.get_result()
+}
+
+pub(crate) async fn write_to_uring(path: PathBuf, data: &Bytes) -> Result<(), std::io::Error> {
+    use crate::cache::io_uring::{FileWriteTask, UringFuture, get_io_mode};
+    use liquid_cache_common::IoMode;
+    use std::os::fd::AsRawFd;
+    use std::{fs::OpenOptions, os::unix::fs::OpenOptionsExt as _};
+
+    let flags = if get_io_mode() == IoMode::DirectIO {
+        libc::O_DIRECT
+    } else {
+        0
+    };
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .custom_flags(flags)
+        .open(path)
+        .expect("failed to create file");
+
+    let task = Arc::new(FileWriteTask::new(
+        data.as_ptr(),
+        data.len(),
+        file.as_raw_fd(),
+    ));
+    // UringFuture will be responsible for submitting and driving the future to completion
+    let uring_fut = UringFuture::new(task.clone());
+    uring_fut.await;
+    task.get_result()
 }

@@ -188,7 +188,7 @@ mod tests {
             tmp_dir.path().to_path_buf(),
             Box::new(LiquidPolicy::new()),
             Box::new(Evict),
-            IoMode::Buffered,
+            IoMode::PageCache,
         );
         let array = Arc::new(arrow::array::Int32Array::from(vec![1, 2, 3]));
         let num_rows = 8 * 8 * 8 * 8;

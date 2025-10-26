@@ -2,8 +2,6 @@
 //!
 
 use crate::cache::io::{ColumnAccessPath, ParquetIoContext};
-#[cfg(target_os = "linux")]
-use crate::cache::io_backend::initialize_uring_pool;
 use crate::reader::{LiquidPredicate, extract_multi_column_or};
 use crate::sync::{Mutex, RwLock};
 use ahash::AHashMap;
@@ -22,7 +20,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 mod id;
 mod io;
-mod io_backend;
+mod io_uring;
 mod stats;
 
 pub use id::{BatchID, ParquetArrayID};
@@ -380,7 +378,7 @@ impl LiquidCache {
         let cache_storage = cache_storage_builder.build();
 
         #[cfg(target_os = "linux")]
-        initialize_uring_pool(io_mode);
+        io_uring::initialize_uring_pool(io_mode);
         LiquidCache {
             files: Mutex::new(AHashMap::new()),
             cache_store: cache_storage,
@@ -492,7 +490,7 @@ mod tests {
             tmp_dir.path().to_path_buf(),
             Box::new(LiquidPolicy::new()),
             Box::new(TranscodeSqueezeEvict),
-            IoMode::Buffered,
+            IoMode::PageCache,
         );
         let file = cache.register_or_get_file("test".to_string());
         file.row_group(0)

@@ -863,7 +863,7 @@ mod tests {
             PathBuf::from("test"),
             Box::new(LiquidPolicy::new()),
             Box::new(TranscodeSqueezeEvict),
-            IoMode::Buffered,
+            IoMode::PageCache,
         )));
 
         let state = SessionStateBuilder::new()

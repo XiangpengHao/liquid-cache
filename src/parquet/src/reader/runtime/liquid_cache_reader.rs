@@ -294,7 +294,7 @@ mod tests {
             tmp_dir.path().to_path_buf(),
             Box::new(LiquidPolicy::new()),
             Box::new(Evict),
-            IoMode::Buffered,
+            IoMode::PageCache,
         );
         let file = cache.register_or_get_file("test".to_string());
         let row_group = file.row_group(0);

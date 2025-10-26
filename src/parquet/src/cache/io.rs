@@ -55,7 +55,7 @@ impl IoContext for ParquetIoContext {
     async fn read_file(&self, path: PathBuf) -> Result<Bytes, std::io::Error> {
         #[cfg(target_os = "linux")]
         {
-            read_range_from_uring(path, None).await
+            super::io_uring::read_range_from_uring(path, None).await
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -77,7 +77,7 @@ impl IoContext for ParquetIoContext {
     ) -> Result<Bytes, std::io::Error> {
         #[cfg(target_os = "linux")]
         {
-            read_range_from_uring(path, Some(range)).await
+            super::io_uring::read_range_from_uring(path, Some(range)).await
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -97,7 +97,7 @@ impl IoContext for ParquetIoContext {
     async fn write_file(&self, path: PathBuf, data: Bytes) -> Result<(), std::io::Error> {
         #[cfg(target_os = "linux")]
         {
-            write_to_uring(path, &data).await
+            super::io_uring::write_to_uring(path, &data).await
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -112,73 +112,8 @@ impl IoContext for ParquetIoContext {
     }
 }
 
-#[cfg(target_os = "linux")]
-async fn read_range_from_uring(
-    path: PathBuf,
-    mut range: Option<std::ops::Range<u64>>,
-) -> Result<Bytes, std::io::Error> {
-    use std::os::fd::AsRawFd;
-    use std::{fs::OpenOptions, os::unix::fs::OpenOptionsExt as _};
-
-    use crate::cache::io_backend::{FileReadTask, UringFuture, get_io_mode};
-    use liquid_cache_common::IoMode;
-
-    let flags = if get_io_mode() == IoMode::Direct {
-        libc::O_DIRECT
-    } else {
-        0
-    };
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(flags)
-        .open(path)
-        .expect("failed to open file");
-
-    if range.is_none() {
-        range = Some(std::ops::Range::<u64> {
-            start: 0,
-            end: file.metadata()?.len(),
-        });
-    }
-
-    let task = Arc::new(FileReadTask::new(range.unwrap(), file.as_raw_fd()));
-    // UringFuture will be responsible for submitting and driving the future to completion
-    let uring_fut = UringFuture::new(task.clone());
-    uring_fut.await;
-    task.get_result()
-}
-
-#[cfg(target_os = "linux")]
-async fn write_to_uring(path: PathBuf, data: &Bytes) -> Result<(), std::io::Error> {
-    use crate::cache::io_backend::{FileWriteTask, UringFuture, get_io_mode};
-    use liquid_cache_common::IoMode;
-    use std::os::fd::AsRawFd;
-    use std::{fs::OpenOptions, os::unix::fs::OpenOptionsExt as _};
-
-    let flags = if get_io_mode() == IoMode::Direct {
-        libc::O_DIRECT
-    } else {
-        0
-    };
-    let file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .custom_flags(flags)
-        .open(path)
-        .expect("failed to create file");
-
-    let task = Arc::new(FileWriteTask::new(
-        data.as_ptr(),
-        data.len(),
-        file.as_raw_fd(),
-    ));
-    // UringFuture will be responsible for submitting and driving the future to completion
-    let uring_fut = UringFuture::new(task.clone());
-    uring_fut.await;
-    task.get_result()
-}
-
-pub(crate) async fn maybe_spawn_blocking<F, T>(f: F) -> Result<T, std::io::Error>
+#[cfg(not(target_os = "linux"))]
+async fn maybe_spawn_blocking<F, T>(f: F) -> Result<T, std::io::Error>
 where
     F: FnOnce() -> Result<T, std::io::Error> + Send + 'static,
     T: Send + 'static,
