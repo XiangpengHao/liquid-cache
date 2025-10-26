@@ -48,8 +48,8 @@ struct CliArgs {
     #[arg(long = "jaeger-endpoint")]
     jaeger_endpoint: Option<String>,
 
-    /// IO mode (direct vs buffered)
-    #[arg(long = "io-mode", default_value = "buffered")]
+    /// IO mode (direct vs page-cache)
+    #[arg(long = "io-mode", default_value = "page-cache")]
     io_mode: IoMode,
 }
 
