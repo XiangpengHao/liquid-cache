@@ -1,8 +1,9 @@
 use std::{
     alloc::Layout,
     collections::VecDeque,
+    fs,
     ops::Range,
-    os::fd::RawFd,
+    os::fd::{AsRawFd, RawFd},
     path::PathBuf,
     pin::Pin,
     sync::{
@@ -51,7 +52,7 @@ trait IoTask: Send + Sync {
 struct FileReadTask {
     base_ptr: *mut u8,
     layout: Layout,
-    fd: RawFd,
+    file: fs::File,
     completed: AtomicBool,
     waker: Mutex<Option<Waker>>,
     range: Range<u64>,
@@ -61,7 +62,7 @@ struct FileReadTask {
 }
 
 impl FileReadTask {
-    fn new(range: Range<u64>, fd: RawFd) -> FileReadTask {
+    fn new(range: Range<u64>, file: fs::File) -> FileReadTask {
         let mut start_padding: usize = 0;
         let mut end_padding: usize = 0;
         if get_io_mode() == IoMode::DirectIO {
@@ -82,7 +83,7 @@ impl FileReadTask {
         FileReadTask {
             base_ptr,
             layout,
-            fd,
+            file,
             completed: AtomicBool::new(false),
             waker: Mutex::<Option<Waker>>::new(None),
             range,
@@ -94,7 +95,11 @@ impl FileReadTask {
 
     /// Return a bytes object holding the result of the read operation
     #[inline]
-    fn get_result(&self) -> Result<Bytes, std::io::Error> {
+    fn consume_result(self: Arc<Self>) -> Result<Bytes, std::io::Error> {
+        assert!(
+            Arc::strong_count(&self) == 1,
+            "FileReadTask must be consumed exactly once"
+        );
         let mut err = self.error.lock().unwrap();
         if err.is_some() {
             unsafe {
@@ -128,7 +133,7 @@ impl IoTask for FileReadTask {
         let num_bytes = (self.range.end - self.range.start) as usize;
         let num_bytes_aligned = num_bytes + self.start_padding + self.end_padding;
         let read_op = opcode::Read::new(
-            io_uring::types::Fd(self.fd),
+            io_uring::types::Fd(self.file.as_raw_fd()),
             self.base_ptr,
             num_bytes_aligned as u32,
         );
@@ -183,7 +188,11 @@ impl FileWriteTask {
         }
     }
 
-    fn get_result(&self) -> Result<(), std::io::Error> {
+    fn consume_result(self: Arc<Self>) -> Result<(), std::io::Error> {
+        assert!(
+            Arc::strong_count(&self) == 1,
+            "FileWriteTask must be consumed exactly once"
+        );
         let mut err = self.error.lock().unwrap();
         if err.is_some() {
             return Err(err.take().unwrap());
@@ -429,8 +438,8 @@ where
                 let pool = IO_URING_THREAD_POOL_INST
                     .get()
                     .expect("Uring threadpool not initialized");
-                pool.submit_task(self.task.clone());
                 self.task.set_waker(cx.waker().clone());
+                pool.submit_task(self.task.clone());
                 self.state = UringState::Submitted;
                 Poll::Pending
             }
@@ -449,7 +458,6 @@ pub(crate) async fn read_range_from_uring(
     path: PathBuf,
     mut range: Option<std::ops::Range<u64>>,
 ) -> Result<Bytes, std::io::Error> {
-    use std::os::fd::AsRawFd;
     use std::{fs::OpenOptions, os::unix::fs::OpenOptionsExt as _};
 
     use crate::cache::io_uring::{FileReadTask, UringFuture, get_io_mode};
@@ -473,11 +481,11 @@ pub(crate) async fn read_range_from_uring(
         });
     }
 
-    let task = Arc::new(FileReadTask::new(range.unwrap(), file.as_raw_fd()));
+    let task = Arc::new(FileReadTask::new(range.unwrap(), file));
     // UringFuture will be responsible for submitting and driving the future to completion
     let uring_fut = UringFuture::new(task.clone());
     uring_fut.await;
-    task.get_result()
+    task.consume_result()
 }
 
 pub(crate) async fn write_to_uring(path: PathBuf, data: &Bytes) -> Result<(), std::io::Error> {
@@ -506,5 +514,5 @@ pub(crate) async fn write_to_uring(path: PathBuf, data: &Bytes) -> Result<(), st
     // UringFuture will be responsible for submitting and driving the future to completion
     let uring_fut = UringFuture::new(task.clone());
     uring_fut.await;
-    task.get_result()
+    task.consume_result()
 }
