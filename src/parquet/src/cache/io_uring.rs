@@ -19,31 +19,23 @@ use liquid_cache_common::IoMode;
 
 const BLOCK_ALIGN: usize = 4096;
 
-/**
-Represents an IO request to the uring worker thread
-*/
-pub trait IoTask: Send + Sync {
+/// Represents an IO request to the uring worker thread
+trait IoTask: Send + Sync {
     #[inline]
     fn set_waker(&self, waker: Waker) {
         let mut guard = self.waker().lock().unwrap();
         *guard = Some(waker);
     }
 
-    /**
-    Get the waker associated with this IO request
-     */
+    /// Get the waker associated with this IO request
     fn waker(&self) -> &Mutex<Option<Waker>>;
 
-    /**
-    Converts the IO request to an IO uring submission queue entry
-    */
+    /// Converts the IO request to an IO uring submission queue entry
     fn get_sqe(&self) -> squeue::Entry;
 
     fn completed(&self) -> &AtomicBool;
 
-    /**
-    Wake the future that submitted this IO request
-     */
+    /// Wake the future that submitted this IO request
     #[inline]
     fn notify_waker(&self) {
         self.completed().store(true, Ordering::Release);
@@ -56,10 +48,7 @@ pub trait IoTask: Send + Sync {
     fn process_completion(&self, cqe: &cqueue::Entry);
 }
 
-/**
-Represents a request to read from a file
-*/
-pub struct FileReadTask {
+struct FileReadTask {
     base_ptr: *mut u8,
     layout: Layout,
     fd: RawFd,
@@ -72,7 +61,7 @@ pub struct FileReadTask {
 }
 
 impl FileReadTask {
-    pub fn new(range: Range<u64>, fd: RawFd) -> FileReadTask {
+    fn new(range: Range<u64>, fd: RawFd) -> FileReadTask {
         let mut start_padding: usize = 0;
         let mut end_padding: usize = 0;
         if get_io_mode() == IoMode::DirectIO {
@@ -103,11 +92,9 @@ impl FileReadTask {
         }
     }
 
-    /**
-    Return a bytes object holding the result of the read operation
-     */
+    /// Return a bytes object holding the result of the read operation
     #[inline]
-    pub fn get_result(&self) -> Result<Bytes, std::io::Error> {
+    fn get_result(&self) -> Result<Bytes, std::io::Error> {
         let mut err = self.error.lock().unwrap();
         if err.is_some() {
             unsafe {
@@ -168,9 +155,7 @@ impl IoTask for FileReadTask {
 unsafe impl Send for FileReadTask {}
 unsafe impl Sync for FileReadTask {}
 
-/**
-Represents a request to write to a file
-*/
+/// Represents a request to write to a file
 pub struct FileWriteTask {
     base_ptr: *const u8,
     num_bytes: usize,
@@ -182,7 +167,7 @@ pub struct FileWriteTask {
 }
 
 impl FileWriteTask {
-    pub fn new(base_ptr: *const u8, num_bytes: usize, fd: RawFd) -> FileWriteTask {
+    fn new(base_ptr: *const u8, num_bytes: usize, fd: RawFd) -> FileWriteTask {
         let mut padding = 0;
         if get_io_mode() == IoMode::DirectIO && (num_bytes & 4095) > 0 {
             padding = 4096 - num_bytes % 4096;
@@ -198,7 +183,7 @@ impl FileWriteTask {
         }
     }
 
-    pub fn get_result(&self) -> Result<(), std::io::Error> {
+    fn get_result(&self) -> Result<(), std::io::Error> {
         let mut err = self.error.lock().unwrap();
         if err.is_some() {
             return Err(err.take().unwrap());
@@ -412,7 +397,7 @@ enum UringState {
     Submitted,
 }
 
-pub struct UringFuture<T>
+struct UringFuture<T>
 where
     T: IoTask,
 {
