@@ -3,8 +3,6 @@
 //! Instead, use `liquid_cache_server` or `liquid_cache_client` to interact with LiquidCache.
 mod byte_array;
 pub mod byte_view_array;
-pub mod byte_view_array_v2;
-// pub mod byte_view_array_v3;
 mod fix_len_byte_array;
 mod float_array;
 pub mod ipc;
@@ -23,8 +21,6 @@ use arrow::{
 };
 pub use byte_array::{LiquidByteArray, get_string_needle};
 pub use byte_view_array::LiquidByteViewArray;
-pub use byte_view_array_v2::LiquidByteViewArrayV2;
-// pub use byte_view_array_v3::LiquidByteViewArrayV3;
 use datafusion::physical_plan::PhysicalExpr;
 pub use fix_len_byte_array::LiquidFixedLenByteArray;
 use float_array::LiquidFloatType;
