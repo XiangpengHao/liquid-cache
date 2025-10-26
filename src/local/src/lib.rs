@@ -9,9 +9,9 @@ use std::sync::Arc;
 
 use datafusion::error::Result;
 use datafusion::prelude::{SessionConfig, SessionContext};
+use liquid_cache_common::IoMode;
 use liquid_cache_parquet::optimizers::{DateExtractOptimizer, LocalModeOptimizer};
 use liquid_cache_parquet::{LiquidCache, LiquidCacheRef};
-use liquid_cache_storage::cache::io_mode::IoMode;
 use liquid_cache_storage::cache::squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict};
 use liquid_cache_storage::cache_policies::CachePolicy;
 use liquid_cache_storage::cache_policies::LiquidPolicy;
@@ -133,8 +133,6 @@ impl LiquidCacheLocalBuilder {
     /// Build a SessionContext with liquid cache configured
     /// Returns the SessionContext and the liquid cache reference
     pub fn build(self, mut config: SessionConfig) -> Result<(SessionContext, LiquidCacheRef)> {
-        #[cfg(target_os = "linux")]
-        storage::cache::io_backend::initialize_uring_pool(self.io_mode);
         config.options_mut().execution.parquet.pushdown_filters = true;
         config
             .options_mut()
@@ -149,6 +147,7 @@ impl LiquidCacheLocalBuilder {
             self.cache_dir,
             self.cache_policy,
             self.squeeze_policy,
+            self.io_mode,
         );
         let cache_ref = Arc::new(cache);
 

@@ -1,4 +1,3 @@
-#![allow(missing_docs)]
 use std::{
     alloc::Layout,
     collections::VecDeque,
@@ -13,9 +12,9 @@ use std::{
     thread,
 };
 
-use crate::cache::io_mode::IoMode;
 use bytes::Bytes;
 use io_uring::{IoUring, cqueue, opcode, squeue};
+use liquid_cache_common::IoMode;
 
 const BLOCK_ALIGN: usize = 4096;
 
@@ -59,7 +58,6 @@ pub trait IoTask: Send + Sync {
 /**
 Represents a request to read from a file
 */
-#[allow(unused)]
 pub struct FileReadTask {
     base_ptr: *mut u8,
     layout: Layout,
@@ -73,7 +71,6 @@ pub struct FileReadTask {
 }
 
 impl FileReadTask {
-    #[allow(unused)]
     pub fn new(range: Range<u64>, fd: RawFd) -> FileReadTask {
         let mut start_padding: usize = 0;
         let mut end_padding: usize = 0;
@@ -103,11 +100,6 @@ impl FileReadTask {
             end_padding,
             error: Mutex::new(None),
         }
-    }
-
-    #[inline]
-    pub fn ptr(&self) -> *const u8 {
-        self.base_ptr as *const u8
     }
 
     /**
@@ -189,7 +181,6 @@ pub struct FileWriteTask {
 }
 
 impl FileWriteTask {
-    #[allow(dead_code)]
     pub fn new(base_ptr: *const u8, num_bytes: usize, fd: RawFd) -> FileWriteTask {
         let mut padding = 0;
         if get_io_mode() == IoMode::Direct && (num_bytes & 4095) > 0 {

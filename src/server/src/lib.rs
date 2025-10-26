@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#![warn(missing_docs)]
 #![doc = include_str!("../README.md")]
 
 use arrow::ipc::writer::IpcWriteOptions;
@@ -36,7 +35,10 @@ use datafusion::{
 use datafusion_proto::bytes::physical_plan_from_bytes;
 use fastrace::prelude::SpanContext;
 use futures::{Stream, TryStreamExt};
-use liquid_cache_common::rpc::{FetchResults, LiquidCacheActions};
+use liquid_cache_common::{
+    IoMode,
+    rpc::{FetchResults, LiquidCacheActions},
+};
 use liquid_cache_parquet::cache::LiquidCacheRef;
 use log::info;
 use prost::bytes::Bytes;
@@ -57,9 +59,6 @@ pub use errors::{
 };
 pub use liquid_cache_common as common;
 pub use liquid_cache_storage as storage;
-#[cfg(target_os = "linux")]
-use liquid_cache_storage::cache::io_backend::initialize_uring_pool;
-use liquid_cache_storage::cache::io_mode::IoMode;
 use liquid_cache_storage::{
     cache::squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict},
     cache_policies::{CachePolicy, LiquidPolicy},
@@ -148,8 +147,6 @@ impl LiquidCacheService {
             Some(io) => io,
             None => IoMode::Buffered,
         };
-        #[cfg(target_os = "linux")]
-        initialize_uring_pool(io_mode);
         Ok(Self {
             inner: LiquidCacheServiceInner::new(
                 Arc::new(ctx),
@@ -157,6 +154,7 @@ impl LiquidCacheService {
                 disk_cache_dir,
                 cache_policy,
                 squeeze_policy,
+                io_mode,
             ),
         })
     }

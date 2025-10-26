@@ -1,4 +1,3 @@
-#![allow(missing_docs)]
 use std::{fmt::Display, str::FromStr};
 
 use serde::Serialize;
@@ -6,9 +5,11 @@ use serde::Serialize;
 /// Mode in which Disk IO is done (buffered or direct)
 #[derive(Debug, Clone, PartialEq, Default, Serialize)]
 pub enum IoMode {
-    Direct, // Bypasses the page cache
+    /// Bypasses the page cache, uses direct IO
+    Direct,
+    /// Uses the page cache
     #[default]
-    Buffered, // Uses the page cache
+    Buffered,
 }
 
 impl Display for IoMode {

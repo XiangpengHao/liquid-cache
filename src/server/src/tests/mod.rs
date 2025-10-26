@@ -5,6 +5,7 @@ use datafusion::{
     physical_plan::{ExecutionPlan, collect},
     prelude::SessionContext,
 };
+use liquid_cache_common::IoMode;
 use liquid_cache_storage::{
     cache::squeeze_policies::{Evict, SqueezePolicy, TranscodeEvict, TranscodeSqueezeEvict},
     cache_policies::LiquidPolicy,
@@ -40,6 +41,7 @@ async fn run_sql(
         tmp_dir.path().to_path_buf(),
         Box::new(LiquidPolicy::new()),
         squeeze_policy,
+        IoMode::Buffered,
     );
     async fn get_result(service: &LiquidCacheServiceInner, sql: &str) -> String {
         let handle = Uuid::new_v4();

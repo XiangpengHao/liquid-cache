@@ -5,9 +5,9 @@ use crate::{
 use anyhow::Result;
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::prelude::{SessionConfig, SessionContext};
+use liquid_cache_common::IoMode;
 use liquid_cache_local::LiquidCacheLocalBuilder;
 use liquid_cache_parquet::{LiquidCacheRef, extract_execution_metrics};
-use liquid_cache_storage::cache::io_mode::IoMode;
 use liquid_cache_storage::cache::squeeze_policies::{Evict, TranscodeEvict, TranscodeSqueezeEvict};
 use liquid_cache_storage::cache_policies::LiquidPolicy;
 use log::info;

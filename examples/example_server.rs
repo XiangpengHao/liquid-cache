@@ -1,8 +1,8 @@
 use arrow_flight::flight_service_server::FlightServiceServer;
 use datafusion::prelude::SessionContext;
-use liquid_cache_local::storage::cache::io_mode::IoMode;
 use liquid_cache_local::storage::cache::squeeze_policies::TranscodeSqueezeEvict;
 use liquid_cache_server::LiquidCacheService;
+use liquid_cache_server::common::IoMode;
 use liquid_cache_server::storage::cache_policies::LruPolicy;
 use tonic::transport::Server;
 

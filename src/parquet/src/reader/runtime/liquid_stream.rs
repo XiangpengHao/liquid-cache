@@ -683,6 +683,7 @@ mod tests {
     use super::*;
     use crate::cache::LiquidCache;
     use arrow::array::{ArrayRef, Int32Array};
+    use liquid_cache_common::IoMode;
     use liquid_cache_storage::cache::squeeze_policies::Evict;
     use liquid_cache_storage::cache_policies::LiquidPolicy;
     use parquet::arrow::arrow_reader::RowSelection;
@@ -696,6 +697,7 @@ mod tests {
             tmp_dir.path().to_path_buf(),
             Box::new(LiquidPolicy::new()),
             Box::new(Evict),
+            IoMode::Buffered,
         );
         let file = cache.register_or_get_file("test.parquet".to_string());
         file.row_group(0)

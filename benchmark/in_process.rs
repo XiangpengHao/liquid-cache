@@ -4,7 +4,7 @@ use fastrace::prelude::*;
 use liquid_cache_benchmarks::{
     BenchmarkManifest, InProcessBenchmarkMode, InProcessBenchmarkRunner, setup_observability,
 };
-use liquid_cache_storage::cache::io_mode::IoMode;
+use liquid_cache_common::IoMode;
 use mimalloc::MiMalloc;
 use serde::Serialize;
 use std::path::PathBuf;

@@ -1,5 +1,6 @@
 use arrow::buffer::BooleanBuffer;
 use divan::Bencher;
+use liquid_cache_common::IoMode;
 use liquid_cache_parquet::cache::LiquidCachedColumn;
 use liquid_cache_parquet::{FilterCandidateBuilder, LiquidPredicate};
 use liquid_cache_storage::cache::squeeze_policies::TranscodeSqueezeEvict;
@@ -45,6 +46,7 @@ fn setup_cache(tmp_dir: &TempDir) -> Arc<LiquidCachedColumn> {
         tmp_dir.path().to_path_buf(),
         Box::new(LiquidPolicy::new()),
         Box::new(TranscodeSqueezeEvict),
+        IoMode::Buffered,
     );
     let file = cache.register_or_get_file("test_file.parquet".to_string());
     let row_group = file.row_group(0);
