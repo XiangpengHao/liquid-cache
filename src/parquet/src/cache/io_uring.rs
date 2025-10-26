@@ -244,11 +244,9 @@ unsafe impl Sync for FileWriteTask {}
 
 static ENABLED: AtomicBool = AtomicBool::new(true);
 
-/**
- * Represents a pool of worker threads responsible for submitting IO requests to the
- * kernel via io-uring.
- */
-pub struct IoUringThreadpool {
+/// Represents a pool of worker threads responsible for submitting IO requests to the
+/// kernel via io-uring.
+struct IoUringThreadpool {
     sender: crossbeam_channel::Sender<Arc<dyn IoTask>>,
     worker: Option<thread::JoinHandle<()>>,
     io_type: IoMode,
@@ -256,17 +254,14 @@ pub struct IoUringThreadpool {
 
 unsafe impl Sync for IoUringThreadpool {}
 
-pub(crate) static IO_URING_THREAD_POOL_INST: OnceLock<IoUringThreadpool> = OnceLock::new();
+static IO_URING_THREAD_POOL_INST: OnceLock<IoUringThreadpool> = OnceLock::new();
 
-/**
- * Intializes the global io-uring threadpool. This function must be called before submitting any IO to the pool.
- */
-pub fn initialize_uring_pool(io_mode: IoMode) {
+pub(crate) fn initialize_uring_pool(io_mode: IoMode) {
     IO_URING_THREAD_POOL_INST.get_or_init(|| IoUringThreadpool::new(io_mode));
 }
 
 #[inline]
-pub fn get_io_mode() -> IoMode {
+fn get_io_mode() -> IoMode {
     IO_URING_THREAD_POOL_INST
         .get()
         .expect("Uring threadpool not initialized")
@@ -276,7 +271,7 @@ pub fn get_io_mode() -> IoMode {
 impl IoUringThreadpool {
     const NUM_ENTRIES: u32 = 64;
 
-    pub fn new(io_type: IoMode) -> IoUringThreadpool {
+    fn new(io_type: IoMode) -> IoUringThreadpool {
         let (sender, receiver) = crossbeam_channel::unbounded::<Arc<dyn IoTask>>();
 
         let mut builder = IoUring::<squeue::Entry, cqueue::Entry>::builder();
@@ -303,14 +298,14 @@ impl IoUringThreadpool {
     }
 
     #[inline]
-    pub fn submit_task(&self, task: Arc<dyn IoTask>) {
+    fn submit_task(&self, task: Arc<dyn IoTask>) {
         self.sender
             .send(task.clone())
             .expect("Failed to submit task through channel");
     }
 
     #[inline]
-    pub fn io_mode(&self) -> IoMode {
+    fn io_mode(&self) -> IoMode {
         self.io_type.clone()
     }
 }
@@ -333,12 +328,10 @@ impl std::fmt::Debug for IoUringThreadpool {
     }
 }
 
-/**
-Represents a single worker thread. The worker thread busy loops through 3 phases:
-* Receives new requests from the application via a crossbeam channel
-* Converts the requests to submission queue entries and submits them to the ring
-* Polls the ring for completions and notifies the application
-*/
+/// Represents a single worker thread. The worker thread busy loops through 3 phases:
+/// 1. Receives new requests from the application via a crossbeam channel
+/// 2. Converts the requests to submission queue entries and submits them to the ring
+/// 3. Polls the ring for completions and notifies the application
 struct UringWorker {
     channel: crossbeam_channel::Receiver<Arc<dyn IoTask>>,
     ring: io_uring::IoUring,
