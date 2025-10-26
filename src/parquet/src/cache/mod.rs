@@ -20,6 +20,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 mod id;
 mod io;
+#[cfg(target_os = "linux")]
 mod io_uring;
 mod stats;
 
