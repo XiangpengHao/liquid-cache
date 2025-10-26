@@ -387,10 +387,9 @@ impl UringWorker {
             match cq.next() {
                 Some(cqe) => {
                     let token = cqe.user_data() as usize;
-                    self.submitted_tasks[token]
-                        .as_ref()
-                        .unwrap()
-                        .process_completion(&cqe);
+                    if let Some(task) = self.submitted_tasks[token].take() {
+                        task.process_completion(&cqe);
+                    }
                     self.tokens.push_back(token as u16);
                 }
                 None => {
