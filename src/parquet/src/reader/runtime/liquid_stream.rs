@@ -481,11 +481,18 @@ pub struct LiquidStreamBuilder {
     pub(crate) limit: Option<usize>,
 
     pub(crate) offset: Option<usize>,
+
+    pub(crate) span: Option<fastrace::Span>,
 }
 
 impl LiquidStreamBuilder {
     pub fn with_row_filter(mut self, filter: LiquidRowFilter) -> Self {
         self.filter = Some(filter);
+        self
+    }
+
+    pub fn with_span(mut self, span: fastrace::Span) -> Self {
+        self.span = Some(span);
         self
     }
 
@@ -538,6 +545,7 @@ impl LiquidStreamBuilder {
             selection: self.selection,
             reader: Some(reader),
             state: StreamState::Init,
+            span: self.span,
         })
     }
 }
@@ -559,6 +567,8 @@ pub struct LiquidStream {
     reader: Option<ReaderFactory>,
 
     state: StreamState,
+
+    span: Option<fastrace::Span>,
 }
 
 impl std::fmt::Debug for LiquidStream {
@@ -577,6 +587,11 @@ impl Stream for LiquidStream {
     type Item = Result<RecordBatch, parquet::errors::ParquetError>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let _guard = if let Some(s) = &self.span {
+            Some(s.set_local_parent())
+        } else {
+            None
+        };
         loop {
             let state = std::mem::replace(&mut self.state, StreamState::Init);
 

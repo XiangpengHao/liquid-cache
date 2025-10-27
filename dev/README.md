@@ -22,6 +22,7 @@ LiquidCache exports OpenTelemetry traces. Spin up a Jaeger v2
 ```bash
 docker run  \
       --name jaeger \
+      --replace \
       -e COLLECTOR_OTLP_ENABLED=true \
       -p 16686:16686 \
       -p 4317:4317 \
@@ -29,13 +30,14 @@ docker run  \
       cr.jaegertracing.io/jaegertracing/jaeger:2.11.0
 ```
 
-This image contains the Jaeger v2 distribution. Port 16686 exposes the UI; 4317
-and 4318 expose OTLP over gRPC and HTTP respectively.
+This image contains the Jaeger v2 distribution. 
+Port 16686 exposes the frontend UI at http://localhost:16686.
+4317 and 4318 expose OTLP over gRPC and HTTP respectively.
 
 Once the collector is running, point the benchmark binaries at the OTLP gRPC
 endpoint (defaults to `http://localhost:4317`):
 ```bash
-cargo run --release --bin bench_server -- --jaeger-endpoint http://localhost:4317
+cargo run --release --bin bench_server --features "trace" -- --jaeger-endpoint http://localhost:4317
 ```
 
 The Jaeger UI will be available at http://localhost:16686.

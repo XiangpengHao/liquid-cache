@@ -46,6 +46,7 @@ pub struct LiquidParquetOpener {
     reorder_filters: bool,
     liquid_cache: LiquidCacheRef,
     schema_adapter_factory: Arc<dyn SchemaAdapterFactory>,
+    span: Option<Arc<fastrace::Span>>,
 }
 
 impl LiquidParquetOpener {
@@ -64,6 +65,7 @@ impl LiquidParquetOpener {
         parquet_file_reader_factory: Arc<CachedMetaReaderFactory>,
         reorder_filters: bool,
         schema_adapter_factory: Arc<dyn SchemaAdapterFactory>,
+        span: Option<Arc<fastrace::Span>>,
     ) -> Self {
         Self {
             partition_index,
@@ -79,6 +81,7 @@ impl LiquidParquetOpener {
             parquet_file_reader_factory,
             reorder_filters,
             schema_adapter_factory,
+            span,
         }
     }
 }
@@ -122,7 +125,7 @@ impl FileOpener for LiquidParquetOpener {
         let enable_page_index = should_enable_page_index(&self.page_pruning_predicate);
         let limit = self.limit;
         let schema_adapter_factory = Arc::clone(&self.schema_adapter_factory);
-
+        let span = self.span.clone();
         Ok(Box::pin(async move {
             let mut options = ArrowReaderOptions::new().with_page_index(enable_page_index);
 
@@ -258,6 +261,11 @@ impl FileOpener for LiquidParquetOpener {
 
             if let Some(row_filter) = row_filter {
                 liquid_builder = liquid_builder.with_row_filter(row_filter);
+            }
+
+            if let Some(s) = &span {
+                let span = fastrace::Span::enter_with_parent(format!("liquid_stream"), &s);
+                liquid_builder = liquid_builder.with_span(span);
             }
 
             let stream = liquid_builder.build(liquid_cache)?;
