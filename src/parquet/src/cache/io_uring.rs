@@ -46,7 +46,7 @@ struct FileReadTask {
 }
 
 impl FileReadTask {
-    fn new(range: Range<u64>, file: fs::File) -> FileReadTask {
+    fn build(range: Range<u64>, file: fs::File) -> FileReadTask {
         let mut start_padding: usize = 0;
         let mut end_padding: usize = 0;
         if get_io_mode() == IoMode::DirectIO {
@@ -75,27 +75,34 @@ impl FileReadTask {
         }
     }
 
+    #[allow(clippy::new_ret_no_self)]
+    fn new(range: Range<u64>, file: fs::File) -> FileReadTaskFuture {
+        let task = FileReadTask::build(range, file);
+        FileReadTaskFuture(UringFuture::new(Box::new(task)))
+    }
+
     /// Return a bytes object holding the result of the read operation
     #[inline]
-    fn consume_result(mut self: Box<Self>) -> Result<Bytes, std::io::Error> {
-        if let Some(err) = self.error.take() {
+    fn into_result(self: Box<Self>) -> Result<Bytes, std::io::Error> {
+        let mut this = self;
+        if let Some(err) = this.error.take() {
             unsafe {
-                std::alloc::dealloc(self.base_ptr, self.layout);
+                std::alloc::dealloc(this.base_ptr, this.layout);
             }
-            self.base_ptr = std::ptr::null_mut();
+            this.base_ptr = std::ptr::null_mut();
             return Err(err);
         }
         let total_bytes =
-            (self.range.end - self.range.start) as usize + self.start_padding + self.end_padding;
-        let base_ptr = std::mem::replace(&mut self.base_ptr, std::ptr::null_mut());
+            (this.range.end - this.range.start) as usize + this.start_padding + this.end_padding;
+        let base_ptr = std::mem::replace(&mut this.base_ptr, std::ptr::null_mut());
         unsafe {
             let vec = Vec::from_raw_parts(base_ptr, total_bytes, total_bytes);
             // Convert to vec in order to transfer ownership of underlying pointer
             let owned_slice: Box<[u8]> = vec.into_boxed_slice();
             // The below slice operation removes the padding. This is a no-op in case of buffered IO
             Ok(Bytes::from(owned_slice).slice(
-                self.start_padding
-                    ..(self.range.end as usize - self.range.start as usize + self.start_padding),
+                this.start_padding
+                    ..(this.range.end as usize - this.range.start as usize + this.start_padding),
             ))
         }
     }
@@ -142,6 +149,21 @@ impl Drop for FileReadTask {
 
 unsafe impl Send for FileReadTask {}
 
+struct FileReadTaskFuture(UringFuture<FileReadTask>);
+
+impl Future for FileReadTaskFuture {
+    type Output = Result<Bytes, std::io::Error>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        // SAFETY: We never move the inner future after pinning `self`.
+        let inner = unsafe { self.map_unchecked_mut(|fut| &mut fut.0) };
+        match inner.poll(cx) {
+            Poll::Ready(task) => Poll::Ready(task.into_result()),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
 /// Represents a request to write to a file
 #[derive(Debug)]
 pub struct FileWriteTask {
@@ -153,7 +175,7 @@ pub struct FileWriteTask {
 }
 
 impl FileWriteTask {
-    fn new(base_ptr: *const u8, num_bytes: usize, fd: RawFd) -> FileWriteTask {
+    fn build(base_ptr: *const u8, num_bytes: usize, fd: RawFd) -> FileWriteTask {
         let mut padding = 0;
         if get_io_mode() == IoMode::DirectIO && (num_bytes & 4095) > 0 {
             padding = 4096 - num_bytes % 4096;
@@ -167,8 +189,15 @@ impl FileWriteTask {
         }
     }
 
-    fn consume_result(mut self: Box<Self>) -> Result<(), std::io::Error> {
-        if let Some(err) = self.error.take() {
+    #[allow(clippy::new_ret_no_self)]
+    fn new(base_ptr: *const u8, num_bytes: usize, fd: RawFd) -> FileWriteTaskFuture {
+        let task = FileWriteTask::build(base_ptr, num_bytes, fd);
+        FileWriteTaskFuture(UringFuture::new(Box::new(task)))
+    }
+
+    fn into_result(self: Box<Self>) -> Result<(), std::io::Error> {
+        let mut this = self;
+        if let Some(err) = this.error.take() {
             return Err(err);
         }
         Ok(())
@@ -208,6 +237,21 @@ impl Drop for FileWriteTask {
 
 unsafe impl Send for FileWriteTask {}
 
+struct FileWriteTaskFuture(UringFuture<FileWriteTask>);
+
+impl Future for FileWriteTaskFuture {
+    type Output = Result<(), std::io::Error>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        // SAFETY: We never move the inner future after pinning `self`.
+        let inner = unsafe { self.map_unchecked_mut(|fut| &mut fut.0) };
+        match inner.poll(cx) {
+            Poll::Ready(task) => Poll::Ready(task.into_result()),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
 static ENABLED: AtomicBool = AtomicBool::new(true);
 
 struct Submission {
@@ -225,8 +269,7 @@ impl Submission {
 
     fn send_back(mut self, cqe: &cqueue::Entry) {
         self.task.process_completion(cqe);
-        let _ = self
-            .completion_tx
+        self.completion_tx
             .send(self.task)
             .expect("Failed to send task back to caller");
     }
@@ -327,6 +370,7 @@ struct UringWorker {
 }
 
 impl UringWorker {
+    #[allow(clippy::new_ret_no_self)]
     fn new(
         channel: crossbeam_channel::Receiver<Submission>,
         ring: io_uring::IoUring,
@@ -460,11 +504,11 @@ where
 
 pub(crate) async fn read_range_from_uring(
     path: PathBuf,
-    mut range: Option<std::ops::Range<u64>>,
+    range: Option<std::ops::Range<u64>>,
 ) -> Result<Bytes, std::io::Error> {
     use std::{fs::OpenOptions, os::unix::fs::OpenOptionsExt as _};
 
-    use crate::cache::io_uring::{FileReadTask, UringFuture, get_io_mode};
+    use crate::cache::io_uring::{FileReadTask, get_io_mode};
     use liquid_cache_common::IoMode;
 
     let flags = if get_io_mode() == IoMode::DirectIO {
@@ -478,21 +522,16 @@ pub(crate) async fn read_range_from_uring(
         .open(path)
         .expect("failed to open file");
 
-    if range.is_none() {
-        range = Some(std::ops::Range::<u64> {
-            start: 0,
-            end: file.metadata()?.len(),
-        });
-    }
+    let effective_range = range.unwrap_or(std::ops::Range::<u64> {
+        start: 0,
+        end: file.metadata()?.len(),
+    });
 
-    let task = Box::new(FileReadTask::new(range.unwrap(), file));
-    // UringFuture will be responsible for submitting and driving the future to completion
-    let completed_task = UringFuture::new(task).await;
-    completed_task.consume_result()
+    FileReadTask::new(effective_range, file).await
 }
 
 pub(crate) async fn write_to_uring(path: PathBuf, data: &Bytes) -> Result<(), std::io::Error> {
-    use crate::cache::io_uring::{FileWriteTask, UringFuture, get_io_mode};
+    use crate::cache::io_uring::{FileWriteTask, get_io_mode};
     use liquid_cache_common::IoMode;
     use std::os::fd::AsRawFd;
     use std::{fs::OpenOptions, os::unix::fs::OpenOptionsExt as _};
@@ -509,12 +548,5 @@ pub(crate) async fn write_to_uring(path: PathBuf, data: &Bytes) -> Result<(), st
         .open(path)
         .expect("failed to create file");
 
-    let task = Box::new(FileWriteTask::new(
-        data.as_ptr(),
-        data.len(),
-        file.as_raw_fd(),
-    ));
-    // UringFuture will be responsible for submitting and driving the future to completion
-    let completed_task = UringFuture::new(task).await;
-    completed_task.consume_result()
+    FileWriteTask::new(data.as_ptr(), data.len(), file.as_raw_fd()).await
 }
