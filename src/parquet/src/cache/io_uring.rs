@@ -25,10 +25,10 @@ const BLOCK_ALIGN: usize = 4096;
 /// Represents an IO request to the uring worker thread
 trait IoTask: Send + Any + std::fmt::Debug {
     /// Converts the IO request to an IO uring submission queue entry
-    fn get_sqe(&mut self) -> squeue::Entry;
+    fn prepare_sqe(&mut self) -> squeue::Entry;
 
-    /// Allows the task to record the outcome of the completion queue entry
-    fn process_completion(&mut self, cqe: &cqueue::Entry);
+    /// Record the outcome of the completion queue entry
+    fn complete(&mut self, cqe: &cqueue::Entry);
 
     /// Convert the boxed task to a boxed `Any` so callers can recover the original type.
     fn into_any(self: Box<Self>) -> Box<dyn Any>;
@@ -110,7 +110,7 @@ impl FileReadTask {
 
 impl IoTask for FileReadTask {
     #[inline]
-    fn get_sqe(&mut self) -> squeue::Entry {
+    fn prepare_sqe(&mut self) -> squeue::Entry {
         let num_bytes = (self.range.end - self.range.start) as usize;
         let num_bytes_aligned = num_bytes + self.start_padding + self.end_padding;
         let read_op = opcode::Read::new(
@@ -125,7 +125,7 @@ impl IoTask for FileReadTask {
     }
 
     #[inline]
-    fn process_completion(&mut self, cqe: &cqueue::Entry) {
+    fn complete(&mut self, cqe: &cqueue::Entry) {
         if cqe.result() < 0 {
             self.error = Some(std::io::Error::from_raw_os_error(-cqe.result()));
         }
@@ -206,7 +206,7 @@ impl FileWriteTask {
 
 impl IoTask for FileWriteTask {
     #[inline]
-    fn get_sqe(&mut self) -> squeue::Entry {
+    fn prepare_sqe(&mut self) -> squeue::Entry {
         let num_bytes_aligned = self.num_bytes + self.padding;
         let write_op = opcode::Write::new(
             io_uring::types::Fd(self.fd),
@@ -218,7 +218,7 @@ impl IoTask for FileWriteTask {
     }
 
     #[inline]
-    fn process_completion(&mut self, cqe: &cqueue::Entry) {
+    fn complete(&mut self, cqe: &cqueue::Entry) {
         if cqe.result() < 0 {
             self.error = Some(std::io::Error::from_raw_os_error(-cqe.result()));
         }
@@ -268,10 +268,26 @@ impl Submission {
     }
 
     fn send_back(mut self, cqe: &cqueue::Entry) {
-        self.task.process_completion(cqe);
+        self.task.complete(cqe);
         self.completion_tx
             .send(self.task)
             .expect("Failed to send task back to caller");
+    }
+}
+
+struct JoinOnDropHandle<T>(Option<thread::JoinHandle<T>>);
+
+impl<T> JoinOnDropHandle<T> {
+    fn new(handle: thread::JoinHandle<T>) -> JoinOnDropHandle<T> {
+        JoinOnDropHandle(Some(handle))
+    }
+}
+
+impl<T> Drop for JoinOnDropHandle<T> {
+    fn drop(&mut self) {
+        if let Some(handle) = self.0.take() {
+            let _ = handle.join();
+        }
     }
 }
 
@@ -279,7 +295,7 @@ impl Submission {
 /// kernel via io-uring.
 struct IoUringThreadpool {
     sender: crossbeam_channel::Sender<Submission>,
-    worker: Option<thread::JoinHandle<()>>,
+    _worker_guard: JoinOnDropHandle<()>,
     io_type: IoMode,
 }
 
@@ -322,7 +338,7 @@ impl IoUringThreadpool {
 
         IoUringThreadpool {
             sender,
-            worker: Some(worker),
+            _worker_guard: JoinOnDropHandle::new(worker),
             io_type,
         }
     }
@@ -343,10 +359,6 @@ impl IoUringThreadpool {
 impl Drop for IoUringThreadpool {
     fn drop(&mut self) {
         ENABLED.store(false, Ordering::Relaxed);
-        let worker = self.worker.take();
-        if let Some(w) = worker {
-            let _ = w.join();
-        }
     }
 }
 
@@ -401,8 +413,7 @@ impl UringWorker {
                 {
                     let sq = &mut (self.ring.submission());
                     let task = submission.task.as_mut();
-                    let sqe = task.get_sqe().user_data(token as u64);
-
+                    let sqe = task.prepare_sqe().user_data(token as u64);
                     unsafe {
                         sq.push(&sqe).expect("Failed to push to submission queue");
                     }
