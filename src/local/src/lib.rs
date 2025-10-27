@@ -77,7 +77,7 @@ impl Default for LiquidCacheLocalBuilder {
             cache_policy: Box::new(LiquidPolicy::new()),
             squeeze_policy: Box::new(TranscodeSqueezeEvict),
             span: fastrace::Span::enter_with_local_parent("liquid_cache_local_builder"),
-            io_mode: IoMode::PageCache,
+            io_mode: IoMode::StdBlockingIO,
         }
     }
 }

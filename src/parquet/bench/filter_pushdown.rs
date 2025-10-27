@@ -46,7 +46,7 @@ fn setup_cache(tmp_dir: &TempDir) -> Arc<LiquidCachedColumn> {
         tmp_dir.path().to_path_buf(),
         Box::new(LiquidPolicy::new()),
         Box::new(TranscodeSqueezeEvict),
-        IoMode::PageCache,
+        IoMode::Uring,
     );
     let file = cache.register_or_get_file("test_file.parquet".to_string());
     let row_group = file.row_group(0);

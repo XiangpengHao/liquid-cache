@@ -369,17 +369,16 @@ impl LiquidCache {
         io_mode: IoMode,
     ) -> Self {
         assert!(batch_size.is_power_of_two());
+        let io_context = Arc::new(ParquetIoContext::new(cache_dir.clone(), io_mode));
         let cache_storage_builder = CacheStorageBuilder::new()
             .with_batch_size(batch_size)
             .with_max_cache_bytes(max_cache_bytes)
             .with_cache_dir(cache_dir.clone())
             .with_squeeze_policy(squeeze_policy)
             .with_cache_policy(cache_policy)
-            .with_io_worker(Arc::new(ParquetIoContext::new(cache_dir)));
+            .with_io_worker(io_context);
         let cache_storage = cache_storage_builder.build();
 
-        #[cfg(target_os = "linux")]
-        io_uring::initialize_uring_pool(io_mode);
         LiquidCache {
             files: Mutex::new(AHashMap::new()),
             cache_store: cache_storage,
@@ -491,7 +490,7 @@ mod tests {
             tmp_dir.path().to_path_buf(),
             Box::new(LiquidPolicy::new()),
             Box::new(TranscodeSqueezeEvict),
-            IoMode::PageCache,
+            IoMode::Uring,
         );
         let file = cache.register_or_get_file("test".to_string());
         file.row_group(0)

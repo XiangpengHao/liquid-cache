@@ -145,7 +145,7 @@ impl LiquidCacheService {
         };
         let io_mode = match io_mode {
             Some(io) => io,
-            None => IoMode::PageCache,
+            None => IoMode::Uring,
         };
         Ok(Self {
             inner: LiquidCacheServiceInner::new(

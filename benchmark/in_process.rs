@@ -59,8 +59,8 @@ struct InProcessBenchmark {
     #[arg(long = "jaeger-endpoint")]
     pub jaeger_endpoint: Option<String>,
 
-    /// IO mode (direct vs page-cache)
-    #[arg(long = "io-mode", default_value = "page-cache")]
+    /// IO mode, available options: uring, uring-direct, std-blocking, tokio, std-spawn-blocking
+    #[arg(long = "io-mode", default_value = "uring")]
     io_mode: IoMode,
 }
 
@@ -78,7 +78,7 @@ impl InProcessBenchmark {
             .with_flamegraph_dir(self.flamegraph_dir.clone())
             .with_cache_dir(self.cache_dir.clone())
             .with_query_filter(self.query_index)
-            .with_io_mode(self.io_mode.clone());
+            .with_io_mode(self.io_mode);
 
         runner.run(manifest, self, output).await?;
         Ok(())
