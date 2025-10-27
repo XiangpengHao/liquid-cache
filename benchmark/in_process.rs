@@ -78,7 +78,7 @@ impl InProcessBenchmark {
             .with_flamegraph_dir(self.flamegraph_dir.clone())
             .with_cache_dir(self.cache_dir.clone())
             .with_query_filter(self.query_index)
-            .with_io_mode(self.io_mode.clone());
+            .with_io_mode(self.io_mode);
 
         runner.run(manifest, self, output).await?;
         Ok(())

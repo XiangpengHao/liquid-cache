@@ -352,7 +352,7 @@ impl IoUringThreadpool {
 
     #[inline]
     fn io_mode(&self) -> IoMode {
-        self.io_type.clone()
+        self.io_type
     }
 }
 

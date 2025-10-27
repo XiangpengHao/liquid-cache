@@ -192,7 +192,7 @@ mod io_backend {
         match tokio::runtime::Handle::try_current() {
             Ok(runtime) => match runtime.spawn_blocking(f).await {
                 Ok(result) => result,
-                Err(err) => Err(std::io::Error::new(std::io::ErrorKind::Other, err)),
+                Err(err) => Err(std::io::Error::other(err)),
             },
             Err(_) => f(),
         }
@@ -225,7 +225,7 @@ impl IoContext for ParquetIoContext {
     }
 
     async fn read_file(&self, path: PathBuf) -> Result<Bytes, std::io::Error> {
-        io_backend::read_file(self.io_mode.clone(), path).await
+        io_backend::read_file(self.io_mode, path).await
     }
 
     async fn read_range(
@@ -233,11 +233,11 @@ impl IoContext for ParquetIoContext {
         path: PathBuf,
         range: std::ops::Range<u64>,
     ) -> Result<Bytes, std::io::Error> {
-        io_backend::read_range(self.io_mode.clone(), path, range).await
+        io_backend::read_range(self.io_mode, path, range).await
     }
 
     async fn write_file(&self, path: PathBuf, data: Bytes) -> Result<(), std::io::Error> {
-        io_backend::write_file(self.io_mode.clone(), path, data).await
+        io_backend::write_file(self.io_mode, path, data).await
     }
 }
 
