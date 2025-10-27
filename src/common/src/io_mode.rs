@@ -20,12 +20,12 @@ pub enum IoMode {
     #[serde(rename = "std-blocking")]
     StdBlockingIO,
 
-    /// Uses tokio's async IO, this is non-blocking IO, but quite slow: https://github.com/tokio-rs/tokio/issues/3664
+    /// Uses tokio's async IO, this is non-blocking IO, but quite slow: <https://github.com/tokio-rs/tokio/issues/3664>
     #[serde(rename = "tokio")]
     TokioIO,
 
     /// Use rust's std::fs::File, but will try to `spawn_blocking`, just like `object_store` does:
-    /// https://github.com/apache/arrow-rs-object-store/blob/28b2fc563feb44bb3d15718cf58036772334a704/src/local.rs#L440-L448
+    /// <https://github.com/apache/arrow-rs-object-store/blob/28b2fc563feb44bb3d15718cf58036772334a704/src/local.rs#L440-L448>
     #[serde(rename = "std-spawn-blocking")]
     StdSpawnBlockingIO,
 }
