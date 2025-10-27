@@ -96,27 +96,24 @@ impl FileReadTask {
     /// Return a bytes object holding the result of the read operation
     #[inline]
     fn consume_result(self: Arc<Self>) -> Result<Bytes, std::io::Error> {
-        assert!(
-            Arc::strong_count(&self) == 1,
-            "FileReadTask must be consumed exactly once"
-        );
-        let mut err = self.error.lock().unwrap();
+        let task = Arc::into_inner(self).expect("FileReadTask must be consumed exactly once");
+        let mut err = task.error.lock().unwrap();
         if err.is_some() {
             unsafe {
-                std::alloc::dealloc(self.base_ptr, self.layout);
+                std::alloc::dealloc(task.base_ptr, task.layout);
             }
             return Err(err.take().unwrap());
         }
         let total_bytes =
-            (self.range.end - self.range.start) as usize + self.start_padding + self.end_padding;
+            (task.range.end - task.range.start) as usize + task.start_padding + task.end_padding;
         unsafe {
-            let vec = Vec::from_raw_parts(self.base_ptr, total_bytes, total_bytes);
+            let vec = Vec::from_raw_parts(task.base_ptr, total_bytes, total_bytes);
             // Convert to vec in order to transfer ownership of underlying pointer
             let owned_slice: Box<[u8]> = vec.into_boxed_slice();
             // The below slice operation removes the padding. This is a no-op in case of buffered IO
             Ok(Bytes::from(owned_slice).slice(
-                self.start_padding
-                    ..(self.range.end as usize - self.range.start as usize + self.start_padding),
+                task.start_padding
+                    ..(task.range.end as usize - task.range.start as usize + task.start_padding),
             ))
         }
     }
@@ -189,11 +186,8 @@ impl FileWriteTask {
     }
 
     fn consume_result(self: Arc<Self>) -> Result<(), std::io::Error> {
-        assert!(
-            Arc::strong_count(&self) == 1,
-            "FileWriteTask must be consumed exactly once"
-        );
-        let mut err = self.error.lock().unwrap();
+        let task = Arc::into_inner(self).expect("FileWriteTask must be consumed exactly once");
+        let mut err = task.error.lock().unwrap();
         if err.is_some() {
             return Err(err.take().unwrap());
         }
@@ -294,7 +288,7 @@ impl IoUringThreadpool {
     #[inline]
     fn submit_task(&self, task: Arc<dyn IoTask>) {
         self.sender
-            .send(task.clone())
+            .send(task)
             .expect("Failed to submit task through channel");
     }
 
@@ -327,7 +321,7 @@ impl std::fmt::Debug for IoUringThreadpool {
 /// 2. Converts the requests to submission queue entries and submits them to the ring
 /// 3. Polls the ring for completions and notifies the application
 struct UringWorker {
-    channel: crossbeam_channel::Receiver<Arc<dyn IoTask>>,
+    receiver: crossbeam_channel::Receiver<Arc<dyn IoTask>>,
     ring: io_uring::IoUring,
     tokens: VecDeque<u16>,
     submitted_tasks: Vec<Option<Arc<dyn IoTask>>>,
@@ -342,7 +336,7 @@ impl UringWorker {
         let mut tasks = Vec::<Option<Arc<dyn IoTask>>>::new();
         tasks.resize(IoUringThreadpool::NUM_ENTRIES as usize, None);
         UringWorker {
-            channel,
+            receiver: channel,
             ring,
             tokens,
             submitted_tasks: tasks,
@@ -356,7 +350,7 @@ impl UringWorker {
             }
 
             while !self.tokens.is_empty() {
-                let res = self.channel.try_recv();
+                let res = self.receiver.try_recv();
                 if res.is_err() {
                     break;
                 }
@@ -387,9 +381,10 @@ impl UringWorker {
             match cq.next() {
                 Some(cqe) => {
                     let token = cqe.user_data() as usize;
-                    if let Some(task) = self.submitted_tasks[token].take() {
-                        task.process_completion(&cqe);
-                    }
+                    let task = self.submitted_tasks[token]
+                        .take()
+                        .expect("Task not found in submitted tasks");
+                    task.process_completion(&cqe);
                     self.tokens.push_back(token as u16);
                 }
                 None => {
@@ -405,19 +400,19 @@ enum UringState {
     Submitted,
 }
 
-struct UringFuture<T>
+struct UringFuture<'a, T>
 where
     T: IoTask,
 {
-    task: Arc<T>,
+    task: &'a Arc<T>,
     state: UringState,
 }
 
-impl<T> UringFuture<T>
+impl<'a, T> UringFuture<'a, T>
 where
     T: IoTask,
 {
-    pub fn new(task: Arc<T>) -> UringFuture<T> {
+    pub fn new(task: &'a Arc<T>) -> UringFuture<'a, T> {
         UringFuture {
             task,
             state: UringState::Initialized,
@@ -425,7 +420,7 @@ where
     }
 }
 
-impl<T> Future for UringFuture<T>
+impl<'a, T> Future for UringFuture<'a, T>
 where
     T: IoTask + 'static,
 {
@@ -482,7 +477,7 @@ pub(crate) async fn read_range_from_uring(
 
     let task = Arc::new(FileReadTask::new(range.unwrap(), file));
     // UringFuture will be responsible for submitting and driving the future to completion
-    let uring_fut = UringFuture::new(task.clone());
+    let uring_fut = UringFuture::new(&task);
     uring_fut.await;
     task.consume_result()
 }
@@ -511,7 +506,7 @@ pub(crate) async fn write_to_uring(path: PathBuf, data: &Bytes) -> Result<(), st
         file.as_raw_fd(),
     ));
     // UringFuture will be responsible for submitting and driving the future to completion
-    let uring_fut = UringFuture::new(task.clone());
+    let uring_fut = UringFuture::new(&task);
     uring_fut.await;
     task.consume_result()
 }
