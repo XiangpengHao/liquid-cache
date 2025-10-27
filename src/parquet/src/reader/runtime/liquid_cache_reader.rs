@@ -274,6 +274,7 @@ mod tests {
         scalar::ScalarValue,
     };
     use futures::{StreamExt, pin_mut};
+    use liquid_cache_common::IoMode;
     use liquid_cache_storage::cache::squeeze_policies::Evict;
     use liquid_cache_storage::cache_policies::LiquidPolicy;
     use parquet::arrow::{
@@ -282,7 +283,7 @@ mod tests {
     };
     use std::sync::Arc;
 
-    fn make_row_group(
+    async fn make_row_group(
         batch_size: usize,
         batches: &[Vec<i32>],
     ) -> (LiquidCachedRowGroupRef, SchemaRef) {
@@ -293,6 +294,7 @@ mod tests {
             tmp_dir.path().to_path_buf(),
             Box::new(LiquidPolicy::new()),
             Box::new(Evict),
+            IoMode::PageCache,
         );
         let file = cache.register_or_get_file("test".to_string());
         let row_group = file.row_group(0);
@@ -302,12 +304,10 @@ mod tests {
 
         for (idx, values) in batches.iter().enumerate() {
             let array: ArrayRef = Arc::new(Int32Array::from(values.clone()));
-            tokio_test::block_on(async {
-                column
-                    .insert(BatchID::from_raw(idx as u16), array)
-                    .await
-                    .expect("cache insert");
-            });
+            column
+                .insert(BatchID::from_raw(idx as u16), array)
+                .await
+                .expect("cache insert");
         }
 
         let schema = Arc::new(Schema::new(vec![Field::new(
@@ -379,10 +379,10 @@ mod tests {
         build_filter(schema, values, expr)
     }
 
-    #[test]
-    fn reads_batches_in_order() {
+    #[tokio::test]
+    async fn reads_batches_in_order() {
         let batch_size = 2;
-        let (row_group, schema) = make_row_group(batch_size, &[vec![1, 2], vec![3, 4]]);
+        let (row_group, schema) = make_row_group(batch_size, &[vec![1, 2], vec![3, 4]]).await;
         let selection = RowSelection::from(vec![RowSelector::select(4)]);
 
         let reader =
@@ -394,10 +394,10 @@ mod tests {
         assert_eq!(as_i32_values(&batches[1]), vec![3, 4]);
     }
 
-    #[test]
-    fn skips_unselected_batches() {
+    #[tokio::test]
+    async fn skips_unselected_batches() {
         let batch_size = 2;
-        let (row_group, schema) = make_row_group(batch_size, &[vec![1, 2], vec![3, 4]]);
+        let (row_group, schema) = make_row_group(batch_size, &[vec![1, 2], vec![3, 4]]).await;
         let selection = RowSelection::from(vec![RowSelector::skip(2), RowSelector::select(2)]);
 
         let reader =
@@ -408,10 +408,10 @@ mod tests {
         assert_eq!(as_i32_values(&batches[0]), vec![3, 4]);
     }
 
-    #[test]
-    fn empty_projection_emits_schema_only_batches() {
+    #[tokio::test]
+    async fn empty_projection_emits_schema_only_batches() {
         let batch_size = 2;
-        let (row_group, _) = make_row_group(batch_size, &[vec![10, 11]]);
+        let (row_group, _) = make_row_group(batch_size, &[vec![10, 11]]).await;
         let selection = RowSelection::from(vec![RowSelector::select(2)]);
 
         let reader = LiquidCacheReader::new(
@@ -430,10 +430,10 @@ mod tests {
         assert_eq!(batch.num_rows(), 2);
     }
 
-    #[test]
-    fn into_filter_returns_stored_filter_after_completion() {
+    #[tokio::test]
+    async fn into_filter_returns_stored_filter_after_completion() {
         let batch_size = 2;
-        let (row_group, schema) = make_row_group(batch_size, &[vec![1, 2]]);
+        let (row_group, schema) = make_row_group(batch_size, &[vec![1, 2]]).await;
         let selection = RowSelection::from(Vec::<RowSelector>::new());
         let filter = LiquidRowFilter::new(Vec::new());
 
@@ -456,12 +456,12 @@ mod tests {
         assert!(reader.into_filter().is_some());
     }
 
-    #[test]
-    fn predicate_filters_rows_across_batches() {
+    #[tokio::test]
+    async fn predicate_filters_rows_across_batches() {
         let batches = vec![vec![1, 2], vec![3, 4]];
         let batch_size = 2;
         let all_values = flatten_batches(&batches);
-        let (row_group, schema) = make_row_group(batch_size, &batches);
+        let (row_group, schema) = make_row_group(batch_size, &batches).await;
         let filter = make_gt_filter(Arc::clone(&schema), &all_values, 2);
         let selection = RowSelection::from(vec![RowSelector::select(4)]);
 
@@ -499,12 +499,12 @@ mod tests {
         build_filter(schema, values, expr)
     }
 
-    #[test]
-    fn predicate_filters_or_rows() {
+    #[tokio::test]
+    async fn predicate_filters_or_rows() {
         let batches = vec![vec![1, 2], vec![3, 4], vec![5, 6]];
         let batch_size = 2;
         let all_values = flatten_batches(&batches);
-        let (row_group, schema) = make_row_group(batch_size, &batches);
+        let (row_group, schema) = make_row_group(batch_size, &batches).await;
         let filter = make_or_filter(Arc::clone(&schema), &all_values, 4, 2);
         let selection = RowSelection::from(vec![RowSelector::select(6)]);
 
@@ -523,12 +523,12 @@ mod tests {
         assert_eq!(as_i32_values(&batches[1]), vec![5, 6]);
     }
 
-    #[test]
-    fn predicate_combines_with_selection() {
+    #[tokio::test]
+    async fn predicate_combines_with_selection() {
         let batches = vec![vec![1, 2, 3, 4]];
         let batch_size = 4;
         let all_values = flatten_batches(&batches);
-        let (row_group, schema) = make_row_group(batch_size, &batches);
+        let (row_group, schema) = make_row_group(batch_size, &batches).await;
         let filter = make_gt_filter(Arc::clone(&schema), &all_values, 2);
         let selection = RowSelection::from(vec![
             RowSelector::skip(1),
@@ -550,12 +550,12 @@ mod tests {
         assert_eq!(as_i32_values(&batches.pop().unwrap()), vec![3]);
     }
 
-    #[test]
-    fn predicate_can_filter_all_rows() {
+    #[tokio::test]
+    async fn predicate_can_filter_all_rows() {
         let batches = vec![vec![1, 2]];
         let batch_size = 2;
         let all_values = flatten_batches(&batches);
-        let (row_group, schema) = make_row_group(batch_size, &batches);
+        let (row_group, schema) = make_row_group(batch_size, &batches).await;
         let filter = make_gt_filter(Arc::clone(&schema), &all_values, 10);
         let selection = RowSelection::from(vec![RowSelector::select(2)]);
 

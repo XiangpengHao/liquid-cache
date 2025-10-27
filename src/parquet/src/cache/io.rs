@@ -27,6 +27,77 @@ impl ParquetIoContext {
     }
 }
 
+#[cfg(target_os = "linux")]
+mod io_backend {
+    use super::*;
+
+    pub async fn read_file(path: PathBuf) -> Result<Bytes, std::io::Error> {
+        crate::cache::io_uring::read_range_from_uring(path, None).await
+    }
+
+    pub async fn read_range(
+        path: PathBuf,
+        range: std::ops::Range<u64>,
+    ) -> Result<Bytes, std::io::Error> {
+        crate::cache::io_uring::read_range_from_uring(path, Some(range)).await
+    }
+
+    pub async fn write_file(path: PathBuf, data: Bytes) -> Result<(), std::io::Error> {
+        crate::cache::io_uring::write_to_uring(path, &data).await
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+mod io_backend {
+    use super::*;
+    use std::io::{Read, Seek, Write};
+
+    pub async fn read_file(path: PathBuf) -> Result<Bytes, std::io::Error> {
+        maybe_spawn_blocking(move || {
+            let mut file = std::fs::File::open(path)?;
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes)?;
+            Ok(Bytes::from(bytes))
+        })
+        .await
+    }
+
+    pub async fn read_range(
+        path: PathBuf,
+        range: std::ops::Range<u64>,
+    ) -> Result<Bytes, std::io::Error> {
+        maybe_spawn_blocking(move || {
+            let mut file = std::fs::File::open(path)?;
+            let len = (range.end - range.start) as usize;
+            let mut bytes = vec![0u8; len];
+            file.seek(std::io::SeekFrom::Start(range.start))?;
+            file.read_exact(&mut bytes)?;
+            Ok(Bytes::from(bytes))
+        })
+        .await
+    }
+
+    pub async fn write_file(path: PathBuf, data: Bytes) -> Result<(), std::io::Error> {
+        maybe_spawn_blocking(move || {
+            let mut file = std::fs::File::create(path)?;
+            file.write_all(&data)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn maybe_spawn_blocking<F, T>(f: F) -> Result<T, std::io::Error>
+    where
+        F: FnOnce() -> Result<T, std::io::Error> + Send + 'static,
+        T: Send + 'static,
+    {
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => runtime.spawn_blocking(f).await?,
+            Err(_) => f(),
+        }
+    }
+}
+
 #[async_trait::async_trait]
 impl IoContext for ParquetIoContext {
     fn base_dir(&self) -> &Path {
@@ -53,14 +124,7 @@ impl IoContext for ParquetIoContext {
     }
 
     async fn read_file(&self, path: PathBuf) -> Result<Bytes, std::io::Error> {
-        maybe_spawn_blocking(move || {
-            use std::io::Read;
-            let mut file = std::fs::File::open(path)?;
-            let mut bytes = Vec::new();
-            file.read_to_end(&mut bytes)?;
-            Ok(Bytes::from(bytes))
-        })
-        .await
+        io_backend::read_file(path).await
     }
 
     async fn read_range(
@@ -68,37 +132,11 @@ impl IoContext for ParquetIoContext {
         path: PathBuf,
         range: std::ops::Range<u64>,
     ) -> Result<Bytes, std::io::Error> {
-        maybe_spawn_blocking(move || {
-            use std::io::{Read, Seek};
-            let mut file = std::fs::File::open(path)?;
-            let len = (range.end - range.start) as usize;
-            let mut bytes = vec![0u8; len];
-            file.seek(std::io::SeekFrom::Start(range.start))?;
-            file.read_exact(&mut bytes)?;
-            Ok(Bytes::from(bytes))
-        })
-        .await
+        io_backend::read_range(path, range).await
     }
 
     async fn write_file(&self, path: PathBuf, data: Bytes) -> Result<(), std::io::Error> {
-        maybe_spawn_blocking(move || {
-            use std::io::Write;
-            let mut file = std::fs::File::create(path)?;
-            file.write_all(&data)?;
-            Ok(())
-        })
-        .await
-    }
-}
-
-pub(crate) async fn maybe_spawn_blocking<F, T>(f: F) -> Result<T, std::io::Error>
-where
-    F: FnOnce() -> Result<T, std::io::Error> + Send + 'static,
-    T: Send + 'static,
-{
-    match tokio::runtime::Handle::try_current() {
-        Ok(runtime) => runtime.spawn_blocking(f).await?,
-        Err(_) => f(),
+        io_backend::write_file(path, data).await
     }
 }
 

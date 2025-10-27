@@ -961,15 +961,19 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_concurrent_cache_operations() {
-        concurrent_cache_operations();
+    #[tokio::test]
+    async fn test_concurrent_cache_operations() {
+        concurrent_cache_operations().await;
     }
 
     #[cfg(feature = "shuttle")]
-    #[test]
-    fn shuttle_cache_operations() {
-        crate::utils::shuttle_test(concurrent_cache_operations);
+    #[tokio::test]
+    async fn shuttle_cache_operations() {
+        crate::utils::shuttle_test(|| {
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(concurrent_cache_operations());
+        });
     }
     pub fn block_on<F: Future>(future: F) -> F::Output {
         #[cfg(feature = "shuttle")]
@@ -982,7 +986,7 @@ mod tests {
         }
     }
 
-    fn concurrent_cache_operations() {
+    async fn concurrent_cache_operations() {
         let num_threads = 3;
         let ops_per_thread = 50;
 

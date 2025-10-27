@@ -4,6 +4,7 @@ use fastrace::prelude::*;
 use liquid_cache_benchmarks::{
     BenchmarkManifest, InProcessBenchmarkMode, InProcessBenchmarkRunner, setup_observability,
 };
+use liquid_cache_common::IoMode;
 use mimalloc::MiMalloc;
 use serde::Serialize;
 use std::path::PathBuf;
@@ -57,6 +58,10 @@ struct InProcessBenchmark {
     /// Jaeger OTLP gRPC endpoint (for example: http://localhost:4317)
     #[arg(long = "jaeger-endpoint")]
     pub jaeger_endpoint: Option<String>,
+
+    /// IO mode (direct vs page-cache)
+    #[arg(long = "io-mode", default_value = "page-cache")]
+    io_mode: IoMode,
 }
 
 impl InProcessBenchmark {
@@ -72,7 +77,8 @@ impl InProcessBenchmark {
             .with_max_cache_mb(self.max_cache_mb)
             .with_flamegraph_dir(self.flamegraph_dir.clone())
             .with_cache_dir(self.cache_dir.clone())
-            .with_query_filter(self.query_index);
+            .with_query_filter(self.query_index)
+            .with_io_mode(self.io_mode.clone());
 
         runner.run(manifest, self, output).await?;
         Ok(())

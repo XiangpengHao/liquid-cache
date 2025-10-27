@@ -804,6 +804,7 @@ mod tests {
 
     use crate::LiquidCache;
     use crate::optimizers::{DATE_MAPPING_METADATA_KEY, LocalModeOptimizer};
+    use liquid_cache_common::IoMode;
 
     use super::*;
     use arrow::array::{ArrayRef, Date32Array, TimestampMicrosecondArray};
@@ -862,6 +863,7 @@ mod tests {
             PathBuf::from("test"),
             Box::new(LiquidPolicy::new()),
             Box::new(TranscodeSqueezeEvict),
+            IoMode::PageCache,
         )));
 
         let state = SessionStateBuilder::new()

@@ -125,6 +125,7 @@ mod tests {
     };
 
     use crate::LiquidCache;
+    use liquid_cache_common::IoMode;
 
     use super::*;
 
@@ -136,6 +137,7 @@ mod tests {
             PathBuf::from("test"),
             Box::new(LiquidPolicy::new()),
             Box::new(TranscodeSqueezeEvict),
+            IoMode::PageCache,
         ));
         let rewritten = rewrite_data_source_plan(plan, &liquid_cache);
 

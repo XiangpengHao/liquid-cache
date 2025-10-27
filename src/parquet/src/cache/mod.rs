@@ -9,6 +9,7 @@ use arrow::array::{Array, ArrayRef, BooleanArray, RecordBatch};
 use arrow::buffer::BooleanBuffer;
 use arrow::compute::prep_null_mask_filter;
 use arrow_schema::{ArrowError, Field, Schema};
+use liquid_cache_common::IoMode;
 use liquid_cache_storage::cache::GetWithPredicateResult;
 use liquid_cache_storage::cache::squeeze_policies::SqueezePolicy;
 use liquid_cache_storage::cache::{CachePolicy, CacheStorage, CacheStorageBuilder};
@@ -19,6 +20,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 mod id;
 mod io;
+#[cfg(target_os = "linux")]
+mod io_uring;
 mod stats;
 
 pub use id::{BatchID, ParquetArrayID};
@@ -363,6 +366,7 @@ impl LiquidCache {
         cache_dir: PathBuf,
         cache_policy: Box<dyn CachePolicy>,
         squeeze_policy: Box<dyn SqueezePolicy>,
+        io_mode: IoMode,
     ) -> Self {
         assert!(batch_size.is_power_of_two());
         let cache_storage_builder = CacheStorageBuilder::new()
@@ -374,6 +378,8 @@ impl LiquidCache {
             .with_io_worker(Arc::new(ParquetIoContext::new(cache_dir)));
         let cache_storage = cache_storage_builder.build();
 
+        #[cfg(target_os = "linux")]
+        io_uring::initialize_uring_pool(io_mode);
         LiquidCache {
             files: Mutex::new(AHashMap::new()),
             cache_store: cache_storage,
@@ -485,6 +491,7 @@ mod tests {
             tmp_dir.path().to_path_buf(),
             Box::new(LiquidPolicy::new()),
             Box::new(TranscodeSqueezeEvict),
+            IoMode::PageCache,
         );
         let file = cache.register_or_get_file("test".to_string());
         file.row_group(0)
