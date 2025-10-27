@@ -3,19 +3,20 @@ use std::{fmt::Display, str::FromStr};
 use serde::Serialize;
 
 /// Mode in which Disk IO is done (direct IO or page cache)
-#[derive(Debug, Clone, PartialEq, Default, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize)]
 pub enum IoMode {
     /// Uses io_uring and bypass the page cache (uses direct IO), only available on Linux
     #[serde(rename = "uring-direct")]
     UringDirectIO,
 
     /// Uses io_uring and uses OS's page cache, only available on Linux
-    #[default]
     #[serde(rename = "uring")]
     Uring,
 
     /// Uses rust's std::fs::File, this is blocking IO.
     /// On Linux, this is essentially `pread/pwrite`
+    /// This is the default until we optimized the performance of uring.
+    #[default]
     #[serde(rename = "std-blocking")]
     StdBlockingIO,
 

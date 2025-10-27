@@ -59,8 +59,8 @@ struct InProcessBenchmark {
     #[arg(long = "jaeger-endpoint")]
     pub jaeger_endpoint: Option<String>,
 
-    /// IO mode (direct vs page-cache)
-    #[arg(long = "io-mode", default_value = "page-cache")]
+    /// IO mode, available options: uring, uring-direct, std-blocking, tokio, std-spawn-blocking
+    #[arg(long = "io-mode", default_value = "uring")]
     io_mode: IoMode,
 }
 

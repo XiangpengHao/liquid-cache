@@ -369,25 +369,15 @@ impl LiquidCache {
         io_mode: IoMode,
     ) -> Self {
         assert!(batch_size.is_power_of_two());
+        let io_context = Arc::new(ParquetIoContext::new(cache_dir.clone(), io_mode.clone()));
         let cache_storage_builder = CacheStorageBuilder::new()
             .with_batch_size(batch_size)
             .with_max_cache_bytes(max_cache_bytes)
             .with_cache_dir(cache_dir.clone())
             .with_squeeze_policy(squeeze_policy)
             .with_cache_policy(cache_policy)
-            .with_io_worker(Arc::new(ParquetIoContext::new(cache_dir)));
+            .with_io_worker(io_context);
         let cache_storage = cache_storage_builder.build();
-
-        if matches!(io_mode, IoMode::UringDirectIO | IoMode::Uring) {
-            #[cfg(target_os = "linux")]
-            {
-                io_uring::initialize_uring_pool(io_mode);
-            }
-            #[cfg(not(target_os = "linux"))]
-            {
-                panic!("io_mode {:?} is only supported on Linux", io_mode);
-            }
-        }
 
         LiquidCache {
             files: Mutex::new(AHashMap::new()),
