@@ -1,5 +1,6 @@
 use std::{
     alloc::Layout,
+    any::Any,
     collections::VecDeque,
     fs,
     ops::Range,
@@ -7,58 +8,41 @@ use std::{
     path::PathBuf,
     pin::Pin,
     sync::{
-        Arc, Mutex, OnceLock,
+        OnceLock,
         atomic::{AtomicBool, Ordering},
     },
-    task::{Context, Poll, Waker},
+    task::{Context, Poll},
     thread,
 };
 
 use bytes::Bytes;
 use io_uring::{IoUring, cqueue, opcode, squeue};
 use liquid_cache_common::IoMode;
+use tokio::sync::oneshot;
 
 const BLOCK_ALIGN: usize = 4096;
 
 /// Represents an IO request to the uring worker thread
-trait IoTask: Send + Sync {
-    #[inline]
-    fn set_waker(&self, waker: Waker) {
-        let mut guard = self.waker().lock().unwrap();
-        *guard = Some(waker);
-    }
-
-    /// Get the waker associated with this IO request
-    fn waker(&self) -> &Mutex<Option<Waker>>;
-
+trait IoTask: Send + Any + std::fmt::Debug {
     /// Converts the IO request to an IO uring submission queue entry
-    fn get_sqe(&self) -> squeue::Entry;
+    fn get_sqe(&mut self) -> squeue::Entry;
 
-    fn completed(&self) -> &AtomicBool;
+    /// Allows the task to record the outcome of the completion queue entry
+    fn process_completion(&mut self, cqe: &cqueue::Entry);
 
-    /// Wake the future that submitted this IO request
-    #[inline]
-    fn notify_waker(&self) {
-        self.completed().store(true, Ordering::Release);
-        let mut guard = self.waker().lock().unwrap();
-        if let Some(waker) = guard.take() {
-            waker.wake();
-        }
-    }
-
-    fn process_completion(&self, cqe: &cqueue::Entry);
+    /// Convert the boxed task to a boxed `Any` so callers can recover the original type.
+    fn into_any(self: Box<Self>) -> Box<dyn Any>;
 }
 
+#[derive(Debug)]
 struct FileReadTask {
     base_ptr: *mut u8,
     layout: Layout,
     file: fs::File,
-    completed: AtomicBool,
-    waker: Mutex<Option<Waker>>,
     range: Range<u64>,
     start_padding: usize,
     end_padding: usize,
-    error: Mutex<Option<std::io::Error>>,
+    error: Option<std::io::Error>,
 }
 
 impl FileReadTask {
@@ -84,36 +68,34 @@ impl FileReadTask {
             base_ptr,
             layout,
             file,
-            completed: AtomicBool::new(false),
-            waker: Mutex::<Option<Waker>>::new(None),
             range,
             start_padding,
             end_padding,
-            error: Mutex::new(None),
+            error: None,
         }
     }
 
     /// Return a bytes object holding the result of the read operation
     #[inline]
-    fn consume_result(self: Arc<Self>) -> Result<Bytes, std::io::Error> {
-        let task = Arc::into_inner(self).expect("FileReadTask must be consumed exactly once");
-        let mut err = task.error.lock().unwrap();
-        if err.is_some() {
+    fn consume_result(mut self: Box<Self>) -> Result<Bytes, std::io::Error> {
+        if let Some(err) = self.error.take() {
             unsafe {
-                std::alloc::dealloc(task.base_ptr, task.layout);
+                std::alloc::dealloc(self.base_ptr, self.layout);
             }
-            return Err(err.take().unwrap());
+            self.base_ptr = std::ptr::null_mut();
+            return Err(err);
         }
         let total_bytes =
-            (task.range.end - task.range.start) as usize + task.start_padding + task.end_padding;
+            (self.range.end - self.range.start) as usize + self.start_padding + self.end_padding;
+        let base_ptr = std::mem::replace(&mut self.base_ptr, std::ptr::null_mut());
         unsafe {
-            let vec = Vec::from_raw_parts(task.base_ptr, total_bytes, total_bytes);
+            let vec = Vec::from_raw_parts(base_ptr, total_bytes, total_bytes);
             // Convert to vec in order to transfer ownership of underlying pointer
             let owned_slice: Box<[u8]> = vec.into_boxed_slice();
             // The below slice operation removes the padding. This is a no-op in case of buffered IO
             Ok(Bytes::from(owned_slice).slice(
-                task.start_padding
-                    ..(task.range.end as usize - task.range.start as usize + task.start_padding),
+                self.start_padding
+                    ..(self.range.end as usize - self.range.start as usize + self.start_padding),
             ))
         }
     }
@@ -121,12 +103,7 @@ impl FileReadTask {
 
 impl IoTask for FileReadTask {
     #[inline]
-    fn waker(&self) -> &Mutex<Option<Waker>> {
-        &self.waker
-    }
-
-    #[inline]
-    fn get_sqe(&self) -> squeue::Entry {
+    fn get_sqe(&mut self) -> squeue::Entry {
         let num_bytes = (self.range.end - self.range.start) as usize;
         let num_bytes_aligned = num_bytes + self.start_padding + self.end_padding;
         let read_op = opcode::Read::new(
@@ -141,31 +118,38 @@ impl IoTask for FileReadTask {
     }
 
     #[inline]
-    fn completed(&self) -> &AtomicBool {
-        &self.completed
+    fn process_completion(&mut self, cqe: &cqueue::Entry) {
+        if cqe.result() < 0 {
+            self.error = Some(std::io::Error::from_raw_os_error(-cqe.result()));
+        }
     }
 
-    fn process_completion(&self, cqe: &cqueue::Entry) {
-        if cqe.result() < 0 {
-            let mut error = self.error.lock().unwrap();
-            *error = Some(std::io::Error::from_raw_os_error(-cqe.result()));
+    fn into_any(self: Box<Self>) -> Box<dyn Any> {
+        self
+    }
+}
+
+impl Drop for FileReadTask {
+    fn drop(&mut self) {
+        if !self.base_ptr.is_null() {
+            unsafe {
+                std::alloc::dealloc(self.base_ptr, self.layout);
+            }
+            self.base_ptr = std::ptr::null_mut();
         }
-        self.notify_waker();
     }
 }
 
 unsafe impl Send for FileReadTask {}
-unsafe impl Sync for FileReadTask {}
 
 /// Represents a request to write to a file
+#[derive(Debug)]
 pub struct FileWriteTask {
     base_ptr: *const u8,
     num_bytes: usize,
     padding: usize,
     fd: RawFd,
-    completed: AtomicBool,
-    waker: Mutex<Option<Waker>>,
-    error: Mutex<Option<std::io::Error>>,
+    error: Option<std::io::Error>,
 }
 
 impl FileWriteTask {
@@ -179,17 +163,13 @@ impl FileWriteTask {
             num_bytes,
             padding,
             fd,
-            completed: AtomicBool::new(false),
-            waker: Mutex::<Option<Waker>>::new(None),
-            error: Mutex::new(None),
+            error: None,
         }
     }
 
-    fn consume_result(self: Arc<Self>) -> Result<(), std::io::Error> {
-        let task = Arc::into_inner(self).expect("FileWriteTask must be consumed exactly once");
-        let mut err = task.error.lock().unwrap();
-        if err.is_some() {
-            return Err(err.take().unwrap());
+    fn consume_result(mut self: Box<Self>) -> Result<(), std::io::Error> {
+        if let Some(err) = self.error.take() {
+            return Err(err);
         }
         Ok(())
     }
@@ -197,12 +177,7 @@ impl FileWriteTask {
 
 impl IoTask for FileWriteTask {
     #[inline]
-    fn waker(&self) -> &Mutex<Option<Waker>> {
-        &self.waker
-    }
-
-    #[inline]
-    fn get_sqe(&self) -> squeue::Entry {
+    fn get_sqe(&mut self) -> squeue::Entry {
         let num_bytes_aligned = self.num_bytes + self.padding;
         let write_op = opcode::Write::new(
             io_uring::types::Fd(self.fd),
@@ -214,28 +189,53 @@ impl IoTask for FileWriteTask {
     }
 
     #[inline]
-    fn completed(&self) -> &AtomicBool {
-        &self.completed
+    fn process_completion(&mut self, cqe: &cqueue::Entry) {
+        if cqe.result() < 0 {
+            self.error = Some(std::io::Error::from_raw_os_error(-cqe.result()));
+        }
     }
 
-    fn process_completion(&self, cqe: &cqueue::Entry) {
-        if cqe.result() < 0 {
-            let mut error = self.error.lock().unwrap();
-            *error = Some(std::io::Error::from_raw_os_error(-cqe.result()));
-        }
-        self.notify_waker();
+    fn into_any(self: Box<Self>) -> Box<dyn Any> {
+        self
+    }
+}
+
+impl Drop for FileWriteTask {
+    fn drop(&mut self) {
+        // Nothing to do; ownership of buffers is external to the task.
     }
 }
 
 unsafe impl Send for FileWriteTask {}
-unsafe impl Sync for FileWriteTask {}
 
 static ENABLED: AtomicBool = AtomicBool::new(true);
+
+struct Submission {
+    task: Box<dyn IoTask>,
+    completion_tx: oneshot::Sender<Box<dyn IoTask>>,
+}
+
+impl Submission {
+    fn new(task: Box<dyn IoTask>, completion_tx: oneshot::Sender<Box<dyn IoTask>>) -> Submission {
+        Submission {
+            task,
+            completion_tx,
+        }
+    }
+
+    fn send_back(mut self, cqe: &cqueue::Entry) {
+        self.task.process_completion(cqe);
+        let _ = self
+            .completion_tx
+            .send(self.task)
+            .expect("Failed to send task back to caller");
+    }
+}
 
 /// Represents a pool of worker threads responsible for submitting IO requests to the
 /// kernel via io-uring.
 struct IoUringThreadpool {
-    sender: crossbeam_channel::Sender<Arc<dyn IoTask>>,
+    sender: crossbeam_channel::Sender<Submission>,
     worker: Option<thread::JoinHandle<()>>,
     io_type: IoMode,
 }
@@ -260,7 +260,7 @@ impl IoUringThreadpool {
     const NUM_ENTRIES: u32 = 64;
 
     fn new(io_type: IoMode) -> IoUringThreadpool {
-        let (sender, receiver) = crossbeam_channel::unbounded::<Arc<dyn IoTask>>();
+        let (sender, receiver) = crossbeam_channel::unbounded::<Submission>();
 
         let mut builder = IoUring::<squeue::Entry, cqueue::Entry>::builder();
         if io_type == IoMode::DirectIO {
@@ -272,9 +272,8 @@ impl IoUringThreadpool {
             .build(Self::NUM_ENTRIES)
             .expect("Failed to build IoUring instance");
 
-        let receiver_clone = receiver.clone();
         let worker = thread::spawn(move || {
-            let mut uring_worker = UringWorker::new(receiver_clone, ring);
+            let mut uring_worker = UringWorker::new(receiver, ring);
             uring_worker.thread_loop();
         });
 
@@ -286,9 +285,9 @@ impl IoUringThreadpool {
     }
 
     #[inline]
-    fn submit_task(&self, task: Arc<dyn IoTask>) {
+    fn submit_task(&self, task: Box<dyn IoTask>, completion_tx: oneshot::Sender<Box<dyn IoTask>>) {
         self.sender
-            .send(task)
+            .send(Submission::new(task, completion_tx))
             .expect("Failed to submit task through channel");
     }
 
@@ -321,20 +320,20 @@ impl std::fmt::Debug for IoUringThreadpool {
 /// 2. Converts the requests to submission queue entries and submits them to the ring
 /// 3. Polls the ring for completions and notifies the application
 struct UringWorker {
-    receiver: crossbeam_channel::Receiver<Arc<dyn IoTask>>,
+    receiver: crossbeam_channel::Receiver<Submission>,
     ring: io_uring::IoUring,
     tokens: VecDeque<u16>,
-    submitted_tasks: Vec<Option<Arc<dyn IoTask>>>,
+    submitted_tasks: Vec<Option<Submission>>,
 }
 
 impl UringWorker {
     fn new(
-        channel: crossbeam_channel::Receiver<Arc<dyn IoTask>>,
+        channel: crossbeam_channel::Receiver<Submission>,
         ring: io_uring::IoUring,
     ) -> UringWorker {
         let tokens = (0..IoUringThreadpool::NUM_ENTRIES as u16).collect();
-        let mut tasks = Vec::<Option<Arc<dyn IoTask>>>::new();
-        tasks.resize(IoUringThreadpool::NUM_ENTRIES as usize, None);
+        let mut tasks = Vec::with_capacity(IoUringThreadpool::NUM_ENTRIES as usize);
+        tasks.resize_with(IoUringThreadpool::NUM_ENTRIES as usize, || None);
         UringWorker {
             receiver: channel,
             ring,
@@ -350,23 +349,22 @@ impl UringWorker {
             }
 
             while !self.tokens.is_empty() {
-                let res = self.receiver.try_recv();
-                if res.is_err() {
+                let Ok(mut submission) = self.receiver.try_recv() else {
                     break;
-                }
+                };
                 let token = self.tokens.pop_front().unwrap();
-                let task = res.unwrap();
                 // Consume tasks from channel and submit them to the ring
                 {
                     let sq = &mut (self.ring.submission());
+                    let task = submission.task.as_mut();
                     let sqe = task.get_sqe().user_data(token as u64);
 
                     unsafe {
                         sq.push(&sqe).expect("Failed to push to submission queue");
                     }
                     sq.sync();
-                    self.submitted_tasks[token as usize] = Some(task);
                 }
+                self.submitted_tasks[token as usize] = Some(submission);
                 self.ring.submit().expect("Failed to submit");
             }
 
@@ -381,10 +379,10 @@ impl UringWorker {
             match cq.next() {
                 Some(cqe) => {
                     let token = cqe.user_data() as usize;
-                    let task = self.submitted_tasks[token]
+                    let submission = self.submitted_tasks[token]
                         .take()
                         .expect("Task not found in submitted tasks");
-                    task.process_completion(&cqe);
+                    submission.send_back(&cqe);
                     self.tokens.push_back(token as u16);
                 }
                 None => {
@@ -395,55 +393,67 @@ impl UringWorker {
     }
 }
 
-enum UringState {
-    Initialized,
-    Submitted,
+enum UringState<T> {
+    Created(Box<T>),
+    Submitted(oneshot::Receiver<Box<dyn IoTask>>),
+    Undecided, // used to please the borrow checker
 }
 
-struct UringFuture<'a, T>
+struct UringFuture<T>
 where
     T: IoTask,
 {
-    task: &'a Arc<T>,
-    state: UringState,
+    state: UringState<T>,
 }
 
-impl<'a, T> UringFuture<'a, T>
+impl<T> UringFuture<T>
 where
-    T: IoTask,
+    T: IoTask + 'static,
 {
-    pub fn new(task: &'a Arc<T>) -> UringFuture<'a, T> {
+    pub fn new(task: Box<T>) -> UringFuture<T> {
         UringFuture {
-            task,
-            state: UringState::Initialized,
+            state: UringState::Created(task),
         }
     }
 }
 
-impl<'a, T> Future for UringFuture<'a, T>
+impl<T> Future for UringFuture<T>
 where
     T: IoTask + 'static,
 {
-    type Output = ();
+    type Output = Box<T>;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-        match self.state {
-            UringState::Initialized => {
-                let pool = IO_URING_THREAD_POOL_INST
-                    .get()
-                    .expect("Uring threadpool not initialized");
-                self.task.set_waker(cx.waker().clone());
-                pool.submit_task(self.task.clone());
-                self.state = UringState::Submitted;
-                Poll::Pending
-            }
-            UringState::Submitted => match self.task.completed().load(Ordering::Relaxed) {
-                false => {
-                    self.task.set_waker(cx.waker().clone());
-                    Poll::Pending
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        loop {
+            let state = std::mem::replace(&mut self.state, UringState::Undecided);
+            match state {
+                UringState::Created(task) => {
+                    let pool = IO_URING_THREAD_POOL_INST
+                        .get()
+                        .expect("Uring threadpool not initialized");
+                    let (tx, rx) = oneshot::channel::<Box<dyn IoTask>>();
+                    let boxed_task: Box<dyn IoTask> = task;
+                    pool.submit_task(boxed_task, tx);
+                    self.state = UringState::Submitted(rx);
                 }
-                true => Poll::Ready(()),
-            },
+                UringState::Submitted(mut receiver) => match Pin::new(&mut receiver).poll(cx) {
+                    Poll::Ready(Ok(task)) => {
+                        let typed_task = task
+                            .into_any()
+                            .downcast::<T>()
+                            .expect("io task downcast failure");
+                        return Poll::Ready(typed_task);
+                    }
+                    Poll::Ready(Err(_)) => {
+                        panic!("io-uring worker dropped completion channel")
+                    }
+                    Poll::Pending => {
+                        self.state = UringState::Submitted(receiver);
+                        return Poll::Pending;
+                    }
+                },
+                UringState::Undecided => unreachable!("state cannot be undecided during poll"),
+            }
         }
     }
 }
@@ -475,11 +485,10 @@ pub(crate) async fn read_range_from_uring(
         });
     }
 
-    let task = Arc::new(FileReadTask::new(range.unwrap(), file));
+    let task = Box::new(FileReadTask::new(range.unwrap(), file));
     // UringFuture will be responsible for submitting and driving the future to completion
-    let uring_fut = UringFuture::new(&task);
-    uring_fut.await;
-    task.consume_result()
+    let completed_task = UringFuture::new(task).await;
+    completed_task.consume_result()
 }
 
 pub(crate) async fn write_to_uring(path: PathBuf, data: &Bytes) -> Result<(), std::io::Error> {
@@ -500,13 +509,12 @@ pub(crate) async fn write_to_uring(path: PathBuf, data: &Bytes) -> Result<(), st
         .open(path)
         .expect("failed to create file");
 
-    let task = Arc::new(FileWriteTask::new(
+    let task = Box::new(FileWriteTask::new(
         data.as_ptr(),
         data.len(),
         file.as_raw_fd(),
     ));
     // UringFuture will be responsible for submitting and driving the future to completion
-    let uring_fut = UringFuture::new(&task);
-    uring_fut.await;
-    task.consume_result()
+    let completed_task = UringFuture::new(task).await;
+    completed_task.consume_result()
 }
