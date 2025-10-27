@@ -137,7 +137,7 @@ mod tests {
             PathBuf::from("test"),
             Box::new(LiquidPolicy::new()),
             Box::new(TranscodeSqueezeEvict),
-            IoMode::PageCache,
+            IoMode::Uring,
         ));
         let rewritten = rewrite_data_source_plan(plan, &liquid_cache);
 

@@ -49,7 +49,7 @@ impl FileReadTask {
     fn build(range: Range<u64>, file: fs::File) -> FileReadTask {
         let mut start_padding: usize = 0;
         let mut end_padding: usize = 0;
-        if get_io_mode() == IoMode::DirectIO {
+        if get_io_mode() == IoMode::UringDirectIO {
             // Padding must be applied to ensure that starting and ending addresses are block-aligned
             start_padding = range.start as usize & (BLOCK_ALIGN - 1);
             end_padding = if range.end as usize & (BLOCK_ALIGN - 1) == 0 {
@@ -177,7 +177,7 @@ pub struct FileWriteTask {
 impl FileWriteTask {
     fn build(base_ptr: *const u8, num_bytes: usize, fd: RawFd) -> FileWriteTask {
         let mut padding = 0;
-        if get_io_mode() == IoMode::DirectIO && (num_bytes & 4095) > 0 {
+        if get_io_mode() == IoMode::UringDirectIO && (num_bytes & 4095) > 0 {
             padding = 4096 - num_bytes % 4096;
         }
         FileWriteTask {
@@ -322,7 +322,7 @@ impl IoUringThreadpool {
         let (sender, receiver) = crossbeam_channel::unbounded::<Submission>();
 
         let mut builder = IoUring::<squeue::Entry, cqueue::Entry>::builder();
-        if io_type == IoMode::DirectIO {
+        if io_type == IoMode::UringDirectIO {
             // Polled IO is only supported for direct IO requests
             builder.setup_iopoll();
         }
@@ -522,7 +522,7 @@ pub(crate) async fn read_range_from_uring(
     use crate::cache::io_uring::{FileReadTask, get_io_mode};
     use liquid_cache_common::IoMode;
 
-    let flags = if get_io_mode() == IoMode::DirectIO {
+    let flags = if get_io_mode() == IoMode::UringDirectIO {
         libc::O_DIRECT
     } else {
         0
@@ -547,7 +547,7 @@ pub(crate) async fn write_to_uring(path: PathBuf, data: &Bytes) -> Result<(), st
     use std::os::fd::AsRawFd;
     use std::{fs::OpenOptions, os::unix::fs::OpenOptionsExt as _};
 
-    let flags = if get_io_mode() == IoMode::DirectIO {
+    let flags = if get_io_mode() == IoMode::UringDirectIO {
         libc::O_DIRECT
     } else {
         0

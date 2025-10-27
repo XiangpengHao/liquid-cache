@@ -697,7 +697,7 @@ mod tests {
             tmp_dir.path().to_path_buf(),
             Box::new(LiquidPolicy::new()),
             Box::new(Evict),
-            IoMode::PageCache,
+            IoMode::Uring,
         );
         let file = cache.register_or_get_file("test.parquet".to_string());
         file.row_group(0)

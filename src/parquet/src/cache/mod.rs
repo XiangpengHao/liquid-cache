@@ -378,8 +378,17 @@ impl LiquidCache {
             .with_io_worker(Arc::new(ParquetIoContext::new(cache_dir)));
         let cache_storage = cache_storage_builder.build();
 
-        #[cfg(target_os = "linux")]
-        io_uring::initialize_uring_pool(io_mode);
+        if matches!(io_mode, IoMode::UringDirectIO | IoMode::Uring) {
+            #[cfg(target_os = "linux")]
+            {
+                io_uring::initialize_uring_pool(io_mode);
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                panic!("io_mode {:?} is only supported on Linux", io_mode);
+            }
+        }
+
         LiquidCache {
             files: Mutex::new(AHashMap::new()),
             cache_store: cache_storage,
@@ -491,7 +500,7 @@ mod tests {
             tmp_dir.path().to_path_buf(),
             Box::new(LiquidPolicy::new()),
             Box::new(TranscodeSqueezeEvict),
-            IoMode::PageCache,
+            IoMode::Uring,
         );
         let file = cache.register_or_get_file("test".to_string());
         file.row_group(0)
