@@ -39,8 +39,6 @@ reqwest = { version = "0.12.23", default-features = false, features = ["json"] }
 uuid = { version = "1.18.1", features = ["v4"] }
 pprof = { version = "0.15.0", features = ["flamegraph"] }
 anyhow = "1.0"
-fastrace-futures = "0.7"
-futures = { workspace = true }
 usdt = "0.6"
 
 [features]

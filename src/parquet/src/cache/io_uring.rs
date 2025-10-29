@@ -440,8 +440,7 @@ impl IoUringThreadpool {
     fn new(io_type: IoMode) -> IoUringThreadpool {
         let (sender, receiver) = crossbeam_channel::unbounded::<Submission>();
 
-        let mut builder = IoUring::<squeue::Entry, cqueue::Entry>::builder();
-        builder.setup_sqpoll(50000);
+        let builder = IoUring::<squeue::Entry, cqueue::Entry>::builder();
         let ring = builder
             .build(Self::NUM_ENTRIES)
             .expect("Failed to build IoUring instance");
