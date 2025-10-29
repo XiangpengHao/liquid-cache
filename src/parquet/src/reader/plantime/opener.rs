@@ -264,7 +264,7 @@ impl FileOpener for LiquidParquetOpener {
             }
 
             if let Some(s) = &span {
-                let span = fastrace::Span::enter_with_parent(format!("liquid_stream"), &s);
+                let span = fastrace::Span::enter_with_parent("liquid_stream", s);
                 liquid_builder = liquid_builder.with_span(span);
             }
 

@@ -38,7 +38,7 @@ pub fn instrument_liquid_source_with_span(
             else {
                 return Ok(Transformed::no(node));
             };
-            let sub_span = fastrace::Span::enter_with_parent(format!("execute"), &span);
+            let sub_span = fastrace::Span::enter_with_parent("execute", &span);
             let new_source = Arc::new(liquid_source.with_span(sub_span));
             new_config.file_source = new_source;
             let new_file_source: Arc<dyn DataSource> = Arc::new(new_config);

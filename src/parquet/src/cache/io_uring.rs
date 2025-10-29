@@ -6,7 +6,7 @@ use std::{
     ffi::CString,
     fs,
     future::Future,
-    io::{self, ErrorKind},
+    io,
     ops::Range,
     os::{
         fd::{AsRawFd, FromRawFd, RawFd},
@@ -82,15 +82,12 @@ impl FileOpenTask {
         Ok(FileOpenTaskFuture(UringFuture::new(Box::new(task))))
     }
 
-    fn into_result(mut self: Box<Self>) -> Result<fs::File, std::io::Error> {
+    fn into_result(mut self) -> Result<fs::File, std::io::Error> {
         if let Some(err) = self.error.take() {
             return Err(err);
         }
         let fd = self.fd.take().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "open operation completed without returning file descriptor",
-            )
+            std::io::Error::other("open operation completed without returning file descriptor")
         })?;
         // SAFETY: `fd` has been received from the kernel for this task and is uniquely owned here.
         let file = unsafe { fs::File::from_raw_fd(fd) };
@@ -487,7 +484,7 @@ impl std::fmt::Debug for IoUringThreadpool {
 }
 
 thread_local! {
-    static BLOCKING_URING_RING: RefCell<Option<BlockingRing>> = RefCell::new(None);
+    static BLOCKING_URING_RING: RefCell<Option<BlockingRing>> = const { RefCell::new(None) };
 }
 
 struct BlockingRing {
@@ -518,9 +515,9 @@ impl BlockingRing {
         {
             let mut cq = self.ring.completion();
             cq.sync();
-            let cqe = cq.next().ok_or_else(|| {
-                io::Error::new(ErrorKind::Other, "io-uring completion queue empty")
-            })?;
+            let cqe = cq
+                .next()
+                .ok_or_else(|| io::Error::other("io-uring completion queue empty"))?;
             task.complete(&cqe);
         }
 

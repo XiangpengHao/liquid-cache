@@ -278,14 +278,10 @@ impl FileSource for LiquidParquetSource {
         let reader_factory = Arc::new(CachedMetaReaderFactory::new(object_store));
         let schema_adapter = Arc::new(DefaultSchemaAdapterFactory);
 
-        let execution_span = if let Some(span) = self.span.clone() {
-            Some(fastrace::Span::enter_with_parent(
-                format!("opener_{partition}"),
-                &span,
-            ))
-        } else {
-            None
-        };
+        let execution_span = self
+            .span
+            .clone()
+            .map(|span| fastrace::Span::enter_with_parent(format!("opener_{partition}"), &span));
         let opener = LiquidParquetOpener::new(
             partition,
             Arc::from(projection),
