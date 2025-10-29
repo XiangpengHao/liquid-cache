@@ -22,7 +22,10 @@ pub(crate) struct ParquetIoContext {
 
 impl ParquetIoContext {
     pub fn new(base_dir: PathBuf, io_mode: IoMode) -> Self {
-        if matches!(io_mode, IoMode::UringDirectIO | IoMode::Uring) {
+        if matches!(
+            io_mode,
+            IoMode::UringDirect | IoMode::Uring | IoMode::UringBlocking
+        ) {
             #[cfg(target_os = "linux")]
             {
                 crate::cache::io_uring::initialize_uring_pool(io_mode);
@@ -52,9 +55,10 @@ mod io_backend {
 
     pub(super) async fn read_file(io_mode: IoMode, path: PathBuf) -> Result<Bytes, std::io::Error> {
         match io_mode {
-            IoMode::Uring | IoMode::UringDirectIO => read_file_uring(path).await,
-            IoMode::StdSpawnBlockingIO => read_file_spawn_blocking(path).await,
-            IoMode::StdBlockingIO => read_file_blocking(path),
+            IoMode::Uring | IoMode::UringDirect => read_file_uring(path).await,
+            IoMode::UringBlocking => read_file_blocking_uring(path).await,
+            IoMode::StdSpawnBlocking => read_file_spawn_blocking(path).await,
+            IoMode::StdBlocking => read_file_blocking(path),
             IoMode::TokioIO => read_file_tokio(path).await,
         }
     }
@@ -65,9 +69,10 @@ mod io_backend {
         range: Range<u64>,
     ) -> Result<Bytes, std::io::Error> {
         match io_mode {
-            IoMode::Uring | IoMode::UringDirectIO => read_range_uring(path, range).await,
-            IoMode::StdSpawnBlockingIO => read_range_spawn_blocking(path, range).await,
-            IoMode::StdBlockingIO => read_range_blocking(path, range),
+            IoMode::Uring | IoMode::UringDirect => read_range_uring(path, range).await,
+            IoMode::UringBlocking => read_range_blocking_uring(path, range).await,
+            IoMode::StdSpawnBlocking => read_range_spawn_blocking(path, range).await,
+            IoMode::StdBlocking => read_range_blocking(path, range),
             IoMode::TokioIO => read_range_tokio(path, range).await,
         }
     }
@@ -78,9 +83,10 @@ mod io_backend {
         data: Bytes,
     ) -> Result<(), std::io::Error> {
         match io_mode {
-            IoMode::Uring | IoMode::UringDirectIO => write_file_uring(path, data).await,
-            IoMode::StdSpawnBlockingIO => write_file_spawn_blocking(path, data).await,
-            IoMode::StdBlockingIO => write_file_blocking(path, data),
+            IoMode::Uring | IoMode::UringDirect => write_file_uring(path, data).await,
+            IoMode::UringBlocking => write_file_blocking_uring(path, data).await,
+            IoMode::StdSpawnBlocking => write_file_spawn_blocking(path, data).await,
+            IoMode::StdBlocking => write_file_blocking(path, data),
             IoMode::TokioIO => write_file_tokio(path, data).await,
         }
     }
@@ -175,12 +181,48 @@ mod io_backend {
     }
 
     #[cfg(target_os = "linux")]
+    async fn read_file_blocking_uring(path: PathBuf) -> Result<Bytes, std::io::Error> {
+        crate::cache::io_uring::read_range_from_blocking_uring(path, None)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    async fn read_file_blocking_uring(_path: PathBuf) -> Result<Bytes, std::io::Error> {
+        panic!("io_uring modes are only supported on Linux");
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn read_range_blocking_uring(
+        path: PathBuf,
+        range: Range<u64>,
+    ) -> Result<Bytes, std::io::Error> {
+        crate::cache::io_uring::read_range_from_blocking_uring(path, Some(range))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    async fn read_range_blocking_uring(
+        _path: PathBuf,
+        _range: Range<u64>,
+    ) -> Result<Bytes, std::io::Error> {
+        panic!("io_uring modes are only supported on Linux");
+    }
+
+    #[cfg(target_os = "linux")]
     async fn write_file_uring(path: PathBuf, data: Bytes) -> Result<(), std::io::Error> {
         crate::cache::io_uring::write_to_uring(path, &data).await
     }
 
     #[cfg(not(target_os = "linux"))]
     async fn write_file_uring(_path: PathBuf, _data: Bytes) -> Result<(), std::io::Error> {
+        panic!("io_uring modes are only supported on Linux");
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn write_file_blocking_uring(path: PathBuf, data: Bytes) -> Result<(), std::io::Error> {
+        crate::cache::io_uring::write_to_blocking_uring(path, &data)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    async fn write_file_blocking_uring(_path: PathBuf, _data: Bytes) -> Result<(), std::io::Error> {
         panic!("io_uring modes are only supported on Linux");
     }
 

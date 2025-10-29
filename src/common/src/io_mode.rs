@@ -7,18 +7,22 @@ use serde::Serialize;
 pub enum IoMode {
     /// Uses io_uring and bypass the page cache (uses direct IO), only available on Linux
     #[serde(rename = "uring-direct")]
-    UringDirectIO,
+    UringDirect,
 
     /// Uses io_uring and uses OS's page cache, only available on Linux
     #[serde(rename = "uring")]
     Uring,
+
+    /// Uses io_uring on the calling thread and blocks until completion.
+    #[serde(rename = "uring-blocking")]
+    UringBlocking,
 
     /// Uses rust's std::fs::File, this is blocking IO.
     /// On Linux, this is essentially `pread/pwrite`
     /// This is the default until we optimized the performance of uring.
     #[default]
     #[serde(rename = "std-blocking")]
-    StdBlockingIO,
+    StdBlocking,
 
     /// Uses tokio's async IO, this is non-blocking IO, but quite slow: <https://github.com/tokio-rs/tokio/issues/3664>
     #[serde(rename = "tokio")]
@@ -27,7 +31,7 @@ pub enum IoMode {
     /// Use rust's std::fs::File, but will try to `spawn_blocking`, just like `object_store` does:
     /// <https://github.com/apache/arrow-rs-object-store/blob/28b2fc563feb44bb3d15718cf58036772334a704/src/local.rs#L440-L448>
     #[serde(rename = "std-spawn-blocking")]
-    StdSpawnBlockingIO,
+    StdSpawnBlocking,
 }
 
 impl Display for IoMode {
@@ -37,10 +41,11 @@ impl Display for IoMode {
             "{}",
             match self {
                 IoMode::Uring => "uring",
-                IoMode::UringDirectIO => "uring-direct",
-                IoMode::StdBlockingIO => "std-blocking",
+                IoMode::UringDirect => "uring-direct",
+                IoMode::UringBlocking => "uring-blocking",
+                IoMode::StdBlocking => "std-blocking",
                 IoMode::TokioIO => "tokio",
-                IoMode::StdSpawnBlockingIO => "std-spawn-blocking",
+                IoMode::StdSpawnBlocking => "std-spawn-blocking",
             }
         )
     }
@@ -51,11 +56,12 @@ impl FromStr for IoMode {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s {
-            "uring-direct" => IoMode::UringDirectIO,
+            "uring-direct" => IoMode::UringDirect,
             "uring" => IoMode::Uring,
-            "std-blocking" => IoMode::StdBlockingIO,
+            "uring-blocking" => IoMode::UringBlocking,
+            "std-blocking" => IoMode::StdBlocking,
             "tokio" => IoMode::TokioIO,
-            "std-spawn-blocking" => IoMode::StdSpawnBlockingIO,
+            "std-spawn-blocking" => IoMode::StdSpawnBlocking,
             _ => return Err(format!("Invalid IO mode: {s}")),
         })
     }
