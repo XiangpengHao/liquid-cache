@@ -322,10 +322,6 @@ impl IoUringThreadpool {
         let (sender, receiver) = crossbeam_channel::unbounded::<Submission>();
 
         let mut builder = IoUring::<squeue::Entry, cqueue::Entry>::builder();
-        if io_type == IoMode::UringDirectIO {
-            // Polled IO is only supported for direct IO requests
-            builder.setup_iopoll();
-        }
         builder.setup_sqpoll(50000);
         let ring = builder
             .build(Self::NUM_ENTRIES)

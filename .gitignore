@@ -7,3 +7,5 @@ data/
 .claude
 .jj
 profile.json.gz
+*.svg
+perf.data*

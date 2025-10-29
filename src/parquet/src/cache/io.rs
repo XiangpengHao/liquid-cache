@@ -224,11 +224,13 @@ impl IoContext for ParquetIoContext {
         parquet_array_id.on_disk_path(self.base_dir())
     }
 
+    #[inline(never)]
     #[fastrace::trace]
     async fn read_file(&self, path: PathBuf) -> Result<Bytes, std::io::Error> {
         io_backend::read_file(self.io_mode, path).await
     }
 
+    #[inline(never)]
     #[fastrace::trace]
     async fn read_range(
         &self,
@@ -238,6 +240,7 @@ impl IoContext for ParquetIoContext {
         io_backend::read_range(self.io_mode, path, range).await
     }
 
+    #[inline(never)]
     #[fastrace::trace]
     async fn write_file(&self, path: PathBuf, data: Bytes) -> Result<(), std::io::Error> {
         io_backend::write_file(self.io_mode, path, data).await
