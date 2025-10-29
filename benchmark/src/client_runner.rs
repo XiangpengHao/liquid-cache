@@ -83,6 +83,8 @@ impl BenchmarkRunner {
             let mut query_result = QueryResult::new(query.clone());
 
             for it in 0..common.iteration {
+                let iteration = it + 1;
+                crate::tracepoints::iteration_start(query.id(), iteration);
                 let iteration_result = Self::run_single_iteration(
                     &benchmark,
                     &ctx,

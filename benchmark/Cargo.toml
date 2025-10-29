@@ -41,6 +41,7 @@ pprof = { version = "0.15.0", features = ["flamegraph"] }
 anyhow = "1.0"
 fastrace-futures = "0.7"
 futures = { workspace = true }
+usdt = "0.6"
 
 [features]
 trace = ["fastrace/enable"]

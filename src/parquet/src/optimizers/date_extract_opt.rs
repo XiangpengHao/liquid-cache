@@ -857,16 +857,14 @@ mod tests {
         writer.write(&batch).unwrap();
         writer.close().unwrap();
 
-        let physical_optimizer = LocalModeOptimizer::with_cache(
-            Arc::new(LiquidCache::new(
-                1024,
-                1024 * 1024 * 1024,
-                PathBuf::from("test"),
-                Box::new(LiquidPolicy::new()),
-                Box::new(TranscodeSqueezeEvict),
-                IoMode::Uring,
-            )),
-        );
+        let physical_optimizer = LocalModeOptimizer::with_cache(Arc::new(LiquidCache::new(
+            1024,
+            1024 * 1024 * 1024,
+            PathBuf::from("test"),
+            Box::new(LiquidPolicy::new()),
+            Box::new(TranscodeSqueezeEvict),
+            IoMode::Uring,
+        )));
 
         let state = SessionStateBuilder::new()
             .with_config(SessionConfig::new())

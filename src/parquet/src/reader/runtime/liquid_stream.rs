@@ -587,11 +587,7 @@ impl Stream for LiquidStream {
     type Item = Result<RecordBatch, parquet::errors::ParquetError>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let _guard = if let Some(s) = &self.span {
-            Some(s.set_local_parent())
-        } else {
-            None
-        };
+        let _guard = self.span.as_ref().map(|s| s.set_local_parent());
         loop {
             let state = std::mem::replace(&mut self.state, StreamState::Init);
 

@@ -47,6 +47,7 @@
               llvmPackages.bintools
               lldb
               cargo-fuzz
+              bpftrace
               # rustup
               (rust-bin.selectLatestNightlyWith (toolchain: toolchain.default.override {
                 extensions = [ "rust-src" "llvm-tools-preview" ];

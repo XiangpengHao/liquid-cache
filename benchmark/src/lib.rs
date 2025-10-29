@@ -23,6 +23,7 @@ pub mod client_runner;
 pub mod inprocess_runner;
 mod manifest;
 mod observability;
+mod tracepoints;
 pub mod utils;
 
 pub use client_runner::*;

@@ -6,3 +6,4 @@ data/
 .direnv
 .claude
 .jj
+profile.json.gz

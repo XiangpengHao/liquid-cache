@@ -9,7 +9,7 @@ use std::{
     pin::Pin,
     sync::{
         OnceLock,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     task::{Context, Poll},
     thread,
@@ -316,7 +316,7 @@ fn get_io_mode() -> IoMode {
 }
 
 impl IoUringThreadpool {
-    const NUM_ENTRIES: u32 = 64;
+    const NUM_ENTRIES: u32 = 256;
 
     fn new(io_type: IoMode) -> IoUringThreadpool {
         let (sender, receiver) = crossbeam_channel::unbounded::<Submission>();
@@ -331,10 +331,13 @@ impl IoUringThreadpool {
             .build(Self::NUM_ENTRIES)
             .expect("Failed to build IoUring instance");
 
-        let worker = thread::spawn(move || {
-            let mut uring_worker = UringWorker::new(receiver, ring);
-            uring_worker.thread_loop();
-        });
+        let worker = thread::Builder::new()
+            .name("lc-io-worker".to_string())
+            .spawn(move || {
+                let mut uring_worker = UringWorker::new(receiver, ring);
+                uring_worker.thread_loop();
+            })
+            .expect("Failed to spawn io-uring worker thread");
 
         IoUringThreadpool {
             sender,
@@ -379,6 +382,7 @@ struct UringWorker {
     ring: io_uring::IoUring,
     tokens: VecDeque<u16>,
     submitted_tasks: Vec<Option<Submission>>,
+    io_performed: AtomicUsize,
 }
 
 impl UringWorker {
@@ -395,6 +399,7 @@ impl UringWorker {
             ring,
             tokens,
             submitted_tasks: tasks,
+            io_performed: AtomicUsize::new(0),
         }
     }
 
@@ -404,29 +409,36 @@ impl UringWorker {
                 break;
             }
 
-            while !self.tokens.is_empty() {
-                let Ok(mut submission) = self.receiver.try_recv() else {
-                    break;
-                };
-                let token = self.tokens.pop_front().unwrap();
-                // Consume tasks from channel and submit them to the ring
-                {
-                    let sq = &mut (self.ring.submission());
-                    let task = submission.task.as_mut();
-                    let sqe = task.prepare_sqe().user_data(token as u64);
-                    unsafe {
-                        sq.push(&sqe).expect("Failed to push to submission queue");
-                    }
-                    sq.sync();
-                }
-                self.submitted_tasks[token as usize] = Some(submission);
-                self.ring.submit().expect("Failed to submit");
-            }
-
+            self.drain_submissions();
             self.poll_completions();
         }
     }
 
+    #[inline(never)]
+    fn drain_submissions(&mut self) {
+        let mut need_submit = false;
+        while !self.receiver.is_empty() && !self.tokens.is_empty() {
+            let mut submission = self.receiver.recv().unwrap();
+            let token = self.tokens.pop_front().unwrap();
+            // Consume tasks from channel and submit them to the ring
+            {
+                let sq = &mut (self.ring.submission());
+                let task = submission.task.as_mut();
+                let sqe = task.prepare_sqe().user_data(token as u64);
+                unsafe {
+                    sq.push(&sqe).expect("Failed to push to submission queue");
+                }
+                sq.sync();
+            }
+            self.submitted_tasks[token as usize] = Some(submission);
+            need_submit = true;
+        }
+        if need_submit {
+            self.ring.submit().expect("Failed to submit");
+        }
+    }
+
+    #[inline(never)]
     fn poll_completions(&mut self) {
         let cq = &mut self.ring.completion();
         loop {
@@ -439,6 +451,7 @@ impl UringWorker {
                         .expect("Task not found in submitted tasks");
                     submission.send_back(&cqe);
                     self.tokens.push_back(token as u16);
+                    self.io_performed.fetch_add(1, Ordering::Relaxed);
                 }
                 None => {
                     break;
