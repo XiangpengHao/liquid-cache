@@ -14,13 +14,14 @@ pub enum IoMode {
     Uring,
 
     /// Uses io_uring on the calling thread and blocks until completion.
-    #[default]
+    #[cfg_attr(target_os = "linux", default)]
     #[serde(rename = "uring-blocking")]
     UringBlocking,
 
     /// Uses rust's std::fs::File, this is blocking IO.
     /// On Linux, this is essentially `pread/pwrite`
-    /// This is the default until we optimized the performance of uring.
+    /// This is the default on non-Linux platforms.
+    #[cfg_attr(not(target_os = "linux"), default)]
     #[serde(rename = "std-blocking")]
     StdBlocking,
 
