@@ -425,8 +425,9 @@ impl InProcessBenchmarkRunner {
             let mut query_result = QueryResult::new(query.clone());
 
             for it in 0..self.iteration {
+                crate::tracepoints::iteration_start(query.id(), it);
                 let iteration_result = self
-                    .run_single_iteration(&ctx, query, bench_start_time, cache.clone(), it + 1)
+                    .run_single_iteration(&ctx, query, bench_start_time, cache.clone(), it)
                     .await?;
 
                 query_result.add(iteration_result);

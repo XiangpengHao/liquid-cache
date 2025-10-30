@@ -167,11 +167,20 @@ pub struct LiquidParquetSource {
     liquid_cache: LiquidCacheRef,
     batch_size: Option<usize>,
     projected_statistics: Option<Statistics>,
+    span: Option<Arc<fastrace::Span>>,
 }
 
 impl LiquidParquetSource {
     fn reorder_filters(&self) -> bool {
         self.table_parquet_options.global.reorder_filters
+    }
+
+    /// Set the span for the LiquidParquetSource
+    pub fn with_span(&self, span: fastrace::Span) -> Self {
+        Self {
+            span: Some(Arc::new(span)),
+            ..self.clone()
+        }
     }
 
     /// Set predicate information, also sets pruning_predicate and page_pruning_predicate attributes
@@ -228,6 +237,7 @@ impl LiquidParquetSource {
             pruning_predicate: None,
             page_pruning_predicate: None,
             projected_statistics: Some(source.statistics().unwrap()),
+            span: None,
         };
 
         if let Some(predicate) = predicate {
@@ -268,6 +278,10 @@ impl FileSource for LiquidParquetSource {
         let reader_factory = Arc::new(CachedMetaReaderFactory::new(object_store));
         let schema_adapter = Arc::new(DefaultSchemaAdapterFactory);
 
+        let execution_span = self
+            .span
+            .clone()
+            .map(|span| fastrace::Span::enter_with_parent(format!("opener_{partition}"), &span));
         let opener = LiquidParquetOpener::new(
             partition,
             Arc::from(projection),
@@ -283,6 +297,7 @@ impl FileSource for LiquidParquetSource {
             reader_factory,
             self.reorder_filters(),
             schema_adapter,
+            execution_span.map(Arc::new),
         );
 
         Arc::new(opener)

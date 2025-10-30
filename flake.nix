@@ -47,7 +47,10 @@
               llvmPackages.bintools
               lldb
               cargo-fuzz
-              # rustup
+              bpftrace
+              perf
+              inferno
+              cargo-flamegraph
               (rust-bin.selectLatestNightlyWith (toolchain: toolchain.default.override {
                 extensions = [ "rust-src" "llvm-tools-preview" ];
               }))

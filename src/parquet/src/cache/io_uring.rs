@@ -1,15 +1,22 @@
 use std::{
     alloc::Layout,
     any::Any,
+    cell::RefCell,
     collections::VecDeque,
+    ffi::CString,
     fs,
+    future::Future,
+    io,
     ops::Range,
-    os::fd::{AsRawFd, RawFd},
+    os::{
+        fd::{AsRawFd, FromRawFd, RawFd},
+        unix::ffi::OsStringExt,
+    },
     path::PathBuf,
     pin::Pin,
     sync::{
         OnceLock,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     task::{Context, Poll},
     thread,
@@ -35,6 +42,110 @@ trait IoTask: Send + Any + std::fmt::Debug {
 }
 
 #[derive(Debug)]
+struct FileOpenTask {
+    path: CString,
+    flags: i32,
+    mode: libc::mode_t,
+    fd: Option<RawFd>,
+    error: Option<std::io::Error>,
+}
+
+impl FileOpenTask {
+    fn build(
+        path: PathBuf,
+        flags: i32,
+        mode: libc::mode_t,
+    ) -> Result<FileOpenTask, std::io::Error> {
+        let bytes = path.into_os_string().into_vec();
+        let path = CString::new(bytes).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "path contains interior null byte",
+            )
+        })?;
+        Ok(FileOpenTask {
+            path,
+            flags,
+            mode,
+            fd: None,
+            error: None,
+        })
+    }
+
+    #[allow(clippy::new_ret_no_self)]
+    fn new(
+        path: PathBuf,
+        flags: i32,
+        mode: libc::mode_t,
+    ) -> Result<FileOpenTaskFuture, std::io::Error> {
+        let task = FileOpenTask::build(path, flags, mode)?;
+        Ok(FileOpenTaskFuture(UringFuture::new(Box::new(task))))
+    }
+
+    fn into_result(mut self) -> Result<fs::File, std::io::Error> {
+        if let Some(err) = self.error.take() {
+            return Err(err);
+        }
+        let fd = self.fd.take().ok_or_else(|| {
+            std::io::Error::other("open operation completed without returning file descriptor")
+        })?;
+        // SAFETY: `fd` has been received from the kernel for this task and is uniquely owned here.
+        let file = unsafe { fs::File::from_raw_fd(fd) };
+        Ok(file)
+    }
+}
+
+impl IoTask for FileOpenTask {
+    #[inline]
+    fn prepare_sqe(&mut self) -> squeue::Entry {
+        let open_op = opcode::OpenAt::new(io_uring::types::Fd(libc::AT_FDCWD), self.path.as_ptr())
+            .flags(self.flags)
+            .mode(self.mode);
+
+        open_op.build()
+    }
+
+    #[inline]
+    fn complete(&mut self, cqe: &cqueue::Entry) {
+        let result = cqe.result();
+        if result < 0 {
+            self.error = Some(std::io::Error::from_raw_os_error(-result));
+        } else {
+            self.fd = Some(result);
+        }
+    }
+
+    fn into_any(self: Box<Self>) -> Box<dyn Any> {
+        self
+    }
+}
+
+impl Drop for FileOpenTask {
+    fn drop(&mut self) {
+        if let Some(fd) = self.fd.take() {
+            unsafe {
+                libc::close(fd);
+            }
+        }
+    }
+}
+
+struct FileOpenTaskFuture(UringFuture<FileOpenTask>);
+
+impl Future for FileOpenTaskFuture {
+    type Output = Result<fs::File, std::io::Error>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        // SAFETY: We never move the inner future after pinning `self`.
+        let inner = unsafe { self.map_unchecked_mut(|fut| &mut fut.0) };
+        match inner.poll(cx) {
+            Poll::Ready(task) => Poll::Ready(task.into_result()),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+#[derive(Debug)]
 struct FileReadTask {
     base_ptr: *mut u8,
     layout: Layout,
@@ -49,7 +160,7 @@ impl FileReadTask {
     fn build(range: Range<u64>, file: fs::File) -> FileReadTask {
         let mut start_padding: usize = 0;
         let mut end_padding: usize = 0;
-        if get_io_mode() == IoMode::UringDirectIO {
+        if get_io_mode() == IoMode::UringDirect {
             // Padding must be applied to ensure that starting and ending addresses are block-aligned
             start_padding = range.start as usize & (BLOCK_ALIGN - 1);
             end_padding = if range.end as usize & (BLOCK_ALIGN - 1) == 0 {
@@ -177,7 +288,7 @@ pub struct FileWriteTask {
 impl FileWriteTask {
     fn build(base_ptr: *const u8, num_bytes: usize, fd: RawFd) -> FileWriteTask {
         let mut padding = 0;
-        if get_io_mode() == IoMode::UringDirectIO && (num_bytes & 4095) > 0 {
+        if get_io_mode() == IoMode::UringDirect && (num_bytes & 4095) > 0 {
             padding = 4096 - num_bytes % 4096;
         }
         FileWriteTask {
@@ -252,6 +363,7 @@ impl Future for FileWriteTaskFuture {
     }
 }
 
+static IO_MODE: OnceLock<IoMode> = OnceLock::new();
 static ENABLED: AtomicBool = AtomicBool::new(true);
 
 struct Submission {
@@ -304,37 +416,42 @@ unsafe impl Sync for IoUringThreadpool {}
 static IO_URING_THREAD_POOL_INST: OnceLock<IoUringThreadpool> = OnceLock::new();
 
 pub(crate) fn initialize_uring_pool(io_mode: IoMode) {
-    IO_URING_THREAD_POOL_INST.get_or_init(|| IoUringThreadpool::new(io_mode));
+    let current_mode = IO_MODE.get_or_init(|| io_mode);
+    if *current_mode != io_mode {
+        panic!(
+            "io-uring runtime already initialized with mode {:?}, received {:?}",
+            current_mode, io_mode
+        );
+    }
+
+    if matches!(io_mode, IoMode::Uring | IoMode::UringDirect) {
+        IO_URING_THREAD_POOL_INST.get_or_init(|| IoUringThreadpool::new(io_mode));
+    }
 }
 
 #[inline]
 fn get_io_mode() -> IoMode {
-    IO_URING_THREAD_POOL_INST
-        .get()
-        .expect("Uring threadpool not initialized")
-        .io_mode()
+    *IO_MODE.get().expect("io-uring runtime not initialized")
 }
 
 impl IoUringThreadpool {
-    const NUM_ENTRIES: u32 = 64;
+    const NUM_ENTRIES: u32 = 256;
 
     fn new(io_type: IoMode) -> IoUringThreadpool {
         let (sender, receiver) = crossbeam_channel::unbounded::<Submission>();
 
-        let mut builder = IoUring::<squeue::Entry, cqueue::Entry>::builder();
-        if io_type == IoMode::UringDirectIO {
-            // Polled IO is only supported for direct IO requests
-            builder.setup_iopoll();
-        }
-        builder.setup_sqpoll(50000);
+        let builder = IoUring::<squeue::Entry, cqueue::Entry>::builder();
         let ring = builder
             .build(Self::NUM_ENTRIES)
             .expect("Failed to build IoUring instance");
 
-        let worker = thread::spawn(move || {
-            let mut uring_worker = UringWorker::new(receiver, ring);
-            uring_worker.thread_loop();
-        });
+        let worker = thread::Builder::new()
+            .name("lc-io-worker".to_string())
+            .spawn(move || {
+                let mut uring_worker = UringWorker::new(receiver, ring);
+                uring_worker.thread_loop();
+            })
+            .expect("Failed to spawn io-uring worker thread");
 
         IoUringThreadpool {
             sender,
@@ -348,11 +465,6 @@ impl IoUringThreadpool {
         self.sender
             .send(Submission::new(task, completion_tx))
             .expect("Failed to submit task through channel");
-    }
-
-    #[inline]
-    fn io_mode(&self) -> IoMode {
-        self.io_type
     }
 }
 
@@ -370,6 +482,112 @@ impl std::fmt::Debug for IoUringThreadpool {
     }
 }
 
+thread_local! {
+    static BLOCKING_URING_RING: RefCell<Option<BlockingRing>> = const { RefCell::new(None) };
+}
+
+struct BlockingRing {
+    ring: IoUring,
+}
+
+impl BlockingRing {
+    fn new() -> io::Result<BlockingRing> {
+        let ring = IoUring::builder().build(IoUringThreadpool::NUM_ENTRIES)?;
+        Ok(BlockingRing { ring })
+    }
+
+    fn run_task<T>(&mut self, mut task: Box<T>) -> io::Result<Box<T>>
+    where
+        T: IoTask + 'static,
+    {
+        {
+            let mut sq = self.ring.submission();
+            let entry = task.prepare_sqe().user_data(0);
+            unsafe {
+                sq.push(&entry).expect("Failed to push to submission queue");
+            }
+            sq.sync();
+        }
+
+        self.ring.submit_and_wait(1)?;
+
+        {
+            let mut cq = self.ring.completion();
+            cq.sync();
+            let cqe = cq
+                .next()
+                .ok_or_else(|| io::Error::other("io-uring completion queue empty"))?;
+            task.complete(&cqe);
+        }
+
+        Ok(task)
+    }
+}
+
+fn with_blocking_ring<F, R>(f: F) -> io::Result<R>
+where
+    F: FnOnce(&mut BlockingRing) -> io::Result<R>,
+{
+    BLOCKING_URING_RING.with(|cell| {
+        let mut borrowed = cell.borrow_mut();
+        if borrowed.is_none() {
+            *borrowed = Some(BlockingRing::new()?);
+        }
+        let ring = borrowed
+            .as_mut()
+            .expect("BlockingRing missing after initialization");
+        f(ring)
+    })
+}
+
+fn run_blocking_task<T>(task: Box<T>) -> io::Result<Box<T>>
+where
+    T: IoTask + 'static,
+{
+    with_blocking_ring(move |ring| ring.run_task(task))
+}
+
+pub(crate) fn read_range_from_blocking_uring(
+    path: PathBuf,
+    range: Option<Range<u64>>,
+) -> Result<Bytes, std::io::Error> {
+    let mut flags = libc::O_RDONLY | libc::O_CLOEXEC;
+    if get_io_mode() == IoMode::UringDirect {
+        flags |= libc::O_DIRECT;
+    }
+
+    let open_task = FileOpenTask::build(path, flags, 0)?;
+    let file = run_blocking_task(Box::new(open_task))?.into_result()?;
+    let effective_range = if let Some(range) = range {
+        range
+    } else {
+        let len = file.metadata()?.len();
+        0..len
+    };
+
+    let read_task = FileReadTask::build(effective_range, file);
+    run_blocking_task(Box::new(read_task))?.into_result()
+}
+
+pub(crate) fn write_to_blocking_uring(path: PathBuf, data: &Bytes) -> Result<(), std::io::Error> {
+    use std::{fs::OpenOptions, os::unix::fs::OpenOptionsExt as _};
+
+    let flags = if get_io_mode() == IoMode::UringDirect {
+        libc::O_DIRECT
+    } else {
+        0
+    };
+
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .custom_flags(flags)
+        .open(path)?;
+
+    let write_task = FileWriteTask::build(data.as_ptr(), data.len(), file.as_raw_fd());
+    run_blocking_task(Box::new(write_task))?.into_result()
+}
+
 /// Represents a single worker thread. The worker thread busy loops through 3 phases:
 /// 1. Receives new requests from the application via a crossbeam channel
 /// 2. Converts the requests to submission queue entries and submits them to the ring
@@ -379,6 +597,7 @@ struct UringWorker {
     ring: io_uring::IoUring,
     tokens: VecDeque<u16>,
     submitted_tasks: Vec<Option<Submission>>,
+    io_performed: AtomicUsize,
 }
 
 impl UringWorker {
@@ -395,6 +614,7 @@ impl UringWorker {
             ring,
             tokens,
             submitted_tasks: tasks,
+            io_performed: AtomicUsize::new(0),
         }
     }
 
@@ -404,29 +624,36 @@ impl UringWorker {
                 break;
             }
 
-            while !self.tokens.is_empty() {
-                let Ok(mut submission) = self.receiver.try_recv() else {
-                    break;
-                };
-                let token = self.tokens.pop_front().unwrap();
-                // Consume tasks from channel and submit them to the ring
-                {
-                    let sq = &mut (self.ring.submission());
-                    let task = submission.task.as_mut();
-                    let sqe = task.prepare_sqe().user_data(token as u64);
-                    unsafe {
-                        sq.push(&sqe).expect("Failed to push to submission queue");
-                    }
-                    sq.sync();
-                }
-                self.submitted_tasks[token as usize] = Some(submission);
-                self.ring.submit().expect("Failed to submit");
-            }
-
+            self.drain_submissions();
             self.poll_completions();
         }
     }
 
+    #[inline(never)]
+    fn drain_submissions(&mut self) {
+        let mut need_submit = false;
+        while !self.receiver.is_empty() && !self.tokens.is_empty() {
+            let mut submission = self.receiver.recv().unwrap();
+            let token = self.tokens.pop_front().unwrap();
+            // Consume tasks from channel and submit them to the ring
+            {
+                let sq = &mut (self.ring.submission());
+                let task = submission.task.as_mut();
+                let sqe = task.prepare_sqe().user_data(token as u64);
+                unsafe {
+                    sq.push(&sqe).expect("Failed to push to submission queue");
+                }
+                sq.sync();
+            }
+            self.submitted_tasks[token as usize] = Some(submission);
+            need_submit = true;
+        }
+        if need_submit {
+            self.ring.submit().expect("Failed to submit");
+        }
+    }
+
+    #[inline(never)]
     fn poll_completions(&mut self) {
         let cq = &mut self.ring.completion();
         loop {
@@ -439,6 +666,7 @@ impl UringWorker {
                         .expect("Task not found in submitted tasks");
                     submission.send_back(&cqe);
                     self.tokens.push_back(token as u16);
+                    self.io_performed.fetch_add(1, Ordering::Relaxed);
                 }
                 None => {
                     break;
@@ -517,26 +745,23 @@ pub(crate) async fn read_range_from_uring(
     path: PathBuf,
     range: Option<std::ops::Range<u64>>,
 ) -> Result<Bytes, std::io::Error> {
-    use std::{fs::OpenOptions, os::unix::fs::OpenOptionsExt as _};
-
-    use crate::cache::io_uring::{FileReadTask, get_io_mode};
+    use crate::cache::io_uring::{FileOpenTask, FileReadTask, get_io_mode};
     use liquid_cache_common::IoMode;
 
-    let flags = if get_io_mode() == IoMode::UringDirectIO {
-        libc::O_DIRECT
-    } else {
-        0
-    };
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(flags)
-        .open(path)
-        .expect("failed to open file");
+    let mut flags = libc::O_RDONLY | libc::O_CLOEXEC;
+    if get_io_mode() == IoMode::UringDirect {
+        flags |= libc::O_DIRECT;
+    }
 
-    let effective_range = range.unwrap_or(std::ops::Range::<u64> {
-        start: 0,
-        end: file.metadata()?.len(),
-    });
+    let open_future = FileOpenTask::new(path, flags, 0)?;
+    let file = open_future.await?;
+
+    let effective_range = if let Some(range) = range {
+        range
+    } else {
+        let len = file.metadata()?.len();
+        0..len
+    };
 
     FileReadTask::new(effective_range, file).await
 }
@@ -547,7 +772,7 @@ pub(crate) async fn write_to_uring(path: PathBuf, data: &Bytes) -> Result<(), st
     use std::os::fd::AsRawFd;
     use std::{fs::OpenOptions, os::unix::fs::OpenOptionsExt as _};
 
-    let flags = if get_io_mode() == IoMode::UringDirectIO {
+    let flags = if get_io_mode() == IoMode::UringDirect {
         libc::O_DIRECT
     } else {
         0

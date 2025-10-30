@@ -156,7 +156,7 @@ impl LiquidCacheReaderInner {
                 .build_predicate_filter(&mut row_filter, selection)
                 .await
             {
-                Ok(buffer) => match inner.read_from_cache(&buffer).await {
+                Ok(selection) => match inner.read_from_cache(&selection).await {
                     Ok(Some(batch)) => {
                         inner.current_batch_id.inc();
                         ProcessResult::Emit(Ok(batch))
@@ -174,6 +174,7 @@ impl LiquidCacheReaderInner {
         })
     }
 
+    #[fastrace::trace]
     async fn build_predicate_filter(
         &mut self,
         row_filter: &mut Option<LiquidRowFilter>,
@@ -212,6 +213,7 @@ impl LiquidCacheReaderInner {
         Ok(input_selection)
     }
 
+    #[fastrace::trace]
     async fn read_from_cache(
         &self,
         selection: &BooleanBuffer,

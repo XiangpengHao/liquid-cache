@@ -232,6 +232,7 @@ impl LiquidCachedRowGroup {
     }
 
     /// Evaluate a predicate on a row group.
+    #[fastrace::trace]
     pub async fn evaluate_selection_with_predicate(
         &self,
         batch_id: BatchID,
