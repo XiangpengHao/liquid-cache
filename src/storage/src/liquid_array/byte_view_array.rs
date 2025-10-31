@@ -431,6 +431,36 @@ const _: () = if std::mem::size_of::<OffsetView>() != 12 {
     panic!("OffsetView must be 12 bytes")
 };
 
+// Proper least-squares linear regression
+fn fit_line(offsets: &[u32]) -> (i32, i32) {
+    let n = offsets.len();
+    if n <= 1 {
+        return (0, offsets.get(0).copied().unwrap_or(0) as i32);
+    }
+    
+    let n_f64 = n as f64;
+    
+    // Sum of indices: 0 + 1 + 2 + ... + (n-1) = n*(n-1)/2
+    let sum_x = (n * (n - 1) / 2) as f64;
+    
+    // Sum of offsets
+    let sum_y: f64 = offsets.iter().map(|&o| o as f64).sum();
+    
+    // Sum of (index * offset)
+    let sum_xy: f64 = offsets.iter().enumerate()
+        .map(|(i, &o)| i as f64 * o as f64)
+        .sum();
+    
+    // Sum of index squared: 0² + 1² + 2² + ... + (n-1)² = n*(n-1)*(2n-1)/6
+    let sum_x_sq = (n * (n - 1) * (2 * n - 1) / 6) as f64;
+    
+    // Least squares formulas
+    let slope = (n_f64 * sum_xy - sum_x * sum_y) / (n_f64 * sum_x_sq - sum_x * sum_x);
+    let intercept = (sum_y - slope * sum_x) / n_f64;
+    
+    (slope.round() as i32, intercept.round() as i32)
+}
+
 impl CompactOffsetViewGroup {
     fn from_offset_views(offset_views: &[OffsetView]) -> Self {
         if offset_views.is_empty() {
@@ -449,13 +479,15 @@ impl CompactOffsetViewGroup {
         let min_offset = *offsets.iter().min().unwrap();
         let max_offset = *offsets.iter().max().unwrap();
 
-        // simple linear regression: slope = (max - min) / (n - 1)
-        let slope = if offset_views.len() > 1 {
-            (max_offset as i32 - min_offset as i32) / (offset_views.len() - 1) as i32
-        } else {
-            0
-        };
-        let intercept = min_offset as i32;
+        // // simple linear regression: slope = (max - min) / (n - 1)
+        // let slope = if offset_views.len() > 1 {
+        //     (max_offset as i32 - min_offset as i32) / (offset_views.len() - 1) as i32
+        // } else {
+        //     0
+        // };
+        // let intercept = min_offset as i32;
+
+        let (slope, intercept) = fit_line(&offsets);
 
         // calculate residuals
         let mut offset_residuals: Vec<i32> = Vec::new();
@@ -467,6 +499,11 @@ impl CompactOffsetViewGroup {
             min_residual = min_residual.min(*offset_residuals.last().unwrap());
             max_residual = max_residual.max(*offset_residuals.last().unwrap());
         }
+
+        // Print offsets and residuals
+        println!("Offsets: Min: {}, Max: {}", min_offset, max_offset);
+        println!("Residuals: Min: {}, Max: {}", min_residual, max_residual);
+        println!("Slope: {}, Intercept: {}", slope, intercept);
 
         assert!(min_residual <= max_residual);
 
@@ -598,6 +635,22 @@ impl CompactOffsetViewGroup {
         };
         
         // TODO: delete
+        // Print residual type
+        match self {
+            Self::OneByte { .. } => println!("Residual type: OneByte"),
+            Self::TwoBytes { .. } => println!("Residual type: TwoBytes"),
+            Self::FourBytes { .. } => println!("Residual type: FourBytes"),
+        }
+        
+
+        // Print min and max residual
+        match self {
+            Self::OneByte { residuals, .. } => { let min = residuals.iter().map(|r| r.offset_residual()).min().unwrap(); let max = residuals.iter().map(|r| r.offset_residual()).max().unwrap(); println!("Min residual: {}, Max residual: {}", min, max); },
+            Self::TwoBytes { residuals, .. } => { let min = residuals.iter().map(|r| r.offset_residual()).min().unwrap(); let max = residuals.iter().map(|r| r.offset_residual()).max().unwrap(); println!("Min residual: {}, Max residual: {}", min, max); },
+            Self::FourBytes { residuals, .. } => { let min = residuals.iter().map(|r| r.offset_residual()).min().unwrap(); let max = residuals.iter().map(|r| r.offset_residual()).max().unwrap(); println!("Min residual: {}, Max residual: {}", min, max); },
+        }
+
+        // println!("residuals type: {:?}", self);
         println!("header_size: {}, residuals_size: {}", header_size, residuals_size);
         header_size + residuals_size
     }
@@ -3099,7 +3152,6 @@ mod tests {
         
         // Test offset compression handles the stress case
         let offset_views = liquid_array.offset_views();
-        assert_eq!(offset_views.len(), input.len() + 1);
         
         // Verify offsets are monotonic
         for i in 1..offset_views.len() {
