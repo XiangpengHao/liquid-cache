@@ -113,7 +113,7 @@ async fn write_file_tokio(path: PathBuf, data: Bytes) -> Result<(), std::io::Err
 
 #[cfg(target_os = "linux")]
 async fn read_uring(path: PathBuf, range: Option<Range<u64>>) -> Result<Bytes, std::io::Error> {
-    crate::io::io_uring::read_range_from_uring(path, range).await
+    crate::io::io_uring::thread_pool_uring::read_range(path, range).await
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -126,7 +126,7 @@ async fn read_blocking_uring(
     path: PathBuf,
     range: Option<Range<u64>>,
 ) -> Result<Bytes, std::io::Error> {
-    crate::io::io_uring::read_range_from_blocking_uring(path, range)
+    crate::io::io_uring::tls_blocking_uring::read_range(path, range)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -139,7 +139,7 @@ async fn read_blocking_uring(
 
 #[cfg(target_os = "linux")]
 async fn write_file_uring(path: PathBuf, data: Bytes) -> Result<(), std::io::Error> {
-    crate::io::io_uring::write_to_uring(path, &data).await
+    crate::io::io_uring::thread_pool_uring::write(path, &data).await
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -149,7 +149,7 @@ async fn write_file_uring(_path: PathBuf, _data: Bytes) -> Result<(), std::io::E
 
 #[cfg(target_os = "linux")]
 async fn write_file_blocking_uring(path: PathBuf, data: Bytes) -> Result<(), std::io::Error> {
-    crate::io::io_uring::write_to_blocking_uring(path, &data)
+    crate::io::io_uring::tls_blocking_uring::write(path, &data)
 }
 
 #[cfg(not(target_os = "linux"))]
