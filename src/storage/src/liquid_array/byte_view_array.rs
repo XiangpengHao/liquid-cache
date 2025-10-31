@@ -175,7 +175,7 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
             result.extend_from_slice(&header.slope.to_le_bytes());
             result.extend_from_slice(&header.intercept.to_le_bytes());
             result.push(header.offset_bytes);
-            
+
             // serialize residuals based on type
             match &self.compact_offset_views {
                 CompactOffsetViewGroup::OneByte { residuals, .. } => {
@@ -184,21 +184,21 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
                         result.extend_from_slice(residual.prefix7());
                         result.push(residual.len_byte());
                     }
-                },
+                }
                 CompactOffsetViewGroup::TwoBytes { residuals, .. } => {
                     for residual in residuals.iter() {
                         result.extend_from_slice(&residual.offset_residual().to_le_bytes());
                         result.extend_from_slice(residual.prefix7());
                         result.push(residual.len_byte());
                     }
-                },
+                }
                 CompactOffsetViewGroup::FourBytes { residuals, .. } => {
                     for residual in residuals.iter() {
                         result.extend_from_slice(&residual.offset_residual().to_le_bytes());
                         result.extend_from_slice(residual.prefix7());
                         result.push(residual.len_byte());
                     }
-                },
+                }
             }
         }
         let offset_views_size = result.len() - offsets_start;
@@ -244,8 +244,8 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
     ) -> Self {
         // let offset_views = Arc::<[OffsetView]>::from(offset_views.to_vec());
 
-        let compact_offset_views = CompactOffsetViewGroup::from_offset_views(&offset_views);
-        
+        let compact_offset_views = CompactOffsetViewGroup::from_offset_views(offset_views);
+
         Self {
             dictionary_keys,
             compact_offset_views,
@@ -259,7 +259,7 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
     /// Get the offset views of the LiquidByteViewArray
     pub fn offset_views(&self) -> Vec<OffsetView> {
         let mut offset_views: Vec<OffsetView> = Vec::new();
-        
+
         let header = self.compact_offset_views.header();
 
         match &self.compact_offset_views {
@@ -274,7 +274,7 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
                     };
                     offset_views.push(offset_view);
                 }
-            },
+            }
             CompactOffsetViewGroup::TwoBytes { residuals, .. } => {
                 for (index, residual_offset) in residuals.iter().enumerate() {
                     let predicted = header.slope * index as i32 + header.intercept;
@@ -286,11 +286,11 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
                     };
                     offset_views.push(offset_view);
                 }
-            },
+            }
             CompactOffsetViewGroup::FourBytes { residuals, .. } => {
                 for (index, residual_offset) in residuals.iter().enumerate() {
                     let predicted = header.slope * index as i32 + header.intercept;
-                    let offset = (predicted + residual_offset.offset_residual() as i32) as u32;
+                    let offset = (predicted + residual_offset.offset_residual()) as u32;
                     let offset_view = OffsetView {
                         offset,
                         prefix7: *residual_offset.prefix7(),
@@ -298,7 +298,7 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
                     };
                     offset_views.push(offset_view);
                 }
-            },
+            }
         }
 
         offset_views
@@ -383,7 +383,7 @@ impl LiquidByteViewArray<MemoryBuffer> {
     }
 }
 
-/// OffsetView stores information about the offsets of the byte view array 
+/// OffsetView stores information about the offsets of the byte view array
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 // TODO: change it back to pub(crate)
@@ -393,13 +393,12 @@ pub struct OffsetView {
     len: u8,
 }
 
-
 #[derive(Debug, Clone, Copy)]
 #[repr(C, packed)]
 struct CompactOffsetViewHeader {
-    slope: i32,    
+    slope: i32,
     intercept: i32,
-    offset_bytes: u8,         // 1, 2, or 4 bytes per offset
+    offset_bytes: u8, // 1, 2, or 4 bytes per offset
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -407,7 +406,7 @@ struct CompactOffsetViewHeader {
 struct CompactOffsetView<T> {
     offset_residual: T,
     prefix7: [u8; 7],
-    len: u8
+    len: u8,
 }
 
 type CompactOffsetViewOneByte = CompactOffsetView<i8>;
@@ -422,11 +421,11 @@ enum CompactOffsetViewGroup {
     },
     TwoBytes {
         header: CompactOffsetViewHeader,
-        residuals: Arc<[CompactOffsetViewTwoBytes]>
+        residuals: Arc<[CompactOffsetViewTwoBytes]>,
     },
     FourBytes {
         header: CompactOffsetViewHeader,
-        residuals: Arc<[CompactOffsetViewFourBytes]>
+        residuals: Arc<[CompactOffsetViewFourBytes]>,
     },
 }
 
@@ -438,29 +437,31 @@ const _: () = if std::mem::size_of::<OffsetView>() != 12 {
 fn fit_line(offsets: &[u32]) -> (i32, i32) {
     let n = offsets.len();
     if n <= 1 {
-        return (0, offsets.get(0).copied().unwrap_or(0) as i32);
+        return (0, offsets.first().copied().unwrap_or(0) as i32);
     }
-    
+
     let n_f64 = n as f64;
-    
+
     // Sum of indices: 0 + 1 + 2 + ... + (n-1) = n*(n-1)/2
     let sum_x = (n * (n - 1) / 2) as f64;
-    
+
     // Sum of offsets
     let sum_y: f64 = offsets.iter().map(|&o| o as f64).sum();
-    
+
     // Sum of (index * offset)
-    let sum_xy: f64 = offsets.iter().enumerate()
+    let sum_xy: f64 = offsets
+        .iter()
+        .enumerate()
         .map(|(i, &o)| i as f64 * o as f64)
         .sum();
-    
+
     // Sum of index squared: 0² + 1² + 2² + ... + (n-1)² = n*(n-1)*(2n-1)/6
     let sum_x_sq = (n * (n - 1) * (2 * n - 1) / 6) as f64;
-    
+
     // Least squares formulas
     let slope = (n_f64 * sum_xy - sum_x * sum_y) / (n_f64 * sum_x_sq - sum_x * sum_x);
     let intercept = (sum_y - slope * sum_x) / n_f64;
-    
+
     (slope.round() as i32, intercept.round() as i32)
 }
 
@@ -477,7 +478,10 @@ impl CompactOffsetViewGroup {
             };
         }
 
-        let offsets: Vec<u32> = offset_views.iter().map(|offset_view| offset_view.offset()).collect();
+        let offsets: Vec<u32> = offset_views
+            .iter()
+            .map(|offset_view| offset_view.offset())
+            .collect();
 
         let (slope, intercept) = fit_line(&offsets);
 
@@ -504,7 +508,7 @@ impl CompactOffsetViewGroup {
         };
 
         let header = CompactOffsetViewHeader {
-            slope,    
+            slope,
             intercept,
             offset_bytes,
         };
@@ -515,7 +519,7 @@ impl CompactOffsetViewGroup {
                 for (index, offset) in offset_views.iter().enumerate() {
                     let compact_residual = CompactOffsetViewOneByte {
                         offset_residual: *offset_residuals.get(index).unwrap() as i8,
-                        prefix7: offset.prefix7().clone(),
+                        prefix7: *offset.prefix7(),
                         len: offset.len_byte(),
                     };
                     residuals.push(compact_residual);
@@ -524,29 +528,29 @@ impl CompactOffsetViewGroup {
                     header,
                     residuals: residuals.into(),
                 }
-            },
+            }
             2 => {
                 let mut residuals = Vec::new();
                 for (index, offset) in offset_views.iter().enumerate() {
                     let compact_residual = CompactOffsetViewTwoBytes {
                         offset_residual: *offset_residuals.get(index).unwrap() as i16,
-                        prefix7: offset.prefix7().clone(),
+                        prefix7: *offset.prefix7(),
                         len: offset.len_byte(),
                     };
                     residuals.push(compact_residual);
                 }
-                    
+
                 Self::TwoBytes {
                     header,
                     residuals: residuals.into(),
                 }
-            },
+            }
             4 => {
                 let mut residuals = Vec::new();
                 for (index, offset) in offset_views.iter().enumerate() {
                     let compact_residual = CompactOffsetViewFourBytes {
-                        offset_residual: *offset_residuals.get(index).unwrap() as i32,
-                        prefix7: offset.prefix7().clone(),
+                        offset_residual: *offset_residuals.get(index).unwrap(),
+                        prefix7: *offset.prefix7(),
                         len: offset.len_byte(),
                     };
                     residuals.push(compact_residual);
@@ -555,7 +559,7 @@ impl CompactOffsetViewGroup {
                     header,
                     residuals: residuals.into(),
                 }
-            },
+            }
             _ => panic!("Invalid offset_bytes value"),
         }
     }
@@ -583,17 +587,17 @@ impl CompactOffsetViewGroup {
                 let residual = &residuals[index];
                 let predicted = header.slope * index as i32 + header.intercept;
                 (predicted + residual.offset_residual as i32) as u32
-            },
+            }
             Self::TwoBytes { residuals, .. } => {
                 let residual = &residuals[index];
                 let predicted = header.slope * index as i32 + header.intercept;
                 (predicted + residual.offset_residual as i32) as u32
-            },
+            }
             Self::FourBytes { residuals, .. } => {
                 let residual = &residuals[index];
                 let predicted = header.slope * index as i32 + header.intercept;
                 (predicted + residual.offset_residual) as u32
-            },
+            }
         }
     }
 
@@ -616,11 +620,17 @@ impl CompactOffsetViewGroup {
     fn memory_usage(&self) -> usize {
         let header_size = std::mem::size_of::<CompactOffsetViewHeader>();
         let residuals_size = match self {
-            Self::OneByte { residuals, .. } => residuals.len() * std::mem::size_of::<CompactOffsetViewOneByte>(),
-            Self::TwoBytes { residuals, .. } => residuals.len() * std::mem::size_of::<CompactOffsetViewTwoBytes>(),
-            Self::FourBytes { residuals, .. } => residuals.len() * std::mem::size_of::<CompactOffsetViewFourBytes>(),
+            Self::OneByte { residuals, .. } => {
+                residuals.len() * std::mem::size_of::<CompactOffsetViewOneByte>()
+            }
+            Self::TwoBytes { residuals, .. } => {
+                residuals.len() * std::mem::size_of::<CompactOffsetViewTwoBytes>()
+            }
+            Self::FourBytes { residuals, .. } => {
+                residuals.len() * std::mem::size_of::<CompactOffsetViewFourBytes>()
+            }
         };
-        
+
         header_size + residuals_size
     }
 
@@ -645,85 +655,87 @@ impl CompactOffsetViewGroup {
         match offset_bytes {
             1 => {
                 let residual_size = std::mem::size_of::<CompactOffsetViewOneByte>();
-                if residuals_data.len() % residual_size != 0 {
+                if !residuals_data.len().is_multiple_of(residual_size) {
                     panic!("Invalid residuals data size for OneByte variant");
                 }
                 let count = residuals_data.len() / residual_size;
                 let mut residuals = Vec::with_capacity(count);
-                
+
                 for i in 0..count {
                     let base = i * residual_size;
                     let offset_residual = residuals_data[base] as i8;
                     let mut prefix7 = [0u8; 7];
                     prefix7.copy_from_slice(&residuals_data[base + 1..base + 8]);
                     let len = residuals_data[base + 8];
-                    
+
                     residuals.push(CompactOffsetViewOneByte {
                         offset_residual,
                         prefix7,
                         len,
                     });
                 }
-                
+
                 Self::OneByte {
                     header,
                     residuals: residuals.into(),
                 }
-            },
+            }
             2 => {
                 let residual_size = std::mem::size_of::<CompactOffsetViewTwoBytes>();
-                if residuals_data.len() % residual_size != 0 {
+                if !residuals_data.len().is_multiple_of(residual_size) {
                     panic!("Invalid residuals data size for TwoBytes variant");
                 }
                 let count = residuals_data.len() / residual_size;
                 let mut residuals = Vec::with_capacity(count);
-                
+
                 for i in 0..count {
                     let base = i * residual_size;
-                    let offset_residual = i16::from_le_bytes(residuals_data[base..base + 2].try_into().unwrap());
+                    let offset_residual =
+                        i16::from_le_bytes(residuals_data[base..base + 2].try_into().unwrap());
                     let mut prefix7 = [0u8; 7];
                     prefix7.copy_from_slice(&residuals_data[base + 2..base + 9]);
                     let len = residuals_data[base + 9];
-                    
+
                     residuals.push(CompactOffsetViewTwoBytes {
                         offset_residual,
                         prefix7,
                         len,
                     });
                 }
-                
+
                 Self::TwoBytes {
                     header,
                     residuals: residuals.into(),
                 }
-            },
+            }
             4 => {
                 let residual_size = std::mem::size_of::<CompactOffsetViewFourBytes>();
-                if residuals_data.len() % residual_size != 0 {
+                if !residuals_data.len().is_multiple_of(residual_size) {
                     panic!("Invalid residuals data size for FourBytes variant");
                 }
                 let count = residuals_data.len() / residual_size;
                 let mut residuals = Vec::with_capacity(count);
-                
+
                 for i in 0..count {
                     let base = i * residual_size;
-                    let offset_residual = i32::from_le_bytes(residuals_data[base..base + 4].try_into().unwrap());
+                    let offset_residual =
+                        i32::from_le_bytes(residuals_data[base..base + 4].try_into().unwrap());
                     let mut prefix7 = [0u8; 7];
                     prefix7.copy_from_slice(&residuals_data[base + 4..base + 11]);
                     let len = residuals_data[base + 11];
-                    
+
                     residuals.push(CompactOffsetViewFourBytes {
                         offset_residual,
                         prefix7,
                         len,
                     });
                 }
-                
+
                 Self::FourBytes {
                     header,
                     residuals: residuals.into(),
                 }
-            },
+            }
             _ => panic!("Invalid offset_bytes value: {}", offset_bytes),
         }
     }
@@ -796,10 +808,9 @@ impl OffsetView {
 }
 
 impl<T> CompactOffsetView<T> {
-    
     #[inline]
     pub fn offset_residual(&self) -> T
-    where 
+    where
         T: Copy,
     {
         self.offset_residual
@@ -1132,49 +1143,53 @@ impl LiquidByteViewArray<DiskBuffer> {
         let num_unique = self.compact_offset_views.len().saturating_sub(1);
         let mut dict_results = vec![false; num_unique];
 
-        for i in 0..num_unique {
+        for (i, result) in dict_results.iter_mut().enumerate().take(num_unique) {
             let known_len = if self.compact_offset_views.get_len_byte(i) == 255 {
                 None
             } else {
                 Some(self.compact_offset_views.get_len_byte(i) as usize)
             };
 
-                    // 1) Length gate
-                    match known_len {
-                        Some(l) => {
-                            if l != needle_len {
-                                continue; // definitively not equal
-                            }
-                        }
-                        None => {
-                            if needle_len < 255 {
-                                continue; // definitively not equal
-                            }
-                        }
+            // 1) Length gate
+            match known_len {
+                Some(l) => {
+                    if l != needle_len {
+                        continue; // definitively not equal
                     }
+                }
+                None => {
+                    if needle_len < 255 {
+                        continue; // definitively not equal
+                    }
+                }
+            }
 
-                    // 2) Compare by category
-                    match known_len {
-                        None => {
-                            // Long strings: need IO if prefix matches
-                            if self.compact_offset_views.get_prefix7(i)[..prefix_len] == needle_suffix[..prefix_len] {
-                                return None; // ambiguous, requires IO
-                            }
-                            // else definitively not equal, leave false
-                        }
-                        Some(l) if l <= prefix_len => {
-                            // Small strings: exact compare on l bytes
-                            if self.compact_offset_views.get_prefix7(i)[..l] == needle_suffix[..l] {
-                                dict_results[i] = true; // definitive match
-                            }
-                        }
-                        Some(_l) => {
-                            // Medium strings: prefix compare; equal means ambiguous
-                            if self.compact_offset_views.get_prefix7(i)[..prefix_len] == needle_suffix[..prefix_len] {
-                                return None; // ambiguous
-                            }
-                        }
+            // 2) Compare by category
+            match known_len {
+                None => {
+                    // Long strings: need IO if prefix matches
+                    if self.compact_offset_views.get_prefix7(i)[..prefix_len]
+                        == needle_suffix[..prefix_len]
+                    {
+                        return None; // ambiguous, requires IO
                     }
+                    // else definitively not equal, leave false
+                }
+                Some(l) if l <= prefix_len => {
+                    // Small strings: exact compare on l bytes
+                    if self.compact_offset_views.get_prefix7(i)[..l] == needle_suffix[..l] {
+                        *result = true; // definitive match
+                    }
+                }
+                Some(_l) => {
+                    // Medium strings: prefix compare; equal means ambiguous
+                    if self.compact_offset_views.get_prefix7(i)[..prefix_len]
+                        == needle_suffix[..prefix_len]
+                    {
+                        return None; // ambiguous
+                    }
+                }
+            }
         }
 
         // Map dict-level results to array-level mask
@@ -1526,7 +1541,7 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
     pub fn get_detailed_memory_usage(&self) -> ByteViewArrayMemoryUsage {
         ByteViewArrayMemoryUsage {
             dictionary_key: self.dictionary_keys.get_array_memory_size(),
-            offsets: self.compact_offset_views.memory_usage(),  
+            offsets: self.compact_offset_views.memory_usage(),
             fsst_buffer: self.fsst_buffer.get_array_memory_size(),
             shared_prefix: self.shared_prefix.len(),
             struct_size: std::mem::size_of::<Self>(),
@@ -2137,9 +2152,18 @@ mod tests {
 
         // With no shared prefix, the offset view prefixes should be the original strings (truncated to 7 bytes)
         assert_eq!(liquid_array.shared_prefix, Vec::<u8>::new());
-        assert_eq!(liquid_array.compact_offset_views.get_prefix7(0), b"hello\0\0");
-        assert_eq!(liquid_array.compact_offset_views.get_prefix7(1), b"world\0\0");
-        assert_eq!(liquid_array.compact_offset_views.get_prefix7(2), b"test\0\0\0");
+        assert_eq!(
+            liquid_array.compact_offset_views.get_prefix7(0),
+            b"hello\0\0"
+        );
+        assert_eq!(
+            liquid_array.compact_offset_views.get_prefix7(1),
+            b"world\0\0"
+        );
+        assert_eq!(
+            liquid_array.compact_offset_views.get_prefix7(2),
+            b"test\0\0\0"
+        );
     }
 
     #[test]
@@ -2159,10 +2183,22 @@ mod tests {
         assert_eq!(liquid_array.shared_prefix, b"hello_");
 
         // Offset view prefixes (7 bytes) and lengths
-        assert_eq!(liquid_array.compact_offset_views.get_prefix7(0), b"world\0\0");
-        assert_eq!(liquid_array.compact_offset_views.get_prefix7(1), b"rust\0\0\0");
-        assert_eq!(liquid_array.compact_offset_views.get_prefix7(2), b"test\0\0\0");
-        assert_eq!(liquid_array.compact_offset_views.get_prefix7(3), b"code\0\0\0");
+        assert_eq!(
+            liquid_array.compact_offset_views.get_prefix7(0),
+            b"world\0\0"
+        );
+        assert_eq!(
+            liquid_array.compact_offset_views.get_prefix7(1),
+            b"rust\0\0\0"
+        );
+        assert_eq!(
+            liquid_array.compact_offset_views.get_prefix7(2),
+            b"test\0\0\0"
+        );
+        assert_eq!(
+            liquid_array.compact_offset_views.get_prefix7(3),
+            b"code\0\0\0"
+        );
 
         // Test roundtrip - should reconstruct original strings correctly
         let output = liquid_array.to_arrow_array().unwrap();
@@ -2197,9 +2233,18 @@ mod tests {
 
         // Offset view prefixes should be the remaining parts after shared prefix (7 bytes)
         assert_eq!(liquid_array.compact_offset_views.get_prefix7(0), &[0u8; 7]); // empty after "abc"
-        assert_eq!(liquid_array.compact_offset_views.get_prefix7(1), b"de\0\0\0\0\0"); // "de" after "abc"
-        assert_eq!(liquid_array.compact_offset_views.get_prefix7(2), b"def\0\0\0\0"); // "def" after "abc"
-        assert_eq!(liquid_array.compact_offset_views.get_prefix7(3), b"defg\0\0\0"); // "defg" after "abc"
+        assert_eq!(
+            liquid_array.compact_offset_views.get_prefix7(1),
+            b"de\0\0\0\0\0"
+        ); // "de" after "abc"
+        assert_eq!(
+            liquid_array.compact_offset_views.get_prefix7(2),
+            b"def\0\0\0\0"
+        ); // "def" after "abc"
+        assert_eq!(
+            liquid_array.compact_offset_views.get_prefix7(3),
+            b"defg\0\0\0"
+        ); // "defg" after "abc"
 
         // Test roundtrip
         let output = liquid_array.to_arrow_array().unwrap();
@@ -2237,10 +2282,22 @@ mod tests {
 
         // Offset view prefixes should be the remaining parts (7 bytes)
         assert_eq!(liquid_array.compact_offset_views.get_prefix7(0), &[0u8; 7]); // "data" - empty remainder
-        assert_eq!(liquid_array.compact_offset_views.get_prefix7(1), b"base\0\0\0"); // "database" - "base" remainder
-        assert_eq!(liquid_array.compact_offset_views.get_prefix7(2), b"_entry\0"); // "data_entry" - "_entry" remainder
-        assert_eq!(liquid_array.compact_offset_views.get_prefix7(3), b"_\0\0\0\0\0\0"); // "data_" - "_" remainder
-        assert_eq!(liquid_array.compact_offset_views.get_prefix7(4), b"type\0\0\0"); // "datatype" - "type" remainder
+        assert_eq!(
+            liquid_array.compact_offset_views.get_prefix7(1),
+            b"base\0\0\0"
+        ); // "database" - "base" remainder
+        assert_eq!(
+            liquid_array.compact_offset_views.get_prefix7(2),
+            b"_entry\0"
+        ); // "data_entry" - "_entry" remainder
+        assert_eq!(
+            liquid_array.compact_offset_views.get_prefix7(3),
+            b"_\0\0\0\0\0\0"
+        ); // "data_" - "_" remainder
+        assert_eq!(
+            liquid_array.compact_offset_views.get_prefix7(4),
+            b"type\0\0\0"
+        ); // "datatype" - "type" remainder
 
         // Test roundtrip
         let output = liquid_array.to_arrow_array().unwrap();
@@ -2312,8 +2369,14 @@ mod tests {
 
         assert_eq!(liquid_array.shared_prefix, b"hello");
         assert_eq!(liquid_array.compact_offset_views.get_prefix7(0), &[0u8; 7]); // empty after "hello"
-        assert_eq!(liquid_array.compact_offset_views.get_prefix7(1), b"_world\0");
-        assert_eq!(liquid_array.compact_offset_views.get_prefix7(2), b"_test\0\0");
+        assert_eq!(
+            liquid_array.compact_offset_views.get_prefix7(1),
+            b"_world\0"
+        );
+        assert_eq!(
+            liquid_array.compact_offset_views.get_prefix7(2),
+            b"_test\0\0"
+        );
 
         // Test roundtrip
         let output = liquid_array.to_arrow_array().unwrap();
@@ -2327,7 +2390,10 @@ mod tests {
 
         assert_eq!(liquid_array.shared_prefix, Vec::<u8>::new()); // empty shared prefix
         assert_eq!(liquid_array.compact_offset_views.get_prefix7(0), &[0u8; 7]);
-        assert_eq!(liquid_array.compact_offset_views.get_prefix7(1), b"hello\0\0");
+        assert_eq!(
+            liquid_array.compact_offset_views.get_prefix7(1),
+            b"hello\0\0"
+        );
         assert_eq!(liquid_array.compact_offset_views.get_prefix7(2), b"hello_w"); // "hello_world" truncated to 7 bytes
 
         // Test roundtrip
@@ -2876,11 +2942,11 @@ mod tests {
 
         // Test 4: Mixed scenario with varying prefix lengths
         let mixed_offsets = vec![
-            OffsetView::new(1000, b"a"),                    // 1 byte prefix
-            OffsetView::new(1010, b"abcdef"),              // 6 byte prefix
-            OffsetView::new(1020, b"abcdefg"),             // 7 byte prefix (max)
-            OffsetView::new(1030, b"abcdefgh"),            // 8 bytes (7 stored + len)
-            OffsetView::new(1040, &vec![b'x'; 300]),       // 300 bytes (long string, len=255)
+            OffsetView::new(1000, b"a"),             // 1 byte prefix
+            OffsetView::new(1010, b"abcdef"),        // 6 byte prefix
+            OffsetView::new(1020, b"abcdefg"),       // 7 byte prefix (max)
+            OffsetView::new(1030, b"abcdefgh"),      // 8 bytes (7 stored + len)
+            OffsetView::new(1040, &vec![b'x'; 300]), // 300 bytes (long string, len=255)
         ];
         test_round_trip(&mixed_offsets, "mixed scenarios");
 
@@ -2896,32 +2962,41 @@ mod tests {
     fn test_round_trip(original_offsets: &[OffsetView], test_name: &str) {
         // convert to compact representation
         let compact = CompactOffsetViewGroup::from_offset_views(original_offsets);
-        
+
         // convert back to offset views
         let recovered_offsets = convert_compact_to_offset_views(&compact);
-        
+
         // verify they match
         assert_eq!(
-            original_offsets.len(), 
+            original_offsets.len(),
             recovered_offsets.len(),
-            "Length mismatch in {}", test_name
+            "Length mismatch in {}",
+            test_name
         );
-        
-        for (i, (original, recovered)) in original_offsets.iter().zip(&recovered_offsets).enumerate() {
+
+        for (i, (original, recovered)) in
+            original_offsets.iter().zip(&recovered_offsets).enumerate()
+        {
             assert_eq!(
-                original.offset(), 
+                original.offset(),
                 recovered.offset(),
-                "Offset mismatch at index {} in {}", i, test_name
+                "Offset mismatch at index {} in {}",
+                i,
+                test_name
             );
             assert_eq!(
-                original.prefix7(), 
+                original.prefix7(),
                 recovered.prefix7(),
-                "Prefix mismatch at index {} in {}", i, test_name
+                "Prefix mismatch at index {} in {}",
+                i,
+                test_name
             );
             assert_eq!(
-                original.len_byte(), 
+                original.len_byte(),
                 recovered.len_byte(),
-                "Length byte mismatch at index {} in {}", i, test_name
+                "Length byte mismatch at index {} in {}",
+                i,
+                test_name
             );
         }
     }
@@ -2946,37 +3021,46 @@ mod tests {
             OffsetView::new(1020, b"test3"),
             OffsetView::new(1030, b"test4"),
         ];
-        
+
         let original_size = offsets.len() * std::mem::size_of::<OffsetView>();
         let compact = CompactOffsetViewGroup::from_offset_views(&offsets);
         let compact_size = compact.memory_usage();
-        
+
         // for this test case, we should see some savings due to using smaller residuals
-        assert!(compact_size <= original_size, "Compact representation should not be larger");
+        assert!(
+            compact_size <= original_size,
+            "Compact representation should not be larger"
+        );
     }
 
     // Benchmark tests for v2 offset compression improvements
     fn generate_mixed_size_strings(count: usize, seed: u64) -> Vec<String> {
         let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
         let mut strings = Vec::with_capacity(count);
-        
+
         for _ in 0..count {
             let size_type = rng.random_range(0..4);
             let string = match size_type {
                 0 => {
                     // Very short strings (1-3 chars) - stress test prefix optimization
                     let len = rng.random_range(1..=3);
-                    (0..len).map(|_| rng.random_range(b'a'..=b'z') as char).collect()
+                    (0..len)
+                        .map(|_| rng.random_range(b'a'..=b'z') as char)
+                        .collect()
                 }
                 1 => {
                     // Medium strings (50-200 chars) - test offset compression
                     let len = rng.random_range(50..=200);
-                    (0..len).map(|_| rng.random_range(b'a'..=b'z') as char).collect()
+                    (0..len)
+                        .map(|_| rng.random_range(b'a'..=b'z') as char)
+                        .collect()
                 }
                 2 => {
                     // Long strings (1000-5000 chars) - stress test linear regression
                     let len = rng.random_range(1000..=5000);
-                    (0..len).map(|_| rng.random_range(b'a'..=b'z') as char).collect()
+                    (0..len)
+                        .map(|_| rng.random_range(b'a'..=b'z') as char)
+                        .collect()
                 }
                 _ => {
                     // Very long strings (10k+ chars) - edge case for offset compression
@@ -2986,14 +3070,14 @@ mod tests {
             };
             strings.push(string);
         }
-        
+
         strings
     }
 
     fn generate_zipf_strings(count: usize, base_strings: &[&str], seed: u64) -> Vec<String> {
         let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
         let mut strings = Vec::with_capacity(count);
-        
+
         // Simple Zipf-like distribution: first few strings are much more common
         for _ in 0..count {
             let zipf_choice = rng.random_range(0..100);
@@ -3006,20 +3090,20 @@ mod tests {
             } else {
                 rng.random_range(3..base_strings.len()) // remaining strings split rest
             };
-            
+
             let base = base_strings[base_idx];
-            
+
             // Add variations to create realistic patterns
             let variation = rng.random_range(0..4);
             let string = match variation {
-                0 => base.to_string(), // Exact duplicate
+                0 => base.to_string(),                                     // Exact duplicate
                 1 => format!("{}_{}", base, rng.random_range(1000..9999)), // Common suffix
-                2 => format!("{}/{}", base, rng.random_range(100..999)), // Path-like
-                _ => format!("prefix_{}", base), // Common prefix
+                2 => format!("{}/{}", base, rng.random_range(100..999)),   // Path-like
+                _ => format!("prefix_{}", base),                           // Common prefix
             };
             strings.push(string);
         }
-        
+
         strings
     }
 
@@ -3027,81 +3111,91 @@ mod tests {
     fn test_mixed_size_offset_views() {
         let strings = generate_mixed_size_strings(16384, 42);
         let input = StringArray::from(strings.clone());
-        
+
         let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
-        let liquid_array = LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
-        
+        let liquid_array =
+            LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
+
         // Verify correctness
         let output = liquid_array.to_arrow_array().unwrap();
         assert_eq!(&input, output.as_string::<i32>());
-        
+
         // Check compact offset view size efficiency
         let header = liquid_array.compact_offset_views.header();
-        
+
         // Mixed size strings should use compact offset views (1 or 2 bytes)
-        assert!(header.offset_bytes <= 2, "Mixed size data should use compact offset views (1 or 2 bytes), got {} bytes", header.offset_bytes);
+        assert!(
+            header.offset_bytes <= 2,
+            "Mixed size data should use compact offset views (1 or 2 bytes), got {} bytes",
+            header.offset_bytes
+        );
     }
 
     #[test]
     fn test_zipf_offset_views() {
         // Real-world string patterns
         let base_patterns = &[
-            "error", "warning", "info", "debug",
-            "user", "admin", "guest", 
-            "GET", "POST", "PUT", "DELETE",
-            "success", "failure", "pending",
-            "/api/v1", "/api/v2", "/health",
+            "error", "warning", "info", "debug", "user", "admin", "guest", "GET", "POST", "PUT",
+            "DELETE", "success", "failure", "pending", "/api/v1", "/api/v2", "/health",
         ];
-        
+
         let strings = generate_zipf_strings(16384, base_patterns, 123);
         let input = StringArray::from(strings.clone());
-        
+
         let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
-        let liquid_array = LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
-        
+        let liquid_array =
+            LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
+
         // Verify correctness
         let output = liquid_array.to_arrow_array().unwrap();
         assert_eq!(&input, output.as_string::<i32>());
-        
+
         let header = liquid_array.compact_offset_views.header();
-        
-        assert!(header.offset_bytes <= 2, "Zipf patterns with short strings should use 1 or 2 bytes offset views, got {} bytes", header.offset_bytes);
+
+        assert!(
+            header.offset_bytes <= 2,
+            "Zipf patterns with short strings should use 1 or 2 bytes offset views, got {} bytes",
+            header.offset_bytes
+        );
     }
 
-    #[test] 
+    #[test]
     fn test_offset_stress() {
         let mut strings = Vec::with_capacity(16384);
-        
+
         // Create strings with problematic offset patterns
         for i in 0..16384 {
             let string = match i % 8 {
-                0 => "a".to_string(), // tiny
-                1 => "x".repeat(1000 + (i % 100)), // variable medium
-                2 => "b".to_string(), // tiny
-                3 => "y".repeat(5000 + (i % 1000)), // variable large
-                4 => "c".to_string(), // tiny
-                5 => "medium".repeat(50 + (i % 20)), // variable medium
+                0 => "a".to_string(),                 // tiny
+                1 => "x".repeat(1000 + (i % 100)),    // variable medium
+                2 => "b".to_string(),                 // tiny
+                3 => "y".repeat(5000 + (i % 1000)),   // variable large
+                4 => "c".to_string(),                 // tiny
+                5 => "medium".repeat(50 + (i % 20)),  // variable medium
                 6 => "huge".repeat(2000 + (i % 500)), // variable huge
-                _ => format!("string_{}", i), // varied length based on number
+                _ => format!("string_{}", i),         // varied length based on number
             };
             strings.push(string);
         }
-        
+
         let input = StringArray::from(strings);
         let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
-        let liquid_array = LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
-        
+        let liquid_array =
+            LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
+
         // Verify correctness
         let output = liquid_array.to_arrow_array().unwrap();
         assert_eq!(&input, output.as_string::<i32>());
-        
+
         // Test offset compression handles the stress case
         let offset_views = liquid_array.offset_views();
-        
+
         // Verify offsets are monotonic
         for i in 1..offset_views.len() {
-            assert!(offset_views[i].offset() >= offset_views[i-1].offset(), 
-                   "Offsets should be monotonic");
-        }  
+            assert!(
+                offset_views[i].offset() >= offset_views[i - 1].offset(),
+                "Offsets should be monotonic"
+            );
+        }
     }
 }

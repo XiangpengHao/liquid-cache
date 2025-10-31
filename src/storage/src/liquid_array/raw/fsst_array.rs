@@ -121,7 +121,7 @@ impl RawFsstBuffer {
         let buffer = Buffer::from(value_buffer);
         (buffer, offsets.finish())
     }
-    
+
     /// Get compressed data slice using byte offsets
     pub fn get_compressed_slice(&self, start_offset: u32, end_offset: u32) -> &[u8] {
         let start = start_offset as usize;
