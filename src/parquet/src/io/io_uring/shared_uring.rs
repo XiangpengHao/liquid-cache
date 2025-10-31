@@ -102,7 +102,7 @@ impl SharedRingInner {
     fn drain_completions(&mut self) {
         let mut cq = self.ring.completion();
         cq.sync();
-        while let Some(cqe) = cq.next() {
+        for cqe in cq {
             let raw_token = cqe.user_data();
             debug_assert!(
                 raw_token < URING_NUM_ENTRIES as u64,
@@ -123,9 +123,8 @@ impl SharedRingInner {
 
     #[inline]
     fn take_completion(&mut self, token: u16) -> Option<cqueue::Entry> {
-        self.completions.remove(&token).map(|entry| {
+        self.completions.remove(&token).inspect(|_| {
             self.free_tokens.push_back(token);
-            entry
         })
     }
 
@@ -265,6 +264,7 @@ pub(crate) async fn read(
 pub(crate) async fn write(path: PathBuf, data: &Bytes) -> Result<(), std::io::Error> {
     let file = OpenOptions::new()
         .create(true)
+        .truncate(true)
         .write(true)
         .open(path)
         .expect("failed to create file");

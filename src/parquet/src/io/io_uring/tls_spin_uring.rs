@@ -95,7 +95,11 @@ pub(crate) fn write(path: PathBuf, data: &Bytes) -> Result<(), std::io::Error> {
     use std::fs::OpenOptions;
     use std::os::fd::AsRawFd;
 
-    let file = OpenOptions::new().create(true).write(true).open(path)?;
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(path)?;
     let write_task = FileWriteTask::build(data.as_ptr(), data.len(), file.as_raw_fd());
     run_blocking_task(Box::new(write_task))?.into_result()
 }

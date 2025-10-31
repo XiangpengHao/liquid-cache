@@ -301,6 +301,7 @@ pub(crate) async fn read(
 pub(crate) async fn write(path: PathBuf, data: &Bytes) -> Result<(), std::io::Error> {
     let file = OpenOptions::new()
         .create(true)
+        .truncate(true)
         .write(true)
         .open(path)
         .expect("failed to create file");

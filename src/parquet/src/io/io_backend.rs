@@ -16,7 +16,7 @@ pub(super) async fn read(
         IoMode::Uring => {
             #[cfg(target_os = "linux")]
             {
-                return super::io_uring::thread_pool_uring::read(path, range, false).await;
+                super::io_uring::thread_pool_uring::read(path, range, false).await
             }
             #[cfg(not(target_os = "linux"))]
             {
@@ -27,7 +27,7 @@ pub(super) async fn read(
         IoMode::UringShared => {
             #[cfg(target_os = "linux")]
             {
-                return super::io_uring::shared_uring::read(path, range, false).await;
+                super::io_uring::shared_uring::read(path, range, false).await
             }
             #[cfg(not(target_os = "linux"))]
             {
@@ -38,7 +38,7 @@ pub(super) async fn read(
         IoMode::UringDirect => {
             #[cfg(target_os = "linux")]
             {
-                return super::io_uring::thread_pool_uring::read(path, range, true).await;
+                super::io_uring::thread_pool_uring::read(path, range, true).await
             }
             #[cfg(not(target_os = "linux"))]
             {
@@ -48,7 +48,7 @@ pub(super) async fn read(
         IoMode::UringBlocking => {
             #[cfg(target_os = "linux")]
             {
-                return super::io_uring::tls_spin_uring::read(path, range, false);
+                super::io_uring::tls_spin_uring::read(path, range, false)
             }
             #[cfg(not(target_os = "linux"))]
             {
@@ -56,14 +56,10 @@ pub(super) async fn read(
             }
         }
         IoMode::StdSpawnBlocking => {
-            return maybe_spawn_blocking(move || read_blocking_impl(path, range)).await;
+            maybe_spawn_blocking(move || read_blocking_impl(path, range)).await
         }
-        IoMode::StdBlocking => {
-            return read_blocking_impl(path, range);
-        }
-        IoMode::TokioIO => {
-            return read_tokio(path, range).await;
-        }
+        IoMode::StdBlocking => read_blocking_impl(path, range),
+        IoMode::TokioIO => read_tokio(path, range).await,
     }
 }
 
@@ -76,7 +72,7 @@ pub(super) async fn write(
         IoMode::Uring | IoMode::UringDirect => {
             #[cfg(target_os = "linux")]
             {
-                return super::io_uring::thread_pool_uring::write(path, &data).await;
+                super::io_uring::thread_pool_uring::write(path, &data).await
             }
             #[cfg(not(target_os = "linux"))]
             {
@@ -86,7 +82,7 @@ pub(super) async fn write(
         IoMode::UringShared => {
             #[cfg(target_os = "linux")]
             {
-                return super::io_uring::shared_uring::write(path, &data).await;
+                super::io_uring::shared_uring::write(path, &data).await
             }
             #[cfg(not(target_os = "linux"))]
             {
@@ -96,7 +92,7 @@ pub(super) async fn write(
         IoMode::UringBlocking => {
             #[cfg(target_os = "linux")]
             {
-                return super::io_uring::tls_spin_uring::write(path, &data);
+                super::io_uring::tls_spin_uring::write(path, &data)
             }
             #[cfg(not(target_os = "linux"))]
             {
@@ -104,14 +100,10 @@ pub(super) async fn write(
             }
         }
         IoMode::StdSpawnBlocking => {
-            return maybe_spawn_blocking(move || write_file_blocking_impl(path, data)).await;
+            maybe_spawn_blocking(move || write_file_blocking_impl(path, data)).await
         }
-        IoMode::StdBlocking => {
-            return write_file_blocking_impl(path, data);
-        }
-        IoMode::TokioIO => {
-            return write_file_tokio(path, data).await;
-        }
+        IoMode::StdBlocking => write_file_blocking_impl(path, data),
+        IoMode::TokioIO => write_file_tokio(path, data).await,
     }
 }
 
