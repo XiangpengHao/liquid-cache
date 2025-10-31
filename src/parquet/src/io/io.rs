@@ -9,7 +9,7 @@ use liquid_cache_common::IoMode;
 use liquid_cache_storage::cache::{EntryID, IoContext, LiquidCompressorStates};
 
 use crate::{
-    cache::id::{BatchID, ParquetArrayID},
+    cache::{ColumnAccessPath, ParquetArrayID},
     sync::RwLock,
 };
 
@@ -28,7 +28,7 @@ impl ParquetIoContext {
         ) {
             #[cfg(target_os = "linux")]
             {
-                crate::cache::io_uring::initialize_uring_pool(io_mode);
+                crate::io::io_uring::initialize_uring_pool(io_mode);
             }
             #[cfg(not(target_os = "linux"))]
             {
@@ -162,7 +162,7 @@ mod io_backend {
 
     #[cfg(target_os = "linux")]
     async fn read_file_uring(path: PathBuf) -> Result<Bytes, std::io::Error> {
-        crate::cache::io_uring::read_range_from_uring(path, None).await
+        crate::io::io_uring::read_range_from_uring(path, None).await
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -172,7 +172,7 @@ mod io_backend {
 
     #[cfg(target_os = "linux")]
     async fn read_range_uring(path: PathBuf, range: Range<u64>) -> Result<Bytes, std::io::Error> {
-        crate::cache::io_uring::read_range_from_uring(path, Some(range)).await
+        crate::io::io_uring::read_range_from_uring(path, Some(range)).await
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -182,7 +182,7 @@ mod io_backend {
 
     #[cfg(target_os = "linux")]
     async fn read_file_blocking_uring(path: PathBuf) -> Result<Bytes, std::io::Error> {
-        crate::cache::io_uring::read_range_from_blocking_uring(path, None)
+        crate::io::io_uring::read_range_from_blocking_uring(path, None)
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -195,7 +195,7 @@ mod io_backend {
         path: PathBuf,
         range: Range<u64>,
     ) -> Result<Bytes, std::io::Error> {
-        crate::cache::io_uring::read_range_from_blocking_uring(path, Some(range))
+        crate::io::io_uring::read_range_from_blocking_uring(path, Some(range))
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -208,7 +208,7 @@ mod io_backend {
 
     #[cfg(target_os = "linux")]
     async fn write_file_uring(path: PathBuf, data: Bytes) -> Result<(), std::io::Error> {
-        crate::cache::io_uring::write_to_uring(path, &data).await
+        crate::io::io_uring::write_to_uring(path, &data).await
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -218,7 +218,7 @@ mod io_backend {
 
     #[cfg(target_os = "linux")]
     async fn write_file_blocking_uring(path: PathBuf, data: Bytes) -> Result<(), std::io::Error> {
-        crate::cache::io_uring::write_to_blocking_uring(path, &data)
+        crate::io::io_uring::write_to_blocking_uring(path, &data)
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -286,125 +286,5 @@ impl IoContext for ParquetIoContext {
     #[fastrace::trace]
     async fn write_file(&self, path: PathBuf, data: Bytes) -> Result<(), std::io::Error> {
         io_backend::write_file(self.io_mode, path, data).await
-    }
-}
-
-/// Column access path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
-pub struct ColumnAccessPath {
-    file_id: u16,
-    rg_id: u16,
-    col_id: u16,
-}
-
-impl ColumnAccessPath {
-    /// Create a new instance of ColumnAccessPath.
-    pub fn new(file_id: u64, row_group_id: u64, column_id: u64) -> Self {
-        debug_assert!(file_id <= u16::MAX as u64);
-        debug_assert!(row_group_id <= u16::MAX as u64);
-        debug_assert!(column_id <= u16::MAX as u64);
-        Self {
-            file_id: file_id as u16,
-            rg_id: row_group_id as u16,
-            col_id: column_id as u16,
-        }
-    }
-
-    /// Initialize the directory for the column access path.
-    pub fn initialize_dir(&self, cache_root_dir: &Path) {
-        let path = cache_root_dir
-            .join(format!("file_{}", self.file_id_inner()))
-            .join(format!("rg_{}", self.row_group_id_inner()))
-            .join(format!("col_{}", self.column_id_inner()));
-        std::fs::create_dir_all(&path).expect("Failed to create cache directory");
-    }
-
-    /// Get the file id.
-    fn file_id_inner(&self) -> u64 {
-        self.file_id as u64
-    }
-
-    /// Get the row group id.
-    fn row_group_id_inner(&self) -> u64 {
-        self.rg_id as u64
-    }
-
-    /// Get the column id.
-    fn column_id_inner(&self) -> u64 {
-        self.col_id as u64
-    }
-
-    /// Get the entry id.
-    pub fn entry_id(&self, batch_id: BatchID) -> ParquetArrayID {
-        ParquetArrayID::new(
-            self.file_id_inner(),
-            self.row_group_id_inner(),
-            self.column_id_inner(),
-            batch_id,
-        )
-    }
-}
-
-impl From<ParquetArrayID> for ColumnAccessPath {
-    fn from(value: ParquetArrayID) -> Self {
-        Self {
-            file_id: value.file_id_inner() as u16,
-            rg_id: value.row_group_id_inner() as u16,
-            col_id: value.column_id_inner() as u16,
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use tempfile::tempdir;
-
-    use super::*;
-
-    #[test]
-    fn test_column_path_from_cache_entry_id() {
-        let entry_id = ParquetArrayID::new(1, 2, 3, BatchID::from_raw(4));
-        let column_path: ColumnAccessPath = entry_id.into();
-
-        assert_eq!(column_path.file_id, 1);
-        assert_eq!(column_path.rg_id, 2);
-        assert_eq!(column_path.col_id, 3);
-    }
-
-    #[test]
-    fn test_column_path_directory_hosts_cache_entry_path() {
-        let temp_dir = tempdir().unwrap();
-        let cache_root = temp_dir.path();
-
-        // Create a column path
-        let file_id = 5u64;
-        let row_group_id = 6u64;
-        let column_id = 7u64;
-        let column_path = ColumnAccessPath::new(file_id, row_group_id, column_id);
-
-        // Initialize the directory
-        column_path.initialize_dir(cache_root);
-
-        // Create a cache entry ID from the column path
-        let batch_id = BatchID::from_raw(8);
-        let entry_id = column_path.entry_id(batch_id);
-
-        // Get the on-disk path
-        let entry_path = entry_id.on_disk_path(cache_root);
-
-        // Verify the parent directory of the entry path exists
-        assert!(entry_path.parent().unwrap().exists());
-
-        // Verify the directory structure matches
-        let expected_dir = cache_root
-            .join(format!("file_{file_id}"))
-            .join(format!("rg_{row_group_id}"))
-            .join(format!("col_{column_id}"));
-
-        assert_eq!(entry_path.parent().unwrap(), &expected_dir);
-
-        // Verify we can create a file at the entry path
-        std::fs::write(&entry_path, b"test data").unwrap();
-        assert!(entry_path.exists());
     }
 }

@@ -1,7 +1,7 @@
 //! This module contains the cache implementation for the Parquet reader.
 //!
 
-use crate::cache::io::{ColumnAccessPath, ParquetIoContext};
+use crate::io::ParquetIoContext;
 use crate::reader::{LiquidPredicate, extract_multi_column_or};
 use crate::sync::{Mutex, RwLock};
 use ahash::AHashMap;
@@ -19,11 +19,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 mod id;
-mod io;
-#[cfg(target_os = "linux")]
-mod io_uring;
 mod stats;
 
+pub(crate) use id::ColumnAccessPath;
 pub use id::{BatchID, ParquetArrayID};
 
 /// A column in the cache.

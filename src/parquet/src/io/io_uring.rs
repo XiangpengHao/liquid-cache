@@ -745,7 +745,7 @@ pub(crate) async fn read_range_from_uring(
     path: PathBuf,
     range: Option<std::ops::Range<u64>>,
 ) -> Result<Bytes, std::io::Error> {
-    use crate::cache::io_uring::{FileOpenTask, FileReadTask, get_io_mode};
+    use crate::io::io_uring::{FileOpenTask, FileReadTask, get_io_mode};
     use liquid_cache_common::IoMode;
 
     let mut flags = libc::O_RDONLY | libc::O_CLOEXEC;
@@ -767,7 +767,7 @@ pub(crate) async fn read_range_from_uring(
 }
 
 pub(crate) async fn write_to_uring(path: PathBuf, data: &Bytes) -> Result<(), std::io::Error> {
-    use crate::cache::io_uring::{FileWriteTask, get_io_mode};
+    use crate::io::io_uring::{FileWriteTask, get_io_mode};
     use liquid_cache_common::IoMode;
     use std::os::fd::AsRawFd;
     use std::{fs::OpenOptions, os::unix::fs::OpenOptionsExt as _};
