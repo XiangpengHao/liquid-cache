@@ -73,18 +73,12 @@ impl IoContext for ParquetIoContext {
 
     #[inline(never)]
     #[fastrace::trace]
-    async fn read_file(&self, path: PathBuf) -> Result<Bytes, std::io::Error> {
-        io_backend::read_file(self.io_mode, path).await
-    }
-
-    #[inline(never)]
-    #[fastrace::trace]
-    async fn read_range(
+    async fn read(
         &self,
         path: PathBuf,
-        range: std::ops::Range<u64>,
+        range: Option<std::ops::Range<u64>>,
     ) -> Result<Bytes, std::io::Error> {
-        io_backend::read_range(self.io_mode, path, range).await
+        io_backend::read(self.io_mode, path, range).await
     }
 
     #[inline(never)]

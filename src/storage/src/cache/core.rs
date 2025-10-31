@@ -37,11 +37,9 @@ pub trait IoContext: Debug + Send + Sync {
     /// Get the path to the liquid file for an entry.
     fn liquid_path(&self, entry_id: &EntryID) -> PathBuf;
 
-    /// Read the entire file at the given path.
-    async fn read_file(&self, path: PathBuf) -> Result<Bytes, std::io::Error>;
-
-    /// Read a range of bytes from a file at the given path.
-    async fn read_range(&self, path: PathBuf, range: Range<u64>) -> Result<Bytes, std::io::Error>;
+    /// Read bytes from the file at the given path, optionally restricted to the provided range.
+    async fn read(&self, path: PathBuf, range: Option<Range<u64>>)
+    -> Result<Bytes, std::io::Error>;
 
     /// Write the entire buffer to a file at the given path.
     async fn write_file(&self, path: PathBuf, data: Bytes) -> Result<(), std::io::Error>;
@@ -84,22 +82,29 @@ impl IoContext for DefaultIoContext {
             .join(format!("{:016x}.liquid", usize::from(*entry_id)))
     }
 
-    async fn read_file(&self, path: PathBuf) -> Result<Bytes, std::io::Error> {
+    async fn read(
+        &self,
+        path: PathBuf,
+        range: Option<Range<u64>>,
+    ) -> Result<Bytes, std::io::Error> {
         use tokio::io::AsyncReadExt;
+        use tokio::io::AsyncSeekExt;
         let mut file = tokio::fs::File::open(path).await?;
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes).await?;
-        Ok(Bytes::from(bytes))
-    }
 
-    async fn read_range(&self, path: PathBuf, range: Range<u64>) -> Result<Bytes, std::io::Error> {
-        use tokio::io::{AsyncReadExt, AsyncSeekExt};
-        let mut file = tokio::fs::File::open(path).await?;
-        let len = (range.end - range.start) as usize;
-        let mut bytes = vec![0u8; len];
-        file.seek(tokio::io::SeekFrom::Start(range.start)).await?;
-        file.read_exact(&mut bytes).await?;
-        Ok(Bytes::from(bytes))
+        match range {
+            Some(range) => {
+                let len = (range.end - range.start) as usize;
+                let mut bytes = vec![0u8; len];
+                file.seek(tokio::io::SeekFrom::Start(range.start)).await?;
+                file.read_exact(&mut bytes).await?;
+                Ok(Bytes::from(bytes))
+            }
+            None => {
+                let mut bytes = Vec::new();
+                file.read_to_end(&mut bytes).await?;
+                Ok(Bytes::from(bytes))
+            }
+        }
     }
 
     async fn write_file(&self, path: PathBuf, data: Bytes) -> Result<(), std::io::Error> {
@@ -148,20 +153,26 @@ impl IoContext for BlockingIoContext {
             .join(format!("{:016x}.liquid", usize::from(*entry_id)))
     }
 
-    async fn read_file(&self, path: PathBuf) -> Result<Bytes, std::io::Error> {
+    async fn read(
+        &self,
+        path: PathBuf,
+        range: Option<Range<u64>>,
+    ) -> Result<Bytes, std::io::Error> {
         let mut file = std::fs::File::open(path)?;
-        let mut bytes = Vec::new();
-        std::io::Read::read_to_end(&mut file, &mut bytes)?;
-        Ok(Bytes::from(bytes))
-    }
-
-    async fn read_range(&self, path: PathBuf, range: Range<u64>) -> Result<Bytes, std::io::Error> {
-        let mut file = std::fs::File::open(path)?;
-        let len = (range.end - range.start) as usize;
-        let mut bytes = vec![0u8; len];
-        std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(range.start))?;
-        std::io::Read::read_exact(&mut file, &mut bytes)?;
-        Ok(Bytes::from(bytes))
+        match range {
+            Some(range) => {
+                let len = (range.end - range.start) as usize;
+                let mut bytes = vec![0u8; len];
+                std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(range.start))?;
+                std::io::Read::read_exact(&mut file, &mut bytes)?;
+                Ok(Bytes::from(bytes))
+            }
+            None => {
+                let mut bytes = Vec::new();
+                std::io::Read::read_to_end(&mut file, &mut bytes)?;
+                Ok(Bytes::from(bytes))
+            }
+        }
     }
 
     async fn write_file(&self, path: PathBuf, data: Bytes) -> Result<(), std::io::Error> {
@@ -367,7 +378,7 @@ impl CacheStorage {
             CachedBatch::MemoryLiquid(array) => Some(array.to_arrow_array()),
             CachedBatch::DiskLiquid(_) => {
                 let path = self.io_context.liquid_path(entry_id);
-                let bytes = self.io_context.read_file(path).await.ok()?;
+                let bytes = self.io_context.read(path, None).await.ok()?;
                 let compressor_states = self.io_context.get_compressor(entry_id);
                 let compressor = compressor_states.fsst_compressor();
                 let liquid = crate::liquid_array::ipc::read_from_bytes(
@@ -382,7 +393,7 @@ impl CacheStorage {
                     let path = self.io_context.liquid_path(entry_id);
                     let bytes = self
                         .io_context
-                        .read_range(path, io_range.range().clone())
+                        .read(path, Some(io_range.range().clone()))
                         .await
                         .ok()?;
                     let new_array = array.soak(bytes);
@@ -391,7 +402,7 @@ impl CacheStorage {
             },
             CachedBatch::DiskArrow(_) => {
                 let path = self.io_context.arrow_path(entry_id);
-                let bytes = self.io_context.read_file(path).await.ok()?;
+                let bytes = self.io_context.read(path, None).await.ok()?;
                 let cursor = std::io::Cursor::new(bytes.to_vec());
                 let mut reader = arrow::ipc::reader::StreamReader::try_new(cursor, None).ok()?;
                 let batch = reader.next()?.ok()?;
@@ -426,7 +437,7 @@ impl CacheStorage {
                     return Some(Ok(empty_array));
                 }
                 let path = self.io_context.liquid_path(entry_id);
-                let bytes = self.io_context.read_file(path).await.ok()?;
+                let bytes = self.io_context.read(path, None).await.ok()?;
                 let compressor_states = self.io_context.get_compressor(entry_id);
                 let compressor = compressor_states.fsst_compressor();
                 let liquid = crate::liquid_array::ipc::read_from_bytes(
@@ -441,7 +452,7 @@ impl CacheStorage {
                     let path = self.io_context.liquid_path(entry_id);
                     let bytes = self
                         .io_context
-                        .read_range(path, io_range.range().clone())
+                        .read(path, Some(io_range.range().clone()))
                         .await
                         .ok()?;
                     let new_array = array.soak(bytes);
@@ -450,7 +461,7 @@ impl CacheStorage {
             },
             CachedBatch::DiskArrow(_) => {
                 let path = self.io_context.arrow_path(entry_id);
-                let bytes = self.io_context.read_file(path).await.ok()?;
+                let bytes = self.io_context.read(path, None).await.ok()?;
                 let cursor = std::io::Cursor::new(bytes.to_vec());
                 let mut reader = arrow::ipc::reader::StreamReader::try_new(cursor, None).ok()?;
                 let batch = reader.next()?.ok()?;
@@ -483,7 +494,7 @@ impl CacheStorage {
             }
             CachedBatch::DiskArrow(_) => {
                 let path = self.io_context.arrow_path(entry_id);
-                let bytes = self.io_context.read_file(path).await.ok()?;
+                let bytes = self.io_context.read(path, None).await.ok()?;
                 let cursor = std::io::Cursor::new(bytes.to_vec());
                 let mut reader = arrow::ipc::reader::StreamReader::try_new(cursor, None).ok()?;
                 let batch = reader.next()?.ok()?;
@@ -503,7 +514,7 @@ impl CacheStorage {
             }
             CachedBatch::DiskLiquid(_) => {
                 let path = self.io_context.liquid_path(entry_id);
-                let bytes = self.io_context.read_file(path).await.ok()?;
+                let bytes = self.io_context.read(path, None).await.ok()?;
                 let compressor_states = self.io_context.get_compressor(entry_id);
                 let compressor = compressor_states.fsst_compressor();
                 let liquid = crate::liquid_array::ipc::read_from_bytes(
@@ -533,7 +544,7 @@ impl CacheStorage {
                                 let path = self.io_context.liquid_path(entry_id);
                                 let bytes = self
                                     .io_context
-                                    .read_range(path, io_range.range().clone())
+                                    .read(path, Some(io_range.range().clone()))
                                     .await
                                     .ok()?;
                                 let new_array = array.soak(bytes);
@@ -552,7 +563,7 @@ impl CacheStorage {
                         let path = self.io_context.liquid_path(entry_id);
                         let bytes = self
                             .io_context
-                            .read_range(path, io_range.range().clone())
+                            .read(path, Some(io_range.range().clone()))
                             .await
                             .ok()?;
                         let new_array = array.soak(bytes);
@@ -584,7 +595,7 @@ impl CacheStorage {
             CachedBatch::MemoryLiquid(array) => Some(array),
             CachedBatch::DiskLiquid(_) => {
                 let path = self.io_context.liquid_path(entry_id);
-                let bytes = self.io_context.read_file(path).await.ok()?;
+                let bytes = self.io_context.read(path, None).await.ok()?;
                 let compressor_states = self.io_context.get_compressor(entry_id);
                 let compressor = compressor_states.fsst_compressor();
                 let liquid = crate::liquid_array::ipc::read_from_bytes(
@@ -598,7 +609,7 @@ impl CacheStorage {
                 let path = self.io_context.liquid_path(entry_id);
                 let bytes = self
                     .io_context
-                    .read_range(path, io_range.range().clone())
+                    .read(path, Some(io_range.range().clone()))
                     .await
                     .ok()?;
                 Some(array.soak(bytes))
