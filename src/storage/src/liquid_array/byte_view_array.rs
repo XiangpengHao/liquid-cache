@@ -256,7 +256,7 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
         }
     }
 
-    fn offset_views(&self) -> Vec<OffsetView> {
+    pub fn offset_views(&self) -> Vec<OffsetView> {
         let mut offset_views: Vec<OffsetView> = Vec::new();
         
         let header = self.compact_offset_views.header();
@@ -384,7 +384,8 @@ impl LiquidByteViewArray<MemoryBuffer> {
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
-pub(crate) struct OffsetView {
+// TODO: change it back to pub(crate)
+pub struct OffsetView {
     offset: u32,
     prefix7: [u8; 7],
     len: u8,
@@ -501,9 +502,9 @@ impl CompactOffsetViewGroup {
         }
 
         // Print offsets and residuals
-        println!("Offsets: Min: {}, Max: {}", min_offset, max_offset);
-        println!("Residuals: Min: {}, Max: {}", min_residual, max_residual);
-        println!("Slope: {}, Intercept: {}", slope, intercept);
+        // println!("Offsets: Min: {}, Max: {}", min_offset, max_offset);
+        // println!("Residuals: Min: {}, Max: {}", min_residual, max_residual);
+        // println!("Slope: {}, Intercept: {}", slope, intercept);
 
         assert!(min_residual <= max_residual);
 
@@ -634,24 +635,24 @@ impl CompactOffsetViewGroup {
             Self::FourBytes { residuals, .. } => residuals.len() * std::mem::size_of::<CompactOffsetViewFourBytes>(),
         };
         
-        // TODO: delete
-        // Print residual type
-        match self {
-            Self::OneByte { .. } => println!("Residual type: OneByte"),
-            Self::TwoBytes { .. } => println!("Residual type: TwoBytes"),
-            Self::FourBytes { .. } => println!("Residual type: FourBytes"),
-        }
+        // // TODO: delete
+        // // Print residual type
+        // match self {
+        //     Self::OneByte { .. } => println!("Residual type: OneByte"),
+        //     Self::TwoBytes { .. } => println!("Residual type: TwoBytes"),
+        //     Self::FourBytes { .. } => println!("Residual type: FourBytes"),
+        // }
         
 
-        // Print min and max residual
-        match self {
-            Self::OneByte { residuals, .. } => { let min = residuals.iter().map(|r| r.offset_residual()).min().unwrap(); let max = residuals.iter().map(|r| r.offset_residual()).max().unwrap(); println!("Min residual: {}, Max residual: {}", min, max); },
-            Self::TwoBytes { residuals, .. } => { let min = residuals.iter().map(|r| r.offset_residual()).min().unwrap(); let max = residuals.iter().map(|r| r.offset_residual()).max().unwrap(); println!("Min residual: {}, Max residual: {}", min, max); },
-            Self::FourBytes { residuals, .. } => { let min = residuals.iter().map(|r| r.offset_residual()).min().unwrap(); let max = residuals.iter().map(|r| r.offset_residual()).max().unwrap(); println!("Min residual: {}, Max residual: {}", min, max); },
-        }
+        // // Print min and max residual
+        // match self {
+        //     Self::OneByte { residuals, .. } => { let min = residuals.iter().map(|r| r.offset_residual()).min().unwrap(); let max = residuals.iter().map(|r| r.offset_residual()).max().unwrap(); println!("Min residual: {}, Max residual: {}", min, max); },
+        //     Self::TwoBytes { residuals, .. } => { let min = residuals.iter().map(|r| r.offset_residual()).min().unwrap(); let max = residuals.iter().map(|r| r.offset_residual()).max().unwrap(); println!("Min residual: {}, Max residual: {}", min, max); },
+        //     Self::FourBytes { residuals, .. } => { let min = residuals.iter().map(|r| r.offset_residual()).min().unwrap(); let max = residuals.iter().map(|r| r.offset_residual()).max().unwrap(); println!("Min residual: {}, Max residual: {}", min, max); },
+        // }
 
         // println!("residuals type: {:?}", self);
-        println!("header_size: {}, residuals_size: {}", header_size, residuals_size);
+        // println!("header_size: {}, residuals_size: {}", header_size, residuals_size);
         header_size + residuals_size
     }
 
