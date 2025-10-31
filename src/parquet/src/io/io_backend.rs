@@ -37,7 +37,7 @@ pub(super) async fn read(
         IoMode::UringBlocking => {
             #[cfg(target_os = "linux")]
             {
-                return super::io_uring::tls_blocking_uring::read(path, range, false);
+                return super::io_uring::tls_spin_uring::read(path, range, false);
             }
             #[cfg(not(target_os = "linux"))]
             {
@@ -75,7 +75,7 @@ pub(super) async fn write(
         IoMode::UringBlocking => {
             #[cfg(target_os = "linux")]
             {
-                return super::io_uring::tls_blocking_uring::write(path, &data);
+                return super::io_uring::tls_spin_uring::write(path, &data);
             }
             #[cfg(not(target_os = "linux"))]
             {
