@@ -31,18 +31,13 @@ pub(crate) trait IoTask: Send + Any + std::fmt::Debug {
 #[derive(Debug)]
 pub(crate) struct FileOpenTask {
     path: CString,
-    flags: i32,
-    mode: libc::mode_t,
+    direct_io: bool,
     fd: Option<RawFd>,
     error: Option<std::io::Error>,
 }
 
 impl FileOpenTask {
-    pub(crate) fn build(
-        path: PathBuf,
-        flags: i32,
-        mode: libc::mode_t,
-    ) -> Result<FileOpenTask, std::io::Error> {
+    pub(crate) fn build(path: PathBuf, direct_io: bool) -> Result<FileOpenTask, std::io::Error> {
         let bytes = path.into_os_string().into_vec();
         let path = CString::new(bytes).map_err(|_| {
             std::io::Error::new(
@@ -52,8 +47,7 @@ impl FileOpenTask {
         })?;
         Ok(FileOpenTask {
             path,
-            flags,
-            mode,
+            direct_io,
             fd: None,
             error: None,
         })
@@ -75,9 +69,12 @@ impl FileOpenTask {
 impl IoTask for FileOpenTask {
     #[inline]
     fn prepare_sqe(&mut self) -> squeue::Entry {
+        let mut flags = libc::O_RDONLY | libc::O_CLOEXEC;
+        if self.direct_io {
+            flags |= libc::O_DIRECT;
+        }
         let open_op = opcode::OpenAt::new(io_uring::types::Fd(libc::AT_FDCWD), self.path.as_ptr())
-            .flags(self.flags)
-            .mode(self.mode);
+            .flags(flags);
 
         open_op.build()
     }
@@ -113,24 +110,40 @@ pub(crate) struct FileReadTask {
     layout: Layout,
     file: fs::File,
     range: Range<u64>,
-    start_padding: usize,
-    end_padding: usize,
+    direct_io: bool,
     error: Option<std::io::Error>,
 }
 
 impl FileReadTask {
-    pub(crate) fn build(range: Range<u64>, file: fs::File, direct_io: bool) -> FileReadTask {
-        let mut start_padding: usize = 0;
-        let mut end_padding: usize = 0;
-        if direct_io {
-            // Padding must be applied to ensure that starting and ending addresses are block-aligned.
-            start_padding = range.start as usize & (BLOCK_ALIGN - 1);
-            end_padding = if range.end as usize & (BLOCK_ALIGN - 1) == 0 {
+    #[inline]
+    fn padding(&self) -> (usize, usize) {
+        if self.direct_io {
+            let start_padding = self.range.start as usize & (BLOCK_ALIGN - 1);
+            let end_mod = self.range.end as usize & (BLOCK_ALIGN - 1);
+            let end_padding = if end_mod == 0 {
                 0
             } else {
-                BLOCK_ALIGN - (range.end as usize & (BLOCK_ALIGN - 1))
+                BLOCK_ALIGN - end_mod
             };
+            (start_padding, end_padding)
+        } else {
+            (0, 0)
         }
+    }
+
+    pub(crate) fn build(range: Range<u64>, file: fs::File, direct_io: bool) -> FileReadTask {
+        let (start_padding, end_padding) = if direct_io {
+            let start_padding = range.start as usize & (BLOCK_ALIGN - 1);
+            let end_mod = range.end as usize & (BLOCK_ALIGN - 1);
+            let end_padding = if end_mod == 0 {
+                0
+            } else {
+                BLOCK_ALIGN - end_mod
+            };
+            (start_padding, end_padding)
+        } else {
+            (0, 0)
+        };
         let layout = Layout::from_size_align(
             (range.end - range.start) as usize + start_padding + end_padding,
             BLOCK_ALIGN,
@@ -142,8 +155,7 @@ impl FileReadTask {
             layout,
             file,
             range,
-            start_padding,
-            end_padding,
+            direct_io,
             error: None,
         }
     }
@@ -159,8 +171,9 @@ impl FileReadTask {
             this.base_ptr = std::ptr::null_mut();
             return Err(err);
         }
+        let (start_padding, end_padding) = this.padding();
         let total_bytes =
-            (this.range.end - this.range.start) as usize + this.start_padding + this.end_padding;
+            (this.range.end - this.range.start) as usize + start_padding + end_padding;
         let base_ptr = std::mem::replace(&mut this.base_ptr, std::ptr::null_mut());
         unsafe {
             let vec = Vec::from_raw_parts(base_ptr, total_bytes, total_bytes);
@@ -168,8 +181,8 @@ impl FileReadTask {
             let owned_slice: Box<[u8]> = vec.into_boxed_slice();
             // The below slice operation removes the padding. This is a no-op in case of buffered IO.
             Ok(Bytes::from(owned_slice).slice(
-                this.start_padding
-                    ..(this.range.end as usize - this.range.start as usize + this.start_padding),
+                start_padding
+                    ..(this.range.end as usize - this.range.start as usize + start_padding),
             ))
         }
     }
@@ -179,7 +192,8 @@ impl IoTask for FileReadTask {
     #[inline]
     fn prepare_sqe(&mut self) -> squeue::Entry {
         let num_bytes = (self.range.end - self.range.start) as usize;
-        let num_bytes_aligned = num_bytes + self.start_padding + self.end_padding;
+        let (start_padding, end_padding) = self.padding();
+        let num_bytes_aligned = num_bytes + start_padding + end_padding;
         let read_op = opcode::Read::new(
             io_uring::types::Fd(self.file.as_raw_fd()),
             self.base_ptr,
@@ -187,7 +201,7 @@ impl IoTask for FileReadTask {
         );
 
         read_op
-            .offset(self.range.start - self.start_padding as u64)
+            .offset(self.range.start - start_padding as u64)
             .build()
     }
 
@@ -220,26 +234,15 @@ unsafe impl Send for FileReadTask {}
 pub(crate) struct FileWriteTask {
     base_ptr: *const u8,
     num_bytes: usize,
-    padding: usize,
     fd: RawFd,
     error: Option<std::io::Error>,
 }
 
 impl FileWriteTask {
-    pub(crate) fn build(
-        base_ptr: *const u8,
-        num_bytes: usize,
-        fd: RawFd,
-        direct_io: bool,
-    ) -> FileWriteTask {
-        let mut padding = 0;
-        if direct_io && (num_bytes & (BLOCK_ALIGN - 1)) > 0 {
-            padding = BLOCK_ALIGN - num_bytes % BLOCK_ALIGN;
-        }
+    pub(crate) fn build(base_ptr: *const u8, num_bytes: usize, fd: RawFd) -> FileWriteTask {
         FileWriteTask {
             base_ptr,
             num_bytes,
-            padding,
             fd,
             error: None,
         }
@@ -257,11 +260,10 @@ impl FileWriteTask {
 impl IoTask for FileWriteTask {
     #[inline]
     fn prepare_sqe(&mut self) -> squeue::Entry {
-        let num_bytes_aligned = self.num_bytes + self.padding;
         let write_op = opcode::Write::new(
             io_uring::types::Fd(self.fd),
             self.base_ptr,
-            num_bytes_aligned as u32,
+            self.num_bytes as u32,
         );
 
         write_op.offset(0u64).build()

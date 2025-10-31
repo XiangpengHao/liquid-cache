@@ -23,7 +23,6 @@ use super::tasks::{FileOpenTask, FileReadTask, FileWriteTask, IoTask};
 
 pub(crate) const URING_NUM_ENTRIES: u32 = 256;
 
-static IO_MODE: OnceLock<IoMode> = OnceLock::new();
 static ENABLED: AtomicBool = AtomicBool::new(true);
 
 struct Submission {
@@ -76,22 +75,9 @@ unsafe impl Sync for IoUringThreadpool {}
 static IO_URING_THREAD_POOL_INST: OnceLock<IoUringThreadpool> = OnceLock::new();
 
 pub(crate) fn initialize_uring_pool(io_mode: IoMode) {
-    let current_mode = IO_MODE.get_or_init(|| io_mode);
-    if *current_mode != io_mode {
-        panic!(
-            "io-uring runtime already initialized with mode {:?}, received {:?}",
-            current_mode, io_mode
-        );
-    }
-
     if matches!(io_mode, IoMode::Uring | IoMode::UringDirect) {
         IO_URING_THREAD_POOL_INST.get_or_init(|| IoUringThreadpool::new(io_mode));
     }
-}
-
-#[inline]
-pub(crate) fn get_io_mode() -> IoMode {
-    *IO_MODE.get().expect("io-uring runtime not initialized")
 }
 
 impl IoUringThreadpool {
@@ -298,12 +284,7 @@ pub(crate) async fn read(
     range: Option<Range<u64>>,
     direct_io: bool,
 ) -> Result<Bytes, std::io::Error> {
-    let mut flags = libc::O_RDONLY | libc::O_CLOEXEC;
-    if direct_io {
-        flags |= libc::O_DIRECT;
-    }
-
-    let open_task = FileOpenTask::build(path, flags, 0)?;
+    let open_task = FileOpenTask::build(path, direct_io)?;
     let file = submit_async_task(open_task).await.into_result()?;
 
     let effective_range = if let Some(range) = range {
@@ -318,17 +299,12 @@ pub(crate) async fn read(
 }
 
 pub(crate) async fn write(path: PathBuf, data: &Bytes) -> Result<(), std::io::Error> {
-    use std::os::unix::fs::OpenOptionsExt as _;
-
-    let direct = matches!(get_io_mode(), IoMode::UringDirect);
-    let flags = if direct { libc::O_DIRECT } else { 0 };
     let file = OpenOptions::new()
         .create(true)
         .write(true)
-        .custom_flags(flags)
         .open(path)
         .expect("failed to create file");
 
-    let write_task = FileWriteTask::build(data.as_ptr(), data.len(), file.as_raw_fd(), direct);
+    let write_task = FileWriteTask::build(data.as_ptr(), data.len(), file.as_raw_fd());
     submit_async_task(write_task).await.into_result()
 }

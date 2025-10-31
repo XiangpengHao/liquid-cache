@@ -2,11 +2,10 @@ use std::{cell::RefCell, io, ops::Range, path::PathBuf};
 
 use bytes::Bytes;
 use io_uring::IoUring;
-use liquid_cache_common::IoMode;
 
 use super::{
     tasks::{FileOpenTask, FileReadTask, FileWriteTask, IoTask},
-    thread_pool_uring::{URING_NUM_ENTRIES, get_io_mode},
+    thread_pool_uring::URING_NUM_ENTRIES,
 };
 
 thread_local! {
@@ -79,12 +78,7 @@ pub(crate) fn read(
     range: Option<Range<u64>>,
     direct_io: bool,
 ) -> Result<Bytes, std::io::Error> {
-    let mut flags = libc::O_RDONLY | libc::O_CLOEXEC;
-    if direct_io {
-        flags |= libc::O_DIRECT;
-    }
-
-    let open_task = FileOpenTask::build(path, flags, 0)?;
+    let open_task = FileOpenTask::build(path, direct_io)?;
     let file = run_blocking_task(Box::new(open_task))?.into_result()?;
     let effective_range = if let Some(range) = range {
         range
@@ -98,18 +92,10 @@ pub(crate) fn read(
 }
 
 pub(crate) fn write(path: PathBuf, data: &Bytes) -> Result<(), std::io::Error> {
+    use std::fs::OpenOptions;
     use std::os::fd::AsRawFd;
-    use std::{fs::OpenOptions, os::unix::fs::OpenOptionsExt as _};
 
-    let direct = matches!(get_io_mode(), IoMode::UringDirect);
-    let flags = if direct { libc::O_DIRECT } else { 0 };
-
-    let file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .custom_flags(flags)
-        .open(path)?;
-
-    let write_task = FileWriteTask::build(data.as_ptr(), data.len(), file.as_raw_fd(), direct);
+    let file = OpenOptions::new().create(true).write(true).open(path)?;
+    let write_task = FileWriteTask::build(data.as_ptr(), data.len(), file.as_raw_fd());
     run_blocking_task(Box::new(write_task))?.into_result()
 }
