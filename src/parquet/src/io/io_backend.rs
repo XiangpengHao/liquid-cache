@@ -24,6 +24,17 @@ pub(super) async fn read(
             }
         }
 
+        IoMode::UringShared => {
+            #[cfg(target_os = "linux")]
+            {
+                return super::io_uring::shared_uring::read(path, range, false).await;
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                panic!("io_uring modes are only supported on Linux");
+            }
+        }
+
         IoMode::UringDirect => {
             #[cfg(target_os = "linux")]
             {
@@ -66,6 +77,16 @@ pub(super) async fn write(
             #[cfg(target_os = "linux")]
             {
                 return super::io_uring::thread_pool_uring::write(path, &data).await;
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                panic!("io_uring modes are only supported on Linux");
+            }
+        }
+        IoMode::UringShared => {
+            #[cfg(target_os = "linux")]
+            {
+                return super::io_uring::shared_uring::write(path, &data).await;
             }
             #[cfg(not(target_os = "linux"))]
             {

@@ -13,6 +13,10 @@ pub enum IoMode {
     #[serde(rename = "uring")]
     Uring,
 
+    /// Uses io_uring with a single shared ring on the runtime thread, only available on Linux
+    #[serde(rename = "uring-shared")]
+    UringShared,
+
     /// Uses io_uring on the calling thread and blocks until completion.
     #[cfg_attr(target_os = "linux", default)]
     #[serde(rename = "uring-blocking")]
@@ -43,6 +47,7 @@ impl Display for IoMode {
             match self {
                 IoMode::Uring => "uring",
                 IoMode::UringDirect => "uring-direct",
+                IoMode::UringShared => "uring-shared",
                 IoMode::UringBlocking => "uring-blocking",
                 IoMode::StdBlocking => "std-blocking",
                 IoMode::TokioIO => "tokio",
@@ -59,6 +64,7 @@ impl FromStr for IoMode {
         Ok(match s {
             "uring-direct" => IoMode::UringDirect,
             "uring" => IoMode::Uring,
+            "uring-shared" => IoMode::UringShared,
             "uring-blocking" => IoMode::UringBlocking,
             "std-blocking" => IoMode::StdBlocking,
             "tokio" => IoMode::TokioIO,
