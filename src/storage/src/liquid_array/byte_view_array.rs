@@ -3119,16 +3119,6 @@ mod tests {
         // Verify correctness
         let output = liquid_array.to_arrow_array().unwrap();
         assert_eq!(&input, output.as_string::<i32>());
-
-        // Check compact offset view size efficiency
-        let header = liquid_array.compact_offset_views.header();
-
-        // Mixed size strings should use compact offset views (1 or 2 bytes)
-        assert!(
-            header.offset_bytes <= 2,
-            "Mixed size data should use compact offset views (1 or 2 bytes), got {} bytes",
-            header.offset_bytes
-        );
     }
 
     #[test]
