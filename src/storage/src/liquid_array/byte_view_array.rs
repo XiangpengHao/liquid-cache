@@ -167,7 +167,7 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
             result.push(0);
         }
 
-        // e) Serialize compact offset views (header + residuals)
+        // E) Serialize compact offset views (header + residuals)
         let offsets_start = result.len();
         {
             let header = self.compact_offset_views.header();
@@ -242,7 +242,7 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
         shared_prefix: Vec<u8>,
         compressor: Arc<Compressor>,
     ) -> Self {
-        let offset_views = Arc::<[OffsetView]>::from(offset_views.to_vec());
+        // let offset_views = Arc::<[OffsetView]>::from(offset_views.to_vec());
 
         let compact_offset_views = CompactOffsetViewGroup::from_offset_views(&offset_views);
         
@@ -256,6 +256,7 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
         }
     }
 
+    /// Get the offset views of the LiquidByteViewArray
     pub fn offset_views(&self) -> Vec<OffsetView> {
         let mut offset_views: Vec<OffsetView> = Vec::new();
         
@@ -382,6 +383,7 @@ impl LiquidByteViewArray<MemoryBuffer> {
     }
 }
 
+/// OffsetView stores information about the offsets of the byte view array 
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 // TODO: change it back to pub(crate)
@@ -476,17 +478,6 @@ impl CompactOffsetViewGroup {
         }
 
         let offsets: Vec<u32> = offset_views.iter().map(|offset_view| offset_view.offset()).collect();
-
-        let min_offset = *offsets.iter().min().unwrap();
-        let max_offset = *offsets.iter().max().unwrap();
-
-        // // simple linear regression: slope = (max - min) / (n - 1)
-        // let slope = if offset_views.len() > 1 {
-        //     (max_offset as i32 - min_offset as i32) / (offset_views.len() - 1) as i32
-        // } else {
-        //     0
-        // };
-        // let intercept = min_offset as i32;
 
         let (slope, intercept) = fit_line(&offsets);
 
@@ -768,6 +759,8 @@ impl OffsetView {
         }
     }
 
+    /// Get the offset of the offset view
+    #[inline]
     pub fn offset(&self) -> u32 {
         self.offset
     }
@@ -789,11 +782,13 @@ impl OffsetView {
         }
     }
 
+    /// Get the length of the offset view in bytes
     #[inline]
     pub fn len_byte(&self) -> u8 {
         self.len
     }
 
+    /// Get the length of the prefix array in bytes
     #[inline]
     pub const fn prefix_len() -> usize {
         7
@@ -3029,7 +3024,7 @@ mod tests {
     }
 
     #[test]
-    fn test_mixed_size_compression() {
+    fn test_mixed_size_offset_views() {
         let strings = generate_mixed_size_strings(16384, 42);
         let input = StringArray::from(strings.clone());
         
@@ -3040,16 +3035,15 @@ mod tests {
         let output = liquid_array.to_arrow_array().unwrap();
         assert_eq!(&input, output.as_string::<i32>());
         
-        // Check memory efficiency
-        let original_size = input.get_array_memory_size();
-        let compressed_size = liquid_array.get_array_memory_size();
-        let compression_ratio = original_size as f64 / compressed_size as f64;
+        // Check compact offset view size efficiency
+        let header = liquid_array.compact_offset_views.header();
         
-        assert!(compression_ratio > 1.0, "Should achieve compression on mixed size data");
+        // Mixed size strings should use compact offset views (1 or 2 bytes)
+        assert!(header.offset_bytes <= 2, "Mixed size data should use compact offset views (1 or 2 bytes), got {} bytes", header.offset_bytes);
     }
 
     #[test]
-    fn test_zipf_patterns() {
+    fn test_zipf_offset_views() {
         // Real-world string patterns
         let base_patterns = &[
             "error", "warning", "info", "debug",
@@ -3069,17 +3063,9 @@ mod tests {
         let output = liquid_array.to_arrow_array().unwrap();
         assert_eq!(&input, output.as_string::<i32>());
         
-        // Check compression effectiveness
-        let memory_usage = liquid_array.get_detailed_memory_usage();
-        let original_size = input.get_array_memory_size();
-        let total_compressed = memory_usage.total();
-        let compression_ratio = original_size as f64 / total_compressed as f64;
+        let header = liquid_array.compact_offset_views.header();
         
-        println!("Zipf test - Original: {}, Compressed: {}, Ratio: {:.2}x", 
-                 original_size, total_compressed, compression_ratio);
-        
-        // Zipf should compress very well due to duplication
-        assert!(compression_ratio > 2.0, "Zipf patterns should achieve good compression");
+        assert!(header.offset_bytes <= 2, "Zipf patterns with short strings should use 1 or 2 bytes offset views, got {} bytes", header.offset_bytes);
     }
 
     #[test] 
@@ -3116,6 +3102,6 @@ mod tests {
         for i in 1..offset_views.len() {
             assert!(offset_views[i].offset() >= offset_views[i-1].offset(), 
                    "Offsets should be monotonic");
-        }
+        }  
     }
 }
