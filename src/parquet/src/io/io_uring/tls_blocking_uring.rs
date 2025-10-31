@@ -74,13 +74,13 @@ where
     with_blocking_ring(move |ring| ring.run_task(task))
 }
 
-pub(crate) fn read_range(
+pub(crate) fn read(
     path: PathBuf,
     range: Option<Range<u64>>,
+    direct_io: bool,
 ) -> Result<Bytes, std::io::Error> {
     let mut flags = libc::O_RDONLY | libc::O_CLOEXEC;
-    let direct = matches!(get_io_mode(), IoMode::UringDirect);
-    if direct {
+    if direct_io {
         flags |= libc::O_DIRECT;
     }
 
@@ -93,7 +93,7 @@ pub(crate) fn read_range(
         0..len
     };
 
-    let read_task = FileReadTask::build(effective_range, file, direct);
+    let read_task = FileReadTask::build(effective_range, file, direct_io);
     run_blocking_task(Box::new(read_task))?.into_result()
 }
 

@@ -13,17 +13,42 @@ pub(super) async fn read(
     range: Option<Range<u64>>,
 ) -> Result<Bytes, std::io::Error> {
     match io_mode {
-        IoMode::Uring | IoMode::UringDirect => {
-            return read_uring(path, range).await;
+        IoMode::Uring => {
+            #[cfg(target_os = "linux")]
+            {
+                return super::io_uring::thread_pool_uring::read(path, range, false).await;
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                panic!("io_uring modes are only supported on Linux");
+            }
+        }
+
+        IoMode::UringDirect => {
+            #[cfg(target_os = "linux")]
+            {
+                return super::io_uring::thread_pool_uring::read(path, range, true).await;
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                panic!("io_uring modes are only supported on Linux");
+            }
         }
         IoMode::UringBlocking => {
-            return read_blocking_uring(path, range).await;
+            #[cfg(target_os = "linux")]
+            {
+                return super::io_uring::tls_blocking_uring::read(path, range, false);
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                panic!("io_uring modes are only supported on Linux");
+            }
         }
         IoMode::StdSpawnBlocking => {
-            return read_spawn_blocking(path, range).await;
+            return maybe_spawn_blocking(move || read_blocking_impl(path, range)).await;
         }
         IoMode::StdBlocking => {
-            return read_blocking(path, range);
+            return read_blocking_impl(path, range);
         }
         IoMode::TokioIO => {
             return read_tokio(path, range).await;
@@ -31,17 +56,41 @@ pub(super) async fn read(
     }
 }
 
-pub(super) async fn write_file(
+pub(super) async fn write(
     io_mode: IoMode,
     path: PathBuf,
     data: Bytes,
 ) -> Result<(), std::io::Error> {
     match io_mode {
-        IoMode::Uring | IoMode::UringDirect => write_file_uring(path, data).await,
-        IoMode::UringBlocking => write_file_blocking_uring(path, data).await,
-        IoMode::StdSpawnBlocking => write_file_spawn_blocking(path, data).await,
-        IoMode::StdBlocking => write_file_blocking(path, data),
-        IoMode::TokioIO => write_file_tokio(path, data).await,
+        IoMode::Uring | IoMode::UringDirect => {
+            #[cfg(target_os = "linux")]
+            {
+                return super::io_uring::thread_pool_uring::write(path, &data).await;
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                panic!("io_uring modes are only supported on Linux");
+            }
+        }
+        IoMode::UringBlocking => {
+            #[cfg(target_os = "linux")]
+            {
+                return super::io_uring::tls_blocking_uring::write(path, &data);
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                panic!("io_uring modes are only supported on Linux");
+            }
+        }
+        IoMode::StdSpawnBlocking => {
+            return maybe_spawn_blocking(move || write_file_blocking_impl(path, data)).await;
+        }
+        IoMode::StdBlocking => {
+            return write_file_blocking_impl(path, data);
+        }
+        IoMode::TokioIO => {
+            return write_file_tokio(path, data).await;
+        }
     }
 }
 
@@ -68,25 +117,6 @@ fn write_file_blocking_impl(path: PathBuf, data: Bytes) -> Result<(), std::io::E
     Ok(())
 }
 
-fn read_blocking(path: PathBuf, range: Option<Range<u64>>) -> Result<Bytes, std::io::Error> {
-    read_blocking_impl(path, range)
-}
-
-fn write_file_blocking(path: PathBuf, data: Bytes) -> Result<(), std::io::Error> {
-    write_file_blocking_impl(path, data)
-}
-
-async fn read_spawn_blocking(
-    path: PathBuf,
-    range: Option<Range<u64>>,
-) -> Result<Bytes, std::io::Error> {
-    maybe_spawn_blocking(move || read_blocking_impl(path, range)).await
-}
-
-async fn write_file_spawn_blocking(path: PathBuf, data: Bytes) -> Result<(), std::io::Error> {
-    maybe_spawn_blocking(move || write_file_blocking_impl(path, data)).await
-}
-
 async fn read_tokio(path: PathBuf, range: Option<Range<u64>>) -> Result<Bytes, std::io::Error> {
     let mut file = tokio::fs::File::open(path).await?;
     match range {
@@ -109,52 +139,6 @@ async fn write_file_tokio(path: PathBuf, data: Bytes) -> Result<(), std::io::Err
     let mut file = tokio::fs::File::create(path).await?;
     file.write_all(data.as_ref()).await?;
     Ok(())
-}
-
-#[cfg(target_os = "linux")]
-async fn read_uring(path: PathBuf, range: Option<Range<u64>>) -> Result<Bytes, std::io::Error> {
-    crate::io::io_uring::thread_pool_uring::read_range(path, range).await
-}
-
-#[cfg(not(target_os = "linux"))]
-async fn read_uring(_path: PathBuf, _range: Option<Range<u64>>) -> Result<Bytes, std::io::Error> {
-    panic!("io_uring modes are only supported on Linux");
-}
-
-#[cfg(target_os = "linux")]
-async fn read_blocking_uring(
-    path: PathBuf,
-    range: Option<Range<u64>>,
-) -> Result<Bytes, std::io::Error> {
-    crate::io::io_uring::tls_blocking_uring::read_range(path, range)
-}
-
-#[cfg(not(target_os = "linux"))]
-async fn read_blocking_uring(
-    _path: PathBuf,
-    _range: Option<Range<u64>>,
-) -> Result<Bytes, std::io::Error> {
-    panic!("io_uring modes are only supported on Linux");
-}
-
-#[cfg(target_os = "linux")]
-async fn write_file_uring(path: PathBuf, data: Bytes) -> Result<(), std::io::Error> {
-    crate::io::io_uring::thread_pool_uring::write(path, &data).await
-}
-
-#[cfg(not(target_os = "linux"))]
-async fn write_file_uring(_path: PathBuf, _data: Bytes) -> Result<(), std::io::Error> {
-    panic!("io_uring modes are only supported on Linux");
-}
-
-#[cfg(target_os = "linux")]
-async fn write_file_blocking_uring(path: PathBuf, data: Bytes) -> Result<(), std::io::Error> {
-    crate::io::io_uring::tls_blocking_uring::write(path, &data)
-}
-
-#[cfg(not(target_os = "linux"))]
-async fn write_file_blocking_uring(_path: PathBuf, _data: Bytes) -> Result<(), std::io::Error> {
-    panic!("io_uring modes are only supported on Linux");
 }
 
 async fn maybe_spawn_blocking<F, T>(f: F) -> Result<T, std::io::Error>

@@ -84,6 +84,6 @@ impl IoContext for ParquetIoContext {
     #[inline(never)]
     #[fastrace::trace]
     async fn write_file(&self, path: PathBuf, data: Bytes) -> Result<(), std::io::Error> {
-        io_backend::write_file(self.io_mode, path, data).await
+        io_backend::write(self.io_mode, path, data).await
     }
 }

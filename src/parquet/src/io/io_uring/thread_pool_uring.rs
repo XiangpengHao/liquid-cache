@@ -293,13 +293,13 @@ where
     UringFuture::new(Box::new(task))
 }
 
-pub(crate) async fn read_range(
+pub(crate) async fn read(
     path: PathBuf,
     range: Option<Range<u64>>,
+    direct_io: bool,
 ) -> Result<Bytes, std::io::Error> {
     let mut flags = libc::O_RDONLY | libc::O_CLOEXEC;
-    let direct = matches!(get_io_mode(), IoMode::UringDirect);
-    if direct {
+    if direct_io {
         flags |= libc::O_DIRECT;
     }
 
@@ -313,7 +313,7 @@ pub(crate) async fn read_range(
         0..len
     };
 
-    let read_task = FileReadTask::build(effective_range, file, direct);
+    let read_task = FileReadTask::build(effective_range, file, direct_io);
     submit_async_task(read_task).await.into_result()
 }
 
