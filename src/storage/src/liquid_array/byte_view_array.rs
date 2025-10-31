@@ -501,11 +501,6 @@ impl CompactOffsetViewGroup {
             max_residual = max_residual.max(*offset_residuals.last().unwrap());
         }
 
-        // Print offsets and residuals
-        // println!("Offsets: Min: {}, Max: {}", min_offset, max_offset);
-        // println!("Residuals: Min: {}, Max: {}", min_residual, max_residual);
-        // println!("Slope: {}, Intercept: {}", slope, intercept);
-
         assert!(min_residual <= max_residual);
 
         // determine bytes needed for residuals
@@ -635,24 +630,6 @@ impl CompactOffsetViewGroup {
             Self::FourBytes { residuals, .. } => residuals.len() * std::mem::size_of::<CompactOffsetViewFourBytes>(),
         };
         
-        // // TODO: delete
-        // // Print residual type
-        // match self {
-        //     Self::OneByte { .. } => println!("Residual type: OneByte"),
-        //     Self::TwoBytes { .. } => println!("Residual type: TwoBytes"),
-        //     Self::FourBytes { .. } => println!("Residual type: FourBytes"),
-        // }
-        
-
-        // // Print min and max residual
-        // match self {
-        //     Self::OneByte { residuals, .. } => { let min = residuals.iter().map(|r| r.offset_residual()).min().unwrap(); let max = residuals.iter().map(|r| r.offset_residual()).max().unwrap(); println!("Min residual: {}, Max residual: {}", min, max); },
-        //     Self::TwoBytes { residuals, .. } => { let min = residuals.iter().map(|r| r.offset_residual()).min().unwrap(); let max = residuals.iter().map(|r| r.offset_residual()).max().unwrap(); println!("Min residual: {}, Max residual: {}", min, max); },
-        //     Self::FourBytes { residuals, .. } => { let min = residuals.iter().map(|r| r.offset_residual()).min().unwrap(); let max = residuals.iter().map(|r| r.offset_residual()).max().unwrap(); println!("Min residual: {}, Max residual: {}", min, max); },
-        // }
-
-        // println!("residuals type: {:?}", self);
-        // println!("header_size: {}, residuals_size: {}", header_size, residuals_size);
         header_size + residuals_size
     }
 
@@ -2925,14 +2902,6 @@ mod tests {
         // convert to compact representation
         let compact = CompactOffsetViewGroup::from_offset_views(original_offsets);
         
-        // debug: show which variant was chosen
-        let variant_name = match &compact {
-            CompactOffsetViewGroup::OneByte { .. } => "OneByte",
-            CompactOffsetViewGroup::TwoBytes { .. } => "TwoBytes", 
-            CompactOffsetViewGroup::FourBytes { .. } => "FourBytes",
-        };
-        println!("{} -> Using {} variant", test_name, variant_name);
-        
         // convert back to offset views
         let recovered_offsets = convert_compact_to_offset_views(&compact);
         
@@ -2960,8 +2929,6 @@ mod tests {
                 "Length byte mismatch at index {} in {}", i, test_name
             );
         }
-        
-        println!("round-trip test passed for {}", test_name);
     }
 
     fn convert_compact_to_offset_views(compact: &CompactOffsetViewGroup) -> Vec<OffsetView> {
@@ -2988,12 +2955,6 @@ mod tests {
         let original_size = offsets.len() * std::mem::size_of::<OffsetView>();
         let compact = CompactOffsetViewGroup::from_offset_views(&offsets);
         let compact_size = compact.memory_usage();
-        
-        println!("Original size: {} bytes", original_size);
-        println!("Compact size: {} bytes", compact_size);
-        println!("Space savings: {} bytes ({:.1}%)", 
-                 original_size - compact_size,
-                 100.0 * (original_size - compact_size) as f64 / original_size as f64);
         
         // for this test case, we should see some savings due to using smaller residuals
         assert!(compact_size <= original_size, "Compact representation should not be larger");
@@ -3084,9 +3045,6 @@ mod tests {
         let compressed_size = liquid_array.get_array_memory_size();
         let compression_ratio = original_size as f64 / compressed_size as f64;
         
-        println!("Mixed size test - Original: {}, Compressed: {}, Ratio: {:.2}x", 
-                 original_size, compressed_size, compression_ratio);
-        
         assert!(compression_ratio > 1.0, "Should achieve compression on mixed size data");
     }
 
@@ -3159,7 +3117,5 @@ mod tests {
             assert!(offset_views[i].offset() >= offset_views[i-1].offset(), 
                    "Offsets should be monotonic");
         }
-        
-        println!("Offset stress test passed with {} strings", input.len());
     }
 }
