@@ -1,6 +1,7 @@
 #![warn(missing_docs)]
 #![doc = include_str!("../README.md")]
 
+mod io;
 pub mod optimizers;
 mod reader;
 mod sync;
