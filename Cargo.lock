@@ -2821,7 +2821,6 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "parquet",
- "pprof",
  "reqwest",
  "serde",
  "serde_json",
