@@ -23,7 +23,7 @@ pub mod client_runner;
 pub mod inprocess_runner;
 mod manifest;
 mod observability;
-pub mod tpch;
+mod tracepoints;
 pub mod utils;
 
 pub use client_runner::*;
@@ -88,9 +88,9 @@ pub struct ClientBenchmarkArgs {
     #[arg(long)]
     pub query: Option<u32>,
 
-    /// Openobserve auth token
-    #[arg(long)]
-    pub openobserve_auth: Option<String>,
+    /// Jaeger OTLP gRPC endpoint (for example: http://localhost:4317)
+    #[arg(long = "jaeger-endpoint")]
+    pub jaeger_endpoint: Option<String>,
 
     /// Path to save the cache trace
     /// It tells the **server** to collect the cache trace.
@@ -170,6 +170,30 @@ impl ClientBenchmarkArgs {
             }
         } else {
             None
+        }
+    }
+
+    pub async fn start_disk_usage_monitor(&self) {
+        let client = reqwest::Client::new();
+        let response = client
+            .get(format!("{}/start_disk_usage_monitor?", self.admin_server,))
+            .send()
+            .await
+            .unwrap();
+        if response.status().is_success() {
+            info!("Disk usage monitoring started");
+        }
+    }
+
+    pub async fn stop_disk_usage_monitor(&self) {
+        let client = reqwest::Client::new();
+        let response = client
+            .get(format!("{}/stop_disk_usage_monitor", self.admin_server))
+            .send()
+            .await
+            .unwrap();
+        if response.status().is_success() {
+            info!("Disk usage monitoring stopped");
         }
     }
 
@@ -310,7 +334,6 @@ impl FromStr for BenchmarkMode {
     }
 }
 
-#[fastrace::trace]
 pub async fn run_query(
     ctx: &Arc<SessionContext>,
     query: &str,
@@ -334,6 +357,10 @@ pub async fn run_query(
         .with_extension(Arc::new(Span::enter_with_local_parent(
             "poll_physical_plan",
         )));
+
+    let execution_span = Span::enter_with_local_parent("poll");
+    let physical_plan = instrument_liquid_source_with_span(physical_plan, execution_span);
+
     let ctx = ctx.with_session_config(cfg);
     let results = collect(physical_plan.clone(), Arc::new(ctx)).await.unwrap();
     let plan_uuids = utils::get_plan_uuids(&physical_plan);
@@ -372,6 +399,13 @@ pub struct SerializableCacheStats {
     pub memory_liquid_entries: usize,
     pub memory_hybrid_liquid_entries: usize,
     pub disk_liquid_entries: usize,
+    pub get_arrow_array_calls: u64,
+    pub get_with_selection_calls: u64,
+    pub get_with_predicate_calls: u64,
+    pub get_predicate_hybrid_success: u64,
+    pub get_predicate_hybrid_needs_io: u64,
+    pub get_predicate_hybrid_unsupported: u64,
+    pub try_read_liquid_calls: u64,
 }
 
 impl SerializableCacheStats {
@@ -382,6 +416,13 @@ impl SerializableCacheStats {
             memory_liquid_entries: cache_stats.memory_liquid_entries,
             memory_hybrid_liquid_entries: cache_stats.memory_hybrid_liquid_entries,
             disk_liquid_entries: cache_stats.disk_liquid_entries,
+            get_arrow_array_calls: cache_stats.runtime.get_arrow_array_calls,
+            get_with_selection_calls: cache_stats.runtime.get_with_selection_calls,
+            get_with_predicate_calls: cache_stats.runtime.get_with_predicate_calls,
+            get_predicate_hybrid_success: cache_stats.runtime.get_predicate_hybrid_success,
+            get_predicate_hybrid_needs_io: cache_stats.runtime.get_predicate_hybrid_needs_io,
+            get_predicate_hybrid_unsupported: cache_stats.runtime.get_predicate_hybrid_unsupported,
+            try_read_liquid_calls: cache_stats.runtime.try_read_liquid_calls,
         }
     }
 }
@@ -401,29 +442,194 @@ pub struct IterationResult {
 
 impl Display for IterationResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
+        const INNER: usize = 50; // inner content width between borders
+
+        write_border_top(f, INNER)?;
+        write_kv_row(
             f,
-            "Query time: {} ms\n network: {} bytes\n cache cpu time: {} ms\n cache memory: {} bytes, liquid cache memory: {} bytes\n disk read: {} bytes, disk written: {} bytes\n",
-            self.time_millis,
-            self.network_traffic,
-            self.cache_cpu_time,
-            self.cache_memory_usage,
-            self.liquid_cache_usage,
-            self.disk_bytes_read,
-            self.disk_bytes_written,
+            INNER,
+            "Query Time:",
+            &format!("{} ms", format_number(self.time_millis)),
         )?;
+        write_kv_row(
+            f,
+            INNER,
+            "Cache CPU:",
+            &format!("{} ms", format_number(self.cache_cpu_time)),
+        )?;
+        write_border_sep(f, INNER)?;
+        write_kv_row(f, INNER, "Network:", &format_bytes(self.network_traffic))?;
+        write_kv_row(
+            f,
+            INNER,
+            "Cache Memory (total/liquid):",
+            &format!(
+                "{} / {}",
+                format_bytes(self.cache_memory_usage),
+                format_bytes(self.liquid_cache_usage)
+            ),
+        )?;
+        write_kv_row(
+            f,
+            INNER,
+            "Disk (Read/Write):",
+            &format!(
+                "{} / {}",
+                format_bytes(self.disk_bytes_read),
+                format_bytes(self.disk_bytes_written)
+            ),
+        )?;
+
         if let Some(cache_stats) = &self.cache_stats {
-            write!(
-                f,
-                " cache stats: total_entries: {}, memory_arrow_entries: {}, memory_liquid_entries: {}, memory_hybrid_liquid_entries: {}, disk_liquid_entries: {}",
-                cache_stats.total_entries,
+            write_border_sep(f, INNER)?;
+            let total_value = format!("{}", cache_stats.total_entries);
+            let stats_value = format!(
+                "(Arrow:{} Liquid:{} Hybrid:{} Disk:{})",
                 cache_stats.memory_arrow_entries,
                 cache_stats.memory_liquid_entries,
                 cache_stats.memory_hybrid_liquid_entries,
-                cache_stats.disk_liquid_entries,
-            )
-        } else {
-            Ok(())
+                cache_stats.disk_liquid_entries
+            );
+            write_kv_row(f, INNER, "Cache Stats:", &total_value)?;
+            write_kv_row(f, INNER, "", &stats_value)?;
+
+            // Runtime counters
+            write_kv_row(
+                f,
+                INNER,
+                "get_arrow",
+                &format_number(cache_stats.get_arrow_array_calls),
+            )?;
+            write_kv_row(
+                f,
+                INNER,
+                "get_with_selection",
+                &format_number(cache_stats.get_with_selection_calls),
+            )?;
+            write_kv_row(
+                f,
+                INNER,
+                "get_with_predicate",
+                &format_number(cache_stats.get_with_predicate_calls),
+            )?;
+            write_kv_row(
+                f,
+                INNER,
+                "hybrid_success",
+                &format_number(cache_stats.get_predicate_hybrid_success),
+            )?;
+            write_kv_row(
+                f,
+                INNER,
+                "hybrid_needs_io",
+                &format_number(cache_stats.get_predicate_hybrid_needs_io),
+            )?;
+            write_kv_row(
+                f,
+                INNER,
+                "hybrid_unsupported",
+                &format_number(cache_stats.get_predicate_hybrid_unsupported),
+            )?;
+            write_kv_row(
+                f,
+                INNER,
+                "try_read_liquid",
+                &format_number(cache_stats.try_read_liquid_calls),
+            )?;
+        }
+
+        write_border_bottom(f, INNER)
+    }
+}
+
+fn format_number(n: u64) -> String {
+    let s = n.to_string();
+    let chars: Vec<char> = s.chars().collect();
+    let mut result = String::new();
+
+    for (i, ch) in chars.iter().enumerate() {
+        if i > 0 && (chars.len() - i).is_multiple_of(3) {
+            result.push(',');
+        }
+        result.push(*ch);
+    }
+
+    result
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+
+    if bytes >= GB {
+        format!("{:.1} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
+fn write_border_top(f: &mut std::fmt::Formatter<'_>, inner: usize) -> std::fmt::Result {
+    writeln!(f, "┌{}┐", "─".repeat(inner))
+}
+
+fn write_border_sep(f: &mut std::fmt::Formatter<'_>, inner: usize) -> std::fmt::Result {
+    writeln!(f, "├{}┤", "─".repeat(inner))
+}
+
+fn write_border_bottom(f: &mut std::fmt::Formatter<'_>, inner: usize) -> std::fmt::Result {
+    writeln!(f, "└{}┘", "─".repeat(inner))
+}
+
+fn write_kv_row(
+    f: &mut std::fmt::Formatter<'_>,
+    inner: usize,
+    label: &str,
+    value: &str,
+) -> std::fmt::Result {
+    // one space padding on both left and right inside the borders
+    let left_right_padding = 2usize; // 1 left + 1 right
+    let available = inner.saturating_sub(left_right_padding);
+    let min_gap = 1usize;
+
+    let label_display = label.to_string();
+    let mut value_display = value.to_string();
+
+    // If overflow, truncate the value (keep suffix) and ensure at least one gap
+    if label_display.len() + min_gap + value_display.len() > available {
+        let max_value_len = available.saturating_sub(min_gap + label_display.len());
+        if value_display.len() > max_value_len {
+            if max_value_len == 0 {
+                value_display.clear();
+            } else if max_value_len == 1 {
+                value_display = "…".to_string();
+            } else {
+                let suffix_len = max_value_len - 1;
+                let start = value_display.len().saturating_sub(suffix_len);
+                value_display = format!("…{}", &value_display[start..]);
+            }
         }
     }
+
+    let spaces = available.saturating_sub(label_display.len() + value_display.len());
+
+    let mut line = String::with_capacity(inner);
+    line.push(' ');
+    line.push_str(&label_display);
+    line.push_str(&" ".repeat(spaces));
+    line.push_str(&value_display);
+    line.push(' ');
+
+    // Ensure exact inner width
+    if line.len() < inner {
+        line.push_str(&" ".repeat(inner - line.len()));
+    } else if line.len() > inner {
+        line.truncate(inner);
+    }
+
+    writeln!(f, "│{}│", line)
 }

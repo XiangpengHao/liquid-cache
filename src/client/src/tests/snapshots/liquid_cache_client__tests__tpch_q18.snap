@@ -115,6 +115,7 @@ expression: displayable.tree_render().to_string()
 │    --------------------   ││    --------------------   │                             │    --------------------   │
 │     target_batch_size:    ││            on:            ├──────────────┐              │          files: 1         │
 │           16384           ││  (c_custkey = o_custkey)  │              │              │      format: parquet      │
+│                           ││                           │              │              │      predicate: true      │
 └─────────────┬─────────────┘└─────────────┬─────────────┘              │              └───────────────────────────┘
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐
 │      RepartitionExec      ││   LiquidCacheClientExec   ││   LiquidCacheClientExec   │
@@ -130,7 +131,7 @@ expression: displayable.tree_render().to_string()
 │    --------------------   ││    --------------------   ││    --------------------   │
 │ partition_count(in->out): ││          files: 1         ││          files: 1         │
 │           1 -> 8          ││      format: parquet      ││      format: parquet      │
-│                           ││                           ││                           │
+│                           ││                           ││      predicate: true      │
 │    partitioning_scheme:   ││                           ││                           │
 │     RoundRobinBatch(8)    ││                           ││                           │
 └─────────────┬─────────────┘└───────────────────────────┘└───────────────────────────┘

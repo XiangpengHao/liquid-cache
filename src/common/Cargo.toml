@@ -11,12 +11,12 @@ repository = { workspace = true }
 arrow-flight = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
-chrono = "0.4.41"
+chrono = "0.4.42"
 futures = { workspace = true }
 object_store = { workspace = true }
 prost = { workspace = true }
 serde = { workspace = true }
-thiserror = "2.0.15"
+thiserror = "2.0.17"
 tokio = { workspace = true }
 url = { workspace = true }
 

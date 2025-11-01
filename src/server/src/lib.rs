@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#![warn(missing_docs)]
 #![doc = include_str!("../README.md")]
 
 use arrow::ipc::writer::IpcWriteOptions;
@@ -36,7 +35,10 @@ use datafusion::{
 use datafusion_proto::bytes::physical_plan_from_bytes;
 use fastrace::prelude::SpanContext;
 use futures::{Stream, TryStreamExt};
-use liquid_cache_common::rpc::{FetchResults, LiquidCacheActions};
+use liquid_cache_common::{
+    IoMode,
+    rpc::{FetchResults, LiquidCacheActions},
+};
 use liquid_cache_parquet::cache::LiquidCacheRef;
 use log::info;
 use prost::bytes::Bytes;
@@ -84,6 +86,7 @@ mod tests;
 ///     None,
 ///     Box::new(LiquidPolicy::new()),
 ///     Box::new(TranscodeSqueezeEvict),
+///     None,
 /// )
 /// .unwrap();
 /// let flight = FlightServiceServer::new(liquid_cache);
@@ -112,6 +115,7 @@ impl LiquidCacheService {
             None,
             Box::new(LiquidPolicy::new()),
             Box::new(TranscodeSqueezeEvict),
+            None,
         )
     }
 
@@ -122,12 +126,14 @@ impl LiquidCacheService {
     /// * `ctx` - The [SessionContext] to use
     /// * `max_cache_bytes` - The maximum number of bytes to cache in memory
     /// * `disk_cache_dir` - The directory to store the disk cache
+    /// * `io_mode` - Whether reads and writes should go through the OS page cache
     pub fn new(
         ctx: SessionContext,
         max_cache_bytes: Option<usize>,
         disk_cache_dir: Option<PathBuf>,
         cache_policy: Box<dyn CachePolicy>,
         squeeze_policy: Box<dyn SqueezePolicy>,
+        io_mode: Option<IoMode>,
     ) -> anyhow::Result<Self> {
         let disk_cache_dir = match disk_cache_dir {
             Some(dir) => dir,
@@ -137,6 +143,10 @@ impl LiquidCacheService {
                 dir
             }
         };
+        let io_mode = match io_mode {
+            Some(io) => io,
+            None => IoMode::Uring,
+        };
         Ok(Self {
             inner: LiquidCacheServiceInner::new(
                 Arc::new(ctx),
@@ -144,6 +154,7 @@ impl LiquidCacheService {
                 disk_cache_dir,
                 cache_policy,
                 squeeze_policy,
+                io_mode,
             ),
         })
     }

@@ -1,5 +1,5 @@
 [workspace.package]
-version = "0.1.8"
+version = "0.1.10"
 edition = "2024"
 repository = "https://github.com/XiangpengHao/liquid-cache"
 authors = ["XiangpengHao <xiangpeng.hao@wisc.edu>"]
@@ -23,34 +23,34 @@ members = [
 resolver = "3"
 
 [workspace.dependencies]
-liquid-cache-server = { path = "src/server", version = "0.1.8" }
-liquid-cache-client = { path = "src/client", version = "0.1.8" }
-liquid-cache-parquet = { path = "src/parquet", version = "0.1.8" }
-liquid-cache-common = { path = "src/common", version = "0.1.8" }
-liquid-cache-storage = { path = "src/storage", version = "0.1.8" }
-liquid-cache-local = { path = "src/local", version = "0.1.8" }
-arrow = { version = "=55.1.0", default-features = false, features = [
+liquid-cache-server = { path = "src/server", version = "0.1.10" }
+liquid-cache-client = { path = "src/client", version = "0.1.10" }
+liquid-cache-parquet = { path = "src/parquet", version = "0.1.10" }
+liquid-cache-common = { path = "src/common", version = "0.1.10" }
+liquid-cache-storage = { path = "src/storage", version = "0.1.10" }
+liquid-cache-local = { path = "src/local", version = "0.1.10" }
+arrow = { version = "56.2.0", default-features = false, features = [
 	"prettyprint",
 ] }
-arrow-flight = { version = "=55.1.0", features = ["flight-sql-experimental"] }
-arrow-schema = { version = "=55.1.0", features = ["serde"] }
-parquet = { version = "=55.1.0", features = ["async", "experimental"] }
-datafusion = { version = "47.0.0" }
-datafusion-proto = { version = "47.0.0" }
+arrow-flight = { version = "56.2.0", features = ["flight-sql-experimental"] }
+arrow-schema = { version = "56.2.0", features = ["serde"] }
+parquet = { version = "56.2.0", features = ["async", "experimental"] }
+datafusion = { version = "50.1.0" }
+datafusion-proto = { version = "50.1.0" }
 async-trait = "0.1.89"
 futures = { version = "0.3.31", default-features = false, features = ["std"] }
 tokio = { version = "1.47.1", features = ["rt-multi-thread"] }
-log = "0.4.27"
-tonic = { version = "0.12" }
-url = "2.5.4"
+log = "0.4.28"
+tonic = { version = "0.13" }
+url = "2.5.7"
 bytes = { version = "1.10.1", default-features = false }
 ahash = "0.8.12"
 prost = "0.13.5"
-object_store = { version = "0.12.3", default-features = false }
+object_store = { version = "0.12.4", default-features = false }
 serde = { version = "1.0", default-features = false, features = ["derive"] }
 serde_json = { version = "1.0", default-features = false, features = ["std"] }
-tempfile = "3.20.0"
-uuid = { version = "1.18.0", features = ["v4"] }
+tempfile = "3.23.0"
+uuid = { version = "1.18.1", features = ["v4"] }
 fastrace = "0.7"
 fastrace-tonic = "0.1"
 congee = "0.4.1"

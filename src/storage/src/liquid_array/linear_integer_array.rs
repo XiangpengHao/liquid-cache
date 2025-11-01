@@ -17,6 +17,7 @@ use arrow::array::{
 };
 use arrow::buffer::{BooleanBuffer, ScalarBuffer};
 use arrow::compute::kernels::filter;
+use arrow_schema::DataType;
 use bytes::Bytes;
 use num_traits::{AsPrimitive, Bounded, FromPrimitive};
 
@@ -291,6 +292,10 @@ where
 {
     fn as_any(&self) -> &dyn Any {
         self
+    }
+
+    fn original_arrow_data_type(&self) -> DataType {
+        T::DATA_TYPE.clone()
     }
 
     fn get_array_memory_size(&self) -> usize {
@@ -600,6 +605,13 @@ mod tests {
         let result = filtered.to_arrow_array();
         let expected = PrimitiveArray::<Int32Type>::from(vec![Some(1), Some(3), Some(5)]);
         assert_eq!(result.as_ref(), &expected);
+    }
+
+    #[test]
+    fn test_original_arrow_data_type_returns_int32() {
+        let arr = PrimitiveArray::<Int32Type>::from(vec![Some(1), Some(2)]);
+        let linear = LiquidLinearI32Array::from_arrow_array(arr);
+        assert_eq!(linear.original_arrow_data_type(), DataType::Int32);
     }
 
     #[test]

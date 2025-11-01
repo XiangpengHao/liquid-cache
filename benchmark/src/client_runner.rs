@@ -59,8 +59,7 @@ impl BenchmarkRunner {
 
         setup_observability(
             benchmark.benchmark_name(),
-            opentelemetry::trace::SpanKind::Client,
-            common.openobserve_auth.as_deref(),
+            common.jaeger_endpoint.as_deref(),
         );
 
         let ctx = benchmark.setup_context().await?;
@@ -84,6 +83,8 @@ impl BenchmarkRunner {
             let mut query_result = QueryResult::new(query.clone());
 
             for it in 0..common.iteration {
+                let iteration = it + 1;
+                crate::tracepoints::iteration_start(query.id(), iteration);
                 let iteration_result = Self::run_single_iteration(
                     &benchmark,
                     &ctx,

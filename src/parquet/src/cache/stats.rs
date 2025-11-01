@@ -2,7 +2,7 @@ use super::LiquidCache;
 use crate::{cache::id::ParquetArrayID, sync::Arc};
 use arrow::array::{ArrayBuilder, RecordBatch, StringBuilder, UInt64Builder};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
-use liquid_cache_storage::cache::cached_data::CachedBatch;
+use liquid_cache_storage::cache::CachedBatch;
 use parquet::{
     arrow::ArrowWriter, basic::Compression, errors::ParquetError,
     file::properties::WriterProperties,
@@ -129,15 +129,15 @@ impl LiquidCache {
                 CachedBatch::MemoryArrow(array) => Some(array.len() as u64),
                 CachedBatch::MemoryLiquid(array) => Some(array.len() as u64),
                 CachedBatch::MemoryHybridLiquid(array) => Some(array.len() as u64),
-                CachedBatch::DiskLiquid => None,
-                CachedBatch::DiskArrow => None, // We'd need to read it to get the count
+                CachedBatch::DiskLiquid(_) => None,
+                CachedBatch::DiskArrow(_) => None, // We'd need to read it to get the count
             };
             let cache_type = match cached_batch {
                 CachedBatch::MemoryArrow(_) => "InMemory",
                 CachedBatch::MemoryLiquid(_) => "LiquidMemory",
                 CachedBatch::MemoryHybridLiquid(_) => "LiquidHybrid",
-                CachedBatch::DiskLiquid => "OnDiskLiquid",
-                CachedBatch::DiskArrow => "OnDiskArrow",
+                CachedBatch::DiskLiquid(_) => "OnDiskLiquid",
+                CachedBatch::DiskArrow(_) => "OnDiskArrow",
             };
             let reference_count = cached_batch.reference_count();
             let entry_id = ParquetArrayID::from(*entry_id);
@@ -167,7 +167,7 @@ impl LiquidCache {
 mod tests {
     use std::io::Read;
 
-    use crate::cache::id::BatchID;
+    use crate::cache::{IoMode, id::BatchID};
 
     use super::*;
     use arrow::{
@@ -179,8 +179,8 @@ mod tests {
     use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
     use tempfile::NamedTempFile;
 
-    #[test]
-    fn test_stats_writer() -> Result<(), ParquetError> {
+    #[tokio::test]
+    async fn test_stats_writer() -> Result<(), ParquetError> {
         let tmp_dir = tempfile::tempdir().unwrap();
         let cache = LiquidCache::new(
             1024,
@@ -188,6 +188,7 @@ mod tests {
             tmp_dir.path().to_path_buf(),
             Box::new(LiquidPolicy::new()),
             Box::new(Evict),
+            IoMode::Uring,
         );
         let array = Arc::new(arrow::array::Int32Array::from(vec![1, 2, 3]));
         let num_rows = 8 * 8 * 8 * 8;
@@ -203,11 +204,13 @@ mod tests {
             for rg in 0..8 {
                 let row_group = file.row_group(rg);
                 for col in 0..8 {
-                    let column = row_group
-                        .create_column(col, Arc::new(Field::new("test", DataType::Int32, false)));
+                    let column = row_group.create_column(
+                        col,
+                        Arc::new(Field::new(format!("test_{col}"), DataType::Int32, false)),
+                    );
                     for batch in 0..8 {
                         let batch_id = BatchID::from_raw(batch);
-                        assert!(column.insert(batch_id, array.clone()).is_ok());
+                        assert!(column.insert(batch_id, array.clone()).await.is_ok());
                         row_group_id_sum += rg;
                         column_id_sum += col;
                         row_start_id_sum += *batch_id as u64 * cache.batch_size() as u64;
@@ -215,7 +218,7 @@ mod tests {
                         memory_size_sum += array.get_array_memory_size();
 
                         if batch.is_multiple_of(2) {
-                            _ = column.get_arrow_array_test_only(batch_id).unwrap();
+                            _ = column.get_arrow_array_test_only(batch_id).await.unwrap();
                         }
                     }
                 }

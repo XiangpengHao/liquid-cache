@@ -5,10 +5,11 @@ use crate::{
 use anyhow::Result;
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::prelude::{SessionConfig, SessionContext};
+use liquid_cache_common::IoMode;
 use liquid_cache_local::LiquidCacheLocalBuilder;
 use liquid_cache_parquet::{LiquidCacheRef, extract_execution_metrics};
 use liquid_cache_storage::cache::squeeze_policies::{Evict, TranscodeEvict, TranscodeSqueezeEvict};
-use liquid_cache_storage::cache_policies::FifoPolicy;
+use liquid_cache_storage::cache_policies::LiquidPolicy;
 use log::info;
 use serde::Serialize;
 use std::{
@@ -17,6 +18,51 @@ use std::{
     sync::Arc,
     time::Instant,
 };
+
+struct DiskIoGuard {
+    system: sysinfo::System,
+    pid: sysinfo::Pid,
+    start_read_total: u64,
+    start_written_total: u64,
+}
+
+impl DiskIoGuard {
+    fn new() -> Self {
+        let mut system = sysinfo::System::new();
+        let pid = sysinfo::get_current_pid().unwrap();
+        system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::Some(&[pid]),
+            true,
+            sysinfo::ProcessRefreshKind::nothing().with_disk_usage(),
+        );
+        let p = system.process(pid).unwrap();
+        let du = p.disk_usage();
+        Self {
+            system,
+            pid,
+            start_read_total: du.total_read_bytes,
+            start_written_total: du.total_written_bytes,
+        }
+    }
+
+    fn stop(mut self) -> (u64, u64) {
+        self.system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::Some(&[self.pid]),
+            true,
+            sysinfo::ProcessRefreshKind::nothing().with_disk_usage(),
+        );
+        if let Some(p) = self.system.process(self.pid) {
+            let du = p.disk_usage();
+            (
+                du.total_read_bytes.saturating_sub(self.start_read_total),
+                du.total_written_bytes
+                    .saturating_sub(self.start_written_total),
+            )
+        } else {
+            (0, 0)
+        }
+    }
+}
 
 #[derive(Clone, Debug, Default, Copy, PartialEq, Eq, Serialize)]
 pub enum InProcessBenchmarkMode {
@@ -57,6 +103,7 @@ pub struct InProcessBenchmarkRunner {
     pub flamegraph_dir: Option<PathBuf>,
     pub query_filter: Option<usize>,
     pub cache_dir: Option<PathBuf>,
+    pub io_mode: IoMode,
 }
 
 impl Default for InProcessBenchmarkRunner {
@@ -76,6 +123,7 @@ impl InProcessBenchmarkRunner {
             flamegraph_dir: None,
             query_filter: None,
             cache_dir: None,
+            io_mode: IoMode::default(),
         }
     }
 
@@ -119,6 +167,12 @@ impl InProcessBenchmarkRunner {
         self
     }
 
+    pub fn with_io_mode(mut self, io_mode: IoMode) -> Self {
+        self.io_mode = io_mode;
+        self
+    }
+
+    #[fastrace::trace]
     async fn setup_context(
         &self,
         manifest: &BenchmarkManifest,
@@ -134,7 +188,7 @@ impl InProcessBenchmarkRunner {
             if let Some(partitions) = self.partitions {
                 session_config.options_mut().execution.target_partitions = partitions;
             }
-            session_config.options_mut().execution.batch_size = 8192 * 2;
+            // session_config.options_mut().execution.batch_size = 8192 * 2;
         }
 
         let cache_size = self
@@ -169,7 +223,7 @@ impl InProcessBenchmarkRunner {
                 let v = LiquidCacheLocalBuilder::new()
                     .with_max_cache_bytes(cache_size)
                     .with_cache_dir(cache_dir)
-                    .with_cache_policy(Box::new(FifoPolicy::new()))
+                    .with_cache_policy(Box::new(LiquidPolicy::new()))
                     .with_squeeze_policy(Box::new(Evict))
                     .build(session_config)?;
                 (v.0, Some(v.1))
@@ -178,8 +232,9 @@ impl InProcessBenchmarkRunner {
                 let v = LiquidCacheLocalBuilder::new()
                     .with_max_cache_bytes(cache_size)
                     .with_cache_dir(cache_dir)
-                    .with_cache_policy(Box::new(FifoPolicy::new()))
+                    .with_cache_policy(Box::new(LiquidPolicy::new()))
                     .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+                    .with_io_mode(self.io_mode)
                     .build(session_config)?;
                 (v.0, Some(v.1))
             }
@@ -187,8 +242,9 @@ impl InProcessBenchmarkRunner {
                 let v = LiquidCacheLocalBuilder::new()
                     .with_max_cache_bytes(cache_size)
                     .with_cache_dir(cache_dir)
-                    .with_cache_policy(Box::new(FifoPolicy::new()))
+                    .with_cache_policy(Box::new(LiquidPolicy::new()))
                     .with_squeeze_policy(Box::new(TranscodeEvict))
+                    .with_io_mode(self.io_mode)
                     .build(session_config)?;
                 (v.0, Some(v.1))
             }
@@ -202,8 +258,12 @@ impl InProcessBenchmarkRunner {
 
         // Register tables from manifest
         for (table_name, table_path_str) in &manifest.tables {
-            ctx.register_parquet(table_name, table_path_str, Default::default())
-                .await?;
+            ctx.register_parquet(
+                format!("\"{table_name}\""),
+                table_path_str,
+                Default::default(),
+            )
+            .await?;
             info!("Registered table '{table_name}' from {table_path_str}");
         }
 
@@ -254,6 +314,7 @@ impl InProcessBenchmarkRunner {
         Ok(())
     }
 
+    #[fastrace::trace]
     async fn run_single_iteration(
         &self,
         ctx: &Arc<SessionContext>,
@@ -281,8 +342,7 @@ impl InProcessBenchmarkRunner {
             None
         };
 
-        let s = sysinfo::System::new_all();
-        let process = s.process(sysinfo::get_current_pid().unwrap()).unwrap();
+        let io_guard = DiskIoGuard::new();
 
         let now = Instant::now();
         let starting_timestamp = bench_start_time.elapsed();
@@ -298,9 +358,7 @@ impl InProcessBenchmarkRunner {
         };
         let elapsed = now.elapsed();
 
-        let disk_usage = process.disk_usage();
-        let disk_read: u64 = disk_usage.read_bytes;
-        let disk_written: u64 = disk_usage.written_bytes;
+        let (disk_read, disk_written) = io_guard.stop();
 
         let cache_stats = cache.as_ref().map(|cache| cache.storage().stats());
 
@@ -367,8 +425,9 @@ impl InProcessBenchmarkRunner {
             let mut query_result = QueryResult::new(query.clone());
 
             for it in 0..self.iteration {
+                crate::tracepoints::iteration_start(query.id(), it);
                 let iteration_result = self
-                    .run_single_iteration(&ctx, query, bench_start_time, cache.clone(), it + 1)
+                    .run_single_iteration(&ctx, query, bench_start_time, cache.clone(), it)
                     .await?;
 
                 query_result.add(iteration_result);

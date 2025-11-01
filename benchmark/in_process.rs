@@ -1,8 +1,10 @@
 use anyhow::Result;
 use clap::Parser;
+use fastrace::prelude::*;
 use liquid_cache_benchmarks::{
     BenchmarkManifest, InProcessBenchmarkMode, InProcessBenchmarkRunner, setup_observability,
 };
+use liquid_cache_common::IoMode;
 use mimalloc::MiMalloc;
 use serde::Serialize;
 use std::path::PathBuf;
@@ -52,6 +54,14 @@ struct InProcessBenchmark {
     /// Directory to save the cache
     #[arg(long = "cache-dir")]
     pub cache_dir: Option<PathBuf>,
+
+    /// Jaeger OTLP gRPC endpoint (for example: http://localhost:4317)
+    #[arg(long = "jaeger-endpoint")]
+    pub jaeger_endpoint: Option<String>,
+
+    /// IO mode, available options: uring, uring-direct, std-blocking, tokio, std-spawn-blocking
+    #[arg(long = "io-mode", default_value = "uring-blocking")]
+    io_mode: IoMode,
 }
 
 impl InProcessBenchmark {
@@ -67,7 +77,8 @@ impl InProcessBenchmark {
             .with_max_cache_mb(self.max_cache_mb)
             .with_flamegraph_dir(self.flamegraph_dir.clone())
             .with_cache_dir(self.cache_dir.clone())
-            .with_query_filter(self.query_index);
+            .with_query_filter(self.query_index)
+            .with_io_mode(self.io_mode);
 
         runner.run(manifest, self, output).await?;
         Ok(())
@@ -76,8 +87,12 @@ impl InProcessBenchmark {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    setup_observability("inprocess", opentelemetry::trace::SpanKind::Client, None);
     let benchmark = InProcessBenchmark::parse();
+    setup_observability("inprocess", benchmark.jaeger_endpoint.as_deref());
+    let root = Span::root("worker-loop", SpanContext::random());
+    let _guard = root.set_local_parent();
+
     benchmark.run().await?;
+    fastrace::flush();
     Ok(())
 }

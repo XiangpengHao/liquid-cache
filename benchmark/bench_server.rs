@@ -2,6 +2,7 @@ use arrow_flight::flight_service_server::FlightServiceServer;
 use clap::Parser;
 use fastrace_tonic::FastraceServerLayer;
 use liquid_cache_benchmarks::{BenchmarkMode, setup_observability};
+use liquid_cache_common::IoMode;
 use liquid_cache_server::{LiquidCacheService, run_admin_server};
 use liquid_cache_storage::cache_policies::LiquidPolicy;
 use log::info;
@@ -43,19 +44,19 @@ struct CliArgs {
     #[arg(long = "static-dir", default_value = "static")]
     static_dir: PathBuf,
 
-    /// Openobserve auth token
-    #[arg(long)]
-    openobserve_auth: Option<String>,
+    /// Jaeger OTLP gRPC endpoint (for example: http://localhost:4317)
+    #[arg(long = "jaeger-endpoint")]
+    jaeger_endpoint: Option<String>,
+
+    /// IO mode, available options: uring, uring-direct, std-blocking, tokio, std-spawn-blocking
+    #[arg(long = "io-mode", default_value = "uring")]
+    io_mode: IoMode,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = CliArgs::parse();
-    setup_observability(
-        "liquid-cache-server",
-        opentelemetry::trace::SpanKind::Server,
-        args.openobserve_auth.as_deref(),
-    );
+    setup_observability("liquid-cache-server", args.jaeger_endpoint.as_deref());
 
     let max_cache_bytes = args.max_cache_mb.map(|size| size * 1024 * 1024);
 
@@ -78,6 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.disk_cache_dir.clone(),
         Box::new(LiquidPolicy::new()),
         squeeze_policy,
+        Some(args.io_mode),
     )?;
 
     let liquid_cache_server = Arc::new(liquid_cache_server);

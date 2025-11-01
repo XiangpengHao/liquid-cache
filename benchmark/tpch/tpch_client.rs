@@ -2,7 +2,9 @@ use clap::Parser;
 use datafusion::prelude::SessionConfig;
 use datafusion::{arrow::array::RecordBatch, error::Result, prelude::SessionContext};
 use liquid_cache_benchmarks::BenchmarkRunner;
-use liquid_cache_benchmarks::{Benchmark, BenchmarkManifest, ClientBenchmarkArgs, run_query, tpch};
+use liquid_cache_benchmarks::{
+    Benchmark, BenchmarkManifest, ClientBenchmarkArgs, run_query, utils::check_tpch_result,
+};
 use liquid_cache_client::LiquidCacheBuilder;
 use log::info;
 use mimalloc::MiMalloc;
@@ -86,7 +88,7 @@ impl Benchmark for TpchBenchmark {
         results: &[RecordBatch],
     ) {
         if let Some(answer_dir) = &self.common_args.answer_dir {
-            tpch::check_result_against_answer(results, answer_dir, query.id());
+            check_tpch_result(results, answer_dir, query.id());
             info!("Query {} passed validation", query.id());
         }
     }

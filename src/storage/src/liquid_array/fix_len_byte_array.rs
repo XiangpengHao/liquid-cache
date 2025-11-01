@@ -100,6 +100,10 @@ impl LiquidArray for LiquidFixedLenByteArray {
         self.to_arrow_array()
     }
 
+    fn original_arrow_data_type(&self) -> DataType {
+        DataType::from(&self.arrow_type)
+    }
+
     fn filter(&self, selection: &BooleanBuffer) -> LiquidArrayRef {
         let values = self.values.clone();
         let keys = self.keys.clone();
@@ -503,6 +507,19 @@ mod tests {
                 assert_eq!(original_array.value(i), roundtrip_array.value(i));
             }
         }
+    }
+
+    #[test]
+    fn test_original_arrow_data_type_returns_decimal128() {
+        let data_type = DataType::Decimal128(15, 3);
+        let original_array = gen_test_decimal_array::<Decimal128Type>(data_type);
+        let (_compressor, liquid_array) =
+            LiquidFixedLenByteArray::train_from_decimal_array(&original_array);
+
+        assert_eq!(
+            liquid_array.original_arrow_data_type(),
+            DataType::Decimal128(15, 3)
+        );
     }
 
     #[test]

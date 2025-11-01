@@ -79,58 +79,52 @@ expression: displayable.tree_render().to_string()
 │(n_nationkey = s_nationkey)│              │                                           │(n_nationkey = s_nationkey)│              │
 └─────────────┬─────────────┘              │                                           └─────────────┬─────────────┘              │
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-│   LiquidCacheClientExec   ││      RepartitionExec      │                             │   LiquidCacheClientExec   ││       ProjectionExec      │
+│   LiquidCacheClientExec   ││      RepartitionExec      │                             │   LiquidCacheClientExec   ││      RepartitionExec      │
 │    --------------------   ││    --------------------   │                             │    --------------------   ││    --------------------   │
-│          server:          ││ partition_count(in->out): │                             │          server:          ││        ps_availqty:       │
-│  http://localhost:50051,  ││           1 -> 8          │                             │  http://localhost:50051,  ││        ps_availqty        │
+│          server:          ││ partition_count(in->out): │                             │          server:          ││ partition_count(in->out): │
+│  http://localhost:50051,  ││           1 -> 8          │                             │  http://localhost:50051,  ││           1 -> 8          │
 │      object_stores=[]     ││                           │                             │      object_stores=[]     ││                           │
-│                           ││    partitioning_scheme:   │                             │                           ││        ps_partkey:        │
-│                           ││     RoundRobinBatch(8)    │                             │                           ││         ps_partkey        │
+│                           ││    partitioning_scheme:   │                             │                           ││    partitioning_scheme:   │
+│                           ││     RoundRobinBatch(8)    │                             │                           ││     RoundRobinBatch(8)    │
+└─────────────┬─────────────┘└─────────────┬─────────────┘                             └─────────────┬─────────────┘└─────────────┬─────────────┘
+┌─────────────┴─────────────┐┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+│       DataSourceExec      ││       ProjectionExec      │                             │       DataSourceExec      ││       ProjectionExec      │
+│    --------------------   ││    --------------------   │                             │    --------------------   ││    --------------------   │
+│          files: 1         ││        ps_availqty:       │                             │          files: 1         ││        ps_availqty:       │
+│      format: parquet      ││        ps_availqty        │                             │      format: parquet      ││        ps_availqty        │
 │                           ││                           │                             │                           ││                           │
-│                           ││                           │                             │                           ││       ps_supplycost:      │
-│                           ││                           │                             │                           ││       ps_supplycost       │
+│         predicate:        ││       ps_supplycost:      │                             │         predicate:        ││        ps_partkey:        │
+│      n_name = GERMANY     ││       ps_supplycost       │                             │      n_name = GERMANY     ││         ps_partkey        │
+│                           ││                           │                             │                           ││                           │
+│                           ││        s_nationkey:       │                             │                           ││       ps_supplycost:      │
+│                           ││        s_nationkey        │                             │                           ││       ps_supplycost       │
 │                           ││                           │                             │                           ││                           │
 │                           ││                           │                             │                           ││        s_nationkey:       │
 │                           ││                           │                             │                           ││        s_nationkey        │
-└─────────────┬─────────────┘└─────────────┬─────────────┘                             └─────────────┬─────────────┘└─────────────┬─────────────┘
-┌─────────────┴─────────────┐┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-│       DataSourceExec      ││       ProjectionExec      │                             │       DataSourceExec      ││    CoalesceBatchesExec    │
-│    --------------------   ││    --------------------   │                             │    --------------------   ││    --------------------   │
-│          files: 1         ││        ps_availqty:       │                             │          files: 1         ││     target_batch_size:    │
-│      format: parquet      ││        ps_availqty        │                             │      format: parquet      ││           16384           │
-│                           ││                           │                             │                           ││                           │
-│         predicate:        ││       ps_supplycost:      │                             │         predicate:        ││                           │
-│      n_name = GERMANY     ││       ps_supplycost       │                             │      n_name = GERMANY     ││                           │
-│                           ││                           │                             │                           ││                           │
-│                           ││        s_nationkey:       │                             │                           ││                           │
-│                           ││        s_nationkey        │                             │                           ││                           │
 └───────────────────────────┘└─────────────┬─────────────┘                             └───────────────────────────┘└─────────────┬─────────────┘
                              ┌─────────────┴─────────────┐                                                          ┌─────────────┴─────────────┐
-                             │    CoalesceBatchesExec    │                                                          │        HashJoinExec       │
+                             │    CoalesceBatchesExec    │                                                          │    CoalesceBatchesExec    │
                              │    --------------------   │                                                          │    --------------------   │
-                             │     target_batch_size:    │                                                          │            on:            ├──────────────┐
-                             │           16384           │                                                          │  (s_suppkey = ps_suppkey) │              │
-                             └─────────────┬─────────────┘                                                          └─────────────┬─────────────┘              │
-                             ┌─────────────┴─────────────┐                                                          ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-                             │        HashJoinExec       │                                                          │   LiquidCacheClientExec   ││   LiquidCacheClientExec   │
-                             │    --------------------   │                                                          │    --------------------   ││    --------------------   │
-                             │            on:            ├──────────────┐                                           │          server:          ││          server:          │
-                             │  (s_suppkey = ps_suppkey) │              │                                           │  http://localhost:50051,  ││  http://localhost:50051,  │
-                             │                           │              │                                           │      object_stores=[]     ││      object_stores=[]     │
-                             └─────────────┬─────────────┘              │                                           └─────────────┬─────────────┘└─────────────┬─────────────┘
+                             │     target_batch_size:    │                                                          │     target_batch_size:    │
+                             │           16384           │                                                          │           16384           │
+                             └─────────────┬─────────────┘                                                          └─────────────┬─────────────┘
+                             ┌─────────────┴─────────────┐                                                          ┌─────────────┴─────────────┐
+                             │        HashJoinExec       │                                                          │        HashJoinExec       │
+                             │    --------------------   │                                                          │    --------------------   │
+                             │            on:            ├──────────────┐                                           │            on:            ├──────────────┐
+                             │  (s_suppkey = ps_suppkey) │              │                                           │  (s_suppkey = ps_suppkey) │              │
+                             └─────────────┬─────────────┘              │                                           └─────────────┬─────────────┘              │
                              ┌─────────────┴─────────────┐┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-                             │   LiquidCacheClientExec   ││   LiquidCacheClientExec   │                             │       DataSourceExec      ││      RepartitionExec      │
+                             │   LiquidCacheClientExec   ││   LiquidCacheClientExec   │                             │   LiquidCacheClientExec   ││   LiquidCacheClientExec   │
                              │    --------------------   ││    --------------------   │                             │    --------------------   ││    --------------------   │
-                             │          server:          ││          server:          │                             │          files: 1         ││ partition_count(in->out): │
-                             │  http://localhost:50051,  ││  http://localhost:50051,  │                             │      format: parquet      ││           1 -> 8          │
-                             │      object_stores=[]     ││      object_stores=[]     │                             │                           ││                           │
-                             │                           ││                           │                             │                           ││    partitioning_scheme:   │
-                             │                           ││                           │                             │                           ││     RoundRobinBatch(8)    │
-                             └─────────────┬─────────────┘└─────────────┬─────────────┘                             └───────────────────────────┘└─────────────┬─────────────┘
-                             ┌─────────────┴─────────────┐┌─────────────┴─────────────┐                                                          ┌─────────────┴─────────────┐
-                             │       DataSourceExec      ││       DataSourceExec      │                                                          │       DataSourceExec      │
-                             │    --------------------   ││    --------------------   │                                                          │    --------------------   │
-                             │          files: 1         ││          files: 1         │                                                          │          files: 1         │
-                             │      format: parquet      ││      format: parquet      │                                                          │      format: parquet      │
-                             │                           ││                           │                                                          │      predicate: true      │
-                             └───────────────────────────┘└───────────────────────────┘                                                          └───────────────────────────┘
+                             │          server:          ││          server:          │                             │          server:          ││          server:          │
+                             │  http://localhost:50051,  ││  http://localhost:50051,  │                             │  http://localhost:50051,  ││  http://localhost:50051,  │
+                             │      object_stores=[]     ││      object_stores=[]     │                             │      object_stores=[]     ││      object_stores=[]     │
+                             └─────────────┬─────────────┘└─────────────┬─────────────┘                             └─────────────┬─────────────┘└─────────────┬─────────────┘
+                             ┌─────────────┴─────────────┐┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+                             │       DataSourceExec      ││       DataSourceExec      │                             │       DataSourceExec      ││       DataSourceExec      │
+                             │    --------------------   ││    --------------------   │                             │    --------------------   ││    --------------------   │
+                             │          files: 1         ││          files: 1         │                             │          files: 1         ││          files: 1         │
+                             │      format: parquet      ││      format: parquet      │                             │      format: parquet      ││      format: parquet      │
+                             │      predicate: true      ││      predicate: true      │                             │      predicate: true      ││      predicate: true      │
+                             └───────────────────────────┘└───────────────────────────┘                             └───────────────────────────┘└───────────────────────────┘

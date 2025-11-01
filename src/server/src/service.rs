@@ -5,10 +5,11 @@ use datafusion::{
     physical_plan::{ExecutionPlan, display::DisplayableExecutionPlan},
     prelude::SessionContext,
 };
-use liquid_cache_common::rpc::ExecutionMetricsResponse;
+use liquid_cache_common::{IoMode, rpc::ExecutionMetricsResponse};
 use liquid_cache_parquet::{
     cache::{LiquidCache, LiquidCacheRef},
-    extract_execution_metrics, rewrite_data_source_plan,
+    extract_execution_metrics,
+    optimizers::rewrite_data_source_plan,
 };
 use liquid_cache_storage::cache_policies::CachePolicy;
 use liquid_cache_storage::{ByteCache, cache::squeeze_policies::SqueezePolicy};
@@ -49,6 +50,7 @@ impl LiquidCacheServiceInner {
         disk_cache_dir: PathBuf,
         cache_policy: Box<dyn CachePolicy>,
         squeeze_policy: Box<dyn SqueezePolicy>,
+        io_mode: IoMode,
     ) -> Self {
         let batch_size = default_ctx.state().config().batch_size();
 
@@ -61,6 +63,7 @@ impl LiquidCacheServiceInner {
             liquid_cache_dir,
             cache_policy,
             squeeze_policy,
+            io_mode,
         ));
 
         Self {
@@ -216,6 +219,7 @@ mod tests {
             PathBuf::from("test"),
             Box::new(LiquidPolicy::new()),
             Box::new(TranscodeSqueezeEvict),
+            IoMode::Uring,
         );
         let url = Url::parse("file:///").unwrap();
         server

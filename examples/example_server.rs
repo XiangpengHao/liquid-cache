@@ -2,6 +2,7 @@ use arrow_flight::flight_service_server::FlightServiceServer;
 use datafusion::prelude::SessionContext;
 use liquid_cache_local::storage::cache::squeeze_policies::TranscodeSqueezeEvict;
 use liquid_cache_server::LiquidCacheService;
+use liquid_cache_server::common::IoMode;
 use liquid_cache_server::storage::cache_policies::LruPolicy;
 use tonic::transport::Server;
 
@@ -13,6 +14,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(tempfile::tempdir()?.keep()), // disk cache dir
         Box::new(LruPolicy::new()),
         Box::new(TranscodeSqueezeEvict),
+        Some(IoMode::default()),
     )?;
 
     let flight = FlightServiceServer::new(liquid_cache);

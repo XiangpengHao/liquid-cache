@@ -325,7 +325,7 @@ impl From<&Arc<dyn ExecutionPlan>> for ExecutionPlanWithStats {
 
         let mut column_statistics = Vec::new();
         for (i, cs) in plan
-            .statistics()
+            .partition_statistics(None)
             .unwrap()
             .column_statistics
             .iter()
@@ -378,8 +378,16 @@ impl From<&Arc<dyn ExecutionPlan>> for ExecutionPlanWithStats {
                 })
                 .collect(),
             statistics: Statistics {
-                num_rows: plan.statistics().unwrap().num_rows.to_string(),
-                total_byte_size: plan.statistics().unwrap().total_byte_size.to_string(),
+                num_rows: plan
+                    .partition_statistics(None)
+                    .unwrap()
+                    .num_rows
+                    .to_string(),
+                total_byte_size: plan
+                    .partition_statistics(None)
+                    .unwrap()
+                    .total_byte_size
+                    .to_string(),
                 column_statistics,
             },
             metrics: metric_values,
@@ -483,6 +491,28 @@ pub(crate) async fn add_execution_stats_handler(
     state.liquid_cache.inner().add_execution_stats(params);
     Json(ApiResponse {
         message,
+        status: "success".to_string(),
+    })
+}
+
+pub(crate) async fn start_disk_usage_monitor_handler(
+    State(state): State<Arc<AppState>>,
+) -> Json<ApiResponse> {
+    state.disk_monitor.clone().start_recording();
+    let message = "Successfully started disk usage monitoring";
+    Json(ApiResponse {
+        message: message.to_string(),
+        status: "success".to_string(),
+    })
+}
+
+pub(crate) async fn stop_disk_usage_monitor_handler(
+    State(state): State<Arc<AppState>>,
+) -> Json<ApiResponse> {
+    state.disk_monitor.clone().stop_recording();
+    let message = "Stopped disk usage monitoring";
+    Json(ApiResponse {
+        message: message.to_string(),
         status: "success".to_string(),
     })
 }

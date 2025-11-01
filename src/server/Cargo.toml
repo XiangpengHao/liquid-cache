@@ -23,10 +23,10 @@ liquid-cache-parquet = { workspace = true }
 object_store = { workspace = true, features = ["aws", "http"] }
 liquid-cache-common = { workspace = true }
 tempfile = { workspace = true }
-axum = "0.8.4"
+axum = "0.8.6"
 serde = { workspace = true }
 tower-http = { version = "0.6.6", features = ["cors"] }
-sysinfo = { version = "0.35.2", default-features = false, features = [
+sysinfo = { version = "0.37.2", default-features = false, features = [
 	"component",
 	"disk",
 	"network",
@@ -35,10 +35,11 @@ sysinfo = { version = "0.35.2", default-features = false, features = [
 ] }
 uuid = { workspace = true }
 fastrace = { workspace = true }
-pprof = { version = "0.14.1", features = ["flamegraph"] }
+pprof = { version = "0.15.0", features = ["flamegraph"] }
 anyhow = "1.0"
 liquid-cache-storage = { workspace = true }
+hdrhistogram = "7.5.4"
 
 [dev-dependencies]
-insta = { version = "1.43.1" }
+insta = { version = "1.43.2" }
 parquet = { workspace = true }

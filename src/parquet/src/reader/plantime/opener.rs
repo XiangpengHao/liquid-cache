@@ -7,10 +7,11 @@ use crate::{
         runtime::ArrowReaderBuilderBridge,
     },
 };
-use arrow_schema::{ArrowError, SchemaRef};
+use arrow_schema::SchemaRef;
 use datafusion::{
     common::exec_err,
     datasource::{
+        listing::PartitionedFile,
         physical_plan::{
             FileMeta, FileOpenFuture, FileOpener, ParquetFileMetrics,
             parquet::{PagePruningAccessPlanFilter, ParquetAccessPlan},
@@ -45,6 +46,7 @@ pub struct LiquidParquetOpener {
     reorder_filters: bool,
     liquid_cache: LiquidCacheRef,
     schema_adapter_factory: Arc<dyn SchemaAdapterFactory>,
+    span: Option<Arc<fastrace::Span>>,
 }
 
 impl LiquidParquetOpener {
@@ -63,6 +65,7 @@ impl LiquidParquetOpener {
         parquet_file_reader_factory: Arc<CachedMetaReaderFactory>,
         reorder_filters: bool,
         schema_adapter_factory: Arc<dyn SchemaAdapterFactory>,
+        span: Option<Arc<fastrace::Span>>,
     ) -> Self {
         Self {
             partition_index,
@@ -78,12 +81,17 @@ impl LiquidParquetOpener {
             parquet_file_reader_factory,
             reorder_filters,
             schema_adapter_factory,
+            span,
         }
     }
 }
 
 impl FileOpener for LiquidParquetOpener {
-    fn open(&self, file_meta: FileMeta) -> Result<FileOpenFuture, DataFusionError> {
+    fn open(
+        &self,
+        file_meta: FileMeta,
+        _file: PartitionedFile,
+    ) -> Result<FileOpenFuture, DataFusionError> {
         let file_range = file_meta.range.clone();
         let extensions = file_meta.extensions.clone();
         let file_name = file_meta.location().to_string();
@@ -117,7 +125,7 @@ impl FileOpener for LiquidParquetOpener {
         let enable_page_index = should_enable_page_index(&self.page_pruning_predicate);
         let limit = self.limit;
         let schema_adapter_factory = Arc::clone(&self.schema_adapter_factory);
-
+        let span = self.span.clone();
         Ok(Box::pin(async move {
             let mut options = ArrowReaderOptions::new().with_page_index(enable_page_index);
 
@@ -255,13 +263,16 @@ impl FileOpener for LiquidParquetOpener {
                 liquid_builder = liquid_builder.with_row_filter(row_filter);
             }
 
+            if let Some(s) = &span {
+                let span = fastrace::Span::enter_with_parent("liquid_stream", s);
+                liquid_builder = liquid_builder.with_span(span);
+            }
+
             let stream = liquid_builder.build(liquid_cache)?;
 
             let adapted = stream
-                .map_err(|e| ArrowError::ExternalError(Box::new(e)))
-                .map(move |batch| {
-                    batch.and_then(|batch| schema_mapping.map_batch(batch).map_err(Into::into))
-                });
+                .map_err(|e| DataFusionError::External(Box::new(e)))
+                .map(move |batch| batch.and_then(|batch| schema_mapping.map_batch(batch)));
 
             Ok(adapted.boxed())
         }))
