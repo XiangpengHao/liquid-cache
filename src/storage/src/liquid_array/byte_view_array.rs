@@ -1297,22 +1297,39 @@ fn try_eval_predicate_inner<B: FsstBuffer>(
     Ok(None)
 }
 
-/// An array that stores strings using the FSST view format:
+/// An array that stores strings using the FSST view format with compact offset compression:
 /// - Dictionary keys with 2-byte keys stored in memory
-/// - Offset views with 4-byte offsets and 8-byte prefixes stored in memory
+/// - Compact offset views with variable-size offsets (1, 2, or 4 bytes) and 7-byte prefixes stored in memory
 /// - FSST buffer can be stored in memory or on disk
 ///
+/// # Initialization
+///
+/// The recommended way to create a `LiquidByteViewArray` is using `from_parts()` which takes
+/// standard `OffsetView` instances and automatically converts them to compact representation:
+///
+/// ```rust,ignore
+/// let liquid_array = LiquidByteViewArray::from_parts(
+///     dictionary_keys,
+///     &offset_views,  // Vec<OffsetView> - automatically compressed to compact format
+///     fsst_buffer,
+///     arrow_type,
+///     shared_prefix,
+///     compressor,
+/// );
+/// ```
+///
 /// Data access flow:
-/// 1. Use dictionary key to index into offset_views buffer
-/// 2. Use offset from offset_views to read the corresponding bytes from FSST buffer
-/// 3. Use prefix from offset_views for quick comparisons to avoid decompression when possible
+/// 1. Use dictionary key to index into compact offset views buffer
+/// 2. Reconstruct actual offset from linear regression (predicted + residual)
+/// 3. Use prefix from offset views for quick comparisons to avoid decompression when possible
 /// 4. Decompress bytes from FSST buffer to get the full value when needed
 #[derive(Clone)]
 pub struct LiquidByteViewArray<B: FsstBuffer> {
     /// Dictionary keys (u16) - one per array element, using Arrow's UInt16Array for zero-copy
     dictionary_keys: UInt16Array,
-    /// Offset views containing offset (u32) and prefix (8 bytes) - one per unique value
-    /// Stored as `Arc<[CompactOffsetView]>` for cheap clones when passing across layers (e.g., soak/squeeze).
+    /// Compact offset views containing variable-size offset residuals (1, 2, or 4 bytes)
+    /// and 7-byte prefixes - one per unique value
+    /// Automatically created from standard OffsetView instances via `from_parts()` method.
     compact_offset_views: CompactOffsetViewGroup,
     // offset_views: Arc<[OffsetView]>,
     /// FSST-compressed buffer (can be in memory or on disk)
