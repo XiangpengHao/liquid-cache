@@ -1,75 +1,169 @@
 use std::{
-    collections::VecDeque,
     fs::OpenOptions,
     future::Future,
     ops::Range,
     os::fd::AsRawFd,
     path::PathBuf,
     pin::Pin,
-    sync::{Mutex, MutexGuard, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
     task::{Context, Poll},
 };
 
 use ahash::{AHashMap, AHashSet};
 use bytes::Bytes;
+use crossbeam_queue::ArrayQueue;
+use crossbeam_utils::Backoff;
 use io_uring::{IoUring, cqueue};
 
 use super::tasks::{FileOpenTask, FileReadTask, FileWriteTask, IoTask};
 use super::thread_pool_uring::URING_NUM_ENTRIES;
 
+const COMPLETION_PARTITIONS: usize = 8;
+
+struct CompletionStore {
+    partitions: [Mutex<AHashMap<u16, cqueue::Entry>>; COMPLETION_PARTITIONS],
+}
+
+impl CompletionStore {
+    fn new() -> CompletionStore {
+        CompletionStore {
+            partitions: std::array::from_fn(|_| {
+                Mutex::new(AHashMap::with_capacity(
+                    (URING_NUM_ENTRIES as usize / COMPLETION_PARTITIONS).max(1),
+                ))
+            }),
+        }
+    }
+
+    #[inline]
+    fn partition(token: u16) -> usize {
+        (token as usize) % COMPLETION_PARTITIONS
+    }
+
+    #[inline]
+    fn insert(&self, token: u16, cqe: cqueue::Entry) {
+        let idx = Self::partition(token);
+        let mut guard = self.partitions[idx]
+            .lock()
+            .expect("completion partition mutex poisoned");
+        let replaced = guard.insert(token, cqe);
+        debug_assert!(
+            replaced.is_none(),
+            "completion map already contained token {token}"
+        );
+    }
+
+    #[inline]
+    fn take(&self, token: u16) -> Option<cqueue::Entry> {
+        let idx = Self::partition(token);
+        let mut guard = self.partitions[idx]
+            .lock()
+            .expect("completion partition mutex poisoned");
+        guard.remove(&token)
+    }
+}
+
 struct SharedRing {
-    inner: Mutex<SharedRingInner>,
+    ring: Mutex<SharedRingInner>,
+    completions: CompletionStore,
+    free_tokens: Arc<ArrayQueue<u16>>,
 }
 
 impl SharedRing {
     fn new() -> SharedRing {
         let ring = IoUring::builder()
+            .setup_sqpoll(5000)
             .build(URING_NUM_ENTRIES)
             .expect("Failed to build shared io-uring instance");
+        let free_tokens = Arc::new(ArrayQueue::new(URING_NUM_ENTRIES as usize));
+        for idx in 0..URING_NUM_ENTRIES {
+            free_tokens
+                .push(idx as u16)
+                .expect("token queue capacity exceeded during initialization");
+        }
         SharedRing {
-            inner: Mutex::new(SharedRingInner::from_ring(ring)),
+            ring: Mutex::new(SharedRingInner::from_ring(ring)),
+            completions: CompletionStore::new(),
+            free_tokens,
         }
     }
 
-    #[inline]
-    fn lock(&self) -> MutexGuard<'_, SharedRingInner> {
-        self.inner.lock().expect("shared io-uring mutex poisoned")
+    fn acquire_token(&self) -> Option<u16> {
+        if let Some(token) = self.free_tokens.pop() {
+            return Some(token);
+        }
+
+        let mut guard = self.ring.lock().expect("shared io-uring mutex poisoned");
+        guard.drain_completions(&self.completions, &self.free_tokens);
+        drop(guard);
+
+        self.free_tokens.pop()
+    }
+
+    fn submit_task(&self, task: &mut dyn IoTask) -> Option<u16> {
+        let token = self.acquire_token()?;
+
+        let mut guard = self.ring.lock().expect("shared io-uring mutex poisoned");
+        guard.submit_task(task, token);
+
+        Some(token)
+    }
+
+    fn take_completion(&self, token: u16) -> Option<cqueue::Entry> {
+        if let Some(cqe) = self.completions.take(token) {
+            self.free_tokens
+                .push(token)
+                .expect("token queue capacity exceeded while releasing completion");
+            return Some(cqe);
+        }
+
+        let mut guard = self.ring.lock().expect("shared io-uring mutex poisoned");
+        guard.drain_completions(&self.completions, &self.free_tokens);
+        drop(guard);
+
+        if let Some(cqe) = self.completions.take(token) {
+            self.free_tokens
+                .push(token)
+                .expect("token queue capacity exceeded while releasing completion");
+            Some(cqe)
+        } else {
+            None
+        }
+    }
+
+    fn drain_completions(&self) {
+        let mut guard = self.ring.lock().expect("shared io-uring mutex poisoned");
+        guard.drain_completions(&self.completions, &self.free_tokens);
+    }
+
+    fn abandon_submission(&self, token: u16) {
+        if self.completions.take(token).is_some() {
+            self.free_tokens
+                .push(token)
+                .expect("token queue capacity exceeded while abandoning completion");
+            return;
+        }
+
+        if let Ok(mut guard) = self.ring.lock() {
+            guard.mark_abandoned(token);
+        }
     }
 }
 
 struct SharedRingInner {
     ring: IoUring,
-    free_tokens: VecDeque<u16>,
-    completions: AHashMap<u16, cqueue::Entry>,
     abandoned: AHashSet<u16>,
 }
 
 impl SharedRingInner {
     fn from_ring(ring: IoUring) -> SharedRingInner {
-        let free_tokens = (0..URING_NUM_ENTRIES)
-            .map(|idx| idx as u16)
-            .collect::<VecDeque<_>>();
         SharedRingInner {
             ring,
-            free_tokens,
-            completions: AHashMap::with_capacity(URING_NUM_ENTRIES as usize),
             abandoned: AHashSet::with_capacity(URING_NUM_ENTRIES as usize),
         }
     }
 
-    #[inline]
-    fn acquire_token(&mut self) -> Option<u16> {
-        if let Some(token) = self.free_tokens.pop_front() {
-            Some(token)
-        } else {
-            self.drain_completions();
-            self.free_tokens.pop_front()
-        }
-    }
-
-    fn submit_task(&mut self, task: &mut dyn IoTask) -> Option<u16> {
-        let token = self.acquire_token()?;
-
+    fn submit_task(&mut self, task: &mut dyn IoTask, token: u16) {
         {
             let mut sq = self.ring.submission();
             let entry = task.prepare_sqe().user_data(token as u64);
@@ -81,8 +175,6 @@ impl SharedRingInner {
         }
 
         self.flush_submission_queue();
-
-        Some(token)
     }
 
     fn flush_submission_queue(&mut self) {
@@ -99,7 +191,11 @@ impl SharedRingInner {
         }
     }
 
-    fn drain_completions(&mut self) {
+    fn drain_completions(
+        &mut self,
+        completions: &CompletionStore,
+        free_tokens: &Arc<ArrayQueue<u16>>,
+    ) {
         let mut cq = self.ring.completion();
         cq.sync();
         for cqe in cq {
@@ -110,31 +206,18 @@ impl SharedRingInner {
             );
             let token = raw_token as u16;
             if self.abandoned.remove(&token) {
-                self.free_tokens.push_back(token);
+                free_tokens
+                    .push(token)
+                    .expect("token queue capacity exceeded while reclaiming abandoned submission");
             } else {
-                let replaced = self.completions.insert(token, cqe);
-                debug_assert!(
-                    replaced.is_none(),
-                    "completion map already contained token {token}"
-                );
+                completions.insert(token, cqe);
             }
         }
     }
 
     #[inline]
-    fn take_completion(&mut self, token: u16) -> Option<cqueue::Entry> {
-        self.completions.remove(&token).inspect(|_| {
-            self.free_tokens.push_back(token);
-        })
-    }
-
-    #[inline]
-    fn abandon_submission(&mut self, token: u16) {
-        if self.completions.remove(&token).is_some() {
-            self.free_tokens.push_back(token);
-        } else {
-            self.abandoned.insert(token);
-        }
+    fn mark_abandoned(&mut self, token: u16) {
+        self.abandoned.insert(token);
     }
 }
 
@@ -158,6 +241,7 @@ where
     T: IoTask + 'static,
 {
     state: State<T>,
+    backoff: Backoff,
 }
 
 impl<T> SharedUringFuture<T>
@@ -167,6 +251,7 @@ where
     fn new(task: T) -> SharedUringFuture<T> {
         SharedUringFuture {
             state: State::Created(Box::new(task)),
+            backoff: Backoff::new(),
         }
     }
 }
@@ -180,40 +265,38 @@ where
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         let ring = shared_ring();
-        let mut guard = ring.lock();
 
         let state = std::mem::replace(&mut this.state, State::Invalid);
 
         match state {
             State::Pending { token, mut task } => {
-                if let Some(cqe) = guard.take_completion(token) {
-                    drop(guard);
+                if let Some(cqe) = ring.take_completion(token) {
+                    this.backoff.reset();
                     task.complete(&cqe);
                     return Poll::Ready(task);
-                } else {
-                    guard.drain_completions();
                 }
                 // Not ready yet, restore state
                 this.state = State::Pending { token, task };
+                this.backoff.snooze();
             }
             State::Created(mut task) => {
-                if let Some(token) = guard.submit_task(task.as_mut()) {
+                if let Some(token) = ring.submit_task(task.as_mut()) {
                     this.state = State::Pending { token, task };
-                    drop(guard);
+                    this.backoff.reset();
                     // Ensure the runtime keeps polling so completions are drained without a background thread.
                     cx.waker().wake_by_ref();
                     return Poll::Pending;
                 }
                 // Submission failed, restore state, and drain completions
-                guard.drain_completions();
+                ring.drain_completions();
                 this.state = State::Created(task);
+                this.backoff.snooze();
             }
             State::Invalid => {
                 panic!("poll called on invalid future state");
             }
         }
 
-        drop(guard);
         // No new data yet; reschedule so another poll can drive the ring forward.
         cx.waker().wake_by_ref();
         Poll::Pending
@@ -228,9 +311,7 @@ where
         if let State::Pending { token, .. } = self.state {
             // Attempt to drop any completion state, or mark the submission as abandoned.
             let ring = shared_ring();
-            if let Ok(mut guard) = ring.inner.lock() {
-                guard.abandon_submission(token);
-            }
+            ring.abandon_submission(token);
         }
     }
 }
