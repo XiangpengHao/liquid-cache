@@ -339,6 +339,6 @@ pub(crate) async fn write(path: PathBuf, data: &Bytes) -> Result<(), std::io::Er
         .open(path)
         .expect("failed to create file");
 
-    let write_task = FileWriteTask::build(data.as_ptr(), data.len(), file.as_raw_fd());
+    let write_task = FileWriteTask::build(data.clone(), file.as_raw_fd());
     submit_async_task(write_task).await.into_result()
 }
