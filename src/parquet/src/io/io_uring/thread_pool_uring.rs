@@ -78,6 +78,9 @@ pub(crate) fn initialize_uring_pool(io_mode: IoMode) {
     if matches!(io_mode, IoMode::Uring | IoMode::UringDirect) {
         IO_URING_THREAD_POOL_INST.get_or_init(|| IoUringThreadpool::new(io_mode));
     }
+    if matches!(io_mode, IoMode::UringBlocking) {
+        super::multi_blocking_uring::initialize_blocking_rings();
+    }
 }
 
 impl IoUringThreadpool {
