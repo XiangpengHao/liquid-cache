@@ -176,6 +176,6 @@ pub(crate) fn write(path: PathBuf, data: &Bytes) -> Result<(), std::io::Error> {
         .truncate(true)
         .write(true)
         .open(path)?;
-    let write_task = FileWriteTask::build(data.as_ptr(), data.len(), file.as_raw_fd());
+    let write_task = FileWriteTask::build(data.clone(), file.as_raw_fd());
     run_blocking_task(Box::new(write_task))?.into_result()
 }
