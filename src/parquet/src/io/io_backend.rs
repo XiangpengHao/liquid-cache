@@ -27,7 +27,7 @@ pub(super) async fn read(
         IoMode::UringShared => {
             #[cfg(target_os = "linux")]
             {
-                super::io_uring::shared_uring::read(path, range, false).await
+                super::io_uring::single_uring::read(path, range, false).await
             }
             #[cfg(not(target_os = "linux"))]
             {
@@ -48,7 +48,17 @@ pub(super) async fn read(
         IoMode::UringBlocking => {
             #[cfg(target_os = "linux")]
             {
-                super::io_uring::tls_spin_uring::read(path, range, false)
+                super::io_uring::multi_blocking_uring::read(path, range, false)
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                panic!("io_uring modes are only supported on Linux");
+            }
+        }
+        IoMode::UringMultiAsync => {
+            #[cfg(target_os = "linux")]
+            {
+                super::io_uring::multi_async_uring::read(path, range, false).await
             }
             #[cfg(not(target_os = "linux"))]
             {
@@ -82,7 +92,7 @@ pub(super) async fn write(
         IoMode::UringShared => {
             #[cfg(target_os = "linux")]
             {
-                super::io_uring::shared_uring::write(path, &data).await
+                super::io_uring::single_uring::write(path, &data).await
             }
             #[cfg(not(target_os = "linux"))]
             {
@@ -92,7 +102,17 @@ pub(super) async fn write(
         IoMode::UringBlocking => {
             #[cfg(target_os = "linux")]
             {
-                super::io_uring::tls_spin_uring::write(path, &data)
+                super::io_uring::multi_blocking_uring::write(path, &data)
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                panic!("io_uring modes are only supported on Linux");
+            }
+        }
+        IoMode::UringMultiAsync => {
+            #[cfg(target_os = "linux")]
+            {
+                super::io_uring::multi_async_uring::write(path, &data).await
             }
             #[cfg(not(target_os = "linux"))]
             {
