@@ -2919,7 +2919,6 @@ dependencies = [
  "bytes",
  "crossbeam-channel",
  "crossbeam-queue",
- "crossbeam-utils",
  "datafusion",
  "divan",
  "fastrace",
