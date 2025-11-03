@@ -190,6 +190,10 @@ mod tests {
             Box::new(Evict),
             IoMode::Uring,
         );
+        let fields: Vec<Field> = (0..8)
+            .map(|i| Field::new(format!("test_{i}"), DataType::Int32, false))
+            .collect();
+        let schema = Arc::new(Schema::new(fields));
         let array = Arc::new(arrow::array::Int32Array::from(vec![1, 2, 3]));
         let num_rows = 8 * 8 * 8 * 8;
 
@@ -200,14 +204,11 @@ mod tests {
         let mut memory_size_sum = 0;
         for file_no in 0..8 {
             let file_name = format!("test_{file_no}.parquet");
-            let file = cache.register_or_get_file(file_name);
+            let file = cache.register_or_get_file(file_name, schema.clone());
             for rg in 0..8 {
-                let row_group = file.row_group(rg);
+                let row_group = file.create_row_group(rg);
                 for col in 0..8 {
-                    let column = row_group.create_column(
-                        col,
-                        Arc::new(Field::new(format!("test_{col}"), DataType::Int32, false)),
-                    );
+                    let column = row_group.get_column(col).unwrap();
                     for batch in 0..8 {
                         let batch_id = BatchID::from_raw(batch);
                         assert!(column.insert(batch_id, array.clone()).await.is_ok());

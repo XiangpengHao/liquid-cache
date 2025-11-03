@@ -99,9 +99,8 @@ impl FileOpener for LiquidParquetOpener {
 
         let metadata_size_hint = file_meta.metadata_size_hint;
 
-        let liquid_cache = self
-            .liquid_cache
-            .register_or_get_file(file_meta.location().to_string());
+        let lc = self.liquid_cache.clone();
+        let file_loc = file_meta.location().to_string();
 
         let mut async_file_reader = self.parquet_file_reader_factory.create_liquid_reader(
             self.partition_index,
@@ -267,6 +266,8 @@ impl FileOpener for LiquidParquetOpener {
                 let span = fastrace::Span::enter_with_parent("liquid_stream", s);
                 liquid_builder = liquid_builder.with_span(span);
             }
+
+            let liquid_cache = lc.register_or_get_file(file_loc, physical_file_schema);
 
             let stream = liquid_builder.build(liquid_cache)?;
 

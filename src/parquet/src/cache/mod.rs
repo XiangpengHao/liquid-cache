@@ -9,7 +9,7 @@ use ahash::AHashMap;
 use arrow::array::{Array, ArrayRef, BooleanArray, RecordBatch};
 use arrow::buffer::BooleanBuffer;
 use arrow::compute::prep_null_mask_filter;
-use arrow_schema::{ArrowError, DataType, Field, Schema};
+use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
 use liquid_cache_common::IoMode;
 use liquid_cache_storage::cache::GetWithPredicateResult;
 use liquid_cache_storage::cache::squeeze_policies::SqueezePolicy;
@@ -187,56 +187,41 @@ impl LiquidCachedColumn {
 pub struct LiquidCachedRowGroup {
     columns: RwLock<ColumnMaps>,
     cache_store: Arc<CacheStorage>,
-    row_group_id: u64,
-    file_id: u64,
 }
 
 impl LiquidCachedRowGroup {
-    fn new(cache_store: Arc<CacheStorage>, row_group_id: u64, file_id: u64) -> Self {
+    /// Create a new row group.
+    /// The column_ids are the indices of the columns in the file schema.
+    /// So they may not start from 0.
+    fn new(
+        cache_store: Arc<CacheStorage>,
+        row_group_id: u64,
+        file_id: u64,
+        columns: &[(u64, Arc<Field>)],
+    ) -> Self {
         let cache_dir = cache_store
             .config()
             .cache_root_dir()
             .join(format!("file_{file_id}"))
             .join(format!("rg_{row_group_id}"));
         std::fs::create_dir_all(&cache_dir).expect("Failed to create cache directory");
-        Self {
-            columns: RwLock::new(ColumnMaps::default()),
-            cache_store,
-            row_group_id,
-            file_id,
+
+        let mut column_maps = ColumnMaps::default();
+        for (column_id, field) in columns {
+            let column = Arc::new(LiquidCachedColumn::new(
+                Arc::clone(field),
+                Arc::clone(&cache_store),
+                *column_id,
+                row_group_id,
+                file_id,
+            ));
+            column_maps.by_id.insert(*column_id, column.clone());
+            column_maps.by_name.insert(field.name().to_string(), column);
         }
-    }
 
-    /// Create a column in the row group.
-    pub fn create_column(&self, column_id: u64, field: Arc<Field>) -> LiquidCachedColumnRef {
-        use std::collections::hash_map::Entry;
-        let mut columns = self.columns.write().unwrap();
-
-        match columns.by_id.entry(column_id) {
-            Entry::Occupied(entry) => {
-                let v = entry.get().clone();
-                assert_eq!(v.field, field);
-                columns
-                    .by_name
-                    .entry(v.field.name().to_string())
-                    .or_insert_with(|| v.clone());
-                v
-            }
-            Entry::Vacant(entry) => {
-                let column = Arc::new(LiquidCachedColumn::new(
-                    field,
-                    self.cache_store.clone(),
-                    column_id,
-                    self.row_group_id,
-                    self.file_id,
-                ));
-                let field_name = column.field.name().to_string();
-                entry.insert(column.clone());
-                if let Some(existing) = columns.by_name.insert(field_name, column.clone()) {
-                    assert!(Arc::ptr_eq(&existing, &column), "column name collision");
-                }
-                column
-            }
+        Self {
+            columns: RwLock::new(column_maps),
+            cache_store,
         }
     }
 
@@ -339,31 +324,41 @@ pub(crate) type LiquidCachedRowGroupRef = Arc<LiquidCachedRowGroup>;
 /// A file in the cache.
 #[derive(Debug)]
 pub struct LiquidCachedFile {
-    row_groups: Mutex<AHashMap<u64, Arc<LiquidCachedRowGroup>>>,
     cache_store: Arc<CacheStorage>,
     file_id: u64,
+    file_schema: SchemaRef,
 }
 
 impl LiquidCachedFile {
-    fn new(cache_store: Arc<CacheStorage>, file_id: u64) -> Self {
+    fn new(cache_store: Arc<CacheStorage>, file_id: u64, file_schema: SchemaRef) -> Self {
         Self {
-            row_groups: Mutex::new(AHashMap::new()),
             cache_store,
             file_id,
+            file_schema,
         }
     }
 
-    /// Get a row group from the cache.
-    pub fn row_group(&self, row_group_id: u64) -> LiquidCachedRowGroupRef {
-        let mut row_groups = self.row_groups.lock().unwrap();
-        let row_group = row_groups.entry(row_group_id).or_insert_with(|| {
-            Arc::new(LiquidCachedRowGroup::new(
-                self.cache_store.clone(),
-                row_group_id,
-                self.file_id,
-            ))
-        });
-        row_group.clone()
+    /// Create a row group handle scoped to the current query context.
+    pub fn create_row_group(&self, row_group_id: u64) -> LiquidCachedRowGroupRef {
+        let columns: Vec<(u64, Arc<Field>)> = self
+            .file_schema
+            .fields()
+            .iter()
+            .enumerate()
+            .map(|(idx, field)| (idx as u64, Arc::clone(field)))
+            .collect();
+
+        Arc::new(LiquidCachedRowGroup::new(
+            self.cache_store.clone(),
+            row_group_id,
+            self.file_id,
+            &columns,
+        ))
+    }
+
+    /// Return the configured cache batch size.
+    pub fn batch_size(&self) -> usize {
+        self.cache_store.config().batch_size()
     }
 
     fn reset(&self) {
@@ -417,11 +412,19 @@ impl LiquidCache {
     }
 
     /// Register a file in the cache.
-    pub fn register_or_get_file(&self, file_path: String) -> LiquidCachedFileRef {
+    pub fn register_or_get_file(
+        &self,
+        file_path: String,
+        full_file_schema: SchemaRef,
+    ) -> LiquidCachedFileRef {
         let mut files = self.files.lock().unwrap();
         let value = files.entry(file_path.clone()).or_insert_with(|| {
             let file_id = self.current_file_id.fetch_add(1, Ordering::Relaxed);
-            Arc::new(LiquidCachedFile::new(self.cache_store.clone(), file_id))
+            Arc::new(LiquidCachedFile::new(
+                self.cache_store.clone(),
+                file_id,
+                full_file_schema.clone(),
+            ))
         });
         value.clone()
     }
@@ -512,7 +515,7 @@ mod tests {
     use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
     use std::sync::Arc;
 
-    fn setup_cache(batch_size: usize) -> LiquidCachedRowGroupRef {
+    fn setup_cache(batch_size: usize, schema: SchemaRef) -> LiquidCachedRowGroupRef {
         let tmp_dir = tempfile::tempdir().unwrap();
         let cache = LiquidCache::new(
             batch_size,
@@ -522,22 +525,22 @@ mod tests {
             Box::new(TranscodeSqueezeEvict),
             IoMode::Uring,
         );
-        let file = cache.register_or_get_file("test".to_string());
-        file.row_group(0)
+        let file = cache.register_or_get_file("test".to_string(), schema);
+        file.create_row_group(0)
     }
 
     #[tokio::test]
     async fn evaluate_or_on_cached_columns() {
         let batch_size = 4;
-        let row_group = setup_cache(batch_size);
 
         let schema = Arc::new(Schema::new(vec![
             Field::new("a", DataType::Int32, false),
             Field::new("b", DataType::Int32, false),
         ]));
+        let row_group = setup_cache(batch_size, schema.clone());
 
-        let col_a = row_group.create_column(0, Arc::new(Field::new("a", DataType::Int32, false)));
-        let col_b = row_group.create_column(1, Arc::new(Field::new("b", DataType::Int32, false)));
+        let col_a = row_group.get_column(0).unwrap();
+        let col_b = row_group.get_column(1).unwrap();
 
         let batch_id = BatchID::from_row_id(0, batch_size);
 
@@ -595,7 +598,6 @@ mod tests {
     #[tokio::test]
     async fn evaluate_three_column_or() {
         let batch_size = 8;
-        let row_group = setup_cache(batch_size);
 
         let schema = Arc::new(Schema::new(vec![
             Field::new("a", DataType::Int32, false),
@@ -603,9 +605,11 @@ mod tests {
             Field::new("c", DataType::Int32, false),
         ]));
 
-        let col_a = row_group.create_column(0, Arc::new(Field::new("a", DataType::Int32, false)));
-        let col_b = row_group.create_column(1, Arc::new(Field::new("b", DataType::Int32, false)));
-        let col_c = row_group.create_column(2, Arc::new(Field::new("c", DataType::Int32, false)));
+        let row_group = setup_cache(batch_size, schema.clone());
+
+        let col_a = row_group.get_column(0).unwrap();
+        let col_b = row_group.get_column(1).unwrap();
+        let col_c = row_group.get_column(2).unwrap();
 
         let batch_id = BatchID::from_row_id(0, batch_size);
 
@@ -678,17 +682,16 @@ mod tests {
     #[tokio::test]
     async fn evaluate_string_column_or() {
         let batch_size = 8;
-        let row_group = setup_cache(batch_size);
 
         let schema = Arc::new(Schema::new(vec![
             Field::new("name", DataType::Utf8View, false),
             Field::new("city", DataType::Utf8View, false),
         ]));
 
-        let col_name =
-            row_group.create_column(0, Arc::new(Field::new("name", DataType::Utf8View, false)));
-        let col_city =
-            row_group.create_column(1, Arc::new(Field::new("city", DataType::Utf8View, false)));
+        let row_group = setup_cache(batch_size, schema.clone());
+
+        let col_name = row_group.get_column(0).unwrap();
+        let col_city = row_group.get_column(1).unwrap();
 
         let batch_id = BatchID::from_row_id(0, batch_size);
 
