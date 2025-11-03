@@ -2,17 +2,20 @@
 //!
 
 use crate::io::ParquetIoContext;
+use crate::optimizers::DATE_MAPPING_METADATA_KEY;
 use crate::reader::{LiquidPredicate, extract_multi_column_or};
 use crate::sync::{Mutex, RwLock};
 use ahash::AHashMap;
 use arrow::array::{Array, ArrayRef, BooleanArray, RecordBatch};
 use arrow::buffer::BooleanBuffer;
 use arrow::compute::prep_null_mask_filter;
-use arrow_schema::{ArrowError, Field, Schema};
+use arrow_schema::{ArrowError, DataType, Field, Schema};
 use liquid_cache_common::IoMode;
 use liquid_cache_storage::cache::GetWithPredicateResult;
 use liquid_cache_storage::cache::squeeze_policies::SqueezePolicy;
-use liquid_cache_storage::cache::{CachePolicy, CacheStorage, CacheStorageBuilder};
+use liquid_cache_storage::cache::{
+    CacheExpression, CachePolicy, CacheStorage, CacheStorageBuilder,
+};
 use parquet::arrow::arrow_reader::ArrowPredicate;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -30,6 +33,7 @@ pub struct LiquidCachedColumn {
     cache_store: Arc<CacheStorage>,
     field: Arc<Field>,
     column_path: ColumnAccessPath,
+    expression: Option<CacheExpression>,
 }
 
 pub(crate) type LiquidCachedColumnRef = Arc<LiquidCachedColumn>;
@@ -39,6 +43,14 @@ struct ColumnMaps {
     // invariant: Arc::ptr_eq(map[field.name()], map[field.id()])
     by_id: AHashMap<u64, LiquidCachedColumnRef>,
     by_name: AHashMap<String, LiquidCachedColumnRef>,
+}
+
+fn infer_expression(field: &Field) -> Option<CacheExpression> {
+    let mapping = field.metadata().get(DATE_MAPPING_METADATA_KEY)?;
+    if field.data_type() != &DataType::Date32 {
+        return None;
+    }
+    CacheExpression::try_from_date_part_str(mapping)
 }
 
 /// Error type for inserting an arrow array into the cache.
@@ -58,10 +70,12 @@ impl LiquidCachedColumn {
     ) -> Self {
         let column_path = ColumnAccessPath::new(file_id, row_group_id, column_id);
         column_path.initialize_dir(cache_store.config().cache_root_dir());
+        let expression = infer_expression(field.as_ref());
         Self {
             field,
             cache_store,
             column_path,
+            expression,
         }
     }
 
@@ -82,6 +96,11 @@ impl LiquidCachedColumn {
     /// Returns the Arrow field metadata for this cached column.
     pub fn field(&self) -> Arc<Field> {
         self.field.clone()
+    }
+
+    /// Returns the expression metadata associated with this column, if any.
+    pub fn expression(&self) -> Option<&CacheExpression> {
+        self.expression.as_ref()
     }
 
     /// Evaluates a predicate on a cached column.
@@ -127,6 +146,18 @@ impl LiquidCachedColumn {
             .get_with_selection(&entry_id, filter)
             .await?;
         result.ok()
+    }
+
+    /// Retrieve an arrow array optionally tailored to a cache expression.
+    pub async fn get_arrow_array_with_expression(
+        &self,
+        batch_id: BatchID,
+        expression: Option<&CacheExpression>,
+    ) -> Option<ArrayRef> {
+        let entry_id = self.entry_id(batch_id).into();
+        self.cache_store
+            .get_arrow_array_with_expression(&entry_id, expression)
+            .await
     }
 
     #[cfg(test)]
