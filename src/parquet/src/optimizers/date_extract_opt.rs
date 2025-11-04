@@ -484,9 +484,10 @@ impl TableColumnUsage {
                     }
                 });
                 if let Some(first_unit) = first_unit {
-                    if stats.usages.iter().all(|usage| {
+                    let all_matches = stats.usages.iter().all(|usage| {
                         matches!(usage.first(), Some(Operation::Extract(unit)) if unit == first_unit)
-                    }) {
+                    });
+                    if all_matches {
                         extractions.push(DateExtraction {
                             column: key.to_column(),
                             component: *first_unit,
