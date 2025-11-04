@@ -142,7 +142,6 @@ impl LiquidCachedColumn {
         Some(array)
     }
 
-
     #[cfg(test)]
     pub(crate) async fn get_arrow_array_test_only(&self, batch_id: BatchID) -> Option<ArrayRef> {
         let entry_id = self.entry_id(batch_id).into();
