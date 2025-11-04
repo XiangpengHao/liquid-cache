@@ -2,7 +2,7 @@
 
 use std::{fmt::Display, sync::Arc};
 
-use arrow::array::{ArrayRef, BooleanArray};
+use arrow::array::ArrayRef;
 use arrow_schema::DataType;
 
 use crate::liquid_array::{LiquidArrayRef, LiquidHybridArrayRef};
@@ -83,14 +83,4 @@ impl From<&CachedBatch> for CachedBatchType {
             CachedBatch::DiskArrow(_) => Self::DiskArrow,
         }
     }
-}
-
-/// The result of predicate pushdown.
-#[derive(Debug, PartialEq)]
-pub enum GetWithPredicateResult {
-    /// The predicate is evaluated on the filtered data and the result is a boolean buffer.
-    Evaluated(BooleanArray),
-
-    /// The predicate is not evaluated but data is filtered.
-    Filtered(ArrayRef),
 }
