@@ -49,7 +49,7 @@ storage.insert(entry_id, arrow_array.clone()).await;
 storage.flush_all_to_disk();
 
 // Read asynchronously
-let retrieved = storage.get(&entry_id).read().await.unwrap();
+let retrieved = storage.get(&entry_id).await.unwrap();
 assert_eq!(retrieved.as_ref(), arrow_array.as_ref());
 });
 ```
@@ -79,9 +79,7 @@ let filter = BooleanBuffer::from((0..10).map(|i| i % 2 == 0).collect::<Vec<_>>()
 let filtered = storage
     .get(&entry_id)
     .with_selection(&filter)
-    .read()
     .await
-    .unwrap()
     .unwrap();
 let expected = Arc::new(UInt64Array::from_iter_values((0..10).filter(|i| i % 2 == 0)));
 assert_eq!(filtered.as_ref(), expected.as_ref());
@@ -123,7 +121,6 @@ let expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
 let result = storage
     .eval_predicate(&entry_id, &expr)
     .with_selection(&selection)
-    .read()
     .await
     .unwrap();
 let expected_mask = BooleanArray::from(vec![Some(true), Some(false), Some(true), Some(false)]);

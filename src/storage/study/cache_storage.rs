@@ -77,7 +77,6 @@ fn main() {
             if let Some(_mask) = storage
                 .eval_predicate(id, &pred_expr)
                 .with_selection(&selection)
-                .read()
                 .await
             {
                 evaluated += 1;

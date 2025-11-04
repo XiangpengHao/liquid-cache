@@ -18,6 +18,8 @@ use crate::cache::{CacheExpression, index::ArtIndex, utils::EntryID};
 use crate::cache_policies::LiquidPolicy;
 use crate::liquid_array::SqueezedDate32Array;
 use crate::sync::Arc;
+use std::future::IntoFuture;
+use std::pin::Pin;
 
 use bytes::Bytes;
 use std::ops::Range;
@@ -305,7 +307,7 @@ impl CacheStorageBuilder {
 /// storage.insert(entry_id, arrow_array.clone()).await;
 ///
 /// // Get the arrow array back asynchronously
-/// let retrieved = storage.get(&entry_id).read().await.unwrap();
+/// let retrieved = storage.get(&entry_id).await.unwrap();
 /// assert_eq!(retrieved.as_ref(), arrow_array.as_ref());
 /// });
 /// ```
@@ -323,7 +325,7 @@ pub struct CacheStorage {
 
 /// Builder returned by [`CacheStorage::get`] for configuring cache reads.
 #[derive(Debug)]
-pub struct CacheReaderBuilder<'a> {
+pub struct CacheReader<'a> {
     storage: &'a CacheStorage,
     entry_id: &'a EntryID,
     selection: Option<&'a BooleanBuffer>,
@@ -386,8 +388,8 @@ impl CacheStorage {
     }
 
     /// Create a [`CacheReaderBuilder`] for the provided entry.
-    pub fn get<'a>(&'a self, entry_id: &'a EntryID) -> CacheReaderBuilder<'a> {
-        CacheReaderBuilder::new(self, entry_id)
+    pub fn get<'a>(&'a self, entry_id: &'a EntryID) -> CacheReader<'a> {
+        CacheReader::new(self, entry_id)
     }
 
     /// Create a [`CachePredicateBuilder`] for evaluating predicates on cached data.
@@ -985,7 +987,7 @@ impl CacheStorage {
     }
 }
 
-impl<'a> CacheReaderBuilder<'a> {
+impl<'a> CacheReader<'a> {
     fn new(storage: &'a CacheStorage, entry_id: &'a EntryID) -> Self {
         Self {
             storage,
@@ -1007,6 +1009,17 @@ impl<'a> CacheReaderBuilder<'a> {
         self
     }
 
+    /// Attach an optional expression hint without manual matching at call sites.
+    pub fn with_optional_expression_hint(
+        mut self,
+        expression: Option<&'a CacheExpression>,
+    ) -> Self {
+        if let Some(expr) = expression {
+            self.expression_hint = Some(expr);
+        }
+        self
+    }
+
     /// Materialize the cached array as [`ArrayRef`].
     pub async fn read(self) -> Option<ArrayRef> {
         match self.selection {
@@ -1021,6 +1034,15 @@ impl<'a> CacheReaderBuilder<'a> {
                     .await
             }
         }
+    }
+}
+
+impl<'a> IntoFuture for CacheReader<'a> {
+    type Output = Option<ArrayRef>;
+    type IntoFuture = Pin<Box<dyn std::future::Future<Output = Option<ArrayRef>> + Send + 'a>>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(async move { self.read().await })
     }
 }
 
@@ -1051,6 +1073,17 @@ impl<'a> CachePredicateBuilder<'a> {
         self
     }
 
+    /// Attach an optional expression hint without manual matching at call sites.
+    pub fn with_optional_expression_hint(
+        mut self,
+        expression: Option<&'a CacheExpression>,
+    ) -> Self {
+        if let Some(expr) = expression {
+            self.expression_hint = Some(expr);
+        }
+        self
+    }
+
     /// Evaluate the predicate against the cached data.
     pub async fn read(self) -> Option<BooleanArray> {
         self.storage
@@ -1061,6 +1094,15 @@ impl<'a> CachePredicateBuilder<'a> {
                 self.expression_hint,
             )
             .await
+    }
+}
+
+impl<'a> IntoFuture for CachePredicateBuilder<'a> {
+    type Output = Option<BooleanArray>;
+    type IntoFuture = Pin<Box<dyn std::future::Future<Output = Option<BooleanArray>> + Send + 'a>>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(async move { self.read().await })
     }
 }
 

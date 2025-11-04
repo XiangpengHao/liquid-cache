@@ -87,14 +87,12 @@ impl LiquidCachedColumn {
         predicate: &mut LiquidPredicate,
     ) -> Option<Result<BooleanArray, ArrowError>> {
         let entry_id = self.entry_id(batch_id).into();
-        let mut builder = self
+        let boolean_array = self
             .cache_store
             .eval_predicate(&entry_id, predicate.physical_expr_physical_column_index())
-            .with_selection(filter);
-        if let Some(expression) = self.expression() {
-            builder = builder.with_expression_hint(expression);
-        }
-        let boolean_array = builder.read().await?;
+            .with_selection(filter)
+            .with_optional_expression_hint(self.expression())
+            .await?;
         let predicate_filter = match boolean_array.null_count() {
             0 => boolean_array,
             _ => prep_null_mask_filter(&boolean_array),
@@ -121,7 +119,6 @@ impl LiquidCachedColumn {
             .cache_store
             .get(&entry_id)
             .with_selection(filter)
-            .read()
             .await?;
         Some(array)
     }
@@ -133,18 +130,16 @@ impl LiquidCachedColumn {
         expression: Option<&CacheExpression>,
     ) -> Option<ArrayRef> {
         let entry_id = self.entry_id(batch_id).into();
-        let builder = self.cache_store.get(&entry_id);
-        let builder = match expression {
-            Some(expr) => builder.with_expression_hint(expr),
-            None => builder,
-        };
-        builder.read().await
+        self.cache_store
+            .get(&entry_id)
+            .with_optional_expression_hint(expression)
+            .await
     }
 
     #[cfg(test)]
     pub(crate) async fn get_arrow_array_test_only(&self, batch_id: BatchID) -> Option<ArrayRef> {
         let entry_id = self.entry_id(batch_id).into();
-        self.cache_store.get(&entry_id).read().await
+        self.cache_store.get(&entry_id).await
     }
 
     /// Insert an array into the cache.
