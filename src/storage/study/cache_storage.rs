@@ -12,7 +12,6 @@ use futures::StreamExt;
 use liquid_cache_storage::cache::CacheStorage;
 use liquid_cache_storage::cache::CacheStorageBuilder;
 use liquid_cache_storage::cache::EntryID;
-use liquid_cache_storage::cache::GetWithPredicateResult;
 use liquid_cache_storage::cache::squeeze_policies::TranscodeSqueezeEvict;
 use liquid_cache_storage::cache_policies::FiloPolicy;
 
@@ -75,11 +74,13 @@ fn main() {
         for (i, id) in ids.iter().enumerate() {
             let len = lens[i];
             let selection = BooleanBuffer::new_set(len);
-            if let Some(result) = storage.get_with_predicate(id, &selection, &pred_expr).await {
-                match result {
-                    GetWithPredicateResult::Evaluated(_) => evaluated += 1,
-                    GetWithPredicateResult::Filtered(_filtered) => {}
-                }
+            if let Some(result) = storage
+                .eval_predicate(id, &pred_expr)
+                .with_selection(&selection)
+                .await
+                && result.is_ok()
+            {
+                evaluated += 1;
             }
         }
         let elapsed = t0.elapsed();

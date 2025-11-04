@@ -1,12 +1,13 @@
 use std::sync::Arc;
 
 use arrow::{
-    array::{Array, ArrayRef, BooleanArray, RecordBatch},
+    array::{Array, ArrayRef, BooleanArray},
     buffer::BooleanBuffer,
     compute::prep_null_mask_filter,
+    record_batch::RecordBatch,
 };
 use arrow_schema::{ArrowError, DataType, Field, Schema};
-use liquid_cache_storage::cache::{CacheExpression, CacheStorage, GetWithPredicateResult};
+use liquid_cache_storage::cache::{CacheExpression, CacheStorage};
 use parquet::arrow::arrow_reader::ArrowPredicate;
 
 use crate::{
@@ -70,15 +71,6 @@ impl LiquidCachedColumn {
         self.cache_store.is_cached(&self.entry_id(batch_id).into())
     }
 
-    pub(crate) fn arrow_array_to_record_batch(
-        &self,
-        array: ArrayRef,
-        field: &Arc<Field>,
-    ) -> RecordBatch {
-        let schema = Arc::new(Schema::new(vec![field.clone()]));
-        RecordBatch::try_new(schema, vec![array]).unwrap()
-    }
-
     /// Returns the Arrow field metadata for this cached column.
     pub fn field(&self) -> Arc<Field> {
         self.field.clone()
@@ -87,6 +79,11 @@ impl LiquidCachedColumn {
     /// Returns the expression metadata associated with this column, if any.
     pub fn expression(&self) -> Option<&CacheExpression> {
         self.expression.as_ref()
+    }
+
+    fn array_to_record_batch(&self, array: ArrayRef) -> Result<RecordBatch, ArrowError> {
+        let schema = Arc::new(Schema::new(vec![self.field.clone()]));
+        RecordBatch::try_new(schema, vec![array])
     }
 
     /// Evaluates a predicate on a cached column.
@@ -99,18 +96,27 @@ impl LiquidCachedColumn {
         let entry_id = self.entry_id(batch_id).into();
         let result = self
             .cache_store
-            .get_with_predicate(
-                &entry_id,
-                filter,
-                predicate.physical_expr_physical_column_index(),
-            )
+            .eval_predicate(&entry_id, predicate.physical_expr_physical_column_index())
+            .with_selection(filter)
+            .with_optional_expression_hint(self.expression())
             .await?;
-
         match result {
-            GetWithPredicateResult::Evaluated(buffer) => Some(Ok(buffer)),
-            GetWithPredicateResult::Filtered(array) => {
-                let record_batch = self.arrow_array_to_record_batch(array, &self.field);
-                let boolean_array = predicate.evaluate(record_batch).unwrap();
+            Ok(boolean_array) => {
+                let predicate_filter = match boolean_array.null_count() {
+                    0 => boolean_array,
+                    _ => prep_null_mask_filter(&boolean_array),
+                };
+                Some(Ok(predicate_filter))
+            }
+            Err(array) => {
+                let record_batch = match self.array_to_record_batch(array) {
+                    Ok(batch) => batch,
+                    Err(err) => return Some(Err(err)),
+                };
+                let boolean_array = match predicate.evaluate(record_batch) {
+                    Ok(arr) => arr,
+                    Err(err) => return Some(Err(err)),
+                };
                 let predicate_filter = match boolean_array.null_count() {
                     0 => boolean_array,
                     _ => prep_null_mask_filter(&boolean_array),
@@ -127,37 +133,20 @@ impl LiquidCachedColumn {
         filter: &BooleanBuffer,
     ) -> Option<ArrayRef> {
         let entry_id = self.entry_id(batch_id).into();
-        if let Some(expression) = self.expression()
-            && filter.count_set_bits() == filter.len()
-        {
-            // test only path
-            return self
-                .get_arrow_array_with_expression(batch_id, Some(expression))
-                .await;
-        }
-        let result = self
+        let array = self
             .cache_store
-            .get_with_selection(&entry_id, filter)
+            .get(&entry_id)
+            .with_selection(filter)
+            .with_optional_expression_hint(self.expression())
+            .read()
             .await?;
-        result.ok()
-    }
-
-    /// Retrieve an arrow array optionally tailored to a cache expression.
-    pub async fn get_arrow_array_with_expression(
-        &self,
-        batch_id: BatchID,
-        expression: Option<&CacheExpression>,
-    ) -> Option<ArrayRef> {
-        let entry_id = self.entry_id(batch_id).into();
-        self.cache_store
-            .get_arrow_array_with_expression(&entry_id, expression)
-            .await
+        Some(array)
     }
 
     #[cfg(test)]
     pub(crate) async fn get_arrow_array_test_only(&self, batch_id: BatchID) -> Option<ArrayRef> {
         let entry_id = self.entry_id(batch_id).into();
-        self.cache_store.get_arrow_array(&entry_id).await
+        self.cache_store.get(&entry_id).await
     }
 
     /// Insert an array into the cache.

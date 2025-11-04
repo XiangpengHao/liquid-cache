@@ -1,6 +1,5 @@
-use arrow::array::ArrayRef;
+use arrow::array::{ArrayRef, BooleanArray};
 use arrow::buffer::BooleanBuffer;
-use arrow_schema::ArrowError;
 use datafusion::physical_plan::PhysicalExpr;
 use std::path::PathBuf;
 use std::{fmt::Debug, path::Path};
@@ -8,7 +7,7 @@ use std::{fmt::Debug, path::Path};
 use super::{
     budget::BudgetAccounting,
     cache_policies::CachePolicy,
-    cached_batch::{CachedBatch, CachedBatchType, GetWithPredicateResult},
+    cached_batch::{CachedBatch, CachedBatchType},
     tracer::CacheTracer,
     utils::CacheConfig,
 };
@@ -19,6 +18,8 @@ use crate::cache::{CacheExpression, index::ArtIndex, utils::EntryID};
 use crate::cache_policies::LiquidPolicy;
 use crate::liquid_array::SqueezedDate32Array;
 use crate::sync::Arc;
+use std::future::IntoFuture;
+use std::pin::Pin;
 
 use bytes::Bytes;
 use std::ops::Range;
@@ -306,7 +307,7 @@ impl CacheStorageBuilder {
 /// storage.insert(entry_id, arrow_array.clone()).await;
 ///
 /// // Get the arrow array back asynchronously
-/// let retrieved = storage.get_arrow_array(&entry_id).await.unwrap();
+/// let retrieved = storage.get(&entry_id).await.unwrap();
 /// assert_eq!(retrieved.as_ref(), arrow_array.as_ref());
 /// });
 /// ```
@@ -320,6 +321,25 @@ pub struct CacheStorage {
     tracer: CacheTracer,
     io_context: Arc<dyn IoContext>,
     runtime_stats: RuntimeStats,
+}
+
+/// Builder returned by [`CacheStorage::get`] for configuring cache reads.
+#[derive(Debug)]
+pub struct Get<'a> {
+    storage: &'a CacheStorage,
+    entry_id: &'a EntryID,
+    selection: Option<&'a BooleanBuffer>,
+    expression_hint: Option<&'a CacheExpression>,
+}
+
+/// Builder for predicate evaluation on cached data.
+#[derive(Debug)]
+pub struct EvaluatePredicate<'a> {
+    storage: &'a CacheStorage,
+    entry_id: &'a EntryID,
+    predicate: &'a Arc<dyn PhysicalExpr>,
+    selection: Option<&'a BooleanBuffer>,
+    expression_hint: Option<&'a CacheExpression>,
 }
 
 impl CacheStorage {
@@ -367,247 +387,18 @@ impl CacheStorage {
             .await;
     }
 
-    /// Get an Arrow array from the cache asynchronously.
-    pub async fn get_arrow_array(&self, entry_id: &EntryID) -> Option<ArrayRef> {
-        self.get_arrow_array_internal(entry_id, None).await
+    /// Create a [`Get`] builder for the provided entry.
+    pub fn get<'a>(&'a self, entry_id: &'a EntryID) -> Get<'a> {
+        Get::new(self, entry_id)
     }
 
-    /// Experimental API that returns an Arrow array tailored for a cache expression.
-    pub async fn get_arrow_array_with_expression(
-        &self,
-        entry_id: &EntryID,
-        expression: Option<&CacheExpression>,
-    ) -> Option<ArrayRef> {
-        self.get_arrow_array_internal(entry_id, expression).await
-    }
-
-    async fn get_arrow_array_internal(
-        &self,
-        entry_id: &EntryID,
-        expression: Option<&CacheExpression>,
-    ) -> Option<ArrayRef> {
-        self.runtime_stats.incr_get_arrow_array();
-        let batch = self.index.get(entry_id)?;
-        self.cache_policy
-            .notify_access(entry_id, CachedBatchType::from(&batch));
-
-        match batch {
-            CachedBatch::MemoryArrow(array) => Some(array),
-            CachedBatch::MemoryLiquid(array) => Some(array.to_arrow_array()),
-            CachedBatch::DiskLiquid(_) => {
-                let path = self.io_context.liquid_path(entry_id);
-                let bytes = self.io_context.read(path, None).await.ok()?;
-                let compressor_states = self.io_context.get_compressor(entry_id);
-                let compressor = compressor_states.fsst_compressor();
-                let liquid = crate::liquid_array::ipc::read_from_bytes(
-                    bytes,
-                    &crate::liquid_array::ipc::LiquidIPCContext::new(compressor),
-                );
-                Some(liquid.to_arrow_array())
-            }
-            CachedBatch::MemoryHybridLiquid(array) => {
-                // TODO: we need to do this for other apis as well.
-                if let Some(CacheExpression::ExtractDate32 { field }) = expression
-                    && let Some(squeezed) = array.as_any().downcast_ref::<SqueezedDate32Array>()
-                    && squeezed.field() == *field
-                {
-                    let component = Arc::new(squeezed.to_component_date32()) as ArrayRef;
-                    self.runtime_stats.incr_hit_date32_expression();
-                    return Some(component);
-                }
-                match array.to_arrow_array() {
-                    Ok(arr) => Some(arr),
-                    Err(io_range) => {
-                        let path = self.io_context.liquid_path(entry_id);
-                        let bytes = self
-                            .io_context
-                            .read(path, Some(io_range.range().clone()))
-                            .await
-                            .ok()?;
-                        let new_array = array.soak(bytes);
-                        Some(new_array.to_arrow_array())
-                    }
-                }
-            }
-            CachedBatch::DiskArrow(_) => {
-                let path = self.io_context.arrow_path(entry_id);
-                let bytes = self.io_context.read(path, None).await.ok()?;
-                let cursor = std::io::Cursor::new(bytes.to_vec());
-                let mut reader = arrow::ipc::reader::StreamReader::try_new(cursor, None).ok()?;
-                let batch = reader.next()?.ok()?;
-                let array = batch.column(0).clone();
-                Some(array)
-            }
-        }
-    }
-
-    /// Get an Arrow array with selection pushdown.
-    pub async fn get_with_selection(
-        &self,
-        entry_id: &EntryID,
-        selection: &BooleanBuffer,
-    ) -> Option<Result<ArrayRef, ArrowError>> {
-        use arrow::array::BooleanArray;
-
-        self.runtime_stats.incr_get_with_selection();
-        let batch = self.index.get(entry_id)?;
-        self.cache_policy
-            .notify_access(entry_id, CachedBatchType::from(&batch));
-
-        Some(match batch {
-            CachedBatch::MemoryArrow(array) => {
-                let selection_array = BooleanArray::new(selection.clone(), None);
-                arrow::compute::filter(&array, &selection_array)
-            }
-            CachedBatch::MemoryLiquid(array) => Ok(array.filter_to_arrow(selection)),
-            CachedBatch::DiskLiquid(data_type) => {
-                let select_any = selection.count_set_bits() > 0;
-                if !select_any {
-                    let empty_array = arrow::array::new_empty_array(&data_type);
-                    return Some(Ok(empty_array));
-                }
-                let path = self.io_context.liquid_path(entry_id);
-                let bytes = self.io_context.read(path, None).await.ok()?;
-                let compressor_states = self.io_context.get_compressor(entry_id);
-                let compressor = compressor_states.fsst_compressor();
-                let liquid = crate::liquid_array::ipc::read_from_bytes(
-                    bytes,
-                    &crate::liquid_array::ipc::LiquidIPCContext::new(compressor),
-                );
-                Ok(liquid.filter_to_arrow(selection))
-            }
-            CachedBatch::MemoryHybridLiquid(array) => match array.filter_to_arrow(selection) {
-                Ok(arr) => Ok(arr),
-                Err(io_range) => {
-                    let path = self.io_context.liquid_path(entry_id);
-                    let bytes = self
-                        .io_context
-                        .read(path, Some(io_range.range().clone()))
-                        .await
-                        .ok()?;
-                    let new_array = array.soak(bytes);
-                    Ok(new_array.filter_to_arrow(selection))
-                }
-            },
-            CachedBatch::DiskArrow(_) => {
-                let path = self.io_context.arrow_path(entry_id);
-                let bytes = self.io_context.read(path, None).await.ok()?;
-                let cursor = std::io::Cursor::new(bytes.to_vec());
-                let mut reader = arrow::ipc::reader::StreamReader::try_new(cursor, None).ok()?;
-                let batch = reader.next()?.ok()?;
-                let array = batch.column(0).clone();
-                let selection_array = BooleanArray::new(selection.clone(), None);
-                arrow::compute::filter(&array, &selection_array)
-            }
-        })
-    }
-
-    /// Get with predicate pushdown.
-    pub async fn get_with_predicate(
-        &self,
-        entry_id: &EntryID,
-        selection: &BooleanBuffer,
-        predicate: &Arc<dyn PhysicalExpr>,
-    ) -> Option<GetWithPredicateResult> {
-        use arrow::array::BooleanArray;
-
-        self.runtime_stats.incr_get_with_predicate();
-        let batch = self.index.get(entry_id)?;
-        self.cache_policy
-            .notify_access(entry_id, CachedBatchType::from(&batch));
-
-        Some(match batch {
-            CachedBatch::MemoryArrow(array) => {
-                let selection_array = BooleanArray::new(selection.clone(), None);
-                let selected = arrow::compute::filter(&array, &selection_array).ok()?;
-                GetWithPredicateResult::Filtered(selected)
-            }
-            CachedBatch::DiskArrow(_) => {
-                let path = self.io_context.arrow_path(entry_id);
-                let bytes = self.io_context.read(path, None).await.ok()?;
-                let cursor = std::io::Cursor::new(bytes.to_vec());
-                let mut reader = arrow::ipc::reader::StreamReader::try_new(cursor, None).ok()?;
-                let batch = reader.next()?.ok()?;
-                let array = batch.column(0).clone();
-                let selection_array = BooleanArray::new(selection.clone(), None);
-                let filtered = arrow::compute::filter(&array, &selection_array).ok()?;
-                GetWithPredicateResult::Filtered(filtered)
-            }
-            CachedBatch::MemoryLiquid(array) => {
-                match array.try_eval_predicate(predicate, selection) {
-                    Some(buf) => GetWithPredicateResult::Evaluated(buf),
-                    None => {
-                        let filtered = array.filter_to_arrow(selection);
-                        GetWithPredicateResult::Filtered(filtered)
-                    }
-                }
-            }
-            CachedBatch::DiskLiquid(_) => {
-                let path = self.io_context.liquid_path(entry_id);
-                let bytes = self.io_context.read(path, None).await.ok()?;
-                let compressor_states = self.io_context.get_compressor(entry_id);
-                let compressor = compressor_states.fsst_compressor();
-                let liquid = crate::liquid_array::ipc::read_from_bytes(
-                    bytes,
-                    &crate::liquid_array::ipc::LiquidIPCContext::new(compressor),
-                );
-                match liquid.try_eval_predicate(predicate, selection) {
-                    Some(buf) => GetWithPredicateResult::Evaluated(buf),
-                    None => {
-                        let filtered = liquid.filter_to_arrow(selection);
-                        GetWithPredicateResult::Filtered(filtered)
-                    }
-                }
-            }
-            CachedBatch::MemoryHybridLiquid(array) => {
-                match array.try_eval_predicate(predicate, selection) {
-                    Ok(Some(buf)) => {
-                        self.runtime_stats.incr_get_predicate_hybrid_success();
-                        GetWithPredicateResult::Evaluated(buf)
-                    }
-                    Ok(None) => {
-                        self.runtime_stats.incr_get_predicate_hybrid_unsupported();
-                        match array.filter_to_arrow(selection) {
-                            Ok(arr) => GetWithPredicateResult::Filtered(arr),
-                            Err(io_range) => {
-                                self.runtime_stats.incr_get_predicate_hybrid_needs_io();
-                                let path = self.io_context.liquid_path(entry_id);
-                                let bytes = self
-                                    .io_context
-                                    .read(path, Some(io_range.range().clone()))
-                                    .await
-                                    .ok()?;
-                                let new_array = array.soak(bytes);
-                                match new_array.try_eval_predicate(predicate, selection) {
-                                    Some(buf) => GetWithPredicateResult::Evaluated(buf),
-                                    None => {
-                                        let filtered = new_array.filter_to_arrow(selection);
-                                        GetWithPredicateResult::Filtered(filtered)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Err(io_range) => {
-                        self.runtime_stats.incr_get_predicate_hybrid_needs_io();
-                        let path = self.io_context.liquid_path(entry_id);
-                        let bytes = self
-                            .io_context
-                            .read(path, Some(io_range.range().clone()))
-                            .await
-                            .ok()?;
-                        let new_array = array.soak(bytes);
-                        match new_array.try_eval_predicate(predicate, selection) {
-                            Some(buf) => GetWithPredicateResult::Evaluated(buf),
-                            None => {
-                                let filtered = new_array.filter_to_arrow(selection);
-                                GetWithPredicateResult::Filtered(filtered)
-                            }
-                        }
-                    }
-                }
-            }
-        })
+    /// Create an [`EvaluatePredicate`] builder for evaluating predicates on cached data.
+    pub fn eval_predicate<'a>(
+        &'a self,
+        entry_id: &'a EntryID,
+        predicate: &'a Arc<dyn PhysicalExpr>,
+    ) -> EvaluatePredicate<'a> {
+        EvaluatePredicate::new(self, entry_id, predicate)
     }
 
     /// Try to read a liquid array from the cache.
@@ -900,6 +691,369 @@ impl CacheStorage {
         let disk_usage = bytes.len();
         self.budget.add_used_disk_bytes(disk_usage);
     }
+
+    async fn read_arrow_array(
+        &self,
+        entry_id: &EntryID,
+        selection: Option<&BooleanBuffer>,
+        expression: Option<&CacheExpression>,
+    ) -> Option<ArrayRef> {
+        use arrow::array::BooleanArray;
+
+        let batch = self.index.get(entry_id)?;
+        self.cache_policy
+            .notify_access(entry_id, CachedBatchType::from(&batch));
+
+        match batch {
+            CachedBatch::MemoryArrow(array) => match selection {
+                Some(selection) => {
+                    let selection_array = BooleanArray::new(selection.clone(), None);
+                    arrow::compute::filter(&array, &selection_array).ok()
+                }
+                None => Some(array.clone()),
+            },
+            CachedBatch::MemoryLiquid(array) => match selection {
+                Some(selection) => Some(array.filter_to_arrow(selection)),
+                None => Some(array.to_arrow_array()),
+            },
+            CachedBatch::DiskLiquid(data_type) => match selection {
+                Some(selection) => {
+                    if selection.count_set_bits() == 0 {
+                        return Some(arrow::array::new_empty_array(&data_type));
+                    }
+                    let path = self.io_context.liquid_path(entry_id);
+                    let bytes = self.io_context.read(path, None).await.ok()?;
+                    let compressor_states = self.io_context.get_compressor(entry_id);
+                    let compressor = compressor_states.fsst_compressor();
+                    let liquid = crate::liquid_array::ipc::read_from_bytes(
+                        bytes,
+                        &crate::liquid_array::ipc::LiquidIPCContext::new(compressor),
+                    );
+                    Some(liquid.filter_to_arrow(selection))
+                }
+                None => {
+                    let path = self.io_context.liquid_path(entry_id);
+                    let bytes = self.io_context.read(path, None).await.ok()?;
+                    let compressor_states = self.io_context.get_compressor(entry_id);
+                    let compressor = compressor_states.fsst_compressor();
+                    let liquid = crate::liquid_array::ipc::read_from_bytes(
+                        bytes,
+                        &crate::liquid_array::ipc::LiquidIPCContext::new(compressor),
+                    );
+                    Some(liquid.to_arrow_array())
+                }
+            },
+            CachedBatch::MemoryHybridLiquid(array) => {
+                if let Some(CacheExpression::ExtractDate32 { field }) = expression
+                    && let Some(squeezed) = array.as_any().downcast_ref::<SqueezedDate32Array>()
+                    && squeezed.field() == *field
+                {
+                    let component = Arc::new(squeezed.to_component_date32()) as ArrayRef;
+                    self.runtime_stats.incr_hit_date32_expression();
+                    if let Some(selection) = selection {
+                        let selection_array = BooleanArray::new(selection.clone(), None);
+                        let filtered = arrow::compute::filter(&component, &selection_array).ok()?;
+                        return Some(filtered);
+                    }
+                    return Some(component);
+                }
+                if let Some(selection) = selection {
+                    match array.filter_to_arrow(selection) {
+                        Ok(arr) => Some(arr),
+                        Err(io_range) => {
+                            let path = self.io_context.liquid_path(entry_id);
+                            let bytes = self
+                                .io_context
+                                .read(path, Some(io_range.range().clone()))
+                                .await
+                                .ok()?;
+                            let new_array = array.soak(bytes);
+                            Some(new_array.filter_to_arrow(selection))
+                        }
+                    }
+                } else {
+                    match array.to_arrow_array() {
+                        Ok(arr) => Some(arr),
+                        Err(io_range) => {
+                            let path = self.io_context.liquid_path(entry_id);
+                            let bytes = self
+                                .io_context
+                                .read(path, Some(io_range.range().clone()))
+                                .await
+                                .ok()?;
+                            let new_array = array.soak(bytes);
+                            Some(new_array.to_arrow_array())
+                        }
+                    }
+                }
+            }
+            CachedBatch::DiskArrow(_) => {
+                let path = self.io_context.arrow_path(entry_id);
+                let bytes = self.io_context.read(path, None).await.ok()?;
+                let cursor = std::io::Cursor::new(bytes.to_vec());
+                let mut reader = arrow::ipc::reader::StreamReader::try_new(cursor, None).ok()?;
+                let batch = reader.next()?.ok()?;
+                let array = batch.column(0).clone();
+                match selection {
+                    Some(selection) => {
+                        let selection_array = BooleanArray::new(selection.clone(), None);
+                        arrow::compute::filter(&array, &selection_array).ok()
+                    }
+                    None => Some(array),
+                }
+            }
+        }
+    }
+
+    async fn eval_predicate_internal(
+        &self,
+        entry_id: &EntryID,
+        selection_opt: Option<&BooleanBuffer>,
+        predicate: &Arc<dyn PhysicalExpr>,
+        _expression_hint: Option<&CacheExpression>,
+    ) -> Option<Result<BooleanArray, ArrayRef>> {
+        use arrow::array::BooleanArray;
+
+        self.runtime_stats.incr_get_with_predicate();
+        let batch = self.index.get(entry_id)?;
+        self.cache_policy
+            .notify_access(entry_id, CachedBatchType::from(&batch));
+
+        match batch {
+            CachedBatch::MemoryArrow(array) => {
+                let mut owned = None;
+                let selection = selection_opt.unwrap_or_else(|| {
+                    owned = Some(BooleanBuffer::new_set(array.len()));
+                    owned.as_ref().unwrap()
+                });
+                let selection_array = BooleanArray::new(selection.clone(), None);
+                let filtered = arrow::compute::filter(&array, &selection_array).ok()?;
+                Some(Err(filtered))
+            }
+            CachedBatch::DiskArrow(_) => {
+                let path = self.io_context.arrow_path(entry_id);
+                let bytes = self.io_context.read(path, None).await.ok()?;
+                let cursor = std::io::Cursor::new(bytes.to_vec());
+                let mut reader = arrow::ipc::reader::StreamReader::try_new(cursor, None).ok()?;
+                let batch = reader.next()?.ok()?;
+                let array = batch.column(0).clone();
+                let mut owned = None;
+                let selection = selection_opt.unwrap_or_else(|| {
+                    owned = Some(BooleanBuffer::new_set(array.len()));
+                    owned.as_ref().unwrap()
+                });
+                let selection_array = BooleanArray::new(selection.clone(), None);
+                let filtered = arrow::compute::filter(&array, &selection_array).ok()?;
+                Some(Err(filtered))
+            }
+            CachedBatch::MemoryLiquid(array) => {
+                let mut owned = None;
+                let selection = selection_opt.unwrap_or_else(|| {
+                    owned = Some(BooleanBuffer::new_set(array.len()));
+                    owned.as_ref().unwrap()
+                });
+                match array.try_eval_predicate(predicate, selection) {
+                    Some(buf) => Some(Ok(buf)),
+                    None => {
+                        let filtered = array.filter_to_arrow(selection);
+                        Some(Err(filtered))
+                    }
+                }
+            }
+            CachedBatch::DiskLiquid(_) => {
+                let path = self.io_context.liquid_path(entry_id);
+                let bytes = self.io_context.read(path, None).await.ok()?;
+                let compressor_states = self.io_context.get_compressor(entry_id);
+                let compressor = compressor_states.fsst_compressor();
+                let liquid = crate::liquid_array::ipc::read_from_bytes(
+                    bytes,
+                    &crate::liquid_array::ipc::LiquidIPCContext::new(compressor),
+                );
+                let mut owned = None;
+                let selection = selection_opt.unwrap_or_else(|| {
+                    owned = Some(BooleanBuffer::new_set(liquid.len()));
+                    owned.as_ref().unwrap()
+                });
+                match liquid.try_eval_predicate(predicate, selection) {
+                    Some(buf) => Some(Ok(buf)),
+                    None => {
+                        let filtered = liquid.filter_to_arrow(selection);
+                        Some(Err(filtered))
+                    }
+                }
+            }
+            CachedBatch::MemoryHybridLiquid(array) => {
+                let mut owned = None;
+                let selection = selection_opt.unwrap_or_else(|| {
+                    owned = Some(BooleanBuffer::new_set(array.len()));
+                    owned.as_ref().unwrap()
+                });
+                match array.try_eval_predicate(predicate, selection) {
+                    Ok(Some(buf)) => {
+                        self.runtime_stats.incr_get_predicate_hybrid_success();
+                        Some(Ok(buf))
+                    }
+                    Ok(None) => {
+                        self.runtime_stats.incr_get_predicate_hybrid_unsupported();
+                        match array.filter_to_arrow(selection) {
+                            Ok(arr) => Some(Err(arr)),
+                            Err(io_range) => {
+                                self.runtime_stats.incr_get_predicate_hybrid_needs_io();
+                                let path = self.io_context.liquid_path(entry_id);
+                                let bytes = self
+                                    .io_context
+                                    .read(path, Some(io_range.range().clone()))
+                                    .await
+                                    .ok()?;
+                                let new_array = array.soak(bytes);
+                                match new_array.try_eval_predicate(predicate, selection) {
+                                    Some(buf) => Some(Ok(buf)),
+                                    None => {
+                                        let filtered = new_array.filter_to_arrow(selection);
+                                        Some(Err(filtered))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(io_range) => {
+                        self.runtime_stats.incr_get_predicate_hybrid_needs_io();
+                        let path = self.io_context.liquid_path(entry_id);
+                        let bytes = self
+                            .io_context
+                            .read(path, Some(io_range.range().clone()))
+                            .await
+                            .ok()?;
+                        let new_array = array.soak(bytes);
+                        match new_array.try_eval_predicate(predicate, selection) {
+                            Some(buf) => Some(Ok(buf)),
+                            None => {
+                                let filtered = new_array.filter_to_arrow(selection);
+                                Some(Err(filtered))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl<'a> Get<'a> {
+    fn new(storage: &'a CacheStorage, entry_id: &'a EntryID) -> Self {
+        Self {
+            storage,
+            entry_id,
+            selection: None,
+            expression_hint: None,
+        }
+    }
+
+    /// Attach a selection bitmap used to filter rows prior to materialization.
+    pub fn with_selection(mut self, selection: &'a BooleanBuffer) -> Self {
+        self.selection = Some(selection);
+        self
+    }
+
+    /// Attach an expression hint that may help optimize cache materialization.
+    pub fn with_expression_hint(mut self, expression: &'a CacheExpression) -> Self {
+        self.expression_hint = Some(expression);
+        self
+    }
+
+    /// Attach an optional expression hint.
+    pub fn with_optional_expression_hint(
+        mut self,
+        expression: Option<&'a CacheExpression>,
+    ) -> Self {
+        if let Some(expr) = expression {
+            self.expression_hint = Some(expr);
+        }
+        self
+    }
+
+    /// Materialize the cached array as [`ArrayRef`].
+    pub async fn read(self) -> Option<ArrayRef> {
+        if self.selection.is_some() {
+            self.storage.runtime_stats.incr_get_with_selection();
+        } else {
+            self.storage.runtime_stats.incr_get_arrow_array();
+        }
+        self.storage
+            .read_arrow_array(self.entry_id, self.selection, self.expression_hint)
+            .await
+    }
+}
+
+impl<'a> IntoFuture for Get<'a> {
+    type Output = Option<ArrayRef>;
+    type IntoFuture = Pin<Box<dyn std::future::Future<Output = Option<ArrayRef>> + Send + 'a>>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(async move { self.read().await })
+    }
+}
+
+impl<'a> EvaluatePredicate<'a> {
+    fn new(
+        storage: &'a CacheStorage,
+        entry_id: &'a EntryID,
+        predicate: &'a Arc<dyn PhysicalExpr>,
+    ) -> Self {
+        Self {
+            storage,
+            entry_id,
+            predicate,
+            selection: None,
+            expression_hint: None,
+        }
+    }
+
+    /// Attach a selection bitmap used to pre-filter rows before predicate evaluation.
+    pub fn with_selection(mut self, selection: &'a BooleanBuffer) -> Self {
+        self.selection = Some(selection);
+        self
+    }
+
+    /// Attach an expression hint that may help optimize predicate evaluation.
+    pub fn with_expression_hint(mut self, expression: &'a CacheExpression) -> Self {
+        self.expression_hint = Some(expression);
+        self
+    }
+
+    /// Attach an optional expression hint without manual matching at call sites.
+    pub fn with_optional_expression_hint(
+        mut self,
+        expression: Option<&'a CacheExpression>,
+    ) -> Self {
+        if let Some(expr) = expression {
+            self.expression_hint = Some(expr);
+        }
+        self
+    }
+
+    /// Evaluate the predicate against the cached data.
+    pub async fn read(self) -> Option<Result<BooleanArray, ArrayRef>> {
+        self.storage
+            .eval_predicate_internal(
+                self.entry_id,
+                self.selection,
+                self.predicate,
+                self.expression_hint,
+            )
+            .await
+    }
+}
+
+impl<'a> IntoFuture for EvaluatePredicate<'a> {
+    type Output = Option<Result<BooleanArray, ArrayRef>>;
+    type IntoFuture = Pin<
+        Box<dyn std::future::Future<Output = Option<Result<BooleanArray, ArrayRef>>> + Send + 'a>,
+    >;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(async move { self.read().await })
+    }
 }
 
 #[cfg(test)]
@@ -996,7 +1150,9 @@ mod tests {
 
         let expr = CacheExpression::extract_date32(Date32Field::Year);
         let result = store
-            .get_arrow_array_with_expression(&entry_id, Some(&expr))
+            .get(&entry_id)
+            .with_expression_hint(&expr)
+            .read()
             .await
             .expect("array present");
 
