@@ -133,34 +133,15 @@ impl LiquidCachedColumn {
         filter: &BooleanBuffer,
     ) -> Option<ArrayRef> {
         let entry_id = self.entry_id(batch_id).into();
-        if let Some(expression) = self.expression()
-            && filter.count_set_bits() == filter.len()
-        {
-            // test only path
-            return self
-                .get_arrow_array_with_expression(batch_id, Some(expression))
-                .await;
-        }
         let array = self
             .cache_store
             .get(&entry_id)
             .with_selection(filter)
+            .with_optional_expression_hint(self.expression())
             .await?;
         Some(array)
     }
 
-    /// Retrieve an arrow array optionally tailored to a cache expression.
-    pub async fn get_arrow_array_with_expression(
-        &self,
-        batch_id: BatchID,
-        expression: Option<&CacheExpression>,
-    ) -> Option<ArrayRef> {
-        let entry_id = self.entry_id(batch_id).into();
-        self.cache_store
-            .get(&entry_id)
-            .with_optional_expression_hint(expression)
-            .await
-    }
 
     #[cfg(test)]
     pub(crate) async fn get_arrow_array_test_only(&self, batch_id: BatchID) -> Option<ArrayRef> {
