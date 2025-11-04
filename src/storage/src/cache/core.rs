@@ -325,7 +325,7 @@ pub struct CacheStorage {
 
 /// Builder returned by [`CacheStorage::get`] for configuring cache reads.
 #[derive(Debug)]
-pub struct CacheReader<'a> {
+pub struct ReadCache<'a> {
     storage: &'a CacheStorage,
     entry_id: &'a EntryID,
     selection: Option<&'a BooleanBuffer>,
@@ -334,7 +334,7 @@ pub struct CacheReader<'a> {
 
 /// Builder for predicate evaluation on cached data.
 #[derive(Debug)]
-pub struct CachePredicateBuilder<'a> {
+pub struct EvaluatePredicate<'a> {
     storage: &'a CacheStorage,
     entry_id: &'a EntryID,
     predicate: &'a Arc<dyn PhysicalExpr>,
@@ -388,8 +388,8 @@ impl CacheStorage {
     }
 
     /// Create a [`CacheReaderBuilder`] for the provided entry.
-    pub fn get<'a>(&'a self, entry_id: &'a EntryID) -> CacheReader<'a> {
-        CacheReader::new(self, entry_id)
+    pub fn get<'a>(&'a self, entry_id: &'a EntryID) -> ReadCache<'a> {
+        ReadCache::new(self, entry_id)
     }
 
     /// Create a [`CachePredicateBuilder`] for evaluating predicates on cached data.
@@ -397,8 +397,8 @@ impl CacheStorage {
         &'a self,
         entry_id: &'a EntryID,
         predicate: &'a Arc<dyn PhysicalExpr>,
-    ) -> CachePredicateBuilder<'a> {
-        CachePredicateBuilder::new(self, entry_id, predicate)
+    ) -> EvaluatePredicate<'a> {
+        EvaluatePredicate::new(self, entry_id, predicate)
     }
 
     async fn get_arrow_array_internal(
@@ -987,7 +987,7 @@ impl CacheStorage {
     }
 }
 
-impl<'a> CacheReader<'a> {
+impl<'a> ReadCache<'a> {
     fn new(storage: &'a CacheStorage, entry_id: &'a EntryID) -> Self {
         Self {
             storage,
@@ -1020,8 +1020,7 @@ impl<'a> CacheReader<'a> {
         self
     }
 
-    /// Materialize the cached array as [`ArrayRef`].
-    pub async fn read(self) -> Option<ArrayRef> {
+    async fn read(self) -> Option<ArrayRef> {
         match self.selection {
             Some(selection) => {
                 self.storage
@@ -1037,7 +1036,7 @@ impl<'a> CacheReader<'a> {
     }
 }
 
-impl<'a> IntoFuture for CacheReader<'a> {
+impl<'a> IntoFuture for ReadCache<'a> {
     type Output = Option<ArrayRef>;
     type IntoFuture = Pin<Box<dyn std::future::Future<Output = Option<ArrayRef>> + Send + 'a>>;
 
@@ -1046,7 +1045,7 @@ impl<'a> IntoFuture for CacheReader<'a> {
     }
 }
 
-impl<'a> CachePredicateBuilder<'a> {
+impl<'a> EvaluatePredicate<'a> {
     fn new(
         storage: &'a CacheStorage,
         entry_id: &'a EntryID,
@@ -1097,7 +1096,7 @@ impl<'a> CachePredicateBuilder<'a> {
     }
 }
 
-impl<'a> IntoFuture for CachePredicateBuilder<'a> {
+impl<'a> IntoFuture for EvaluatePredicate<'a> {
     type Output = Option<BooleanArray>;
     type IntoFuture = Pin<Box<dyn std::future::Future<Output = Option<BooleanArray>> + Send + 'a>>;
 
