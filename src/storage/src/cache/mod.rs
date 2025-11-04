@@ -15,8 +15,8 @@ mod utils;
 pub use cache_policies::CachePolicy;
 pub use cached_batch::{CachedBatch, CachedBatchType};
 pub use core::{
-    BlockingIoContext, CacheStorage, CacheStorageBuilder, DefaultIoContext, EvaluatePredicate,
-    IoContext, Get,
+    BlockingIoContext, CacheStorage, CacheStorageBuilder, DefaultIoContext, EvaluatePredicate, Get,
+    IoContext,
 };
 pub use expressions::CacheExpression;
 pub use stats::{CacheStats, RuntimeStats, RuntimeStatsSnapshot};

@@ -123,7 +123,22 @@ let result = storage
     .with_selection(&selection)
     .await
     .unwrap();
+let mask = match result {
+    Ok(mask) => mask,
+    Err(filtered) => {
+        // Fallback path when the predicate cannot be evaluated inside the cache.
+        BooleanArray::from(
+            filtered
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap()
+                .iter()
+                .map(|value| Some(value == Some("apple")))
+                .collect::<Vec<_>>(),
+        )
+    }
+};
 let expected_mask = BooleanArray::from(vec![Some(true), Some(false), Some(true), Some(false)]);
-assert_eq!(result, expected_mask);
+assert_eq!(mask, expected_mask);
 });
 ```

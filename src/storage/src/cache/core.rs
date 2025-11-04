@@ -806,7 +806,7 @@ impl CacheStorage {
         selection_opt: Option<&BooleanBuffer>,
         predicate: &Arc<dyn PhysicalExpr>,
         _expression_hint: Option<&CacheExpression>,
-    ) -> Option<BooleanArray> {
+    ) -> Option<Result<BooleanArray, ArrayRef>> {
         use arrow::array::BooleanArray;
 
         self.runtime_stats.incr_get_with_predicate();
@@ -823,7 +823,7 @@ impl CacheStorage {
                 });
                 let selection_array = BooleanArray::new(selection.clone(), None);
                 let filtered = arrow::compute::filter(&array, &selection_array).ok()?;
-                self.evaluate_predicate_on_arrow(filtered, predicate)
+                Some(Err(filtered))
             }
             CachedBatch::DiskArrow(_) => {
                 let path = self.io_context.arrow_path(entry_id);
@@ -839,7 +839,7 @@ impl CacheStorage {
                 });
                 let selection_array = BooleanArray::new(selection.clone(), None);
                 let filtered = arrow::compute::filter(&array, &selection_array).ok()?;
-                self.evaluate_predicate_on_arrow(filtered, predicate)
+                Some(Err(filtered))
             }
             CachedBatch::MemoryLiquid(array) => {
                 let mut owned = None;
@@ -848,10 +848,10 @@ impl CacheStorage {
                     owned.as_ref().unwrap()
                 });
                 match array.try_eval_predicate(predicate, selection) {
-                    Some(buf) => Some(buf),
+                    Some(buf) => Some(Ok(buf)),
                     None => {
                         let filtered = array.filter_to_arrow(selection);
-                        self.evaluate_predicate_on_arrow(filtered, predicate)
+                        Some(Err(filtered))
                     }
                 }
             }
@@ -870,10 +870,10 @@ impl CacheStorage {
                     owned.as_ref().unwrap()
                 });
                 match liquid.try_eval_predicate(predicate, selection) {
-                    Some(buf) => Some(buf),
+                    Some(buf) => Some(Ok(buf)),
                     None => {
                         let filtered = liquid.filter_to_arrow(selection);
-                        self.evaluate_predicate_on_arrow(filtered, predicate)
+                        Some(Err(filtered))
                     }
                 }
             }
@@ -886,12 +886,12 @@ impl CacheStorage {
                 match array.try_eval_predicate(predicate, selection) {
                     Ok(Some(buf)) => {
                         self.runtime_stats.incr_get_predicate_hybrid_success();
-                        Some(buf)
+                        Some(Ok(buf))
                     }
                     Ok(None) => {
                         self.runtime_stats.incr_get_predicate_hybrid_unsupported();
                         match array.filter_to_arrow(selection) {
-                            Ok(arr) => self.evaluate_predicate_on_arrow(arr, predicate),
+                            Ok(arr) => Some(Err(arr)),
                             Err(io_range) => {
                                 self.runtime_stats.incr_get_predicate_hybrid_needs_io();
                                 let path = self.io_context.liquid_path(entry_id);
@@ -902,10 +902,10 @@ impl CacheStorage {
                                     .ok()?;
                                 let new_array = array.soak(bytes);
                                 match new_array.try_eval_predicate(predicate, selection) {
-                                    Some(buf) => Some(buf),
+                                    Some(buf) => Some(Ok(buf)),
                                     None => {
                                         let filtered = new_array.filter_to_arrow(selection);
-                                        self.evaluate_predicate_on_arrow(filtered, predicate)
+                                        Some(Err(filtered))
                                     }
                                 }
                             }
@@ -921,38 +921,16 @@ impl CacheStorage {
                             .ok()?;
                         let new_array = array.soak(bytes);
                         match new_array.try_eval_predicate(predicate, selection) {
-                            Some(buf) => Some(buf),
+                            Some(buf) => Some(Ok(buf)),
                             None => {
                                 let filtered = new_array.filter_to_arrow(selection);
-                                self.evaluate_predicate_on_arrow(filtered, predicate)
+                                Some(Err(filtered))
                             }
                         }
                     }
                 }
             }
         }
-    }
-
-    fn evaluate_predicate_on_arrow(
-        &self,
-        array: ArrayRef,
-        predicate: &Arc<dyn PhysicalExpr>,
-    ) -> Option<BooleanArray> {
-        use arrow::datatypes::{Field, Schema};
-        use arrow::record_batch::RecordBatch;
-        use datafusion::common::cast::as_boolean_array;
-
-        let nullable = array.null_count() > 0;
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "col",
-            array.data_type().clone(),
-            nullable,
-        )]));
-        let batch = RecordBatch::try_new(schema, vec![array.clone()]).ok()?;
-        let value = predicate.evaluate(&batch).ok()?;
-        let evaluated = value.into_array(batch.num_rows()).ok()?;
-        let boolean = as_boolean_array(&evaluated).ok()?.clone();
-        Some(boolean)
     }
 }
 
@@ -1055,7 +1033,7 @@ impl<'a> EvaluatePredicate<'a> {
     }
 
     /// Evaluate the predicate against the cached data.
-    pub async fn read(self) -> Option<BooleanArray> {
+    pub async fn read(self) -> Option<Result<BooleanArray, ArrayRef>> {
         self.storage
             .eval_predicate_internal(
                 self.entry_id,
@@ -1068,8 +1046,10 @@ impl<'a> EvaluatePredicate<'a> {
 }
 
 impl<'a> IntoFuture for EvaluatePredicate<'a> {
-    type Output = Option<BooleanArray>;
-    type IntoFuture = Pin<Box<dyn std::future::Future<Output = Option<BooleanArray>> + Send + 'a>>;
+    type Output = Option<Result<BooleanArray, ArrayRef>>;
+    type IntoFuture = Pin<
+        Box<dyn std::future::Future<Output = Option<Result<BooleanArray, ArrayRef>>> + Send + 'a>,
+    >;
 
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move { self.read().await })

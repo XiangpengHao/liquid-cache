@@ -4,8 +4,10 @@ use arrow::{
     array::{Array, ArrayRef, BooleanArray},
     buffer::BooleanBuffer,
     compute::prep_null_mask_filter,
+    record_batch::RecordBatch,
 };
-use arrow_schema::{ArrowError, DataType, Field};
+use arrow_schema::{ArrowError, DataType, Field, Schema};
+use parquet::arrow::arrow_reader::ArrowPredicate;
 use liquid_cache_storage::cache::{CacheExpression, CacheStorage};
 
 use crate::{
@@ -79,6 +81,11 @@ impl LiquidCachedColumn {
         self.expression.as_ref()
     }
 
+    fn array_to_record_batch(&self, array: ArrayRef) -> Result<RecordBatch, ArrowError> {
+        let schema = Arc::new(Schema::new(vec![self.field.clone()]));
+        RecordBatch::try_new(schema, vec![array])
+    }
+
     /// Evaluates a predicate on a cached column.
     pub async fn eval_predicate_with_filter(
         &self,
@@ -87,17 +94,36 @@ impl LiquidCachedColumn {
         predicate: &mut LiquidPredicate,
     ) -> Option<Result<BooleanArray, ArrowError>> {
         let entry_id = self.entry_id(batch_id).into();
-        let boolean_array = self
+        let result = self
             .cache_store
             .eval_predicate(&entry_id, predicate.physical_expr_physical_column_index())
             .with_selection(filter)
             .with_optional_expression_hint(self.expression())
             .await?;
-        let predicate_filter = match boolean_array.null_count() {
-            0 => boolean_array,
-            _ => prep_null_mask_filter(&boolean_array),
-        };
-        Some(Ok(predicate_filter))
+        match result {
+            Ok(boolean_array) => {
+                let predicate_filter = match boolean_array.null_count() {
+                    0 => boolean_array,
+                    _ => prep_null_mask_filter(&boolean_array),
+                };
+                Some(Ok(predicate_filter))
+            }
+            Err(array) => {
+                let record_batch = match self.array_to_record_batch(array) {
+                    Ok(batch) => batch,
+                    Err(err) => return Some(Err(err)),
+                };
+                let boolean_array = match predicate.evaluate(record_batch) {
+                    Ok(arr) => arr,
+                    Err(err) => return Some(Err(err)),
+                };
+                let predicate_filter = match boolean_array.null_count() {
+                    0 => boolean_array,
+                    _ => prep_null_mask_filter(&boolean_array),
+                };
+                Some(Ok(predicate_filter))
+            }
+        }
     }
 
     /// Get an arrow array with a filter applied.

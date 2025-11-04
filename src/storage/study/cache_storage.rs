@@ -74,10 +74,11 @@ fn main() {
         for (i, id) in ids.iter().enumerate() {
             let len = lens[i];
             let selection = BooleanBuffer::new_set(len);
-            if let Some(_mask) = storage
+            if let Some(result) = storage
                 .eval_predicate(id, &pred_expr)
                 .with_selection(&selection)
                 .await
+                && result.is_ok()
             {
                 evaluated += 1;
             }
