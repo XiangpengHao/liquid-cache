@@ -7,7 +7,8 @@ use crate::{
         runtime::ArrowReaderBuilderBridge,
     },
 };
-use arrow_schema::SchemaRef;
+use ahash::AHashMap;
+use arrow_schema::{Field, Schema, SchemaRef};
 use datafusion::{
     common::exec_err,
     datasource::{
@@ -86,6 +87,32 @@ impl LiquidParquetOpener {
     }
 }
 
+// transfer lineage metadata from tagged schema to dst schema
+// The two schema must from the same file.
+fn transfer_lineage_metadata_to_file_schema(
+    tagged_schema: SchemaRef,
+    dst_schema: SchemaRef,
+) -> Schema {
+    let mut new_fields = vec![];
+
+    let mut tagged_fields = AHashMap::new();
+    for field in tagged_schema.fields().iter() {
+        tagged_fields.insert(field.name().to_string(), field.clone());
+    }
+    for field in dst_schema.fields().iter() {
+        let tagged_field = match tagged_fields.get(field.name()) {
+            Some(tagged_field) => {
+                let new_field = Field::clone(field).with_metadata(tagged_field.metadata().clone());
+                Arc::new(new_field)
+            }
+            None => field.clone(),
+        };
+        new_fields.push(tagged_field);
+    }
+    let dst_metadata = dst_schema.metadata().clone();
+    Schema::new(new_fields).with_metadata(dst_metadata)
+}
+
 impl FileOpener for LiquidParquetOpener {
     fn open(
         &self,
@@ -144,6 +171,10 @@ impl FileOpener for LiquidParquetOpener {
             //   This is what the physical file schema is coerced to.
             // - The physical file schema: this is the schema as defined by the parquet file. This is what the parquet file actually contains.
             let physical_file_schema = Arc::clone(reader_metadata.schema());
+            let physical_file_schema = Arc::new(transfer_lineage_metadata_to_file_schema(
+                Arc::clone(&downstream_full_schema),
+                Arc::clone(&physical_file_schema),
+            ));
             options = options.with_schema(Arc::clone(&physical_file_schema));
             reader_metadata =
                 ArrowReaderMetadata::try_new(Arc::clone(reader_metadata.metadata()), options)?;

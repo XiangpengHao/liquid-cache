@@ -406,13 +406,14 @@ impl CacheStorage {
                 Some(liquid.to_arrow_array())
             }
             CachedBatch::MemoryHybridLiquid(array) => {
-                if let Some(CacheExpression::ExtractDate32 { field }) = expression {
-                    if let Some(squeezed) = array.as_any().downcast_ref::<SqueezedDate32Array>() {
-                        if squeezed.field() == *field {
-                            let component = Arc::new(squeezed.to_component_int32()) as ArrayRef;
-                            return Some(component);
-                        }
-                    }
+                // TODO: we need to do this for other apis as well.
+                if let Some(CacheExpression::ExtractDate32 { field }) = expression
+                    && let Some(squeezed) = array.as_any().downcast_ref::<SqueezedDate32Array>()
+                    && squeezed.field() == *field
+                {
+                    let component = Arc::new(squeezed.to_component_date32()) as ArrayRef;
+                    self.runtime_stats.incr_hit_date32_expression();
+                    return Some(component);
                 }
                 match array.to_arrow_array() {
                     Ok(arr) => Some(arr),
@@ -1001,8 +1002,8 @@ mod tests {
 
         let result = result
             .as_any()
-            .downcast_ref::<Int32Array>()
-            .expect("int32 result");
+            .downcast_ref::<Date32Array>()
+            .expect("date32 result");
         assert_eq!(result.len(), 4);
         assert_eq!(result.value(0), 1970);
         assert_eq!(result.value(1), 1971);

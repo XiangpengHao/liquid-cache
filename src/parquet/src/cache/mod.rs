@@ -2,184 +2,34 @@
 //!
 
 use crate::io::ParquetIoContext;
-use crate::optimizers::DATE_MAPPING_METADATA_KEY;
 use crate::reader::{LiquidPredicate, extract_multi_column_or};
 use crate::sync::{Mutex, RwLock};
 use ahash::AHashMap;
-use arrow::array::{Array, ArrayRef, BooleanArray, RecordBatch};
+use arrow::array::{BooleanArray, RecordBatch};
 use arrow::buffer::BooleanBuffer;
-use arrow::compute::prep_null_mask_filter;
-use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
+use arrow_schema::{ArrowError, Field, Schema, SchemaRef};
 use liquid_cache_common::IoMode;
-use liquid_cache_storage::cache::GetWithPredicateResult;
 use liquid_cache_storage::cache::squeeze_policies::SqueezePolicy;
-use liquid_cache_storage::cache::{
-    CacheExpression, CachePolicy, CacheStorage, CacheStorageBuilder,
-};
+use liquid_cache_storage::cache::{CachePolicy, CacheStorage, CacheStorageBuilder};
 use parquet::arrow::arrow_reader::ArrowPredicate;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod column;
 mod id;
 mod stats;
 
+pub(crate) use column::InsertArrowArrayError;
+pub use column::{LiquidCachedColumn, LiquidCachedColumnRef};
 pub(crate) use id::ColumnAccessPath;
 pub use id::{BatchID, ParquetArrayID};
-
-/// A column in the cache.
-#[derive(Debug)]
-pub struct LiquidCachedColumn {
-    cache_store: Arc<CacheStorage>,
-    field: Arc<Field>,
-    column_path: ColumnAccessPath,
-    expression: Option<CacheExpression>,
-}
-
-pub(crate) type LiquidCachedColumnRef = Arc<LiquidCachedColumn>;
 
 #[derive(Default, Debug)]
 struct ColumnMaps {
     // invariant: Arc::ptr_eq(map[field.name()], map[field.id()])
     by_id: AHashMap<u64, LiquidCachedColumnRef>,
     by_name: AHashMap<String, LiquidCachedColumnRef>,
-}
-
-fn infer_expression(field: &Field) -> Option<CacheExpression> {
-    let mapping = field.metadata().get(DATE_MAPPING_METADATA_KEY)?;
-    if field.data_type() != &DataType::Date32 {
-        return None;
-    }
-    CacheExpression::try_from_date_part_str(mapping)
-}
-
-/// Error type for inserting an arrow array into the cache.
-#[derive(Debug)]
-pub enum InsertArrowArrayError {
-    /// The array is already cached.
-    AlreadyCached,
-}
-
-impl LiquidCachedColumn {
-    fn new(
-        field: Arc<Field>,
-        cache_store: Arc<CacheStorage>,
-        column_id: u64,
-        row_group_id: u64,
-        file_id: u64,
-    ) -> Self {
-        let column_path = ColumnAccessPath::new(file_id, row_group_id, column_id);
-        column_path.initialize_dir(cache_store.config().cache_root_dir());
-        let expression = infer_expression(field.as_ref());
-        Self {
-            field,
-            cache_store,
-            column_path,
-            expression,
-        }
-    }
-
-    /// row_id must be on a batch boundary.
-    fn entry_id(&self, batch_id: BatchID) -> ParquetArrayID {
-        self.column_path.entry_id(batch_id)
-    }
-
-    pub(crate) fn is_cached(&self, batch_id: BatchID) -> bool {
-        self.cache_store.is_cached(&self.entry_id(batch_id).into())
-    }
-
-    fn arrow_array_to_record_batch(&self, array: ArrayRef, field: &Arc<Field>) -> RecordBatch {
-        let schema = Arc::new(Schema::new(vec![field.clone()]));
-        RecordBatch::try_new(schema, vec![array]).unwrap()
-    }
-
-    /// Returns the Arrow field metadata for this cached column.
-    pub fn field(&self) -> Arc<Field> {
-        self.field.clone()
-    }
-
-    /// Returns the expression metadata associated with this column, if any.
-    pub fn expression(&self) -> Option<&CacheExpression> {
-        self.expression.as_ref()
-    }
-
-    /// Evaluates a predicate on a cached column.
-    pub async fn eval_predicate_with_filter(
-        &self,
-        batch_id: BatchID,
-        filter: &BooleanBuffer,
-        predicate: &mut LiquidPredicate,
-    ) -> Option<Result<BooleanArray, ArrowError>> {
-        let entry_id = self.entry_id(batch_id).into();
-        let result = self
-            .cache_store
-            .get_with_predicate(
-                &entry_id,
-                filter,
-                predicate.physical_expr_physical_column_index(),
-            )
-            .await?;
-
-        match result {
-            GetWithPredicateResult::Evaluated(buffer) => Some(Ok(buffer)),
-            GetWithPredicateResult::Filtered(array) => {
-                let record_batch = self.arrow_array_to_record_batch(array, &self.field);
-                let boolean_array = predicate.evaluate(record_batch).unwrap();
-                let predicate_filter = match boolean_array.null_count() {
-                    0 => boolean_array,
-                    _ => prep_null_mask_filter(&boolean_array),
-                };
-                Some(Ok(predicate_filter))
-            }
-        }
-    }
-
-    /// Get an arrow array with a filter applied.
-    pub async fn get_arrow_array_with_filter(
-        &self,
-        batch_id: BatchID,
-        filter: &BooleanBuffer,
-    ) -> Option<ArrayRef> {
-        let entry_id = self.entry_id(batch_id).into();
-        let result = self
-            .cache_store
-            .get_with_selection(&entry_id, filter)
-            .await?;
-        result.ok()
-    }
-
-    /// Retrieve an arrow array optionally tailored to a cache expression.
-    pub async fn get_arrow_array_with_expression(
-        &self,
-        batch_id: BatchID,
-        expression: Option<&CacheExpression>,
-    ) -> Option<ArrayRef> {
-        let entry_id = self.entry_id(batch_id).into();
-        self.cache_store
-            .get_arrow_array_with_expression(&entry_id, expression)
-            .await
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn get_arrow_array_test_only(&self, batch_id: BatchID) -> Option<ArrayRef> {
-        let entry_id = self.entry_id(batch_id).into();
-        self.cache_store.get_arrow_array(&entry_id).await
-    }
-
-    /// Insert an array into the cache.
-    pub async fn insert(
-        self: &Arc<Self>,
-        batch_id: BatchID,
-        array: ArrayRef,
-    ) -> Result<(), InsertArrowArrayError> {
-        if self.is_cached(batch_id) {
-            return Err(InsertArrowArrayError::AlreadyCached);
-        }
-        self.cache_store
-            .insert(self.entry_id(batch_id).into(), array)
-            .await;
-        Ok(())
-    }
 }
 
 /// A row group in the cache.
@@ -310,7 +160,7 @@ impl LiquidCachedRowGroup {
                 .get_arrow_array_with_filter(batch_id, selection)
                 .await?;
             arrays.push(array);
-            fields.push(column.field.clone());
+            fields.push(column.field());
         }
         let schema = Arc::new(Schema::new(fields));
         let record_batch = RecordBatch::try_new(schema, arrays).unwrap();

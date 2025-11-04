@@ -23,7 +23,10 @@ use crate::liquid_array::hybrid_primitive_array::{
 use crate::liquid_array::ipc::LiquidIPCHeader;
 use crate::liquid_array::ipc::get_physical_type_id;
 use crate::liquid_array::raw::BitPackedArray;
-use crate::liquid_array::{LiquidArray, LiquidArrayRef, LiquidHybridArrayRef, PrimitiveKind};
+use crate::liquid_array::{
+    Date32Field, LiquidArray, LiquidArrayRef, LiquidHybridArrayRef, PrimitiveKind,
+    SqueezedDate32Array,
+};
 use crate::utils::get_bit_width;
 use arrow::datatypes::ArrowNativeType;
 use bytes::Bytes;
@@ -405,6 +408,22 @@ where
     }
 
     fn squeeze(&self) -> Option<(LiquidHybridArrayRef, Bytes)> {
+        // Full bytes (original format) are what we store to disk
+        let full_bytes = Bytes::from(self.to_bytes_inner());
+        let disk_range = 0u64..(full_bytes.len() as u64);
+
+        if T::DATA_TYPE == DataType::Date32 {
+            // Special handle for date32 array, as they have a special squeezed representation.
+            // TODO: don't hard-code Date32Field::Year.
+            return Some((
+                Arc::new(SqueezedDate32Array::from_liquid_date32(
+                    self,
+                    Date32Field::Year,
+                )) as LiquidHybridArrayRef,
+                full_bytes,
+            ));
+        }
+
         // Only squeeze if we have a concrete bit width and it is large enough
         let orig_bw = self.bit_packed.bit_width()?;
         if orig_bw.get() < 8 {
@@ -417,10 +436,6 @@ where
         // Decode original unsigned offsets
         let unsigned_array = self.bit_packed.to_primitive();
         let (_dt, values, nulls) = unsigned_array.into_parts();
-
-        // Full bytes (original format) are what we store to disk
-        let full_bytes = Bytes::from(self.to_bytes_inner());
-        let disk_range = 0u64..(full_bytes.len() as u64);
 
         match self.squeeze_policy {
             IntegerSqueezePolicy::Clamp => {
