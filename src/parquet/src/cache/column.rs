@@ -1,13 +1,12 @@
 use std::sync::Arc;
 
 use arrow::{
-    array::{Array, ArrayRef, BooleanArray, RecordBatch},
+    array::{Array, ArrayRef, BooleanArray},
     buffer::BooleanBuffer,
     compute::prep_null_mask_filter,
 };
-use arrow_schema::{ArrowError, DataType, Field, Schema};
-use liquid_cache_storage::cache::{CacheExpression, CacheStorage, GetWithPredicateResult};
-use parquet::arrow::arrow_reader::ArrowPredicate;
+use arrow_schema::{ArrowError, DataType, Field};
+use liquid_cache_storage::cache::{CacheExpression, CacheStorage};
 
 use crate::{
     LiquidPredicate,
@@ -70,15 +69,6 @@ impl LiquidCachedColumn {
         self.cache_store.is_cached(&self.entry_id(batch_id).into())
     }
 
-    pub(crate) fn arrow_array_to_record_batch(
-        &self,
-        array: ArrayRef,
-        field: &Arc<Field>,
-    ) -> RecordBatch {
-        let schema = Arc::new(Schema::new(vec![field.clone()]));
-        RecordBatch::try_new(schema, vec![array]).unwrap()
-    }
-
     /// Returns the Arrow field metadata for this cached column.
     pub fn field(&self) -> Arc<Field> {
         self.field.clone()
@@ -97,27 +87,19 @@ impl LiquidCachedColumn {
         predicate: &mut LiquidPredicate,
     ) -> Option<Result<BooleanArray, ArrowError>> {
         let entry_id = self.entry_id(batch_id).into();
-        let result = self
+        let mut builder = self
             .cache_store
-            .get_with_predicate(
-                &entry_id,
-                filter,
-                predicate.physical_expr_physical_column_index(),
-            )
-            .await?;
-
-        match result {
-            GetWithPredicateResult::Evaluated(buffer) => Some(Ok(buffer)),
-            GetWithPredicateResult::Filtered(array) => {
-                let record_batch = self.arrow_array_to_record_batch(array, &self.field);
-                let boolean_array = predicate.evaluate(record_batch).unwrap();
-                let predicate_filter = match boolean_array.null_count() {
-                    0 => boolean_array,
-                    _ => prep_null_mask_filter(&boolean_array),
-                };
-                Some(Ok(predicate_filter))
-            }
+            .eval_predicate(&entry_id, predicate.physical_expr_physical_column_index())
+            .with_selection(filter);
+        if let Some(expression) = self.expression() {
+            builder = builder.with_expression_hint(expression);
         }
+        let boolean_array = builder.read().await?;
+        let predicate_filter = match boolean_array.null_count() {
+            0 => boolean_array,
+            _ => prep_null_mask_filter(&boolean_array),
+        };
+        Some(Ok(predicate_filter))
     }
 
     /// Get an arrow array with a filter applied.
@@ -135,11 +117,13 @@ impl LiquidCachedColumn {
                 .get_arrow_array_with_expression(batch_id, Some(expression))
                 .await;
         }
-        let result = self
+        let array = self
             .cache_store
-            .get_with_selection(&entry_id, filter)
+            .get(&entry_id)
+            .with_selection(filter)
+            .read()
             .await?;
-        result.ok()
+        Some(array)
     }
 
     /// Retrieve an arrow array optionally tailored to a cache expression.
@@ -149,15 +133,18 @@ impl LiquidCachedColumn {
         expression: Option<&CacheExpression>,
     ) -> Option<ArrayRef> {
         let entry_id = self.entry_id(batch_id).into();
-        self.cache_store
-            .get_arrow_array_with_expression(&entry_id, expression)
-            .await
+        let builder = self.cache_store.get(&entry_id);
+        let builder = match expression {
+            Some(expr) => builder.with_expression_hint(expr),
+            None => builder,
+        };
+        builder.read().await
     }
 
     #[cfg(test)]
     pub(crate) async fn get_arrow_array_test_only(&self, batch_id: BatchID) -> Option<ArrayRef> {
         let entry_id = self.entry_id(batch_id).into();
-        self.cache_store.get_arrow_array(&entry_id).await
+        self.cache_store.get(&entry_id).read().await
     }
 
     /// Insert an array into the cache.

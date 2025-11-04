@@ -49,7 +49,7 @@ storage.insert(entry_id, arrow_array.clone()).await;
 storage.flush_all_to_disk();
 
 // Read asynchronously
-let retrieved = storage.get_arrow_array(&entry_id).await.unwrap();
+let retrieved = storage.get(&entry_id).read().await.unwrap();
 assert_eq!(retrieved.as_ref(), arrow_array.as_ref());
 });
 ```
@@ -76,7 +76,13 @@ storage.flush_all_to_disk();
 let filter = BooleanBuffer::from((0..10).map(|i| i % 2 == 0).collect::<Vec<_>>());
 
 // Read with selection pushdown
-let filtered = storage.get_with_selection(&entry_id, &filter).await.unwrap().unwrap();
+let filtered = storage
+    .get(&entry_id)
+    .with_selection(&filter)
+    .read()
+    .await
+    .unwrap()
+    .unwrap();
 let expected = Arc::new(UInt64Array::from_iter_values((0..10).filter(|i| i % 2 == 0)));
 assert_eq!(filtered.as_ref(), expected.as_ref());
 });
@@ -85,8 +91,8 @@ assert_eq!(filtered.as_ref(), expected.as_ref());
 ## 4) Read with predicate pushdown
 
 ```rust
-use liquid_cache_storage::cache::{CacheStorageBuilder, EntryID, GetWithPredicateResult};
-use arrow::array::{ArrayRef, StringArray};
+use liquid_cache_storage::cache::{CacheStorageBuilder, EntryID};
+use arrow::array::{BooleanArray, StringArray};
 use arrow::buffer::BooleanBuffer;
 use datafusion::logical_expr::Operator;
 use datafusion::physical_plan::expressions::{BinaryExpr, Column, Literal};
@@ -113,15 +119,14 @@ let expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
     Arc::new(Literal::new(ScalarValue::Utf8(Some("apple".to_string())))),
 ));
 
-let expected_filtered: ArrayRef = Arc::new(StringArray::from(vec![
-    Some("apple"),
-    Some("banana"),
-    Some("apple"),
-    Some("cherry"),
-])) as ArrayRef;
-
 // Read with predicate pushdown
-let result = storage.get_with_predicate(&entry_id, &selection, &expr).await.unwrap();
-assert_eq!(result, GetWithPredicateResult::Filtered(expected_filtered));
+let result = storage
+    .eval_predicate(&entry_id, &expr)
+    .with_selection(&selection)
+    .read()
+    .await
+    .unwrap();
+let expected_mask = BooleanArray::from(vec![Some(true), Some(false), Some(true), Some(false)]);
+assert_eq!(result, expected_mask);
 });
 ```

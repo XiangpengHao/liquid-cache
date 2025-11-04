@@ -14,8 +14,10 @@ mod utils;
 
 pub use cache_policies::CachePolicy;
 pub use cached_batch::{CachedBatch, CachedBatchType, GetWithPredicateResult};
-pub use core::{BlockingIoContext, DefaultIoContext, IoContext};
-pub use core::{CacheStorage, CacheStorageBuilder};
+pub use core::{
+    BlockingIoContext, CachePredicateBuilder, CacheReaderBuilder, CacheStorage,
+    CacheStorageBuilder, DefaultIoContext, IoContext,
+};
 pub use expressions::CacheExpression;
 pub use stats::{CacheStats, RuntimeStats, RuntimeStatsSnapshot};
 pub use transcode::transcode_liquid_inner;
