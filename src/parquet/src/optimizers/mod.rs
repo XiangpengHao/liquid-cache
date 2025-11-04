@@ -19,7 +19,7 @@ use crate::{
     LiquidCacheRef, LiquidParquetSource, optimizers::date_extract_opt::metadata_from_factory,
 };
 
-const DATE_MAPPING_METADATA_KEY: &str = "liquid.cache.date_mapping";
+pub(crate) const DATE_MAPPING_METADATA_KEY: &str = "liquid.cache.date_mapping";
 
 /// Physical optimizer rule for local mode liquid cache
 ///

@@ -15,8 +15,9 @@ use super::{
 use crate::cache::squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict};
 use crate::cache::stats::{CacheStats, RuntimeStats};
 use crate::cache::utils::{LiquidCompressorStates, arrow_to_bytes};
-use crate::cache::{index::ArtIndex, utils::EntryID};
+use crate::cache::{CacheExpression, index::ArtIndex, utils::EntryID};
 use crate::cache_policies::LiquidPolicy;
+use crate::liquid_array::SqueezedDate32Array;
 use crate::sync::Arc;
 
 use bytes::Bytes;
@@ -368,6 +369,23 @@ impl CacheStorage {
 
     /// Get an Arrow array from the cache asynchronously.
     pub async fn get_arrow_array(&self, entry_id: &EntryID) -> Option<ArrayRef> {
+        self.get_arrow_array_internal(entry_id, None).await
+    }
+
+    /// Experimental API that returns an Arrow array tailored for a cache expression.
+    pub async fn get_arrow_array_with_expression(
+        &self,
+        entry_id: &EntryID,
+        expression: Option<&CacheExpression>,
+    ) -> Option<ArrayRef> {
+        self.get_arrow_array_internal(entry_id, expression).await
+    }
+
+    async fn get_arrow_array_internal(
+        &self,
+        entry_id: &EntryID,
+        expression: Option<&CacheExpression>,
+    ) -> Option<ArrayRef> {
         self.runtime_stats.incr_get_arrow_array();
         let batch = self.index.get(entry_id)?;
         self.cache_policy
@@ -387,26 +405,38 @@ impl CacheStorage {
                 );
                 Some(liquid.to_arrow_array())
             }
-            CachedBatch::MemoryHybridLiquid(array) => match array.to_arrow_array() {
-                Ok(arr) => Some(arr),
-                Err(io_range) => {
-                    let path = self.io_context.liquid_path(entry_id);
-                    let bytes = self
-                        .io_context
-                        .read(path, Some(io_range.range().clone()))
-                        .await
-                        .ok()?;
-                    let new_array = array.soak(bytes);
-                    Some(new_array.to_arrow_array())
+            CachedBatch::MemoryHybridLiquid(array) => {
+                // TODO: we need to do this for other apis as well.
+                if let Some(CacheExpression::ExtractDate32 { field }) = expression
+                    && let Some(squeezed) = array.as_any().downcast_ref::<SqueezedDate32Array>()
+                    && squeezed.field() == *field
+                {
+                    let component = Arc::new(squeezed.to_component_date32()) as ArrayRef;
+                    self.runtime_stats.incr_hit_date32_expression();
+                    return Some(component);
                 }
-            },
+                match array.to_arrow_array() {
+                    Ok(arr) => Some(arr),
+                    Err(io_range) => {
+                        let path = self.io_context.liquid_path(entry_id);
+                        let bytes = self
+                            .io_context
+                            .read(path, Some(io_range.range().clone()))
+                            .await
+                            .ok()?;
+                        let new_array = array.soak(bytes);
+                        Some(new_array.to_arrow_array())
+                    }
+                }
+            }
             CachedBatch::DiskArrow(_) => {
                 let path = self.io_context.arrow_path(entry_id);
                 let bytes = self.io_context.read(path, None).await.ok()?;
                 let cursor = std::io::Cursor::new(bytes.to_vec());
                 let mut reader = arrow::ipc::reader::StreamReader::try_new(cursor, None).ok()?;
                 let batch = reader.next()?.ok()?;
-                Some(batch.column(0).clone())
+                let array = batch.column(0).clone();
+                Some(array)
             }
         }
     }
@@ -876,11 +906,16 @@ impl CacheStorage {
 mod tests {
     use super::*;
     use crate::cache::{
+        CacheExpression, CachedBatch,
         cache_policies::{CachePolicy, LruPolicy},
         utils::{create_cache_store, create_test_array, create_test_arrow_array},
     };
+    use crate::liquid_array::{
+        Date32Field, LiquidHybridArrayRef, LiquidPrimitiveArray, SqueezedDate32Array,
+    };
     use crate::sync::thread;
-    use arrow::array::{Array, Int32Array};
+    use arrow::array::{Array, Date32Array, Int32Array};
+    use arrow::datatypes::Date32Type;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     // Unified advice type for more concise testing
@@ -943,6 +978,37 @@ mod tests {
 
         assert_eq!(store.budget.memory_usage_bytes(), size3 + size2);
         assert!(store.index().get(&EntryID::from(999)).is_none());
+    }
+
+    #[tokio::test]
+    async fn get_arrow_array_with_expression_extracts_year() {
+        let store = create_cache_store(1 << 20, Box::new(LruPolicy::new()));
+        let entry_id = EntryID::from(42);
+
+        let date_values = Date32Array::from(vec![Some(0), Some(365), None, Some(730)]);
+        let liquid = LiquidPrimitiveArray::<Date32Type>::from_arrow_array(date_values.clone());
+        let squeezed = SqueezedDate32Array::from_liquid_date32(&liquid, Date32Field::Year);
+        let hybrid: LiquidHybridArrayRef = Arc::new(squeezed);
+
+        store
+            .insert_inner(entry_id, CachedBatch::MemoryHybridLiquid(hybrid.clone()))
+            .await;
+
+        let expr = CacheExpression::extract_date32(Date32Field::Year);
+        let result = store
+            .get_arrow_array_with_expression(&entry_id, Some(&expr))
+            .await
+            .expect("array present");
+
+        let result = result
+            .as_any()
+            .downcast_ref::<Date32Array>()
+            .expect("date32 result");
+        assert_eq!(result.len(), 4);
+        assert_eq!(result.value(0), 1970);
+        assert_eq!(result.value(1), 1971);
+        assert!(result.is_null(2));
+        assert_eq!(result.value(3), 1972);
     }
 
     #[tokio::test]

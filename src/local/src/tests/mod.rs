@@ -22,6 +22,7 @@ use datafusion::{
 };
 
 use crate::LiquidCacheLocalBuilder;
+mod date_optimizer;
 
 const TEST_FILE: &str = "../../examples/nano_hits.parquet";
 const OPENOBSERVE_FILE: &str = "../../dev/test_parquet/openobserve.parquet";
@@ -51,6 +52,7 @@ struct CacheStatsSummary {
     runtime_get_predicate_hybrid_needs_io: u64,
     runtime_get_predicate_hybrid_unsupported: u64,
     runtime_try_read_liquid_calls: u64,
+    runtime_hit_date32_expression_calls: u64,
 }
 
 impl CacheStatsSummary {
@@ -73,6 +75,7 @@ impl CacheStatsSummary {
             runtime_get_predicate_hybrid_needs_io: runtime.get_predicate_hybrid_needs_io,
             runtime_get_predicate_hybrid_unsupported: runtime.get_predicate_hybrid_unsupported,
             runtime_try_read_liquid_calls: runtime.try_read_liquid_calls,
+            runtime_hit_date32_expression_calls: runtime.hit_date32_expression_calls,
         }
     }
 
@@ -137,10 +140,15 @@ impl fmt::Display for CacheStatsSummary {
             "runtime.get_predicate_hybrid_unsupported: {}",
             self.runtime_get_predicate_hybrid_unsupported
         )?;
-        write!(
+        writeln!(
             f,
             "runtime.try_read_liquid_calls: {}",
             self.runtime_try_read_liquid_calls
+        )?;
+        writeln!(
+            f,
+            "runtime.hit_date32_expression_calls: {}",
+            self.runtime_hit_date32_expression_calls
         )
     }
 }

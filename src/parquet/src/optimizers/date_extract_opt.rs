@@ -1,3 +1,7 @@
+//! This module has a logical optimizer that detects columns that are only used via compatible `EXTRACT` projections.
+//! It then attaches the metadata to schema adapter, which is then passed to the physical plan.
+//! The physical optimizer will move the metadata to the fields of the schema.
+
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, OnceLock};
