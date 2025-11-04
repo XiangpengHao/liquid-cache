@@ -138,6 +138,7 @@ impl LiquidCachedColumn {
             .get(&entry_id)
             .with_selection(filter)
             .with_optional_expression_hint(self.expression())
+            .read()
             .await?;
         Some(array)
     }

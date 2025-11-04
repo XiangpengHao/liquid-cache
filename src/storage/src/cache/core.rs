@@ -744,6 +744,19 @@ impl CacheStorage {
                 }
             },
             CachedBatch::MemoryHybridLiquid(array) => {
+                if let Some(CacheExpression::ExtractDate32 { field }) = expression
+                    && let Some(squeezed) = array.as_any().downcast_ref::<SqueezedDate32Array>()
+                    && squeezed.field() == *field
+                {
+                    let component = Arc::new(squeezed.to_component_date32()) as ArrayRef;
+                    self.runtime_stats.incr_hit_date32_expression();
+                    if let Some(selection) = selection {
+                        let selection_array = BooleanArray::new(selection.clone(), None);
+                        let filtered = arrow::compute::filter(&component, &selection_array).ok()?;
+                        return Some(filtered);
+                    }
+                    return Some(component);
+                }
                 if let Some(selection) = selection {
                     match array.filter_to_arrow(selection) {
                         Ok(arr) => Some(arr),
@@ -759,14 +772,6 @@ impl CacheStorage {
                         }
                     }
                 } else {
-                    if let Some(CacheExpression::ExtractDate32 { field }) = expression
-                        && let Some(squeezed) = array.as_any().downcast_ref::<SqueezedDate32Array>()
-                        && squeezed.field() == *field
-                    {
-                        let component = Arc::new(squeezed.to_component_date32()) as ArrayRef;
-                        self.runtime_stats.incr_hit_date32_expression();
-                        return Some(component);
-                    }
                     match array.to_arrow_array() {
                         Ok(arr) => Some(arr),
                         Err(io_range) => {
@@ -967,21 +972,16 @@ impl<'a> Get<'a> {
         self
     }
 
-    async fn read(self) -> Option<ArrayRef> {
-        match self.selection {
-            Some(selection) => {
-                self.storage.runtime_stats.incr_get_with_selection();
-                self.storage
-                    .read_arrow_array(self.entry_id, Some(selection), self.expression_hint)
-                    .await
-            }
-            None => {
-                self.storage.runtime_stats.incr_get_arrow_array();
-                self.storage
-                    .read_arrow_array(self.entry_id, None, self.expression_hint)
-                    .await
-            }
+    /// Materialize the cached array as [`ArrayRef`].
+    pub async fn read(self) -> Option<ArrayRef> {
+        if self.selection.is_some() {
+            self.storage.runtime_stats.incr_get_with_selection();
+        } else {
+            self.storage.runtime_stats.incr_get_arrow_array();
         }
+        self.storage
+            .read_arrow_array(self.entry_id, self.selection, self.expression_hint)
+            .await
     }
 }
 
