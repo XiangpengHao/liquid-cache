@@ -22,7 +22,7 @@ use datafusion::logical_expr::logical_plan::{
     Repartition, Sort, SubqueryAlias, TableScan, Union, Window,
 };
 use datafusion::logical_expr::{Expr, TableSource};
-use datafusion::optimizer::{OptimizerConfig, OptimizerRule};
+use datafusion::optimizer::{ApplyOrder, OptimizerConfig, OptimizerRule};
 
 /// Supported components for `EXTRACT` clauses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -74,6 +74,11 @@ impl OptimizerRule for DateExtractOptimizer {
         "DateExtractOptimizer"
     }
 
+    fn apply_order(&self) -> Option<ApplyOrder> {
+        // so that it won't recursively apply the rule to every node.
+        None
+    }
+
     fn rewrite(
         &self,
         plan: LogicalPlan,
@@ -81,7 +86,8 @@ impl OptimizerRule for DateExtractOptimizer {
     ) -> Result<Transformed<LogicalPlan>, DataFusionError> {
         let mut analyzer = LineageAnalyzer::default();
         let _ = analyzer.analyze_plan(&plan)?;
-        let mut findings = analyzer.finish();
+        let table_usage = analyzer.finish();
+        let mut findings = table_usage.find_date32_extractions();
         findings.sort_by(|a, b| a.column.flat_name().cmp(&b.column.flat_name()));
         let annotations = build_annotation_map(&findings);
         let transformed_plan = annotate_plan_with_extractions(plan, &annotations)?;
@@ -144,61 +150,19 @@ enum Operation {
 #[derive(Debug)]
 struct UsageStats {
     data_type: DataType,
-    component: Option<SupportedIntervalUnit>,
-    only_extract: bool,
+    usages: Vec<Vec<Operation>>,
 }
 
 impl UsageStats {
     fn new(data_type: DataType) -> Self {
         Self {
             data_type,
-            component: None,
-            only_extract: true,
+            usages: Vec::new(),
         }
     }
 
     fn apply(&mut self, usage: &ColumnUsage) {
-        if !self.only_extract {
-            return;
-        }
-
-        if usage.operations.is_empty() {
-            self.only_extract = false;
-            return;
-        }
-
-        let first = match usage.operations.first() {
-            Some(Operation::Extract(unit)) => *unit,
-            _ => {
-                self.only_extract = false;
-                return;
-            }
-        };
-
-        if usage
-            .operations
-            .iter()
-            .skip(1)
-            .any(|op| !matches!(op, Operation::Extract(unit) if *unit == first))
-        {
-            self.only_extract = false;
-            return;
-        }
-
-        match self.component {
-            Some(existing) if existing != first => self.only_extract = false,
-            None => self.component = Some(first),
-            _ => {}
-        }
-    }
-
-    fn candidate(&self) -> Option<(DataType, SupportedIntervalUnit)> {
-        if self.only_extract {
-            self.component
-                .map(|component| (self.data_type.clone(), component))
-        } else {
-            None
-        }
+        self.usages.push(usage.operations.clone());
     }
 }
 
@@ -497,22 +461,41 @@ impl LineageAnalyzer {
         }
     }
 
-    fn finish(self) -> Vec<DateExtraction> {
-        self.stats
-            .into_iter()
-            .filter_map(|(key, stats)| {
-                stats.candidate().and_then(|(data_type, component)| {
-                    if matches!(data_type, DataType::Date32) {
-                        Some(DateExtraction {
-                            column: key.to_column(),
-                            component,
-                        })
+    fn finish(self) -> TableColumnUsage {
+        TableColumnUsage { usage: self.stats }
+    }
+}
+
+struct TableColumnUsage {
+    usage: HashMap<ColumnKey, UsageStats>,
+}
+
+impl TableColumnUsage {
+    fn find_date32_extractions(&self) -> Vec<DateExtraction> {
+        let mut extractions = Vec::new();
+        for (key, stats) in self.usage.iter() {
+            if matches!(stats.data_type, DataType::Date32) {
+                // Check if every usage's first operation is Extract with the same unit
+                let first_unit = stats.usages.first().and_then(|usage| {
+                    if let Some(Operation::Extract(unit)) = usage.first() {
+                        Some(unit)
                     } else {
                         None
                     }
-                })
-            })
-            .collect()
+                });
+                if let Some(first_unit) = first_unit {
+                    if stats.usages.iter().all(|usage| {
+                        matches!(usage.first(), Some(Operation::Extract(unit)) if unit == first_unit)
+                    }) {
+                        extractions.push(DateExtraction {
+                            column: key.to_column(),
+                            component: *first_unit,
+                        });
+                    }
+                }
+            }
+        }
+        extractions
     }
 }
 
@@ -835,6 +818,7 @@ mod tests {
                 false,
             ),
             Field::new("date", DataType::Date32, false),
+            Field::new("date_copy", DataType::Date32, false),
         ]));
 
         let timestamps: ArrayRef = Arc::new(TimestampMicrosecondArray::from(vec![
@@ -847,9 +831,11 @@ mod tests {
             Some(20220202),
             Some(20230303),
         ]));
-        let batch =
-            arrow::record_batch::RecordBatch::try_new(Arc::clone(&schema), vec![timestamps, dates])
-                .unwrap();
+        let batch = arrow::record_batch::RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![timestamps, dates.clone(), dates],
+        )
+        .unwrap();
 
         let file = std::fs::File::create(table_a).unwrap();
         let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), None).unwrap();
@@ -887,33 +873,6 @@ mod tests {
         ctx
     }
 
-    fn extract_date_metadata_from_logical_plan(
-        plan: &LogicalPlan,
-    ) -> HashMap<String, Option<String>> {
-        let mut date_metadata = HashMap::new();
-        plan.apply(|node| {
-            let LogicalPlan::TableScan(scan) = node else {
-                return Ok(TreeNodeRecursion::Continue);
-            };
-            let source = &scan.source;
-            let provider = match source_as_provider(source) {
-                Ok(provider) => provider,
-                Err(_) => return Ok(TreeNodeRecursion::Continue),
-            };
-            let Some(listing) = provider.as_any().downcast_ref::<ListingTable>() else {
-                return Ok(TreeNodeRecursion::Continue);
-            };
-            let Some(factory) = listing.schema_adapter_factory() else {
-                return Ok(TreeNodeRecursion::Continue);
-            };
-            let metadata = metadata_from_factory(factory, "date");
-            date_metadata.insert(scan.table_name.table().to_string(), metadata);
-            Ok(TreeNodeRecursion::Continue)
-        })
-        .unwrap();
-        date_metadata
-    }
-
     fn extract_field_metadata_from_physical_plan(
         plan: &Arc<dyn ExecutionPlan>,
     ) -> HashMap<String, String> {
@@ -944,8 +903,7 @@ mod tests {
         field_metadata_map
     }
 
-    #[tokio::test]
-    async fn multi_table_extracts() {
+    async fn general_test(sql: &str, expected: Vec<DateExtraction>) {
         let temp_dir = TempDir::new().unwrap();
         let table_a = temp_dir.path().join("table_a.parquet");
         let table_b = temp_dir.path().join("table_b.parquet");
@@ -958,153 +916,68 @@ mod tests {
         )
         .await;
 
-        let statements = vec![
-            "SELECT EXTRACT(YEAR FROM table_a.date) AS year, EXTRACT(DAY FROM table_b.date) AS day FROM table_a INNER JOIN table_b ON table_a.event_ts = table_b.event_ts",
-        ];
+        let df = ctx.sql(sql).await.unwrap();
+        let (state, plan) = df.into_parts();
+        let optimized = state.optimize(&plan).unwrap();
+        let extractions = optimizer.extractions();
+        assert_eq!(extractions, expected);
 
-        for sql in statements {
-            let df = ctx.sql(sql).await.unwrap();
-            let (state, plan) = df.into_parts();
-            let optimized = state.optimize(&plan).unwrap();
-            let date_metadata = extract_date_metadata_from_logical_plan(&optimized);
-            assert_eq!(
-                date_metadata.get("table_a").unwrap().as_ref(),
-                Some(&"YEAR".to_string()),
-            );
-            assert_eq!(
-                date_metadata.get("table_b").unwrap().as_ref(),
-                Some(&"DAY".to_string()),
-            );
-            assert_eq!(date_metadata.len(), 2);
+        let physical_plan = state.create_physical_plan(&optimized).await.unwrap();
+        let field_metadata_map = extract_field_metadata_from_physical_plan(&physical_plan);
 
-            let extractions = optimizer.extractions();
-            assert_eq!(extractions.len(), 2);
-            assert!(matches!(
-                extractions[0].component,
-                SupportedIntervalUnit::Year
-            ));
-            assert!(matches!(
-                extractions[1].component,
-                SupportedIntervalUnit::Day
-            ));
-
-            let physical_plan = state.create_physical_plan(&optimized).await.unwrap();
-            let field_metadata_map = extract_field_metadata_from_physical_plan(&physical_plan);
-
-            assert!(field_metadata_map.contains_key("date"),);
-            let date_metadata = field_metadata_map.get("date").unwrap();
-            assert!(date_metadata == "YEAR" || date_metadata == "DAY",);
-            assert!(!field_metadata_map.contains_key("event_ts"),);
-        }
+        let expected_field_metadata = expected
+            .iter()
+            .map(|extraction| {
+                (
+                    extraction.column.name().to_string(),
+                    extraction.component.metadata_value().to_string(),
+                )
+            })
+            .collect::<HashMap<String, String>>();
+        assert_eq!(field_metadata_map, expected_field_metadata);
     }
 
     #[tokio::test]
-    async fn detects_consistent_extracts_for_date32() {
-        let temp_dir = TempDir::new().unwrap();
-        let table_a = temp_dir.path().join("table_a.parquet");
-        let table_b = temp_dir.path().join("table_b.parquet");
-
-        let optimizer = Arc::new(DateExtractOptimizer::new());
-        let ctx = create_test_ctx(
-            table_a.to_str().unwrap(),
-            table_b.to_str().unwrap(),
-            optimizer.clone(),
+    async fn multi_table_extracts() {
+        general_test(
+            "SELECT EXTRACT(YEAR FROM table_a.date) AS year, EXTRACT(DAY FROM table_b.date) AS day FROM table_a INNER JOIN table_b ON table_a.event_ts = table_b.event_ts",
+            vec![
+                DateExtraction { column: Column::new(Some("table_a"), "date"), component: SupportedIntervalUnit::Year },
+                DateExtraction { column: Column::new(Some("table_b"), "date"), component: SupportedIntervalUnit::Day },
+            ],
         )
         .await;
+    }
 
+    #[tokio::test]
+    async fn single_table_multiple_extracts() {
+        general_test(
+            "SELECT EXTRACT(YEAR FROM date_copy) AS year, EXTRACT(DAY FROM date) AS day FROM table_a",
+            vec![
+                DateExtraction { column: Column::new(Some("table_a"), "date"), component: SupportedIntervalUnit::Day },
+                DateExtraction { column: Column::new(Some("table_a"), "date_copy"), component: SupportedIntervalUnit::Year },
+            ],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn single_table_extracts() {
         let statements = vec![
             "SELECT EXTRACT(DAY FROM date) AS day FROM table_a",
             "SELECT EXTRACT(day FROM date) AS day FROM table_a",
             "SELECT EXTRACT(DAY FROM table_a.date) FROM table_a",
-            "SELECT EXTRACT(YEAR FROM event_ts) AS year, EXTRACT(DAY FROM date) AS day FROM table_a",
+            "SELECT AVG(EXTRACT(DAY FROM date)) AS avg_day FROM table_a",
+            "SELECT AVG(EXTRACT(DAY FROM date) + 1) AS avg_day FROM table_a",
+            "SELECT (SELECT MAX(EXTRACT(DAY FROM date)) FROM table_a) AS max_day, (SELECT MIN(EXTRACT(DAY FROM date)) FROM table_a) AS min_day",
         ];
-
+        let expected = vec![DateExtraction {
+            column: Column::new(Some("table_a"), "date"),
+            component: SupportedIntervalUnit::Day,
+        }];
         for sql in statements {
-            let df = ctx.sql(sql).await.unwrap();
-            let (state, plan) = df.into_parts();
-            let optimized = state.optimize(&plan).unwrap();
-            let date_metadata = extract_date_metadata_from_logical_plan(&optimized);
-            println!("date_metadata: {:?}", date_metadata);
-            assert_eq!(
-                date_metadata.get("table_a").unwrap().as_ref(),
-                Some(&"DAY".to_string()),
-            );
-            assert!(!date_metadata.contains_key("table_b"));
-            let extractions = optimizer.extractions();
-            assert_eq!(extractions.len(), 1);
-            let extraction = &extractions[0];
-            assert_eq!(extraction.component, SupportedIntervalUnit::Day);
-            assert_eq!(extraction.column.name(), "date");
-            assert_eq!(
-                extraction
-                    .column
-                    .relation
-                    .as_ref()
-                    .map(|r| r.table().to_string()),
-                Some("table_a".to_string()),
-            );
-
-            let physical_plan = state.create_physical_plan(&optimized).await.unwrap();
-
-            let field_metadata_map = extract_field_metadata_from_physical_plan(&physical_plan);
-            assert_eq!(field_metadata_map.get("date"), Some(&"DAY".to_string()),);
-            assert!(!field_metadata_map.contains_key("event_ts"),);
-            assert_eq!(field_metadata_map.len(), 1,);
+            general_test(sql, expected.clone()).await;
         }
-    }
-
-    #[tokio::test]
-    async fn field_metadata_correctly_tagged() {
-        let temp_dir = TempDir::new().unwrap();
-        let table_a = temp_dir.path().join("table_a.parquet");
-        let table_b = temp_dir.path().join("table_b.parquet");
-
-        let optimizer = Arc::new(DateExtractOptimizer::new());
-        let ctx = create_test_ctx(
-            table_a.to_str().unwrap(),
-            table_b.to_str().unwrap(),
-            optimizer.clone(),
-        )
-        .await;
-
-        // Test YEAR extraction
-        let df = ctx
-            .sql("SELECT EXTRACT(YEAR FROM date) AS year FROM table_a")
-            .await
-            .unwrap();
-        let (state, plan) = df.into_parts();
-        let optimized = state.optimize(&plan).unwrap();
-        let physical_plan = state.create_physical_plan(&optimized).await.unwrap();
-        let field_metadata_map = extract_field_metadata_from_physical_plan(&physical_plan);
-        assert_eq!(field_metadata_map.get("date"), Some(&"YEAR".to_string()),);
-        assert!(!field_metadata_map.contains_key("event_ts"),);
-        assert_eq!(field_metadata_map.len(), 1,);
-
-        // Test MONTH extraction
-        let df = ctx
-            .sql("SELECT EXTRACT(MONTH FROM date) AS month FROM table_a")
-            .await
-            .unwrap();
-        let (state, plan) = df.into_parts();
-        let optimized = state.optimize(&plan).unwrap();
-        let physical_plan = state.create_physical_plan(&optimized).await.unwrap();
-        let field_metadata_map = extract_field_metadata_from_physical_plan(&physical_plan);
-        assert_eq!(field_metadata_map.get("date"), Some(&"MONTH".to_string()),);
-        assert!(!field_metadata_map.contains_key("event_ts"),);
-        assert_eq!(field_metadata_map.len(), 1,);
-
-        // Test DAY extraction
-        let df = ctx
-            .sql("SELECT EXTRACT(DAY FROM date) AS day FROM table_a")
-            .await
-            .unwrap();
-        let (state, plan) = df.into_parts();
-        let optimized = state.optimize(&plan).unwrap();
-        let physical_plan = state.create_physical_plan(&optimized).await.unwrap();
-        let field_metadata_map = extract_field_metadata_from_physical_plan(&physical_plan);
-        assert_eq!(field_metadata_map.get("date"), Some(&"DAY".to_string()),);
-        assert!(!field_metadata_map.contains_key("event_ts"),);
-        assert_eq!(field_metadata_map.len(), 1,);
     }
 
     #[tokio::test]
@@ -1144,39 +1017,17 @@ mod tests {
 
     #[tokio::test]
     async fn inconsistent_extracts_are_ignored() {
-        let temp_dir = TempDir::new().unwrap();
-        let table_a = temp_dir.path().join("table_a.parquet");
-        let table_b = temp_dir.path().join("table_b.parquet");
-
-        let optimizer = Arc::new(DateExtractOptimizer::new());
-        let ctx = create_test_ctx(
-            table_a.to_str().unwrap(),
-            table_b.to_str().unwrap(),
-            optimizer.clone(),
-        )
-        .await;
-
         let statements = vec![
             "SELECT EXTRACT(DAY FROM date) AS day, EXTRACT(MONTH FROM date) AS month FROM table_a",
             "SELECT EXTRACT(DAY FROM date + INTERVAL '1 day') AS day FROM table_a",
             "SELECT date FROM table_a",
             "SELECT EXTRACT(DAY FROM table_a.date) AS day FROM table_a INNER JOIN table_b ON table_a.date = table_b.date",
+            "SELECT (SELECT MAX(EXTRACT(DAY FROM date)) FROM table_a) AS max_day, (SELECT MIN(EXTRACT(Month FROM date)) FROM table_a) AS min_day",
+            "SELECT EXTRACT(YEAR FROM event_ts) AS year FROM table_a", // todo: time stamp is not supported yet.
         ];
 
         for sql in statements {
-            let df = ctx.sql(sql).await.unwrap();
-            let (state, plan) = df.into_parts();
-            let optimized = state.optimize(&plan).unwrap();
-            let date_metadata = extract_date_metadata_from_logical_plan(&optimized);
-            let extractions = optimizer.extractions();
-            assert!(extractions.is_empty());
-            assert!(!date_metadata.contains_key("table_a"));
-
-            let physical_plan = state.create_physical_plan(&optimized).await.unwrap();
-            let field_metadata_map = extract_field_metadata_from_physical_plan(&physical_plan);
-            assert!(field_metadata_map.is_empty(),);
-            assert!(!field_metadata_map.contains_key("date"));
-            assert!(!field_metadata_map.contains_key("event_ts"));
+            general_test(sql, vec![]).await;
         }
     }
 }
