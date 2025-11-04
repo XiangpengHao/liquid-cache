@@ -7,8 +7,8 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use arrow_schema::{ArrowError, DataType, Field, Schema};
-use parquet::arrow::arrow_reader::ArrowPredicate;
 use liquid_cache_storage::cache::{CacheExpression, CacheStorage};
+use parquet::arrow::arrow_reader::ArrowPredicate;
 
 use crate::{
     LiquidPredicate,

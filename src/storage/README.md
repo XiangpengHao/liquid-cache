@@ -54,39 +54,7 @@ assert_eq!(retrieved.as_ref(), arrow_array.as_ref());
 });
 ```
 
-## 3) Read with selection pushdown
-
-```rust
-use liquid_cache_storage::cache::{CacheStorageBuilder, EntryID};
-use arrow::array::UInt64Array;
-use arrow::buffer::BooleanBuffer;
-use std::sync::Arc;
-
-tokio_test::block_on(async {
-let storage = CacheStorageBuilder::new().build();
-
-let entry_id = EntryID::from(8);
-let data = Arc::new(UInt64Array::from_iter_values(0..10));
-storage.insert(entry_id, data.clone()).await;
-
-// Move data to disk so the read will demonstrate async I/O
-storage.flush_all_to_disk();
-
-// Keep even indices
-let filter = BooleanBuffer::from((0..10).map(|i| i % 2 == 0).collect::<Vec<_>>());
-
-// Read with selection pushdown
-let filtered = storage
-    .get(&entry_id)
-    .with_selection(&filter)
-    .await
-    .unwrap();
-let expected = Arc::new(UInt64Array::from_iter_values((0..10).filter(|i| i % 2 == 0)));
-assert_eq!(filtered.as_ref(), expected.as_ref());
-});
-```
-
-## 4) Read with predicate pushdown
+## 3) Read with selection & predicate pushdown
 
 ```rust
 use liquid_cache_storage::cache::{CacheStorageBuilder, EntryID};
@@ -101,7 +69,7 @@ use std::sync::Arc;
 tokio_test::block_on(async {
 let storage = CacheStorageBuilder::new().build();
 
-let entry_id = EntryID::from(9);
+let entry_id = EntryID::from(8);
 let data = Arc::new(StringArray::from(vec![
     Some("apple"), Some("banana"), None, Some("apple"), Some("cherry"),
 ]));
