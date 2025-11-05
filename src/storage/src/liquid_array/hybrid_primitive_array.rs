@@ -14,7 +14,7 @@ use crate::liquid_array::raw::BitPackedArray;
 
 use super::primitive_array::{LiquidPrimitiveArray, LiquidPrimitiveType};
 use super::{
-    IoRange, LiquidArrayRef, LiquidDataType, LiquidHybridArray, LiquidHybridArrayRef, Operator,
+    IoRange, LiquidArrayRef, LiquidDataType, LiquidHybridArray, Operator,
     PrimitiveKind,
 };
 
@@ -261,12 +261,7 @@ where
         })
     }
 
-    fn filter(&self, selection: &BooleanBuffer) -> Result<LiquidHybridArrayRef, IoRange> {
-        let filtered = self.filter_inner(selection);
-        Ok(Arc::new(filtered) as LiquidHybridArrayRef)
-    }
-
-    fn filter_to_arrow(&self, selection: &BooleanBuffer) -> Result<ArrayRef, IoRange> {
+    fn filter(&self, selection: &BooleanBuffer) -> Result<ArrayRef, IoRange> {
         let filtered = self.filter_inner(selection);
         filtered.to_arrow_array()
     }
@@ -566,11 +561,6 @@ where
         })
     }
 
-    fn filter(&self, selection: &BooleanBuffer) -> Result<LiquidHybridArrayRef, IoRange> {
-        let filtered = self.filter_inner(selection);
-        Ok(Arc::new(filtered) as LiquidHybridArrayRef)
-    }
-
     fn try_eval_predicate(
         &self,
         expr: &Arc<dyn PhysicalExpr>,
@@ -718,7 +708,7 @@ mod tests {
             .collect();
         let mask = BooleanBuffer::from_iter(mask_bits.iter().copied());
         let filtered_arrow = hybrid
-            .filter_to_arrow(&mask)
+            .filter(&mask)
             .expect("known-only selection should be materializable");
 
         let expected = {

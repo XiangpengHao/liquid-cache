@@ -175,8 +175,7 @@ mod random_tests {
             let mask = BooleanBuffer::from_iter(mask_bits.iter().copied());
 
             for (_name, la) in make_impls_from_strings(&input) {
-                let filtered = la.filter(&mask);
-                let arr = filtered.to_arrow_array().as_string::<i32>().clone();
+                let arr = la.filter(&mask).as_string::<i32>().clone();
 
                 let expected_vals: Vec<Option<&str>> = (0..input.len())
                     .zip(mask_bits.iter())
@@ -474,8 +473,7 @@ mod random_tests {
         let mask = BooleanBuffer::from_iter((0..input.len()).map(|i| i.is_multiple_of(2)));
 
         for (_name, la) in make_impls_from_strings(&input) {
-            let filtered = la.filter(&mask);
-            let arr = filtered.to_arrow_array().as_string::<i32>().clone();
+            let arr = la.filter(&mask).as_string::<i32>().clone();
             // Build expected via filtering input directly
             let expected_vals: Vec<Option<&str>> = (0..input.len())
                 .filter(|i| i.is_multiple_of(2))

@@ -20,7 +20,7 @@ use std::any::Any;
 use std::mem::MaybeUninit;
 use std::sync::Arc;
 
-use super::{LiquidArray, LiquidArrayRef, LiquidDataType};
+use super::{LiquidArray, LiquidDataType};
 use crate::liquid_array::ipc::LiquidIPCHeader;
 use crate::liquid_array::{raw::BitPackedArray, raw::FsstArray};
 use crate::utils::CheckedDictionaryArray;
@@ -48,11 +48,6 @@ impl LiquidArray for LiquidByteArray {
         // the best arrow string is DictionaryArray<UInt16Type>
         let dict = self.to_dict_arrow();
         Arc::new(dict)
-    }
-
-    fn filter(&self, selection: &BooleanBuffer) -> LiquidArrayRef {
-        let filtered = filter_inner(self, selection);
-        Arc::new(filtered)
     }
 
     fn try_eval_predicate(
@@ -737,7 +732,7 @@ impl LiquidByteArray {
 
 #[cfg(test)]
 mod tests {
-    use crate::liquid_array::LiquidPrimitiveArray;
+    use crate::liquid_array::{LiquidArrayRef, LiquidPrimitiveArray};
 
     use super::*;
     use arrow::{
@@ -1059,8 +1054,8 @@ mod tests {
         let array = StringArray::from(original.clone());
         let compressor = LiquidByteArray::train_compressor(array.iter());
         let liquid_array = LiquidByteArray::from_string_array(&array, compressor);
-        let result_array = liquid_array.filter(&BooleanBuffer::from(vec![true, false, true]));
-        let result_array = result_array.to_arrow_array();
+        let result_array =
+            liquid_array.filter(&BooleanBuffer::from(vec![true, false, true]));
 
         assert_eq!(result_array.len(), 2);
         assert_eq!(result_array.null_count(), 2);

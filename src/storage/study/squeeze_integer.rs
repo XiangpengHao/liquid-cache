@@ -363,7 +363,7 @@ fn get_with_selection_or_fetch(
     selection: &BooleanBuffer,
     expected: &dyn Array,
 ) -> usize {
-    match hybrid.filter_to_arrow(selection) {
+    match hybrid.filter(selection) {
         Ok(arr) => {
             assert_eq!(arr.as_ref(), expected);
             0
@@ -371,7 +371,7 @@ fn get_with_selection_or_fetch(
         Err(io) => {
             let slice = full_bytes.slice(io.range().start as usize..io.range().end as usize);
             let liq = hybrid.soak(slice);
-            let arr = liq.filter_to_arrow(selection);
+            let arr = liq.filter(selection);
             assert_eq!(arr.as_ref(), expected);
             (io.range().end - io.range().start) as usize
         }

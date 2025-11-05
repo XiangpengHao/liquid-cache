@@ -463,11 +463,6 @@ impl LiquidArray for LiquidByteViewArray<MemoryBuffer> {
         Arc::new(dict)
     }
 
-    fn filter(&self, selection: &BooleanBuffer) -> LiquidArrayRef {
-        let filtered = filter_inner(self, selection);
-        Arc::new(filtered)
-    }
-
     fn try_eval_predicate(
         &self,
         expr: &Arc<dyn PhysicalExpr>,
@@ -579,20 +574,15 @@ impl LiquidHybridArray for LiquidByteViewArray<DiskBuffer> {
         self.to_bytes_inner()
     }
 
-    /// Filter the Liquid array with a boolean buffer.
-    fn filter(&self, selection: &BooleanBuffer) -> Result<LiquidHybridArrayRef, IoRange> {
-        Ok(Arc::new(filter_inner(self, selection)))
-    }
-
     /// Filter the Liquid array with a boolean array and return an **arrow array**.
-    fn filter_to_arrow(&self, selection: &BooleanBuffer) -> Result<ArrayRef, IoRange> {
+    fn filter(&self, selection: &BooleanBuffer) -> Result<ArrayRef, IoRange> {
         let select_any = selection.count_set_bits() > 0;
         if !select_any {
             return Ok(arrow::array::new_empty_array(
                 &self.original_arrow_data_type(),
             ));
         }
-        let filtered = self.filter(selection)?;
+        let filtered = filter_inner(self, selection);
         filtered.to_best_arrow_array()
     }
 
@@ -1912,8 +1902,7 @@ mod tests {
         let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
         let liquid_array =
             LiquidByteViewArray::<MemoryBuffer>::from_string_array(input, compressor);
-        let filtered = liquid_array.filter(&filter);
-        let output = filtered.to_arrow_array();
+        let output = liquid_array.filter(&filter);
         let expected = {
             let selection = BooleanArray::new(filter.clone(), None);
             let arrow_filtered = arrow::compute::filter(&input, &selection).unwrap();

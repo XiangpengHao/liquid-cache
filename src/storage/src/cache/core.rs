@@ -713,7 +713,7 @@ impl CacheStorage {
                 None => Some(array.clone()),
             },
             CachedBatch::MemoryLiquid(array) => match selection {
-                Some(selection) => Some(array.filter_to_arrow(selection)),
+                Some(selection) => Some(array.filter(selection)),
                 None => Some(array.to_arrow_array()),
             },
             CachedBatch::DiskLiquid(data_type) => match selection {
@@ -729,7 +729,7 @@ impl CacheStorage {
                         bytes,
                         &crate::liquid_array::ipc::LiquidIPCContext::new(compressor),
                     );
-                    Some(liquid.filter_to_arrow(selection))
+                    Some(liquid.filter(selection))
                 }
                 None => {
                     let path = self.io_context.liquid_path(entry_id);
@@ -758,7 +758,7 @@ impl CacheStorage {
                     return Some(component);
                 }
                 if let Some(selection) = selection {
-                    match array.filter_to_arrow(selection) {
+                    match array.filter(selection) {
                         Ok(arr) => Some(arr),
                         Err(io_range) => {
                             let path = self.io_context.liquid_path(entry_id);
@@ -768,7 +768,7 @@ impl CacheStorage {
                                 .await
                                 .ok()?;
                             let new_array = array.soak(bytes);
-                            Some(new_array.filter_to_arrow(selection))
+                            Some(new_array.filter(selection))
                         }
                     }
                 } else {
@@ -855,7 +855,7 @@ impl CacheStorage {
                 match array.try_eval_predicate(predicate, selection) {
                     Some(buf) => Some(Ok(buf)),
                     None => {
-                        let filtered = array.filter_to_arrow(selection);
+                        let filtered = array.filter(selection);
                         Some(Err(filtered))
                     }
                 }
@@ -877,7 +877,7 @@ impl CacheStorage {
                 match liquid.try_eval_predicate(predicate, selection) {
                     Some(buf) => Some(Ok(buf)),
                     None => {
-                        let filtered = liquid.filter_to_arrow(selection);
+                        let filtered = liquid.filter(selection);
                         Some(Err(filtered))
                     }
                 }
@@ -895,7 +895,7 @@ impl CacheStorage {
                     }
                     Ok(None) => {
                         self.runtime_stats.incr_get_predicate_hybrid_unsupported();
-                        match array.filter_to_arrow(selection) {
+                        match array.filter(selection) {
                             Ok(arr) => Some(Err(arr)),
                             Err(io_range) => {
                                 self.runtime_stats.incr_get_predicate_hybrid_needs_io();
@@ -909,7 +909,7 @@ impl CacheStorage {
                                 match new_array.try_eval_predicate(predicate, selection) {
                                     Some(buf) => Some(Ok(buf)),
                                     None => {
-                                        let filtered = new_array.filter_to_arrow(selection);
+                                        let filtered = new_array.filter(selection);
                                         Some(Err(filtered))
                                     }
                                 }
@@ -928,7 +928,7 @@ impl CacheStorage {
                         match new_array.try_eval_predicate(predicate, selection) {
                             Some(buf) => Some(Ok(buf)),
                             None => {
-                                let filtered = new_array.filter_to_arrow(selection);
+                                let filtered = new_array.filter(selection);
                                 Some(Err(filtered))
                             }
                         }

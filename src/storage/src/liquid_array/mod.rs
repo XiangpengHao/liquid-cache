@@ -178,13 +178,11 @@ pub trait LiquidArray: std::fmt::Debug + Send + Sync {
     /// Serialize the Liquid array to a byte array.
     fn to_bytes(&self) -> Vec<u8>;
 
-    /// Filter the Liquid array with a boolean buffer.
-    fn filter(&self, selection: &BooleanBuffer) -> LiquidArrayRef;
-
     /// Filter the Liquid array with a boolean array and return an **arrow array**.
-    fn filter_to_arrow(&self, selection: &BooleanBuffer) -> ArrayRef {
-        let filtered = self.filter(selection);
-        filtered.to_arrow_array()
+    fn filter(&self, selection: &BooleanBuffer) -> ArrayRef {
+        let arrow_array = self.to_arrow_array();
+        let selection = BooleanArray::new(selection.clone(), None);
+        arrow::compute::kernels::filter::filter(&arrow_array, &selection).unwrap()
     }
 
     /// Try to evaluate a predicate on the Liquid array with a filter.
@@ -291,13 +289,11 @@ pub trait LiquidHybridArray: std::fmt::Debug + Send + Sync {
     /// Serialize the Liquid array to a byte array.
     fn to_bytes(&self) -> Result<Vec<u8>, IoRange>;
 
-    /// Filter the Liquid array with a boolean buffer.
-    fn filter(&self, selection: &BooleanBuffer) -> Result<LiquidHybridArrayRef, IoRange>;
-
     /// Filter the Liquid array with a boolean array and return an **arrow array**.
-    fn filter_to_arrow(&self, selection: &BooleanBuffer) -> Result<ArrayRef, IoRange> {
-        let filtered = self.filter(selection)?;
-        filtered.to_best_arrow_array()
+    fn filter(&self, selection: &BooleanBuffer) -> Result<ArrayRef, IoRange> {
+        let arrow_array = self.to_arrow_array()?;
+        let selection = BooleanArray::new(selection.clone(), None);
+        Ok(arrow::compute::kernels::filter::filter(&arrow_array, &selection).unwrap())
     }
 
     /// Try to evaluate a predicate on the Liquid array with a filter.

@@ -323,15 +323,6 @@ where
         self.to_bytes_inner()
     }
 
-    fn filter(&self, selection: &BooleanBuffer) -> LiquidArrayRef {
-        let values = self.to_arrow_array();
-        let selection = BooleanArray::new(selection.clone(), None);
-        let filtered_values = arrow::compute::kernels::filter::filter(&values, &selection).unwrap();
-        let primitive_values = filtered_values.as_primitive::<T>().clone();
-        let bit_packed = Self::from_arrow_array(primitive_values);
-        Arc::new(bit_packed)
-    }
-
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -979,11 +970,6 @@ where
         })
     }
 
-    fn filter(&self, selection: &BooleanBuffer) -> Result<LiquidHybridArrayRef, super::IoRange> {
-        let filtered = self.filter_inner(selection);
-        Ok(Arc::new(filtered) as LiquidHybridArrayRef)
-    }
-
     fn soak(&self, data: bytes::Bytes) -> LiquidArrayRef {
         // `data` is the full IPC payload for primitive array
         let arr = LiquidFloatArray::<T>::from_bytes(data);
@@ -1096,8 +1082,7 @@ mod tests {
         let selection = BooleanBuffer::from(vec![true, false, true, false, true]);
 
         // Apply filter
-        let filtered = liquid_array.filter(&selection);
-        let result_array = filtered.to_arrow_array();
+        let result_array = liquid_array.filter(&selection);
 
         // Expected result after filtering
         let expected = PrimitiveArray::<Float32Type>::from(vec![Some(1.0), Some(3.2), Some(5.5)]);
@@ -1122,8 +1107,7 @@ mod tests {
         // Keep first and last elements
         let selection = BooleanBuffer::from(vec![true, false, false, true]);
 
-        let filtered = liquid_array.filter(&selection);
-        let result_array = filtered.to_arrow_array();
+        let result_array = liquid_array.filter(&selection);
 
         let expected = PrimitiveArray::<Float32Type>::from(vec![None, None]);
 
@@ -1139,8 +1123,7 @@ mod tests {
         // Filter out all elements
         let selection = BooleanBuffer::from(vec![false, false, false]);
 
-        let filtered = liquid_array.filter(&selection);
-        let result_array = filtered.to_arrow_array();
+        let result_array = liquid_array.filter(&selection);
 
         assert_eq!(result_array.len(), 0);
     }
