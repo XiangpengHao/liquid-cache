@@ -232,7 +232,7 @@ mod random_tests {
 
             let baseline = liquid.to_bytes();
 
-            if let Some((hybrid, bytes)) = liquid.squeeze() {
+            if let Some((hybrid, bytes)) = liquid.squeeze(None) {
                 let range = hybrid.to_liquid().range;
                 assert!(range.start < range.end);
                 assert!((range.end as usize) <= bytes.len());
@@ -541,7 +541,7 @@ mod random_tests {
         let baseline = liquid.to_bytes();
 
         // Squeeze
-        let Some((hybrid, bytes)) = liquid.squeeze() else {
+        let Some((hybrid, bytes)) = liquid.squeeze(None) else {
             panic!("squeeze should succeed");
         };
 

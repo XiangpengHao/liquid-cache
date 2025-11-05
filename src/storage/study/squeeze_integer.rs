@@ -271,14 +271,14 @@ where
     let mut lp = LiquidPrimitiveArray::<T>::from_arrow_array(prim.clone());
     let clamp_hybrid_and_bytes = {
         lp.set_squeeze_policy(IntegerSqueezePolicy::Clamp);
-        lp.squeeze()
+        lp.squeeze(None)
     };
 
     // Build Quantize
     let mut lq = LiquidPrimitiveArray::<T>::from_arrow_array(prim.clone());
     let quant_hybrid_and_bytes = {
         lq.set_squeeze_policy(IntegerSqueezePolicy::Quantize);
-        lq.squeeze()
+        lq.squeeze(None)
     };
 
     // Size accounting (for squeezable ones)

@@ -44,6 +44,7 @@ use super::{
     LiquidArray, LiquidArrayRef, LiquidDataType, LiquidHybridArray,
     byte_array::{ArrowByteType, get_string_needle},
 };
+use crate::cache::CacheExpression;
 use crate::liquid_array::ipc::LiquidIPCHeader;
 use crate::liquid_array::raw::BitPackedArray;
 use crate::liquid_array::raw::fsst_array::{RawFsstBuffer, train_compressor};
@@ -484,7 +485,10 @@ impl LiquidArray for LiquidByteViewArray<MemoryBuffer> {
         LiquidDataType::ByteViewArray
     }
 
-    fn squeeze(&self) -> Option<(LiquidHybridArrayRef, bytes::Bytes)> {
+    fn squeeze(
+        &self,
+        _expression_hint: Option<&CacheExpression>,
+    ) -> Option<(LiquidHybridArrayRef, bytes::Bytes)> {
         // Serialize full IPC bytes first
         let bytes = match self.to_bytes_inner() {
             Ok(b) => b,
@@ -1669,7 +1673,7 @@ mod tests {
         let input = StringArray::from(vec!["foo", "bar"]);
         let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
         let in_memory = LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
-        let (hybrid, _) = in_memory.squeeze().expect("squeeze should succeed");
+        let (hybrid, _) = in_memory.squeeze(None).expect("squeeze should succeed");
         let disk_view = hybrid
             .as_any()
             .downcast_ref::<LiquidByteViewArray<DiskBuffer>>()
@@ -2364,7 +2368,7 @@ mod tests {
         let in_mem = LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
 
         // Squeeze to disk-backed so we exercise compare_equals_with_prefix in DiskBuffer path
-        let (hybrid, _bytes) = in_mem.squeeze().unwrap();
+        let (hybrid, _bytes) = in_mem.squeeze(None).unwrap();
         let disk_view = hybrid
             .as_any()
             .downcast_ref::<LiquidByteViewArray<DiskBuffer>>()

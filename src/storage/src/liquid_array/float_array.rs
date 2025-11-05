@@ -32,6 +32,7 @@ use fastlanes::BitPacking;
 use num_traits::{AsPrimitive, Float, FromPrimitive};
 
 use super::LiquidDataType;
+use crate::cache::CacheExpression;
 use crate::liquid_array::ipc::get_physical_type_id;
 use crate::liquid_array::raw::BitPackedArray;
 use crate::liquid_array::{
@@ -331,7 +332,10 @@ where
         self.to_arrow_array()
     }
 
-    fn squeeze(&self) -> Option<(super::LiquidHybridArrayRef, bytes::Bytes)> {
+    fn squeeze(
+        &self,
+        _expression_hint: Option<&CacheExpression>,
+    ) -> Option<(super::LiquidHybridArrayRef, bytes::Bytes)> {
         let orig_bw = self.bit_packed.bit_width()?;
         if orig_bw.get() < 8 {
             return None;
@@ -1187,7 +1191,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(0x51_71);
         let arr = make_f_array_with_range::<Float32Type>(64, 10_000.0, 100.0, 0.1, &mut rng);
         let liquid = LiquidFloatArray::<Float32Type>::from_arrow_array(arr);
-        assert!(liquid.squeeze().is_none());
+        assert!(liquid.squeeze(None).is_none());
     }
 
     #[test]
@@ -1202,7 +1206,7 @@ mod tests {
         );
         let liq = LiquidFloatArray::<Float32Type>::from_arrow_array(arr.clone());
         let bytes_baseline = liq.to_bytes();
-        let (hybrid, bytes) = liq.squeeze().expect("squeezable");
+        let (hybrid, bytes) = liq.squeeze(None).expect("squeezable");
         // ensure we can recover the original using soak
         let recovered = hybrid.soak(bytes.clone());
         assert_eq!(
@@ -1276,7 +1280,7 @@ mod tests {
         );
         let liq = LiquidFloatArray::<Float64Type>::from_arrow_array(arr.clone());
         let bytes_baseline = liq.to_bytes();
-        let (hybrid, bytes) = liq.squeeze().expect("squeezable");
+        let (hybrid, bytes) = liq.squeeze(None).expect("squeezable");
         // ensure we can recover the original using soak
         let recovered = hybrid.soak(bytes.clone());
         assert_eq!(

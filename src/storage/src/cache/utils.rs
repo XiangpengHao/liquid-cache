@@ -1,5 +1,5 @@
 #[cfg(test)]
-use crate::cache::cached_batch::CachedBatch;
+use crate::cache::cached_batch::CacheEntry;
 use crate::sync::{Arc, RwLock};
 use arrow::array::ArrayRef;
 use arrow_schema::ArrowError;
@@ -37,11 +37,11 @@ impl CacheConfig {
 
 // Helper methods
 #[cfg(test)]
-pub(crate) fn create_test_array(size: usize) -> CachedBatch {
+pub(crate) fn create_test_array(size: usize) -> CacheEntry {
     use arrow::array::Int64Array;
     use std::sync::Arc;
 
-    CachedBatch::MemoryArrow(Arc::new(Int64Array::from_iter_values(0..size as i64)))
+    CacheEntry::memory_arrow(Arc::new(Int64Array::from_iter_values(0..size as i64)))
 }
 
 // Helper methods

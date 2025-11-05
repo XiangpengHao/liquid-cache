@@ -1,6 +1,9 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::{cache::CacheExpressionId, liquid_array::Date32Field};
+use crate::{
+    cache::{CacheExpression, CacheExpressionId},
+    liquid_array::Date32Field,
+};
 
 #[cfg(test)]
 pub(crate) fn gen_test_decimal_array<T: arrow::datatypes::DecimalType>(
@@ -94,6 +97,12 @@ impl ExpressionHintTracker {
         self.record_expression_id(id);
     }
 
+    pub(crate) fn record_expression(&self, expression: &CacheExpression) {
+        match expression {
+            CacheExpression::ExtractDate32 { field } => self.record_date32_field(*field),
+        }
+    }
+
     fn record_expression_id(&self, id: CacheExpressionId) {
         let code = id.raw();
         if code == EXPRESSION_EMPTY_VALUE {
@@ -137,11 +146,25 @@ impl ExpressionHintTracker {
 
         best_field
     }
+
+    pub(crate) fn majority_expression(&self) -> Option<CacheExpression> {
+        self.majority_date32_field()
+            .map(CacheExpression::extract_date32)
+    }
 }
 
 impl Default for ExpressionHintTracker {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Clone for ExpressionHintTracker {
+    fn clone(&self) -> Self {
+        let value = self.packed.load(Ordering::Relaxed);
+        Self {
+            packed: AtomicUsize::new(value),
+        }
     }
 }
 

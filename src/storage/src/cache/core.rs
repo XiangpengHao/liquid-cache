@@ -7,7 +7,7 @@ use std::{fmt::Debug, path::Path};
 use super::{
     budget::BudgetAccounting,
     cache_policies::CachePolicy,
-    cached_batch::{CachedBatch, CachedBatchType},
+    cached_batch::{CacheEntry, CachedBatchType, CachedData},
     tracer::CacheTracer,
     utils::CacheConfig,
 };
@@ -323,6 +323,15 @@ pub struct CacheStorage {
     runtime_stats: RuntimeStats,
 }
 
+/// Builder returned by [`CacheStorage::insert`] for configuring cache writes.
+#[derive(Debug)]
+pub struct Insert<'a> {
+    storage: &'a Arc<CacheStorage>,
+    entry_id: EntryID,
+    batch: ArrayRef,
+    expression_hint: Option<&'a CacheExpression>,
+}
+
 /// Builder returned by [`CacheStorage::get`] for configuring cache reads.
 #[derive(Debug)]
 pub struct Get<'a> {
@@ -354,12 +363,12 @@ impl CacheStorage {
         let mut disk_liquid_entries = 0usize;
         let mut disk_arrow_entries = 0usize;
 
-        self.index.for_each(|_, batch| match batch {
-            CachedBatch::MemoryArrow(_) => memory_arrow_entries += 1,
-            CachedBatch::MemoryLiquid(_) => memory_liquid_entries += 1,
-            CachedBatch::MemoryHybridLiquid(_) => memory_hybrid_liquid_entries += 1,
-            CachedBatch::DiskLiquid(_) => disk_liquid_entries += 1,
-            CachedBatch::DiskArrow(_) => disk_arrow_entries += 1,
+        self.index.for_each(|_, batch| match batch.data() {
+            CachedData::MemoryArrow(_) => memory_arrow_entries += 1,
+            CachedData::MemoryLiquid(_) => memory_liquid_entries += 1,
+            CachedData::MemoryHybridLiquid(_) => memory_hybrid_liquid_entries += 1,
+            CachedData::DiskLiquid(_) => disk_liquid_entries += 1,
+            CachedData::DiskArrow(_) => disk_arrow_entries += 1,
         });
 
         let memory_usage_bytes = self.budget.memory_usage_bytes();
@@ -382,9 +391,12 @@ impl CacheStorage {
     }
 
     /// Insert a batch into the cache.
-    pub async fn insert(self: &Arc<Self>, entry_id: EntryID, batch_to_cache: ArrayRef) {
-        self.insert_inner(entry_id, CachedBatch::MemoryArrow(batch_to_cache))
-            .await;
+    pub fn insert<'a>(
+        self: &'a Arc<Self>,
+        entry_id: EntryID,
+        batch_to_cache: ArrayRef,
+    ) -> Insert<'a> {
+        Insert::new(self, entry_id, batch_to_cache)
     }
 
     /// Create a [`Get`] builder for the provided entry.
@@ -412,9 +424,9 @@ impl CacheStorage {
         self.cache_policy
             .notify_access(entry_id, CachedBatchType::from(&batch));
 
-        match batch {
-            CachedBatch::MemoryLiquid(array) => Some(array),
-            CachedBatch::DiskLiquid(_) => {
+        match batch.data() {
+            CachedData::MemoryLiquid(array) => Some(array.clone()),
+            CachedData::DiskLiquid(_) => {
                 let path = self.io_context.liquid_path(entry_id);
                 let bytes = self.io_context.read(path, None).await.ok()?;
                 let compressor_states = self.io_context.get_compressor(entry_id);
@@ -425,7 +437,7 @@ impl CacheStorage {
                 );
                 Some(liquid)
             }
-            CachedBatch::MemoryHybridLiquid(array) => {
+            CachedData::MemoryHybridLiquid(array) => {
                 let io_range = array.to_liquid();
                 let path = self.io_context.liquid_path(entry_id);
                 let bytes = self
@@ -435,14 +447,14 @@ impl CacheStorage {
                     .ok()?;
                 Some(array.soak(bytes))
             }
-            CachedBatch::DiskArrow(_) | CachedBatch::MemoryArrow(_) => None,
+            CachedData::DiskArrow(_) | CachedData::MemoryArrow(_) => None,
         }
     }
 
     /// Iterate over all entries in the cache.
     /// No guarantees are made about the order of the entries.
     /// Isolation level: read-committed
-    pub fn for_each_entry(&self, mut f: impl FnMut(&EntryID, &CachedBatch)) {
+    pub fn for_each_entry(&self, mut f: impl FnMut(&EntryID, &CacheEntry)) {
         self.index.for_each(&mut f);
     }
 
@@ -489,13 +501,13 @@ impl CacheStorage {
         let mut entries_to_flush = Vec::new();
 
         self.for_each_entry(|entry_id, batch| {
-            match batch {
-                CachedBatch::MemoryArrow(_)
-                | CachedBatch::MemoryLiquid(_)
-                | CachedBatch::MemoryHybridLiquid(_) => {
+            match batch.data() {
+                CachedData::MemoryArrow(_)
+                | CachedData::MemoryLiquid(_)
+                | CachedData::MemoryHybridLiquid(_) => {
                     entries_to_flush.push((*entry_id, batch.clone()));
                 }
-                CachedBatch::DiskArrow(_) | CachedBatch::DiskLiquid(_) => {
+                CachedData::DiskArrow(_) | CachedData::DiskLiquid(_) => {
                     // Already on disk, skip
                 }
             }
@@ -503,33 +515,33 @@ impl CacheStorage {
 
         // Now flush each entry to disk
         for (entry_id, batch) in entries_to_flush {
-            match batch {
-                CachedBatch::MemoryArrow(array) => {
-                    let bytes = arrow_to_bytes(&array).expect("failed to convert arrow to bytes");
+            match batch.data() {
+                CachedData::MemoryArrow(array) => {
+                    let bytes = arrow_to_bytes(array).expect("failed to convert arrow to bytes");
                     let path = self.io_context.arrow_path(&entry_id);
                     self.write_to_disk_blocking(&path, &bytes);
-                    self.try_insert(entry_id, CachedBatch::DiskArrow(array.data_type().clone()))
+                    self.try_insert(entry_id, CacheEntry::disk_arrow(array.data_type().clone()))
                         .expect("failed to insert disk arrow entry");
                 }
-                CachedBatch::MemoryLiquid(liquid_array) => {
+                CachedData::MemoryLiquid(liquid_array) => {
                     let liquid_bytes = liquid_array.to_bytes();
                     let path = self.io_context.liquid_path(&entry_id);
                     self.write_to_disk_blocking(&path, &liquid_bytes);
                     self.try_insert(
                         entry_id,
-                        CachedBatch::DiskLiquid(liquid_array.original_arrow_data_type()),
+                        CacheEntry::disk_liquid(liquid_array.original_arrow_data_type()),
                     )
                     .expect("failed to insert disk liquid entry");
                 }
-                CachedBatch::MemoryHybridLiquid(array) => {
+                CachedData::MemoryHybridLiquid(array) => {
                     // We don't have to do anything, because it's already on disk
                     self.try_insert(
                         entry_id,
-                        CachedBatch::DiskLiquid(array.original_arrow_data_type()),
+                        CacheEntry::disk_liquid(array.original_arrow_data_type()),
                     )
                     .expect("failed to insert disk liquid entry");
                 }
-                CachedBatch::DiskArrow(_) | CachedBatch::DiskLiquid(_) => {
+                CachedData::DiskArrow(_) | CachedData::DiskLiquid(_) => {
                     // Should not happen since we filtered these out above
                     unreachable!("Unexpected disk batch in flush operation");
                 }
@@ -540,30 +552,37 @@ impl CacheStorage {
 
 impl CacheStorage {
     /// returns the batch that was written to disk
-    fn write_in_memory_batch_to_disk(&self, entry_id: EntryID, batch: CachedBatch) -> CachedBatch {
-        match batch {
-            CachedBatch::MemoryArrow(array) => {
+    fn write_in_memory_batch_to_disk(&self, entry_id: EntryID, batch: CacheEntry) -> CacheEntry {
+        let (data, expression_hints) = batch.into_parts();
+        match data {
+            CachedData::MemoryArrow(array) => {
                 let bytes = arrow_to_bytes(&array).expect("failed to convert arrow to bytes");
                 let path = self.io_context.arrow_path(&entry_id);
                 self.write_to_disk_blocking(&path, &bytes);
-                CachedBatch::DiskArrow(array.data_type().clone())
+                CacheEntry::with_expression_tracker(
+                    CachedData::DiskArrow(array.data_type().clone()),
+                    expression_hints,
+                )
             }
-            CachedBatch::MemoryLiquid(liquid_array) => {
+            CachedData::MemoryLiquid(liquid_array) => {
                 let liquid_bytes = liquid_array.to_bytes();
                 let path = self.io_context.liquid_path(&entry_id);
                 self.write_to_disk_blocking(&path, &liquid_bytes);
-                CachedBatch::DiskLiquid(liquid_array.original_arrow_data_type())
+                CacheEntry::with_expression_tracker(
+                    CachedData::DiskLiquid(liquid_array.original_arrow_data_type()),
+                    expression_hints,
+                )
             }
-            CachedBatch::DiskLiquid(_)
-            | CachedBatch::DiskArrow(_)
-            | CachedBatch::MemoryHybridLiquid(_) => {
+            CachedData::DiskLiquid(_)
+            | CachedData::DiskArrow(_)
+            | CachedData::MemoryHybridLiquid(_) => {
                 unreachable!("Unexpected batch in write_in_memory_batch_to_disk")
             }
         }
     }
 
     /// Insert a batch into the cache, it will run cache replacement policy until the batch is inserted.
-    pub(crate) async fn insert_inner(&self, entry_id: EntryID, mut batch_to_cache: CachedBatch) {
+    pub(crate) async fn insert_inner(&self, entry_id: EntryID, mut batch_to_cache: CacheEntry) {
         loop {
             let batch_type = CachedBatchType::from(&batch_to_cache);
             let Err(not_inserted) = self.try_insert(entry_id, batch_to_cache) else {
@@ -609,7 +628,7 @@ impl CacheStorage {
         }
     }
 
-    fn try_insert(&self, entry_id: EntryID, cached_batch: CachedBatch) -> Result<(), CachedBatch> {
+    fn try_insert(&self, entry_id: EntryID, cached_batch: CacheEntry) -> Result<(), CacheEntry> {
         let new_memory_size = cached_batch.memory_usage_bytes();
         if let Some(entry) = self.index.get(&entry_id) {
             let old_memory_size = entry.memory_usage_bytes();
@@ -651,12 +670,12 @@ impl CacheStorage {
                 .squeeze(to_squeeze_batch, compressor.as_ref());
 
             if let Some(bytes_to_write) = bytes_to_write {
-                let path = match new_batch {
-                    CachedBatch::DiskArrow(_) => self.io_context.arrow_path(&to_squeeze),
-                    CachedBatch::DiskLiquid(_) | CachedBatch::MemoryHybridLiquid(_) => {
+                let path = match new_batch.data() {
+                    CachedData::DiskArrow(_) => self.io_context.arrow_path(&to_squeeze),
+                    CachedData::DiskLiquid(_) | CachedData::MemoryHybridLiquid(_) => {
                         self.io_context.liquid_path(&to_squeeze)
                     }
-                    CachedBatch::MemoryArrow(_) | CachedBatch::MemoryLiquid(_) => {
+                    CachedData::MemoryArrow(_) | CachedData::MemoryLiquid(_) => {
                         unreachable!()
                     }
                 };
@@ -704,25 +723,24 @@ impl CacheStorage {
         self.cache_policy
             .notify_access(entry_id, CachedBatchType::from(&batch));
 
-        match batch {
-            CachedBatch::MemoryArrow(array) => match selection {
+        batch.record_expression_hint(expression);
+
+        match batch.data() {
+            CachedData::MemoryArrow(array) => match selection {
                 Some(selection) => {
                     let selection_array = BooleanArray::new(selection.clone(), None);
-                    arrow::compute::filter(&array, &selection_array).ok()
+                    arrow::compute::filter(array, &selection_array).ok()
                 }
                 None => Some(array.clone()),
             },
-            CachedBatch::MemoryLiquid(array) => {
-                array.record_expression_hint(expression);
-                match selection {
-                    Some(selection) => Some(array.filter(selection)),
-                    None => Some(array.to_arrow_array()),
-                }
-            }
-            CachedBatch::DiskLiquid(data_type) => match selection {
+            CachedData::MemoryLiquid(array) => match selection {
+                Some(selection) => Some(array.filter(selection)),
+                None => Some(array.to_arrow_array()),
+            },
+            CachedData::DiskLiquid(data_type) => match selection {
                 Some(selection) => {
                     if selection.count_set_bits() == 0 {
-                        return Some(arrow::array::new_empty_array(&data_type));
+                        return Some(arrow::array::new_empty_array(data_type));
                     }
                     let path = self.io_context.liquid_path(entry_id);
                     let bytes = self.io_context.read(path, None).await.ok()?;
@@ -746,7 +764,7 @@ impl CacheStorage {
                     Some(liquid.to_arrow_array())
                 }
             },
-            CachedBatch::MemoryHybridLiquid(array) => {
+            CachedData::MemoryHybridLiquid(array) => {
                 if let Some(CacheExpression::ExtractDate32 { field }) = expression
                     && let Some(squeezed) = array.as_any().downcast_ref::<SqueezedDate32Array>()
                     && squeezed.field() == *field
@@ -790,7 +808,7 @@ impl CacheStorage {
                     }
                 }
             }
-            CachedBatch::DiskArrow(_) => {
+            CachedData::DiskArrow(_) => {
                 let path = self.io_context.arrow_path(entry_id);
                 let bytes = self.io_context.read(path, None).await.ok()?;
                 let cursor = std::io::Cursor::new(bytes.to_vec());
@@ -822,8 +840,10 @@ impl CacheStorage {
         self.cache_policy
             .notify_access(entry_id, CachedBatchType::from(&batch));
 
-        match batch {
-            CachedBatch::MemoryArrow(array) => {
+        batch.record_expression_hint(expression_hint);
+
+        match batch.data() {
+            CachedData::MemoryArrow(array) => {
                 let mut owned = None;
                 let selection = selection_opt.unwrap_or_else(|| {
                     owned = Some(BooleanBuffer::new_set(array.len()));
@@ -833,7 +853,7 @@ impl CacheStorage {
                 let filtered = arrow::compute::filter(&array, &selection_array).ok()?;
                 Some(Err(filtered))
             }
-            CachedBatch::DiskArrow(_) => {
+            CachedData::DiskArrow(_) => {
                 let path = self.io_context.arrow_path(entry_id);
                 let bytes = self.io_context.read(path, None).await.ok()?;
                 let cursor = std::io::Cursor::new(bytes.to_vec());
@@ -849,8 +869,7 @@ impl CacheStorage {
                 let filtered = arrow::compute::filter(&array, &selection_array).ok()?;
                 Some(Err(filtered))
             }
-            CachedBatch::MemoryLiquid(array) => {
-                array.record_expression_hint(expression_hint);
+            CachedData::MemoryLiquid(array) => {
                 let mut owned = None;
                 let selection = selection_opt.unwrap_or_else(|| {
                     owned = Some(BooleanBuffer::new_set(array.len()));
@@ -864,7 +883,7 @@ impl CacheStorage {
                     }
                 }
             }
-            CachedBatch::DiskLiquid(_) => {
+            CachedData::DiskLiquid(_) => {
                 let path = self.io_context.liquid_path(entry_id);
                 let bytes = self.io_context.read(path, None).await.ok()?;
                 let compressor_states = self.io_context.get_compressor(entry_id);
@@ -886,7 +905,7 @@ impl CacheStorage {
                     }
                 }
             }
-            CachedBatch::MemoryHybridLiquid(array) => {
+            CachedData::MemoryHybridLiquid(array) => {
                 let mut owned = None;
                 let selection = selection_opt.unwrap_or_else(|| {
                     owned = Some(BooleanBuffer::new_set(array.len()));
@@ -940,6 +959,49 @@ impl CacheStorage {
                 }
             }
         }
+    }
+}
+
+impl<'a> Insert<'a> {
+    fn new(storage: &'a Arc<CacheStorage>, entry_id: EntryID, batch: ArrayRef) -> Self {
+        Self {
+            storage,
+            entry_id,
+            batch,
+            expression_hint: None,
+        }
+    }
+
+    /// Attach an expression hint to record at insertion time.
+    pub fn with_expression_hint(mut self, expression: &'a CacheExpression) -> Self {
+        self.expression_hint = Some(expression);
+        self
+    }
+
+    /// Attach an optional expression hint without manual option handling.
+    pub fn with_optional_expression_hint(
+        mut self,
+        expression: Option<&'a CacheExpression>,
+    ) -> Self {
+        if let Some(expr) = expression {
+            self.expression_hint = Some(expr);
+        }
+        self
+    }
+
+    async fn run(self) {
+        let batch = CacheEntry::memory_arrow(self.batch);
+        batch.record_expression_hint(self.expression_hint);
+        self.storage.insert_inner(self.entry_id, batch).await;
+    }
+}
+
+impl<'a> IntoFuture for Insert<'a> {
+    type Output = ();
+    type IntoFuture = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(async move { self.run().await })
     }
 }
 
@@ -1064,7 +1126,7 @@ impl<'a> IntoFuture for EvaluatePredicate<'a> {
 mod tests {
     use super::*;
     use crate::cache::{
-        CacheExpression, CachedBatch,
+        CacheEntry, CacheExpression,
         cache_policies::{CachePolicy, LruPolicy},
         utils::{create_cache_store, create_test_array, create_test_arrow_array},
     };
@@ -1118,8 +1180,8 @@ mod tests {
         // Verify budget usage and data correctness
         assert_eq!(store.budget.memory_usage_bytes(), size1);
         let retrieved1 = store.index().get(&entry_id1).unwrap();
-        match retrieved1 {
-            CachedBatch::MemoryArrow(arr) => assert_eq!(arr.len(), 100),
+        match retrieved1.data() {
+            CachedData::MemoryArrow(arr) => assert_eq!(arr.len(), 100),
             _ => panic!("Expected ArrowMemory"),
         }
 
@@ -1149,7 +1211,7 @@ mod tests {
         let hybrid: LiquidHybridArrayRef = Arc::new(squeezed);
 
         store
-            .insert_inner(entry_id, CachedBatch::MemoryHybridLiquid(hybrid.clone()))
+            .insert_inner(entry_id, CacheEntry::memory_hybrid_liquid(hybrid.clone()))
             .await;
 
         let expr = CacheExpression::extract_date32(Date32Field::Year);
@@ -1185,14 +1247,14 @@ mod tests {
             let store = create_cache_store(8000, Box::new(advisor)); // Small budget to force advice
 
             store.insert_inner(entry_id1, create_test_array(800)).await;
-            match store.index().get(&entry_id1).unwrap() {
-                CachedBatch::MemoryArrow(_) => {}
+            match store.index().get(&entry_id1).unwrap().data() {
+                CachedData::MemoryArrow(_) => {}
                 other => panic!("Expected ArrowMemory, got {other:?}"),
             }
 
             store.insert_inner(entry_id2, create_test_array(800)).await;
-            match store.index().get(&entry_id1).unwrap() {
-                CachedBatch::MemoryLiquid(_) => {}
+            match store.index().get(&entry_id1).unwrap().data() {
+                CachedData::MemoryLiquid(_) => {}
                 other => panic!("Expected LiquidMemory after eviction, got {other:?}"),
             }
         }
