@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use arrow::array::{Date32Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
-use datafusion::parquet::arrow::ArrowWriter;
+use datafusion::{parquet::arrow::ArrowWriter, physical_plan::display::DisplayableExecutionPlan};
 use liquid_cache_storage::cache::squeeze_policies::TranscodeSqueezeEvict;
 use tempfile::TempDir;
 
@@ -23,10 +23,9 @@ fn create_parquet_file(file_path: &str) {
     writer.close().unwrap();
 }
 
-#[tokio::test]
-async fn test_date_extraction_and_ordering() {
+async fn general_test(sql: &str) -> CacheStatsSummary {
     use crate::LiquidCacheLocalBuilder;
-    use datafusion::physical_plan::{ExecutionPlan, collect, display::DisplayableExecutionPlan};
+    use datafusion::physical_plan::{ExecutionPlan, collect};
     use datafusion::prelude::{ParquetReadOptions, SessionConfig};
 
     let cache_dir = TempDir::new().unwrap();
@@ -57,8 +56,6 @@ async fn test_date_extraction_and_ordering() {
     .await
     .unwrap();
 
-    let sql = r#"select EXTRACT(YEAR from date_a) as year from test_table"#;
-
     // Get the physical plan
     async fn get_physical_plan(
         sql: &str,
@@ -69,15 +66,15 @@ async fn test_date_extraction_and_ordering() {
         state.create_physical_plan(&plan).await.unwrap()
     }
 
-    let plan = get_physical_plan(sql, &ctx).await;
-    let displayable = DisplayableExecutionPlan::new(plan.as_ref());
-    let plan_string = format!("{}", displayable.tree_render());
-
     // Clear any historical runtime counters before warming the cache
     cache.storage().stats();
 
     // First run - warms the cache
     let plan_first = get_physical_plan(sql, &ctx).await;
+    println!(
+        "plan_first: \n{}",
+        DisplayableExecutionPlan::new(plan_first.as_ref()).tree_render()
+    );
     let batches_first = collect(plan_first, ctx.task_ctx()).await.unwrap();
 
     let entries_after_first_run = cache.storage().stats().total_entries;
@@ -99,7 +96,21 @@ async fn test_date_extraction_and_ordering() {
         stats.entries_reused(),
         "Expected cache entries to be reused"
     );
+    stats
+}
 
-    let snapshot = format!("plan: \n{}\nstats:\n{}", plan_string, stats);
-    insta::assert_snapshot!(snapshot);
+#[tokio::test]
+async fn test_date_extraction() {
+    let sql = r#"select AVG(EXTRACT(YEAR from date_a)) as year from test_table"#;
+    let stats = general_test(sql).await;
+    assert!(stats.runtime_hit_date32_expression_calls > 0);
+    insta::assert_snapshot!(stats);
+}
+
+#[tokio::test]
+async fn test_date_extraction_case2() {
+    let sql = r#"select AVG(EXTRACT(YEAR from date_a) + 1) as year, (SELECT MAX(EXTRACT(YEAR from date_a)) FROM test_table) as max_year from test_table"#;
+    let stats = general_test(sql).await;
+    assert!(stats.runtime_hit_date32_expression_calls > 0);
+    insta::assert_snapshot!(stats);
 }
