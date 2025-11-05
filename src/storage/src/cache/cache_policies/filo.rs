@@ -193,7 +193,7 @@ impl CachePolicy for FifoPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::cached_batch::{CachedData, CachedBatchType};
+    use crate::cache::cached_batch::{CachedBatchType, CachedData};
     use crate::cache::utils::{EntryID, create_cache_store, create_test_arrow_array};
 
     fn entry(id: usize) -> EntryID {

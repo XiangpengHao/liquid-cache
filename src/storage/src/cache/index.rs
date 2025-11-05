@@ -84,8 +84,8 @@ impl ArtIndex {
 
 #[cfg(test)]
 mod tests {
-    use crate::cache::utils::create_test_array;
     use crate::cache::cached_batch::CachedData;
+    use crate::cache::utils::create_test_array;
 
     use super::*;
 

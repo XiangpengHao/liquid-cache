@@ -13,7 +13,7 @@ mod transcode;
 mod utils;
 
 pub use cache_policies::CachePolicy;
-pub use cached_batch::{CacheEntry, CachedData, CachedBatchType};
+pub use cached_batch::{CacheEntry, CachedBatchType, CachedData};
 pub use core::{
     BlockingIoContext, CacheStorage, CacheStorageBuilder, DefaultIoContext, EvaluatePredicate, Get,
     Insert, IoContext,

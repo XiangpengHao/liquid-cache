@@ -206,8 +206,10 @@ pub trait LiquidArray: std::fmt::Debug + Send + Sync {
     /// Important: The returned `Bytes` is the data that is stored on disk, it is the same as to_bytes().
     ///
     /// If we `soak` the `LiquidHybridArrayRef` back with the bytes, we should get the same `LiquidArray`.
-    fn squeeze(&self, _expression_hint: Option<&CacheExpression>)
-    -> Option<(LiquidHybridArrayRef, bytes::Bytes)> {
+    fn squeeze(
+        &self,
+        _expression_hint: Option<&CacheExpression>,
+    ) -> Option<(LiquidHybridArrayRef, bytes::Bytes)> {
         None
     }
 }

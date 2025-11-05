@@ -396,8 +396,8 @@ where
         if T::DATA_TYPE == DataType::Date32 {
             // Special handle for Date32 arrays with component extraction support.
             let field = expression_hint
-                .and_then(|expr| match expr {
-                    CacheExpression::ExtractDate32 { field } => Some(*field),
+                .map(|expr| match expr {
+                    CacheExpression::ExtractDate32 { field } => *field,
                 })
                 .unwrap_or(Date32Field::Year);
             return Some((
