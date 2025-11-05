@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use super::LiquidArray;
 use super::primitive_array::LiquidPrimitiveArray;
-use super::{IoRange, LiquidArrayRef, LiquidDataType, LiquidHybridArray, LiquidHybridArrayRef};
+use super::{IoRange, LiquidArrayRef, LiquidDataType, LiquidHybridArray};
 use crate::liquid_array::LiquidPrimitiveType;
 use crate::liquid_array::raw::BitPackedArray;
 use crate::utils::get_bit_width;
@@ -259,30 +259,7 @@ impl LiquidHybridArray for SqueezedDate32Array {
         todo!("Not implemented");
     }
 
-    fn filter(&self, selection: &BooleanBuffer) -> Result<LiquidHybridArrayRef, IoRange> {
-        let unsigned_array: PrimitiveArray<UInt32Type> = self.bit_packed.to_primitive();
-        let selection = BooleanArray::new(selection.clone(), None);
-        let filtered_values =
-            arrow::compute::kernels::filter::filter(&unsigned_array, &selection).unwrap();
-        let filtered_values = filtered_values.as_primitive::<UInt32Type>().clone();
-        let filtered = if let Some(bit_width) = self.bit_packed.bit_width() {
-            let squeezed = BitPackedArray::from_primitive(filtered_values, bit_width);
-            SqueezedDate32Array {
-                field: self.field,
-                bit_packed: squeezed,
-                reference_value: self.reference_value,
-            }
-        } else {
-            SqueezedDate32Array {
-                field: self.field,
-                bit_packed: BitPackedArray::new_null_array(filtered_values.len()),
-                reference_value: self.reference_value,
-            }
-        };
-        Ok(Arc::new(filtered) as LiquidHybridArrayRef)
-    }
-
-    fn filter_to_arrow(&self, selection: &BooleanBuffer) -> Result<ArrayRef, IoRange> {
+    fn filter(&self, selection: &BooleanBuffer) -> Result<ArrayRef, IoRange> {
         let unsigned_array: PrimitiveArray<UInt32Type> = self.bit_packed.to_primitive();
         let selection = BooleanArray::new(selection.clone(), None);
         let filtered_values =

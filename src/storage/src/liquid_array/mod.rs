@@ -42,6 +42,7 @@ pub use primitive_array::{
 };
 pub use squeezed_date32_array::{Date32Field, SqueezedDate32Array};
 
+use crate::cache::CacheExpression;
 use crate::liquid_array::byte_view_array::MemoryBuffer;
 
 /// Liquid data type is only logical type
@@ -178,13 +179,11 @@ pub trait LiquidArray: std::fmt::Debug + Send + Sync {
     /// Serialize the Liquid array to a byte array.
     fn to_bytes(&self) -> Vec<u8>;
 
-    /// Filter the Liquid array with a boolean buffer.
-    fn filter(&self, selection: &BooleanBuffer) -> LiquidArrayRef;
-
     /// Filter the Liquid array with a boolean array and return an **arrow array**.
-    fn filter_to_arrow(&self, selection: &BooleanBuffer) -> ArrayRef {
-        let filtered = self.filter(selection);
-        filtered.to_arrow_array()
+    fn filter(&self, selection: &BooleanBuffer) -> ArrayRef {
+        let arrow_array = self.to_arrow_array();
+        let selection = BooleanArray::new(selection.clone(), None);
+        arrow::compute::kernels::filter::filter(&arrow_array, &selection).unwrap()
     }
 
     /// Try to evaluate a predicate on the Liquid array with a filter.
@@ -207,7 +206,10 @@ pub trait LiquidArray: std::fmt::Debug + Send + Sync {
     /// Important: The returned `Bytes` is the data that is stored on disk, it is the same as to_bytes().
     ///
     /// If we `soak` the `LiquidHybridArrayRef` back with the bytes, we should get the same `LiquidArray`.
-    fn squeeze(&self) -> Option<(LiquidHybridArrayRef, bytes::Bytes)> {
+    fn squeeze(
+        &self,
+        _expression_hint: Option<&CacheExpression>,
+    ) -> Option<(LiquidHybridArrayRef, bytes::Bytes)> {
         None
     }
 }
@@ -291,13 +293,11 @@ pub trait LiquidHybridArray: std::fmt::Debug + Send + Sync {
     /// Serialize the Liquid array to a byte array.
     fn to_bytes(&self) -> Result<Vec<u8>, IoRange>;
 
-    /// Filter the Liquid array with a boolean buffer.
-    fn filter(&self, selection: &BooleanBuffer) -> Result<LiquidHybridArrayRef, IoRange>;
-
     /// Filter the Liquid array with a boolean array and return an **arrow array**.
-    fn filter_to_arrow(&self, selection: &BooleanBuffer) -> Result<ArrayRef, IoRange> {
-        let filtered = self.filter(selection)?;
-        filtered.to_best_arrow_array()
+    fn filter(&self, selection: &BooleanBuffer) -> Result<ArrayRef, IoRange> {
+        let arrow_array = self.to_arrow_array()?;
+        let selection = BooleanArray::new(selection.clone(), None);
+        Ok(arrow::compute::kernels::filter::filter(&arrow_array, &selection).unwrap())
     }
 
     /// Try to evaluate a predicate on the Liquid array with a filter.

@@ -13,12 +13,12 @@ mod transcode;
 mod utils;
 
 pub use cache_policies::CachePolicy;
-pub use cached_batch::{CachedBatch, CachedBatchType};
+pub use cached_batch::{CacheEntry, CachedBatchType, CachedData};
 pub use core::{
     BlockingIoContext, CacheStorage, CacheStorageBuilder, DefaultIoContext, EvaluatePredicate, Get,
-    IoContext,
+    Insert, IoContext,
 };
-pub use expressions::CacheExpression;
+pub use expressions::{CacheExpression, CacheExpressionId};
 pub use stats::{CacheStats, RuntimeStats, RuntimeStatsSnapshot};
 pub use transcode::transcode_liquid_inner;
 pub use utils::{EntryID, LiquidCompressorStates};

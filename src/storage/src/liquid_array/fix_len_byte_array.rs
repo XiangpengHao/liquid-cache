@@ -3,10 +3,10 @@ use std::{any::Any, sync::Arc};
 use ahash::HashMap;
 use arrow::{
     array::{
-        Array, ArrayRef, AsArray, BooleanArray, BooleanBufferBuilder, DictionaryArray,
-        PrimitiveArray, UInt16Array,
+        Array, ArrayRef, AsArray, BooleanBufferBuilder, DictionaryArray, PrimitiveArray,
+        UInt16Array,
     },
-    buffer::{BooleanBuffer, Buffer},
+    buffer::Buffer,
     compute::kernels::cast,
     datatypes::{Decimal128Type, Decimal256Type, DecimalType, UInt16Type},
 };
@@ -18,7 +18,7 @@ use std::mem::MaybeUninit;
 use crate::utils::CheckedDictionaryArray;
 
 use super::{
-    LiquidArray, LiquidArrayRef, LiquidDataType,
+    LiquidArray, LiquidDataType,
     raw::{BitPackedArray, FsstArray},
 };
 use crate::liquid_array::ipc::LiquidIPCHeader;
@@ -102,30 +102,6 @@ impl LiquidArray for LiquidFixedLenByteArray {
 
     fn original_arrow_data_type(&self) -> DataType {
         DataType::from(&self.arrow_type)
-    }
-
-    fn filter(&self, selection: &BooleanBuffer) -> LiquidArrayRef {
-        let values = self.values.clone();
-        let keys = self.keys.clone();
-        let primitive_keys = keys.to_primitive();
-        let selection = BooleanArray::new(selection.clone(), None);
-        let filtered_keys = arrow::compute::filter(&primitive_keys, &selection)
-            .unwrap()
-            .as_primitive::<UInt16Type>()
-            .clone();
-        let Some(bit_width) = keys.bit_width() else {
-            return Arc::new(LiquidFixedLenByteArray {
-                arrow_type: self.arrow_type.clone(),
-                keys: BitPackedArray::new_null_array(filtered_keys.len()),
-                values,
-            });
-        };
-        let bit_packed_array = BitPackedArray::from_primitive(filtered_keys, bit_width);
-        Arc::new(LiquidFixedLenByteArray {
-            arrow_type: self.arrow_type.clone(),
-            keys: bit_packed_array,
-            values,
-        })
     }
 
     fn to_bytes(&self) -> Vec<u8> {
@@ -543,11 +519,10 @@ mod tests {
         }
         let filter = filter_builder.finish();
         let (filter, _null) = filter.into_parts();
-        let filtered_array = liquid_array.filter(&filter);
-        let arrow_filtered = filtered_array.to_arrow_array();
+        let arrow_filtered = liquid_array.filter(&filter);
         let arrow_typed = arrow_filtered.as_primitive::<T>();
 
-        assert_eq!(filtered_array.len(), original_array.len() / 2);
+        assert_eq!(arrow_filtered.len(), original_array.len() / 2);
 
         for (i, val) in arrow_typed.iter().enumerate() {
             if original_array.is_null(i * 2) {

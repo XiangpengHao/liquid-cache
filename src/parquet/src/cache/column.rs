@@ -160,6 +160,7 @@ impl LiquidCachedColumn {
         }
         self.cache_store
             .insert(self.entry_id(batch_id).into(), array)
+            .with_optional_expression_hint(self.expression())
             .await;
         Ok(())
     }
