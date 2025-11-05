@@ -41,7 +41,7 @@ entries.memory.liquid: 3
 entries.memory.hybrid_liquid: 2
 entries.disk.liquid: 0
 entries.disk.arrow: 0
-usage.memory_bytes: 949170
+usage.memory_bytes: 949186
 usage.disk_bytes: 154888
 runtime.get_arrow_array_calls: 0
 runtime.get_with_selection_calls: 3

@@ -16,15 +16,16 @@ use fastlanes::BitPacking;
 use num_traits::{AsPrimitive, FromPrimitive};
 
 use super::LiquidDataType;
+use crate::cache::CacheExpression;
 use crate::liquid_array::hybrid_primitive_array::{
     LiquidPrimitiveClampedArray, LiquidPrimitiveQuantizedArray,
 };
 use crate::liquid_array::ipc::LiquidIPCHeader;
 use crate::liquid_array::ipc::get_physical_type_id;
 use crate::liquid_array::raw::BitPackedArray;
+use crate::liquid_array::utils::ExpressionHintTracker;
 use crate::liquid_array::{
-    Date32Field, LiquidArray, LiquidHybridArrayRef, PrimitiveKind,
-    SqueezedDate32Array,
+    Date32Field, LiquidArray, LiquidHybridArrayRef, PrimitiveKind, SqueezedDate32Array,
 };
 use crate::utils::get_bit_width;
 use arrow::datatypes::ArrowNativeType;
@@ -115,10 +116,11 @@ pub type LiquidDate32Array = LiquidPrimitiveArray<Date32Type>;
 pub type LiquidDate64Array = LiquidPrimitiveArray<Date64Type>;
 
 /// Liquid's primitive array
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct LiquidPrimitiveArray<T: LiquidPrimitiveType> {
     bit_packed: BitPackedArray<T::UnSignedType>,
     reference_value: T::Native,
+    expression_hints: ExpressionHintTracker,
     squeeze_policy: IntegerSqueezePolicy,
 }
 
@@ -138,6 +140,7 @@ where
         self.bit_packed.get_array_memory_size()
             + std::mem::size_of::<T::Native>()
             + std::mem::size_of::<IntegerSqueezePolicy>()
+            + std::mem::size_of::<ExpressionHintTracker>()
     }
 
     /// Get the length of the Liquid primitive array.
@@ -160,6 +163,7 @@ where
                     bit_packed: BitPackedArray::new_null_array(arrow_array.len()),
                     reference_value: T::Native::ZERO,
                     squeeze_policy: IntegerSqueezePolicy::default(),
+                    expression_hints: ExpressionHintTracker::default(),
                 };
             }
         };
@@ -197,6 +201,7 @@ where
             bit_packed: bit_packed_array,
             reference_value: min,
             squeeze_policy: IntegerSqueezePolicy::default(),
+            expression_hints: ExpressionHintTracker::default(),
         }
     }
 
@@ -377,6 +382,15 @@ where
         None
     }
 
+    fn record_expression_hint(&self, expression_hint: Option<&CacheExpression>) {
+        if T::DATA_TYPE != DataType::Date32 {
+            return;
+        }
+        if let Some(CacheExpression::ExtractDate32 { field }) = expression_hint {
+            self.expression_hints.record_date32_field(*field);
+        }
+    }
+
     fn to_bytes(&self) -> Vec<u8> {
         self.to_bytes_inner()
     }
@@ -391,13 +405,14 @@ where
         let disk_range = 0u64..(full_bytes.len() as u64);
 
         if T::DATA_TYPE == DataType::Date32 {
-            // Special handle for date32 array, as they have a special squeezed representation.
-            // TODO: don't hard-code Date32Field::Year.
+            // Special handle for Date32 arrays with component extraction support.
+            let field = self
+                .expression_hints
+                .majority_date32_field()
+                .unwrap_or(Date32Field::Year);
             return Some((
-                Arc::new(SqueezedDate32Array::from_liquid_date32(
-                    self,
-                    Date32Field::Year,
-                )) as LiquidHybridArrayRef,
+                Arc::new(SqueezedDate32Array::from_liquid_date32(self, field))
+                    as LiquidHybridArrayRef,
                 full_bytes,
             ));
         }
@@ -665,6 +680,7 @@ where
             bit_packed,
             reference_value,
             squeeze_policy: IntegerSqueezePolicy::default(),
+            expression_hints: ExpressionHintTracker::default(),
         }
     }
 }
@@ -736,6 +752,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cache::CacheExpression;
     use arrow::array::Array;
 
     macro_rules! test_roundtrip {
@@ -863,6 +880,49 @@ mod tests {
         Date32Type,
         vec![Some(-365), Some(0), Some(365), None, Some(18262)]
     );
+
+    #[test]
+    fn test_date32_squeeze_respects_majority_expression_hint() {
+        let original = vec![Some(0), Some(31), Some(59), None, Some(90)];
+        let array = PrimitiveArray::<Date32Type>::from(original);
+        let liquid = LiquidPrimitiveArray::<Date32Type>::from_arrow_array(array);
+
+        let expr_month = CacheExpression::extract_date32(Date32Field::Month);
+        let expr_year = CacheExpression::extract_date32(Date32Field::Year);
+
+        liquid.record_expression_hint(Some(&expr_month));
+        liquid.record_expression_hint(Some(&expr_month));
+        liquid.record_expression_hint(Some(&expr_year));
+
+        let (hybrid, _) = liquid.squeeze().expect("squeeze should succeed");
+        let squeezed = hybrid
+            .as_any()
+            .downcast_ref::<SqueezedDate32Array>()
+            .expect("expected squeezed date32 array");
+
+        assert_eq!(squeezed.field(), Date32Field::Month);
+    }
+
+    #[test]
+    fn test_date32_squeeze_prefers_recent_on_tie() {
+        let original = vec![Some(0), Some(1), Some(2), Some(3)];
+        let array = PrimitiveArray::<Date32Type>::from(original);
+        let liquid = LiquidPrimitiveArray::<Date32Type>::from_arrow_array(array);
+
+        let expr_year = CacheExpression::extract_date32(Date32Field::Year);
+        let expr_day = CacheExpression::extract_date32(Date32Field::Day);
+
+        liquid.record_expression_hint(Some(&expr_year));
+        liquid.record_expression_hint(Some(&expr_day));
+
+        let (hybrid, _) = liquid.squeeze().expect("squeeze should succeed");
+        let squeezed = hybrid
+            .as_any()
+            .downcast_ref::<SqueezedDate32Array>()
+            .expect("expected squeezed date32 array");
+
+        assert_eq!(squeezed.field(), Date32Field::Day);
+    }
 
     test_roundtrip!(
         test_date64_roundtrip,

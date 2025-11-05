@@ -712,10 +712,13 @@ impl CacheStorage {
                 }
                 None => Some(array.clone()),
             },
-            CachedBatch::MemoryLiquid(array) => match selection {
-                Some(selection) => Some(array.filter(selection)),
-                None => Some(array.to_arrow_array()),
-            },
+            CachedBatch::MemoryLiquid(array) => {
+                array.record_expression_hint(expression);
+                match selection {
+                    Some(selection) => Some(array.filter(selection)),
+                    None => Some(array.to_arrow_array()),
+                }
+            }
             CachedBatch::DiskLiquid(data_type) => match selection {
                 Some(selection) => {
                     if selection.count_set_bits() == 0 {
@@ -810,7 +813,7 @@ impl CacheStorage {
         entry_id: &EntryID,
         selection_opt: Option<&BooleanBuffer>,
         predicate: &Arc<dyn PhysicalExpr>,
-        _expression_hint: Option<&CacheExpression>,
+        expression_hint: Option<&CacheExpression>,
     ) -> Option<Result<BooleanArray, ArrayRef>> {
         use arrow::array::BooleanArray;
 
@@ -847,6 +850,7 @@ impl CacheStorage {
                 Some(Err(filtered))
             }
             CachedBatch::MemoryLiquid(array) => {
+                array.record_expression_hint(expression_hint);
                 let mut owned = None;
                 let selection = selection_opt.unwrap_or_else(|| {
                     owned = Some(BooleanBuffer::new_set(array.len()));

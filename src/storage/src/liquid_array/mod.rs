@@ -42,6 +42,7 @@ pub use primitive_array::{
 };
 pub use squeezed_date32_array::{Date32Field, SqueezedDate32Array};
 
+use crate::cache::CacheExpression;
 use crate::liquid_array::byte_view_array::MemoryBuffer;
 
 /// Liquid data type is only logical type
@@ -197,6 +198,9 @@ pub trait LiquidArray: std::fmt::Debug + Send + Sync {
     ) -> Option<BooleanArray> {
         None
     }
+
+    /// Record an optional expression hint observed during cache access.
+    fn record_expression_hint(&self, _expression_hint: Option<&CacheExpression>) {}
 
     /// Squeeze the Liquid array to a `LiquidHybridArrayRef` and a `bytes::Bytes`.
     /// Return `None` if the Liquid array cannot be squeezed.

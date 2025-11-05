@@ -1054,8 +1054,7 @@ mod tests {
         let array = StringArray::from(original.clone());
         let compressor = LiquidByteArray::train_compressor(array.iter());
         let liquid_array = LiquidByteArray::from_string_array(&array, compressor);
-        let result_array =
-            liquid_array.filter(&BooleanBuffer::from(vec![true, false, true]));
+        let result_array = liquid_array.filter(&BooleanBuffer::from(vec![true, false, true]));
 
         assert_eq!(result_array.len(), 2);
         assert_eq!(result_array.null_count(), 2);

@@ -13,10 +13,7 @@ use num_traits::{AsPrimitive, FromPrimitive};
 use crate::liquid_array::raw::BitPackedArray;
 
 use super::primitive_array::{LiquidPrimitiveArray, LiquidPrimitiveType};
-use super::{
-    IoRange, LiquidArrayRef, LiquidDataType, LiquidHybridArray, Operator,
-    PrimitiveKind,
-};
+use super::{IoRange, LiquidArrayRef, LiquidDataType, LiquidHybridArray, Operator, PrimitiveKind};
 
 #[derive(Debug, Clone)]
 pub(crate) struct LiquidPrimitiveClampedArray<T: LiquidPrimitiveType> {

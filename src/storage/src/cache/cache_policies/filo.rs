@@ -203,7 +203,7 @@ mod tests {
     #[tokio::test]
     async fn test_filo_advisor() {
         let advisor = FiloPolicy::new();
-        let store = create_cache_store(3000, Box::new(advisor));
+        let store = create_cache_store(3100, Box::new(advisor));
 
         let entry_id1 = EntryID::from(1);
         let entry_id2 = EntryID::from(2);
@@ -223,9 +223,8 @@ mod tests {
         assert!(store.index().get(&entry_id2).is_some());
         assert!(store.index().get(&entry_id4).is_some());
 
-        if let Some(data) = store.index().get(&entry_id3) {
-            assert!(matches!(data, CachedBatch::DiskLiquid(_)));
-        }
+        let data = store.index().get(&entry_id3).unwrap();
+        assert!(matches!(data, CachedBatch::DiskLiquid(_)));
     }
 
     #[test]

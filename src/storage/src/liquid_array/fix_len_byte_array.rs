@@ -3,8 +3,8 @@ use std::{any::Any, sync::Arc};
 use ahash::HashMap;
 use arrow::{
     array::{
-        Array, ArrayRef, AsArray, BooleanBufferBuilder, DictionaryArray,
-        PrimitiveArray, UInt16Array,
+        Array, ArrayRef, AsArray, BooleanBufferBuilder, DictionaryArray, PrimitiveArray,
+        UInt16Array,
     },
     buffer::Buffer,
     compute::kernels::cast,

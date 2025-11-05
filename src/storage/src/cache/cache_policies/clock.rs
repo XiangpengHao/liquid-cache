@@ -238,7 +238,7 @@ mod tests {
     #[tokio::test]
     async fn test_clock_policy_integration_with_store() {
         let advisor = ClockPolicy::new();
-        let store = create_cache_store(3000, Box::new(advisor));
+        let store = create_cache_store(3100, Box::new(advisor));
 
         let entry_id1 = EntryID::from(1);
         let entry_id2 = EntryID::from(2);
@@ -251,9 +251,8 @@ mod tests {
         let entry_id4 = EntryID::from(4);
         store.insert(entry_id4, create_test_arrow_array(100)).await;
 
-        if let Some(data) = store.index().get(&entry_id1) {
-            assert!(matches!(data, CachedBatch::DiskLiquid(_)));
-        }
+        let data = store.index().get(&entry_id1).unwrap();
+        assert!(matches!(data, CachedBatch::DiskLiquid(_)));
         assert!(store.index().get(&entry_id2).is_some());
         assert!(store.index().get(&entry_id3).is_some());
         assert!(store.index().get(&entry_id4).is_some());
