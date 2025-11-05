@@ -107,13 +107,21 @@ async fn test_date_extraction() {
     insta::assert_snapshot!(stats);
 }
 
-// #[tokio::test]
-// async fn date_extraction_month() {
-//     let sql = r#"select AVG(EXTRACT(MONTH from date_a)) as month from test_table"#;
-//     let stats = general_test(sql).await;
-//     assert!(stats.runtime_hit_date32_expression_calls > 0);
-//     insta::assert_snapshot!(stats);
-// }
+#[tokio::test]
+async fn date_extraction_month() {
+    let sql = r#"select AVG(EXTRACT(MONTH from date_a)) as month from test_table"#;
+    let stats = general_test(sql).await;
+    assert!(stats.runtime_hit_date32_expression_calls > 0);
+    insta::assert_snapshot!(stats);
+}
+
+#[tokio::test]
+async fn date_extraction_day() {
+    let sql = r#"select AVG(EXTRACT(DAY from date_a)) as day from test_table"#;
+    let stats = general_test(sql).await;
+    assert!(stats.runtime_hit_date32_expression_calls > 0);
+    insta::assert_snapshot!(stats);
+}
 
 #[tokio::test]
 async fn test_date_extraction_case2() {
