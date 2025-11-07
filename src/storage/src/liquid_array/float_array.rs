@@ -33,7 +33,7 @@ use num_traits::{AsPrimitive, Float, FromPrimitive};
 
 use super::LiquidDataType;
 use crate::cache::CacheExpression;
-use crate::liquid_array::ipc::get_physical_type_id;
+use crate::liquid_array::ipc::{PhysicalTypeMarker, get_physical_type_id};
 use crate::liquid_array::raw::BitPackedArray;
 use crate::liquid_array::{
     IoRange, LiquidHybridArray, LiquidHybridArrayRef, Operator, ipc::LiquidIPCHeader,
@@ -77,7 +77,10 @@ pub trait LiquidFloatType:
             + Mul<<Self as ArrowPrimitiveType>::Native>
             + Float // required for decode_single and encode_single_unchecked
         >
-        + private::Sealed + Debug {
+        + private::Sealed
+        + Debug
+        + PhysicalTypeMarker
+{
     type UnsignedIntType:
         ArrowPrimitiveType<
             Native: BitPacking +

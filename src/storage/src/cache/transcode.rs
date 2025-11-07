@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use arrow::array::types::*;
 use arrow::array::{ArrayRef, AsArray};
-use arrow_schema::DataType;
+use arrow_schema::{DataType, TimeUnit};
 
 use crate::liquid_array::byte_view_array::MemoryBuffer;
 use crate::liquid_array::{
@@ -53,6 +53,30 @@ pub fn transcode_liquid_inner<'a>(
             DataType::Date64 => Arc::new(LiquidPrimitiveArray::<Date64Type>::from_arrow_array(
                 array.as_primitive::<Date64Type>().clone(),
             )),
+            DataType::Timestamp(TimeUnit::Second, None) => Arc::new(LiquidPrimitiveArray::<
+                TimestampSecondType,
+            >::from_arrow_array(
+                array.as_primitive::<TimestampSecondType>().clone(),
+            )),
+            DataType::Timestamp(TimeUnit::Millisecond, None) => Arc::new(LiquidPrimitiveArray::<
+                TimestampMillisecondType,
+            >::from_arrow_array(
+                array.as_primitive::<TimestampMillisecondType>().clone(),
+            )),
+            DataType::Timestamp(TimeUnit::Microsecond, None) => Arc::new(LiquidPrimitiveArray::<
+                TimestampMicrosecondType,
+            >::from_arrow_array(
+                array.as_primitive::<TimestampMicrosecondType>().clone(),
+            )),
+            DataType::Timestamp(TimeUnit::Nanosecond, None) => Arc::new(LiquidPrimitiveArray::<
+                TimestampNanosecondType,
+            >::from_arrow_array(
+                array.as_primitive::<TimestampNanosecondType>().clone(),
+            )),
+            DataType::Timestamp(_, Some(_)) => {
+                log::warn!("unsupported timestamp type with timezone {data_type:?}");
+                return Err(array);
+            }
             DataType::Float32 => Arc::new(LiquidFloatArray::<Float32Type>::from_arrow_array(
                 array.as_primitive::<Float32Type>().clone(),
             )),
@@ -202,7 +226,7 @@ mod tests {
     use super::*;
     use arrow::array::{
         ArrayRef, BinaryArray, BinaryViewArray, BooleanArray, DictionaryArray, Float32Array,
-        Float64Array, Int32Array, Int64Array, StringArray, UInt16Array,
+        Float64Array, Int32Array, Int64Array, StringArray, TimestampMicrosecondArray, UInt16Array,
     };
     use arrow::datatypes::UInt16Type;
 
@@ -249,6 +273,17 @@ mod tests {
     fn test_transcode_float64() {
         let array: ArrayRef = Arc::new(Float64Array::from_iter_values(
             (0..TEST_ARRAY_SIZE).map(|i| i as f64),
+        ));
+        let state = LiquidCompressorStates::new();
+
+        let transcoded = transcode_liquid_inner(&array, &state).unwrap();
+        assert_transcode(&array, &transcoded);
+    }
+
+    #[test]
+    fn test_transcode_timestamp_microsecond() {
+        let array: ArrayRef = Arc::new(TimestampMicrosecondArray::from_iter_values(
+            (0..TEST_ARRAY_SIZE).map(|i| (i as i64) * 1_000),
         ));
         let state = LiquidCompressorStates::new();
 
