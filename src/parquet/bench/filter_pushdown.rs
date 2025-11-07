@@ -48,10 +48,11 @@ fn setup_cache(tmp_dir: &TempDir) -> Arc<LiquidCachedColumn> {
         Box::new(TranscodeSqueezeEvict),
         IoMode::Uring,
     );
-    let file = cache.register_or_get_file("test_file.parquet".to_string());
-    let row_group = file.row_group(0);
     let field = Arc::new(Field::new("test_column", DataType::Int32, false));
-    row_group.create_column(0, field)
+    let schema = Arc::new(Schema::new(vec![field.clone()]));
+    let file = cache.register_or_get_file("test_file.parquet".to_string(), schema);
+    let row_group = file.create_row_group(0);
+    row_group.get_column(0).unwrap()
 }
 
 #[divan::bench(args = SELECTIVITIES, sample_count = 1000)]

@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use super::LiquidArray;
 use super::primitive_array::LiquidPrimitiveArray;
-use super::{IoRange, LiquidArrayRef, LiquidDataType, LiquidHybridArray, LiquidHybridArrayRef};
+use super::{IoRange, LiquidArrayRef, LiquidDataType, LiquidHybridArray};
+use crate::liquid_array::LiquidPrimitiveType;
 use crate::liquid_array::raw::BitPackedArray;
 use crate::utils::get_bit_width;
 
@@ -36,8 +37,8 @@ pub struct SqueezedDate32Array {
 
 impl SqueezedDate32Array {
     /// Build a squeezed representation (YEAR/MONTH/DAY) from a `LiquidPrimitiveArray<Date32Type>`.
-    pub fn from_liquid_date32(
-        array: &LiquidPrimitiveArray<Date32Type>,
+    pub fn from_liquid_date32<T: LiquidPrimitiveType>(
+        array: &LiquidPrimitiveArray<T>,
         field: Date32Field,
     ) -> Self {
         // Decode the logical Date32 array (i32: days since epoch) from the liquid array.
@@ -144,13 +145,13 @@ impl SqueezedDate32Array {
 
     /// Convert back to an Arrow `Int32` array representing the extracted component values.
     /// Useful for verification or future pushdown logic.
-    pub fn to_component_int32(&self) -> PrimitiveArray<Int32Type> {
+    pub fn to_component_date32(&self) -> PrimitiveArray<Date32Type> {
         let unsigned: PrimitiveArray<UInt32Type> = self.bit_packed.to_primitive();
         let (_dt, values, nulls) = unsigned.into_parts();
         let ref_v = self.reference_value;
         let signed_values: ScalarBuffer<<Int32Type as ArrowPrimitiveType>::Native> =
             ScalarBuffer::from_iter(values.iter().map(|&v| (v as i32).saturating_add(ref_v)));
-        PrimitiveArray::<Int32Type>::new(signed_values, nulls)
+        PrimitiveArray::<Date32Type>::new(signed_values, nulls)
     }
 
     /// Lossy reconstruction to Arrow `Date32` (days since epoch).
@@ -258,30 +259,7 @@ impl LiquidHybridArray for SqueezedDate32Array {
         todo!("Not implemented");
     }
 
-    fn filter(&self, selection: &BooleanBuffer) -> Result<LiquidHybridArrayRef, IoRange> {
-        let unsigned_array: PrimitiveArray<UInt32Type> = self.bit_packed.to_primitive();
-        let selection = BooleanArray::new(selection.clone(), None);
-        let filtered_values =
-            arrow::compute::kernels::filter::filter(&unsigned_array, &selection).unwrap();
-        let filtered_values = filtered_values.as_primitive::<UInt32Type>().clone();
-        let filtered = if let Some(bit_width) = self.bit_packed.bit_width() {
-            let squeezed = BitPackedArray::from_primitive(filtered_values, bit_width);
-            SqueezedDate32Array {
-                field: self.field,
-                bit_packed: squeezed,
-                reference_value: self.reference_value,
-            }
-        } else {
-            SqueezedDate32Array {
-                field: self.field,
-                bit_packed: BitPackedArray::new_null_array(filtered_values.len()),
-                reference_value: self.reference_value,
-            }
-        };
-        Ok(Arc::new(filtered) as LiquidHybridArrayRef)
-    }
-
-    fn filter_to_arrow(&self, selection: &BooleanBuffer) -> Result<ArrayRef, IoRange> {
+    fn filter(&self, selection: &BooleanBuffer) -> Result<ArrayRef, IoRange> {
         let unsigned_array: PrimitiveArray<UInt32Type> = self.bit_packed.to_primitive();
         let selection = BooleanArray::new(selection.clone(), None);
         let filtered_values =
@@ -348,11 +326,11 @@ mod tests {
         assert_eq!(a_ref.as_ref(), b_ref.as_ref());
     }
 
-    fn extract(field: Date32Field, input: Vec<Option<i32>>) -> PrimitiveArray<Int32Type> {
+    fn extract(field: Date32Field, input: Vec<Option<i32>>) -> PrimitiveArray<Date32Type> {
         let arr = dates(&input);
         let liquid = LiquidPrimitiveArray::<Date32Type>::from_arrow_array(arr);
         let squeezed = SqueezedDate32Array::from_liquid_date32(&liquid, field);
-        squeezed.to_component_int32()
+        squeezed.to_component_date32()
     }
 
     fn lossy(field: Date32Field, input: Vec<Option<i32>>) -> PrimitiveArray<Date32Type> {
@@ -372,7 +350,7 @@ mod tests {
             None,
         ];
         let expected =
-            PrimitiveArray::<Int32Type>::from(vec![Some(1969), Some(1970), Some(1971), None]);
+            PrimitiveArray::<Date32Type>::from(vec![Some(1969), Some(1970), Some(1971), None]);
         assert_prim_eq(extract(Date32Field::Year, input), expected);
 
         // MONTH
@@ -382,7 +360,7 @@ mod tests {
             Some(ymd_to_epoch_days(1970, 12, 31)),
             None,
         ];
-        let expected = PrimitiveArray::<Int32Type>::from(vec![Some(1), Some(2), Some(12), None]);
+        let expected = PrimitiveArray::<Date32Type>::from(vec![Some(1), Some(2), Some(12), None]);
         assert_prim_eq(extract(Date32Field::Month, input), expected);
 
         // DAY
@@ -392,7 +370,7 @@ mod tests {
             Some(ymd_to_epoch_days(1970, 2, 1)),
             None,
         ];
-        let expected = PrimitiveArray::<Int32Type>::from(vec![Some(1), Some(31), Some(1), None]);
+        let expected = PrimitiveArray::<Date32Type>::from(vec![Some(1), Some(31), Some(1), None]);
         assert_prim_eq(extract(Date32Field::Day, input), expected);
     }
 
@@ -454,7 +432,7 @@ mod tests {
             let lossy_dt = lossy(field, input.clone());
             let liquid2 = LiquidPrimitiveArray::<Date32Type>::from_arrow_array(lossy_dt);
             let comp2 =
-                SqueezedDate32Array::from_liquid_date32(&liquid2, field).to_component_int32();
+                SqueezedDate32Array::from_liquid_date32(&liquid2, field).to_component_date32();
             assert_prim_eq(comp1, comp2);
         }
     }
@@ -465,7 +443,7 @@ mod tests {
 
         for &field in &[Date32Field::Year, Date32Field::Month, Date32Field::Day] {
             let comp = extract(field, input.clone());
-            let expected_comp = PrimitiveArray::<Int32Type>::from(vec![None, None, None]);
+            let expected_comp = PrimitiveArray::<Date32Type>::from(vec![None, None, None]);
             assert_prim_eq(comp, expected_comp);
 
             let lossy_dt = lossy(field, input.clone());
