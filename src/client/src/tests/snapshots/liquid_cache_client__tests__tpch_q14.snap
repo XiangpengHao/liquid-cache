@@ -22,7 +22,19 @@ expression: displayable.tree_render().to_string()
 ┌─────────────┴─────────────┐
 │       AggregateExec       │
 │    --------------------   │
-│          aggr: ,          │
+│           aggr:           │
+│ sum(CASE WHEN part.p_type │
+│     LIKE Utf8("PROMO%")   │
+│        THEN lineitem      │
+│     .l_extendedprice *    │
+│     Int64(1) - lineitem   │
+│      .l_discount ELSE     │
+│     Int64(0) END), sum    │
+│         (lineitem         │
+│        .l_extendedp       │
+│ rice * Int64(1) - lineitem│
+│        .l_discount)       │
+│                           │
 │        mode: Final        │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
@@ -31,7 +43,19 @@ expression: displayable.tree_render().to_string()
 ┌─────────────┴─────────────┐
 │       AggregateExec       │
 │    --------------------   │
-│          aggr: ,          │
+│           aggr:           │
+│ sum(CASE WHEN part.p_type │
+│     LIKE Utf8("PROMO%")   │
+│        THEN lineitem      │
+│     .l_extendedprice *    │
+│     Int64(1) - lineitem   │
+│      .l_discount ELSE     │
+│     Int64(0) END), sum    │
+│         (lineitem         │
+│        .l_extendedp       │
+│ rice * Int64(1) - lineitem│
+│        .l_discount)       │
+│                           │
 │       mode: Partial       │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
@@ -80,5 +104,5 @@ expression: displayable.tree_render().to_string()
                              │         predicate:        │
                              │  l_shipdate >= 1995-09-01 │
                              │    AND l_shipdate < 1995  │
-                             │           -10-01          │
+                             │      -10-01 AND true      │
                              └───────────────────────────┘

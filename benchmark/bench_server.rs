@@ -43,19 +43,15 @@ struct CliArgs {
     #[arg(long = "static-dir", default_value = "static")]
     static_dir: PathBuf,
 
-    /// Openobserve auth token
-    #[arg(long)]
-    openobserve_auth: Option<String>,
+    /// Jaeger OTLP gRPC endpoint (for example: http://localhost:4317)
+    #[arg(long = "jaeger-endpoint")]
+    jaeger_endpoint: Option<String>,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = CliArgs::parse();
-    setup_observability(
-        "liquid-cache-server",
-        opentelemetry::trace::SpanKind::Server,
-        args.openobserve_auth.as_deref(),
-    );
+    setup_observability("liquid-cache-server", args.jaeger_endpoint.as_deref());
 
     let max_cache_bytes = args.max_cache_mb.map(|size| size * 1024 * 1024);
 

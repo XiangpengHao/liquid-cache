@@ -6,7 +6,7 @@ use arrow_schema::{DataType, Field, Fields};
 use parquet::{
     arrow::{
         array_reader::{ArrayReader, StructArrayReader},
-        arrow_reader::RowGroups,
+        arrow_reader::{RowGroups, metrics::ArrowReaderMetrics},
     },
     errors::ParquetError,
 };
@@ -349,13 +349,14 @@ pub fn build_cached_array_reader(
     row_groups: &dyn RowGroups,
     liquid_cache: LiquidCachedRowGroupRef,
 ) -> Result<Box<dyn ArrayReader>, ParquetError> {
-    let reader = parquet::arrow::array_reader::build_array_reader(
+    let metrics = ArrowReaderMetrics::disabled();
+    let builder = parquet::arrow::array_reader::ArrayReaderBuilder::new(row_groups, &metrics);
+    let reader = builder.build_array_reader(
         #[allow(clippy::missing_transmute_annotations)]
         unsafe {
             std::mem::transmute(field)
         },
         projection,
-        row_groups,
     )?;
 
     let column_ids = get_column_ids(field, projection);

@@ -68,6 +68,10 @@ impl LiquidArray for LiquidByteArray {
         self.to_bytes_inner()
     }
 
+    fn original_arrow_data_type(&self) -> DataType {
+        self.original_arrow_type.to_arrow_type()
+    }
+
     fn data_type(&self) -> LiquidDataType {
         LiquidDataType::ByteArray
     }
@@ -761,6 +765,14 @@ mod tests {
     fn test_simple_roundtrip() {
         let input = StringArray::from(vec!["hello", "world", "hello", "rust"]);
         test_roundtrip(input);
+    }
+
+    #[test]
+    fn test_original_arrow_data_type_returns_utf8() {
+        let input = StringArray::from(vec!["alpha", "beta"]);
+        let compressor = LiquidByteArray::train_compressor(input.iter());
+        let array = LiquidByteArray::from_string_array(&input, compressor);
+        assert_eq!(array.original_arrow_data_type(), DataType::Utf8);
     }
 
     #[test]

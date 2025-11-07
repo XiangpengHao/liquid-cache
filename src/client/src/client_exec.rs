@@ -12,10 +12,12 @@ use datafusion::common::Statistics;
 use datafusion::config::ConfigOptions;
 use datafusion::datasource::schema_adapter::{DefaultSchemaAdapterFactory, SchemaMapper};
 use datafusion::execution::object_store::ObjectStoreUrl;
-use datafusion::physical_plan::Distribution;
 use datafusion::physical_plan::execution_plan::CardinalityEffect;
+use datafusion::physical_plan::filter_pushdown::{
+    ChildPushdownResult, FilterDescription, FilterPushdownPhase, FilterPushdownPropagation,
+};
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricsSet};
-use datafusion::physical_plan::projection::ProjectionExec;
+use datafusion::physical_plan::{ExecutionPlanProperties, PhysicalExpr, PlanProperties};
 use datafusion::{
     error::Result,
     execution::{RecordBatchStream, SendableRecordBatchStream},
@@ -52,6 +54,7 @@ pub struct LiquidCacheClientExec {
     metrics: ExecutionPlanMetricsSet,
     uuid: Uuid,
     plan_registered: Arc<AtomicUsize>,
+    properties: PlanProperties,
 }
 
 impl std::fmt::Debug for LiquidCacheClientExec {
@@ -66,6 +69,12 @@ impl LiquidCacheClientExec {
         cache_server: String,
         object_stores: Vec<(ObjectStoreUrl, HashMap<String, String>)>,
     ) -> Self {
+        let properties = PlanProperties::new(
+            remote_plan.equivalence_properties().clone(), // Equivalence Properties
+            remote_plan.output_partitioning().clone(),    // Output Partitioning
+            remote_plan.pipeline_behavior(),
+            remote_plan.boundedness(),
+        );
         let uuid = Uuid::new_v4();
         Self {
             remote_plan,
@@ -74,6 +83,7 @@ impl LiquidCacheClientExec {
             object_stores,
             uuid,
             metrics: ExecutionPlanMetricsSet::new(),
+            properties,
         }
     }
 
@@ -132,6 +142,7 @@ impl ExecutionPlan for LiquidCacheClientExec {
             object_stores: self.object_stores.clone(),
             metrics: self.metrics.clone(),
             uuid: self.uuid,
+            properties: self.properties.clone(),
         }))
     }
 
@@ -168,24 +179,8 @@ impl ExecutionPlan for LiquidCacheClientExec {
         )))
     }
 
-    fn required_input_distribution(&self) -> Vec<Distribution> {
-        self.remote_plan.required_input_distribution()
-    }
-
-    fn benefits_from_input_partitioning(&self) -> Vec<bool> {
-        self.remote_plan.benefits_from_input_partitioning()
-    }
-
-    fn repartitioned(
-        &self,
-        target_partitions: usize,
-        config: &ConfigOptions,
-    ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
-        self.remote_plan.repartitioned(target_partitions, config)
-    }
-
     fn statistics(&self) -> Result<Statistics> {
-        self.remote_plan.statistics()
+        self.remote_plan.partition_statistics(None)
     }
 
     fn supports_limit_pushdown(&self) -> bool {
@@ -200,19 +195,38 @@ impl ExecutionPlan for LiquidCacheClientExec {
         self.remote_plan.fetch()
     }
 
-    fn cardinality_effect(&self) -> CardinalityEffect {
-        self.remote_plan.cardinality_effect()
-    }
-
-    fn try_swapping_with_projection(
-        &self,
-        projection: &ProjectionExec,
-    ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
-        self.remote_plan.try_swapping_with_projection(projection)
-    }
-
     fn metrics(&self) -> Option<MetricsSet> {
         Some(self.metrics.clone_inner())
+    }
+
+    fn maintains_input_order(&self) -> Vec<bool> {
+        vec![true]
+    }
+
+    fn benefits_from_input_partitioning(&self) -> Vec<bool> {
+        vec![false]
+    }
+
+    fn cardinality_effect(&self) -> CardinalityEffect {
+        CardinalityEffect::Equal
+    }
+
+    fn gather_filters_for_pushdown(
+        &self,
+        _phase: FilterPushdownPhase,
+        parent_filters: Vec<Arc<dyn PhysicalExpr>>,
+        _config: &ConfigOptions,
+    ) -> Result<FilterDescription> {
+        FilterDescription::from_children(parent_filters, &self.children())
+    }
+
+    fn handle_child_pushdown_result(
+        &self,
+        _phase: FilterPushdownPhase,
+        child_pushdown_result: ChildPushdownResult,
+        _config: &ConfigOptions,
+    ) -> Result<FilterPushdownPropagation<Arc<dyn ExecutionPlan>>> {
+        Ok(FilterPushdownPropagation::if_all(child_pushdown_result))
     }
 }
 

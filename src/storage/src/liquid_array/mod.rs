@@ -19,8 +19,10 @@ use arrow::{
     array::{ArrayRef, BooleanArray},
     buffer::BooleanBuffer,
 };
+use arrow_schema::DataType;
 pub use byte_array::{LiquidByteArray, get_string_needle};
 pub use byte_view_array::LiquidByteViewArray;
+use datafusion::logical_expr::Operator as DFOperator;
 use datafusion::physical_plan::PhysicalExpr;
 pub use fix_len_byte_array::LiquidFixedLenByteArray;
 use float_array::LiquidFloatType;
@@ -167,6 +169,9 @@ pub trait LiquidArray: std::fmt::Debug + Send + Sync {
     /// Get the logical data type of the Liquid array.
     fn data_type(&self) -> LiquidDataType;
 
+    /// Get the original arrow data type of the Liquid array.
+    fn original_arrow_data_type(&self) -> DataType;
+
     /// Serialize the Liquid array to a byte array.
     fn to_bytes(&self) -> Vec<u8>;
 
@@ -223,6 +228,30 @@ impl IoRange {
     }
 }
 
+enum Operator {
+    Eq,
+    NotEq,
+    Lt,
+    LtEq,
+    Gt,
+    GtEq,
+}
+
+impl Operator {
+    fn from_datafusion(op: &DFOperator) -> Option<Self> {
+        let op = match op {
+            DFOperator::Eq => Operator::Eq,
+            DFOperator::NotEq => Operator::NotEq,
+            DFOperator::Lt => Operator::Lt,
+            DFOperator::LtEq => Operator::LtEq,
+            DFOperator::Gt => Operator::Gt,
+            DFOperator::GtEq => Operator::GtEq,
+            _ => return None,
+        };
+        Some(op)
+    }
+}
+
 /// A Liquid hybrid array is a Liquid array that part of its data is stored on disk.
 /// `LiquidHybridArray` is more complex than in-memory `LiquidArray` because it needs to handle IO.
 pub trait LiquidHybridArray: std::fmt::Debug + Send + Sync {
@@ -252,6 +281,9 @@ pub trait LiquidHybridArray: std::fmt::Debug + Send + Sync {
 
     /// Get the logical data type of the Liquid array.
     fn data_type(&self) -> LiquidDataType;
+
+    /// Get the original arrow data type of the Liquid hybrid array.
+    fn original_arrow_data_type(&self) -> DataType;
 
     /// Serialize the Liquid array to a byte array.
     fn to_bytes(&self) -> Result<Vec<u8>, IoRange>;

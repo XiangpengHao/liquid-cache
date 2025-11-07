@@ -111,7 +111,7 @@ expression: displayable.tree_render().to_string()
 │    partitioning_scheme:   ││         predicate:        ││                           │
 │     RoundRobinBatch(8)    ││ substr(c_phone, 1, 2) IN  ││                           │
 │                           ││  (13, 31, 23, 29, 30, 18, ││                           │
-│                           ││        17) AND true       ││                           │
+│                           ││             17)           ││                           │
 └─────────────┬─────────────┘└───────────────────────────┘└───────────────────────────┘
 ┌─────────────┴─────────────┐
 │       DataSourceExec      │

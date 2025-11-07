@@ -11,6 +11,7 @@ use arrow::array::{
     },
 };
 use arrow::buffer::{BooleanBuffer, ScalarBuffer};
+use arrow_schema::DataType;
 use datafusion::physical_plan::PhysicalExpr;
 use fastlanes::BitPacking;
 use num_traits::{AsPrimitive, FromPrimitive};
@@ -20,12 +21,12 @@ use crate::liquid_array::ipc::LiquidIPCHeader;
 use crate::liquid_array::ipc::get_physical_type_id;
 use crate::liquid_array::raw::BitPackedArray;
 use crate::liquid_array::{
-    IoRange, LiquidArray, LiquidArrayRef, LiquidHybridArray, LiquidHybridArrayRef, PrimitiveKind,
+    IoRange, LiquidArray, LiquidArrayRef, LiquidHybridArray, LiquidHybridArrayRef, Operator,
+    PrimitiveKind,
 };
 use crate::utils::get_bit_width;
 use arrow::datatypes::ArrowNativeType;
 use bytes::Bytes;
-use datafusion::logical_expr::Operator as DFOperator;
 use datafusion::physical_plan::expressions::{BinaryExpr, Literal};
 
 /// Squeeze policy for primitive integer arrays.
@@ -218,6 +219,10 @@ where
 
     fn len(&self) -> usize {
         self.len()
+    }
+
+    fn original_arrow_data_type(&self) -> DataType {
+        T::DATA_TYPE.clone()
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -476,30 +481,6 @@ struct LiquidPrimitiveClampedArray<T: LiquidPrimitiveType> {
     disk_range: std::ops::Range<u64>,
 }
 
-enum Operator {
-    Eq,
-    NotEq,
-    Lt,
-    LtEq,
-    Gt,
-    GtEq,
-}
-
-impl Operator {
-    fn from_datafusion(op: &DFOperator) -> Option<Self> {
-        let op = match op {
-            DFOperator::Eq => Operator::Eq,
-            DFOperator::NotEq => Operator::NotEq,
-            DFOperator::Lt => Operator::Lt,
-            DFOperator::LtEq => Operator::LtEq,
-            DFOperator::Gt => Operator::Gt,
-            DFOperator::GtEq => Operator::GtEq,
-            _ => return None,
-        };
-        Some(op)
-    }
-}
-
 impl<T> LiquidPrimitiveClampedArray<T>
 where
     T: LiquidPrimitiveType + super::PrimitiveKind,
@@ -723,6 +704,10 @@ where
 
     fn data_type(&self) -> LiquidDataType {
         LiquidDataType::Integer
+    }
+
+    fn original_arrow_data_type(&self) -> DataType {
+        T::DATA_TYPE.clone()
     }
 
     fn to_bytes(&self) -> Result<Vec<u8>, IoRange> {
@@ -1035,6 +1020,10 @@ where
         LiquidDataType::Integer
     }
 
+    fn original_arrow_data_type(&self) -> DataType {
+        T::DATA_TYPE.clone()
+    }
+
     fn to_bytes(&self) -> Result<Vec<u8>, IoRange> {
         Err(IoRange {
             range: self.disk_range.clone(),
@@ -1287,6 +1276,13 @@ mod tests {
     }
 
     #[test]
+    fn test_original_arrow_data_type_returns_int32() {
+        let array = PrimitiveArray::<Int32Type>::from(vec![Some(1), Some(2)]);
+        let liquid = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(array);
+        assert_eq!(liquid.original_arrow_data_type(), DataType::Int32);
+    }
+
+    #[test]
     fn test_filter_all_nulls() {
         // Create array with all nulls
         let original = vec![None, None, None, None];
@@ -1439,7 +1435,8 @@ mod tests {
     fn hybrid_predicate_eval_i32_resolvable_and_unresolvable() {
         let mut rng = StdRng::seed_from_u64(0x51_73);
         let arr = make_i32_array_with_range(200, -1_000_000, 1 << 16, 0.2, &mut rng);
-        let liq = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(arr.clone());
+        let liq = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(arr.clone())
+            .with_squeeze_policy(IntegerSqueezePolicy::Clamp);
         let (hybrid, _bytes) = liq.squeeze().expect("squeezable");
 
         let boundary = compute_boundary_i32(&arr).unwrap();

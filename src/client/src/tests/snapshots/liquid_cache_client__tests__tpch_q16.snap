@@ -159,7 +159,7 @@ expression: displayable.tree_render().to_string()
                              │    --------------------   ││    --------------------   │
                              │          files: 1         ││          files: 1         │
                              │      format: parquet      ││      format: parquet      │
-                             │                           ││                           │
+                             │                           ││      predicate: true      │
                              │         predicate:        ││                           │
                              │  p_brand != Brand#45 AND  ││                           │
                              │       p_type NOT LIKE     ││                           │

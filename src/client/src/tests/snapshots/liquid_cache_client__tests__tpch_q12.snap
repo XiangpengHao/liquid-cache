@@ -92,13 +92,13 @@ expression: displayable.tree_render().to_string()
 │       mode: Partial       │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
-│       ProjectionExec      │
+│      RepartitionExec      │
 │    --------------------   │
-│        l_shipmode:        │
-│         l_shipmode        │
+│ partition_count(in->out): │
+│           1 -> 8          │
 │                           │
-│      o_orderpriority:     │
-│      o_orderpriority      │
+│    partitioning_scheme:   │
+│     RoundRobinBatch(8)    │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
 │    CoalesceBatchesExec    │
@@ -110,7 +110,7 @@ expression: displayable.tree_render().to_string()
 │        HashJoinExec       │
 │    --------------------   │
 │            on:            ├──────────────┐
-│ (o_orderkey = l_orderkey) │              │
+│ (l_orderkey = o_orderkey) │              │
 └─────────────┬─────────────┘              │
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
 │   LiquidCacheClientExec   ││   LiquidCacheClientExec   │
@@ -120,28 +120,19 @@ expression: displayable.tree_render().to_string()
 │      object_stores=[]     ││      object_stores=[]     │
 └─────────────┬─────────────┘└─────────────┬─────────────┘
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-│       DataSourceExec      ││      RepartitionExec      │
+│       DataSourceExec      ││       DataSourceExec      │
 │    --------------------   ││    --------------------   │
-│          files: 1         ││ partition_count(in->out): │
-│      format: parquet      ││           1 -> 8          │
-│                           ││                           │
-│                           ││    partitioning_scheme:   │
-│                           ││     RoundRobinBatch(8)    │
-└───────────────────────────┘└─────────────┬─────────────┘
-                             ┌─────────────┴─────────────┐
-                             │       DataSourceExec      │
-                             │    --------------------   │
-                             │          files: 1         │
-                             │      format: parquet      │
-                             │                           │
-                             │         predicate:        │
-                             │   (l_shipmode = MAIL OR   │
-                             │     l_shipmode = SHIP)    │
-                             │     AND l_receiptdate >   │
-                             │      l_commitdate AND     │
-                             │        l_shipdate <       │
-                             │      l_commitdate AND     │
-                             │  l_receiptdate >= 1994-01 │
-                             │  -01 AND l_receiptdate <  │
-                             │         1995-01-01        │
-                             └───────────────────────────┘
+│          files: 1         ││          files: 1         │
+│      format: parquet      ││      format: parquet      │
+│                           ││      predicate: true      │
+│         predicate:        ││                           │
+│   (l_shipmode = MAIL OR   ││                           │
+│     l_shipmode = SHIP)    ││                           │
+│     AND l_receiptdate >   ││                           │
+│      l_commitdate AND     ││                           │
+│        l_shipdate <       ││                           │
+│      l_commitdate AND     ││                           │
+│  l_receiptdate >= 1994-01 ││                           │
+│  -01 AND l_receiptdate <  ││                           │
+│         1995-01-01        ││                           │
+└───────────────────────────┘└───────────────────────────┘
