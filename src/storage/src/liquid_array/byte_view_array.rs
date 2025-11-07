@@ -44,6 +44,7 @@ use super::{
     LiquidArray, LiquidArrayRef, LiquidDataType, LiquidHybridArray,
     byte_array::{ArrowByteType, get_string_needle},
 };
+use crate::cache::CacheExpression;
 use crate::liquid_array::ipc::LiquidIPCHeader;
 use crate::liquid_array::raw::BitPackedArray;
 use crate::liquid_array::raw::fsst_array::{RawFsstBuffer, train_compressor};
@@ -463,11 +464,6 @@ impl LiquidArray for LiquidByteViewArray<MemoryBuffer> {
         Arc::new(dict)
     }
 
-    fn filter(&self, selection: &BooleanBuffer) -> LiquidArrayRef {
-        let filtered = filter_inner(self, selection);
-        Arc::new(filtered)
-    }
-
     fn try_eval_predicate(
         &self,
         expr: &Arc<dyn PhysicalExpr>,
@@ -489,7 +485,10 @@ impl LiquidArray for LiquidByteViewArray<MemoryBuffer> {
         LiquidDataType::ByteViewArray
     }
 
-    fn squeeze(&self) -> Option<(LiquidHybridArrayRef, bytes::Bytes)> {
+    fn squeeze(
+        &self,
+        _expression_hint: Option<&CacheExpression>,
+    ) -> Option<(LiquidHybridArrayRef, bytes::Bytes)> {
         // Serialize full IPC bytes first
         let bytes = match self.to_bytes_inner() {
             Ok(b) => b,
@@ -579,20 +578,15 @@ impl LiquidHybridArray for LiquidByteViewArray<DiskBuffer> {
         self.to_bytes_inner()
     }
 
-    /// Filter the Liquid array with a boolean buffer.
-    fn filter(&self, selection: &BooleanBuffer) -> Result<LiquidHybridArrayRef, IoRange> {
-        Ok(Arc::new(filter_inner(self, selection)))
-    }
-
     /// Filter the Liquid array with a boolean array and return an **arrow array**.
-    fn filter_to_arrow(&self, selection: &BooleanBuffer) -> Result<ArrayRef, IoRange> {
+    fn filter(&self, selection: &BooleanBuffer) -> Result<ArrayRef, IoRange> {
         let select_any = selection.count_set_bits() > 0;
         if !select_any {
             return Ok(arrow::array::new_empty_array(
                 &self.original_arrow_data_type(),
             ));
         }
-        let filtered = self.filter(selection)?;
+        let filtered = filter_inner(self, selection);
         filtered.to_best_arrow_array()
     }
 
@@ -1679,7 +1673,7 @@ mod tests {
         let input = StringArray::from(vec!["foo", "bar"]);
         let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
         let in_memory = LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
-        let (hybrid, _) = in_memory.squeeze().expect("squeeze should succeed");
+        let (hybrid, _) = in_memory.squeeze(None).expect("squeeze should succeed");
         let disk_view = hybrid
             .as_any()
             .downcast_ref::<LiquidByteViewArray<DiskBuffer>>()
@@ -1912,8 +1906,7 @@ mod tests {
         let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
         let liquid_array =
             LiquidByteViewArray::<MemoryBuffer>::from_string_array(input, compressor);
-        let filtered = liquid_array.filter(&filter);
-        let output = filtered.to_arrow_array();
+        let output = liquid_array.filter(&filter);
         let expected = {
             let selection = BooleanArray::new(filter.clone(), None);
             let arrow_filtered = arrow::compute::filter(&input, &selection).unwrap();
@@ -2375,7 +2368,7 @@ mod tests {
         let in_mem = LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
 
         // Squeeze to disk-backed so we exercise compare_equals_with_prefix in DiskBuffer path
-        let (hybrid, _bytes) = in_mem.squeeze().unwrap();
+        let (hybrid, _bytes) = in_mem.squeeze(None).unwrap();
         let disk_view = hybrid
             .as_any()
             .downcast_ref::<LiquidByteViewArray<DiskBuffer>>()

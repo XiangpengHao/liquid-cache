@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use arrow::array::{
     ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType, BooleanArray, PrimitiveArray,
-    cast::AsArray,
     types::{
         Date32Type, Date64Type, Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt16Type,
         UInt32Type, UInt64Type,
@@ -17,13 +16,16 @@ use fastlanes::BitPacking;
 use num_traits::{AsPrimitive, FromPrimitive};
 
 use super::LiquidDataType;
+use crate::cache::CacheExpression;
 use crate::liquid_array::hybrid_primitive_array::{
     LiquidPrimitiveClampedArray, LiquidPrimitiveQuantizedArray,
 };
 use crate::liquid_array::ipc::LiquidIPCHeader;
 use crate::liquid_array::ipc::get_physical_type_id;
 use crate::liquid_array::raw::BitPackedArray;
-use crate::liquid_array::{LiquidArray, LiquidArrayRef, LiquidHybridArrayRef, PrimitiveKind};
+use crate::liquid_array::{
+    Date32Field, LiquidArray, LiquidHybridArrayRef, PrimitiveKind, SqueezedDate32Array,
+};
 use crate::utils::get_bit_width;
 use arrow::datatypes::ArrowNativeType;
 use bytes::Bytes;
@@ -113,7 +115,7 @@ pub type LiquidDate32Array = LiquidPrimitiveArray<Date32Type>;
 pub type LiquidDate64Array = LiquidPrimitiveArray<Date64Type>;
 
 /// Liquid's primitive array
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct LiquidPrimitiveArray<T: LiquidPrimitiveType> {
     bit_packed: BitPackedArray<T::UnSignedType>,
     reference_value: T::Native,
@@ -360,28 +362,7 @@ where
         Arc::new(PrimitiveArray::<T>::new(values, nulls.cloned()))
     }
 
-    fn filter(&self, selection: &BooleanBuffer) -> LiquidArrayRef {
-        let unsigned_array: PrimitiveArray<T::UnSignedType> = self.bit_packed.to_primitive();
-        let selection = BooleanArray::new(selection.clone(), None);
-        let filtered_values =
-            arrow::compute::kernels::filter::filter(&unsigned_array, &selection).unwrap();
-        let filtered_values = filtered_values.as_primitive::<T::UnSignedType>().clone();
-        let Some(bit_width) = self.bit_packed.bit_width() else {
-            return Arc::new(LiquidPrimitiveArray::<T> {
-                bit_packed: BitPackedArray::new_null_array(filtered_values.len()),
-                reference_value: self.reference_value,
-                squeeze_policy: self.squeeze_policy,
-            });
-        };
-        let bit_packed = BitPackedArray::from_primitive(filtered_values, bit_width);
-        Arc::new(LiquidPrimitiveArray::<T> {
-            bit_packed,
-            reference_value: self.reference_value,
-            squeeze_policy: self.squeeze_policy,
-        })
-    }
-
-    fn filter_to_arrow(&self, selection: &BooleanBuffer) -> ArrayRef {
+    fn filter(&self, selection: &BooleanBuffer) -> ArrayRef {
         let arrow_array = self.to_arrow_array();
         let selection = BooleanArray::new(selection.clone(), None);
         arrow::compute::kernels::filter::filter(&arrow_array, &selection).unwrap()
@@ -404,7 +385,28 @@ where
         LiquidDataType::Integer
     }
 
-    fn squeeze(&self) -> Option<(LiquidHybridArrayRef, Bytes)> {
+    fn squeeze(
+        &self,
+        expression_hint: Option<&CacheExpression>,
+    ) -> Option<(LiquidHybridArrayRef, Bytes)> {
+        // Full bytes (original format) are what we store to disk
+        let full_bytes = Bytes::from(self.to_bytes_inner());
+        let disk_range = 0u64..(full_bytes.len() as u64);
+
+        if T::DATA_TYPE == DataType::Date32 {
+            // Special handle for Date32 arrays with component extraction support.
+            let field = expression_hint
+                .map(|expr| match expr {
+                    CacheExpression::ExtractDate32 { field } => *field,
+                })
+                .unwrap_or(Date32Field::Year);
+            return Some((
+                Arc::new(SqueezedDate32Array::from_liquid_date32(self, field))
+                    as LiquidHybridArrayRef,
+                full_bytes,
+            ));
+        }
+
         // Only squeeze if we have a concrete bit width and it is large enough
         let orig_bw = self.bit_packed.bit_width()?;
         if orig_bw.get() < 8 {
@@ -417,10 +419,6 @@ where
         // Decode original unsigned offsets
         let unsigned_array = self.bit_packed.to_primitive();
         let (_dt, values, nulls) = unsigned_array.into_parts();
-
-        // Full bytes (original format) are what we store to disk
-        let full_bytes = Bytes::from(self.to_bytes_inner());
-        let disk_range = 0u64..(full_bytes.len() as u64);
 
         match self.squeeze_policy {
             IntegerSqueezePolicy::Clamp => {
@@ -564,26 +562,7 @@ where
         Arc::new(PrimitiveArray::<T>::new(values, nulls.cloned()))
     }
 
-    fn filter(&self, selection: &BooleanBuffer) -> LiquidArrayRef {
-        let unsigned_array: PrimitiveArray<T::UnSignedType> = self.bit_packed.to_primitive();
-        let selection = BooleanArray::new(selection.clone(), None);
-        let filtered_values =
-            arrow::compute::kernels::filter::filter(&unsigned_array, &selection).unwrap();
-        let filtered_values = filtered_values.as_primitive::<T::UnSignedType>().clone();
-        let Some(bit_width) = self.bit_packed.bit_width() else {
-            return Arc::new(LiquidPrimitiveDeltaArray::<T> {
-                bit_packed: BitPackedArray::new_null_array(filtered_values.len()),
-                reference_value: self.reference_value,
-            });
-        };
-        let bit_packed = BitPackedArray::from_primitive(filtered_values, bit_width);
-        Arc::new(LiquidPrimitiveDeltaArray::<T> {
-            bit_packed,
-            reference_value: self.reference_value,
-        })
-    }
-
-    fn filter_to_arrow(&self, selection: &BooleanBuffer) -> ArrayRef {
+    fn filter(&self, selection: &BooleanBuffer) -> ArrayRef {
         let arrow_array = self.to_arrow_array();
         let selection = BooleanArray::new(selection.clone(), None);
         arrow::compute::kernels::filter::filter(&arrow_array, &selection).unwrap()
@@ -606,7 +585,10 @@ where
         LiquidDataType::Integer
     }
 
-    fn squeeze(&self) -> Option<(crate::liquid_array::LiquidHybridArrayRef, bytes::Bytes)> {
+    fn squeeze(
+        &self,
+        _expression_hint: Option<&CacheExpression>,
+    ) -> Option<(crate::liquid_array::LiquidHybridArrayRef, bytes::Bytes)> {
         // Not implemented for delta arrays
         None
     }
@@ -762,6 +744,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cache::CacheExpression;
+    use crate::liquid_array::utils::ExpressionHintTracker;
     use arrow::array::Array;
 
     macro_rules! test_roundtrip {
@@ -890,6 +874,55 @@ mod tests {
         vec![Some(-365), Some(0), Some(365), None, Some(18262)]
     );
 
+    #[test]
+    fn test_date32_squeeze_respects_majority_expression_hint() {
+        let original = vec![Some(0), Some(31), Some(59), None, Some(90)];
+        let array = PrimitiveArray::<Date32Type>::from(original);
+        let liquid = LiquidPrimitiveArray::<Date32Type>::from_arrow_array(array);
+
+        let expr_month = CacheExpression::extract_date32(Date32Field::Month);
+        let expr_year = CacheExpression::extract_date32(Date32Field::Year);
+
+        let tracker = ExpressionHintTracker::new();
+        tracker.record_expression(&expr_month);
+        tracker.record_expression(&expr_month);
+        tracker.record_expression(&expr_year);
+        let majority = tracker.majority_expression();
+
+        let (hybrid, _) = liquid
+            .squeeze(majority.as_ref())
+            .expect("squeeze should succeed");
+        let squeezed = hybrid
+            .as_any()
+            .downcast_ref::<SqueezedDate32Array>()
+            .expect("expected squeezed date32 array");
+
+        assert_eq!(squeezed.field(), Date32Field::Month);
+    }
+
+    #[test]
+    fn test_date32_squeeze_prefers_recent_on_tie() {
+        let original = vec![Some(0), Some(1), Some(2), Some(3)];
+        let array = PrimitiveArray::<Date32Type>::from(original);
+        let liquid = LiquidPrimitiveArray::<Date32Type>::from_arrow_array(array);
+
+        let expr_year = CacheExpression::extract_date32(Date32Field::Year);
+        let expr_day = CacheExpression::extract_date32(Date32Field::Day);
+        let tracker = ExpressionHintTracker::new();
+        tracker.record_expression(&expr_year);
+        tracker.record_expression(&expr_day);
+
+        let (hybrid, _) = liquid
+            .squeeze(tracker.majority_expression().as_ref())
+            .expect("squeeze should succeed");
+        let squeezed = hybrid
+            .as_any()
+            .downcast_ref::<SqueezedDate32Array>()
+            .expect("expected squeezed date32 array");
+
+        assert_eq!(squeezed.field(), Date32Field::Day);
+    }
+
     test_roundtrip!(
         test_date64_roundtrip,
         Date64Type,
@@ -914,7 +947,6 @@ mod tests {
         let array = PrimitiveArray::<Int32Type>::from(original.clone());
         let liquid_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(array);
         let result_array = liquid_array.filter(&BooleanBuffer::from(vec![true, false, true]));
-        let result_array = result_array.to_arrow_array();
 
         assert_eq!(result_array.len(), 2);
         assert_eq!(result_array.null_count(), 2);
@@ -952,8 +984,7 @@ mod tests {
         let selection = BooleanBuffer::from(vec![true, false, true, false, true]);
 
         // Apply filter
-        let filtered = liquid_array.filter(&selection);
-        let result_array = filtered.to_arrow_array();
+        let result_array = liquid_array.filter(&selection);
 
         // Expected result after filtering
         let expected = PrimitiveArray::<Int32Type>::from(vec![Some(1), Some(3), Some(5)]);
@@ -978,8 +1009,7 @@ mod tests {
         // Keep first and last elements
         let selection = BooleanBuffer::from(vec![true, false, false, true]);
 
-        let filtered = liquid_array.filter(&selection);
-        let result_array = filtered.to_arrow_array();
+        let result_array = liquid_array.filter(&selection);
 
         let expected = PrimitiveArray::<Int32Type>::from(vec![None, None]);
 
@@ -995,8 +1025,7 @@ mod tests {
         // Filter out all elements
         let selection = BooleanBuffer::from(vec![false, false, false]);
 
-        let filtered = liquid_array.filter(&selection);
-        let result_array = filtered.to_arrow_array();
+        let result_array = liquid_array.filter(&selection);
 
         assert_eq!(result_array.len(), 0);
     }

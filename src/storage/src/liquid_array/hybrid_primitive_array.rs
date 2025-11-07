@@ -13,10 +13,7 @@ use num_traits::{AsPrimitive, FromPrimitive};
 use crate::liquid_array::raw::BitPackedArray;
 
 use super::primitive_array::{LiquidPrimitiveArray, LiquidPrimitiveType};
-use super::{
-    IoRange, LiquidArrayRef, LiquidDataType, LiquidHybridArray, LiquidHybridArrayRef, Operator,
-    PrimitiveKind,
-};
+use super::{IoRange, LiquidArrayRef, LiquidDataType, LiquidHybridArray, Operator, PrimitiveKind};
 
 #[derive(Debug, Clone)]
 pub(crate) struct LiquidPrimitiveClampedArray<T: LiquidPrimitiveType> {
@@ -261,12 +258,7 @@ where
         })
     }
 
-    fn filter(&self, selection: &BooleanBuffer) -> Result<LiquidHybridArrayRef, IoRange> {
-        let filtered = self.filter_inner(selection);
-        Ok(Arc::new(filtered) as LiquidHybridArrayRef)
-    }
-
-    fn filter_to_arrow(&self, selection: &BooleanBuffer) -> Result<ArrayRef, IoRange> {
+    fn filter(&self, selection: &BooleanBuffer) -> Result<ArrayRef, IoRange> {
         let filtered = self.filter_inner(selection);
         filtered.to_arrow_array()
     }
@@ -566,11 +558,6 @@ where
         })
     }
 
-    fn filter(&self, selection: &BooleanBuffer) -> Result<LiquidHybridArrayRef, IoRange> {
-        let filtered = self.filter_inner(selection);
-        Ok(Arc::new(filtered) as LiquidHybridArrayRef)
-    }
-
     fn try_eval_predicate(
         &self,
         expr: &Arc<dyn PhysicalExpr>,
@@ -689,7 +676,7 @@ mod tests {
         let arr = make_i32_array_with_range(64, 10_000, 100, 0.1, &mut rng);
         let liquid = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(arr)
             .with_squeeze_policy(IntegerSqueezePolicy::Clamp);
-        assert!(liquid.squeeze().is_none());
+        assert!(liquid.squeeze(None).is_none());
     }
 
     #[test]
@@ -699,7 +686,7 @@ mod tests {
         let liq = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(arr.clone())
             .with_squeeze_policy(IntegerSqueezePolicy::Clamp);
         let bytes_baseline = liq.to_bytes();
-        let (hybrid, bytes) = liq.squeeze().expect("squeezable");
+        let (hybrid, bytes) = liq.squeeze(None).expect("squeezable");
         // ensure we can recover the original using soak
         let recovered = hybrid.soak(bytes.clone());
         assert_eq!(recovered.to_arrow_array().as_primitive::<Int32Type>(), &arr);
@@ -718,7 +705,7 @@ mod tests {
             .collect();
         let mask = BooleanBuffer::from_iter(mask_bits.iter().copied());
         let filtered_arrow = hybrid
-            .filter_to_arrow(&mask)
+            .filter(&mask)
             .expect("known-only selection should be materializable");
 
         let expected = {
@@ -744,7 +731,7 @@ mod tests {
         let arr = make_i32_array_with_range(200, -1_000_000, 1 << 16, 0.2, &mut rng);
         let liq = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(arr.clone())
             .with_squeeze_policy(IntegerSqueezePolicy::Clamp);
-        let (hybrid, _bytes) = liq.squeeze().expect("squeezable");
+        let (hybrid, _bytes) = liq.squeeze(None).expect("squeezable");
 
         let boundary = compute_boundary_i32(&arr).unwrap();
         // selection mask: random subset
@@ -824,7 +811,7 @@ mod tests {
         let arr = make_u32_array_with_range(180, 1_000_000, 1 << 16, 0.15, &mut rng);
         let liq = LiquidPrimitiveArray::<UInt32Type>::from_arrow_array(arr.clone())
             .with_squeeze_policy(IntegerSqueezePolicy::Clamp);
-        let (hybrid, _bytes) = liq.squeeze().expect("squeezable");
+        let (hybrid, _bytes) = liq.squeeze(None).expect("squeezable");
 
         let boundary = compute_boundary_u32(&arr).unwrap();
         let mask_bits: Vec<bool> = (0..arr.len()).map(|_| rng.random()).collect();
@@ -898,7 +885,7 @@ mod tests {
         let arr = make_u32_array_with_range(200, 1_000_000, 1 << 16, 0.2, &mut rng);
         let liq = LiquidPrimitiveArray::<UInt32Type>::from_arrow_array(arr.clone())
             .with_squeeze_policy(IntegerSqueezePolicy::Quantize);
-        let (hybrid, _bytes) = liq.squeeze().expect("squeezable");
+        let (hybrid, _bytes) = liq.squeeze(None).expect("squeezable");
 
         let min = arrow::compute::kernels::aggregate::min(&arr).unwrap();
 
@@ -959,7 +946,7 @@ mod tests {
         let arr = make_i32_array_with_range(220, -1_000_000, 1 << 16, 0.2, &mut rng);
         let liq = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(arr.clone())
             .with_squeeze_policy(IntegerSqueezePolicy::Quantize);
-        let (hybrid, _bytes) = liq.squeeze().expect("squeezable");
+        let (hybrid, _bytes) = liq.squeeze(None).expect("squeezable");
 
         let min = arrow::compute::kernels::aggregate::min(&arr).unwrap();
         let mask = BooleanBuffer::from(vec![true; arr.len()]);
@@ -1018,7 +1005,7 @@ mod tests {
         let arr = make_u32_array_with_range(64, 1000, 1 << 12, 0.0, &mut rng);
         let liq = LiquidPrimitiveArray::<UInt32Type>::from_arrow_array(arr)
             .with_squeeze_policy(IntegerSqueezePolicy::Quantize);
-        let (hybrid, _bytes) = liq.squeeze().expect("squeezable");
+        let (hybrid, _bytes) = liq.squeeze(None).expect("squeezable");
         // Quantized hybrid cannot materialize to Arrow without IO
         assert!(hybrid.to_arrow_array().is_err());
     }

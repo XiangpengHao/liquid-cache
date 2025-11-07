@@ -271,14 +271,14 @@ where
     let mut lp = LiquidPrimitiveArray::<T>::from_arrow_array(prim.clone());
     let clamp_hybrid_and_bytes = {
         lp.set_squeeze_policy(IntegerSqueezePolicy::Clamp);
-        lp.squeeze()
+        lp.squeeze(None)
     };
 
     // Build Quantize
     let mut lq = LiquidPrimitiveArray::<T>::from_arrow_array(prim.clone());
     let quant_hybrid_and_bytes = {
         lq.set_squeeze_policy(IntegerSqueezePolicy::Quantize);
-        lq.squeeze()
+        lq.squeeze(None)
     };
 
     // Size accounting (for squeezable ones)
@@ -363,7 +363,7 @@ fn get_with_selection_or_fetch(
     selection: &BooleanBuffer,
     expected: &dyn Array,
 ) -> usize {
-    match hybrid.filter_to_arrow(selection) {
+    match hybrid.filter(selection) {
         Ok(arr) => {
             assert_eq!(arr.as_ref(), expected);
             0
@@ -371,7 +371,7 @@ fn get_with_selection_or_fetch(
         Err(io) => {
             let slice = full_bytes.slice(io.range().start as usize..io.range().end as usize);
             let liq = hybrid.soak(slice);
-            let arr = liq.filter_to_arrow(selection);
+            let arr = liq.filter(selection);
             assert_eq!(arr.as_ref(), expected);
             (io.range().end - io.range().start) as usize
         }

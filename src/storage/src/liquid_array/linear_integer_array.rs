@@ -4,7 +4,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use super::PrimitiveKind;
-use super::{LiquidArray, LiquidArrayRef, LiquidDataType, LiquidPrimitiveType};
+use super::{LiquidArray, LiquidDataType, LiquidPrimitiveType};
 use crate::liquid_array::LiquidPrimitiveArray;
 use crate::liquid_array::ipc::{LiquidIPCHeader, get_physical_type_id};
 use arrow::array::{
@@ -343,16 +343,7 @@ where
         Arc::new(PrimitiveArray::<T>::new(values_buf, nulls))
     }
 
-    fn filter(&self, selection: &BooleanBuffer) -> LiquidArrayRef {
-        // Materialize to Arrow, filter, and retrain a new linear array.
-        let arr = self.to_arrow_array();
-        let selection = BooleanArray::new(selection.clone(), None);
-        let filtered = filter::filter(&arr, &selection).unwrap();
-        let filtered = filtered.as_primitive::<T>().clone();
-        Arc::new(Self::from_arrow_array(filtered))
-    }
-
-    fn filter_to_arrow(&self, selection: &BooleanBuffer) -> ArrayRef {
+    fn filter(&self, selection: &BooleanBuffer) -> ArrayRef {
         let arr = self.to_arrow_array();
         let selection = BooleanArray::new(selection.clone(), None);
         filter::filter(&arr, &selection).unwrap()
@@ -601,8 +592,7 @@ mod tests {
         let arr = PrimitiveArray::<Int32Type>::from(original.clone());
         let linear = LiquidLinearI32Array::from_arrow_array(arr);
         let selection = BooleanBuffer::from(vec![true, false, true, false, true, false]);
-        let filtered = linear.filter(&selection);
-        let result = filtered.to_arrow_array();
+        let result = linear.filter(&selection);
         let expected = PrimitiveArray::<Int32Type>::from(vec![Some(1), Some(3), Some(5)]);
         assert_eq!(result.as_ref(), &expected);
     }

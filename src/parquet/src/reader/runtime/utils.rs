@@ -1,6 +1,5 @@
-use std::{collections::VecDeque, sync::Arc};
+use std::collections::VecDeque;
 
-use arrow_schema::Field;
 use parquet::arrow::arrow_reader::RowSelector;
 
 use crate::reader::runtime::parquet_bridge::{ParquetField, ParquetFieldType};
@@ -28,13 +27,6 @@ pub(crate) fn get_column_ids(
         },
         ParquetFieldType::Primitive { .. } => vec![],
     }
-}
-
-/// Metadata describing a column.
-#[derive(Debug)]
-pub(crate) struct ArrayReaderColumn {
-    pub(crate) column_idx: usize,
-    pub(crate) field: Arc<Field>,
 }
 
 /// Take the next batch from the selection queue.

@@ -51,3 +51,4 @@ runtime.get_predicate_hybrid_success: 0
 runtime.get_predicate_hybrid_needs_io: 0
 runtime.get_predicate_hybrid_unsupported: 0
 runtime.try_read_liquid_calls: 0
+runtime.hit_date32_expression_calls: 0
