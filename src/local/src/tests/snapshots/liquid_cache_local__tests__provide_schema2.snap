@@ -26,7 +26,7 @@ entries.memory.liquid: 5
 entries.memory.hybrid_liquid: 0
 entries.disk.liquid: 0
 entries.disk.arrow: 0
-usage.memory_bytes: 1026482
+usage.memory_bytes: 1021360
 usage.disk_bytes: 0
 runtime.get_arrow_array_calls: 0
 runtime.get_with_selection_calls: 4
@@ -167,7 +167,7 @@ entries.memory.liquid: 5
 entries.memory.hybrid_liquid: 0
 entries.disk.liquid: 0
 entries.disk.arrow: 0
-usage.memory_bytes: 1026482
+usage.memory_bytes: 1021360
 usage.disk_bytes: 0
 runtime.get_arrow_array_calls: 0
 runtime.get_with_selection_calls: 3
@@ -203,7 +203,7 @@ entries.memory.liquid: 5
 entries.memory.hybrid_liquid: 0
 entries.disk.liquid: 0
 entries.disk.arrow: 0
-usage.memory_bytes: 1026482
+usage.memory_bytes: 1021360
 usage.disk_bytes: 0
 runtime.get_arrow_array_calls: 0
 runtime.get_with_selection_calls: 2
