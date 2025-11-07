@@ -236,6 +236,14 @@ jobs:
              '. + {"timestamp": $timestamp, "commit": $commit}' \
              benchmark_results/df_default.json > benchmark_results/df_default_final.json
 
+      - name: Generate cache policy plot
+        run: |
+          cargo run -p liquid-cache-benchmarks --bin benchmark_cache_policies --release -- \
+            --trace-dir benchmark/clickbench/official_traces \
+            --output benchmark/data/cache_policy_results.csv \
+            --sizes 7 \
+            --plot out.svg || echo "Plot generation skipped"
+
       - name: Compare LiquidCache vs DataFusion (same runner)
         id: compare
         run: |
@@ -257,6 +265,17 @@ jobs:
               comment = fs.readFileSync('comparison.md', 'utf8');
             } catch (error) {
               comment = 'Error reading benchmark comparison results';
+            }
+            
+            // Add SVG image if available
+            try {
+              if (fs.existsSync('out.svg')) {
+                const svgContent = fs.readFileSync('out.svg', 'utf8');
+                const base64Svg = Buffer.from(svgContent).toString('base64');
+                comment += `\n\n## 📈 Cache Policy Performance\n\n![Cache Policy Plot](data:image/svg+xml;base64,${base64Svg})\n`;
+              }
+            } catch (error) {
+              console.log('Note: Could not embed cache policy plot:', error.message);
             }
             
             // Check if this is an external PR (from a fork)
