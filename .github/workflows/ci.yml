@@ -22,6 +22,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+      - run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev
       - uses: Swatinem/rust-cache@v2
       
       - name: Check formatting
@@ -47,6 +48,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev
       - uses: Swatinem/rust-cache@v2
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
@@ -65,6 +67,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev
       - uses: Swatinem/rust-cache@v2
       - name: Run shuttle test
         run: |
@@ -83,7 +86,7 @@ jobs:
           components: rust-src
 
       # Address sanitizers can't be cached: https://github.com/Swatinem/rust-cache/issues/161
-      - run: sudo apt install llvm-dev -y
+      - run: sudo apt-get update && sudo apt-get install -y llvm-dev libfontconfig1-dev
       - name: Run address sanitizer
         run: >
           env RUSTFLAGS="-Z sanitizer=address" cargo test -Zbuild-std --target x86_64-unknown-linux-gnu --tests -p liquid-cache-parquet
@@ -94,7 +97,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: sudo apt-get update && sudo apt-get install -y wget
+      - run: sudo apt-get update && sudo apt-get install -y wget libfontconfig1-dev
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
       - uses: Swatinem/rust-cache@v2
@@ -135,7 +138,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: sudo apt-get update && sudo apt-get install -y wget
+      - run: sudo apt-get update && sudo apt-get install -y wget libfontconfig1-dev
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
       - uses: Swatinem/rust-cache@v2
@@ -177,7 +180,7 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@stable
-      - run: sudo apt-get update && sudo apt-get install -y wget jq
+      - run: sudo apt-get update && sudo apt-get install -y wget jq libfontconfig1-dev
       - uses: ubicloud/rust-cache@v2
 
       - name: Setup ClickBench partitioned data download
@@ -334,6 +337,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Install system dependencies
+        run: |
+          if [[ "${{ matrix.os }}" == "ubuntu-latest" ]]; then
+            sudo apt-get update && sudo apt-get install -y libfontconfig1-dev
+          elif [[ "${{ matrix.os }}" == "macos-latest" ]]; then
+            brew install fontconfig
+          fi
       - uses: Swatinem/rust-cache@v2
 
       - name: Build LiquidCache server
@@ -368,6 +378,7 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev
 
       - name: Verify storage crate with Kani
         uses: model-checking/kani-github-action@v1.1
