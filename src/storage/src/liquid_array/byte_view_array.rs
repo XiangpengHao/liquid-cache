@@ -3085,6 +3085,150 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_compact_offset_view_struct_methods() {
+        // Test CompactOffsetViewOneByte
+        let view_one = CompactOffsetViewOneByte {
+            offset_residual: -42,
+            prefix7: [1, 2, 3, 4, 5, 6, 7],
+            len: 15,
+        };
+        assert_eq!(view_one.offset_residual(), -42);
+        assert_eq!(view_one.prefix7(), &[1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(view_one.len_byte(), 15);
+        assert_eq!(view_one.known_suffix_len(), Some(15));
+
+        // Test CompactOffsetViewTwoBytes
+        let view_two = CompactOffsetViewTwoBytes {
+            offset_residual: 12345,
+            prefix7: [7, 6, 5, 4, 3, 2, 1],
+            len: 255, // unknown length
+        };
+        assert_eq!(view_two.offset_residual(), 12345);
+        assert_eq!(view_two.prefix7(), &[7, 6, 5, 4, 3, 2, 1]);
+        assert_eq!(view_two.len_byte(), 255);
+        assert_eq!(view_two.known_suffix_len(), None); // 255 means unknown
+
+        // Test CompactOffsetViewFourBytes
+        let view_four = CompactOffsetViewFourBytes {
+            offset_residual: -1000000,
+            prefix7: [0, 1, 2, 3, 4, 5, 6],
+            len: 42,
+        };
+        assert_eq!(view_four.offset_residual(), -1000000);
+        assert_eq!(view_four.prefix7(), &[0, 1, 2, 3, 4, 5, 6]);
+        assert_eq!(view_four.len_byte(), 42);
+        assert_eq!(view_four.known_suffix_len(), Some(42));
+
+        // Test prefix_len constant
+        assert_eq!(CompactOffsetViewOneByte::prefix_len(), 7);
+        assert_eq!(CompactOffsetViewTwoBytes::prefix_len(), 7);
+        assert_eq!(CompactOffsetViewFourBytes::prefix_len(), 7);
+    }
+
+    #[test] 
+    fn test_compact_offset_view_group_from_bytes_errors() {
+        // Test with insufficient bytes for header
+        let short_bytes = vec![1, 2, 3]; // only 3 bytes, need at least 9
+        let result = std::panic::catch_unwind(|| {
+            CompactOffsetViewGroup::from_bytes(&short_bytes)
+        });
+        assert!(result.is_err(), "Should panic with insufficient bytes");
+
+        // Test with invalid offset_bytes value
+        let mut invalid_header = vec![0; 9];
+        invalid_header[8] = 3; // invalid offset_bytes (should be 1, 2, or 4)
+        let result = std::panic::catch_unwind(|| {
+            CompactOffsetViewGroup::from_bytes(&invalid_header)
+        });
+        assert!(result.is_err(), "Should panic with invalid offset_bytes");
+
+        // Test with misaligned residual data for OneByte variant
+        let mut misaligned_one_byte = vec![0; 9 + 8]; // header + incomplete residual
+        misaligned_one_byte[8] = 1; // offset_bytes = 1
+        let result = std::panic::catch_unwind(|| {
+            CompactOffsetViewGroup::from_bytes(&misaligned_one_byte)
+        });
+        assert!(result.is_err(), "Should panic with misaligned OneByte residuals");
+
+        // Test with misaligned residual data for TwoBytes variant  
+        let mut misaligned_two_bytes = vec![0; 9 + 9]; // header + incomplete residual
+        misaligned_two_bytes[8] = 2; // offset_bytes = 2
+        let result = std::panic::catch_unwind(|| {
+            CompactOffsetViewGroup::from_bytes(&misaligned_two_bytes)
+        });
+        assert!(result.is_err(), "Should panic with misaligned TwoBytes residuals");
+
+        // Test with misaligned residual data for FourBytes variant
+        let mut misaligned_four_bytes = vec![0; 9 + 11]; // header + incomplete residual
+        misaligned_four_bytes[8] = 4; // offset_bytes = 4
+        let result = std::panic::catch_unwind(|| {
+            CompactOffsetViewGroup::from_bytes(&misaligned_four_bytes)
+        });
+        assert!(result.is_err(), "Should panic with misaligned FourBytes residuals");
+    }
+
+    #[test]
+    fn test_compact_offset_view_group_from_bytes_valid() {
+        // Test OneByte variant roundtrip
+        let offset_views = vec![
+            OffsetView::from_parts(100, [1, 2, 3, 4, 5, 6, 7], 10),
+            OffsetView::from_parts(101, [7, 6, 5, 4, 3, 2, 1], 20),
+        ];
+        let original = CompactOffsetViewGroup::from_offset_views(&offset_views);
+        
+        // Manually create bytes in expected format 
+        let header = original.header();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&header.slope.to_le_bytes());
+        bytes.extend_from_slice(&header.intercept.to_le_bytes());
+        bytes.push(header.offset_bytes);
+        
+        // Add residuals based on variant type
+        match &original {
+            CompactOffsetViewGroup::OneByte { residuals, .. } => {
+                for residual in residuals.iter() {
+                    bytes.push(residual.offset_residual as u8);
+                    bytes.extend_from_slice(&residual.prefix7);
+                    bytes.push(residual.len);
+                }
+            }
+            CompactOffsetViewGroup::TwoBytes { residuals, .. } => {
+                for residual in residuals.iter() {
+                    bytes.extend_from_slice(&residual.offset_residual.to_le_bytes());
+                    bytes.extend_from_slice(&residual.prefix7);
+                    bytes.push(residual.len);
+                }
+            }
+            CompactOffsetViewGroup::FourBytes { residuals, .. } => {
+                for residual in residuals.iter() {
+                    bytes.extend_from_slice(&residual.offset_residual.to_le_bytes());
+                    bytes.extend_from_slice(&residual.prefix7);
+                    bytes.push(residual.len);
+                }
+            }
+        }
+
+        let reconstructed = CompactOffsetViewGroup::from_bytes(&bytes);
+        
+        // Verify they match
+        assert_eq!(original.len(), reconstructed.len());
+        for i in 0..original.len() {
+            assert_eq!(original.get_offset(i), reconstructed.get_offset(i));
+            assert_eq!(original.get_prefix7(i), reconstructed.get_prefix7(i));
+            assert_eq!(original.get_len_byte(i), reconstructed.get_len_byte(i));
+        }
+
+        // Convert back to OffsetView and compare with original
+        let reconstructed_offset_views = convert_compact_to_offset_views(&reconstructed);
+        assert_eq!(offset_views.len(), reconstructed_offset_views.len());
+        for (original_view, reconstructed_view) in offset_views.iter().zip(reconstructed_offset_views.iter()) {
+            assert_eq!(original_view.offset(), reconstructed_view.offset());
+            assert_eq!(original_view.prefix7(), reconstructed_view.prefix7());
+            assert_eq!(original_view.len_byte(), reconstructed_view.len_byte());
+        }
+    }
+
     // Benchmark tests for v2 offset compression improvements
     fn generate_mixed_size_strings(count: usize, seed: u64) -> Vec<String> {
         let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
