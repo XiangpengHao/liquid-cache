@@ -298,11 +298,11 @@ mod tests {
             Box::new(Evict),
             IoMode::Uring,
         );
-        let file = cache.register_or_get_file("test".to_string());
-        let row_group = file.row_group(0);
-
         let field = Arc::new(Field::new("col0", DataType::Int32, false));
-        let column = row_group.create_column(0, field.clone());
+        let schema = Arc::new(Schema::new(vec![field.clone()]));
+        let file = cache.register_or_get_file("test".to_string(), schema.clone());
+        let row_group = file.create_row_group(0);
+        let column = row_group.get_column(0).unwrap();
 
         for (idx, values) in batches.iter().enumerate() {
             let array: ArrayRef = Arc::new(Int32Array::from(values.clone()));
@@ -311,12 +311,6 @@ mod tests {
                 .await
                 .expect("cache insert");
         }
-
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "col0",
-            DataType::Int32,
-            false,
-        )]));
 
         (row_group, schema)
     }

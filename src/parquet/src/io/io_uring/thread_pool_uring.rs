@@ -78,6 +78,9 @@ pub(crate) fn initialize_uring_pool(io_mode: IoMode) {
     if matches!(io_mode, IoMode::Uring | IoMode::UringDirect) {
         IO_URING_THREAD_POOL_INST.get_or_init(|| IoUringThreadpool::new(io_mode));
     }
+    if matches!(io_mode, IoMode::UringBlocking) {
+        super::multi_blocking_uring::initialize_blocking_rings();
+    }
 }
 
 impl IoUringThreadpool {
@@ -306,6 +309,6 @@ pub(crate) async fn write(path: PathBuf, data: &Bytes) -> Result<(), std::io::Er
         .open(path)
         .expect("failed to create file");
 
-    let write_task = FileWriteTask::build(data.as_ptr(), data.len(), file.as_raw_fd());
+    let write_task = FileWriteTask::build(data.clone(), file.as_raw_fd());
     submit_async_task(write_task).await.into_result()
 }

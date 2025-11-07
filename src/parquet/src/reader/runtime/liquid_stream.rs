@@ -26,36 +26,10 @@ use std::{
 };
 
 use super::liquid_cache_reader::LiquidCacheReader;
-use super::utils::{ArrayReaderColumn, get_column_ids};
+use super::utils::get_column_ids;
 
 type PlanResult = Option<PlanningContext>;
 type FillCacheResult = Result<(ReaderFactory, PlanningContext), ParquetError>;
-
-/// Build column metadata from projection, fields, and record batch schema for cache insertion
-///
-/// The record batch schema contains the projected fields in order, and we use get_column_ids
-/// to get the original column indices in the same order.
-fn build_column_metadata_from_batch(
-    projection: &ProjectionMask,
-    fields: Option<&ParquetField>,
-    record_batch: &RecordBatch,
-) -> Result<Vec<ArrayReaderColumn>, ParquetError> {
-    // Get the original column indices in projection order
-    let column_ids = get_column_ids(fields, projection);
-
-    // The record batch schema has projected fields in the same order as column_ids
-    // Zip them together to create ArrayReaderColumn with correct indices and field names
-    let columns = column_ids
-        .into_iter()
-        .zip(record_batch.schema().fields().iter())
-        .map(|(column_idx, field)| ArrayReaderColumn {
-            column_idx,
-            field: Arc::clone(field),
-        })
-        .collect();
-
-    Ok(columns)
-}
 
 struct ReaderFactory {
     metadata: Arc<ParquetMetaData>,
@@ -96,8 +70,6 @@ impl ReaderFactory {
             }
         }
 
-        let cached_row_group = self.liquid_cache.row_group(row_group_idx as u64);
-
         let mut selection =
             selection.unwrap_or_else(|| vec![RowSelector::select(meta.num_rows() as usize)].into());
 
@@ -133,7 +105,7 @@ impl ReaderFactory {
         }
 
         let row_count = meta.num_rows() as usize;
-        let cache_batch_size = cached_row_group.batch_size();
+        let cache_batch_size = self.liquid_cache.batch_size();
 
         let mut cache_projection = projection.clone();
         if let Some(ref predicate_projection) = predicate_projection {
@@ -145,6 +117,8 @@ impl ReaderFactory {
             collect_selection_batches(&selection_for_cache, cache_batch_size, row_count);
 
         let cache_column_ids = get_column_ids(self.fields.as_deref(), &cache_projection);
+        let cached_row_group = self.liquid_cache.create_row_group(row_group_idx as u64);
+
         let projection_column_ids = get_column_ids(self.fields.as_deref(), &projection);
 
         let missing_batches =
@@ -197,26 +171,14 @@ impl ReaderFactory {
                 .build()?;
 
         let mut processed_batches = 0usize;
-        let mut column_metadata: Option<Vec<ArrayReaderColumn>> = None;
+
+        // Get the original column indices in projection order
+        let column_ids = get_column_ids(self.fields.as_deref(), &context.cache_projection);
 
         while let Some(batch_result) = stream.next().await {
             let record_batch = batch_result?;
             if record_batch.num_rows() == 0 {
                 continue;
-            }
-
-            if let Some(column_metadata) = &column_metadata {
-                debug_assert_eq!(
-                    record_batch.num_columns(),
-                    column_metadata.len(),
-                    "record batch schema changed while filling cache"
-                );
-            } else {
-                column_metadata = Some(build_column_metadata_from_batch(
-                    &context.cache_projection,
-                    self.fields.as_deref(),
-                    &record_batch,
-                )?);
             }
 
             let Some(batch_id) = context.missing_batches.get(processed_batches) else {
@@ -244,7 +206,7 @@ impl ReaderFactory {
             let batch_id = *batch_id;
             insert_batch_into_cache(
                 &record_batch,
-                column_metadata.as_ref().unwrap(),
+                &column_ids,
                 batch_id,
                 cache_batch_size,
                 row_count,
@@ -379,17 +341,17 @@ fn build_selection_for_batches(
 
 async fn insert_batch_into_cache(
     record_batch: &RecordBatch,
-    columns: &[ArrayReaderColumn],
+    column_ids: &[usize],
     batch_id: BatchID,
     batch_size: usize,
     row_count: usize,
     cached_row_group: &LiquidCachedRowGroupRef,
 ) -> Result<(), ParquetError> {
-    if columns.is_empty() || record_batch.num_rows() == 0 {
+    if column_ids.is_empty() || record_batch.num_rows() == 0 {
         return Ok(());
     }
 
-    debug_assert_eq!(record_batch.num_columns(), columns.len());
+    debug_assert_eq!(record_batch.num_columns(), column_ids.len());
 
     let batch_idx = usize::from(*batch_id);
     let start = batch_idx * batch_size;
@@ -409,11 +371,8 @@ async fn insert_batch_into_cache(
         "record batch length does not match cache batch window"
     );
 
-    for (col_idx, column_meta) in columns.iter().enumerate() {
-        let column = cached_row_group.create_column(
-            column_meta.column_idx as u64,
-            Arc::clone(&column_meta.field),
-        );
+    for (col_idx, column_id) in column_ids.iter().enumerate() {
+        let column = cached_row_group.get_column(*column_id as u64).unwrap();
         let array = Arc::clone(record_batch.column(col_idx));
 
         if let Err(err) = column.insert(batch_id, array).await
@@ -421,7 +380,7 @@ async fn insert_batch_into_cache(
         {
             return Err(ParquetError::General(format!(
                 "Failed to insert batch {} for column {} into cache: {err:?}",
-                batch_idx, column_meta.column_idx
+                batch_idx, column_id
             )));
         }
         debug_assert!(column.is_cached(batch_id));
@@ -694,13 +653,14 @@ mod tests {
     use super::*;
     use crate::cache::LiquidCache;
     use arrow::array::{ArrayRef, Int32Array};
+    use arrow_schema::Field;
     use liquid_cache_common::IoMode;
     use liquid_cache_storage::cache::squeeze_policies::Evict;
     use liquid_cache_storage::cache_policies::LiquidPolicy;
     use parquet::arrow::arrow_reader::RowSelection;
     use std::sync::Arc;
 
-    fn make_cache(batch_size: usize) -> LiquidCachedRowGroupRef {
+    fn make_cache(batch_size: usize, schema: SchemaRef) -> LiquidCachedRowGroupRef {
         let tmp_dir = tempfile::tempdir().unwrap();
         let cache = LiquidCache::new(
             batch_size,
@@ -710,8 +670,8 @@ mod tests {
             Box::new(Evict),
             IoMode::Uring,
         );
-        let file = cache.register_or_get_file("test.parquet".to_string());
-        file.row_group(0)
+        let file = cache.register_or_get_file("test.parquet".to_string(), schema);
+        file.create_row_group(0)
     }
 
     async fn insert_batches(
@@ -719,12 +679,7 @@ mod tests {
         column_id: usize,
         batch_payloads: &[(u16, &[i32])],
     ) {
-        let field = Arc::new(arrow_schema::Field::new(
-            format!("col_{column_id}"),
-            arrow_schema::DataType::Int32,
-            false,
-        ));
-        let column = row_group.create_column(column_id as u64, field);
+        let column = row_group.get_column(column_id as u64).unwrap();
         for (batch_idx, values) in batch_payloads.iter() {
             let array: ArrayRef = Arc::new(Int32Array::from(values.to_vec()));
             column
@@ -776,7 +731,12 @@ mod tests {
 
     #[tokio::test]
     async fn compute_missing_batches_identifies_partial_columns() {
-        let row_group = make_cache(4);
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("col_0", DataType::Int32, false),
+            Field::new("col_1", DataType::Int32, false),
+            Field::new("col_2", DataType::Int32, false),
+        ]));
+        let row_group = make_cache(4, schema.clone());
         insert_batches(&row_group, 0, &[(0, &[1, 2, 3, 4]), (2, &[9, 9, 9, 9])]).await;
         insert_batches(&row_group, 2, &[(0, &[5, 6, 7, 8])]).await;
 
