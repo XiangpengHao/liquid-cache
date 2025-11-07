@@ -56,7 +56,7 @@ fastrace-tonic = "0.1"
 congee = "0.4.1"
 
 [workspace.metadata.cargo-shear]
-ignored = ["kani-verifier"]
+ignored = ["plotters-svg", "kani-verifier"]
 
 [profile.dev.package]
 insta.opt-level = 3

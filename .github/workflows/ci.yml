@@ -244,7 +244,7 @@ jobs:
             --trace-dir benchmark/clickbench/official_traces \
             --output benchmark/data/cache_policy_results.csv \
             --sizes 7 \
-            --plot out.svg || echo "Plot generation skipped"
+            --plot out.png || echo "Plot generation skipped"
 
       - name: Compare LiquidCache vs DataFusion (same runner)
         id: compare
@@ -269,12 +269,12 @@ jobs:
               comment = 'Error reading benchmark comparison results';
             }
             
-            // Add SVG image if available
+            // Add PNG image if available
             try {
-              if (fs.existsSync('out.svg')) {
-                const svgContent = fs.readFileSync('out.svg', 'utf8');
-                const base64Svg = Buffer.from(svgContent).toString('base64');
-                comment += `\n\n## 📈 Cache Policy Performance\n\n![Cache Policy Plot](data:image/svg+xml;base64,${base64Svg})\n`;
+              if (fs.existsSync('out.png')) {
+                const pngContent = fs.readFileSync('out.png');
+                const base64Png = pngContent.toString('base64');
+                comment += `\n\n## 📈 Cache Policy Performance\n\n![Cache Policy Plot](data:image/png;base64,${base64Png})\n`;
               }
             } catch (error) {
               console.log('Note: Could not embed cache policy plot:', error.message);

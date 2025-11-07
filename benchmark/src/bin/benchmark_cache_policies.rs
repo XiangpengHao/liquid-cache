@@ -208,6 +208,7 @@ fn draw_plot(
     points: &[(String, u64, f64)],
     total_unique_size: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    use plotters::backend::BitMapBackend;
     use plotters::prelude::*;
 
     if points.is_empty() || total_unique_size == 0 {
@@ -231,7 +232,7 @@ fn draw_plot(
     let height = 400u32;
     let width = 800u32;
 
-    let root = SVGBackend::new(output, (width, height)).into_drawing_area();
+    let root = BitMapBackend::new(output, (width, height)).into_drawing_area();
     root.fill(&WHITE)?;
 
     let mut chart = ChartBuilder::on(&root)
