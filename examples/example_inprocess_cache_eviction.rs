@@ -22,7 +22,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_cache_policy(Box::new(LiquidPolicy::new()))
         .build(SessionConfig::new())?;
 
-    for i in 1..730 {
+    for i in 1..725 {
         let entry_id = EntryID::from(i);
         let arrow_array = Arc::new(UInt64Array::from_iter_values(0..1000));
         // Insert once; replacement/placement is handled by the cache policy
@@ -30,10 +30,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .storage()
             .insert(entry_id, arrow_array.clone())
             .await;
-        let _ = storage.storage().get_arrow_array(&entry_id).await.unwrap();
+        let _ = storage.storage().get(&entry_id).await.unwrap();
     }
-    // Move data to disk so the read will demonstrate async I/O
-    storage.storage().flush_all_to_disk();
+    println!("{:?}", storage.storage().stats());
 
     Ok(())
 }

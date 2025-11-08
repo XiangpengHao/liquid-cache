@@ -15,7 +15,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     storage.flush_all_to_disk();
 
     // Read asynchronously
-    let retrieved = storage.get_arrow_array(&entry_id).await.unwrap();
+    let retrieved = storage.get(&entry_id).await.unwrap();
     assert_eq!(retrieved.as_ref(), arrow_array.as_ref());
 
     Ok(())
