@@ -165,6 +165,65 @@ jobs:
           files: codecov_tpch.json
           fail_ci_if_error: true
 
+  stackoverflow:
+    name: StackOverflow
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+      - name: Prepare dataset directories
+        run: |
+          mkdir -p benchmark/stackoverflow/data/dba
+          mkdir -p benchmark/stackoverflow/downloads
+      - name: Cache StackOverflow dataset
+        uses: actions/cache@v4
+        with:
+          path: |
+            benchmark/stackoverflow/data/dba
+            benchmark/stackoverflow/downloads
+          key: stackoverflow-${{ runner.os }}-dba-v1
+          restore-keys: |
+            stackoverflow-${{ runner.os }}-dba-
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: Swatinem/rust-cache@v2
+      - name: Prepare StackOverflow data
+        env:
+          UV_CACHE_DIR: ${{ runner.temp }}/uv-cache
+          UV_PYTHON: python3
+        run: |
+          if [ ! -f benchmark/stackoverflow/data/dba/Posts.parquet ]; then
+            ~/.cargo/bin/uv run --with duckdb python benchmark/stackoverflow/setup_stackoverflow.py --mode dba 
+          else
+            echo "StackOverflow dataset already prepared, skipping rebuild"
+          fi
+      - name: Run StackOverflow
+        run: |
+          source <(cargo llvm-cov show-env --export-prefix)
+          cargo llvm-cov clean --workspace
+          cargo build --bin bench_server
+          cargo build --bin clickbench_client
+          env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic --cache-mode liquid --max-cache-mb 256 &> server.log &
+          sleep 2
+          env RUST_LOG=info cargo run --bin clickbench_client -- --manifest benchmark/stackoverflow/manifest.dba.json
+          echo "=== Server logs ==="
+          cat server.log || echo "No server log found"
+          curl http://localhost:53703/shutdown
+          env RUST_LOG=info cargo run --bin in_process -- --manifest benchmark/stackoverflow/manifest.dba.json --bench-mode liquid --max-cache-mb 10 
+          cargo llvm-cov report --codecov --output-path codecov_stackoverflow.json
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: codecov_stackoverflow.json
+          fail_ci_if_error: true
+
   benchmark:
     name: Performance Benchmark
     runs-on: ubuntu-latest

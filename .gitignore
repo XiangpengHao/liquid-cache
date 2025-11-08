@@ -3,6 +3,11 @@
 .idea
 profile.json
 data/
+benchmark/stackoverflow/downloads/
+benchmark/stackoverflow/raw/
+benchmark/stackoverflow/data/math/
+benchmark/stackoverflow/data/dba/
+benchmark/stackoverflow/schema/
 .direnv
 .claude
 .jj
