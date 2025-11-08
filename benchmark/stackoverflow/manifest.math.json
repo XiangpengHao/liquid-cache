@@ -25,7 +25,6 @@
 		"benchmark/stackoverflow/queries/q6.sql",
 		"benchmark/stackoverflow/queries/q7.sql",
 		"benchmark/stackoverflow/queries/q8.sql",
-		"benchmark/stackoverflow/queries/q9.sql",
-		"benchmark/stackoverflow/queries/q10.sql"
+		"benchmark/stackoverflow/queries/q9.sql"
 	]
 }

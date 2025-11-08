@@ -207,15 +207,8 @@ jobs:
         run: |
           source <(cargo llvm-cov show-env --export-prefix)
           cargo llvm-cov clean --workspace
-          cargo build --bin bench_server
-          cargo build --bin clickbench_client
-          env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic --cache-mode liquid --max-cache-mb 256 &> server.log &
-          sleep 2
-          env RUST_LOG=info cargo run --bin clickbench_client -- --manifest benchmark/stackoverflow/manifest.dba.json
-          echo "=== Server logs ==="
-          cat server.log || echo "No server log found"
-          curl http://localhost:53703/shutdown
-          env RUST_LOG=info cargo run --bin in_process -- --manifest benchmark/stackoverflow/manifest.dba.json --bench-mode liquid --max-cache-mb 10 
+          cargo build --bin in_process 
+          env RUST_LOG=info cargo run --bin in_process -- --manifest benchmark/stackoverflow/manifest.dba.json --bench-mode liquid --max-cache-mb 10 --check-results
           cargo llvm-cov report --codecov --output-path codecov_stackoverflow.json
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5

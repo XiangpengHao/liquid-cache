@@ -11,4 +11,5 @@ WHERE p."PostTypeId" = 1 -- Question
   AND p."OwnerUserId" = a."OwnerUserId"
 GROUP BY p."OwnerUserId", u."DisplayName"
 HAVING COUNT(*) > 1
-ORDER BY SelfAnsweredCount DESC;
+ORDER BY SelfAnsweredCount DESC
+LIMIT 10;

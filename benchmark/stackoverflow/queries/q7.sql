@@ -12,4 +12,5 @@ WHERE "PostTypeId" = 1 -- Question
   AND "AnswerCount" > 10
   AND "AcceptedAnswerId" IS NULL
   AND EXTRACT(YEAR FROM "CreationDate") = 2020
-ORDER BY "Score" DESC;
+ORDER BY "Score" DESC
+LIMIT 10;
