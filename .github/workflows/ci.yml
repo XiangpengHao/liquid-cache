@@ -175,8 +175,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y wget
-      - name: Install uv
-        run: curl -LsSf https://astral.sh/uv/install.sh | sh
       - name: Prepare dataset directories
         run: |
           mkdir -p benchmark/stackoverflow/data/dba
@@ -199,7 +197,8 @@ jobs:
           UV_PYTHON: python3
         run: |
           if [ ! -f benchmark/stackoverflow/data/dba/Posts.parquet ]; then
-            ~/.cargo/bin/uv run --with duckdb python benchmark/stackoverflow/setup_stackoverflow.py --mode dba 
+            curl -LsSf https://astral.sh/uv/install.sh | sh
+            uv run --with duckdb python benchmark/stackoverflow/setup_stackoverflow.py --mode dba 
           else
             echo "StackOverflow dataset already prepared, skipping rebuild"
           fi
