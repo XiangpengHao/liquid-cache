@@ -34,7 +34,11 @@ arrow = { version = "57.0.0", default-features = false, features = [
 ] }
 arrow-flight = { version = "57.0.0", features = ["flight-sql-experimental"] }
 arrow-schema = { version = "57.0.0", features = ["serde"] }
-parquet = { version = "57.0.0", features = ["async", "experimental"] }
+parquet = { version = "57.0.0", features = [
+	"async",
+	"experimental",
+	"variant_experimental",
+] }
 datafusion = { version = "51.0.0" }
 datafusion-proto = { version = "51.0.0" }
 async-trait = "0.1.89"
@@ -64,3 +68,22 @@ insta.opt-level = 3
 [patch.crates-io]
 datafusion = { git = "https://github.com/apache/datafusion.git", branch = "main" }
 datafusion-proto = { git = "https://github.com/apache/datafusion.git", branch = "main" }
+# arrow = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
+# arrow-schema = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
+# arrow-flight = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
+# parquet = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
+
+
+# Arrow/Parquet from main — include all the subcrates DF uses
+arrow = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
+arrow-array = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
+arrow-buffer = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
+arrow-cast = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
+arrow-data = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
+arrow-ipc = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
+arrow-ord = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
+arrow-row = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
+arrow-schema = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
+arrow-select = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
+arrow-flight = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
+parquet = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
