@@ -82,9 +82,8 @@ impl InProcessBenchmark {
             .with_flamegraph_dir(self.flamegraph_dir.clone())
             .with_cache_dir(self.cache_dir.clone())
             .with_query_filter(self.query_index)
-            .with_io_mode(self.io_mode);
-        let runner = runner.with_check_results(self.check_results);
-
+            .with_io_mode(self.io_mode)
+            .with_check_results(self.check_results);
         runner.run(manifest, self, output).await?;
         Ok(())
     }
