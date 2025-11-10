@@ -270,8 +270,7 @@ fn build_mermaid_chart(points: &[(String, u64, f64)], total_unique_size: u64) ->
                     .get(cache_size)
                     .copied()
                     .unwrap_or(0.0)
-                    .max(0.0)
-                    .min(1.0)
+                    .clamp(0.0, 1.0)
                     * 100.0;
                 fmt_float(pct)
             })
