@@ -1,8 +1,12 @@
 use crate::manifest::BenchmarkManifest;
+use crate::utils::assert_batch_eq;
 use crate::{
     BenchmarkResult, IterationResult, Query, QueryResult, SerializableCacheStats, run_query,
 };
 use anyhow::Result;
+use datafusion::arrow::array::RecordBatch;
+use datafusion::arrow::compute::concat_batches;
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use liquid_cache_common::IoMode;
@@ -104,6 +108,7 @@ pub struct InProcessBenchmarkRunner {
     pub query_filter: Option<usize>,
     pub cache_dir: Option<PathBuf>,
     pub io_mode: IoMode,
+    pub check_results: bool,
 }
 
 impl Default for InProcessBenchmarkRunner {
@@ -124,6 +129,7 @@ impl InProcessBenchmarkRunner {
             query_filter: None,
             cache_dir: None,
             io_mode: IoMode::default(),
+            check_results: false,
         }
     }
 
@@ -169,6 +175,11 @@ impl InProcessBenchmarkRunner {
 
     pub fn with_io_mode(mut self, io_mode: IoMode) -> Self {
         self.io_mode = io_mode;
+        self
+    }
+
+    pub fn with_check_results(mut self, check_results: bool) -> Self {
+        self.check_results = check_results;
         self
     }
 
@@ -256,7 +267,29 @@ impl InProcessBenchmarkRunner {
             }
         }
 
-        // Register tables from manifest
+        Self::register_manifest_tables(&ctx, manifest).await?;
+
+        Ok((Arc::new(ctx), cache))
+    }
+
+    async fn setup_datafusion_default_context(
+        &self,
+        manifest: &BenchmarkManifest,
+    ) -> Result<Arc<SessionContext>> {
+        let ctx = SessionContext::new_with_config(SessionConfig::new());
+        if let Some(object_stores) = manifest.get_object_store() {
+            for (url, object_store) in object_stores {
+                ctx.register_object_store(url.as_ref(), Arc::new(object_store));
+            }
+        }
+        Self::register_manifest_tables(&ctx, manifest).await?;
+        Ok(Arc::new(ctx))
+    }
+
+    async fn register_manifest_tables(
+        ctx: &SessionContext,
+        manifest: &BenchmarkManifest,
+    ) -> Result<()> {
         for (table_name, table_path_str) in &manifest.tables {
             ctx.register_parquet(
                 format!("\"{table_name}\""),
@@ -266,8 +299,7 @@ impl InProcessBenchmarkRunner {
             .await?;
             info!("Registered table '{table_name}' from {table_path_str}");
         }
-
-        Ok((Arc::new(ctx), cache))
+        Ok(())
     }
 
     async fn execute_query(
@@ -285,6 +317,52 @@ impl InProcessBenchmarkRunner {
             results.push((r, plan));
         }
         results
+    }
+
+    fn select_result(
+        query: &Query,
+        execution_results: Vec<(
+            Vec<RecordBatch>,
+            Arc<dyn datafusion::physical_plan::ExecutionPlan>,
+        )>,
+    ) -> (Vec<RecordBatch>, SchemaRef) {
+        let idx = if query.id() == 15 && query.statement().len() == 3 {
+            1
+        } else {
+            0
+        };
+        let (batches, plan) = execution_results
+            .into_iter()
+            .nth(idx)
+            .expect("query execution produced no result batches");
+        (batches, plan.schema())
+    }
+
+    fn coalesce_batches(schema: &SchemaRef, batches: &[RecordBatch]) -> RecordBatch {
+        if batches.is_empty() {
+            RecordBatch::new_empty(schema.clone())
+        } else {
+            concat_batches(schema, batches).expect("failed to concatenate result batches")
+        }
+    }
+
+    async fn validate_results(
+        &self,
+        query: &Query,
+        bench_ctx: &Arc<SessionContext>,
+        baseline_ctx: &Arc<SessionContext>,
+    ) -> Result<()> {
+        let bench_exec = self.execute_query(bench_ctx, query).await;
+        let (bench_batches, bench_schema) = Self::select_result(query, bench_exec);
+        let bench_batch = Self::coalesce_batches(&bench_schema, &bench_batches);
+
+        let baseline_exec = self.execute_query(baseline_ctx, query).await;
+        let (baseline_batches, baseline_schema) = Self::select_result(query, baseline_exec);
+        let baseline_batch = Self::coalesce_batches(&baseline_schema, &baseline_batches);
+
+        assert_batch_eq(&baseline_batch, &bench_batch);
+        println!("Query {} passed validation", query.id());
+        Ok(())
     }
 
     fn write_flamegraph(
@@ -418,6 +496,12 @@ impl InProcessBenchmarkRunner {
             results: Vec::new(),
         };
 
+        let baseline_ctx = if self.check_results {
+            Some(self.setup_datafusion_default_context(&manifest).await?)
+        } else {
+            None
+        };
+
         let bench_start_time = Instant::now();
 
         for query_index in query_indices {
@@ -442,6 +526,10 @@ impl InProcessBenchmarkRunner {
             }
 
             benchmark_result.results.push(query_result);
+
+            if let Some(baseline_ctx) = &baseline_ctx {
+                self.validate_results(query, &ctx, baseline_ctx).await?;
+            }
         }
 
         if let Some(output_path) = &output_path {
