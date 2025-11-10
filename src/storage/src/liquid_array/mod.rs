@@ -357,7 +357,8 @@ macro_rules! impl_signed_kind {
 }
 
 use arrow::datatypes::{
-    Date32Type, Date64Type, Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt16Type,
+    Date32Type, Date64Type, Int8Type, Int16Type, Int32Type, Int64Type, TimestampMicrosecondType,
+    TimestampMillisecondType, TimestampNanosecondType, TimestampSecondType, UInt8Type, UInt16Type,
     UInt32Type, UInt64Type,
 };
 
@@ -374,3 +375,7 @@ impl_signed_kind!(Int64Type, i64::MIN, i64::MAX);
 // Dates are logically signed in Arrow (Date32: i32 days, Date64: i64 ms)
 impl_signed_kind!(Date32Type, i32::MIN, i32::MAX);
 impl_signed_kind!(Date64Type, i64::MIN, i64::MAX);
+impl_signed_kind!(TimestampSecondType, i64::MIN, i64::MAX);
+impl_signed_kind!(TimestampMillisecondType, i64::MIN, i64::MAX);
+impl_signed_kind!(TimestampMicrosecondType, i64::MIN, i64::MAX);
+impl_signed_kind!(TimestampNanosecondType, i64::MIN, i64::MAX);

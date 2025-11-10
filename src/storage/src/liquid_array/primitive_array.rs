@@ -5,8 +5,9 @@ use std::sync::Arc;
 use arrow::array::{
     ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType, BooleanArray, PrimitiveArray,
     types::{
-        Date32Type, Date64Type, Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt16Type,
-        UInt32Type, UInt64Type,
+        Date32Type, Date64Type, Int8Type, Int16Type, Int32Type, Int64Type,
+        TimestampMicrosecondType, TimestampMillisecondType, TimestampNanosecondType,
+        TimestampSecondType, UInt8Type, UInt16Type, UInt32Type, UInt64Type,
     },
 };
 use arrow::buffer::{BooleanBuffer, ScalarBuffer};
@@ -20,8 +21,7 @@ use crate::cache::CacheExpression;
 use crate::liquid_array::hybrid_primitive_array::{
     LiquidPrimitiveClampedArray, LiquidPrimitiveQuantizedArray,
 };
-use crate::liquid_array::ipc::LiquidIPCHeader;
-use crate::liquid_array::ipc::get_physical_type_id;
+use crate::liquid_array::ipc::{LiquidIPCHeader, PhysicalTypeMarker, get_physical_type_id};
 use crate::liquid_array::raw::BitPackedArray;
 use crate::liquid_array::{
     Date32Field, LiquidArray, LiquidHybridArrayRef, PrimitiveKind, SqueezedDate32Array,
@@ -46,7 +46,7 @@ mod private {
 }
 
 /// LiquidPrimitiveType is a sealed trait that represents the primitive types supported by Liquid.
-/// Implementors are: Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt16Type, UInt32Type, UInt64Type
+/// Implemented for all supported integer, date, and timestamp Arrow primitive types.
 ///
 /// I have to admit this trait is super complicated.
 /// Luckily users never have to worry about it, they can just use the types that are already implemented.
@@ -63,6 +63,7 @@ pub trait LiquidPrimitiveType:
     + Sync
     + private::Sealed
     + PrimitiveKind
+    + PhysicalTypeMarker
 {
     /// The unsigned type that can be used to represent the signed type.
     type UnSignedType: ArrowPrimitiveType<Native: AsPrimitive<Self::Native> + AsPrimitive<u64> + BitPacking>
@@ -90,7 +91,11 @@ impl_has_unsigned_type! {
     UInt16Type => UInt16Type,
     UInt8Type => UInt8Type,
     Date64Type => UInt64Type,
-    Date32Type => UInt32Type
+    Date32Type => UInt32Type,
+    TimestampSecondType => UInt64Type,
+    TimestampMillisecondType => UInt64Type,
+    TimestampMicrosecondType => UInt64Type,
+    TimestampNanosecondType => UInt64Type
 }
 
 /// Liquid's unsigned 8-bit integer array.
