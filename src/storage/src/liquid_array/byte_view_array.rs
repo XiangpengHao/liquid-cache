@@ -258,7 +258,8 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
     }
 
     /// Get the offset views of the LiquidByteViewArray
-    pub fn offset_views(&self) -> Vec<OffsetView> {
+    /// TODO: I think we can get rid of this function entirely, and instead just directly work on the CompactOffsetViewGroup
+    pub(crate) fn offset_views(&self) -> Vec<OffsetView> {
         let mut offset_views: Vec<OffsetView> = Vec::new();
 
         let header = self.compact_offset_views.header();
@@ -387,8 +388,7 @@ impl LiquidByteViewArray<MemoryBuffer> {
 /// OffsetView stores information about the offsets of the byte view array
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
-// TODO: change it back to pub(crate)
-pub struct OffsetView {
+pub(crate) struct OffsetView {
     offset: u32,
     prefix7: [u8; 7],
     len: u8,
@@ -784,17 +784,6 @@ impl OffsetView {
         &self.prefix7
     }
 
-    /// Returns Some(length) if known (<255), otherwise None for unknown (>=255)
-    #[allow(dead_code)]
-    #[inline]
-    pub fn known_suffix_len(&self) -> Option<usize> {
-        if self.len == 255 {
-            None
-        } else {
-            Some(self.len as usize)
-        }
-    }
-
     /// Get the length of the offset view in bytes
     #[inline]
     pub fn len_byte(&self) -> u8 {
@@ -817,7 +806,7 @@ impl<T> CompactOffsetView<T> {
         self.offset_residual
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn known_suffix_len(&self) -> Option<usize> {
         if self.len == 255 {
             None
@@ -836,7 +825,7 @@ impl<T> CompactOffsetView<T> {
         self.len
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     #[inline]
     pub const fn prefix_len() -> usize {
         7
@@ -1339,7 +1328,6 @@ pub struct LiquidByteViewArray<B: FsstBuffer> {
     /// and 7-byte prefixes - one per unique value
     /// Automatically created from standard OffsetView instances via `from_parts()` method.
     compact_offset_views: CompactOffsetViewGroup,
-    // offset_views: Arc<[OffsetView]>,
     /// FSST-compressed buffer (can be in memory or on disk)
     fsst_buffer: B,
     /// Used to convert back to the original arrow type
