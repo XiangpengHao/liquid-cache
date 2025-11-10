@@ -208,7 +208,10 @@ fn build_mermaid_chart(points: &[(String, u64, f64)], total_unique_size: u64) ->
         return None;
     }
 
-    let mut budgets: Vec<u64> = points.iter().map(|(_, cache_size, _)| *cache_size).collect();
+    let mut budgets: Vec<u64> = points
+        .iter()
+        .map(|(_, cache_size, _)| *cache_size)
+        .collect();
     budgets.sort_unstable();
     budgets.dedup();
     if budgets.is_empty() {
