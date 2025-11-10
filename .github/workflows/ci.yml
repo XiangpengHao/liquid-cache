@@ -206,8 +206,8 @@ jobs:
         run: |
           source <(cargo llvm-cov show-env --export-prefix)
           cargo llvm-cov clean --workspace
-          cargo build --release --bin in_process 
-          env RUST_LOG=info cargo run --release --bin in_process -- --manifest benchmark/stackoverflow/manifest.dba.json --bench-mode liquid --max-cache-mb 10 --check-results
+          cargo build --bin in_process 
+          env RUST_LOG=info cargo run --bin in_process -- --manifest benchmark/stackoverflow/manifest.dba.json --bench-mode liquid --max-cache-mb 10 --check-results
           cargo llvm-cov report --codecov --output-path codecov_stackoverflow.json
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
