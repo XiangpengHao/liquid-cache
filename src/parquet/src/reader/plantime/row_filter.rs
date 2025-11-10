@@ -70,6 +70,7 @@ use arrow::record_batch::RecordBatch;
 use arrow_schema::SchemaRef;
 use datafusion::datasource::physical_plan::ParquetFileMetrics;
 use datafusion::logical_expr::Operator;
+use datafusion::physical_expr::utils::reassign_expr_columns;
 use datafusion::physical_plan::expressions::{BinaryExpr, LikeExpr};
 use datafusion::physical_plan::metrics;
 use parquet::arrow::ProjectionMask;
@@ -81,7 +82,6 @@ use datafusion::common::cast::as_boolean_array;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion, TreeNodeVisitor};
 use datafusion::datasource::schema_adapter::{SchemaAdapterFactory, SchemaMapper};
 use datafusion::physical_expr::expressions::Column;
-use datafusion::physical_expr::utils::reassign_predicate_columns;
 use datafusion::physical_expr::{PhysicalExpr, split_conjunction};
 
 /// A row filter that can be used to filter rows from a parquet file.
@@ -168,9 +168,8 @@ impl LiquidPredicate {
         rows_matched: metrics::Count,
         time: metrics::Time,
     ) -> Result<Self> {
-        let projected_schema = Arc::clone(&candidate.filter_schema);
         let physical_expr =
-            reassign_predicate_columns(candidate.expr.clone(), &projected_schema, true)?;
+            reassign_expr_columns(candidate.expr.clone(), &candidate.filter_schema)?;
 
         Ok(Self {
             physical_expr,
