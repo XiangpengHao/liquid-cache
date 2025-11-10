@@ -1,4 +1,5 @@
 //! This file is mostly used for Xiangpeng and llm to understand how variant works.
+//! todo: DELETE ME when variant is implemented.
 
 use arrow::array::{ArrayRef, RecordBatch, StringArray, StructArray};
 use arrow::array::{AsArray, RecordBatchReader};

@@ -1,12 +1,13 @@
 use std::collections::VecDeque;
 
-use parquet::arrow::arrow_reader::RowSelector;
+use arrow_schema::DataType;
+use parquet::{arrow::ProjectionMask, arrow::arrow_reader::RowSelector};
 
 use crate::reader::runtime::parquet_bridge::{ParquetField, ParquetFieldType};
 
 pub(crate) fn get_column_ids(
     field: Option<&ParquetField>,
-    projection: &parquet::arrow::ProjectionMask,
+    projection: &ProjectionMask,
 ) -> Vec<usize> {
     let Some(field) = field else {
         return vec![];
@@ -14,18 +15,25 @@ pub(crate) fn get_column_ids(
 
     match &field.field_type {
         ParquetFieldType::Group { children } => match &field.arrow_type {
-            arrow_schema::DataType::Struct(_) => children
+            DataType::Struct(_) => children
                 .iter()
-                .filter_map(|child| match child.field_type {
-                    ParquetFieldType::Primitive { col_idx, .. } => {
-                        projection.leaf_included(col_idx).then_some(col_idx)
-                    }
-                    _ => None,
+                .enumerate()
+                .filter_map(|(idx, child)| {
+                    field_has_projected_leaf(child, projection).then_some(idx)
                 })
                 .collect(),
-            _ => unreachable!("Root arrow type must be Struct"),
+            _ => Vec::new(),
         },
-        ParquetFieldType::Primitive { .. } => vec![],
+        ParquetFieldType::Primitive { .. } => Vec::new(),
+    }
+}
+
+fn field_has_projected_leaf(field: &ParquetField, projection: &ProjectionMask) -> bool {
+    match &field.field_type {
+        ParquetFieldType::Primitive { col_idx, .. } => projection.leaf_included(*col_idx),
+        ParquetFieldType::Group { children } => children
+            .iter()
+            .any(|child| field_has_projected_leaf(child, projection)),
     }
 }
 

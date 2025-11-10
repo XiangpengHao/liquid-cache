@@ -81,16 +81,25 @@ impl SqueezePolicy for TranscodeSqueezeEvict {
         let squeeze_hint = tracker.majority_expression();
 
         match data {
-            CachedData::MemoryArrow(array) => {
-                let liquid_array = transcode_liquid_inner(&array, compressor).unwrap();
-                (
+            CachedData::MemoryArrow(array) => match transcode_liquid_inner(&array, compressor) {
+                Ok(liquid_array) => (
                     CacheEntry::with_expression_tracker(
                         CachedData::MemoryLiquid(liquid_array),
                         tracker,
                     ),
                     None,
-                )
-            }
+                ),
+                Err(_) => {
+                    let bytes = arrow_to_bytes(&array).expect("failed to convert arrow to bytes");
+                    (
+                        CacheEntry::with_expression_tracker(
+                            CachedData::DiskArrow(array.data_type().clone()),
+                            tracker,
+                        ),
+                        Some(bytes),
+                    )
+                }
+            },
             CachedData::MemoryLiquid(liquid_array) => {
                 let (hybrid_array, bytes) = match liquid_array.squeeze(squeeze_hint.as_ref()) {
                     Some(result) => result,
@@ -140,16 +149,25 @@ impl SqueezePolicy for TranscodeEvict {
         let (data, tracker) = entry.into_parts();
 
         match data {
-            CachedData::MemoryArrow(array) => {
-                let liquid_array = transcode_liquid_inner(&array, compressor).unwrap();
-                (
+            CachedData::MemoryArrow(array) => match transcode_liquid_inner(&array, compressor) {
+                Ok(liquid_array) => (
                     CacheEntry::with_expression_tracker(
                         CachedData::MemoryLiquid(liquid_array),
                         tracker,
                     ),
                     None,
-                )
-            }
+                ),
+                Err(_) => {
+                    let bytes = arrow_to_bytes(&array).expect("failed to convert arrow to bytes");
+                    (
+                        CacheEntry::with_expression_tracker(
+                            CachedData::DiskArrow(array.data_type().clone()),
+                            tracker,
+                        ),
+                        Some(bytes),
+                    )
+                }
+            },
             CachedData::MemoryLiquid(liquid_array) => {
                 let bytes = Bytes::from(liquid_array.to_bytes());
                 (
