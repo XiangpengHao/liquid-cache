@@ -83,7 +83,7 @@ jobs:
           components: rust-src
 
       # Address sanitizers can't be cached: https://github.com/Swatinem/rust-cache/issues/161
-      - run: sudo apt install llvm-dev -y
+      - run: sudo apt-get update && sudo apt-get install -y llvm-dev
       - name: Run address sanitizer
         run: >
           env RUSTFLAGS="-Z sanitizer=address" cargo test -Zbuild-std --target x86_64-unknown-linux-gnu --tests -p liquid-cache-parquet
@@ -231,7 +231,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: sudo apt-get update && sudo apt-get install -y wget jq
       - uses: Swatinem/rust-cache@v2
-
       - name: Setup ClickBench partitioned data download
         run: |
           mkdir -p benchmark/clickbench/data
@@ -288,6 +287,14 @@ jobs:
              '. + {"timestamp": $timestamp, "commit": $commit}' \
              benchmark_results/df_default.json > benchmark_results/df_default_final.json
 
+      - name: Generate cache policy Mermaid chart
+        run: |
+          cargo run -p liquid-cache-benchmarks --bin benchmark_cache_policies --release -- \
+            --trace-dir benchmark/clickbench/official_traces \
+            --output benchmark/data/cache_policy_results.csv \
+            --sizes 7 \
+            --mermaid cache_policy.mmd || echo "Mermaid generation skipped"
+
       - name: Compare LiquidCache vs DataFusion (same runner)
         id: compare
         run: |
@@ -309,6 +316,16 @@ jobs:
               comment = fs.readFileSync('comparison.md', 'utf8');
             } catch (error) {
               comment = 'Error reading benchmark comparison results';
+            }
+            
+            // Add Mermaid chart if available
+            try {
+              if (fs.existsSync('cache_policy.mmd')) {
+                const mermaidChart = fs.readFileSync('cache_policy.mmd', 'utf8');
+                comment += `\n\n## 📈 Cache Policy Performance\n\n\`\`\`mermaid\n${mermaidChart}\n\`\`\`\n`;
+              }
+            } catch (error) {
+              console.log('Note: Could not embed cache policy chart:', error.message);
             }
             
             // Check if this is an external PR (from a fork)
@@ -401,7 +418,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
       - name: Verify storage crate with Kani
         uses: model-checking/kani-github-action@v1.1
         with:
