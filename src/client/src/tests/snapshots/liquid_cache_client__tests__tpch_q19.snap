@@ -125,5 +125,5 @@ expression: displayable.tree_render().to_string()
                              │    l_shipmode = AIR REG   │
                              │   ) AND l_shipinstruct =  │
                              │    DELIVER IN PERSON AND  │
-                             │            true           │
+                             │   DynamicFilter [ empty ] │
                              └───────────────────────────┘

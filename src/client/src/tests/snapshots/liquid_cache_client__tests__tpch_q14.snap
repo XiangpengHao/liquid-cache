@@ -104,5 +104,6 @@ expression: displayable.tree_render().to_string()
                              │         predicate:        │
                              │  l_shipdate >= 1995-09-01 │
                              │    AND l_shipdate < 1995  │
-                             │      -10-01 AND true      │
+                             │  -10-01 AND DynamicFilter │
+                             │          [ empty ]        │
                              └───────────────────────────┘

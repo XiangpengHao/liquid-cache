@@ -254,7 +254,7 @@ impl LiquidCacheService {
             }
             LiquidCacheActions::RegisterPlan(cmd) => {
                 let plan = cmd.plan;
-                let plan = physical_plan_from_bytes(&plan, self.inner.get_ctx())?;
+                let plan = physical_plan_from_bytes(&plan, &self.inner.get_ctx().task_ctx())?;
                 let handle = Uuid::from_bytes_ref(cmd.handle.as_ref().try_into()?);
                 self.inner.register_plan(*handle, plan);
                 let output = futures::stream::iter(vec![Ok(arrow_flight::Result {

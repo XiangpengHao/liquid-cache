@@ -14,7 +14,7 @@ use datafusion::{
     datasource::{
         listing::PartitionedFile,
         physical_plan::{
-            FileMeta, FileOpenFuture, FileOpener, ParquetFileMetrics,
+            FileOpenFuture, FileOpener, ParquetFileMetrics,
             parquet::{PagePruningAccessPlanFilter, ParquetAccessPlan},
         },
         schema_adapter::SchemaAdapterFactory,
@@ -114,24 +114,20 @@ fn transfer_lineage_metadata_to_file_schema(
 }
 
 impl FileOpener for LiquidParquetOpener {
-    fn open(
-        &self,
-        file_meta: FileMeta,
-        _file: PartitionedFile,
-    ) -> Result<FileOpenFuture, DataFusionError> {
-        let file_range = file_meta.range.clone();
-        let extensions = file_meta.extensions.clone();
-        let file_name = file_meta.location().to_string();
+    fn open(&self, file: PartitionedFile) -> Result<FileOpenFuture, DataFusionError> {
+        let file_range = file.range.clone();
+        let extensions = file.extensions.clone();
+        let file_name = file.object_meta.location.to_string();
         let file_metrics = ParquetFileMetrics::new(self.partition_index, &file_name, &self.metrics);
 
-        let metadata_size_hint = file_meta.metadata_size_hint;
+        let metadata_size_hint = file.metadata_size_hint;
 
         let lc = self.liquid_cache.clone();
-        let file_loc = file_meta.location().to_string();
+        let file_loc = file.object_meta.location.to_string();
 
         let mut async_file_reader = self.parquet_file_reader_factory.create_liquid_reader(
             self.partition_index,
-            file_meta,
+            file,
             metadata_size_hint,
             &self.metrics,
         );

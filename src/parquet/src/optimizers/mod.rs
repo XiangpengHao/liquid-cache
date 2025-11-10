@@ -9,7 +9,11 @@ use datafusion::{
     catalog::memory::DataSourceExec,
     common::tree_node::{Transformed, TreeNode, TreeNodeRecursion},
     config::ConfigOptions,
-    datasource::{physical_plan::ParquetSource, source::DataSource},
+    datasource::{
+        physical_plan::{FileSource, ParquetSource},
+        source::DataSource,
+        table_schema::TableSchema,
+    },
     physical_optimizer::PhysicalOptimizerRule,
     physical_plan::ExecutionPlan,
 };
@@ -68,10 +72,15 @@ pub fn rewrite_data_source_plan(
                     data_source_exec.downcast_to_file_source::<ParquetSource>()
                 {
                     let mut new_config = file_scan_config.clone();
+
+                    let mut new_source = LiquidParquetSource::from_parquet_source(
+                        parquet_source.clone(),
+                        cache.clone(),
+                    );
                     if let Some(schema_factory) =
                         file_scan_config.file_source().schema_adapter_factory()
                     {
-                        let file_schema = file_scan_config.file_schema.clone();
+                        let file_schema = file_scan_config.file_schema().clone();
                         let mut new_fields = vec![];
                         for field in file_schema.fields() {
                             let date_metadata =
@@ -89,13 +98,12 @@ pub fn rewrite_data_source_plan(
                             }
                         }
                         let new_schema = Schema::new(new_fields);
-                        new_config.file_schema = Arc::new(new_schema);
+                        let table_partition_cols = new_source.table_schema().table_partition_cols();
+                        let new_table_schema =
+                            TableSchema::new(Arc::new(new_schema), table_partition_cols.clone());
+                        new_source = new_source.with_table_schema(new_table_schema);
                     }
-                    let new_source = LiquidParquetSource::from_parquet_source(
-                        parquet_source.clone(),
-                        file_scan_config.file_schema.clone(),
-                        cache.clone(),
-                    );
+
                     new_config.file_source = Arc::new(new_source);
                     let new_file_source: Arc<dyn DataSource> = Arc::new(new_config);
                     let new_plan = Arc::new(DataSourceExec::new(new_file_source));
@@ -152,7 +160,7 @@ mod tests {
                     let _parquet_source = any_file_source
                         .downcast_ref::<LiquidParquetSource>()
                         .unwrap();
-                    let schema = source.file_schema.as_ref();
+                    let schema = source.file_schema().as_ref();
                     assert_eq!(schema, expected_schema.as_ref());
                 }
                 Ok(TreeNodeRecursion::Continue)

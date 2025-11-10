@@ -100,9 +100,9 @@ fn byte_array_gt_operation(bencher: Bencher, chunk_size: usize) {
             let lhs = datafusion::logical_expr::ColumnarValue::Array(Arc::new(dict));
             let rhs = datafusion::logical_expr::ColumnarValue::Scalar(needle_scalar);
             datafusion::physical_expr_common::datum::apply_cmp(
+                datafusion::logical_expr::Operator::Gt,
                 &lhs,
                 &rhs,
-                arrow::compute::kernels::cmp::gt,
             )
         });
 }

@@ -7,7 +7,7 @@ use arrow::array::{
     cast::AsArray, types::UInt16Type,
 };
 use arrow::buffer::{BooleanBuffer, NullBuffer};
-use arrow::compute::{cast, kernels, sort_to_indices};
+use arrow::compute::{cast, sort_to_indices};
 use arrow::datatypes::ByteArrayType;
 use arrow_schema::DataType;
 use bytes::Bytes;
@@ -1248,16 +1248,16 @@ fn try_eval_predicate_inner<B: FsstBuffer>(
             let rhs = ColumnarValue::Scalar(literal.value().clone());
 
             let result = match op {
-                Operator::NotEq => apply_cmp(&lhs, &rhs, kernels::cmp::neq),
-                Operator::Eq => apply_cmp(&lhs, &rhs, kernels::cmp::eq),
-                Operator::Lt => apply_cmp(&lhs, &rhs, kernels::cmp::lt),
-                Operator::LtEq => apply_cmp(&lhs, &rhs, kernels::cmp::lt_eq),
-                Operator::Gt => apply_cmp(&lhs, &rhs, kernels::cmp::gt),
-                Operator::GtEq => apply_cmp(&lhs, &rhs, kernels::cmp::gt_eq),
-                Operator::LikeMatch => apply_cmp(&lhs, &rhs, arrow::compute::like),
-                Operator::ILikeMatch => apply_cmp(&lhs, &rhs, arrow::compute::ilike),
-                Operator::NotLikeMatch => apply_cmp(&lhs, &rhs, arrow::compute::nlike),
-                Operator::NotILikeMatch => apply_cmp(&lhs, &rhs, arrow::compute::nilike),
+                Operator::NotEq => apply_cmp(Operator::NotEq, &lhs, &rhs),
+                Operator::Eq => apply_cmp(Operator::Eq, &lhs, &rhs),
+                Operator::Lt => apply_cmp(Operator::Lt, &lhs, &rhs),
+                Operator::LtEq => apply_cmp(Operator::LtEq, &lhs, &rhs),
+                Operator::Gt => apply_cmp(Operator::Gt, &lhs, &rhs),
+                Operator::GtEq => apply_cmp(Operator::GtEq, &lhs, &rhs),
+                Operator::LikeMatch => apply_cmp(Operator::LikeMatch, &lhs, &rhs),
+                Operator::ILikeMatch => apply_cmp(Operator::ILikeMatch, &lhs, &rhs),
+                Operator::NotLikeMatch => apply_cmp(Operator::NotLikeMatch, &lhs, &rhs),
+                Operator::NotILikeMatch => apply_cmp(Operator::NotILikeMatch, &lhs, &rhs),
                 _ => return Ok(None),
             };
             if let Ok(result) = result {
@@ -1281,10 +1281,10 @@ fn try_eval_predicate_inner<B: FsstBuffer>(
         let rhs = ColumnarValue::Scalar(literal.value().clone());
 
         let result = match (like_expr.negated(), like_expr.case_insensitive()) {
-            (false, false) => apply_cmp(&lhs, &rhs, arrow::compute::like),
-            (true, false) => apply_cmp(&lhs, &rhs, arrow::compute::nlike),
-            (false, true) => apply_cmp(&lhs, &rhs, arrow::compute::ilike),
-            (true, true) => apply_cmp(&lhs, &rhs, arrow::compute::nilike),
+            (false, false) => apply_cmp(Operator::LikeMatch, &lhs, &rhs),
+            (true, false) => apply_cmp(Operator::NotLikeMatch, &lhs, &rhs),
+            (false, true) => apply_cmp(Operator::ILikeMatch, &lhs, &rhs),
+            (true, true) => apply_cmp(Operator::NotILikeMatch, &lhs, &rhs),
         };
         if let Ok(result) = result {
             let filtered = result.into_array(array.len()).unwrap().as_boolean().clone();
@@ -1977,10 +1977,10 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
         let rhs = ColumnarValue::Scalar(needle_scalar);
 
         let result = match op {
-            Operator::LikeMatch => apply_cmp(&lhs, &rhs, arrow::compute::like),
-            Operator::ILikeMatch => apply_cmp(&lhs, &rhs, arrow::compute::ilike),
-            Operator::NotLikeMatch => apply_cmp(&lhs, &rhs, arrow::compute::nlike),
-            Operator::NotILikeMatch => apply_cmp(&lhs, &rhs, arrow::compute::nilike),
+            Operator::LikeMatch => apply_cmp(Operator::LikeMatch, &lhs, &rhs),
+            Operator::ILikeMatch => apply_cmp(Operator::ILikeMatch, &lhs, &rhs),
+            Operator::NotLikeMatch => apply_cmp(Operator::NotLikeMatch, &lhs, &rhs),
+            Operator::NotILikeMatch => apply_cmp(Operator::NotILikeMatch, &lhs, &rhs),
             _ => {
                 unreachable!()
             }

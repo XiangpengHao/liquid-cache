@@ -892,7 +892,7 @@ mod tests {
             };
 
             // Extract metadata from all fields in file_schema
-            let file_schema = &file_scan_config.file_schema;
+            let file_schema = &file_scan_config.file_schema();
             for field in file_schema.fields() {
                 if let Some(metadata_value) = field.metadata().get(DATE_MAPPING_METADATA_KEY) {
                     field_metadata_map.insert(field.name().to_string(), metadata_value.clone());

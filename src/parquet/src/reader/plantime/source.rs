@@ -1,17 +1,19 @@
 use super::opener::LiquidParquetOpener;
 use crate::cache::LiquidCacheRef;
 use ahash::{HashMap, HashMapExt};
-use arrow_schema::{Schema, SchemaRef};
+use arrow_schema::Schema;
 use bytes::Bytes;
 use datafusion::{
     common::Statistics,
     config::TableParquetOptions,
     datasource::{
+        listing::PartitionedFile,
         physical_plan::{
-            FileMeta, FileScanConfig, FileSource, ParquetFileMetrics, ParquetFileReaderFactory,
+            FileScanConfig, FileSource, ParquetFileMetrics, ParquetFileReaderFactory,
             ParquetSource, parquet::PagePruningAccessPlanFilter,
         },
         schema_adapter::DefaultSchemaAdapterFactory,
+        table_schema::TableSchema,
     },
     error::Result,
     physical_optimizer::pruning::PruningPredicate,
@@ -51,11 +53,11 @@ impl CachedMetaReaderFactory {
     pub(crate) fn create_liquid_reader(
         &self,
         partition_index: usize,
-        file_meta: FileMeta,
+        partitioned_file: PartitionedFile,
         metadata_size_hint: Option<usize>,
         metrics: &ExecutionPlanMetricsSet,
     ) -> ParquetMetadataCacheReader {
-        let path = file_meta.location().clone();
+        let path = partitioned_file.object_meta.location.clone();
         let store = Arc::clone(&self.store);
         let mut inner = ParquetObjectReader::new(store, path.clone());
 
@@ -75,12 +77,16 @@ impl ParquetFileReaderFactory for CachedMetaReaderFactory {
     fn create_reader(
         &self,
         partition_index: usize,
-        file_meta: FileMeta,
+        partitioned_file: PartitionedFile,
         metadata_size_hint: Option<usize>,
         metrics: &ExecutionPlanMetricsSet,
     ) -> Result<Box<dyn AsyncFileReader + Send>> {
-        let reader =
-            self.create_liquid_reader(partition_index, file_meta, metadata_size_hint, metrics);
+        let reader = self.create_liquid_reader(
+            partition_index,
+            partitioned_file,
+            metadata_size_hint,
+            metrics,
+        );
         Ok(Box::new(reader))
     }
 }
@@ -167,6 +173,7 @@ pub struct LiquidParquetSource {
     liquid_cache: LiquidCacheRef,
     batch_size: Option<usize>,
     projected_statistics: Option<Statistics>,
+    table_schema: TableSchema,
     span: Option<Arc<fastrace::Span>>,
 }
 
@@ -179,6 +186,14 @@ impl LiquidParquetSource {
     pub fn with_span(&self, span: fastrace::Span) -> Self {
         Self {
             span: Some(Arc::new(span)),
+            ..self.clone()
+        }
+    }
+
+    /// Set the table schema for the LiquidParquetSource
+    pub fn with_table_schema(&self, table_schema: TableSchema) -> Self {
+        Self {
+            table_schema,
             ..self.clone()
         }
     }
@@ -218,17 +233,13 @@ impl LiquidParquetSource {
     }
 
     /// Create a new LiquidParquetSource from a ParquetSource
-    ///
-    /// `downstream_full_schema` is the schema that the LiquidCache will be mapped onto,
-    /// and the schema that `DataSourceExec` will return.
-    pub fn from_parquet_source(
-        source: ParquetSource,
-        downstream_full_schema: Arc<Schema>,
-        liquid_cache: LiquidCacheRef,
-    ) -> Self {
-        let predicate = source.predicate().cloned();
+    pub fn from_parquet_source(source: ParquetSource, liquid_cache: LiquidCacheRef) -> Self {
+        let predicate = source.filter();
 
+        let table_schema = source.table_schema().clone();
+        let file_schema = table_schema.file_schema().clone();
         let mut v = Self {
+            table_schema,
             table_parquet_options: source.table_parquet_options().clone(),
             batch_size: Some(liquid_cache.batch_size()),
             liquid_cache,
@@ -241,7 +252,7 @@ impl LiquidParquetSource {
         };
 
         if let Some(predicate) = predicate {
-            v = v.with_predicate(downstream_full_schema, predicate);
+            v = v.with_predicate(file_schema, predicate);
         }
 
         v
@@ -264,16 +275,9 @@ impl FileSource for LiquidParquetSource {
         base_config: &FileScanConfig,
         partition: usize,
     ) -> Arc<dyn datafusion::datasource::physical_plan::FileOpener> {
-        let projection: Vec<usize> = base_config
-            .projection
-            .as_ref()
-            .map(|p| {
-                p.iter()
-                    .filter(|col_idx| **col_idx < base_config.file_schema.fields().len())
-                    .copied()
-                    .collect()
-            })
-            .unwrap_or_else(|| (0..base_config.file_schema.fields().len()).collect());
+        let projection = base_config
+            .file_column_projection_indices()
+            .unwrap_or_else(|| (0..base_config.file_schema().fields().len()).collect());
 
         let reader_factory = Arc::new(CachedMetaReaderFactory::new(object_store));
         let schema_adapter = Arc::new(DefaultSchemaAdapterFactory);
@@ -291,7 +295,7 @@ impl FileSource for LiquidParquetSource {
             self.predicate.clone(),
             self.pruning_predicate.clone(),
             self.page_pruning_predicate.clone(),
-            base_config.file_schema.clone(),
+            base_config.file_schema().clone(),
             self.metrics.clone(),
             self.liquid_cache.clone(),
             reader_factory,
@@ -309,8 +313,8 @@ impl FileSource for LiquidParquetSource {
         Arc::new(conf)
     }
 
-    fn with_schema(&self, _schema: SchemaRef) -> Arc<dyn FileSource> {
-        Arc::new(Self { ..self.clone() })
+    fn table_schema(&self) -> &TableSchema {
+        &self.table_schema
     }
 
     fn with_projection(&self, _config: &FileScanConfig) -> Arc<dyn FileSource> {

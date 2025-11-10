@@ -122,7 +122,9 @@ expression: displayable.tree_render().to_string()
                              │    --------------------   ││    --------------------   │
                              │          files: 1         ││     target_batch_size:    │
                              │      format: parquet      ││           16384           │
-                             │      predicate: true      ││                           │
+                             │                           ││                           │
+                             │         predicate:        ││                           │
+                             │  DynamicFilter [ empty ]  ││                           │
                              └───────────────────────────┘└─────────────┬─────────────┘
                                                           ┌─────────────┴─────────────┐
                                                           │        HashJoinExec       │
@@ -146,7 +148,9 @@ expression: displayable.tree_render().to_string()
                                                           │    --------------------   ││    --------------------   │
                                                           │          files: 1         ││     target_batch_size:    │
                                                           │      format: parquet      ││           16384           │
-                                                          │      predicate: true      ││                           │
+                                                          │                           ││                           │
+                                                          │         predicate:        ││                           │
+                                                          │  DynamicFilter [ empty ]  ││                           │
                                                           └───────────────────────────┘└─────────────┬─────────────┘
                                                                                        ┌─────────────┴─────────────┐
                                                                                        │        HashJoinExec       │
@@ -168,7 +172,9 @@ expression: displayable.tree_render().to_string()
                                                                                        │    --------------------   │                             │    --------------------   │
                                                                                        │     target_batch_size:    │                             │          files: 1         │
                                                                                        │           16384           │                             │      format: parquet      │
-                                                                                       │                           │                             │      predicate: true      │
+                                                                                       │                           │                             │                           │
+                                                                                       │                           │                             │         predicate:        │
+                                                                                       │                           │                             │  DynamicFilter [ empty ]  │
                                                                                        └─────────────┬─────────────┘                             └───────────────────────────┘
                                                                                        ┌─────────────┴─────────────┐
                                                                                        │        HashJoinExec       │
@@ -188,9 +194,9 @@ expression: displayable.tree_render().to_string()
                                                                                        │    --------------------   ││    --------------------   │
                                                                                        │          files: 1         ││          files: 1         │
                                                                                        │      format: parquet      ││      format: parquet      │
-                                                                                       │                           ││      predicate: true      │
-                                                                                       │         predicate:        ││                           │
-                                                                                       │ o_orderdate >= 1994-01-01 ││                           │
+                                                                                       │                           ││                           │
+                                                                                       │         predicate:        ││         predicate:        │
+                                                                                       │ o_orderdate >= 1994-01-01 ││  DynamicFilter [ empty ]  │
                                                                                        │   AND o_orderdate < 1995  ││                           │
                                                                                        │           -01-01          ││                           │
                                                                                        └───────────────────────────┘└───────────────────────────┘
