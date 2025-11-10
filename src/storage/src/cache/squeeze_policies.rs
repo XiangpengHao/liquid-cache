@@ -196,8 +196,8 @@ impl SqueezePolicy for TranscodeEvict {
 mod tests {
     use super::*;
     use crate::cache::cached_batch::CacheEntry;
-    use arrow::array::{ArrayRef, Int32Array, StringArray};
-    use arrow_schema::DataType;
+    use arrow::array::{ArrayRef, Int32Array, StringArray, StructArray};
+    use arrow_schema::{DataType, Field};
     use std::sync::Arc;
 
     fn int_array(n: i32) -> ArrayRef {
@@ -213,6 +213,12 @@ mod tests {
             .expect("non-empty stream")
             .expect("read stream");
         batch.column(0).clone()
+    }
+
+    fn struct_array() -> ArrayRef {
+        let values = Arc::new(Int32Array::from(vec![Some(1), None, Some(3)])) as ArrayRef;
+        let field = Arc::new(Field::new("value", DataType::Int32, true));
+        Arc::new(StructArray::from(vec![(field, values)]))
     }
 
     #[test]
@@ -307,5 +313,37 @@ mod tests {
         assert!(matches!(b1.data(), CachedData::DiskArrow(DataType::Utf8)) && w1.is_none());
         let (b2, w2) = to_liquid.squeeze(CacheEntry::disk_liquid(DataType::Utf8), &states);
         assert!(matches!(b2.data(), CachedData::DiskLiquid(DataType::Utf8)) && w2.is_none());
+    }
+
+    #[test]
+    fn transcode_squeeze_struct_falls_back_to_disk_arrow() {
+        let to_liquid = TranscodeSqueezeEvict;
+        let states = LiquidCompressorStates::new();
+        let struct_arr = struct_array();
+        let (new_batch, bytes) =
+            to_liquid.squeeze(CacheEntry::memory_arrow(struct_arr.clone()), &states);
+        match (new_batch.data(), bytes) {
+            (CachedData::DiskArrow(dt), Some(b)) => {
+                assert_eq!(dt, struct_arr.data_type());
+                assert_eq!(decode_arrow(&b).as_ref(), struct_arr.as_ref());
+            }
+            other => panic!("expected disk arrow fallback, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn transcode_evict_struct_falls_back_to_disk_arrow() {
+        let to_disk = TranscodeEvict;
+        let states = LiquidCompressorStates::new();
+        let struct_arr = struct_array();
+        let (new_batch, bytes) =
+            to_disk.squeeze(CacheEntry::memory_arrow(struct_arr.clone()), &states);
+        match (new_batch.data(), bytes) {
+            (CachedData::DiskArrow(dt), Some(b)) => {
+                assert_eq!(dt, struct_arr.data_type());
+                assert_eq!(decode_arrow(&b).as_ref(), struct_arr.as_ref());
+            }
+            other => panic!("expected disk arrow fallback, got {other:?}"),
+        }
     }
 }
