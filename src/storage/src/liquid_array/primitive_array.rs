@@ -747,7 +747,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::CacheExpression;
+    use crate::cache::{CacheExpression, ExpressionRegistry};
     use crate::liquid_array::utils::ExpressionHintTracker;
     use arrow::array::Array;
 
@@ -882,18 +882,24 @@ mod tests {
         let original = vec![Some(0), Some(31), Some(59), None, Some(90)];
         let array = PrimitiveArray::<Date32Type>::from(original);
         let liquid = LiquidPrimitiveArray::<Date32Type>::from_arrow_array(array);
+        let registry = ExpressionRegistry::new();
 
-        let expr_month = CacheExpression::extract_date32(Date32Field::Month);
-        let expr_year = CacheExpression::extract_date32(Date32Field::Year);
+        let expr_month = registry
+            .register(CacheExpression::extract_date32(Date32Field::Month))
+            .expect("register month");
+        let expr_year = registry
+            .register(CacheExpression::extract_date32(Date32Field::Year))
+            .expect("register year");
 
         let tracker = ExpressionHintTracker::new();
-        tracker.record_expression(&expr_month);
-        tracker.record_expression(&expr_month);
-        tracker.record_expression(&expr_year);
-        let majority = tracker.majority_expression();
+        tracker.record_expression(expr_month);
+        tracker.record_expression(expr_month);
+        tracker.record_expression(expr_year);
+        let majority = tracker.majority_expression().expect("majority id");
+        let majority_expr = registry.get(majority).expect("resolve majority");
 
         let (hybrid, _) = liquid
-            .squeeze(majority.as_ref())
+            .squeeze(Some(majority_expr.as_ref()))
             .expect("squeeze should succeed");
         let squeezed = hybrid
             .as_any()
@@ -908,15 +914,23 @@ mod tests {
         let original = vec![Some(0), Some(1), Some(2), Some(3)];
         let array = PrimitiveArray::<Date32Type>::from(original);
         let liquid = LiquidPrimitiveArray::<Date32Type>::from_arrow_array(array);
+        let registry = ExpressionRegistry::new();
 
-        let expr_year = CacheExpression::extract_date32(Date32Field::Year);
-        let expr_day = CacheExpression::extract_date32(Date32Field::Day);
+        let expr_year = registry
+            .register(CacheExpression::extract_date32(Date32Field::Year))
+            .expect("register year");
+        let expr_day = registry
+            .register(CacheExpression::extract_date32(Date32Field::Day))
+            .expect("register day");
         let tracker = ExpressionHintTracker::new();
-        tracker.record_expression(&expr_year);
-        tracker.record_expression(&expr_day);
+        tracker.record_expression(expr_year);
+        tracker.record_expression(expr_day);
+
+        let majority = tracker.majority_expression().expect("majority id");
+        let majority_expr = registry.get(majority).expect("resolve expression");
 
         let (hybrid, _) = liquid
-            .squeeze(tracker.majority_expression().as_ref())
+            .squeeze(Some(majority_expr.as_ref()))
             .expect("squeeze should succeed");
         let squeezed = hybrid
             .as_any()
