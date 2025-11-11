@@ -6,7 +6,7 @@ use arrow::array::ArrayRef;
 use arrow_schema::DataType;
 
 use crate::{
-    cache::CacheExpression,
+    cache::ExpressionId,
     liquid_array::utils::ExpressionHintTracker,
     liquid_array::{LiquidArrayRef, LiquidHybridArrayRef},
 };
@@ -84,7 +84,7 @@ impl CacheEntry {
     fn new(data: CachedData) -> Self {
         Self {
             data,
-            expression_hints: ExpressionHintTracker::default(),
+            expression_hints: ExpressionHintTracker::new(),
         }
     }
 
@@ -120,14 +120,14 @@ impl CacheEntry {
     }
 
     /// Record an optional expression hint for this cached batch.
-    pub fn record_expression_hint(&self, expression_hint: Option<&CacheExpression>) {
+    pub fn record_expression_hint(&self, expression_hint: Option<ExpressionId>) {
         if let Some(expression) = expression_hint {
             self.expression_hints.record_expression(expression);
         }
     }
 
     /// Derive the expression hint (if any) preferred for squeezing.
-    pub fn expression_hint_for_squeeze(&self) -> Option<CacheExpression> {
+    pub fn expression_hint_for_squeeze(&self) -> Option<ExpressionId> {
         self.expression_hints.majority_expression()
     }
 }
