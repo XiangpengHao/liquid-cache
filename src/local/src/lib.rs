@@ -8,10 +8,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use datafusion::error::Result;
+use datafusion::logical_expr::ScalarUDF;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use liquid_cache_common::IoMode;
-use liquid_cache_parquet::optimizers::{DateExtractOptimizer, LocalModeOptimizer};
-use liquid_cache_parquet::{LiquidCache, LiquidCacheRef};
+use liquid_cache_parquet::optimizers::{LineageOptimizer, LocalModeOptimizer};
+use liquid_cache_parquet::{
+    LiquidCache, LiquidCacheRef, VariantGetUdf, VariantPretty, VariantToJsonUdf,
+};
 use liquid_cache_storage::cache::squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict};
 use liquid_cache_storage::cache_policies::CachePolicy;
 use liquid_cache_storage::cache_policies::LiquidPolicy;
@@ -151,7 +154,7 @@ impl LiquidCacheLocalBuilder {
         );
         let cache_ref = Arc::new(cache);
 
-        let date_extract_optimizer = Arc::new(DateExtractOptimizer::new());
+        let date_extract_optimizer = Arc::new(LineageOptimizer::new());
 
         let optimizer = LocalModeOptimizer::with_cache(cache_ref.clone());
 
@@ -162,7 +165,11 @@ impl LiquidCacheLocalBuilder {
             .with_physical_optimizer_rule(Arc::new(optimizer))
             .build();
 
-        Ok((SessionContext::new_with_state(state), cache_ref))
+        let ctx = SessionContext::new_with_state(state);
+        ctx.register_udf(ScalarUDF::new_from_impl(VariantGetUdf::default()));
+        ctx.register_udf(ScalarUDF::new_from_impl(VariantPretty::default()));
+        ctx.register_udf(ScalarUDF::new_from_impl(VariantToJsonUdf::default()));
+        Ok((ctx, cache_ref))
     }
 }
 

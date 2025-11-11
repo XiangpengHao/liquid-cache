@@ -13,7 +13,7 @@ use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
 use liquid_cache_storage::cache::squeeze_policies::TranscodeSqueezeEvict;
 use parquet::{
     arrow::ArrowWriter,
-    variant::{VariantArray, json_to_variant},
+    variant::{VariantArray, VariantType, json_to_variant},
 };
 use tempfile::TempDir;
 
@@ -47,7 +47,7 @@ fn write_variant_parquet_file(dir: &Path) -> PathBuf {
 }
 
 #[tokio::test]
-async fn test_variant_parquet_is_not_supported() {
+async fn test_variant_parquet_naive_read() {
     let cache_dir = TempDir::new().unwrap();
     let parquet_dir = TempDir::new().unwrap();
     let parquet_path = write_variant_parquet_file(parquet_dir.path());
@@ -143,4 +143,61 @@ async fn test_variant_transcoding_falls_back_to_disk_arrow() {
         stats.disk_arrow_entries > 0,
         "expected struct columns to fall back to disk arrow, stats: {stats:?}"
     );
+}
+
+#[tokio::test]
+async fn test_variant_preserved() {
+    let parquet_dir = TempDir::new().unwrap();
+    let parquet_path = write_variant_parquet_file(parquet_dir.path());
+    let parquet_path_str = parquet_path.to_str().expect("unicode path");
+
+    let ctx = SessionContext::new();
+    ctx.register_parquet(
+        "variants_test",
+        parquet_path_str,
+        ParquetReadOptions::default().skip_metadata(false),
+    )
+    .await
+    .unwrap();
+
+    let batches = ctx
+        .sql("SELECT data FROM variants_test")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .expect("query should succeed with small cache");
+    let field = batches[0].schema().field_with_name("data").unwrap().clone();
+    assert!(field.try_extension_type::<VariantType>().is_ok());
+}
+
+#[tokio::test]
+async fn test_variant_get() {
+    let cache_dir = TempDir::new().unwrap();
+    let parquet_dir = TempDir::new().unwrap();
+    let parquet_path = write_variant_parquet_file(parquet_dir.path());
+    let parquet_path_str = parquet_path.to_str().expect("unicode path");
+
+    let (ctx, _cache) = LiquidCacheLocalBuilder::new()
+        .with_cache_dir(cache_dir.path().to_path_buf())
+        .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+        .build(SessionConfig::new())
+        .unwrap();
+
+    ctx.register_parquet(
+        "variants_test",
+        parquet_path_str,
+        ParquetReadOptions::default().skip_metadata(false),
+    )
+    .await
+    .unwrap();
+
+    let batches = ctx
+        .sql("SELECT variant_to_json(variant_get(data, 'name')) FROM variants_test")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .expect("query should succeed with small cache");
+    println!("results: \n{}", pretty_format_batches(&batches).unwrap());
 }

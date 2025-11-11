@@ -39,6 +39,7 @@ parquet = { version = "57.0.0", features = [
 	"experimental",
 	"variant_experimental",
 ] }
+parquet-variant-json = { version = "0.2.0" }
 datafusion = { version = "51.0.0" }
 datafusion-proto = { version = "51.0.0" }
 async-trait = "0.1.89"
@@ -87,3 +88,4 @@ arrow-schema = { git = "https://github.com/apache/arrow-rs.git", branch = "main"
 arrow-select = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
 arrow-flight = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
 parquet = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
+parquet-variant-json = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }

@@ -1,8 +1,8 @@
 //! Optimizers for the Parquet module
 
-mod date_extract_opt;
+mod lineage_opt;
 
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use arrow_schema::{Field, Schema};
 use datafusion::{
@@ -17,13 +17,15 @@ use datafusion::{
     physical_optimizer::PhysicalOptimizerRule,
     physical_plan::ExecutionPlan,
 };
-pub use date_extract_opt::DateExtractOptimizer;
+pub use lineage_opt::LineageOptimizer;
 
 use crate::{
-    LiquidCacheRef, LiquidParquetSource, optimizers::date_extract_opt::metadata_from_factory,
+    LiquidCacheRef, LiquidParquetSource,
+    optimizers::lineage_opt::{ColumnAnnotation, metadata_from_factory},
 };
 
 pub(crate) const DATE_MAPPING_METADATA_KEY: &str = "liquid.cache.date_mapping";
+pub(crate) const VARIANT_MAPPING_METADATA_KEY: &str = "liquid.cache.variant_path";
 
 /// Physical optimizer rule for local mode liquid cache
 ///
@@ -83,18 +85,26 @@ pub fn rewrite_data_source_plan(
                         let file_schema = file_scan_config.file_schema().clone();
                         let mut new_fields = vec![];
                         for field in file_schema.fields() {
-                            let date_metadata =
-                                metadata_from_factory(&schema_factory, field.name());
-                            if let Some(date_metadata) = date_metadata {
+                            if let Some(annotation) =
+                                metadata_from_factory(&schema_factory, field.name())
+                            {
+                                let (metadata_key, metadata_value): (&str, String) =
+                                    match annotation {
+                                        ColumnAnnotation::DatePart(unit) => (
+                                            DATE_MAPPING_METADATA_KEY,
+                                            unit.metadata_value().to_string(),
+                                        ),
+                                        ColumnAnnotation::VariantPath(path) => {
+                                            (VARIANT_MAPPING_METADATA_KEY, path)
+                                        }
+                                    };
+                                let mut field_metadata = field.metadata().clone();
+                                field_metadata.insert(metadata_key.to_string(), metadata_value);
                                 let new_field =
-                                    Field::clone(field.as_ref()).with_metadata(HashMap::from([(
-                                        DATE_MAPPING_METADATA_KEY.to_string(),
-                                        date_metadata,
-                                    )]));
+                                    Field::clone(field.as_ref()).with_metadata(field_metadata);
                                 new_fields.push(Arc::new(new_field));
                             } else {
-                                let new_field = field.clone();
-                                new_fields.push(new_field);
+                                new_fields.push(field.clone());
                             }
                         }
                         let new_schema = Schema::new(new_fields);
