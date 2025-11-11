@@ -1,4 +1,4 @@
-//! Credit: this is copied from https://github.com/datafusion-contrib/datafusion-variant/blob/main/src/variant_get.rs
+//! Credit: this is copied from <https://github.com/datafusion-contrib/datafusion-variant/blob/main/src/variant_get.rs>
 //! Full credit to the original authors.
 //! We need to copy it here because we have different datafusion versions, and can't easily include that crate in our workspace.
 //! But eventually, we will use whatever the official datafusion has to offer.
