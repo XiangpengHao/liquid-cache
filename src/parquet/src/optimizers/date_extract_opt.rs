@@ -33,7 +33,7 @@ pub(crate) enum SupportedIntervalUnit {
 }
 
 impl SupportedIntervalUnit {
-    fn metadata_value(self) -> &'static str {
+    pub(crate) fn metadata_value(self) -> &'static str {
         match self {
             SupportedIntervalUnit::Year => "YEAR",
             SupportedIntervalUnit::Month => "MONTH",
@@ -47,6 +47,20 @@ impl SupportedIntervalUnit {
 pub(crate) struct DateExtraction {
     pub(crate) column: Column,
     pub(crate) component: SupportedIntervalUnit,
+}
+
+/// Metadata describing a Variant column that participates in a `variant_get`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct VariantExtraction {
+    pub(crate) column: Column,
+    pub(crate) path: String,
+}
+
+/// Annotation that should be attached to a column in the file schema.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ColumnAnnotation {
+    DatePart(SupportedIntervalUnit),
+    VariantPath(String),
 }
 
 /// Logical optimizer that analyses the logical plan to detect columns that
@@ -87,11 +101,20 @@ impl OptimizerRule for DateExtractOptimizer {
         let mut analyzer = LineageAnalyzer::default();
         let _ = analyzer.analyze_plan(&plan)?;
         let table_usage = analyzer.finish();
-        let mut findings = table_usage.find_date32_extractions();
-        findings.sort_by(|a, b| a.column.flat_name().cmp(&b.column.flat_name()));
-        let annotations = build_annotation_map(&findings);
+        let mut date_findings = table_usage.find_date32_extractions();
+        date_findings.sort_by(|a, b| a.column.flat_name().cmp(&b.column.flat_name()));
+
+        let mut variant_findings = table_usage.find_variant_gets();
+        variant_findings.sort_by(|a, b| {
+            a.column
+                .flat_name()
+                .cmp(&b.column.flat_name())
+                .then(a.path.cmp(&b.path))
+        });
+
+        let annotations = build_annotation_map(&date_findings, &variant_findings);
         let transformed_plan = annotate_plan_with_extractions(plan, &annotations)?;
-        *self.extractions.lock().unwrap() = findings;
+        *self.extractions.lock().unwrap() = date_findings;
         Ok(transformed_plan)
     }
 }
@@ -141,9 +164,10 @@ impl ColumnUsage {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Operation {
     Extract(SupportedIntervalUnit),
+    VariantGet(String),
     Other,
 }
 
@@ -498,23 +522,53 @@ impl TableColumnUsage {
         }
         extractions
     }
+
+    fn find_variant_gets(&self) -> Vec<VariantExtraction> {
+        let mut gets = Vec::new();
+        for (key, stats) in self.usage.iter() {
+            let first_path = stats.usages.first().and_then(|usage| match usage.first() {
+                Some(Operation::VariantGet(path)) => Some(path.clone()),
+                _ => None,
+            });
+            if let Some(first_path) = first_path {
+                let all_match = stats.usages.iter().all(|usage| {
+                    matches!(usage.first(), Some(Operation::VariantGet(path)) if path == &first_path)
+                });
+                if all_match {
+                    gets.push(VariantExtraction {
+                        column: key.to_column(),
+                        path: first_path.clone(),
+                    });
+                }
+            }
+        }
+        gets
+    }
 }
 
-fn build_annotation_map(findings: &[DateExtraction]) -> HashMap<ColumnKey, SupportedIntervalUnit> {
-    findings
-        .iter()
-        .map(|extraction| {
-            (
-                ColumnKey::from_column(&extraction.column),
-                extraction.component,
-            )
-        })
-        .collect()
+fn build_annotation_map(
+    date_findings: &[DateExtraction],
+    variant_findings: &[VariantExtraction],
+) -> HashMap<ColumnKey, ColumnAnnotation> {
+    let mut annotations: HashMap<ColumnKey, ColumnAnnotation> = HashMap::new();
+    for extraction in date_findings {
+        annotations.insert(
+            ColumnKey::from_column(&extraction.column),
+            ColumnAnnotation::DatePart(extraction.component),
+        );
+    }
+    for extraction in variant_findings {
+        annotations.insert(
+            ColumnKey::from_column(&extraction.column),
+            ColumnAnnotation::VariantPath(extraction.path.clone()),
+        );
+    }
+    annotations
 }
 
 fn annotate_plan_with_extractions(
     plan: LogicalPlan,
-    annotations: &HashMap<ColumnKey, SupportedIntervalUnit>,
+    annotations: &HashMap<ColumnKey, ColumnAnnotation>,
 ) -> Result<Transformed<LogicalPlan>, DataFusionError> {
     if annotations.is_empty() {
         return Ok(Transformed::no(plan));
@@ -542,8 +596,8 @@ fn annotate_plan_with_extractions(
 
 fn annotations_for_table_scan(
     scan: &TableScan,
-    annotations: &HashMap<ColumnKey, SupportedIntervalUnit>,
-) -> HashMap<String, SupportedIntervalUnit> {
+    annotations: &HashMap<ColumnKey, ColumnAnnotation>,
+) -> HashMap<String, ColumnAnnotation> {
     let mut table_annotations = HashMap::new();
 
     for (qualifier_opt, field_ref) in scan.projected_schema.iter() {
@@ -551,11 +605,11 @@ fn annotations_for_table_scan(
         let name = field_ref.name().clone();
         if let Some(unit) = annotations
             .get(&ColumnKey::new(qualifier_owned.clone(), name.clone()))
-            .copied()
+            .cloned()
             .or_else(|| {
                 annotations
                     .get(&ColumnKey::new(None, name.clone()))
-                    .copied()
+                    .cloned()
             })
         {
             table_annotations.insert(name, unit);
@@ -567,7 +621,7 @@ fn annotations_for_table_scan(
 
 fn annotate_listing_table_source(
     source: &Arc<dyn TableSource>,
-    annotations: &HashMap<String, SupportedIntervalUnit>,
+    annotations: &HashMap<String, ColumnAnnotation>,
 ) -> Result<Option<Arc<dyn TableSource>>, DataFusionError> {
     if annotations.is_empty() {
         return Ok(None);
@@ -584,14 +638,9 @@ fn annotate_listing_table_source(
 
     let base_factory = listing.schema_adapter_factory().map(Arc::clone);
 
-    let encoded_annotations: HashMap<String, String> = annotations
-        .iter()
-        .map(|(name, unit)| (name.clone(), unit.metadata_value().to_string()))
-        .collect();
-
-    let metadata_copy = encoded_annotations.clone();
+    let metadata_copy = annotations.clone();
     let new_factory: Arc<dyn SchemaAdapterFactory> = Arc::new(
-        DateExtractSchemaAdapterFactory::new(base_factory, encoded_annotations),
+        DateExtractSchemaAdapterFactory::new(base_factory, annotations.clone()),
     );
     register_factory_metadata(&new_factory, metadata_copy);
     let new_listing = listing.clone().with_schema_adapter_factory(new_factory);
@@ -603,13 +652,13 @@ fn annotate_listing_table_source(
 #[derive(Debug)]
 struct DateExtractSchemaAdapterFactory {
     base: Option<Arc<dyn SchemaAdapterFactory>>,
-    _annotations: HashMap<String, String>,
+    _annotations: HashMap<String, ColumnAnnotation>,
 }
 
 impl DateExtractSchemaAdapterFactory {
     fn new(
         base: Option<Arc<dyn SchemaAdapterFactory>>,
-        annotations: HashMap<String, String>,
+        annotations: HashMap<String, ColumnAnnotation>,
     ) -> Self {
         Self {
             base,
@@ -649,14 +698,15 @@ impl SchemaAdapter for DateExtractSchemaAdapter {
     }
 }
 
-fn factory_registry() -> &'static Mutex<HashMap<usize, HashMap<String, String>>> {
-    static REGISTRY: OnceLock<Mutex<HashMap<usize, HashMap<String, String>>>> = OnceLock::new();
+fn factory_registry() -> &'static Mutex<HashMap<usize, HashMap<String, ColumnAnnotation>>> {
+    static REGISTRY: OnceLock<Mutex<HashMap<usize, HashMap<String, ColumnAnnotation>>>> =
+        OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn register_factory_metadata(
     factory: &Arc<dyn SchemaAdapterFactory>,
-    metadata: HashMap<String, String>,
+    metadata: HashMap<String, ColumnAnnotation>,
 ) {
     let key = Arc::as_ptr(factory) as *const () as usize;
     factory_registry().lock().unwrap().insert(key, metadata);
@@ -665,7 +715,7 @@ fn register_factory_metadata(
 pub(crate) fn metadata_from_factory(
     factory: &Arc<dyn SchemaAdapterFactory>,
     column: &str,
-) -> Option<String> {
+) -> Option<ColumnAnnotation> {
     let key = Arc::as_ptr(factory) as *const () as usize;
     factory_registry()
         .lock()
@@ -717,6 +767,15 @@ fn lineage_for_expr(
                     usage.operations.push(Operation::Extract(component));
                 }
                 return Ok(usages);
+            } else if func_name.eq_ignore_ascii_case("variant_get")
+                && func.args.len() == 2
+                && let Some(path) = literal_utf8(&func.args[1])
+            {
+                let mut usages = lineage_for_expr(&func.args[0], input_lineage, schema)?;
+                for usage in &mut usages {
+                    usage.operations.push(Operation::VariantGet(path.clone()));
+                }
+                return Ok(usages);
             }
             propagate_other(expr, input_lineage, schema)
         }
@@ -766,6 +825,17 @@ fn propagate_other(
     Ok(combined)
 }
 
+fn literal_utf8(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Literal(value, _) => match value {
+            ScalarValue::Utf8(Some(v)) | ScalarValue::LargeUtf8(Some(v)) => Some(v.clone()),
+            ScalarValue::Utf8View(Some(v)) => Some(v.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn part_to_unit(expr: &Expr) -> Option<SupportedIntervalUnit> {
     let value = match expr {
         Expr::Literal(literal, _) => literal,
@@ -788,23 +858,27 @@ fn part_to_unit(expr: &Expr) -> Option<SupportedIntervalUnit> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
-    use crate::LiquidCache;
-    use crate::optimizers::{DATE_MAPPING_METADATA_KEY, LocalModeOptimizer};
+    use crate::optimizers::{
+        DATE_MAPPING_METADATA_KEY, LocalModeOptimizer, VARIANT_MAPPING_METADATA_KEY,
+    };
+    use crate::{LiquidCache, VariantGetUdf, VariantToJsonUdf};
     use liquid_cache_common::IoMode;
 
     use super::*;
-    use arrow::array::{ArrayRef, Date32Array, TimestampMicrosecondArray};
+    use arrow::array::{ArrayRef, Date32Array, StringArray, TimestampMicrosecondArray};
     use arrow_schema::{Field, Schema, TimeUnit};
     use datafusion::catalog::memory::DataSourceExec;
     use datafusion::datasource::physical_plan::FileScanConfig;
     use datafusion::execution::SessionStateBuilder;
+    use datafusion::logical_expr::ScalarUDF;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
     use liquid_cache_storage::cache::squeeze_policies::TranscodeSqueezeEvict;
     use liquid_cache_storage::cache_policies::LiquidPolicy;
     use parquet::arrow::ArrowWriter;
+    use parquet::variant::{VariantArray, json_to_variant};
     use tempfile::TempDir;
 
     async fn create_test_ctx(
@@ -876,6 +950,7 @@ mod tests {
 
     fn extract_field_metadata_from_physical_plan(
         plan: &Arc<dyn ExecutionPlan>,
+        metadata_key: &str,
     ) -> HashMap<String, String> {
         let mut field_metadata_map = HashMap::new();
 
@@ -894,7 +969,7 @@ mod tests {
             // Extract metadata from all fields in file_schema
             let file_schema = &file_scan_config.file_schema();
             for field in file_schema.fields() {
-                if let Some(metadata_value) = field.metadata().get(DATE_MAPPING_METADATA_KEY) {
+                if let Some(metadata_value) = field.metadata().get(metadata_key) {
                     field_metadata_map.insert(field.name().to_string(), metadata_value.clone());
                 }
             }
@@ -902,6 +977,35 @@ mod tests {
         })
         .unwrap();
         field_metadata_map
+    }
+
+    fn make_variant_array() -> VariantArray {
+        let values = StringArray::from(vec![
+            Some(r#"{"name": "Alice", "age": 30}"#),
+            Some(r#"{"name": "Bob", "age": 25}"#),
+            Some(r#"{"name": "Charlie"}"#),
+        ]);
+        let input_array: ArrayRef = Arc::new(values);
+        json_to_variant(&input_array).expect("variant conversion for test data")
+    }
+
+    fn write_variant_parquet_file(dir: &Path) -> PathBuf {
+        let file_path = dir.join("variant_rows.parquet");
+        let variant = make_variant_array();
+        let schema = Arc::new(Schema::new(vec![variant.field("data")]));
+        let batch = arrow::record_batch::RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![ArrayRef::from(variant)],
+        )
+        .expect("variant batch");
+
+        let file = std::fs::File::create(&file_path).expect("create variant parquet file");
+        let mut writer =
+            ArrowWriter::try_new(file, batch.schema(), None).expect("create variant writer");
+        writer.write(&batch).expect("write variant batch");
+        writer.close().expect("close variant writer");
+
+        file_path
     }
 
     async fn general_test(sql: &str, expected: Vec<DateExtraction>) {
@@ -924,7 +1028,8 @@ mod tests {
         assert_eq!(extractions, expected);
 
         let physical_plan = state.create_physical_plan(&optimized).await.unwrap();
-        let field_metadata_map = extract_field_metadata_from_physical_plan(&physical_plan);
+        let field_metadata_map =
+            extract_field_metadata_from_physical_plan(&physical_plan, DATE_MAPPING_METADATA_KEY);
 
         let expected_field_metadata = expected
             .iter()
@@ -1003,7 +1108,8 @@ mod tests {
         let (state, plan) = df.into_parts();
         let optimized = state.optimize(&plan).unwrap();
         let physical_plan = state.create_physical_plan(&optimized).await.unwrap();
-        let field_metadata_map = extract_field_metadata_from_physical_plan(&physical_plan);
+        let field_metadata_map =
+            extract_field_metadata_from_physical_plan(&physical_plan, DATE_MAPPING_METADATA_KEY);
 
         assert_eq!(field_metadata_map.get("date"), Some(&"YEAR".to_string()),);
 
@@ -1030,5 +1136,48 @@ mod tests {
         for sql in statements {
             general_test(sql, vec![]).await;
         }
+    }
+
+    #[tokio::test]
+    async fn variant_get_metadata_is_propagated() {
+        let temp_dir = TempDir::new().unwrap();
+        let table_a = temp_dir.path().join("table_a.parquet");
+        let table_b = temp_dir.path().join("table_b.parquet");
+
+        let optimizer = Arc::new(DateExtractOptimizer::new());
+        let ctx = create_test_ctx(
+            table_a.to_str().unwrap(),
+            table_b.to_str().unwrap(),
+            optimizer.clone(),
+        )
+        .await;
+
+        ctx.register_udf(ScalarUDF::new_from_impl(VariantGetUdf::default()));
+        ctx.register_udf(ScalarUDF::new_from_impl(VariantToJsonUdf::default()));
+
+        let variant_path = write_variant_parquet_file(temp_dir.path());
+        ctx.register_parquet(
+            "variants_test",
+            variant_path.to_str().unwrap(),
+            ParquetReadOptions::default().skip_metadata(false),
+        )
+        .await
+        .unwrap();
+
+        let df = ctx
+            .sql("SELECT variant_to_json(variant_get(data, 'name')) FROM variants_test")
+            .await
+            .unwrap();
+        let (state, plan) = df.into_parts();
+        let optimized = state.optimize(&plan).unwrap();
+        let physical_plan = state.create_physical_plan(&optimized).await.unwrap();
+        let field_metadata_map =
+            extract_field_metadata_from_physical_plan(&physical_plan, VARIANT_MAPPING_METADATA_KEY);
+
+        assert_eq!(
+            field_metadata_map.get("data"),
+            Some(&"name".to_string()),
+            "variant path should be attached to base column metadata"
+        );
     }
 }
