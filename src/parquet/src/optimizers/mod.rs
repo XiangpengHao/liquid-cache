@@ -1,6 +1,6 @@
 //! Optimizers for the Parquet module
 
-mod date_extract_opt;
+mod lineage_opt;
 
 use std::sync::Arc;
 
@@ -17,11 +17,11 @@ use datafusion::{
     physical_optimizer::PhysicalOptimizerRule,
     physical_plan::ExecutionPlan,
 };
-pub use date_extract_opt::DateExtractOptimizer;
+pub use lineage_opt::LineageOptimizer;
 
 use crate::{
     LiquidCacheRef, LiquidParquetSource,
-    optimizers::date_extract_opt::{ColumnAnnotation, metadata_from_factory},
+    optimizers::lineage_opt::{ColumnAnnotation, metadata_from_factory},
 };
 
 pub(crate) const DATE_MAPPING_METADATA_KEY: &str = "liquid.cache.date_mapping";

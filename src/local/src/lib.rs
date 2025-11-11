@@ -11,7 +11,7 @@ use datafusion::error::Result;
 use datafusion::logical_expr::ScalarUDF;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use liquid_cache_common::IoMode;
-use liquid_cache_parquet::optimizers::{DateExtractOptimizer, LocalModeOptimizer};
+use liquid_cache_parquet::optimizers::{LineageOptimizer, LocalModeOptimizer};
 use liquid_cache_parquet::{
     LiquidCache, LiquidCacheRef, VariantGetUdf, VariantPretty, VariantToJsonUdf,
 };
@@ -154,7 +154,7 @@ impl LiquidCacheLocalBuilder {
         );
         let cache_ref = Arc::new(cache);
 
-        let date_extract_optimizer = Arc::new(DateExtractOptimizer::new());
+        let date_extract_optimizer = Arc::new(LineageOptimizer::new());
 
         let optimizer = LocalModeOptimizer::with_cache(cache_ref.clone());
 

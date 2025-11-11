@@ -64,13 +64,13 @@ pub(crate) enum ColumnAnnotation {
 }
 
 /// Logical optimizer that analyses the logical plan to detect columns that
-/// are only used via compatible `EXTRACT` projections.
+/// are only used via compatible `EXTRACT` or `variant_get` projections.
 #[derive(Debug, Default)]
-pub struct DateExtractOptimizer {
+pub struct LineageOptimizer {
     extractions: Arc<Mutex<Vec<DateExtraction>>>,
 }
 
-impl DateExtractOptimizer {
+impl LineageOptimizer {
     /// Create a new optimizer.
     pub fn new() -> Self {
         Self::default()
@@ -83,9 +83,9 @@ impl DateExtractOptimizer {
     }
 }
 
-impl OptimizerRule for DateExtractOptimizer {
+impl OptimizerRule for LineageOptimizer {
     fn name(&self) -> &str {
-        "DateExtractOptimizer"
+        "LineageOptimizer"
     }
 
     fn apply_order(&self) -> Option<ApplyOrder> {
@@ -640,7 +640,7 @@ fn annotate_listing_table_source(
 
     let metadata_copy = annotations.clone();
     let new_factory: Arc<dyn SchemaAdapterFactory> = Arc::new(
-        DateExtractSchemaAdapterFactory::new(base_factory, annotations.clone()),
+        LineageExtractSchemaAdapterFactory::new(base_factory, annotations.clone()),
     );
     register_factory_metadata(&new_factory, metadata_copy);
     let new_listing = listing.clone().with_schema_adapter_factory(new_factory);
@@ -650,12 +650,12 @@ fn annotate_listing_table_source(
 }
 
 #[derive(Debug)]
-struct DateExtractSchemaAdapterFactory {
+struct LineageExtractSchemaAdapterFactory {
     base: Option<Arc<dyn SchemaAdapterFactory>>,
     _annotations: HashMap<String, ColumnAnnotation>,
 }
 
-impl DateExtractSchemaAdapterFactory {
+impl LineageExtractSchemaAdapterFactory {
     fn new(
         base: Option<Arc<dyn SchemaAdapterFactory>>,
         annotations: HashMap<String, ColumnAnnotation>,
@@ -667,7 +667,7 @@ impl DateExtractSchemaAdapterFactory {
     }
 }
 
-impl SchemaAdapterFactory for DateExtractSchemaAdapterFactory {
+impl SchemaAdapterFactory for LineageExtractSchemaAdapterFactory {
     fn create(
         &self,
         projected_table_schema: SchemaRef,
@@ -884,7 +884,7 @@ mod tests {
     async fn create_test_ctx(
         table_a: &str,
         table_b: &str,
-        optimizer: Arc<DateExtractOptimizer>,
+        optimizer: Arc<LineageOptimizer>,
     ) -> SessionContext {
         let schema = Arc::new(Schema::new(vec![
             Field::new(
@@ -1013,7 +1013,7 @@ mod tests {
         let table_a = temp_dir.path().join("table_a.parquet");
         let table_b = temp_dir.path().join("table_b.parquet");
 
-        let optimizer = Arc::new(DateExtractOptimizer::new());
+        let optimizer = Arc::new(LineageOptimizer::new());
         let ctx = create_test_ctx(
             table_a.to_str().unwrap(),
             table_b.to_str().unwrap(),
@@ -1092,7 +1092,7 @@ mod tests {
         let table_a = temp_dir.path().join("table_a.parquet");
         let table_b = temp_dir.path().join("table_b.parquet");
 
-        let optimizer = Arc::new(DateExtractOptimizer::new());
+        let optimizer = Arc::new(LineageOptimizer::new());
         let ctx = create_test_ctx(
             table_a.to_str().unwrap(),
             table_b.to_str().unwrap(),
@@ -1144,7 +1144,7 @@ mod tests {
         let table_a = temp_dir.path().join("table_a.parquet");
         let table_b = temp_dir.path().join("table_b.parquet");
 
-        let optimizer = Arc::new(DateExtractOptimizer::new());
+        let optimizer = Arc::new(LineageOptimizer::new());
         let ctx = create_test_ctx(
             table_a.to_str().unwrap(),
             table_b.to_str().unwrap(),
@@ -1164,20 +1164,153 @@ mod tests {
         .await
         .unwrap();
 
-        let df = ctx
-            .sql("SELECT variant_to_json(variant_get(data, 'name')) FROM variants_test")
-            .await
-            .unwrap();
-        let (state, plan) = df.into_parts();
-        let optimized = state.optimize(&plan).unwrap();
-        let physical_plan = state.create_physical_plan(&optimized).await.unwrap();
-        let field_metadata_map =
-            extract_field_metadata_from_physical_plan(&physical_plan, VARIANT_MAPPING_METADATA_KEY);
+        let test_cases = vec![
+            (
+                "SELECT variant_to_json(variant_get(data, 'name')) FROM variants_test",
+                Some("name"),
+            ),
+            (
+                "SELECT variant_get(data, 'name'), variant_get(data, 'name') AS name2 FROM variants_test",
+                Some("name"),
+            ),
+            (
+                "SELECT variant_to_json(variant_get(data, 'age')), variant_to_json(variant_get(data, 'age')) AS age2 FROM variants_test",
+                Some("age"),
+            ),
+            (
+                "SELECT variant_get(variants_test.data, 'name') as name1, variant_get(variants_test.data, 'name') as name2 FROM variants_test",
+                Some("name"),
+            ),
+            (
+                "SELECT COUNT(variant_get(data, 'age')), MAX(variant_get(data, 'age')) FROM variants_test",
+                Some("age"),
+            ),
+            (
+                "SELECT variant_get(data, 'name') FROM variants_test WHERE variant_get(data, 'name') IS NOT NULL",
+                Some("name"),
+            ),
+            (
+                "SELECT (SELECT MAX(variant_get(data, 'name')) FROM variants_test) AS max_name, (SELECT MIN(variant_get(data, 'name')) FROM variants_test) AS min_name",
+                Some("name"),
+            ),
+            (
+                "SELECT variant_get(data, 'name'), variant_get(data, 'date') FROM variants_test",
+                None,
+            ),
+            (
+                "SELECT variant_get(variant_get(data, 'name'), 'age') FROM variants_test",
+                Some("name"),
+            ),
+        ];
 
-        assert_eq!(
-            field_metadata_map.get("data"),
-            Some(&"name".to_string()),
-            "variant path should be attached to base column metadata"
-        );
+        for (sql, expected_path) in test_cases {
+            let df = ctx.sql(sql).await.unwrap();
+            let (state, plan) = df.into_parts();
+            let optimized = state.optimize(&plan).unwrap();
+            let physical_plan = state.create_physical_plan(&optimized).await.unwrap();
+            let field_metadata_map = extract_field_metadata_from_physical_plan(
+                &physical_plan,
+                VARIANT_MAPPING_METADATA_KEY,
+            );
+
+            assert_eq!(
+                field_metadata_map.get("data").cloned(),
+                expected_path.map(|s| s.to_string()),
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn mixed_date_extract_and_variant_get() {
+        let temp_dir = TempDir::new().unwrap();
+        let table_a = temp_dir.path().join("table_a.parquet");
+        let table_b = temp_dir.path().join("table_b.parquet");
+
+        let optimizer = Arc::new(LineageOptimizer::new());
+        let ctx = create_test_ctx(
+            table_a.to_str().unwrap(),
+            table_b.to_str().unwrap(),
+            optimizer.clone(),
+        )
+        .await;
+
+        ctx.register_udf(ScalarUDF::new_from_impl(VariantGetUdf::default()));
+        ctx.register_udf(ScalarUDF::new_from_impl(VariantToJsonUdf::default()));
+
+        let variant_path = write_variant_parquet_file(temp_dir.path());
+        ctx.register_parquet(
+            "variants_test",
+            variant_path.to_str().unwrap(),
+            ParquetReadOptions::default().skip_metadata(false),
+        )
+        .await
+        .unwrap();
+
+        let test_cases = vec![
+            (
+                "SELECT EXTRACT(DAY FROM table_a.date) AS day, variant_get(variants_test.data, 'name') AS name FROM table_a CROSS JOIN variants_test",
+                vec![("date", "DAY")],
+                Some("name"),
+            ),
+            (
+                "SELECT EXTRACT(YEAR FROM table_a.date) AS year, EXTRACT(MONTH FROM table_a.date_copy) AS month, variant_get(variants_test.data, 'name') AS name, variant_get(variants_test.data, 'age') AS age FROM table_a CROSS JOIN variants_test",
+                vec![("date", "YEAR"), ("date_copy", "MONTH")],
+                None, // Different variant paths
+            ),
+            (
+                "SELECT variant_get(variants_test.data, 'name') AS name FROM variants_test CROSS JOIN table_a WHERE EXTRACT(DAY FROM table_a.date) > 1",
+                vec![("date", "DAY")],
+                Some("name"),
+            ),
+            (
+                "SELECT EXTRACT(DAY FROM table_a.date) AS day FROM table_a CROSS JOIN variants_test WHERE variant_get(variants_test.data, 'name') IS NOT NULL",
+                vec![("date", "DAY")],
+                Some("name"),
+            ),
+            (
+                "SELECT EXTRACT(YEAR FROM table_a.date) AS year, (SELECT variant_get(variants_test.data, 'name') FROM variants_test LIMIT 1) AS name FROM table_a",
+                vec![("date", "YEAR")],
+                Some("name"),
+            ),
+            (
+                "SELECT AVG(EXTRACT(DAY FROM table_a.date)) AS avg_day, COUNT(variant_get(variants_test.data, 'name')) AS name_count FROM table_a CROSS JOIN variants_test",
+                vec![("date", "DAY")],
+                Some("name"),
+            ),
+        ];
+
+        for (sql, expected_date_metadata, expected_variant_path) in test_cases {
+            let df = ctx.sql(sql).await.unwrap();
+            let (state, plan) = df.into_parts();
+            let optimized = state.optimize(&plan).unwrap();
+            let physical_plan = state.create_physical_plan(&optimized).await.unwrap();
+
+            let date_metadata = extract_field_metadata_from_physical_plan(
+                &physical_plan,
+                DATE_MAPPING_METADATA_KEY,
+            );
+            let variant_metadata = extract_field_metadata_from_physical_plan(
+                &physical_plan,
+                VARIANT_MAPPING_METADATA_KEY,
+            );
+
+            for (column, expected_value) in expected_date_metadata {
+                assert_eq!(
+                    date_metadata.get(column),
+                    Some(&expected_value.to_string()),
+                    "date extract metadata for column '{}' should be '{}' in SQL: {}",
+                    column,
+                    expected_value,
+                    sql
+                );
+            }
+
+            assert_eq!(
+                variant_metadata.get("data").cloned(),
+                expected_variant_path.map(|s| s.to_string()),
+                "variant metadata should match expected path for SQL: {}",
+                sql
+            );
+        }
     }
 }
