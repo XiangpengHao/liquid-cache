@@ -1,119 +1,56 @@
-use datafusion::arrow::array::RecordBatch;
-use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::error::Result;
-use datafusion::execution::RecordBatchStream;
-use datafusion::execution::SendableRecordBatchStream;
-use datafusion::physical_plan::DisplayAs;
-use datafusion::physical_plan::DisplayFormatType;
+use datafusion::catalog::memory::DataSourceExec;
+use datafusion::common::tree_node::Transformed;
+use datafusion::common::tree_node::TreeNode;
+use datafusion::common::tree_node::TreeNodeRecursion;
+use datafusion::datasource::physical_plan::FileScanConfig;
+use datafusion::datasource::source::DataSource;
 use datafusion::physical_plan::ExecutionPlan;
-use fastrace::Span;
-use fastrace_futures::InSpan;
-use fastrace_futures::StreamExt as _;
 use fastrace_opentelemetry::OpenTelemetryReporter;
-use futures::Stream;
-use futures::StreamExt;
+use liquid_cache_parquet::LiquidParquetSource;
 use logforth::filter::EnvFilter;
 use opentelemetry::InstrumentationScope;
 use opentelemetry::KeyValue;
 use opentelemetry_otlp::SpanExporter;
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::Resource;
-use std::any::Any;
 use std::borrow::Cow;
 use std::sync::Arc;
 
-pub(crate) struct TracedExecutionPlan {
+pub fn instrument_liquid_source_with_span(
     plan: Arc<dyn ExecutionPlan>,
-    span: Arc<fastrace::Span>,
-}
-
-impl std::fmt::Debug for TracedExecutionPlan {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "TracedExecutionPlan {{ plan: {:?} }}", self.plan)
-    }
-}
-
-impl TracedExecutionPlan {
-    pub fn new(plan: Arc<dyn ExecutionPlan>, span: fastrace::Span) -> Self {
-        Self {
-            plan,
-            span: Arc::new(span),
-        }
-    }
-}
-
-impl DisplayAs for TracedExecutionPlan {
-    fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.plan.fmt_as(t, f)
-    }
-}
-
-impl ExecutionPlan for TracedExecutionPlan {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn name(&self) -> &str {
-        "traced_execution_plan"
-    }
-
-    fn properties(&self) -> &datafusion::physical_plan::PlanProperties {
-        self.plan.properties()
-    }
-
-    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-        vec![&self.plan]
-    }
-
-    fn with_new_children(
-        self: Arc<Self>,
-        children: Vec<Arc<dyn ExecutionPlan>>,
-    ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
-        Ok(Arc::new(Self {
-            plan: children.first().unwrap().clone(),
-            span: self.span.clone(),
-        }))
-    }
-
-    fn execute(
-        &self,
-        partition: usize,
-        context: Arc<datafusion::execution::TaskContext>,
-    ) -> datafusion::error::Result<datafusion::execution::SendableRecordBatchStream> {
-        let span = Span::enter_with_parent("execute", &self.span);
-        let stream = self.plan.execute(partition, context)?;
-        Ok(Box::pin(TracedSendableRecordBatchStream::new(stream, span)))
-    }
-}
-
-struct TracedSendableRecordBatchStream {
-    stream: InSpan<SendableRecordBatchStream>,
-    schema: SchemaRef,
-}
-
-impl TracedSendableRecordBatchStream {
-    pub fn new(stream: SendableRecordBatchStream, span: fastrace::Span) -> Self {
-        let schema = stream.schema();
-        let stream = stream.in_span(span);
-        Self { stream, schema }
-    }
-}
-
-impl RecordBatchStream for TracedSendableRecordBatchStream {
-    fn schema(&self) -> SchemaRef {
-        self.schema.clone()
-    }
-}
-
-impl Stream for TracedSendableRecordBatchStream {
-    type Item = Result<RecordBatch>;
-
-    fn poll_next(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        self.stream.poll_next_unpin(cx)
-    }
+    span: fastrace::Span,
+) -> Arc<dyn ExecutionPlan> {
+    let rewritten = plan
+        .transform_up(|node| {
+            let Some(data_source) = node.as_any().downcast_ref::<DataSourceExec>() else {
+                return Ok(Transformed::no(node));
+            };
+            let file_scan_config = data_source
+                .data_source()
+                .as_any()
+                .downcast_ref::<FileScanConfig>()
+                .expect("FileScanConfig not found");
+            let mut new_config = file_scan_config.clone();
+            let Some(liquid_source) = file_scan_config
+                .file_source()
+                .as_any()
+                .downcast_ref::<LiquidParquetSource>()
+            else {
+                return Ok(Transformed::no(node));
+            };
+            let sub_span = fastrace::Span::enter_with_parent("execute", &span);
+            let new_source = Arc::new(liquid_source.with_span(sub_span));
+            new_config.file_source = new_source;
+            let new_file_source: Arc<dyn DataSource> = Arc::new(new_config);
+            let new_plan = Arc::new(DataSourceExec::new(new_file_source));
+            Ok(Transformed::new(
+                new_plan,
+                true,
+                TreeNodeRecursion::Continue,
+            ))
+        })
+        .unwrap();
+    rewritten.data
 }
 
 pub fn setup_observability(service_name: &str, jaeger_endpoint: Option<&str>) {

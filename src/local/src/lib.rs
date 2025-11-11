@@ -7,12 +7,14 @@ mod tests;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use datafusion::config::ConfigOptions;
 use datafusion::error::Result;
-use datafusion::physical_optimizer::PhysicalOptimizerRule;
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::logical_expr::ScalarUDF;
 use datafusion::prelude::{SessionConfig, SessionContext};
-use liquid_cache_parquet::{LiquidCache, LiquidCacheRef, rewrite_data_source_plan};
+use liquid_cache_common::IoMode;
+use liquid_cache_parquet::optimizers::{LineageOptimizer, LocalModeOptimizer};
+use liquid_cache_parquet::{
+    LiquidCache, LiquidCacheRef, VariantGetUdf, VariantPretty, VariantToJsonUdf,
+};
 use liquid_cache_storage::cache::squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict};
 use liquid_cache_storage::cache_policies::CachePolicy;
 use liquid_cache_storage::cache_policies::LiquidPolicy;
@@ -65,6 +67,8 @@ pub struct LiquidCacheLocalBuilder {
     squeeze_policy: Box<dyn SqueezePolicy>,
 
     span: fastrace::Span,
+
+    io_mode: IoMode,
 }
 
 impl Default for LiquidCacheLocalBuilder {
@@ -76,6 +80,7 @@ impl Default for LiquidCacheLocalBuilder {
             cache_policy: Box::new(LiquidPolicy::new()),
             squeeze_policy: Box::new(TranscodeSqueezeEvict),
             span: fastrace::Span::enter_with_local_parent("liquid_cache_local_builder"),
+            io_mode: IoMode::StdBlocking,
         }
     }
 }
@@ -122,6 +127,12 @@ impl LiquidCacheLocalBuilder {
         self
     }
 
+    /// Set IO mode
+    pub fn with_io_mode(mut self, io_mode: IoMode) -> Self {
+        self.io_mode = io_mode;
+        self
+    }
+
     /// Build a SessionContext with liquid cache configured
     /// Returns the SessionContext and the liquid cache reference
     pub fn build(self, mut config: SessionConfig) -> Result<(SessionContext, LiquidCacheRef)> {
@@ -139,52 +150,26 @@ impl LiquidCacheLocalBuilder {
             self.cache_dir,
             self.cache_policy,
             self.squeeze_policy,
+            self.io_mode,
         );
         let cache_ref = Arc::new(cache);
+
+        let date_extract_optimizer = Arc::new(LineageOptimizer::new());
 
         let optimizer = LocalModeOptimizer::with_cache(cache_ref.clone());
 
         let state = datafusion::execution::SessionStateBuilder::new()
             .with_config(config)
             .with_default_features()
+            .with_optimizer_rule(date_extract_optimizer)
             .with_physical_optimizer_rule(Arc::new(optimizer))
             .build();
 
-        Ok((SessionContext::new_with_state(state), cache_ref))
-    }
-}
-
-/// Physical optimizer rule for local mode liquid cache
-///
-/// This optimizer rewrites DataSourceExec nodes that read Parquet files
-/// to use LiquidParquetSource instead of the default ParquetSource
-#[derive(Debug)]
-struct LocalModeOptimizer {
-    cache: LiquidCacheRef,
-}
-
-impl LocalModeOptimizer {
-    /// Create an optimizer with an existing cache instance
-    fn with_cache(cache: LiquidCacheRef) -> Self {
-        Self { cache }
-    }
-}
-
-impl PhysicalOptimizerRule for LocalModeOptimizer {
-    fn optimize(
-        &self,
-        plan: Arc<dyn ExecutionPlan>,
-        _config: &ConfigOptions,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
-        Ok(rewrite_data_source_plan(plan, &self.cache))
-    }
-
-    fn name(&self) -> &str {
-        "LocalModeLiquidCacheOptimizer"
-    }
-
-    fn schema_check(&self) -> bool {
-        true
+        let ctx = SessionContext::new_with_state(state);
+        ctx.register_udf(ScalarUDF::new_from_impl(VariantGetUdf::default()));
+        ctx.register_udf(ScalarUDF::new_from_impl(VariantPretty::default()));
+        ctx.register_udf(ScalarUDF::new_from_impl(VariantToJsonUdf::default()));
+        Ok((ctx, cache_ref))
     }
 }
 
@@ -239,62 +224,6 @@ mod local_tests {
             .await?
             .show()
             .await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_provide_schema2() -> Result<()> {
-        let df_ctx = SessionContext::new();
-        let liquid_ctx = {
-            let (ctx, _) = LiquidCacheLocalBuilder::new()
-                .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
-                .build(SessionConfig::new())?;
-            ctx
-        };
-
-        let file_format = ParquetFormat::default().with_enable_pruning(true);
-        let listing_options =
-            ListingOptions::new(Arc::new(file_format)).with_file_extension(".parquet");
-
-        let table_path = ListingTableUrl::parse("../../dev/test_parquet/openobserve.parquet")?;
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("_timestamp", DataType::Int64, false),
-            Field::new("log", DataType::Utf8, true),
-            Field::new("message", DataType::Utf8, true),
-            Field::new("kubernetes_namespace_name", DataType::Utf8, false),
-        ]));
-
-        df_ctx
-            .register_listing_table(
-                "default",
-                &table_path,
-                listing_options.clone(),
-                Some(schema.clone()),
-                None,
-            )
-            .await?;
-        liquid_ctx
-            .register_listing_table(
-                "default",
-                &table_path,
-                listing_options.clone(),
-                Some(schema.clone()),
-                None,
-            )
-            .await?;
-
-        let sql_to_tests = [
-            "SELECT * from default where log like '%hhj%' order by _timestamp",
-            "SELECT date_bin(interval '10 second', to_timestamp_micros(_timestamp), to_timestamp('2001-01-01T00:00:00')) AS zo_sql_key, count(*) AS zo_sql_num from default WHERE log like '%hhj%' or message like '%hhj%' GROUP BY zo_sql_key ORDER BY zo_sql_key",
-            "SELECT _timestamp, kubernetes_namespace_name from default order by _timestamp desc limit 100",
-        ];
-        for sql in sql_to_tests {
-            for _i in 0..3 {
-                let df_results = df_ctx.sql(sql).await?.collect().await?;
-                let liquid_results = liquid_ctx.sql(sql).await?.collect().await?;
-                assert_eq!(df_results, liquid_results);
-            }
-        }
         Ok(())
     }
 }

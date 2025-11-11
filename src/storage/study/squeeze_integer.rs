@@ -271,14 +271,14 @@ where
     let mut lp = LiquidPrimitiveArray::<T>::from_arrow_array(prim.clone());
     let clamp_hybrid_and_bytes = {
         lp.set_squeeze_policy(IntegerSqueezePolicy::Clamp);
-        lp.squeeze()
+        lp.squeeze(None)
     };
 
     // Build Quantize
     let mut lq = LiquidPrimitiveArray::<T>::from_arrow_array(prim.clone());
     let quant_hybrid_and_bytes = {
         lq.set_squeeze_policy(IntegerSqueezePolicy::Quantize);
-        lq.squeeze()
+        lq.squeeze(None)
     };
 
     // Size accounting (for squeezable ones)
@@ -363,7 +363,7 @@ fn get_with_selection_or_fetch(
     selection: &BooleanBuffer,
     expected: &dyn Array,
 ) -> usize {
-    match hybrid.filter_to_arrow(selection) {
+    match hybrid.filter(selection) {
         Ok(arr) => {
             assert_eq!(arr.as_ref(), expected);
             0
@@ -371,7 +371,7 @@ fn get_with_selection_or_fetch(
         Err(io) => {
             let slice = full_bytes.slice(io.range().start as usize..io.range().end as usize);
             let liq = hybrid.soak(slice);
-            let arr = liq.filter_to_arrow(selection);
+            let arr = liq.filter(selection);
             assert_eq!(arr.as_ref(), expected);
             (io.range().end - io.range().start) as usize
         }
@@ -382,7 +382,7 @@ fn eval_on_arrow(
     array: &ArrayRef,
     expr: &std::sync::Arc<dyn datafusion::physical_plan::PhysicalExpr>,
 ) -> BooleanArray {
-    use arrow::compute::{cast, kernels};
+    use arrow::compute::cast;
     use datafusion::logical_expr::ColumnarValue;
     use datafusion::physical_expr_common::datum::apply_cmp;
     use datafusion::physical_plan::expressions::{BinaryExpr, Literal};
@@ -399,12 +399,24 @@ fn eval_on_arrow(
         let lhs = ColumnarValue::Array(lhs_arr);
         let rhs = ColumnarValue::Scalar(lit.value().clone());
         let res = match be.op() {
-            datafusion::logical_expr::Operator::Eq => apply_cmp(&lhs, &rhs, kernels::cmp::eq),
-            datafusion::logical_expr::Operator::NotEq => apply_cmp(&lhs, &rhs, kernels::cmp::neq),
-            datafusion::logical_expr::Operator::Lt => apply_cmp(&lhs, &rhs, kernels::cmp::lt),
-            datafusion::logical_expr::Operator::LtEq => apply_cmp(&lhs, &rhs, kernels::cmp::lt_eq),
-            datafusion::logical_expr::Operator::Gt => apply_cmp(&lhs, &rhs, kernels::cmp::gt),
-            datafusion::logical_expr::Operator::GtEq => apply_cmp(&lhs, &rhs, kernels::cmp::gt_eq),
+            datafusion::logical_expr::Operator::Eq => {
+                apply_cmp(datafusion::logical_expr::Operator::Eq, &lhs, &rhs)
+            }
+            datafusion::logical_expr::Operator::NotEq => {
+                apply_cmp(datafusion::logical_expr::Operator::NotEq, &lhs, &rhs)
+            }
+            datafusion::logical_expr::Operator::Lt => {
+                apply_cmp(datafusion::logical_expr::Operator::Lt, &lhs, &rhs)
+            }
+            datafusion::logical_expr::Operator::LtEq => {
+                apply_cmp(datafusion::logical_expr::Operator::LtEq, &lhs, &rhs)
+            }
+            datafusion::logical_expr::Operator::Gt => {
+                apply_cmp(datafusion::logical_expr::Operator::Gt, &lhs, &rhs)
+            }
+            datafusion::logical_expr::Operator::GtEq => {
+                apply_cmp(datafusion::logical_expr::Operator::GtEq, &lhs, &rhs)
+            }
             _ => panic!("unsupported operator"),
         }
         .expect("cmp ok");

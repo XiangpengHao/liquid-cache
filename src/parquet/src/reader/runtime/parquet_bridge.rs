@@ -1,9 +1,7 @@
 #![allow(unused)]
-
 use std::sync::Arc;
 
 use arrow_schema::{DataType, Field, SchemaRef};
-use parquet::arrow::array_reader::ArrayReader;
 use parquet::arrow::arrow_reader::metrics::ArrowReaderMetrics;
 use parquet::arrow::arrow_reader::{ArrowReaderBuilder, RowFilter, RowSelection, RowSelector};
 use parquet::file::metadata::ParquetMetaData;
@@ -127,25 +125,6 @@ pub(super) fn limit_row_selection(selection: RowSelection, mut limit: usize) -> 
     RowSelection::from(selectors)
 }
 
-#[derive(Debug, Clone)]
-pub struct ProjectionMask {
-    mask: Option<Vec<bool>>,
-}
-
-pub(crate) fn get_predicate_column_id(projection: &parquet::arrow::ProjectionMask) -> Vec<usize> {
-    let project_inner: &ProjectionMask = unsafe { std::mem::transmute(projection) };
-    project_inner
-        .mask
-        .as_ref()
-        .map(|m| {
-            m.iter()
-                .enumerate()
-                .filter_map(|(pos, &x)| if x { Some(pos) } else { None })
-                .collect::<Vec<usize>>()
-        })
-        .unwrap_or_default()
-}
-
 use parquet::arrow::async_reader::AsyncReader;
 
 use crate::reader::plantime::ParquetMetadataCacheReader;
@@ -203,45 +182,7 @@ impl ArrowReaderBuilderBridge {
             selection: self.selection,
             limit: self.limit,
             offset: self.offset,
+            span: None,
         }
-    }
-}
-
-pub struct StructArrayReaderBridge {
-    pub children: Vec<Box<dyn ArrayReader>>,
-    pub data_type: DataType,
-    pub struct_def_level: i16,
-    pub struct_rep_level: i16,
-    pub nullable: bool,
-}
-
-use parquet::arrow::array_reader::StructArrayReader;
-
-impl StructArrayReaderBridge {
-    pub fn from_parquet(parquet: &mut StructArrayReader) -> &mut Self {
-        unsafe { std::mem::transmute(parquet) }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::reader;
-
-    use super::*;
-    use std::mem::transmute;
-
-    #[test]
-    fn test_valid_projection_mask() {
-        // Create a valid projection mask with one `true` at index 1.
-        let proj = ProjectionMask {
-            mask: Some(vec![false, true, false, true, true, false]),
-        };
-        let predicate_ids = unsafe {
-            get_predicate_column_id(transmute::<
-                &reader::runtime::parquet_bridge::ProjectionMask,
-                &parquet::arrow::ProjectionMask,
-            >(&proj))
-        };
-        assert_eq!(predicate_ids, vec![1, 3, 4]);
     }
 }

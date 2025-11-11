@@ -5,10 +5,12 @@ mod byte_array;
 pub mod byte_view_array;
 mod fix_len_byte_array;
 mod float_array;
+mod hybrid_primitive_array;
 pub mod ipc;
 mod linear_integer_array;
 mod primitive_array;
 pub mod raw;
+mod squeezed_date32_array;
 #[cfg(test)]
 mod tests;
 pub(crate) mod utils;
@@ -35,10 +37,12 @@ pub use linear_integer_array::{
 pub use primitive_array::IntegerSqueezePolicy;
 pub use primitive_array::{
     LiquidDate32Array, LiquidDate64Array, LiquidI8Array, LiquidI16Array, LiquidI32Array,
-    LiquidI64Array, LiquidPrimitiveArray, LiquidPrimitiveType, LiquidU8Array, LiquidU16Array,
-    LiquidU32Array, LiquidU64Array,
+    LiquidI64Array, LiquidPrimitiveArray, LiquidPrimitiveDeltaArray, LiquidPrimitiveType,
+    LiquidU8Array, LiquidU16Array, LiquidU32Array, LiquidU64Array,
 };
+pub use squeezed_date32_array::{Date32Field, SqueezedDate32Array};
 
+use crate::cache::CacheExpression;
 use crate::liquid_array::byte_view_array::MemoryBuffer;
 
 /// Liquid data type is only logical type
@@ -175,13 +179,11 @@ pub trait LiquidArray: std::fmt::Debug + Send + Sync {
     /// Serialize the Liquid array to a byte array.
     fn to_bytes(&self) -> Vec<u8>;
 
-    /// Filter the Liquid array with a boolean buffer.
-    fn filter(&self, selection: &BooleanBuffer) -> LiquidArrayRef;
-
     /// Filter the Liquid array with a boolean array and return an **arrow array**.
-    fn filter_to_arrow(&self, selection: &BooleanBuffer) -> ArrayRef {
-        let filtered = self.filter(selection);
-        filtered.to_arrow_array()
+    fn filter(&self, selection: &BooleanBuffer) -> ArrayRef {
+        let arrow_array = self.to_arrow_array();
+        let selection = BooleanArray::new(selection.clone(), None);
+        arrow::compute::kernels::filter::filter(&arrow_array, &selection).unwrap()
     }
 
     /// Try to evaluate a predicate on the Liquid array with a filter.
@@ -204,7 +206,10 @@ pub trait LiquidArray: std::fmt::Debug + Send + Sync {
     /// Important: The returned `Bytes` is the data that is stored on disk, it is the same as to_bytes().
     ///
     /// If we `soak` the `LiquidHybridArrayRef` back with the bytes, we should get the same `LiquidArray`.
-    fn squeeze(&self) -> Option<(LiquidHybridArrayRef, bytes::Bytes)> {
+    fn squeeze(
+        &self,
+        _expression_hint: Option<&CacheExpression>,
+    ) -> Option<(LiquidHybridArrayRef, bytes::Bytes)> {
         None
     }
 }
@@ -288,13 +293,11 @@ pub trait LiquidHybridArray: std::fmt::Debug + Send + Sync {
     /// Serialize the Liquid array to a byte array.
     fn to_bytes(&self) -> Result<Vec<u8>, IoRange>;
 
-    /// Filter the Liquid array with a boolean buffer.
-    fn filter(&self, selection: &BooleanBuffer) -> Result<LiquidHybridArrayRef, IoRange>;
-
     /// Filter the Liquid array with a boolean array and return an **arrow array**.
-    fn filter_to_arrow(&self, selection: &BooleanBuffer) -> Result<ArrayRef, IoRange> {
-        let filtered = self.filter(selection)?;
-        filtered.to_best_arrow_array()
+    fn filter(&self, selection: &BooleanBuffer) -> Result<ArrayRef, IoRange> {
+        let arrow_array = self.to_arrow_array()?;
+        let selection = BooleanArray::new(selection.clone(), None);
+        Ok(arrow::compute::kernels::filter::filter(&arrow_array, &selection).unwrap())
     }
 
     /// Try to evaluate a predicate on the Liquid array with a filter.
@@ -314,7 +317,7 @@ pub trait LiquidHybridArray: std::fmt::Debug + Send + Sync {
     /// For byte-view arrays, `data` should be the raw FSST buffer bytes.
     fn soak(&self, data: bytes::Bytes) -> LiquidArrayRef;
 
-    /// Get the `IoRequest` to convert the `LiquidHybridArray` to a `LiquidArray`.
+    /// Get the `IoRange` to convert the `LiquidHybridArray` to a `LiquidArray`.
     fn to_liquid(&self) -> IoRange;
 }
 
@@ -354,7 +357,8 @@ macro_rules! impl_signed_kind {
 }
 
 use arrow::datatypes::{
-    Date32Type, Date64Type, Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt16Type,
+    Date32Type, Date64Type, Int8Type, Int16Type, Int32Type, Int64Type, TimestampMicrosecondType,
+    TimestampMillisecondType, TimestampNanosecondType, TimestampSecondType, UInt8Type, UInt16Type,
     UInt32Type, UInt64Type,
 };
 
@@ -371,3 +375,7 @@ impl_signed_kind!(Int64Type, i64::MIN, i64::MAX);
 // Dates are logically signed in Arrow (Date32: i32 days, Date64: i64 ms)
 impl_signed_kind!(Date32Type, i32::MIN, i32::MAX);
 impl_signed_kind!(Date64Type, i64::MIN, i64::MAX);
+impl_signed_kind!(TimestampSecondType, i64::MIN, i64::MAX);
+impl_signed_kind!(TimestampMillisecondType, i64::MIN, i64::MAX);
+impl_signed_kind!(TimestampMicrosecondType, i64::MIN, i64::MAX);
+impl_signed_kind!(TimestampNanosecondType, i64::MIN, i64::MAX);

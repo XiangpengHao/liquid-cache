@@ -23,6 +23,7 @@ pub mod client_runner;
 pub mod inprocess_runner;
 mod manifest;
 mod observability;
+mod tracepoints;
 pub mod utils;
 
 pub use client_runner::*;
@@ -169,6 +170,30 @@ impl ClientBenchmarkArgs {
             }
         } else {
             None
+        }
+    }
+
+    pub async fn start_disk_usage_monitor(&self) {
+        let client = reqwest::Client::new();
+        let response = client
+            .get(format!("{}/start_disk_usage_monitor?", self.admin_server,))
+            .send()
+            .await
+            .unwrap();
+        if response.status().is_success() {
+            info!("Disk usage monitoring started");
+        }
+    }
+
+    pub async fn stop_disk_usage_monitor(&self) {
+        let client = reqwest::Client::new();
+        let response = client
+            .get(format!("{}/stop_disk_usage_monitor", self.admin_server))
+            .send()
+            .await
+            .unwrap();
+        if response.status().is_success() {
+            info!("Disk usage monitoring stopped");
         }
     }
 
@@ -332,13 +357,13 @@ pub async fn run_query(
         .with_extension(Arc::new(Span::enter_with_local_parent(
             "poll_physical_plan",
         )));
-    let traced_plan: Arc<dyn ExecutionPlan> = Arc::new(TracedExecutionPlan::new(
-        physical_plan.clone(),
-        Span::enter_with_local_parent("traced_execution_plan"),
-    ));
+
+    let execution_span = Span::enter_with_local_parent("poll");
+    let physical_plan = instrument_liquid_source_with_span(physical_plan, execution_span);
+
     let ctx = ctx.with_session_config(cfg);
-    let results = collect(traced_plan.clone(), Arc::new(ctx)).await.unwrap();
-    let plan_uuids = utils::get_plan_uuids(&traced_plan);
+    let results = collect(physical_plan.clone(), Arc::new(ctx)).await.unwrap();
+    let plan_uuids = utils::get_plan_uuids(&physical_plan);
     (results, physical_plan, plan_uuids)
 }
 

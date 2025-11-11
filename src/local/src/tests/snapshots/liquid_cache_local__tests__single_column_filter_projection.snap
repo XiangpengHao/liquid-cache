@@ -1,6 +1,6 @@
 ---
-source: src/liquid_parquet/src/tests/mod.rs
-expression: "format!(\"plan: \\n{}\\nvalues: \\n{}\", plan, reference)"
+source: src/local/src/tests/mod.rs
+expression: "format!(\"plan: \\n{}\\nvalues: \\n{}\\nstats:\\n{}\", plan, values, stats)"
 ---
 plan: 
 ┌───────────────────────────┐
@@ -18,3 +18,21 @@ values:
 +---------------------+
 | 6978470580070504163 |
 +---------------------+
+stats:
+entries.total: 4
+entries.after_first_run: 4
+entries.memory.arrow: 4
+entries.memory.liquid: 0
+entries.memory.hybrid_liquid: 0
+entries.disk.liquid: 0
+entries.disk.arrow: 0
+usage.memory_bytes: 197072
+usage.disk_bytes: 0
+runtime.get_arrow_array_calls: 0
+runtime.get_with_selection_calls: 1
+runtime.get_with_predicate_calls: 4
+runtime.get_predicate_hybrid_success: 0
+runtime.get_predicate_hybrid_needs_io: 0
+runtime.get_predicate_hybrid_unsupported: 0
+runtime.try_read_liquid_calls: 0
+runtime.hit_date32_expression_calls: 0

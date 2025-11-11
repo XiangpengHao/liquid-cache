@@ -1,12 +1,9 @@
-use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
 use arrow::array::ArrayRef;
 use arrow::buffer::BooleanBuffer;
-use bytes::Bytes;
 use clap::Parser;
 use datafusion::logical_expr::Operator;
 use datafusion::prelude::*;
@@ -15,9 +12,6 @@ use futures::StreamExt;
 use liquid_cache_storage::cache::CacheStorage;
 use liquid_cache_storage::cache::CacheStorageBuilder;
 use liquid_cache_storage::cache::EntryID;
-use liquid_cache_storage::cache::cached_data::GetWithPredicateResult;
-use liquid_cache_storage::cache::io_state::IoRequest;
-use liquid_cache_storage::cache::io_state::{IoStateMachine, SansIo, TryGet};
 use liquid_cache_storage::cache::squeeze_policies::TranscodeSqueezeEvict;
 use liquid_cache_storage::cache_policies::FiloPolicy;
 
@@ -39,24 +33,6 @@ struct CliArgs {
     /// Cargo passes --bench for harness=false binaries; accept it to avoid parse errors
     #[arg(long, default_value = "false")]
     bench: bool,
-}
-
-fn do_io(io_req: &IoRequest) -> Bytes {
-    match io_req.range() {
-        Some(range) => {
-            let r = range.range();
-            let len = (r.end - r.start) as usize;
-            let mut file = File::open(io_req.path()).expect("open cache file");
-            file.seek(SeekFrom::Start(r.start)).expect("seek start");
-            let mut buf = vec![0u8; len];
-            file.read_exact(&mut buf).expect("read exact range");
-            Bytes::from(buf)
-        }
-        None => {
-            let bytes = std::fs::read(io_req.path()).expect("read cache file");
-            Bytes::from(bytes)
-        }
-    }
 }
 
 fn main() {
@@ -91,43 +67,33 @@ fn main() {
     ));
 
     // 4) Scan all entries with selection=all-true and time get_with_predicate
-    let t0 = Instant::now();
-    let mut evaluated = 0usize;
-    let mut num_io = 0usize;
-    let mut num_io_bytes = 0usize;
-    for (i, id) in ids.iter().enumerate() {
-        let cached = storage.get(id).expect("get cached data");
-        let len = lens[i];
-        let selection = BooleanBuffer::new_set(len);
-        match cached.get_with_predicate(&selection, &pred_expr) {
-            SansIo::Ready(res) => match res {
-                GetWithPredicateResult::Evaluated(_) => evaluated += 1,
-                GetWithPredicateResult::Filtered(_filtered) => {}
-            },
-            SansIo::Pending((mut state, io_req)) => {
-                let bytes = do_io(&io_req);
-                num_io_bytes += bytes.len();
-                num_io += 1;
-                state.feed(bytes);
-                match state.try_get() {
-                    TryGet::Ready(GetWithPredicateResult::Evaluated(_)) => evaluated += 1,
-                    TryGet::Ready(GetWithPredicateResult::Filtered(_filtered)) => {}
-                    e => panic!("unexpected result: {e:?}"),
-                }
+    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+    let scan_elapsed = rt.block_on(async {
+        let t0 = Instant::now();
+        let mut evaluated = 0usize;
+        for (i, id) in ids.iter().enumerate() {
+            let len = lens[i];
+            let selection = BooleanBuffer::new_set(len);
+            if let Some(result) = storage
+                .eval_predicate(id, &pred_expr)
+                .with_selection(&selection)
+                .await
+                && result.is_ok()
+            {
+                evaluated += 1;
             }
         }
-    }
-    let scan_elapsed = t0.elapsed();
+        let elapsed = t0.elapsed();
+        eprintln!("Evaluated: {}", evaluated);
+        elapsed
+    });
     let stats = storage.stats();
     println!("Cache stats: {stats:#?}");
     println!(
-        "Cache scan (get_with_predicate) completed:\n  batches: {}\n  rows: {}\n  time: {:.3}s\n  evaluated: {}\n  num_io: {}\n  num_io_bytes: {}",
+        "Cache scan (get_with_predicate) completed:\n  batches: {}\n  rows: {}\n  time: {:.3}s",
         ids.len(),
         total_rows,
         scan_elapsed.as_secs_f64(),
-        evaluated,
-        num_io,
-        num_io_bytes,
     );
 }
 
@@ -162,7 +128,7 @@ fn load_and_insert_referer(
             let id = EntryID::from(idx);
             ids.push(id);
             total_size += array.get_array_memory_size();
-            storage.insert(id, array);
+            storage.insert(id, array).await;
             idx += 1;
         }
 

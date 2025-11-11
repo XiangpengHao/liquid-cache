@@ -3,7 +3,10 @@
 use bytes::Bytes;
 
 use crate::cache::{
-    LiquidCompressorStates, cached_data::CachedBatch, transcode_liquid_inner, utils::arrow_to_bytes,
+    LiquidCompressorStates,
+    cached_batch::{CacheEntry, CachedData},
+    transcode_liquid_inner,
+    utils::arrow_to_bytes,
 };
 
 /// What to do when we need to squeeze an entry?
@@ -12,9 +15,9 @@ pub trait SqueezePolicy: std::fmt::Debug + Send + Sync {
     /// Returns the squeezed entry and the bytes that were used to store the entry on disk.
     fn squeeze(
         &self,
-        entry: CachedBatch,
+        entry: CacheEntry,
         compressor: &LiquidCompressorStates,
-    ) -> (CachedBatch, Option<Bytes>);
+    ) -> (CacheEntry, Option<Bytes>);
 }
 
 /// Squeeze the entry to disk.
@@ -24,37 +27,42 @@ pub struct Evict;
 impl SqueezePolicy for Evict {
     fn squeeze(
         &self,
-        entry: CachedBatch,
+        entry: CacheEntry,
         _compressor: &LiquidCompressorStates,
-    ) -> (CachedBatch, Option<Bytes>) {
-        match entry {
-            CachedBatch::MemoryArrow(array) => {
+    ) -> (CacheEntry, Option<Bytes>) {
+        let (data, tracker) = entry.into_parts();
+
+        match data {
+            CachedData::MemoryArrow(array) => {
                 let bytes = arrow_to_bytes(&array).expect("failed to convert arrow to bytes");
                 (
-                    CachedBatch::DiskArrow(array.data_type().clone()),
+                    CacheEntry::with_expression_tracker(
+                        CachedData::DiskArrow(array.data_type().clone()),
+                        tracker,
+                    ),
                     Some(bytes),
                 )
             }
-            CachedBatch::MemoryLiquid(liquid_array) => {
-                let (hybrid_array, bytes) = match liquid_array.squeeze() {
-                    Some(result) => result,
-                    None => {
-                        // not supported, evict to disk
-                        let bytes = liquid_array.to_bytes();
-                        let bytes = Bytes::from(bytes);
-                        return (
-                            CachedBatch::DiskLiquid(liquid_array.original_arrow_data_type()),
-                            Some(bytes),
-                        );
-                    }
-                };
-                (CachedBatch::MemoryHybridLiquid(hybrid_array), Some(bytes))
+            CachedData::MemoryLiquid(liquid_array) => {
+                let disk_data = liquid_array.to_bytes();
+                (
+                    CacheEntry::with_expression_tracker(
+                        CachedData::DiskLiquid(liquid_array.original_arrow_data_type()),
+                        tracker,
+                    ),
+                    Some(Bytes::from(disk_data)),
+                )
             }
-            CachedBatch::MemoryHybridLiquid(hybrid_array) => (
-                CachedBatch::DiskLiquid(hybrid_array.original_arrow_data_type()),
+            CachedData::MemoryHybridLiquid(hybrid_array) => (
+                CacheEntry::with_expression_tracker(
+                    CachedData::DiskLiquid(hybrid_array.original_arrow_data_type()),
+                    tracker,
+                ),
                 None,
             ),
-            CachedBatch::DiskLiquid(_) | CachedBatch::DiskArrow(_) => (entry, None),
+            CachedData::DiskLiquid(_) | CachedData::DiskArrow(_) => {
+                (CacheEntry::with_expression_tracker(data, tracker), None)
+            }
         }
     }
 }
@@ -66,36 +74,64 @@ pub struct TranscodeSqueezeEvict;
 impl SqueezePolicy for TranscodeSqueezeEvict {
     fn squeeze(
         &self,
-        entry: CachedBatch,
+        entry: CacheEntry,
         compressor: &LiquidCompressorStates,
-    ) -> (CachedBatch, Option<Bytes>) {
-        match entry {
-            CachedBatch::MemoryArrow(array) => {
-                let liquid_array = transcode_liquid_inner(&array, compressor).unwrap();
-                (CachedBatch::MemoryLiquid(liquid_array), None)
-            }
-            CachedBatch::MemoryLiquid(liquid_array) => {
-                let (hybrid_array, bytes) = match liquid_array.squeeze() {
+    ) -> (CacheEntry, Option<Bytes>) {
+        let (data, tracker) = entry.into_parts();
+        let squeeze_hint = tracker.majority_expression();
+
+        match data {
+            CachedData::MemoryArrow(array) => match transcode_liquid_inner(&array, compressor) {
+                Ok(liquid_array) => (
+                    CacheEntry::with_expression_tracker(
+                        CachedData::MemoryLiquid(liquid_array),
+                        tracker,
+                    ),
+                    None,
+                ),
+                Err(_) => {
+                    let bytes = arrow_to_bytes(&array).expect("failed to convert arrow to bytes");
+                    (
+                        CacheEntry::with_expression_tracker(
+                            CachedData::DiskArrow(array.data_type().clone()),
+                            tracker,
+                        ),
+                        Some(bytes),
+                    )
+                }
+            },
+            CachedData::MemoryLiquid(liquid_array) => {
+                let (hybrid_array, bytes) = match liquid_array.squeeze(squeeze_hint.as_ref()) {
                     Some(result) => result,
                     None => {
-                        let bytes = liquid_array.to_bytes();
-                        let bytes = Bytes::from(bytes);
+                        let bytes = Bytes::from(liquid_array.to_bytes());
                         return (
-                            CachedBatch::DiskLiquid(liquid_array.original_arrow_data_type()),
+                            CacheEntry::with_expression_tracker(
+                                CachedData::DiskLiquid(liquid_array.original_arrow_data_type()),
+                                tracker,
+                            ),
                             Some(bytes),
                         );
                     }
                 };
-                (CachedBatch::MemoryHybridLiquid(hybrid_array), Some(bytes))
-            }
-            CachedBatch::MemoryHybridLiquid(hybrid_array) => {
-                // the full data of hybrid array is already on disk
                 (
-                    CachedBatch::DiskLiquid(hybrid_array.original_arrow_data_type()),
-                    None,
+                    CacheEntry::with_expression_tracker(
+                        CachedData::MemoryHybridLiquid(hybrid_array),
+                        tracker,
+                    ),
+                    Some(bytes),
                 )
             }
-            CachedBatch::DiskLiquid(_) | CachedBatch::DiskArrow(_) => (entry, None),
+            CachedData::MemoryHybridLiquid(hybrid_array) => (
+                CacheEntry::with_expression_tracker(
+                    CachedData::DiskLiquid(hybrid_array.original_arrow_data_type()),
+                    tracker,
+                ),
+                None,
+            ),
+            CachedData::DiskLiquid(_) | CachedData::DiskArrow(_) => {
+                (CacheEntry::with_expression_tracker(data, tracker), None)
+            }
         }
     }
 }
@@ -107,27 +143,51 @@ pub struct TranscodeEvict;
 impl SqueezePolicy for TranscodeEvict {
     fn squeeze(
         &self,
-        entry: CachedBatch,
+        entry: CacheEntry,
         compressor: &LiquidCompressorStates,
-    ) -> (CachedBatch, Option<Bytes>) {
-        match entry {
-            CachedBatch::MemoryArrow(array) => {
-                let liquid_array = transcode_liquid_inner(&array, compressor).unwrap();
-                (CachedBatch::MemoryLiquid(liquid_array), None)
-            }
-            CachedBatch::MemoryLiquid(liquid_array) => {
-                let bytes = liquid_array.to_bytes();
-                let bytes = Bytes::from(bytes);
+    ) -> (CacheEntry, Option<Bytes>) {
+        let (data, tracker) = entry.into_parts();
+
+        match data {
+            CachedData::MemoryArrow(array) => match transcode_liquid_inner(&array, compressor) {
+                Ok(liquid_array) => (
+                    CacheEntry::with_expression_tracker(
+                        CachedData::MemoryLiquid(liquid_array),
+                        tracker,
+                    ),
+                    None,
+                ),
+                Err(_) => {
+                    let bytes = arrow_to_bytes(&array).expect("failed to convert arrow to bytes");
+                    (
+                        CacheEntry::with_expression_tracker(
+                            CachedData::DiskArrow(array.data_type().clone()),
+                            tracker,
+                        ),
+                        Some(bytes),
+                    )
+                }
+            },
+            CachedData::MemoryLiquid(liquid_array) => {
+                let bytes = Bytes::from(liquid_array.to_bytes());
                 (
-                    CachedBatch::DiskLiquid(liquid_array.original_arrow_data_type()),
+                    CacheEntry::with_expression_tracker(
+                        CachedData::DiskLiquid(liquid_array.original_arrow_data_type()),
+                        tracker,
+                    ),
                     Some(bytes),
                 )
             }
-            CachedBatch::MemoryHybridLiquid(hybrid_array) => (
-                CachedBatch::DiskLiquid(hybrid_array.original_arrow_data_type()),
+            CachedData::MemoryHybridLiquid(hybrid_array) => (
+                CacheEntry::with_expression_tracker(
+                    CachedData::DiskLiquid(hybrid_array.original_arrow_data_type()),
+                    tracker,
+                ),
                 None,
             ),
-            CachedBatch::DiskLiquid(_) | CachedBatch::DiskArrow(_) => (entry, None),
+            CachedData::DiskLiquid(_) | CachedData::DiskArrow(_) => {
+                (CacheEntry::with_expression_tracker(data, tracker), None)
+            }
         }
     }
 }
@@ -135,9 +195,9 @@ impl SqueezePolicy for TranscodeEvict {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::cached_data::CachedBatch;
-    use arrow::array::{ArrayRef, Int32Array, StringArray};
-    use arrow_schema::DataType;
+    use crate::cache::cached_batch::CacheEntry;
+    use arrow::array::{ArrayRef, Int32Array, StringArray, StructArray};
+    use arrow_schema::{DataType, Field};
     use std::sync::Arc;
 
     fn int_array(n: i32) -> ArrayRef {
@@ -155,6 +215,12 @@ mod tests {
         batch.column(0).clone()
     }
 
+    fn struct_array() -> ArrayRef {
+        let values = Arc::new(Int32Array::from(vec![Some(1), None, Some(3)])) as ArrayRef;
+        let field = Arc::new(Field::new("value", DataType::Int32, true));
+        Arc::new(StructArray::from(vec![(field, values)]))
+    }
+
     #[test]
     fn test_squeeze_to_disk_policy() {
         let disk = Evict;
@@ -162,9 +228,11 @@ mod tests {
 
         // MemoryArrow -> DiskArrow + bytes (Arrow IPC)
         let arr = int_array(8);
-        let (new_batch, bytes) = disk.squeeze(CachedBatch::MemoryArrow(arr.clone()), &states);
-        match (new_batch, bytes) {
-            (CachedBatch::DiskArrow(DataType::Int32), Some(b)) => {
+        let (new_batch, bytes) = disk.squeeze(CacheEntry::memory_arrow(arr.clone()), &states);
+        let (data, _) = new_batch.into_parts();
+        match (data, bytes) {
+            (CachedData::DiskArrow(dt), Some(b)) => {
+                assert_eq!(dt, DataType::Int32);
                 let decoded = decode_arrow(&b);
                 assert_eq!(decoded.as_ref(), arr.as_ref());
             }
@@ -174,30 +242,32 @@ mod tests {
         // MemoryLiquid (strings) -> MemoryHybridLiquid + bytes
         let strings = Arc::new(StringArray::from(vec!["a", "b", "a"])) as ArrayRef;
         let liquid = transcode_liquid_inner(&strings, &states).unwrap();
-        let (new_batch, bytes) = disk.squeeze(CachedBatch::MemoryLiquid(liquid.clone()), &states);
-        match (new_batch, bytes) {
-            (CachedBatch::MemoryHybridLiquid(_), Some(b)) => {
+        let (new_batch, bytes) = disk.squeeze(CacheEntry::memory_liquid(liquid.clone()), &states);
+        let (data, _) = new_batch.into_parts();
+        match (data, bytes) {
+            (CachedData::DiskLiquid(_), Some(b)) => {
                 assert!(!b.is_empty());
             }
             other => panic!("unexpected: {other:?}"),
         }
 
         // MemoryHybridLiquid -> DiskLiquid, no extra bytes
-        let hybrid = match liquid.squeeze() {
+        let hybrid = match liquid.squeeze(None) {
             Some((h, _b)) => h,
             None => panic!("squeeze should succeed for byte-view"),
         };
-        let (new_batch, bytes) = disk.squeeze(CachedBatch::MemoryHybridLiquid(hybrid), &states);
-        match (new_batch, bytes) {
-            (CachedBatch::DiskLiquid(_data_type), None) => {}
+        let (new_batch, bytes) = disk.squeeze(CacheEntry::memory_hybrid_liquid(hybrid), &states);
+        let (data, _) = new_batch.into_parts();
+        match (data, bytes) {
+            (CachedData::DiskLiquid(_data_type), None) => {}
             other => panic!("unexpected: {other:?}"),
         }
 
         // Disk* -> unchanged, no bytes
-        let (b1, w1) = disk.squeeze(CachedBatch::DiskArrow(DataType::Utf8), &states);
-        assert!(matches!(b1, CachedBatch::DiskArrow(DataType::Utf8)) && w1.is_none());
-        let (b2, w2) = disk.squeeze(CachedBatch::DiskLiquid(DataType::Utf8), &states);
-        assert!(matches!(b2, CachedBatch::DiskLiquid(DataType::Utf8)) && w2.is_none());
+        let (b1, w1) = disk.squeeze(CacheEntry::disk_arrow(DataType::Utf8), &states);
+        assert!(matches!(b1.data(), CachedData::DiskArrow(DataType::Utf8)) && w1.is_none());
+        let (b2, w2) = disk.squeeze(CacheEntry::disk_liquid(DataType::Utf8), &states);
+        assert!(matches!(b2.data(), CachedData::DiskLiquid(DataType::Utf8)) && w2.is_none());
     }
 
     #[test]
@@ -207,10 +277,10 @@ mod tests {
 
         // MemoryArrow -> MemoryLiquid, no bytes
         let arr = int_array(8);
-        let (new_batch, bytes) = to_liquid.squeeze(CachedBatch::MemoryArrow(arr.clone()), &states);
+        let (new_batch, bytes) = to_liquid.squeeze(CacheEntry::memory_arrow(arr.clone()), &states);
         assert!(bytes.is_none());
-        match new_batch {
-            CachedBatch::MemoryLiquid(liq) => {
+        match new_batch.data() {
+            CachedData::MemoryLiquid(liq) => {
                 assert_eq!(liq.to_arrow_array().as_ref(), arr.as_ref());
             }
             other => panic!("unexpected: {other:?}"),
@@ -219,27 +289,61 @@ mod tests {
         // MemoryLiquid (strings) -> MemoryHybridLiquid + bytes
         let strings = Arc::new(StringArray::from(vec!["x", "y", "x"])) as ArrayRef;
         let liquid = transcode_liquid_inner(&strings, &states).unwrap();
-        let (new_batch, bytes) = to_liquid.squeeze(CachedBatch::MemoryLiquid(liquid), &states);
-        match (new_batch, bytes) {
-            (CachedBatch::MemoryHybridLiquid(_), Some(b)) => assert!(!b.is_empty()),
+        let (new_batch, bytes) = to_liquid.squeeze(CacheEntry::memory_liquid(liquid), &states);
+        let (data, _) = new_batch.into_parts();
+        match (data, bytes) {
+            (CachedData::MemoryHybridLiquid(_), Some(b)) => assert!(!b.is_empty()),
             other => panic!("unexpected: {other:?}"),
         }
 
         // MemoryHybridLiquid -> DiskLiquid, no bytes
         let strings = Arc::new(StringArray::from(vec!["m", "n"])) as ArrayRef;
         let liquid = transcode_liquid_inner(&strings, &states).unwrap();
-        let hybrid = liquid.squeeze().unwrap().0;
+        let hybrid = liquid.squeeze(None).unwrap().0;
         let (new_batch, bytes) =
-            to_liquid.squeeze(CachedBatch::MemoryHybridLiquid(hybrid), &states);
-        match (new_batch, bytes) {
-            (CachedBatch::DiskLiquid(DataType::Utf8), None) => {}
+            to_liquid.squeeze(CacheEntry::memory_hybrid_liquid(hybrid), &states);
+        let (data, _) = new_batch.into_parts();
+        match (data, bytes) {
+            (CachedData::DiskLiquid(DataType::Utf8), None) => {}
             other => panic!("unexpected: {other:?}"),
         }
 
         // Disk* -> unchanged
-        let (b1, w1) = to_liquid.squeeze(CachedBatch::DiskArrow(DataType::Utf8), &states);
-        assert!(matches!(b1, CachedBatch::DiskArrow(DataType::Utf8)) && w1.is_none());
-        let (b2, w2) = to_liquid.squeeze(CachedBatch::DiskLiquid(DataType::Utf8), &states);
-        assert!(matches!(b2, CachedBatch::DiskLiquid(DataType::Utf8)) && w2.is_none());
+        let (b1, w1) = to_liquid.squeeze(CacheEntry::disk_arrow(DataType::Utf8), &states);
+        assert!(matches!(b1.data(), CachedData::DiskArrow(DataType::Utf8)) && w1.is_none());
+        let (b2, w2) = to_liquid.squeeze(CacheEntry::disk_liquid(DataType::Utf8), &states);
+        assert!(matches!(b2.data(), CachedData::DiskLiquid(DataType::Utf8)) && w2.is_none());
+    }
+
+    #[test]
+    fn transcode_squeeze_struct_falls_back_to_disk_arrow() {
+        let to_liquid = TranscodeSqueezeEvict;
+        let states = LiquidCompressorStates::new();
+        let struct_arr = struct_array();
+        let (new_batch, bytes) =
+            to_liquid.squeeze(CacheEntry::memory_arrow(struct_arr.clone()), &states);
+        match (new_batch.data(), bytes) {
+            (CachedData::DiskArrow(dt), Some(b)) => {
+                assert_eq!(dt, struct_arr.data_type());
+                assert_eq!(decode_arrow(&b).as_ref(), struct_arr.as_ref());
+            }
+            other => panic!("expected disk arrow fallback, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn transcode_evict_struct_falls_back_to_disk_arrow() {
+        let to_disk = TranscodeEvict;
+        let states = LiquidCompressorStates::new();
+        let struct_arr = struct_array();
+        let (new_batch, bytes) =
+            to_disk.squeeze(CacheEntry::memory_arrow(struct_arr.clone()), &states);
+        match (new_batch.data(), bytes) {
+            (CachedData::DiskArrow(dt), Some(b)) => {
+                assert_eq!(dt, struct_arr.data_type());
+                assert_eq!(decode_arrow(&b).as_ref(), struct_arr.as_ref());
+            }
+            other => panic!("expected disk arrow fallback, got {other:?}"),
+        }
     }
 }

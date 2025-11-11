@@ -1,12 +1,13 @@
 //! IPC for liquid array.
 
+use std::mem::size_of;
 use std::sync::Arc;
-use std::{any::TypeId, mem::size_of};
 
 use arrow::array::ArrowPrimitiveType;
 use arrow::datatypes::{
     Date32Type, Date64Type, Float32Type, Float64Type, Int8Type, Int16Type, Int32Type, Int64Type,
-    UInt8Type, UInt16Type, UInt32Type, UInt64Type,
+    TimestampMicrosecondType, TimestampMillisecondType, TimestampNanosecondType,
+    TimestampSecondType, UInt8Type, UInt16Type, UInt32Type, UInt64Type,
 };
 use bytes::Bytes;
 use fsst::Compressor;
@@ -22,6 +23,138 @@ use super::{
 
 const MAGIC: u32 = 0x4C51_4441; // "LQDA" for LiQuid Data Array
 const VERSION: u16 = 1;
+
+macro_rules! primitive_physical_type_entries {
+    ($macro:ident) => {
+        $macro!([
+            (Int8, Int8Type, 0, Integer),
+            (Int16, Int16Type, 1, Integer),
+            (Int32, Int32Type, 2, Integer),
+            (Int64, Int64Type, 3, Integer),
+            (UInt8, UInt8Type, 4, Integer),
+            (UInt16, UInt16Type, 5, Integer),
+            (UInt32, UInt32Type, 6, Integer),
+            (UInt64, UInt64Type, 7, Integer),
+            (Float32, Float32Type, 8, Float),
+            (Float64, Float64Type, 9, Float),
+            (Date32, Date32Type, 10, Integer),
+            (Date64, Date64Type, 11, Integer),
+            (TimestampSecond, TimestampSecondType, 12, Integer),
+            (TimestampMillisecond, TimestampMillisecondType, 13, Integer),
+            (TimestampMicrosecond, TimestampMicrosecondType, 14, Integer),
+            (TimestampNanosecond, TimestampNanosecondType, 15, Integer)
+        ]);
+    };
+}
+
+macro_rules! physical_type_integer_body {
+    (Integer, $arrow_ty:ty, $bytes:expr, $self:expr) => {
+        Arc::new(LiquidPrimitiveArray::<$arrow_ty>::from_bytes($bytes)) as LiquidArrayRef
+    };
+    (Float, $arrow_ty:ty, $bytes:expr, $self:expr) => {
+        panic!(
+            "Physical type {:?} cannot be decoded as an integer array",
+            $self
+        )
+    };
+}
+
+macro_rules! physical_type_linear_body {
+    (Integer, $arrow_ty:ty, $bytes:expr, $self:expr) => {
+        Arc::new(LiquidLinearArray::<$arrow_ty>::from_bytes($bytes)) as LiquidArrayRef
+    };
+    (Float, $arrow_ty:ty, $bytes:expr, $self:expr) => {
+        panic!(
+            "Physical type {:?} cannot be decoded as a linear integer array",
+            $self
+        )
+    };
+}
+
+macro_rules! physical_type_float_body {
+    (Float, $arrow_ty:ty, $bytes:expr, $self:expr) => {
+        Arc::new(LiquidFloatArray::<$arrow_ty>::from_bytes($bytes)) as LiquidArrayRef
+    };
+    (Integer, $arrow_ty:ty, $bytes:expr, $self:expr) => {
+        panic!(
+            "Physical type {:?} cannot be decoded as a float array",
+            $self
+        )
+    };
+}
+
+macro_rules! define_physical_types {
+    ( [ $(($variant:ident, $arrow_ty:ty, $id:expr, $category:ident)),+ $(,)? ] ) => {
+        /// Physical primitive types supported by Liquid IPC.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        #[allow(missing_docs)]
+        #[repr(u16)]
+        pub enum PrimitivePhysicalType {
+            $( $variant = $id, )+
+        }
+
+        /// Marker trait implemented for Arrow primitive types that have a Liquid physical ID.
+        pub trait PhysicalTypeMarker: ArrowPrimitiveType {
+            /// The physical type associated with the Arrow primitive.
+            const PHYSICAL_TYPE: PrimitivePhysicalType;
+        }
+
+        $(impl PhysicalTypeMarker for $arrow_ty {
+            const PHYSICAL_TYPE: PrimitivePhysicalType = PrimitivePhysicalType::$variant;
+        })+
+
+        impl PrimitivePhysicalType {
+            fn from_arrow_type<T>() -> PrimitivePhysicalType
+            where
+                T: ArrowPrimitiveType + PhysicalTypeMarker,
+            {
+                T::PHYSICAL_TYPE
+            }
+
+            fn deserialize_integer(self, bytes: Bytes) -> LiquidArrayRef {
+                match self {
+                    $( PrimitivePhysicalType::$variant => {
+                        physical_type_integer_body!($category, $arrow_ty, bytes, self)
+                    }, )+
+                }
+            }
+
+            fn deserialize_linear_integer(self, bytes: Bytes) -> LiquidArrayRef {
+                match self {
+                    $( PrimitivePhysicalType::$variant => {
+                        physical_type_linear_body!($category, $arrow_ty, bytes, self)
+                    }, )+
+                }
+            }
+
+            fn deserialize_float(self, bytes: Bytes) -> LiquidArrayRef {
+                match self {
+                    $( PrimitivePhysicalType::$variant => {
+                        physical_type_float_body!($category, $arrow_ty, bytes, self)
+                    }, )+
+                }
+            }
+        }
+
+        impl TryFrom<u16> for PrimitivePhysicalType {
+            type Error = u16;
+
+            fn try_from(value: u16) -> Result<Self, Self::Error> {
+                match value {
+                    $( $id => Ok(PrimitivePhysicalType::$variant), )+
+                    _ => Err(value),
+                }
+            }
+        }
+    };
+}
+
+primitive_physical_type_entries!(define_physical_types);
+
+fn expect_physical_type(id: u16, label: &str) -> PrimitivePhysicalType {
+    PrimitivePhysicalType::try_from(id)
+        .unwrap_or_else(|value| panic!("Unsupported {label} physical type: {value}"))
+}
 
 /*
     +--------------------------------------------------+
@@ -120,19 +253,10 @@ pub fn read_from_bytes(bytes: Bytes, context: &LiquidIPCContext) -> LiquidArrayR
     let header = LiquidIPCHeader::from_bytes(&bytes);
     let logical_type = LiquidDataType::from(header.logical_type_id);
     match logical_type {
-        LiquidDataType::Integer => match header.physical_type_id {
-            0 => Arc::new(LiquidPrimitiveArray::<Int8Type>::from_bytes(bytes)),
-            1 => Arc::new(LiquidPrimitiveArray::<Int16Type>::from_bytes(bytes)),
-            2 => Arc::new(LiquidPrimitiveArray::<Int32Type>::from_bytes(bytes)),
-            3 => Arc::new(LiquidPrimitiveArray::<Int64Type>::from_bytes(bytes)),
-            4 => Arc::new(LiquidPrimitiveArray::<UInt8Type>::from_bytes(bytes)),
-            5 => Arc::new(LiquidPrimitiveArray::<UInt16Type>::from_bytes(bytes)),
-            6 => Arc::new(LiquidPrimitiveArray::<UInt32Type>::from_bytes(bytes)),
-            7 => Arc::new(LiquidPrimitiveArray::<UInt64Type>::from_bytes(bytes)),
-            10 => Arc::new(LiquidPrimitiveArray::<Date32Type>::from_bytes(bytes)),
-            11 => Arc::new(LiquidPrimitiveArray::<Date64Type>::from_bytes(bytes)),
-            v => panic!("Unsupported integer physical type: {v}"),
-        },
+        LiquidDataType::Integer => {
+            let physical_type = expect_physical_type(header.physical_type_id, "integer");
+            physical_type.deserialize_integer(bytes)
+        }
         LiquidDataType::ByteArray => {
             let compressor = context.compressor.as_ref().expect("Expected a compressor");
             Arc::new(LiquidByteArray::from_bytes(bytes, compressor.clone()))
@@ -144,11 +268,10 @@ pub fn read_from_bytes(bytes: Bytes, context: &LiquidIPCContext) -> LiquidArrayR
                 compressor.clone(),
             ))
         }
-        LiquidDataType::Float => match header.physical_type_id {
-            8 => Arc::new(LiquidFloatArray::<Float32Type>::from_bytes(bytes)),
-            9 => Arc::new(LiquidFloatArray::<Float64Type>::from_bytes(bytes)),
-            v => panic!("Unsupported float physical type: {v}"),
-        },
+        LiquidDataType::Float => {
+            let physical_type = expect_physical_type(header.physical_type_id, "float");
+            physical_type.deserialize_float(bytes)
+        }
         LiquidDataType::FixedLenByteArray => {
             let compressor = context.compressor.as_ref().expect("Expected a compressor");
             Arc::new(LiquidFixedLenByteArray::from_bytes(
@@ -156,45 +279,28 @@ pub fn read_from_bytes(bytes: Bytes, context: &LiquidIPCContext) -> LiquidArrayR
                 compressor.clone(),
             ))
         }
-        LiquidDataType::LinearInteger => match header.physical_type_id {
-            0 => Arc::new(LiquidLinearArray::<Int8Type>::from_bytes(bytes)),
-            1 => Arc::new(LiquidLinearArray::<Int16Type>::from_bytes(bytes)),
-            2 => Arc::new(LiquidLinearArray::<Int32Type>::from_bytes(bytes)),
-            3 => Arc::new(LiquidLinearArray::<Int64Type>::from_bytes(bytes)),
-            4 => Arc::new(LiquidLinearArray::<UInt8Type>::from_bytes(bytes)),
-            5 => Arc::new(LiquidLinearArray::<UInt16Type>::from_bytes(bytes)),
-            6 => Arc::new(LiquidLinearArray::<UInt32Type>::from_bytes(bytes)),
-            7 => Arc::new(LiquidLinearArray::<UInt64Type>::from_bytes(bytes)),
-            10 => Arc::new(LiquidLinearArray::<Date32Type>::from_bytes(bytes)),
-            11 => Arc::new(LiquidLinearArray::<Date64Type>::from_bytes(bytes)),
-            v => panic!("Unsupported linear-integer physical type: {v}"),
-        },
+        LiquidDataType::LinearInteger => {
+            let physical_type = expect_physical_type(header.physical_type_id, "linear-integer");
+            physical_type.deserialize_linear_integer(bytes)
+        }
     }
 }
 
-pub(super) fn get_physical_type_id<T: ArrowPrimitiveType>() -> u16 {
-    match TypeId::of::<T>() {
-        id if id == TypeId::of::<arrow::datatypes::Int8Type>() => 0,
-        id if id == TypeId::of::<arrow::datatypes::Int16Type>() => 1,
-        id if id == TypeId::of::<arrow::datatypes::Int32Type>() => 2,
-        id if id == TypeId::of::<arrow::datatypes::Int64Type>() => 3,
-        id if id == TypeId::of::<arrow::datatypes::UInt8Type>() => 4,
-        id if id == TypeId::of::<arrow::datatypes::UInt16Type>() => 5,
-        id if id == TypeId::of::<arrow::datatypes::UInt32Type>() => 6,
-        id if id == TypeId::of::<arrow::datatypes::UInt64Type>() => 7,
-        id if id == TypeId::of::<arrow::datatypes::Float32Type>() => 8,
-        id if id == TypeId::of::<arrow::datatypes::Float64Type>() => 9,
-        id if id == TypeId::of::<arrow::datatypes::Date32Type>() => 10,
-        id if id == TypeId::of::<arrow::datatypes::Date64Type>() => 11,
-        _ => panic!("Unsupported primitive type: {}", T::DATA_TYPE),
-    }
+pub(super) fn get_physical_type_id<T>() -> u16
+where
+    T: ArrowPrimitiveType + PhysicalTypeMarker,
+{
+    PrimitivePhysicalType::from_arrow_type::<T>() as u16
 }
 
 #[cfg(test)]
 mod tests {
     use arrow::{
         array::{AsArray, BinaryViewArray, PrimitiveArray, StringArray},
-        datatypes::{Decimal128Type, Decimal256Type, DecimalType, Int32Type, i256},
+        datatypes::{
+            Decimal128Type, Decimal256Type, DecimalType, Int32Type, TimestampMicrosecondType,
+            TimestampMillisecondType, TimestampNanosecondType, TimestampSecondType, i256,
+        },
     };
     use arrow_schema::DataType;
 
@@ -627,5 +733,13 @@ mod tests {
         let result_arrow = deserialized_ref.to_arrow_array();
 
         assert_eq!(result_arrow.as_ref(), &single_value_array);
+    }
+
+    #[test]
+    fn test_timestamp_physical_type_ids() {
+        assert_eq!(get_physical_type_id::<TimestampSecondType>(), 12);
+        assert_eq!(get_physical_type_id::<TimestampMillisecondType>(), 13);
+        assert_eq!(get_physical_type_id::<TimestampMicrosecondType>(), 14);
+        assert_eq!(get_physical_type_id::<TimestampNanosecondType>(), 15);
     }
 }

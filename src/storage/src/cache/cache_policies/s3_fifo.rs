@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::sync::Mutex;
 
-use crate::cache::{cached_data::CachedBatchType, utils::EntryID};
+use crate::cache::{cached_batch::CachedBatchType, utils::EntryID};
 use crate::cache_policies::CachePolicy;
 
 type EntryFreq = u8;

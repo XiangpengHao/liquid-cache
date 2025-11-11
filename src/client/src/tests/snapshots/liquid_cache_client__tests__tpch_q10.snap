@@ -5,7 +5,9 @@ expression: displayable.tree_render().to_string()
 ┌───────────────────────────┐
 │  SortPreservingMergeExec  │
 │    --------------------   │
-│   revenue DESClimit: 20   │
+│         limit: 20         │
+│                           │
+│        revenue DESC       │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
 │       SortExec(TopK)      │
@@ -157,10 +159,12 @@ expression: displayable.tree_render().to_string()
                              │        HashJoinExec       │                             │       DataSourceExec      │
                              │    --------------------   │                             │    --------------------   │
                              │            on:            │                             │          files: 1         │
-                             │  (o_custkey = c_custkey)  ├──────────────┐              │      format: parquet      │
-                             │                           │              │              │                           │
+                             │  (o_custkey = c_custkey)  │                             │      format: parquet      │
+                             │                           ├──────────────┐              │                           │
                              │                           │              │              │         predicate:        │
-                             │                           │              │              │ l_returnflag = R AND true │
+                             │                           │              │              │    l_returnflag = R AND   │
+                             │                           │              │              │       DynamicFilter [     │
+                             │                           │              │              │           empty ]         │
                              └─────────────┬─────────────┘              │              └───────────────────────────┘
                              ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
                              │   LiquidCacheClientExec   ││   LiquidCacheClientExec   │
@@ -176,7 +180,7 @@ expression: displayable.tree_render().to_string()
                              │      format: parquet      ││      format: parquet      │
                              │                           ││                           │
                              │         predicate:        ││         predicate:        │
-                             │ o_orderdate >= 1993-10-01 ││       true AND true       │
-                             │   AND o_orderdate < 1994  ││                           │
-                             │           -01-01          ││                           │
+                             │ o_orderdate >= 1993-10-01 ││  DynamicFilter [ empty ]  │
+                             │   AND o_orderdate < 1994  ││     AND DynamicFilter [   │
+                             │           -01-01          ││           empty ]         │
                              └───────────────────────────┘└───────────────────────────┘

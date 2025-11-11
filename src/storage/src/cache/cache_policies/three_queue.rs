@@ -1,7 +1,7 @@
 use std::{collections::HashMap, ptr::NonNull};
 
 use crate::{
-    cache::{CachePolicy, EntryID, cached_data::CachedBatchType},
+    cache::{CachePolicy, EntryID, cached_batch::CachedBatchType},
     sync::Mutex,
 };
 

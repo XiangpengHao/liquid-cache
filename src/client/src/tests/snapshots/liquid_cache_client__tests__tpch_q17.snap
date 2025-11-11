@@ -96,9 +96,9 @@ expression: displayable.tree_render().to_string()
 │    --------------------   ││    --------------------   ││    --------------------   │
 │          files: 1         ││          files: 1         ││ partition_count(in->out): │
 │      format: parquet      ││      format: parquet      ││           1 -> 8          │
-│                           ││      predicate: true      ││                           │
-│         predicate:        ││                           ││    partitioning_scheme:   │
-│   p_brand = Brand#23 AND  ││                           ││     RoundRobinBatch(8)    │
+│                           ││                           ││                           │
+│         predicate:        ││         predicate:        ││    partitioning_scheme:   │
+│   p_brand = Brand#23 AND  ││  DynamicFilter [ empty ]  ││     RoundRobinBatch(8)    │
 │    p_container = MED BOX  ││                           ││                           │
 └───────────────────────────┘└───────────────────────────┘└─────────────┬─────────────┘
                                                           ┌─────────────┴─────────────┐
@@ -122,4 +122,7 @@ expression: displayable.tree_render().to_string()
                                                           │    --------------------   │
                                                           │          files: 1         │
                                                           │      format: parquet      │
+                                                          │                           │
+                                                          │         predicate:        │
+                                                          │  DynamicFilter [ empty ]  │
                                                           └───────────────────────────┘

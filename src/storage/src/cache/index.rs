@@ -7,10 +7,10 @@ use std::{
     },
 };
 
-use crate::cache::{cached_data::CachedBatch, utils::EntryID};
+use crate::cache::{cached_batch::CacheEntry, utils::EntryID};
 
 pub(crate) struct ArtIndex {
-    art: CongeeArc<EntryID, CachedBatch>,
+    art: CongeeArc<EntryID, CacheEntry>,
     entry_count: AtomicUsize,
 }
 
@@ -22,17 +22,17 @@ impl Debug for ArtIndex {
 
 impl ArtIndex {
     pub(crate) fn new() -> Self {
-        let art: CongeeArc<EntryID, CachedBatch> = CongeeArc::new();
+        let art: CongeeArc<EntryID, CacheEntry> = CongeeArc::new();
         Self {
             art,
             entry_count: AtomicUsize::new(0),
         }
     }
 
-    pub(crate) fn get(&self, entry_id: &EntryID) -> Option<CachedBatch> {
+    pub(crate) fn get(&self, entry_id: &EntryID) -> Option<CacheEntry> {
         let guard = self.art.pin();
         let batch = self.art.get(*entry_id, &guard)?;
-        Some(CachedBatch::clone(&batch))
+        Some(CacheEntry::clone(&batch))
     }
 
     pub(crate) fn is_cached(&self, entry_id: &EntryID) -> bool {
@@ -40,7 +40,7 @@ impl ArtIndex {
         self.art.get(*entry_id, &guard).is_some()
     }
 
-    pub(crate) fn insert(&self, entry_id: &EntryID, batch: CachedBatch) {
+    pub(crate) fn insert(&self, entry_id: &EntryID, batch: CacheEntry) {
         let guard = self.art.pin();
         let existing = self
             .art
@@ -59,7 +59,7 @@ impl ArtIndex {
         self.entry_count.store(0, Ordering::Relaxed);
     }
 
-    pub(crate) fn for_each(&self, mut f: impl FnMut(&EntryID, &CachedBatch)) {
+    pub(crate) fn for_each(&self, mut f: impl FnMut(&EntryID, &CacheEntry)) {
         let guard = self.art.pin();
         for id in self.art.keys().into_iter() {
             f(
@@ -84,6 +84,7 @@ impl ArtIndex {
 
 #[cfg(test)]
 mod tests {
+    use crate::cache::cached_batch::CachedData;
     use crate::cache::utils::create_test_array;
 
     use super::*;
@@ -110,8 +111,11 @@ mod tests {
 
         // Get should return the cached value
         match store.get(&entry_id1) {
-            Some(CachedBatch::MemoryArrow(arr)) => assert_eq!(arr.len(), 100),
-            _ => panic!("Expected ArrowMemory batch"),
+            Some(batch) => match batch.data() {
+                CachedData::MemoryArrow(arr) => assert_eq!(arr.len(), 100),
+                _ => panic!("Expected ArrowMemory batch"),
+            },
+            None => panic!("Expected ArrowMemory batch"),
         }
     }
 

@@ -7,13 +7,14 @@ use crate::{
         runtime::ArrowReaderBuilderBridge,
     },
 };
-use arrow_schema::SchemaRef;
+use ahash::AHashMap;
+use arrow_schema::{Field, Schema, SchemaRef};
 use datafusion::{
     common::exec_err,
     datasource::{
         listing::PartitionedFile,
         physical_plan::{
-            FileMeta, FileOpenFuture, FileOpener, ParquetFileMetrics,
+            FileOpenFuture, FileOpener, ParquetFileMetrics,
             parquet::{PagePruningAccessPlanFilter, ParquetAccessPlan},
         },
         schema_adapter::SchemaAdapterFactory,
@@ -46,6 +47,7 @@ pub struct LiquidParquetOpener {
     reorder_filters: bool,
     liquid_cache: LiquidCacheRef,
     schema_adapter_factory: Arc<dyn SchemaAdapterFactory>,
+    span: Option<Arc<fastrace::Span>>,
 }
 
 impl LiquidParquetOpener {
@@ -64,6 +66,7 @@ impl LiquidParquetOpener {
         parquet_file_reader_factory: Arc<CachedMetaReaderFactory>,
         reorder_filters: bool,
         schema_adapter_factory: Arc<dyn SchemaAdapterFactory>,
+        span: Option<Arc<fastrace::Span>>,
     ) -> Self {
         Self {
             partition_index,
@@ -79,30 +82,52 @@ impl LiquidParquetOpener {
             parquet_file_reader_factory,
             reorder_filters,
             schema_adapter_factory,
+            span,
         }
     }
 }
 
+// transfer lineage metadata from tagged schema to dst schema
+// The two schema must from the same file.
+fn transfer_lineage_metadata_to_file_schema(
+    tagged_schema: SchemaRef,
+    dst_schema: SchemaRef,
+) -> Schema {
+    let mut new_fields = vec![];
+
+    let mut tagged_fields = AHashMap::new();
+    for field in tagged_schema.fields().iter() {
+        tagged_fields.insert(field.name().to_string(), field.clone());
+    }
+    for field in dst_schema.fields().iter() {
+        let tagged_field = match tagged_fields.get(field.name()) {
+            Some(tagged_field) => {
+                let new_field = Field::clone(field).with_metadata(tagged_field.metadata().clone());
+                Arc::new(new_field)
+            }
+            None => field.clone(),
+        };
+        new_fields.push(tagged_field);
+    }
+    let dst_metadata = dst_schema.metadata().clone();
+    Schema::new(new_fields).with_metadata(dst_metadata)
+}
+
 impl FileOpener for LiquidParquetOpener {
-    fn open(
-        &self,
-        file_meta: FileMeta,
-        _file: PartitionedFile,
-    ) -> Result<FileOpenFuture, DataFusionError> {
-        let file_range = file_meta.range.clone();
-        let extensions = file_meta.extensions.clone();
-        let file_name = file_meta.location().to_string();
+    fn open(&self, file: PartitionedFile) -> Result<FileOpenFuture, DataFusionError> {
+        let file_range = file.range.clone();
+        let extensions = file.extensions.clone();
+        let file_name = file.object_meta.location.to_string();
         let file_metrics = ParquetFileMetrics::new(self.partition_index, &file_name, &self.metrics);
 
-        let metadata_size_hint = file_meta.metadata_size_hint;
+        let metadata_size_hint = file.metadata_size_hint;
 
-        let liquid_cache = self
-            .liquid_cache
-            .register_or_get_file(file_meta.location().to_string());
+        let lc = self.liquid_cache.clone();
+        let file_loc = file.object_meta.location.to_string();
 
         let mut async_file_reader = self.parquet_file_reader_factory.create_liquid_reader(
             self.partition_index,
-            file_meta,
+            file,
             metadata_size_hint,
             &self.metrics,
         );
@@ -122,7 +147,7 @@ impl FileOpener for LiquidParquetOpener {
         let enable_page_index = should_enable_page_index(&self.page_pruning_predicate);
         let limit = self.limit;
         let schema_adapter_factory = Arc::clone(&self.schema_adapter_factory);
-
+        let span = self.span.clone();
         Ok(Box::pin(async move {
             let mut options = ArrowReaderOptions::new().with_page_index(enable_page_index);
 
@@ -142,6 +167,10 @@ impl FileOpener for LiquidParquetOpener {
             //   This is what the physical file schema is coerced to.
             // - The physical file schema: this is the schema as defined by the parquet file. This is what the parquet file actually contains.
             let physical_file_schema = Arc::clone(reader_metadata.schema());
+            let physical_file_schema = Arc::new(transfer_lineage_metadata_to_file_schema(
+                Arc::clone(&downstream_full_schema),
+                Arc::clone(&physical_file_schema),
+            ));
             options = options.with_schema(Arc::clone(&physical_file_schema));
             reader_metadata =
                 ArrowReaderMetadata::try_new(Arc::clone(reader_metadata.metadata()), options)?;
@@ -259,6 +288,13 @@ impl FileOpener for LiquidParquetOpener {
             if let Some(row_filter) = row_filter {
                 liquid_builder = liquid_builder.with_row_filter(row_filter);
             }
+
+            if let Some(s) = &span {
+                let span = fastrace::Span::enter_with_parent("liquid_stream", s);
+                liquid_builder = liquid_builder.with_span(span);
+            }
+
+            let liquid_cache = lc.register_or_get_file(file_loc, physical_file_schema);
 
             let stream = liquid_builder.build(liquid_cache)?;
 

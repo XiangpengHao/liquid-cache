@@ -18,6 +18,8 @@ pub struct RuntimeStats {
     pub(crate) get_predicate_hybrid_unsupported: AtomicU64,
     /// Number of `try_read_liquid` calls issued via `CachedData`.
     pub(crate) try_read_liquid_calls: AtomicU64,
+    /// Number of `hit_date32_expression` calls.
+    pub(crate) hit_date32_expression_calls: AtomicU64,
 }
 
 /// Immutable snapshot of [`RuntimeStats`].
@@ -37,6 +39,8 @@ pub struct RuntimeStatsSnapshot {
     pub get_predicate_hybrid_unsupported: u64,
     /// Total `try_read_liquid` calls.
     pub try_read_liquid_calls: u64,
+    /// Total `hit_date32_expression` calls.
+    pub hit_date32_expression_calls: u64,
 }
 
 impl RuntimeStats {
@@ -54,6 +58,7 @@ impl RuntimeStats {
                 .get_predicate_hybrid_unsupported
                 .load(Ordering::Relaxed),
             try_read_liquid_calls: self.try_read_liquid_calls.load(Ordering::Relaxed),
+            hit_date32_expression_calls: self.hit_date32_expression_calls.load(Ordering::Relaxed),
         };
         self.reset();
         v
@@ -106,6 +111,13 @@ impl RuntimeStats {
             .fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Increment `hit_date32_expression` counter.
+    #[inline]
+    pub fn incr_hit_date32_expression(&self) {
+        self.hit_date32_expression_calls
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Reset the runtime stats to 0.
     pub fn reset(&self) {
         self.get_arrow_array_calls.store(0, Ordering::Relaxed);
@@ -118,6 +130,7 @@ impl RuntimeStats {
         self.get_predicate_hybrid_unsupported
             .store(0, Ordering::Relaxed);
         self.try_read_liquid_calls.store(0, Ordering::Relaxed);
+        self.hit_date32_expression_calls.store(0, Ordering::Relaxed);
     }
 }
 

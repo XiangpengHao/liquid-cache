@@ -1,16 +1,14 @@
 //! This module contains the cache implementation for the Parquet reader.
 //!
 
-use crate::cache::io::{ColumnAccessPath, ParquetIoContext, blocking_reading_io, blocking_sans_io};
+use crate::io::ParquetIoContext;
 use crate::reader::{LiquidPredicate, extract_multi_column_or};
 use crate::sync::{Mutex, RwLock};
 use ahash::AHashMap;
-use arrow::array::{Array, ArrayRef, BooleanArray, RecordBatch};
+use arrow::array::{BooleanArray, RecordBatch};
 use arrow::buffer::BooleanBuffer;
-use arrow::compute::prep_null_mask_filter;
-use arrow_schema::{ArrowError, Field, Schema};
-use liquid_cache_storage::cache::cached_data::GetWithPredicateResult;
-use liquid_cache_storage::cache::io_state::{IoStateMachine, SansIo, TryGet};
+use arrow_schema::{ArrowError, Field, Schema, SchemaRef};
+use liquid_cache_common::IoMode;
 use liquid_cache_storage::cache::squeeze_policies::SqueezePolicy;
 use liquid_cache_storage::cache::{CachePolicy, CacheStorage, CacheStorageBuilder};
 use parquet::arrow::arrow_reader::ArrowPredicate;
@@ -18,182 +16,88 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod column;
 mod id;
-mod io;
 mod stats;
 
+pub(crate) use column::InsertArrowArrayError;
+pub use column::{LiquidCachedColumn, LiquidCachedColumnRef};
+pub(crate) use id::ColumnAccessPath;
 pub use id::{BatchID, ParquetArrayID};
 
-/// A column in the cache.
-#[derive(Debug)]
-pub struct LiquidCachedColumn {
-    cache_store: Arc<CacheStorage>,
-    field: Arc<Field>,
-    column_path: ColumnAccessPath,
-}
-
-pub(crate) type LiquidCachedColumnRef = Arc<LiquidCachedColumn>;
-
-/// Error type for inserting an arrow array into the cache.
-#[derive(Debug)]
-pub enum InsertArrowArrayError {
-    /// The array is already cached.
-    AlreadyCached,
-}
-
-impl LiquidCachedColumn {
-    fn new(
-        field: Arc<Field>,
-        cache_store: Arc<CacheStorage>,
-        column_id: u64,
-        row_group_id: u64,
-        file_id: u64,
-    ) -> Self {
-        let column_path = ColumnAccessPath::new(file_id, row_group_id, column_id);
-        column_path.initialize_dir(cache_store.config().cache_root_dir());
-        Self {
-            field,
-            cache_store,
-            column_path,
-        }
-    }
-
-    /// row_id must be on a batch boundary.
-    fn entry_id(&self, batch_id: BatchID) -> ParquetArrayID {
-        self.column_path.entry_id(batch_id)
-    }
-
-    pub(crate) fn batch_size(&self) -> usize {
-        self.cache_store.config().batch_size()
-    }
-
-    pub(crate) fn is_cached(&self, batch_id: BatchID) -> bool {
-        self.cache_store.is_cached(&self.entry_id(batch_id).into())
-    }
-
-    fn arrow_array_to_record_batch(&self, array: ArrayRef, field: &Arc<Field>) -> RecordBatch {
-        let schema = Arc::new(Schema::new(vec![field.clone()]));
-        RecordBatch::try_new(schema, vec![array]).unwrap()
-    }
-
-    /// Evaluates a predicate on a cached column.
-    pub fn eval_predicate_with_filter(
-        &self,
-        batch_id: BatchID,
-        filter: &BooleanBuffer,
-        predicate: &mut LiquidPredicate,
-    ) -> Option<Result<BooleanArray, ArrowError>> {
-        let cached_entry = self.cache_store.get(&self.entry_id(batch_id).into())?;
-
-        let result = cached_entry
-            .get_with_predicate(filter, predicate.physical_expr_physical_column_index());
-        let result = blocking_sans_io(result);
-        match result {
-            GetWithPredicateResult::Evaluated(buffer) => Some(Ok(buffer)),
-            GetWithPredicateResult::Filtered(array) => {
-                let record_batch = self.arrow_array_to_record_batch(array, &self.field);
-                let boolean_array = predicate.evaluate(record_batch).unwrap();
-                let predicate_filter = match boolean_array.null_count() {
-                    0 => boolean_array,
-                    _ => prep_null_mask_filter(&boolean_array),
-                };
-                Some(Ok(predicate_filter))
-            }
-        }
-    }
-
-    /// Get an arrow array with a filter applied.
-    pub fn get_arrow_array_with_filter(
-        &self,
-        batch_id: BatchID,
-        filter: &BooleanBuffer,
-    ) -> Option<ArrayRef> {
-        let inner_value = self.cache_store.get(&self.entry_id(batch_id).into())?;
-        let result = blocking_sans_io(inner_value.get_with_selection(filter));
-        result.ok()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn get_arrow_array_test_only(&self, batch_id: BatchID) -> Option<ArrayRef> {
-        let cached_entry = self.cache_store.get(&self.entry_id(batch_id).into())?;
-        let result = blocking_sans_io(cached_entry.get_arrow_array());
-        Some(result)
-    }
-
-    /// Insert an array into the cache.
-    pub fn insert(
-        self: &Arc<Self>,
-        batch_id: BatchID,
-        array: ArrayRef,
-    ) -> Result<(), InsertArrowArrayError> {
-        if self.is_cached(batch_id) {
-            return Err(InsertArrowArrayError::AlreadyCached);
-        }
-        self.cache_store
-            .insert(self.entry_id(batch_id).into(), array);
-        Ok(())
-    }
+#[derive(Default, Debug)]
+struct ColumnMaps {
+    // invariant: Arc::ptr_eq(map[field.name()], map[field.id()])
+    by_id: AHashMap<u64, LiquidCachedColumnRef>,
+    by_name: AHashMap<String, LiquidCachedColumnRef>,
 }
 
 /// A row group in the cache.
 #[derive(Debug)]
 pub struct LiquidCachedRowGroup {
-    columns: RwLock<AHashMap<u64, Arc<LiquidCachedColumn>>>,
+    columns: RwLock<ColumnMaps>,
     cache_store: Arc<CacheStorage>,
-    row_group_id: u64,
-    file_id: u64,
 }
 
 impl LiquidCachedRowGroup {
-    fn new(cache_store: Arc<CacheStorage>, row_group_id: u64, file_id: u64) -> Self {
+    /// Create a new row group.
+    /// The column_ids are the indices of the columns in the file schema.
+    /// So they may not start from 0.
+    fn new(
+        cache_store: Arc<CacheStorage>,
+        row_group_id: u64,
+        file_id: u64,
+        columns: &[(u64, Arc<Field>)],
+    ) -> Self {
         let cache_dir = cache_store
             .config()
             .cache_root_dir()
             .join(format!("file_{file_id}"))
             .join(format!("rg_{row_group_id}"));
         std::fs::create_dir_all(&cache_dir).expect("Failed to create cache directory");
+
+        let mut column_maps = ColumnMaps::default();
+        for (column_id, field) in columns {
+            let column = Arc::new(LiquidCachedColumn::new(
+                Arc::clone(field),
+                Arc::clone(&cache_store),
+                *column_id,
+                row_group_id,
+                file_id,
+            ));
+            column_maps.by_id.insert(*column_id, column.clone());
+            column_maps.by_name.insert(field.name().to_string(), column);
+        }
+
         Self {
-            columns: RwLock::new(AHashMap::new()),
+            columns: RwLock::new(column_maps),
             cache_store,
-            row_group_id,
-            file_id,
         }
     }
 
-    /// Create a column in the row group.
-    pub fn create_column(&self, column_id: u64, field: Arc<Field>) -> LiquidCachedColumnRef {
-        use std::collections::hash_map::Entry;
-        let mut columns = self.columns.write().unwrap();
-
-        let column = columns.entry(column_id);
-
-        match column {
-            Entry::Occupied(entry) => {
-                let v = entry.get().clone();
-                assert_eq!(v.field, field);
-                v
-            }
-            Entry::Vacant(entry) => {
-                let column = Arc::new(LiquidCachedColumn::new(
-                    field,
-                    self.cache_store.clone(),
-                    column_id,
-                    self.row_group_id,
-                    self.file_id,
-                ));
-                entry.insert(column.clone());
-                column
-            }
-        }
+    /// Returns the batch size configured for this cached row group.
+    pub fn batch_size(&self) -> usize {
+        self.cache_store.config().batch_size()
     }
 
     /// Get a column from the row group.
     pub fn get_column(&self, column_id: u64) -> Option<LiquidCachedColumnRef> {
-        self.columns.read().unwrap().get(&column_id).cloned()
+        self.columns.read().unwrap().by_id.get(&column_id).cloned()
+    }
+
+    /// Get a column from the row group by its field name.
+    pub fn get_column_by_name(&self, column_name: &str) -> Option<LiquidCachedColumnRef> {
+        self.columns
+            .read()
+            .unwrap()
+            .by_name
+            .get(column_name)
+            .cloned()
     }
 
     /// Evaluate a predicate on a row group.
-    pub fn evaluate_selection_with_predicate(
+    #[fastrace::trace]
+    pub async fn evaluate_selection_with_predicate(
         &self,
         batch_id: BatchID,
         selection: &BooleanBuffer,
@@ -205,7 +109,9 @@ impl LiquidCachedRowGroup {
             // If we only have one column, we can short-circuit and try to evaluate the predicate on encoded data.
             let column_id = column_ids[0];
             let cache = self.get_column(column_id as u64)?;
-            return cache.eval_predicate_with_filter(batch_id, selection, predicate);
+            return cache
+                .eval_predicate_with_filter(batch_id, selection, predicate)
+                .await;
         } else if column_ids.len() >= 2 {
             // Try to extract multiple column-literal expressions from OR structure
             if let Some(column_exprs) =
@@ -213,27 +119,16 @@ impl LiquidCachedRowGroup {
             {
                 let mut combined_buffer: Option<BooleanArray> = None;
 
-                for (col_idx, expr) in column_exprs {
-                    let column = self.get_column(col_idx as u64)?;
-                    let entry = self.cache_store.get(&column.entry_id(batch_id).into())?;
-                    let io_state = entry.try_read_liquid();
-                    let liquid_array = match io_state {
-                        SansIo::Ready(None) => {
+                for (col_name, expr) in column_exprs {
+                    let column = self.get_column_by_name(col_name)?;
+                    let entry_id = column.entry_id(batch_id).into();
+                    let liquid_array = self.cache_store.try_read_liquid(&entry_id).await;
+                    let liquid_array = match liquid_array {
+                        None => {
                             combined_buffer = None;
                             break;
                         }
-                        SansIo::Ready(Some(array)) => array,
-                        SansIo::Pending((mut state, mut io_req)) => loop {
-                            let bytes = blocking_reading_io(&io_req).ok()?;
-                            state.feed(bytes);
-                            match state.try_get() {
-                                TryGet::Ready(array) => break array,
-                                TryGet::NeedData((s, req)) => {
-                                    state = s;
-                                    io_req = req;
-                                }
-                            }
-                        },
+                        Some(array) => array,
                     };
                     let buffer =
                         if let Some(buffer) = liquid_array.try_eval_predicate(&expr, selection) {
@@ -261,9 +156,11 @@ impl LiquidCachedRowGroup {
         let mut fields = Vec::new();
         for column_id in column_ids {
             let column = self.get_column(column_id as u64)?;
-            let array = column.get_arrow_array_with_filter(batch_id, selection)?;
+            let array = column
+                .get_arrow_array_with_filter(batch_id, selection)
+                .await?;
             arrays.push(array);
-            fields.push(column.field.clone());
+            fields.push(column.field());
         }
         let schema = Arc::new(Schema::new(fields));
         let record_batch = RecordBatch::try_new(schema, arrays).unwrap();
@@ -277,31 +174,41 @@ pub(crate) type LiquidCachedRowGroupRef = Arc<LiquidCachedRowGroup>;
 /// A file in the cache.
 #[derive(Debug)]
 pub struct LiquidCachedFile {
-    row_groups: Mutex<AHashMap<u64, Arc<LiquidCachedRowGroup>>>,
     cache_store: Arc<CacheStorage>,
     file_id: u64,
+    file_schema: SchemaRef,
 }
 
 impl LiquidCachedFile {
-    fn new(cache_store: Arc<CacheStorage>, file_id: u64) -> Self {
+    fn new(cache_store: Arc<CacheStorage>, file_id: u64, file_schema: SchemaRef) -> Self {
         Self {
-            row_groups: Mutex::new(AHashMap::new()),
             cache_store,
             file_id,
+            file_schema,
         }
     }
 
-    /// Get a row group from the cache.
-    pub fn row_group(&self, row_group_id: u64) -> LiquidCachedRowGroupRef {
-        let mut row_groups = self.row_groups.lock().unwrap();
-        let row_group = row_groups.entry(row_group_id).or_insert_with(|| {
-            Arc::new(LiquidCachedRowGroup::new(
-                self.cache_store.clone(),
-                row_group_id,
-                self.file_id,
-            ))
-        });
-        row_group.clone()
+    /// Create a row group handle scoped to the current query context.
+    pub fn create_row_group(&self, row_group_id: u64) -> LiquidCachedRowGroupRef {
+        let columns: Vec<(u64, Arc<Field>)> = self
+            .file_schema
+            .fields()
+            .iter()
+            .enumerate()
+            .map(|(idx, field)| (idx as u64, Arc::clone(field)))
+            .collect();
+
+        Arc::new(LiquidCachedRowGroup::new(
+            self.cache_store.clone(),
+            row_group_id,
+            self.file_id,
+            &columns,
+        ))
+    }
+
+    /// Return the configured cache batch size.
+    pub fn batch_size(&self) -> usize {
+        self.cache_store.config().batch_size()
     }
 
     fn reset(&self) {
@@ -334,15 +241,17 @@ impl LiquidCache {
         cache_dir: PathBuf,
         cache_policy: Box<dyn CachePolicy>,
         squeeze_policy: Box<dyn SqueezePolicy>,
+        io_mode: IoMode,
     ) -> Self {
         assert!(batch_size.is_power_of_two());
+        let io_context = Arc::new(ParquetIoContext::new(cache_dir.clone(), io_mode));
         let cache_storage_builder = CacheStorageBuilder::new()
             .with_batch_size(batch_size)
             .with_max_cache_bytes(max_cache_bytes)
             .with_cache_dir(cache_dir.clone())
             .with_squeeze_policy(squeeze_policy)
             .with_cache_policy(cache_policy)
-            .with_io_worker(Arc::new(ParquetIoContext::new(cache_dir)));
+            .with_io_worker(io_context);
         let cache_storage = cache_storage_builder.build();
 
         LiquidCache {
@@ -353,11 +262,19 @@ impl LiquidCache {
     }
 
     /// Register a file in the cache.
-    pub fn register_or_get_file(&self, file_path: String) -> LiquidCachedFileRef {
+    pub fn register_or_get_file(
+        &self,
+        file_path: String,
+        full_file_schema: SchemaRef,
+    ) -> LiquidCachedFileRef {
         let mut files = self.files.lock().unwrap();
         let value = files.entry(file_path.clone()).or_insert_with(|| {
             let file_id = self.current_file_id.fetch_add(1, Ordering::Relaxed);
-            Arc::new(LiquidCachedFile::new(self.cache_store.clone(), file_id))
+            Arc::new(LiquidCachedFile::new(
+                self.cache_store.clone(),
+                file_id,
+                full_file_schema.clone(),
+            ))
         });
         value.clone()
     }
@@ -448,7 +365,7 @@ mod tests {
     use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
     use std::sync::Arc;
 
-    fn setup_cache(batch_size: usize) -> LiquidCachedRowGroupRef {
+    fn setup_cache(batch_size: usize, schema: SchemaRef) -> LiquidCachedRowGroupRef {
         let tmp_dir = tempfile::tempdir().unwrap();
         let cache = LiquidCache::new(
             batch_size,
@@ -456,31 +373,32 @@ mod tests {
             tmp_dir.path().to_path_buf(),
             Box::new(LiquidPolicy::new()),
             Box::new(TranscodeSqueezeEvict),
+            IoMode::Uring,
         );
-        let file = cache.register_or_get_file("test".to_string());
-        file.row_group(0)
+        let file = cache.register_or_get_file("test".to_string(), schema);
+        file.create_row_group(0)
     }
 
-    #[test]
-    fn evaluate_or_on_cached_columns() {
+    #[tokio::test]
+    async fn evaluate_or_on_cached_columns() {
         let batch_size = 4;
-        let row_group = setup_cache(batch_size);
 
         let schema = Arc::new(Schema::new(vec![
             Field::new("a", DataType::Int32, false),
             Field::new("b", DataType::Int32, false),
         ]));
+        let row_group = setup_cache(batch_size, schema.clone());
 
-        let col_a = row_group.create_column(0, Arc::new(Field::new("a", DataType::Int32, false)));
-        let col_b = row_group.create_column(1, Arc::new(Field::new("b", DataType::Int32, false)));
+        let col_a = row_group.get_column(0).unwrap();
+        let col_b = row_group.get_column(1).unwrap();
 
         let batch_id = BatchID::from_row_id(0, batch_size);
 
         let array_a = Arc::new(Int32Array::from(vec![1, 2, 3, 4]));
         let array_b = Arc::new(Int32Array::from(vec![10, 20, 30, 40]));
 
-        assert!(col_a.insert(batch_id, array_a.clone()).is_ok());
-        assert!(col_b.insert(batch_id, array_b.clone()).is_ok());
+        assert!(col_a.insert(batch_id, array_a.clone()).await.is_ok());
+        assert!(col_b.insert(batch_id, array_b.clone()).await.is_ok());
 
         // build parquet metadata for predicate construction
         let tmp_meta = tempfile::NamedTempFile::new().unwrap();
@@ -519,6 +437,7 @@ mod tests {
         let selection = BooleanBuffer::new_set(batch_size);
         let result = row_group
             .evaluate_selection_with_predicate(batch_id, &selection, &mut predicate)
+            .await
             .unwrap()
             .unwrap();
 
@@ -526,10 +445,9 @@ mod tests {
         assert_eq!(result, expected);
     }
 
-    #[test]
-    fn evaluate_three_column_or() {
+    #[tokio::test]
+    async fn evaluate_three_column_or() {
         let batch_size = 8;
-        let row_group = setup_cache(batch_size);
 
         let schema = Arc::new(Schema::new(vec![
             Field::new("a", DataType::Int32, false),
@@ -537,9 +455,11 @@ mod tests {
             Field::new("c", DataType::Int32, false),
         ]));
 
-        let col_a = row_group.create_column(0, Arc::new(Field::new("a", DataType::Int32, false)));
-        let col_b = row_group.create_column(1, Arc::new(Field::new("b", DataType::Int32, false)));
-        let col_c = row_group.create_column(2, Arc::new(Field::new("c", DataType::Int32, false)));
+        let row_group = setup_cache(batch_size, schema.clone());
+
+        let col_a = row_group.get_column(0).unwrap();
+        let col_b = row_group.get_column(1).unwrap();
+        let col_c = row_group.get_column(2).unwrap();
 
         let batch_id = BatchID::from_row_id(0, batch_size);
 
@@ -549,9 +469,9 @@ mod tests {
             100, 200, 300, 400, 500, 600, 700, 800,
         ]));
 
-        assert!(col_a.insert(batch_id, array_a.clone()).is_ok());
-        assert!(col_b.insert(batch_id, array_b.clone()).is_ok());
-        assert!(col_c.insert(batch_id, array_c.clone()).is_ok());
+        assert!(col_a.insert(batch_id, array_a.clone()).await.is_ok());
+        assert!(col_b.insert(batch_id, array_b.clone()).await.is_ok());
+        assert!(col_c.insert(batch_id, array_c.clone()).await.is_ok());
 
         // build parquet metadata for predicate construction
         let tmp_meta = tempfile::NamedTempFile::new().unwrap();
@@ -599,6 +519,7 @@ mod tests {
         let selection = BooleanBuffer::new_set(batch_size);
         let result = row_group
             .evaluate_selection_with_predicate(batch_id, &selection, &mut predicate)
+            .await
             .unwrap()
             .unwrap();
 
@@ -608,20 +529,19 @@ mod tests {
         assert_eq!(result, expected);
     }
 
-    #[test]
-    fn evaluate_string_column_or() {
+    #[tokio::test]
+    async fn evaluate_string_column_or() {
         let batch_size = 8;
-        let row_group = setup_cache(batch_size);
 
         let schema = Arc::new(Schema::new(vec![
             Field::new("name", DataType::Utf8View, false),
             Field::new("city", DataType::Utf8View, false),
         ]));
 
-        let col_name =
-            row_group.create_column(0, Arc::new(Field::new("name", DataType::Utf8View, false)));
-        let col_city =
-            row_group.create_column(1, Arc::new(Field::new("city", DataType::Utf8View, false)));
+        let row_group = setup_cache(batch_size, schema.clone());
+
+        let col_name = row_group.get_column(0).unwrap();
+        let col_city = row_group.get_column(1).unwrap();
 
         let batch_id = BatchID::from_row_id(0, batch_size);
 
@@ -632,8 +552,8 @@ mod tests {
             "New York", "London", "Paris", "Tokyo", "Berlin", "Sydney", "Madrid", "Rome",
         ]));
 
-        assert!(col_name.insert(batch_id, array_name.clone()).is_ok());
-        assert!(col_city.insert(batch_id, array_city.clone()).is_ok());
+        assert!(col_name.insert(batch_id, array_name.clone()).await.is_ok());
+        assert!(col_city.insert(batch_id, array_city.clone()).await.is_ok());
 
         // build parquet metadata for predicate construction
         let tmp_meta = tempfile::NamedTempFile::new().unwrap();
@@ -676,6 +596,7 @@ mod tests {
         let selection = BooleanBuffer::new_set(batch_size);
         let result = row_group
             .evaluate_selection_with_predicate(batch_id, &selection, &mut predicate)
+            .await
             .unwrap()
             .unwrap();
 

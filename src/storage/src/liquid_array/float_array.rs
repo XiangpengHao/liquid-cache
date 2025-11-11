@@ -32,7 +32,8 @@ use fastlanes::BitPacking;
 use num_traits::{AsPrimitive, Float, FromPrimitive};
 
 use super::LiquidDataType;
-use crate::liquid_array::ipc::get_physical_type_id;
+use crate::cache::CacheExpression;
+use crate::liquid_array::ipc::{PhysicalTypeMarker, get_physical_type_id};
 use crate::liquid_array::raw::BitPackedArray;
 use crate::liquid_array::{
     IoRange, LiquidHybridArray, LiquidHybridArrayRef, Operator, ipc::LiquidIPCHeader,
@@ -76,7 +77,10 @@ pub trait LiquidFloatType:
             + Mul<<Self as ArrowPrimitiveType>::Native>
             + Float // required for decode_single and encode_single_unchecked
         >
-        + private::Sealed + Debug {
+        + private::Sealed
+        + Debug
+        + PhysicalTypeMarker
+{
     type UnsignedIntType:
         ArrowPrimitiveType<
             Native: BitPacking +
@@ -323,15 +327,6 @@ where
         self.to_bytes_inner()
     }
 
-    fn filter(&self, selection: &BooleanBuffer) -> LiquidArrayRef {
-        let values = self.to_arrow_array();
-        let selection = BooleanArray::new(selection.clone(), None);
-        let filtered_values = arrow::compute::kernels::filter::filter(&values, &selection).unwrap();
-        let primitive_values = filtered_values.as_primitive::<T>().clone();
-        let bit_packed = Self::from_arrow_array(primitive_values);
-        Arc::new(bit_packed)
-    }
-
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -340,7 +335,10 @@ where
         self.to_arrow_array()
     }
 
-    fn squeeze(&self) -> Option<(super::LiquidHybridArrayRef, bytes::Bytes)> {
+    fn squeeze(
+        &self,
+        _expression_hint: Option<&CacheExpression>,
+    ) -> Option<(super::LiquidHybridArrayRef, bytes::Bytes)> {
         let orig_bw = self.bit_packed.bit_width()?;
         if orig_bw.get() < 8 {
             return None;
@@ -979,11 +977,6 @@ where
         })
     }
 
-    fn filter(&self, selection: &BooleanBuffer) -> Result<LiquidHybridArrayRef, super::IoRange> {
-        let filtered = self.filter_inner(selection);
-        Ok(Arc::new(filtered) as LiquidHybridArrayRef)
-    }
-
     fn soak(&self, data: bytes::Bytes) -> LiquidArrayRef {
         // `data` is the full IPC payload for primitive array
         let arr = LiquidFloatArray::<T>::from_bytes(data);
@@ -1096,8 +1089,7 @@ mod tests {
         let selection = BooleanBuffer::from(vec![true, false, true, false, true]);
 
         // Apply filter
-        let filtered = liquid_array.filter(&selection);
-        let result_array = filtered.to_arrow_array();
+        let result_array = liquid_array.filter(&selection);
 
         // Expected result after filtering
         let expected = PrimitiveArray::<Float32Type>::from(vec![Some(1.0), Some(3.2), Some(5.5)]);
@@ -1122,8 +1114,7 @@ mod tests {
         // Keep first and last elements
         let selection = BooleanBuffer::from(vec![true, false, false, true]);
 
-        let filtered = liquid_array.filter(&selection);
-        let result_array = filtered.to_arrow_array();
+        let result_array = liquid_array.filter(&selection);
 
         let expected = PrimitiveArray::<Float32Type>::from(vec![None, None]);
 
@@ -1139,8 +1130,7 @@ mod tests {
         // Filter out all elements
         let selection = BooleanBuffer::from(vec![false, false, false]);
 
-        let filtered = liquid_array.filter(&selection);
-        let result_array = filtered.to_arrow_array();
+        let result_array = liquid_array.filter(&selection);
 
         assert_eq!(result_array.len(), 0);
     }
@@ -1204,7 +1194,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(0x51_71);
         let arr = make_f_array_with_range::<Float32Type>(64, 10_000.0, 100.0, 0.1, &mut rng);
         let liquid = LiquidFloatArray::<Float32Type>::from_arrow_array(arr);
-        assert!(liquid.squeeze().is_none());
+        assert!(liquid.squeeze(None).is_none());
     }
 
     #[test]
@@ -1219,7 +1209,7 @@ mod tests {
         );
         let liq = LiquidFloatArray::<Float32Type>::from_arrow_array(arr.clone());
         let bytes_baseline = liq.to_bytes();
-        let (hybrid, bytes) = liq.squeeze().expect("squeezable");
+        let (hybrid, bytes) = liq.squeeze(None).expect("squeezable");
         // ensure we can recover the original using soak
         let recovered = hybrid.soak(bytes.clone());
         assert_eq!(
@@ -1293,7 +1283,7 @@ mod tests {
         );
         let liq = LiquidFloatArray::<Float64Type>::from_arrow_array(arr.clone());
         let bytes_baseline = liq.to_bytes();
-        let (hybrid, bytes) = liq.squeeze().expect("squeezable");
+        let (hybrid, bytes) = liq.squeeze(None).expect("squeezable");
         // ensure we can recover the original using soak
         let recovered = hybrid.soak(bytes.clone());
         assert_eq!(
