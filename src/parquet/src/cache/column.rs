@@ -13,8 +13,9 @@ use parquet::arrow::arrow_reader::ArrowPredicate;
 use crate::{
     LiquidPredicate,
     cache::{BatchID, ColumnAccessPath, ParquetArrayID},
-    optimizers::DATE_MAPPING_METADATA_KEY,
+    optimizers::{DATE_MAPPING_METADATA_KEY, VARIANT_MAPPING_METADATA_KEY},
 };
+use parquet::variant::VariantType;
 
 /// A column in the cache.
 #[derive(Debug)]
@@ -29,11 +30,18 @@ pub struct LiquidCachedColumn {
 pub type LiquidCachedColumnRef = Arc<LiquidCachedColumn>;
 
 fn infer_expression(field: &Field) -> Option<CacheExpression> {
-    let mapping = field.metadata().get(DATE_MAPPING_METADATA_KEY)?;
-    if field.data_type() != &DataType::Date32 {
-        return None;
+    if let Some(mapping) = field.metadata().get(DATE_MAPPING_METADATA_KEY)
+        && field.data_type() == &DataType::Date32
+        && let Some(expr) = CacheExpression::try_from_date_part_str(mapping)
+    {
+        return Some(expr);
     }
-    CacheExpression::try_from_date_part_str(mapping)
+    if let Some(path) = field.metadata().get(VARIANT_MAPPING_METADATA_KEY)
+        && field.try_extension_type::<VariantType>().is_ok()
+    {
+        return Some(CacheExpression::variant_get(path.to_string()));
+    }
+    None
 }
 
 /// Error type for inserting an arrow array into the cache.

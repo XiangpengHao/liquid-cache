@@ -401,9 +401,7 @@ where
         if T::DATA_TYPE == DataType::Date32 {
             // Special handle for Date32 arrays with component extraction support.
             let field = expression_hint
-                .map(|expr| match expr {
-                    CacheExpression::ExtractDate32 { field } => *field,
-                })
+                .and_then(|expr| expr.as_date32_field())
                 .unwrap_or(Date32Field::Year);
             return Some((
                 Arc::new(SqueezedDate32Array::from_liquid_date32(self, field))

@@ -2986,6 +2986,8 @@ dependencies = [
  "num-traits",
  "object_store",
  "parquet",
+ "parquet-variant",
+ "parquet-variant-compute",
  "paste",
  "rand 0.9.2",
  "serde",
