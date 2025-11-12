@@ -154,9 +154,9 @@ expression: displayable.tree_render().to_string()
                                                           │    --------------------   ││    --------------------   │
                                                           │          files: 1         ││ partition_count(in->out): │
                                                           │      format: parquet      ││           1 -> 8          │
-                                                          │      predicate: true      ││                           │
-                                                          │                           ││    partitioning_scheme:   │
-                                                          │                           ││     RoundRobinBatch(8)    │
+                                                          │                           ││                           │
+                                                          │         predicate:        ││    partitioning_scheme:   │
+                                                          │  DynamicFilter [ empty ]  ││     RoundRobinBatch(8)    │
                                                           └───────────────────────────┘└─────────────┬─────────────┘
                                                                                        ┌─────────────┴─────────────┐
                                                                                        │       DataSourceExec      │
@@ -167,5 +167,8 @@ expression: displayable.tree_render().to_string()
                                                                                        │         predicate:        │
                                                                                        │      l_receiptdate >      │
                                                                                        │        l_commitdate       │
-                                                                                       │      AND true AND true    │
+                                                                                       │     AND DynamicFilter [   │
+                                                                                       │         empty ] AND       │
+                                                                                       │       DynamicFilter [     │
+                                                                                       │           empty ]         │
                                                                                        └───────────────────────────┘

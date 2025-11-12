@@ -1,9 +1,6 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::{
-    cache::{CacheExpression, CacheExpressionId},
-    liquid_array::Date32Field,
-};
+use crate::cache::ExpressionId;
 
 #[cfg(test)]
 pub(crate) fn gen_test_decimal_array<T: arrow::datatypes::DecimalType>(
@@ -38,118 +35,62 @@ pub(crate) fn gen_test_decimal_array<T: arrow::datatypes::DecimalType>(
         .clone()
 }
 
-const EXPRESSION_SLOT_BITS: usize = 16;
-const EXPRESSION_SLOT_MASK: usize = (1usize << EXPRESSION_SLOT_BITS) - 1;
-const EXPRESSION_SLOT_COUNT: usize = 4;
-const EXPRESSION_EMPTY_VALUE: u16 = u16::MAX;
-
-const fn empty_expression_packed() -> usize {
-    let mut value = 0usize;
-    let mut idx = 0;
-    while idx < EXPRESSION_SLOT_COUNT {
-        value |= (EXPRESSION_EMPTY_VALUE as usize) << (idx * EXPRESSION_SLOT_BITS);
-        idx += 1;
-    }
-    value
-}
-
-const EXPRESSION_EMPTY_PACKED: usize = empty_expression_packed();
-
-#[cfg(not(target_pointer_width = "64"))]
-compile_error!("Expression hint tracking requires a 64-bit target pointer width");
-
-fn decode_expression_slots(raw: usize) -> [u16; EXPRESSION_SLOT_COUNT] {
-    let mut slots = [EXPRESSION_EMPTY_VALUE; EXPRESSION_SLOT_COUNT];
-    let mut idx = 0;
-    while idx < EXPRESSION_SLOT_COUNT {
-        let shift = idx * EXPRESSION_SLOT_BITS;
-        let value = (raw >> shift) & EXPRESSION_SLOT_MASK;
-        slots[idx] = value as u16;
-        idx += 1;
-    }
-    slots
-}
-
-fn encode_expression_slots(slots: &[u16; EXPRESSION_SLOT_COUNT]) -> usize {
-    let mut raw = 0usize;
-    let mut idx = 0;
-    while idx < EXPRESSION_SLOT_COUNT {
-        raw |= (slots[idx] as usize) << (idx * EXPRESSION_SLOT_BITS);
-        idx += 1;
-    }
-    raw
-}
-
 #[derive(Debug)]
 pub(crate) struct ExpressionHintTracker {
-    packed: AtomicUsize,
+    slots: AtomicU64,
 }
 
 impl ExpressionHintTracker {
     pub(crate) fn new() -> Self {
         Self {
-            packed: AtomicUsize::new(EXPRESSION_EMPTY_PACKED),
+            slots: AtomicU64::new(0),
         }
     }
 
-    pub(crate) fn record_date32_field(&self, field: Date32Field) {
-        let id = CacheExpressionId::from_date32_field(field);
-        self.record_expression_id(id);
-    }
-
-    pub(crate) fn record_expression(&self, expression: &CacheExpression) {
-        match expression {
-            CacheExpression::ExtractDate32 { field } => self.record_date32_field(*field),
+    pub(crate) fn record_expression(&self, expression: ExpressionId) {
+        let value = expression.as_raw() as u64;
+        loop {
+            let current = self.slots.load(Ordering::Relaxed);
+            let next = (current << 16) | value;
+            if self
+                .slots
+                .compare_exchange(current, next, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
+                break;
+            }
         }
     }
 
-    fn record_expression_id(&self, id: CacheExpressionId) {
-        let code = id.raw();
-        if code == EXPRESSION_EMPTY_VALUE {
-            return;
+    pub(crate) fn majority_expression(&self) -> Option<ExpressionId> {
+        let mut slots = [0u16; 4];
+        let mut value = self.slots.load(Ordering::Relaxed);
+        for raw in &mut slots {
+            *raw = (value & 0xFFFF) as u16;
+            value >>= 16;
         }
-        let mut slots = decode_expression_slots(self.packed.load(Ordering::Relaxed));
-        let mut idx = 0;
-        while idx + 1 < EXPRESSION_SLOT_COUNT {
-            slots[idx] = slots[idx + 1];
-            idx += 1;
-        }
-        slots[EXPRESSION_SLOT_COUNT - 1] = code;
-        let encoded = encode_expression_slots(&slots);
-        // here we didn't use compare and swap because we don't care about contention here.
-        self.packed.store(encoded, Ordering::Relaxed);
-    }
 
-    pub(crate) fn majority_date32_field(&self) -> Option<Date32Field> {
-        let slots = decode_expression_slots(self.packed.load(Ordering::Relaxed));
-        let mut best_field = None;
-        let mut best_count = 0u8;
-        let mut best_index = 0usize;
-
-        for (idx, &code) in slots.iter().enumerate() {
-            if code == EXPRESSION_EMPTY_VALUE {
+        let mut best: Option<(ExpressionId, usize, usize)> = None;
+        for (idx, raw) in slots.iter().enumerate() {
+            if *raw == 0 {
                 continue;
             }
-
-            let id = CacheExpressionId::from_raw(code);
-            let Some(field) = id.as_date32_field() else {
+            let Some(candidate) = ExpressionId::from_raw(*raw) else {
                 continue;
             };
-
-            let count = slots.iter().filter(|&&value| value == code).count() as u8;
-            if count > best_count || (count == best_count && idx > best_index) {
-                best_count = count;
-                best_index = idx;
-                best_field = Some(field);
+            let count = slots.iter().filter(|value| **value == *raw).count();
+            match best {
+                None => best = Some((candidate, count, idx)),
+                Some((_, best_count, best_idx))
+                    if count > best_count || (count == best_count && idx < best_idx) =>
+                {
+                    best = Some((candidate, count, idx));
+                }
+                _ => {}
             }
         }
 
-        best_field
-    }
-
-    pub(crate) fn majority_expression(&self) -> Option<CacheExpression> {
-        self.majority_date32_field()
-            .map(CacheExpression::extract_date32)
+        best.map(|(id, _, _)| id)
     }
 }
 
@@ -161,9 +102,8 @@ impl Default for ExpressionHintTracker {
 
 impl Clone for ExpressionHintTracker {
     fn clone(&self) -> Self {
-        let value = self.packed.load(Ordering::Relaxed);
         Self {
-            packed: AtomicUsize::new(value),
+            slots: AtomicU64::new(self.slots.load(Ordering::Relaxed)),
         }
     }
 }
@@ -171,29 +111,58 @@ impl Clone for ExpressionHintTracker {
 #[cfg(test)]
 mod tests {
     use super::ExpressionHintTracker;
-    use crate::liquid_array::Date32Field;
+    use crate::{
+        cache::{CacheExpression, ExpressionRegistry},
+        liquid_array::Date32Field,
+    };
 
     #[test]
     fn majority_date32_field_returns_most_frequent_field() {
         let tracker = ExpressionHintTracker::new();
+        let registry = ExpressionRegistry::new();
 
-        tracker.record_date32_field(Date32Field::Year);
-        tracker.record_date32_field(Date32Field::Month);
-        tracker.record_date32_field(Date32Field::Year);
-        tracker.record_date32_field(Date32Field::Year);
+        let year = registry
+            .register(CacheExpression::extract_date32(Date32Field::Year))
+            .expect("register year");
+        let month = registry
+            .register(CacheExpression::extract_date32(Date32Field::Month))
+            .expect("register month");
 
-        assert_eq!(tracker.majority_date32_field(), Some(Date32Field::Year));
+        tracker.record_expression(year);
+        tracker.record_expression(month);
+        tracker.record_expression(year);
+        tracker.record_expression(year);
+
+        let majority = tracker.majority_expression().expect("majority id");
+        let expr = registry.get(majority).expect("resolve expression");
+        assert_eq!(
+            expr.as_ref(),
+            &CacheExpression::extract_date32(Date32Field::Year)
+        );
     }
 
     #[test]
     fn majority_date32_field_prefers_most_recent_on_tie() {
         let tracker = ExpressionHintTracker::new();
+        let registry = ExpressionRegistry::new();
 
-        tracker.record_date32_field(Date32Field::Year);
-        tracker.record_date32_field(Date32Field::Month);
-        tracker.record_date32_field(Date32Field::Year);
-        tracker.record_date32_field(Date32Field::Month);
+        let year = registry
+            .register(CacheExpression::extract_date32(Date32Field::Year))
+            .expect("register year");
+        let month = registry
+            .register(CacheExpression::extract_date32(Date32Field::Month))
+            .expect("register month");
 
-        assert_eq!(tracker.majority_date32_field(), Some(Date32Field::Month));
+        tracker.record_expression(year);
+        tracker.record_expression(month);
+        tracker.record_expression(year);
+        tracker.record_expression(month);
+
+        let majority = tracker.majority_expression().expect("majority id");
+        let expr = registry.get(majority).expect("resolve expression");
+        assert_eq!(
+            expr.as_ref(),
+            &CacheExpression::extract_date32(Date32Field::Month)
+        );
     }
 }

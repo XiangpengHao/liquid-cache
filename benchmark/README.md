@@ -71,6 +71,50 @@ cargo run --release --bin bench_server -- --cache-mode liquid_eager_transcode
 env RUST_LOG=info,clickbench_client=debug RUSTFLAGS='-C target-cpu=native' cargo run --release --bin tpch_client -- --query-dir benchmark/tpch/queries/ --data-dir benchmark/tpch/data/sf0.1  --iteration 3 --answer-dir benchmark/tpch/answers/sf0.1
 ```
 
+## StackOverflow
+
+### Prepare data
+
+The StackOverflow benchmark uses the CSV bundles published by TUM
+([math](https://db.in.tum.de/~schmidt/data/stackoverflow_math.tar.gz) /
+[DBA](https://db.in.tum.de/~schmidt/data/stackoverflow_dba.tar.gz)). By default
+it downloads the math archive, while `--mode ci` switches to the smaller DBA
+slice. Each tarball contains headerless CSV files that we load with DuckDB and
+export to Parquet.
+
+Requirements:
+- [`uv`](https://docs.astral.sh/uv/) (install once with `curl -LsSf https://astral.sh/uv/install.sh | sh`)
+
+```bash
+# Full dataset (may take a while and needs ~15GB of free disk space)
+~/.cargo/bin/uv run --with duckdb python benchmark/stackoverflow/setup_stackoverflow.py --mode full
+
+# CI-sized slice that keeps roughly the last five years of data (DBA site)
+~/.cargo/bin/uv run --with duckdb python benchmark/stackoverflow/setup_stackoverflow.py --mode ci
+```
+
+The helper automatically downloads `stackoverflow_schema.sql` from the same
+mirror and derives column definitions from it, so no local schema maintenance
+is required.
+
+The Parquet files are written to `benchmark/stackoverflow/data/<site>`, matching
+`benchmark/stackoverflow/manifest.json` (math) or
+`benchmark/stackoverflow/manifest.ci.json` (DBA). Use `--output-dir` if you want
+the files somewhere else.
+
+### Run benchmarks
+
+```bash
+cargo run --release --bin bench_server
+cargo run --release --bin clickbench_client -- --manifest benchmark/stackoverflow/manifest.json
+
+# Optional in-process run
+cargo run --release --bin in_process -- \
+  --manifest benchmark/stackoverflow/manifest.json \
+  --bench-mode liquid \
+  --max-cache-mb 256
+```
+
 ## In process mode
 The benchmark uses a JSON manifest file to describe the data tables and queries to run.
 

@@ -169,7 +169,9 @@ expression: displayable.tree_render().to_string()
                                                           │    --------------------   ││    --------------------   │
                                                           │          files: 1         ││     target_batch_size:    │
                                                           │      format: parquet      ││           16384           │
-                                                          │      predicate: true      ││                           │
+                                                          │                           ││                           │
+                                                          │         predicate:        ││                           │
+                                                          │  DynamicFilter [ empty ]  ││                           │
                                                           └───────────────────────────┘└─────────────┬─────────────┘
                                                                                        ┌─────────────┴─────────────┐
                                                                                        │        HashJoinExec       │
@@ -191,9 +193,9 @@ expression: displayable.tree_render().to_string()
                                                                                        │         l_discount        │                                                                                       │      format: parquet      │
                                                                                        │                           │                                                                                       │                           │
                                                                                        │      l_extendedprice:     │                                                                                       │         predicate:        │
-                                                                                       │      l_extendedprice      │                                                                                       │       true AND true       │
-                                                                                       │                           │                                                                                       │                           │
-                                                                                       │    o_custkey: o_custkey   │                                                                                       │                           │
+                                                                                       │      l_extendedprice      │                                                                                       │  DynamicFilter [ empty ]  │
+                                                                                       │                           │                                                                                       │     AND DynamicFilter [   │
+                                                                                       │    o_custkey: o_custkey   │                                                                                       │           empty ]         │
                                                                                        │                           │                                                                                       │                           │
                                                                                        │        o_orderdate:       │                                                                                       │                           │
                                                                                        │        o_orderdate        │                                                                                       │                           │
@@ -259,6 +261,9 @@ expression: displayable.tree_render().to_string()
                                                                                                                     │    --------------------   ││    --------------------   │
                                                                                                                     │          files: 1         ││     target_batch_size:    │
                                                                                                                     │      format: parquet      ││           16384           │
+                                                                                                                    │                           ││                           │
+                                                                                                                    │         predicate:        ││                           │
+                                                                                                                    │  DynamicFilter [ empty ]  ││                           │
                                                                                                                     └───────────────────────────┘└─────────────┬─────────────┘
                                                                                                                                                  ┌─────────────┴─────────────┐
                                                                                                                                                  │        HashJoinExec       │
@@ -280,6 +285,9 @@ expression: displayable.tree_render().to_string()
                                                                                                                                                  │      format: parquet      ││      format: parquet      │
                                                                                                                                                  │                           ││                           │
                                                                                                                                                  │         predicate:        ││         predicate:        │
-                                                                                                                                                 │ p_type = ECONOMY ANODIZED ││   true AND true AND true  │
-                                                                                                                                                 │            STEEL          ││                           │
+                                                                                                                                                 │ p_type = ECONOMY ANODIZED ││  DynamicFilter [ empty ]  │
+                                                                                                                                                 │            STEEL          ││     AND DynamicFilter [   │
+                                                                                                                                                 │                           ││         empty ] AND       │
+                                                                                                                                                 │                           ││        DynamicFilter      │
+                                                                                                                                                 │                           ││          [ empty ]        │
                                                                                                                                                  └───────────────────────────┘└───────────────────────────┘

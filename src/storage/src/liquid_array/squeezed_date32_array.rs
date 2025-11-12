@@ -12,7 +12,7 @@ use crate::liquid_array::raw::BitPackedArray;
 use crate::utils::get_bit_width;
 
 /// Which component to extract from a `Date32` (days since UNIX epoch).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Date32Field {
     /// Year component
     Year,

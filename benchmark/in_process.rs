@@ -55,6 +55,10 @@ struct InProcessBenchmark {
     #[arg(long = "cache-dir")]
     pub cache_dir: Option<PathBuf>,
 
+    /// If set, compare results against datafusion-default mode after each query
+    #[arg(long = "check-results", default_value_t = false)]
+    pub check_results: bool,
+
     /// Jaeger OTLP gRPC endpoint (for example: http://localhost:4317)
     #[arg(long = "jaeger-endpoint")]
     pub jaeger_endpoint: Option<String>,
@@ -78,8 +82,8 @@ impl InProcessBenchmark {
             .with_flamegraph_dir(self.flamegraph_dir.clone())
             .with_cache_dir(self.cache_dir.clone())
             .with_query_filter(self.query_index)
-            .with_io_mode(self.io_mode);
-
+            .with_io_mode(self.io_mode)
+            .with_check_results(self.check_results);
         runner.run(manifest, self, output).await?;
         Ok(())
     }

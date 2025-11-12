@@ -72,56 +72,58 @@ expression: displayable.tree_render().to_string()
 │     NestedLoopJoinExec    ├──────────────┐
 └─────────────┬─────────────┘              │
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-│       AggregateExec       ││      RepartitionExec      │
+│       AggregateExec       ││       ProjectionExec      │
 │    --------------------   ││    --------------------   │
-│           aggr:           ││ partition_count(in->out): │
-│  avg(customer.c_acctbal)  ││           1 -> 8          │
+│           aggr:           ││    c_acctbal: c_acctbal   │
+│  avg(customer.c_acctbal)  ││      c_phone: c_phone     │
 │                           ││                           │
-│        mode: Final        ││    partitioning_scheme:   │
+│        mode: Final        ││   join_proj_push_down_1:  │
+│                           ││     CAST(c_acctbal AS     │
+│                           ││       Decimal128(19,      │
+│                           ││             6))           │
+└─────────────┬─────────────┘└─────────────┬─────────────┘
+┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+│   CoalescePartitionsExec  ││      RepartitionExec      │
+│                           ││    --------------------   │
+│                           ││ partition_count(in->out): │
+│                           ││           1 -> 8          │
+│                           ││                           │
+│                           ││    partitioning_scheme:   │
 │                           ││     RoundRobinBatch(8)    │
 └─────────────┬─────────────┘└─────────────┬─────────────┘
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-│   CoalescePartitionsExec  ││    CoalesceBatchesExec    │
-│                           ││    --------------------   │
-│                           ││     target_batch_size:    │
-│                           ││           16384           │
+│   LiquidCacheClientExec   ││    CoalesceBatchesExec    │
+│    --------------------   ││    --------------------   │
+│          server:          ││     target_batch_size:    │
+│  http://localhost:50051,  ││           16384           │
+│      object_stores=[]     ││                           │
 └─────────────┬─────────────┘└─────────────┬─────────────┘
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-│   LiquidCacheClientExec   ││        HashJoinExec       │
+│       AggregateExec       ││        HashJoinExec       │
 │    --------------------   ││    --------------------   │
-│          server:          ││    join_type: LeftAnti    │
-│  http://localhost:50051,  ││                           ├──────────────┐
-│      object_stores=[]     ││            on:            │              │
-│                           ││  (c_custkey = o_custkey)  │              │
+│           aggr:           ││    join_type: LeftAnti    │
+│  avg(customer.c_acctbal)  ││                           ├──────────────┐
+│                           ││            on:            │              │
+│       mode: Partial       ││  (c_custkey = o_custkey)  │              │
 └─────────────┬─────────────┘└─────────────┬─────────────┘              │
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-│       AggregateExec       ││   LiquidCacheClientExec   ││   LiquidCacheClientExec   │
+│      RepartitionExec      ││   LiquidCacheClientExec   ││   LiquidCacheClientExec   │
 │    --------------------   ││    --------------------   ││    --------------------   │
-│           aggr:           ││          server:          ││          server:          │
-│  avg(customer.c_acctbal)  ││  http://localhost:50051,  ││  http://localhost:50051,  │
+│ partition_count(in->out): ││          server:          ││          server:          │
+│           1 -> 8          ││  http://localhost:50051,  ││  http://localhost:50051,  │
 │                           ││      object_stores=[]     ││      object_stores=[]     │
-│       mode: Partial       ││                           ││                           │
+│    partitioning_scheme:   ││                           ││                           │
+│     RoundRobinBatch(8)    ││                           ││                           │
 └─────────────┬─────────────┘└─────────────┬─────────────┘└─────────────┬─────────────┘
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-│      RepartitionExec      ││       DataSourceExec      ││       DataSourceExec      │
+│       DataSourceExec      ││       DataSourceExec      ││       DataSourceExec      │
 │    --------------------   ││    --------------------   ││    --------------------   │
-│ partition_count(in->out): ││          files: 1         ││          files: 1         │
-│           1 -> 8          ││      format: parquet      ││      format: parquet      │
+│          files: 1         ││          files: 1         ││          files: 1         │
+│      format: parquet      ││      format: parquet      ││      format: parquet      │
 │                           ││                           ││                           │
-│    partitioning_scheme:   ││         predicate:        ││                           │
-│     RoundRobinBatch(8)    ││ substr(c_phone, 1, 2) IN  ││                           │
-│                           ││  (13, 31, 23, 29, 30, 18, ││                           │
-│                           ││             17)           ││                           │
-└─────────────┬─────────────┘└───────────────────────────┘└───────────────────────────┘
-┌─────────────┴─────────────┐
-│       DataSourceExec      │
-│    --------------------   │
-│          files: 1         │
-│      format: parquet      │
-│                           │
-│         predicate:        │
-│  c_acctbal > Some(0),15,2 │
-│   AND substr(c_phone, 1,  │
-│   2) IN (13, 31, 23, 29,  │
-│         30, 18, 17)       │
-└───────────────────────────┘
+│         predicate:        ││         predicate:        ││                           │
+│  c_acctbal > Some(0),15,2 ││ substr(c_phone, 1, 2) IN  ││                           │
+│   AND substr(c_phone, 1,  ││  (13, 31, 23, 29, 30, 18, ││                           │
+│   2) IN (13, 31, 23, 29,  ││             17)           ││                           │
+│         30, 18, 17)       ││                           ││                           │
+└───────────────────────────┘└───────────────────────────┘└───────────────────────────┘

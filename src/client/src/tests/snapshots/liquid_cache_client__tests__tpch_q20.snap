@@ -64,9 +64,9 @@ expression: displayable.tree_render().to_string()
 │    --------------------   ││    --------------------   ││    --------------------   │                             │    --------------------   │
 │          files: 1         ││          files: 1         ││    join_type: RightSemi   │                             │           aggr:           │
 │      format: parquet      ││      format: parquet      ││                           │                             │  sum(lineitem.l_quantity) │
-│                           ││      predicate: true      ││            on:            │                             │                           │
-│         predicate:        ││                           ││  (p_partkey = ps_partkey) ├──────────────┐              │         group_by:         │
-│      n_name = CANADA      ││                           ││                           │              │              │    l_partkey, l_suppkey   │
+│                           ││                           ││            on:            │                             │                           │
+│         predicate:        ││         predicate:        ││  (p_partkey = ps_partkey) ├──────────────┐              │         group_by:         │
+│      n_name = CANADA      ││  DynamicFilter [ empty ]  ││                           │              │              │    l_partkey, l_suppkey   │
 │                           ││                           ││                           │              │              │                           │
 │                           ││                           ││                           │              │              │           mode:           │
 │                           ││                           ││                           │              │              │      FinalPartitioned     │
@@ -124,5 +124,6 @@ expression: displayable.tree_render().to_string()
                                                                                                                     │         predicate:        │
                                                                                                                     │  l_shipdate >= 1994-01-01 │
                                                                                                                     │    AND l_shipdate < 1995  │
-                                                                                                                    │           -01-01          │
+                                                                                                                    │  -01-01 AND DynamicFilter │
+                                                                                                                    │          [ empty ]        │
                                                                                                                     └───────────────────────────┘

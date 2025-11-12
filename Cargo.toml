@@ -29,23 +29,30 @@ liquid-cache-parquet = { path = "src/parquet", version = "0.1.10" }
 liquid-cache-common = { path = "src/common", version = "0.1.10" }
 liquid-cache-storage = { path = "src/storage", version = "0.1.10" }
 liquid-cache-local = { path = "src/local", version = "0.1.10" }
-arrow = { version = "56.2.0", default-features = false, features = [
+arrow = { version = "57.0.0", default-features = false, features = [
 	"prettyprint",
 ] }
-arrow-flight = { version = "56.2.0", features = ["flight-sql-experimental"] }
-arrow-schema = { version = "56.2.0", features = ["serde"] }
-parquet = { version = "56.2.0", features = ["async", "experimental"] }
-datafusion = { version = "50.1.0" }
-datafusion-proto = { version = "50.1.0" }
+arrow-flight = { version = "57.0.0", features = ["flight-sql-experimental"] }
+arrow-schema = { version = "57.0.0", features = ["serde"] }
+parquet = { version = "57.0.0", features = [
+	"async",
+	"experimental",
+	"variant_experimental",
+] }
+parquet-variant-json = { version = "0.2.0" }
+parquet-variant = { version = "0.2.0" }
+parquet-variant-compute = { version = "0.2.0" }
+datafusion = { version = "51.0.0" }
+datafusion-proto = { version = "51.0.0" }
 async-trait = "0.1.89"
 futures = { version = "0.3.31", default-features = false, features = ["std"] }
 tokio = { version = "1.47.1", features = ["rt-multi-thread"] }
 log = "0.4.28"
-tonic = { version = "0.13" }
+tonic = { version = "0.14.1" }
 url = "2.5.7"
 bytes = { version = "1.10.1", default-features = false }
 ahash = "0.8.12"
-prost = "0.13.5"
+prost = "0.14.1"
 object_store = { version = "0.12.4", default-features = false }
 serde = { version = "1.0", default-features = false, features = ["derive"] }
 serde_json = { version = "1.0", default-features = false, features = ["std"] }
@@ -62,5 +69,27 @@ ignored = ["kani-verifier"]
 insta.opt-level = 3
 
 [patch.crates-io]
-# datafusion = { path = "../datafusion/datafusion/core" }
-# datafusion-proto = { path = "../datafusion/datafusion/proto" }
+datafusion = { git = "https://github.com/apache/datafusion.git", branch = "main" }
+datafusion-proto = { git = "https://github.com/apache/datafusion.git", branch = "main" }
+# arrow = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
+# arrow-schema = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
+# arrow-flight = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
+# parquet = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
+
+
+# Arrow/Parquet from main — include all the subcrates DF uses
+arrow = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
+arrow-array = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
+arrow-buffer = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
+arrow-cast = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
+arrow-data = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
+arrow-ipc = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
+arrow-ord = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
+arrow-row = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
+arrow-schema = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
+arrow-select = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
+arrow-flight = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
+parquet = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
+parquet-variant-json = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
+parquet-variant = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
+parquet-variant-compute = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }

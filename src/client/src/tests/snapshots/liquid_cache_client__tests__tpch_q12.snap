@@ -124,9 +124,9 @@ expression: displayable.tree_render().to_string()
 │    --------------------   ││    --------------------   │
 │          files: 1         ││          files: 1         │
 │      format: parquet      ││      format: parquet      │
-│                           ││      predicate: true      │
-│         predicate:        ││                           │
-│   (l_shipmode = MAIL OR   ││                           │
+│                           ││                           │
+│         predicate:        ││         predicate:        │
+│   (l_shipmode = MAIL OR   ││  DynamicFilter [ empty ]  │
 │     l_shipmode = SHIP)    ││                           │
 │     AND l_receiptdate >   ││                           │
 │      l_commitdate AND     ││                           │

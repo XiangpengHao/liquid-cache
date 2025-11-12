@@ -187,7 +187,9 @@ expression: displayable.tree_render().to_string()
                                                           │    --------------------   ││    --------------------   │
                                                           │          files: 1         ││     target_batch_size:    │
                                                           │      format: parquet      ││           16384           │
-                                                          │      predicate: true      ││                           │
+                                                          │                           ││                           │
+                                                          │         predicate:        ││                           │
+                                                          │  DynamicFilter [ empty ]  ││                           │
                                                           └───────────────────────────┘└─────────────┬─────────────┘
                                                                                        ┌─────────────┴─────────────┐
                                                                                        │        HashJoinExec       │
@@ -209,7 +211,9 @@ expression: displayable.tree_render().to_string()
                                                                                        │           16384           │                             │      format: parquet      │
                                                                                        │                           │                             │                           │
                                                                                        │                           │                             │         predicate:        │
-                                                                                       │                           │                             │       true AND true       │
+                                                                                       │                           │                             │  DynamicFilter [ empty ]  │
+                                                                                       │                           │                             │     AND DynamicFilter [   │
+                                                                                       │                           │                             │           empty ]         │
                                                                                        └─────────────┬─────────────┘                             └───────────────────────────┘
                                                                                        ┌─────────────┴─────────────┐
                                                                                        │        HashJoinExec       │
@@ -230,8 +234,8 @@ expression: displayable.tree_render().to_string()
                                                                                        │          files: 1         ││ partition_count(in->out): │
                                                                                        │      format: parquet      ││           1 -> 8          │
                                                                                        │                           ││                           │
-                                                                                       │                           ││    partitioning_scheme:   │
-                                                                                       │                           ││     RoundRobinBatch(8)    │
+                                                                                       │         predicate:        ││    partitioning_scheme:   │
+                                                                                       │  DynamicFilter [ empty ]  ││     RoundRobinBatch(8)    │
                                                                                        └───────────────────────────┘└─────────────┬─────────────┘
                                                                                                                     ┌─────────────┴─────────────┐
                                                                                                                     │       DataSourceExec      │
@@ -242,5 +246,6 @@ expression: displayable.tree_render().to_string()
                                                                                                                     │         predicate:        │
                                                                                                                     │  l_shipdate >= 1995-01-01 │
                                                                                                                     │   AND l_shipdate <= 1996  │
-                                                                                                                    │      -12-31 AND true      │
+                                                                                                                    │ -12-31 AND DynamicFilter  │
+                                                                                                                    │         [ empty ]         │
                                                                                                                     └───────────────────────────┘

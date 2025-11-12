@@ -159,9 +159,9 @@ expression: displayable.tree_render().to_string()
                              │    --------------------   ││    --------------------   │
                              │          files: 1         ││          files: 1         │
                              │      format: parquet      ││      format: parquet      │
-                             │                           ││      predicate: true      │
-                             │         predicate:        ││                           │
-                             │  p_brand != Brand#45 AND  ││                           │
+                             │                           ││                           │
+                             │         predicate:        ││         predicate:        │
+                             │  p_brand != Brand#45 AND  ││  DynamicFilter [ empty ]  │
                              │       p_type NOT LIKE     ││                           │
                              │      MEDIUM POLISHED%     ││                           │
                              │   AND p_size IN (49, 14,  ││                           │
