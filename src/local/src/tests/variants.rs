@@ -201,3 +201,34 @@ async fn test_variant_get() {
         .expect("query should succeed with small cache");
     println!("results: \n{}", pretty_format_batches(&batches).unwrap());
 }
+
+#[tokio::test]
+async fn test_variant_predicate() {
+    let cache_dir = TempDir::new().unwrap();
+    let parquet_dir = TempDir::new().unwrap();
+    let parquet_path = write_variant_parquet_file(parquet_dir.path());
+    let parquet_path_str = parquet_path.to_str().expect("unicode path");
+
+    let (ctx, _cache) = LiquidCacheLocalBuilder::new()
+        .with_cache_dir(cache_dir.path().to_path_buf())
+        .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+        .build(SessionConfig::new())
+        .unwrap();
+
+    ctx.register_parquet(
+        "variants_test",
+        parquet_path_str,
+        ParquetReadOptions::default().skip_metadata(false),
+    )
+    .await
+    .unwrap();
+
+    let batches = ctx
+        .sql("SELECT variant_to_json(variant_get(data, 'name')) FROM variants_test WHERE variant_get(data, 'name', 'string') = 'Bob'")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    insta::assert_snapshot!(pretty_format_batches(&batches).unwrap());
+}
