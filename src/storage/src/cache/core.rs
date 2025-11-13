@@ -15,7 +15,7 @@ use crate::cache::squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict};
 use crate::cache::stats::{CacheStats, RuntimeStats};
 use crate::cache::utils::{LiquidCompressorStates, arrow_to_bytes};
 use crate::cache::{
-    CacheExpression, ExpressionId, ExpressionRegistry, index::ArtIndex, utils::EntryID,
+    CacheExpression, ExpressionRegistry, index::ArtIndex, utils::EntryID,
 };
 use crate::cache_policies::LiquidPolicy;
 use crate::liquid_array::SqueezedDate32Array;
@@ -332,7 +332,6 @@ pub struct Insert<'a> {
     storage: &'a Arc<CacheStorage>,
     entry_id: EntryID,
     batch: ArrayRef,
-    expression_hint: Option<ExpressionId>,
 }
 
 /// Builder returned by [`CacheStorage::get`] for configuring cache reads.
@@ -341,7 +340,7 @@ pub struct Get<'a> {
     storage: &'a CacheStorage,
     entry_id: &'a EntryID,
     selection: Option<&'a BooleanBuffer>,
-    expression_hint: Option<ExpressionId>,
+    expression_hint: Option<Arc<CacheExpression>>,
 }
 
 /// Builder for predicate evaluation on cached data.
@@ -351,7 +350,6 @@ pub struct EvaluatePredicate<'a> {
     entry_id: &'a EntryID,
     predicate: &'a Arc<dyn PhysicalExpr>,
     selection: Option<&'a BooleanBuffer>,
-    expression_hint: Option<ExpressionId>,
 }
 
 impl CacheStorage {
@@ -528,8 +526,11 @@ impl CacheStorage {
                     let bytes = arrow_to_bytes(array).expect("failed to convert arrow to bytes");
                     let path = self.io_context.arrow_path(&entry_id);
                     self.write_to_disk_blocking(&path, &bytes);
-                    self.try_insert(entry_id, CacheEntry::disk_arrow(array.data_type().clone()))
-                        .expect("failed to insert disk arrow entry");
+                    self.try_insert(
+                        entry_id,
+                        CacheEntry::disk_arrow(array.data_type().clone()),
+                    )
+                    .expect("failed to insert disk arrow entry");
                 }
                 CachedData::MemoryLiquid(liquid_array) => {
                     let liquid_bytes = liquid_array.to_bytes();
@@ -561,25 +562,19 @@ impl CacheStorage {
 impl CacheStorage {
     /// returns the batch that was written to disk
     fn write_in_memory_batch_to_disk(&self, entry_id: EntryID, batch: CacheEntry) -> CacheEntry {
-        let (data, expression_hints) = batch.into_parts();
+        let data = batch.into_data();
         match data {
             CachedData::MemoryArrow(array) => {
                 let bytes = arrow_to_bytes(&array).expect("failed to convert arrow to bytes");
                 let path = self.io_context.arrow_path(&entry_id);
                 self.write_to_disk_blocking(&path, &bytes);
-                CacheEntry::with_expression_tracker(
-                    CachedData::DiskArrow(array.data_type().clone()),
-                    expression_hints,
-                )
+                CacheEntry::disk_arrow(array.data_type().clone())
             }
             CachedData::MemoryLiquid(liquid_array) => {
                 let liquid_bytes = liquid_array.to_bytes();
                 let path = self.io_context.liquid_path(&entry_id);
                 self.write_to_disk_blocking(&path, &liquid_bytes);
-                CacheEntry::with_expression_tracker(
-                    CachedData::DiskLiquid(liquid_array.original_arrow_data_type()),
-                    expression_hints,
-                )
+                CacheEntry::disk_liquid(liquid_array.original_arrow_data_type())
             }
             CachedData::DiskLiquid(_)
             | CachedData::DiskArrow(_)
@@ -672,12 +667,14 @@ impl CacheStorage {
             return;
         };
         let compressor = self.io_context.get_compressor(&to_squeeze);
+        let squeeze_hint_arc = self.expression_registry.column_majority_expression(to_squeeze);
+        let squeeze_hint = squeeze_hint_arc.as_deref();
 
         loop {
             let (new_batch, bytes_to_write) = self.squeeze_policy.squeeze(
                 to_squeeze_batch,
                 compressor.as_ref(),
-                self.expression_registry.as_ref(),
+                squeeze_hint,
             );
 
             if let Some(bytes_to_write) = bytes_to_write {
@@ -726,18 +723,13 @@ impl CacheStorage {
         &self,
         entry_id: &EntryID,
         selection: Option<&BooleanBuffer>,
-        expression: Option<ExpressionId>,
+        expression: Option<&CacheExpression>,
     ) -> Option<ArrayRef> {
         use arrow::array::BooleanArray;
-
-        let expression_arc = expression.and_then(|id| self.expression_registry.get(id));
-        let expression_ref = expression_arc.as_deref();
 
         let batch = self.index.get(entry_id)?;
         self.cache_policy
             .notify_access(entry_id, CachedBatchType::from(&batch));
-
-        batch.record_expression_hint(expression);
 
         match batch.data() {
             CachedData::MemoryArrow(array) => match selection {
@@ -779,7 +771,7 @@ impl CacheStorage {
                 }
             },
             CachedData::MemoryHybridLiquid(array) => {
-                if let Some(CacheExpression::ExtractDate32 { field }) = expression_ref
+                if let Some(CacheExpression::ExtractDate32 { field }) = expression
                     && let Some(squeezed) = array.as_any().downcast_ref::<SqueezedDate32Array>()
                     && squeezed.field() == *field
                 {
@@ -845,7 +837,6 @@ impl CacheStorage {
         entry_id: &EntryID,
         selection_opt: Option<&BooleanBuffer>,
         predicate: &Arc<dyn PhysicalExpr>,
-        expression_hint: Option<ExpressionId>,
     ) -> Option<Result<BooleanArray, ArrayRef>> {
         use arrow::array::BooleanArray;
 
@@ -853,8 +844,6 @@ impl CacheStorage {
         let batch = self.index.get(entry_id)?;
         self.cache_policy
             .notify_access(entry_id, CachedBatchType::from(&batch));
-
-        batch.record_expression_hint(expression_hint);
 
         match batch.data() {
             CachedData::MemoryArrow(array) => {
@@ -982,25 +971,11 @@ impl<'a> Insert<'a> {
             storage,
             entry_id,
             batch,
-            expression_hint: None,
         }
-    }
-
-    /// Attach an expression hint to record at insertion time.
-    pub fn with_expression_hint(mut self, expression: ExpressionId) -> Self {
-        self.expression_hint = Some(expression);
-        self
-    }
-
-    /// Attach an optional expression hint without manual option handling.
-    pub fn with_optional_expression_hint(mut self, expression: Option<ExpressionId>) -> Self {
-        self.expression_hint = expression;
-        self
     }
 
     async fn run(self) {
         let batch = CacheEntry::memory_arrow(self.batch);
-        batch.record_expression_hint(self.expression_hint);
         self.storage.insert_inner(self.entry_id, batch).await;
     }
 }
@@ -1031,13 +1006,16 @@ impl<'a> Get<'a> {
     }
 
     /// Attach an expression hint that may help optimize cache materialization.
-    pub fn with_expression_hint(mut self, expression: ExpressionId) -> Self {
+    pub fn with_expression_hint(mut self, expression: Arc<CacheExpression>) -> Self {
         self.expression_hint = Some(expression);
         self
     }
 
     /// Attach an optional expression hint.
-    pub fn with_optional_expression_hint(mut self, expression: Option<ExpressionId>) -> Self {
+    pub fn with_optional_expression_hint(
+        mut self,
+        expression: Option<Arc<CacheExpression>>,
+    ) -> Self {
         self.expression_hint = expression;
         self
     }
@@ -1050,7 +1028,11 @@ impl<'a> Get<'a> {
             self.storage.runtime_stats.incr_get_arrow_array();
         }
         self.storage
-            .read_arrow_array(self.entry_id, self.selection, self.expression_hint)
+            .read_arrow_array(
+                self.entry_id,
+                self.selection,
+                self.expression_hint.as_deref(),
+            )
             .await
     }
 }
@@ -1075,25 +1057,12 @@ impl<'a> EvaluatePredicate<'a> {
             entry_id,
             predicate,
             selection: None,
-            expression_hint: None,
         }
     }
 
     /// Attach a selection bitmap used to pre-filter rows before predicate evaluation.
     pub fn with_selection(mut self, selection: &'a BooleanBuffer) -> Self {
         self.selection = Some(selection);
-        self
-    }
-
-    /// Attach an expression hint that may help optimize predicate evaluation.
-    pub fn with_expression_hint(mut self, expression: ExpressionId) -> Self {
-        self.expression_hint = Some(expression);
-        self
-    }
-
-    /// Attach an optional expression hint without manual matching at call sites.
-    pub fn with_optional_expression_hint(mut self, expression: Option<ExpressionId>) -> Self {
-        self.expression_hint = expression;
         self
     }
 
@@ -1104,7 +1073,6 @@ impl<'a> EvaluatePredicate<'a> {
                 self.entry_id,
                 self.selection,
                 self.predicate,
-                self.expression_hint,
             )
             .await
     }
@@ -1214,12 +1182,10 @@ mod tests {
             .await;
 
         let registry = store.expression_registry();
-        let expr_id = registry
-            .register(CacheExpression::extract_date32(Date32Field::Year))
-            .expect("register expr");
+        let expr = registry.register(CacheExpression::extract_date32(Date32Field::Year), None);
         let result = store
             .get(&entry_id)
-            .with_expression_hint(expr_id)
+            .with_expression_hint(expr)
             .read()
             .await
             .expect("array present");

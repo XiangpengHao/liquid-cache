@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use arrow::{
     array::{Array, ArrayRef, BooleanArray},
     buffer::BooleanBuffer,
@@ -7,9 +5,7 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use arrow_schema::{ArrowError, DataType, Field, Schema};
-use liquid_cache_storage::cache::{
-    CacheExpression, CacheStorage, ExpressionId, ExpressionRegistry,
-};
+use liquid_cache_storage::cache::{CacheExpression, CacheStorage, ColumnID};
 use parquet::arrow::arrow_reader::ArrowPredicate;
 
 use crate::{
@@ -18,6 +14,7 @@ use crate::{
     optimizers::{DATE_MAPPING_METADATA_KEY, VARIANT_MAPPING_METADATA_KEY},
 };
 use parquet::variant::VariantType;
+use std::sync::Arc;
 
 /// A column in the cache.
 #[derive(Debug)]
@@ -25,23 +22,23 @@ pub struct LiquidCachedColumn {
     cache_store: Arc<CacheStorage>,
     field: Arc<Field>,
     column_path: ColumnAccessPath,
-    expression: Option<ExpressionId>,
+    expression: Option<Arc<CacheExpression>>,
 }
 
 /// A reference to a cached column.
 pub type LiquidCachedColumnRef = Arc<LiquidCachedColumn>;
 
-fn infer_expression(field: &Field, registry: &ExpressionRegistry) -> Option<ExpressionId> {
+fn infer_expression(field: &Field) -> Option<CacheExpression> {
     if let Some(mapping) = field.metadata().get(DATE_MAPPING_METADATA_KEY)
         && field.data_type() == &DataType::Date32
         && let Some(expr) = CacheExpression::try_from_date_part_str(mapping)
     {
-        return registry.register(expr);
+        return Some(expr);
     }
     if let Some(path) = field.metadata().get(VARIANT_MAPPING_METADATA_KEY)
         && field.try_extension_type::<VariantType>().is_ok()
     {
-        return registry.register(CacheExpression::variant_get(path.to_string()));
+        return Some(CacheExpression::variant_get(path.to_string()));
     }
     None
 }
@@ -64,7 +61,10 @@ impl LiquidCachedColumn {
         let column_path = ColumnAccessPath::new(file_id, row_group_id, column_id);
         column_path.initialize_dir(cache_store.config().cache_root_dir());
         let registry = cache_store.expression_registry();
-        let expression = infer_expression(field.as_ref(), registry.as_ref());
+        let expression = infer_expression(field.as_ref()).map(|expr| {
+            let col_id = ColumnID::new(file_id, row_group_id, column_id);
+            registry.register(expr, Some(col_id))
+        });
         Self {
             field,
             cache_store,
@@ -88,8 +88,8 @@ impl LiquidCachedColumn {
     }
 
     /// Returns the expression metadata associated with this column, if any.
-    pub fn expression(&self) -> Option<ExpressionId> {
-        self.expression
+    pub fn expression(&self) -> Option<Arc<CacheExpression>> {
+        self.expression.clone()
     }
 
     fn array_to_record_batch(&self, array: ArrayRef) -> Result<RecordBatch, ArrowError> {
@@ -109,7 +109,6 @@ impl LiquidCachedColumn {
             .cache_store
             .eval_predicate(&entry_id, predicate.physical_expr_physical_column_index())
             .with_selection(filter)
-            .with_optional_expression_hint(self.expression())
             .await?;
         match result {
             Ok(boolean_array) => {
@@ -171,7 +170,6 @@ impl LiquidCachedColumn {
         }
         self.cache_store
             .insert(self.entry_id(batch_id).into(), array)
-            .with_optional_expression_hint(self.expression())
             .await;
         Ok(())
     }
