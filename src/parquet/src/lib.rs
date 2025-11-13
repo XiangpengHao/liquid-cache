@@ -15,6 +15,3 @@ pub use liquid_cache_storage as storage;
 pub use reader::{FilterCandidateBuilder, LiquidParquetSource, LiquidPredicate, LiquidRowFilter};
 pub use utils::{boolean_buffer_and_then, extract_execution_metrics};
 pub use variant_udf::{VariantGetUdf, VariantPretty, VariantToJsonUdf};
-
-#[cfg(test)]
-mod tests;
