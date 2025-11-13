@@ -5,11 +5,7 @@ use std::{fmt::Display, sync::Arc};
 use arrow::array::ArrayRef;
 use arrow_schema::DataType;
 
-use crate::{
-    cache::ExpressionId,
-    liquid_array::utils::ExpressionHintTracker,
-    liquid_array::{LiquidArrayRef, LiquidHybridArrayRef},
-};
+use crate::liquid_array::{LiquidArrayRef, LiquidHybridArrayRef};
 
 /// Backing data for a cached entry.
 #[derive(Debug, Clone)]
@@ -48,11 +44,10 @@ impl CachedData {
     }
 }
 
-/// A cached entry with associated expression hint tracker.
+/// A cached entry.
 #[derive(Debug, Clone)]
 pub struct CacheEntry {
     data: CachedData,
-    expression_hints: ExpressionHintTracker,
 }
 
 impl CacheEntry {
@@ -82,21 +77,12 @@ impl CacheEntry {
     }
 
     fn new(data: CachedData) -> Self {
-        Self {
-            data,
-            expression_hints: ExpressionHintTracker::new(),
-        }
+        Self { data }
     }
 
-    /// Reconstruct a batch from raw parts.
-    pub(crate) fn with_expression_tracker(
-        data: CachedData,
-        expression_hints: ExpressionHintTracker,
-    ) -> Self {
-        Self {
-            data,
-            expression_hints,
-        }
+    /// Rebuild an entry from stored data.
+    pub(crate) fn from_data(data: CachedData) -> Self {
+        Self { data }
     }
 
     /// Borrow the underlying data representation.
@@ -104,9 +90,9 @@ impl CacheEntry {
         &self.data
     }
 
-    /// Decompose the batch into its representation and hint tracker.
-    pub(crate) fn into_parts(self) -> (CachedData, ExpressionHintTracker) {
-        (self.data, self.expression_hints)
+    /// Decompose the batch into its representation.
+    pub(crate) fn into_data(self) -> CachedData {
+        self.data
     }
 
     /// Get the memory usage of the cached batch.
@@ -117,18 +103,6 @@ impl CacheEntry {
     /// Get the reference count of the cached batch.
     pub fn reference_count(&self) -> usize {
         self.data.reference_count()
-    }
-
-    /// Record an optional expression hint for this cached batch.
-    pub fn record_expression_hint(&self, expression_hint: Option<ExpressionId>) {
-        if let Some(expression) = expression_hint {
-            self.expression_hints.record_expression(expression);
-        }
-    }
-
-    /// Derive the expression hint (if any) preferred for squeezing.
-    pub fn expression_hint_for_squeeze(&self) -> Option<ExpressionId> {
-        self.expression_hints.majority_expression()
     }
 }
 
