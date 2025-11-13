@@ -142,6 +142,8 @@ impl LiquidCacheLocalBuilder {
             .execution
             .parquet
             .schema_force_view_types = false;
+        config.options_mut().execution.parquet.skip_arrow_metadata = false;
+        config.options_mut().execution.parquet.skip_metadata = false;
         config.options_mut().execution.batch_size = self.batch_size;
 
         let cache = LiquidCache::new(
