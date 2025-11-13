@@ -374,7 +374,7 @@ jobs:
             }
 
   examples:
-    name: Run client/server examples (${{ matrix.os }})
+    name: Run client/server/inprocess examples (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -389,6 +389,14 @@ jobs:
         run: cargo build --bin example_server
       - name: Build LiquidCache client
         run: cargo build --bin example_client
+      - name: Build LiquidCache client projection pushdown
+        run: cargo build --bin example_projection_pushdown      
+      - name: Build LiquidCache in process eviction
+        run: cargo build --bin example_inprocess_cache_eviction 
+      - name: Build LiquidCache in process insertion
+        run: cargo build --bin example_inprocess_insertion
+      - name: Build LiquidCache in process read
+        run: cargo build --bin example_inprocess_read
 
       - name: Start LiquidCache server
         run: |
@@ -403,6 +411,13 @@ jobs:
           # Run twice to test the cache
           env RUST_LOG=info cargo run --bin example_client
 
+      - name: Start LiquidCache client projection pushdown
+        run: |
+          # First run to populate the cache
+          env RUST_LOG=info cargo run --bin example_projection_pushdown
+          # Run twice to test the cache
+          env RUST_LOG=info cargo run --bin example_projection_pushdown
+
       - name: Kill LiquidCache server and show logs
         if: always()
         run: |
@@ -410,6 +425,21 @@ jobs:
           cat server.log || echo "No server log found"
           pkill -F server.pid || true
           rm -f server.pid
+
+      - name: Start LiquidCache in process projection pushdown
+        run: |
+          # Run to populate to evict cache
+          env RUST_LOG=info cargo run --bin example_inprocess_cache_eviction
+
+      - name: Start LiquidCache in process insert
+        run: |
+          # Run to populate cache with arrow array
+          env RUST_LOG=info cargo run --bin example_inprocess_insertion
+
+      - name: Start LiquidCache in process read arrow array
+        run: |
+          # Run to populate cache and read arrow array
+          env RUST_LOG=info cargo run --bin example_inprocess_read   
 
   kani:
     name: Run Kani proofs
