@@ -183,14 +183,6 @@ fn try_variant_squeeze(
     if owned_path.is_empty() {
         return None;
     }
-    let path_segments: Vec<String> = owned_path
-        .split('.')
-        .map(|segment| segment.trim().to_string())
-        .collect();
-    if path_segments.len() != 1 || path_segments[0].is_empty() {
-        return None;
-    }
-    let field_name = path_segments[0].clone();
 
     let variant_path = VariantPath::from(owned_path.as_str());
     let baseline = variant_get(array, GetOptions::new_with_path(variant_path.clone())).ok()?;
@@ -225,7 +217,7 @@ fn try_variant_squeeze(
     };
     let bytes = arrow_to_bytes(array).ok()?;
     let hybrid = VariantExtractedArray::new(
-        field_name,
+        owned_path,
         liquid_values,
         metadata,
         nulls,
