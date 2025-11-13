@@ -282,8 +282,8 @@ fn is_supported_leaf_type(data_type: &DataType) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::cached_batch::CacheEntry;
     use crate::cache::CacheExpression;
+    use crate::cache::cached_batch::CacheEntry;
     use arrow::array::{ArrayRef, Int32Array, StringArray, StructArray};
     use arrow_schema::{DataType, Field};
     use parquet_variant::VariantPath;
@@ -309,8 +309,7 @@ mod tests {
         let entry = CacheEntry::memory_arrow(array.clone());
         let squeeze_hint = Some(&CacheExpression::variant_get("name"));
 
-        let (new_entry, bytes) =
-            TranscodeSqueezeEvict.squeeze(entry, &states, squeeze_hint);
+        let (new_entry, bytes) = TranscodeSqueezeEvict.squeeze(entry, &states, squeeze_hint);
         assert!(bytes.is_some());
 
         let data = new_entry.into_data();
@@ -357,8 +356,7 @@ mod tests {
 
         // MemoryArrow -> DiskArrow + bytes (Arrow IPC)
         let arr = int_array(8);
-        let (new_batch, bytes) =
-            disk.squeeze(CacheEntry::memory_arrow(arr.clone()), &states, None);
+        let (new_batch, bytes) = disk.squeeze(CacheEntry::memory_arrow(arr.clone()), &states, None);
         let data = new_batch.into_data();
         match (data, bytes) {
             (CachedData::DiskArrow(dt), Some(b)) => {
@@ -372,11 +370,8 @@ mod tests {
         // MemoryLiquid (strings) -> MemoryHybridLiquid + bytes
         let strings = Arc::new(StringArray::from(vec!["a", "b", "a"])) as ArrayRef;
         let liquid = transcode_liquid_inner(&strings, &states).unwrap();
-        let (new_batch, bytes) = disk.squeeze(
-            CacheEntry::memory_liquid(liquid.clone()),
-            &states,
-            None,
-        );
+        let (new_batch, bytes) =
+            disk.squeeze(CacheEntry::memory_liquid(liquid.clone()), &states, None);
         let data = new_batch.into_data();
         match (data, bytes) {
             (CachedData::DiskLiquid(_), Some(b)) => {
@@ -399,11 +394,9 @@ mod tests {
         }
 
         // Disk* -> unchanged, no bytes
-        let (b1, w1) =
-            disk.squeeze(CacheEntry::disk_arrow(DataType::Utf8), &states, None);
+        let (b1, w1) = disk.squeeze(CacheEntry::disk_arrow(DataType::Utf8), &states, None);
         assert!(matches!(b1.data(), CachedData::DiskArrow(DataType::Utf8)) && w1.is_none());
-        let (b2, w2) =
-            disk.squeeze(CacheEntry::disk_liquid(DataType::Utf8), &states, None);
+        let (b2, w2) = disk.squeeze(CacheEntry::disk_liquid(DataType::Utf8), &states, None);
         assert!(matches!(b2.data(), CachedData::DiskLiquid(DataType::Utf8)) && w2.is_none());
     }
 
@@ -448,11 +441,9 @@ mod tests {
         }
 
         // Disk* -> unchanged
-        let (b1, w1) =
-            to_liquid.squeeze(CacheEntry::disk_arrow(DataType::Utf8), &states, None);
+        let (b1, w1) = to_liquid.squeeze(CacheEntry::disk_arrow(DataType::Utf8), &states, None);
         assert!(matches!(b1.data(), CachedData::DiskArrow(DataType::Utf8)) && w1.is_none());
-        let (b2, w2) =
-            to_liquid.squeeze(CacheEntry::disk_liquid(DataType::Utf8), &states, None);
+        let (b2, w2) = to_liquid.squeeze(CacheEntry::disk_liquid(DataType::Utf8), &states, None);
         assert!(matches!(b2.data(), CachedData::DiskLiquid(DataType::Utf8)) && w2.is_none());
     }
 
@@ -461,11 +452,8 @@ mod tests {
         let to_liquid = TranscodeSqueezeEvict;
         let states = LiquidCompressorStates::new();
         let struct_arr = struct_array();
-        let (new_batch, bytes) = to_liquid.squeeze(
-            CacheEntry::memory_arrow(struct_arr.clone()),
-            &states,
-            None,
-        );
+        let (new_batch, bytes) =
+            to_liquid.squeeze(CacheEntry::memory_arrow(struct_arr.clone()), &states, None);
         match (new_batch.data(), bytes) {
             (CachedData::DiskArrow(dt), Some(b)) => {
                 assert_eq!(dt, struct_arr.data_type());
@@ -480,11 +468,8 @@ mod tests {
         let to_disk = TranscodeEvict;
         let states = LiquidCompressorStates::new();
         let struct_arr = struct_array();
-        let (new_batch, bytes) = to_disk.squeeze(
-            CacheEntry::memory_arrow(struct_arr.clone()),
-            &states,
-            None,
-        );
+        let (new_batch, bytes) =
+            to_disk.squeeze(CacheEntry::memory_arrow(struct_arr.clone()), &states, None);
         match (new_batch.data(), bytes) {
             (CachedData::DiskArrow(dt), Some(b)) => {
                 assert_eq!(dt, struct_arr.data_type());

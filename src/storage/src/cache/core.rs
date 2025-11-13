@@ -14,9 +14,7 @@ use super::{
 use crate::cache::squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict};
 use crate::cache::stats::{CacheStats, RuntimeStats};
 use crate::cache::utils::{LiquidCompressorStates, arrow_to_bytes};
-use crate::cache::{
-    CacheExpression, ExpressionRegistry, index::ArtIndex, utils::EntryID,
-};
+use crate::cache::{CacheExpression, ExpressionRegistry, index::ArtIndex, utils::EntryID};
 use crate::cache_policies::LiquidPolicy;
 use crate::liquid_array::SqueezedDate32Array;
 use crate::sync::Arc;
@@ -526,11 +524,8 @@ impl CacheStorage {
                     let bytes = arrow_to_bytes(array).expect("failed to convert arrow to bytes");
                     let path = self.io_context.arrow_path(&entry_id);
                     self.write_to_disk_blocking(&path, &bytes);
-                    self.try_insert(
-                        entry_id,
-                        CacheEntry::disk_arrow(array.data_type().clone()),
-                    )
-                    .expect("failed to insert disk arrow entry");
+                    self.try_insert(entry_id, CacheEntry::disk_arrow(array.data_type().clone()))
+                        .expect("failed to insert disk arrow entry");
                 }
                 CachedData::MemoryLiquid(liquid_array) => {
                     let liquid_bytes = liquid_array.to_bytes();
@@ -667,15 +662,15 @@ impl CacheStorage {
             return;
         };
         let compressor = self.io_context.get_compressor(&to_squeeze);
-        let squeeze_hint_arc = self.expression_registry.column_majority_expression(to_squeeze);
+        let squeeze_hint_arc = self
+            .expression_registry
+            .column_majority_expression(to_squeeze);
         let squeeze_hint = squeeze_hint_arc.as_deref();
 
         loop {
-            let (new_batch, bytes_to_write) = self.squeeze_policy.squeeze(
-                to_squeeze_batch,
-                compressor.as_ref(),
-                squeeze_hint,
-            );
+            let (new_batch, bytes_to_write) =
+                self.squeeze_policy
+                    .squeeze(to_squeeze_batch, compressor.as_ref(), squeeze_hint);
 
             if let Some(bytes_to_write) = bytes_to_write {
                 let path = match new_batch.data() {
@@ -1069,11 +1064,7 @@ impl<'a> EvaluatePredicate<'a> {
     /// Evaluate the predicate against the cached data.
     pub async fn read(self) -> Option<Result<BooleanArray, ArrayRef>> {
         self.storage
-            .eval_predicate_internal(
-                self.entry_id,
-                self.selection,
-                self.predicate,
-            )
+            .eval_predicate_internal(self.entry_id, self.selection, self.predicate)
             .await
     }
 }

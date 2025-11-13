@@ -104,7 +104,6 @@ impl CacheEntry {
     pub fn reference_count(&self) -> usize {
         self.data.reference_count()
     }
-
 }
 
 impl Display for CacheEntry {

@@ -142,10 +142,7 @@ impl ExpressionRegistry {
 
         if let Some(column_id) = column_id {
             let mut guard = self.column_trackers.write().unwrap();
-            guard
-                .entry(column_id)
-                .or_insert_with(ColumnExpressionTracker::default)
-                .record(arc.clone());
+            guard.entry(column_id).or_default().record(arc.clone());
         }
 
         arc
