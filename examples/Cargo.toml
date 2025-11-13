@@ -15,6 +15,22 @@ path = "example_client.rs"
 name = "example_local"
 path = "example_local.rs"
 
+[[bin]]
+name = "example_projection_pushdown"
+path = "example_projection_pushdown.rs"
+
+[[bin]]
+name = "example_inprocess_insertion"
+path = "example_inprocess_insertion.rs"
+
+[[bin]]
+name = "example_inprocess_cache_eviction"
+path = "example_inprocess_cache_eviction.rs"
+
+[[bin]]
+name = "example_inprocess_read"
+path = "example_inprocess_read.rs"
+
 [dependencies]
 datafusion = { workspace = true }
 liquid-cache-server = { workspace = true }
