@@ -4,7 +4,9 @@ use arrow::array::{Array, ArrayRef, BinaryViewArray, StructArray};
 use arrow::buffer::NullBuffer;
 use arrow_schema::{DataType, Field, Fields};
 
-use crate::liquid_array::{IoRange, LiquidArrayRef, LiquidDataType, LiquidHybridArray};
+use crate::liquid_array::{
+    HybridBacking, IoRange, LiquidArrayRef, LiquidDataType, LiquidHybridArray,
+};
 
 /// Hybrid representation for a single top-level variant field.
 #[derive(Debug)]
@@ -133,5 +135,9 @@ impl LiquidHybridArray for VariantExtractedArray {
 
     fn to_liquid(&self) -> IoRange {
         IoRange { range: 0..0 }
+    }
+
+    fn disk_backing(&self) -> HybridBacking {
+        HybridBacking::Arrow
     }
 }

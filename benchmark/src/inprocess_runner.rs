@@ -7,9 +7,7 @@ use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::parquet::{
-    arrow::ArrowWriter,
-    basic::Compression,
-    file::properties::WriterProperties,
+    arrow::ArrowWriter, basic::Compression, file::properties::WriterProperties,
 };
 use datafusion::prelude::{SessionConfig, SessionContext};
 use liquid_cache_common::IoMode;
@@ -344,7 +342,10 @@ impl InProcessBenchmarkRunner {
         batches: &[RecordBatch],
     ) -> Result<()> {
         create_dir_all(output_dir)?;
-        let filename = format!("q{query_id:02}_i{iteration:02}.parquet", query_id = query.id());
+        let filename = format!(
+            "q{query_id:02}_i{iteration:02}.parquet",
+            query_id = query.id()
+        );
         let path = output_dir.join(filename);
         let file = File::create(&path)?;
         let props = WriterProperties::builder()

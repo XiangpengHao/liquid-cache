@@ -14,7 +14,7 @@ use crate::cache::{
     transcode_liquid_inner,
     utils::arrow_to_bytes,
 };
-use crate::liquid_array::{LiquidHybridArrayRef, VariantExtractedArray};
+use crate::liquid_array::{HybridBacking, LiquidHybridArrayRef, VariantExtractedArray};
 
 /// What to do when we need to squeeze an entry?
 pub trait SqueezePolicy: std::fmt::Debug + Send + Sync {
@@ -56,10 +56,14 @@ impl SqueezePolicy for Evict {
                     Some(Bytes::from(disk_data)),
                 )
             }
-            CachedData::MemoryHybridLiquid(hybrid_array) => (
-                CacheEntry::disk_liquid(hybrid_array.original_arrow_data_type()),
-                None,
-            ),
+            CachedData::MemoryHybridLiquid(hybrid_array) => {
+                let data_type = hybrid_array.original_arrow_data_type();
+                let entry = match hybrid_array.disk_backing() {
+                    HybridBacking::Liquid => CacheEntry::disk_liquid(data_type),
+                    HybridBacking::Arrow => CacheEntry::disk_arrow(data_type),
+                };
+                (entry, None)
+            }
             CachedData::DiskLiquid(_) | CachedData::DiskArrow(_) => {
                 (CacheEntry::from_data(data), None)
             }
@@ -113,10 +117,14 @@ impl SqueezePolicy for TranscodeSqueezeEvict {
                 };
                 (CacheEntry::memory_hybrid_liquid(hybrid_array), Some(bytes))
             }
-            CachedData::MemoryHybridLiquid(hybrid_array) => (
-                CacheEntry::disk_liquid(hybrid_array.original_arrow_data_type()),
-                None,
-            ),
+            CachedData::MemoryHybridLiquid(hybrid_array) => {
+                let data_type = hybrid_array.original_arrow_data_type();
+                let entry = match hybrid_array.disk_backing() {
+                    HybridBacking::Liquid => CacheEntry::disk_liquid(data_type),
+                    HybridBacking::Arrow => CacheEntry::disk_arrow(data_type),
+                };
+                (entry, None)
+            }
             CachedData::DiskLiquid(_) | CachedData::DiskArrow(_) => {
                 (CacheEntry::from_data(data), None)
             }
@@ -155,10 +163,14 @@ impl SqueezePolicy for TranscodeEvict {
                     Some(bytes),
                 )
             }
-            CachedData::MemoryHybridLiquid(hybrid_array) => (
-                CacheEntry::disk_liquid(hybrid_array.original_arrow_data_type()),
-                None,
-            ),
+            CachedData::MemoryHybridLiquid(hybrid_array) => {
+                let data_type = hybrid_array.original_arrow_data_type();
+                let entry = match hybrid_array.disk_backing() {
+                    HybridBacking::Liquid => CacheEntry::disk_liquid(data_type),
+                    HybridBacking::Arrow => CacheEntry::disk_arrow(data_type),
+                };
+                (entry, None)
+            }
             CachedData::DiskLiquid(_) | CachedData::DiskArrow(_) => {
                 (CacheEntry::from_data(data), None)
             }
@@ -276,6 +288,7 @@ mod tests {
     use super::*;
     use crate::cache::CacheExpression;
     use crate::cache::cached_batch::CacheEntry;
+    use crate::liquid_array::HybridBacking;
     use arrow::array::{ArrayRef, Int32Array, StringArray, StructArray};
     use arrow_schema::{DataType, Field};
     use parquet_variant::VariantPath;
@@ -308,6 +321,18 @@ mod tests {
         let CachedData::MemoryHybridLiquid(hybrid) = data else {
             panic!("expected hybrid liquid array");
         };
+        assert_eq!(hybrid.disk_backing(), HybridBacking::Arrow);
+
+        let (evicted_entry, evicted_bytes) = Evict.squeeze(
+            CacheEntry::memory_hybrid_liquid(hybrid.clone()),
+            &states,
+            None,
+        );
+        assert!(evicted_bytes.is_none());
+        match evicted_entry.data() {
+            CachedData::DiskArrow(dt) => assert_eq!(dt, array.data_type()),
+            other => panic!("expected disk arrow from hybrid eviction, got {other:?}"),
+        }
 
         let field = Arc::new(Field::new("name", DataType::Utf8, true));
         let rebuilt = hybrid.to_arrow_array().expect("to arrow");
