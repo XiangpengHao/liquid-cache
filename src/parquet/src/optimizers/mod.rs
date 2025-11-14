@@ -57,7 +57,9 @@ impl PhysicalOptimizerRule for LocalModeOptimizer {
     }
 
     fn schema_check(&self) -> bool {
-        true
+        // We deliberately enrich scan schemas with metadata describing variant/date
+        // extractions, so allow the optimizer to adjust schema metadata.
+        false
     }
 }
 

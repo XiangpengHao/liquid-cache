@@ -747,8 +747,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::{CacheExpression, ExpressionRegistry};
-    use crate::liquid_array::utils::ExpressionHintTracker;
+    use crate::cache::{CacheExpression, ColumnID, EntryID, ExpressionRegistry};
     use arrow::array::Array;
 
     macro_rules! test_roundtrip {
@@ -884,19 +883,23 @@ mod tests {
         let liquid = LiquidPrimitiveArray::<Date32Type>::from_arrow_array(array);
         let registry = ExpressionRegistry::new();
 
-        let expr_month = registry
-            .register(CacheExpression::extract_date32(Date32Field::Month))
-            .expect("register month");
-        let expr_year = registry
-            .register(CacheExpression::extract_date32(Date32Field::Year))
-            .expect("register year");
-
-        let tracker = ExpressionHintTracker::new();
-        tracker.record_expression(expr_month);
-        tracker.record_expression(expr_month);
-        tracker.record_expression(expr_year);
-        let majority = tracker.majority_expression().expect("majority id");
-        let majority_expr = registry.get(majority).expect("resolve majority");
+        let entry_id = EntryID::from(0x0001_0000usize);
+        let column_id = ColumnID::from_entry_id(entry_id);
+        let _expr_month = registry.register(
+            CacheExpression::extract_date32(Date32Field::Month),
+            Some(column_id),
+        );
+        let _expr_month2 = registry.register(
+            CacheExpression::extract_date32(Date32Field::Month),
+            Some(column_id),
+        );
+        let _expr_year = registry.register(
+            CacheExpression::extract_date32(Date32Field::Year),
+            Some(column_id),
+        );
+        let majority_expr = registry
+            .column_majority_expression(entry_id)
+            .expect("majority expression");
 
         let (hybrid, _) = liquid
             .squeeze(Some(majority_expr.as_ref()))
@@ -916,18 +919,20 @@ mod tests {
         let liquid = LiquidPrimitiveArray::<Date32Type>::from_arrow_array(array);
         let registry = ExpressionRegistry::new();
 
-        let expr_year = registry
-            .register(CacheExpression::extract_date32(Date32Field::Year))
-            .expect("register year");
-        let expr_day = registry
-            .register(CacheExpression::extract_date32(Date32Field::Day))
-            .expect("register day");
-        let tracker = ExpressionHintTracker::new();
-        tracker.record_expression(expr_year);
-        tracker.record_expression(expr_day);
+        let entry_id = EntryID::from(0x0002_0000usize);
+        let column_id = ColumnID::from_entry_id(entry_id);
+        let _expr_year = registry.register(
+            CacheExpression::extract_date32(Date32Field::Year),
+            Some(column_id),
+        );
+        let _expr_day = registry.register(
+            CacheExpression::extract_date32(Date32Field::Day),
+            Some(column_id),
+        );
 
-        let majority = tracker.majority_expression().expect("majority id");
-        let majority_expr = registry.get(majority).expect("resolve expression");
+        let majority_expr = registry
+            .column_majority_expression(entry_id)
+            .expect("majority expression");
 
         let (hybrid, _) = liquid
             .squeeze(Some(majority_expr.as_ref()))

@@ -215,7 +215,7 @@ pub fn transcode_liquid_inner<'a>(
             Err(array)
         }
         _ => {
-            log::warn!("unsupported data type {:?}", array.data_type());
+            log::debug!("unsupported data type {:?}", array.data_type());
             Err(array)
         }
     }

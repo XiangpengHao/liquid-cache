@@ -810,7 +810,7 @@ fn lineage_for_expr(
                 }
                 return Ok(usages);
             } else if func_name.eq_ignore_ascii_case("variant_get")
-                && func.args.len() == 2
+                && (func.args.len() == 2 || func.args.len() == 3)
                 && let Some(path) = literal_utf8(&func.args[1])
             {
                 let mut usages = lineage_for_expr(&func.args[0], input_lineage, schema)?;
