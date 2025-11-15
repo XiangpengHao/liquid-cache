@@ -136,9 +136,10 @@ impl FileOpener for LiquidParquetOpener {
 
         let projected_schema =
             SchemaRef::from(self.downstream_full_schema.project(&self.projection)?);
-        let schema_adapter = self
-            .schema_adapter_factory
-            .create(projected_schema, Arc::clone(&self.downstream_full_schema));
+        let schema_adapter = self.schema_adapter_factory.create(
+            Arc::clone(&projected_schema),
+            Arc::clone(&self.downstream_full_schema),
+        );
         let predicate = self.predicate.clone();
         let pruning_predicate = self.pruning_predicate.clone();
         let page_pruning_predicate = self.page_pruning_predicate.clone();
@@ -282,8 +283,10 @@ impl FileOpener for LiquidParquetOpener {
                 .with_batch_size(batch_size)
                 .with_row_groups(row_group_indexes);
 
-            let mut liquid_builder =
-                unsafe { ArrowReaderBuilderBridge::from_parquet(builder).into_liquid_builder() };
+            let mut liquid_builder = unsafe {
+                ArrowReaderBuilderBridge::from_parquet(builder)
+                    .into_liquid_builder(Arc::clone(&projected_schema))
+            };
 
             if let Some(row_filter) = row_filter {
                 liquid_builder = liquid_builder.with_row_filter(row_filter);
@@ -294,7 +297,8 @@ impl FileOpener for LiquidParquetOpener {
                 liquid_builder = liquid_builder.with_span(span);
             }
 
-            let liquid_cache = lc.register_or_get_file(file_loc, physical_file_schema);
+            let liquid_cache =
+                lc.register_or_get_file(file_loc, Arc::clone(&downstream_full_schema));
 
             let stream = liquid_builder.build(liquid_cache)?;
 

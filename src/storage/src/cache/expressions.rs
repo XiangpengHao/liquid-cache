@@ -7,6 +7,8 @@ use std::sync::{Arc, RwLock};
 use ahash::AHashMap;
 
 use crate::cache::utils::EntryID;
+use arrow_schema::DataType;
+
 use crate::liquid_array::Date32Field;
 
 /// Experimental expression descriptor for cache lookups.
@@ -21,6 +23,8 @@ pub enum CacheExpression {
     VariantGet {
         /// The dotted path requested by the query.
         path: Arc<str>,
+        /// The desired Arrow data type for the typed value.
+        data_type: Arc<DataType>,
     },
 }
 
@@ -31,8 +35,11 @@ impl CacheExpression {
     }
 
     /// Build a variant-get expression for the provided dotted path.
-    pub fn variant_get(path: impl Into<Arc<str>>) -> Self {
-        Self::VariantGet { path: path.into() }
+    pub fn variant_get(path: impl Into<Arc<str>>, data_type: DataType) -> Self {
+        Self::VariantGet {
+            path: path.into(),
+            data_type: Arc::new(data_type),
+        }
     }
 
     /// Attempt to parse a metadata value (e.g. `"YEAR"`) into an expression.
@@ -60,7 +67,15 @@ impl CacheExpression {
     /// Return the associated variant path when this is a variant-get expression.
     pub fn variant_path(&self) -> Option<&str> {
         match self {
-            Self::VariantGet { path } => Some(path.as_ref()),
+            Self::VariantGet { path, .. } => Some(path.as_ref()),
+            Self::ExtractDate32 { .. } => None,
+        }
+    }
+
+    /// Return the associated Arrow data type when this is a variant-get expression.
+    pub fn variant_data_type(&self) -> Option<&DataType> {
+        match self {
+            Self::VariantGet { data_type, .. } => Some(data_type.as_ref()),
             Self::ExtractDate32 { .. } => None,
         }
     }

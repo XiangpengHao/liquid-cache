@@ -169,7 +169,7 @@ impl ArrowReaderBuilderBridge {
         }
     }
 
-    pub(crate) fn into_liquid_builder(self) -> LiquidStreamBuilder {
+    pub(crate) fn into_liquid_builder(self, output_schema: SchemaRef) -> LiquidStreamBuilder {
         let input: ParquetMetadataCacheReader = unsafe { std::mem::transmute(self.input) };
         LiquidStreamBuilder {
             input,
@@ -183,6 +183,7 @@ impl ArrowReaderBuilderBridge {
             limit: self.limit,
             offset: self.offset,
             span: None,
+            output_schema,
         }
     }
 }

@@ -3,10 +3,9 @@
 use std::sync::Arc;
 
 use arrow::array::{Array, ArrayRef, StructArray};
-use arrow_schema::{DataType, Field};
+use arrow_schema::DataType;
 use bytes::Bytes;
-use parquet_variant::VariantPath;
-use parquet_variant_compute::{GetOptions, VariantArray, variant_get};
+use parquet_variant_compute::VariantArray;
 
 use crate::cache::{
     CacheExpression, LiquidCompressorStates,
@@ -86,7 +85,7 @@ impl SqueezePolicy for TranscodeSqueezeEvict {
 
         match data {
             CachedData::MemoryArrow(array) => {
-                if let Some(CacheExpression::VariantGet { path }) = squeeze_hint
+                if let Some(CacheExpression::VariantGet { path, .. }) = squeeze_hint
                     && let Some((hybrid_array, bytes)) =
                         try_variant_squeeze(&array, path.as_ref(), compressor)
                 {
@@ -196,31 +195,16 @@ fn try_variant_squeeze(
         return None;
     }
 
-    let variant_path = VariantPath::from(owned_path.as_str());
-    let baseline = variant_get(array, GetOptions::new_with_path(variant_path.clone())).ok()?;
-    let baseline_variant = VariantArray::try_new(&baseline).ok()?;
-    let leaf_type = infer_variant_leaf_type(&baseline_variant)?;
-    if !is_supported_leaf_type(&leaf_type) {
-        return None;
-    }
-
-    let field = Arc::new(Field::new("typed_value", leaf_type.clone(), true));
-    let typed_values = variant_get(
-        array,
-        GetOptions::new_with_path(variant_path.clone()).with_as_type(Some(field)),
-    )
-    .ok()?;
+    let typed_root = variant_array.typed_value_field()?;
+    let typed_root = typed_root.as_any().downcast_ref::<StructArray>()?;
+    let path_values = typed_root.column_by_name(owned_path.as_str())?;
+    let path_struct = path_values.as_any().downcast_ref::<StructArray>()?;
+    let typed_values = path_struct.column_by_name("typed_value")?.clone();
     if typed_values.len() != array.len() {
         return None;
     }
-
-    for i in 0..array.len() {
-        if baseline_variant.is_null(i) {
-            continue;
-        }
-        if typed_values.is_null(i) {
-            return None;
-        }
+    if !is_supported_leaf_type(typed_values.data_type()) {
+        return None;
     }
 
     let liquid_values = match transcode_liquid_inner(&typed_values, compressor) {
@@ -237,37 +221,6 @@ fn try_variant_squeeze(
     );
 
     Some((Arc::new(hybrid) as LiquidHybridArrayRef, bytes))
-}
-
-fn infer_variant_leaf_type(array: &VariantArray) -> Option<DataType> {
-    use arrow_schema::TimeUnit;
-    use parquet::variant::Variant;
-
-    for i in 0..array.len() {
-        if array.is_null(i) {
-            continue;
-        }
-        let value = array.value(i);
-        let data_type = match value {
-            Variant::Int8(_) | Variant::Int16(_) | Variant::Int32(_) | Variant::Int64(_) => {
-                DataType::Int64
-            }
-            Variant::Float(_) | Variant::Double(_) => DataType::Float64,
-            Variant::BooleanTrue | Variant::BooleanFalse => DataType::Boolean,
-            Variant::String(_) | Variant::ShortString(_) => DataType::Utf8,
-            Variant::Binary(_) => DataType::Binary,
-            Variant::Date(_) => DataType::Date32,
-            Variant::TimestampMicros(_) | Variant::TimestampNtzMicros(_) => {
-                DataType::Timestamp(TimeUnit::Microsecond, None)
-            }
-            Variant::TimestampNanos(_) | Variant::TimestampNtzNanos(_) => {
-                DataType::Timestamp(TimeUnit::Nanosecond, None)
-            }
-            _ => continue,
-        };
-        return Some(data_type);
-    }
-    None
 }
 
 fn is_supported_leaf_type(data_type: &DataType) -> bool {
@@ -292,7 +245,7 @@ mod tests {
     use arrow::array::{ArrayRef, Int32Array, StringArray, StructArray};
     use arrow_schema::{DataType, Field};
     use parquet_variant::VariantPath;
-    use parquet_variant_compute::json_to_variant;
+    use parquet_variant_compute::{GetOptions, json_to_variant, variant_get};
     use std::sync::Arc;
 
     fn int_array(n: i32) -> ArrayRef {
@@ -312,7 +265,7 @@ mod tests {
         let array: ArrayRef = Arc::new(struct_array);
 
         let entry = CacheEntry::memory_arrow(array.clone());
-        let squeeze_hint = Some(&CacheExpression::variant_get("name"));
+        let squeeze_hint = Some(&CacheExpression::variant_get("name", DataType::Utf8));
 
         let (new_entry, bytes) = TranscodeSqueezeEvict.squeeze(entry, &states, squeeze_hint);
         assert!(bytes.is_some());

@@ -1,20 +1,22 @@
 use arrow::{
-    array::{Array, ArrayRef, BooleanArray},
-    buffer::BooleanBuffer,
+    array::{Array, ArrayRef, BinaryViewArray, BooleanArray, StructArray},
+    buffer::{BooleanBuffer, NullBuffer},
     compute::prep_null_mask_filter,
     record_batch::RecordBatch,
 };
-use arrow_schema::{ArrowError, DataType, Field, Schema};
+use arrow_schema::{ArrowError, DataType, Field, Fields, Schema};
 use liquid_cache_storage::cache::{CacheExpression, CacheStorage, ColumnID};
 use parquet::arrow::arrow_reader::ArrowPredicate;
+use parquet::variant::{GetOptions, VariantArray, VariantPath, VariantType, variant_get};
 
 use crate::{
     LiquidPredicate,
     cache::{BatchID, ColumnAccessPath, ParquetArrayID},
-    optimizers::{DATE_MAPPING_METADATA_KEY, VARIANT_MAPPING_METADATA_KEY},
+    optimizers::{
+        DATE_MAPPING_METADATA_KEY, VARIANT_MAPPING_METADATA_KEY, VARIANT_MAPPING_TYPE_METADATA_KEY,
+    },
 };
-use parquet::variant::VariantType;
-use std::sync::Arc;
+use std::{str::FromStr, sync::Arc};
 
 /// A column in the cache.
 #[derive(Debug)]
@@ -36,9 +38,13 @@ fn infer_expression(field: &Field) -> Option<CacheExpression> {
         return Some(expr);
     }
     if let Some(path) = field.metadata().get(VARIANT_MAPPING_METADATA_KEY)
+        && let Some(data_type) = field
+            .metadata()
+            .get(VARIANT_MAPPING_TYPE_METADATA_KEY)
+            .and_then(|ty| DataType::from_str(ty).ok())
         && field.try_extension_type::<VariantType>().is_ok()
     {
-        return Some(CacheExpression::variant_get(path.to_string()));
+        return Some(CacheExpression::variant_get(path.to_string(), data_type));
     }
     None
 }
@@ -168,11 +174,113 @@ impl LiquidCachedColumn {
         if self.is_cached(batch_id) {
             return Err(InsertArrowArrayError::AlreadyCached);
         }
+        let mut array = array;
+        if let Some(expr) = &self.expression {
+            if let Some(transformed) =
+                maybe_shred_variant_array(&array, expr.as_ref(), self.field.as_ref())
+            {
+                array = transformed;
+            }
+        }
         self.cache_store
             .insert(self.entry_id(batch_id).into(), array)
             .await;
         Ok(())
     }
+}
+
+fn maybe_shred_variant_array(
+    array: &ArrayRef,
+    expression: &CacheExpression,
+    field: &Field,
+) -> Option<ArrayRef> {
+    match expression {
+        CacheExpression::VariantGet { path, data_type } => {
+            shred_variant_array(array, field, path.as_ref(), data_type.as_ref())
+        }
+        _ => None,
+    }
+}
+
+fn shred_variant_array(
+    array: &ArrayRef,
+    field: &Field,
+    path: &str,
+    data_type: &DataType,
+) -> Option<ArrayRef> {
+    let variant_array = VariantArray::try_new(array.as_ref()).ok()?;
+    if variant_contains_typed_field(&variant_array, path) {
+        return None;
+    }
+
+    let typed_field = Arc::new(Field::new("typed_value", data_type.clone(), true));
+    let options =
+        GetOptions::new_with_path(VariantPath::from(path)).with_as_type(Some(typed_field));
+    let typed_values = variant_get(array, options).ok()?;
+
+    let typed_struct =
+        build_typed_value_struct(path, typed_values, variant_array.inner().nulls().cloned());
+
+    let inner = variant_array.inner();
+    let target_fields = match field.data_type() {
+        DataType::Struct(fields) => fields.clone(),
+        _ => return None,
+    };
+
+    let metadata_array = inner
+        .column_by_name("metadata")
+        .cloned()
+        .unwrap_or_else(|| Arc::new(variant_array.metadata_field().clone()) as ArrayRef);
+    let value_array = inner.column_by_name("value").cloned().unwrap_or_else(|| {
+        Arc::new(BinaryViewArray::from(vec![None::<&[u8]>; inner.len()])) as ArrayRef
+    });
+
+    let mut columns = Vec::with_capacity(target_fields.len());
+    for target_field in target_fields.iter() {
+        let column = match target_field.name().as_str() {
+            "metadata" => metadata_array.clone(),
+            "value" => value_array.clone(),
+            "typed_value" => typed_struct.clone(),
+            other => inner.column_by_name(other)?.clone(),
+        };
+        columns.push(column);
+    }
+
+    let root_struct = StructArray::new(target_fields, columns, inner.nulls().cloned());
+
+    Some(Arc::new(root_struct))
+}
+
+fn build_typed_value_struct(
+    path: &str,
+    typed_values: ArrayRef,
+    nulls: Option<NullBuffer>,
+) -> ArrayRef {
+    let leaf_field = Arc::new(Field::new(
+        "typed_value",
+        typed_values.data_type().clone(),
+        typed_values.null_count() > 0,
+    ));
+    let leaf_struct = Arc::new(StructArray::new(
+        Fields::from(vec![leaf_field]),
+        vec![typed_values.clone()],
+        typed_values.nulls().cloned(),
+    ));
+
+    let named_field = Arc::new(Field::new(path, leaf_struct.data_type().clone(), true));
+    Arc::new(StructArray::new(
+        Fields::from(vec![named_field]),
+        vec![leaf_struct as ArrayRef],
+        nulls,
+    ))
+}
+
+fn variant_contains_typed_field(array: &VariantArray, path: &str) -> bool {
+    array
+        .typed_value_field()
+        .and_then(|typed| typed.as_any().downcast_ref::<StructArray>())
+        .map(|typed_struct| typed_struct.column_by_name(path).is_some())
+        .unwrap_or(false)
 }
 
 #[cfg(test)]

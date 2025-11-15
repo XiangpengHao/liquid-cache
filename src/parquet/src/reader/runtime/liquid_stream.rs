@@ -4,7 +4,7 @@ use crate::reader::runtime::parquet_bridge::{
     ParquetField, limit_row_selection, offset_row_selection,
 };
 use arrow::array::RecordBatch;
-use arrow_schema::{DataType, Fields, Schema, SchemaRef};
+use arrow_schema::SchemaRef;
 use fastrace::Event;
 use fastrace::local::LocalSpan;
 use futures::{FutureExt, Stream, StreamExt, future::BoxFuture};
@@ -442,6 +442,8 @@ pub struct LiquidStreamBuilder {
     pub(crate) offset: Option<usize>,
 
     pub(crate) span: Option<fastrace::Span>,
+
+    pub(crate) output_schema: SchemaRef,
 }
 
 impl LiquidStreamBuilder {
@@ -474,17 +476,6 @@ impl LiquidStreamBuilder {
             .batch_size
             .min(self.metadata.file_metadata().num_rows() as usize);
 
-        // Ensure schema of ParquetRecordBatchStream respects projection, and does
-        // not store metadata (same as for ParquetRecordBatchReader and emitted RecordBatches)
-        let projected_fields = match self.fields.as_deref().map(|pf| &pf.arrow_type) {
-            Some(DataType::Struct(fields)) => {
-                fields.filter_leaves(|idx, _| self.projection.leaf_included(idx))
-            }
-            None => Fields::empty(),
-            _ => unreachable!("Must be Struct for root type"),
-        };
-        let schema = Arc::new(Schema::new(projected_fields));
-
         let reader = ReaderFactory {
             metadata: Arc::clone(&self.metadata),
             fields: self.fields,
@@ -497,7 +488,7 @@ impl LiquidStreamBuilder {
 
         Ok(LiquidStream {
             metadata: self.metadata,
-            schema,
+            schema: self.output_schema,
             row_groups,
             projection: self.projection,
             batch_size,
@@ -653,7 +644,7 @@ mod tests {
     use super::*;
     use crate::cache::LiquidCache;
     use arrow::array::{ArrayRef, Int32Array};
-    use arrow_schema::Field;
+    use arrow_schema::{DataType, Field, Schema};
     use liquid_cache_common::IoMode;
     use liquid_cache_storage::cache::squeeze_policies::Evict;
     use liquid_cache_storage::cache_policies::LiquidPolicy;
