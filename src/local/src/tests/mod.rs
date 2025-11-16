@@ -37,120 +37,60 @@ struct QueryOutcome {
 
 #[derive(Debug, Clone)]
 struct CacheStatsSummary {
-    total_entries: usize,
+    stats: CacheStats,
     entries_after_first_run: usize,
-    memory_arrow_entries: usize,
-    memory_liquid_entries: usize,
-    memory_hybrid_liquid_entries: usize,
-    disk_liquid_entries: usize,
-    disk_arrow_entries: usize,
-    memory_usage_bytes: usize,
-    disk_usage_bytes: usize,
-    runtime_get_arrow_array_calls: u64,
-    runtime_get_with_selection_calls: u64,
-    runtime_get_with_predicate_calls: u64,
-    runtime_get_predicate_hybrid_success: u64,
-    runtime_get_predicate_hybrid_needs_io: u64,
-    runtime_get_predicate_hybrid_unsupported: u64,
-    runtime_try_read_liquid_calls: u64,
-    runtime_hit_date32_expression_calls: u64,
 }
 
 impl CacheStatsSummary {
-    fn from_stats(after_second_run: CacheStats, entries_after_first_run: usize) -> Self {
-        let runtime = after_second_run.runtime;
+    fn from_stats(stats: CacheStats, entries_after_first_run: usize) -> Self {
         Self {
-            total_entries: after_second_run.total_entries,
+            stats,
             entries_after_first_run,
-            memory_arrow_entries: after_second_run.memory_arrow_entries,
-            memory_liquid_entries: after_second_run.memory_liquid_entries,
-            memory_hybrid_liquid_entries: after_second_run.memory_hybrid_liquid_entries,
-            disk_liquid_entries: after_second_run.disk_liquid_entries,
-            disk_arrow_entries: after_second_run.disk_arrow_entries,
-            memory_usage_bytes: after_second_run.memory_usage_bytes,
-            disk_usage_bytes: after_second_run.disk_usage_bytes,
-            runtime_get_arrow_array_calls: runtime.get_arrow_array_calls,
-            runtime_get_with_selection_calls: runtime.get_with_selection_calls,
-            runtime_get_with_predicate_calls: runtime.get_with_predicate_calls,
-            runtime_get_predicate_hybrid_success: runtime.get_predicate_hybrid_success,
-            runtime_get_predicate_hybrid_needs_io: runtime.get_predicate_hybrid_needs_io,
-            runtime_get_predicate_hybrid_unsupported: runtime.get_predicate_hybrid_unsupported,
-            runtime_try_read_liquid_calls: runtime.try_read_liquid_calls,
-            runtime_hit_date32_expression_calls: runtime.hit_date32_expression_calls,
         }
     }
 
     fn has_cache_hits(&self) -> bool {
-        self.runtime_get_with_selection_calls > 0
-            || self.runtime_try_read_liquid_calls > 0
-            || self.runtime_get_arrow_array_calls > 0
-            || self.runtime_get_with_predicate_calls > 0
+        let runtime = &self.stats.runtime;
+        runtime.get_with_selection_calls > 0
+            || runtime.try_read_liquid_calls > 0
+            || runtime.get_arrow_array_calls > 0
+            || runtime.get_with_predicate_calls > 0
     }
 
     fn entries_reused(&self) -> bool {
-        self.total_entries == self.entries_after_first_run
+        self.stats.total_entries == self.entries_after_first_run
     }
 }
 
 impl fmt::Display for CacheStatsSummary {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "entries.total: {}", self.total_entries)?;
+        writeln!(f, "entries.total: {}", self.stats.total_entries)?;
         writeln!(
             f,
             "entries.after_first_run: {}",
             self.entries_after_first_run
         )?;
-        writeln!(f, "entries.memory.arrow: {}", self.memory_arrow_entries)?;
-        writeln!(f, "entries.memory.liquid: {}", self.memory_liquid_entries)?;
+        writeln!(
+            f,
+            "entries.memory.arrow: {}",
+            self.stats.memory_arrow_entries
+        )?;
+        writeln!(
+            f,
+            "entries.memory.liquid: {}",
+            self.stats.memory_liquid_entries
+        )?;
         writeln!(
             f,
             "entries.memory.hybrid_liquid: {}",
-            self.memory_hybrid_liquid_entries
+            self.stats.memory_hybrid_liquid_entries
         )?;
-        writeln!(f, "entries.disk.liquid: {}", self.disk_liquid_entries)?;
-        writeln!(f, "entries.disk.arrow: {}", self.disk_arrow_entries)?;
-        writeln!(f, "usage.memory_bytes: {}", self.memory_usage_bytes)?;
-        writeln!(f, "usage.disk_bytes: {}", self.disk_usage_bytes)?;
-        writeln!(
-            f,
-            "runtime.get_arrow_array_calls: {}",
-            self.runtime_get_arrow_array_calls
-        )?;
-        writeln!(
-            f,
-            "runtime.get_with_selection_calls: {}",
-            self.runtime_get_with_selection_calls
-        )?;
-        writeln!(
-            f,
-            "runtime.get_with_predicate_calls: {}",
-            self.runtime_get_with_predicate_calls
-        )?;
-        writeln!(
-            f,
-            "runtime.get_predicate_hybrid_success: {}",
-            self.runtime_get_predicate_hybrid_success
-        )?;
-        writeln!(
-            f,
-            "runtime.get_predicate_hybrid_needs_io: {}",
-            self.runtime_get_predicate_hybrid_needs_io
-        )?;
-        writeln!(
-            f,
-            "runtime.get_predicate_hybrid_unsupported: {}",
-            self.runtime_get_predicate_hybrid_unsupported
-        )?;
-        writeln!(
-            f,
-            "runtime.try_read_liquid_calls: {}",
-            self.runtime_try_read_liquid_calls
-        )?;
-        writeln!(
-            f,
-            "runtime.hit_date32_expression_calls: {}",
-            self.runtime_hit_date32_expression_calls
-        )
+        writeln!(f, "entries.disk.liquid: {}", self.stats.disk_liquid_entries)?;
+        writeln!(f, "entries.disk.arrow: {}", self.stats.disk_arrow_entries)?;
+        writeln!(f, "usage.memory_bytes: {}", self.stats.memory_usage_bytes)?;
+        writeln!(f, "usage.disk_bytes: {}", self.stats.disk_usage_bytes)?;
+        // Use the Display implementation for runtime stats
+        write!(f, "{}", self.stats.runtime)
     }
 }
 

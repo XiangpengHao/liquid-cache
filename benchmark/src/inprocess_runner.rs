@@ -1,7 +1,5 @@
 use crate::manifest::BenchmarkManifest;
-use crate::{
-    BenchmarkResult, IterationResult, Query, QueryResult, SerializableCacheStats, run_query,
-};
+use crate::{BenchmarkResult, IterationResult, Query, QueryResult, run_query};
 use anyhow::Result;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::SchemaRef;
@@ -438,7 +436,7 @@ impl InProcessBenchmarkRunner {
             disk_bytes_read: disk_read,
             disk_bytes_written: disk_written,
             starting_timestamp,
-            cache_stats: cache_stats.map(SerializableCacheStats::from),
+            cache_stats,
         };
 
         println!("{}", pretty_format_batches(&results).unwrap());

@@ -30,6 +30,7 @@ parquet = { workspace = true }
 parquet-variant = { workspace = true }
 parquet-variant-compute = { workspace = true }
 fastrace = { workspace = true }
+serde = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

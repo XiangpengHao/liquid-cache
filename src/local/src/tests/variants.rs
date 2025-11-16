@@ -199,7 +199,7 @@ async fn test_variant_get() {
         .collect()
         .await
         .expect("query should succeed with small cache");
-    println!("results: \n{}", pretty_format_batches(&batches).unwrap());
+    insta::assert_snapshot!(pretty_format_batches(&batches).unwrap());
 }
 
 #[tokio::test]
@@ -224,7 +224,7 @@ async fn test_variant_predicate() {
     .unwrap();
 
     let batches = ctx
-        .sql("SELECT variant_to_json(variant_get(data, 'name')) FROM variants_test WHERE variant_get(data, 'name', 'string') = 'Bob'")
+        .sql("SELECT variant_to_json(variant_get(data, 'name')) FROM variants_test WHERE variant_get(data, 'name', 'Utf8') = 'Bob'")
         .await
         .unwrap()
         .collect()

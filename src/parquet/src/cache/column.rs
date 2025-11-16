@@ -175,12 +175,11 @@ impl LiquidCachedColumn {
             return Err(InsertArrowArrayError::AlreadyCached);
         }
         let mut array = array;
-        if let Some(expr) = &self.expression {
-            if let Some(transformed) =
+        if let Some(expr) = &self.expression
+            && let Some(transformed) =
                 maybe_shred_variant_array(&array, expr.as_ref(), self.field.as_ref())
-            {
-                array = transformed;
-            }
+        {
+            array = transformed;
         }
         self.cache_store
             .insert(self.entry_id(batch_id).into(), array)

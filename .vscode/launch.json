@@ -127,15 +127,15 @@
 			},
 			"args": [
 				"--manifest",
-				"benchmark/tpch/data/tpch-10.json",
+				"benchmark/json_bench/manifest.bluesky.json",
 				"--max-cache-mb",
-				"4",
+				"10",
 				"--bench-mode",
 				"liquid",
 				"--query-index",
-				"5",
+				"0",
 				"--partitions",
-				"8"
+				"1"
 			],
 			"cwd": "${workspaceFolder}"
 		},

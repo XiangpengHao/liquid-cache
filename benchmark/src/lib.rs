@@ -392,41 +392,6 @@ impl QueryResult {
     }
 }
 
-#[derive(Serialize, Debug)]
-pub struct SerializableCacheStats {
-    pub total_entries: usize,
-    pub memory_arrow_entries: usize,
-    pub memory_liquid_entries: usize,
-    pub memory_hybrid_liquid_entries: usize,
-    pub disk_liquid_entries: usize,
-    pub get_arrow_array_calls: u64,
-    pub get_with_selection_calls: u64,
-    pub get_with_predicate_calls: u64,
-    pub get_predicate_hybrid_success: u64,
-    pub get_predicate_hybrid_needs_io: u64,
-    pub get_predicate_hybrid_unsupported: u64,
-    pub try_read_liquid_calls: u64,
-}
-
-impl SerializableCacheStats {
-    pub fn from(cache_stats: CacheStats) -> Self {
-        Self {
-            total_entries: cache_stats.total_entries,
-            memory_arrow_entries: cache_stats.memory_arrow_entries,
-            memory_liquid_entries: cache_stats.memory_liquid_entries,
-            memory_hybrid_liquid_entries: cache_stats.memory_hybrid_liquid_entries,
-            disk_liquid_entries: cache_stats.disk_liquid_entries,
-            get_arrow_array_calls: cache_stats.runtime.get_arrow_array_calls,
-            get_with_selection_calls: cache_stats.runtime.get_with_selection_calls,
-            get_with_predicate_calls: cache_stats.runtime.get_with_predicate_calls,
-            get_predicate_hybrid_success: cache_stats.runtime.get_predicate_hybrid_success,
-            get_predicate_hybrid_needs_io: cache_stats.runtime.get_predicate_hybrid_needs_io,
-            get_predicate_hybrid_unsupported: cache_stats.runtime.get_predicate_hybrid_unsupported,
-            try_read_liquid_calls: cache_stats.runtime.try_read_liquid_calls,
-        }
-    }
-}
-
 #[derive(Serialize)]
 pub struct IterationResult {
     pub network_traffic: u64,
@@ -437,7 +402,7 @@ pub struct IterationResult {
     pub starting_timestamp: Duration,
     pub disk_bytes_read: u64,
     pub disk_bytes_written: u64,
-    pub cache_stats: Option<SerializableCacheStats>,
+    pub cache_stats: Option<CacheStats>,
 }
 
 impl Display for IterationResult {
@@ -484,58 +449,27 @@ impl Display for IterationResult {
             write_border_sep(f, INNER)?;
             let total_value = format!("{}", cache_stats.total_entries);
             let stats_value = format!(
-                "(Arrow:{} Liquid:{} Hybrid:{} Disk:{})",
+                "(Arrow:{} Liquid:{} Hybrid:{} D-L:{} D-A:{})",
                 cache_stats.memory_arrow_entries,
                 cache_stats.memory_liquid_entries,
                 cache_stats.memory_hybrid_liquid_entries,
-                cache_stats.disk_liquid_entries
+                cache_stats.disk_liquid_entries,
+                cache_stats.disk_arrow_entries
             );
             write_kv_row(f, INNER, "Cache Stats:", &total_value)?;
             write_kv_row(f, INNER, "", &stats_value)?;
 
-            // Runtime counters
-            write_kv_row(
-                f,
-                INNER,
-                "get_arrow",
-                &format_number(cache_stats.get_arrow_array_calls),
-            )?;
-            write_kv_row(
-                f,
-                INNER,
-                "get_with_selection",
-                &format_number(cache_stats.get_with_selection_calls),
-            )?;
-            write_kv_row(
-                f,
-                INNER,
-                "get_with_predicate",
-                &format_number(cache_stats.get_with_predicate_calls),
-            )?;
-            write_kv_row(
-                f,
-                INNER,
-                "hybrid_success",
-                &format_number(cache_stats.get_predicate_hybrid_success),
-            )?;
-            write_kv_row(
-                f,
-                INNER,
-                "hybrid_needs_io",
-                &format_number(cache_stats.get_predicate_hybrid_needs_io),
-            )?;
-            write_kv_row(
-                f,
-                INNER,
-                "hybrid_unsupported",
-                &format_number(cache_stats.get_predicate_hybrid_unsupported),
-            )?;
-            write_kv_row(
-                f,
-                INNER,
-                "try_read_liquid",
-                &format_number(cache_stats.try_read_liquid_calls),
-            )?;
+            // Runtime counters - use Display implementation
+            let runtime_stats_str = format!("{}", cache_stats.runtime);
+            for line in runtime_stats_str.lines().skip(1) {
+                // Skip the "RuntimeStatsSnapshot:" header line
+                // Parse "  field_name: value" format
+                if let Some((field, value)) = line.trim().split_once(':') {
+                    let field_trimmed = field.trim();
+                    let value_trimmed = value.trim();
+                    write_kv_row(f, INNER, field_trimmed, value_trimmed)?;
+                }
+            }
         }
 
         write_border_bottom(f, INNER)

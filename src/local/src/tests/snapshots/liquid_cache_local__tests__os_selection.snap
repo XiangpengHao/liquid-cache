@@ -43,11 +43,18 @@ entries.disk.liquid: 0
 entries.disk.arrow: 0
 usage.memory_bytes: 940626
 usage.disk_bytes: 150568
-runtime.get_arrow_array_calls: 0
-runtime.get_with_selection_calls: 3
-runtime.get_with_predicate_calls: 4
-runtime.get_predicate_hybrid_success: 0
-runtime.get_predicate_hybrid_needs_io: 1
-runtime.get_predicate_hybrid_unsupported: 1
-runtime.try_read_liquid_calls: 0
-runtime.hit_date32_expression_calls: 0
+RuntimeStatsSnapshot:
+  get_arrow_array_calls: 0
+  get_with_selection_calls: 3
+  get_with_predicate_calls: 4
+  get_predicate_hybrid_success: 0
+  get_predicate_hybrid_needs_io: 1
+  get_predicate_hybrid_unsupported: 1
+  get_filter_hybrid_success: 0
+  get_filter_hybrid_needs_io: 1
+  get_filter_hybrid_unsupported: 0
+  get_full_hybrid_success: 0
+  get_full_hybrid_needs_io: 0
+  get_full_hybrid_unsupported: 0
+  try_read_liquid_calls: 0
+  hit_date32_expression_calls: 0

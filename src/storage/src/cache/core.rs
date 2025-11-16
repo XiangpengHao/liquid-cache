@@ -796,8 +796,12 @@ impl CacheStorage {
                 }
                 if let Some(selection) = selection {
                     match array.filter(selection) {
-                        Ok(arr) => Some(arr),
+                        Ok(arr) => {
+                            self.runtime_stats.incr_get_filter_hybrid_success();
+                            Some(arr)
+                        }
                         Err(io_range) => {
+                            self.runtime_stats.incr_get_filter_hybrid_needs_io();
                             let path = self.hybrid_disk_path(entry_id, array);
                             let bytes = self
                                 .io_context
@@ -810,8 +814,12 @@ impl CacheStorage {
                     }
                 } else {
                     match array.to_arrow_array() {
-                        Ok(arr) => Some(arr),
+                        Ok(arr) => {
+                            self.runtime_stats.incr_get_full_hybrid_success();
+                            Some(arr)
+                        }
                         Err(io_range) => {
+                            self.runtime_stats.incr_get_full_hybrid_needs_io();
                             let path = self.hybrid_disk_path(entry_id, array);
                             let bytes = self
                                 .io_context
