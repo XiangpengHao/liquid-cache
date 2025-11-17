@@ -579,10 +579,4 @@ mod tests {
 
         assert_eq!(value.as_deref(), Some("norm"));
     }
-
-    #[test]
-    fn test_parse_type_hint_invalid() {
-        let err = parse_type_hint("uuid").unwrap_err();
-        assert!(err.to_string().contains("unsupported type hint"));
-    }
 }

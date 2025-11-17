@@ -243,63 +243,14 @@ mod tests {
     use crate::cache::cached_batch::CacheEntry;
     use crate::liquid_array::HybridBacking;
     use arrow::array::{ArrayRef, Int32Array, StringArray, StructArray};
+    use arrow_schema::Fields;
     use arrow_schema::{DataType, Field};
-    use parquet_variant::VariantPath;
+    use parquet::variant::VariantPath;
     use parquet_variant_compute::{GetOptions, json_to_variant, variant_get};
     use std::sync::Arc;
 
     fn int_array(n: i32) -> ArrayRef {
         Arc::new(Int32Array::from_iter_values(0..n))
-    }
-
-    #[test]
-    fn variant_hint_creates_hybrid_array() {
-        let states = LiquidCompressorStates::new();
-        let string_array: ArrayRef = Arc::new(StringArray::from(vec![
-            Some(r#"{"name":"Alice"}"#),
-            Some(r#"{"name":"Bob"}"#),
-            Some(r#"{"name":"Carol"}"#),
-        ]));
-        let variant = json_to_variant(&string_array).expect("variant conversion");
-        let struct_array: StructArray = variant.into();
-        let array: ArrayRef = Arc::new(struct_array);
-
-        let entry = CacheEntry::memory_arrow(array.clone());
-        let squeeze_hint = Some(&CacheExpression::variant_get("name", DataType::Utf8));
-
-        let (new_entry, bytes) = TranscodeSqueezeEvict.squeeze(entry, &states, squeeze_hint);
-        assert!(bytes.is_some());
-
-        let data = new_entry.into_data();
-        let CachedData::MemoryHybridLiquid(hybrid) = data else {
-            panic!("expected hybrid liquid array");
-        };
-        assert_eq!(hybrid.disk_backing(), HybridBacking::Arrow);
-
-        let (evicted_entry, evicted_bytes) = Evict.squeeze(
-            CacheEntry::memory_hybrid_liquid(hybrid.clone()),
-            &states,
-            None,
-        );
-        assert!(evicted_bytes.is_none());
-        match evicted_entry.data() {
-            CachedData::DiskArrow(dt) => assert_eq!(dt, array.data_type()),
-            other => panic!("expected disk arrow from hybrid eviction, got {other:?}"),
-        }
-
-        let field = Arc::new(Field::new("name", DataType::Utf8, true));
-        let rebuilt = hybrid.to_arrow_array().expect("to arrow");
-        let optimized = variant_get(
-            &rebuilt,
-            GetOptions::new_with_path(VariantPath::from("name")).with_as_type(Some(field.clone())),
-        )
-        .expect("variant_get optimized");
-        let baseline = variant_get(
-            &array,
-            GetOptions::new_with_path(VariantPath::from("name")).with_as_type(Some(field.clone())),
-        )
-        .expect("variant_get baseline");
-        assert_eq!(optimized.as_ref(), baseline.as_ref());
     }
 
     fn decode_arrow(bytes: &Bytes) -> ArrayRef {
@@ -446,6 +397,134 @@ mod tests {
                 assert_eq!(decode_arrow(&b).as_ref(), struct_arr.as_ref());
             }
             other => panic!("expected disk arrow fallback, got {other:?}"),
+        }
+    }
+
+    fn enriched_variant_array(path: &str, data_type: DataType) -> ArrayRef {
+        let values: ArrayRef = Arc::new(StringArray::from(vec![
+            Some(r#"{"name": "Alice", "age": 30}"#),
+            Some(r#"{"name": "Bob", "age": 25}"#),
+            Some(r#"{"name": "Charlie", "age": 35}"#),
+        ]));
+        let base_variant = json_to_variant(&values).unwrap();
+        let base_arr: ArrayRef = Arc::new(base_variant.inner().clone());
+
+        let typed_values = variant_get(
+            &base_arr,
+            GetOptions::new_with_path(VariantPath::from(path))
+                .with_as_type(Some(Arc::new(Field::new("typed_value", data_type, true)))),
+        )
+        .unwrap();
+
+        let leaf_struct = Arc::new(StructArray::new(
+            Fields::from(vec![Arc::new(Field::new(
+                "typed_value",
+                typed_values.data_type().clone(),
+                typed_values.null_count() > 0,
+            ))]),
+            vec![typed_values.clone()],
+            typed_values.nulls().cloned(),
+        ));
+
+        let typed_struct = Arc::new(StructArray::new(
+            Fields::from(vec![Arc::new(Field::new(
+                path,
+                leaf_struct.data_type().clone(),
+                true,
+            ))]),
+            vec![leaf_struct as ArrayRef],
+            base_variant.inner().nulls().cloned(),
+        ));
+
+        let inner = base_variant.inner();
+        use arrow::array::BinaryViewArray;
+        Arc::new(StructArray::new(
+            Fields::from(vec![
+                Arc::new(Field::new("metadata", DataType::BinaryView, false)),
+                Arc::new(Field::new("value", DataType::BinaryView, true)),
+                Arc::new(Field::new(
+                    "typed_value",
+                    typed_struct.data_type().clone(),
+                    true,
+                )),
+            ]),
+            vec![
+                inner
+                    .column_by_name("metadata")
+                    .cloned()
+                    .unwrap_or_else(|| Arc::new(base_variant.metadata_field().clone()) as ArrayRef),
+                inner.column_by_name("value").cloned().unwrap_or_else(|| {
+                    Arc::new(BinaryViewArray::from(vec![None::<&[u8]>; inner.len()])) as ArrayRef
+                }),
+                typed_struct as ArrayRef,
+            ],
+            inner.nulls().cloned(),
+        )) as ArrayRef
+    }
+
+    fn assert_variant_hybrid(hybrid: &LiquidHybridArrayRef, expected_field: &str, bytes: &Bytes) {
+        use crate::liquid_array::VariantExtractedArray;
+        assert!(!bytes.is_empty());
+        assert_eq!(hybrid.disk_backing(), HybridBacking::Arrow);
+        assert_eq!(
+            hybrid
+                .as_any()
+                .downcast_ref::<VariantExtractedArray>()
+                .unwrap()
+                .field(),
+            expected_field
+        );
+    }
+
+    #[test]
+    fn test_variant_squeeze_with_hint() {
+        let policy = TranscodeSqueezeEvict;
+        let states = LiquidCompressorStates::new();
+        let variant_arr = enriched_variant_array("name", DataType::Utf8);
+        let hint = CacheExpression::variant_get("name", DataType::Utf8);
+
+        let (new_batch, bytes) =
+            policy.squeeze(CacheEntry::memory_arrow(variant_arr), &states, Some(&hint));
+
+        match (new_batch.into_data(), bytes) {
+            (CachedData::MemoryHybridLiquid(hybrid), Some(b)) => {
+                assert_variant_hybrid(&hybrid, "name", &b);
+            }
+            other => panic!("expected MemoryHybridLiquid with bytes, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_variant_squeeze_with_int64_path() {
+        let policy = TranscodeSqueezeEvict;
+        let states = LiquidCompressorStates::new();
+        let variant_arr = enriched_variant_array("age", DataType::Int64);
+        let hint = CacheExpression::variant_get("age", DataType::Int64);
+
+        let (new_batch, bytes) =
+            policy.squeeze(CacheEntry::memory_arrow(variant_arr), &states, Some(&hint));
+
+        match (new_batch.into_data(), bytes) {
+            (CachedData::MemoryHybridLiquid(hybrid), Some(b)) => {
+                assert_variant_hybrid(&hybrid, "age", &b);
+            }
+            other => panic!("expected MemoryHybridLiquid with bytes, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_variant_squeeze_without_hint() {
+        let policy = TranscodeSqueezeEvict;
+        let states = LiquidCompressorStates::new();
+        let variant_arr = enriched_variant_array("name", DataType::Utf8);
+
+        let (new_batch, bytes) =
+            policy.squeeze(CacheEntry::memory_arrow(variant_arr), &states, None);
+
+        match (new_batch.into_data(), bytes) {
+            (CachedData::DiskArrow(_), Some(b)) => assert!(!b.is_empty()),
+            (CachedData::MemoryLiquid(_), None) => {}
+            other => panic!("expected DiskArrow with bytes or MemoryLiquid, got {other:?}"),
         }
     }
 }
