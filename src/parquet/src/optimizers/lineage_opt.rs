@@ -2,7 +2,7 @@
 //! It then attaches the metadata to schema adapter, which is then passed to the physical plan.
 //! The physical optimizer will move the metadata to the fields of the schema.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -46,7 +46,7 @@ impl SupportedIntervalUnit {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DateExtraction {
     pub(crate) column: Column,
-    pub(crate) component: SupportedIntervalUnit,
+    pub(crate) components: HashSet<SupportedIntervalUnit>,
 }
 
 /// Metadata describing a Variant column that participates in a `variant_get`.
@@ -60,11 +60,26 @@ pub(crate) struct VariantExtraction {
 /// Annotation that should be attached to a column in the file schema.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ColumnAnnotation {
-    DatePart(SupportedIntervalUnit),
+    DatePart(HashSet<SupportedIntervalUnit>),
     VariantPath {
         path: String,
         data_type: Option<DataType>,
     },
+}
+
+pub(crate) fn serialize_date_part(units: &HashSet<SupportedIntervalUnit>) -> String {
+    let mut sorted_units: Vec<&SupportedIntervalUnit> = units.iter().collect();
+    // Sort by a consistent order: Year, Month, Day
+    sorted_units.sort_by_key(|unit| match unit {
+        SupportedIntervalUnit::Year => 0,
+        SupportedIntervalUnit::Month => 1,
+        SupportedIntervalUnit::Day => 2,
+    });
+    sorted_units
+        .iter()
+        .map(|unit| unit.metadata_value())
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// Logical optimizer that analyses the logical plan to detect columns that
@@ -506,24 +521,40 @@ impl TableColumnUsage {
         let mut extractions = Vec::new();
         for (key, stats) in self.usage.iter() {
             if matches!(stats.data_type, DataType::Date32) {
-                // Check if every usage's first operation is Extract with the same unit
-                let first_unit = stats.usages.first().and_then(|usage| {
-                    if let Some(Operation::Extract(unit)) = usage.first() {
-                        Some(unit)
-                    } else {
-                        None
+                // Collect all extract units from paths where the first n operations are all extracts
+                let mut all_units = HashSet::new();
+                let mut all_paths_valid = true;
+
+                for usage in &stats.usages {
+                    // Collect all Extract units from the leading sequence of extracts
+                    let mut path_units = HashSet::new();
+                    for op in usage {
+                        match op {
+                            Operation::Extract(unit) => {
+                                path_units.insert(unit);
+                            }
+                            _ => {
+                                // Stop at first non-extract operation
+                                break;
+                            }
+                        }
                     }
-                });
-                if let Some(first_unit) = first_unit {
-                    let all_matches = stats.usages.iter().all(|usage| {
-                        matches!(usage.first(), Some(Operation::Extract(unit)) if unit == first_unit)
+
+                    if path_units.is_empty() {
+                        // This path doesn't start with Extract, so skip this column
+                        all_paths_valid = false;
+                        break;
+                    }
+
+                    // Union the units from this path into the overall set
+                    all_units.extend(path_units);
+                }
+
+                if all_paths_valid && !all_units.is_empty() {
+                    extractions.push(DateExtraction {
+                        column: key.to_column(),
+                        components: all_units,
                     });
-                    if all_matches {
-                        extractions.push(DateExtraction {
-                            column: key.to_column(),
-                            component: *first_unit,
-                        });
-                    }
                 }
             }
         }
@@ -564,7 +595,7 @@ fn build_annotation_map(
     for extraction in date_findings {
         annotations.insert(
             ColumnKey::from_column(&extraction.column),
-            ColumnAnnotation::DatePart(extraction.component),
+            ColumnAnnotation::DatePart(extraction.components.clone()),
         );
     }
     for extraction in variant_findings {
@@ -1056,10 +1087,19 @@ mod tests {
         let expected_field_metadata = expected
             .iter()
             .map(|extraction| {
-                (
-                    extraction.column.name().to_string(),
-                    extraction.component.metadata_value().to_string(),
-                )
+                let mut sorted_units: Vec<&SupportedIntervalUnit> =
+                    extraction.components.iter().collect();
+                sorted_units.sort_by_key(|unit| match unit {
+                    SupportedIntervalUnit::Year => 0,
+                    SupportedIntervalUnit::Month => 1,
+                    SupportedIntervalUnit::Day => 2,
+                });
+                let metadata_value = sorted_units
+                    .iter()
+                    .map(|unit| unit.metadata_value())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                (extraction.column.name().to_string(), metadata_value)
             })
             .collect::<HashMap<String, String>>();
         assert_eq!(field_metadata_map, expected_field_metadata);
@@ -1070,20 +1110,14 @@ mod tests {
         general_test(
             "SELECT EXTRACT(YEAR FROM table_a.date) AS year, EXTRACT(DAY FROM table_b.date) AS day FROM table_a INNER JOIN table_b ON table_a.event_ts = table_b.event_ts",
             vec![
-                DateExtraction { column: Column::new(Some("table_a"), "date"), component: SupportedIntervalUnit::Year },
-                DateExtraction { column: Column::new(Some("table_b"), "date"), component: SupportedIntervalUnit::Day },
-            ],
-        )
-        .await;
-    }
-
-    #[tokio::test]
-    async fn single_table_multiple_extracts() {
-        general_test(
-            "SELECT EXTRACT(YEAR FROM date_copy) AS year, EXTRACT(DAY FROM date) AS day FROM table_a",
-            vec![
-                DateExtraction { column: Column::new(Some("table_a"), "date"), component: SupportedIntervalUnit::Day },
-                DateExtraction { column: Column::new(Some("table_a"), "date_copy"), component: SupportedIntervalUnit::Year },
+                DateExtraction {
+                    column: Column::new(Some("table_a"), "date"), 
+                    components: HashSet::from([SupportedIntervalUnit::Year]),
+                },
+                DateExtraction {
+                    column: Column::new(Some("table_b"), "date"), 
+                    components: HashSet::from([SupportedIntervalUnit::Day]),
+                },
             ],
         )
         .await;
@@ -1101,7 +1135,7 @@ mod tests {
         ];
         let expected = vec![DateExtraction {
             column: Column::new(Some("table_a"), "date"),
-            component: SupportedIntervalUnit::Day,
+            components: HashSet::from([SupportedIntervalUnit::Day]),
         }];
         for sql in statements {
             general_test(sql, expected.clone()).await;
@@ -1147,16 +1181,29 @@ mod tests {
     #[tokio::test]
     async fn inconsistent_extracts_are_ignored() {
         let statements = vec![
-            "SELECT EXTRACT(DAY FROM date) AS day, EXTRACT(MONTH FROM date) AS month FROM table_a",
             "SELECT EXTRACT(DAY FROM date + INTERVAL '1 day') AS day FROM table_a",
             "SELECT date FROM table_a",
             "SELECT EXTRACT(DAY FROM table_a.date) AS day FROM table_a INNER JOIN table_b ON table_a.date = table_b.date",
-            "SELECT (SELECT MAX(EXTRACT(DAY FROM date)) FROM table_a) AS max_day, (SELECT MIN(EXTRACT(Month FROM date)) FROM table_a) AS min_day",
             "SELECT EXTRACT(YEAR FROM event_ts) AS year FROM table_a", // todo: time stamp is not supported yet.
         ];
 
         for sql in statements {
             general_test(sql, vec![]).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn single_table_multiple_extracts() {
+        let statements = vec![
+            "SELECT EXTRACT(DAY FROM date) AS day, EXTRACT(MONTH FROM date) AS month FROM table_a",
+            "SELECT (SELECT MAX(EXTRACT(DAY FROM date)) FROM table_a) AS max_day, (SELECT MIN(EXTRACT(Month FROM date)) FROM table_a) AS min_day",
+        ];
+        let expected = vec![DateExtraction {
+            column: Column::new(Some("table_a"), "date"),
+            components: HashSet::from([SupportedIntervalUnit::Month, SupportedIntervalUnit::Day]),
+        }];
+        for sql in statements {
+            general_test(sql, expected.clone()).await;
         }
     }
 

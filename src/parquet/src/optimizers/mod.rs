@@ -21,7 +21,7 @@ pub use lineage_opt::LineageOptimizer;
 
 use crate::{
     LiquidCacheRef, LiquidParquetSource,
-    optimizers::lineage_opt::{ColumnAnnotation, metadata_from_factory},
+    optimizers::lineage_opt::{ColumnAnnotation, metadata_from_factory, serialize_date_part},
 };
 
 pub(crate) const DATE_MAPPING_METADATA_KEY: &str = "liquid.cache.date_mapping";
@@ -97,7 +97,7 @@ pub fn rewrite_data_source_plan(
                                     ColumnAnnotation::DatePart(unit) => {
                                         field_metadata.insert(
                                             DATE_MAPPING_METADATA_KEY.to_string(),
-                                            unit.metadata_value().to_string(),
+                                            serialize_date_part(&unit),
                                         );
                                     }
                                     ColumnAnnotation::VariantPath { path, data_type } => {
