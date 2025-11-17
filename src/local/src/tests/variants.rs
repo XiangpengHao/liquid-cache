@@ -5,10 +5,10 @@ use std::{
 };
 
 use arrow::{
-    array::{ArrayRef, RecordBatch, StringArray},
+    array::{Array, ArrayRef, RecordBatch, StringArray, StructArray},
     util::pretty::pretty_format_batches,
 };
-use arrow_schema::Schema;
+use arrow_schema::{Field, Fields, Schema};
 use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
 use liquid_cache_storage::cache::squeeze_policies::TranscodeSqueezeEvict;
 use parquet::{
@@ -36,6 +36,60 @@ fn write_variant_parquet_file(dir: &Path) -> PathBuf {
     let variant = make_variant_array();
     let schema = Arc::new(Schema::new(vec![variant.field("data")]));
     let batch = RecordBatch::try_new(schema, vec![ArrayRef::from(variant)]).expect("variant batch");
+
+    let file = File::create(&file_path).expect("create variant parquet file");
+    let mut writer =
+        ArrowWriter::try_new(file, batch.schema(), None).expect("create variant writer");
+    writer.write(&batch).expect("write variant batch");
+    writer.close().expect("close variant writer");
+
+    file_path
+}
+
+fn write_variant_non_nullable_value_file(dir: &Path) -> PathBuf {
+    let file_path = dir.join("variant_value_not_nullable.parquet");
+    let values = StringArray::from(vec![
+        Some(r#"{"name": "Alice", "age": 30}"#),
+        Some(r#"{"name": "Bob", "age": 25}"#),
+        None,
+    ]);
+    let input_array: ArrayRef = Arc::new(values);
+    let variant = json_to_variant(&input_array).expect("variant conversion");
+    let inner = variant.inner();
+    let fields = inner.fields();
+    let metadata_field = fields
+        .iter()
+        .find(|f| f.name() == "metadata")
+        .expect("metadata field");
+    let value_field = fields
+        .iter()
+        .find(|f| f.name() == "value")
+        .expect("value field");
+    let metadata_array = inner
+        .column_by_name("metadata")
+        .expect("metadata column")
+        .clone();
+    let value_array = inner.column_by_name("value").expect("value column").clone();
+
+    let struct_array = StructArray::new(
+        Fields::from(vec![
+            Arc::new(metadata_field.as_ref().clone()),
+            Arc::new(Field::new(
+                value_field.name(),
+                value_field.data_type().clone(),
+                false,
+            )),
+        ]),
+        vec![metadata_array, value_array],
+        inner.nulls().cloned(),
+    );
+
+    let data_field = Arc::new(
+        Field::new("data", struct_array.data_type().clone(), true).with_extension_type(VariantType),
+    );
+    let schema = Arc::new(Schema::new(vec![data_field]));
+    let batch = RecordBatch::try_new(schema, vec![Arc::new(struct_array) as ArrayRef])
+        .expect("variant batch");
 
     let file = File::create(&file_path).expect("create variant parquet file");
     let mut writer =
@@ -199,7 +253,7 @@ async fn test_variant_get() {
         .collect()
         .await
         .expect("query should succeed with small cache");
-    println!("results: \n{}", pretty_format_batches(&batches).unwrap());
+    insta::assert_snapshot!(pretty_format_batches(&batches).unwrap());
 }
 
 #[tokio::test]
@@ -224,11 +278,43 @@ async fn test_variant_predicate() {
     .unwrap();
 
     let batches = ctx
-        .sql("SELECT variant_to_json(variant_get(data, 'name')) FROM variants_test WHERE variant_get(data, 'name', 'string') = 'Bob'")
+        .sql("SELECT variant_to_json(variant_get(data, 'name')) FROM variants_test WHERE variant_get(data, 'name', 'Utf8') = 'Bob'")
         .await
         .unwrap()
         .collect()
         .await
         .unwrap();
+    insta::assert_snapshot!(pretty_format_batches(&batches).unwrap());
+}
+
+#[tokio::test]
+async fn test_variant_get_fails_when_value_field_not_nullable() {
+    let cache_dir = TempDir::new().unwrap();
+    let parquet_dir = TempDir::new().unwrap();
+    let parquet_path = write_variant_non_nullable_value_file(parquet_dir.path());
+    let parquet_path_str = parquet_path.to_str().expect("unicode path");
+
+    let (ctx, _cache) = LiquidCacheLocalBuilder::new()
+        .with_cache_dir(cache_dir.path().to_path_buf())
+        .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+        .build(SessionConfig::new())
+        .unwrap();
+
+    ctx.register_parquet(
+        "variants_value_not_nullable",
+        parquet_path_str,
+        ParquetReadOptions::default().skip_metadata(false),
+    )
+    .await
+    .unwrap();
+
+    let batches = ctx
+        .sql("SELECT variant_get(data, 'name', 'Utf8') AS name FROM variants_value_not_nullable")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+
     insta::assert_snapshot!(pretty_format_batches(&batches).unwrap());
 }

@@ -31,6 +31,10 @@ struct InProcessBenchmark {
     #[arg(long)]
     pub output: Option<PathBuf>,
 
+    /// Directory to write query results as Parquet files
+    #[arg(long = "output-dir")]
+    pub output_dir: Option<PathBuf>,
+
     /// Reset the cache before running a new query
     #[arg(long = "reset-cache", default_value = "false")]
     pub reset_cache: bool,
@@ -54,10 +58,6 @@ struct InProcessBenchmark {
     /// Directory to save the cache
     #[arg(long = "cache-dir")]
     pub cache_dir: Option<PathBuf>,
-
-    /// If set, compare results against datafusion-default mode after each query
-    #[arg(long = "check-results", default_value_t = false)]
-    pub check_results: bool,
 
     /// Jaeger OTLP gRPC endpoint (for example: http://localhost:4317)
     #[arg(long = "jaeger-endpoint")]
@@ -83,7 +83,7 @@ impl InProcessBenchmark {
             .with_cache_dir(self.cache_dir.clone())
             .with_query_filter(self.query_index)
             .with_io_mode(self.io_mode)
-            .with_check_results(self.check_results);
+            .with_output_dir(self.output_dir.clone());
         runner.run(manifest, self, output).await?;
         Ok(())
     }

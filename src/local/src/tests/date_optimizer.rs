@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use arrow::array::{Date32Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
-use datafusion::{parquet::arrow::ArrowWriter, physical_plan::display::DisplayableExecutionPlan};
+use datafusion::parquet::arrow::ArrowWriter;
 use liquid_cache_storage::cache::squeeze_policies::TranscodeSqueezeEvict;
 use tempfile::TempDir;
 
@@ -71,10 +71,6 @@ async fn general_test(sql: &str) -> CacheStatsSummary {
 
     // First run - warms the cache
     let plan_first = get_physical_plan(sql, &ctx).await;
-    println!(
-        "plan_first: \n{}",
-        DisplayableExecutionPlan::new(plan_first.as_ref()).tree_render()
-    );
     let batches_first = collect(plan_first, ctx.task_ctx()).await.unwrap();
 
     let entries_after_first_run = cache.storage().stats().total_entries;
@@ -103,30 +99,26 @@ async fn general_test(sql: &str) -> CacheStatsSummary {
 async fn test_date_extraction() {
     let sql = r#"select AVG(EXTRACT(YEAR from date_a)) as year from test_table"#;
     let stats = general_test(sql).await;
-    assert!(stats.runtime_hit_date32_expression_calls > 0);
-    insta::assert_snapshot!(stats);
+    assert_eq!(stats.stats.runtime.hit_date32_expression_calls, 81);
 }
 
 #[tokio::test]
 async fn date_extraction_month() {
     let sql = r#"select AVG(EXTRACT(MONTH from date_a)) as month from test_table"#;
     let stats = general_test(sql).await;
-    assert!(stats.runtime_hit_date32_expression_calls > 0);
-    insta::assert_snapshot!(stats);
+    assert_eq!(stats.stats.runtime.hit_date32_expression_calls, 73);
 }
 
 #[tokio::test]
 async fn date_extraction_day() {
     let sql = r#"select AVG(EXTRACT(DAY from date_a)) as day from test_table"#;
     let stats = general_test(sql).await;
-    assert!(stats.runtime_hit_date32_expression_calls > 0);
-    insta::assert_snapshot!(stats);
+    assert_eq!(stats.stats.runtime.hit_date32_expression_calls, 81);
 }
 
 #[tokio::test]
 async fn test_date_extraction_case2() {
     let sql = r#"select AVG(EXTRACT(YEAR from date_a) + 1) as year, (SELECT MAX(EXTRACT(YEAR from date_a)) FROM test_table) as max_year from test_table"#;
     let stats = general_test(sql).await;
-    assert!(stats.runtime_hit_date32_expression_calls > 0);
-    insta::assert_snapshot!(stats);
+    assert_eq!(stats.stats.runtime.hit_date32_expression_calls, 162); // we know this.
 }

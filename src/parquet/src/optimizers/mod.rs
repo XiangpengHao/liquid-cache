@@ -2,9 +2,9 @@
 
 mod lineage_opt;
 
-use std::sync::Arc;
+use std::{str::FromStr, sync::Arc};
 
-use arrow_schema::{Field, Schema};
+use arrow_schema::{DataType, Field, Fields, Schema, SchemaRef};
 use datafusion::{
     catalog::memory::DataSourceExec,
     common::tree_node::{Transformed, TreeNode, TreeNodeRecursion},
@@ -21,11 +21,12 @@ pub use lineage_opt::LineageOptimizer;
 
 use crate::{
     LiquidCacheRef, LiquidParquetSource,
-    optimizers::lineage_opt::{ColumnAnnotation, metadata_from_factory},
+    optimizers::lineage_opt::{ColumnAnnotation, metadata_from_factory, serialize_date_part},
 };
 
 pub(crate) const DATE_MAPPING_METADATA_KEY: &str = "liquid.cache.date_mapping";
 pub(crate) const VARIANT_MAPPING_METADATA_KEY: &str = "liquid.cache.variant_path";
+pub(crate) const VARIANT_MAPPING_TYPE_METADATA_KEY: &str = "liquid.cache.variant_type";
 
 /// Physical optimizer rule for local mode liquid cache
 ///
@@ -90,22 +91,34 @@ pub fn rewrite_data_source_plan(
                             if let Some(annotation) =
                                 metadata_from_factory(&schema_factory, field.name())
                             {
-                                let (metadata_key, metadata_value): (&str, String) =
-                                    match annotation {
-                                        ColumnAnnotation::DatePart(_) => (
-                                            DATE_MAPPING_METADATA_KEY,
-                                            annotation
-                                                .serialize_date_part()
-                                                .expect("DatePart should serialize"),
-                                        ),
-                                        ColumnAnnotation::VariantPath(path) => {
-                                            (VARIANT_MAPPING_METADATA_KEY, path)
-                                        }
-                                    };
                                 let mut field_metadata = field.metadata().clone();
-                                field_metadata.insert(metadata_key.to_string(), metadata_value);
-                                let new_field =
-                                    Field::clone(field.as_ref()).with_metadata(field_metadata);
+                                let mut updated_field = Field::clone(field.as_ref());
+                                match annotation {
+                                    ColumnAnnotation::DatePart(unit) => {
+                                        field_metadata.insert(
+                                            DATE_MAPPING_METADATA_KEY.to_string(),
+                                            serialize_date_part(&unit),
+                                        );
+                                    }
+                                    ColumnAnnotation::VariantPath { path, data_type } => {
+                                        field_metadata.insert(
+                                            VARIANT_MAPPING_METADATA_KEY.to_string(),
+                                            path.clone(),
+                                        );
+                                        if let Some(data_type) = data_type.as_ref() {
+                                            field_metadata.insert(
+                                                VARIANT_MAPPING_TYPE_METADATA_KEY.to_string(),
+                                                data_type.to_string(),
+                                            );
+                                            updated_field = enrich_variant_field_type(
+                                                &updated_field,
+                                                path.as_str(),
+                                                data_type,
+                                            );
+                                        }
+                                    }
+                                }
+                                let new_field = updated_field.with_metadata(field_metadata);
                                 new_fields.push(Arc::new(new_field));
                             } else {
                                 new_fields.push(field.clone());
@@ -135,6 +148,65 @@ pub fn rewrite_data_source_plan(
         })
         .unwrap();
     rewritten.data
+}
+
+pub(crate) fn enrich_variant_field_type(field: &Field, path: &str, data_type: &DataType) -> Field {
+    let new_type = match field.data_type() {
+        DataType::Struct(children) => {
+            let mut rewritten = Vec::with_capacity(children.len() + 1);
+            let mut replaced = false;
+            for child in children.iter() {
+                if child.name() == "typed_value" {
+                    rewritten.push(build_variant_typed_field(path, data_type));
+                    replaced = true;
+                } else {
+                    let mut child_field = child.as_ref().clone();
+                    if child_field.name() == "value" {
+                        child_field =
+                            Field::new(child_field.name(), child_field.data_type().clone(), true)
+                                .with_metadata(child_field.metadata().clone());
+                    }
+                    rewritten.push(Arc::new(child_field));
+                }
+            }
+            if !replaced {
+                rewritten.push(build_variant_typed_field(path, data_type));
+            }
+            DataType::Struct(Fields::from(rewritten))
+        }
+        other => other.clone(),
+    };
+    Field::clone(field).with_data_type(new_type)
+}
+
+pub(crate) fn enrich_schema_for_cache(schema: &SchemaRef) -> SchemaRef {
+    let mut fields = vec![];
+    for field in schema.fields() {
+        let new_field = if let (Some(path), Some(data_type)) = (
+            field.metadata().get(VARIANT_MAPPING_METADATA_KEY),
+            field
+                .metadata()
+                .get(VARIANT_MAPPING_TYPE_METADATA_KEY)
+                .and_then(|ty| DataType::from_str(ty).ok()),
+        ) {
+            Arc::new(enrich_variant_field_type(field.as_ref(), path, &data_type))
+        } else {
+            field.clone()
+        };
+        fields.push(new_field);
+    }
+    Arc::new(Schema::new(fields))
+}
+
+fn build_variant_typed_field(path: &str, data_type: &DataType) -> Arc<Field> {
+    let leaf_field = Arc::new(Field::new("typed_value", data_type.clone(), true));
+    let leaf_struct = DataType::Struct(Fields::from(vec![leaf_field]));
+    let path_field = Arc::new(Field::new(path, leaf_struct, true));
+    Arc::new(Field::new(
+        "typed_value",
+        DataType::Struct(Fields::from(vec![path_field])),
+        true,
+    ))
 }
 
 #[cfg(test)]

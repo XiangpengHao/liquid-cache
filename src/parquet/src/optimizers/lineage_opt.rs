@@ -54,39 +54,32 @@ pub(crate) struct DateExtraction {
 pub(crate) struct VariantExtraction {
     pub(crate) column: Column,
     pub(crate) path: String,
+    pub(crate) data_type: Option<DataType>,
 }
 
 /// Annotation that should be attached to a column in the file schema.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ColumnAnnotation {
     DatePart(HashSet<SupportedIntervalUnit>),
-    VariantPath(String),
+    VariantPath {
+        path: String,
+        data_type: Option<DataType>,
+    },
 }
 
-impl ColumnAnnotation {
-    /// Serialize DatePart units to a comma-separated string.
-    /// Returns None if this is not a DatePart annotation.
-    pub(crate) fn serialize_date_part(&self) -> Option<String> {
-        match self {
-            ColumnAnnotation::DatePart(units) => {
-                let mut sorted_units: Vec<&SupportedIntervalUnit> = units.iter().collect();
-                // Sort by a consistent order: Year, Month, Day
-                sorted_units.sort_by_key(|unit| match unit {
-                    SupportedIntervalUnit::Year => 0,
-                    SupportedIntervalUnit::Month => 1,
-                    SupportedIntervalUnit::Day => 2,
-                });
-                Some(
-                    sorted_units
-                        .iter()
-                        .map(|unit| unit.metadata_value())
-                        .collect::<Vec<_>>()
-                        .join(","),
-                )
-            }
-            ColumnAnnotation::VariantPath(_) => None,
-        }
-    }
+pub(crate) fn serialize_date_part(units: &HashSet<SupportedIntervalUnit>) -> String {
+    let mut sorted_units: Vec<&SupportedIntervalUnit> = units.iter().collect();
+    // Sort by a consistent order: Year, Month, Day
+    sorted_units.sort_by_key(|unit| match unit {
+        SupportedIntervalUnit::Year => 0,
+        SupportedIntervalUnit::Month => 1,
+        SupportedIntervalUnit::Day => 2,
+    });
+    sorted_units
+        .iter()
+        .map(|unit| unit.metadata_value())
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// Logical optimizer that analyses the logical plan to detect columns that
@@ -193,7 +186,10 @@ impl ColumnUsage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Operation {
     Extract(SupportedIntervalUnit),
-    VariantGet(String),
+    VariantGet {
+        path: String,
+        data_type: Option<DataType>,
+    },
     Other,
 }
 
@@ -568,18 +564,21 @@ impl TableColumnUsage {
     fn find_variant_gets(&self) -> Vec<VariantExtraction> {
         let mut gets = Vec::new();
         for (key, stats) in self.usage.iter() {
-            let first_path = stats.usages.first().and_then(|usage| match usage.first() {
-                Some(Operation::VariantGet(path)) => Some(path.clone()),
+            let first = stats.usages.first().and_then(|usage| match usage.first() {
+                Some(Operation::VariantGet { path, data_type }) => {
+                    Some((path.clone(), data_type.clone()))
+                }
                 _ => None,
             });
-            if let Some(first_path) = first_path {
+            if let Some((first_path, first_type)) = first {
                 let all_match = stats.usages.iter().all(|usage| {
-                    matches!(usage.first(), Some(Operation::VariantGet(path)) if path == &first_path)
+                    matches!(usage.first(), Some(Operation::VariantGet { path, data_type }) if path == &first_path && data_type == &first_type)
                 });
                 if all_match {
                     gets.push(VariantExtraction {
                         column: key.to_column(),
                         path: first_path.clone(),
+                        data_type: first_type.clone(),
                     });
                 }
             }
@@ -602,7 +601,10 @@ fn build_annotation_map(
     for extraction in variant_findings {
         annotations.insert(
             ColumnKey::from_column(&extraction.column),
-            ColumnAnnotation::VariantPath(extraction.path.clone()),
+            ColumnAnnotation::VariantPath {
+                path: extraction.path.clone(),
+                data_type: extraction.data_type.clone(),
+            },
         );
     }
     annotations
@@ -813,9 +815,13 @@ fn lineage_for_expr(
                 && (func.args.len() == 2 || func.args.len() == 3)
                 && let Some(path) = literal_utf8(&func.args[1])
             {
+                let type_hint = func.args.get(2).and_then(literal_data_type);
                 let mut usages = lineage_for_expr(&func.args[0], input_lineage, schema)?;
                 for usage in &mut usages {
-                    usage.operations.push(Operation::VariantGet(path.clone()));
+                    usage.operations.push(Operation::VariantGet {
+                        path: path.clone(),
+                        data_type: type_hint.clone(),
+                    });
                 }
                 return Ok(usages);
             }
@@ -878,6 +884,10 @@ fn literal_utf8(expr: &Expr) -> Option<String> {
     }
 }
 
+fn literal_data_type(expr: &Expr) -> Option<DataType> {
+    literal_utf8(expr).and_then(|spec| DataType::from_str(&spec).ok())
+}
+
 fn part_to_unit(expr: &Expr) -> Option<SupportedIntervalUnit> {
     let value = match expr {
         Expr::Literal(literal, _) => literal,
@@ -904,6 +914,7 @@ mod tests {
 
     use crate::optimizers::{
         DATE_MAPPING_METADATA_KEY, LocalModeOptimizer, VARIANT_MAPPING_METADATA_KEY,
+        VARIANT_MAPPING_TYPE_METADATA_KEY,
     };
     use crate::{LiquidCache, VariantGetUdf, VariantToJsonUdf};
     use liquid_cache_common::IoMode;
@@ -1276,6 +1287,47 @@ mod tests {
                 expected_path.map(|s| s.to_string()),
             );
         }
+    }
+
+    #[tokio::test]
+    async fn variant_get_type_metadata_is_propagated() {
+        let temp_dir = TempDir::new().unwrap();
+        let table_a = temp_dir.path().join("table_a.parquet");
+        let table_b = temp_dir.path().join("table_b.parquet");
+
+        let optimizer = Arc::new(LineageOptimizer::new());
+        let ctx = create_test_ctx(
+            table_a.to_str().unwrap(),
+            table_b.to_str().unwrap(),
+            optimizer.clone(),
+        )
+        .await;
+
+        ctx.register_udf(ScalarUDF::new_from_impl(VariantGetUdf::default()));
+
+        let variant_path = write_variant_parquet_file(temp_dir.path());
+        ctx.register_parquet(
+            "variants_test",
+            variant_path.to_str().unwrap(),
+            ParquetReadOptions::default().skip_metadata(false),
+        )
+        .await
+        .unwrap();
+
+        let df = ctx
+            .sql("SELECT variant_get(data, 'name', 'Utf8') FROM variants_test")
+            .await
+            .unwrap();
+        let (state, plan) = df.into_parts();
+        let optimized = state.optimize(&plan).unwrap();
+        let physical_plan = state.create_physical_plan(&optimized).await.unwrap();
+
+        let type_metadata = extract_field_metadata_from_physical_plan(
+            &physical_plan,
+            VARIANT_MAPPING_TYPE_METADATA_KEY,
+        );
+
+        assert_eq!(type_metadata.get("data"), Some(&"Utf8".to_string()));
     }
 
     #[tokio::test]

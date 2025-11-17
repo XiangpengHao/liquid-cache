@@ -9,9 +9,7 @@ use arrow::{
     array::{Array, ArrayRef, AsArray, StringViewArray, StructArray},
     compute::concat,
 };
-use arrow_schema::{
-    DataType, Field, FieldRef, Fields, IntervalUnit, TimeUnit, extension::ExtensionType,
-};
+use arrow_schema::{DataType, Field, FieldRef, Fields, extension::ExtensionType};
 use datafusion::{
     common::{exec_datafusion_err, exec_err},
     error::{DataFusionError, Result},
@@ -76,163 +74,12 @@ pub fn try_parse_string_scalar(scalar: &ScalarValue) -> Result<Option<&String>> 
     Ok(b.as_ref())
 }
 
-fn strip_prefix_case_insensitive<'a>(value: &'a str, prefix: &str) -> Option<&'a str> {
-    if value.len() < prefix.len() {
-        return None;
-    }
-    if value[..prefix.len()].eq_ignore_ascii_case(prefix) {
-        Some(&value[prefix.len()..])
-    } else {
-        None
-    }
-}
-
-fn parse_decimal_spec(body_with_suffix: &str, kind: DecimalKind) -> Result<DataType> {
-    let inner = body_with_suffix
-        .strip_suffix(')')
-        .ok_or_else(|| exec_datafusion_err!("decimal specification must end with ')'"))?;
-    let mut parts = inner.split(',');
-    let precision = parts
-        .next()
-        .ok_or_else(|| exec_datafusion_err!("decimal specification requires a precision"))?
-        .trim()
-        .parse::<u8>()
-        .map_err(|_| exec_datafusion_err!("invalid decimal precision: {inner}"))?;
-    let scale = parts
-        .next()
-        .ok_or_else(|| exec_datafusion_err!("decimal specification requires a scale"))?
-        .trim()
-        .parse::<i8>()
-        .map_err(|_| exec_datafusion_err!("invalid decimal scale: {inner}"))?;
-
-    if parts.next().is_some() {
-        return exec_err!("decimal specification only accepts precision and scale");
-    }
-
-    Ok(match kind {
-        DecimalKind::Decimal128 => DataType::Decimal128(precision, scale),
-        DecimalKind::Decimal256 => DataType::Decimal256(precision, scale),
-    })
-}
-
-fn parse_timestamp_spec(body_with_suffix: &str) -> Result<DataType> {
-    let inner = body_with_suffix
-        .strip_suffix(')')
-        .ok_or_else(|| exec_datafusion_err!("timestamp specification must end with ')'"))?;
-    let mut segments = inner.split(',').map(|s| s.trim()).filter(|s| !s.is_empty());
-    let unit_str = segments
-        .next()
-        .ok_or_else(|| exec_datafusion_err!("timestamp specification requires a time unit"))?;
-    let unit = parse_time_unit(unit_str).ok_or_else(|| {
-        exec_datafusion_err!("unsupported timestamp unit '{unit_str}', expected one of s/ms/us/ns")
-    })?;
-
-    let timezone = segments.next().map(|tz| {
-        let trimmed = tz.trim_matches(|c| c == '"' || c == '\'');
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        }
-    });
-
-    if segments.next().is_some() {
-        return exec_err!("timestamp specification accepts at most unit and timezone");
-    }
-
-    Ok(DataType::Timestamp(
-        unit,
-        timezone.flatten().map(Into::into),
-    ))
-}
-
-fn parse_time_unit(value: &str) -> Option<TimeUnit> {
-    match value.to_ascii_lowercase().as_str() {
-        "s" | "sec" | "secs" | "second" | "seconds" => Some(TimeUnit::Second),
-        "ms" | "milli" | "millis" | "millisecond" | "milliseconds" => Some(TimeUnit::Millisecond),
-        "us" | "micro" | "micros" | "microsecond" | "microseconds" => Some(TimeUnit::Microsecond),
-        "ns" | "nano" | "nanos" | "nanosecond" | "nanoseconds" => Some(TimeUnit::Nanosecond),
-        _ => None,
-    }
-}
-
 fn parse_type_hint(spec: &str) -> Result<DataType> {
-    let trimmed = spec.trim();
-    if trimmed.is_empty() {
-        return exec_err!("type hint cannot be empty");
+    if let Ok(data_type) = spec.parse::<DataType>() {
+        Ok(data_type)
+    } else {
+        exec_err!("invalid type hint: {spec}")
     }
-
-    if let Ok(data_type) = trimmed.parse::<DataType>() {
-        return Ok(data_type);
-    }
-
-    if let Some(rest) = strip_prefix_case_insensitive(trimmed, "decimal(") {
-        return parse_decimal_spec(rest, DecimalKind::Decimal128);
-    }
-
-    if let Some(rest) = strip_prefix_case_insensitive(trimmed, "decimal128(") {
-        return parse_decimal_spec(rest, DecimalKind::Decimal128);
-    }
-
-    if let Some(rest) = strip_prefix_case_insensitive(trimmed, "decimal256(") {
-        return parse_decimal_spec(rest, DecimalKind::Decimal256);
-    }
-
-    if let Some(rest) = strip_prefix_case_insensitive(trimmed, "numeric(") {
-        return parse_decimal_spec(rest, DecimalKind::Decimal128);
-    }
-
-    if let Some(rest) = strip_prefix_case_insensitive(trimmed, "timestamp(") {
-        return parse_timestamp_spec(rest);
-    }
-
-    let no_whitespace: String = trimmed.chars().filter(|c| !c.is_whitespace()).collect();
-    let canonical = no_whitespace.to_ascii_uppercase();
-
-    let data_type = match canonical.as_str() {
-        // Character types
-        "CHAR" | "CHARACTER" | "VARCHAR" | "CHARACTERVARYING" | "TEXT" | "STRING" => DataType::Utf8,
-        // Numeric types
-        "TINYINT" => DataType::Int8,
-        "SMALLINT" => DataType::Int16,
-        "INT" | "INTEGER" => DataType::Int32,
-        "BIGINT" => DataType::Int64,
-        "TINYINTUNSIGNED" => DataType::UInt8,
-        "SMALLINTUNSIGNED" => DataType::UInt16,
-        "INTUNSIGNED" | "INTEGERUNSIGNED" => DataType::UInt32,
-        "BIGINTUNSIGNED" => DataType::UInt64,
-        "FLOAT" | "REAL" => DataType::Float32,
-        "DOUBLE" | "DOUBLEPRECISION" => DataType::Float64,
-        // Date/time
-        "DATE" => DataType::Date32,
-        "TIME" => DataType::Time64(TimeUnit::Nanosecond),
-        "TIMESTAMP" => DataType::Timestamp(TimeUnit::Nanosecond, None),
-        "TIMESTAMP_S" | "TIMESTAMPSECOND" => DataType::Timestamp(TimeUnit::Second, None),
-        "TIMESTAMP_MS" | "TIMESTAMPMILLISECOND" => DataType::Timestamp(TimeUnit::Millisecond, None),
-        "TIMESTAMP_US" | "TIMESTAMPMICROSECOND" => DataType::Timestamp(TimeUnit::Microsecond, None),
-        "TIMESTAMP_NS" | "TIMESTAMPNANOSECOND" => DataType::Timestamp(TimeUnit::Nanosecond, None),
-        "INTERVAL" => DataType::Interval(IntervalUnit::MonthDayNano),
-        // Boolean
-        "BOOLEAN" | "BOOL" => DataType::Boolean,
-        // Binary
-        "BYTEA" => DataType::Binary,
-        // Existing Arrow names (case-insensitive convenience)
-        "UTF8" => DataType::Utf8,
-        "LARGEUTF8" => DataType::LargeUtf8,
-        "UTF8VIEW" | "STRINGVIEW" => DataType::Utf8View,
-        "BINARY" => DataType::Binary,
-        "LARGEBINARY" => DataType::LargeBinary,
-        "BINARYVIEW" => DataType::BinaryView,
-        "DATE32" => DataType::Date32,
-        "DATE64" => DataType::Date64,
-        _ => {
-            return exec_err!(
-                "unsupported type hint '{trimmed}'. See DataFusion's data type documentation for supported names"
-            );
-        }
-    };
-
-    Ok(data_type)
 }
 
 fn type_hint_from_scalar(field_name: &str, scalar: &ScalarValue) -> Result<FieldRef> {
@@ -266,12 +113,6 @@ fn build_get_options<'a>(path: VariantPath<'a>, as_type: &Option<FieldRef>) -> G
         Some(field) => GetOptions::new_with_path(path).with_as_type(Some(field.clone())),
         None => GetOptions::new_with_path(path),
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-enum DecimalKind {
-    Decimal128,
-    Decimal256,
 }
 
 /// UDF for getting a variant from a variant array or scalar.
@@ -737,29 +578,5 @@ mod tests {
         };
 
         assert_eq!(value.as_deref(), Some("norm"));
-    }
-
-    #[test]
-    fn test_parse_type_hint_sql_aliases() {
-        assert_eq!(parse_type_hint("varchar").unwrap(), DataType::Utf8);
-        assert_eq!(
-            parse_type_hint("DECIMAL(12, 3)").unwrap(),
-            DataType::Decimal128(12, 3)
-        );
-        assert_eq!(
-            parse_type_hint("time").unwrap(),
-            DataType::Time64(TimeUnit::Nanosecond)
-        );
-        assert_eq!(
-            parse_type_hint("timestamp_s").unwrap(),
-            DataType::Timestamp(TimeUnit::Second, None)
-        );
-        assert_eq!(parse_type_hint("bytea").unwrap(), DataType::Binary);
-    }
-
-    #[test]
-    fn test_parse_type_hint_invalid() {
-        let err = parse_type_hint("uuid").unwrap_err();
-        assert!(err.to_string().contains("unsupported type hint"));
     }
 }

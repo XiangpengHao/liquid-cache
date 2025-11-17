@@ -4,7 +4,7 @@ use crate::reader::runtime::parquet_bridge::{
     ParquetField, limit_row_selection, offset_row_selection,
 };
 use arrow::array::RecordBatch;
-use arrow_schema::{DataType, Fields, Schema, SchemaRef};
+use arrow_schema::{Schema, SchemaRef};
 use fastrace::Event;
 use fastrace::local::LocalSpan;
 use futures::{FutureExt, Stream, StreamExt, future::BoxFuture};
@@ -120,7 +120,6 @@ impl ReaderFactory {
         let cached_row_group = self.liquid_cache.create_row_group(row_group_idx as u64);
 
         let projection_column_ids = get_column_ids(self.fields.as_deref(), &projection);
-
         let missing_batches =
             compute_missing_batches(&cached_row_group, &cache_column_ids, &selection_batches);
 
@@ -227,6 +226,15 @@ impl ReaderFactory {
 
         Ok((self, context))
     }
+}
+
+fn build_projection_schema(file_schema: &SchemaRef, projection_column_ids: &[usize]) -> SchemaRef {
+    let fields: Vec<_> = projection_column_ids
+        .iter()
+        .filter_map(|column_id| file_schema.fields().get(*column_id))
+        .map(|field_ref| field_ref.as_ref().clone())
+        .collect();
+    Arc::new(Schema::new(fields))
 }
 
 fn collect_selection_batches(
@@ -474,16 +482,9 @@ impl LiquidStreamBuilder {
             .batch_size
             .min(self.metadata.file_metadata().num_rows() as usize);
 
-        // Ensure schema of ParquetRecordBatchStream respects projection, and does
-        // not store metadata (same as for ParquetRecordBatchReader and emitted RecordBatches)
-        let projected_fields = match self.fields.as_deref().map(|pf| &pf.arrow_type) {
-            Some(DataType::Struct(fields)) => {
-                fields.filter_leaves(|idx, _| self.projection.leaf_included(idx))
-            }
-            None => Fields::empty(),
-            _ => unreachable!("Must be Struct for root type"),
-        };
-        let schema = Arc::new(Schema::new(projected_fields));
+        let projection_column_ids = get_column_ids(self.fields.as_deref(), &self.projection);
+        let file_schema = liquid_cache.schema();
+        let schema = build_projection_schema(&file_schema, &projection_column_ids);
 
         let reader = ReaderFactory {
             metadata: Arc::clone(&self.metadata),
@@ -608,7 +609,7 @@ impl Stream for LiquidStream {
                                     reader_factory.filter.take(),
                                     context.cached_row_group,
                                     context.projection_column_ids,
-                                    self.schema.clone(),
+                                    Arc::clone(&self.schema),
                                 );
                                 self.state = StreamState::ReadFromCache(batch_reader);
                             }
@@ -634,7 +635,7 @@ impl Stream for LiquidStream {
                                 reader_factory.filter.take(),
                                 context.cached_row_group,
                                 context.projection_column_ids,
-                                self.schema.clone(),
+                                Arc::clone(&self.schema),
                             );
                             self.state = StreamState::ReadFromCache(batch_reader);
                         }
@@ -653,7 +654,7 @@ mod tests {
     use super::*;
     use crate::cache::LiquidCache;
     use arrow::array::{ArrayRef, Int32Array};
-    use arrow_schema::Field;
+    use arrow_schema::{DataType, Field, Schema};
     use liquid_cache_common::IoMode;
     use liquid_cache_storage::cache::squeeze_policies::Evict;
     use liquid_cache_storage::cache_policies::LiquidPolicy;

@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::{
     cache::LiquidCacheRef,
+    optimizers::enrich_schema_for_cache,
     reader::{
         plantime::{row_filter::build_row_filter, row_group_filter::RowGroupAccessPlanFilter},
         runtime::ArrowReaderBuilderBridge,
@@ -136,9 +137,10 @@ impl FileOpener for LiquidParquetOpener {
 
         let projected_schema =
             SchemaRef::from(self.downstream_full_schema.project(&self.projection)?);
-        let schema_adapter = self
-            .schema_adapter_factory
-            .create(projected_schema, Arc::clone(&self.downstream_full_schema));
+        let schema_adapter = self.schema_adapter_factory.create(
+            Arc::clone(&projected_schema),
+            Arc::clone(&self.downstream_full_schema),
+        );
         let predicate = self.predicate.clone();
         let pruning_predicate = self.pruning_predicate.clone();
         let page_pruning_predicate = self.page_pruning_predicate.clone();
@@ -171,6 +173,7 @@ impl FileOpener for LiquidParquetOpener {
                 Arc::clone(&downstream_full_schema),
                 Arc::clone(&physical_file_schema),
             ));
+            let cache_full_schema = enrich_schema_for_cache(&physical_file_schema);
             options = options.with_schema(Arc::clone(&physical_file_schema));
             reader_metadata =
                 ArrowReaderMetadata::try_new(Arc::clone(reader_metadata.metadata()), options)?;
@@ -294,7 +297,7 @@ impl FileOpener for LiquidParquetOpener {
                 liquid_builder = liquid_builder.with_span(span);
             }
 
-            let liquid_cache = lc.register_or_get_file(file_loc, physical_file_schema);
+            let liquid_cache = lc.register_or_get_file(file_loc, Arc::clone(&cache_full_schema));
 
             let stream = liquid_builder.build(liquid_cache)?;
 

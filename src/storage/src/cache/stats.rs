@@ -1,141 +1,118 @@
+use std::fmt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Atomic runtime counters for cache API calls.
-#[derive(Debug, Default)]
-pub struct RuntimeStats {
-    /// Number of `get_arrow_array` calls issued via `CachedData`.
-    pub(crate) get_arrow_array_calls: AtomicU64,
-    /// Number of `get_with_selection` calls issued via `CachedData`.
-    pub(crate) get_with_selection_calls: AtomicU64,
-    /// Number of `get_with_predicate` calls issued via `CachedData`.
-    pub(crate) get_with_predicate_calls: AtomicU64,
-    /// Number of Hybrid-Liquid predicate evaluations finished without IO.
-    pub(crate) get_predicate_hybrid_success: AtomicU64,
-    /// Number of Hybrid-Liquid predicate paths that required IO.
-    pub(crate) get_predicate_hybrid_needs_io: AtomicU64,
-    /// Number of Hybrid-Liquid predicate paths that were unsupported and fell back.
-    pub(crate) get_predicate_hybrid_unsupported: AtomicU64,
-    /// Number of `try_read_liquid` calls issued via `CachedData`.
-    pub(crate) try_read_liquid_calls: AtomicU64,
-    /// Number of `hit_date32_expression` calls.
-    pub(crate) hit_date32_expression_calls: AtomicU64,
+/// Macro to define runtime statistics metrics.
+///
+/// Usage:
+/// ```ignore
+/// define_runtime_stats! {
+///     (field_name, "doc comment", method_name),
+///     ...
+/// }
+/// ```
+///
+/// This generates:
+/// - Fields in `RuntimeStats` struct
+/// - Fields in `RuntimeStatsSnapshot` struct  
+/// - Increment methods (`incr_*`)
+/// - `consume_snapshot` implementation
+/// - `reset` implementation
+macro_rules! define_runtime_stats {
+    (
+        $(
+            ($field:ident, $doc:literal, $method:ident)
+        ),* $(,)?
+    ) => {
+        /// Atomic runtime counters for cache API calls.
+        #[derive(Debug, Default)]
+        pub struct RuntimeStats {
+            $(
+                #[doc = $doc]
+                pub(crate) $field: AtomicU64,
+            )*
+        }
+
+        /// Immutable snapshot of [`RuntimeStats`].
+        #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+        pub struct RuntimeStatsSnapshot {
+            $(
+                #[doc = concat!("Total ", stringify!($field), ".")]
+                pub $field: u64,
+            )*
+        }
+
+        impl RuntimeStats {
+            /// Return an immutable snapshot of the current runtime counters and reset the stats to 0.
+            pub fn consume_snapshot(&self) -> RuntimeStatsSnapshot {
+                let v = RuntimeStatsSnapshot {
+                    $(
+                        $field: self.$field.load(Ordering::Relaxed),
+                    )*
+                };
+                self.reset();
+                v
+            }
+
+            $(
+                /// Increment counter.
+                #[inline]
+                pub fn $method(&self) {
+                    self.$field.fetch_add(1, Ordering::Relaxed);
+                }
+            )*
+
+            /// Reset the runtime stats to 0.
+            pub fn reset(&self) {
+                $(
+                    self.$field.store(0, Ordering::Relaxed);
+                )*
+            }
+        }
+
+        impl fmt::Display for RuntimeStats {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                writeln!(f, "RuntimeStats:")?;
+                $(
+                    writeln!(f, "  {}: {}", stringify!($field), self.$field.load(Ordering::Relaxed))?;
+                )*
+                Ok(())
+            }
+        }
+
+        impl fmt::Display for RuntimeStatsSnapshot {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                writeln!(f, "RuntimeStatsSnapshot:")?;
+                $(
+                    writeln!(f, "  {}: {}", stringify!($field), self.$field)?;
+                )*
+                Ok(())
+            }
+        }
+    };
 }
 
-/// Immutable snapshot of [`RuntimeStats`].
-#[derive(Debug, Clone, Copy)]
-pub struct RuntimeStatsSnapshot {
-    /// Total `get_arrow_array` calls.
-    pub get_arrow_array_calls: u64,
-    /// Total `get_with_selection` calls.
-    pub get_with_selection_calls: u64,
-    /// Total `get_with_predicate` calls.
-    pub get_with_predicate_calls: u64,
-    /// Total Hybrid-Liquid predicate successes (no IO).
-    pub get_predicate_hybrid_success: u64,
-    /// Total Hybrid-Liquid predicate paths requiring IO.
-    pub get_predicate_hybrid_needs_io: u64,
-    /// Total Hybrid-Liquid predicate paths that were unsupported.
-    pub get_predicate_hybrid_unsupported: u64,
-    /// Total `try_read_liquid` calls.
-    pub try_read_liquid_calls: u64,
-    /// Total `hit_date32_expression` calls.
-    pub hit_date32_expression_calls: u64,
-}
-
-impl RuntimeStats {
-    /// Return an immutable snapshot of the current runtime counters and reset the stats to 0.
-    pub fn consume_snapshot(&self) -> RuntimeStatsSnapshot {
-        let v = RuntimeStatsSnapshot {
-            get_arrow_array_calls: self.get_arrow_array_calls.load(Ordering::Relaxed),
-            get_with_selection_calls: self.get_with_selection_calls.load(Ordering::Relaxed),
-            get_with_predicate_calls: self.get_with_predicate_calls.load(Ordering::Relaxed),
-            get_predicate_hybrid_success: self.get_predicate_hybrid_success.load(Ordering::Relaxed),
-            get_predicate_hybrid_needs_io: self
-                .get_predicate_hybrid_needs_io
-                .load(Ordering::Relaxed),
-            get_predicate_hybrid_unsupported: self
-                .get_predicate_hybrid_unsupported
-                .load(Ordering::Relaxed),
-            try_read_liquid_calls: self.try_read_liquid_calls.load(Ordering::Relaxed),
-            hit_date32_expression_calls: self.hit_date32_expression_calls.load(Ordering::Relaxed),
-        };
-        self.reset();
-        v
-    }
-
-    /// Increment `get_arrow_array` counter.
-    #[inline]
-    pub fn incr_get_arrow_array(&self) {
-        self.get_arrow_array_calls.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Increment `get_with_selection` counter.
-    #[inline]
-    pub fn incr_get_with_selection(&self) {
-        self.get_with_selection_calls
-            .fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Increment `get_with_predicate` counter.
-    #[inline]
-    pub fn incr_get_with_predicate(&self) {
-        self.get_with_predicate_calls
-            .fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Increment `try_read_liquid` counter.
-    #[inline]
-    pub fn incr_try_read_liquid(&self) {
-        self.try_read_liquid_calls.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Increment Hybrid-Liquid predicate success counter.
-    #[inline]
-    pub fn incr_get_predicate_hybrid_success(&self) {
-        self.get_predicate_hybrid_success
-            .fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Increment Hybrid-Liquid predicate needs-IO counter.
-    #[inline]
-    pub fn incr_get_predicate_hybrid_needs_io(&self) {
-        self.get_predicate_hybrid_needs_io
-            .fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Increment Hybrid-Liquid predicate unsupported counter.
-    #[inline]
-    pub fn incr_get_predicate_hybrid_unsupported(&self) {
-        self.get_predicate_hybrid_unsupported
-            .fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Increment `hit_date32_expression` counter.
-    #[inline]
-    pub fn incr_hit_date32_expression(&self) {
-        self.hit_date32_expression_calls
-            .fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Reset the runtime stats to 0.
-    pub fn reset(&self) {
-        self.get_arrow_array_calls.store(0, Ordering::Relaxed);
-        self.get_with_selection_calls.store(0, Ordering::Relaxed);
-        self.get_with_predicate_calls.store(0, Ordering::Relaxed);
-        self.get_predicate_hybrid_success
-            .store(0, Ordering::Relaxed);
-        self.get_predicate_hybrid_needs_io
-            .store(0, Ordering::Relaxed);
-        self.get_predicate_hybrid_unsupported
-            .store(0, Ordering::Relaxed);
-        self.try_read_liquid_calls.store(0, Ordering::Relaxed);
-        self.hit_date32_expression_calls.store(0, Ordering::Relaxed);
-    }
+// Define all runtime statistics metrics here.
+// To add a new metric, add a line: (field_name, "doc comment", method_name)
+define_runtime_stats! {
+    (get_arrow_array_calls, "Number of `get_arrow_array` calls issued via `CachedData`.", incr_get_arrow_array),
+    (get_with_selection_calls, "Number of `get_with_selection` calls issued via `CachedData`.", incr_get_with_selection),
+    (get_with_predicate_calls, "Number of `get_with_predicate` calls issued via `CachedData`.", incr_get_with_predicate),
+    (get_predicate_hybrid_success, "Number of Hybrid-Liquid predicate evaluations finished without IO.", incr_get_predicate_hybrid_success),
+    (get_predicate_hybrid_needs_io, "Number of Hybrid-Liquid predicate paths that required IO.", incr_get_predicate_hybrid_needs_io),
+    (get_predicate_hybrid_unsupported, "Number of Hybrid-Liquid predicate paths that were unsupported and fell back.", incr_get_predicate_hybrid_unsupported),
+    (get_filter_hybrid_success, "Number of Hybrid-Liquid filter evaluations finished without IO.", incr_get_filter_hybrid_success),
+    (get_filter_hybrid_needs_io, "Number of Hybrid-Liquid filter paths that required IO.", incr_get_filter_hybrid_needs_io),
+    (get_filter_hybrid_unsupported, "Number of Hybrid-Liquid filter paths that were unsupported and fell back.", incr_get_filter_hybrid_unsupported),
+    (get_full_hybrid_success, "Number of Hybrid-Liquid full evaluations finished without IO.", incr_get_full_hybrid_success),
+    (get_full_hybrid_needs_io, "Number of Hybrid-Liquid full paths that required IO.", incr_get_full_hybrid_needs_io),
+    (get_full_hybrid_unsupported, "Number of Hybrid-Liquid full paths that were unsupported and fell back.", incr_get_full_hybrid_unsupported),
+    (try_read_liquid_calls, "Number of `try_read_liquid` calls issued via `CachedData`.", incr_try_read_liquid),
+    (hit_date32_expression_calls, "Number of `hit_date32_expression` calls.", incr_hit_date32_expression),
 }
 
 /// Snapshot of cache statistics.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CacheStats {
     /// Total number of entries in the cache.
     pub total_entries: usize,

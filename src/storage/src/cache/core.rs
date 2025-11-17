@@ -1,5 +1,6 @@
 use arrow::array::{ArrayRef, BooleanArray};
 use arrow::buffer::BooleanBuffer;
+use arrow_schema::DataType;
 use datafusion::physical_plan::PhysicalExpr;
 use std::path::PathBuf;
 use std::{fmt::Debug, path::Path};
@@ -16,7 +17,7 @@ use crate::cache::stats::{CacheStats, RuntimeStats};
 use crate::cache::utils::{LiquidCompressorStates, arrow_to_bytes};
 use crate::cache::{CacheExpression, ExpressionRegistry, index::ArtIndex, utils::EntryID};
 use crate::cache_policies::LiquidPolicy;
-use crate::liquid_array::SqueezedDate32Array;
+use crate::liquid_array::{HybridBacking, LiquidHybridArrayRef, SqueezedDate32Array};
 use crate::sync::Arc;
 use std::future::IntoFuture;
 use std::pin::Pin;
@@ -438,7 +439,7 @@ impl CacheStorage {
             }
             CachedData::MemoryHybridLiquid(array) => {
                 let io_range = array.to_liquid();
-                let path = self.io_context.liquid_path(entry_id);
+                let path = self.hybrid_disk_path(entry_id, array);
                 let bytes = self
                     .io_context
                     .read(path, Some(io_range.range().clone()))
@@ -539,11 +540,9 @@ impl CacheStorage {
                 }
                 CachedData::MemoryHybridLiquid(array) => {
                     // We don't have to do anything, because it's already on disk
-                    self.try_insert(
-                        entry_id,
-                        CacheEntry::disk_liquid(array.original_arrow_data_type()),
-                    )
-                    .expect("failed to insert disk liquid entry");
+                    let disk_entry = Self::disk_entry_from_hybrid(array);
+                    self.try_insert(entry_id, disk_entry)
+                        .expect("failed to insert disk entry");
                 }
                 CachedData::DiskArrow(_) | CachedData::DiskLiquid(_) => {
                     // Should not happen since we filtered these out above
@@ -675,8 +674,9 @@ impl CacheStorage {
             if let Some(bytes_to_write) = bytes_to_write {
                 let path = match new_batch.data() {
                     CachedData::DiskArrow(_) => self.io_context.arrow_path(&to_squeeze),
-                    CachedData::DiskLiquid(_) | CachedData::MemoryHybridLiquid(_) => {
-                        self.io_context.liquid_path(&to_squeeze)
+                    CachedData::DiskLiquid(_) => self.io_context.liquid_path(&to_squeeze),
+                    CachedData::MemoryHybridLiquid(array) => {
+                        self.hybrid_disk_path(&to_squeeze, array)
                     }
                     CachedData::MemoryArrow(_) | CachedData::MemoryLiquid(_) => {
                         unreachable!()
@@ -712,6 +712,21 @@ impl CacheStorage {
         file.write_all(bytes).expect("failed to write to file");
         let disk_usage = bytes.len();
         self.budget.add_used_disk_bytes(disk_usage);
+    }
+
+    fn hybrid_disk_path(&self, entry_id: &EntryID, array: &LiquidHybridArrayRef) -> PathBuf {
+        match array.disk_backing() {
+            HybridBacking::Liquid => self.io_context.liquid_path(entry_id),
+            HybridBacking::Arrow => self.io_context.arrow_path(entry_id),
+        }
+    }
+
+    fn disk_entry_from_hybrid(array: &LiquidHybridArrayRef) -> CacheEntry {
+        let constructor: fn(DataType) -> CacheEntry = match array.disk_backing() {
+            HybridBacking::Liquid => CacheEntry::disk_liquid,
+            HybridBacking::Arrow => CacheEntry::disk_arrow,
+        };
+        constructor(array.original_arrow_data_type())
     }
 
     async fn read_arrow_array(
@@ -781,9 +796,13 @@ impl CacheStorage {
                 }
                 if let Some(selection) = selection {
                     match array.filter(selection) {
-                        Ok(arr) => Some(arr),
+                        Ok(arr) => {
+                            self.runtime_stats.incr_get_filter_hybrid_success();
+                            Some(arr)
+                        }
                         Err(io_range) => {
-                            let path = self.io_context.liquid_path(entry_id);
+                            self.runtime_stats.incr_get_filter_hybrid_needs_io();
+                            let path = self.hybrid_disk_path(entry_id, array);
                             let bytes = self
                                 .io_context
                                 .read(path, Some(io_range.range().clone()))
@@ -795,9 +814,13 @@ impl CacheStorage {
                     }
                 } else {
                     match array.to_arrow_array() {
-                        Ok(arr) => Some(arr),
+                        Ok(arr) => {
+                            self.runtime_stats.incr_get_full_hybrid_success();
+                            Some(arr)
+                        }
                         Err(io_range) => {
-                            let path = self.io_context.liquid_path(entry_id);
+                            self.runtime_stats.incr_get_full_hybrid_needs_io();
+                            let path = self.hybrid_disk_path(entry_id, array);
                             let bytes = self
                                 .io_context
                                 .read(path, Some(io_range.range().clone()))
@@ -920,7 +943,7 @@ impl CacheStorage {
                             Ok(arr) => Some(Err(arr)),
                             Err(io_range) => {
                                 self.runtime_stats.incr_get_predicate_hybrid_needs_io();
-                                let path = self.io_context.liquid_path(entry_id);
+                                let path = self.hybrid_disk_path(entry_id, array);
                                 let bytes = self
                                     .io_context
                                     .read(path, Some(io_range.range().clone()))
@@ -939,7 +962,7 @@ impl CacheStorage {
                     }
                     Err(io_range) => {
                         self.runtime_stats.incr_get_predicate_hybrid_needs_io();
-                        let path = self.io_context.liquid_path(entry_id);
+                        let path = self.hybrid_disk_path(entry_id, array);
                         let bytes = self
                             .io_context
                             .read(path, Some(io_range.range().clone()))

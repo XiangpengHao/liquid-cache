@@ -219,6 +219,15 @@ pub trait LiquidArray: std::fmt::Debug + Send + Sync {
 /// A reference to a Liquid array.
 pub type LiquidArrayRef = Arc<dyn LiquidArray>;
 
+/// On-disk backing type for a hybrid array.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HybridBacking {
+    /// Bytes are stored using the Liquid IPC format.
+    Liquid,
+    /// Bytes are stored using Arrow IPC (or another Arrow-compatible encoding).
+    Arrow,
+}
+
 /// A reference to a Liquid hybrid array.
 pub type LiquidHybridArrayRef = Arc<dyn LiquidHybridArray>;
 
@@ -321,6 +330,11 @@ pub trait LiquidHybridArray: std::fmt::Debug + Send + Sync {
 
     /// Get the `IoRange` to convert the `LiquidHybridArray` to a `LiquidArray`.
     fn to_liquid(&self) -> IoRange;
+
+    /// Describe how the hybrid array persists its backing bytes on disk.
+    fn disk_backing(&self) -> HybridBacking {
+        HybridBacking::Liquid
+    }
 }
 
 /// Compile-time info about primitive kind (signed vs unsigned) and bounds.
