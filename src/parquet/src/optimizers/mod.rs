@@ -113,7 +113,7 @@ pub fn rewrite_data_source_plan(
                                             updated_field = enrich_variant_field_type(
                                                 &updated_field,
                                                 path.as_str(),
-                                                &data_type,
+                                                data_type,
                                             );
                                         }
                                     }
