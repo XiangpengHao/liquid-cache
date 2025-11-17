@@ -92,9 +92,11 @@ pub fn rewrite_data_source_plan(
                             {
                                 let (metadata_key, metadata_value): (&str, String) =
                                     match annotation {
-                                        ColumnAnnotation::DatePart(unit) => (
+                                        ColumnAnnotation::DatePart(_) => (
                                             DATE_MAPPING_METADATA_KEY,
-                                            unit.metadata_value().to_string(),
+                                            annotation
+                                                .serialize_date_part()
+                                                .expect("DatePart should serialize"),
                                         ),
                                         ColumnAnnotation::VariantPath(path) => {
                                             (VARIANT_MAPPING_METADATA_KEY, path)
