@@ -4,6 +4,7 @@
 mod byte_cache;
 pub mod cache;
 pub mod liquid_array;
+pub mod variant_utils;
 mod sync;
 mod utils;
 

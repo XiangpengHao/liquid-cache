@@ -7,7 +7,7 @@ use bytes::Bytes;
 use parquet_variant_compute::VariantArray;
 
 use crate::cache::{
-    CacheExpression, LiquidCompressorStates,
+    CacheExpression, LiquidCompressorStates, VariantRequest,
     cached_batch::{CacheEntry, CachedData},
     transcode_liquid_inner,
     utils::arrow_to_bytes,
@@ -84,9 +84,10 @@ impl SqueezePolicy for TranscodeSqueezeEvict {
 
         match data {
             CachedData::MemoryArrow(array) => {
-                if let Some(CacheExpression::VariantGet { path, .. }) = squeeze_hint
+                if let Some(requests) =
+                    squeeze_hint.and_then(|expression| expression.variant_requests())
                     && let Some((hybrid_array, bytes)) =
-                        try_variant_squeeze(&array, path.as_ref())
+                        try_variant_squeeze(&array, requests)
                 {
                     return (CacheEntry::memory_hybrid_liquid(hybrid_array), Some(bytes));
                 }
@@ -176,21 +177,26 @@ impl SqueezePolicy for TranscodeEvict {
     }
 }
 
-fn try_variant_squeeze(array: &ArrayRef, path: &str) -> Option<(LiquidHybridArrayRef, Bytes)> {
+fn try_variant_squeeze(
+    array: &ArrayRef,
+    requests: &[VariantRequest],
+) -> Option<(LiquidHybridArrayRef, Bytes)> {
     let struct_array = array.as_any().downcast_ref::<StructArray>()?;
     let variant_array = VariantArray::try_new(struct_array).ok()?;
     if variant_array.is_empty() {
         return None;
     }
 
-    let owned_path = path.trim().to_string();
-    if owned_path.is_empty() {
+    if requests.is_empty() {
         return None;
     }
 
     let typed_root = variant_array.typed_value_field()?;
     let typed_root = typed_root.as_any().downcast_ref::<StructArray>()?;
-    if extract_typed_values_for_path(typed_root, owned_path.as_str()).is_none() {
+    if !requests
+        .iter()
+        .any(|request| extract_typed_values_for_path(typed_root, request.path()).is_some())
+    {
         return None;
     }
 

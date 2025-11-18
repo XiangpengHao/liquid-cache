@@ -6,6 +6,7 @@ use arrow::{
 };
 use arrow_schema::{ArrowError, DataType, Field, Schema};
 use liquid_cache_storage::cache::{CacheExpression, CacheStorage, ColumnID};
+use liquid_cache_storage::variant_utils::typed_struct_contains_path;
 use parquet::arrow::arrow_reader::ArrowPredicate;
 use parquet_variant_compute::{VariantArray, VariantType, shred_variant, unshred_variant};
 
@@ -38,14 +39,14 @@ fn infer_expression(field: &Field) -> Option<CacheExpression> {
     }
     if field.try_extension_type::<VariantType>().is_ok()
         && let Some(mappings) = variant_mappings_from_field(field)
-        && let Some((path, data_type)) = mappings.iter().find_map(|mapping| {
-            mapping
-                .data_type
-                .as_ref()
-                .map(|data_type| (mapping.path.clone(), data_type.clone()))
-        })
     {
-        return Some(CacheExpression::variant_get(path, data_type));
+        let typed_specs: Vec<_> = mappings
+            .into_iter()
+            .filter_map(|mapping| mapping.data_type.map(|data_type| (mapping.path, data_type)))
+            .collect();
+        if !typed_specs.is_empty() {
+            return Some(CacheExpression::variant_get_many(typed_specs));
+        }
     }
     None
 }
@@ -236,14 +237,6 @@ fn shred_variant_array(
     Some(Arc::new(shredded.into_inner()))
 }
 
-fn split_variant_path(path: &str) -> Vec<String> {
-    path
-        .split('.')
-        .filter(|segment| !segment.is_empty())
-        .map(|segment| segment.to_string())
-        .collect()
-}
-
 fn variant_contains_typed_field(array: &VariantArray, path: &str) -> bool {
     let Some(typed_root) = array
         .typed_value_field()
@@ -252,34 +245,7 @@ fn variant_contains_typed_field(array: &VariantArray, path: &str) -> bool {
         return false;
     };
 
-    let segments = split_variant_path(path);
-    if segments.is_empty() {
-        return false;
-    }
-
-    typed_struct_contains_path(typed_root, &segments)
-}
-
-fn typed_struct_contains_path(current: &StructArray, segments: &[String]) -> bool {
-    if segments.is_empty() {
-        return false;
-    }
-    let Some(field) = current.column_by_name(&segments[0]) else {
-        return false;
-    };
-    let Some(struct_field) = field.as_any().downcast_ref::<StructArray>() else {
-        return false;
-    };
-    let Some(typed_value) = struct_field.column_by_name("typed_value") else {
-        return false;
-    };
-    if segments.len() == 1 {
-        return true;
-    }
-    let Some(next) = typed_value.as_any().downcast_ref::<StructArray>() else {
-        return false;
-    };
-    typed_struct_contains_path(next, &segments[1..])
+    typed_struct_contains_path(typed_root, path)
 }
 
 #[cfg(test)]

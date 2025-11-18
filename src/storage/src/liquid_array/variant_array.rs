@@ -12,6 +12,7 @@ use std::io::Cursor;
 use crate::liquid_array::{
     HybridBacking, IoRange, LiquidArray, LiquidArrayRef, LiquidDataType, LiquidHybridArray,
 };
+use crate::variant_utils::typed_struct_contains_path;
 
 /// Hybrid representation for variant arrays that contain multiple typed fields.
 #[derive(Debug)]
@@ -59,6 +60,11 @@ impl VariantStructHybridArray {
             ],
             self.nulls.clone(),
         )
+    }
+
+    /// Returns true if the typed struct contains the provided variant path.
+    pub fn contains_path(&self, path: &str) -> bool {
+        typed_struct_contains_path(&self.typed_struct, path)
     }
 }
 

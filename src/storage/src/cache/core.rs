@@ -17,7 +17,9 @@ use crate::cache::stats::{CacheStats, RuntimeStats};
 use crate::cache::utils::{LiquidCompressorStates, arrow_to_bytes};
 use crate::cache::{CacheExpression, ExpressionRegistry, index::ArtIndex, utils::EntryID};
 use crate::cache_policies::LiquidPolicy;
-use crate::liquid_array::{HybridBacking, LiquidHybridArrayRef, SqueezedDate32Array};
+use crate::liquid_array::{
+    HybridBacking, LiquidHybridArrayRef, SqueezedDate32Array, VariantStructHybridArray,
+};
 use crate::sync::Arc;
 use std::future::IntoFuture;
 use std::pin::Pin;
@@ -794,6 +796,18 @@ impl CacheStorage {
                     }
                     return Some(component);
                 }
+                if let Some(requests) = expression.and_then(|expr| expr.variant_requests())
+                    && let Some(variant_hybrid) =
+                        array.as_any().downcast_ref::<VariantStructHybridArray>()
+                {
+                    if !requests
+                        .iter()
+                        .all(|request| variant_hybrid.contains_path(request.path()))
+                    {
+                        let path = self.hybrid_disk_path(entry_id, array);
+                        return self.read_disk_arrow_array(path, selection).await;
+                    }
+                }
                 if let Some(selection) = selection {
                     match array.filter(selection) {
                         Ok(arr) => {
@@ -834,19 +848,27 @@ impl CacheStorage {
             }
             CachedData::DiskArrow(_) => {
                 let path = self.io_context.arrow_path(entry_id);
-                let bytes = self.io_context.read(path, None).await.ok()?;
-                let cursor = std::io::Cursor::new(bytes.to_vec());
-                let mut reader = arrow::ipc::reader::StreamReader::try_new(cursor, None).ok()?;
-                let batch = reader.next()?.ok()?;
-                let array = batch.column(0).clone();
-                match selection {
-                    Some(selection) => {
-                        let selection_array = BooleanArray::new(selection.clone(), None);
-                        arrow::compute::filter(&array, &selection_array).ok()
-                    }
-                    None => Some(array),
-                }
+                return self.read_disk_arrow_array(path, selection).await;
             }
+        }
+    }
+
+    async fn read_disk_arrow_array(
+        &self,
+        path: PathBuf,
+        selection: Option<&BooleanBuffer>,
+    ) -> Option<ArrayRef> {
+        let bytes = self.io_context.read(path, None).await.ok()?;
+        let cursor = std::io::Cursor::new(bytes.to_vec());
+        let mut reader = arrow::ipc::reader::StreamReader::try_new(cursor, None).ok()?;
+        let batch = reader.next()?.ok()?;
+        let array = batch.column(0).clone();
+        match selection {
+            Some(selection) => {
+                let selection_array = BooleanArray::new(selection.clone(), None);
+                arrow::compute::filter(&array, &selection_array).ok()
+            }
+            None => Some(array),
         }
     }
 
@@ -1109,15 +1131,21 @@ mod tests {
     use crate::cache::{
         CacheEntry, CacheExpression,
         cache_policies::{CachePolicy, LruPolicy},
-        utils::{create_cache_store, create_test_array, create_test_arrow_array},
+        utils::{arrow_to_bytes, create_cache_store, create_test_array, create_test_arrow_array},
     };
     use crate::liquid_array::{
         Date32Field, LiquidHybridArrayRef, LiquidPrimitiveArray, SqueezedDate32Array,
+        VariantStructHybridArray,
     };
     use crate::sync::thread;
-    use arrow::array::{Array, Date32Array, Int32Array};
+    use arrow::array::{
+        Array, ArrayRef, BinaryViewArray, Date32Array, Int32Array, StringArray, StructArray,
+    };
     use arrow::datatypes::Date32Type;
+    use arrow_schema::{DataType, Field, Fields};
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::fs;
 
     // Unified advice type for more concise testing
     #[derive(Debug)]
@@ -1141,6 +1169,65 @@ mod tests {
             let id_to_use = self.target_id.unwrap();
             vec![id_to_use]
         }
+    }
+
+    fn build_variant_test_hybrid() -> (LiquidHybridArrayRef, Vec<u8>) {
+        let len = 2;
+        let metadata = Arc::new(BinaryViewArray::from(vec![
+            Some(br#"{"m":1}"# as &[u8]),
+            Some(br#"{"m":1}"# as &[u8]),
+        ]));
+        let name_values =
+            Arc::new(StringArray::from(vec![Some("Alice"), Some("Bob")])) as ArrayRef;
+        let value_placeholder =
+            Arc::new(BinaryViewArray::from(vec![None::<&[u8]>; len])) as ArrayRef;
+        let name_struct = Arc::new(StructArray::new(
+            Fields::from(vec![
+                Arc::new(Field::new("value", DataType::BinaryView, true)),
+                Arc::new(Field::new("typed_value", DataType::Utf8, true)),
+            ]),
+            vec![value_placeholder, name_values.clone()],
+            None,
+        )) as ArrayRef;
+        let typed_struct = Arc::new(StructArray::new(
+            Fields::from(vec![Arc::new(Field::new(
+                "name",
+                name_struct.data_type().clone(),
+                true,
+            ))]),
+            vec![name_struct.clone()],
+            None,
+        ));
+        let value_array = Arc::new(BinaryViewArray::from(vec![
+            Some(br#"{"name":"Alice"}"# as &[u8]),
+            Some(br#"{"name":"Bob"}"# as &[u8]),
+        ])) as ArrayRef;
+        let root_fields = Fields::from(vec![
+            Arc::new(Field::new("metadata", DataType::BinaryView, false)),
+            Arc::new(Field::new("value", DataType::BinaryView, true)),
+            Arc::new(Field::new(
+                "typed_value",
+                typed_struct.data_type().clone(),
+                true,
+            )),
+        ]);
+        let root = Arc::new(StructArray::new(
+            root_fields,
+            vec![
+                metadata.clone() as ArrayRef,
+                value_array.clone(),
+                typed_struct.clone() as ArrayRef,
+            ],
+            None,
+        )) as ArrayRef;
+        let hybrid: LiquidHybridArrayRef = Arc::new(VariantStructHybridArray::new(
+            metadata,
+            typed_struct,
+            None,
+            root.data_type().clone(),
+        ));
+        let bytes = arrow_to_bytes(&root).expect("arrow bytes").to_vec();
+        (hybrid, bytes)
     }
 
     #[tokio::test]
@@ -1213,6 +1300,78 @@ mod tests {
         assert_eq!(result.value(1), 1971);
         assert!(result.is_null(2));
         assert_eq!(result.value(3), 1972);
+    }
+
+    #[tokio::test]
+    async fn read_variant_hybrid_reads_disk_when_path_missing() {
+        let store = create_cache_store(1 << 20, Box::new(LruPolicy::new()));
+        let entry_id = EntryID::from(99);
+        let (hybrid, arrow_bytes) = build_variant_test_hybrid();
+        store
+            .insert_inner(entry_id, CacheEntry::memory_hybrid_liquid(hybrid))
+            .await;
+
+        let path = store.io_context.arrow_path(&entry_id);
+        fs::write(&path, &arrow_bytes).unwrap();
+
+        let expr = store.expression_registry().register(
+            CacheExpression::variant_get_many(vec![
+                ("name", DataType::Utf8),
+                ("age", DataType::Int64),
+            ]),
+            None,
+        );
+        let result = store
+            .get(&entry_id)
+            .with_expression_hint(expr)
+            .read()
+            .await
+            .expect("variant array");
+
+        let struct_array = result
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .expect("struct array");
+        let value_column = struct_array
+            .column_by_name("value")
+            .expect("value column")
+            .as_any()
+            .downcast_ref::<BinaryViewArray>()
+            .expect("binary view array");
+        assert_eq!(value_column.null_count(), 0);
+        assert_eq!(value_column.value(0), br#"{"name":"Alice"}"#);
+    }
+
+    #[tokio::test]
+    async fn read_variant_hybrid_uses_hybrid_when_paths_present() {
+        let store = create_cache_store(1 << 20, Box::new(LruPolicy::new()));
+        let entry_id = EntryID::from(100);
+        let (hybrid, _bytes) = build_variant_test_hybrid();
+        store
+            .insert_inner(entry_id, CacheEntry::memory_hybrid_liquid(hybrid))
+            .await;
+
+        let expr = store
+            .expression_registry()
+            .register(CacheExpression::variant_get("name", DataType::Utf8), None);
+        let result = store
+            .get(&entry_id)
+            .with_expression_hint(expr)
+            .read()
+            .await
+            .expect("variant array");
+
+        let struct_array = result
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .expect("struct array");
+        let value_column = struct_array
+            .column_by_name("value")
+            .expect("value column")
+            .as_any()
+            .downcast_ref::<BinaryViewArray>()
+            .expect("binary view array");
+        assert_eq!(value_column.len(), value_column.null_count());
     }
 
     #[tokio::test]
