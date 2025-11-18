@@ -4,7 +4,7 @@ use arrow::{
     compute::prep_null_mask_filter,
     record_batch::RecordBatch,
 };
-use arrow_schema::{ArrowError, DataType, Field, Fields, Schema};
+use arrow_schema::{ArrowError, DataType, Field, Schema};
 use liquid_cache_storage::cache::{CacheExpression, CacheStorage, ColumnID};
 use parquet::arrow::arrow_reader::ArrowPredicate;
 use parquet_variant_compute::{VariantArray, VariantType, shred_variant, unshred_variant};
@@ -13,6 +13,7 @@ use crate::{
     LiquidPredicate,
     cache::{BatchID, ColumnAccessPath, ParquetArrayID},
     optimizers::{DATE_MAPPING_METADATA_KEY, variant_mappings_from_field},
+    variant_schema::VariantSchema,
 };
 use std::sync::Arc;
 
@@ -225,31 +226,14 @@ fn shred_variant_array(
         .iter()
         .find(|child| child.name() == "typed_value")
         .cloned()?;
-    let shredding_schema = build_shredding_schema(typed_schema.as_ref())?;
+    let mut schema = VariantSchema::new(Some(typed_schema.as_ref()));
+    for (path, data_type) in missing_specs {
+        schema.insert_path(path, data_type);
+    }
+    let shredding_schema = schema.shredding_type()?;
     let unshredded = unshred_variant(&variant_array).ok()?;
     let shredded = shred_variant(&unshredded, &shredding_schema).ok()?;
-    let inner = shredded.inner();
-    let metadata_array = inner.column_by_name("metadata")?.clone();
-    let value_array = inner.column_by_name("value")?.clone();
-    let typed_value_column = inner.column_by_name("typed_value")?.clone();
-    let typed_struct = typed_value_column
-        .as_any()
-        .downcast_ref::<StructArray>()?;
-    let rebuilt_typed_value = rebuild_typed_value_array(typed_schema.as_ref(), typed_struct)?;
-
-    let mut columns = Vec::with_capacity(target_fields.len());
-    for target_field in target_fields.iter() {
-        let column = match target_field.name().as_str() {
-            "metadata" => metadata_array.clone(),
-            "value" => value_array.clone(),
-            "typed_value" => rebuilt_typed_value.clone(),
-            other => inner.column_by_name(other)?.clone(),
-        };
-        columns.push(column);
-    }
-
-    let root_struct = StructArray::new(target_fields, columns, inner.nulls().cloned());
-    Some(Arc::new(root_struct))
+    Some(Arc::new(shredded.into_inner()))
 }
 
 fn split_variant_path(path: &str) -> Vec<String> {
@@ -260,122 +244,13 @@ fn split_variant_path(path: &str) -> Vec<String> {
         .collect()
 }
 
-fn build_shredding_schema(typed_schema: &Field) -> Option<DataType> {
-    match typed_schema.data_type() {
-        DataType::Struct(children) => build_struct_from_children(children),
-        other => Some(other.clone()),
-    }
-}
-
-fn build_struct_from_children(children: &Fields) -> Option<DataType> {
-    let mut new_children = Vec::with_capacity(children.len());
-    for child in children.iter() {
-        if let Some(field) = typed_schema_field(child.as_ref()) {
-            new_children.push(field);
-        }
-    }
-    if new_children.is_empty() {
-        None
-    } else {
-        Some(DataType::Struct(Fields::from(new_children)))
-    }
-}
-
-fn typed_schema_field(field: &Field) -> Option<Arc<Field>> {
-    let Some(typed_child) = typed_value_child(field) else {
-        return None;
-    };
-    match typed_child.data_type() {
-        DataType::Struct(grand_children) => {
-            let Some(child_type) = build_struct_from_children(grand_children) else {
-                return None;
-            };
-            Some(Arc::new(Field::new(field.name(), child_type, true)))
-        }
-        other => Some(Arc::new(Field::new(field.name(), other.clone(), true))),
-    }
-}
-
-fn typed_value_child(field: &Field) -> Option<&Field> {
-    match field.data_type() {
-        DataType::Struct(children) => children
-            .iter()
-            .find(|child| child.name() == "typed_value")
-            .map(|child| child.as_ref()),
-        _ => None,
-    }
-}
-
-fn rebuild_typed_value_array(
-    typed_schema: &Field,
-    shredded_struct: &StructArray,
-) -> Option<ArrayRef> {
-    let DataType::Struct(children) = typed_schema.data_type() else {
-        return None;
-    };
-    rebuild_struct_children(children, shredded_struct)
-}
-
-fn rebuild_struct_children(children: &Fields, shredded_struct: &StructArray) -> Option<ArrayRef> {
-    let mut columns = Vec::with_capacity(children.len());
-    for child in children.iter() {
-        let shredded_child = shredded_struct.column_by_name(child.name())?;
-        let shredded_field = shredded_child
-            .as_any()
-            .downcast_ref::<StructArray>()?;
-        let converted = convert_shredded_field(child.as_ref(), shredded_field)?;
-        columns.push(converted);
-    }
-    Some(Arc::new(StructArray::new(
-        children.clone(),
-        columns,
-        shredded_struct.nulls().cloned(),
-    )) as ArrayRef)
-}
-
-fn convert_shredded_field(schema_field: &Field, shredded_field: &StructArray) -> Option<ArrayRef> {
-    let Some(typed_child) = typed_value_child(schema_field) else {
-        return None;
-    };
-    let typed_value_array = shredded_field.column_by_name("typed_value")?.clone();
-    match typed_child.data_type() {
-        DataType::Struct(grand_children) => {
-            let typed_struct = typed_value_array
-                .as_any()
-                .downcast_ref::<StructArray>()?;
-            let rebuilt = rebuild_struct_children(grand_children, typed_struct)?;
-            let struct_array = StructArray::new(
-                Fields::from(vec![Arc::new(typed_child.clone())]),
-                vec![rebuilt],
-                typed_struct.nulls().cloned(),
-            );
-            Some(Arc::new(struct_array) as ArrayRef)
-        }
-        _ => {
-            let struct_array = StructArray::new(
-                Fields::from(vec![Arc::new(typed_child.clone())]),
-                vec![typed_value_array],
-                shredded_field.nulls().cloned(),
-            );
-            Some(Arc::new(struct_array) as ArrayRef)
-        }
-    }
-}
-
 fn variant_contains_typed_field(array: &VariantArray, path: &str) -> bool {
-    let Some(typed_root_array) = array.typed_value_field() else {
-        return false;
-    };
-    let Some(typed_root) = typed_root_array
-        .as_any()
-        .downcast_ref::<StructArray>()
+    let Some(typed_root) = array
+        .typed_value_field()
+        .and_then(|typed| typed.as_any().downcast_ref::<StructArray>())
     else {
         return false;
     };
-
-    if typed_root.column_by_name(path).is_some() {
-        return true;
-    }
 
     let segments = split_variant_path(path);
     if segments.is_empty() {
@@ -386,26 +261,25 @@ fn variant_contains_typed_field(array: &VariantArray, path: &str) -> bool {
 }
 
 fn typed_struct_contains_path(current: &StructArray, segments: &[String]) -> bool {
-    let mut cursor = current;
-    for (idx, segment) in segments.iter().enumerate() {
-        let Some(field) = cursor.column_by_name(segment) else {
-            return false;
-        };
-        let Some(struct_field) = field.as_any().downcast_ref::<StructArray>() else {
-            return false;
-        };
-        if idx == segments.len() - 1 {
-            return struct_field.column_by_name("typed_value").is_some();
-        }
-        let Some(next) = struct_field
-            .column_by_name("typed_value")
-            .and_then(|col| col.as_any().downcast_ref::<StructArray>())
-        else {
-            return false;
-        };
-        cursor = next;
+    if segments.is_empty() {
+        return false;
     }
-    false
+    let Some(field) = current.column_by_name(&segments[0]) else {
+        return false;
+    };
+    let Some(struct_field) = field.as_any().downcast_ref::<StructArray>() else {
+        return false;
+    };
+    let Some(typed_value) = struct_field.column_by_name("typed_value") else {
+        return false;
+    };
+    if segments.len() == 1 {
+        return true;
+    }
+    let Some(next) = typed_value.as_any().downcast_ref::<StructArray>() else {
+        return false;
+    };
+    typed_struct_contains_path(next, &segments[1..])
 }
 
 #[cfg(test)]

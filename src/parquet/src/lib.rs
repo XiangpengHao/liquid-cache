@@ -7,6 +7,7 @@ mod reader;
 mod sync;
 pub(crate) mod utils;
 mod variant_udf;
+pub(crate) mod variant_schema;
 
 pub mod cache;
 pub use cache::{LiquidCache, LiquidCacheRef};

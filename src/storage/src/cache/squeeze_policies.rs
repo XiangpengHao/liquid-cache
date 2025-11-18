@@ -264,25 +264,23 @@ fn split_variant_path(path: &str) -> Vec<String> {
 }
 
 fn extract_typed_values_for_path(typed_root: &StructArray, path: &str) -> Option<ArrayRef> {
-    if let Some(flat_field) = typed_root.column_by_name(path) {
-        return Some(flat_field.clone());
-    }
-
     let segments = split_variant_path(path);
     if segments.is_empty() {
         return None;
     }
 
     let mut cursor = typed_root;
-    for segment in &segments[..segments.len().saturating_sub(1)] {
+    for (idx, segment) in segments.iter().enumerate() {
         let field = cursor.column_by_name(segment)?;
         let struct_field = field.as_any().downcast_ref::<StructArray>()?;
+        if idx == segments.len() - 1 {
+            return Some(field.clone());
+        }
         let typed_value = struct_field.column_by_name("typed_value")?;
         cursor = typed_value.as_any().downcast_ref::<StructArray>()?;
     }
 
-    let last = segments.last()?;
-    cursor.column_by_name(last).cloned()
+    None
 }
 
 #[cfg(test)]
@@ -291,7 +289,7 @@ mod tests {
     use crate::cache::CacheExpression;
     use crate::cache::cached_batch::CacheEntry;
     use crate::liquid_array::{HybridBacking, LiquidHybridArray, VariantStructHybridArray};
-    use arrow::array::{ArrayRef, Int32Array, StringArray, StructArray};
+    use arrow::array::{ArrayRef, BinaryViewArray, Int32Array, StringArray, StructArray};
     use arrow_schema::Fields;
     use arrow_schema::{DataType, Field};
     use parquet::variant::VariantPath;
@@ -329,7 +327,7 @@ mod tests {
                 fields.push(Arc::new(Field::new(
                     name.as_str(),
                     field_array.data_type().clone(),
-                    true,
+                    false,
                 )));
                 arrays.push(field_array);
             }
@@ -338,16 +336,20 @@ mod tests {
 
         fn into_struct_array(self) -> ArrayRef {
             let typed_value = self.into_typed_value_array();
+            let len = typed_value.len();
+            let value_field = Arc::new(Field::new("value", DataType::BinaryView, true));
             let typed_field = Arc::new(Field::new(
                 "typed_value",
                 typed_value.data_type().clone(),
                 true,
             ));
-            let struct_nulls = typed_value.nulls().cloned();
             Arc::new(StructArray::new(
-                Fields::from(vec![typed_field]),
-                vec![typed_value],
-                struct_nulls,
+                Fields::from(vec![value_field, typed_field]),
+                vec![
+                    Arc::new(BinaryViewArray::from(vec![None::<&[u8]>; len])) as ArrayRef,
+                    typed_value,
+                ],
+                None,
             )) as ArrayRef
         }
     }

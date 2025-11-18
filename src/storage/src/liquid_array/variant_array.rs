@@ -143,12 +143,16 @@ fn build_typed_struct_from_path(
         .collect();
     if segments.is_empty() {
         let leaf_field = Arc::new(Field::new("typed_value", values.data_type().clone(), true));
+        let value_field = Arc::new(Field::new("value", DataType::BinaryView, true));
         let leaf_struct = Arc::new(StructArray::new(
-            Fields::from(vec![leaf_field]),
-            vec![values.clone()],
-            values.nulls().cloned(),
+            Fields::from(vec![value_field, leaf_field]),
+            vec![
+                Arc::new(BinaryViewArray::from(vec![None::<&[u8]>; values.len()])) as ArrayRef,
+                values.clone(),
+            ],
+            None,
         ));
-        let named_field = Arc::new(Field::new(path, leaf_struct.data_type().clone(), true));
+        let named_field = Arc::new(Field::new(path, leaf_struct.data_type().clone(), false));
         return Arc::new(StructArray::new(
             Fields::from(vec![named_field]),
             vec![leaf_struct as ArrayRef],
@@ -158,22 +162,24 @@ fn build_typed_struct_from_path(
 
     let mut current: ArrayRef = values;
     for segment in segments.iter().rev() {
+        let value_placeholder = Arc::new(BinaryViewArray::from(vec![None::<&[u8]>; current.len()]))
+            as ArrayRef;
         let typed_field = Arc::new(Field::new(
             "typed_value",
             current.data_type().clone(),
             true,
         ));
-        let struct_nulls = current.nulls().cloned();
+        let value_field = Arc::new(Field::new("value", DataType::BinaryView, true));
         let inner = Arc::new(StructArray::new(
-            Fields::from(vec![typed_field]),
-            vec![current],
-            struct_nulls.clone(),
+            Fields::from(vec![value_field, typed_field]),
+            vec![value_placeholder, current],
+            None,
         )) as ArrayRef;
-        let named_field = Arc::new(Field::new(segment.as_str(), inner.data_type().clone(), true));
+        let named_field = Arc::new(Field::new(segment.as_str(), inner.data_type().clone(), false));
         current = Arc::new(StructArray::new(
             Fields::from(vec![named_field]),
             vec![inner],
-            struct_nulls.clone(),
+            None,
         )) as ArrayRef;
     }
 
