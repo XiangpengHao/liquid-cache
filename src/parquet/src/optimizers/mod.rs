@@ -262,38 +262,137 @@ fn build_variant_typed_value_field(
     existing: Option<&Field>,
     specs: &[&VariantField],
 ) -> Arc<Field> {
-    let mut children: BTreeMap<String, Arc<Field>> = existing
-        .and_then(|field| match field.data_type() {
-            DataType::Struct(fields) => Some(
-                fields
-                    .iter()
-                    .map(|child| (child.name().clone(), child.clone()))
-                    .collect(),
-            ),
-            _ => None,
-        })
-        .unwrap_or_default();
+    let mut root = VariantSchemaNode::default();
+
+    if let Some(field) = existing {
+        if let DataType::Struct(children) = field.data_type() {
+            for child in children.iter() {
+                root.insert_existing_field(child.name(), child.as_ref());
+            }
+        }
+    }
 
     for spec in specs {
-        let Some(data_type) = spec.data_type.as_ref() else {
-            continue;
-        };
-        children
-            .entry(spec.path.clone())
-            .or_insert_with(|| build_variant_typed_path_field(&spec.path, data_type));
+        if let Some(data_type) = spec.data_type.as_ref() {
+            root.insert_spec(&spec.path, data_type);
+        }
     }
+
+    let fields: Vec<_> = root
+        .children
+        .iter()
+        .map(|(name, node)| node.build_field(name))
+        .collect();
 
     Arc::new(Field::new(
         "typed_value",
-        DataType::Struct(Fields::from(children.into_values().collect::<Vec<_>>())),
+        DataType::Struct(Fields::from(fields)),
         true,
     ))
 }
 
-fn build_variant_typed_path_field(path: &str, data_type: &DataType) -> Arc<Field> {
-    let leaf_field = Arc::new(Field::new("typed_value", data_type.clone(), true));
-    let leaf_struct = DataType::Struct(Fields::from(vec![leaf_field]));
-    Arc::new(Field::new(path, leaf_struct, true))
+fn split_variant_path(path: &str) -> Vec<String> {
+    path
+        .split('.')
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| segment.to_string())
+        .collect()
+}
+
+#[derive(Default)]
+struct VariantSchemaNode {
+    leaf_type: Option<DataType>,
+    children: BTreeMap<String, VariantSchemaNode>,
+}
+
+impl VariantSchemaNode {
+    fn insert_spec(&mut self, path: &str, data_type: &DataType) {
+        let segments = split_variant_path(path);
+        if segments.is_empty() {
+            return;
+        }
+        self.insert_segments(&segments, data_type);
+    }
+
+    fn insert_segments(&mut self, segments: &[String], data_type: &DataType) {
+        if segments.is_empty() {
+            self.leaf_type = Some(data_type.clone());
+            return;
+        }
+        let (head, tail) = segments.split_first().unwrap();
+        self.children
+            .entry(head.clone())
+            .or_default()
+            .insert_segments(tail, data_type);
+    }
+
+    fn insert_existing_field(&mut self, name: &str, field: &Field) {
+        let segments = split_variant_path(name);
+        if segments.is_empty() {
+            return;
+        }
+        self.insert_existing_segments(&segments, field);
+    }
+
+    fn insert_existing_segments(&mut self, segments: &[String], field: &Field) {
+        let (head, tail) = segments.split_first().unwrap();
+        let node = self.children.entry(head.clone()).or_default();
+        if tail.is_empty() {
+            if let Some(typed_value_field) = Self::typed_value_child(field) {
+                match typed_value_field.data_type() {
+                    DataType::Struct(children) if !children.is_empty() => {
+                        for child in children.iter() {
+                            node.insert_existing_field(child.name(), child.as_ref());
+                        }
+                    }
+                    other => {
+                        node.leaf_type = Some(other.clone());
+                    }
+                }
+            }
+        } else {
+            node.insert_existing_segments(tail, field);
+        }
+    }
+
+    fn typed_value_child(field: &Field) -> Option<&Field> {
+        match field.data_type() {
+            DataType::Struct(children) => children
+                .iter()
+                .find(|child| child.name() == "typed_value")
+                .map(|child| child.as_ref()),
+            _ => None,
+        }
+    }
+
+    fn build_field(&self, name: &str) -> Arc<Field> {
+        let typed_value_field = if !self.children.is_empty() {
+            let child_fields: Vec<_> = self
+                .children
+                .iter()
+                .map(|(child_name, child)| child.build_field(child_name))
+                .collect();
+            Field::new(
+                "typed_value",
+                DataType::Struct(Fields::from(child_fields)),
+                true,
+            )
+        } else if let Some(data_type) = &self.leaf_type {
+            Field::new("typed_value", data_type.clone(), true)
+        } else {
+            Field::new(
+                "typed_value",
+                DataType::Struct(Fields::from(Vec::<Arc<Field>>::new())),
+                true,
+            )
+        };
+
+        Arc::new(Field::new(
+            name,
+            DataType::Struct(Fields::from(vec![Arc::new(typed_value_field)])),
+            true,
+        ))
+    }
 }
 
 #[cfg(test)]

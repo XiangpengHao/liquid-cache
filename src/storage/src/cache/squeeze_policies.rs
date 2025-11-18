@@ -199,7 +199,7 @@ fn try_variant_squeeze(
 
     let typed_root = variant_array.typed_value_field()?;
     let typed_root = typed_root.as_any().downcast_ref::<StructArray>()?;
-    let path_values = typed_root.column_by_name(owned_path.as_str())?;
+    let path_values = extract_typed_values_for_path(typed_root, owned_path.as_str())?;
 
     if typed_root.columns().len() > 1 {
         let inner = variant_array.inner();
@@ -255,6 +255,36 @@ fn is_supported_leaf_type(data_type: &DataType) -> bool {
     )
 }
 
+fn split_variant_path(path: &str) -> Vec<String> {
+    path
+        .split('.')
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| segment.to_string())
+        .collect()
+}
+
+fn extract_typed_values_for_path(typed_root: &StructArray, path: &str) -> Option<ArrayRef> {
+    if let Some(flat_field) = typed_root.column_by_name(path) {
+        return Some(flat_field.clone());
+    }
+
+    let segments = split_variant_path(path);
+    if segments.is_empty() {
+        return None;
+    }
+
+    let mut cursor = typed_root;
+    for segment in &segments[..segments.len().saturating_sub(1)] {
+        let field = cursor.column_by_name(segment)?;
+        let struct_field = field.as_any().downcast_ref::<StructArray>()?;
+        let typed_value = struct_field.column_by_name("typed_value")?;
+        cursor = typed_value.as_any().downcast_ref::<StructArray>()?;
+    }
+
+    let last = segments.last()?;
+    cursor.column_by_name(last).cloned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,7 +296,61 @@ mod tests {
     use arrow_schema::{DataType, Field};
     use parquet::variant::VariantPath;
     use parquet_variant_compute::{GetOptions, json_to_variant, variant_get};
+    use std::collections::BTreeMap;
     use std::sync::Arc;
+
+    #[derive(Default)]
+    struct VariantTestTree {
+        leaf: Option<ArrayRef>,
+        children: BTreeMap<String, VariantTestTree>,
+    }
+
+    impl VariantTestTree {
+        fn insert(&mut self, segments: &[String], values: ArrayRef) {
+            if segments.is_empty() {
+                self.leaf = Some(values);
+                return;
+            }
+            let (head, tail) = segments.split_first().unwrap();
+            self.children
+                .entry(head.clone())
+                .or_default()
+                .insert(tail, values);
+        }
+
+        fn into_typed_value_array(self) -> ArrayRef {
+            if let Some(values) = self.leaf {
+                return values;
+            }
+            let mut fields = Vec::with_capacity(self.children.len());
+            let mut arrays = Vec::with_capacity(self.children.len());
+            for (name, child) in self.children {
+                let field_array = child.into_struct_array();
+                fields.push(Arc::new(Field::new(
+                    name.as_str(),
+                    field_array.data_type().clone(),
+                    true,
+                )));
+                arrays.push(field_array);
+            }
+            Arc::new(StructArray::new(Fields::from(fields), arrays, None)) as ArrayRef
+        }
+
+        fn into_struct_array(self) -> ArrayRef {
+            let typed_value = self.into_typed_value_array();
+            let typed_field = Arc::new(Field::new(
+                "typed_value",
+                typed_value.data_type().clone(),
+                true,
+            ));
+            let struct_nulls = typed_value.nulls().cloned();
+            Arc::new(StructArray::new(
+                Fields::from(vec![typed_field]),
+                vec![typed_value],
+                struct_nulls,
+            )) as ArrayRef
+        }
+    }
 
     fn int_array(n: i32) -> ArrayRef {
         Arc::new(Int32Array::from_iter_values(0..n))
@@ -432,8 +516,7 @@ mod tests {
         let base_variant = json_to_variant(&values).unwrap();
         let base_arr: ArrayRef = Arc::new(base_variant.inner().clone());
 
-        let mut typed_fields: Vec<Arc<Field>> = Vec::new();
-        let mut typed_columns: Vec<ArrayRef> = Vec::new();
+        let mut typed_trees: BTreeMap<String, VariantTestTree> = BTreeMap::new();
 
         for (path, data_type) in entries.iter() {
             let typed_values = variant_get(
@@ -443,23 +526,27 @@ mod tests {
                 ))),
             )
             .unwrap();
+            let segments = split_variant_path(path);
+            if segments.is_empty() {
+                continue;
+            }
+            let head = segments[0].clone();
+            typed_trees
+                .entry(head)
+                .or_default()
+                .insert(&segments[1..], typed_values.clone());
+        }
 
-            let leaf_struct = Arc::new(StructArray::new(
-                Fields::from(vec![Arc::new(Field::new(
-                    "typed_value",
-                    typed_values.data_type().clone(),
-                    typed_values.null_count() > 0,
-                ))]),
-                vec![typed_values.clone()],
-                typed_values.nulls().cloned(),
-            ));
-
+        let mut typed_fields: Vec<Arc<Field>> = Vec::new();
+        let mut typed_columns: Vec<ArrayRef> = Vec::new();
+        for (name, tree) in typed_trees {
+            let array = tree.into_struct_array();
             typed_fields.push(Arc::new(Field::new(
-                *path,
-                leaf_struct.data_type().clone(),
+                name.as_str(),
+                array.data_type().clone(),
                 true,
             )));
-            typed_columns.push(leaf_struct as ArrayRef);
+            typed_columns.push(array);
         }
 
         let typed_struct = Arc::new(StructArray::new(

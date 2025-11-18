@@ -1,5 +1,5 @@
 use arrow::{
-    array::{Array, ArrayRef, BinaryViewArray, BooleanArray, StructArray, new_null_array},
+    array::{Array, ArrayRef, BooleanArray, StructArray},
     buffer::BooleanBuffer,
     compute::prep_null_mask_filter,
     record_batch::RecordBatch,
@@ -7,14 +7,14 @@ use arrow::{
 use arrow_schema::{ArrowError, DataType, Field, Fields, Schema};
 use liquid_cache_storage::cache::{CacheExpression, CacheStorage, ColumnID};
 use parquet::arrow::arrow_reader::ArrowPredicate;
-use parquet::variant::{GetOptions, VariantArray, VariantPath, VariantType, variant_get};
+use parquet_variant_compute::{VariantArray, VariantType, shred_variant, unshred_variant};
 
 use crate::{
     LiquidPredicate,
     cache::{BatchID, ColumnAccessPath, ParquetArrayID},
     optimizers::{DATE_MAPPING_METADATA_KEY, variant_mappings_from_field},
 };
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 /// A column in the cache.
 #[derive(Debug)]
@@ -225,62 +225,24 @@ fn shred_variant_array(
         .iter()
         .find(|child| child.name() == "typed_value")
         .cloned()?;
-    let typed_children = match typed_schema.data_type() {
-        DataType::Struct(fields) => fields.clone(),
-        _ => return None,
-    };
-
-    let mut new_columns: HashMap<String, ArrayRef> = HashMap::new();
-    for (path, data_type) in missing_specs {
-        let typed_field = Arc::new(Field::new("typed_value", data_type.clone(), true));
-        let options = GetOptions::new_with_path(VariantPath::from(path.as_str()))
-            .with_as_type(Some(typed_field));
-        let typed_values = variant_get(array, options).ok()?;
-        new_columns.insert(path.clone(), build_typed_value_leaf(typed_values));
-    }
-
-    if new_columns.is_empty() {
-        return None;
-    }
-
-    let existing_typed_struct = variant_array
-        .typed_value_field()
-        .and_then(|typed| typed.as_any().downcast_ref::<StructArray>());
-
-    let mut typed_child_arrays = Vec::with_capacity(typed_children.len());
-    for child in typed_children.iter() {
-        if let Some(new_column) = new_columns.remove(child.name()) {
-            typed_child_arrays.push(new_column);
-        } else if let Some(existing) = existing_typed_struct
-            .and_then(|struct_array| struct_array.column_by_name(child.name()).cloned())
-        {
-            typed_child_arrays.push(existing);
-        } else {
-            typed_child_arrays.push(empty_typed_value_column(child.as_ref(), array.len()));
-        }
-    }
-
-    let typed_struct = Arc::new(StructArray::new(
-        typed_children,
-        typed_child_arrays,
-        variant_array.inner().nulls().cloned(),
-    )) as ArrayRef;
-
-    let inner = variant_array.inner();
-    let metadata_array = inner
-        .column_by_name("metadata")
-        .cloned()
-        .unwrap_or_else(|| Arc::new(variant_array.metadata_field().clone()) as ArrayRef);
-    let value_array = inner.column_by_name("value").cloned().unwrap_or_else(|| {
-        Arc::new(BinaryViewArray::from(vec![None::<&[u8]>; inner.len()])) as ArrayRef
-    });
+    let shredding_schema = build_shredding_schema(typed_schema.as_ref())?;
+    let unshredded = unshred_variant(&variant_array).ok()?;
+    let shredded = shred_variant(&unshredded, &shredding_schema).ok()?;
+    let inner = shredded.inner();
+    let metadata_array = inner.column_by_name("metadata")?.clone();
+    let value_array = inner.column_by_name("value")?.clone();
+    let typed_value_column = inner.column_by_name("typed_value")?.clone();
+    let typed_struct = typed_value_column
+        .as_any()
+        .downcast_ref::<StructArray>()?;
+    let rebuilt_typed_value = rebuild_typed_value_array(typed_schema.as_ref(), typed_struct)?;
 
     let mut columns = Vec::with_capacity(target_fields.len());
     for target_field in target_fields.iter() {
         let column = match target_field.name().as_str() {
             "metadata" => metadata_array.clone(),
             "value" => value_array.clone(),
-            "typed_value" => typed_struct.clone(),
+            "typed_value" => rebuilt_typed_value.clone(),
             other => inner.column_by_name(other)?.clone(),
         };
         columns.push(column);
@@ -290,50 +252,160 @@ fn shred_variant_array(
     Some(Arc::new(root_struct))
 }
 
-fn build_typed_value_leaf(typed_values: ArrayRef) -> ArrayRef {
-    let leaf_field = Arc::new(Field::new(
-        "typed_value",
-        typed_values.data_type().clone(),
-        true,
-    ));
-    Arc::new(StructArray::new(
-        Fields::from(vec![leaf_field]),
-        vec![typed_values],
-        None,
-    ))
+fn split_variant_path(path: &str) -> Vec<String> {
+    path
+        .split('.')
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| segment.to_string())
+        .collect()
 }
 
-// consider a column that previously got shredded for paths [name, age] and now a new query asks for [name, address].
-// In this batch we only add the new address child;
-// we still need to emit a column for age because the schema already includes it.
-// Without empty_typed_value_column we'd be missing columns for those paths, and StructArray:: new would error
-// because it requires an array per field. Returning an all-null struct (same shape as the field definition) keeps the schema consistent across batches and avoids panics.
-fn empty_typed_value_column(field: &Field, len: usize) -> ArrayRef {
-    let DataType::Struct(children) = field.data_type() else {
-        return Arc::new(StructArray::new(
-            Fields::from(Vec::<Arc<Field>>::new()),
-            vec![],
-            None,
-        ));
-    };
-    if let Some(child) = children.iter().next() {
-        let values = new_null_array(child.data_type(), len);
-        Arc::new(StructArray::new(
-            Fields::from(vec![child.clone()]),
-            vec![values],
-            None,
-        ))
+fn build_shredding_schema(typed_schema: &Field) -> Option<DataType> {
+    match typed_schema.data_type() {
+        DataType::Struct(children) => build_struct_from_children(children),
+        other => Some(other.clone()),
+    }
+}
+
+fn build_struct_from_children(children: &Fields) -> Option<DataType> {
+    let mut new_children = Vec::with_capacity(children.len());
+    for child in children.iter() {
+        if let Some(field) = typed_schema_field(child.as_ref()) {
+            new_children.push(field);
+        }
+    }
+    if new_children.is_empty() {
+        None
     } else {
-        Arc::new(StructArray::new(children.clone(), vec![], None))
+        Some(DataType::Struct(Fields::from(new_children)))
+    }
+}
+
+fn typed_schema_field(field: &Field) -> Option<Arc<Field>> {
+    let Some(typed_child) = typed_value_child(field) else {
+        return None;
+    };
+    match typed_child.data_type() {
+        DataType::Struct(grand_children) => {
+            let Some(child_type) = build_struct_from_children(grand_children) else {
+                return None;
+            };
+            Some(Arc::new(Field::new(field.name(), child_type, true)))
+        }
+        other => Some(Arc::new(Field::new(field.name(), other.clone(), true))),
+    }
+}
+
+fn typed_value_child(field: &Field) -> Option<&Field> {
+    match field.data_type() {
+        DataType::Struct(children) => children
+            .iter()
+            .find(|child| child.name() == "typed_value")
+            .map(|child| child.as_ref()),
+        _ => None,
+    }
+}
+
+fn rebuild_typed_value_array(
+    typed_schema: &Field,
+    shredded_struct: &StructArray,
+) -> Option<ArrayRef> {
+    let DataType::Struct(children) = typed_schema.data_type() else {
+        return None;
+    };
+    rebuild_struct_children(children, shredded_struct)
+}
+
+fn rebuild_struct_children(children: &Fields, shredded_struct: &StructArray) -> Option<ArrayRef> {
+    let mut columns = Vec::with_capacity(children.len());
+    for child in children.iter() {
+        let shredded_child = shredded_struct.column_by_name(child.name())?;
+        let shredded_field = shredded_child
+            .as_any()
+            .downcast_ref::<StructArray>()?;
+        let converted = convert_shredded_field(child.as_ref(), shredded_field)?;
+        columns.push(converted);
+    }
+    Some(Arc::new(StructArray::new(
+        children.clone(),
+        columns,
+        shredded_struct.nulls().cloned(),
+    )) as ArrayRef)
+}
+
+fn convert_shredded_field(schema_field: &Field, shredded_field: &StructArray) -> Option<ArrayRef> {
+    let Some(typed_child) = typed_value_child(schema_field) else {
+        return None;
+    };
+    let typed_value_array = shredded_field.column_by_name("typed_value")?.clone();
+    match typed_child.data_type() {
+        DataType::Struct(grand_children) => {
+            let typed_struct = typed_value_array
+                .as_any()
+                .downcast_ref::<StructArray>()?;
+            let rebuilt = rebuild_struct_children(grand_children, typed_struct)?;
+            let struct_array = StructArray::new(
+                Fields::from(vec![Arc::new(typed_child.clone())]),
+                vec![rebuilt],
+                typed_struct.nulls().cloned(),
+            );
+            Some(Arc::new(struct_array) as ArrayRef)
+        }
+        _ => {
+            let struct_array = StructArray::new(
+                Fields::from(vec![Arc::new(typed_child.clone())]),
+                vec![typed_value_array],
+                shredded_field.nulls().cloned(),
+            );
+            Some(Arc::new(struct_array) as ArrayRef)
+        }
     }
 }
 
 fn variant_contains_typed_field(array: &VariantArray, path: &str) -> bool {
-    array
-        .typed_value_field()
-        .and_then(|typed| typed.as_any().downcast_ref::<StructArray>())
-        .map(|typed_struct| typed_struct.column_by_name(path).is_some())
-        .unwrap_or(false)
+    let Some(typed_root_array) = array.typed_value_field() else {
+        return false;
+    };
+    let Some(typed_root) = typed_root_array
+        .as_any()
+        .downcast_ref::<StructArray>()
+    else {
+        return false;
+    };
+
+    if typed_root.column_by_name(path).is_some() {
+        return true;
+    }
+
+    let segments = split_variant_path(path);
+    if segments.is_empty() {
+        return false;
+    }
+
+    typed_struct_contains_path(typed_root, &segments)
+}
+
+fn typed_struct_contains_path(current: &StructArray, segments: &[String]) -> bool {
+    let mut cursor = current;
+    for (idx, segment) in segments.iter().enumerate() {
+        let Some(field) = cursor.column_by_name(segment) else {
+            return false;
+        };
+        let Some(struct_field) = field.as_any().downcast_ref::<StructArray>() else {
+            return false;
+        };
+        if idx == segments.len() - 1 {
+            return struct_field.column_by_name("typed_value").is_some();
+        }
+        let Some(next) = struct_field
+            .column_by_name("typed_value")
+            .and_then(|col| col.as_any().downcast_ref::<StructArray>())
+        else {
+            return false;
+        };
+        cursor = next;
+    }
+    false
 }
 
 #[cfg(test)]
@@ -345,6 +417,7 @@ mod tests {
     use arrow::array::{ArrayRef, StringArray, StructArray};
     use parquet::variant::{VariantType, json_to_variant};
     use serde_json::json;
+    use std::collections::HashMap;
 
     #[test]
     fn shredding_adds_all_variant_paths() {

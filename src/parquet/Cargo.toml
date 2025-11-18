@@ -23,6 +23,7 @@ liquid-cache-storage = { workspace = true }
 fastrace = { workspace = true }
 async-trait = { workspace = true }
 parquet-variant-json = { workspace = true }
+parquet-variant-compute = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 

@@ -129,11 +129,11 @@
 				"--manifest",
 				"benchmark/json_bench/manifest.bluesky.json",
 				"--max-cache-mb",
-				"10",
+				"100",
 				"--bench-mode",
 				"liquid",
 				"--query-index",
-				"1",
+				"0",
 				"--partitions",
 				"1"
 			],

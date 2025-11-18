@@ -62,27 +62,11 @@ impl LiquidHybridArray for VariantExtractedArray {
 
     fn to_arrow_array(&self) -> Result<ArrayRef, IoRange> {
         let arrow_values = self.values.to_arrow_array();
-        let leaf_field = Arc::new(Field::new(
-            "typed_value",
-            arrow_values.data_type().clone(),
-            arrow_values.null_count() > 0,
-        ));
-        let leaf_struct = Arc::new(StructArray::new(
-            Fields::from(vec![leaf_field]),
-            vec![arrow_values.clone()],
-            arrow_values.nulls().cloned(),
-        ));
-
-        let named_field = Arc::new(Field::new(
+        let typed_struct = build_typed_struct_from_path(
             self.field_name.as_ref(),
-            leaf_struct.data_type().clone(),
-            true,
-        ));
-        let typed_struct = Arc::new(StructArray::new(
-            Fields::from(vec![named_field]),
-            vec![leaf_struct as ArrayRef],
+            arrow_values.clone(),
             self.nulls.clone(),
-        ));
+        );
 
         let value_placeholder =
             Arc::new(BinaryViewArray::from(vec![None::<&[u8]>; self.len()])) as ArrayRef;
@@ -145,6 +129,63 @@ impl LiquidHybridArray for VariantExtractedArray {
     fn disk_backing(&self) -> HybridBacking {
         HybridBacking::Arrow
     }
+}
+
+fn build_typed_struct_from_path(
+    path: &str,
+    values: ArrayRef,
+    root_nulls: Option<NullBuffer>,
+) -> Arc<StructArray> {
+    let segments: Vec<String> = path
+        .split('.')
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| segment.to_string())
+        .collect();
+    if segments.is_empty() {
+        let leaf_field = Arc::new(Field::new("typed_value", values.data_type().clone(), true));
+        let leaf_struct = Arc::new(StructArray::new(
+            Fields::from(vec![leaf_field]),
+            vec![values.clone()],
+            values.nulls().cloned(),
+        ));
+        let named_field = Arc::new(Field::new(path, leaf_struct.data_type().clone(), true));
+        return Arc::new(StructArray::new(
+            Fields::from(vec![named_field]),
+            vec![leaf_struct as ArrayRef],
+            root_nulls,
+        ));
+    }
+
+    let mut current: ArrayRef = values;
+    for segment in segments.iter().rev() {
+        let typed_field = Arc::new(Field::new(
+            "typed_value",
+            current.data_type().clone(),
+            true,
+        ));
+        let struct_nulls = current.nulls().cloned();
+        let inner = Arc::new(StructArray::new(
+            Fields::from(vec![typed_field]),
+            vec![current],
+            struct_nulls.clone(),
+        )) as ArrayRef;
+        let named_field = Arc::new(Field::new(segment.as_str(), inner.data_type().clone(), true));
+        current = Arc::new(StructArray::new(
+            Fields::from(vec![named_field]),
+            vec![inner],
+            struct_nulls.clone(),
+        )) as ArrayRef;
+    }
+
+    let struct_array = current
+        .as_any()
+        .downcast_ref::<StructArray>()
+        .expect("struct array for variant path");
+    Arc::new(StructArray::new(
+        struct_array.fields().clone(),
+        struct_array.columns().iter().cloned().collect(),
+        root_nulls,
+    ))
 }
 
 /// Hybrid representation for variant arrays that contain multiple typed fields.
