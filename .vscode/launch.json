@@ -133,7 +133,7 @@
 				"--bench-mode",
 				"liquid",
 				"--query-index",
-				"0",
+				"1",
 				"--partitions",
 				"1"
 			],

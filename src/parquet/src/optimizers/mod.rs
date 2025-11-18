@@ -2,7 +2,7 @@
 
 mod lineage_opt;
 
-use std::{str::FromStr, sync::Arc};
+use std::{collections::BTreeMap, str::FromStr, sync::Arc};
 
 use arrow_schema::{DataType, Field, Fields, Schema, SchemaRef};
 use datafusion::{
@@ -18,15 +18,76 @@ use datafusion::{
     physical_plan::ExecutionPlan,
 };
 pub use lineage_opt::LineageOptimizer;
+pub(crate) use lineage_opt::VariantField;
 
 use crate::{
     LiquidCacheRef, LiquidParquetSource,
     optimizers::lineage_opt::{ColumnAnnotation, metadata_from_factory, serialize_date_part},
 };
+use serde::{Deserialize, Serialize};
 
 pub(crate) const DATE_MAPPING_METADATA_KEY: &str = "liquid.cache.date_mapping";
 pub(crate) const VARIANT_MAPPING_METADATA_KEY: &str = "liquid.cache.variant_path";
 pub(crate) const VARIANT_MAPPING_TYPE_METADATA_KEY: &str = "liquid.cache.variant_type";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct VariantMappingSerdeEntry {
+    path: String,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    data_type: Option<String>,
+}
+
+fn serialize_variant_mappings(fields: &[VariantField]) -> Option<String> {
+    if fields.is_empty() {
+        return None;
+    }
+
+    let entries: Vec<VariantMappingSerdeEntry> = fields
+        .iter()
+        .map(|field| VariantMappingSerdeEntry {
+            path: field.path.clone(),
+            data_type: field
+                .data_type
+                .as_ref()
+                .map(|data_type| data_type.to_string()),
+        })
+        .collect();
+
+    serde_json::to_string(&entries).ok()
+}
+
+fn deserialize_variant_mappings(raw: &str) -> Option<Vec<VariantField>> {
+    let entries: Vec<VariantMappingSerdeEntry> = serde_json::from_str(raw).ok()?;
+    let mut fields = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let data_type = match entry.data_type {
+            Some(spec) => Some(DataType::from_str(&spec).ok()?),
+            None => None,
+        };
+        fields.push(VariantField {
+            path: entry.path,
+            data_type,
+        });
+    }
+    Some(fields)
+}
+
+pub(crate) fn variant_mappings_from_field(field: &Field) -> Option<Vec<VariantField>> {
+    let metadata = field.metadata();
+    let raw = metadata.get(VARIANT_MAPPING_METADATA_KEY)?;
+    if let Some(parsed) = deserialize_variant_mappings(raw) {
+        return Some(parsed);
+    }
+
+    let data_type = metadata
+        .get(VARIANT_MAPPING_TYPE_METADATA_KEY)
+        .and_then(|spec| DataType::from_str(spec).ok());
+
+    Some(vec![VariantField {
+        path: raw.clone(),
+        data_type,
+    }])
+}
 
 /// Physical optimizer rule for local mode liquid cache
 ///
@@ -100,22 +161,16 @@ pub fn rewrite_data_source_plan(
                                             serialize_date_part(&unit),
                                         );
                                     }
-                                    ColumnAnnotation::VariantPath { path, data_type } => {
-                                        field_metadata.insert(
-                                            VARIANT_MAPPING_METADATA_KEY.to_string(),
-                                            path.clone(),
-                                        );
-                                        if let Some(data_type) = data_type.as_ref() {
+                                    ColumnAnnotation::VariantPaths(paths) => {
+                                        if let Some(serialized) = serialize_variant_mappings(&paths)
+                                        {
                                             field_metadata.insert(
-                                                VARIANT_MAPPING_TYPE_METADATA_KEY.to_string(),
-                                                data_type.to_string(),
-                                            );
-                                            updated_field = enrich_variant_field_type(
-                                                &updated_field,
-                                                path.as_str(),
-                                                data_type,
+                                                VARIANT_MAPPING_METADATA_KEY.to_string(),
+                                                serialized,
                                             );
                                         }
+                                        updated_field =
+                                            enrich_variant_field_type(&updated_field, &paths);
                                     }
                                 }
                                 let new_field = updated_field.with_metadata(field_metadata);
@@ -150,14 +205,25 @@ pub fn rewrite_data_source_plan(
     rewritten.data
 }
 
-pub(crate) fn enrich_variant_field_type(field: &Field, path: &str, data_type: &DataType) -> Field {
+pub(crate) fn enrich_variant_field_type(field: &Field, fields: &[VariantField]) -> Field {
+    let typed_specs: Vec<&VariantField> = fields
+        .iter()
+        .filter(|field| field.data_type.is_some())
+        .collect();
+    if typed_specs.is_empty() {
+        return Field::clone(field);
+    }
+
     let new_type = match field.data_type() {
         DataType::Struct(children) => {
             let mut rewritten = Vec::with_capacity(children.len() + 1);
             let mut replaced = false;
             for child in children.iter() {
                 if child.name() == "typed_value" {
-                    rewritten.push(build_variant_typed_field(path, data_type));
+                    rewritten.push(build_variant_typed_value_field(
+                        Some(child.as_ref()),
+                        &typed_specs,
+                    ));
                     replaced = true;
                 } else {
                     let mut child_field = child.as_ref().clone();
@@ -170,7 +236,7 @@ pub(crate) fn enrich_variant_field_type(field: &Field, path: &str, data_type: &D
                 }
             }
             if !replaced {
-                rewritten.push(build_variant_typed_field(path, data_type));
+                rewritten.push(build_variant_typed_value_field(None, &typed_specs));
             }
             DataType::Struct(Fields::from(rewritten))
         }
@@ -182,14 +248,8 @@ pub(crate) fn enrich_variant_field_type(field: &Field, path: &str, data_type: &D
 pub(crate) fn enrich_schema_for_cache(schema: &SchemaRef) -> SchemaRef {
     let mut fields = vec![];
     for field in schema.fields() {
-        let new_field = if let (Some(path), Some(data_type)) = (
-            field.metadata().get(VARIANT_MAPPING_METADATA_KEY),
-            field
-                .metadata()
-                .get(VARIANT_MAPPING_TYPE_METADATA_KEY)
-                .and_then(|ty| DataType::from_str(ty).ok()),
-        ) {
-            Arc::new(enrich_variant_field_type(field.as_ref(), path, &data_type))
+        let new_field = if let Some(mappings) = variant_mappings_from_field(field.as_ref()) {
+            Arc::new(enrich_variant_field_type(field.as_ref(), &mappings))
         } else {
             field.clone()
         };
@@ -198,15 +258,42 @@ pub(crate) fn enrich_schema_for_cache(schema: &SchemaRef) -> SchemaRef {
     Arc::new(Schema::new(fields))
 }
 
-fn build_variant_typed_field(path: &str, data_type: &DataType) -> Arc<Field> {
-    let leaf_field = Arc::new(Field::new("typed_value", data_type.clone(), true));
-    let leaf_struct = DataType::Struct(Fields::from(vec![leaf_field]));
-    let path_field = Arc::new(Field::new(path, leaf_struct, true));
+fn build_variant_typed_value_field(
+    existing: Option<&Field>,
+    specs: &[&VariantField],
+) -> Arc<Field> {
+    let mut children: BTreeMap<String, Arc<Field>> = existing
+        .and_then(|field| match field.data_type() {
+            DataType::Struct(fields) => Some(
+                fields
+                    .iter()
+                    .map(|child| (child.name().clone(), child.clone()))
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .unwrap_or_default();
+
+    for spec in specs {
+        let Some(data_type) = spec.data_type.as_ref() else {
+            continue;
+        };
+        children
+            .entry(spec.path.clone())
+            .or_insert_with(|| build_variant_typed_path_field(&spec.path, data_type));
+    }
+
     Arc::new(Field::new(
         "typed_value",
-        DataType::Struct(Fields::from(vec![path_field])),
+        DataType::Struct(Fields::from(children.into_values().collect::<Vec<_>>())),
         true,
     ))
+}
+
+fn build_variant_typed_path_field(path: &str, data_type: &DataType) -> Arc<Field> {
+    let leaf_field = Arc::new(Field::new("typed_value", data_type.clone(), true));
+    let leaf_struct = DataType::Struct(Fields::from(vec![leaf_field]));
+    Arc::new(Field::new(path, leaf_struct, true))
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 use arrow::{
-    array::{Array, ArrayRef, BinaryViewArray, BooleanArray, StructArray},
-    buffer::{BooleanBuffer, NullBuffer},
+    array::{Array, ArrayRef, BinaryViewArray, BooleanArray, StructArray, new_null_array},
+    buffer::BooleanBuffer,
     compute::prep_null_mask_filter,
     record_batch::RecordBatch,
 };
@@ -12,11 +12,9 @@ use parquet::variant::{GetOptions, VariantArray, VariantPath, VariantType, varia
 use crate::{
     LiquidPredicate,
     cache::{BatchID, ColumnAccessPath, ParquetArrayID},
-    optimizers::{
-        DATE_MAPPING_METADATA_KEY, VARIANT_MAPPING_METADATA_KEY, VARIANT_MAPPING_TYPE_METADATA_KEY,
-    },
+    optimizers::{DATE_MAPPING_METADATA_KEY, variant_mappings_from_field},
 };
-use std::{str::FromStr, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 /// A column in the cache.
 #[derive(Debug)]
@@ -37,14 +35,16 @@ fn infer_expression(field: &Field) -> Option<CacheExpression> {
     {
         return Some(expr);
     }
-    if let Some(path) = field.metadata().get(VARIANT_MAPPING_METADATA_KEY)
-        && let Some(data_type) = field
-            .metadata()
-            .get(VARIANT_MAPPING_TYPE_METADATA_KEY)
-            .and_then(|ty| DataType::from_str(ty).ok())
-        && field.try_extension_type::<VariantType>().is_ok()
+    if field.try_extension_type::<VariantType>().is_ok()
+        && let Some(mappings) = variant_mappings_from_field(field)
+        && let Some((path, data_type)) = mappings.iter().find_map(|mapping| {
+            mapping
+                .data_type
+                .as_ref()
+                .map(|data_type| (mapping.path.clone(), data_type.clone()))
+        })
     {
-        return Some(CacheExpression::variant_get(path.to_string(), data_type));
+        return Some(CacheExpression::variant_get(path, data_type));
     }
     None
 }
@@ -175,9 +175,8 @@ impl LiquidCachedColumn {
             return Err(InsertArrowArrayError::AlreadyCached);
         }
         let mut array = array;
-        if let Some(expr) = &self.expression
-            && let Some(transformed) =
-                maybe_shred_variant_array(&array, expr.as_ref(), self.field.as_ref())
+        if self.expression.is_some()
+            && let Some(transformed) = maybe_shred_variant_array(&array, self.field.as_ref())
         {
             array = transformed;
         }
@@ -188,44 +187,86 @@ impl LiquidCachedColumn {
     }
 }
 
-fn maybe_shred_variant_array(
-    array: &ArrayRef,
-    expression: &CacheExpression,
-    field: &Field,
-) -> Option<ArrayRef> {
-    match expression {
-        CacheExpression::VariantGet { path, data_type } => {
-            shred_variant_array(array, field, path.as_ref(), data_type.as_ref())
-        }
-        _ => None,
+fn maybe_shred_variant_array(array: &ArrayRef, field: &Field) -> Option<ArrayRef> {
+    let mappings = variant_mappings_from_field(field)?;
+    let typed_specs: Vec<(String, DataType)> = mappings
+        .into_iter()
+        .filter_map(|mapping| mapping.data_type.map(|data_type| (mapping.path, data_type)))
+        .collect();
+    if typed_specs.is_empty() {
+        return None;
     }
+    shred_variant_array(array, field, &typed_specs)
 }
 
 fn shred_variant_array(
     array: &ArrayRef,
     field: &Field,
-    path: &str,
-    data_type: &DataType,
+    specs: &[(String, DataType)],
 ) -> Option<ArrayRef> {
-    let variant_array = VariantArray::try_new(array.as_ref()).ok()?;
-    if variant_contains_typed_field(&variant_array, path) {
+    if specs.is_empty() {
         return None;
     }
 
-    let typed_field = Arc::new(Field::new("typed_value", data_type.clone(), true));
-    let options =
-        GetOptions::new_with_path(VariantPath::from(path)).with_as_type(Some(typed_field));
-    let typed_values = variant_get(array, options).ok()?;
+    let variant_array = VariantArray::try_new(array.as_ref()).ok()?;
+    let missing_specs: Vec<_> = specs
+        .iter()
+        .filter(|(path, _)| !variant_contains_typed_field(&variant_array, path))
+        .collect();
+    if missing_specs.is_empty() {
+        return None;
+    }
 
-    let typed_struct =
-        build_typed_value_struct(path, typed_values, variant_array.inner().nulls().cloned());
-
-    let inner = variant_array.inner();
     let target_fields = match field.data_type() {
         DataType::Struct(fields) => fields.clone(),
         _ => return None,
     };
+    let typed_schema = target_fields
+        .iter()
+        .find(|child| child.name() == "typed_value")
+        .cloned()?;
+    let typed_children = match typed_schema.data_type() {
+        DataType::Struct(fields) => fields.clone(),
+        _ => return None,
+    };
 
+    let mut new_columns: HashMap<String, ArrayRef> = HashMap::new();
+    for (path, data_type) in missing_specs {
+        let typed_field = Arc::new(Field::new("typed_value", data_type.clone(), true));
+        let options = GetOptions::new_with_path(VariantPath::from(path.as_str()))
+            .with_as_type(Some(typed_field));
+        let typed_values = variant_get(array, options).ok()?;
+        new_columns.insert(path.clone(), build_typed_value_leaf(typed_values));
+    }
+
+    if new_columns.is_empty() {
+        return None;
+    }
+
+    let existing_typed_struct = variant_array
+        .typed_value_field()
+        .and_then(|typed| typed.as_any().downcast_ref::<StructArray>());
+
+    let mut typed_child_arrays = Vec::with_capacity(typed_children.len());
+    for child in typed_children.iter() {
+        if let Some(new_column) = new_columns.remove(child.name()) {
+            typed_child_arrays.push(new_column);
+        } else if let Some(existing) = existing_typed_struct
+            .and_then(|struct_array| struct_array.column_by_name(child.name()).cloned())
+        {
+            typed_child_arrays.push(existing);
+        } else {
+            typed_child_arrays.push(empty_typed_value_column(child.as_ref(), array.len()));
+        }
+    }
+
+    let typed_struct = Arc::new(StructArray::new(
+        typed_children,
+        typed_child_arrays,
+        variant_array.inner().nulls().cloned(),
+    )) as ArrayRef;
+
+    let inner = variant_array.inner();
     let metadata_array = inner
         .column_by_name("metadata")
         .cloned()
@@ -246,32 +287,45 @@ fn shred_variant_array(
     }
 
     let root_struct = StructArray::new(target_fields, columns, inner.nulls().cloned());
-
     Some(Arc::new(root_struct))
 }
 
-fn build_typed_value_struct(
-    path: &str,
-    typed_values: ArrayRef,
-    nulls: Option<NullBuffer>,
-) -> ArrayRef {
+fn build_typed_value_leaf(typed_values: ArrayRef) -> ArrayRef {
     let leaf_field = Arc::new(Field::new(
         "typed_value",
         typed_values.data_type().clone(),
-        typed_values.null_count() > 0,
+        true,
     ));
-    let leaf_struct = Arc::new(StructArray::new(
-        Fields::from(vec![leaf_field]),
-        vec![typed_values.clone()],
-        typed_values.nulls().cloned(),
-    ));
-
-    let named_field = Arc::new(Field::new(path, leaf_struct.data_type().clone(), true));
     Arc::new(StructArray::new(
-        Fields::from(vec![named_field]),
-        vec![leaf_struct as ArrayRef],
-        nulls,
+        Fields::from(vec![leaf_field]),
+        vec![typed_values],
+        None,
     ))
+}
+
+// consider a column that previously got shredded for paths [name, age] and now a new query asks for [name, address].
+// In this batch we only add the new address child;
+// we still need to emit a column for age because the schema already includes it.
+// Without empty_typed_value_column we'd be missing columns for those paths, and StructArray:: new would error
+// because it requires an array per field. Returning an all-null struct (same shape as the field definition) keeps the schema consistent across batches and avoids panics.
+fn empty_typed_value_column(field: &Field, len: usize) -> ArrayRef {
+    let DataType::Struct(children) = field.data_type() else {
+        return Arc::new(StructArray::new(
+            Fields::from(Vec::<Arc<Field>>::new()),
+            vec![],
+            None,
+        ));
+    };
+    if let Some(child) = children.iter().next() {
+        let values = new_null_array(child.data_type(), len);
+        Arc::new(StructArray::new(
+            Fields::from(vec![child.clone()]),
+            vec![values],
+            None,
+        ))
+    } else {
+        Arc::new(StructArray::new(children.clone(), vec![], None))
+    }
 }
 
 fn variant_contains_typed_field(array: &VariantArray, path: &str) -> bool {
@@ -283,4 +337,85 @@ fn variant_contains_typed_field(array: &VariantArray, path: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+    use crate::optimizers::{
+        VARIANT_MAPPING_METADATA_KEY, VariantField, enrich_variant_field_type,
+    };
+    use arrow::array::{ArrayRef, StringArray, StructArray};
+    use parquet::variant::{VariantType, json_to_variant};
+    use serde_json::json;
+
+    #[test]
+    fn shredding_adds_all_variant_paths() {
+        let values = StringArray::from(vec![
+            Some(r#"{"name":"Alice","age":30}"#),
+            Some(r#"{"name":"Bob","age":27}"#),
+        ]);
+        let variant = json_to_variant(&(Arc::new(values) as ArrayRef)).expect("variant");
+
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            VARIANT_MAPPING_METADATA_KEY.to_string(),
+            serde_json::to_string(&vec![
+                json!({"path": "name", "type": "Utf8"}),
+                json!({"path": "age", "type": "Int64"}),
+            ])
+            .unwrap(),
+        );
+
+        let variant_fields = vec![
+            VariantField {
+                path: "name".to_string(),
+                data_type: Some(DataType::Utf8),
+            },
+            VariantField {
+                path: "age".to_string(),
+                data_type: Some(DataType::Int64),
+            },
+        ];
+
+        let base_field = Field::new("variant", variant.inner().data_type().clone(), true)
+            .with_extension_type(VariantType)
+            .with_metadata(metadata);
+        let enriched = enrich_variant_field_type(base_field.as_ref(), &variant_fields)
+            .with_metadata(base_field.metadata().clone());
+        let array: ArrayRef = ArrayRef::from(variant);
+
+        let shredded = maybe_shred_variant_array(&array, enriched.as_ref())
+            .expect("variant should be shredded");
+        let shredded_struct = shredded
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .expect("struct array");
+        let typed_value = shredded_struct
+            .column_by_name("typed_value")
+            .expect("typed_value column");
+        let typed_struct = typed_value
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .expect("typed struct");
+
+        let name_struct = typed_struct
+            .column_by_name("name")
+            .expect("name path")
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .expect("name struct");
+        let name_values = name_struct
+            .column_by_name("typed_value")
+            .expect("name typed value");
+        assert_eq!(name_values.data_type(), &DataType::Utf8);
+
+        let age_struct = typed_struct
+            .column_by_name("age")
+            .expect("age path")
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .expect("age struct");
+        let age_values = age_struct
+            .column_by_name("typed_value")
+            .expect("age typed value");
+        assert_eq!(age_values.data_type(), &DataType::Int64);
+    }
+}

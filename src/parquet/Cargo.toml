@@ -23,6 +23,8 @@ liquid-cache-storage = { workspace = true }
 fastrace = { workspace = true }
 async-trait = { workspace = true }
 parquet-variant-json = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 io-uring = "0.7.10"
