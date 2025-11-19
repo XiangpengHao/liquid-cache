@@ -799,15 +799,13 @@ impl CacheStorage {
                 if let Some(requests) = expression.and_then(|expr| expr.variant_requests())
                     && let Some(variant_hybrid) =
                         array.as_any().downcast_ref::<VariantStructHybridArray>()
-                {
-                    if !requests
+                    && !requests
                         .iter()
                         .all(|request| variant_hybrid.contains_path(request.path()))
                     {
                         let path = self.hybrid_disk_path(entry_id, array);
                         return self.read_disk_arrow_array(path, selection).await;
                     }
-                }
                 if let Some(selection) = selection {
                     match array.filter(selection) {
                         Ok(arr) => {
@@ -1143,9 +1141,9 @@ mod tests {
     };
     use arrow::datatypes::Date32Type;
     use arrow_schema::{DataType, Field, Fields};
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
     use std::fs;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     // Unified advice type for more concise testing
     #[derive(Debug)]
@@ -1177,8 +1175,7 @@ mod tests {
             Some(br#"{"m":1}"# as &[u8]),
             Some(br#"{"m":1}"# as &[u8]),
         ]));
-        let name_values =
-            Arc::new(StringArray::from(vec![Some("Alice"), Some("Bob")])) as ArrayRef;
+        let name_values = Arc::new(StringArray::from(vec![Some("Alice"), Some("Bob")])) as ArrayRef;
         let value_placeholder =
             Arc::new(BinaryViewArray::from(vec![None::<&[u8]>; len])) as ArrayRef;
         let name_struct = Arc::new(StructArray::new(

@@ -46,7 +46,7 @@ impl VariantStructHybridArray {
 
     fn build_root_struct(&self) -> StructArray {
         let metadata = Arc::new(BinaryViewArray::from_iter_values(
-            std::iter::repeat(b"" as &[u8]).take(self.len),
+            std::iter::repeat_n(b"" as &[u8], self.len),
         )) as ArrayRef;
         let value_placeholder =
             Arc::new(BinaryViewArray::from(vec![None::<&[u8]>; self.len])) as ArrayRef;
@@ -267,16 +267,11 @@ impl VariantTreeNode {
 }
 
 fn wrap_typed_value(len: usize, values: ArrayRef) -> ArrayRef {
-    let placeholder =
-        Arc::new(BinaryViewArray::from(vec![None::<&[u8]>; len])) as ArrayRef;
+    let placeholder = Arc::new(BinaryViewArray::from(vec![None::<&[u8]>; len])) as ArrayRef;
     Arc::new(StructArray::new(
         Fields::from(vec![
             Arc::new(Field::new("value", DataType::BinaryView, true)),
-            Arc::new(Field::new(
-                "typed_value",
-                values.data_type().clone(),
-                true,
-            )),
+            Arc::new(Field::new("typed_value", values.data_type().clone(), true)),
         ]),
         vec![placeholder, values],
         None,

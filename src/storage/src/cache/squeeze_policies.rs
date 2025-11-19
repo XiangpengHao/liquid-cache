@@ -86,8 +86,7 @@ impl SqueezePolicy for TranscodeSqueezeEvict {
             CachedData::MemoryArrow(array) => {
                 if let Some(requests) =
                     squeeze_hint.and_then(|expression| expression.variant_requests())
-                    && let Some((hybrid_array, bytes)) =
-                        try_variant_squeeze(&array, requests)
+                    && let Some((hybrid_array, bytes)) = try_variant_squeeze(&array, requests)
                 {
                     return (CacheEntry::memory_hybrid_liquid(hybrid_array), Some(bytes));
                 }
@@ -224,8 +223,7 @@ fn try_variant_squeeze(
 }
 
 fn split_variant_path(path: &str) -> Vec<String> {
-    path
-        .split('.')
+    path.split('.')
         .filter(|segment| !segment.is_empty())
         .map(|segment| segment.to_string())
         .collect()
@@ -681,8 +679,11 @@ mod tests {
         let variant_arr = enriched_variant_array("name", DataType::Utf8);
         let hint = CacheExpression::variant_get("age", DataType::Int64);
 
-        let (new_batch, bytes) =
-            policy.squeeze(CacheEntry::memory_arrow(variant_arr.clone()), &states, Some(&hint));
+        let (new_batch, bytes) = policy.squeeze(
+            CacheEntry::memory_arrow(variant_arr.clone()),
+            &states,
+            Some(&hint),
+        );
 
         match (new_batch.into_data(), bytes) {
             (CachedData::DiskArrow(dt), Some(b)) => {

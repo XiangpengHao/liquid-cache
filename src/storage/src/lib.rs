@@ -4,9 +4,9 @@
 mod byte_cache;
 pub mod cache;
 pub mod liquid_array;
-pub mod variant_utils;
 mod sync;
 mod utils;
+pub mod variant_utils;
 
 pub use byte_cache::ByteCache;
 pub use cache::cache_policies;
