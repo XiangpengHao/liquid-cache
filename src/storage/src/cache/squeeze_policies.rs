@@ -3,17 +3,16 @@
 use std::sync::Arc;
 
 use arrow::array::{Array, ArrayRef, StructArray};
-use arrow_schema::DataType;
 use bytes::Bytes;
 use parquet_variant_compute::VariantArray;
 
 use crate::cache::{
-    CacheExpression, LiquidCompressorStates,
+    CacheExpression, LiquidCompressorStates, VariantRequest,
     cached_batch::{CacheEntry, CachedData},
     transcode_liquid_inner,
     utils::arrow_to_bytes,
 };
-use crate::liquid_array::{HybridBacking, LiquidHybridArrayRef, VariantExtractedArray};
+use crate::liquid_array::{HybridBacking, LiquidHybridArrayRef, VariantStructHybridArray};
 
 /// What to do when we need to squeeze an entry?
 pub trait SqueezePolicy: std::fmt::Debug + Send + Sync {
@@ -85,9 +84,9 @@ impl SqueezePolicy for TranscodeSqueezeEvict {
 
         match data {
             CachedData::MemoryArrow(array) => {
-                if let Some(CacheExpression::VariantGet { path, .. }) = squeeze_hint
-                    && let Some((hybrid_array, bytes)) =
-                        try_variant_squeeze(&array, path.as_ref(), compressor)
+                if let Some(requests) =
+                    squeeze_hint.and_then(|expression| expression.variant_requests())
+                    && let Some((hybrid_array, bytes)) = try_variant_squeeze(&array, requests)
                 {
                     return (CacheEntry::memory_hybrid_liquid(hybrid_array), Some(bytes));
                 }
@@ -179,8 +178,7 @@ impl SqueezePolicy for TranscodeEvict {
 
 fn try_variant_squeeze(
     array: &ArrayRef,
-    path: &str,
-    compressor: &LiquidCompressorStates,
+    requests: &[VariantRequest],
 ) -> Option<(LiquidHybridArrayRef, Bytes)> {
     let struct_array = array.as_any().downcast_ref::<StructArray>()?;
     let variant_array = VariantArray::try_new(struct_array).ok()?;
@@ -188,52 +186,67 @@ fn try_variant_squeeze(
         return None;
     }
 
-    let metadata = Arc::new(variant_array.metadata_field().clone());
-    let nulls = variant_array.inner().nulls().cloned();
-    let owned_path = path.trim().to_string();
-    if owned_path.is_empty() {
+    if requests.is_empty() {
         return None;
     }
 
     let typed_root = variant_array.typed_value_field()?;
     let typed_root = typed_root.as_any().downcast_ref::<StructArray>()?;
-    let path_values = typed_root.column_by_name(owned_path.as_str())?;
-    let path_struct = path_values.as_any().downcast_ref::<StructArray>()?;
-    let typed_values = path_struct.column_by_name("typed_value")?.clone();
-    if typed_values.len() != array.len() {
-        return None;
+
+    let mut collected = Vec::new();
+    for request in requests {
+        let path = request.path().trim();
+        if path.is_empty() {
+            continue;
+        }
+        let Some(path_struct) = extract_typed_values_for_path(typed_root, path) else {
+            continue;
+        };
+        let path_struct = path_struct.as_any().downcast_ref::<StructArray>()?;
+        let Some(typed_values) = path_struct.column_by_name("typed_value") else {
+            continue;
+        };
+        if typed_values.len() != array.len() {
+            continue;
+        }
+        collected.push((Arc::<str>::from(path.to_string()), typed_values.clone()));
     }
-    if !is_supported_leaf_type(typed_values.data_type()) {
+
+    if collected.is_empty() {
         return None;
     }
 
-    let liquid_values = match transcode_liquid_inner(&typed_values, compressor) {
-        Ok(liquid) => liquid,
-        Err(_) => return None,
-    };
+    let nulls = variant_array.inner().nulls().cloned();
     let bytes = arrow_to_bytes(array).ok()?;
-    let hybrid = VariantExtractedArray::new(
-        owned_path,
-        liquid_values,
-        metadata,
-        nulls,
-        array.data_type().clone(),
-    );
-
+    let hybrid = VariantStructHybridArray::new(collected, nulls, array.data_type().clone());
     Some((Arc::new(hybrid) as LiquidHybridArrayRef, bytes))
 }
 
-fn is_supported_leaf_type(data_type: &DataType) -> bool {
-    matches!(
-        data_type,
-        DataType::Int64
-            | DataType::Float64
-            | DataType::Boolean
-            | DataType::Utf8
-            | DataType::Binary
-            | DataType::Date32
-            | DataType::Timestamp(_, _)
-    )
+fn split_variant_path(path: &str) -> Vec<String> {
+    path.split('.')
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| segment.to_string())
+        .collect()
+}
+
+fn extract_typed_values_for_path(typed_root: &StructArray, path: &str) -> Option<ArrayRef> {
+    let segments = split_variant_path(path);
+    if segments.is_empty() {
+        return None;
+    }
+
+    let mut cursor = typed_root;
+    for (idx, segment) in segments.iter().enumerate() {
+        let field = cursor.column_by_name(segment)?;
+        let struct_field = field.as_any().downcast_ref::<StructArray>()?;
+        if idx == segments.len() - 1 {
+            return Some(field.clone());
+        }
+        let typed_value = struct_field.column_by_name("typed_value")?;
+        cursor = typed_value.as_any().downcast_ref::<StructArray>()?;
+    }
+
+    None
 }
 
 #[cfg(test)]
@@ -241,13 +254,71 @@ mod tests {
     use super::*;
     use crate::cache::CacheExpression;
     use crate::cache::cached_batch::CacheEntry;
-    use crate::liquid_array::HybridBacking;
-    use arrow::array::{ArrayRef, Int32Array, StringArray, StructArray};
+    use crate::liquid_array::{HybridBacking, LiquidHybridArray, VariantStructHybridArray};
+    use arrow::array::{Array, ArrayRef, BinaryViewArray, Int32Array, StringArray, StructArray};
     use arrow_schema::Fields;
     use arrow_schema::{DataType, Field};
     use parquet::variant::VariantPath;
     use parquet_variant_compute::{GetOptions, json_to_variant, variant_get};
+    use std::collections::BTreeMap;
     use std::sync::Arc;
+
+    #[derive(Default)]
+    struct VariantTestTree {
+        leaf: Option<ArrayRef>,
+        children: BTreeMap<String, VariantTestTree>,
+    }
+
+    impl VariantTestTree {
+        fn insert(&mut self, segments: &[String], values: ArrayRef) {
+            if segments.is_empty() {
+                self.leaf = Some(values);
+                return;
+            }
+            let (head, tail) = segments.split_first().unwrap();
+            self.children
+                .entry(head.clone())
+                .or_default()
+                .insert(tail, values);
+        }
+
+        fn into_typed_value_array(self) -> ArrayRef {
+            if let Some(values) = self.leaf {
+                return values;
+            }
+            let mut fields = Vec::with_capacity(self.children.len());
+            let mut arrays = Vec::with_capacity(self.children.len());
+            for (name, child) in self.children {
+                let field_array = child.into_struct_array();
+                fields.push(Arc::new(Field::new(
+                    name.as_str(),
+                    field_array.data_type().clone(),
+                    false,
+                )));
+                arrays.push(field_array);
+            }
+            Arc::new(StructArray::new(Fields::from(fields), arrays, None)) as ArrayRef
+        }
+
+        fn into_struct_array(self) -> ArrayRef {
+            let typed_value = self.into_typed_value_array();
+            let len = typed_value.len();
+            let value_field = Arc::new(Field::new("value", DataType::BinaryView, true));
+            let typed_field = Arc::new(Field::new(
+                "typed_value",
+                typed_value.data_type().clone(),
+                true,
+            ));
+            Arc::new(StructArray::new(
+                Fields::from(vec![value_field, typed_field]),
+                vec![
+                    Arc::new(BinaryViewArray::from(vec![None::<&[u8]>; len])) as ArrayRef,
+                    typed_value,
+                ],
+                None,
+            )) as ArrayRef
+        }
+    }
 
     fn int_array(n: i32) -> ArrayRef {
         Arc::new(Int32Array::from_iter_values(0..n))
@@ -401,6 +472,10 @@ mod tests {
     }
 
     fn enriched_variant_array(path: &str, data_type: DataType) -> ArrayRef {
+        enriched_variant_array_with_paths(&[(path, data_type)])
+    }
+
+    fn enriched_variant_array_with_paths(entries: &[(&str, DataType)]) -> ArrayRef {
         let values: ArrayRef = Arc::new(StringArray::from(vec![
             Some(r#"{"name": "Alice", "age": 30}"#),
             Some(r#"{"name": "Bob", "age": 25}"#),
@@ -409,30 +484,42 @@ mod tests {
         let base_variant = json_to_variant(&values).unwrap();
         let base_arr: ArrayRef = Arc::new(base_variant.inner().clone());
 
-        let typed_values = variant_get(
-            &base_arr,
-            GetOptions::new_with_path(VariantPath::from(path))
-                .with_as_type(Some(Arc::new(Field::new("typed_value", data_type, true)))),
-        )
-        .unwrap();
+        let mut typed_trees: BTreeMap<String, VariantTestTree> = BTreeMap::new();
 
-        let leaf_struct = Arc::new(StructArray::new(
-            Fields::from(vec![Arc::new(Field::new(
-                "typed_value",
-                typed_values.data_type().clone(),
-                typed_values.null_count() > 0,
-            ))]),
-            vec![typed_values.clone()],
-            typed_values.nulls().cloned(),
-        ));
+        for (path, data_type) in entries.iter() {
+            let typed_values = variant_get(
+                &base_arr,
+                GetOptions::new_with_path(VariantPath::from(*path)).with_as_type(Some(Arc::new(
+                    Field::new("typed_value", data_type.clone(), true),
+                ))),
+            )
+            .unwrap();
+            let segments = split_variant_path(path);
+            if segments.is_empty() {
+                continue;
+            }
+            let head = segments[0].clone();
+            typed_trees
+                .entry(head)
+                .or_default()
+                .insert(&segments[1..], typed_values.clone());
+        }
+
+        let mut typed_fields: Vec<Arc<Field>> = Vec::new();
+        let mut typed_columns: Vec<ArrayRef> = Vec::new();
+        for (name, tree) in typed_trees {
+            let array = tree.into_struct_array();
+            typed_fields.push(Arc::new(Field::new(
+                name.as_str(),
+                array.data_type().clone(),
+                true,
+            )));
+            typed_columns.push(array);
+        }
 
         let typed_struct = Arc::new(StructArray::new(
-            Fields::from(vec![Arc::new(Field::new(
-                path,
-                leaf_struct.data_type().clone(),
-                true,
-            ))]),
-            vec![leaf_struct as ArrayRef],
+            Fields::from(typed_fields),
+            typed_columns,
             base_variant.inner().nulls().cloned(),
         ));
 
@@ -462,17 +549,33 @@ mod tests {
         )) as ArrayRef
     }
 
-    fn assert_variant_hybrid(hybrid: &LiquidHybridArrayRef, expected_field: &str, bytes: &Bytes) {
-        use crate::liquid_array::VariantExtractedArray;
+    fn assert_variant_hybrid(hybrid: &LiquidHybridArrayRef, expected_path: &str, bytes: &Bytes) {
         assert!(!bytes.is_empty());
         assert_eq!(hybrid.disk_backing(), HybridBacking::Arrow);
-        assert_eq!(
-            hybrid
-                .as_any()
-                .downcast_ref::<VariantExtractedArray>()
-                .unwrap()
-                .field(),
-            expected_field
+        let struct_hybrid = hybrid
+            .as_any()
+            .downcast_ref::<VariantStructHybridArray>()
+            .expect("hybrid variant struct");
+        let arrow_array = struct_hybrid
+            .to_arrow_array()
+            .expect("reconstruct arrow struct");
+        let struct_array = arrow_array
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .expect("variant struct");
+        let value_column = struct_array
+            .column_by_name("value")
+            .expect("value column present");
+        assert_eq!(value_column.len(), value_column.null_count());
+        let typed_struct = struct_array
+            .column_by_name("typed_value")
+            .expect("typed_value column")
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .expect("typed struct");
+        assert!(
+            extract_typed_values_for_path(typed_struct, expected_path).is_some(),
+            "typed path {expected_path} missing from squeezed variant"
         );
     }
 
@@ -513,6 +616,47 @@ mod tests {
     }
 
     #[test]
+    fn test_variant_squeeze_with_multiple_paths_preserves_all_fields() {
+        let policy = TranscodeSqueezeEvict;
+        let states = LiquidCompressorStates::new();
+        let variant_arr = enriched_variant_array_with_paths(&[
+            ("name", DataType::Utf8),
+            ("age", DataType::Int64),
+        ]);
+        let hint = CacheExpression::variant_get("name", DataType::Utf8);
+
+        let (new_batch, bytes) =
+            policy.squeeze(CacheEntry::memory_arrow(variant_arr), &states, Some(&hint));
+
+        match (new_batch.into_data(), bytes) {
+            (CachedData::MemoryHybridLiquid(hybrid), Some(b)) => {
+                assert!(!b.is_empty());
+                let struct_hybrid = hybrid
+                    .as_any()
+                    .downcast_ref::<VariantStructHybridArray>()
+                    .expect("multi-field hybrid array");
+                let arrow_array = struct_hybrid
+                    .to_arrow_array()
+                    .expect("arrow reconstruction");
+                let struct_array = arrow_array
+                    .as_any()
+                    .downcast_ref::<StructArray>()
+                    .expect("variant struct");
+                let typed_value = struct_array
+                    .column_by_name("typed_value")
+                    .expect("typed value column");
+                let typed_struct = typed_value
+                    .as_any()
+                    .downcast_ref::<StructArray>()
+                    .expect("typed struct");
+                assert!(typed_struct.column_by_name("name").is_some());
+                assert!(typed_struct.column_by_name("age").is_none());
+            }
+            other => panic!("expected MemoryHybridLiquid with bytes, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn test_variant_squeeze_without_hint() {
         let policy = TranscodeSqueezeEvict;
         let states = LiquidCompressorStates::new();
@@ -525,6 +669,28 @@ mod tests {
             (CachedData::DiskArrow(_), Some(b)) => assert!(!b.is_empty()),
             (CachedData::MemoryLiquid(_), None) => {}
             other => panic!("expected DiskArrow with bytes or MemoryLiquid, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_variant_squeeze_skips_when_path_missing() {
+        let policy = TranscodeSqueezeEvict;
+        let states = LiquidCompressorStates::new();
+        let variant_arr = enriched_variant_array("name", DataType::Utf8);
+        let hint = CacheExpression::variant_get("age", DataType::Int64);
+
+        let (new_batch, bytes) = policy.squeeze(
+            CacheEntry::memory_arrow(variant_arr.clone()),
+            &states,
+            Some(&hint),
+        );
+
+        match (new_batch.into_data(), bytes) {
+            (CachedData::DiskArrow(dt), Some(b)) => {
+                assert_eq!(dt, variant_arr.data_type().clone());
+                assert!(!b.is_empty());
+            }
+            other => panic!("expected DiskArrow fallback when path missing, got {other:?}"),
         }
     }
 }

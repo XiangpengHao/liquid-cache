@@ -318,3 +318,101 @@ async fn test_variant_get_fails_when_value_field_not_nullable() {
 
     insta::assert_snapshot!(pretty_format_batches(&batches).unwrap());
 }
+
+fn write_large_variant_parquet_file(dir: &Path, num_rows: usize) -> PathBuf {
+    let file_path = dir.join("large_variant_rows.parquet");
+
+    let values: Vec<Option<String>> = (0..num_rows)
+        .map(|i| {
+            if i % 3 == 0 {
+                Some(format!(
+                    r#"{{"name": "Person_{}", "age": {}, "tags": ["a", "b"], "details": {{"info": "info_{}"}}}}"#,
+                    i,
+                    20 + (i % 50),
+                    i
+                ))
+            } else if i % 3 == 1 {
+                Some(format!(
+                    r#"{{"name": "Person_{}", "city": "City_{}", "active": true, "details": {{"info": "info_{}", "extra": "extra_{}"}}}}"#,
+                    i,
+                    i % 100,
+                    i,
+                    i
+                ))
+            } else {
+                Some(format!(r#"{{"name": "Person_{}", "score": {}.5}}"#, i, i))
+            }
+        })
+        .collect();
+
+    let input_array: ArrayRef =
+        Arc::new(StringArray::from_iter(values.iter().map(|x| x.as_deref())));
+    let variant = json_to_variant(&input_array).expect("variant conversion");
+
+    let schema = Arc::new(Schema::new(vec![variant.field("data")]));
+    let batch = RecordBatch::try_new(schema, vec![ArrayRef::from(variant)]).expect("variant batch");
+
+    let file = File::create(&file_path).expect("create large variant parquet file");
+    let mut writer =
+        ArrowWriter::try_new(file, batch.schema(), None).expect("create variant writer");
+    writer.write(&batch).expect("write variant batch");
+    writer.close().expect("close variant writer");
+
+    file_path
+}
+
+#[tokio::test]
+async fn test_large_variant_squeeze() {
+    let cache_dir = TempDir::new().unwrap();
+    let parquet_dir = TempDir::new().unwrap();
+    let num_rows = 10_000;
+    let parquet_path = write_large_variant_parquet_file(parquet_dir.path(), num_rows);
+    let parquet_path_str = parquet_path.to_str().unwrap();
+
+    let (ctx, _cache) = LiquidCacheLocalBuilder::new()
+        .with_cache_dir(cache_dir.path().to_path_buf())
+        .with_max_cache_bytes(1024 * 1024)
+        .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+        .build(SessionConfig::new())
+        .unwrap();
+
+    ctx.register_parquet(
+        "large_variants",
+        parquet_path_str,
+        ParquetReadOptions::default(),
+    )
+    .await
+    .unwrap();
+
+    // let batches = ctx
+    //     .sql(
+    //         "SELECT Count(Distinct(variant_get(data, 'name', 'Utf8'))) FROM large_variants LIMIT 5",
+    //     )
+    //     .await
+    //     .unwrap()
+    //     .collect()
+    //     .await
+    //     .expect("should query variant field");
+    // let count = batches[0]
+    //     .column(0)
+    //     .as_any()
+    //     .downcast_ref::<arrow::array::Int64Array>()
+    //     .unwrap()
+    //     .value(0);
+    // assert_eq!(count, num_rows as i64);
+
+    let batches = ctx
+        .sql("SELECT Count(Distinct(variant_get(data, 'details.info', 'Utf8'))) FROM large_variants LIMIT 5")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .expect("should query variant field");
+    let count = batches[0]
+        .column(0)
+        .as_any()
+        .downcast_ref::<arrow::array::Int64Array>()
+        .unwrap()
+        .value(0);
+    assert_eq!(count, 6667_i64);
+}

@@ -11,6 +11,33 @@ use arrow_schema::DataType;
 
 use crate::liquid_array::Date32Field;
 
+/// A typed variant path requested by a query.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct VariantRequest {
+    path: Arc<str>,
+    data_type: Arc<DataType>,
+}
+
+impl VariantRequest {
+    /// Create a new typed path request.
+    pub fn new(path: impl Into<Arc<str>>, data_type: DataType) -> Self {
+        Self {
+            path: path.into(),
+            data_type: Arc::new(data_type),
+        }
+    }
+
+    /// Path string for this request.
+    pub fn path(&self) -> &str {
+        self.path.as_ref()
+    }
+
+    /// Requested Arrow data type for this path.
+    pub fn data_type(&self) -> &DataType {
+        self.data_type.as_ref()
+    }
+}
+
 /// Experimental expression descriptor for cache lookups.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CacheExpression {
@@ -21,10 +48,8 @@ pub enum CacheExpression {
     },
     /// Extract a field from a variant column via `variant_get`.
     VariantGet {
-        /// The dotted path requested by the query.
-        path: Arc<str>,
-        /// The desired Arrow data type for the typed value.
-        data_type: Arc<DataType>,
+        /// The set of dotted paths requested by the query.
+        requests: Arc<[VariantRequest]>,
     },
 }
 
@@ -37,8 +62,26 @@ impl CacheExpression {
     /// Build a variant-get expression for the provided dotted path.
     pub fn variant_get(path: impl Into<Arc<str>>, data_type: DataType) -> Self {
         Self::VariantGet {
-            path: path.into(),
-            data_type: Arc::new(data_type),
+            requests: Arc::from(vec![VariantRequest::new(path, data_type)].into_boxed_slice()),
+        }
+    }
+
+    /// Build a variant-get expression covering multiple paths.
+    pub fn variant_get_many<I, S>(requests: I) -> Self
+    where
+        I: IntoIterator<Item = (S, DataType)>,
+        S: Into<Arc<str>>,
+    {
+        let requests: Vec<VariantRequest> = requests
+            .into_iter()
+            .map(|(path, data_type)| VariantRequest::new(path.into(), data_type))
+            .collect();
+        assert!(
+            !requests.is_empty(),
+            "variant_get_many requires at least one path"
+        );
+        Self::VariantGet {
+            requests: Arc::from(requests.into_boxed_slice()),
         }
     }
 
@@ -67,7 +110,7 @@ impl CacheExpression {
     /// Return the associated variant path when this is a variant-get expression.
     pub fn variant_path(&self) -> Option<&str> {
         match self {
-            Self::VariantGet { path, .. } => Some(path.as_ref()),
+            Self::VariantGet { requests } => requests.first().map(|request| request.path()),
             Self::ExtractDate32 { .. } => None,
         }
     }
@@ -75,7 +118,15 @@ impl CacheExpression {
     /// Return the associated Arrow data type when this is a variant-get expression.
     pub fn variant_data_type(&self) -> Option<&DataType> {
         match self {
-            Self::VariantGet { data_type, .. } => Some(data_type.as_ref()),
+            Self::VariantGet { requests } => requests.first().map(|request| request.data_type()),
+            Self::ExtractDate32 { .. } => None,
+        }
+    }
+
+    /// Return all typed variant paths carried by this expression.
+    pub fn variant_requests(&self) -> Option<&[VariantRequest]> {
+        match self {
+            Self::VariantGet { requests } => Some(requests.as_ref()),
             Self::ExtractDate32 { .. } => None,
         }
     }

@@ -18,7 +18,7 @@ pub use core::{
     BlockingIoContext, CacheStorage, CacheStorageBuilder, DefaultIoContext, EvaluatePredicate, Get,
     Insert, IoContext,
 };
-pub use expressions::{CacheExpression, ColumnID, ExpressionRegistry};
+pub use expressions::{CacheExpression, ColumnID, ExpressionRegistry, VariantRequest};
 pub use stats::{CacheStats, RuntimeStats, RuntimeStatsSnapshot};
 pub use transcode::transcode_liquid_inner;
 pub use utils::{EntryID, LiquidCompressorStates};

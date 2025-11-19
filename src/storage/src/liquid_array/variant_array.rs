@@ -2,105 +2,111 @@ use std::sync::Arc;
 
 use arrow::array::{Array, ArrayRef, BinaryViewArray, StructArray};
 use arrow::buffer::NullBuffer;
-use arrow_schema::{DataType, Field, Fields};
+use arrow::error::ArrowError;
+use arrow::ipc::{reader::StreamReader, writer::StreamWriter};
+use arrow::record_batch::RecordBatch;
+use arrow_schema::{DataType, Field, Fields, Schema};
+use bytes::Bytes;
+use std::io::Cursor;
 
 use crate::liquid_array::{
-    HybridBacking, IoRange, LiquidArrayRef, LiquidDataType, LiquidHybridArray,
+    HybridBacking, IoRange, LiquidArray, LiquidArrayRef, LiquidDataType, LiquidHybridArray,
 };
+use ahash::AHashMap;
 
-/// Hybrid representation for a single top-level variant field.
+/// Hybrid representation for variant arrays that contain multiple typed fields.
 #[derive(Debug)]
-pub struct VariantExtractedArray {
-    field_name: Arc<str>,
-    values: LiquidArrayRef,
-    metadata: Arc<BinaryViewArray>,
+pub struct VariantStructHybridArray {
+    values: AHashMap<Arc<str>, ArrayRef>,
+    len: usize,
     nulls: Option<NullBuffer>,
     original_arrow_type: DataType,
 }
 
-impl VariantExtractedArray {
-    /// Build a hybrid array for the provided top-level variant field.
+impl VariantStructHybridArray {
+    /// Create a hybrid representation that keeps only the typed variant columns resident.
     pub fn new(
-        field_name: impl Into<Arc<str>>,
-        values: LiquidArrayRef,
-        metadata: Arc<BinaryViewArray>,
+        values: Vec<(Arc<str>, ArrayRef)>,
         nulls: Option<NullBuffer>,
         original_arrow_type: DataType,
     ) -> Self {
+        let len = values.first().map(|(_, array)| array.len()).unwrap_or(0);
+        let mut map = AHashMap::with_capacity(values.len());
+        for (path, array) in values {
+            debug_assert_eq!(array.len(), len, "variant paths must share length");
+            map.insert(path, array);
+        }
         Self {
-            field_name: field_name.into(),
-            values,
-            metadata,
+            values: map,
+            len,
             nulls,
             original_arrow_type,
         }
     }
 
-    /// Field name carried by this hybrid array.
-    pub fn field(&self) -> &str {
-        self.field_name.as_ref()
+    fn build_root_struct(&self) -> StructArray {
+        let metadata = Arc::new(BinaryViewArray::from_iter_values(std::iter::repeat_n(
+            b"" as &[u8],
+            self.len,
+        ))) as ArrayRef;
+        let value_placeholder =
+            Arc::new(BinaryViewArray::from(vec![None::<&[u8]>; self.len])) as ArrayRef;
+        let typed_struct = self.build_typed_struct();
+
+        let metadata_field = Arc::new(Field::new("metadata", DataType::BinaryView, false));
+        let value_field = Arc::new(Field::new("value", DataType::BinaryView, true));
+        let typed_field = Arc::new(Field::new(
+            "typed_value",
+            typed_struct.data_type().clone(),
+            true,
+        ));
+
+        StructArray::new(
+            Fields::from(vec![metadata_field, value_field, typed_field]),
+            vec![metadata, value_placeholder, typed_struct as ArrayRef],
+            self.nulls.clone(),
+        )
+    }
+
+    fn build_typed_struct(&self) -> Arc<StructArray> {
+        let mut root = VariantTreeNode::new(self.len);
+        for (path, array) in &self.values {
+            let segments: Vec<&str> = path
+                .split('.')
+                .filter(|segment| !segment.is_empty())
+                .collect();
+            if segments.is_empty() {
+                continue;
+            }
+            root.insert(&segments, array.clone());
+        }
+        root.into_struct_array()
+    }
+
+    /// Returns true if the hybrid contains the provided variant path.
+    pub fn contains_path(&self, path: &str) -> bool {
+        self.values.contains_key(path)
     }
 }
 
-impl LiquidHybridArray for VariantExtractedArray {
+impl LiquidHybridArray for VariantStructHybridArray {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
 
     fn get_array_memory_size(&self) -> usize {
-        self.metadata.get_array_memory_size() + self.values.get_array_memory_size()
+        self.values
+            .values()
+            .map(|array| array.get_array_memory_size())
+            .sum()
     }
 
     fn len(&self) -> usize {
-        self.metadata.len()
+        self.len
     }
 
     fn to_arrow_array(&self) -> Result<ArrayRef, IoRange> {
-        let arrow_values = self.values.to_arrow_array();
-        let leaf_field = Arc::new(Field::new(
-            "typed_value",
-            arrow_values.data_type().clone(),
-            arrow_values.null_count() > 0,
-        ));
-        let leaf_struct = Arc::new(StructArray::new(
-            Fields::from(vec![leaf_field]),
-            vec![arrow_values.clone()],
-            arrow_values.nulls().cloned(),
-        ));
-
-        let named_field = Arc::new(Field::new(
-            self.field_name.as_ref(),
-            leaf_struct.data_type().clone(),
-            true,
-        ));
-        let typed_struct = Arc::new(StructArray::new(
-            Fields::from(vec![named_field]),
-            vec![leaf_struct as ArrayRef],
-            self.nulls.clone(),
-        ));
-
-        let value_placeholder =
-            Arc::new(BinaryViewArray::from(vec![None::<&[u8]>; self.len()])) as ArrayRef;
-
-        let root_fields = Fields::from(vec![
-            Arc::new(Field::new("metadata", DataType::BinaryView, false)),
-            Arc::new(Field::new("value", DataType::BinaryView, true)),
-            Arc::new(Field::new(
-                "typed_value",
-                typed_struct.data_type().clone(),
-                true,
-            )),
-        ]);
-
-        Ok(Arc::new(StructArray::new(
-            root_fields,
-            vec![
-                self.metadata.clone() as ArrayRef,
-                value_placeholder,
-                typed_struct,
-            ],
-            self.nulls.clone(),
-        )))
+        Ok(Arc::new(self.build_root_struct()) as ArrayRef)
     }
 
     fn data_type(&self) -> LiquidDataType {
@@ -112,25 +118,23 @@ impl LiquidHybridArray for VariantExtractedArray {
     }
 
     fn to_bytes(&self) -> Result<Vec<u8>, IoRange> {
-        Err(IoRange { range: 0..0 })
+        serialize_variant_array(&(Arc::new(self.build_root_struct()) as ArrayRef))
+            .map(|bytes| bytes.to_vec())
+            .map_err(|_| IoRange { range: 0..0 })
     }
 
-    fn filter(&self, selection: &arrow::buffer::BooleanBuffer) -> Result<ArrayRef, IoRange> {
-        let array = self.to_arrow_array()?;
-        let selection = arrow::array::BooleanArray::new(selection.clone(), None);
-        Ok(arrow::compute::filter(&array, &selection).unwrap())
-    }
-
-    fn try_eval_predicate(
-        &self,
-        _predicate: &Arc<dyn datafusion::physical_plan::PhysicalExpr>,
-        _filter: &arrow::buffer::BooleanBuffer,
-    ) -> Result<Option<arrow::array::BooleanArray>, IoRange> {
-        Ok(None)
-    }
-
-    fn soak(&self, _data: bytes::Bytes) -> LiquidArrayRef {
-        Arc::clone(&self.values)
+    fn soak(&self, data: Bytes) -> LiquidArrayRef {
+        let mut reader =
+            StreamReader::try_new(Cursor::new(data), None).expect("invalid variant IPC stream");
+        let batch = reader
+            .next()
+            .expect("variant IPC batch")
+            .expect("read variant batch");
+        let column = batch.column(0).clone();
+        Arc::new(VariantStructLiquidArray::new(
+            column,
+            self.original_arrow_type.clone(),
+        )) as LiquidArrayRef
     }
 
     fn to_liquid(&self) -> IoRange {
@@ -140,4 +144,137 @@ impl LiquidHybridArray for VariantExtractedArray {
     fn disk_backing(&self) -> HybridBacking {
         HybridBacking::Arrow
     }
+}
+
+#[derive(Debug)]
+struct VariantStructLiquidArray {
+    array: ArrayRef,
+    original_arrow_type: DataType,
+}
+
+impl VariantStructLiquidArray {
+    fn new(array: ArrayRef, original_arrow_type: DataType) -> Self {
+        Self {
+            array,
+            original_arrow_type,
+        }
+    }
+}
+
+impl LiquidArray for VariantStructLiquidArray {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn get_array_memory_size(&self) -> usize {
+        self.array.get_array_memory_size()
+    }
+
+    fn len(&self) -> usize {
+        self.array.len()
+    }
+
+    fn to_arrow_array(&self) -> ArrayRef {
+        self.array.clone()
+    }
+
+    fn data_type(&self) -> LiquidDataType {
+        LiquidDataType::ByteArray
+    }
+
+    fn original_arrow_data_type(&self) -> DataType {
+        self.original_arrow_type.clone()
+    }
+
+    fn to_bytes(&self) -> Vec<u8> {
+        serialize_variant_array(&self.array)
+            .expect("failed to serialize variant struct")
+            .to_vec()
+    }
+}
+
+fn serialize_variant_array(array: &ArrayRef) -> Result<Bytes, ArrowError> {
+    let field = Arc::new(Field::new(
+        "column",
+        array.data_type().clone(),
+        array.null_count() > 0,
+    ));
+    let schema = Arc::new(Schema::new(vec![field]));
+    let batch = RecordBatch::try_new(schema.clone(), vec![array.clone()])?;
+    let mut buffer = Vec::new();
+    {
+        let mut writer = StreamWriter::try_new(&mut buffer, &schema)?;
+        writer.write(&batch)?;
+        writer.finish()?;
+    }
+    Ok(Bytes::from(buffer))
+}
+
+#[derive(Default)]
+struct VariantTreeNode {
+    len: usize,
+    leaf: Option<ArrayRef>,
+    children: AHashMap<String, VariantTreeNode>,
+}
+
+impl VariantTreeNode {
+    fn new(len: usize) -> Self {
+        Self {
+            len,
+            leaf: None,
+            children: AHashMap::new(),
+        }
+    }
+
+    fn insert(&mut self, segments: &[&str], values: ArrayRef) {
+        if segments.is_empty() {
+            self.leaf = Some(values);
+            return;
+        }
+        let (head, tail) = segments.split_first().unwrap();
+        self.children
+            .entry(head.to_string())
+            .or_insert_with(|| VariantTreeNode::new(self.len))
+            .insert(tail, values);
+    }
+
+    fn into_struct_array(self) -> Arc<StructArray> {
+        let mut fields = Vec::with_capacity(self.children.len());
+        let mut arrays = Vec::with_capacity(self.children.len());
+        let mut entries: Vec<_> = self.children.into_iter().collect();
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        for (name, child) in entries {
+            let field_array = child.into_field_array();
+            fields.push(Arc::new(Field::new(
+                name.as_str(),
+                field_array.data_type().clone(),
+                false,
+            )));
+            arrays.push(field_array);
+        }
+        Arc::new(StructArray::new(Fields::from(fields), arrays, None))
+    }
+
+    fn into_field_array(self) -> ArrayRef {
+        let len = self.len;
+        if self.children.is_empty() {
+            let values = self.leaf.expect("variant leaf value present");
+            wrap_typed_value(len, values)
+        } else {
+            let typed_struct = self.into_struct_array() as ArrayRef;
+            wrap_typed_value(len, typed_struct)
+        }
+    }
+}
+
+fn wrap_typed_value(len: usize, values: ArrayRef) -> ArrayRef {
+    let placeholder = Arc::new(BinaryViewArray::from(vec![None::<&[u8]>; len])) as ArrayRef;
+    Arc::new(StructArray::new(
+        Fields::from(vec![
+            Arc::new(Field::new("value", DataType::BinaryView, true)),
+            Arc::new(Field::new("typed_value", values.data_type().clone(), true)),
+        ]),
+        vec![placeholder, values],
+        None,
+    )) as ArrayRef
 }

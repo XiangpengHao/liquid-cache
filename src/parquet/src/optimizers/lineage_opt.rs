@@ -2,6 +2,8 @@
 //! It then attaches the metadata to schema adapter, which is then passed to the physical plan.
 //! The physical optimizer will move the metadata to the fields of the schema.
 
+use std::cmp::Ordering;
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -53,18 +55,59 @@ pub(crate) struct DateExtraction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct VariantExtraction {
     pub(crate) column: Column,
+    pub(crate) fields: Vec<VariantField>,
+}
+
+impl PartialOrd for VariantExtraction {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for VariantExtraction {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.column
+            .flat_name()
+            .cmp(&other.column.flat_name())
+            .then_with(|| self.fields.cmp(&other.fields))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct VariantField {
     pub(crate) path: String,
     pub(crate) data_type: Option<DataType>,
+}
+
+impl PartialOrd for VariantField {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for VariantField {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.path.cmp(&other.path).then_with(|| {
+            let self_ty = self
+                .data_type
+                .as_ref()
+                .map(|dt| dt.to_string())
+                .unwrap_or_default();
+            let other_ty = other
+                .data_type
+                .as_ref()
+                .map(|dt| dt.to_string())
+                .unwrap_or_default();
+            self_ty.cmp(&other_ty)
+        })
+    }
 }
 
 /// Annotation that should be attached to a column in the file schema.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ColumnAnnotation {
     DatePart(HashSet<SupportedIntervalUnit>),
-    VariantPath {
-        path: String,
-        data_type: Option<DataType>,
-    },
+    VariantPaths(Vec<VariantField>),
 }
 
 pub(crate) fn serialize_date_part(units: &HashSet<SupportedIntervalUnit>) -> String {
@@ -124,12 +167,7 @@ impl OptimizerRule for LineageOptimizer {
         date_findings.sort_by(|a, b| a.column.flat_name().cmp(&b.column.flat_name()));
 
         let mut variant_findings = table_usage.find_variant_gets();
-        variant_findings.sort_by(|a, b| {
-            a.column
-                .flat_name()
-                .cmp(&b.column.flat_name())
-                .then(a.path.cmp(&b.path))
-        });
+        variant_findings.sort();
 
         let annotations = build_annotation_map(&date_findings, &variant_findings);
         let transformed_plan = annotate_plan_with_extractions(plan, &annotations)?;
@@ -564,23 +602,50 @@ impl TableColumnUsage {
     fn find_variant_gets(&self) -> Vec<VariantExtraction> {
         let mut gets = Vec::new();
         for (key, stats) in self.usage.iter() {
-            let first = stats.usages.first().and_then(|usage| match usage.first() {
-                Some(Operation::VariantGet { path, data_type }) => {
-                    Some((path.clone(), data_type.clone()))
+            if stats.usages.is_empty() {
+                continue;
+            }
+
+            let mut field_map: HashMap<String, VariantField> = HashMap::new();
+            let mut valid = true;
+            for usage in &stats.usages {
+                match usage.first() {
+                    Some(Operation::VariantGet { path, data_type }) => {
+                        match field_map.entry(path.clone()) {
+                            Entry::Vacant(entry) => {
+                                entry.insert(VariantField {
+                                    path: path.clone(),
+                                    data_type: data_type.clone(),
+                                });
+                            }
+                            Entry::Occupied(entry) => {
+                                let current = entry.into_mut();
+                                let conflict = match (&current.data_type, data_type) {
+                                    (Some(existing), Some(new_ty)) => existing != new_ty,
+                                    (Some(_), None) | (None, Some(_)) => true,
+                                    (None, None) => false,
+                                };
+                                if conflict {
+                                    valid = false;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        valid = false;
+                        break;
+                    }
                 }
-                _ => None,
-            });
-            if let Some((first_path, first_type)) = first {
-                let all_match = stats.usages.iter().all(|usage| {
-                    matches!(usage.first(), Some(Operation::VariantGet { path, data_type }) if path == &first_path && data_type == &first_type)
+            }
+
+            if valid && !field_map.is_empty() {
+                let mut fields: Vec<VariantField> = field_map.into_values().collect();
+                fields.sort();
+                gets.push(VariantExtraction {
+                    column: key.to_column(),
+                    fields,
                 });
-                if all_match {
-                    gets.push(VariantExtraction {
-                        column: key.to_column(),
-                        path: first_path.clone(),
-                        data_type: first_type.clone(),
-                    });
-                }
             }
         }
         gets
@@ -601,10 +666,7 @@ fn build_annotation_map(
     for extraction in variant_findings {
         annotations.insert(
             ColumnKey::from_column(&extraction.column),
-            ColumnAnnotation::VariantPath {
-                path: extraction.path.clone(),
-                data_type: extraction.data_type.clone(),
-            },
+            ColumnAnnotation::VariantPaths(extraction.fields.clone()),
         );
     }
     annotations
@@ -914,7 +976,6 @@ mod tests {
 
     use crate::optimizers::{
         DATE_MAPPING_METADATA_KEY, LocalModeOptimizer, VARIANT_MAPPING_METADATA_KEY,
-        VARIANT_MAPPING_TYPE_METADATA_KEY,
     };
     use crate::{LiquidCache, VariantGetUdf, VariantToJsonUdf};
     use liquid_cache_common::IoMode;
@@ -932,6 +993,7 @@ mod tests {
     use liquid_cache_storage::cache_policies::LiquidPolicy;
     use parquet::arrow::ArrowWriter;
     use parquet::variant::{VariantArray, json_to_variant};
+    use serde::Deserialize;
     use tempfile::TempDir;
 
     async fn create_test_ctx(
@@ -1030,6 +1092,29 @@ mod tests {
         })
         .unwrap();
         field_metadata_map
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct VariantMetadataTestEntry {
+        path: String,
+        #[serde(rename = "type")]
+        data_type: Option<String>,
+    }
+
+    fn parse_variant_metadata_entries(value: &str) -> Vec<VariantMetadataTestEntry> {
+        serde_json::from_str(value).unwrap_or_else(|_| {
+            vec![VariantMetadataTestEntry {
+                path: value.to_string(),
+                data_type: None,
+            }]
+        })
+    }
+
+    fn variant_paths_from_metadata(value: &str) -> Vec<String> {
+        parse_variant_metadata_entries(value)
+            .into_iter()
+            .map(|entry| entry.path)
+            .collect()
     }
 
     fn make_variant_array() -> VariantArray {
@@ -1236,43 +1321,47 @@ mod tests {
         let test_cases = vec![
             (
                 "SELECT variant_to_json(variant_get(data, 'name')) FROM variants_test",
-                Some("name"),
+                vec!["name"],
             ),
             (
                 "SELECT variant_get(data, 'name'), variant_get(data, 'name') AS name2 FROM variants_test",
-                Some("name"),
+                vec!["name"],
             ),
             (
                 "SELECT variant_to_json(variant_get(data, 'age')), variant_to_json(variant_get(data, 'age')) AS age2 FROM variants_test",
-                Some("age"),
+                vec!["age"],
             ),
             (
                 "SELECT variant_get(variants_test.data, 'name') as name1, variant_get(variants_test.data, 'name') as name2 FROM variants_test",
-                Some("name"),
+                vec!["name"],
             ),
             (
                 "SELECT COUNT(variant_get(data, 'age')), MAX(variant_get(data, 'age')) FROM variants_test",
-                Some("age"),
+                vec!["age"],
             ),
             (
                 "SELECT variant_get(data, 'name') FROM variants_test WHERE variant_get(data, 'name') IS NOT NULL",
-                Some("name"),
+                vec!["name"],
             ),
             (
                 "SELECT (SELECT MAX(variant_get(data, 'name')) FROM variants_test) AS max_name, (SELECT MIN(variant_get(data, 'name')) FROM variants_test) AS min_name",
-                Some("name"),
+                vec!["name"],
             ),
             (
                 "SELECT variant_get(data, 'name'), variant_get(data, 'date') FROM variants_test",
-                None,
+                vec!["name", "date"],
             ),
             (
                 "SELECT variant_get(variant_get(data, 'name'), 'age') FROM variants_test",
-                Some("name"),
+                vec!["name"],
+            ),
+            (
+                "SELECT variant_get(data, 'name', 'Utf8'), variant_get(data, 'name') FROM variants_test",
+                vec![],
             ),
         ];
 
-        for (sql, expected_path) in test_cases {
+        for (sql, expected_paths) in test_cases {
             let df = ctx.sql(sql).await.unwrap();
             let (state, plan) = df.into_parts();
             let optimized = state.optimize(&plan).unwrap();
@@ -1282,10 +1371,25 @@ mod tests {
                 VARIANT_MAPPING_METADATA_KEY,
             );
 
-            assert_eq!(
-                field_metadata_map.get("data").cloned(),
-                expected_path.map(|s| s.to_string()),
-            );
+            if expected_paths.is_empty() {
+                assert!(
+                    !field_metadata_map.contains_key("data"),
+                    "metadata should not be present for SQL: {}",
+                    sql
+                );
+            } else {
+                let mut actual = field_metadata_map
+                    .get("data")
+                    .map(|value| variant_paths_from_metadata(value))
+                    .unwrap_or_default();
+                actual.sort();
+                let mut expected_vec = expected_paths
+                    .into_iter()
+                    .map(|path| path.to_string())
+                    .collect::<Vec<_>>();
+                expected_vec.sort();
+                assert_eq!(actual, expected_vec, "SQL: {}", sql);
+            }
         }
     }
 
@@ -1322,12 +1426,59 @@ mod tests {
         let optimized = state.optimize(&plan).unwrap();
         let physical_plan = state.create_physical_plan(&optimized).await.unwrap();
 
-        let type_metadata = extract_field_metadata_from_physical_plan(
-            &physical_plan,
-            VARIANT_MAPPING_TYPE_METADATA_KEY,
-        );
+        let variant_metadata =
+            extract_field_metadata_from_physical_plan(&physical_plan, VARIANT_MAPPING_METADATA_KEY);
 
-        assert_eq!(type_metadata.get("data"), Some(&"Utf8".to_string()));
+        let entries = variant_metadata
+            .get("data")
+            .map(|value| parse_variant_metadata_entries(value))
+            .unwrap_or_default();
+        let entry = entries
+            .iter()
+            .find(|entry| entry.path == "name")
+            .expect("variant metadata entry for name");
+        assert_eq!(entry.data_type.as_deref(), Some("Utf8"));
+    }
+
+    #[tokio::test]
+    async fn variant_get_conflicting_types_disable_metadata() {
+        let temp_dir = TempDir::new().unwrap();
+        let table_a = temp_dir.path().join("table_a.parquet");
+        let table_b = temp_dir.path().join("table_b.parquet");
+
+        let optimizer = Arc::new(LineageOptimizer::new());
+        let ctx = create_test_ctx(
+            table_a.to_str().unwrap(),
+            table_b.to_str().unwrap(),
+            optimizer.clone(),
+        )
+        .await;
+
+        ctx.register_udf(ScalarUDF::new_from_impl(VariantGetUdf::default()));
+        ctx.register_udf(ScalarUDF::new_from_impl(VariantToJsonUdf::default()));
+
+        let variant_path = write_variant_parquet_file(temp_dir.path());
+        ctx.register_parquet(
+            "variants_test",
+            variant_path.to_str().unwrap(),
+            ParquetReadOptions::default().skip_metadata(false),
+        )
+        .await
+        .unwrap();
+
+        let sql = "SELECT variant_to_json(variant_get(data, 'name')) FROM variants_test WHERE variant_get(data, 'name', 'Utf8') = 'Bob'";
+        let df = ctx.sql(sql).await.unwrap();
+        let (state, plan) = df.into_parts();
+        let optimized = state.optimize(&plan).unwrap();
+        let physical_plan = state.create_physical_plan(&optimized).await.unwrap();
+
+        let variant_metadata =
+            extract_field_metadata_from_physical_plan(&physical_plan, VARIANT_MAPPING_METADATA_KEY);
+
+        assert!(
+            !variant_metadata.contains_key("data"),
+            "expected no variant metadata for conflicting types"
+        );
     }
 
     #[tokio::test]
@@ -1360,36 +1511,36 @@ mod tests {
             (
                 "SELECT EXTRACT(DAY FROM table_a.date) AS day, variant_get(variants_test.data, 'name') AS name FROM table_a CROSS JOIN variants_test",
                 vec![("date", "DAY")],
-                Some("name"),
+                vec!["name"],
             ),
             (
                 "SELECT EXTRACT(YEAR FROM table_a.date) AS year, EXTRACT(MONTH FROM table_a.date_copy) AS month, variant_get(variants_test.data, 'name') AS name, variant_get(variants_test.data, 'age') AS age FROM table_a CROSS JOIN variants_test",
                 vec![("date", "YEAR"), ("date_copy", "MONTH")],
-                None, // Different variant paths
+                vec!["age", "name"],
             ),
             (
                 "SELECT variant_get(variants_test.data, 'name') AS name FROM variants_test CROSS JOIN table_a WHERE EXTRACT(DAY FROM table_a.date) > 1",
                 vec![("date", "DAY")],
-                Some("name"),
+                vec!["name"],
             ),
             (
                 "SELECT EXTRACT(DAY FROM table_a.date) AS day FROM table_a CROSS JOIN variants_test WHERE variant_get(variants_test.data, 'name') IS NOT NULL",
                 vec![("date", "DAY")],
-                Some("name"),
+                vec!["name"],
             ),
             (
                 "SELECT EXTRACT(YEAR FROM table_a.date) AS year, (SELECT variant_get(variants_test.data, 'name') FROM variants_test LIMIT 1) AS name FROM table_a",
                 vec![("date", "YEAR")],
-                Some("name"),
+                vec!["name"],
             ),
             (
                 "SELECT AVG(EXTRACT(DAY FROM table_a.date)) AS avg_day, COUNT(variant_get(variants_test.data, 'name')) AS name_count FROM table_a CROSS JOIN variants_test",
                 vec![("date", "DAY")],
-                Some("name"),
+                vec!["name"],
             ),
         ];
 
-        for (sql, expected_date_metadata, expected_variant_path) in test_cases {
+        for (sql, expected_date_metadata, expected_variant_paths) in test_cases {
             let df = ctx.sql(sql).await.unwrap();
             let (state, plan) = df.into_parts();
             let optimized = state.optimize(&plan).unwrap();
@@ -1415,12 +1566,21 @@ mod tests {
                 );
             }
 
-            assert_eq!(
-                variant_metadata.get("data").cloned(),
-                expected_variant_path.map(|s| s.to_string()),
-                "variant metadata should match expected path for SQL: {}",
-                sql
-            );
+            if expected_variant_paths.is_empty() {
+                assert!(!variant_metadata.contains_key("data"));
+            } else {
+                let mut actual = variant_metadata
+                    .get("data")
+                    .map(|value| variant_paths_from_metadata(value))
+                    .unwrap_or_default();
+                actual.sort();
+                let mut expected_vec = expected_variant_paths
+                    .into_iter()
+                    .map(|path| path.to_string())
+                    .collect::<Vec<_>>();
+                expected_vec.sort();
+                assert_eq!(actual, expected_vec, "SQL: {}", sql);
+            }
         }
     }
 }
