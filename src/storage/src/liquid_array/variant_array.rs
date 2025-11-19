@@ -17,7 +17,7 @@ use ahash::AHashMap;
 /// Hybrid representation for variant arrays that contain multiple typed fields.
 #[derive(Debug)]
 pub struct VariantStructHybridArray {
-    values: AHashMap<Arc<str>, ArrayRef>,
+    values: AHashMap<Arc<str>, LiquidArrayRef>,
     len: usize,
     nulls: Option<NullBuffer>,
     original_arrow_type: DataType,
@@ -26,7 +26,7 @@ pub struct VariantStructHybridArray {
 impl VariantStructHybridArray {
     /// Create a hybrid representation that keeps only the typed variant columns resident.
     pub fn new(
-        values: Vec<(Arc<str>, ArrayRef)>,
+        values: Vec<(Arc<str>, LiquidArrayRef)>,
         nulls: Option<NullBuffer>,
         original_arrow_type: DataType,
     ) -> Self {
@@ -78,7 +78,7 @@ impl VariantStructHybridArray {
             if segments.is_empty() {
                 continue;
             }
-            root.insert(&segments, array.clone());
+            root.insert(&segments, array.to_arrow_array());
         }
         root.into_struct_array()
     }

@@ -1129,7 +1129,11 @@ mod tests {
     use crate::cache::{
         CacheEntry, CacheExpression,
         cache_policies::{CachePolicy, LruPolicy},
-        utils::{arrow_to_bytes, create_cache_store, create_test_array, create_test_arrow_array},
+        transcode_liquid_inner,
+        utils::{
+            LiquidCompressorStates, arrow_to_bytes, create_cache_store, create_test_array,
+            create_test_arrow_array,
+        },
     };
     use crate::liquid_array::{
         Date32Field, LiquidHybridArrayRef, LiquidPrimitiveArray, SqueezedDate32Array,
@@ -1217,8 +1221,11 @@ mod tests {
             ],
             None,
         )) as ArrayRef;
+        let compressor = LiquidCompressorStates::new();
+        let name_liquid = transcode_liquid_inner(&name_values, &compressor)
+            .expect("string path transcodes to liquid");
         let hybrid: LiquidHybridArrayRef = Arc::new(VariantStructHybridArray::new(
-            vec![(Arc::<str>::from("name"), name_values.clone())],
+            vec![(Arc::<str>::from("name"), name_liquid)],
             None,
             root.data_type().clone(),
         ));

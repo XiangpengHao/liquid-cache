@@ -86,7 +86,8 @@ impl SqueezePolicy for TranscodeSqueezeEvict {
             CachedData::MemoryArrow(array) => {
                 if let Some(requests) =
                     squeeze_hint.and_then(|expression| expression.variant_requests())
-                    && let Some((hybrid_array, bytes)) = try_variant_squeeze(&array, requests)
+                    && let Some((hybrid_array, bytes)) =
+                        try_variant_squeeze(&array, requests, compressor)
                 {
                     return (CacheEntry::memory_hybrid_liquid(hybrid_array), Some(bytes));
                 }
@@ -179,6 +180,7 @@ impl SqueezePolicy for TranscodeEvict {
 fn try_variant_squeeze(
     array: &ArrayRef,
     requests: &[VariantRequest],
+    compressor: &LiquidCompressorStates,
 ) -> Option<(LiquidHybridArrayRef, Bytes)> {
     let struct_array = array.as_any().downcast_ref::<StructArray>()?;
     let variant_array = VariantArray::try_new(struct_array).ok()?;
@@ -218,7 +220,14 @@ fn try_variant_squeeze(
 
     let nulls = variant_array.inner().nulls().cloned();
     let bytes = arrow_to_bytes(array).ok()?;
-    let hybrid = VariantStructHybridArray::new(collected, nulls, array.data_type().clone());
+    let mut liquid_values = Vec::with_capacity(collected.len());
+    for (path, typed_values) in collected {
+        let Ok(liquid_array) = transcode_liquid_inner(&typed_values, compressor) else {
+            return None;
+        };
+        liquid_values.push((path, liquid_array));
+    }
+    let hybrid = VariantStructHybridArray::new(liquid_values, nulls, array.data_type().clone());
     Some((Arc::new(hybrid) as LiquidHybridArrayRef, bytes))
 }
 

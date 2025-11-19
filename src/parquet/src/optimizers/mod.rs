@@ -167,10 +167,8 @@ fn try_optimize_parquet_source(
         {
             let mut new_config = file_scan_config.clone();
 
-            let mut new_source = LiquidParquetSource::from_parquet_source(
-                parquet_source.clone(),
-                cache.clone(),
-            );
+            let mut new_source =
+                LiquidParquetSource::from_parquet_source(parquet_source.clone(), cache.clone());
             if let Some(schema_factory) = file_scan_config.file_source().schema_adapter_factory() {
                 let new_schema = enrich_source_schema(
                     file_scan_config.file_schema(),
