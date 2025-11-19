@@ -45,9 +45,10 @@ impl VariantStructHybridArray {
     }
 
     fn build_root_struct(&self) -> StructArray {
-        let metadata = Arc::new(BinaryViewArray::from_iter_values(
-            std::iter::repeat_n(b"" as &[u8], self.len),
-        )) as ArrayRef;
+        let metadata = Arc::new(BinaryViewArray::from_iter_values(std::iter::repeat_n(
+            b"" as &[u8],
+            self.len,
+        ))) as ArrayRef;
         let value_placeholder =
             Arc::new(BinaryViewArray::from(vec![None::<&[u8]>; self.len])) as ArrayRef;
         let typed_struct = self.build_typed_struct();

@@ -802,10 +802,10 @@ impl CacheStorage {
                     && !requests
                         .iter()
                         .all(|request| variant_hybrid.contains_path(request.path()))
-                    {
-                        let path = self.hybrid_disk_path(entry_id, array);
-                        return self.read_disk_arrow_array(path, selection).await;
-                    }
+                {
+                    let path = self.hybrid_disk_path(entry_id, array);
+                    return self.read_disk_arrow_array(path, selection).await;
+                }
                 if let Some(selection) = selection {
                     match array.filter(selection) {
                         Ok(arr) => {
