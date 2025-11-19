@@ -1,8 +1,5 @@
 use crate::cache::{BatchID, InsertArrowArrayError, LiquidCachedFileRef, LiquidCachedRowGroupRef};
 use crate::reader::plantime::{LiquidRowFilter, ParquetMetadataCacheReader};
-use crate::reader::runtime::parquet_bridge::{
-    ParquetField, limit_row_selection, offset_row_selection,
-};
 use arrow::array::RecordBatch;
 use arrow_schema::{Schema, SchemaRef};
 use fastrace::Event;
@@ -26,15 +23,13 @@ use std::{
 };
 
 use super::liquid_cache_reader::LiquidCacheReader;
-use super::utils::get_column_ids;
+use super::utils::{get_root_column_ids, limit_row_selection, offset_row_selection};
 
 type PlanResult = Option<PlanningContext>;
 type FillCacheResult = Result<(ReaderFactory, PlanningContext), ParquetError>;
 
 struct ReaderFactory {
     metadata: Arc<ParquetMetaData>,
-
-    fields: Option<Arc<ParquetField>>,
 
     input: ParquetMetadataCacheReader,
 
@@ -116,10 +111,11 @@ impl ReaderFactory {
         let selection_batches =
             collect_selection_batches(&selection_for_cache, cache_batch_size, row_count);
 
-        let cache_column_ids = get_column_ids(self.fields.as_deref(), &cache_projection);
+        let schema_descr = self.metadata.file_metadata().schema_descr();
+        let cache_column_ids = get_root_column_ids(schema_descr, &cache_projection);
         let cached_row_group = self.liquid_cache.create_row_group(row_group_idx as u64);
 
-        let projection_column_ids = get_column_ids(self.fields.as_deref(), &projection);
+        let projection_column_ids = get_root_column_ids(schema_descr, &projection);
         let missing_batches =
             compute_missing_batches(&cached_row_group, &cache_column_ids, &selection_batches);
 
@@ -172,7 +168,10 @@ impl ReaderFactory {
         let mut processed_batches = 0usize;
 
         // Get the original column indices in projection order
-        let column_ids = get_column_ids(self.fields.as_deref(), &context.cache_projection);
+        let column_ids = get_root_column_ids(
+            self.metadata.file_metadata().schema_descr(),
+            &context.cache_projection,
+        );
 
         while let Some(batch_result) = stream.next().await {
             let record_batch = batch_result?;
@@ -433,8 +432,6 @@ pub struct LiquidStreamBuilder {
 
     pub(crate) metadata: Arc<ParquetMetaData>,
 
-    pub(crate) fields: Option<Arc<ParquetField>>,
-
     pub(crate) batch_size: usize,
 
     pub(crate) row_groups: Option<Vec<usize>>,
@@ -453,6 +450,46 @@ pub struct LiquidStreamBuilder {
 }
 
 impl LiquidStreamBuilder {
+    pub fn new(input: ParquetMetadataCacheReader, metadata: Arc<ParquetMetaData>) -> Self {
+        Self {
+            input,
+            metadata,
+            batch_size: 1024,
+            row_groups: None,
+            projection: ProjectionMask::all(),
+            filter: None,
+            selection: None,
+            limit: None,
+            offset: None,
+            span: None,
+        }
+    }
+
+    pub fn with_batch_size(mut self, batch_size: usize) -> Self {
+        self.batch_size = batch_size;
+        self
+    }
+
+    pub fn with_row_groups(mut self, row_groups: Vec<usize>) -> Self {
+        self.row_groups = Some(row_groups);
+        self
+    }
+
+    pub fn with_projection(mut self, projection: ProjectionMask) -> Self {
+        self.projection = projection;
+        self
+    }
+
+    pub fn with_selection(mut self, selection: Option<RowSelection>) -> Self {
+        self.selection = selection;
+        self
+    }
+
+    pub fn with_limit(mut self, limit: Option<usize>) -> Self {
+        self.limit = limit;
+        self
+    }
+
     pub fn with_row_filter(mut self, filter: LiquidRowFilter) -> Self {
         self.filter = Some(filter);
         self
@@ -482,13 +519,13 @@ impl LiquidStreamBuilder {
             .batch_size
             .min(self.metadata.file_metadata().num_rows() as usize);
 
-        let projection_column_ids = get_column_ids(self.fields.as_deref(), &self.projection);
+        let schema_descr = self.metadata.file_metadata().schema_descr();
+        let projection_column_ids = get_root_column_ids(schema_descr, &self.projection);
         let file_schema = liquid_cache.schema();
         let schema = build_projection_schema(&file_schema, &projection_column_ids);
 
         let reader = ReaderFactory {
             metadata: Arc::clone(&self.metadata),
-            fields: self.fields,
             input: self.input,
             filter: self.filter,
             limit: self.limit,

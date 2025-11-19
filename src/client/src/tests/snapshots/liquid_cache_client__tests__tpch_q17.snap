@@ -86,30 +86,21 @@ expression: displayable.tree_render().to_string()
 │   LiquidCacheClientExec   ││   LiquidCacheClientExec   ││      RepartitionExec      │
 │    --------------------   ││    --------------------   ││    --------------------   │
 │          server:          ││          server:          ││ partition_count(in->out): │
-│  http://localhost:50051,  ││  http://localhost:50051,  ││           8 -> 8          │
+│  http://localhost:50051,  ││  http://localhost:50051,  ││           1 -> 8          │
 │      object_stores=[]     ││      object_stores=[]     ││                           │
 │                           ││                           ││    partitioning_scheme:   │
 │                           ││                           ││   Hash([l_partkey@0], 8)  │
 └─────────────┬─────────────┘└─────────────┬─────────────┘└─────────────┬─────────────┘
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-│       DataSourceExec      ││       DataSourceExec      ││      RepartitionExec      │
+│       DataSourceExec      ││       DataSourceExec      ││       AggregateExec       │
 │    --------------------   ││    --------------------   ││    --------------------   │
-│          files: 1         ││          files: 1         ││ partition_count(in->out): │
-│      format: parquet      ││      format: parquet      ││           1 -> 8          │
+│          files: 1         ││          files: 1         ││           aggr:           │
+│      format: parquet      ││      format: parquet      ││  avg(lineitem.l_quantity) │
 │                           ││                           ││                           │
-│         predicate:        ││         predicate:        ││    partitioning_scheme:   │
-│   p_brand = Brand#23 AND  ││  DynamicFilter [ empty ]  ││     RoundRobinBatch(8)    │
+│         predicate:        ││         predicate:        ││    group_by: l_partkey    │
+│   p_brand = Brand#23 AND  ││  DynamicFilter [ empty ]  ││       mode: Partial       │
 │    p_container = MED BOX  ││                           ││                           │
 └───────────────────────────┘└───────────────────────────┘└─────────────┬─────────────┘
-                                                          ┌─────────────┴─────────────┐
-                                                          │       AggregateExec       │
-                                                          │    --------------------   │
-                                                          │           aggr:           │
-                                                          │  avg(lineitem.l_quantity) │
-                                                          │                           │
-                                                          │    group_by: l_partkey    │
-                                                          │       mode: Partial       │
-                                                          └─────────────┬─────────────┘
                                                           ┌─────────────┴─────────────┐
                                                           │   LiquidCacheClientExec   │
                                                           │    --------------------   │

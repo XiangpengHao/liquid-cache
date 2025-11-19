@@ -1,40 +1,89 @@
 use std::collections::VecDeque;
 
-use arrow_schema::DataType;
-use parquet::{arrow::ProjectionMask, arrow::arrow_reader::RowSelector};
+use parquet::{
+    arrow::{
+        ProjectionMask,
+        arrow_reader::{RowSelection, RowSelector},
+    },
+    schema::types::SchemaDescriptor,
+};
 
-use crate::reader::runtime::parquet_bridge::{ParquetField, ParquetFieldType};
-
-pub(crate) fn get_column_ids(
-    field: Option<&ParquetField>,
+pub(crate) fn get_root_column_ids(
+    schema: &SchemaDescriptor,
     projection: &ProjectionMask,
 ) -> Vec<usize> {
-    let Some(field) = field else {
-        return vec![];
-    };
+    let mut root_mask = vec![false; schema.root_schema().get_fields().len()];
 
-    match &field.field_type {
-        ParquetFieldType::Group { children } => match &field.arrow_type {
-            DataType::Struct(_) => children
-                .iter()
-                .enumerate()
-                .filter_map(|(idx, child)| {
-                    field_has_projected_leaf(child, projection).then_some(idx)
-                })
-                .collect(),
-            _ => Vec::new(),
-        },
-        ParquetFieldType::Primitive { .. } => Vec::new(),
+    for leaf_idx in 0..schema.num_columns() {
+        if projection.leaf_included(leaf_idx) {
+            let root_idx = schema.get_column_root_idx(leaf_idx);
+            root_mask[root_idx] = true;
+        }
     }
+
+    root_mask
+        .into_iter()
+        .enumerate()
+        .filter_map(|(idx, included)| included.then_some(idx))
+        .collect()
 }
 
-fn field_has_projected_leaf(field: &ParquetField, projection: &ProjectionMask) -> bool {
-    match &field.field_type {
-        ParquetFieldType::Primitive { col_idx, .. } => projection.leaf_included(*col_idx),
-        ParquetFieldType::Group { children } => children
-            .iter()
-            .any(|child| field_has_projected_leaf(child, projection)),
+pub(crate) fn offset_row_selection(selection: RowSelection, offset: usize) -> RowSelection {
+    if offset == 0 {
+        return selection;
     }
+
+    let mut selected_count = 0;
+    let mut skipped_count = 0;
+
+    let mut selectors: Vec<RowSelector> = selection.into();
+
+    let find = selectors.iter().position(|selector| match selector.skip {
+        true => {
+            skipped_count += selector.row_count;
+            false
+        }
+        false => {
+            selected_count += selector.row_count;
+            selected_count > offset
+        }
+    });
+
+    let split_idx = match find {
+        Some(idx) => idx,
+        None => {
+            selectors.clear();
+            return RowSelection::from(selectors);
+        }
+    };
+
+    let mut new_selectors = Vec::with_capacity(selectors.len() - split_idx + 1);
+    new_selectors.push(RowSelector::skip(skipped_count + offset));
+    new_selectors.push(RowSelector::select(selected_count - offset));
+    new_selectors.extend_from_slice(&selectors[split_idx + 1..]);
+
+    RowSelection::from(new_selectors)
+}
+
+pub(crate) fn limit_row_selection(selection: RowSelection, mut limit: usize) -> RowSelection {
+    let mut selectors: Vec<RowSelector> = selection.into();
+
+    if limit == 0 {
+        selectors.clear();
+    }
+
+    for (idx, selection) in selectors.iter_mut().enumerate() {
+        if !selection.skip {
+            if selection.row_count >= limit {
+                selection.row_count = limit;
+                selectors.truncate(idx + 1);
+                break;
+            } else {
+                limit -= selection.row_count;
+            }
+        }
+    }
+    RowSelection::from(selectors)
 }
 
 /// Take the next batch from the selection queue.

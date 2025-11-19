@@ -5,7 +5,7 @@ use crate::{
     optimizers::enrich_schema_for_cache,
     reader::{
         plantime::{row_filter::build_row_filter, row_group_filter::RowGroupAccessPlanFilter},
-        runtime::ArrowReaderBuilderBridge,
+        runtime::LiquidStreamBuilder,
     },
 };
 use ahash::AHashMap;
@@ -31,6 +31,7 @@ use parquet::arrow::{
     ParquetRecordBatchStreamBuilder, ProjectionMask,
     arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions},
 };
+use parquet::file::metadata::ParquetMetaData;
 
 use super::source::CachedMetaReaderFactory;
 
@@ -185,8 +186,8 @@ impl FileOpener for LiquidParquetOpener {
             metadata_timer.stop();
 
             let mut builder = ParquetRecordBatchStreamBuilder::new_with_metadata(
-                async_file_reader,
-                reader_metadata,
+                async_file_reader.clone(),
+                reader_metadata.clone(),
             );
 
             let (schema_mapping, adapted_projections) =
@@ -203,7 +204,7 @@ impl FileOpener for LiquidParquetOpener {
                     p,
                     &physical_file_schema,
                     &downstream_full_schema,
-                    builder.metadata(),
+                    reader_metadata.metadata(),
                     reorder_predicates,
                     &file_metrics,
                     &schema_adapter_factory,
@@ -221,7 +222,7 @@ impl FileOpener for LiquidParquetOpener {
 
             // Determine which row groups to actually read. The idea is to skip
             // as many row groups as possible based on the metadata and query
-            let file_metadata = Arc::clone(builder.metadata());
+            let file_metadata: Arc<ParquetMetaData> = Arc::clone(builder.metadata());
             let predicate = pruning_predicate.as_ref().map(|p| p.as_ref());
             let rg_metadata = file_metadata.row_groups();
             // track which row groups to actually read
@@ -272,21 +273,15 @@ impl FileOpener for LiquidParquetOpener {
             }
 
             let row_group_indexes = access_plan.row_group_indexes();
-            if let Some(row_selection) = access_plan.into_overall_row_selection(rg_metadata)? {
-                builder = builder.with_row_selection(row_selection);
-            }
-
-            if let Some(limit) = limit {
-                builder = builder.with_limit(limit)
-            }
-
-            let builder = builder
-                .with_projection(mask)
-                .with_batch_size(batch_size)
-                .with_row_groups(row_group_indexes);
+            let row_selection = access_plan.into_overall_row_selection(rg_metadata)?;
 
             let mut liquid_builder =
-                unsafe { ArrowReaderBuilderBridge::from_parquet(builder).into_liquid_builder() };
+                LiquidStreamBuilder::new(async_file_reader, Arc::clone(reader_metadata.metadata()))
+                    .with_batch_size(batch_size)
+                    .with_row_groups(row_group_indexes)
+                    .with_projection(mask)
+                    .with_selection(row_selection)
+                    .with_limit(limit);
 
             if let Some(row_filter) = row_filter {
                 liquid_builder = liquid_builder.with_row_filter(row_filter);
