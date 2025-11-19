@@ -143,7 +143,7 @@ impl LiquidCacheServiceInner {
         let cache = self.cache();
         self.execution_plans.write().unwrap().insert(
             handle,
-            ExecutionPlanEntry::new(rewrite_data_source_plan(plan, cache)),
+            ExecutionPlanEntry::new(rewrite_data_source_plan(plan, cache, true)),
         );
     }
 
