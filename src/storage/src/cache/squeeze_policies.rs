@@ -193,22 +193,33 @@ fn try_variant_squeeze(
 
     let typed_root = variant_array.typed_value_field()?;
     let typed_root = typed_root.as_any().downcast_ref::<StructArray>()?;
-    if !requests
-        .iter()
-        .any(|request| extract_typed_values_for_path(typed_root, request.path()).is_some())
-    {
+
+    let mut collected = Vec::new();
+    for request in requests {
+        let path = request.path().trim();
+        if path.is_empty() {
+            continue;
+        }
+        let Some(path_struct) = extract_typed_values_for_path(typed_root, path) else {
+            continue;
+        };
+        let path_struct = path_struct.as_any().downcast_ref::<StructArray>()?;
+        let Some(typed_values) = path_struct.column_by_name("typed_value") else {
+            continue;
+        };
+        if typed_values.len() != array.len() {
+            continue;
+        }
+        collected.push((Arc::<str>::from(path.to_string()), typed_values.clone()));
+    }
+
+    if collected.is_empty() {
         return None;
     }
 
-    let metadata = Arc::new(variant_array.metadata_field().clone());
     let nulls = variant_array.inner().nulls().cloned();
     let bytes = arrow_to_bytes(array).ok()?;
-    let hybrid = VariantStructHybridArray::new(
-        metadata,
-        Arc::new(typed_root.clone()),
-        nulls,
-        array.data_type().clone(),
-    );
+    let hybrid = VariantStructHybridArray::new(collected, nulls, array.data_type().clone());
     Some((Arc::new(hybrid) as LiquidHybridArrayRef, bytes))
 }
 
@@ -641,7 +652,7 @@ mod tests {
                     .downcast_ref::<StructArray>()
                     .expect("typed struct");
                 assert!(typed_struct.column_by_name("name").is_some());
-                assert!(typed_struct.column_by_name("age").is_some());
+                assert!(typed_struct.column_by_name("age").is_none());
             }
             other => panic!("expected MemoryHybridLiquid with bytes, got {other:?}"),
         }

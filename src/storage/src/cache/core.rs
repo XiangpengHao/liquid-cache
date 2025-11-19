@@ -1221,8 +1221,7 @@ mod tests {
             None,
         )) as ArrayRef;
         let hybrid: LiquidHybridArrayRef = Arc::new(VariantStructHybridArray::new(
-            metadata,
-            typed_struct,
+            vec![(Arc::<str>::from("name"), name_values.clone())],
             None,
             root.data_type().clone(),
         ));
