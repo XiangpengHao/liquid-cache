@@ -17,15 +17,13 @@ use fastlanes::BitPacking;
 use num_traits::{AsPrimitive, FromPrimitive};
 
 use super::LiquidDataType;
-use crate::cache::CacheExpression;
+use crate::cache::{CacheExpression, DatePartSet};
 use crate::liquid_array::hybrid_primitive_array::{
     LiquidPrimitiveClampedArray, LiquidPrimitiveQuantizedArray,
 };
 use crate::liquid_array::ipc::{LiquidIPCHeader, PhysicalTypeMarker, get_physical_type_id};
 use crate::liquid_array::raw::BitPackedArray;
-use crate::liquid_array::{
-    Date32Field, LiquidArray, LiquidHybridArrayRef, PrimitiveKind, SqueezedDate32Array,
-};
+use crate::liquid_array::{LiquidArray, LiquidHybridArrayRef, PrimitiveKind, SqueezedDate32Array};
 use crate::utils::get_bit_width;
 use arrow::datatypes::ArrowNativeType;
 use bytes::Bytes;
@@ -402,7 +400,7 @@ where
             // Special handle for Date32 arrays with component extraction support.
             let field = expression_hint
                 .and_then(|expr| expr.as_date32_field())
-                .unwrap_or(Date32Field::Year);
+                .unwrap_or(DatePartSet::Year);
             return Some((
                 Arc::new(SqueezedDate32Array::from_liquid_date32(self, field))
                     as LiquidHybridArrayRef,
@@ -885,10 +883,10 @@ mod tests {
         let registry = ExpressionRegistry::new();
 
         let expr_month = registry
-            .register(CacheExpression::extract_date32(Date32Field::Month))
+            .register(CacheExpression::extract_date32(DatePartSet::Month))
             .expect("register month");
         let expr_year = registry
-            .register(CacheExpression::extract_date32(Date32Field::Year))
+            .register(CacheExpression::extract_date32(DatePartSet::Year))
             .expect("register year");
 
         let tracker = ExpressionHintTracker::new();
@@ -906,7 +904,7 @@ mod tests {
             .downcast_ref::<SqueezedDate32Array>()
             .expect("expected squeezed date32 array");
 
-        assert_eq!(squeezed.field(), Date32Field::Month);
+        assert_eq!(squeezed.field(), DatePartSet::Month);
     }
 
     #[test]
@@ -917,10 +915,10 @@ mod tests {
         let registry = ExpressionRegistry::new();
 
         let expr_year = registry
-            .register(CacheExpression::extract_date32(Date32Field::Year))
+            .register(CacheExpression::extract_date32(DatePartSet::Year))
             .expect("register year");
         let expr_day = registry
-            .register(CacheExpression::extract_date32(Date32Field::Day))
+            .register(CacheExpression::extract_date32(DatePartSet::Day))
             .expect("register day");
         let tracker = ExpressionHintTracker::new();
         tracker.record_expression(expr_year);
@@ -937,7 +935,7 @@ mod tests {
             .downcast_ref::<SqueezedDate32Array>()
             .expect("expected squeezed date32 array");
 
-        assert_eq!(squeezed.field(), Date32Field::Day);
+        assert_eq!(squeezed.field(), DatePartSet::Day);
     }
 
     test_roundtrip!(

@@ -781,16 +781,32 @@ impl CacheStorage {
             CachedData::MemoryHybridLiquid(array) => {
                 if let Some(CacheExpression::ExtractDate32 { field }) = expression_ref
                     && let Some(squeezed) = array.as_any().downcast_ref::<SqueezedDate32Array>()
-                    && squeezed.field() == *field
                 {
-                    let component = Arc::new(squeezed.to_component_date32()) as ArrayRef;
-                    self.runtime_stats.incr_hit_date32_expression();
-                    if let Some(selection) = selection {
-                        let selection_array = BooleanArray::new(selection.clone(), None);
-                        let filtered = arrow::compute::filter(&component, &selection_array).ok()?;
-                        return Some(filtered);
+                    for part in field.iter() {
+                        if let Some(component) = squeezed.to_component_date32(part) {
+                            let component = Arc::new(component) as ArrayRef;
+                            self.runtime_stats.incr_hit_date32_expression();
+                            if let Some(selection) = selection {
+                                let selection_array = BooleanArray::new(selection.clone(), None);
+                                let filtered =
+                                    arrow::compute::filter(&component, &selection_array).ok()?;
+                                return Some(filtered);
+                            }
+                            return Some(component);
+                        }
+
+                        if let Some(component) = squeezed.compute_derived(part) {
+                            let component = Arc::new(component) as ArrayRef;
+                            self.runtime_stats.incr_hit_date32_expression();
+                            if let Some(selection) = selection {
+                                let selection_array = BooleanArray::new(selection.clone(), None);
+                                let filtered =
+                                    arrow::compute::filter(&component, &selection_array).ok()?;
+                                return Some(filtered);
+                            }
+                            return Some(component);
+                        }
                     }
-                    return Some(component);
                 }
                 if let Some(selection) = selection {
                     match array.filter(selection) {
@@ -1125,15 +1141,14 @@ impl<'a> IntoFuture for EvaluatePredicate<'a> {
 mod tests {
     use super::*;
     use crate::cache::{
-        CacheEntry, CacheExpression,
+        CacheEntry, CacheExpression, DatePartSet,
         cache_policies::{CachePolicy, LruPolicy},
         utils::{create_cache_store, create_test_array, create_test_arrow_array},
     };
-    use crate::liquid_array::{
-        Date32Field, LiquidHybridArrayRef, LiquidPrimitiveArray, SqueezedDate32Array,
-    };
+    use crate::liquid_array::{LiquidHybridArrayRef, LiquidPrimitiveArray, SqueezedDate32Array};
     use crate::sync::thread;
     use arrow::array::{Array, Date32Array, Int32Array};
+    use arrow::compute::DatePart;
     use arrow::datatypes::Date32Type;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1206,7 +1221,7 @@ mod tests {
 
         let date_values = Date32Array::from(vec![Some(0), Some(365), None, Some(730)]);
         let liquid = LiquidPrimitiveArray::<Date32Type>::from_arrow_array(date_values.clone());
-        let squeezed = SqueezedDate32Array::from_liquid_date32(&liquid, Date32Field::Year);
+        let squeezed = SqueezedDate32Array::from_liquid_date32(&liquid, DatePart::Year);
         let hybrid: LiquidHybridArrayRef = Arc::new(squeezed);
 
         store
@@ -1215,7 +1230,7 @@ mod tests {
 
         let registry = store.expression_registry();
         let expr_id = registry
-            .register(CacheExpression::extract_date32(Date32Field::Year))
+            .register(CacheExpression::extract_date32(DatePart::Year))
             .expect("register expr");
         let result = store
             .get(&entry_id)
@@ -1233,6 +1248,68 @@ mod tests {
         assert_eq!(result.value(1), 1971);
         assert!(result.is_null(2));
         assert_eq!(result.value(3), 1972);
+    }
+
+    #[tokio::test]
+    async fn test_get_arrow_array_with_expression_extracts_year_month() {
+        let store = create_cache_store(1 << 20, Box::new(LruPolicy::new()));
+        let entry_id = EntryID::from(42);
+
+        // Dates: Jan 1 1970, Jan 1 1971, null, Jan 1 1972
+        let date_values = Date32Array::from(vec![Some(0), Some(397), None, Some(790)]);
+        let liquid = LiquidPrimitiveArray::<Date32Type>::from_arrow_array(date_values.clone());
+
+        // Cache both Year and Month components together
+        let squeezed = SqueezedDate32Array::from_liquid_date32(&liquid, DatePartSet::YearMonth);
+        let hybrid: LiquidHybridArrayRef = Arc::new(squeezed);
+
+        store
+            .insert_inner(entry_id, CacheEntry::memory_hybrid_liquid(hybrid.clone()))
+            .await;
+
+        let registry = store.expression_registry();
+
+        // Test 1: Extract Year from the cached YearMonth data
+        let year_expr_id = registry
+            .register(CacheExpression::extract_date32(DatePart::Year))
+            .expect("register year expr");
+        let year_result = store
+            .get(&entry_id)
+            .with_expression_hint(year_expr_id)
+            .read()
+            .await
+            .expect("year array present");
+
+        let year_result = year_result
+            .as_any()
+            .downcast_ref::<Date32Array>()
+            .expect("date32 year result");
+        assert_eq!(year_result.len(), 4);
+        assert_eq!(year_result.value(0), 1970);
+        assert_eq!(year_result.value(1), 1971);
+        assert!(year_result.is_null(2));
+        assert_eq!(year_result.value(3), 1972);
+
+        // Test 2: Extract Month from the same cached YearMonth data
+        let month_expr_id = registry
+            .register(CacheExpression::extract_date32(DatePart::Month))
+            .expect("register month expr");
+        let month_result = store
+            .get(&entry_id)
+            .with_expression_hint(month_expr_id)
+            .read()
+            .await
+            .expect("month array present");
+
+        let month_result = month_result
+            .as_any()
+            .downcast_ref::<Date32Array>()
+            .expect("date32 month result");
+        assert_eq!(month_result.len(), 4);
+        assert_eq!(month_result.value(0), 1); // January
+        assert_eq!(month_result.value(1), 2); // February
+        assert!(month_result.is_null(2));
+        assert_eq!(month_result.value(3), 3); // March
     }
 
     #[tokio::test]

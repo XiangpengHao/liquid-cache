@@ -1,7 +1,6 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::cache::ExpressionId;
-
 #[cfg(test)]
 pub(crate) fn gen_test_decimal_array<T: arrow::datatypes::DecimalType>(
     data_type: arrow_schema::DataType,
@@ -111,10 +110,8 @@ impl Clone for ExpressionHintTracker {
 #[cfg(test)]
 mod tests {
     use super::ExpressionHintTracker;
-    use crate::{
-        cache::{CacheExpression, ExpressionRegistry},
-        liquid_array::Date32Field,
-    };
+    use crate::cache::{CacheExpression, ExpressionRegistry};
+    use arrow::compute::DatePart;
 
     #[test]
     fn majority_date32_field_returns_most_frequent_field() {
@@ -122,10 +119,10 @@ mod tests {
         let registry = ExpressionRegistry::new();
 
         let year = registry
-            .register(CacheExpression::extract_date32(Date32Field::Year))
+            .register(CacheExpression::extract_date32(DatePart::Year))
             .expect("register year");
         let month = registry
-            .register(CacheExpression::extract_date32(Date32Field::Month))
+            .register(CacheExpression::extract_date32(DatePart::Month))
             .expect("register month");
 
         tracker.record_expression(year);
@@ -137,7 +134,7 @@ mod tests {
         let expr = registry.get(majority).expect("resolve expression");
         assert_eq!(
             expr.as_ref(),
-            &CacheExpression::extract_date32(Date32Field::Year)
+            &CacheExpression::extract_date32(DatePart::Year)
         );
     }
 
@@ -147,10 +144,10 @@ mod tests {
         let registry = ExpressionRegistry::new();
 
         let year = registry
-            .register(CacheExpression::extract_date32(Date32Field::Year))
+            .register(CacheExpression::extract_date32(DatePart::Year))
             .expect("register year");
         let month = registry
-            .register(CacheExpression::extract_date32(Date32Field::Month))
+            .register(CacheExpression::extract_date32(DatePart::Month))
             .expect("register month");
 
         tracker.record_expression(year);
@@ -162,7 +159,7 @@ mod tests {
         let expr = registry.get(majority).expect("resolve expression");
         assert_eq!(
             expr.as_ref(),
-            &CacheExpression::extract_date32(Date32Field::Month)
+            &CacheExpression::extract_date32(DatePart::Month)
         );
     }
 }

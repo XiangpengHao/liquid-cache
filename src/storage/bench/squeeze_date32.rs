@@ -1,9 +1,10 @@
 use arrow::array::{Array, ArrayRef, cast::AsArray};
+use arrow::compute::DatePart;
 use arrow::datatypes::Date32Type;
 use clap::Parser;
 use datafusion::prelude::*;
 use futures::StreamExt;
-use liquid_cache_storage::liquid_array::{Date32Field, LiquidPrimitiveArray, SqueezedDate32Array};
+use liquid_cache_storage::liquid_array::{LiquidPrimitiveArray, SqueezedDate32Array};
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -76,9 +77,9 @@ async fn run_for_column(ctx: &SessionContext, col: &str, limit: Option<usize>) {
         let liquid = LiquidPrimitiveArray::<Date32Type>::from_arrow_array(prim.clone());
         total_liquid_bytes += liquid.get_array_memory_size();
 
-        let squeezed_year = SqueezedDate32Array::from_liquid_date32(&liquid, Date32Field::Year);
-        let squeezed_month = SqueezedDate32Array::from_liquid_date32(&liquid, Date32Field::Month);
-        let squeezed_day = SqueezedDate32Array::from_liquid_date32(&liquid, Date32Field::Day);
+        let squeezed_year = SqueezedDate32Array::from_liquid_date32(&liquid, DatePart::Year);
+        let squeezed_month = SqueezedDate32Array::from_liquid_date32(&liquid, DatePart::Month);
+        let squeezed_day = SqueezedDate32Array::from_liquid_date32(&liquid, DatePart::Day);
 
         total_year_bytes += squeezed_year.get_array_memory_size();
         total_month_bytes += squeezed_month.get_array_memory_size();

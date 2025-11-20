@@ -41,7 +41,7 @@ pub use primitive_array::{
     LiquidI64Array, LiquidPrimitiveArray, LiquidPrimitiveDeltaArray, LiquidPrimitiveType,
     LiquidU8Array, LiquidU16Array, LiquidU32Array, LiquidU64Array,
 };
-pub use squeezed_date32_array::{Date32Field, SqueezedDate32Array};
+pub use squeezed_date32_array::SqueezedDate32Array;
 pub use variant_array::VariantExtractedArray;
 
 use crate::cache::CacheExpression;
