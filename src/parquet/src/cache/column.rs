@@ -6,8 +6,8 @@ use arrow::{
 };
 use arrow_schema::{ArrowError, DataType, Field, Schema};
 use liquid_cache_storage::cache::{CacheExpression, CacheStorage, ColumnID};
-use liquid_cache_storage::variant_utils::typed_struct_contains_path;
 use liquid_cache_storage::variant_schema::VariantSchema;
+use liquid_cache_storage::variant_utils::typed_struct_contains_path;
 use parquet::arrow::arrow_reader::ArrowPredicate;
 use parquet_variant_compute::{VariantArray, VariantType, shred_variant, unshred_variant};
 
@@ -100,9 +100,9 @@ impl LiquidCachedColumn {
         self.expression.clone()
     }
 
-    fn array_to_record_batch(&self, array: ArrayRef) -> Result<RecordBatch, ArrowError> {
+    fn array_to_record_batch(&self, array: ArrayRef) -> RecordBatch {
         let schema = Arc::new(Schema::new(vec![self.field.clone()]));
-        RecordBatch::try_new(schema, vec![array])
+        RecordBatch::try_new(schema, vec![array]).unwrap()
     }
 
     /// Evaluates a predicate on a cached column.
@@ -131,10 +131,7 @@ impl LiquidCachedColumn {
                 if let Some(transformed) = maybe_shred_variant_array(&array, self.field.as_ref()) {
                     array = transformed;
                 }
-                let record_batch = match self.array_to_record_batch(array) {
-                    Ok(batch) => batch,
-                    Err(err) => return Some(Err(err)),
-                };
+                let record_batch = self.array_to_record_batch(array);
                 let boolean_array = match predicate.evaluate(record_batch) {
                     Ok(arr) => arr,
                     Err(err) => return Some(Err(err)),

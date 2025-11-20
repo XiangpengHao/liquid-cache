@@ -3,14 +3,13 @@ use std::sync::Arc;
 use arrow::array::{Array, ArrayRef, BinaryViewArray, StructArray};
 use arrow::buffer::NullBuffer;
 use arrow::error::ArrowError;
-use arrow::ipc::{reader::StreamReader, writer::StreamWriter};
+use arrow::ipc::writer::StreamWriter;
 use arrow::record_batch::RecordBatch;
 use arrow_schema::{DataType, Field, Fields, Schema};
 use bytes::Bytes;
-use std::io::Cursor;
 
 use crate::liquid_array::{
-    HybridBacking, IoRange, LiquidArray, LiquidArrayRef, LiquidDataType, LiquidHybridArray,
+    HybridBacking, IoRange, LiquidArrayRef, LiquidDataType, LiquidHybridArray,
 };
 use ahash::AHashMap;
 
@@ -123,18 +122,8 @@ impl LiquidHybridArray for VariantStructHybridArray {
             .map_err(|_| IoRange { range: 0..0 })
     }
 
-    fn soak(&self, data: Bytes) -> LiquidArrayRef {
-        let mut reader =
-            StreamReader::try_new(Cursor::new(data), None).expect("invalid variant IPC stream");
-        let batch = reader
-            .next()
-            .expect("variant IPC batch")
-            .expect("read variant batch");
-        let column = batch.column(0).clone();
-        Arc::new(VariantStructLiquidArray::new(
-            column,
-            self.original_arrow_type.clone(),
-        )) as LiquidArrayRef
+    fn soak(&self, _data: Bytes) -> LiquidArrayRef {
+        unreachable!()
     }
 
     fn to_liquid(&self) -> IoRange {
@@ -143,53 +132,6 @@ impl LiquidHybridArray for VariantStructHybridArray {
 
     fn disk_backing(&self) -> HybridBacking {
         HybridBacking::Arrow
-    }
-}
-
-#[derive(Debug)]
-struct VariantStructLiquidArray {
-    array: ArrayRef,
-    original_arrow_type: DataType,
-}
-
-impl VariantStructLiquidArray {
-    fn new(array: ArrayRef, original_arrow_type: DataType) -> Self {
-        Self {
-            array,
-            original_arrow_type,
-        }
-    }
-}
-
-impl LiquidArray for VariantStructLiquidArray {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn get_array_memory_size(&self) -> usize {
-        self.array.get_array_memory_size()
-    }
-
-    fn len(&self) -> usize {
-        self.array.len()
-    }
-
-    fn to_arrow_array(&self) -> ArrayRef {
-        self.array.clone()
-    }
-
-    fn data_type(&self) -> LiquidDataType {
-        LiquidDataType::ByteArray
-    }
-
-    fn original_arrow_data_type(&self) -> DataType {
-        self.original_arrow_type.clone()
-    }
-
-    fn to_bytes(&self) -> Vec<u8> {
-        serialize_variant_array(&self.array)
-            .expect("failed to serialize variant struct")
-            .to_vec()
     }
 }
 
