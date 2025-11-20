@@ -7,6 +7,7 @@ use arrow::{
 use arrow_schema::{ArrowError, DataType, Field, Schema};
 use liquid_cache_storage::cache::{CacheExpression, CacheStorage, ColumnID};
 use liquid_cache_storage::variant_utils::typed_struct_contains_path;
+use liquid_cache_storage::variant_schema::VariantSchema;
 use parquet::arrow::arrow_reader::ArrowPredicate;
 use parquet_variant_compute::{VariantArray, VariantType, shred_variant, unshred_variant};
 
@@ -14,7 +15,6 @@ use crate::{
     LiquidPredicate,
     cache::{BatchID, ColumnAccessPath, ParquetArrayID},
     optimizers::{DATE_MAPPING_METADATA_KEY, variant_mappings_from_field},
-    variant_schema::VariantSchema,
 };
 use std::sync::Arc;
 
@@ -127,6 +127,10 @@ impl LiquidCachedColumn {
                 Some(Ok(predicate_filter))
             }
             Err(array) => {
+                let mut array = array;
+                if let Some(transformed) = maybe_shred_variant_array(&array, self.field.as_ref()) {
+                    array = transformed;
+                }
                 let record_batch = match self.array_to_record_batch(array) {
                     Ok(batch) => batch,
                     Err(err) => return Some(Err(err)),
@@ -151,13 +155,16 @@ impl LiquidCachedColumn {
         filter: &BooleanBuffer,
     ) -> Option<ArrayRef> {
         let entry_id = self.entry_id(batch_id).into();
-        let array = self
+        let mut array = self
             .cache_store
             .get(&entry_id)
             .with_selection(filter)
             .with_optional_expression_hint(self.expression())
             .read()
             .await?;
+        if let Some(transformed) = maybe_shred_variant_array(&array, self.field.as_ref()) {
+            array = transformed;
+        }
         Some(array)
     }
 
@@ -175,12 +182,6 @@ impl LiquidCachedColumn {
     ) -> Result<(), InsertArrowArrayError> {
         if self.is_cached(batch_id) {
             return Err(InsertArrowArrayError::AlreadyCached);
-        }
-        let mut array = array;
-        if self.expression.is_some()
-            && let Some(transformed) = maybe_shred_variant_array(&array, self.field.as_ref())
-        {
-            array = transformed;
         }
         self.cache_store
             .insert(self.entry_id(batch_id).into(), array)

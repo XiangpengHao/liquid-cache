@@ -24,8 +24,8 @@ pub(crate) use lineage_opt::VariantField;
 use crate::{
     LiquidCacheRef, LiquidParquetSource,
     optimizers::lineage_opt::{ColumnAnnotation, metadata_from_factory, serialize_date_part},
-    variant_schema::VariantSchema,
 };
+use liquid_cache_storage::variant_schema::VariantSchema;
 use serde::{Deserialize, Serialize};
 
 pub(crate) const DATE_MAPPING_METADATA_KEY: &str = "liquid.cache.date_mapping";
@@ -39,7 +39,7 @@ struct VariantMappingSerdeEntry {
     data_type: Option<String>,
 }
 
-fn serialize_variant_mappings(fields: &[VariantField]) -> Option<String> {
+pub(crate) fn serialize_variant_mappings(fields: &[VariantField]) -> Option<String> {
     if fields.is_empty() {
         return None;
     }

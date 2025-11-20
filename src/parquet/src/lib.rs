@@ -6,7 +6,7 @@ pub mod optimizers;
 mod reader;
 mod sync;
 pub(crate) mod utils;
-pub(crate) mod variant_schema;
+pub use liquid_cache_storage::variant_schema;
 mod variant_udf;
 
 pub mod cache;
