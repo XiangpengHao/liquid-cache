@@ -1,5 +1,5 @@
 use arrow::{
-    array::{Array, ArrayRef, BooleanArray, StructArray},
+    array::{Array, ArrayRef, AsArray, BooleanArray},
     buffer::BooleanBuffer,
     compute::prep_null_mask_filter,
     record_batch::RecordBatch,
@@ -236,13 +236,12 @@ fn shred_variant_array(
 }
 
 fn variant_contains_typed_field(array: &VariantArray, path: &str) -> bool {
-    let Some(typed_root) = array
-        .typed_value_field()
-        .and_then(|typed| typed.as_any().downcast_ref::<StructArray>())
-    else {
+    let Some(typed_field) = array.typed_value_field() else {
         return false;
     };
-
+    let Some(typed_root) = typed_field.as_struct_opt() else {
+        return false;
+    };
     typed_struct_contains_path(typed_root, path)
 }
 

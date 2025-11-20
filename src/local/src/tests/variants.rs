@@ -458,8 +458,8 @@ async fn variant_multi_queries_complex() {
 
     let (ctx, cache) = LiquidCacheLocalBuilder::new()
         .with_cache_dir(cache_dir.path().to_path_buf())
-        .with_max_cache_bytes(1024 * 1000)
-        .with_batch_size(4)
+        .with_max_cache_bytes(1024 * 600)
+        .with_batch_size(8)
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
         .build(SessionConfig::new())
         .unwrap();
@@ -469,6 +469,15 @@ async fn variant_multi_queries_complex() {
         parquet_path_str,
         ParquetReadOptions::default(),
     )
+    .await
+    .unwrap();
+
+    ctx.sql(
+        "SELECT Count(Distinct(variant_get(data, 'details.info', 'Utf8'))) FROM large_variants LIMIT 5",
+    )
+    .await
+    .unwrap()
+    .collect()
     .await
     .unwrap();
 
