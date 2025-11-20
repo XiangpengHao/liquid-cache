@@ -83,7 +83,7 @@ impl Default for LiquidCacheLocalBuilder {
             squeeze_policy: Box::new(TranscodeSqueezeEvict),
             span: fastrace::Span::enter_with_local_parent("liquid_cache_local_builder"),
             io_mode: IoMode::StdBlocking,
-            eager_shredding: false,
+            eager_shredding: true,
         }
     }
 }
