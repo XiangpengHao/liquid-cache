@@ -215,7 +215,6 @@ impl LiquidCachedFile {
     pub fn schema(&self) -> SchemaRef {
         Arc::clone(&self.file_schema)
     }
-
 }
 
 /// A reference to a cached file.
@@ -270,9 +269,9 @@ impl LiquidCache {
         full_file_schema: SchemaRef,
     ) -> LiquidCachedFileRef {
         let mut files = self.files.lock().unwrap();
-        let file_id = *files.entry(file_path.clone()).or_insert_with(|| {
-            self.current_file_id.fetch_add(1, Ordering::Relaxed)
-        });
+        let file_id = *files
+            .entry(file_path.clone())
+            .or_insert_with(|| self.current_file_id.fetch_add(1, Ordering::Relaxed));
         drop(files);
 
         Arc::new(LiquidCachedFile::new(

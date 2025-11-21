@@ -6,8 +6,8 @@ pub mod cache;
 pub mod liquid_array;
 mod sync;
 mod utils;
-pub mod variant_utils;
 pub mod variant_schema;
+pub mod variant_utils;
 
 pub use byte_cache::ByteCache;
 pub use cache::cache_policies;

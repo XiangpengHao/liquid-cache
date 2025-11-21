@@ -164,33 +164,33 @@ fn try_optimize_parquet_source(
     if let Some(data_source_exec) = any_plan.downcast_ref::<DataSourceExec>()
         && let Some((file_scan_config, parquet_source)) =
             data_source_exec.downcast_to_file_source::<ParquetSource>()
-        {
-            let mut new_config = file_scan_config.clone();
+    {
+        let mut new_config = file_scan_config.clone();
 
-            let mut new_source =
-                LiquidParquetSource::from_parquet_source(parquet_source.clone(), cache.clone());
-            if let Some(schema_factory) = file_scan_config.file_source().schema_adapter_factory() {
-                let new_schema = enrich_source_schema(
-                    file_scan_config.file_schema(),
-                    &schema_factory,
-                    eager_shredding,
-                );
-                let table_partition_cols = new_source.table_schema().table_partition_cols();
-                let new_table_schema =
-                    TableSchema::new(Arc::new(new_schema), table_partition_cols.clone());
-                new_source = new_source.with_table_schema(new_table_schema);
-            }
-
-            new_config.file_source = Arc::new(new_source);
-            let new_file_source: Arc<dyn DataSource> = Arc::new(new_config);
-            let new_plan = Arc::new(DataSourceExec::new(new_file_source));
-
-            return Ok(Transformed::new(
-                new_plan,
-                true,
-                TreeNodeRecursion::Continue,
-            ));
+        let mut new_source =
+            LiquidParquetSource::from_parquet_source(parquet_source.clone(), cache.clone());
+        if let Some(schema_factory) = file_scan_config.file_source().schema_adapter_factory() {
+            let new_schema = enrich_source_schema(
+                file_scan_config.file_schema(),
+                &schema_factory,
+                eager_shredding,
+            );
+            let table_partition_cols = new_source.table_schema().table_partition_cols();
+            let new_table_schema =
+                TableSchema::new(Arc::new(new_schema), table_partition_cols.clone());
+            new_source = new_source.with_table_schema(new_table_schema);
         }
+
+        new_config.file_source = Arc::new(new_source);
+        let new_file_source: Arc<dyn DataSource> = Arc::new(new_config);
+        let new_plan = Arc::new(DataSourceExec::new(new_file_source));
+
+        return Ok(Transformed::new(
+            new_plan,
+            true,
+            TreeNodeRecursion::Continue,
+        ));
+    }
     Ok(Transformed::no(plan))
 }
 
