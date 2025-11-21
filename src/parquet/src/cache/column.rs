@@ -1,11 +1,12 @@
 use arrow::{
-    array::{Array, ArrayRef, BooleanArray, StructArray},
+    array::{Array, ArrayRef, AsArray, BooleanArray},
     buffer::BooleanBuffer,
     compute::prep_null_mask_filter,
     record_batch::RecordBatch,
 };
 use arrow_schema::{ArrowError, DataType, Field, Schema};
 use liquid_cache_storage::cache::{CacheExpression, CacheStorage, ColumnID};
+use liquid_cache_storage::variant_schema::VariantSchema;
 use liquid_cache_storage::variant_utils::typed_struct_contains_path;
 use parquet::arrow::arrow_reader::ArrowPredicate;
 use parquet_variant_compute::{VariantArray, VariantType, shred_variant, unshred_variant};
@@ -14,7 +15,6 @@ use crate::{
     LiquidPredicate,
     cache::{BatchID, ColumnAccessPath, ParquetArrayID},
     optimizers::{DATE_MAPPING_METADATA_KEY, variant_mappings_from_field},
-    variant_schema::VariantSchema,
 };
 use std::sync::Arc;
 
@@ -100,9 +100,9 @@ impl LiquidCachedColumn {
         self.expression.clone()
     }
 
-    fn array_to_record_batch(&self, array: ArrayRef) -> Result<RecordBatch, ArrowError> {
+    fn array_to_record_batch(&self, array: ArrayRef) -> RecordBatch {
         let schema = Arc::new(Schema::new(vec![self.field.clone()]));
-        RecordBatch::try_new(schema, vec![array])
+        RecordBatch::try_new(schema, vec![array]).unwrap()
     }
 
     /// Evaluates a predicate on a cached column.
@@ -127,10 +127,11 @@ impl LiquidCachedColumn {
                 Some(Ok(predicate_filter))
             }
             Err(array) => {
-                let record_batch = match self.array_to_record_batch(array) {
-                    Ok(batch) => batch,
-                    Err(err) => return Some(Err(err)),
-                };
+                let mut array = array;
+                if let Some(transformed) = maybe_shred_variant_array(&array, self.field.as_ref()) {
+                    array = transformed;
+                }
+                let record_batch = self.array_to_record_batch(array);
                 let boolean_array = match predicate.evaluate(record_batch) {
                     Ok(arr) => arr,
                     Err(err) => return Some(Err(err)),
@@ -151,13 +152,16 @@ impl LiquidCachedColumn {
         filter: &BooleanBuffer,
     ) -> Option<ArrayRef> {
         let entry_id = self.entry_id(batch_id).into();
-        let array = self
+        let mut array = self
             .cache_store
             .get(&entry_id)
             .with_selection(filter)
             .with_optional_expression_hint(self.expression())
             .read()
             .await?;
+        if let Some(transformed) = maybe_shred_variant_array(&array, self.field.as_ref()) {
+            array = transformed;
+        }
         Some(array)
     }
 
@@ -175,12 +179,6 @@ impl LiquidCachedColumn {
     ) -> Result<(), InsertArrowArrayError> {
         if self.is_cached(batch_id) {
             return Err(InsertArrowArrayError::AlreadyCached);
-        }
-        let mut array = array;
-        if self.expression.is_some()
-            && let Some(transformed) = maybe_shred_variant_array(&array, self.field.as_ref())
-        {
-            array = transformed;
         }
         self.cache_store
             .insert(self.entry_id(batch_id).into(), array)
@@ -238,13 +236,12 @@ fn shred_variant_array(
 }
 
 fn variant_contains_typed_field(array: &VariantArray, path: &str) -> bool {
-    let Some(typed_root) = array
-        .typed_value_field()
-        .and_then(|typed| typed.as_any().downcast_ref::<StructArray>())
-    else {
+    let Some(typed_field) = array.typed_value_field() else {
         return false;
     };
-
+    let Some(typed_root) = typed_field.as_struct_opt() else {
+        return false;
+    };
     typed_struct_contains_path(typed_root, path)
 }
 

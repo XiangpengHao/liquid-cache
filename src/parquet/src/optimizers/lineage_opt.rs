@@ -608,9 +608,11 @@ impl TableColumnUsage {
 
             let mut field_map: HashMap<String, VariantField> = HashMap::new();
             let mut valid = true;
+            let mut saw_variant_get = false;
             for usage in &stats.usages {
                 match usage.first() {
                     Some(Operation::VariantGet { path, data_type }) => {
+                        saw_variant_get = true;
                         match field_map.entry(path.clone()) {
                             Entry::Vacant(entry) => {
                                 entry.insert(VariantField {
@@ -632,6 +634,9 @@ impl TableColumnUsage {
                             }
                         }
                     }
+                    // A passthrough of the base column (no operations) should not invalidate
+                    // the variant metadata, but also does not contribute a path.
+                    None => continue,
                     _ => {
                         valid = false;
                         break;
@@ -639,7 +644,7 @@ impl TableColumnUsage {
                 }
             }
 
-            if valid && !field_map.is_empty() {
+            if valid && saw_variant_get && !field_map.is_empty() {
                 let mut fields: Vec<VariantField> = field_map.into_values().collect();
                 fields.sort();
                 gets.push(VariantExtraction {
@@ -1581,6 +1586,64 @@ mod tests {
                 expected_vec.sort();
                 assert_eq!(actual, expected_vec, "SQL: {}", sql);
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn variant_edge_case() {
+        let temp_dir = TempDir::new().unwrap();
+        let table_a = temp_dir.path().join("table_a.parquet");
+        let table_b = temp_dir.path().join("table_b.parquet");
+
+        let optimizer = Arc::new(LineageOptimizer::new());
+        let ctx = create_test_ctx(
+            table_a.to_str().unwrap(),
+            table_b.to_str().unwrap(),
+            optimizer.clone(),
+        )
+        .await;
+
+        ctx.register_udf(ScalarUDF::new_from_impl(VariantGetUdf::default()));
+
+        let variant_path = write_variant_parquet_file(temp_dir.path());
+        ctx.register_parquet(
+            "variants_test",
+            variant_path.to_str().unwrap(),
+            ParquetReadOptions::default().skip_metadata(false),
+        )
+        .await
+        .unwrap();
+
+        let test_cases = vec![(
+            "SELECT variant_get(data, 'did', 'Utf8') as user_id,  
+             MAX(TO_TIMESTAMP_MICROS(variant_get(data, 'time_us', 'Int64'))) - MIN(TO_TIMESTAMP_MICROS(variant_get(data, 'time_us', 'Int64'))) 
+            FROM variants_test GROUP BY user_id",
+            vec!["did", "time_us"],
+        )];
+
+        for (sql, expected_variant_paths) in test_cases {
+            let df = ctx.sql(sql).await.unwrap();
+            let (state, plan) = df.into_parts();
+            let optimized = state.optimize(&plan).unwrap();
+            println!("optimized: {}", optimized);
+            let physical_plan = state.create_physical_plan(&optimized).await.unwrap();
+
+            let variant_metadata = extract_field_metadata_from_physical_plan(
+                &physical_plan,
+                VARIANT_MAPPING_METADATA_KEY,
+            );
+
+            let mut actual = variant_metadata
+                .get("data")
+                .map(|value| variant_paths_from_metadata(value))
+                .unwrap_or_default();
+            actual.sort();
+            let mut expected_vec = expected_variant_paths
+                .into_iter()
+                .map(|path| path.to_string())
+                .collect::<Vec<_>>();
+            expected_vec.sort();
+            assert_eq!(actual, expected_vec);
         }
     }
 }

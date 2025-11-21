@@ -226,7 +226,8 @@ impl LiquidCacheReaderInner {
         if self.projection_columns.is_empty() {
             let options = RecordBatchOptions::new().with_row_count(Some(selected_rows));
             let batch =
-                RecordBatch::try_new_with_options(self.schema.clone(), Vec::new(), &options)?;
+                RecordBatch::try_new_with_options(self.schema.clone(), Vec::new(), &options)
+                    .unwrap();
             return Ok(Some(batch));
         }
 
@@ -254,7 +255,9 @@ impl LiquidCacheReaderInner {
             arrays.push(array);
         }
 
-        RecordBatch::try_new(self.schema.clone(), arrays).map(Some)
+        Ok(Some(
+            RecordBatch::try_new(self.schema.clone(), arrays).unwrap(),
+        ))
     }
 }
 

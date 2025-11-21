@@ -215,10 +215,6 @@ impl LiquidCachedFile {
     pub fn schema(&self) -> SchemaRef {
         Arc::clone(&self.file_schema)
     }
-
-    fn reset(&self) {
-        self.cache_store.reset();
-    }
 }
 
 /// A reference to a cached file.
@@ -227,8 +223,8 @@ pub(crate) type LiquidCachedFileRef = Arc<LiquidCachedFile>;
 /// The main cache structure.
 #[derive(Debug)]
 pub struct LiquidCache {
-    /// Files -> RowGroups -> Columns -> Batches
-    files: Mutex<AHashMap<String, Arc<LiquidCachedFile>>>,
+    /// Map file path to file id.
+    files: Mutex<AHashMap<String, u64>>,
 
     cache_store: Arc<CacheStorage>,
 
@@ -273,15 +269,16 @@ impl LiquidCache {
         full_file_schema: SchemaRef,
     ) -> LiquidCachedFileRef {
         let mut files = self.files.lock().unwrap();
-        let value = files.entry(file_path.clone()).or_insert_with(|| {
-            let file_id = self.current_file_id.fetch_add(1, Ordering::Relaxed);
-            Arc::new(LiquidCachedFile::new(
-                self.cache_store.clone(),
-                file_id,
-                full_file_schema.clone(),
-            ))
-        });
-        value.clone()
+        let file_id = *files
+            .entry(file_path.clone())
+            .or_insert_with(|| self.current_file_id.fetch_add(1, Ordering::Relaxed));
+        drop(files);
+
+        Arc::new(LiquidCachedFile::new(
+            self.cache_store.clone(),
+            file_id,
+            full_file_schema,
+        ))
     }
 
     /// Get the batch size of the cache.
@@ -326,9 +323,7 @@ impl LiquidCache {
     /// You should only call this when no one else is using the cache.
     pub unsafe fn reset(&self) {
         let mut files = self.files.lock().unwrap();
-        for file in files.values_mut() {
-            file.reset();
-        }
+        files.clear();
         self.cache_store.reset();
     }
 

@@ -3,8 +3,9 @@
 use std::sync::Arc;
 
 use arrow::array::{Array, ArrayRef, StructArray};
+use arrow_schema::DataType;
 use bytes::Bytes;
-use parquet_variant_compute::VariantArray;
+use parquet_variant_compute::{VariantArray, shred_variant, unshred_variant};
 
 use crate::cache::{
     CacheExpression, LiquidCompressorStates, VariantRequest,
@@ -13,6 +14,7 @@ use crate::cache::{
     utils::arrow_to_bytes,
 };
 use crate::liquid_array::{HybridBacking, LiquidHybridArrayRef, VariantStructHybridArray};
+use crate::variant_schema::VariantSchema;
 
 /// What to do when we need to squeeze an entry?
 pub trait SqueezePolicy: std::fmt::Debug + Send + Sync {
@@ -86,7 +88,8 @@ impl SqueezePolicy for TranscodeSqueezeEvict {
             CachedData::MemoryArrow(array) => {
                 if let Some(requests) =
                     squeeze_hint.and_then(|expression| expression.variant_requests())
-                    && let Some((hybrid_array, bytes)) = try_variant_squeeze(&array, requests)
+                    && let Some((hybrid_array, bytes)) =
+                        try_variant_squeeze(&array, requests, compressor)
                 {
                     return (CacheEntry::memory_hybrid_liquid(hybrid_array), Some(bytes));
                 }
@@ -179,15 +182,26 @@ impl SqueezePolicy for TranscodeEvict {
 fn try_variant_squeeze(
     array: &ArrayRef,
     requests: &[VariantRequest],
+    compressor: &LiquidCompressorStates,
 ) -> Option<(LiquidHybridArrayRef, Bytes)> {
     let struct_array = array.as_any().downcast_ref::<StructArray>()?;
-    let variant_array = VariantArray::try_new(struct_array).ok()?;
+    let mut variant_array = VariantArray::try_new(struct_array).ok()?;
     if variant_array.is_empty() {
         return None;
     }
 
     if requests.is_empty() {
         return None;
+    }
+
+    let mut shredded_array: Option<ArrayRef> = None;
+    if let Some(shredding_type) = build_shredding_schema(struct_array, requests)
+        && let Ok(unshredded) = unshred_variant(&variant_array)
+        && let Ok(shredded) = shred_variant(&unshredded, &shredding_type)
+    {
+        let shredded_struct: ArrayRef = Arc::new(shredded.into_inner());
+        variant_array = VariantArray::try_new(shredded_struct.as_ref()).ok()?;
+        shredded_array = Some(shredded_struct);
     }
 
     let typed_root = variant_array.typed_value_field()?;
@@ -216,9 +230,18 @@ fn try_variant_squeeze(
         return None;
     }
 
+    let backing_array = shredded_array.as_ref().unwrap_or(array);
     let nulls = variant_array.inner().nulls().cloned();
-    let bytes = arrow_to_bytes(array).ok()?;
-    let hybrid = VariantStructHybridArray::new(collected, nulls, array.data_type().clone());
+    let bytes = arrow_to_bytes(backing_array).ok()?;
+    let mut liquid_values = Vec::with_capacity(collected.len());
+    for (path, typed_values) in collected {
+        let Ok(liquid_array) = transcode_liquid_inner(&typed_values, compressor) else {
+            return None;
+        };
+        liquid_values.push((path, liquid_array));
+    }
+    let hybrid =
+        VariantStructHybridArray::new(liquid_values, nulls, backing_array.data_type().clone());
     Some((Arc::new(hybrid) as LiquidHybridArrayRef, bytes))
 }
 
@@ -227,6 +250,29 @@ fn split_variant_path(path: &str) -> Vec<String> {
         .filter(|segment| !segment.is_empty())
         .map(|segment| segment.to_string())
         .collect()
+}
+
+fn build_shredding_schema(
+    variant_struct: &StructArray,
+    requests: &[VariantRequest],
+) -> Option<DataType> {
+    let typed_field = match variant_struct.data_type() {
+        DataType::Struct(fields) => fields
+            .iter()
+            .find(|child| child.name() == "typed_value")
+            .cloned(),
+        _ => None,
+    };
+
+    let mut schema = VariantSchema::new(typed_field.as_deref());
+    for request in requests {
+        let path = request.path().trim();
+        if path.is_empty() {
+            continue;
+        }
+        schema.insert_path(path, request.data_type());
+    }
+    schema.shredding_type()
 }
 
 fn extract_typed_values_for_path(typed_root: &StructArray, path: &str) -> Option<ArrayRef> {

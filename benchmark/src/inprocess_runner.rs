@@ -245,6 +245,7 @@ impl InProcessBenchmarkRunner {
                     .with_cache_policy(Box::new(LiquidPolicy::new()))
                     .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
                     .with_io_mode(self.io_mode)
+                    .with_eager_shredding(true)
                     .build(session_config)?;
                 (v.0, Some(v.1))
             }

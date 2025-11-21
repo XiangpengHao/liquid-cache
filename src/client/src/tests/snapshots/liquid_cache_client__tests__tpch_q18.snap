@@ -87,72 +87,57 @@ expression: displayable.tree_render().to_string()
 │                           ││     RoundRobinBatch(8)    │
 └─────────────┬─────────────┘└─────────────┬─────────────┘
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-│    CoalesceBatchesExec    ││    CoalesceBatchesExec    │
+│         FilterExec        ││    CoalesceBatchesExec    │
 │    --------------------   ││    --------------------   │
-│     target_batch_size:    ││     target_batch_size:    │
-│           16384           ││           16384           │
+│         predicate:        ││     target_batch_size:    │
+│ sum(lineitem.l_quantity) >││           16384           │
+│      Some(30000),25,2     ││                           │
 └─────────────┬─────────────┘└─────────────┬─────────────┘
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-│         FilterExec        ││        HashJoinExec       │
+│       AggregateExec       ││        HashJoinExec       │
 │    --------------------   ││    --------------------   │
-│         predicate:        ││            on:            ├───────────────────────────────────────────┐
-│ sum(lineitem.l_quantity) >││ (o_orderkey = l_orderkey) │                                           │
-│      Some(30000),25,2     ││                           │                                           │
+│           aggr:           ││            on:            │
+│  sum(lineitem.l_quantity) ││ (o_orderkey = l_orderkey) │
+│                           ││                           ├───────────────────────────────────────────┐
+│    group_by: l_orderkey   ││                           │                                           │
+│                           ││                           │                                           │
+│           mode:           ││                           │                                           │
+│      FinalPartitioned     ││                           │                                           │
 └─────────────┬─────────────┘└─────────────┬─────────────┘                                           │
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
-│       AggregateExec       ││    CoalesceBatchesExec    │                             │   LiquidCacheClientExec   │
+│    CoalesceBatchesExec    ││    CoalesceBatchesExec    │                             │   LiquidCacheClientExec   │
 │    --------------------   ││    --------------------   │                             │    --------------------   │
-│           aggr:           ││     target_batch_size:    │                             │          server:          │
-│  sum(lineitem.l_quantity) ││           16384           │                             │  http://localhost:50051,  │
+│     target_batch_size:    ││     target_batch_size:    │                             │          server:          │
+│           16384           ││           16384           │                             │  http://localhost:50051,  │
 │                           ││                           │                             │      object_stores=[]     │
-│    group_by: l_orderkey   ││                           │                             │                           │
-│                           ││                           │                             │                           │
-│           mode:           ││                           │                             │                           │
-│      FinalPartitioned     ││                           │                             │                           │
 └─────────────┬─────────────┘└─────────────┬─────────────┘                             └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
-│    CoalesceBatchesExec    ││        HashJoinExec       │                             │       DataSourceExec      │
+│      RepartitionExec      ││        HashJoinExec       │                             │       DataSourceExec      │
 │    --------------------   ││    --------------------   │                             │    --------------------   │
-│     target_batch_size:    ││            on:            │                             │          files: 1         │
-│           16384           ││  (c_custkey = o_custkey)  ├──────────────┐              │      format: parquet      │
+│ partition_count(in->out): ││            on:            │                             │          files: 1         │
+│           1 -> 8          ││  (c_custkey = o_custkey)  ├──────────────┐              │      format: parquet      │
 │                           ││                           │              │              │                           │
-│                           ││                           │              │              │         predicate:        │
-│                           ││                           │              │              │  DynamicFilter [ empty ]  │
+│    partitioning_scheme:   ││                           │              │              │         predicate:        │
+│  Hash([l_orderkey@0], 8)  ││                           │              │              │  DynamicFilter [ empty ]  │
 └─────────────┬─────────────┘└─────────────┬─────────────┘              │              └───────────────────────────┘
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-│      RepartitionExec      ││   LiquidCacheClientExec   ││   LiquidCacheClientExec   │
+│       AggregateExec       ││   LiquidCacheClientExec   ││   LiquidCacheClientExec   │
 │    --------------------   ││    --------------------   ││    --------------------   │
-│ partition_count(in->out): ││          server:          ││          server:          │
-│           8 -> 8          ││  http://localhost:50051,  ││  http://localhost:50051,  │
+│           aggr:           ││          server:          ││          server:          │
+│  sum(lineitem.l_quantity) ││  http://localhost:50051,  ││  http://localhost:50051,  │
 │                           ││      object_stores=[]     ││      object_stores=[]     │
-│    partitioning_scheme:   ││                           ││                           │
-│  Hash([l_orderkey@0], 8)  ││                           ││                           │
+│    group_by: l_orderkey   ││                           ││                           │
+│       mode: Partial       ││                           ││                           │
 └─────────────┬─────────────┘└─────────────┬─────────────┘└─────────────┬─────────────┘
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-│      RepartitionExec      ││       DataSourceExec      ││       DataSourceExec      │
+│   LiquidCacheClientExec   ││       DataSourceExec      ││       DataSourceExec      │
 │    --------------------   ││    --------------------   ││    --------------------   │
-│ partition_count(in->out): ││          files: 1         ││          files: 1         │
-│           1 -> 8          ││      format: parquet      ││      format: parquet      │
-│                           ││                           ││                           │
-│    partitioning_scheme:   ││                           ││         predicate:        │
-│     RoundRobinBatch(8)    ││                           ││  DynamicFilter [ empty ]  │
+│          server:          ││          files: 1         ││          files: 1         │
+│  http://localhost:50051,  ││      format: parquet      ││      format: parquet      │
+│      object_stores=[]     ││                           ││                           │
+│                           ││                           ││         predicate:        │
+│                           ││                           ││  DynamicFilter [ empty ]  │
 └─────────────┬─────────────┘└───────────────────────────┘└───────────────────────────┘
-┌─────────────┴─────────────┐
-│       AggregateExec       │
-│    --------------------   │
-│           aggr:           │
-│  sum(lineitem.l_quantity) │
-│                           │
-│    group_by: l_orderkey   │
-│       mode: Partial       │
-└─────────────┬─────────────┘
-┌─────────────┴─────────────┐
-│   LiquidCacheClientExec   │
-│    --------------------   │
-│          server:          │
-│  http://localhost:50051,  │
-│      object_stores=[]     │
-└─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
 │       DataSourceExec      │
 │    --------------------   │

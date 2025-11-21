@@ -365,13 +365,13 @@ fn write_large_variant_parquet_file(dir: &Path, num_rows: usize) -> PathBuf {
 async fn test_large_variant_squeeze() {
     let cache_dir = TempDir::new().unwrap();
     let parquet_dir = TempDir::new().unwrap();
-    let num_rows = 10_000;
+    let num_rows = 1_000;
     let parquet_path = write_large_variant_parquet_file(parquet_dir.path(), num_rows);
     let parquet_path_str = parquet_path.to_str().unwrap();
 
     let (ctx, _cache) = LiquidCacheLocalBuilder::new()
         .with_cache_dir(cache_dir.path().to_path_buf())
-        .with_max_cache_bytes(1024 * 1024)
+        .with_max_cache_bytes(1024)
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
         .build(SessionConfig::new())
         .unwrap();
@@ -383,23 +383,6 @@ async fn test_large_variant_squeeze() {
     )
     .await
     .unwrap();
-
-    // let batches = ctx
-    //     .sql(
-    //         "SELECT Count(Distinct(variant_get(data, 'name', 'Utf8'))) FROM large_variants LIMIT 5",
-    //     )
-    //     .await
-    //     .unwrap()
-    //     .collect()
-    //     .await
-    //     .expect("should query variant field");
-    // let count = batches[0]
-    //     .column(0)
-    //     .as_any()
-    //     .downcast_ref::<arrow::array::Int64Array>()
-    //     .unwrap()
-    //     .value(0);
-    // assert_eq!(count, num_rows as i64);
 
     let batches = ctx
         .sql("SELECT Count(Distinct(variant_get(data, 'details.info', 'Utf8'))) FROM large_variants LIMIT 5")
@@ -414,5 +397,114 @@ async fn test_large_variant_squeeze() {
         .downcast_ref::<arrow::array::Int64Array>()
         .unwrap()
         .value(0);
-    assert_eq!(count, 6667_i64);
+    assert_eq!(count, 667_i64);
+}
+
+#[tokio::test]
+async fn variant_multi_queries() {
+    let cache_dir = TempDir::new().unwrap();
+    let parquet_dir = TempDir::new().unwrap();
+    let num_rows = 1_000;
+    let parquet_path = write_large_variant_parquet_file(parquet_dir.path(), num_rows);
+    let parquet_path_str = parquet_path.to_str().unwrap();
+
+    let (ctx, _cache) = LiquidCacheLocalBuilder::new()
+        .with_cache_dir(cache_dir.path().to_path_buf())
+        .with_max_cache_bytes(1024)
+        .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+        .build(SessionConfig::new())
+        .unwrap();
+
+    ctx.register_parquet(
+        "large_variants",
+        parquet_path_str,
+        ParquetReadOptions::default(),
+    )
+    .await
+    .unwrap();
+
+    ctx.sql(
+        "SELECT Count(Distinct(variant_get(data, 'name', 'Utf8'))) FROM large_variants LIMIT 5",
+    )
+    .await
+    .unwrap()
+    .collect()
+    .await
+    .unwrap();
+
+    let batches = ctx
+        .sql(
+            "SELECT Count(Distinct(variant_get(data, 'details.info', 'Utf8'))) FROM large_variants LIMIT 5",
+        )
+        .await
+        .unwrap();
+    let batches = batches.collect().await.unwrap();
+    let count = batches[0]
+        .column(0)
+        .as_any()
+        .downcast_ref::<arrow::array::Int64Array>()
+        .unwrap()
+        .value(0);
+    assert_eq!(count, 667_i64);
+}
+
+#[tokio::test]
+async fn variant_multi_queries_complex() {
+    let cache_dir = TempDir::new().unwrap();
+    let parquet_dir = TempDir::new().unwrap();
+    let num_rows = 1_000;
+    let parquet_path = write_large_variant_parquet_file(parquet_dir.path(), num_rows);
+    let parquet_path_str = parquet_path.to_str().unwrap();
+
+    let (ctx, cache) = LiquidCacheLocalBuilder::new()
+        .with_cache_dir(cache_dir.path().to_path_buf())
+        .with_max_cache_bytes(1024 * 600)
+        .with_batch_size(8)
+        .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+        .build(SessionConfig::new())
+        .unwrap();
+
+    ctx.register_parquet(
+        "large_variants",
+        parquet_path_str,
+        ParquetReadOptions::default(),
+    )
+    .await
+    .unwrap();
+
+    ctx.sql(
+        "SELECT Count(Distinct(variant_get(data, 'details.info', 'Utf8'))) FROM large_variants LIMIT 5",
+    )
+    .await
+    .unwrap()
+    .collect()
+    .await
+    .unwrap();
+
+    ctx.sql(
+        "SELECT Count(Distinct(variant_get(data, 'details.info', 'Utf8'))) FROM large_variants LIMIT 5",
+    )
+    .await
+    .unwrap()
+    .collect()
+    .await
+    .unwrap();
+
+    let batches = ctx
+        .sql(
+            "SELECT Count(Distinct(variant_get(data, 'details.extra', 'Utf8'))) FROM large_variants WHERE variant_get(data, 'details.info', 'Utf8') = 'info_1'",
+        )
+        .await
+        .unwrap();
+    let logical_plan = batches.logical_plan();
+    println!("logical_plan: \n{}", logical_plan);
+    println!("cache: \n{:?}", cache.storage().stats());
+    let batches = batches.collect().await.unwrap();
+    let count = batches[0]
+        .column(0)
+        .as_any()
+        .downcast_ref::<arrow::array::Int64Array>()
+        .unwrap()
+        .value(0);
+    assert_eq!(count, 1_i64);
 }
