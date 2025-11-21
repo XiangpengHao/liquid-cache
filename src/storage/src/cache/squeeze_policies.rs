@@ -195,15 +195,13 @@ fn try_variant_squeeze(
     }
 
     let mut shredded_array: Option<ArrayRef> = None;
-    if let Some(shredding_type) = build_shredding_schema(struct_array, requests) {
-        if let Ok(unshredded) = unshred_variant(&variant_array) {
-            if let Ok(shredded) = shred_variant(&unshredded, &shredding_type) {
+    if let Some(shredding_type) = build_shredding_schema(struct_array, requests)
+        && let Ok(unshredded) = unshred_variant(&variant_array)
+            && let Ok(shredded) = shred_variant(&unshredded, &shredding_type) {
                 let shredded_struct: ArrayRef = Arc::new(shredded.into_inner());
                 variant_array = VariantArray::try_new(shredded_struct.as_ref()).ok()?;
                 shredded_array = Some(shredded_struct);
             }
-        }
-    }
 
     let typed_root = variant_array.typed_value_field()?;
     let typed_root = typed_root.as_any().downcast_ref::<StructArray>()?;

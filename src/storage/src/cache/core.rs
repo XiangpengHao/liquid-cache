@@ -803,6 +803,7 @@ impl CacheStorage {
                         .iter()
                         .all(|request| variant_hybrid.contains_path(request.path()))
                 {
+                    self.runtime_stats.incr_get_full_hybrid_needs_io();
                     let path = self.hybrid_disk_path(entry_id, array);
                     return self.read_disk_arrow_array(path, selection).await;
                 }

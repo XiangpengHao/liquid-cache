@@ -161,8 +161,8 @@ fn try_optimize_parquet_source(
     eager_shredding: bool,
 ) -> Result<Transformed<Arc<dyn ExecutionPlan>>, datafusion::error::DataFusionError> {
     let any_plan = plan.as_any();
-    if let Some(data_source_exec) = any_plan.downcast_ref::<DataSourceExec>() {
-        if let Some((file_scan_config, parquet_source)) =
+    if let Some(data_source_exec) = any_plan.downcast_ref::<DataSourceExec>()
+        && let Some((file_scan_config, parquet_source)) =
             data_source_exec.downcast_to_file_source::<ParquetSource>()
         {
             let mut new_config = file_scan_config.clone();
@@ -191,7 +191,6 @@ fn try_optimize_parquet_source(
                 TreeNodeRecursion::Continue,
             ));
         }
-    }
     Ok(Transformed::no(plan))
 }
 

@@ -608,9 +608,11 @@ impl TableColumnUsage {
 
             let mut field_map: HashMap<String, VariantField> = HashMap::new();
             let mut valid = true;
+            let mut saw_variant_get = false;
             for usage in &stats.usages {
                 match usage.first() {
                     Some(Operation::VariantGet { path, data_type }) => {
+                        saw_variant_get = true;
                         match field_map.entry(path.clone()) {
                             Entry::Vacant(entry) => {
                                 entry.insert(VariantField {
@@ -632,6 +634,9 @@ impl TableColumnUsage {
                             }
                         }
                     }
+                    // A passthrough of the base column (no operations) should not invalidate
+                    // the variant metadata, but also does not contribute a path.
+                    None => continue,
                     _ => {
                         valid = false;
                         break;
@@ -639,7 +644,7 @@ impl TableColumnUsage {
                 }
             }
 
-            if valid && !field_map.is_empty() {
+            if valid && saw_variant_get && !field_map.is_empty() {
                 let mut fields: Vec<VariantField> = field_map.into_values().collect();
                 fields.sort();
                 gets.push(VariantExtraction {
