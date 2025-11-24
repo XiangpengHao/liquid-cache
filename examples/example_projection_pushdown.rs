@@ -1,6 +1,6 @@
 use clap::Parser;
 use datafusion::{error::Result, execution::object_store::ObjectStoreUrl, prelude::*};
-use liquid_cache_client::LiquidCacheBuilder;
+use liquid_cache_client::LiquidCacheClientBuilder;
 use std::path::Path;
 use std::sync::Arc;
 use url::Url;
@@ -33,7 +33,7 @@ pub async fn main() -> Result<()> {
     let url = Url::parse(&args.file).unwrap();
     let object_store_url = format!("{}://{}", url.scheme(), url.host_str().unwrap_or_default());
 
-    let ctx = LiquidCacheBuilder::new(args.cache_server.clone())
+    let ctx = LiquidCacheClientBuilder::new(args.cache_server.clone())
         .with_object_store(ObjectStoreUrl::parse(object_store_url.as_str())?, None)
         .build(SessionConfig::from_env()?)?;
     let ctx = Arc::new(ctx);

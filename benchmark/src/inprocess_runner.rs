@@ -10,7 +10,7 @@ use datafusion::parquet::{
 use datafusion::prelude::{SessionConfig, SessionContext};
 use liquid_cache_common::IoMode;
 use liquid_cache_local::LiquidCacheLocalBuilder;
-use liquid_cache_parquet::{LiquidCacheRef, extract_execution_metrics};
+use liquid_cache_parquet::{LiquidCacheParquetRef, extract_execution_metrics};
 use liquid_cache_storage::cache::squeeze_policies::{Evict, TranscodeEvict, TranscodeSqueezeEvict};
 use liquid_cache_storage::cache_policies::LiquidPolicy;
 use log::info;
@@ -186,7 +186,7 @@ impl InProcessBenchmarkRunner {
     async fn setup_context(
         &self,
         manifest: &BenchmarkManifest,
-    ) -> Result<(Arc<SessionContext>, Option<LiquidCacheRef>)> {
+    ) -> Result<(Arc<SessionContext>, Option<LiquidCacheParquetRef>)> {
         let mut session_config = SessionConfig::from_env()?;
         // Apply some helpful defaults for non-DataFusionDefault modes
         if self.bench_mode != InProcessBenchmarkMode::DataFusionDefault {
@@ -215,7 +215,7 @@ impl InProcessBenchmarkRunner {
         }
         std::fs::create_dir_all(&cache_dir)?;
 
-        let (ctx, cache): (SessionContext, Option<LiquidCacheRef>) = match self.bench_mode {
+        let (ctx, cache): (SessionContext, Option<LiquidCacheParquetRef>) = match self.bench_mode {
             InProcessBenchmarkMode::Parquet => {
                 let mut session_config = session_config.clone();
                 session_config
@@ -370,7 +370,7 @@ impl InProcessBenchmarkRunner {
         ctx: &Arc<SessionContext>,
         query: &Query,
         bench_start_time: Instant,
-        cache: Option<LiquidCacheRef>,
+        cache: Option<LiquidCacheParquetRef>,
         iteration: u32,
     ) -> Result<IterationResult> {
         info!(

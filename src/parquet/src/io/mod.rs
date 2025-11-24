@@ -1,12 +1,13 @@
 use std::{
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{Arc, RwLock},
 };
 
 use ahash::AHashMap;
 use bytes::Bytes;
 use liquid_cache_common::IoMode;
-use liquid_cache_storage::cache::{EntryID, IoContext, LiquidCompressorStates};
+use liquid_cache_storage::cache::{CacheEntry, EntryID, IoContext, LiquidCompressorStates};
+use liquid_cache_storage::liquid_array::HybridBacking;
 
 use crate::cache::{ColumnAccessPath, ParquetArrayID};
 
@@ -48,10 +49,6 @@ impl ParquetIoContext {
 
 #[async_trait::async_trait]
 impl IoContext for ParquetIoContext {
-    fn base_dir(&self) -> &Path {
-        &self.base_dir
-    }
-
     fn get_compressor(&self, entry_id: &EntryID) -> Arc<LiquidCompressorStates> {
         let column_path = ColumnAccessPath::from(ParquetArrayID::from(*entry_id));
         let mut states = self.compressor_states.write().unwrap();
@@ -61,14 +58,20 @@ impl IoContext for ParquetIoContext {
             .clone()
     }
 
-    fn arrow_path(&self, entry_id: &EntryID) -> PathBuf {
+    fn disk_path(&self, entry: &CacheEntry, entry_id: &EntryID) -> PathBuf {
         let parquet_array_id = ParquetArrayID::from(*entry_id);
-        parquet_array_id.on_disk_arrow_path(self.base_dir())
-    }
-
-    fn liquid_path(&self, entry_id: &EntryID) -> PathBuf {
-        let parquet_array_id = ParquetArrayID::from(*entry_id);
-        parquet_array_id.on_disk_path(self.base_dir())
+        match entry {
+            CacheEntry::DiskArrow(_) | CacheEntry::MemoryArrow(_) => {
+                parquet_array_id.on_disk_arrow_path(&self.base_dir)
+            }
+            CacheEntry::DiskLiquid(_) | CacheEntry::MemoryLiquid(_) => {
+                parquet_array_id.on_disk_path(&self.base_dir)
+            }
+            CacheEntry::MemoryHybridLiquid(array) => match array.disk_backing() {
+                HybridBacking::Arrow => parquet_array_id.on_disk_arrow_path(&self.base_dir),
+                HybridBacking::Liquid => parquet_array_id.on_disk_path(&self.base_dir),
+            },
+        }
     }
 
     #[inline(never)]

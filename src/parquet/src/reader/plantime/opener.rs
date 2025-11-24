@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
-    cache::LiquidCacheRef,
+    cache::LiquidCacheParquetRef,
     optimizers::enrich_schema_for_cache,
     reader::{
         plantime::{row_filter::build_row_filter, row_group_filter::RowGroupAccessPlanFilter},
@@ -47,7 +47,7 @@ pub struct LiquidParquetOpener {
     metrics: ExecutionPlanMetricsSet,
     parquet_file_reader_factory: Arc<CachedMetaReaderFactory>,
     reorder_filters: bool,
-    liquid_cache: LiquidCacheRef,
+    liquid_cache: LiquidCacheParquetRef,
     schema_adapter_factory: Arc<dyn SchemaAdapterFactory>,
     span: Option<Arc<fastrace::Span>>,
 }
@@ -64,7 +64,7 @@ impl LiquidParquetOpener {
         page_pruning_predicate: Option<Arc<PagePruningAccessPlanFilter>>,
         downstream_full_schema: SchemaRef,
         metrics: ExecutionPlanMetricsSet,
-        liquid_cache: LiquidCacheRef,
+        liquid_cache: LiquidCacheParquetRef,
         parquet_file_reader_factory: Arc<CachedMetaReaderFactory>,
         reorder_filters: bool,
         schema_adapter_factory: Arc<dyn SchemaAdapterFactory>,

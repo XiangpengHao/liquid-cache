@@ -1,5 +1,5 @@
 use super::opener::LiquidParquetOpener;
-use crate::cache::LiquidCacheRef;
+use crate::cache::LiquidCacheParquetRef;
 use ahash::{HashMap, HashMapExt};
 use arrow_schema::Schema;
 use bytes::Bytes;
@@ -170,7 +170,7 @@ pub struct LiquidParquetSource {
     pruning_predicate: Option<Arc<PruningPredicate>>,
     page_pruning_predicate: Option<Arc<PagePruningAccessPlanFilter>>,
     table_parquet_options: TableParquetOptions,
-    liquid_cache: LiquidCacheRef,
+    liquid_cache: LiquidCacheParquetRef,
     batch_size: Option<usize>,
     projected_statistics: Option<Statistics>,
     table_schema: TableSchema,
@@ -233,7 +233,7 @@ impl LiquidParquetSource {
     }
 
     /// Create a new LiquidParquetSource from a ParquetSource
-    pub fn from_parquet_source(source: ParquetSource, liquid_cache: LiquidCacheRef) -> Self {
+    pub fn from_parquet_source(source: ParquetSource, liquid_cache: LiquidCacheParquetRef) -> Self {
         let predicate = source.filter();
 
         let table_schema = source.table_schema().clone();

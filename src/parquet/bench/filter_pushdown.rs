@@ -1,7 +1,7 @@
 use arrow::buffer::BooleanBuffer;
 use divan::Bencher;
 use liquid_cache_common::IoMode;
-use liquid_cache_parquet::cache::LiquidCachedColumn;
+use liquid_cache_parquet::cache::CachedColumn;
 use liquid_cache_parquet::{FilterCandidateBuilder, LiquidPredicate};
 use liquid_cache_storage::cache::squeeze_policies::TranscodeSqueezeEvict;
 use liquid_cache_storage::cache_policies::LiquidPolicy;
@@ -17,7 +17,7 @@ use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr::expressions::{BinaryExpr, Literal};
 use datafusion::physical_plan::expressions::Column;
 use datafusion::physical_plan::metrics;
-use liquid_cache_parquet::cache::{BatchID, LiquidCache};
+use liquid_cache_parquet::cache::{BatchID, LiquidCacheParquet};
 use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
 use rand::Rng;
@@ -39,8 +39,8 @@ fn create_boolean_filter(array_size: usize, selectivity: f64) -> BooleanBuffer {
     BooleanBuffer::from(values)
 }
 
-fn setup_cache(tmp_dir: &TempDir) -> Arc<LiquidCachedColumn> {
-    let cache = LiquidCache::new(
+fn setup_cache(tmp_dir: &TempDir) -> Arc<CachedColumn> {
+    let cache = LiquidCacheParquet::new(
         BATCH_SIZE,
         1024 * 1024 * 1024, // max_cache_bytes (1GB)
         tmp_dir.path().to_path_buf(),

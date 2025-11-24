@@ -264,7 +264,7 @@ pub(crate) async fn get_execution_metrics_handler(
 }
 
 pub(crate) fn get_cache_stats_inner(
-    cache: &liquid_cache_parquet::LiquidCacheRef,
+    cache: &liquid_cache_parquet::LiquidCacheParquetRef,
     save_dir: impl AsRef<Path>,
     state: &AppState,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {

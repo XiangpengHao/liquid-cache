@@ -221,29 +221,25 @@ mod random_tests {
     }
 
     #[test]
-    fn randomized_byte_view_squeeze_and_soak_roundtrip() {
+    fn randomized_byte_view_squeeze_full_read_roundtrip() {
         for seed in 0..25u64 {
             // slightly fewer to keep runtime reasonable
             let mut rng = StdRng::seed_from_u64(0x50_55_45_33 + seed);
             let vals = gen_vec_opt_string(&mut rng, 32, 64);
             let input = StringArray::from(vals);
             let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
+            let decode_compressor = compressor.clone();
             let liquid = LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
 
-            let baseline = liquid.to_bytes();
-
-            if let Some((hybrid, bytes)) = liquid.squeeze(None) {
-                let range = hybrid.to_liquid().range;
-                assert!(range.start < range.end);
-                assert!((range.end as usize) <= bytes.len());
-
-                let fsst_bytes = bytes.slice(range.start as usize..range.end as usize);
-                let restored = hybrid.soak(fsst_bytes);
+            if let Some((_hybrid, bytes)) = liquid.squeeze(None) {
+                let restored = crate::liquid_array::ipc::read_from_bytes(
+                    bytes.clone(),
+                    &crate::liquid_array::ipc::LiquidIPCContext::new(Some(decode_compressor)),
+                );
 
                 let a1 = LiquidArray::to_arrow_array(&liquid);
                 let a2 = restored.to_arrow_array();
                 assert_eq!(a1.as_ref(), a2.as_ref());
-                assert_eq!(baseline, restored.to_bytes());
             }
         }
     }
@@ -525,7 +521,7 @@ mod random_tests {
     }
 
     #[test]
-    fn byte_view_squeeze_and_soak_roundtrip() {
+    fn byte_view_squeeze_and_full_read_roundtrip() {
         // Build a small array
         let input = StringArray::from(vec![
             Some("hello"),
@@ -535,24 +531,22 @@ mod random_tests {
             Some("byteview"),
         ]);
         let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
+        let decode_compressor = compressor.clone();
         let liquid = LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
 
         // Full IPC bytes as baseline
         let baseline = liquid.to_bytes();
 
         // Squeeze
-        let Some((hybrid, bytes)) = liquid.squeeze(None) else {
+        let Some((_hybrid, bytes)) = liquid.squeeze(None) else {
             panic!("squeeze should succeed");
         };
 
-        let range = hybrid.to_liquid().range;
-        // Sanity: range bounds are valid
-        assert!(range.start < range.end);
-        assert!(range.end as usize <= bytes.len());
-
-        // Soak back to memory with raw FSST bytes
-        let fsst_bytes = bytes.slice(range.start as usize..range.end as usize);
-        let restored = hybrid.soak(fsst_bytes);
+        // Hydrate from full IPC bytes
+        let restored = crate::liquid_array::ipc::read_from_bytes(
+            bytes.clone(),
+            &crate::liquid_array::ipc::LiquidIPCContext::new(Some(decode_compressor)),
+        );
 
         // Arrow equality check
         let a1 = LiquidArray::to_arrow_array(&liquid);

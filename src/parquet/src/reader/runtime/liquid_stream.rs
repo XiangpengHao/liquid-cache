@@ -1,4 +1,4 @@
-use crate::cache::{BatchID, InsertArrowArrayError, LiquidCachedFileRef, LiquidCachedRowGroupRef};
+use crate::cache::{BatchID, CachedFileRef, CachedRowGroupRef, InsertArrowArrayError};
 use crate::reader::plantime::{LiquidRowFilter, ParquetMetadataCacheReader};
 use arrow::array::RecordBatch;
 use arrow_schema::{Schema, SchemaRef};
@@ -39,7 +39,7 @@ struct ReaderFactory {
 
     offset: Option<usize>,
 
-    liquid_cache: LiquidCachedFileRef,
+    cached_file: CachedFileRef,
 }
 
 impl ReaderFactory {
@@ -100,7 +100,7 @@ impl ReaderFactory {
         }
 
         let row_count = meta.num_rows() as usize;
-        let cache_batch_size = self.liquid_cache.batch_size();
+        let cache_batch_size = self.cached_file.batch_size();
 
         let mut cache_projection = projection.clone();
         if let Some(ref predicate_projection) = predicate_projection {
@@ -113,7 +113,7 @@ impl ReaderFactory {
 
         let schema_descr = self.metadata.file_metadata().schema_descr();
         let cache_column_ids = get_root_column_ids(schema_descr, &cache_projection);
-        let cached_row_group = self.liquid_cache.create_row_group(row_group_idx as u64);
+        let cached_row_group = self.cached_file.create_row_group(row_group_idx as u64);
 
         let projection_column_ids = get_root_column_ids(schema_descr, &projection);
         let missing_batches =
@@ -274,7 +274,7 @@ fn collect_selection_batches(
 }
 
 fn compute_missing_batches(
-    cached_row_group: &LiquidCachedRowGroupRef,
+    cached_row_group: &CachedRowGroupRef,
     column_ids: &[usize],
     selection_batches: &[BatchID],
 ) -> Vec<BatchID> {
@@ -352,7 +352,7 @@ async fn insert_batch_into_cache(
     batch_id: BatchID,
     batch_size: usize,
     row_count: usize,
-    cached_row_group: &LiquidCachedRowGroupRef,
+    cached_row_group: &CachedRowGroupRef,
 ) -> Result<(), ParquetError> {
     if column_ids.is_empty() || record_batch.num_rows() == 0 {
         return Ok(());
@@ -401,7 +401,7 @@ struct PlanningContext {
     row_group_idx: usize,
     selection: RowSelection,
     batch_size: usize,
-    cached_row_group: LiquidCachedRowGroupRef,
+    cached_row_group: CachedRowGroupRef,
     cache_projection: ProjectionMask,
     projection_column_ids: Vec<usize>,
     cache_column_ids: Vec<usize>,
@@ -500,7 +500,7 @@ impl LiquidStreamBuilder {
         self
     }
 
-    pub fn build(self, liquid_cache: LiquidCachedFileRef) -> Result<LiquidStream, ParquetError> {
+    pub fn build(self, liquid_cache: CachedFileRef) -> Result<LiquidStream, ParquetError> {
         let num_row_groups = self.metadata.row_groups().len();
 
         let row_groups: VecDeque<usize> = match self.row_groups {
@@ -530,7 +530,7 @@ impl LiquidStreamBuilder {
             filter: self.filter,
             limit: self.limit,
             offset: self.offset,
-            liquid_cache,
+            cached_file: liquid_cache,
         };
 
         Ok(LiquidStream {
@@ -689,7 +689,7 @@ impl Stream for LiquidStream {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::LiquidCache;
+    use crate::cache::LiquidCacheParquet;
     use arrow::array::{ArrayRef, Int32Array};
     use arrow_schema::{DataType, Field, Schema};
     use liquid_cache_common::IoMode;
@@ -698,9 +698,9 @@ mod tests {
     use parquet::arrow::arrow_reader::RowSelection;
     use std::sync::Arc;
 
-    fn make_cache(batch_size: usize, schema: SchemaRef) -> LiquidCachedRowGroupRef {
+    fn make_cache(batch_size: usize, schema: SchemaRef) -> CachedRowGroupRef {
         let tmp_dir = tempfile::tempdir().unwrap();
-        let cache = LiquidCache::new(
+        let cache = LiquidCacheParquet::new(
             batch_size,
             usize::MAX,
             tmp_dir.path().to_path_buf(),
@@ -713,7 +713,7 @@ mod tests {
     }
 
     async fn insert_batches(
-        row_group: &LiquidCachedRowGroupRef,
+        row_group: &CachedRowGroupRef,
         column_id: usize,
         batch_payloads: &[(u16, &[i32])],
     ) {

@@ -16,7 +16,7 @@ mod tests;
 pub(crate) mod utils;
 mod variant_array;
 
-use std::{any::Any, ops::Range, sync::Arc};
+use std::{any::Any, sync::Arc};
 
 use arrow::{
     array::{ArrayRef, BooleanArray},
@@ -207,7 +207,7 @@ pub trait LiquidArray: std::fmt::Debug + Send + Sync {
     /// This is the bridge from in-memory array to hybrid array.
     /// Important: The returned `Bytes` is the data that is stored on disk, it is the same as to_bytes().
     ///
-    /// If we `soak` the `LiquidHybridArrayRef` back with the bytes, we should get the same `LiquidArray`.
+    /// Hydrating the hybrid array from the stored bytes should yield the same `LiquidArray`.
     fn squeeze(
         &self,
         _expression_hint: Option<&CacheExpression>,
@@ -231,18 +231,12 @@ pub enum HybridBacking {
 /// A reference to a Liquid hybrid array.
 pub type LiquidHybridArrayRef = Arc<dyn LiquidHybridArray>;
 
-/// A range of bytes on disk.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IoRange {
-    range: Range<u64>,
-}
+/// Signals that the hybrid representation needs to be hydrated from disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NeedsBacking;
 
-impl IoRange {
-    /// Get the range of bytes on disk.
-    pub fn range(&self) -> &Range<u64> {
-        &self.range
-    }
-}
+/// Result type for hybrid operations that may require disk hydration.
+pub type HybridResult<T> = Result<T, NeedsBacking>;
 
 enum Operator {
     Eq,
@@ -286,12 +280,12 @@ pub trait LiquidHybridArray: std::fmt::Debug + Send + Sync {
     }
 
     /// Convert the Liquid array to an Arrow array.
-    fn to_arrow_array(&self) -> Result<ArrayRef, IoRange>;
+    fn to_arrow_array(&self) -> HybridResult<ArrayRef>;
 
     /// Convert the Liquid array to an Arrow array.
     /// Except that it will pick the best encoding for the arrow array.
     /// Meaning that it may not obey the data type of the original arrow array.
-    fn to_best_arrow_array(&self) -> Result<ArrayRef, IoRange> {
+    fn to_best_arrow_array(&self) -> HybridResult<ArrayRef> {
         self.to_arrow_array()
     }
 
@@ -302,10 +296,10 @@ pub trait LiquidHybridArray: std::fmt::Debug + Send + Sync {
     fn original_arrow_data_type(&self) -> DataType;
 
     /// Serialize the Liquid array to a byte array.
-    fn to_bytes(&self) -> Result<Vec<u8>, IoRange>;
+    fn to_bytes(&self) -> HybridResult<Vec<u8>>;
 
     /// Filter the Liquid array with a boolean array and return an **arrow array**.
-    fn filter(&self, selection: &BooleanBuffer) -> Result<ArrayRef, IoRange> {
+    fn filter(&self, selection: &BooleanBuffer) -> HybridResult<ArrayRef> {
         let arrow_array = self.to_arrow_array()?;
         let selection = BooleanArray::new(selection.clone(), None);
         Ok(arrow::compute::kernels::filter::filter(&arrow_array, &selection).unwrap())
@@ -320,16 +314,9 @@ pub trait LiquidHybridArray: std::fmt::Debug + Send + Sync {
         &self,
         _predicate: &Arc<dyn PhysicalExpr>,
         _filter: &BooleanBuffer,
-    ) -> Result<Option<BooleanArray>, IoRange> {
+    ) -> HybridResult<Option<BooleanArray>> {
         Ok(None)
     }
-
-    /// Feed IO data to the `LiquidHybridArray` and return the in-memory `LiquidArray`.
-    /// For byte-view arrays, `data` should be the raw FSST buffer bytes.
-    fn soak(&self, data: bytes::Bytes) -> LiquidArrayRef;
-
-    /// Get the `IoRange` to convert the `LiquidHybridArray` to a `LiquidArray`.
-    fn to_liquid(&self) -> IoRange;
 
     /// Describe how the hybrid array persists its backing bytes on disk.
     fn disk_backing(&self) -> HybridBacking {

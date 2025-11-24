@@ -39,7 +39,7 @@ use liquid_cache_common::{
     IoMode,
     rpc::{FetchResults, LiquidCacheActions},
 };
-use liquid_cache_parquet::cache::LiquidCacheRef;
+use liquid_cache_parquet::cache::LiquidCacheParquetRef;
 use log::info;
 use prost::bytes::Bytes;
 use service::LiquidCacheServiceInner;
@@ -160,7 +160,7 @@ impl LiquidCacheService {
     }
 
     /// Get a reference to the cache
-    pub fn cache(&self) -> &LiquidCacheRef {
+    pub fn cache(&self) -> &LiquidCacheParquetRef {
         self.inner.cache()
     }
 

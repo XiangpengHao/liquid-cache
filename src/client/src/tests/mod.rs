@@ -5,13 +5,13 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 
-use crate::LiquidCacheBuilder;
+use crate::LiquidCacheClientBuilder;
 
 async fn setup_tpch_ctx() -> Arc<SessionContext> {
     let mut session_config = SessionConfig::from_env().unwrap();
     // To get deterministic results
     session_config.options_mut().execution.target_partitions = 8;
-    let ctx = LiquidCacheBuilder::new("http://localhost:50051")
+    let ctx = LiquidCacheClientBuilder::new("http://localhost:50051")
         .build(session_config)
         .unwrap();
     let tables = [

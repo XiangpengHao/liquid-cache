@@ -12,8 +12,10 @@ use num_traits::{AsPrimitive, FromPrimitive};
 
 use crate::liquid_array::raw::BitPackedArray;
 
-use super::primitive_array::{LiquidPrimitiveArray, LiquidPrimitiveType};
-use super::{IoRange, LiquidArrayRef, LiquidDataType, LiquidHybridArray, Operator, PrimitiveKind};
+use super::primitive_array::LiquidPrimitiveType;
+use super::{
+    HybridResult, LiquidDataType, LiquidHybridArray, NeedsBacking, Operator, PrimitiveKind,
+};
 
 #[derive(Debug, Clone)]
 pub(crate) struct LiquidPrimitiveClampedArray<T: LiquidPrimitiveType> {
@@ -87,12 +89,12 @@ where
         Some(Arc::new(arr))
     }
 
-    // Evaluate a simple comparison if fully decidable without disk; otherwise return Err(IoRange)
+    // Evaluate a simple comparison if fully decidable without disk; otherwise return Err(NeedsBacking)
     pub(crate) fn try_eval_predicate_inner(
         &self,
         op: &Operator,
         literal: &Literal,
-    ) -> Result<Option<BooleanArray>, IoRange> {
+    ) -> HybridResult<Option<BooleanArray>> {
         use datafusion::common::ScalarValue;
 
         // Extract scalar value as T::Native
@@ -154,9 +156,7 @@ where
                 }
                 if u == sentinel {
                     if !resolves_on_sentinel {
-                        return Err(IoRange {
-                            range: self.disk_range.clone(),
-                        });
+                        return Err(NeedsBacking);
                     }
                     let b = match op {
                         Operator::Eq => false,
@@ -184,9 +184,7 @@ where
             for &u in values.iter() {
                 if u == sentinel {
                     if !resolves_on_sentinel {
-                        return Err(IoRange {
-                            range: self.disk_range.clone(),
-                        });
+                        return Err(NeedsBacking);
                     }
                     let b = match op {
                         Operator::Eq => false,
@@ -234,13 +232,11 @@ where
         LiquidPrimitiveClampedArray::<T>::len(self)
     }
 
-    fn to_arrow_array(&self) -> Result<ArrayRef, IoRange> {
+    fn to_arrow_array(&self) -> HybridResult<ArrayRef> {
         if let Some(arr) = self.to_arrow_known_only() {
             Ok(arr)
         } else {
-            Err(IoRange {
-                range: self.disk_range.clone(),
-            })
+            Err(NeedsBacking)
         }
     }
 
@@ -252,13 +248,11 @@ where
         T::DATA_TYPE.clone()
     }
 
-    fn to_bytes(&self) -> Result<Vec<u8>, IoRange> {
-        Err(IoRange {
-            range: self.disk_range.clone(),
-        })
+    fn to_bytes(&self) -> HybridResult<Vec<u8>> {
+        Err(NeedsBacking)
     }
 
-    fn filter(&self, selection: &BooleanBuffer) -> Result<ArrayRef, IoRange> {
+    fn filter(&self, selection: &BooleanBuffer) -> HybridResult<ArrayRef> {
         let filtered = self.filter_inner(selection);
         filtered.to_arrow_array()
     }
@@ -267,7 +261,7 @@ where
         &self,
         expr: &Arc<dyn PhysicalExpr>,
         filter: &BooleanBuffer,
-    ) -> Result<Option<BooleanArray>, IoRange> {
+    ) -> HybridResult<Option<BooleanArray>> {
         // Apply selection first to reduce input rows
         let filtered = self.filter_inner(filter);
 
@@ -281,18 +275,6 @@ where
             }
         }
         Ok(None)
-    }
-
-    fn soak(&self, data: bytes::Bytes) -> LiquidArrayRef {
-        // `data` is the full IPC payload for primitive array
-        let arr = LiquidPrimitiveArray::<T>::from_bytes(data);
-        Arc::new(arr)
-    }
-
-    fn to_liquid(&self) -> IoRange {
-        IoRange {
-            range: self.disk_range.clone(),
-        }
     }
 }
 
@@ -345,7 +327,7 @@ where
         &self,
         op: &Operator,
         literal: &Literal,
-    ) -> Result<Option<BooleanArray>, IoRange> {
+    ) -> HybridResult<Option<BooleanArray>> {
         use datafusion::common::ScalarValue;
         type U<TT> = <<TT as LiquidPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native;
 
@@ -486,9 +468,7 @@ where
                         match on_equal_bucket(r, bw) {
                             Some(val) => val,
                             None => {
-                                return Err(IoRange {
-                                    range: self.disk_range.clone(),
-                                });
+                                return Err(NeedsBacking);
                             }
                         }
                     };
@@ -505,9 +485,7 @@ where
                         match on_equal_bucket(r, bw) {
                             Some(val) => val,
                             None => {
-                                return Err(IoRange {
-                                    range: self.disk_range.clone(),
-                                });
+                                return Err(NeedsBacking);
                             }
                         }
                     };
@@ -538,10 +516,8 @@ where
         LiquidPrimitiveQuantizedArray::<T>::len(self)
     }
 
-    fn to_arrow_array(&self) -> Result<ArrayRef, IoRange> {
-        Err(IoRange {
-            range: self.disk_range.clone(),
-        })
+    fn to_arrow_array(&self) -> HybridResult<ArrayRef> {
+        Err(NeedsBacking)
     }
 
     fn data_type(&self) -> LiquidDataType {
@@ -552,17 +528,15 @@ where
         T::DATA_TYPE.clone()
     }
 
-    fn to_bytes(&self) -> Result<Vec<u8>, IoRange> {
-        Err(IoRange {
-            range: self.disk_range.clone(),
-        })
+    fn to_bytes(&self) -> HybridResult<Vec<u8>> {
+        Err(NeedsBacking)
     }
 
     fn try_eval_predicate(
         &self,
         expr: &Arc<dyn PhysicalExpr>,
         filter: &BooleanBuffer,
-    ) -> Result<Option<BooleanArray>, IoRange> {
+    ) -> HybridResult<Option<BooleanArray>> {
         // Apply selection first to reduce input rows
         let filtered = self.filter_inner(filter);
 
@@ -576,18 +550,6 @@ where
             }
         }
         Ok(None)
-    }
-
-    fn soak(&self, data: bytes::Bytes) -> LiquidArrayRef {
-        // `data` is the full IPC payload for primitive array
-        let arr = LiquidPrimitiveArray::<T>::from_bytes(data);
-        Arc::new(arr)
-    }
-
-    fn to_liquid(&self) -> IoRange {
-        IoRange {
-            range: self.disk_range.clone(),
-        }
     }
 }
 
@@ -680,15 +642,15 @@ mod tests {
     }
 
     #[test]
-    fn clamp_squeeze_and_soak_roundtrip_i32() {
+    fn clamp_squeeze_full_read_roundtrip_i32() {
         let mut rng = StdRng::seed_from_u64(0x51_72);
         let arr = make_i32_array_with_range(128, -50_000, 1 << 16, 0.1, &mut rng);
         let liq = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(arr.clone())
             .with_squeeze_policy(IntegerSqueezePolicy::Clamp);
         let bytes_baseline = liq.to_bytes();
         let (hybrid, bytes) = liq.squeeze(None).expect("squeezable");
-        // ensure we can recover the original using soak
-        let recovered = hybrid.soak(bytes.clone());
+        // ensure we can recover the original by hydrating from full bytes
+        let recovered = LiquidPrimitiveArray::<Int32Type>::from_bytes(bytes.clone());
         assert_eq!(recovered.to_arrow_array().as_primitive::<Int32Type>(), &arr);
         assert_eq!(bytes_baseline, recovered.to_bytes());
 
@@ -800,8 +762,7 @@ mod tests {
             let err = hybrid
                 .try_eval_predicate(&expr, &mask)
                 .expect_err("should request IO");
-            let io = hybrid.to_liquid();
-            assert_eq!(err.range(), io.range());
+            assert_eq!(err, NeedsBacking);
         }
     }
 
@@ -875,7 +836,7 @@ mod tests {
             let err = hybrid
                 .try_eval_predicate(&expr, &mask)
                 .expect_err("should request IO");
-            assert_eq!(err.range(), hybrid.to_liquid().range());
+            assert_eq!(err, NeedsBacking);
         }
     }
 
@@ -937,7 +898,7 @@ mod tests {
         let err = hybrid
             .try_eval_predicate(&expr_eq_present, &mask)
             .expect_err("quantized should request IO on ambiguous eq bucket");
-        assert_eq!(err.range(), hybrid.to_liquid().range());
+        assert_eq!(err, NeedsBacking);
     }
 
     #[test]
@@ -996,7 +957,7 @@ mod tests {
         let err = hybrid
             .try_eval_predicate(&expr_eq_present, &mask)
             .expect_err("quantized should request IO on ambiguous eq bucket");
-        assert_eq!(err.range(), hybrid.to_liquid().range());
+        assert_eq!(err, NeedsBacking);
     }
 
     #[test]

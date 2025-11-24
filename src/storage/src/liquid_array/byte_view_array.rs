@@ -18,7 +18,6 @@ use datafusion::physical_plan::expressions::{BinaryExpr, LikeExpr, Literal};
 use fsst::Compressor;
 use std::any::Any;
 use std::fmt::Display;
-use std::ops::Range;
 use std::sync::Arc;
 
 #[cfg(test)]
@@ -41,14 +40,14 @@ fn reset_disk_read_counter() {
 }
 
 use super::{
-    LiquidArray, LiquidArrayRef, LiquidDataType, LiquidHybridArray,
+    LiquidArray, LiquidDataType, LiquidHybridArray,
     byte_array::{ArrowByteType, get_string_needle},
 };
 use crate::cache::CacheExpression;
 use crate::liquid_array::ipc::LiquidIPCHeader;
 use crate::liquid_array::raw::BitPackedArray;
 use crate::liquid_array::raw::fsst_array::{RawFsstBuffer, train_compressor};
-use crate::liquid_array::{IoRange, LiquidHybridArrayRef};
+use crate::liquid_array::{HybridResult, LiquidHybridArrayRef, NeedsBacking};
 use crate::utils::CheckedDictionaryArray;
 
 // Header for LiquidByteViewArray serialization
@@ -129,7 +128,7 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
     | Shared prefix bytes                              |
     +--------------------------------------------------+
     */
-    pub(crate) fn to_bytes_inner(&self) -> Result<Vec<u8>, IoRange> {
+    pub(crate) fn to_bytes_inner(&self) -> HybridResult<Vec<u8>> {
         let header_size = LiquidIPCHeader::size() + ByteViewArrayHeader::size();
         let mut result = Vec::with_capacity(header_size + 1024);
         result.resize(header_size, 0);
@@ -848,15 +847,11 @@ impl MemoryBuffer {
 #[derive(Debug, Clone)]
 pub struct DiskBuffer {
     uncompressed_bytes: usize,
-    disk_range: Range<u64>,
 }
 
 impl DiskBuffer {
-    fn new(uncompressed_bytes: usize, disk_range: Range<u64>) -> Self {
-        Self {
-            uncompressed_bytes,
-            disk_range,
-        }
+    fn new(uncompressed_bytes: usize) -> Self {
+        Self { uncompressed_bytes }
     }
 }
 
@@ -867,7 +862,7 @@ mod sealed {
 /// Trait for FSST buffer - can be in memory or on disk
 pub trait FsstBuffer: std::fmt::Debug + Clone + sealed::Sealed {
     /// Get the raw FSST buffer, loading from disk if necessary
-    fn get_fsst_buffer(&self) -> Result<Arc<RawFsstBuffer>, IoRange>;
+    fn get_fsst_buffer(&self) -> HybridResult<Arc<RawFsstBuffer>>;
 
     /// Get the memory size of the FSST buffer
     fn get_array_memory_size(&self) -> usize;
@@ -880,7 +875,7 @@ impl sealed::Sealed for MemoryBuffer {}
 impl sealed::Sealed for DiskBuffer {}
 
 impl FsstBuffer for MemoryBuffer {
-    fn get_fsst_buffer(&self) -> Result<Arc<RawFsstBuffer>, IoRange> {
+    fn get_fsst_buffer(&self) -> HybridResult<Arc<RawFsstBuffer>> {
         Ok(self.buffer.clone())
     }
 
@@ -894,10 +889,8 @@ impl FsstBuffer for MemoryBuffer {
 }
 
 impl FsstBuffer for DiskBuffer {
-    fn get_fsst_buffer(&self) -> Result<Arc<RawFsstBuffer>, IoRange> {
-        Err(IoRange {
-            range: self.disk_range.clone(),
-        })
+    fn get_fsst_buffer(&self) -> HybridResult<Arc<RawFsstBuffer>> {
+        Err(NeedsBacking)
     }
 
     fn get_array_memory_size(&self) -> usize {
@@ -982,10 +975,8 @@ impl LiquidArray for LiquidByteViewArray<MemoryBuffer> {
 
         assert!(fsst_end <= bytes.len());
 
-        let disk_range = (fsst_start as u64)..(fsst_end as u64);
-
         // Build the hybrid (disk-backed FSST) view
-        let disk = DiskBuffer::new(self.fsst_buffer.uncompressed_bytes(), disk_range);
+        let disk = DiskBuffer::new(self.fsst_buffer.uncompressed_bytes());
         let hybrid = LiquidByteViewArray::<DiskBuffer> {
             dictionary_keys: self.dictionary_keys.clone(),
             compact_offset_views: self.compact_offset_views.clone(),
@@ -1022,14 +1013,14 @@ impl LiquidHybridArray for LiquidByteViewArray<DiskBuffer> {
     }
 
     /// Convert the Liquid array to an Arrow array.
-    fn to_arrow_array(&self) -> Result<ArrayRef, IoRange> {
+    fn to_arrow_array(&self) -> HybridResult<ArrayRef> {
         self.to_arrow_array()
     }
 
     /// Convert the Liquid array to an Arrow array.
     /// Except that it will pick the best encoding for the arrow array.
     /// Meaning that it may not obey the data type of the original arrow array.
-    fn to_best_arrow_array(&self) -> Result<ArrayRef, IoRange> {
+    fn to_best_arrow_array(&self) -> HybridResult<ArrayRef> {
         self.to_arrow_array()
     }
 
@@ -1043,12 +1034,12 @@ impl LiquidHybridArray for LiquidByteViewArray<DiskBuffer> {
     }
 
     /// Serialize the Liquid array to a byte array.
-    fn to_bytes(&self) -> Result<Vec<u8>, IoRange> {
+    fn to_bytes(&self) -> HybridResult<Vec<u8>> {
         self.to_bytes_inner()
     }
 
     /// Filter the Liquid array with a boolean array and return an **arrow array**.
-    fn filter(&self, selection: &BooleanBuffer) -> Result<ArrayRef, IoRange> {
+    fn filter(&self, selection: &BooleanBuffer) -> HybridResult<ArrayRef> {
         let select_any = selection.count_set_bits() > 0;
         if !select_any {
             return Ok(arrow::array::new_empty_array(
@@ -1068,7 +1059,7 @@ impl LiquidHybridArray for LiquidByteViewArray<DiskBuffer> {
         &self,
         expr: &Arc<dyn PhysicalExpr>,
         filter: &BooleanBuffer,
-    ) -> Result<Option<BooleanArray>, IoRange> {
+    ) -> HybridResult<Option<BooleanArray>> {
         // Reuse generic filter path first to reduce input rows if any
         let filtered = filter_inner(self, filter);
 
@@ -1080,10 +1071,10 @@ impl LiquidHybridArray for LiquidByteViewArray<DiskBuffer> {
             if matches!(op, Operator::Eq | Operator::NotEq)
                 && let Some(needle) = get_string_needle(literal.value())
             {
-                // Try prefix-based equality. On ambiguity, bubble up IoRange for fallback.
+                // Try prefix-based equality. On ambiguity, bubble up NeedsBacking for fallback.
                 let eq_mask = filtered
                     .compare_equals_with_prefix(needle.as_bytes())
-                    .ok_or_else(|| self.to_liquid())?;
+                    .ok_or(NeedsBacking)?;
                 if matches!(op, Operator::Eq) {
                     return Ok(Some(eq_mask));
                 } else {
@@ -1094,30 +1085,6 @@ impl LiquidHybridArray for LiquidByteViewArray<DiskBuffer> {
         }
 
         Ok(None)
-    }
-
-    /// Feed IO data to the `LiquidHybridArray`.
-    /// Returns the in-memory `LiquidArray`.
-    /// This is the bridge from hybrid array to in-memory array.
-    fn soak(&self, data: bytes::Bytes) -> LiquidArrayRef {
-        // `data` is the raw FSST buffer bytes (no IPC header)
-        let buffer = MemoryBuffer::new(Arc::new(RawFsstBuffer::from_bytes(data)));
-
-        let in_memory_array = LiquidByteViewArray::<MemoryBuffer> {
-            dictionary_keys: self.dictionary_keys.clone(),
-            compact_offset_views: self.compact_offset_views.clone(),
-            fsst_buffer: buffer,
-            original_arrow_type: self.original_arrow_type,
-            shared_prefix: self.shared_prefix.clone(),
-            compressor: self.compressor.clone(),
-        };
-        Arc::new(in_memory_array)
-    }
-
-    fn to_liquid(&self) -> IoRange {
-        IoRange {
-            range: self.fsst_buffer.disk_range.clone(),
-        }
     }
 }
 
@@ -1229,7 +1196,7 @@ fn filter_inner<B: FsstBuffer>(
 fn try_eval_predicate_inner<B: FsstBuffer>(
     expr: &Arc<dyn PhysicalExpr>,
     array: &LiquidByteViewArray<B>,
-) -> Result<Option<BooleanArray>, IoRange> {
+) -> Result<Option<BooleanArray>, NeedsBacking> {
     // Handle binary expressions (comparisons)
     if let Some(binary_expr) = expr.as_any().downcast_ref::<BinaryExpr>() {
         if let Some(literal) = binary_expr.right().as_any().downcast_ref::<Literal>() {
@@ -1496,7 +1463,7 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
     }
 
     /// Convert to Arrow DictionaryArray
-    pub fn to_dict_arrow(&self) -> Result<DictionaryArray<UInt16Type>, IoRange> {
+    pub fn to_dict_arrow(&self) -> Result<DictionaryArray<UInt16Type>, NeedsBacking> {
         let keys_array = self.dictionary_keys.clone();
 
         // Convert raw FSST buffer to values using our offset views
@@ -1523,7 +1490,7 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
     }
 
     /// Convert to Arrow array with original type
-    pub fn to_arrow_array(&self) -> Result<ArrayRef, IoRange> {
+    pub fn to_arrow_array(&self) -> Result<ArrayRef, NeedsBacking> {
         let dict = self.to_dict_arrow()?;
         Ok(cast(&dict, &self.original_arrow_type.to_arrow_type()).unwrap())
     }
@@ -1534,7 +1501,7 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
     }
 
     /// Compare with prefix optimization and fallback to Arrow operations
-    pub fn compare_with(&self, needle: &[u8], op: &Operator) -> Result<BooleanArray, IoRange> {
+    pub fn compare_with(&self, needle: &[u8], op: &Operator) -> Result<BooleanArray, NeedsBacking> {
         match op {
             // Handle equality operations with existing optimized methods
             Operator::Eq => self.compare_equals(needle),
@@ -1566,7 +1533,7 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
     /// 1. First sort the dictionary using prefixes to delay decompression
     /// 2. If decompression is needed, decompress the entire array at once
     /// 3. Use dictionary ranks to sort the final keys
-    pub fn sort_to_indices(&self) -> Result<UInt32Array, IoRange> {
+    pub fn sort_to_indices(&self) -> Result<UInt32Array, NeedsBacking> {
         // if distinct ratio is more than 10%, use arrow sort.
         if self.compact_offset_views.len() > (self.dictionary_keys.len() / 10) {
             let array = self.to_dict_arrow()?;
@@ -1742,7 +1709,7 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
     }
 
     /// Compare equality with a byte needle
-    fn compare_equals(&self, needle: &[u8]) -> Result<BooleanArray, IoRange> {
+    fn compare_equals(&self, needle: &[u8]) -> Result<BooleanArray, NeedsBacking> {
         // Fast path 1: Check shared prefix
         let shared_prefix_len = self.shared_prefix.len();
         if needle.len() < shared_prefix_len || needle[..shared_prefix_len] != self.shared_prefix {
@@ -1789,7 +1756,7 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
     }
 
     /// Compare not equals with a byte needle
-    fn compare_not_equals(&self, needle: &[u8]) -> Result<BooleanArray, IoRange> {
+    fn compare_not_equals(&self, needle: &[u8]) -> Result<BooleanArray, NeedsBacking> {
         let result = self.compare_equals(needle)?;
         let (values, nulls) = result.into_parts();
         let values = !&values;
@@ -1854,7 +1821,11 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
     }
 
     /// Prefix optimization for ordering operations
-    fn compare_with_inner(&self, needle: &[u8], op: &Operator) -> Result<BooleanArray, IoRange> {
+    fn compare_with_inner(
+        &self,
+        needle: &[u8],
+        op: &Operator,
+    ) -> Result<BooleanArray, NeedsBacking> {
         // Try to short-circuit based on shared prefix comparison
         if let Some(result) = self.try_shared_prefix_short_circuit(needle, op) {
             return Ok(result);
@@ -1970,7 +1941,7 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
         &self,
         needle: &[u8],
         op: &Operator,
-    ) -> Result<BooleanArray, IoRange> {
+    ) -> Result<BooleanArray, NeedsBacking> {
         let dict_array = self.to_dict_arrow()?;
         let needle_scalar = datafusion::common::ScalarValue::Binary(Some(needle.to_vec()));
         let lhs = ColumnarValue::Array(Arc::new(dict_array));
@@ -2004,7 +1975,7 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
         reset_disk_read_counter()
     }
 
-    fn sort_to_indices_inner(&self) -> Result<UInt32Array, IoRange> {
+    fn sort_to_indices_inner(&self) -> Result<UInt32Array, NeedsBacking> {
         // Step 1: Get dictionary ranks using prefix optimization
         let dict_ranks = self.get_dictionary_ranks()?;
 
@@ -2033,7 +2004,7 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
 
     /// Get dictionary ranks using prefix optimization and lazy decompression
     /// Returns a mapping from dictionary key to its rank in sorted order
-    fn get_dictionary_ranks(&self) -> Result<Vec<u16>, IoRange> {
+    fn get_dictionary_ranks(&self) -> Result<Vec<u16>, NeedsBacking> {
         let num_unique = self.compact_offset_views.len().saturating_sub(1);
         let mut dict_indices: Vec<u32> = (0..num_unique as u32).collect();
 

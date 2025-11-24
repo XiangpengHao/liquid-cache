@@ -13,10 +13,10 @@ mod transcode;
 mod utils;
 
 pub use cache_policies::CachePolicy;
-pub use cached_batch::{CacheEntry, CachedBatchType, CachedData};
+pub use cached_batch::{CacheEntry, CachedBatchType};
 pub use core::{
-    BlockingIoContext, CacheStorage, CacheStorageBuilder, DefaultIoContext, EvaluatePredicate, Get,
-    Insert, IoContext,
+    BlockingIoContext, DefaultIoContext, EvaluatePredicate, Get, Insert, IoContext, LiquidCache,
+    LiquidCacheBuilder,
 };
 pub use expressions::{CacheExpression, ColumnID, ExpressionRegistry, VariantRequest};
 pub use stats::{CacheStats, RuntimeStats, RuntimeStatsSnapshot};

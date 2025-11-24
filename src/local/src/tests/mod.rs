@@ -1,5 +1,5 @@
 use arrow_schema::{DataType, Field, Schema};
-use liquid_cache_parquet::LiquidCacheRef;
+use liquid_cache_parquet::LiquidCacheParquetRef;
 use liquid_cache_storage::{
     cache::{
         CacheStats,
@@ -98,7 +98,7 @@ async fn create_session_context_with_liquid_cache(
     squeeze_policy: Box<dyn SqueezePolicy>,
     cache_size_bytes: usize,
     cache_dir: &Path,
-) -> Result<(SessionContext, LiquidCacheRef)> {
+) -> Result<(SessionContext, LiquidCacheParquetRef)> {
     let mut config = SessionConfig::new();
     config.options_mut().execution.target_partitions = 4;
     let (ctx, cache) = LiquidCacheLocalBuilder::new()

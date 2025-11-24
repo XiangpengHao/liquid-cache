@@ -29,10 +29,10 @@ impl ArtIndex {
         }
     }
 
-    pub(crate) fn get(&self, entry_id: &EntryID) -> Option<CacheEntry> {
+    pub(crate) fn get(&self, entry_id: &EntryID) -> Option<Arc<CacheEntry>> {
         let guard = self.art.pin();
         let batch = self.art.get(*entry_id, &guard)?;
-        Some(CacheEntry::clone(&batch))
+        Some(batch)
     }
 
     pub(crate) fn is_cached(&self, entry_id: &EntryID) -> bool {
@@ -84,7 +84,7 @@ impl ArtIndex {
 
 #[cfg(test)]
 mod tests {
-    use crate::cache::cached_batch::CachedData;
+    use crate::cache::cached_batch::CacheEntry;
     use crate::cache::utils::create_test_array;
 
     use super::*;
@@ -111,8 +111,8 @@ mod tests {
 
         // Get should return the cached value
         match store.get(&entry_id1) {
-            Some(batch) => match batch.data() {
-                CachedData::MemoryArrow(arr) => assert_eq!(arr.len(), 100),
+            Some(batch) => match batch.as_ref() {
+                CacheEntry::MemoryArrow(arr) => assert_eq!(arr.len(), 100),
                 _ => panic!("Expected ArrowMemory batch"),
             },
             None => panic!("Expected ArrowMemory batch"),

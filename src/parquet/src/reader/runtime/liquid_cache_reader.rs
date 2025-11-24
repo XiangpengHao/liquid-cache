@@ -11,7 +11,7 @@ use arrow_schema::{ArrowError, SchemaRef};
 use futures::{Stream, future::BoxFuture};
 use parquet::arrow::arrow_reader::{RowSelection, RowSelector};
 
-use crate::cache::{BatchID, LiquidCachedRowGroupRef};
+use crate::cache::{BatchID, CachedRowGroupRef};
 use crate::reader::plantime::LiquidRowFilter;
 use crate::reader::runtime::utils::take_next_batch;
 use crate::utils::{boolean_buffer_and_then, row_selector_to_boolean_buffer};
@@ -42,7 +42,7 @@ enum ProcessResult {
 }
 
 struct LiquidCacheReaderInner {
-    liquid_cache: LiquidCachedRowGroupRef,
+    cached_row_group: CachedRowGroupRef,
     current_batch_id: BatchID,
     selection: VecDeque<RowSelector>,
     schema: SchemaRef,
@@ -55,14 +55,14 @@ impl LiquidCacheReader {
         batch_size: usize,
         selection: RowSelection,
         row_filter: Option<LiquidRowFilter>,
-        liquid_cache: LiquidCachedRowGroupRef,
+        cached_row_group: CachedRowGroupRef,
         projection_columns: Vec<usize>,
         schema: SchemaRef,
     ) -> Self {
         let inner = LiquidCacheReaderInner::new(
             batch_size,
             selection,
-            liquid_cache,
+            cached_row_group,
             projection_columns,
             Arc::clone(&schema),
         );
@@ -129,12 +129,12 @@ impl LiquidCacheReaderInner {
     fn new(
         batch_size: usize,
         selection: RowSelection,
-        liquid_cache: LiquidCachedRowGroupRef,
+        cached_row_group: CachedRowGroupRef,
         projection_columns: Vec<usize>,
         schema: SchemaRef,
     ) -> Self {
         Self {
-            liquid_cache,
+            cached_row_group,
             current_batch_id: BatchID::from_raw(0),
             selection: selection.into(),
             schema,
@@ -192,7 +192,7 @@ impl LiquidCacheReaderInner {
             }
 
             let boolean_array = self
-                .liquid_cache
+                .cached_row_group
                 .evaluate_selection_with_predicate(
                     self.current_batch_id,
                     &input_selection,
@@ -234,7 +234,7 @@ impl LiquidCacheReaderInner {
         let mut arrays = Vec::with_capacity(self.projection_columns.len());
         for &column_idx in &self.projection_columns {
             let column = self
-                .liquid_cache
+                .cached_row_group
                 .get_column(column_idx as u64)
                 .ok_or_else(|| {
                     ArrowError::ComputeError(format!(
@@ -265,7 +265,7 @@ impl LiquidCacheReaderInner {
 mod tests {
     use super::*;
     use crate::{
-        cache::LiquidCache,
+        cache::LiquidCacheParquet,
         reader::{FilterCandidateBuilder, LiquidPredicate, LiquidRowFilter},
     };
     use arrow::array::{ArrayRef, Int32Array};
@@ -291,9 +291,9 @@ mod tests {
     async fn make_row_group(
         batch_size: usize,
         batches: &[Vec<i32>],
-    ) -> (LiquidCachedRowGroupRef, SchemaRef) {
+    ) -> (CachedRowGroupRef, SchemaRef) {
         let tmp_dir = tempfile::tempdir().unwrap();
-        let cache = LiquidCache::new(
+        let cache = LiquidCacheParquet::new(
             batch_size,
             usize::MAX,
             tmp_dir.path().to_path_buf(),
