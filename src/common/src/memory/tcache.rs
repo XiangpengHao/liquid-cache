@@ -24,7 +24,7 @@ const NUM_SIZE_CLASSES: usize = SIZE_CLASSES.len();
 pub(crate) const MIN_SIZE_FROM_PAGES: usize = SIZE_CLASSES[0];
 const MAX_SIZE_FROM_PAGES: usize = SIZE_CLASSES[NUM_SIZE_CLASSES - 1];
 
-const SEGMENT_BINS: usize = 8; // (SEGMENT_SIZE/PAGE_SIZE).log2() + 1
+const SEGMENT_BINS: usize = 7; // (SEGMENT_SIZE/PAGE_SIZE).log2() + 1
 
 #[derive(Default, Clone)]
 pub(crate) struct TCacheStats {
@@ -100,18 +100,10 @@ impl TCache {
     // }
 
     /**
-     * Get the smallest bin which could contiguous runs of at least `slice_count` pages
+     * Get the smallest bin which can hold contiguous runs of `slice_count` pages
      */
     #[inline]
     fn get_span_idx_from_slice_count(slice_count: usize) -> usize {
-        slice_count.next_power_of_two().trailing_zeros() as usize
-    }
-
-    /**
-     * Get the smallest bin holding continuous runs of at least `slice_count` pages
-     */
-    #[inline]
-    fn get_smallest_bin_for_slice_count(slice_count: usize) -> usize {
         (slice_count + 1).next_power_of_two().trailing_zeros() as usize - 1usize
     }
 
@@ -240,31 +232,32 @@ impl TCache {
     fn find_page_from_spans(self: &mut Self, num_slices_required: usize, block_size: usize) -> *mut Page {
         debug_assert!(block_size >= MIN_SIZE_FROM_PAGES);
         let min_bin = Self::get_span_idx_from_slice_count(num_slices_required);
-        println!("Min bin: {min_bin}");
         for i in min_bin..SEGMENT_BINS {
             let bin = &mut self.spans[i];
-            if bin.is_empty() {
-                continue;
-            }
-            let slice = bin.pop().unwrap();
-            let num_slices_original = unsafe { (*slice).slice_count };
-            println!("Slice count original: {num_slices_original}");
-            println!("Slice count required: {num_slices_required}");
-            
-            if num_slices_original > num_slices_required {
-                // split slice
-                let segment = Segment::get_segment_from_ptr(slice as *mut u8);
-                let next_slice = unsafe { (*segment).split_page(slice, num_slices_required) };
-                let bin = Self::get_span_idx_from_slice_count(num_slices_original - num_slices_required);
-                unsafe {
-                    (*segment).allocated += num_slices_required;
+            for j in 0..bin.len() {
+                let slice = bin[j];
+                let num_slices_original = unsafe { (*slice).slice_count };
+                debug_assert!(num_slices_original >= 1 << i);
+                if num_slices_original < num_slices_required {
+                    continue;
                 }
-                self.spans[bin].push(next_slice);
+                bin.remove(j);
+                if num_slices_original > num_slices_required {
+                    // split slice
+                    let segment = Segment::get_segment_from_ptr(slice as *mut u8);
+                    let next_slice = unsafe { (*segment).split_page(slice, num_slices_required) };
+                    let bin = Self::get_span_idx_from_slice_count(num_slices_original - num_slices_required);
+                    unsafe {
+                        (*segment).allocated += num_slices_required;
+                    }
+                    self.spans[bin].push(next_slice);
+                }
+                unsafe {
+                    (*slice).set_block_size(block_size);
+                }
+                return slice;
+
             }
-            unsafe {
-                (*slice).set_block_size(block_size);
-            }
-            return slice;
         }
         null_mut()
     }
@@ -314,6 +307,9 @@ impl TCache {
                 return (null_mut(), None);
             }
             free_page = self.find_page_from_spans(num_pages, block_size);
+            if free_page == null_mut() {
+                return (null_mut(), None)
+            }
             debug_assert_eq!(block_size, unsafe { (*free_page).block_size });
             assert_ne!(free_page, null_mut());
             let (free_block, buffer_id) = unsafe { (*free_page).get_free_block() };

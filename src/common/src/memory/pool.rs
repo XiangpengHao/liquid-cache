@@ -179,10 +179,32 @@ mod tests {
     }
 
     #[test]
+    fn test_large_alloc_and_free2() {
+        FixedBufferPool::init(128);
+        let len = 3 * 1024 * 1024;      // 1 MB
+        let (ptr, fixed_buffer) = FixedBufferPool::malloc(len);
+        assert_ne!(ptr, null_mut());
+        assert_eq!(fixed_buffer, None);
+        // 4096 byte alignment is necessary for direct IO
+        assert_eq!(ptr as usize % 4096, 0);
+        let buffer = unsafe { std::slice::from_raw_parts_mut(ptr, len) };
+        buffer[0] = 1;
+        buffer[len-1] = 1;
+        FixedBufferPool::free(ptr);
+
+        let cur_cpu = unsafe { libc::sched_getcpu() as usize };
+        let stats = FixedBufferPool::get_stats(cur_cpu);
+
+        assert_eq!(stats.allocations_from_arena, 1);
+        assert_eq!(stats.pages_retired, 1);
+        assert_eq!(stats.segments_retired, 1);
+    }
+
+    #[test]
     fn test_very_large_alloc_fails() {
         FixedBufferPool::init(128);
         let len = 32 * 1024 * 1024;      // 32 MB
-        let (ptr, fixed_buffer) = FixedBufferPool::malloc(len);
+        let (ptr, _fixed_buffer) = FixedBufferPool::malloc(len);
         assert_eq!(ptr, null_mut());
     }
 }
