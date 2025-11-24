@@ -128,20 +128,12 @@ pub(crate) fn serialize_date_part(units: &HashSet<SupportedIntervalUnit>) -> Str
 /// Logical optimizer that analyses the logical plan to detect columns that
 /// are only used via compatible `EXTRACT` or `variant_get` projections.
 #[derive(Debug, Default)]
-pub struct LineageOptimizer {
-    extractions: Arc<Mutex<Vec<DateExtraction>>>,
-}
+pub struct LineageOptimizer;
 
 impl LineageOptimizer {
     /// Create a new optimizer.
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Retrieve the extractions discovered during the last optimization pass.
-    #[cfg(test)]
-    fn extractions(&self) -> Vec<DateExtraction> {
-        self.extractions.lock().unwrap().clone()
     }
 }
 
@@ -170,9 +162,7 @@ impl OptimizerRule for LineageOptimizer {
         variant_findings.sort();
 
         let annotations = build_annotation_map(&date_findings, &variant_findings);
-        let transformed_plan = annotate_plan_with_extractions(plan, &annotations)?;
-        *self.extractions.lock().unwrap() = date_findings;
-        Ok(transformed_plan)
+        annotate_plan_with_extractions(plan, &annotations)
     }
 }
 
@@ -977,7 +967,7 @@ fn part_to_unit(expr: &Expr) -> Option<SupportedIntervalUnit> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
     use crate::optimizers::{
         DATE_MAPPING_METADATA_KEY, LocalModeOptimizer, VARIANT_MAPPING_METADATA_KEY,
@@ -1001,11 +991,32 @@ mod tests {
     use serde::Deserialize;
     use tempfile::TempDir;
 
-    async fn create_test_ctx(
-        table_a: &str,
-        table_b: &str,
-        optimizer: Arc<LineageOptimizer>,
-    ) -> SessionContext {
+    // ─────────────────────────────────────────────────────────────────────────────
+    // Setup helpers - lean versions for different test scenarios
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    fn create_physical_optimizer() -> LocalModeOptimizer {
+        LocalModeOptimizer::with_cache(Arc::new(LiquidCache::new(
+            1024,
+            1024 * 1024 * 1024,
+            PathBuf::from("test"),
+            Box::new(LiquidPolicy::new()),
+            Box::new(TranscodeSqueezeEvict),
+            IoMode::Uring,
+        )))
+    }
+
+    fn create_session_context(optimizer: Arc<LineageOptimizer>) -> SessionContext {
+        let state = SessionStateBuilder::new()
+            .with_config(SessionConfig::new())
+            .with_default_features()
+            .with_optimizer_rule(optimizer as Arc<dyn OptimizerRule + Send + Sync>)
+            .with_physical_optimizer_rule(Arc::new(create_physical_optimizer()))
+            .build();
+        SessionContext::new_with_state(state)
+    }
+
+    fn write_date_parquet(path: &std::path::Path) {
         let schema = Arc::new(Schema::new(vec![
             Field::new(
                 "event_ts",
@@ -1032,43 +1043,139 @@ mod tests {
         )
         .unwrap();
 
-        let file = std::fs::File::create(table_a).unwrap();
+        let file = std::fs::File::create(path).unwrap();
         let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), None).unwrap();
         writer.write(&batch).unwrap();
         writer.close().unwrap();
-
-        let file = std::fs::File::create(table_b).unwrap();
-        let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), None).unwrap();
-        writer.write(&batch).unwrap();
-        writer.close().unwrap();
-
-        let physical_optimizer = LocalModeOptimizer::with_cache(Arc::new(LiquidCache::new(
-            1024,
-            1024 * 1024 * 1024,
-            PathBuf::from("test"),
-            Box::new(LiquidPolicy::new()),
-            Box::new(TranscodeSqueezeEvict),
-            IoMode::Uring,
-        )));
-
-        let state = SessionStateBuilder::new()
-            .with_config(SessionConfig::new())
-            .with_default_features()
-            .with_optimizer_rule(optimizer as Arc<dyn OptimizerRule + Send + Sync>)
-            .with_physical_optimizer_rule(Arc::new(physical_optimizer))
-            .build();
-        let ctx = SessionContext::new_with_state(state);
-
-        ctx.register_parquet("table_a", table_a, ParquetReadOptions::default())
-            .await
-            .unwrap();
-        ctx.register_parquet("table_b", table_b, ParquetReadOptions::default())
-            .await
-            .unwrap();
-        ctx
     }
 
-    fn extract_field_metadata_from_physical_plan(
+    fn write_variant_parquet(path: &std::path::Path) {
+        let values = StringArray::from(vec![
+            Some(r#"{"name": "Alice", "age": 30}"#),
+            Some(r#"{"name": "Bob", "age": 25}"#),
+            Some(r#"{"name": "Charlie"}"#),
+        ]);
+        let input_array: ArrayRef = Arc::new(values);
+        let variant: VariantArray =
+            json_to_variant(&input_array).expect("variant conversion for test data");
+
+        let schema = Arc::new(Schema::new(vec![variant.field("data")]));
+        let batch = arrow::record_batch::RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![ArrayRef::from(variant)],
+        )
+        .expect("variant batch");
+
+        let file = std::fs::File::create(path).expect("create variant parquet file");
+        let mut writer =
+            ArrowWriter::try_new(file, batch.schema(), None).expect("create variant writer");
+        writer.write(&batch).expect("write variant batch");
+        writer.close().expect("close variant writer");
+    }
+
+    /// Setup for tests that only need a single date table (table_a)
+    async fn setup_single_date_table() -> (TempDir, SessionContext, Arc<LineageOptimizer>) {
+        let temp_dir = TempDir::new().unwrap();
+        let table_path = temp_dir.path().join("table_a.parquet");
+        write_date_parquet(&table_path);
+
+        let optimizer = Arc::new(LineageOptimizer::new());
+        let ctx = create_session_context(optimizer.clone());
+        ctx.register_parquet(
+            "table_a",
+            table_path.to_str().unwrap(),
+            ParquetReadOptions::default(),
+        )
+        .await
+        .unwrap();
+
+        (temp_dir, ctx, optimizer)
+    }
+
+    /// Setup for tests that need two date tables (table_a and table_b) for joins
+    async fn setup_dual_date_tables() -> (TempDir, SessionContext, Arc<LineageOptimizer>) {
+        let temp_dir = TempDir::new().unwrap();
+        let table_a_path = temp_dir.path().join("table_a.parquet");
+        let table_b_path = temp_dir.path().join("table_b.parquet");
+        write_date_parquet(&table_a_path);
+        write_date_parquet(&table_b_path);
+
+        let optimizer = Arc::new(LineageOptimizer::new());
+        let ctx = create_session_context(optimizer.clone());
+        ctx.register_parquet(
+            "table_a",
+            table_a_path.to_str().unwrap(),
+            ParquetReadOptions::default(),
+        )
+        .await
+        .unwrap();
+        ctx.register_parquet(
+            "table_b",
+            table_b_path.to_str().unwrap(),
+            ParquetReadOptions::default(),
+        )
+        .await
+        .unwrap();
+
+        (temp_dir, ctx, optimizer)
+    }
+
+    /// Setup for tests that only need a variant table
+    async fn setup_variant_table() -> (TempDir, SessionContext, Arc<LineageOptimizer>) {
+        let temp_dir = TempDir::new().unwrap();
+        let variant_path = temp_dir.path().join("variants_test.parquet");
+        write_variant_parquet(&variant_path);
+
+        let optimizer = Arc::new(LineageOptimizer::new());
+        let ctx = create_session_context(optimizer.clone());
+        ctx.register_udf(ScalarUDF::new_from_impl(VariantGetUdf::default()));
+        ctx.register_udf(ScalarUDF::new_from_impl(VariantToJsonUdf::default()));
+        ctx.register_parquet(
+            "variants_test",
+            variant_path.to_str().unwrap(),
+            ParquetReadOptions::default().skip_metadata(false),
+        )
+        .await
+        .unwrap();
+
+        (temp_dir, ctx, optimizer)
+    }
+
+    /// Setup for tests that need both date table and variant table
+    async fn setup_date_and_variant_tables() -> (TempDir, SessionContext, Arc<LineageOptimizer>) {
+        let temp_dir = TempDir::new().unwrap();
+        let table_a_path = temp_dir.path().join("table_a.parquet");
+        let variant_path = temp_dir.path().join("variants_test.parquet");
+        write_date_parquet(&table_a_path);
+        write_variant_parquet(&variant_path);
+
+        let optimizer = Arc::new(LineageOptimizer::new());
+        let ctx = create_session_context(optimizer.clone());
+        ctx.register_udf(ScalarUDF::new_from_impl(VariantGetUdf::default()));
+        ctx.register_udf(ScalarUDF::new_from_impl(VariantToJsonUdf::default()));
+        ctx.register_parquet(
+            "table_a",
+            table_a_path.to_str().unwrap(),
+            ParquetReadOptions::default(),
+        )
+        .await
+        .unwrap();
+        ctx.register_parquet(
+            "variants_test",
+            variant_path.to_str().unwrap(),
+            ParquetReadOptions::default().skip_metadata(false),
+        )
+        .await
+        .unwrap();
+
+        (temp_dir, ctx, optimizer)
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // Test utilities
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    fn extract_field_metadata(
         plan: &Arc<dyn ExecutionPlan>,
         metadata_key: &str,
     ) -> HashMap<String, String> {
@@ -1086,7 +1193,6 @@ mod tests {
                 return Ok(TreeNodeRecursion::Continue);
             };
 
-            // Extract metadata from all fields in file_schema
             let file_schema = &file_scan_config.file_schema();
             for field in file_schema.fields() {
                 if let Some(metadata_value) = field.metadata().get(metadata_key) {
@@ -1100,15 +1206,15 @@ mod tests {
     }
 
     #[derive(Debug, Deserialize)]
-    struct VariantMetadataTestEntry {
+    struct VariantMetadataEntry {
         path: String,
         #[serde(rename = "type")]
         data_type: Option<String>,
     }
 
-    fn parse_variant_metadata_entries(value: &str) -> Vec<VariantMetadataTestEntry> {
+    fn parse_variant_metadata(value: &str) -> Vec<VariantMetadataEntry> {
         serde_json::from_str(value).unwrap_or_else(|_| {
-            vec![VariantMetadataTestEntry {
+            vec![VariantMetadataEntry {
                 path: value.to_string(),
                 data_type: None,
             }]
@@ -1116,312 +1222,382 @@ mod tests {
     }
 
     fn variant_paths_from_metadata(value: &str) -> Vec<String> {
-        parse_variant_metadata_entries(value)
+        parse_variant_metadata(value)
             .into_iter()
             .map(|entry| entry.path)
             .collect()
     }
 
-    fn make_variant_array() -> VariantArray {
-        let values = StringArray::from(vec![
-            Some(r#"{"name": "Alice", "age": 30}"#),
-            Some(r#"{"name": "Bob", "age": 25}"#),
-            Some(r#"{"name": "Charlie"}"#),
-        ]);
-        let input_array: ArrayRef = Arc::new(values);
-        json_to_variant(&input_array).expect("variant conversion for test data")
-    }
-
-    fn write_variant_parquet_file(dir: &Path) -> PathBuf {
-        let file_path = dir.join("variant_rows.parquet");
-        let variant = make_variant_array();
-        let schema = Arc::new(Schema::new(vec![variant.field("data")]));
-        let batch = arrow::record_batch::RecordBatch::try_new(
-            Arc::clone(&schema),
-            vec![ArrayRef::from(variant)],
-        )
-        .expect("variant batch");
-
-        let file = std::fs::File::create(&file_path).expect("create variant parquet file");
-        let mut writer =
-            ArrowWriter::try_new(file, batch.schema(), None).expect("create variant writer");
-        writer.write(&batch).expect("write variant batch");
-        writer.close().expect("close variant writer");
-
-        file_path
-    }
-
-    async fn general_test(sql: &str, expected: Vec<DateExtraction>) {
-        let temp_dir = TempDir::new().unwrap();
-        let table_a = temp_dir.path().join("table_a.parquet");
-        let table_b = temp_dir.path().join("table_b.parquet");
-
-        let optimizer = Arc::new(LineageOptimizer::new());
-        let ctx = create_test_ctx(
-            table_a.to_str().unwrap(),
-            table_b.to_str().unwrap(),
-            optimizer.clone(),
-        )
-        .await;
-
+    /// Assert metadata on physical plan matches expected date and variant extractions
+    async fn assert_metadata(
+        ctx: &SessionContext,
+        sql: &str,
+        expected_date: Vec<(&str, &str)>,
+        expected_variant: Vec<&str>,
+    ) {
         let df = ctx.sql(sql).await.unwrap();
         let (state, plan) = df.into_parts();
         let optimized = state.optimize(&plan).unwrap();
-        let extractions = optimizer.extractions();
-        assert_eq!(extractions, expected);
-
         let physical_plan = state.create_physical_plan(&optimized).await.unwrap();
-        let field_metadata_map =
-            extract_field_metadata_from_physical_plan(&physical_plan, DATE_MAPPING_METADATA_KEY);
 
-        let expected_field_metadata = expected
-            .iter()
-            .map(|extraction| {
-                let mut sorted_units: Vec<&SupportedIntervalUnit> =
-                    extraction.components.iter().collect();
-                sorted_units.sort_by_key(|unit| match unit {
-                    SupportedIntervalUnit::Year => 0,
-                    SupportedIntervalUnit::Month => 1,
-                    SupportedIntervalUnit::Day => 2,
-                });
-                let metadata_value = sorted_units
-                    .iter()
-                    .map(|unit| unit.metadata_value())
-                    .collect::<Vec<_>>()
-                    .join(",");
-                (extraction.column.name().to_string(), metadata_value)
-            })
-            .collect::<HashMap<String, String>>();
-        assert_eq!(field_metadata_map, expected_field_metadata);
-    }
+        let date_metadata = extract_field_metadata(&physical_plan, DATE_MAPPING_METADATA_KEY);
+        let variant_metadata = extract_field_metadata(&physical_plan, VARIANT_MAPPING_METADATA_KEY);
 
-    #[tokio::test]
-    async fn multi_table_extracts() {
-        general_test(
-            "SELECT EXTRACT(YEAR FROM table_a.date) AS year, EXTRACT(DAY FROM table_b.date) AS day FROM table_a INNER JOIN table_b ON table_a.event_ts = table_b.event_ts",
-            vec![
-                DateExtraction {
-                    column: Column::new(Some("table_a"), "date"), 
-                    components: HashSet::from([SupportedIntervalUnit::Year]),
-                },
-                DateExtraction {
-                    column: Column::new(Some("table_b"), "date"), 
-                    components: HashSet::from([SupportedIntervalUnit::Day]),
-                },
-            ],
-        )
-        .await;
-    }
+        // Check date metadata
+        let expected_date_map: HashMap<String, String> = expected_date
+            .into_iter()
+            .map(|(col, val)| (col.to_string(), val.to_string()))
+            .collect();
+        assert_eq!(date_metadata, expected_date_map, "date metadata mismatch for SQL: {}", sql);
 
-    #[tokio::test]
-    async fn single_table_extracts() {
-        let statements = vec![
-            "SELECT EXTRACT(DAY FROM date) AS day FROM table_a",
-            "SELECT EXTRACT(day FROM date) AS day FROM table_a",
-            "SELECT EXTRACT(DAY FROM table_a.date) FROM table_a",
-            "SELECT AVG(EXTRACT(DAY FROM date)) AS avg_day FROM table_a",
-            "SELECT AVG(EXTRACT(DAY FROM date) + 1) AS avg_day FROM table_a",
-            "SELECT (SELECT MAX(EXTRACT(DAY FROM date)) FROM table_a) AS max_day, (SELECT MIN(EXTRACT(DAY FROM date)) FROM table_a) AS min_day",
-        ];
-        let expected = vec![DateExtraction {
-            column: Column::new(Some("table_a"), "date"),
-            components: HashSet::from([SupportedIntervalUnit::Day]),
-        }];
-        for sql in statements {
-            general_test(sql, expected.clone()).await;
+        // Check variant metadata
+        if expected_variant.is_empty() {
+            assert!(
+                !variant_metadata.contains_key("data"),
+                "variant metadata should not be present for SQL: {}",
+                sql
+            );
+        } else {
+            let mut actual = variant_metadata
+                .get("data")
+                .map(|v| variant_paths_from_metadata(v))
+                .unwrap_or_default();
+            actual.sort();
+            let mut expected: Vec<String> =
+                expected_variant.into_iter().map(|s| s.to_string()).collect();
+            expected.sort();
+            assert_eq!(actual, expected, "variant metadata mismatch for SQL: {}", sql);
         }
     }
 
-    #[tokio::test]
-    async fn test_no_metadata_on_unused_fields() {
-        let temp_dir = TempDir::new().unwrap();
-        let table_a = temp_dir.path().join("table_a.parquet");
-        let table_b = temp_dir.path().join("table_b.parquet");
+    // ─────────────────────────────────────────────────────────────────────────────
+    // Date extraction tests - single table
+    // ─────────────────────────────────────────────────────────────────────────────
 
-        let optimizer = Arc::new(LineageOptimizer::new());
-        let ctx = create_test_ctx(
-            table_a.to_str().unwrap(),
-            table_b.to_str().unwrap(),
-            optimizer.clone(),
+    #[tokio::test]
+    async fn extract_day_basic() {
+        let (_dir, ctx, _) = setup_single_date_table().await;
+        assert_metadata(
+            &ctx,
+            "SELECT EXTRACT(DAY FROM date) AS day FROM table_a",
+            vec![("date", "DAY")],
+            vec![],
         )
         .await;
+    }
 
-        // Query that extracts from date but doesn't use event_ts for extraction
+    #[tokio::test]
+    async fn extract_day_lowercase() {
+        let (_dir, ctx, _) = setup_single_date_table().await;
+        assert_metadata(
+            &ctx,
+            "SELECT EXTRACT(day FROM date) AS day FROM table_a",
+            vec![("date", "DAY")],
+            vec![],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn extract_day_qualified_column() {
+        let (_dir, ctx, _) = setup_single_date_table().await;
+        assert_metadata(
+            &ctx,
+            "SELECT EXTRACT(DAY FROM table_a.date) FROM table_a",
+            vec![("date", "DAY")],
+            vec![],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn extract_day_in_avg() {
+        let (_dir, ctx, _) = setup_single_date_table().await;
+        assert_metadata(
+            &ctx,
+            "SELECT AVG(EXTRACT(DAY FROM date)) AS avg_day FROM table_a",
+            vec![("date", "DAY")],
+            vec![],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn extract_day_in_expression() {
+        let (_dir, ctx, _) = setup_single_date_table().await;
+        assert_metadata(
+            &ctx,
+            "SELECT AVG(EXTRACT(DAY FROM date) + 1) AS avg_day FROM table_a",
+            vec![("date", "DAY")],
+            vec![],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn extract_day_in_subqueries() {
+        let (_dir, ctx, _) = setup_single_date_table().await;
+        assert_metadata(
+            &ctx,
+            "SELECT (SELECT MAX(EXTRACT(DAY FROM date)) FROM table_a) AS max_day, (SELECT MIN(EXTRACT(DAY FROM date)) FROM table_a) AS min_day",
+            vec![("date", "DAY")],
+            vec![],
+        )
+        .await;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // Date extraction tests - multiple components
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn extract_day_and_month() {
+        let (_dir, ctx, _) = setup_single_date_table().await;
+        assert_metadata(
+            &ctx,
+            "SELECT EXTRACT(DAY FROM date) AS day, EXTRACT(MONTH FROM date) AS month FROM table_a",
+            vec![("date", "MONTH,DAY")],
+            vec![],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn extract_day_and_month_subqueries() {
+        let (_dir, ctx, _) = setup_single_date_table().await;
+        assert_metadata(
+            &ctx,
+            "SELECT (SELECT MAX(EXTRACT(DAY FROM date)) FROM table_a) AS max_day, (SELECT MIN(EXTRACT(Month FROM date)) FROM table_a) AS min_day",
+            vec![("date", "MONTH,DAY")],
+            vec![],
+        )
+        .await;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // Date extraction tests - multi table (joins)
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn extract_from_joined_tables() {
+        let (_dir, ctx, _) = setup_dual_date_tables().await;
+        // Both tables have "date" column - metadata HashMap stores by column name only,
+        // so we verify at least one extraction is present (iteration order determines which)
         let df = ctx
-            .sql("SELECT EXTRACT(YEAR FROM date) AS year, event_ts FROM table_a")
+            .sql("SELECT EXTRACT(YEAR FROM table_a.date) AS year, EXTRACT(DAY FROM table_b.date) AS day FROM table_a INNER JOIN table_b ON table_a.event_ts = table_b.event_ts")
             .await
             .unwrap();
         let (state, plan) = df.into_parts();
         let optimized = state.optimize(&plan).unwrap();
         let physical_plan = state.create_physical_plan(&optimized).await.unwrap();
-        let field_metadata_map =
-            extract_field_metadata_from_physical_plan(&physical_plan, DATE_MAPPING_METADATA_KEY);
+        let metadata = extract_field_metadata(&physical_plan, DATE_MAPPING_METADATA_KEY);
 
-        assert_eq!(field_metadata_map.get("date"), Some(&"YEAR".to_string()),);
-
-        assert!(!field_metadata_map.contains_key("event_ts"));
-
-        assert_eq!(field_metadata_map.len(), 1);
-
-        let expected_keys: Vec<&str> = vec!["date"];
-        let actual_keys: Vec<&str> = field_metadata_map.keys().map(|s| s.as_str()).collect();
-        assert_eq!(actual_keys, expected_keys);
+        // Both tables' date columns should have extraction metadata
+        assert!(metadata.contains_key("date"), "date column should have extraction metadata");
+        let value = metadata.get("date").unwrap();
+        assert!(
+            value == "YEAR" || value == "DAY",
+            "expected YEAR or DAY, got {}",
+            value
+        );
     }
 
+    // ─────────────────────────────────────────────────────────────────────────────
+    // Date extraction tests - no metadata (inconsistent usage)
+    // ─────────────────────────────────────────────────────────────────────────────
+
     #[tokio::test]
-    async fn inconsistent_extracts_are_ignored() {
-        let statements = vec![
+    async fn no_extraction_with_interval_arithmetic() {
+        let (_dir, ctx, _) = setup_single_date_table().await;
+        assert_metadata(
+            &ctx,
             "SELECT EXTRACT(DAY FROM date + INTERVAL '1 day') AS day FROM table_a",
-            "SELECT date FROM table_a",
+            vec![],
+            vec![],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn no_extraction_when_column_used_directly() {
+        let (_dir, ctx, _) = setup_single_date_table().await;
+        assert_metadata(&ctx, "SELECT date FROM table_a", vec![], vec![]).await;
+    }
+
+    #[tokio::test]
+    async fn no_extraction_when_used_in_join_condition() {
+        let (_dir, ctx, _) = setup_dual_date_tables().await;
+        assert_metadata(
+            &ctx,
             "SELECT EXTRACT(DAY FROM table_a.date) AS day FROM table_a INNER JOIN table_b ON table_a.date = table_b.date",
-            "SELECT EXTRACT(YEAR FROM event_ts) AS year FROM table_a", // todo: time stamp is not supported yet.
-        ];
-
-        for sql in statements {
-            general_test(sql, vec![]).await;
-        }
-    }
-
-    #[tokio::test]
-    async fn single_table_multiple_extracts() {
-        let statements = vec![
-            "SELECT EXTRACT(DAY FROM date) AS day, EXTRACT(MONTH FROM date) AS month FROM table_a",
-            "SELECT (SELECT MAX(EXTRACT(DAY FROM date)) FROM table_a) AS max_day, (SELECT MIN(EXTRACT(Month FROM date)) FROM table_a) AS min_day",
-        ];
-        let expected = vec![DateExtraction {
-            column: Column::new(Some("table_a"), "date"),
-            components: HashSet::from([SupportedIntervalUnit::Month, SupportedIntervalUnit::Day]),
-        }];
-        for sql in statements {
-            general_test(sql, expected.clone()).await;
-        }
-    }
-
-    #[tokio::test]
-    async fn variant_get_metadata_is_propagated() {
-        let temp_dir = TempDir::new().unwrap();
-        let table_a = temp_dir.path().join("table_a.parquet");
-        let table_b = temp_dir.path().join("table_b.parquet");
-
-        let optimizer = Arc::new(LineageOptimizer::new());
-        let ctx = create_test_ctx(
-            table_a.to_str().unwrap(),
-            table_b.to_str().unwrap(),
-            optimizer.clone(),
+            vec![],
+            vec![],
         )
         .await;
-
-        ctx.register_udf(ScalarUDF::new_from_impl(VariantGetUdf::default()));
-        ctx.register_udf(ScalarUDF::new_from_impl(VariantToJsonUdf::default()));
-
-        let variant_path = write_variant_parquet_file(temp_dir.path());
-        ctx.register_parquet(
-            "variants_test",
-            variant_path.to_str().unwrap(),
-            ParquetReadOptions::default().skip_metadata(false),
-        )
-        .await
-        .unwrap();
-
-        let test_cases = vec![
-            (
-                "SELECT variant_to_json(variant_get(data, 'name')) FROM variants_test",
-                vec!["name"],
-            ),
-            (
-                "SELECT variant_get(data, 'name'), variant_get(data, 'name') AS name2 FROM variants_test",
-                vec!["name"],
-            ),
-            (
-                "SELECT variant_to_json(variant_get(data, 'age')), variant_to_json(variant_get(data, 'age')) AS age2 FROM variants_test",
-                vec!["age"],
-            ),
-            (
-                "SELECT variant_get(variants_test.data, 'name') as name1, variant_get(variants_test.data, 'name') as name2 FROM variants_test",
-                vec!["name"],
-            ),
-            (
-                "SELECT COUNT(variant_get(data, 'age')), MAX(variant_get(data, 'age')) FROM variants_test",
-                vec!["age"],
-            ),
-            (
-                "SELECT variant_get(data, 'name') FROM variants_test WHERE variant_get(data, 'name') IS NOT NULL",
-                vec!["name"],
-            ),
-            (
-                "SELECT (SELECT MAX(variant_get(data, 'name')) FROM variants_test) AS max_name, (SELECT MIN(variant_get(data, 'name')) FROM variants_test) AS min_name",
-                vec!["name"],
-            ),
-            (
-                "SELECT variant_get(data, 'name'), variant_get(data, 'date') FROM variants_test",
-                vec!["name", "date"],
-            ),
-            (
-                "SELECT variant_get(variant_get(data, 'name'), 'age') FROM variants_test",
-                vec!["name"],
-            ),
-            (
-                "SELECT variant_get(data, 'name', 'Utf8'), variant_get(data, 'name') FROM variants_test",
-                vec![],
-            ),
-        ];
-
-        for (sql, expected_paths) in test_cases {
-            let df = ctx.sql(sql).await.unwrap();
-            let (state, plan) = df.into_parts();
-            let optimized = state.optimize(&plan).unwrap();
-            let physical_plan = state.create_physical_plan(&optimized).await.unwrap();
-            let field_metadata_map = extract_field_metadata_from_physical_plan(
-                &physical_plan,
-                VARIANT_MAPPING_METADATA_KEY,
-            );
-
-            if expected_paths.is_empty() {
-                assert!(
-                    !field_metadata_map.contains_key("data"),
-                    "metadata should not be present for SQL: {}",
-                    sql
-                );
-            } else {
-                let mut actual = field_metadata_map
-                    .get("data")
-                    .map(|value| variant_paths_from_metadata(value))
-                    .unwrap_or_default();
-                actual.sort();
-                let mut expected_vec = expected_paths
-                    .into_iter()
-                    .map(|path| path.to_string())
-                    .collect::<Vec<_>>();
-                expected_vec.sort();
-                assert_eq!(actual, expected_vec, "SQL: {}", sql);
-            }
-        }
     }
 
     #[tokio::test]
-    async fn variant_get_type_metadata_is_propagated() {
-        let temp_dir = TempDir::new().unwrap();
-        let table_a = temp_dir.path().join("table_a.parquet");
-        let table_b = temp_dir.path().join("table_b.parquet");
-
-        let optimizer = Arc::new(LineageOptimizer::new());
-        let ctx = create_test_ctx(
-            table_a.to_str().unwrap(),
-            table_b.to_str().unwrap(),
-            optimizer.clone(),
+    async fn no_extraction_for_timestamp() {
+        let (_dir, ctx, _) = setup_single_date_table().await;
+        // Timestamp extraction not supported yet
+        assert_metadata(
+            &ctx,
+            "SELECT EXTRACT(YEAR FROM event_ts) AS year FROM table_a",
+            vec![],
+            vec![],
         )
         .await;
+    }
 
-        ctx.register_udf(ScalarUDF::new_from_impl(VariantGetUdf::default()));
+    // ─────────────────────────────────────────────────────────────────────────────
+    // Date extraction - metadata isolation test
+    // ─────────────────────────────────────────────────────────────────────────────
 
-        let variant_path = write_variant_parquet_file(temp_dir.path());
-        ctx.register_parquet(
-            "variants_test",
-            variant_path.to_str().unwrap(),
-            ParquetReadOptions::default().skip_metadata(false),
+    #[tokio::test]
+    async fn metadata_only_on_extracted_fields() {
+        let (_dir, ctx, _) = setup_single_date_table().await;
+        // Only 'date' should have metadata, not 'event_ts'
+        assert_metadata(
+            &ctx,
+            "SELECT EXTRACT(YEAR FROM date) AS year, event_ts FROM table_a",
+            vec![("date", "YEAR")],
+            vec![],
         )
-        .await
-        .unwrap();
+        .await;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // Variant extraction tests - basic
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn variant_get_single_path() {
+        let (_dir, ctx, _) = setup_variant_table().await;
+        assert_metadata(
+            &ctx,
+            "SELECT variant_to_json(variant_get(data, 'name')) FROM variants_test",
+            vec![],
+            vec!["name"],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn variant_get_duplicate_paths() {
+        let (_dir, ctx, _) = setup_variant_table().await;
+        assert_metadata(
+            &ctx,
+            "SELECT variant_get(data, 'name'), variant_get(data, 'name') AS name2 FROM variants_test",
+            vec![],
+            vec!["name"],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn variant_get_with_to_json() {
+        let (_dir, ctx, _) = setup_variant_table().await;
+        assert_metadata(
+            &ctx,
+            "SELECT variant_to_json(variant_get(data, 'age')), variant_to_json(variant_get(data, 'age')) AS age2 FROM variants_test",
+            vec![],
+            vec!["age"],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn variant_get_qualified_column() {
+        let (_dir, ctx, _) = setup_variant_table().await;
+        assert_metadata(
+            &ctx,
+            "SELECT variant_get(variants_test.data, 'name') as name1, variant_get(variants_test.data, 'name') as name2 FROM variants_test",
+            vec![],
+            vec!["name"],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn variant_get_in_aggregates() {
+        let (_dir, ctx, _) = setup_variant_table().await;
+        assert_metadata(
+            &ctx,
+            "SELECT COUNT(variant_get(data, 'age')), MAX(variant_get(data, 'age')) FROM variants_test",
+            vec![],
+            vec!["age"],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn variant_get_with_where_clause() {
+        let (_dir, ctx, _) = setup_variant_table().await;
+        assert_metadata(
+            &ctx,
+            "SELECT variant_get(data, 'name') FROM variants_test WHERE variant_get(data, 'name') IS NOT NULL",
+            vec![],
+            vec!["name"],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn variant_get_in_subqueries() {
+        let (_dir, ctx, _) = setup_variant_table().await;
+        assert_metadata(
+            &ctx,
+            "SELECT (SELECT MAX(variant_get(data, 'name')) FROM variants_test) AS max_name, (SELECT MIN(variant_get(data, 'name')) FROM variants_test) AS min_name",
+            vec![],
+            vec!["name"],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn variant_get_multiple_paths() {
+        let (_dir, ctx, _) = setup_variant_table().await;
+        assert_metadata(
+            &ctx,
+            "SELECT variant_get(data, 'name'), variant_get(data, 'date') FROM variants_test",
+            vec![],
+            vec!["date", "name"],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn variant_get_nested() {
+        let (_dir, ctx, _) = setup_variant_table().await;
+        assert_metadata(
+            &ctx,
+            "SELECT variant_get(variant_get(data, 'name'), 'age') FROM variants_test",
+            vec![],
+            vec!["name"],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn variant_get_conflicting_types_no_metadata() {
+        let (_dir, ctx, _) = setup_variant_table().await;
+        // Same path with different type hints - should not produce metadata
+        assert_metadata(
+            &ctx,
+            "SELECT variant_get(data, 'name', 'Utf8'), variant_get(data, 'name') FROM variants_test",
+            vec![],
+            vec![],
+        )
+        .await;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // Variant extraction tests - type metadata
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn variant_get_type_hint_propagated() {
+        let (_dir, ctx, _) = setup_variant_table().await;
 
         let df = ctx
             .sql("SELECT variant_get(data, 'name', 'Utf8') FROM variants_test")
@@ -1431,12 +1607,11 @@ mod tests {
         let optimized = state.optimize(&plan).unwrap();
         let physical_plan = state.create_physical_plan(&optimized).await.unwrap();
 
-        let variant_metadata =
-            extract_field_metadata_from_physical_plan(&physical_plan, VARIANT_MAPPING_METADATA_KEY);
+        let metadata = extract_field_metadata(&physical_plan, VARIANT_MAPPING_METADATA_KEY);
 
-        let entries = variant_metadata
+        let entries = metadata
             .get("data")
-            .map(|value| parse_variant_metadata_entries(value))
+            .map(|value| parse_variant_metadata(value))
             .unwrap_or_default();
         let entry = entries
             .iter()
@@ -1446,204 +1621,108 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn variant_get_conflicting_types_disable_metadata() {
-        let temp_dir = TempDir::new().unwrap();
-        let table_a = temp_dir.path().join("table_a.parquet");
-        let table_b = temp_dir.path().join("table_b.parquet");
-
-        let optimizer = Arc::new(LineageOptimizer::new());
-        let ctx = create_test_ctx(
-            table_a.to_str().unwrap(),
-            table_b.to_str().unwrap(),
-            optimizer.clone(),
+    async fn variant_get_conflicting_types_in_filter() {
+        let (_dir, ctx, _) = setup_variant_table().await;
+        assert_metadata(
+            &ctx,
+            "SELECT variant_to_json(variant_get(data, 'name')) FROM variants_test WHERE variant_get(data, 'name', 'Utf8') = 'Bob'",
+            vec![],
+            vec![],
         )
         .await;
-
-        ctx.register_udf(ScalarUDF::new_from_impl(VariantGetUdf::default()));
-        ctx.register_udf(ScalarUDF::new_from_impl(VariantToJsonUdf::default()));
-
-        let variant_path = write_variant_parquet_file(temp_dir.path());
-        ctx.register_parquet(
-            "variants_test",
-            variant_path.to_str().unwrap(),
-            ParquetReadOptions::default().skip_metadata(false),
-        )
-        .await
-        .unwrap();
-
-        let sql = "SELECT variant_to_json(variant_get(data, 'name')) FROM variants_test WHERE variant_get(data, 'name', 'Utf8') = 'Bob'";
-        let df = ctx.sql(sql).await.unwrap();
-        let (state, plan) = df.into_parts();
-        let optimized = state.optimize(&plan).unwrap();
-        let physical_plan = state.create_physical_plan(&optimized).await.unwrap();
-
-        let variant_metadata =
-            extract_field_metadata_from_physical_plan(&physical_plan, VARIANT_MAPPING_METADATA_KEY);
-
-        assert!(
-            !variant_metadata.contains_key("data"),
-            "expected no variant metadata for conflicting types"
-        );
     }
 
-    #[tokio::test]
-    async fn mixed_date_extract_and_variant_get() {
-        let temp_dir = TempDir::new().unwrap();
-        let table_a = temp_dir.path().join("table_a.parquet");
-        let table_b = temp_dir.path().join("table_b.parquet");
-
-        let optimizer = Arc::new(LineageOptimizer::new());
-        let ctx = create_test_ctx(
-            table_a.to_str().unwrap(),
-            table_b.to_str().unwrap(),
-            optimizer.clone(),
-        )
-        .await;
-
-        ctx.register_udf(ScalarUDF::new_from_impl(VariantGetUdf::default()));
-        ctx.register_udf(ScalarUDF::new_from_impl(VariantToJsonUdf::default()));
-
-        let variant_path = write_variant_parquet_file(temp_dir.path());
-        ctx.register_parquet(
-            "variants_test",
-            variant_path.to_str().unwrap(),
-            ParquetReadOptions::default().skip_metadata(false),
-        )
-        .await
-        .unwrap();
-
-        let test_cases = vec![
-            (
-                "SELECT EXTRACT(DAY FROM table_a.date) AS day, variant_get(variants_test.data, 'name') AS name FROM table_a CROSS JOIN variants_test",
-                vec![("date", "DAY")],
-                vec!["name"],
-            ),
-            (
-                "SELECT EXTRACT(YEAR FROM table_a.date) AS year, EXTRACT(MONTH FROM table_a.date_copy) AS month, variant_get(variants_test.data, 'name') AS name, variant_get(variants_test.data, 'age') AS age FROM table_a CROSS JOIN variants_test",
-                vec![("date", "YEAR"), ("date_copy", "MONTH")],
-                vec!["age", "name"],
-            ),
-            (
-                "SELECT variant_get(variants_test.data, 'name') AS name FROM variants_test CROSS JOIN table_a WHERE EXTRACT(DAY FROM table_a.date) > 1",
-                vec![("date", "DAY")],
-                vec!["name"],
-            ),
-            (
-                "SELECT EXTRACT(DAY FROM table_a.date) AS day FROM table_a CROSS JOIN variants_test WHERE variant_get(variants_test.data, 'name') IS NOT NULL",
-                vec![("date", "DAY")],
-                vec!["name"],
-            ),
-            (
-                "SELECT EXTRACT(YEAR FROM table_a.date) AS year, (SELECT variant_get(variants_test.data, 'name') FROM variants_test LIMIT 1) AS name FROM table_a",
-                vec![("date", "YEAR")],
-                vec!["name"],
-            ),
-            (
-                "SELECT AVG(EXTRACT(DAY FROM table_a.date)) AS avg_day, COUNT(variant_get(variants_test.data, 'name')) AS name_count FROM table_a CROSS JOIN variants_test",
-                vec![("date", "DAY")],
-                vec!["name"],
-            ),
-        ];
-
-        for (sql, expected_date_metadata, expected_variant_paths) in test_cases {
-            let df = ctx.sql(sql).await.unwrap();
-            let (state, plan) = df.into_parts();
-            let optimized = state.optimize(&plan).unwrap();
-            let physical_plan = state.create_physical_plan(&optimized).await.unwrap();
-
-            let date_metadata = extract_field_metadata_from_physical_plan(
-                &physical_plan,
-                DATE_MAPPING_METADATA_KEY,
-            );
-            let variant_metadata = extract_field_metadata_from_physical_plan(
-                &physical_plan,
-                VARIANT_MAPPING_METADATA_KEY,
-            );
-
-            for (column, expected_value) in expected_date_metadata {
-                assert_eq!(
-                    date_metadata.get(column),
-                    Some(&expected_value.to_string()),
-                    "date extract metadata for column '{}' should be '{}' in SQL: {}",
-                    column,
-                    expected_value,
-                    sql
-                );
-            }
-
-            if expected_variant_paths.is_empty() {
-                assert!(!variant_metadata.contains_key("data"));
-            } else {
-                let mut actual = variant_metadata
-                    .get("data")
-                    .map(|value| variant_paths_from_metadata(value))
-                    .unwrap_or_default();
-                actual.sort();
-                let mut expected_vec = expected_variant_paths
-                    .into_iter()
-                    .map(|path| path.to_string())
-                    .collect::<Vec<_>>();
-                expected_vec.sort();
-                assert_eq!(actual, expected_vec, "SQL: {}", sql);
-            }
-        }
-    }
+    // ─────────────────────────────────────────────────────────────────────────────
+    // Variant extraction tests - edge cases
+    // ─────────────────────────────────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn variant_edge_case() {
-        let temp_dir = TempDir::new().unwrap();
-        let table_a = temp_dir.path().join("table_a.parquet");
-        let table_b = temp_dir.path().join("table_b.parquet");
-
-        let optimizer = Arc::new(LineageOptimizer::new());
-        let ctx = create_test_ctx(
-            table_a.to_str().unwrap(),
-            table_b.to_str().unwrap(),
-            optimizer.clone(),
-        )
-        .await;
-
-        ctx.register_udf(ScalarUDF::new_from_impl(VariantGetUdf::default()));
-
-        let variant_path = write_variant_parquet_file(temp_dir.path());
-        ctx.register_parquet(
-            "variants_test",
-            variant_path.to_str().unwrap(),
-            ParquetReadOptions::default().skip_metadata(false),
-        )
-        .await
-        .unwrap();
-
-        let test_cases = vec![(
-            "SELECT variant_get(data, 'did', 'Utf8') as user_id,  
-             MAX(TO_TIMESTAMP_MICROS(variant_get(data, 'time_us', 'Int64'))) - MIN(TO_TIMESTAMP_MICROS(variant_get(data, 'time_us', 'Int64'))) 
+    async fn variant_get_multiple_paths_with_types() {
+        let (_dir, ctx, _) = setup_variant_table().await;
+        assert_metadata(
+            &ctx,
+            "SELECT variant_get(data, 'did', 'Utf8') as user_id,
+             MAX(TO_TIMESTAMP_MICROS(variant_get(data, 'time_us', 'Int64'))) - MIN(TO_TIMESTAMP_MICROS(variant_get(data, 'time_us', 'Int64')))
             FROM variants_test GROUP BY user_id",
+            vec![],
             vec!["did", "time_us"],
-        )];
+        )
+        .await;
+    }
 
-        for (sql, expected_variant_paths) in test_cases {
-            let df = ctx.sql(sql).await.unwrap();
-            let (state, plan) = df.into_parts();
-            let optimized = state.optimize(&plan).unwrap();
-            println!("optimized: {}", optimized);
-            let physical_plan = state.create_physical_plan(&optimized).await.unwrap();
+    // ─────────────────────────────────────────────────────────────────────────────
+    // Mixed date extract and variant tests
+    // ─────────────────────────────────────────────────────────────────────────────
 
-            let variant_metadata = extract_field_metadata_from_physical_plan(
-                &physical_plan,
-                VARIANT_MAPPING_METADATA_KEY,
-            );
+    #[tokio::test]
+    async fn mixed_date_and_variant_basic() {
+        let (_dir, ctx, _) = setup_date_and_variant_tables().await;
+        assert_metadata(
+            &ctx,
+            "SELECT EXTRACT(DAY FROM table_a.date) AS day, variant_get(variants_test.data, 'name') AS name FROM table_a CROSS JOIN variants_test",
+            vec![("date", "DAY")],
+            vec!["name"],
+        )
+        .await;
+    }
 
-            let mut actual = variant_metadata
-                .get("data")
-                .map(|value| variant_paths_from_metadata(value))
-                .unwrap_or_default();
-            actual.sort();
-            let mut expected_vec = expected_variant_paths
-                .into_iter()
-                .map(|path| path.to_string())
-                .collect::<Vec<_>>();
-            expected_vec.sort();
-            assert_eq!(actual, expected_vec);
-        }
+    #[tokio::test]
+    async fn mixed_multiple_date_and_variant() {
+        let (_dir, ctx, _) = setup_date_and_variant_tables().await;
+        assert_metadata(
+            &ctx,
+            "SELECT EXTRACT(YEAR FROM table_a.date) AS year, EXTRACT(MONTH FROM table_a.date_copy) AS month, variant_get(variants_test.data, 'name') AS name, variant_get(variants_test.data, 'age') AS age FROM table_a CROSS JOIN variants_test",
+            vec![("date", "YEAR"), ("date_copy", "MONTH")],
+            vec!["age", "name"],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn mixed_date_in_where_clause() {
+        let (_dir, ctx, _) = setup_date_and_variant_tables().await;
+        assert_metadata(
+            &ctx,
+            "SELECT variant_get(variants_test.data, 'name') AS name FROM variants_test CROSS JOIN table_a WHERE EXTRACT(DAY FROM table_a.date) > 1",
+            vec![("date", "DAY")],
+            vec!["name"],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn mixed_variant_in_where_clause() {
+        let (_dir, ctx, _) = setup_date_and_variant_tables().await;
+        assert_metadata(
+            &ctx,
+            "SELECT EXTRACT(DAY FROM table_a.date) AS day FROM table_a CROSS JOIN variants_test WHERE variant_get(variants_test.data, 'name') IS NOT NULL",
+            vec![("date", "DAY")],
+            vec!["name"],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn mixed_date_with_variant_subquery() {
+        let (_dir, ctx, _) = setup_date_and_variant_tables().await;
+        assert_metadata(
+            &ctx,
+            "SELECT EXTRACT(YEAR FROM table_a.date) AS year, (SELECT variant_get(variants_test.data, 'name') FROM variants_test LIMIT 1) AS name FROM table_a",
+            vec![("date", "YEAR")],
+            vec!["name"],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn mixed_in_aggregates() {
+        let (_dir, ctx, _) = setup_date_and_variant_tables().await;
+        assert_metadata(
+            &ctx,
+            "SELECT AVG(EXTRACT(DAY FROM table_a.date)) AS avg_day, COUNT(variant_get(variants_test.data, 'name')) AS name_count FROM table_a CROSS JOIN variants_test",
+            vec![("date", "DAY")],
+            vec!["name"],
+        )
+        .await;
     }
 }
