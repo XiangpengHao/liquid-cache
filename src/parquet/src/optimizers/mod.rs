@@ -22,7 +22,7 @@ pub use lineage_opt::LineageOptimizer;
 pub(crate) use lineage_opt::VariantField;
 
 use crate::{
-    LiquidCacheRef, LiquidParquetSource,
+    LiquidCacheParquetRef, LiquidParquetSource,
     optimizers::lineage_opt::{ColumnAnnotation, metadata_from_factory, serialize_date_part},
 };
 use liquid_cache_storage::variant_schema::VariantSchema;
@@ -97,13 +97,13 @@ pub(crate) fn variant_mappings_from_field(field: &Field) -> Option<Vec<VariantFi
 /// to use LiquidParquetSource instead of the default ParquetSource
 #[derive(Debug)]
 pub struct LocalModeOptimizer {
-    cache: LiquidCacheRef,
+    cache: LiquidCacheParquetRef,
     eager_shredding: bool,
 }
 
 impl LocalModeOptimizer {
     /// Create an optimizer with an existing cache instance
-    pub fn new(cache: LiquidCacheRef, eager_shredding: bool) -> Self {
+    pub fn new(cache: LiquidCacheParquetRef, eager_shredding: bool) -> Self {
         Self {
             cache,
             eager_shredding,
@@ -111,7 +111,7 @@ impl LocalModeOptimizer {
     }
 
     /// Create an optimizer with an existing cache instance
-    pub fn with_cache(cache: LiquidCacheRef) -> Self {
+    pub fn with_cache(cache: LiquidCacheParquetRef) -> Self {
         Self {
             cache,
             eager_shredding: true,
@@ -146,7 +146,7 @@ impl PhysicalOptimizerRule for LocalModeOptimizer {
 /// Rewrite the data source plan to use liquid cache.
 pub fn rewrite_data_source_plan(
     plan: Arc<dyn ExecutionPlan>,
-    cache: &LiquidCacheRef,
+    cache: &LiquidCacheParquetRef,
     eager_shredding: bool,
 ) -> Arc<dyn ExecutionPlan> {
     let rewritten = plan
@@ -157,7 +157,7 @@ pub fn rewrite_data_source_plan(
 
 fn try_optimize_parquet_source(
     plan: Arc<dyn ExecutionPlan>,
-    cache: &LiquidCacheRef,
+    cache: &LiquidCacheParquetRef,
     eager_shredding: bool,
 ) -> Result<Transformed<Arc<dyn ExecutionPlan>>, datafusion::error::DataFusionError> {
     let any_plan = plan.as_any();
@@ -316,14 +316,14 @@ mod tests {
         cache::squeeze_policies::TranscodeSqueezeEvict, cache_policies::LiquidPolicy,
     };
 
-    use crate::LiquidCache;
+    use crate::LiquidCacheParquet;
     use liquid_cache_common::IoMode;
 
     use super::*;
 
     fn rewrite_plan_inner(plan: Arc<dyn ExecutionPlan>) {
         let expected_schema = plan.schema();
-        let liquid_cache = Arc::new(LiquidCache::new(
+        let liquid_cache = Arc::new(LiquidCacheParquet::new(
             8192,
             1000000,
             PathBuf::from("test"),

@@ -13,7 +13,7 @@ use datafusion::prelude::{SessionConfig, SessionContext};
 use liquid_cache_common::IoMode;
 use liquid_cache_parquet::optimizers::{LineageOptimizer, LocalModeOptimizer};
 use liquid_cache_parquet::{
-    LiquidCache, LiquidCacheRef, VariantGetUdf, VariantPretty, VariantToJsonUdf,
+    LiquidCacheParquet, LiquidCacheParquetRef, VariantGetUdf, VariantPretty, VariantToJsonUdf,
 };
 use liquid_cache_storage::cache::squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict};
 use liquid_cache_storage::cache_policies::CachePolicy;
@@ -144,7 +144,10 @@ impl LiquidCacheLocalBuilder {
 
     /// Build a SessionContext with liquid cache configured
     /// Returns the SessionContext and the liquid cache reference
-    pub fn build(self, mut config: SessionConfig) -> Result<(SessionContext, LiquidCacheRef)> {
+    pub fn build(
+        self,
+        mut config: SessionConfig,
+    ) -> Result<(SessionContext, LiquidCacheParquetRef)> {
         config.options_mut().execution.parquet.pushdown_filters = true;
         config
             .options_mut()
@@ -155,7 +158,7 @@ impl LiquidCacheLocalBuilder {
         config.options_mut().execution.parquet.skip_metadata = false;
         config.options_mut().execution.batch_size = self.batch_size;
 
-        let cache = LiquidCache::new(
+        let cache = LiquidCacheParquet::new(
             self.batch_size,
             self.max_cache_bytes,
             self.cache_dir,

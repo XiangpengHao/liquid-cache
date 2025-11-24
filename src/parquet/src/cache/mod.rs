@@ -21,25 +21,25 @@ mod id;
 mod stats;
 
 pub(crate) use column::InsertArrowArrayError;
-pub use column::{LiquidCachedColumn, LiquidCachedColumnRef};
+pub use column::{CachedColumn, CachedColumnRef};
 pub(crate) use id::ColumnAccessPath;
 pub use id::{BatchID, ParquetArrayID};
 
 #[derive(Default, Debug)]
 struct ColumnMaps {
     // invariant: Arc::ptr_eq(map[field.name()], map[field.id()])
-    by_id: AHashMap<u64, LiquidCachedColumnRef>,
-    by_name: AHashMap<String, LiquidCachedColumnRef>,
+    by_id: AHashMap<u64, CachedColumnRef>,
+    by_name: AHashMap<String, CachedColumnRef>,
 }
 
 /// A row group in the cache.
 #[derive(Debug)]
-pub struct LiquidCachedRowGroup {
+pub struct CachedRowGroup {
     columns: RwLock<ColumnMaps>,
     cache_store: Arc<CacheStorage>,
 }
 
-impl LiquidCachedRowGroup {
+impl CachedRowGroup {
     /// Create a new row group.
     /// The column_ids are the indices of the columns in the file schema.
     /// So they may not start from 0.
@@ -58,7 +58,7 @@ impl LiquidCachedRowGroup {
 
         let mut column_maps = ColumnMaps::default();
         for (column_id, field) in columns {
-            let column = Arc::new(LiquidCachedColumn::new(
+            let column = Arc::new(CachedColumn::new(
                 Arc::clone(field),
                 Arc::clone(&cache_store),
                 *column_id,
@@ -81,12 +81,12 @@ impl LiquidCachedRowGroup {
     }
 
     /// Get a column from the row group.
-    pub fn get_column(&self, column_id: u64) -> Option<LiquidCachedColumnRef> {
+    pub fn get_column(&self, column_id: u64) -> Option<CachedColumnRef> {
         self.columns.read().unwrap().by_id.get(&column_id).cloned()
     }
 
     /// Get a column from the row group by its field name.
-    pub fn get_column_by_name(&self, column_name: &str) -> Option<LiquidCachedColumnRef> {
+    pub fn get_column_by_name(&self, column_name: &str) -> Option<CachedColumnRef> {
         self.columns
             .read()
             .unwrap()
@@ -169,17 +169,17 @@ impl LiquidCachedRowGroup {
     }
 }
 
-pub(crate) type LiquidCachedRowGroupRef = Arc<LiquidCachedRowGroup>;
+pub(crate) type CachedRowGroupRef = Arc<CachedRowGroup>;
 
 /// A file in the cache.
 #[derive(Debug)]
-pub struct LiquidCachedFile {
+pub struct CachedFile {
     cache_store: Arc<CacheStorage>,
     file_id: u64,
     file_schema: SchemaRef,
 }
 
-impl LiquidCachedFile {
+impl CachedFile {
     fn new(cache_store: Arc<CacheStorage>, file_id: u64, file_schema: SchemaRef) -> Self {
         Self {
             cache_store,
@@ -189,7 +189,7 @@ impl LiquidCachedFile {
     }
 
     /// Create a row group handle scoped to the current query context.
-    pub fn create_row_group(&self, row_group_id: u64) -> LiquidCachedRowGroupRef {
+    pub fn create_row_group(&self, row_group_id: u64) -> CachedRowGroupRef {
         let columns: Vec<(u64, Arc<Field>)> = self
             .file_schema
             .fields()
@@ -198,7 +198,7 @@ impl LiquidCachedFile {
             .map(|(idx, field)| (idx as u64, Arc::clone(field)))
             .collect();
 
-        Arc::new(LiquidCachedRowGroup::new(
+        Arc::new(CachedRowGroup::new(
             self.cache_store.clone(),
             row_group_id,
             self.file_id,
@@ -218,11 +218,11 @@ impl LiquidCachedFile {
 }
 
 /// A reference to a cached file.
-pub(crate) type LiquidCachedFileRef = Arc<LiquidCachedFile>;
+pub(crate) type CachedFileRef = Arc<CachedFile>;
 
 /// The main cache structure.
 #[derive(Debug)]
-pub struct LiquidCache {
+pub struct LiquidCacheParquet {
     /// Map file path to file id.
     files: Mutex<AHashMap<String, u64>>,
 
@@ -232,10 +232,10 @@ pub struct LiquidCache {
 }
 
 /// A reference to the main cache structure.
-pub type LiquidCacheRef = Arc<LiquidCache>;
+pub type LiquidCacheParquetRef = Arc<LiquidCacheParquet>;
 
-impl LiquidCache {
-    /// Create a new cache
+impl LiquidCacheParquet {
+    /// Create a new cache for parquet files.
     pub fn new(
         batch_size: usize,
         max_cache_bytes: usize,
@@ -255,7 +255,7 @@ impl LiquidCache {
             .with_io_worker(io_context);
         let cache_storage = cache_storage_builder.build();
 
-        LiquidCache {
+        LiquidCacheParquet {
             files: Mutex::new(AHashMap::new()),
             cache_store: cache_storage,
             current_file_id: AtomicU64::new(0),
@@ -267,14 +267,14 @@ impl LiquidCache {
         &self,
         file_path: String,
         full_file_schema: SchemaRef,
-    ) -> LiquidCachedFileRef {
+    ) -> CachedFileRef {
         let mut files = self.files.lock().unwrap();
         let file_id = *files
             .entry(file_path.clone())
             .or_insert_with(|| self.current_file_id.fetch_add(1, Ordering::Relaxed));
         drop(files);
 
-        Arc::new(LiquidCachedFile::new(
+        Arc::new(CachedFile::new(
             self.cache_store.clone(),
             file_id,
             full_file_schema,
@@ -347,7 +347,7 @@ impl LiquidCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::{LiquidCache, LiquidCachedRowGroupRef};
+    use crate::cache::{CachedRowGroupRef, LiquidCacheParquet};
     use crate::reader::FilterCandidateBuilder;
     use arrow::array::Int32Array;
     use arrow::buffer::BooleanBuffer;
@@ -365,9 +365,9 @@ mod tests {
     use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
     use std::sync::Arc;
 
-    fn setup_cache(batch_size: usize, schema: SchemaRef) -> LiquidCachedRowGroupRef {
+    fn setup_cache(batch_size: usize, schema: SchemaRef) -> CachedRowGroupRef {
         let tmp_dir = tempfile::tempdir().unwrap();
-        let cache = LiquidCache::new(
+        let cache = LiquidCacheParquet::new(
             batch_size,
             usize::MAX,
             tmp_dir.path().to_path_buf(),

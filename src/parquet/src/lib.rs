@@ -10,7 +10,7 @@ pub use liquid_cache_storage::variant_schema;
 mod variant_udf;
 
 pub mod cache;
-pub use cache::{LiquidCache, LiquidCacheRef};
+pub use cache::{LiquidCacheParquet, LiquidCacheParquetRef};
 pub use liquid_cache_common as common;
 pub use liquid_cache_storage as storage;
 pub use reader::{FilterCandidateBuilder, LiquidParquetSource, LiquidPredicate, LiquidRowFilter};

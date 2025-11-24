@@ -1,4 +1,4 @@
-use super::LiquidCache;
+use super::LiquidCacheParquet;
 use crate::{cache::id::ParquetArrayID, sync::Arc};
 use arrow::array::{ArrayBuilder, RecordBatch, StringBuilder, UInt64Builder};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
@@ -114,7 +114,7 @@ impl StatsWriter {
     }
 }
 
-impl LiquidCache {
+impl LiquidCacheParquet {
     /// Get the memory usage of the cache in bytes.
     pub fn compute_memory_usage_bytes(&self) -> u64 {
         self.cache_store.budget().memory_usage_bytes() as u64
@@ -182,7 +182,7 @@ mod tests {
     #[tokio::test]
     async fn test_stats_writer() -> Result<(), ParquetError> {
         let tmp_dir = tempfile::tempdir().unwrap();
-        let cache = LiquidCache::new(
+        let cache = LiquidCacheParquet::new(
             1024,
             usize::MAX,
             tmp_dir.path().to_path_buf(),

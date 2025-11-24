@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 /// A column in the cache.
 #[derive(Debug)]
-pub struct LiquidCachedColumn {
+pub struct CachedColumn {
     cache_store: Arc<CacheStorage>,
     field: Arc<Field>,
     column_path: ColumnAccessPath,
@@ -28,7 +28,7 @@ pub struct LiquidCachedColumn {
 }
 
 /// A reference to a cached column.
-pub type LiquidCachedColumnRef = Arc<LiquidCachedColumn>;
+pub type CachedColumnRef = Arc<CachedColumn>;
 
 fn infer_expression(field: &Field) -> Option<CacheExpression> {
     if let Some(mapping) = field.metadata().get(DATE_MAPPING_METADATA_KEY)
@@ -58,7 +58,7 @@ pub enum InsertArrowArrayError {
     AlreadyCached,
 }
 
-impl LiquidCachedColumn {
+impl CachedColumn {
     pub(crate) fn new(
         field: Arc<Field>,
         cache_store: Arc<CacheStorage>,

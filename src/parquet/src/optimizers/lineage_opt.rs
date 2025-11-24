@@ -972,7 +972,7 @@ mod tests {
     use crate::optimizers::{
         DATE_MAPPING_METADATA_KEY, LocalModeOptimizer, VARIANT_MAPPING_METADATA_KEY,
     };
-    use crate::{LiquidCache, VariantGetUdf, VariantToJsonUdf};
+    use crate::{LiquidCacheParquet, VariantGetUdf, VariantToJsonUdf};
     use liquid_cache_common::IoMode;
 
     use super::*;
@@ -996,7 +996,7 @@ mod tests {
     // ─────────────────────────────────────────────────────────────────────────────
 
     fn create_physical_optimizer() -> LocalModeOptimizer {
-        LocalModeOptimizer::with_cache(Arc::new(LiquidCache::new(
+        LocalModeOptimizer::with_cache(Arc::new(LiquidCacheParquet::new(
             1024,
             1024 * 1024 * 1024,
             PathBuf::from("test"),
@@ -1248,7 +1248,11 @@ mod tests {
             .into_iter()
             .map(|(col, val)| (col.to_string(), val.to_string()))
             .collect();
-        assert_eq!(date_metadata, expected_date_map, "date metadata mismatch for SQL: {}", sql);
+        assert_eq!(
+            date_metadata, expected_date_map,
+            "date metadata mismatch for SQL: {}",
+            sql
+        );
 
         // Check variant metadata
         if expected_variant.is_empty() {
@@ -1263,10 +1267,16 @@ mod tests {
                 .map(|v| variant_paths_from_metadata(v))
                 .unwrap_or_default();
             actual.sort();
-            let mut expected: Vec<String> =
-                expected_variant.into_iter().map(|s| s.to_string()).collect();
+            let mut expected: Vec<String> = expected_variant
+                .into_iter()
+                .map(|s| s.to_string())
+                .collect();
             expected.sort();
-            assert_eq!(actual, expected, "variant metadata mismatch for SQL: {}", sql);
+            assert_eq!(
+                actual, expected,
+                "variant metadata mismatch for SQL: {}",
+                sql
+            );
         }
     }
 
@@ -1393,7 +1403,10 @@ mod tests {
         let metadata = extract_field_metadata(&physical_plan, DATE_MAPPING_METADATA_KEY);
 
         // Both tables' date columns should have extraction metadata
-        assert!(metadata.contains_key("date"), "date column should have extraction metadata");
+        assert!(
+            metadata.contains_key("date"),
+            "date column should have extraction metadata"
+        );
         let value = metadata.get("date").unwrap();
         assert!(
             value == "YEAR" || value == "DAY",

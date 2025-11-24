@@ -29,7 +29,7 @@ mod tests;
 /// ```ignore
 /// use datafusion::execution::object_store::ObjectStoreUrl;
 /// use datafusion::prelude::SessionConfig;
-/// use liquid_cache_client::LiquidCacheBuilder;
+/// use liquid_cache_client::LiquidCacheClientBuilder;
 /// use std::collections::HashMap;
 ///
 /// let mut s3_options = HashMap::new();
@@ -37,7 +37,7 @@ mod tests;
 /// s3_options.insert("secret_access_key".to_string(), "your-secret-key".to_string());
 /// s3_options.insert("region".to_string(), "us-east-1".to_string());
 ///
-/// let ctx = LiquidCacheBuilder::new("localhost:15214")
+/// let ctx = LiquidCacheClientBuilder::new("localhost:15214")
 ///     .with_object_store(ObjectStoreUrl::parse("s3://my_bucket").unwrap(), Some(s3_options))
 ///     .build(SessionConfig::from_env().unwrap())
 ///     .unwrap();
@@ -47,12 +47,12 @@ mod tests;
 /// let df = ctx.sql("SELECT * FROM my_table").await?.show().await?;
 /// println!("{:?}", df);
 /// ```
-pub struct LiquidCacheBuilder {
+pub struct LiquidCacheClientBuilder {
     object_stores: Vec<(ObjectStoreUrl, HashMap<String, String>)>,
     cache_server: String,
 }
 
-impl LiquidCacheBuilder {
+impl LiquidCacheClientBuilder {
     /// Create a new builder for LiquidCache client state.
     pub fn new(cache_server: impl AsRef<str>) -> Self {
         Self {

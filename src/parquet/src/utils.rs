@@ -12,7 +12,7 @@ use datafusion::{
 use liquid_cache_common::rpc::ExecutionMetricsResponse;
 use parquet::arrow::arrow_reader::RowSelector;
 
-use crate::cache::LiquidCacheRef;
+use crate::cache::LiquidCacheParquetRef;
 
 fn boolean_buffer_and_then_fallback(left: &BooleanBuffer, right: &BooleanBuffer) -> BooleanBuffer {
     debug_assert_eq!(
@@ -266,7 +266,7 @@ pub(super) fn row_selector_to_boolean_buffer(selection: &[RowSelector]) -> Boole
 /// - `liquid_cache_usage`: Memory usage of the liquid cache specifically
 pub fn extract_execution_metrics(
     plan: &Arc<dyn ExecutionPlan>,
-    liquid_cache: Option<&LiquidCacheRef>,
+    liquid_cache: Option<&LiquidCacheParquetRef>,
 ) -> ExecutionMetricsResponse {
     // Traverse the plan tree to find all DataSourceExec nodes and collect their metrics
     let mut time_elapsed_processing_millis = 0;

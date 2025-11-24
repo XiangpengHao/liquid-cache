@@ -13,7 +13,7 @@ use liquid_cache_benchmarks::{
     Benchmark, BenchmarkManifest, ClientBenchmarkArgs, utils::assert_batch_eq,
 };
 use liquid_cache_benchmarks::{BenchmarkRunner, Query, run_query};
-use liquid_cache_client::LiquidCacheBuilder;
+use liquid_cache_client::LiquidCacheClientBuilder;
 use log::info;
 use mimalloc::MiMalloc;
 use serde::Serialize;
@@ -151,7 +151,7 @@ impl Benchmark for ClickBench {
             session_config.options_mut().execution.target_partitions = partitions;
         }
 
-        let liquid_cache_builder = LiquidCacheBuilder::new(&self.common_args.server);
+        let liquid_cache_builder = LiquidCacheClientBuilder::new(&self.common_args.server);
         let ctx = liquid_cache_builder.build(session_config)?;
 
         self.manifest.register_object_stores(&ctx).await.unwrap();

@@ -7,7 +7,7 @@ use datafusion::{
 };
 use liquid_cache_common::{IoMode, rpc::ExecutionMetricsResponse};
 use liquid_cache_parquet::{
-    cache::{LiquidCache, LiquidCacheRef},
+    cache::{LiquidCacheParquet, LiquidCacheParquetRef},
     extract_execution_metrics,
     optimizers::rewrite_data_source_plan,
 };
@@ -39,7 +39,7 @@ pub(crate) struct LiquidCacheServiceInner {
     execution_plans: RwLock<HashMap<Uuid, ExecutionPlanEntry>>,
     execution_stats: RwLock<Vec<ExecutionStats>>,
     default_ctx: Arc<SessionContext>,
-    liquid_cache: LiquidCacheRef,
+    liquid_cache: LiquidCacheParquetRef,
     parquet_cache_dir: PathBuf,
 }
 
@@ -57,7 +57,7 @@ impl LiquidCacheServiceInner {
         let parquet_cache_dir = disk_cache_dir.join("parquet");
         let liquid_cache_dir = disk_cache_dir.join("liquid");
 
-        let liquid_cache = Arc::new(LiquidCache::new(
+        let liquid_cache = Arc::new(LiquidCacheParquet::new(
             batch_size,
             max_cache_bytes.unwrap_or(usize::MAX),
             liquid_cache_dir,
@@ -75,7 +75,7 @@ impl LiquidCacheServiceInner {
         }
     }
 
-    pub(crate) fn cache(&self) -> &LiquidCacheRef {
+    pub(crate) fn cache(&self) -> &LiquidCacheParquetRef {
         &self.liquid_cache
     }
 
