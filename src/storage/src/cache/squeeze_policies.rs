@@ -14,7 +14,7 @@ use crate::cache::{
     utils::arrow_to_bytes,
 };
 use crate::liquid_array::{HybridBacking, LiquidHybridArrayRef, VariantStructHybridArray};
-use crate::variant_schema::VariantSchema;
+use crate::utils::VariantSchema;
 
 /// What to do when we need to squeeze an entry?
 pub trait SqueezePolicy: std::fmt::Debug + Send + Sync {

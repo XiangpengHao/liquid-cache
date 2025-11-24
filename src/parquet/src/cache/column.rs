@@ -5,9 +5,9 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use arrow_schema::{ArrowError, DataType, Field, Schema};
-use liquid_cache_storage::cache::{CacheExpression, LiquidCache, ColumnID};
-use liquid_cache_storage::variant_schema::VariantSchema;
-use liquid_cache_storage::variant_utils::typed_struct_contains_path;
+use liquid_cache_storage::cache::{CacheExpression, ColumnID, LiquidCache};
+use liquid_cache_storage::utils::VariantSchema;
+use liquid_cache_storage::utils::typed_struct_contains_path;
 use parquet::arrow::arrow_reader::ArrowPredicate;
 use parquet_variant_compute::{VariantArray, VariantType, shred_variant, unshred_variant};
 

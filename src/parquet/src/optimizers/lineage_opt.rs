@@ -133,7 +133,7 @@ pub struct LineageOptimizer;
 impl LineageOptimizer {
     /// Create a new optimizer.
     pub fn new() -> Self {
-        Self::default()
+        Self
     }
 }
 

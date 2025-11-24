@@ -9,9 +9,9 @@ use datafusion::logical_expr::Operator;
 use datafusion::prelude::*;
 use datafusion::scalar::ScalarValue;
 use futures::StreamExt;
+use liquid_cache_storage::cache::EntryID;
 use liquid_cache_storage::cache::LiquidCache;
 use liquid_cache_storage::cache::LiquidCacheBuilder;
-use liquid_cache_storage::cache::EntryID;
 use liquid_cache_storage::cache::squeeze_policies::TranscodeSqueezeEvict;
 use liquid_cache_storage::cache_policies::FiloPolicy;
 

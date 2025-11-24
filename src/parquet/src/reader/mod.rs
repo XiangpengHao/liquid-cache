@@ -1,10 +1,7 @@
-/// Everything happens during query planning time
 mod plantime;
-
-/// Everything happens during query execution time
 mod runtime;
-
 mod utils;
+pub(crate) mod variant_udf;
 
 pub use plantime::{FilterCandidateBuilder, LiquidParquetSource, LiquidPredicate, LiquidRowFilter};
 pub(crate) use runtime::extract_multi_column_or;
