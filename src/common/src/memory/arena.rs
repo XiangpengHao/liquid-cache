@@ -13,7 +13,12 @@ pub struct Arena {
     size: usize,
     slices: Vec<Slice>,
     used_bitmap: Vec<u8>,
-    start_ptr: *mut u8,
+    /**
+     * Segments need to be aligned to 32MB boundaries. Hence the first segment's starting address
+     * could be different from the starting address of the allocated memory
+     */
+    aligned_start_ptr: *mut u8,     
+    actual_start_ptr: *mut u8,
     buffers_registered: bool,
 }
 
@@ -31,7 +36,7 @@ impl Arena {
             slice_start = ptr_aligned + SEGMENT_SIZE;
         }
         let mut slices = Vec::new();
-        while slice_start < mem_end as usize {
+        while slice_start + SEGMENT_SIZE <= mem_end as usize {
             slices.push(Slice {
                 ptr: slice_start as *mut u8,
                 size: SEGMENT_SIZE,
@@ -45,7 +50,8 @@ impl Arena {
             size: capacity,
             slices: slices,
             used_bitmap: used_bitmap,
-            start_ptr: mem_start,
+            aligned_start_ptr: ptr_aligned as *mut u8,
+            actual_start_ptr: mem_start,
             buffers_registered: false,
         }
     }
@@ -101,21 +107,23 @@ impl Arena {
         let num_buffers = self.size / MIN_SIZE_FROM_PAGES;
         let mut buffers = Vec::<libc::iovec>::new();
         buffers.reserve(num_buffers);
-        let mut base_ptr = self.start_ptr;
+        let mut base_ptr = self.aligned_start_ptr;
         for _i in 0..num_buffers {
             buffers.push(libc::iovec {iov_base: base_ptr as *mut std::ffi::c_void, iov_len: MIN_SIZE_FROM_PAGES});
-            base_ptr = unsafe { base_ptr.add(MIN_SIZE_FROM_PAGES) };
+            base_ptr = base_ptr.wrapping_add(MIN_SIZE_FROM_PAGES);
         }
-        unsafe {
+        let res = unsafe {
             ring.submitter().register_buffers(&buffers)
-        }
+        };
+        self.buffers_registered = res.is_ok();
+        res
     }    
 }
 
 impl Drop for Arena {
     fn drop(self: &mut Self) {
         unsafe {
-            libc::munmap(self.start_ptr as *mut c_void, self.size);
+            libc::munmap(self.actual_start_ptr as *mut c_void, self.size);
         }
     }
 }

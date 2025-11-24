@@ -85,7 +85,11 @@ impl Drop for FixedBufferPool {
 
 
 mod tests {
-    use std::ptr::null_mut;
+    use std::{io::Write, os::fd::AsRawFd, ptr::{null, null_mut}};
+
+    use io_uring::{IoUring, cqueue, opcode, squeue};
+    use libc::rlimit;
+    use rand::RngCore as _;
 
     use crate::memory::pool::FixedBufferPool;
 
@@ -207,4 +211,57 @@ mod tests {
         let (ptr, _fixed_buffer) = FixedBufferPool::malloc(len);
         assert_eq!(ptr, null_mut());
     }
+
+    #[test]
+    fn test_with_uring_basic() {
+        let mut rlimit = libc::rlimit{
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        unsafe { libc::getrlimit(libc::RLIMIT_MEMLOCK, &mut rlimit); }
+        assert!(64 * 1024 <= rlimit.rlim_max, "rlimit.MEMLOCK should be at least 64 MB to test the fixed-buffer pool. Current rlimit is: {} KB", rlimit.rlim_max);
+        FixedBufferPool::init(64);
+        
+        let mut ring = IoUring::<squeue::Entry, cqueue::Entry>::builder().build(32).unwrap();
+        let res = FixedBufferPool::register_buffers_with_ring(&ring);
+        assert!(res.is_ok());
+
+        const LEN: usize = 4096;
+        let mut file = tempfile::tempfile().unwrap();
+        let (ptr, id) = FixedBufferPool::malloc(LEN);
+        assert_ne!(ptr, null_mut());
+        assert!(id.is_some());
+
+        let mut random_bytes = [0u8; LEN];
+        let mut rng = rand::rng();
+        rng.fill_bytes(&mut random_bytes);
+        let mut res = file.write(&random_bytes);
+        assert!(res.is_ok(), "Failed to write to temp file");
+
+        {
+            let sqe = opcode::ReadFixed::new(
+                io_uring::types::Fd(file.as_raw_fd()),
+                ptr,
+                LEN as u32,
+                id.unwrap() as u16)
+                .offset(0).build();
+            let mut sq = ring.submission();
+            let res = unsafe { sq.push(&sqe) };
+            assert!(res.is_ok(), "Failed to submit to io uring");
+            sq.sync();
+        }
+        res = ring.submit_and_wait(1);
+        assert!(res.is_ok(), "Failed to submit");
+
+        {
+            let mut cq = ring.completion();
+            let cqe = cq.next();
+            assert!(cqe.is_some());
+            assert_eq!(cqe.as_ref().unwrap().result(), LEN as i32, "{}", std::io::Error::from_raw_os_error(-cqe.unwrap().result()));
+        }
+        let buffer = unsafe { std::slice::from_raw_parts_mut(ptr, LEN) };
+        assert_eq!(buffer, random_bytes);
+    }
+
+    // Test with vector maybe?
 }

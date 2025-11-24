@@ -27,7 +27,8 @@ impl Segment {
             (*segment_ptr).num_slices = PAGES_PER_SEGMENT - 1;
             for i in 0..(*segment_ptr).num_slices {
                 let page_start_buffer_id = if start_buffer_id.is_some() {
-                    Some(start_buffer_id.unwrap() + i * FIXED_BUFFERS_PER_PAGE)
+                    let offset = (start_ptr as usize - segment_ptr as usize) / MIN_SIZE_FROM_PAGES;
+                    Some(start_buffer_id.unwrap() + offset)
                 } else {
                     start_buffer_id
                 };
