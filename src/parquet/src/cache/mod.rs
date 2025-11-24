@@ -10,7 +10,7 @@ use arrow::buffer::BooleanBuffer;
 use arrow_schema::{ArrowError, Field, Schema, SchemaRef};
 use liquid_cache_common::IoMode;
 use liquid_cache_storage::cache::squeeze_policies::SqueezePolicy;
-use liquid_cache_storage::cache::{CachePolicy, CacheStorage, CacheStorageBuilder};
+use liquid_cache_storage::cache::{CachePolicy, LiquidCache, LiquidCacheBuilder};
 use parquet::arrow::arrow_reader::ArrowPredicate;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -36,7 +36,7 @@ struct ColumnMaps {
 #[derive(Debug)]
 pub struct CachedRowGroup {
     columns: RwLock<ColumnMaps>,
-    cache_store: Arc<CacheStorage>,
+    cache_store: Arc<LiquidCache>,
 }
 
 impl CachedRowGroup {
@@ -44,7 +44,7 @@ impl CachedRowGroup {
     /// The column_ids are the indices of the columns in the file schema.
     /// So they may not start from 0.
     fn new(
-        cache_store: Arc<CacheStorage>,
+        cache_store: Arc<LiquidCache>,
         row_group_id: u64,
         file_id: u64,
         columns: &[(u64, Arc<Field>)],
@@ -174,13 +174,13 @@ pub(crate) type CachedRowGroupRef = Arc<CachedRowGroup>;
 /// A file in the cache.
 #[derive(Debug)]
 pub struct CachedFile {
-    cache_store: Arc<CacheStorage>,
+    cache_store: Arc<LiquidCache>,
     file_id: u64,
     file_schema: SchemaRef,
 }
 
 impl CachedFile {
-    fn new(cache_store: Arc<CacheStorage>, file_id: u64, file_schema: SchemaRef) -> Self {
+    fn new(cache_store: Arc<LiquidCache>, file_id: u64, file_schema: SchemaRef) -> Self {
         Self {
             cache_store,
             file_id,
@@ -226,7 +226,7 @@ pub struct LiquidCacheParquet {
     /// Map file path to file id.
     files: Mutex<AHashMap<String, u64>>,
 
-    cache_store: Arc<CacheStorage>,
+    cache_store: Arc<LiquidCache>,
 
     current_file_id: AtomicU64,
 }
@@ -246,7 +246,7 @@ impl LiquidCacheParquet {
     ) -> Self {
         assert!(batch_size.is_power_of_two());
         let io_context = Arc::new(ParquetIoContext::new(cache_dir.clone(), io_mode));
-        let cache_storage_builder = CacheStorageBuilder::new()
+        let cache_storage_builder = LiquidCacheBuilder::new()
             .with_batch_size(batch_size)
             .with_max_cache_bytes(max_cache_bytes)
             .with_cache_dir(cache_dir.clone())
@@ -339,7 +339,7 @@ impl LiquidCacheParquet {
     }
 
     /// Get the storage of the cache.
-    pub fn storage(&self) -> &Arc<CacheStorage> {
+    pub fn storage(&self) -> &Arc<LiquidCache> {
         &self.cache_store
     }
 }

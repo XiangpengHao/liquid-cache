@@ -9,8 +9,8 @@ use datafusion::logical_expr::Operator;
 use datafusion::prelude::*;
 use datafusion::scalar::ScalarValue;
 use futures::StreamExt;
-use liquid_cache_storage::cache::CacheStorage;
-use liquid_cache_storage::cache::CacheStorageBuilder;
+use liquid_cache_storage::cache::LiquidCache;
+use liquid_cache_storage::cache::LiquidCacheBuilder;
 use liquid_cache_storage::cache::EntryID;
 use liquid_cache_storage::cache::squeeze_policies::TranscodeSqueezeEvict;
 use liquid_cache_storage::cache_policies::FiloPolicy;
@@ -39,7 +39,7 @@ fn main() {
     let args = CliArgs::parse();
 
     // 1) Build cache storage with FILO and a small budget (100 MB)
-    let mut builder = CacheStorageBuilder::new()
+    let mut builder = LiquidCacheBuilder::new()
         .with_max_cache_bytes(500 * 1024 * 1024)
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
         .with_cache_policy(Box::new(FiloPolicy::new()));
@@ -99,7 +99,7 @@ fn main() {
 
 // Read Referer column and insert into cache. Returns (entry_ids, lengths)
 fn load_and_insert_referer(
-    storage: &Arc<CacheStorage>,
+    storage: &Arc<LiquidCache>,
     parquet_path: &str,
 ) -> (Vec<EntryID>, Vec<usize>, usize) {
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");

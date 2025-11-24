@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use datafusion::arrow::array::UInt64Array;
-use liquid_cache_local::storage::cache::{CacheStorageBuilder, EntryID};
+use liquid_cache_local::storage::cache::{LiquidCacheBuilder, EntryID};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let storage = CacheStorageBuilder::new().build();
+    let storage = LiquidCacheBuilder::new().build();
 
     let entry_id = EntryID::from(7);
     let arrow_array = Arc::new(UInt64Array::from_iter_values(0..16));

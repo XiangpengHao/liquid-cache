@@ -5,7 +5,7 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use arrow_schema::{ArrowError, DataType, Field, Schema};
-use liquid_cache_storage::cache::{CacheExpression, CacheStorage, ColumnID};
+use liquid_cache_storage::cache::{CacheExpression, LiquidCache, ColumnID};
 use liquid_cache_storage::variant_schema::VariantSchema;
 use liquid_cache_storage::variant_utils::typed_struct_contains_path;
 use parquet::arrow::arrow_reader::ArrowPredicate;
@@ -21,7 +21,7 @@ use std::sync::Arc;
 /// A column in the cache.
 #[derive(Debug)]
 pub struct CachedColumn {
-    cache_store: Arc<CacheStorage>,
+    cache_store: Arc<LiquidCache>,
     field: Arc<Field>,
     column_path: ColumnAccessPath,
     expression: Option<Arc<CacheExpression>>,
@@ -61,7 +61,7 @@ pub enum InsertArrowArrayError {
 impl CachedColumn {
     pub(crate) fn new(
         field: Arc<Field>,
-        cache_store: Arc<CacheStorage>,
+        cache_store: Arc<LiquidCache>,
         column_id: u64,
         row_group_id: u64,
         file_id: u64,

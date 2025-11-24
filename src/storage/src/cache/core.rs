@@ -189,21 +189,21 @@ impl IoContext for BlockingIoContext {
 
 // CacheStats and RuntimeStats moved to stats.rs
 
-/// Builder for [CacheStorage].
+/// Builder for [LiquidCache].
 ///
 /// Example:
 /// ```rust
-/// use liquid_cache_storage::cache::CacheStorageBuilder;
+/// use liquid_cache_storage::cache::LiquidCacheBuilder;
 /// use liquid_cache_storage::cache_policies::LiquidPolicy;
 ///
 ///
-/// let _storage = CacheStorageBuilder::new()
+/// let _storage = LiquidCacheBuilder::new()
 ///     .with_batch_size(8192)
 ///     .with_max_cache_bytes(1024 * 1024 * 1024)
 ///     .with_cache_policy(Box::new(LiquidPolicy::new()))
 ///     .build();
 /// ```
-pub struct CacheStorageBuilder {
+pub struct LiquidCacheBuilder {
     batch_size: usize,
     max_cache_bytes: usize,
     cache_dir: Option<PathBuf>,
@@ -212,14 +212,14 @@ pub struct CacheStorageBuilder {
     io_worker: Option<Arc<dyn IoContext>>,
 }
 
-impl Default for CacheStorageBuilder {
+impl Default for LiquidCacheBuilder {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl CacheStorageBuilder {
-    /// Create a new instance of CacheStorageBuilder.
+impl LiquidCacheBuilder {
+    /// Create a new instance of [LiquidCacheBuilder].
     pub fn new() -> Self {
         Self {
             batch_size: 8192,
@@ -276,14 +276,14 @@ impl CacheStorageBuilder {
     /// Build the cache storage.
     ///
     /// The cache storage is wrapped in an [Arc] to allow for concurrent access.
-    pub fn build(self) -> Arc<CacheStorage> {
+    pub fn build(self) -> Arc<LiquidCache> {
         let cache_dir = self
             .cache_dir
             .unwrap_or_else(|| tempfile::tempdir().unwrap().keep());
         let io_worker = self
             .io_worker
             .unwrap_or_else(|| Arc::new(DefaultIoContext::new(cache_dir.clone())));
-        Arc::new(CacheStorage::new(
+        Arc::new(LiquidCache::new(
             self.batch_size,
             self.max_cache_bytes,
             cache_dir,
@@ -298,12 +298,12 @@ impl CacheStorageBuilder {
 ///
 /// Example (async read):
 /// ```rust
-/// use liquid_cache_storage::cache::{CacheStorageBuilder, EntryID};
+/// use liquid_cache_storage::cache::{LiquidCacheBuilder, EntryID};
 /// use arrow::array::UInt64Array;
 /// use std::sync::Arc;
 ///
 /// tokio_test::block_on(async {
-/// let storage = CacheStorageBuilder::new().build();
+/// let storage = LiquidCacheBuilder::new().build();
 ///
 /// let entry_id = EntryID::from(0);
 /// let arrow_array = Arc::new(UInt64Array::from_iter_values(0..32));
@@ -315,7 +315,7 @@ impl CacheStorageBuilder {
 /// });
 /// ```
 #[derive(Debug)]
-pub struct CacheStorage {
+pub struct LiquidCache {
     index: ArtIndex,
     config: CacheConfig,
     budget: BudgetAccounting,
@@ -327,18 +327,18 @@ pub struct CacheStorage {
     expression_registry: Arc<ExpressionRegistry>,
 }
 
-/// Builder returned by [`CacheStorage::insert`] for configuring cache writes.
+/// Builder returned by [`LiquidCache::insert`] for configuring cache writes.
 #[derive(Debug)]
 pub struct Insert<'a> {
-    storage: &'a Arc<CacheStorage>,
+    storage: &'a Arc<LiquidCache>,
     entry_id: EntryID,
     batch: ArrayRef,
 }
 
-/// Builder returned by [`CacheStorage::get`] for configuring cache reads.
+/// Builder returned by [`LiquidCache::get`] for configuring cache reads.
 #[derive(Debug)]
 pub struct Get<'a> {
-    storage: &'a CacheStorage,
+    storage: &'a LiquidCache,
     entry_id: &'a EntryID,
     selection: Option<&'a BooleanBuffer>,
     expression_hint: Option<Arc<CacheExpression>>,
@@ -347,13 +347,13 @@ pub struct Get<'a> {
 /// Builder for predicate evaluation on cached data.
 #[derive(Debug)]
 pub struct EvaluatePredicate<'a> {
-    storage: &'a CacheStorage,
+    storage: &'a LiquidCache,
     entry_id: &'a EntryID,
     predicate: &'a Arc<dyn PhysicalExpr>,
     selection: Option<&'a BooleanBuffer>,
 }
 
-impl CacheStorage {
+impl LiquidCache {
     /// Return current cache statistics: counts and resource usage.
     pub fn stats(&self) -> CacheStats {
         // Count entries by residency/format
@@ -555,7 +555,7 @@ impl CacheStorage {
     }
 }
 
-impl CacheStorage {
+impl LiquidCache {
     /// returns the batch that was written to disk
     fn write_in_memory_batch_to_disk(&self, entry_id: EntryID, batch: CacheEntry) -> CacheEntry {
         let data = batch.into_data();
@@ -1005,7 +1005,7 @@ impl CacheStorage {
 }
 
 impl<'a> Insert<'a> {
-    fn new(storage: &'a Arc<CacheStorage>, entry_id: EntryID, batch: ArrayRef) -> Self {
+    fn new(storage: &'a Arc<LiquidCache>, entry_id: EntryID, batch: ArrayRef) -> Self {
         Self {
             storage,
             entry_id,
@@ -1029,7 +1029,7 @@ impl<'a> IntoFuture for Insert<'a> {
 }
 
 impl<'a> Get<'a> {
-    fn new(storage: &'a CacheStorage, entry_id: &'a EntryID) -> Self {
+    fn new(storage: &'a LiquidCache, entry_id: &'a EntryID) -> Self {
         Self {
             storage,
             entry_id,
@@ -1087,7 +1087,7 @@ impl<'a> IntoFuture for Get<'a> {
 
 impl<'a> EvaluatePredicate<'a> {
     fn new(
-        storage: &'a CacheStorage,
+        storage: &'a LiquidCache,
         entry_id: &'a EntryID,
         predicate: &'a Arc<dyn PhysicalExpr>,
     ) -> Self {
@@ -1471,7 +1471,7 @@ mod tests {
     #[tokio::test]
     async fn test_cache_stats_memory_and_disk_usage() {
         // Build a small cache in blocking liquid mode to avoid background tasks
-        let storage = CacheStorageBuilder::new()
+        let storage = LiquidCacheBuilder::new()
             .with_max_cache_bytes(10 * 1024 * 1024)
             .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
             .build();
