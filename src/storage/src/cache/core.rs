@@ -434,16 +434,20 @@ impl LiquidCache {
                 );
                 Some(liquid)
             }
-            entry @ CacheEntry::MemoryHybridLiquid(array) => {
-                let io_range = array.to_liquid();
-                let path = self.io_context.disk_path(entry, entry_id);
-                let bytes = self
-                    .io_context
-                    .read(path, Some(io_range.range().clone()))
-                    .await
-                    .ok()?;
-                Some(array.soak(bytes))
-            }
+            entry @ CacheEntry::MemoryHybridLiquid(array) => match array.disk_backing() {
+                HybridBacking::Liquid => {
+                    let path = self.io_context.disk_path(entry, entry_id);
+                    let bytes = self.io_context.read(path, None).await.ok()?;
+                    let compressor_states = self.io_context.get_compressor(entry_id);
+                    let compressor = compressor_states.fsst_compressor();
+                    let liquid = crate::liquid_array::ipc::read_from_bytes(
+                        bytes,
+                        &crate::liquid_array::ipc::LiquidIPCContext::new(compressor),
+                    );
+                    Some(liquid)
+                }
+                HybridBacking::Arrow => None,
+            },
             CacheEntry::DiskArrow(_) | CacheEntry::MemoryArrow(_) => None,
         }
     }
@@ -685,7 +689,6 @@ impl LiquidCache {
         self.budget.add_used_disk_bytes(disk_usage);
     }
 
-
     fn disk_entry_from_hybrid(array: &LiquidHybridArrayRef) -> CacheEntry {
         let constructor: fn(DataType) -> CacheEntry = match array.disk_backing() {
             HybridBacking::Liquid => CacheEntry::disk_liquid,
@@ -718,33 +721,18 @@ impl LiquidCache {
                 Some(selection) => Some(array.filter(selection)),
                 None => Some(array.to_arrow_array()),
             },
-            entry @ CacheEntry::DiskLiquid(data_type) => match selection {
-                Some(selection) => {
+            entry @ CacheEntry::DiskLiquid(data_type) => {
+                if let Some(selection) = selection {
                     if selection.count_set_bits() == 0 {
                         return Some(arrow::array::new_empty_array(data_type));
                     }
-                    let path = self.io_context.disk_path(entry, entry_id);
-                    let bytes = self.io_context.read(path, None).await.ok()?;
-                    let compressor_states = self.io_context.get_compressor(entry_id);
-                    let compressor = compressor_states.fsst_compressor();
-                    let liquid = crate::liquid_array::ipc::read_from_bytes(
-                        bytes,
-                        &crate::liquid_array::ipc::LiquidIPCContext::new(compressor),
-                    );
+                    let liquid = self.read_disk_liquid_array(entry, entry_id).await?;
                     Some(liquid.filter(selection))
-                }
-                None => {
-                    let path = self.io_context.disk_path(entry, entry_id);
-                    let bytes = self.io_context.read(path, None).await.ok()?;
-                    let compressor_states = self.io_context.get_compressor(entry_id);
-                    let compressor = compressor_states.fsst_compressor();
-                    let liquid = crate::liquid_array::ipc::read_from_bytes(
-                        bytes,
-                        &crate::liquid_array::ipc::LiquidIPCContext::new(compressor),
-                    );
+                } else {
+                    let liquid = self.read_disk_liquid_array(entry, entry_id).await?;
                     Some(liquid.to_arrow_array())
                 }
-            },
+            }
             entry @ CacheEntry::MemoryHybridLiquid(array) => {
                 if let Some(CacheExpression::ExtractDate32 { field }) = expression
                     && let Some(squeezed) = array.as_any().downcast_ref::<SqueezedDate32Array>()
@@ -767,8 +755,7 @@ impl LiquidCache {
                         .all(|request| variant_hybrid.contains_path(request.path()))
                 {
                     self.runtime_stats.incr_get_full_hybrid_needs_io();
-                    let path = self.io_context.disk_path(entry, entry_id);
-                    return self.read_disk_arrow_array(path, selection).await;
+                    return self.read_disk_arrow_array(entry, entry_id, selection).await;
                 }
                 if let Some(selection) = selection {
                     match array.filter(selection) {
@@ -776,16 +763,19 @@ impl LiquidCache {
                             self.runtime_stats.incr_get_filter_hybrid_success();
                             Some(arr)
                         }
-                        Err(io_range) => {
+                        Err(_) => {
                             self.runtime_stats.incr_get_filter_hybrid_needs_io();
-                            let path = self.io_context.disk_path(entry, entry_id);
-                            let bytes = self
-                                .io_context
-                                .read(path, Some(io_range.range().clone()))
-                                .await
-                                .ok()?;
-                            let new_array = array.soak(bytes);
-                            Some(new_array.filter(selection))
+                            match array.disk_backing() {
+                                HybridBacking::Liquid => {
+                                    let liquid =
+                                        self.read_disk_liquid_array(entry, entry_id).await?;
+                                    Some(liquid.filter(selection))
+                                }
+                                HybridBacking::Arrow => {
+                                    self.read_disk_arrow_array(entry, entry_id, Some(selection))
+                                        .await
+                                }
+                            }
                         }
                     }
                 } else {
@@ -794,32 +784,35 @@ impl LiquidCache {
                             self.runtime_stats.incr_get_full_hybrid_success();
                             Some(arr)
                         }
-                        Err(io_range) => {
+                        Err(_) => {
                             self.runtime_stats.incr_get_full_hybrid_needs_io();
-                            let path = self.io_context.disk_path(entry, entry_id);
-                            let bytes = self
-                                .io_context
-                                .read(path, Some(io_range.range().clone()))
-                                .await
-                                .ok()?;
-                            let new_array = array.soak(bytes);
-                            Some(new_array.to_arrow_array())
+                            match array.disk_backing() {
+                                HybridBacking::Liquid => {
+                                    let liquid =
+                                        self.read_disk_liquid_array(entry, entry_id).await?;
+                                    Some(liquid.to_arrow_array())
+                                }
+                                HybridBacking::Arrow => {
+                                    self.read_disk_arrow_array(entry, entry_id, None).await
+                                }
+                            }
                         }
                     }
                 }
             }
             entry @ CacheEntry::DiskArrow(_) => {
-                let path = self.io_context.disk_path(entry, entry_id);
-                return self.read_disk_arrow_array(path, selection).await;
+                return self.read_disk_arrow_array(entry, entry_id, selection).await;
             }
         }
     }
 
     async fn read_disk_arrow_array(
         &self,
-        path: PathBuf,
+        entry: &CacheEntry,
+        entry_id: &EntryID,
         selection: Option<&BooleanBuffer>,
     ) -> Option<ArrayRef> {
+        let path = self.io_context.disk_path(entry, entry_id);
         let bytes = self.io_context.read(path, None).await.ok()?;
         let cursor = std::io::Cursor::new(bytes.to_vec());
         let mut reader = arrow::ipc::reader::StreamReader::try_new(cursor, None).ok()?;
@@ -832,6 +825,22 @@ impl LiquidCache {
             }
             None => Some(array),
         }
+    }
+
+    async fn read_disk_liquid_array(
+        &self,
+        entry: &CacheEntry,
+        entry_id: &EntryID,
+    ) -> Option<crate::liquid_array::LiquidArrayRef> {
+        let path = self.io_context.disk_path(entry, entry_id);
+        let bytes = self.io_context.read(path, None).await.ok()?;
+        let compressor_states = self.io_context.get_compressor(entry_id);
+        let compressor = compressor_states.fsst_compressor();
+        let liquid = crate::liquid_array::ipc::read_from_bytes(
+            bytes,
+            &crate::liquid_array::ipc::LiquidIPCContext::new(compressor),
+        );
+        Some(liquid)
     }
 
     async fn eval_predicate_internal(
@@ -889,14 +898,7 @@ impl LiquidCache {
                 }
             }
             entry @ CacheEntry::DiskLiquid(_) => {
-                let path = self.io_context.disk_path(entry, entry_id);
-                let bytes = self.io_context.read(path, None).await.ok()?;
-                let compressor_states = self.io_context.get_compressor(entry_id);
-                let compressor = compressor_states.fsst_compressor();
-                let liquid = crate::liquid_array::ipc::read_from_bytes(
-                    bytes,
-                    &crate::liquid_array::ipc::LiquidIPCContext::new(compressor),
-                );
+                let liquid = self.read_disk_liquid_array(entry, entry_id).await?;
                 let mut owned = None;
                 let selection = selection_opt.unwrap_or_else(|| {
                     owned = Some(BooleanBuffer::new_set(liquid.len()));
@@ -925,38 +927,47 @@ impl LiquidCache {
                         self.runtime_stats.incr_get_predicate_hybrid_unsupported();
                         match array.filter(selection) {
                             Ok(arr) => Some(Err(arr)),
-                            Err(io_range) => {
+                            Err(_) => {
                                 self.runtime_stats.incr_get_predicate_hybrid_needs_io();
-                                let path = self.io_context.disk_path(entry, entry_id);
-                                let bytes = self
-                                    .io_context
-                                    .read(path, Some(io_range.range().clone()))
-                                    .await
-                                    .ok()?;
-                                let new_array = array.soak(bytes);
-                                match new_array.try_eval_predicate(predicate, selection) {
-                                    Some(buf) => Some(Ok(buf)),
-                                    None => {
-                                        let filtered = new_array.filter(selection);
+                                match array.disk_backing() {
+                                    HybridBacking::Liquid => {
+                                        let hydrated =
+                                            self.read_disk_liquid_array(entry, entry_id).await?;
+                                        match hydrated.try_eval_predicate(predicate, selection) {
+                                            Some(buf) => Some(Ok(buf)),
+                                            None => {
+                                                let filtered = hydrated.filter(selection);
+                                                Some(Err(filtered))
+                                            }
+                                        }
+                                    }
+                                    HybridBacking::Arrow => {
+                                        let filtered = self
+                                            .read_disk_arrow_array(entry, entry_id, Some(selection))
+                                            .await?;
                                         Some(Err(filtered))
                                     }
                                 }
                             }
                         }
                     }
-                    Err(io_range) => {
+                    Err(_) => {
                         self.runtime_stats.incr_get_predicate_hybrid_needs_io();
-                        let path = self.io_context.disk_path(entry, entry_id);
-                        let bytes = self
-                            .io_context
-                            .read(path, Some(io_range.range().clone()))
-                            .await
-                            .ok()?;
-                        let new_array = array.soak(bytes);
-                        match new_array.try_eval_predicate(predicate, selection) {
-                            Some(buf) => Some(Ok(buf)),
-                            None => {
-                                let filtered = new_array.filter(selection);
+                        match array.disk_backing() {
+                            HybridBacking::Liquid => {
+                                let hydrated = self.read_disk_liquid_array(entry, entry_id).await?;
+                                match hydrated.try_eval_predicate(predicate, selection) {
+                                    Some(buf) => Some(Ok(buf)),
+                                    None => {
+                                        let filtered = hydrated.filter(selection);
+                                        Some(Err(filtered))
+                                    }
+                                }
+                            }
+                            HybridBacking::Arrow => {
+                                let filtered = self
+                                    .read_disk_arrow_array(entry, entry_id, Some(selection))
+                                    .await?;
                                 Some(Err(filtered))
                             }
                         }

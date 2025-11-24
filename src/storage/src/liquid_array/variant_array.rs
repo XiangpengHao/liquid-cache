@@ -9,7 +9,7 @@ use arrow_schema::{DataType, Field, Fields, Schema};
 use bytes::Bytes;
 
 use crate::liquid_array::{
-    HybridBacking, IoRange, LiquidArrayRef, LiquidDataType, LiquidHybridArray,
+    HybridBacking, LiquidArrayRef, LiquidDataType, LiquidHybridArray, NeedsBacking,
 };
 use ahash::AHashMap;
 
@@ -104,7 +104,7 @@ impl LiquidHybridArray for VariantStructHybridArray {
         self.len
     }
 
-    fn to_arrow_array(&self) -> Result<ArrayRef, IoRange> {
+    fn to_arrow_array(&self) -> Result<ArrayRef, NeedsBacking> {
         Ok(Arc::new(self.build_root_struct()) as ArrayRef)
     }
 
@@ -116,18 +116,10 @@ impl LiquidHybridArray for VariantStructHybridArray {
         self.original_arrow_type.clone()
     }
 
-    fn to_bytes(&self) -> Result<Vec<u8>, IoRange> {
+    fn to_bytes(&self) -> Result<Vec<u8>, NeedsBacking> {
         serialize_variant_array(&(Arc::new(self.build_root_struct()) as ArrayRef))
             .map(|bytes| bytes.to_vec())
-            .map_err(|_| IoRange { range: 0..0 })
-    }
-
-    fn soak(&self, _data: Bytes) -> LiquidArrayRef {
-        unreachable!()
-    }
-
-    fn to_liquid(&self) -> IoRange {
-        IoRange { range: 0..0 }
+            .map_err(|_| NeedsBacking)
     }
 
     fn disk_backing(&self) -> HybridBacking {

@@ -8,10 +8,8 @@ use bytes::Bytes;
 use parquet_variant_compute::{VariantArray, shred_variant, unshred_variant};
 
 use crate::cache::{
-    CacheExpression, LiquidCompressorStates, VariantRequest,
-    cached_batch::CacheEntry,
-    transcode_liquid_inner,
-    utils::arrow_to_bytes,
+    CacheExpression, LiquidCompressorStates, VariantRequest, cached_batch::CacheEntry,
+    transcode_liquid_inner, utils::arrow_to_bytes,
 };
 use crate::liquid_array::{HybridBacking, LiquidHybridArrayRef, VariantStructHybridArray};
 use crate::utils::VariantSchema;
@@ -62,9 +60,7 @@ impl SqueezePolicy for Evict {
                 };
                 (new_entry, None)
             }
-            CacheEntry::DiskLiquid(_) | CacheEntry::DiskArrow(_) => {
-                (entry.clone(), None)
-            }
+            CacheEntry::DiskLiquid(_) | CacheEntry::DiskArrow(_) => (entry.clone(), None),
         }
     }
 }
@@ -122,9 +118,7 @@ impl SqueezePolicy for TranscodeSqueezeEvict {
                 };
                 (new_entry, None)
             }
-            CacheEntry::DiskLiquid(_) | CacheEntry::DiskArrow(_) => {
-                (entry.clone(), None)
-            }
+            CacheEntry::DiskLiquid(_) | CacheEntry::DiskArrow(_) => (entry.clone(), None),
         }
     }
 }
@@ -166,9 +160,7 @@ impl SqueezePolicy for TranscodeEvict {
                 };
                 (new_entry, None)
             }
-            CacheEntry::DiskLiquid(_) | CacheEntry::DiskArrow(_) => {
-                (entry.clone(), None)
-            }
+            CacheEntry::DiskLiquid(_) | CacheEntry::DiskArrow(_) => (entry.clone(), None),
         }
     }
 }
