@@ -193,7 +193,7 @@ impl CachePolicy for FifoPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::cached_batch::{CachedBatchType, CachedData};
+    use crate::cache::cached_batch::{CacheEntry, CachedBatchType};
     use crate::cache::utils::{EntryID, create_cache_store, create_test_arrow_array};
 
     fn entry(id: usize) -> EntryID {
@@ -212,7 +212,7 @@ mod tests {
         store.insert(entry_id1, create_test_arrow_array(100)).await;
 
         let data = store.index().get(&entry_id1).unwrap();
-        assert!(matches!(data.data(), CachedData::MemoryArrow(_)));
+        assert!(matches!(data.as_ref(), CacheEntry::MemoryArrow(_)));
         store.insert(entry_id2, create_test_arrow_array(100)).await;
         store.insert(entry_id3, create_test_arrow_array(100)).await;
 
@@ -224,7 +224,7 @@ mod tests {
         assert!(store.index().get(&entry_id4).is_some());
 
         let data = store.index().get(&entry_id3).unwrap();
-        assert!(matches!(data.data(), CachedData::DiskLiquid(_)));
+        assert!(matches!(data.as_ref(), CacheEntry::DiskLiquid(_)));
     }
 
     #[test]

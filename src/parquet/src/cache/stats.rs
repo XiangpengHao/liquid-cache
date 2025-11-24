@@ -2,7 +2,7 @@ use super::LiquidCacheParquet;
 use crate::{cache::id::ParquetArrayID, sync::Arc};
 use arrow::array::{ArrayBuilder, RecordBatch, StringBuilder, UInt64Builder};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
-use liquid_cache_storage::cache::CachedData;
+use liquid_cache_storage::cache::CacheEntry;
 use parquet::{
     arrow::ArrowWriter, basic::Compression, errors::ParquetError,
     file::properties::WriterProperties,
@@ -125,19 +125,19 @@ impl LiquidCacheParquet {
         let mut writer = StatsWriter::new(parquet_file_path)?;
         self.cache_store.for_each_entry(|entry_id, cached_batch| {
             let memory_size = cached_batch.memory_usage_bytes();
-            let row_count = match cached_batch.data() {
-                CachedData::MemoryArrow(array) => Some(array.len() as u64),
-                CachedData::MemoryLiquid(array) => Some(array.len() as u64),
-                CachedData::MemoryHybridLiquid(array) => Some(array.len() as u64),
-                CachedData::DiskLiquid(_) => None,
-                CachedData::DiskArrow(_) => None, // We'd need to read it to get the count
+            let row_count = match cached_batch {
+                CacheEntry::MemoryArrow(array) => Some(array.len() as u64),
+                CacheEntry::MemoryLiquid(array) => Some(array.len() as u64),
+                CacheEntry::MemoryHybridLiquid(array) => Some(array.len() as u64),
+                CacheEntry::DiskLiquid(_) => None,
+                CacheEntry::DiskArrow(_) => None, // We'd need to read it to get the count
             };
-            let cache_type = match cached_batch.data() {
-                CachedData::MemoryArrow(_) => "InMemory",
-                CachedData::MemoryLiquid(_) => "LiquidMemory",
-                CachedData::MemoryHybridLiquid(_) => "LiquidHybrid",
-                CachedData::DiskLiquid(_) => "OnDiskLiquid",
-                CachedData::DiskArrow(_) => "OnDiskArrow",
+            let cache_type = match cached_batch {
+                CacheEntry::MemoryArrow(_) => "InMemory",
+                CacheEntry::MemoryLiquid(_) => "LiquidMemory",
+                CacheEntry::MemoryHybridLiquid(_) => "LiquidHybrid",
+                CacheEntry::DiskLiquid(_) => "OnDiskLiquid",
+                CacheEntry::DiskArrow(_) => "OnDiskArrow",
             };
             let reference_count = cached_batch.reference_count();
             let entry_id = ParquetArrayID::from(*entry_id);
