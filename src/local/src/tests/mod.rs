@@ -223,7 +223,7 @@ async fn test_url_selection_and_ordering() {
     } = run_sql_with_cache(
         sql,
         Box::new(TranscodeSqueezeEvict),
-        1024 * 1024,
+        1024 * 300,
         cache_dir.path(),
     )
     .await;
