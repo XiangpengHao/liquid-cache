@@ -9,6 +9,7 @@ use super::{
     budget::BudgetAccounting,
     cache_policies::CachePolicy,
     cached_batch::{CacheEntry, CachedBatchType},
+    hydration_policies::{HydrationPolicy, HydrationRequest, MaterializedEntry},
     tracer::CacheTracer,
     utils::CacheConfig,
 };
@@ -17,6 +18,7 @@ use crate::cache::stats::{CacheStats, RuntimeStats};
 use crate::cache::utils::{LiquidCompressorStates, arrow_to_bytes};
 use crate::cache::{CacheExpression, ExpressionRegistry, index::ArtIndex, utils::EntryID};
 use crate::cache_policies::LiquidPolicy;
+use crate::hydration_policies::NoHydration;
 use crate::liquid_array::{
     HybridBacking, LiquidHybridArrayRef, SqueezedDate32Array, VariantStructHybridArray,
 };
@@ -203,6 +205,7 @@ pub struct LiquidCacheBuilder {
     max_cache_bytes: usize,
     cache_dir: Option<PathBuf>,
     cache_policy: Box<dyn CachePolicy>,
+    hydration_policy: Box<dyn HydrationPolicy>,
     squeeze_policy: Box<dyn SqueezePolicy>,
     io_worker: Option<Arc<dyn IoContext>>,
 }
@@ -221,6 +224,7 @@ impl LiquidCacheBuilder {
             max_cache_bytes: 1024 * 1024 * 1024,
             cache_dir: None,
             cache_policy: Box::new(LiquidPolicy::new()),
+            hydration_policy: Box::new(NoHydration::new()),
             squeeze_policy: Box::new(TranscodeSqueezeEvict),
             io_worker: None,
         }
@@ -254,6 +258,13 @@ impl LiquidCacheBuilder {
         self
     }
 
+    /// Set the hydration policy for the cache.
+    /// Default is [NoHydration].
+    pub fn with_hydration_policy(mut self, policy: Box<dyn HydrationPolicy>) -> Self {
+        self.hydration_policy = policy;
+        self
+    }
+
     /// Set the squeeze policy for the cache.
     /// Default is [TranscodeSqueezeEvict].
     pub fn with_squeeze_policy(mut self, policy: Box<dyn SqueezePolicy>) -> Self {
@@ -284,6 +295,7 @@ impl LiquidCacheBuilder {
             cache_dir,
             self.squeeze_policy,
             self.cache_policy,
+            self.hydration_policy,
             io_worker,
         ))
     }
@@ -315,6 +327,7 @@ pub struct LiquidCache {
     config: CacheConfig,
     budget: BudgetAccounting,
     cache_policy: Box<dyn CachePolicy>,
+    hydration_policy: Box<dyn HydrationPolicy>,
     squeeze_policy: Box<dyn SqueezePolicy>,
     tracer: CacheTracer,
     io_context: Arc<dyn IoContext>,
@@ -432,6 +445,13 @@ impl LiquidCache {
                     bytes,
                     &crate::liquid_array::ipc::LiquidIPCContext::new(compressor),
                 );
+                self.maybe_hydrate(
+                    entry_id,
+                    CachedBatchType::DiskLiquid,
+                    MaterializedEntry::Liquid(&liquid),
+                    None,
+                )
+                .await;
                 Some(liquid)
             }
             entry @ CacheEntry::MemoryHybridLiquid(array) => match array.disk_backing() {
@@ -540,11 +560,18 @@ impl LiquidCache {
     /// returns the batch that was written to disk
     fn write_in_memory_batch_to_disk(&self, entry_id: EntryID, batch: CacheEntry) -> CacheEntry {
         match &batch {
-            CacheEntry::MemoryArrow(array) => {
-                let bytes = arrow_to_bytes(array).expect("failed to convert arrow to bytes");
-                let path = self.io_context.disk_path(&batch, &entry_id);
-                self.write_to_disk_blocking(&path, &bytes);
-                CacheEntry::disk_arrow(array.data_type().clone())
+            batch @ CacheEntry::MemoryArrow(_) => {
+                let (new_batch, bytes_to_write) = self.squeeze_policy.squeeze(
+                    batch,
+                    self.io_context.get_compressor(&entry_id).as_ref(),
+                    None,
+                );
+                if let Some(bytes_to_write) = bytes_to_write {
+                    let path = self.io_context.disk_path(&new_batch, &entry_id);
+                    self.write_to_disk_blocking(&path, &bytes_to_write);
+                    self.budget.add_used_disk_bytes(bytes_to_write.len());
+                }
+                new_batch
             }
             CacheEntry::MemoryLiquid(liquid_array) => {
                 let liquid_bytes = liquid_array.to_bytes();
@@ -592,6 +619,7 @@ impl LiquidCache {
         cache_dir: PathBuf,
         squeeze_policy: Box<dyn SqueezePolicy>,
         cache_policy: Box<dyn CachePolicy>,
+        hydration_policy: Box<dyn HydrationPolicy>,
         io_worker: Arc<dyn IoContext>,
     ) -> Self {
         let config = CacheConfig::new(batch_size, max_cache_bytes, cache_dir);
@@ -600,6 +628,7 @@ impl LiquidCache {
             budget: BudgetAccounting::new(config.max_cache_bytes()),
             config,
             cache_policy,
+            hydration_policy,
             squeeze_policy,
             tracer: CacheTracer::new(),
             io_context: io_worker,
@@ -697,6 +726,23 @@ impl LiquidCache {
         constructor(array.original_arrow_data_type())
     }
 
+    async fn maybe_hydrate(
+        &self,
+        entry_id: &EntryID,
+        cached_type: CachedBatchType,
+        materialized: MaterializedEntry<'_>,
+        expression: Option<&CacheExpression>,
+    ) {
+        if let Some(new_entry) = self.hydration_policy.decide(&HydrationRequest {
+            entry_id: *entry_id,
+            cached_batch_type: cached_type,
+            materialized,
+            expression,
+        }) {
+            self.insert_inner(*entry_id, new_entry).await;
+        }
+    }
+
     async fn read_arrow_array(
         &self,
         entry_id: &EntryID,
@@ -722,15 +768,23 @@ impl LiquidCache {
                 None => Some(array.to_arrow_array()),
             },
             entry @ CacheEntry::DiskLiquid(data_type) => {
-                if let Some(selection) = selection {
-                    if selection.count_set_bits() == 0 {
-                        return Some(arrow::array::new_empty_array(data_type));
-                    }
-                    let liquid = self.read_disk_liquid_array(entry, entry_id).await?;
-                    Some(liquid.filter(selection))
-                } else {
-                    let liquid = self.read_disk_liquid_array(entry, entry_id).await?;
-                    Some(liquid.to_arrow_array())
+                if let Some(selection) = selection
+                    && selection.count_set_bits() == 0
+                {
+                    return Some(arrow::array::new_empty_array(data_type));
+                }
+                let cached_type = CachedBatchType::DiskLiquid;
+                let liquid = self.read_disk_liquid_array(entry, entry_id).await?;
+                self.maybe_hydrate(
+                    entry_id,
+                    cached_type,
+                    MaterializedEntry::Liquid(&liquid),
+                    expression,
+                )
+                .await;
+                match selection {
+                    Some(selection) => Some(liquid.filter(selection)),
+                    None => Some(liquid.to_arrow_array()),
                 }
             }
             entry @ CacheEntry::MemoryHybridLiquid(array) => {
@@ -755,7 +809,21 @@ impl LiquidCache {
                         .all(|request| variant_hybrid.contains_path(request.path()))
                 {
                     self.runtime_stats.incr_get_full_hybrid_needs_io();
-                    return self.read_disk_arrow_array(entry, entry_id, selection).await;
+                    let full_array = self.read_disk_arrow_array(entry, entry_id).await?;
+                    self.maybe_hydrate(
+                        entry_id,
+                        CachedBatchType::DiskArrow,
+                        MaterializedEntry::Arrow(&full_array),
+                        expression,
+                    )
+                    .await;
+                    return match selection {
+                        Some(selection) => {
+                            let selection_array = BooleanArray::new(selection.clone(), None);
+                            arrow::compute::filter(&full_array, &selection_array).ok()
+                        }
+                        None => Some(full_array),
+                    };
                 }
                 if let Some(selection) = selection {
                     match array.filter(selection) {
@@ -769,11 +837,28 @@ impl LiquidCache {
                                 HybridBacking::Liquid => {
                                     let liquid =
                                         self.read_disk_liquid_array(entry, entry_id).await?;
+                                    self.maybe_hydrate(
+                                        entry_id,
+                                        CachedBatchType::DiskLiquid,
+                                        MaterializedEntry::Liquid(&liquid),
+                                        expression,
+                                    )
+                                    .await;
                                     Some(liquid.filter(selection))
                                 }
                                 HybridBacking::Arrow => {
-                                    self.read_disk_arrow_array(entry, entry_id, Some(selection))
-                                        .await
+                                    let full_array =
+                                        self.read_disk_arrow_array(entry, entry_id).await?;
+                                    self.maybe_hydrate(
+                                        entry_id,
+                                        CachedBatchType::DiskArrow,
+                                        MaterializedEntry::Arrow(&full_array),
+                                        expression,
+                                    )
+                                    .await;
+                                    let selection_array =
+                                        BooleanArray::new(selection.clone(), None);
+                                    arrow::compute::filter(&full_array, &selection_array).ok()
                                 }
                             }
                         }
@@ -790,10 +875,26 @@ impl LiquidCache {
                                 HybridBacking::Liquid => {
                                     let liquid =
                                         self.read_disk_liquid_array(entry, entry_id).await?;
+                                    self.maybe_hydrate(
+                                        entry_id,
+                                        CachedBatchType::DiskLiquid,
+                                        MaterializedEntry::Liquid(&liquid),
+                                        expression,
+                                    )
+                                    .await;
                                     Some(liquid.to_arrow_array())
                                 }
                                 HybridBacking::Arrow => {
-                                    self.read_disk_arrow_array(entry, entry_id, None).await
+                                    let full_array =
+                                        self.read_disk_arrow_array(entry, entry_id).await?;
+                                    self.maybe_hydrate(
+                                        entry_id,
+                                        CachedBatchType::DiskArrow,
+                                        MaterializedEntry::Arrow(&full_array),
+                                        expression,
+                                    )
+                                    .await;
+                                    Some(full_array)
                                 }
                             }
                         }
@@ -801,7 +902,22 @@ impl LiquidCache {
                 }
             }
             entry @ CacheEntry::DiskArrow(_) => {
-                return self.read_disk_arrow_array(entry, entry_id, selection).await;
+                let cached_type = CachedBatchType::DiskArrow;
+                let full_array = self.read_disk_arrow_array(entry, entry_id).await?;
+                self.maybe_hydrate(
+                    entry_id,
+                    cached_type,
+                    MaterializedEntry::Arrow(&full_array),
+                    expression,
+                )
+                .await;
+                match selection {
+                    Some(selection) => {
+                        let selection_array = BooleanArray::new(selection.clone(), None);
+                        arrow::compute::filter(&full_array, &selection_array).ok()
+                    }
+                    None => Some(full_array),
+                }
             }
         }
     }
@@ -810,7 +926,6 @@ impl LiquidCache {
         &self,
         entry: &CacheEntry,
         entry_id: &EntryID,
-        selection: Option<&BooleanBuffer>,
     ) -> Option<ArrayRef> {
         let path = self.io_context.disk_path(entry, entry_id);
         let bytes = self.io_context.read(path, None).await.ok()?;
@@ -818,13 +933,7 @@ impl LiquidCache {
         let mut reader = arrow::ipc::reader::StreamReader::try_new(cursor, None).ok()?;
         let batch = reader.next()?.ok()?;
         let array = batch.column(0).clone();
-        match selection {
-            Some(selection) => {
-                let selection_array = BooleanArray::new(selection.clone(), None);
-                arrow::compute::filter(&array, &selection_array).ok()
-            }
-            None => Some(array),
-        }
+        Some(array)
     }
 
     async fn read_disk_liquid_array(
@@ -868,12 +977,15 @@ impl LiquidCache {
                 Some(Err(filtered))
             }
             entry @ CacheEntry::DiskArrow(_) => {
-                let path = self.io_context.disk_path(entry, entry_id);
-                let bytes = self.io_context.read(path, None).await.ok()?;
-                let cursor = std::io::Cursor::new(bytes.to_vec());
-                let mut reader = arrow::ipc::reader::StreamReader::try_new(cursor, None).ok()?;
-                let batch = reader.next()?.ok()?;
-                let array = batch.column(0).clone();
+                let cached_type = CachedBatchType::DiskArrow;
+                let array = self.read_disk_arrow_array(entry, entry_id).await?;
+                self.maybe_hydrate(
+                    entry_id,
+                    cached_type,
+                    MaterializedEntry::Arrow(&array),
+                    None,
+                )
+                .await;
                 let mut owned = None;
                 let selection = selection_opt.unwrap_or_else(|| {
                     owned = Some(BooleanBuffer::new_set(array.len()));
@@ -899,6 +1011,13 @@ impl LiquidCache {
             }
             entry @ CacheEntry::DiskLiquid(_) => {
                 let liquid = self.read_disk_liquid_array(entry, entry_id).await?;
+                self.maybe_hydrate(
+                    entry_id,
+                    CachedBatchType::DiskLiquid,
+                    MaterializedEntry::Liquid(&liquid),
+                    None,
+                )
+                .await;
                 let mut owned = None;
                 let selection = selection_opt.unwrap_or_else(|| {
                     owned = Some(BooleanBuffer::new_set(liquid.len()));
@@ -933,6 +1052,13 @@ impl LiquidCache {
                                     HybridBacking::Liquid => {
                                         let hydrated =
                                             self.read_disk_liquid_array(entry, entry_id).await?;
+                                        self.maybe_hydrate(
+                                            entry_id,
+                                            CachedBatchType::DiskLiquid,
+                                            MaterializedEntry::Liquid(&hydrated),
+                                            None,
+                                        )
+                                        .await;
                                         match hydrated.try_eval_predicate(predicate, selection) {
                                             Some(buf) => Some(Ok(buf)),
                                             None => {
@@ -942,9 +1068,20 @@ impl LiquidCache {
                                         }
                                     }
                                     HybridBacking::Arrow => {
-                                        let filtered = self
-                                            .read_disk_arrow_array(entry, entry_id, Some(selection))
-                                            .await?;
+                                        let full_array =
+                                            self.read_disk_arrow_array(entry, entry_id).await?;
+                                        self.maybe_hydrate(
+                                            entry_id,
+                                            CachedBatchType::DiskArrow,
+                                            MaterializedEntry::Arrow(&full_array),
+                                            None,
+                                        )
+                                        .await;
+                                        let selection_array =
+                                            BooleanArray::new(selection.clone(), None);
+                                        let filtered =
+                                            arrow::compute::filter(&full_array, &selection_array)
+                                                .ok()?;
                                         Some(Err(filtered))
                                     }
                                 }
@@ -956,6 +1093,13 @@ impl LiquidCache {
                         match array.disk_backing() {
                             HybridBacking::Liquid => {
                                 let hydrated = self.read_disk_liquid_array(entry, entry_id).await?;
+                                self.maybe_hydrate(
+                                    entry_id,
+                                    CachedBatchType::DiskLiquid,
+                                    MaterializedEntry::Liquid(&hydrated),
+                                    None,
+                                )
+                                .await;
                                 match hydrated.try_eval_predicate(predicate, selection) {
                                     Some(buf) => Some(Ok(buf)),
                                     None => {
@@ -965,9 +1109,18 @@ impl LiquidCache {
                                 }
                             }
                             HybridBacking::Arrow => {
-                                let filtered = self
-                                    .read_disk_arrow_array(entry, entry_id, Some(selection))
-                                    .await?;
+                                let full_array =
+                                    self.read_disk_arrow_array(entry, entry_id).await?;
+                                self.maybe_hydrate(
+                                    entry_id,
+                                    CachedBatchType::DiskArrow,
+                                    MaterializedEntry::Arrow(&full_array),
+                                    None,
+                                )
+                                .await;
+                                let selection_array = BooleanArray::new(selection.clone(), None);
+                                let filtered =
+                                    arrow::compute::filter(&full_array, &selection_array).ok()?;
                                 Some(Err(filtered))
                             }
                         }
@@ -1468,5 +1621,51 @@ mod tests {
         assert!(s2.disk_usage_bytes > 0);
         // In-memory usage should be reduced after moving to on-disk formats
         assert!(s2.memory_usage_bytes <= s.memory_usage_bytes);
+    }
+
+    #[tokio::test]
+    async fn hydrate_disk_arrow_on_get_promotes_to_memory() {
+        let store = create_cache_store(1 << 20, Box::new(LruPolicy::new()));
+        let entry_id = EntryID::from(321usize);
+        let array = create_test_arrow_array(8);
+
+        store.insert(entry_id, array.clone()).await;
+        store.flush_all_to_disk();
+        {
+            let entry = store.index().get(&entry_id).unwrap();
+            assert!(matches!(entry.as_ref(), CacheEntry::DiskArrow(_)));
+        }
+
+        let result = store.get(&entry_id).await.expect("present");
+        assert_eq!(result.as_ref(), array.as_ref());
+        {
+            let entry = store.index().get(&entry_id).unwrap();
+            assert!(matches!(entry.as_ref(), CacheEntry::MemoryArrow(_)));
+        }
+    }
+
+    #[tokio::test]
+    async fn hydrate_disk_liquid_on_get_promotes_to_memory_liquid() {
+        let store = create_cache_store(1 << 20, Box::new(LruPolicy::new()));
+        let entry_id = EntryID::from(322usize);
+        let arrow_array: ArrayRef = Arc::new(Int32Array::from(vec![1, 2, 3, 4]));
+        let compressor = LiquidCompressorStates::new();
+        let liquid = transcode_liquid_inner(&arrow_array, &compressor).unwrap();
+
+        store
+            .insert_inner(entry_id, CacheEntry::memory_liquid(liquid.clone()))
+            .await;
+        store.flush_all_to_disk();
+        {
+            let entry = store.index().get(&entry_id).unwrap();
+            assert!(matches!(entry.as_ref(), CacheEntry::DiskLiquid(_)));
+        }
+
+        let result = store.get(&entry_id).await.expect("present");
+        assert_eq!(result.as_ref(), arrow_array.as_ref());
+        {
+            let entry = store.index().get(&entry_id).unwrap();
+            assert!(matches!(entry.as_ref(), CacheEntry::MemoryLiquid(_)));
+        }
     }
 }
