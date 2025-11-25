@@ -218,7 +218,7 @@ jobs:
 
   benchmark:
     name: Performance Benchmark
-    runs-on: ubuntu-latest
+    runs-on: pittsburgh
     permissions:
       contents: write
       pull-requests: write
