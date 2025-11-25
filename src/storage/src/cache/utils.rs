@@ -59,7 +59,8 @@ pub(crate) fn create_cache_store(
     use tempfile::tempdir;
 
     use crate::cache::{
-        AlwaysHydrate, LiquidCacheBuilder, core::BlockingIoContext, squeeze_policies::TranscodeSqueezeEvict
+        AlwaysHydrate, LiquidCacheBuilder, core::BlockingIoContext,
+        squeeze_policies::TranscodeSqueezeEvict,
     };
 
     let temp_dir = tempdir().unwrap();
