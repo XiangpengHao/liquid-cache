@@ -18,6 +18,7 @@ use crate::cache::stats::{CacheStats, RuntimeStats};
 use crate::cache::utils::{LiquidCompressorStates, arrow_to_bytes};
 use crate::cache::{CacheExpression, ExpressionRegistry, index::ArtIndex, utils::EntryID};
 use crate::cache_policies::LiquidPolicy;
+use crate::hydration_policies::NoHydration;
 use crate::liquid_array::{
     HybridBacking, LiquidHybridArrayRef, SqueezedDate32Array, VariantStructHybridArray,
 };
@@ -223,7 +224,7 @@ impl LiquidCacheBuilder {
             max_cache_bytes: 1024 * 1024 * 1024,
             cache_dir: None,
             cache_policy: Box::new(LiquidPolicy::new()),
-            hydration_policy: Box::new(super::hydration_policies::NoHydration::new()),
+            hydration_policy: Box::new(NoHydration::new()),
             squeeze_policy: Box::new(TranscodeSqueezeEvict),
             io_worker: None,
         }
@@ -258,7 +259,7 @@ impl LiquidCacheBuilder {
     }
 
     /// Set the hydration policy for the cache.
-    /// Default is [AlwaysHydrate].
+    /// Default is [NoHydration].
     pub fn with_hydration_policy(mut self, policy: Box<dyn HydrationPolicy>) -> Self {
         self.hydration_policy = policy;
         self
