@@ -768,9 +768,10 @@ impl LiquidCache {
             },
             entry @ CacheEntry::DiskLiquid(data_type) => {
                 if let Some(selection) = selection
-                    && selection.count_set_bits() == 0 {
-                        return Some(arrow::array::new_empty_array(data_type));
-                    }
+                    && selection.count_set_bits() == 0
+                {
+                    return Some(arrow::array::new_empty_array(data_type));
+                }
                 let cached_type = CachedBatchType::DiskLiquid;
                 let liquid = self.read_disk_liquid_array(entry, entry_id).await?;
                 self.maybe_hydrate(
