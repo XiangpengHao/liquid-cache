@@ -1,13 +1,10 @@
-use std::{io, os::raw::c_void, ptr::{null, null_mut}};
+use std::{io, os::raw::c_void, ptr::null_mut};
 
 use io_uring::IoUring;
 
 use crate::memory::{
-    page::Slice,
-    segment::{SEGMENT_SIZE, SEGMENT_SIZE_BITS, Segment}, tcache::MIN_SIZE_FROM_PAGES,
+    page::Slice, pool::{FIXED_BUFFER_BITS, FIXED_BUFFER_SIZE_BYTES}, segment::{SEGMENT_SIZE, SEGMENT_SIZE_BITS, Segment}
 };
-
-const FIXED_BUFFERS_PER_SEGMENT: usize = SEGMENT_SIZE / MIN_SIZE_FROM_PAGES;
 
 pub struct Arena {
     size: usize,
@@ -89,12 +86,11 @@ impl Arena {
             ptr: self.slices[result as usize].ptr,
             size: num_slices * SEGMENT_SIZE,
         };
-        let start_buffer_id = if self.buffers_registered {
-            Some(result as usize * FIXED_BUFFERS_PER_SEGMENT)
-        } else {
-            None
-        };
-        Some(Segment::new_from_slice(combined_slice, start_buffer_id))
+        Some(Segment::new_from_slice(combined_slice))
+    }
+
+    pub(crate) fn start_ptr(self: &Self) -> *mut u8 {
+        self.aligned_start_ptr
     }
 
     pub(crate) fn retire_segment(self: &mut Self, segment: *mut Segment) {
@@ -104,13 +100,13 @@ impl Arena {
     }
 
     pub(crate) fn register_buffers_with_ring(self: &mut Self, ring: &IoUring) -> io::Result<()> {
-        let num_buffers = self.size / MIN_SIZE_FROM_PAGES;
+        let num_buffers = self.size >> FIXED_BUFFER_BITS;
         let mut buffers = Vec::<libc::iovec>::new();
         buffers.reserve(num_buffers);
         let mut base_ptr = self.aligned_start_ptr;
         for _i in 0..num_buffers {
-            buffers.push(libc::iovec {iov_base: base_ptr as *mut std::ffi::c_void, iov_len: MIN_SIZE_FROM_PAGES});
-            base_ptr = base_ptr.wrapping_add(MIN_SIZE_FROM_PAGES);
+            buffers.push(libc::iovec {iov_base: base_ptr as *mut std::ffi::c_void, iov_len: FIXED_BUFFER_SIZE_BYTES});
+            base_ptr = base_ptr.wrapping_add(FIXED_BUFFER_SIZE_BYTES);
         }
         let res = unsafe {
             ring.submitter().register_buffers(&buffers)

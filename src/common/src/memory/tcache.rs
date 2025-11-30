@@ -214,19 +214,19 @@ impl TCache {
         }
     }
 
-    fn find_page_from_used(self: &mut Self, bin: usize) -> (*mut u8, Option<usize>) {
+    fn find_page_from_used(self: &mut Self, bin: usize) -> *mut u8 {
         for i in 0..self.used_pages[bin].len() {
             unsafe {
                 if (*self.used_pages[bin][i]).is_full() {
                     continue;
                 }
                 let page = self.used_pages[bin].remove(i);
-                let (block, buffer_id) = (*page).get_free_block();
+                let block = (*page).get_free_block();
                 self.free_pages[bin] = page;
-                return (block, buffer_id)
+                return block
             }
         }
-        (null_mut(), None)
+        null_mut()
     }
 
     fn find_page_from_spans(self: &mut Self, num_slices_required: usize, block_size: usize) -> *mut Page {
@@ -289,7 +289,7 @@ impl TCache {
         true
     }
 
-    pub(crate) fn allocate(self: &mut Self, size: usize) -> (*mut u8, Option<usize>) {
+    pub(crate) fn allocate(self: &mut Self, size: usize) -> *mut u8 {
         self.stats.total_allocations += 1;
         if size > MAX_SIZE_FROM_PAGES {
             // Directly get page from segment
@@ -298,22 +298,22 @@ impl TCache {
             let mut free_page = self.find_page_from_spans(num_pages, block_size);
             if free_page != null_mut() {
                 self.stats.allocations_from_segment += 1;
-                let (free_block, buffer_id) = unsafe { (*free_page).get_free_block() };
-                return (free_block, buffer_id);
+                let free_block = unsafe { (*free_page).get_free_block() };
+                return free_block
             }
             self.stats.allocations_from_arena += 1;
             let res = self.allocate_segment_from_arena(self.thread_id);
             if !res {
-                return (null_mut(), None);
+                return null_mut()
             }
             free_page = self.find_page_from_spans(num_pages, block_size);
             if free_page == null_mut() {
-                return (null_mut(), None)
+                return null_mut()
             }
             debug_assert_eq!(block_size, unsafe { (*free_page).block_size });
             assert_ne!(free_page, null_mut());
-            let (free_block, buffer_id) = unsafe { (*free_page).get_free_block() };
-            return (free_block, buffer_id)
+            let free_block = unsafe { (*free_page).get_free_block() };
+            return free_block
         }
         let size_class = Self::get_size_class(size);
         debug_assert!(size_class < NUM_SIZE_CLASSES);
@@ -329,34 +329,33 @@ impl TCache {
                     self.free_pages[size_class] = null_mut();
                 } else {
                     self.stats.fast_allocations += 1;
-                    let (ptr, buffer_id) = (*page).get_free_block();
-                    return (ptr, buffer_id)
+                    return (*page).get_free_block()
                 }
             }
         }
-        let (block, buffer_id) = self.find_page_from_used(size_class);
+        let block = self.find_page_from_used(size_class);
         if !block.is_null() {
             self.stats.allocations_from_pages += 1;
-            return (block, buffer_id);
+            return block
         }
         free_page = self.find_page_from_spans(1, block_size);
         if free_page != null_mut() {
             self.stats.allocations_from_segment += 1;
-            let (free_block, buffer_id) = unsafe { (*free_page).get_free_block() };
+            let free_block = unsafe { (*free_page).get_free_block() };
             self.free_pages[size_class] = free_page;
-            return (free_block, buffer_id);
+            return free_block;
         }
         // No space available in segments, allocate a new one
         self.stats.allocations_from_arena += 1;
         let res = self.allocate_segment_from_arena(self.thread_id);
         if !res {
-            return (null_mut(), None);
+            return null_mut()
         }
         free_page = self.find_page_from_spans(1, size);
         assert_ne!(free_page, null_mut());
-        let (free_block, buffer_id) = unsafe { (*free_page).get_free_block() };
+        let free_block = unsafe { (*free_page).get_free_block() };
         self.free_pages[size_class] = free_page;
-        return (free_block, buffer_id)
+        return free_block
     }
 
     #[allow(unused)]

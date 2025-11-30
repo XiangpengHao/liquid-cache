@@ -1,7 +1,5 @@
 use std::{collections::VecDeque, ptr::null_mut, sync::{Mutex, atomic::{AtomicUsize, Ordering}}};
 
-use crate::memory::tcache::MIN_SIZE_FROM_PAGES;
-
 #[derive(Clone, Copy)]
 pub struct Block {
     ptr: *mut u8,
@@ -20,11 +18,10 @@ pub struct Page {
     pub(crate) slice_count: usize,      // No. of pages in the slice containing this page
     pub(crate) slice_offset: usize,     // Offset of this page from the start of this slice
     pub(crate) page_start: *mut u8,
-    pub(crate) start_buffer_id: Option<usize>,
 }
 
 impl Page {
-    pub fn from_slice(slice: Slice, start_buffer_id: Option<usize>) -> Page {
+    pub fn from_slice(slice: Slice) -> Page {
         // let mut start_ptr = slice.ptr;
         let free_list = VecDeque::<Block>::new();
         Page {
@@ -37,7 +34,6 @@ impl Page {
             slice_count: 1,
             slice_offset: 0,
             page_start: slice.ptr,
-            start_buffer_id
         }
     }
 
@@ -56,20 +52,14 @@ impl Page {
      * Returns (block, buffer id) pair
      */
     #[inline]
-    pub fn get_free_block(self: &mut Self) -> (*mut u8, Option<usize>) {
+    pub fn get_free_block(self: &mut Self) -> *mut u8 {
         let mut guard = self.free_list.lock().unwrap();
         let block = guard.pop_front();
         if block.is_none() {
-            return (null_mut(), None);
+            return null_mut()
         }
         self.used.fetch_add(1usize, Ordering::Relaxed);
-        let ptr = block.unwrap().ptr;
-        if self.start_buffer_id.is_none() {
-            return (ptr, None)
-        }
-        
-        let buffer_offset = (ptr as usize - self.page_start as usize) / MIN_SIZE_FROM_PAGES;
-        (ptr, Some(self.start_buffer_id.unwrap() + buffer_offset))
+        block.unwrap().ptr
     }
 
     #[inline]

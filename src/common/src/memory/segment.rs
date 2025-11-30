@@ -1,23 +1,21 @@
 use std::ptr::null_mut;
 
-use crate::memory::{page::{PAGE_SIZE, Page, Slice}, tcache::MIN_SIZE_FROM_PAGES};
+use crate::memory::{page::{PAGE_SIZE, Page, Slice}};
 
 pub const SEGMENT_SIZE: usize = 32 * 1024 * 1024;
 pub const SEGMENT_SIZE_BITS: usize = SEGMENT_SIZE.ilog2() as usize;
 
 pub const PAGES_PER_SEGMENT: usize = SEGMENT_SIZE / PAGE_SIZE;
-const FIXED_BUFFERS_PER_PAGE: usize = PAGE_SIZE / MIN_SIZE_FROM_PAGES;
 
 pub struct Segment {
     pub(crate) allocated: usize,
     pub(crate) num_slices: usize,
     pub(crate) pages: [Page; PAGES_PER_SEGMENT - 1],
     pub(crate) thread_id: usize,
-    pub(crate) start_buffer_id: Option<usize>,
 }
 
 impl Segment {
-    pub fn new_from_slice(slice: Slice, start_buffer_id: Option<usize>) -> *mut Segment {
+    pub fn new_from_slice(slice: Slice) -> *mut Segment {
         // First sizeof(Segment) bytes should hold the Segment object
         let segment_ptr = slice.ptr as *mut Segment;
         let mut start_ptr = unsafe { slice.ptr.add(PAGE_SIZE) };
@@ -26,16 +24,9 @@ impl Segment {
             (*segment_ptr).allocated = 0;
             (*segment_ptr).num_slices = PAGES_PER_SEGMENT - 1;
             for i in 0..(*segment_ptr).num_slices {
-                let page_start_buffer_id = if start_buffer_id.is_some() {
-                    let offset = (start_ptr as usize - segment_ptr as usize) / MIN_SIZE_FROM_PAGES;
-                    Some(start_buffer_id.unwrap() + offset)
-                } else {
-                    start_buffer_id
-                };
-                (*segment_ptr).pages[i] = Page::from_slice(Slice {ptr: start_ptr, size: PAGE_SIZE}, page_start_buffer_id);
+                (*segment_ptr).pages[i] = Page::from_slice(Slice {ptr: start_ptr, size: PAGE_SIZE});
                 start_ptr = start_ptr.wrapping_add(PAGE_SIZE);
             }
-            (*segment_ptr).start_buffer_id = start_buffer_id;
         }
         segment_ptr
     }
