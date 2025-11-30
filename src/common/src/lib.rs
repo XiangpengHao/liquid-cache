@@ -5,3 +5,4 @@ pub mod mock_store;
 pub mod rpc;
 pub mod utils;
 pub use io_mode::IoMode;
+pub mod memory;

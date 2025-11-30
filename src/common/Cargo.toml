@@ -13,9 +13,14 @@ async-trait = { workspace = true }
 bytes = { workspace = true }
 chrono = "0.4.42"
 futures = { workspace = true }
+io-uring = "0.7.11"
+libc = "0.2.177"
+log.workspace = true
 object_store = { workspace = true }
 prost = { workspace = true }
+rand = "0.9.2"
 serde = { workspace = true }
+tempfile.workspace = true
 thiserror = "2.0.17"
 tokio = { workspace = true }
 url = { workspace = true }
