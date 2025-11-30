@@ -10,6 +10,7 @@ use std::sync::Arc;
 use url::Url;
 
 use crate::Query;
+use regex::Regex;
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct ObjectStoreConfig {
@@ -112,6 +113,7 @@ impl BenchmarkManifest {
 
     pub fn load_queries(&self, id_offset: u32) -> Vec<Query> {
         let mut queries = Vec::new();
+        let re = Regex::new(r"q(\d+)\.sql$").unwrap();
         for (index, query) in self.queries.iter().enumerate() {
             let sql = if std::path::Path::new(query).exists() {
                 let raw_string = std::fs::read_to_string(query).expect("Failed to read query file");
@@ -124,8 +126,17 @@ impl BenchmarkManifest {
                 vec![query.clone()]
             };
 
+            let path = std::path::Path::new(query);
+            let id = path
+                .file_name()
+                .and_then(|f| f.to_str())
+                .and_then(|name| re.captures(name))
+                .and_then(|cap| cap.get(1))
+                .and_then(|m| m.as_str().parse::<u32>().ok())
+                .unwrap_or(index as u32 + id_offset);
+
             queries.push(Query {
-                id: index as u32 + id_offset,
+                id,
                 statement: sql,
             });
         }

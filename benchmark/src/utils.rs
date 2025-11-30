@@ -127,6 +127,39 @@ pub fn check_tpch_result(results: &[RecordBatch], answer_dir: &Path, query_id: u
     assert_batch_eq(&answer_batch, &result_batch);
 }
 
+/// TPC-DS answer checker: same shape as TPCH but tolerant to empty results.
+pub fn check_tpcds_result(results: &[RecordBatch], answer_dir: &Path, query_id: u32) {
+    let baseline_path = format!("{}/q{}.parquet", answer_dir.display(), query_id);
+    let baseline_file = File::open(baseline_path).unwrap();
+    let mut baseline_batches = Vec::new();
+    let reader = ParquetRecordBatchReaderBuilder::try_new(baseline_file)
+        .unwrap()
+        .build()
+        .unwrap();
+    for batch in reader {
+        baseline_batches.push(batch.unwrap());
+    }
+
+    let result_rows: usize = results.iter().map(|b| b.num_rows()).sum();
+    let answer_rows: usize = baseline_batches.iter().map(|b| b.num_rows()).sum();
+    if answer_rows == 0 && result_rows == 0 {
+        return;
+    }
+    assert!(
+        answer_rows == result_rows,
+        "Row count mismatch for q{query_id}: expected {answer_rows}, got {result_rows}"
+    );
+
+    let result_batch =
+        datafusion::arrow::compute::concat_batches(&results[0].schema(), results).unwrap();
+    let answer_batch = datafusion::arrow::compute::concat_batches(
+        &baseline_batches[0].schema(),
+        &baseline_batches,
+    )
+    .unwrap();
+    assert_batch_eq(&answer_batch, &result_batch);
+}
+
 #[cfg(test)]
 mod tests {
 
