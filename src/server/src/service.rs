@@ -51,6 +51,7 @@ impl LiquidCacheServiceInner {
         cache_policy: Box<dyn CachePolicy>,
         squeeze_policy: Box<dyn SqueezePolicy>,
         io_mode: IoMode,
+        fixed_buffer_pool_size_mb: usize,
     ) -> Self {
         let batch_size = default_ctx.state().config().batch_size();
 
@@ -64,6 +65,7 @@ impl LiquidCacheServiceInner {
             cache_policy,
             squeeze_policy,
             io_mode,
+            fixed_buffer_pool_size_mb,
         ));
 
         Self {
@@ -220,6 +222,7 @@ mod tests {
             Box::new(LiquidPolicy::new()),
             Box::new(TranscodeSqueezeEvict),
             IoMode::Uring,
+            0,
         );
         let url = Url::parse("file:///").unwrap();
         server

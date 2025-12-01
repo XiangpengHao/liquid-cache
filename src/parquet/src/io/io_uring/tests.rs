@@ -55,7 +55,7 @@ impl BackendKind {
                     } else {
                         IoMode::Uring
                     };
-                    initialize_uring_pool(mode);
+                    initialize_uring_pool(mode, false);
                 });
             }
             BackendKind::MultiBlocking => {
@@ -79,7 +79,7 @@ impl BackendKind {
             BackendKind::MultiBlocking => {
                 async move { multi_blocking_uring::read(path, range, direct_io) }.boxed()
             }
-            BackendKind::ThreadPool => thread_pool_uring::read(path, range, direct_io).boxed(),
+            BackendKind::ThreadPool => thread_pool_uring::read(path, range, direct_io, true).boxed(),
         }
     }
 
@@ -93,7 +93,7 @@ impl BackendKind {
                 async move { multi_blocking_uring::write(path, &data) }.boxed()
             }
             BackendKind::ThreadPool => {
-                async move { thread_pool_uring::write(path, &data).await }.boxed()
+                async move { thread_pool_uring::write(path, &data, false).await }.boxed()
             }
         }
     }

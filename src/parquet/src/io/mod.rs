@@ -23,19 +23,25 @@ pub(crate) struct ParquetIoContext {
 }
 
 impl ParquetIoContext {
-    pub fn new(base_dir: PathBuf, io_mode: IoMode) -> Self {
+    pub fn new(base_dir: PathBuf, io_mode: IoMode, fixed_buffer_pool_size_mb: usize) -> Self {
         if matches!(
             io_mode,
             IoMode::UringDirect | IoMode::Uring | IoMode::UringBlocking
         ) {
             #[cfg(target_os = "linux")]
             {
-                crate::io::io_uring::initialize_uring_pool(io_mode);
+                use liquid_cache_common::memory::pool::FixedBufferPool;
+                if fixed_buffer_pool_size_mb > 0 {
+                    FixedBufferPool::init(fixed_buffer_pool_size_mb);
+                }
+                crate::io::io_uring::initialize_uring_pool(io_mode, fixed_buffer_pool_size_mb > 0);
             }
             #[cfg(not(target_os = "linux"))]
             {
                 panic!("io_mode {:?} is only supported on Linux", io_mode);
             }
+        } else if fixed_buffer_pool_size_mb > 0 {
+            panic!("Fixed buffers are only supported for UringDirect, Uring and UringBlocking");
         }
 
         Self {

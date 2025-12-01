@@ -232,6 +232,7 @@ mod tests {
             Box::new(LiquidPolicy::new()),
             Box::new(TranscodeSqueezeEvict),
             IoMode::Uring,
+            0,
         ));
         let rewritten = rewrite_data_source_plan(plan, &liquid_cache);
 

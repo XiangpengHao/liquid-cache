@@ -12,16 +12,18 @@ use std::{
 
 use bytes::Bytes;
 use io_uring::{cqueue, opcode, squeue};
+use liquid_cache_common::memory::pool::{FixedBufferAllocation, FixedBufferPool};
 
 pub(crate) const BLOCK_ALIGN: usize = 4096;
 
 /// Represents an IO request to the uring worker thread.
 pub(crate) trait IoTask: Send + Any + std::fmt::Debug {
     /// Convert the request to an io-uring submission queue entry.
-    fn prepare_sqe(&mut self) -> squeue::Entry;
+    fn prepare_sqe(&mut self) -> Vec<squeue::Entry>;
 
+    // TODO(): Can we pass completion queue entries on the stack?
     /// Record the outcome of the completion queue entry.
-    fn complete(&mut self, cqe: &cqueue::Entry);
+    fn complete(&mut self, cqe: Vec<&cqueue::Entry>);
 
     /// Convert the boxed task to a boxed `Any` so callers can recover the original type.
     fn into_any(self: Box<Self>) -> Box<dyn Any>;
@@ -67,7 +69,7 @@ impl FileOpenTask {
 
 impl IoTask for FileOpenTask {
     #[inline]
-    fn prepare_sqe(&mut self) -> squeue::Entry {
+    fn prepare_sqe(&mut self) -> Vec<squeue::Entry> {
         let mut flags = libc::O_RDONLY | libc::O_CLOEXEC;
         if self.direct_io {
             flags |= libc::O_DIRECT;
@@ -75,12 +77,13 @@ impl IoTask for FileOpenTask {
         let open_op = opcode::OpenAt::new(io_uring::types::Fd(libc::AT_FDCWD), self.path.as_ptr())
             .flags(flags);
 
-        open_op.build()
+        vec![open_op.build()]
     }
 
     #[inline]
-    fn complete(&mut self, cqe: &cqueue::Entry) {
-        let result = cqe.result();
+    fn complete(&mut self, cqe: Vec<&cqueue::Entry>) {
+        debug_assert_eq!(cqe.len(), 1, "Should receive a single completion for a file open task");
+        let result = cqe[0].result();
         if result < 0 {
             self.error = Some(std::io::Error::from_raw_os_error(-result));
         } else {
@@ -184,7 +187,7 @@ impl FileReadTask {
 
 impl IoTask for FileReadTask {
     #[inline]
-    fn prepare_sqe(&mut self) -> squeue::Entry {
+    fn prepare_sqe(&mut self) -> Vec<squeue::Entry> {
         let num_bytes = (self.range.end - self.range.start) as usize;
         let (start_padding, end_padding) = self.padding();
         let num_bytes_aligned = num_bytes + start_padding + end_padding;
@@ -198,15 +201,119 @@ impl IoTask for FileReadTask {
             num_bytes_aligned as u32,
         );
 
-        read_op
+        vec![read_op
             .offset(self.range.start - start_padding as u64)
-            .build()
+            .build()]
     }
 
     #[inline]
-    fn complete(&mut self, cqe: &cqueue::Entry) {
-        if cqe.result() < 0 {
-            self.error = Some(std::io::Error::from_raw_os_error(-cqe.result()));
+    fn complete(&mut self, cqe: Vec<&cqueue::Entry>) {
+        debug_assert_eq!(cqe.len(), 1, "Should receive a single completion for a FileRead task");
+        let result = cqe[0].result();
+        if result < 0 {
+            self.error = Some(std::io::Error::from_raw_os_error(-result));
+        }
+    }
+
+    fn into_any(self: Box<Self>) -> Box<dyn Any> {
+        self
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct FixedFileReadTask {
+    fixed_buffer: FixedBufferAllocation,
+    file: RawFd,
+    range: Range<u64>,
+    direct_io: bool,
+    error: Option<std::io::Error>,
+}
+
+impl FixedFileReadTask {
+    #[inline]
+    fn compute_padding(range: &Range<u64>, direct_io: bool) -> (usize, usize) {
+        if direct_io {
+            let start_padding = range.start as usize & (BLOCK_ALIGN - 1);
+            let end_mod = range.end as usize & (BLOCK_ALIGN - 1);
+            let end_padding = if end_mod == 0 {
+                0
+            } else {
+                BLOCK_ALIGN - end_mod
+            };
+            (start_padding, end_padding)
+        } else {
+            (0, 0)
+        }
+    }
+
+    #[inline]
+    fn padding(&self) -> (usize, usize) {
+        Self::compute_padding(&self.range, self.direct_io)
+    }
+
+    pub(crate) fn build(range: Range<u64>, file: &fs::File, direct_io: bool) -> Result<FixedFileReadTask, std::io::Error> {
+        let (start_padding, end_padding) = Self::compute_padding(&range, direct_io);
+        let requested_bytes = (range.end - range.start) as usize;
+        let num_bytes_aligned = requested_bytes + start_padding + end_padding;
+
+        // Fixed buffers are aligned to the block size. Don't worry about alignment here
+        let ptr = FixedBufferPool::malloc(num_bytes_aligned);
+        if ptr.is_null() {
+            return Err(std::io::Error::from(std::io::ErrorKind::OutOfMemory));
+        }
+        let alloc = FixedBufferAllocation {ptr, size: num_bytes_aligned};
+
+        Ok(FixedFileReadTask {
+            fixed_buffer: alloc,
+            file: file.as_raw_fd(),
+            range,
+            direct_io,
+            error: None,
+        })
+    }
+
+    /// Return a bytes object holding the result of the read operation.
+    #[inline]
+    pub(crate) fn into_result(self: Box<Self>) -> Result<Bytes, std::io::Error> {
+        let mut this = self;
+        if let Some(err) = this.error.take() {
+            return Err(err);
+        }
+
+        let (start_padding, _) = this.padding();
+        let range_len = (this.range.end - this.range.start) as usize;
+        let data_end = start_padding + range_len;
+        let bytes = Bytes::from_owner(this.fixed_buffer);
+
+        Ok(bytes.slice(start_padding..data_end))
+    }
+}
+
+impl IoTask for FixedFileReadTask {
+    #[inline]
+    fn prepare_sqe(&mut self) -> Vec<squeue::Entry> {        
+        let buffers = FixedBufferPool::get_fixed_buffers(&self.fixed_buffer);
+        let mut sqes = Vec::<squeue::Entry>::new();
+        let mut file_offset = 0;
+        for buffer in buffers {
+            let sqe = opcode::ReadFixed::new(
+                io_uring::types::Fd(self.file),
+                buffer.ptr,
+                buffer.bytes as u32,
+                buffer.buf_id as u16)
+                .offset(file_offset).build();
+                file_offset += buffer.bytes as u64;
+            sqes.push(sqe);
+        }
+        sqes
+    }
+
+    #[inline]
+    fn complete(&mut self, cqes: Vec<&cqueue::Entry>) {
+        for cqe in cqes.iter().as_ref() {
+            if cqe.result() < 0 {
+                self.error = Some(std::io::Error::from_raw_os_error(-cqe.result()));
+            }
         }
     }
 
@@ -220,14 +327,16 @@ pub(crate) struct FileWriteTask {
     data: Bytes,
     fd: RawFd,
     error: Option<std::io::Error>,
+    use_fixed_buffers: bool,
 }
 
 impl FileWriteTask {
-    pub(crate) fn build(data: Bytes, fd: RawFd) -> FileWriteTask {
+    pub(crate) fn build(data: Bytes, fd: RawFd, use_fixed_buffers: bool) -> FileWriteTask {
         FileWriteTask {
             data,
             fd,
             error: None,
+            use_fixed_buffers,
         }
     }
 
@@ -242,20 +351,22 @@ impl FileWriteTask {
 
 impl IoTask for FileWriteTask {
     #[inline]
-    fn prepare_sqe(&mut self) -> squeue::Entry {
+    fn prepare_sqe(&mut self) -> Vec<squeue::Entry> {
         let write_op = opcode::Write::new(
             io_uring::types::Fd(self.fd),
             self.data.as_ptr(),
             self.data.len() as u32,
         );
 
-        write_op.offset(0u64).build()
+       vec![write_op.offset(0u64).build()]
     }
 
     #[inline]
-    fn complete(&mut self, cqe: &cqueue::Entry) {
-        if cqe.result() < 0 {
-            self.error = Some(std::io::Error::from_raw_os_error(-cqe.result()));
+    fn complete(&mut self, cqes: Vec<&cqueue::Entry>) {
+        debug_assert_eq!(cqes.len(), 1, "Should receive a single completion for a FileRead task");
+        let result = cqes[0].result();
+        if result < 0 {
+            self.error = Some(std::io::Error::from_raw_os_error(-result));
         }
     }
 

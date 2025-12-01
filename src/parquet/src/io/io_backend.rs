@@ -16,7 +16,7 @@ pub(super) async fn read(
         IoMode::Uring => {
             #[cfg(target_os = "linux")]
             {
-                super::io_uring::thread_pool_uring::read(path, range, false).await
+                super::io_uring::thread_pool_uring::read(path, range, false,true).await
             }
             #[cfg(not(target_os = "linux"))]
             {
@@ -38,7 +38,7 @@ pub(super) async fn read(
         IoMode::UringDirect => {
             #[cfg(target_os = "linux")]
             {
-                super::io_uring::thread_pool_uring::read(path, range, true).await
+                super::io_uring::thread_pool_uring::read(path, range, true, true).await
             }
             #[cfg(not(target_os = "linux"))]
             {
@@ -82,7 +82,7 @@ pub(super) async fn write(
         IoMode::Uring | IoMode::UringDirect => {
             #[cfg(target_os = "linux")]
             {
-                super::io_uring::thread_pool_uring::write(path, &data).await
+                super::io_uring::thread_pool_uring::write(path, &data, false).await
             }
             #[cfg(not(target_os = "linux"))]
             {

@@ -29,7 +29,7 @@ impl BlockingRing {
     {
         {
             let mut sq = self.ring.submission();
-            let entry = task.prepare_sqe().user_data(0);
+            let entry = task.prepare_sqe()[0].clone().user_data(0);
             unsafe {
                 sq.push(&entry).expect("Failed to push to submission queue");
             }
@@ -44,7 +44,7 @@ impl BlockingRing {
             let cqe = cq
                 .next()
                 .ok_or_else(|| io::Error::other("io-uring completion queue empty"))?;
-            task.complete(&cqe);
+            task.complete(vec![&cqe]);
         }
 
         Ok(task)
@@ -176,6 +176,6 @@ pub(crate) fn write(path: PathBuf, data: &Bytes) -> Result<(), std::io::Error> {
         .truncate(true)
         .write(true)
         .open(path)?;
-    let write_task = FileWriteTask::build(data.clone(), file.as_raw_fd());
+    let write_task = FileWriteTask::build(data.clone(), file.as_raw_fd(), false);
     run_blocking_task(Box::new(write_task))?.into_result()
 }

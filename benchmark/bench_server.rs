@@ -51,6 +51,9 @@ struct CliArgs {
     /// IO mode, available options: uring, uring-direct, std-blocking, tokio, std-spawn-blocking
     #[arg(long = "io-mode", default_value = "uring-multi-async")]
     io_mode: IoMode,
+
+    #[arg(long = "fixed-buffer-pool-size-mb", default_value = "0")]
+    fixed_buffer_pool_size_mb: usize,
 }
 
 #[tokio::main]
@@ -80,6 +83,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Box::new(LiquidPolicy::new()),
         squeeze_policy,
         Some(args.io_mode),
+        args.fixed_buffer_pool_size_mb,
     )?;
 
     let liquid_cache_server = Arc::new(liquid_cache_server);

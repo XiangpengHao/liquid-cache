@@ -161,7 +161,7 @@ impl SharedRingInner {
     fn submit_task(&mut self, task: &mut dyn IoTask, token: u16) {
         {
             let mut sq = self.ring.submission();
-            let entry = task.prepare_sqe().user_data(token as u64);
+            let entry = task.prepare_sqe()[0].clone().user_data(token as u64);
             unsafe {
                 sq.push(&entry)
                     .expect("Failed to push entry to io-uring submission queue");
@@ -264,7 +264,7 @@ where
         match state {
             State::Pending { token, mut task } => {
                 if let Some(cqe) = ring.take_completion(token) {
-                    task.complete(&cqe);
+                    task.complete(vec![&cqe]);
                     return Poll::Ready(task);
                 }
                 // Not ready yet, restore state
@@ -339,6 +339,6 @@ pub(crate) async fn write(path: PathBuf, data: &Bytes) -> Result<(), std::io::Er
         .open(path)
         .expect("failed to create file");
 
-    let write_task = FileWriteTask::build(data.clone(), file.as_raw_fd());
+    let write_task = FileWriteTask::build(data.clone(), file.as_raw_fd(), false);
     submit_async_task(write_task).await.into_result()
 }

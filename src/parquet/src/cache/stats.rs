@@ -189,6 +189,7 @@ mod tests {
             Box::new(LiquidPolicy::new()),
             Box::new(Evict),
             IoMode::Uring,
+            0,
         );
         let fields: Vec<Field> = (0..8)
             .map(|i| Field::new(format!("test_{i}"), DataType::Int32, false))

@@ -19,6 +19,7 @@ pub struct FixedBuffer {
     pub bytes: usize,
 }
 
+#[derive(Debug)]
 pub struct FixedBufferAllocation {
     pub ptr: *mut u8,
     pub size: usize,

@@ -15,6 +15,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Box::new(LruPolicy::new()),
         Box::new(TranscodeSqueezeEvict),
         Some(IoMode::default()),
+        0,
     )?;
 
     let flight = FlightServiceServer::new(liquid_cache);

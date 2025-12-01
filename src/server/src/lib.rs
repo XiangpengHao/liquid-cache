@@ -116,6 +116,7 @@ impl LiquidCacheService {
             Box::new(LiquidPolicy::new()),
             Box::new(TranscodeSqueezeEvict),
             None,
+            0,
         )
     }
 
@@ -134,6 +135,7 @@ impl LiquidCacheService {
         cache_policy: Box<dyn CachePolicy>,
         squeeze_policy: Box<dyn SqueezePolicy>,
         io_mode: Option<IoMode>,
+        fixed_buffer_pool_size_mb: usize,
     ) -> anyhow::Result<Self> {
         let disk_cache_dir = match disk_cache_dir {
             Some(dir) => dir,
@@ -155,6 +157,7 @@ impl LiquidCacheService {
                 cache_policy,
                 squeeze_policy,
                 io_mode,
+                fixed_buffer_pool_size_mb,
             ),
         })
     }

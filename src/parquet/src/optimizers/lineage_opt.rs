@@ -982,6 +982,7 @@ mod tests {
             Box::new(LiquidPolicy::new()),
             Box::new(TranscodeSqueezeEvict),
             IoMode::Uring,
+            0,
         )));
 
         let state = SessionStateBuilder::new()
