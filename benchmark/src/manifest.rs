@@ -135,10 +135,7 @@ impl BenchmarkManifest {
                 .and_then(|m| m.as_str().parse::<u32>().ok())
                 .unwrap_or(index as u32 + id_offset);
 
-            queries.push(Query {
-                id,
-                statement: sql,
-            });
+            queries.push(Query { id, statement: sql });
         }
         queries
     }
