@@ -2,304 +2,27 @@ use arrow::array::{ArrayRef, BooleanArray};
 use arrow::buffer::BooleanBuffer;
 use arrow_schema::DataType;
 use datafusion::physical_plan::PhysicalExpr;
-use std::path::PathBuf;
-use std::{fmt::Debug, path::Path};
+use std::path::{Path, PathBuf};
 
 use super::{
     budget::BudgetAccounting,
-    cache_policies::CachePolicy,
+    builders::{EvaluatePredicate, Get, Insert},
     cached_batch::{CacheEntry, CachedBatchType},
-    hydration_policies::{HydrationPolicy, HydrationRequest, MaterializedEntry},
+    io_context::IoContext,
+    policies::{CachePolicy, HydrationPolicy, HydrationRequest, MaterializedEntry},
     tracer::CacheTracer,
     utils::CacheConfig,
 };
-use crate::cache::squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict};
+use crate::cache::policies::SqueezePolicy;
 use crate::cache::stats::{CacheStats, RuntimeStats};
 use crate::cache::utils::{LiquidCompressorStates, arrow_to_bytes};
 use crate::cache::{CacheExpression, ExpressionRegistry, index::ArtIndex, utils::EntryID};
-use crate::cache_policies::LiquidPolicy;
-use crate::hydration_policies::NoHydration;
 use crate::liquid_array::{
     HybridBacking, LiquidHybridArrayRef, SqueezedDate32Array, VariantStructHybridArray,
 };
 use crate::sync::Arc;
-use std::future::IntoFuture;
-use std::pin::Pin;
-
-use bytes::Bytes;
-use std::ops::Range;
-
-/// A trait for objects that can handle IO operations for the cache.
-#[async_trait::async_trait]
-pub trait IoContext: Debug + Send + Sync {
-    /// Get the compressor for an entry.
-    fn get_compressor(&self, entry_id: &EntryID) -> Arc<LiquidCompressorStates>;
-
-    /// Get the disk path for a cache entry.
-    ///
-    /// The implementation should determine the appropriate path based on the entry type
-    /// (e.g., different extensions for Arrow vs Liquid formats).
-    fn disk_path(&self, entry: &CacheEntry, entry_id: &EntryID) -> PathBuf;
-
-    /// Read bytes from the file at the given path, optionally restricted to the provided range.
-    async fn read(&self, path: PathBuf, range: Option<Range<u64>>)
-    -> Result<Bytes, std::io::Error>;
-
-    /// Write the entire buffer to a file at the given path.
-    async fn write_file(&self, path: PathBuf, data: Bytes) -> Result<(), std::io::Error>;
-}
-
-/// A default implementation of [IoContext] that uses the default compressor.
-#[derive(Debug)]
-pub struct DefaultIoContext {
-    compressor_state: Arc<LiquidCompressorStates>,
-    base_dir: PathBuf,
-}
-
-impl DefaultIoContext {
-    /// Create a new instance of [DefaultIoContext].
-    pub fn new(base_dir: PathBuf) -> Self {
-        Self {
-            compressor_state: Arc::new(LiquidCompressorStates::new()),
-            base_dir,
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl IoContext for DefaultIoContext {
-    fn get_compressor(&self, _entry_id: &EntryID) -> Arc<LiquidCompressorStates> {
-        self.compressor_state.clone()
-    }
-
-    fn disk_path(&self, entry: &CacheEntry, entry_id: &EntryID) -> PathBuf {
-        let ext = match entry {
-            CacheEntry::DiskArrow(_) | CacheEntry::MemoryArrow(_) => "arrow",
-            CacheEntry::DiskLiquid(_) | CacheEntry::MemoryLiquid(_) => "liquid",
-            CacheEntry::MemoryHybridLiquid(array) => match array.disk_backing() {
-                HybridBacking::Arrow => "arrow",
-                HybridBacking::Liquid => "liquid",
-            },
-        };
-        self.base_dir
-            .join(format!("{:016x}.{}", usize::from(*entry_id), ext))
-    }
-
-    async fn read(
-        &self,
-        path: PathBuf,
-        range: Option<Range<u64>>,
-    ) -> Result<Bytes, std::io::Error> {
-        use tokio::io::AsyncReadExt;
-        use tokio::io::AsyncSeekExt;
-        let mut file = tokio::fs::File::open(path).await?;
-
-        match range {
-            Some(range) => {
-                let len = (range.end - range.start) as usize;
-                let mut bytes = vec![0u8; len];
-                file.seek(tokio::io::SeekFrom::Start(range.start)).await?;
-                file.read_exact(&mut bytes).await?;
-                Ok(Bytes::from(bytes))
-            }
-            None => {
-                let mut bytes = Vec::new();
-                file.read_to_end(&mut bytes).await?;
-                Ok(Bytes::from(bytes))
-            }
-        }
-    }
-
-    async fn write_file(&self, path: PathBuf, data: Bytes) -> Result<(), std::io::Error> {
-        use tokio::io::AsyncWriteExt;
-        let mut file = tokio::fs::File::create(path).await?;
-        file.write_all(&data).await?;
-        Ok(())
-    }
-}
-
-/// A blocking implementation of [IoContext] that uses the default compressor.
-/// This is used for testing purposes as all io operations are blocking.
-#[derive(Debug)]
-pub struct BlockingIoContext {
-    compressor_state: Arc<LiquidCompressorStates>,
-    base_dir: PathBuf,
-}
-
-impl BlockingIoContext {
-    /// Create a new instance of [BlockingIoContext].
-    pub fn new(base_dir: PathBuf) -> Self {
-        Self {
-            compressor_state: Arc::new(LiquidCompressorStates::new()),
-            base_dir,
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl IoContext for BlockingIoContext {
-    fn get_compressor(&self, _entry_id: &EntryID) -> Arc<LiquidCompressorStates> {
-        self.compressor_state.clone()
-    }
-
-    fn disk_path(&self, entry: &CacheEntry, entry_id: &EntryID) -> PathBuf {
-        let ext = match entry {
-            CacheEntry::DiskArrow(_) | CacheEntry::MemoryArrow(_) => "arrow",
-            CacheEntry::DiskLiquid(_) | CacheEntry::MemoryLiquid(_) => "liquid",
-            CacheEntry::MemoryHybridLiquid(array) => match array.disk_backing() {
-                HybridBacking::Arrow => "arrow",
-                HybridBacking::Liquid => "liquid",
-            },
-        };
-        self.base_dir
-            .join(format!("{:016x}.{}", usize::from(*entry_id), ext))
-    }
-
-    async fn read(
-        &self,
-        path: PathBuf,
-        range: Option<Range<u64>>,
-    ) -> Result<Bytes, std::io::Error> {
-        let mut file = std::fs::File::open(path)?;
-        match range {
-            Some(range) => {
-                let len = (range.end - range.start) as usize;
-                let mut bytes = vec![0u8; len];
-                std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(range.start))?;
-                std::io::Read::read_exact(&mut file, &mut bytes)?;
-                Ok(Bytes::from(bytes))
-            }
-            None => {
-                let mut bytes = Vec::new();
-                std::io::Read::read_to_end(&mut file, &mut bytes)?;
-                Ok(Bytes::from(bytes))
-            }
-        }
-    }
-
-    async fn write_file(&self, path: PathBuf, data: Bytes) -> Result<(), std::io::Error> {
-        let mut file = std::fs::File::create(path)?;
-        std::io::Write::write_all(&mut file, &data)?;
-        Ok(())
-    }
-}
 
 // CacheStats and RuntimeStats moved to stats.rs
-
-/// Builder for [LiquidCache].
-///
-/// Example:
-/// ```rust
-/// use liquid_cache_storage::cache::LiquidCacheBuilder;
-/// use liquid_cache_storage::cache_policies::LiquidPolicy;
-///
-///
-/// let _storage = LiquidCacheBuilder::new()
-///     .with_batch_size(8192)
-///     .with_max_cache_bytes(1024 * 1024 * 1024)
-///     .with_cache_policy(Box::new(LiquidPolicy::new()))
-///     .build();
-/// ```
-pub struct LiquidCacheBuilder {
-    batch_size: usize,
-    max_cache_bytes: usize,
-    cache_dir: Option<PathBuf>,
-    cache_policy: Box<dyn CachePolicy>,
-    hydration_policy: Box<dyn HydrationPolicy>,
-    squeeze_policy: Box<dyn SqueezePolicy>,
-    io_worker: Option<Arc<dyn IoContext>>,
-}
-
-impl Default for LiquidCacheBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl LiquidCacheBuilder {
-    /// Create a new instance of [LiquidCacheBuilder].
-    pub fn new() -> Self {
-        Self {
-            batch_size: 8192,
-            max_cache_bytes: 1024 * 1024 * 1024,
-            cache_dir: None,
-            cache_policy: Box::new(LiquidPolicy::new()),
-            hydration_policy: Box::new(NoHydration::new()),
-            squeeze_policy: Box::new(TranscodeSqueezeEvict),
-            io_worker: None,
-        }
-    }
-
-    /// Set the cache directory for the cache.
-    /// Default is a temporary directory.
-    pub fn with_cache_dir(mut self, cache_dir: PathBuf) -> Self {
-        self.cache_dir = Some(cache_dir);
-        self
-    }
-
-    /// Set the batch size for the cache.
-    /// Default is 8192.
-    pub fn with_batch_size(mut self, batch_size: usize) -> Self {
-        self.batch_size = batch_size;
-        self
-    }
-
-    /// Set the max cache bytes for the cache.
-    /// Default is 1GB.
-    pub fn with_max_cache_bytes(mut self, max_cache_bytes: usize) -> Self {
-        self.max_cache_bytes = max_cache_bytes;
-        self
-    }
-
-    /// Set the cache policy for the cache.
-    /// Default is [LiquidPolicy].
-    pub fn with_cache_policy(mut self, policy: Box<dyn CachePolicy>) -> Self {
-        self.cache_policy = policy;
-        self
-    }
-
-    /// Set the hydration policy for the cache.
-    /// Default is [NoHydration].
-    pub fn with_hydration_policy(mut self, policy: Box<dyn HydrationPolicy>) -> Self {
-        self.hydration_policy = policy;
-        self
-    }
-
-    /// Set the squeeze policy for the cache.
-    /// Default is [TranscodeSqueezeEvict].
-    pub fn with_squeeze_policy(mut self, policy: Box<dyn SqueezePolicy>) -> Self {
-        self.squeeze_policy = policy;
-        self
-    }
-
-    /// Set the io worker for the cache.
-    /// Default is [DefaultIoContext].
-    pub fn with_io_worker(mut self, io_worker: Arc<dyn IoContext>) -> Self {
-        self.io_worker = Some(io_worker);
-        self
-    }
-
-    /// Build the cache storage.
-    ///
-    /// The cache storage is wrapped in an [Arc] to allow for concurrent access.
-    pub fn build(self) -> Arc<LiquidCache> {
-        let cache_dir = self
-            .cache_dir
-            .unwrap_or_else(|| tempfile::tempdir().unwrap().keep());
-        let io_worker = self
-            .io_worker
-            .unwrap_or_else(|| Arc::new(DefaultIoContext::new(cache_dir.clone())));
-        Arc::new(LiquidCache::new(
-            self.batch_size,
-            self.max_cache_bytes,
-            cache_dir,
-            self.squeeze_policy,
-            self.cache_policy,
-            self.hydration_policy,
-            io_worker,
-        ))
-    }
-}
 
 /// Cache storage for liquid cache.
 ///
@@ -331,36 +54,11 @@ pub struct LiquidCache {
     squeeze_policy: Box<dyn SqueezePolicy>,
     tracer: CacheTracer,
     io_context: Arc<dyn IoContext>,
-    runtime_stats: RuntimeStats,
+    pub(crate) runtime_stats: RuntimeStats,
     expression_registry: Arc<ExpressionRegistry>,
 }
 
 /// Builder returned by [`LiquidCache::insert`] for configuring cache writes.
-#[derive(Debug)]
-pub struct Insert<'a> {
-    storage: &'a Arc<LiquidCache>,
-    entry_id: EntryID,
-    batch: ArrayRef,
-}
-
-/// Builder returned by [`LiquidCache::get`] for configuring cache reads.
-#[derive(Debug)]
-pub struct Get<'a> {
-    storage: &'a LiquidCache,
-    entry_id: &'a EntryID,
-    selection: Option<&'a BooleanBuffer>,
-    expression_hint: Option<Arc<CacheExpression>>,
-}
-
-/// Builder for predicate evaluation on cached data.
-#[derive(Debug)]
-pub struct EvaluatePredicate<'a> {
-    storage: &'a LiquidCache,
-    entry_id: &'a EntryID,
-    predicate: &'a Arc<dyn PhysicalExpr>,
-    selection: Option<&'a BooleanBuffer>,
-}
-
 impl LiquidCache {
     /// Return current cache statistics: counts and resource usage.
     pub fn stats(&self) -> CacheStats {
@@ -613,7 +311,7 @@ impl LiquidCache {
     }
 
     /// Create a new instance of CacheStorage.
-    fn new(
+    pub(crate) fn new(
         batch_size: usize,
         max_cache_bytes: usize,
         cache_dir: PathBuf,
@@ -729,13 +427,13 @@ impl LiquidCache {
     async fn maybe_hydrate(
         &self,
         entry_id: &EntryID,
-        cached_type: CachedBatchType,
+        cached: CachedBatchType,
         materialized: MaterializedEntry<'_>,
         expression: Option<&CacheExpression>,
     ) {
-        if let Some(new_entry) = self.hydration_policy.decide(&HydrationRequest {
+        if let Some(new_entry) = self.hydration_policy.hydrate(&HydrationRequest {
             entry_id: *entry_id,
-            cached_batch_type: cached_type,
+            cached,
             materialized,
             expression,
         }) {
@@ -743,7 +441,7 @@ impl LiquidCache {
         }
     }
 
-    async fn read_arrow_array(
+    pub(crate) async fn read_arrow_array(
         &self,
         entry_id: &EntryID,
         selection: Option<&BooleanBuffer>,
@@ -952,7 +650,7 @@ impl LiquidCache {
         Some(liquid)
     }
 
-    async fn eval_predicate_internal(
+    pub(crate) async fn eval_predicate_internal(
         &self,
         entry_id: &EntryID,
         selection_opt: Option<&BooleanBuffer>,
@@ -1131,132 +829,12 @@ impl LiquidCache {
     }
 }
 
-impl<'a> Insert<'a> {
-    fn new(storage: &'a Arc<LiquidCache>, entry_id: EntryID, batch: ArrayRef) -> Self {
-        Self {
-            storage,
-            entry_id,
-            batch,
-        }
-    }
-
-    async fn run(self) {
-        let batch = CacheEntry::memory_arrow(self.batch);
-        self.storage.insert_inner(self.entry_id, batch).await;
-    }
-}
-
-impl<'a> IntoFuture for Insert<'a> {
-    type Output = ();
-    type IntoFuture = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
-
-    fn into_future(self) -> Self::IntoFuture {
-        Box::pin(async move { self.run().await })
-    }
-}
-
-impl<'a> Get<'a> {
-    fn new(storage: &'a LiquidCache, entry_id: &'a EntryID) -> Self {
-        Self {
-            storage,
-            entry_id,
-            selection: None,
-            expression_hint: None,
-        }
-    }
-
-    /// Attach a selection bitmap used to filter rows prior to materialization.
-    pub fn with_selection(mut self, selection: &'a BooleanBuffer) -> Self {
-        self.selection = Some(selection);
-        self
-    }
-
-    /// Attach an expression hint that may help optimize cache materialization.
-    pub fn with_expression_hint(mut self, expression: Arc<CacheExpression>) -> Self {
-        self.expression_hint = Some(expression);
-        self
-    }
-
-    /// Attach an optional expression hint.
-    pub fn with_optional_expression_hint(
-        mut self,
-        expression: Option<Arc<CacheExpression>>,
-    ) -> Self {
-        self.expression_hint = expression;
-        self
-    }
-
-    /// Materialize the cached array as [`ArrayRef`].
-    pub async fn read(self) -> Option<ArrayRef> {
-        if self.selection.is_some() {
-            self.storage.runtime_stats.incr_get_with_selection();
-        } else {
-            self.storage.runtime_stats.incr_get_arrow_array();
-        }
-        self.storage
-            .read_arrow_array(
-                self.entry_id,
-                self.selection,
-                self.expression_hint.as_deref(),
-            )
-            .await
-    }
-}
-
-impl<'a> IntoFuture for Get<'a> {
-    type Output = Option<ArrayRef>;
-    type IntoFuture = Pin<Box<dyn std::future::Future<Output = Option<ArrayRef>> + Send + 'a>>;
-
-    fn into_future(self) -> Self::IntoFuture {
-        Box::pin(async move { self.read().await })
-    }
-}
-
-impl<'a> EvaluatePredicate<'a> {
-    fn new(
-        storage: &'a LiquidCache,
-        entry_id: &'a EntryID,
-        predicate: &'a Arc<dyn PhysicalExpr>,
-    ) -> Self {
-        Self {
-            storage,
-            entry_id,
-            predicate,
-            selection: None,
-        }
-    }
-
-    /// Attach a selection bitmap used to pre-filter rows before predicate evaluation.
-    pub fn with_selection(mut self, selection: &'a BooleanBuffer) -> Self {
-        self.selection = Some(selection);
-        self
-    }
-
-    /// Evaluate the predicate against the cached data.
-    pub async fn read(self) -> Option<Result<BooleanArray, ArrayRef>> {
-        self.storage
-            .eval_predicate_internal(self.entry_id, self.selection, self.predicate)
-            .await
-    }
-}
-
-impl<'a> IntoFuture for EvaluatePredicate<'a> {
-    type Output = Option<Result<BooleanArray, ArrayRef>>;
-    type IntoFuture = Pin<
-        Box<dyn std::future::Future<Output = Option<Result<BooleanArray, ArrayRef>>> + Send + 'a>,
-    >;
-
-    fn into_future(self) -> Self::IntoFuture {
-        Box::pin(async move { self.read().await })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::cache::{
-        CacheEntry, CacheExpression,
-        cache_policies::{CachePolicy, LruPolicy},
+        CacheEntry, CacheExpression, CachePolicy, LiquidCacheBuilder, TranscodeSqueezeEvict,
+        policies::LruPolicy,
         transcode_liquid_inner,
         utils::{
             LiquidCompressorStates, arrow_to_bytes, create_cache_store, create_test_array,
@@ -1274,6 +852,7 @@ mod tests {
     use arrow::datatypes::Date32Type;
     use arrow_schema::{DataType, Field, Fields};
     use std::fs;
+    use std::future::Future;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 

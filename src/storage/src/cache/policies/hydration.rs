@@ -22,7 +22,7 @@ pub struct HydrationRequest<'a> {
     /// Cache key being materialized.
     pub entry_id: EntryID,
     /// The cached batch type before materialization (e.g., `DiskArrow`).
-    pub cached_batch_type: CachedBatchType,
+    pub cached: CachedBatchType,
     /// The fully materialized entry produced by the read path.
     pub materialized: MaterializedEntry<'a>,
     /// Optional expression hint associated with the read.
@@ -33,7 +33,7 @@ pub struct HydrationRequest<'a> {
 pub trait HydrationPolicy: std::fmt::Debug + Send + Sync {
     /// Determine how to hydrate a cache entry that was just materialized.
     /// Return a new cache entry to insert if hydration is desired.
-    fn decide(&self, request: &HydrationRequest<'_>) -> Option<CacheEntry>;
+    fn hydrate(&self, request: &HydrationRequest<'_>) -> Option<CacheEntry>;
 }
 
 /// Default hydration policy: always keep a materialized cache miss in memory
@@ -49,8 +49,8 @@ impl AlwaysHydrate {
 }
 
 impl HydrationPolicy for AlwaysHydrate {
-    fn decide(&self, request: &HydrationRequest<'_>) -> Option<CacheEntry> {
-        match (request.cached_batch_type, &request.materialized) {
+    fn hydrate(&self, request: &HydrationRequest<'_>) -> Option<CacheEntry> {
+        match (request.cached, &request.materialized) {
             (CachedBatchType::DiskArrow, MaterializedEntry::Arrow(arr)) => {
                 Some(CacheEntry::memory_arrow((*arr).clone()))
             }
@@ -82,7 +82,7 @@ impl NoHydration {
 }
 
 impl HydrationPolicy for NoHydration {
-    fn decide(&self, _request: &HydrationRequest<'_>) -> Option<CacheEntry> {
+    fn hydrate(&self, _request: &HydrationRequest<'_>) -> Option<CacheEntry> {
         None
     }
 }

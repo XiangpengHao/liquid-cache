@@ -5,7 +5,7 @@ use std::fmt;
 use std::sync::Mutex;
 
 use crate::cache::{cached_batch::CachedBatchType, utils::EntryID};
-use crate::cache_policies::CachePolicy;
+use crate::cache::CachePolicy;
 
 type EntryFreq = u8;
 
