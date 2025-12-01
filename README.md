@@ -13,7 +13,9 @@
 [![Rust CI](https://github.com/XiangpengHao/liquid-cache/actions/workflows/ci.yml/badge.svg)](https://github.com/XiangpengHao/liquid-cache/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/XiangpengHao/liquid-cache/graph/badge.svg?token=yTeQR2lVnd)](https://codecov.io/gh/XiangpengHao/liquid-cache)
 [![Codacy Badge](https://app.codacy.com/project/badge/Grade/1a23a108cd2b4d2b9ffd2c2258599dfa)](https://app.codacy.com/gh/XiangpengHao/liquid-cache/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade)
-
+[![ClickBench](https://img.shields.io/badge/ClickBench-passing-brightgreen)](https://github.com/XiangpengHao/liquid-cache/actions/workflows/ci.yml)
+[![TPC-H](https://img.shields.io/badge/TPC--H-passing-brightgreen)](https://github.com/XiangpengHao/liquid-cache/actions/workflows/ci.yml)
+[![TPC-DS](https://img.shields.io/badge/TPC--DS-passing-brightgreen)](https://github.com/XiangpengHao/liquid-cache/actions/workflows/ci.yml)
 </div>
 
 LiquidCache is a pushdown cache for S3 --
