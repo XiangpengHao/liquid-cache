@@ -2,6 +2,8 @@
 """
 Generate TPC-DS data (and optional answers) using DuckDB's tpcds extension.
 
+Always fetches queries from DuckDB before generating data.
+
 Usage:
   uvx --from duckdb python benchmark/tpcds/tpcds_gen.py --scale 0.1 --answers-dir benchmark/tpcds/answers
 """
@@ -11,7 +13,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import duckdb
 
@@ -25,11 +27,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data-dir", type=Path, default=Path("benchmark/tpcds/data"), help="Output root for tables")
     parser.add_argument("--answers-dir", type=Path, help="Output root for answer Parquet files (optional)")
     parser.add_argument("--queries-dir", type=Path, default=Path("benchmark/tpcds/queries"), help="Directory containing qNN.sql files")
-    parser.add_argument("--manifest", type=Path, default=Path("benchmark/tpcds/manifest.json"), help="Path to write manifest.json")
+    parser.add_argument("--manifest", type=Optional[Path], default=None, help="Path to write manifest.json")
     parser.add_argument("--duckdb", type=Path, help="Optional path to DuckDB executable")
     parser.add_argument("--seed", type=int, help="Optional seed if DuckDB supports deterministic dsdgen")
     parser.add_argument("--overwrite", action="store_true", help="Allow overwriting existing Parquet/manifest files")
     return parser.parse_args()
+
+
+def fetch_queries_from_duckdb(conn: duckdb.DuckDBPyConnection) -> List[Tuple[int, str]]:
+    """Fetch the 99 TPC-DS queries from DuckDB's tpcds extension."""
+    rows = conn.execute("SELECT query_nr, query FROM tpcds_queries() ORDER BY query_nr").fetchall()
+    return [(int(q), sql) for q, sql in rows]
+
+
+def write_queries(queries: List[Tuple[int, str]], out_dir: Path, overwrite: bool):
+    """Write query SQL files to the specified directory."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for qnum, sql in queries:
+        fname = out_dir / f"q{qnum}.sql"
+        if fname.exists() and not overwrite:
+            print(f"Query exists, skipping (use --overwrite to regenerate): {fname}")
+            continue
+        fname.write_text(sql)
+        print(f"Wrote {fname}")
 
 
 def table_list(conn: duckdb.DuckDBPyConnection) -> List[str]:
@@ -116,6 +136,15 @@ def main():
         print("Installing/loading DuckDB tpcds extension...")
         conn.execute("INSTALL tpcds")
         conn.execute("LOAD tpcds")
+
+        # Fetch queries from DuckDB
+        print(f"Fetching TPC-DS queries from DuckDB...")
+        queries = fetch_queries_from_duckdb(conn)
+        if len(queries) != DEFAULT_QUERIES:
+            print(f"Warning: expected {DEFAULT_QUERIES} queries, got {len(queries)}")
+        write_queries(queries, args.queries_dir, args.overwrite)
+        print(f"Query fetch complete. Wrote {len(queries)} queries to {args.queries_dir}")
+
         if args.seed is not None:
             try:
                 conn.execute(f"SET generator_seed={args.seed}")
@@ -142,8 +171,9 @@ def main():
         if answers_dir:
             answers = export_answers(conn, args.queries_dir, answers_dir, args.scale, args.overwrite)
 
-        write_manifest(args.manifest, table_paths, args.queries_dir, answers)
-        print(f"Wrote manifest to {args.manifest}")
+        if args.manifest:
+            write_manifest(args.manifest, table_paths, args.queries_dir, answers)
+            print(f"Wrote manifest to {args.manifest}")
 
     except Exception as e:
         print(f"Error during generation: {e}")

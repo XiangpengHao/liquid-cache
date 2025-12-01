@@ -1,4 +1,4 @@
-Muted queries in benchmark/tpcds/manifest.json (full list remains in manifest.all.json):
+Muted queries in benchmark/tpcds/manifest.json:
 - q10, q18, q31, q54, q81: DataFusion planning bug on customer_address; column `ca_county` referenced but input schema seen as single column.
 - q23: DataFusion planning bug on date_dim; column `d_year` referenced but input schema seen as single column.
 - q37: DataFusion planning bug on item; column `i_manufact_id` missing due to truncated schema.
