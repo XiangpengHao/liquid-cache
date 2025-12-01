@@ -1,7 +1,7 @@
 extern crate io_uring;
 
 use core::slice;
-use std::{cmp::min, sync::{Arc, Mutex, OnceLock, atomic::{AtomicBool, Ordering}}};
+use std::{cmp::min, sync::{Arc, Mutex, OnceLock, atomic::{AtomicBool, AtomicU64, Ordering}}};
 
 use futures::io;
 use io_uring::IoUring;
@@ -45,6 +45,7 @@ pub struct FixedBufferPool {
     start_ptr: *mut u8,
     capacity: usize,
     registered: AtomicBool,         // Whether buffers have been registered
+    foreign_free: AtomicU64,
 }
 
 unsafe impl Send for FixedBufferPool {}
@@ -53,6 +54,7 @@ unsafe impl Sync for FixedBufferPool {}
 
 impl FixedBufferPool {
     fn new(capacity_mb: usize) -> FixedBufferPool {
+        log::info!("Initializing fixed buffer pool with capacity: {} MB", capacity_mb);
         let num_cpus = std::thread::available_parallelism().unwrap();
         let capacity = capacity_mb << 20;
         let arena = Self::allocate_arena(capacity.clone());
@@ -69,7 +71,8 @@ impl FixedBufferPool {
             arena, 
             start_ptr, 
             capacity, 
-            registered: AtomicBool::new(false)
+            registered: AtomicBool::new(false),
+            foreign_free: AtomicU64::new(0),
         }
     }
 
@@ -88,7 +91,12 @@ impl FixedBufferPool {
 
     pub fn malloc(size: usize) -> *mut u8 {
         let local_cache = Self::get_thread_local_cache();
-        local_cache.lock().unwrap().allocate(size)
+        let ptr = local_cache.lock().unwrap().allocate(size);
+        if ptr.is_null() {
+            let pool = FIXED_BUFFER_POOL.get().unwrap();
+            log::info!("Foreign frees: {}", pool.foreign_free.load(Ordering::Relaxed));
+        }
+        ptr
     }
 
     pub fn register_buffers_with_ring(ring: &IoUring) -> io::Result<()> {
@@ -96,6 +104,7 @@ impl FixedBufferPool {
         let mut arena_guard = pool.arena.lock().unwrap();
         let res = arena_guard.register_buffers_with_ring(ring);
         if res.is_ok() {
+            log::info!("Registered buffers with io-uring ring");
             pool.registered.store(true, Ordering::Relaxed);
         }
         res
@@ -155,13 +164,15 @@ impl FixedBufferPool {
                 let mut guard = local_cache.lock().unwrap();
                 guard.retire_page(page_ptr);
             }
+        } else {
+            let pool = FIXED_BUFFER_POOL.get().unwrap();
+            pool.foreign_free.fetch_add(1, Ordering::Relaxed);
         }
     }
 }
 
 impl Drop for FixedBufferPool {
     fn drop(self: &mut Self) {
-        println!("Drop called");
         let arena = self.arena.lock().unwrap();
         drop(arena);
     }

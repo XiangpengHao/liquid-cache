@@ -22,9 +22,8 @@ const SIZE_CLASSES: &'static [usize] = &[
 const NUM_SIZE_CLASSES: usize = SIZE_CLASSES.len();
 
 pub(crate) const MIN_SIZE_FROM_PAGES: usize = SIZE_CLASSES[0];
-const MAX_SIZE_FROM_PAGES: usize = SIZE_CLASSES[NUM_SIZE_CLASSES - 1];
 
-const SEGMENT_BINS: usize = 7; // (SEGMENT_SIZE/PAGE_SIZE).log2() + 1
+const SEGMENT_BINS: usize = (SEGMENT_SIZE/PAGE_SIZE).ilog2() as usize + 1;
 
 #[derive(Default, Clone)]
 pub(crate) struct TCacheStats {
@@ -126,13 +125,16 @@ impl TCache {
     }
 
     fn retire_segment(self: &mut Self, segment: *mut Segment) {
+        log::info!("Retiring segment from thread with id: {}", self.thread_id);
+        unsafe { (*segment).debug_print(); }
         self.stats.segments_retired += 1;
         let pages = unsafe { &mut (*segment).pages };
         let mut slice_idx: usize = 0;
-        while slice_idx < PAGES_PER_SEGMENT - 1 {
+        while slice_idx < PAGES_PER_SEGMENT {
             self.remove_slice_from_span(&mut pages[slice_idx]);
             slice_idx += pages[slice_idx].slice_count;
         }
+        unsafe { (*segment).reset(); }
         let mut guard = self.arena.lock().unwrap();
         guard.retire_segment(segment);
     }
@@ -174,12 +176,12 @@ impl TCache {
         }
 
         let next_slice = page.wrapping_add(page_ref.slice_count);
-        if next_slice < (&mut segment.pages[PAGES_PER_SEGMENT - 2]) as *mut Page {
+        if next_slice <= (&mut segment.pages[PAGES_PER_SEGMENT - 1]) as *mut Page {
             let next_slice_ref = unsafe { &mut (*next_slice) };
             if next_slice_ref.block_size == 0 {
                 // Page is not in use, remove it
                 self.remove_slice_from_span(next_slice_ref);
-                self.coalesce_slices(page_ref, unsafe { &mut (*next_slice) });
+                segment.coalesce_slices(page_ref, unsafe { &mut (*next_slice) });
             }
         }
 
@@ -189,8 +191,10 @@ impl TCache {
             let prev_slice_ref = unsafe { &mut (*prev_slice) };
             if prev_slice_ref.block_size == 0 {
                 // Merge with the previous slice
+                log::info!("Slice count before merge: {}", prev_slice_ref.slice_count);
                 self.remove_slice_from_span(prev_slice_ref);
-                self.coalesce_slices(prev_slice_ref, page_ref);
+                segment.coalesce_slices(prev_slice_ref, page_ref);
+                log::info!("Slice count after merge: {}", prev_slice_ref.slice_count);
                 let span_idx = Self::get_span_idx_from_slice_count(prev_slice_ref.slice_count);
                 self.spans[span_idx].push(prev_slice);
             }
@@ -256,7 +260,6 @@ impl TCache {
                     (*slice).set_block_size(block_size);
                 }
                 return slice;
-
             }
         }
         null_mut()
@@ -281,6 +284,7 @@ impl TCache {
         if segment_opt.is_none() {
             return false;
         }
+        log::info!("Allocating segment to thread with id: {}", thread_id);
         unsafe {
             (*segment_opt.unwrap()).thread_id = thread_id;
         }
@@ -291,7 +295,7 @@ impl TCache {
 
     pub(crate) fn allocate(self: &mut Self, size: usize) -> *mut u8 {
         self.stats.total_allocations += 1;
-        if size > MAX_SIZE_FROM_PAGES {
+        if size > PAGE_SIZE {
             // Directly get page from segment
             let num_pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
             let block_size = num_pages * PAGE_SIZE;

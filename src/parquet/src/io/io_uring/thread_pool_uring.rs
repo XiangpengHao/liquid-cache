@@ -231,13 +231,13 @@ impl UringWorker {
             let token = self.tokens.pop_front().unwrap();
             let mut submission = self.receiver.recv().unwrap();
             let task = submission.task.as_mut();
-            let sqes = task.prepare_sqe();
+            let mut sqes = task.prepare_sqe();
             submission.set_completions(sqes.len());
             let mut tasks_submitted = 0;
             
-            for sqe in sqes.iter().as_ref() {
+            for sqe in sqes.iter_mut() {
                 let res = unsafe {
-                    sq.push(&sqe)
+                    sq.push(&sqe.clone().user_data(token as u64))
                 };
                 if res.is_err() {
                     break;
@@ -388,7 +388,6 @@ pub(crate) async fn read(
         if read_task.is_ok() {
             return submit_async_task(read_task.unwrap()).await.into_result()
         }
-        log::error!("Failed to allocate fixed buffers for read. Falling back to normal read");
     }
     let read_task = FileReadTask::build(effective_range, file, direct_io);
     return submit_async_task(read_task).await.into_result()
