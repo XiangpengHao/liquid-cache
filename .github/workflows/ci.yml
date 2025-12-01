@@ -179,7 +179,7 @@ jobs:
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh
           cd benchmark/tpcds
-          uvx --from duckdb python tpcds_gen.py --scale 0.1 --answers-dir answers
+          uvx --from duckdb python tpcds_gen.py --scale 0.1 --answers-dir answers --data-dir data --queries-dir queries
       - name: Run TPC-DS
         run: |
           source <(cargo llvm-cov show-env --export-prefix)
