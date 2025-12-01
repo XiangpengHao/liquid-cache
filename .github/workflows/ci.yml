@@ -165,6 +165,42 @@ jobs:
           files: codecov_tpch.json
           fail_ci_if_error: true
 
+  tpcds:
+    name: TPC-DS
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y wget
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: Swatinem/rust-cache@v2
+      - name: Setup TPC-DS data
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          cd benchmark/tpcds
+          uvx --from duckdb python tpcds_gen.py --scale 0.1 --answers-dir answers
+      - name: Run TPC-DS
+        run: |
+          source <(cargo llvm-cov show-env --export-prefix)
+          cargo llvm-cov clean --workspace
+          cargo build --bin bench_server
+          cargo build --bin tpcds_client
+          env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic --cache-mode liquid --max-cache-mb 256 &> server.log &
+          sleep 2  # Wait for server to start up
+          env RUST_LOG=info cargo run --bin tpcds_client -- --manifest benchmark/tpcds/manifest.json --answer-dir benchmark/tpcds/answers/sf0.1
+          echo "=== Server logs ==="
+          cat server.log || echo "No server log found"
+          curl http://localhost:53703/shutdown
+          env RUST_LOG=info cargo run --bin in_process -- --manifest benchmark/tpcds/manifest.json --bench-mode liquid --max-cache-mb 256
+          cargo llvm-cov report --codecov --output-path codecov_tpcds.json
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: codecov_tpcds.json
+          fail_ci_if_error: true
+
   stackoverflow:
     name: StackOverflow
     runs-on: ubuntu-latest
