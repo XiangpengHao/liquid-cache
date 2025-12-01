@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use super::LiquidArray;
 use super::primitive_array::LiquidPrimitiveArray;
-use super::{IoRange, LiquidArrayRef, LiquidDataType, LiquidHybridArray};
+use super::{LiquidDataType, LiquidHybridArray, NeedsBacking};
 use crate::liquid_array::LiquidPrimitiveType;
 use crate::liquid_array::raw::BitPackedArray;
 use crate::utils::get_bit_width;
@@ -242,7 +242,7 @@ impl LiquidHybridArray for SqueezedDate32Array {
         self.len()
     }
 
-    fn to_arrow_array(&self) -> Result<ArrayRef, IoRange> {
+    fn to_arrow_array(&self) -> Result<ArrayRef, NeedsBacking> {
         let arr = self.to_arrow_date32_lossy();
         Ok(Arc::new(arr))
     }
@@ -255,11 +255,11 @@ impl LiquidHybridArray for SqueezedDate32Array {
         DataType::Date32
     }
 
-    fn to_bytes(&self) -> Result<Vec<u8>, IoRange> {
-        todo!("Not implemented");
+    fn to_bytes(&self) -> Result<Vec<u8>, NeedsBacking> {
+        Err(NeedsBacking)
     }
 
-    fn filter(&self, selection: &BooleanBuffer) -> Result<ArrayRef, IoRange> {
+    fn filter(&self, selection: &BooleanBuffer) -> Result<ArrayRef, NeedsBacking> {
         let unsigned_array: PrimitiveArray<UInt32Type> = self.bit_packed.to_primitive();
         let selection = BooleanArray::new(selection.clone(), None);
         let filtered_values =
@@ -297,16 +297,8 @@ impl LiquidHybridArray for SqueezedDate32Array {
         &self,
         _predicate: &Arc<dyn datafusion::physical_plan::PhysicalExpr>,
         _filter: &BooleanBuffer,
-    ) -> Result<Option<BooleanArray>, IoRange> {
+    ) -> Result<Option<BooleanArray>, NeedsBacking> {
         Ok(None)
-    }
-
-    fn soak(&self, _data: bytes::Bytes) -> LiquidArrayRef {
-        todo!("Not implemented");
-    }
-
-    fn to_liquid(&self) -> IoRange {
-        todo!("Not implemented");
     }
 }
 

@@ -254,7 +254,7 @@ jobs:
 
   benchmark:
     name: Performance Benchmark
-    runs-on: ubuntu-latest
+    runs-on: pittsburgh
     permissions:
       contents: write
       pull-requests: write
@@ -264,8 +264,6 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@stable
-      - run: sudo apt-get update && sudo apt-get install -y wget jq
-      - uses: Swatinem/rust-cache@v2
       - name: Setup ClickBench partitioned data download
         run: |
           mkdir -p benchmark/clickbench/data

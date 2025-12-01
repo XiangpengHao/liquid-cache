@@ -14,12 +14,12 @@ Below are four concise, runnable examples showcasing these core operations.
 ## 1) Insert
 
 ```rust
-use liquid_cache_storage::cache::{CacheStorageBuilder, EntryID};
+use liquid_cache_storage::cache::{LiquidCacheBuilder, EntryID};
 use arrow::array::UInt64Array;
 use std::sync::Arc;
 
 tokio_test::block_on(async {
-let storage = CacheStorageBuilder::new().build();
+let storage = LiquidCacheBuilder::new().build();
 
 let entry_id = EntryID::from(42);
 let arrow_array = Arc::new(UInt64Array::from_iter_values(0..1000));
@@ -34,12 +34,12 @@ assert!(storage.is_cached(&entry_id));
 ## 2) Read as Arrow
 
 ```rust
-use liquid_cache_storage::cache::{CacheStorageBuilder, EntryID};
+use liquid_cache_storage::cache::{LiquidCacheBuilder, EntryID};
 use arrow::array::UInt64Array;
 use std::sync::Arc;
 
 tokio_test::block_on(async {
-let storage = CacheStorageBuilder::new().build();
+let storage = LiquidCacheBuilder::new().build();
 
 let entry_id = EntryID::from(7);
 let arrow_array = Arc::new(UInt64Array::from_iter_values(0..16));
@@ -57,7 +57,7 @@ assert_eq!(retrieved.as_ref(), arrow_array.as_ref());
 ## 3) Read with selection & predicate pushdown
 
 ```rust
-use liquid_cache_storage::cache::{CacheStorageBuilder, EntryID};
+use liquid_cache_storage::cache::{LiquidCacheBuilder, EntryID};
 use arrow::array::{BooleanArray, StringArray};
 use arrow::buffer::BooleanBuffer;
 use datafusion::logical_expr::Operator;
@@ -67,7 +67,7 @@ use datafusion::scalar::ScalarValue;
 use std::sync::Arc;
 
 tokio_test::block_on(async {
-let storage = CacheStorageBuilder::new().build();
+let storage = LiquidCacheBuilder::new().build();
 
 let entry_id = EntryID::from(8);
 let data = Arc::new(StringArray::from(vec![

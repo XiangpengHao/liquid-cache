@@ -1,7 +1,5 @@
 use crate::sync::atomic::{AtomicUsize, Ordering};
 
-use log::warn;
-
 #[derive(Debug)]
 pub struct BudgetAccounting {
     max_memory_bytes: usize,
@@ -51,12 +49,6 @@ impl BudgetAccounting {
     ) -> Result<(), ()> {
         if old_size < new_size {
             let diff = new_size - old_size;
-            if diff > 1024 * 1024 {
-                warn!(
-                    "Transcoding increased the size of the array by at least 1MB, previous size: {old_size}, new size: {new_size}, double check this is correct"
-                );
-            }
-
             self.try_reserve_memory(diff)?;
             Ok(())
         } else {

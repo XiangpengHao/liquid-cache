@@ -33,12 +33,13 @@ use num_traits::{AsPrimitive, Float, FromPrimitive};
 
 use super::LiquidDataType;
 use crate::cache::CacheExpression;
+use crate::liquid_array::LiquidArray;
 use crate::liquid_array::ipc::{PhysicalTypeMarker, get_physical_type_id};
 use crate::liquid_array::raw::BitPackedArray;
 use crate::liquid_array::{
-    IoRange, LiquidHybridArray, LiquidHybridArrayRef, Operator, ipc::LiquidIPCHeader,
+    HybridResult, LiquidHybridArray, LiquidHybridArrayRef, NeedsBacking, Operator,
+    ipc::LiquidIPCHeader,
 };
-use crate::liquid_array::{LiquidArray, LiquidArrayRef};
 use crate::utils::get_bit_width;
 use bytes::Bytes;
 
@@ -848,7 +849,7 @@ where
         &self,
         op: &Operator,
         literal: &Literal,
-    ) -> Result<Option<BooleanArray>, IoRange> {
+    ) -> HybridResult<Option<BooleanArray>> {
         // Extract scalar value as T::Native
         let k_opt: Option<T::Native> = match literal.value() {
             ScalarValue::Int8(Some(v)) => T::Native::from_i8(*v),
@@ -911,9 +912,7 @@ where
             if let Some(v) = decided {
                 out_vals.push(v);
             } else {
-                return Err(IoRange {
-                    range: self.disk_range.clone(),
-                });
+                return Err(NeedsBacking);
             }
         }
 
@@ -957,10 +956,8 @@ where
         LiquidFloatQuantizedArray::<T>::len(self)
     }
 
-    fn to_arrow_array(&self) -> Result<ArrayRef, super::IoRange> {
-        Err(IoRange {
-            range: self.disk_range.clone(),
-        })
+    fn to_arrow_array(&self) -> HybridResult<ArrayRef> {
+        Err(NeedsBacking)
     }
 
     fn data_type(&self) -> LiquidDataType {
@@ -971,29 +968,15 @@ where
         T::DATA_TYPE.clone()
     }
 
-    fn to_bytes(&self) -> Result<Vec<u8>, super::IoRange> {
-        Err(IoRange {
-            range: self.disk_range.clone(),
-        })
-    }
-
-    fn soak(&self, data: bytes::Bytes) -> LiquidArrayRef {
-        // `data` is the full IPC payload for primitive array
-        let arr = LiquidFloatArray::<T>::from_bytes(data);
-        Arc::new(arr)
-    }
-
-    fn to_liquid(&self) -> super::IoRange {
-        IoRange {
-            range: self.disk_range.clone(),
-        }
+    fn to_bytes(&self) -> HybridResult<Vec<u8>> {
+        Err(NeedsBacking)
     }
 
     fn try_eval_predicate(
         &self,
         expr: &Arc<dyn PhysicalExpr>,
         filter: &BooleanBuffer,
-    ) -> Result<Option<BooleanArray>, IoRange> {
+    ) -> HybridResult<Option<BooleanArray>> {
         // Apply selection first to reduce input rows
         let filtered = self.filter_inner(filter);
 
@@ -1198,7 +1181,7 @@ mod tests {
     }
 
     #[test]
-    fn hybrid_squeeze_and_soak_roundtrip_f32() {
+    fn hybrid_squeeze_full_read_roundtrip_f32() {
         let mut rng = StdRng::seed_from_u64(0x51_72);
         let arr = make_f_array_with_range::<Float32Type>(
             2000,
@@ -1210,8 +1193,8 @@ mod tests {
         let liq = LiquidFloatArray::<Float32Type>::from_arrow_array(arr.clone());
         let bytes_baseline = liq.to_bytes();
         let (hybrid, bytes) = liq.squeeze(None).expect("squeezable");
-        // ensure we can recover the original using soak
-        let recovered = hybrid.soak(bytes.clone());
+        // ensure we can recover the original by hydrating from full bytes
+        let recovered = LiquidFloatArray::<Float32Type>::from_bytes(bytes.clone());
         assert_eq!(
             recovered.to_arrow_array().as_primitive::<Float32Type>(),
             &arr
@@ -1268,11 +1251,11 @@ mod tests {
         let err = hybrid
             .try_eval_predicate(&expr_eq_present, &mask)
             .expect_err("quantized should request IO on ambiguous eq bucket");
-        assert_eq!(err.range(), hybrid.to_liquid().range());
+        assert_eq!(err, NeedsBacking);
     }
 
     #[test]
-    fn hybrid_squeeze_and_soak_roundtrip_f64() {
+    fn hybrid_squeeze_full_read_roundtrip_f64() {
         let mut rng = StdRng::seed_from_u64(0x51_72);
         let arr = make_f_array_with_range::<Float64Type>(
             2000,
@@ -1284,8 +1267,8 @@ mod tests {
         let liq = LiquidFloatArray::<Float64Type>::from_arrow_array(arr.clone());
         let bytes_baseline = liq.to_bytes();
         let (hybrid, bytes) = liq.squeeze(None).expect("squeezable");
-        // ensure we can recover the original using soak
-        let recovered = hybrid.soak(bytes.clone());
+        // ensure we can recover the original by hydrating from full bytes
+        let recovered = LiquidFloatArray::<Float64Type>::from_bytes(bytes.clone());
         assert_eq!(
             recovered.to_arrow_array().as_primitive::<Float64Type>(),
             &arr
@@ -1342,6 +1325,6 @@ mod tests {
         let err = hybrid
             .try_eval_predicate(&expr_eq_present, &mask)
             .expect_err("quantized should request IO on ambiguous eq bucket");
-        assert_eq!(err.range(), hybrid.to_liquid().range());
+        assert_eq!(err, NeedsBacking);
     }
 }

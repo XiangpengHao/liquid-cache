@@ -7,9 +7,9 @@ use arrow_schema::DataType;
 
 use crate::liquid_array::{LiquidArrayRef, LiquidHybridArrayRef};
 
-/// Backing data for a cached entry.
+/// A cached entry storing data in various formats.
 #[derive(Debug, Clone)]
-pub enum CachedData {
+pub enum CacheEntry {
     /// Cached batch in memory as Arrow array.
     MemoryArrow(ArrayRef),
     /// Cached batch in memory as liquid array.
@@ -22,7 +22,32 @@ pub enum CachedData {
     DiskArrow(DataType),
 }
 
-impl CachedData {
+impl CacheEntry {
+    /// Construct a cached batch stored as an in-memory Arrow array.
+    pub fn memory_arrow(array: ArrayRef) -> Self {
+        Self::MemoryArrow(array)
+    }
+
+    /// Construct a cached batch stored as an in-memory Liquid array.
+    pub fn memory_liquid(array: LiquidArrayRef) -> Self {
+        Self::MemoryLiquid(array)
+    }
+
+    /// Construct a cached batch stored as an in-memory hybrid Liquid array.
+    pub fn memory_hybrid_liquid(array: LiquidHybridArrayRef) -> Self {
+        Self::MemoryHybridLiquid(array)
+    }
+
+    /// Construct a cached batch stored on disk as Liquid bytes.
+    pub fn disk_liquid(data_type: DataType) -> Self {
+        Self::DiskLiquid(data_type)
+    }
+
+    /// Construct a cached batch stored on disk as Arrow bytes.
+    pub fn disk_arrow(data_type: DataType) -> Self {
+        Self::DiskArrow(data_type)
+    }
+
     /// Memory usage reported by the underlying representation.
     pub fn memory_usage_bytes(&self) -> usize {
         match self {
@@ -44,76 +69,14 @@ impl CachedData {
     }
 }
 
-/// A cached entry.
-#[derive(Debug, Clone)]
-pub struct CacheEntry {
-    data: CachedData,
-}
-
-impl CacheEntry {
-    /// Construct a cached batch stored as an in-memory Arrow array.
-    pub fn memory_arrow(array: ArrayRef) -> Self {
-        Self::new(CachedData::MemoryArrow(array))
-    }
-
-    /// Construct a cached batch stored as an in-memory Liquid array.
-    pub fn memory_liquid(array: LiquidArrayRef) -> Self {
-        Self::new(CachedData::MemoryLiquid(array))
-    }
-
-    /// Construct a cached batch stored as an in-memory hybrid Liquid array.
-    pub fn memory_hybrid_liquid(array: LiquidHybridArrayRef) -> Self {
-        Self::new(CachedData::MemoryHybridLiquid(array))
-    }
-
-    /// Construct a cached batch stored on disk as Liquid bytes.
-    pub fn disk_liquid(data_type: DataType) -> Self {
-        Self::new(CachedData::DiskLiquid(data_type))
-    }
-
-    /// Construct a cached batch stored on disk as Arrow bytes.
-    pub fn disk_arrow(data_type: DataType) -> Self {
-        Self::new(CachedData::DiskArrow(data_type))
-    }
-
-    fn new(data: CachedData) -> Self {
-        Self { data }
-    }
-
-    /// Rebuild an entry from stored data.
-    pub(crate) fn from_data(data: CachedData) -> Self {
-        Self { data }
-    }
-
-    /// Borrow the underlying data representation.
-    pub fn data(&self) -> &CachedData {
-        &self.data
-    }
-
-    /// Decompose the batch into its representation.
-    pub(crate) fn into_data(self) -> CachedData {
-        self.data
-    }
-
-    /// Get the memory usage of the cached batch.
-    pub fn memory_usage_bytes(&self) -> usize {
-        self.data.memory_usage_bytes()
-    }
-
-    /// Get the reference count of the cached batch.
-    pub fn reference_count(&self) -> usize {
-        self.data.reference_count()
-    }
-}
-
 impl Display for CacheEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.data() {
-            CachedData::MemoryArrow(_) => write!(f, "MemoryArrow"),
-            CachedData::MemoryLiquid(_) => write!(f, "MemoryLiquid"),
-            CachedData::MemoryHybridLiquid(_) => write!(f, "MemoryHybridLiquid"),
-            CachedData::DiskLiquid(_) => write!(f, "DiskLiquid"),
-            CachedData::DiskArrow(_) => write!(f, "DiskArrow"),
+        match self {
+            Self::MemoryArrow(_) => write!(f, "MemoryArrow"),
+            Self::MemoryLiquid(_) => write!(f, "MemoryLiquid"),
+            Self::MemoryHybridLiquid(_) => write!(f, "MemoryHybridLiquid"),
+            Self::DiskLiquid(_) => write!(f, "DiskLiquid"),
+            Self::DiskArrow(_) => write!(f, "DiskArrow"),
         }
     }
 }
@@ -135,12 +98,12 @@ pub enum CachedBatchType {
 
 impl From<&CacheEntry> for CachedBatchType {
     fn from(batch: &CacheEntry) -> Self {
-        match batch.data() {
-            CachedData::MemoryArrow(_) => Self::MemoryArrow,
-            CachedData::MemoryLiquid(_) => Self::MemoryLiquid,
-            CachedData::MemoryHybridLiquid(_) => Self::MemoryHybridLiquid,
-            CachedData::DiskLiquid(_) => Self::DiskLiquid,
-            CachedData::DiskArrow(_) => Self::DiskArrow,
+        match batch {
+            CacheEntry::MemoryArrow(_) => Self::MemoryArrow,
+            CacheEntry::MemoryLiquid(_) => Self::MemoryLiquid,
+            CacheEntry::MemoryHybridLiquid(_) => Self::MemoryHybridLiquid,
+            CacheEntry::DiskLiquid(_) => Self::DiskLiquid,
+            CacheEntry::DiskArrow(_) => Self::DiskArrow,
         }
     }
 }

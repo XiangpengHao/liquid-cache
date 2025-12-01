@@ -178,7 +178,7 @@ impl Drop for ClockPolicy {
 mod tests {
     use super::*;
     use crate::cache::{
-        cached_batch::CachedData,
+        cached_batch::CacheEntry,
         utils::{EntryID, create_cache_store, create_test_arrow_array},
     };
 
@@ -252,7 +252,7 @@ mod tests {
         store.insert(entry_id4, create_test_arrow_array(100)).await;
 
         let data = store.index().get(&entry_id1).unwrap();
-        assert!(matches!(data.data(), CachedData::DiskLiquid(_)));
+        assert!(matches!(data.as_ref(), CacheEntry::DiskLiquid(_)));
         assert!(store.index().get(&entry_id2).is_some());
         assert!(store.index().get(&entry_id3).is_some());
         assert!(store.index().get(&entry_id4).is_some());

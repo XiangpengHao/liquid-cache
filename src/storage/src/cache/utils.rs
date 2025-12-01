@@ -55,22 +55,24 @@ pub(crate) fn create_test_arrow_array(size: usize) -> ArrayRef {
 pub(crate) fn create_cache_store(
     max_cache_bytes: usize,
     policy: Box<dyn super::cache_policies::CachePolicy>,
-) -> Arc<super::core::CacheStorage> {
+) -> Arc<super::core::LiquidCache> {
     use tempfile::tempdir;
 
     use crate::cache::{
-        CacheStorageBuilder, core::BlockingIoContext, squeeze_policies::TranscodeSqueezeEvict,
+        AlwaysHydrate, LiquidCacheBuilder, core::BlockingIoContext,
+        squeeze_policies::TranscodeSqueezeEvict,
     };
 
     let temp_dir = tempdir().unwrap();
     let base_dir = temp_dir.keep();
     let batch_size = 128;
 
-    let builder = CacheStorageBuilder::new()
+    let builder = LiquidCacheBuilder::new()
         .with_batch_size(batch_size)
         .with_max_cache_bytes(max_cache_bytes)
         .with_cache_dir(base_dir.clone())
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+        .with_hydration_policy(Box::new(AlwaysHydrate::new()))
         .with_cache_policy(policy)
         .with_io_worker(Arc::new(BlockingIoContext::new(base_dir)));
     builder.build()

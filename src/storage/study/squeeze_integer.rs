@@ -304,33 +304,33 @@ where
 
     // Evaluate predicate on clamp
     if let Some((hy, full_bytes)) = clamp_hybrid_and_bytes.clone() {
-        let (mask, pred_io_bytes) = try_eval_or_fetch(&*hy, &full_bytes, &expr, &all_true);
+        let (mask, pred_io_bytes) = try_eval_or_fetch::<T>(&*hy, &full_bytes, &expr, &all_true);
         stats.clamp_pred_io_bytes += pred_io_bytes;
         let sel = bool_array_to_selection(&mask);
         // Expected selection result from Arrow
         let expected_filtered = filter_expected::<T>(&prim, &case.op, &case.scalar);
         // Try get with selection from hybrid
         let sel_io =
-            get_with_selection_or_fetch(&*hy, &full_bytes, &sel, expected_filtered.as_ref());
+            get_with_selection_or_fetch::<T>(&*hy, &full_bytes, &sel, expected_filtered.as_ref());
         stats.clamp_select_io_bytes += sel_io;
     }
 
     // Evaluate predicate on quantized
     if let Some((hy, full_bytes)) = quant_hybrid_and_bytes.clone() {
-        let (mask, pred_io_bytes) = try_eval_or_fetch(&*hy, &full_bytes, &expr, &all_true);
+        let (mask, pred_io_bytes) = try_eval_or_fetch::<T>(&*hy, &full_bytes, &expr, &all_true);
         stats.quant_pred_io_bytes += pred_io_bytes;
         let sel = bool_array_to_selection(&mask);
         // Expected selection result from Arrow
         let expected_filtered = filter_expected::<T>(&prim, &case.op, &case.scalar);
         let sel_io =
-            get_with_selection_or_fetch(&*hy, &full_bytes, &sel, expected_filtered.as_ref());
+            get_with_selection_or_fetch::<T>(&*hy, &full_bytes, &sel, expected_filtered.as_ref());
         stats.quant_select_io_bytes += sel_io;
     }
 
     stats.pred_cases += 1;
 }
 
-fn try_eval_or_fetch(
+fn try_eval_or_fetch<T: LiquidPrimitiveType>(
     hybrid: &dyn LiquidHybridArray,
     full_bytes: &Bytes,
     expr: &std::sync::Arc<dyn datafusion::physical_plan::PhysicalExpr>,
@@ -338,26 +338,17 @@ fn try_eval_or_fetch(
 ) -> (BooleanArray, usize) {
     match hybrid.try_eval_predicate(expr, filter) {
         Ok(Some(mask)) => (mask, 0),
-        Ok(None) => {
-            // Not supported: materialize and compute expected via Arrow
-            let io = hybrid.to_liquid();
-            let slice = full_bytes.slice(io.range().start as usize..io.range().end as usize);
-            let liq = hybrid.soak(slice);
+        Ok(None) | Err(_) => {
+            // Not supported in hybrid form: materialize from full bytes and compute via Arrow
+            let liq = LiquidPrimitiveArray::<T>::from_bytes(full_bytes.clone());
             let arr = liq.to_arrow_array();
             let mask = eval_on_arrow(&arr, expr);
-            (mask, (io.range().end - io.range().start) as usize)
-        }
-        Err(io) => {
-            let slice = full_bytes.slice(io.range().start as usize..io.range().end as usize);
-            let liq = hybrid.soak(slice);
-            let arr = liq.to_arrow_array();
-            let mask = eval_on_arrow(&arr, expr);
-            (mask, (io.range().end - io.range().start) as usize)
+            (mask, full_bytes.len())
         }
     }
 }
 
-fn get_with_selection_or_fetch(
+fn get_with_selection_or_fetch<T: LiquidPrimitiveType>(
     hybrid: &dyn LiquidHybridArray,
     full_bytes: &Bytes,
     selection: &BooleanBuffer,
@@ -368,12 +359,11 @@ fn get_with_selection_or_fetch(
             assert_eq!(arr.as_ref(), expected);
             0
         }
-        Err(io) => {
-            let slice = full_bytes.slice(io.range().start as usize..io.range().end as usize);
-            let liq = hybrid.soak(slice);
+        Err(_) => {
+            let liq = LiquidPrimitiveArray::<T>::from_bytes(full_bytes.clone());
             let arr = liq.filter(selection);
             assert_eq!(arr.as_ref(), expected);
-            (io.range().end - io.range().start) as usize
+            full_bytes.len()
         }
     }
 }

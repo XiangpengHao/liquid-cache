@@ -1,3 +1,5 @@
+//! Utility functions for the storage module.
+
 use std::num::NonZero;
 
 use arrow::{
@@ -8,6 +10,12 @@ use arrow::{
     datatypes::{BinaryType, ByteArrayType, DecimalType, UInt16Type, Utf8Type},
 };
 use arrow_schema::DataType;
+pub(crate) mod byte_cache;
+mod variant_schema;
+mod variant_utils;
+
+pub use variant_schema::VariantSchema;
+pub use variant_utils::typed_struct_contains_path;
 
 /// Get the bit width for a given max value.
 /// Returns 1 if the max value is 0.
@@ -26,7 +34,7 @@ pub(crate) fn get_bit_width(max_value: u64) -> NonZero<u8> {
 /// This is because we leverage the fact that the values are unique in the dictionary to short cut the
 /// comparison process, i.e., return the index on first match.
 /// If the values are not unique, we are screwed.
-pub struct CheckedDictionaryArray {
+pub(crate) struct CheckedDictionaryArray {
     val: DictionaryArray<UInt16Type>,
 }
 
