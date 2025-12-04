@@ -9,9 +9,7 @@ use datafusion::physical_plan::PhysicalExpr;
 use super::cached_batch::CacheEntry;
 use super::core::LiquidCache;
 use super::io_context::{DefaultIoContext, IoContext};
-use super::policies::{
-    CachePolicy, HydrationPolicy, NoHydration, SqueezePolicy, TranscodeSqueezeEvict,
-};
+use super::policies::{CachePolicy, HydrationPolicy, SqueezePolicy, TranscodeSqueezeEvict};
 use super::{CacheExpression, EntryID, LiquidPolicy};
 use crate::sync::Arc;
 
@@ -53,7 +51,7 @@ impl LiquidCacheBuilder {
             max_cache_bytes: 1024 * 1024 * 1024,
             cache_dir: None,
             cache_policy: Box::new(LiquidPolicy::new()),
-            hydration_policy: Box::new(NoHydration::new()),
+            hydration_policy: Box::new(super::AlwaysHydrate::new()),
             squeeze_policy: Box::new(TranscodeSqueezeEvict),
             io_worker: None,
         }
@@ -138,24 +136,6 @@ pub struct Insert<'a> {
     pub(super) batch: ArrayRef,
 }
 
-/// Builder returned by [`LiquidCache::get`] for configuring cache reads.
-#[derive(Debug)]
-pub struct Get<'a> {
-    pub(super) storage: &'a LiquidCache,
-    pub(super) entry_id: &'a EntryID,
-    pub(super) selection: Option<&'a BooleanBuffer>,
-    pub(super) expression_hint: Option<Arc<CacheExpression>>,
-}
-
-/// Builder for predicate evaluation on cached data.
-#[derive(Debug)]
-pub struct EvaluatePredicate<'a> {
-    pub(super) storage: &'a LiquidCache,
-    pub(super) entry_id: &'a EntryID,
-    pub(super) predicate: &'a Arc<dyn PhysicalExpr>,
-    pub(super) selection: Option<&'a BooleanBuffer>,
-}
-
 impl<'a> Insert<'a> {
     pub(super) fn new(storage: &'a Arc<LiquidCache>, entry_id: EntryID, batch: ArrayRef) -> Self {
         Self {
@@ -178,6 +158,15 @@ impl<'a> IntoFuture for Insert<'a> {
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move { self.run().await })
     }
+}
+
+/// Builder returned by [`LiquidCache::get`] for configuring cache reads.
+#[derive(Debug)]
+pub struct Get<'a> {
+    pub(super) storage: &'a LiquidCache,
+    pub(super) entry_id: &'a EntryID,
+    pub(super) selection: Option<&'a BooleanBuffer>,
+    pub(super) expression_hint: Option<Arc<CacheExpression>>,
 }
 
 impl<'a> Get<'a> {
@@ -235,6 +224,15 @@ impl<'a> IntoFuture for Get<'a> {
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move { self.read().await })
     }
+}
+
+/// Builder for predicate evaluation on cached data.
+#[derive(Debug)]
+pub struct EvaluatePredicate<'a> {
+    pub(super) storage: &'a LiquidCache,
+    pub(super) entry_id: &'a EntryID,
+    pub(super) predicate: &'a Arc<dyn PhysicalExpr>,
+    pub(super) selection: Option<&'a BooleanBuffer>,
 }
 
 impl<'a> EvaluatePredicate<'a> {

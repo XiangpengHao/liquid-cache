@@ -179,15 +179,28 @@ fn array_size(_bencher: Bencher, chunk_size: usize) {
     let byte_array_compressor = LiquidByteArray::train_compressor(string_array.iter());
     let byte_array_array = LiquidByteArray::from_string_array(&string_array, byte_array_compressor);
 
-    println!("\narrow size: {}", string_array.get_array_memory_size());
-    println!(
-        "byte_view_array size: {}",
-        byte_view_array.get_array_memory_size()
-    );
-    println!(
-        "byte_array_array size: {}",
-        byte_array_array.get_array_memory_size()
-    );
+    println!("\n=== Memory Usage (chunk_size: {}) ===", chunk_size);
+    println!("Arrow StringArray size: {} bytes", string_array.get_array_memory_size());
+    
+    // Detailed byte_view_array memory usage
+    let byte_view_usage = byte_view_array.get_detailed_memory_usage();
+    println!("\nLiquidByteViewArray total size: {} bytes", byte_view_array.get_array_memory_size());
+    println!("  - Dictionary keys: {} bytes", byte_view_usage.dictionary_key);
+    println!("  - Offsets: {} bytes", byte_view_usage.offsets);
+    println!("  - FSST buffer: {} bytes", byte_view_usage.fsst_buffer);
+    println!("  - Shared prefix: {} bytes", byte_view_usage.shared_prefix);
+    println!("  - Struct overhead: {} bytes", byte_view_usage.struct_size);
+    
+    println!("\nLiquidByteArray size: {} bytes", byte_array_array.get_array_memory_size());
+    
+    // Calculate compression ratios
+    let arrow_size = string_array.get_array_memory_size() as f64;
+    let byte_view_ratio = (byte_view_array.get_array_memory_size() as f64 / arrow_size) * 100.0;
+    let byte_array_ratio = (byte_array_array.get_array_memory_size() as f64 / arrow_size) * 100.0;
+    
+    println!("\n=== Compression Ratios ===");
+    println!("ByteViewArray: {:.2}% of Arrow size", byte_view_ratio);
+    println!("ByteArray: {:.2}% of Arrow size", byte_array_ratio);
 }
 
 fn main() {

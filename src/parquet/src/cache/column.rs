@@ -180,11 +180,42 @@ impl CachedColumn {
         if self.is_cached(batch_id) {
             return Err(InsertArrowArrayError::AlreadyCached);
         }
+
+        let array = if let Some(array) = try_gc_variant_array(&array) {
+            array
+        } else {
+            array
+        };
         self.cache_store
             .insert(self.entry_id(batch_id).into(), array)
             .await;
         Ok(())
     }
+}
+
+fn try_gc_variant_array(array: &ArrayRef) -> Option<ArrayRef> {
+    let struct_array = array.as_struct_opt()?;
+    let metadata = struct_array.column_by_name("metadata")?;
+    let metadata_binary_view = metadata.as_binary_view_opt()?;
+    let metadata_gc = metadata_binary_view.gc();
+    let value = struct_array.column_by_name("value")?;
+    let value_binary_view = value.as_binary_view_opt()?;
+    let value_gc = value_binary_view.gc();
+
+    let fields = struct_array.fields().clone();
+    let columns: Vec<ArrayRef> = struct_array
+        .columns()
+        .iter()
+        .zip(fields.iter())
+        .map(|(col, field)| match field.name().as_str() {
+            "metadata" => Arc::new(metadata_gc.clone()) as ArrayRef,
+            "value" => Arc::new(value_gc.clone()) as ArrayRef,
+            _ => col.clone(),
+        })
+        .collect();
+    let new_struct =
+        arrow::array::StructArray::try_new(fields, columns, struct_array.nulls().cloned()).ok()?;
+    Some(Arc::new(new_struct))
 }
 
 fn maybe_shred_variant_array(array: &ArrayRef, field: &Field) -> Option<ArrayRef> {

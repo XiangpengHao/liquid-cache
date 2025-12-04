@@ -537,7 +537,7 @@ impl LiquidCache {
                                         self.read_disk_liquid_array(entry, entry_id).await?;
                                     self.maybe_hydrate(
                                         entry_id,
-                                        CachedBatchType::DiskLiquid,
+                                        CachedBatchType::MemoryHybridLiquid,
                                         MaterializedEntry::Liquid(&liquid),
                                         expression,
                                     )
@@ -549,7 +549,7 @@ impl LiquidCache {
                                         self.read_disk_arrow_array(entry, entry_id).await?;
                                     self.maybe_hydrate(
                                         entry_id,
-                                        CachedBatchType::DiskArrow,
+                                        CachedBatchType::MemoryHybridLiquid,
                                         MaterializedEntry::Arrow(&full_array),
                                         expression,
                                     )
@@ -575,7 +575,7 @@ impl LiquidCache {
                                         self.read_disk_liquid_array(entry, entry_id).await?;
                                     self.maybe_hydrate(
                                         entry_id,
-                                        CachedBatchType::DiskLiquid,
+                                        CachedBatchType::MemoryHybridLiquid,
                                         MaterializedEntry::Liquid(&liquid),
                                         expression,
                                     )
@@ -587,7 +587,7 @@ impl LiquidCache {
                                         self.read_disk_arrow_array(entry, entry_id).await?;
                                     self.maybe_hydrate(
                                         entry_id,
-                                        CachedBatchType::DiskArrow,
+                                        CachedBatchType::MemoryHybridLiquid,
                                         MaterializedEntry::Arrow(&full_array),
                                         expression,
                                     )
@@ -600,11 +600,10 @@ impl LiquidCache {
                 }
             }
             entry @ CacheEntry::DiskArrow(_) => {
-                let cached_type = CachedBatchType::DiskArrow;
                 let full_array = self.read_disk_arrow_array(entry, entry_id).await?;
                 self.maybe_hydrate(
                     entry_id,
-                    cached_type,
+                    CachedBatchType::DiskArrow,
                     MaterializedEntry::Arrow(&full_array),
                     expression,
                 )
