@@ -51,7 +51,7 @@ impl LiquidCacheBuilder {
             max_cache_bytes: 1024 * 1024 * 1024,
             cache_dir: None,
             cache_policy: Box::new(LiquidPolicy::new()),
-            hydration_policy: Box::new(super::AlwaysHydrate::new()),
+            hydration_policy: Box::new(super::NoHydration::new()),
             squeeze_policy: Box::new(TranscodeSqueezeEvict),
             io_worker: None,
         }
