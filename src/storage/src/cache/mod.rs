@@ -1,20 +1,20 @@
 //! Cache layer for liquid cache.
 
 mod budget;
-mod cached_batch;
 mod builders;
+mod cached_batch;
 mod core;
 mod expressions;
-mod io_context;
 mod index;
+mod io_context;
 pub mod policies;
 mod stats;
 mod tracer;
 mod transcode;
 mod utils;
 
-pub use cached_batch::{CacheEntry, CachedBatchType};
 pub use builders::{EvaluatePredicate, Get, Insert, LiquidCacheBuilder};
+pub use cached_batch::{CacheEntry, CachedBatchType};
 pub use core::LiquidCache;
 pub use expressions::{CacheExpression, ColumnID, ExpressionRegistry, VariantRequest};
 pub use io_context::{BlockingIoContext, DefaultIoContext, IoContext};

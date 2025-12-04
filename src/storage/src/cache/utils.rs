@@ -58,7 +58,9 @@ pub(crate) fn create_cache_store(
 ) -> Arc<super::core::LiquidCache> {
     use tempfile::tempdir;
 
-    use crate::cache::{AlwaysHydrate, BlockingIoContext, LiquidCacheBuilder, TranscodeSqueezeEvict};
+    use crate::cache::{
+        AlwaysHydrate, BlockingIoContext, LiquidCacheBuilder, TranscodeSqueezeEvict,
+    };
 
     let temp_dir = tempdir().unwrap();
     let base_dir = temp_dir.keep();
