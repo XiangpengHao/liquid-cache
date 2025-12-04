@@ -86,7 +86,7 @@ impl LiquidCacheBuilder {
     }
 
     /// Set the hydration policy for the cache.
-    /// Default is [NoHydration].
+    /// Default is [crate::cache::NoHydration].
     pub fn with_hydration_policy(mut self, policy: Box<dyn HydrationPolicy>) -> Self {
         self.hydration_policy = policy;
         self
