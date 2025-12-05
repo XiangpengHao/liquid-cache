@@ -41,6 +41,7 @@ struct FilterCase {
 struct Stats {
     rows: usize,
     arrow_bytes: usize,
+    liquid_bytes: usize,
     clamp_mem_bytes: usize,
     clamp_disk_bytes: usize,
     quant_mem_bytes: usize,
@@ -59,6 +60,7 @@ impl Stats {
     fn add(&mut self, other: &Stats) {
         self.rows += other.rows;
         self.arrow_bytes += other.arrow_bytes;
+        self.liquid_bytes += other.liquid_bytes;
         self.clamp_mem_bytes += other.clamp_mem_bytes;
         self.clamp_disk_bytes += other.clamp_disk_bytes;
         self.quant_mem_bytes += other.quant_mem_bytes;
@@ -167,12 +169,13 @@ async fn main() {
     for case in &cases {
         let stats = run_case(&ctx, case, args.limit).await;
         println!(
-            "Case on column '{}', op '{:?}', scalar {:?}:\n  rows: {}\n  sizes (bytes) -> arrow: {}, clamp: {} (mem: {}, disk: {}), quant: {} (mem: {}, disk: {})\n  io (bytes)   -> pred: clamp {}, quant {}; select: clamp {}, quant {}",
+            "Case on column '{}', op '{:?}', scalar {:?}:\n  rows: {}\n  sizes (bytes) -> arrow: {}, liquid: {}, clamp: {} (mem: {}, disk: {}), quant: {} (mem: {}, disk: {})\n  io (bytes)   -> pred: clamp {}, quant {}; select: clamp {}, quant {}",
             case.column,
             case.op,
             case.scalar,
             stats.rows,
             stats.arrow_bytes,
+            stats.liquid_bytes,
             stats.clamp_mem_bytes + stats.clamp_disk_bytes,
             stats.clamp_mem_bytes,
             stats.clamp_disk_bytes,
@@ -188,9 +191,10 @@ async fn main() {
     }
 
     println!(
-        "TOTAL\n  rows: {}\n  sizes (bytes) -> arrow: {}, clamp: {} (mem: {}, disk: {}), quant: {} (mem: {}, disk: {})\n  io (bytes)   -> pred: clamp {}, quant {}; select: clamp {}, quant {}",
+        "TOTAL\n  rows: {}\n  sizes (bytes) -> arrow: {}, liquid: {}, clamp: {} (mem: {}, disk: {}), quant: {} (mem: {}, disk: {})\n  io (bytes)   -> pred: clamp {}, quant {}; select: clamp {}, quant {}",
         grand.rows,
         grand.arrow_bytes,
+        grand.liquid_bytes,
         grand.clamp_mem_bytes + grand.clamp_disk_bytes,
         grand.clamp_mem_bytes,
         grand.clamp_disk_bytes,
@@ -266,6 +270,10 @@ where
         + num_traits::bounds::Bounded,
 {
     let prim = array.as_primitive::<T>().clone();
+
+    // Build Liquid primitive array (unsqueezed) and track its size
+    let liquid = LiquidPrimitiveArray::<T>::from_arrow_array(prim.clone());
+    stats.liquid_bytes += liquid.get_array_memory_size();
 
     // Build Liquid primitive array and squeeze with Clamp
     let mut lp = LiquidPrimitiveArray::<T>::from_arrow_array(prim.clone());

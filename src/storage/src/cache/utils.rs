@@ -54,13 +54,12 @@ pub(crate) fn create_test_arrow_array(size: usize) -> ArrayRef {
 #[cfg(test)]
 pub(crate) fn create_cache_store(
     max_cache_bytes: usize,
-    policy: Box<dyn super::cache_policies::CachePolicy>,
+    policy: Box<dyn super::policies::CachePolicy>,
 ) -> Arc<super::core::LiquidCache> {
     use tempfile::tempdir;
 
     use crate::cache::{
-        AlwaysHydrate, LiquidCacheBuilder, core::BlockingIoContext,
-        squeeze_policies::TranscodeSqueezeEvict,
+        AlwaysHydrate, BlockingIoContext, LiquidCacheBuilder, TranscodeSqueezeEvict,
     };
 
     let temp_dir = tempdir().unwrap();
