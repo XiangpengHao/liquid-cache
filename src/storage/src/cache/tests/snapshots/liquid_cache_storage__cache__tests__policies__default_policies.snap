@@ -2,15 +2,17 @@
 source: src/storage/src/cache/tests/policies.rs
 expression: trace
 ---
-EventTrace [
+EventTrace: [
 	insert_success entry=0 kind=MemoryArrow
 	insert_success entry=1 kind=MemoryArrow
+	insert_failed entry=2 kind=MemoryArrow
 	squeeze_begin victims=[0,1]
 	squeeze_victim entry=0
 	insert_success entry=0 kind=MemoryLiquid
 	squeeze_victim entry=1
 	insert_success entry=1 kind=MemoryLiquid
 	insert_success entry=2 kind=MemoryArrow
+	insert_failed entry=3 kind=MemoryArrow
 	squeeze_begin victims=[2,0,1]
 	squeeze_victim entry=2
 	insert_success entry=2 kind=MemoryLiquid
@@ -21,6 +23,7 @@ EventTrace [
 	io_write entry=1 kind=MemoryHybridLiquid bytes=1320
 	insert_success entry=1 kind=MemoryHybridLiquid
 	insert_success entry=3 kind=MemoryArrow
+	insert_failed entry=4 kind=MemoryArrow
 	squeeze_begin victims=[3,2,0,1]
 	squeeze_victim entry=3
 	insert_success entry=3 kind=MemoryLiquid

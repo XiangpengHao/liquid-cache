@@ -283,6 +283,10 @@ impl LiquidCache {
             let Err(not_inserted) = self.try_insert(entry_id, batch_to_cache) else {
                 return;
             };
+            self.trace(InternalEvent::InsertFailed {
+                entry: entry_id,
+                kind: CachedBatchType::from(&not_inserted),
+            });
 
             let victims = self.cache_policy.find_victim(8);
             if victims.is_empty() {

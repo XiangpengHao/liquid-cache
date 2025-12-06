@@ -5,6 +5,10 @@ use crate::cache::{CachedBatchType, EntryID};
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) enum InternalEvent {
+    InsertFailed {
+        entry: EntryID,
+        kind: CachedBatchType,
+    },
     InsertSuccess {
         entry: EntryID,
         kind: CachedBatchType,
@@ -67,6 +71,14 @@ fn fmt_entry_list(buf: &mut String, victims: &[EntryID]) -> fmt::Result {
 impl fmt::Display for InternalEvent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            InternalEvent::InsertFailed { entry, kind } => {
+                write!(
+                    f,
+                    "insert_failed entry={} kind={:?}",
+                    usize::from(*entry),
+                    kind
+                )
+            }
             InternalEvent::InsertSuccess { entry, kind } => {
                 write!(
                     f,
