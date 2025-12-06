@@ -214,7 +214,7 @@ impl LiquidCache {
         for (entry_id, batch) in entires {
             match &batch {
                 CacheEntry::MemoryArrow(array) => {
-                    let bytes = arrow_to_bytes(&array).expect("failed to convert arrow to bytes");
+                    let bytes = arrow_to_bytes(array).expect("failed to convert arrow to bytes");
                     self.write_batch_to_disk(entry_id, &batch, bytes).await;
                     self.try_insert(entry_id, CacheEntry::disk_arrow(array.data_type().clone()))
                         .expect("failed to insert disk arrow entry");
@@ -231,7 +231,7 @@ impl LiquidCache {
                 }
                 CacheEntry::MemoryHybridLiquid(array) => {
                     // We don't have to do anything, because it's already on disk
-                    let disk_entry = Self::disk_entry_from_hybrid(&array);
+                    let disk_entry = Self::disk_entry_from_hybrid(array);
                     self.try_insert(entry_id, disk_entry)
                         .expect("failed to insert disk entry");
                 }
@@ -652,7 +652,7 @@ impl LiquidCache {
             kind: CachedBatchType::from(batch),
             bytes: bytes.len(),
         });
-        let path = self.io_context.disk_path(&batch, &entry_id);
+        let path = self.io_context.disk_path(batch, &entry_id);
         let len = bytes.len();
         self.io_context.write_file(path, bytes).await.unwrap();
         self.budget.add_used_disk_bytes(len);
