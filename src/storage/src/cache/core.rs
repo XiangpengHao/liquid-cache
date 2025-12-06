@@ -1,18 +1,22 @@
 use arrow::array::{ArrayRef, BooleanArray};
 use arrow::buffer::BooleanBuffer;
 use arrow_schema::DataType;
+use bytes::Bytes;
 use datafusion::physical_plan::PhysicalExpr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use super::{
     budget::BudgetAccounting,
     builders::{EvaluatePredicate, Get, Insert},
     cached_batch::{CacheEntry, CachedBatchType},
+    internal_tracing::{EventTracer, InternalEvent},
     io_context::IoContext,
     policies::{CachePolicy, HydrationPolicy, HydrationRequest, MaterializedEntry},
     tracer::CacheTracer,
     utils::CacheConfig,
 };
+#[cfg(test)]
+use crate::cache::internal_tracing::EventTrace;
 use crate::cache::policies::SqueezePolicy;
 use crate::cache::stats::{CacheStats, RuntimeStats};
 use crate::cache::utils::{LiquidCompressorStates, arrow_to_bytes};
@@ -53,8 +57,9 @@ pub struct LiquidCache {
     hydration_policy: Box<dyn HydrationPolicy>,
     squeeze_policy: Box<dyn SqueezePolicy>,
     tracer: CacheTracer,
+    event_tracer: EventTracer,
     io_context: Arc<dyn IoContext>,
-    pub(crate) runtime_stats: RuntimeStats,
+    runtime_stats: RuntimeStats,
     expression_registry: Arc<ExpressionRegistry>,
 }
 
@@ -128,6 +133,7 @@ impl LiquidCache {
         entry_id: &EntryID,
     ) -> Option<crate::liquid_array::LiquidArrayRef> {
         self.runtime_stats.incr_try_read_liquid();
+        self.trace(InternalEvent::TryReadLiquid { entry: *entry_id });
         let batch = self.index.get(entry_id)?;
         self.cache_policy
             .notify_access(entry_id, CachedBatchType::from(batch.as_ref()));
@@ -135,14 +141,7 @@ impl LiquidCache {
         match batch.as_ref() {
             CacheEntry::MemoryLiquid(array) => Some(array.clone()),
             entry @ CacheEntry::DiskLiquid(_) => {
-                let path = self.io_context.disk_path(entry, entry_id);
-                let bytes = self.io_context.read(path, None).await.ok()?;
-                let compressor_states = self.io_context.get_compressor(entry_id);
-                let compressor = compressor_states.fsst_compressor();
-                let liquid = crate::liquid_array::ipc::read_from_bytes(
-                    bytes,
-                    &crate::liquid_array::ipc::LiquidIPCContext::new(compressor),
-                );
+                let liquid = self.read_disk_liquid_array(entry, entry_id).await?;
                 self.maybe_hydrate(
                     entry_id,
                     CachedBatchType::DiskLiquid,
@@ -154,14 +153,7 @@ impl LiquidCache {
             }
             entry @ CacheEntry::MemoryHybridLiquid(array) => match array.disk_backing() {
                 HybridBacking::Liquid => {
-                    let path = self.io_context.disk_path(entry, entry_id);
-                    let bytes = self.io_context.read(path, None).await.ok()?;
-                    let compressor_states = self.io_context.get_compressor(entry_id);
-                    let compressor = compressor_states.fsst_compressor();
-                    let liquid = crate::liquid_array::ipc::read_from_bytes(
-                        bytes,
-                        &crate::liquid_array::ipc::LiquidIPCContext::new(compressor),
-                    );
+                    let liquid = self.read_disk_liquid_array(entry, entry_id).await?;
                     Some(liquid)
                 }
                 HybridBacking::Arrow => None,
@@ -203,12 +195,6 @@ impl LiquidCache {
         &self.tracer
     }
 
-    /// Get the index of the cache.
-    #[cfg(test)]
-    pub(crate) fn index(&self) -> &ArtIndex {
-        &self.index
-    }
-
     /// Get the compressor states of the cache.
     pub fn compressor_states(&self, entry_id: &EntryID) -> Arc<LiquidCompressorStates> {
         self.io_context.get_compressor(entry_id)
@@ -220,43 +206,50 @@ impl LiquidCache {
     }
 
     /// Flush all entries to disk.
-    pub fn flush_all_to_disk(&self) {
+    pub async fn flush_all_to_disk(&self) {
+        let mut entires = Vec::new();
         self.for_each_entry(|entry_id, batch| {
-            match batch {
-                entry @ CacheEntry::MemoryArrow(array) => {
-                    let bytes = arrow_to_bytes(array).expect("failed to convert arrow to bytes");
-                    let path = self.io_context.disk_path(entry, entry_id);
-                    self.write_to_disk_blocking(&path, &bytes);
-                    self.try_insert(*entry_id, CacheEntry::disk_arrow(array.data_type().clone()))
+            entires.push((*entry_id, batch.clone()));
+        });
+        for (entry_id, batch) in entires {
+            match &batch {
+                CacheEntry::MemoryArrow(array) => {
+                    let bytes = arrow_to_bytes(&array).expect("failed to convert arrow to bytes");
+                    self.write_batch_to_disk(entry_id, &batch, bytes).await;
+                    self.try_insert(entry_id, CacheEntry::disk_arrow(array.data_type().clone()))
                         .expect("failed to insert disk arrow entry");
                 }
-                entry @ CacheEntry::MemoryLiquid(liquid_array) => {
+                CacheEntry::MemoryLiquid(liquid_array) => {
                     let liquid_bytes = liquid_array.to_bytes();
-                    let path = self.io_context.disk_path(entry, entry_id);
-                    self.write_to_disk_blocking(&path, &liquid_bytes);
+                    self.write_batch_to_disk(entry_id, &batch, Bytes::from(liquid_bytes))
+                        .await;
                     self.try_insert(
-                        *entry_id,
+                        entry_id,
                         CacheEntry::disk_liquid(liquid_array.original_arrow_data_type()),
                     )
                     .expect("failed to insert disk liquid entry");
                 }
                 CacheEntry::MemoryHybridLiquid(array) => {
                     // We don't have to do anything, because it's already on disk
-                    let disk_entry = Self::disk_entry_from_hybrid(array);
-                    self.try_insert(*entry_id, disk_entry)
+                    let disk_entry = Self::disk_entry_from_hybrid(&array);
+                    self.try_insert(entry_id, disk_entry)
                         .expect("failed to insert disk entry");
                 }
                 CacheEntry::DiskArrow(_) | CacheEntry::DiskLiquid(_) => {
                     // Already on disk, skip
                 }
             }
-        });
+        }
     }
 }
 
 impl LiquidCache {
     /// returns the batch that was written to disk
-    fn write_in_memory_batch_to_disk(&self, entry_id: EntryID, batch: CacheEntry) -> CacheEntry {
+    async fn write_in_memory_batch_to_disk(
+        &self,
+        entry_id: EntryID,
+        batch: CacheEntry,
+    ) -> CacheEntry {
         match &batch {
             batch @ CacheEntry::MemoryArrow(_) => {
                 let (new_batch, bytes_to_write) = self.squeeze_policy.squeeze(
@@ -265,16 +258,15 @@ impl LiquidCache {
                     None,
                 );
                 if let Some(bytes_to_write) = bytes_to_write {
-                    let path = self.io_context.disk_path(&new_batch, &entry_id);
-                    self.write_to_disk_blocking(&path, &bytes_to_write);
-                    self.budget.add_used_disk_bytes(bytes_to_write.len());
+                    self.write_batch_to_disk(entry_id, &new_batch, bytes_to_write)
+                        .await;
                 }
                 new_batch
             }
             CacheEntry::MemoryLiquid(liquid_array) => {
-                let liquid_bytes = liquid_array.to_bytes();
-                let path = self.io_context.disk_path(&batch, &entry_id);
-                self.write_to_disk_blocking(&path, &liquid_bytes);
+                let liquid_bytes = Bytes::from(liquid_array.to_bytes());
+                self.write_batch_to_disk(entry_id, &batch, liquid_bytes)
+                    .await;
                 CacheEntry::disk_liquid(liquid_array.original_arrow_data_type())
             }
             CacheEntry::DiskLiquid(_)
@@ -288,9 +280,7 @@ impl LiquidCache {
     /// Insert a batch into the cache, it will run cache replacement policy until the batch is inserted.
     pub(crate) async fn insert_inner(&self, entry_id: EntryID, mut batch_to_cache: CacheEntry) {
         loop {
-            let batch_type = CachedBatchType::from(&batch_to_cache);
             let Err(not_inserted) = self.try_insert(entry_id, batch_to_cache) else {
-                self.cache_policy.notify_insert(&entry_id, batch_type);
                 return;
             };
 
@@ -299,7 +289,9 @@ impl LiquidCache {
                 // no advice, because the cache is already empty
                 // this can happen if the entry to be inserted is too large, in that case,
                 // we write it to disk
-                let on_disk_batch = self.write_in_memory_batch_to_disk(entry_id, not_inserted);
+                let on_disk_batch = self
+                    .write_in_memory_batch_to_disk(entry_id, not_inserted)
+                    .await;
                 batch_to_cache = on_disk_batch;
                 continue;
             }
@@ -308,6 +300,10 @@ impl LiquidCache {
             batch_to_cache = not_inserted;
             crate::utils::yield_now_if_shuttle();
         }
+    }
+
+    pub(crate) fn runtime_stats(&self) -> &RuntimeStats {
+        &self.runtime_stats
     }
 
     /// Create a new instance of CacheStorage.
@@ -329,37 +325,70 @@ impl LiquidCache {
             hydration_policy,
             squeeze_policy,
             tracer: CacheTracer::new(),
+            event_tracer: EventTracer::new(),
             io_context: io_worker,
             runtime_stats: RuntimeStats::default(),
             expression_registry: Arc::new(ExpressionRegistry::new()),
         }
     }
 
-    fn try_insert(&self, entry_id: EntryID, cached_batch: CacheEntry) -> Result<(), CacheEntry> {
-        let new_memory_size = cached_batch.memory_usage_bytes();
-        if let Some(entry) = self.index.get(&entry_id) {
+    fn try_insert(&self, entry_id: EntryID, to_insert: CacheEntry) -> Result<(), CacheEntry> {
+        let new_memory_size = to_insert.memory_usage_bytes();
+        let cached_batch_type = if let Some(entry) = self.index.get(&entry_id) {
             let old_memory_size = entry.memory_usage_bytes();
             if self
                 .budget
                 .try_update_memory_usage(old_memory_size, new_memory_size)
                 .is_err()
             {
-                return Err(cached_batch);
+                return Err(to_insert);
             }
-            self.index.insert(&entry_id, cached_batch);
+            let batch_type = CachedBatchType::from(&to_insert);
+            self.index.insert(&entry_id, to_insert);
+            batch_type
         } else {
             if self.budget.try_reserve_memory(new_memory_size).is_err() {
-                return Err(cached_batch);
+                return Err(to_insert);
             }
-            self.index.insert(&entry_id, cached_batch);
-        }
+            let batch_type = CachedBatchType::from(&to_insert);
+            self.index.insert(&entry_id, to_insert);
+            batch_type
+        };
+
+        self.trace(InternalEvent::InsertSuccess {
+            entry: entry_id,
+            kind: cached_batch_type,
+        });
+        self.cache_policy
+            .notify_insert(&entry_id, cached_batch_type);
 
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn consume_trace(&self) -> EventTrace {
+        self.event_tracer.drain()
+    }
+
+    pub(crate) fn trace(&self, event: InternalEvent) {
+        #[cfg(debug_assertions)]
+        {
+            self.event_tracer.record(event);
+        }
+    }
+
+    /// Get the index of the cache.
+    #[cfg(test)]
+    pub(crate) fn index(&self) -> &ArtIndex {
+        &self.index
     }
 
     #[fastrace::trace]
     async fn squeeze_victims(&self, victims: Vec<EntryID>) {
         // Run squeeze operations sequentially using async I/O
+        self.trace(InternalEvent::SqueezeBegin {
+            victims: victims.clone(),
+        });
         for victim in victims {
             self.squeeze_victim_inner(victim).await;
         }
@@ -369,6 +398,7 @@ impl LiquidCache {
         let Some(mut to_squeeze_batch) = self.index.get(&to_squeeze) else {
             return;
         };
+        self.trace(InternalEvent::SqueezeVictim { entry: to_squeeze });
         let compressor = self.io_context.get_compressor(&to_squeeze);
         let squeeze_hint_arc = self
             .expression_registry
@@ -383,22 +413,11 @@ impl LiquidCache {
             );
 
             if let Some(bytes_to_write) = bytes_to_write {
-                let path = self.io_context.disk_path(&new_batch, &to_squeeze);
-                // Use IoContext's write_file for async I/O
-                if let Err(e) = self
-                    .io_context
-                    .write_file(path, bytes_to_write.clone())
-                    .await
-                {
-                    eprintln!("Failed to write to disk: {}", e);
-                    return;
-                }
-                self.budget.add_used_disk_bytes(bytes_to_write.len());
+                self.write_batch_to_disk(to_squeeze, &new_batch, bytes_to_write)
+                    .await;
             }
-            let batch_type = CachedBatchType::from(&new_batch);
             match self.try_insert(to_squeeze, new_batch) {
                 Ok(()) => {
-                    self.cache_policy.notify_insert(&to_squeeze, batch_type);
                     break;
                 }
                 Err(batch) => {
@@ -406,14 +425,6 @@ impl LiquidCache {
                 }
             }
         }
-    }
-
-    fn write_to_disk_blocking(&self, path: impl AsRef<Path>, bytes: &[u8]) {
-        use std::io::Write;
-        let mut file = std::fs::File::create(&path).expect("failed to create file");
-        file.write_all(bytes).expect("failed to write to file");
-        let disk_usage = bytes.len();
-        self.budget.add_used_disk_bytes(disk_usage);
     }
 
     fn disk_entry_from_hybrid(array: &LiquidHybridArrayRef) -> CacheEntry {
@@ -437,6 +448,12 @@ impl LiquidCache {
             materialized,
             expression,
         }) {
+            let new_type = CachedBatchType::from(&new_entry);
+            self.trace(InternalEvent::Hydrate {
+                entry: *entry_id,
+                cached,
+                new: new_type,
+            });
             self.insert_inner(*entry_id, new_entry).await;
         }
     }
@@ -452,6 +469,12 @@ impl LiquidCache {
         let batch = self.index.get(entry_id)?;
         self.cache_policy
             .notify_access(entry_id, CachedBatchType::from(batch.as_ref()));
+        self.trace(InternalEvent::Read {
+            entry: *entry_id,
+            selection: selection.is_some(),
+            expr: expression.is_some(),
+            cached: CachedBatchType::from(batch.as_ref()),
+        });
 
         match batch.as_ref() {
             CacheEntry::MemoryArrow(array) => match selection {
@@ -619,11 +642,24 @@ impl LiquidCache {
         }
     }
 
+    async fn write_batch_to_disk(&self, entry_id: EntryID, batch: &CacheEntry, bytes: Bytes) {
+        self.trace(InternalEvent::IoWrite {
+            entry: entry_id,
+            kind: CachedBatchType::from(batch),
+            bytes: bytes.len(),
+        });
+        let path = self.io_context.disk_path(&batch, &entry_id);
+        let len = bytes.len();
+        self.io_context.write_file(path, bytes).await.unwrap();
+        self.budget.add_used_disk_bytes(len);
+    }
+
     async fn read_disk_arrow_array(
         &self,
         entry: &CacheEntry,
         entry_id: &EntryID,
     ) -> Option<ArrayRef> {
+        self.trace(InternalEvent::IoReadArrow { entry: *entry_id });
         let path = self.io_context.disk_path(entry, entry_id);
         let bytes = self.io_context.read(path, None).await.ok()?;
         let cursor = std::io::Cursor::new(bytes.to_vec());
@@ -638,6 +674,7 @@ impl LiquidCache {
         entry: &CacheEntry,
         entry_id: &EntryID,
     ) -> Option<crate::liquid_array::LiquidArrayRef> {
+        self.trace(InternalEvent::IoReadLiquid { entry: *entry_id });
         let path = self.io_context.disk_path(entry, entry_id);
         let bytes = self.io_context.read(path, None).await.ok()?;
         let compressor_states = self.io_context.get_compressor(entry_id);
@@ -661,6 +698,11 @@ impl LiquidCache {
         let batch = self.index.get(entry_id)?;
         self.cache_policy
             .notify_access(entry_id, CachedBatchType::from(batch.as_ref()));
+        self.trace(InternalEvent::EvalPredicate {
+            entry: *entry_id,
+            selection: selection_opt.is_some(),
+            cached: CachedBatchType::from(batch.as_ref()),
+        });
 
         match batch.as_ref() {
             CacheEntry::MemoryArrow(array) => {
@@ -1193,7 +1235,7 @@ mod tests {
         assert_eq!(s.max_cache_bytes, 10 * 1024 * 1024);
 
         // Flush to disk and verify memory usage drops and disk usage increases
-        storage.flush_all_to_disk();
+        storage.flush_all_to_disk().await;
         let s2 = storage.stats();
         assert_eq!(s2.total_entries, 2);
         assert!(s2.disk_usage_bytes > 0);
@@ -1208,7 +1250,7 @@ mod tests {
         let array = create_test_arrow_array(8);
 
         store.insert(entry_id, array.clone()).await;
-        store.flush_all_to_disk();
+        store.flush_all_to_disk().await;
         {
             let entry = store.index().get(&entry_id).unwrap();
             assert!(matches!(entry.as_ref(), CacheEntry::DiskArrow(_)));
@@ -1233,7 +1275,7 @@ mod tests {
         store
             .insert_inner(entry_id, CacheEntry::memory_liquid(liquid.clone()))
             .await;
-        store.flush_all_to_disk();
+        store.flush_all_to_disk().await;
         {
             let entry = store.index().get(&entry_id).unwrap();
             assert!(matches!(entry.as_ref(), CacheEntry::DiskLiquid(_)));

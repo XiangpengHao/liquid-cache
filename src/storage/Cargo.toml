@@ -44,6 +44,7 @@ mimalloc = "0.1.48"
 clap = { version = "4.5.48", features = ["derive"] }
 divan = "0.1.21"
 kani-verifier = "0.65.0"
+insta = { workspace = true }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [

@@ -1,0 +1,49 @@
+---
+source: src/storage/src/cache/tests/policies.rs
+expression: trace
+---
+EventTrace [
+	insert_success entry=0 kind=MemoryArrow
+	insert_success entry=1 kind=MemoryArrow
+	squeeze_begin victims=[0,1]
+	squeeze_victim entry=0
+	insert_success entry=0 kind=MemoryLiquid
+	squeeze_victim entry=1
+	insert_success entry=1 kind=MemoryLiquid
+	insert_success entry=2 kind=MemoryArrow
+	squeeze_begin victims=[2,0,1]
+	squeeze_victim entry=2
+	insert_success entry=2 kind=MemoryLiquid
+	squeeze_victim entry=0
+	io_write entry=0 kind=MemoryHybridLiquid bytes=1320
+	insert_success entry=0 kind=MemoryHybridLiquid
+	squeeze_victim entry=1
+	io_write entry=1 kind=MemoryHybridLiquid bytes=1320
+	insert_success entry=1 kind=MemoryHybridLiquid
+	insert_success entry=3 kind=MemoryArrow
+	squeeze_begin victims=[3,2,0,1]
+	squeeze_victim entry=3
+	insert_success entry=3 kind=MemoryLiquid
+	squeeze_victim entry=2
+	io_write entry=2 kind=MemoryHybridLiquid bytes=1320
+	insert_success entry=2 kind=MemoryHybridLiquid
+	squeeze_victim entry=0
+	insert_success entry=0 kind=DiskLiquid
+	squeeze_victim entry=1
+	insert_success entry=1 kind=DiskLiquid
+	insert_success entry=4 kind=MemoryArrow
+	read entry=0 selection=false expr=false cached=DiskLiquid
+	io_read_liquid entry=0
+	hydrate entry=0 cached=DiskLiquid new=MemoryLiquid
+	insert_success entry=0 kind=MemoryLiquid
+	read entry=1 selection=false expr=false cached=DiskLiquid
+	io_read_liquid entry=1
+	hydrate entry=1 cached=DiskLiquid new=MemoryLiquid
+	insert_success entry=1 kind=MemoryLiquid
+	read entry=2 selection=false expr=false cached=MemoryHybridLiquid
+	io_read_liquid entry=2
+	hydrate entry=2 cached=MemoryHybridLiquid new=MemoryLiquid
+	insert_success entry=2 kind=MemoryLiquid
+	read entry=3 selection=false expr=false cached=MemoryLiquid
+	read entry=4 selection=false expr=false cached=MemoryArrow
+]

@@ -6,6 +6,7 @@ mod cached_batch;
 mod core;
 mod expressions;
 mod index;
+mod internal_tracing;
 mod io_context;
 pub mod policies;
 mod stats;
@@ -41,3 +42,6 @@ pub mod hydration_policies {
 pub mod squeeze_policies {
     pub use super::policies::squeeze::*;
 }
+
+#[cfg(test)]
+mod tests;

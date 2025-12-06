@@ -218,9 +218,9 @@ impl<'a> Get<'a> {
     /// Materialize the cached array as [`ArrayRef`].
     pub async fn read(self) -> Option<ArrayRef> {
         if self.selection.is_some() {
-            self.storage.runtime_stats.incr_get_with_selection();
+            self.storage.runtime_stats().incr_get_with_selection();
         } else {
-            self.storage.runtime_stats.incr_get_arrow_array();
+            self.storage.runtime_stats().incr_get_arrow_array();
         }
         self.storage
             .read_arrow_array(
