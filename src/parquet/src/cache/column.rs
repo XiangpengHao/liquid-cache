@@ -5,7 +5,7 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use arrow_schema::{ArrowError, DataType, Field, Schema};
-use liquid_cache_storage::cache::{CacheExpression, ColumnID, LiquidCache};
+use liquid_cache_storage::cache::{CacheExpression, LiquidCache};
 use liquid_cache_storage::utils::VariantSchema;
 use liquid_cache_storage::utils::typed_struct_contains_path;
 use parquet::arrow::arrow_reader::ArrowPredicate;
@@ -68,10 +68,11 @@ impl CachedColumn {
     ) -> Self {
         let column_path = ColumnAccessPath::new(file_id, row_group_id, column_id);
         column_path.initialize_dir(cache_store.config().cache_root_dir());
-        let registry = cache_store.expression_registry();
         let expression = infer_expression(field.as_ref()).map(|expr| {
-            let col_id = ColumnID::new(file_id, row_group_id, column_id);
-            registry.register(expr, Some(col_id))
+            let expr = Arc::new(expr);
+            let hint_entry_id = column_path.entry_id(BatchID::from_raw(0)).into();
+            cache_store.set_squeeze_hint(&hint_entry_id, expr.clone());
+            expr
         });
         Self {
             field,

@@ -20,7 +20,7 @@ use crate::cache::internal_tracing::EventTrace;
 use crate::cache::policies::SqueezePolicy;
 use crate::cache::stats::{CacheStats, RuntimeStats};
 use crate::cache::utils::{LiquidCompressorStates, arrow_to_bytes};
-use crate::cache::{CacheExpression, ExpressionRegistry, index::ArtIndex, utils::EntryID};
+use crate::cache::{CacheExpression, index::ArtIndex, utils::EntryID};
 use crate::liquid_array::{
     LiquidSqueezedArray, LiquidSqueezedArrayRef, SqueezedBacking, SqueezedDate32Array,
     VariantStructSqueezedArray,
@@ -61,7 +61,6 @@ pub struct LiquidCache {
     event_tracer: EventTracer,
     io_context: Arc<dyn IoContext>,
     runtime_stats: RuntimeStats,
-    expression_registry: Arc<ExpressionRegistry>,
 }
 
 /// Builder returned by [`LiquidCache::insert`] for configuring cache writes.
@@ -201,9 +200,13 @@ impl LiquidCache {
         self.io_context.get_compressor(entry_id)
     }
 
-    /// Access the expression registry used by this cache.
-    pub fn expression_registry(&self) -> &Arc<ExpressionRegistry> {
-        &self.expression_registry
+    /// Record a squeeze hint for an entry.
+    pub fn set_squeeze_hint(
+        &self,
+        entry_id: &EntryID,
+        expression: Arc<CacheExpression>,
+    ) {
+        self.io_context.set_squeeze_hint(entry_id, expression);
     }
 
     /// Flush all entries to disk.
@@ -333,7 +336,6 @@ impl LiquidCache {
             event_tracer: EventTracer::new(),
             io_context: io_worker,
             runtime_stats: RuntimeStats::default(),
-            expression_registry: Arc::new(ExpressionRegistry::new()),
         }
     }
 
@@ -405,9 +407,7 @@ impl LiquidCache {
         };
         self.trace(InternalEvent::SqueezeVictim { entry: to_squeeze });
         let compressor = self.io_context.get_compressor(&to_squeeze);
-        let squeeze_hint_arc = self
-            .expression_registry
-            .column_majority_expression(to_squeeze);
+        let squeeze_hint_arc = self.io_context.squeeze_hint(&to_squeeze);
         let squeeze_hint = squeeze_hint_arc.as_deref();
 
         loop {
@@ -1079,8 +1079,7 @@ mod tests {
             )
             .await;
 
-        let registry = store.expression_registry();
-        let expr = registry.register(CacheExpression::extract_date32(Date32Field::Year), None);
+        let expr = Arc::new(CacheExpression::extract_date32(Date32Field::Year));
         let result = store
             .get(&entry_id)
             .with_expression_hint(expr)
@@ -1109,13 +1108,10 @@ mod tests {
         store.insert_inner(entry_id, entry).await;
         fs::write(&path, &arrow_bytes).unwrap();
 
-        let expr = store.expression_registry().register(
-            CacheExpression::variant_get_many(vec![
-                ("name", DataType::Utf8),
-                ("age", DataType::Int64),
-            ]),
-            None,
-        );
+        let expr = Arc::new(CacheExpression::variant_get_many(vec![
+            ("name", DataType::Utf8),
+            ("age", DataType::Int64),
+        ]));
         let result = store
             .get(&entry_id)
             .with_expression_hint(expr)
@@ -1146,9 +1142,7 @@ mod tests {
             .insert_inner(entry_id, CacheEntry::memory_squeezed_liquid(squeezed))
             .await;
 
-        let expr = store
-            .expression_registry()
-            .register(CacheExpression::variant_get("name", DataType::Utf8), None);
+        let expr = Arc::new(CacheExpression::variant_get("name", DataType::Utf8));
         let result = store
             .get(&entry_id)
             .with_expression_hint(expr)

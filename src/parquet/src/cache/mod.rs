@@ -252,7 +252,7 @@ impl LiquidCacheParquet {
             .with_cache_dir(cache_dir.clone())
             .with_squeeze_policy(squeeze_policy)
             .with_cache_policy(cache_policy)
-            .with_io_worker(io_context);
+            .with_io_context(io_context);
         let cache_storage = cache_storage_builder.build();
 
         LiquidCacheParquet {

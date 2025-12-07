@@ -1,8 +1,10 @@
-use std::{fmt::Debug, ops::Range, path::PathBuf};
+use std::{fmt::Debug, ops::Range, path::PathBuf, sync::RwLock};
 
+use ahash::AHashMap;
 use bytes::Bytes;
 
 use crate::cache::{
+    CacheExpression,
     cached_batch::CacheEntry,
     utils::{EntryID, LiquidCompressorStates},
 };
@@ -12,6 +14,20 @@ use crate::sync::Arc;
 /// A trait for objects that can handle IO operations for the cache.
 #[async_trait::async_trait]
 pub trait IoContext: Debug + Send + Sync {
+    /// Set a squeeze hint for an entry.
+    fn set_squeeze_hint(&self, _entry_id: &EntryID, _expression: Arc<CacheExpression>) {
+        // Do nothing by default
+    }
+
+    /// Get the squeeze hint for an entry.
+    /// If None, the entry will be evicted to disk entirely.
+    /// If Some, the entry will be squeezed according to the cache expressions previously recorded for this column.
+    /// For example, if expression is ExtractDate32 { field: Date32Field::Year },
+    /// the entry will be squeezed to a [crate::liquid_array::SqueezedDate32Array] with the year component.
+    fn squeeze_hint(&self, _entry_id: &EntryID) -> Option<Arc<CacheExpression>> {
+        None
+    }
+
     /// Get the compressor for an entry.
     fn get_compressor(&self, entry_id: &EntryID) -> Arc<LiquidCompressorStates>;
 
@@ -33,6 +49,7 @@ pub trait IoContext: Debug + Send + Sync {
 #[derive(Debug)]
 pub struct DefaultIoContext {
     compressor_state: Arc<LiquidCompressorStates>,
+    squeeze_hints: RwLock<AHashMap<EntryID, Arc<CacheExpression>>>,
     base_dir: PathBuf,
 }
 
@@ -42,12 +59,23 @@ impl DefaultIoContext {
         Self {
             compressor_state: Arc::new(LiquidCompressorStates::new()),
             base_dir,
+            squeeze_hints: RwLock::new(AHashMap::new()),
         }
     }
 }
 
 #[async_trait::async_trait]
 impl IoContext for DefaultIoContext {
+    fn set_squeeze_hint(&self, entry_id: &EntryID, expression: Arc<CacheExpression>) {
+        let mut guard = self.squeeze_hints.write().unwrap();
+        guard.insert(*entry_id, expression);
+    }
+
+    fn squeeze_hint(&self, entry_id: &EntryID) -> Option<Arc<CacheExpression>> {
+        let guard = self.squeeze_hints.read().unwrap();
+        guard.get(entry_id).cloned()
+    }
+
     fn get_compressor(&self, _entry_id: &EntryID) -> Arc<LiquidCompressorStates> {
         self.compressor_state.clone()
     }
@@ -94,72 +122,6 @@ impl IoContext for DefaultIoContext {
         use tokio::io::AsyncWriteExt;
         let mut file = tokio::fs::File::create(path).await?;
         file.write_all(&data).await?;
-        Ok(())
-    }
-}
-
-/// A blocking implementation of [IoContext] that uses the default compressor.
-/// This is used for testing purposes as all io operations are blocking.
-#[derive(Debug)]
-pub struct BlockingIoContext {
-    compressor_state: Arc<LiquidCompressorStates>,
-    base_dir: PathBuf,
-}
-
-impl BlockingIoContext {
-    /// Create a new instance of [BlockingIoContext].
-    pub fn new(base_dir: PathBuf) -> Self {
-        Self {
-            compressor_state: Arc::new(LiquidCompressorStates::new()),
-            base_dir,
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl IoContext for BlockingIoContext {
-    fn get_compressor(&self, _entry_id: &EntryID) -> Arc<LiquidCompressorStates> {
-        self.compressor_state.clone()
-    }
-
-    fn disk_path(&self, entry: &CacheEntry, entry_id: &EntryID) -> PathBuf {
-        let ext = match entry {
-            CacheEntry::DiskArrow(_) | CacheEntry::MemoryArrow(_) => "arrow",
-            CacheEntry::DiskLiquid(_) | CacheEntry::MemoryLiquid(_) => "liquid",
-            CacheEntry::MemorySqueezedLiquid(array) => match array.disk_backing() {
-                SqueezedBacking::Arrow => "arrow",
-                SqueezedBacking::Liquid => "liquid",
-            },
-        };
-        self.base_dir
-            .join(format!("{:016x}.{}", usize::from(*entry_id), ext))
-    }
-
-    async fn read(
-        &self,
-        path: PathBuf,
-        range: Option<Range<u64>>,
-    ) -> Result<Bytes, std::io::Error> {
-        let mut file = std::fs::File::open(path)?;
-        match range {
-            Some(range) => {
-                let len = (range.end - range.start) as usize;
-                let mut bytes = vec![0u8; len];
-                std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(range.start))?;
-                std::io::Read::read_exact(&mut file, &mut bytes)?;
-                Ok(Bytes::from(bytes))
-            }
-            None => {
-                let mut bytes = Vec::new();
-                std::io::Read::read_to_end(&mut file, &mut bytes)?;
-                Ok(Bytes::from(bytes))
-            }
-        }
-    }
-
-    async fn write_file(&self, path: PathBuf, data: Bytes) -> Result<(), std::io::Error> {
-        let mut file = std::fs::File::create(path)?;
-        std::io::Write::write_all(&mut file, &data)?;
         Ok(())
     }
 }

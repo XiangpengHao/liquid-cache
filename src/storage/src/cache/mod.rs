@@ -17,8 +17,8 @@ mod utils;
 pub use builders::{EvaluatePredicate, Get, Insert, LiquidCacheBuilder};
 pub use cached_batch::{CacheEntry, CachedBatchType};
 pub use core::LiquidCache;
-pub use expressions::{CacheExpression, ColumnID, ExpressionRegistry, VariantRequest};
-pub use io_context::{BlockingIoContext, DefaultIoContext, IoContext};
+pub use expressions::{CacheExpression, VariantRequest};
+pub use io_context::{DefaultIoContext, IoContext};
 pub use policies::{
     AlwaysHydrate, CachePolicy, HydrationPolicy, HydrationRequest, LiquidPolicy, MaterializedEntry,
     NoHydration, SqueezePolicy, TranscodeSqueezeEvict,
