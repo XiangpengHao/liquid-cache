@@ -9,7 +9,7 @@ use arrow_schema::{DataType, Field, Fields, Schema};
 use bytes::Bytes;
 
 use crate::liquid_array::{
-    SqueezedBacking, LiquidArrayRef, LiquidDataType, LiquidSqueezedArray, NeedsBacking,
+    LiquidArrayRef, LiquidDataType, LiquidSqueezedArray, NeedsBacking, SqueezedBacking,
 };
 use ahash::AHashMap;
 

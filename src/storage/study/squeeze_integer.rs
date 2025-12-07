@@ -7,7 +7,8 @@ use datafusion::prelude::*;
 use datafusion::scalar::ScalarValue;
 use futures::StreamExt;
 use liquid_cache_storage::liquid_array::{
-    IntegerSqueezePolicy, LiquidArray, LiquidSqueezedArray, LiquidPrimitiveArray, LiquidPrimitiveType,
+    IntegerSqueezePolicy, LiquidArray, LiquidPrimitiveArray, LiquidPrimitiveType,
+    LiquidSqueezedArray,
 };
 
 #[global_allocator]

@@ -566,6 +566,10 @@ impl LiquidCache {
     ) -> Option<ArrayRef> {
         if let Some(array) = self.try_read_squeezed_date32_array(array, expression, selection) {
             self.runtime_stats.incr_get_squeezed_success();
+            self.trace(InternalEvent::ReadSqueezedData {
+                entry: *entry_id,
+                expression: expression.unwrap().clone(),
+            });
             return Some(array);
         }
 
@@ -574,6 +578,10 @@ impl LiquidCache {
             .await
         {
             self.runtime_stats.incr_get_squeezed_success();
+            self.trace(InternalEvent::ReadSqueezedData {
+                entry: *entry_id,
+                expression: expression.unwrap().clone(),
+            });
             return Some(array);
         }
 
