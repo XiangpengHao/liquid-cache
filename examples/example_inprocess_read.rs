@@ -12,7 +12,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     storage.insert(entry_id, arrow_array.clone()).await;
 
     // Move data to disk so the read will demonstrate async I/O
-    storage.flush_all_to_disk();
+    storage.flush_all_to_disk().await;
 
     // Read asynchronously
     let retrieved = storage.get(&entry_id).await.unwrap();

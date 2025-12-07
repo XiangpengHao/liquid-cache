@@ -334,8 +334,8 @@ impl LiquidCacheParquet {
     /// This is for admin use only.
     /// This has no guarantees that some new entry will not be inserted in the meantime, or some entries are promoted to memory again.
     /// You mostly want to use this when no one else is using the cache.
-    pub fn flush_data(&self) {
-        self.cache_store.flush_all_to_disk();
+    pub async fn flush_data(&self) {
+        self.cache_store.flush_all_to_disk().await;
     }
 
     /// Get the storage of the cache.

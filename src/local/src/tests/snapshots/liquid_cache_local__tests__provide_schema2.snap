@@ -21,13 +21,13 @@ plan:
 stats:
 entries.total: 8
 entries.after_first_run: 8
-entries.memory.arrow: 3
-entries.memory.liquid: 5
+entries.memory.arrow: 5
+entries.memory.liquid: 1
 entries.memory.hybrid_liquid: 0
-entries.disk.liquid: 0
+entries.disk.liquid: 2
 entries.disk.arrow: 0
-usage.memory_bytes: 1021360
-usage.disk_bytes: 0
+usage.memory_bytes: 969801
+usage.disk_bytes: 35000
 RuntimeStatsSnapshot:
   get_arrow_array_calls: 0
   get_with_selection_calls: 4
@@ -171,16 +171,16 @@ plan:
 stats:
 entries.total: 8
 entries.after_first_run: 8
-entries.memory.arrow: 3
-entries.memory.liquid: 5
+entries.memory.arrow: 5
+entries.memory.liquid: 1
 entries.memory.hybrid_liquid: 0
-entries.disk.liquid: 0
+entries.disk.liquid: 2
 entries.disk.arrow: 0
-usage.memory_bytes: 1021360
-usage.disk_bytes: 0
+usage.memory_bytes: 969801
+usage.disk_bytes: 35000
 RuntimeStatsSnapshot:
   get_arrow_array_calls: 0
-  get_with_selection_calls: 3
+  get_with_selection_calls: 5
   get_with_predicate_calls: 0
   get_predicate_hybrid_success: 0
   get_predicate_hybrid_needs_io: 0
@@ -216,13 +216,13 @@ plan:
 stats:
 entries.total: 8
 entries.after_first_run: 8
-entries.memory.arrow: 3
-entries.memory.liquid: 5
+entries.memory.arrow: 5
+entries.memory.liquid: 1
 entries.memory.hybrid_liquid: 0
-entries.disk.liquid: 0
+entries.disk.liquid: 2
 entries.disk.arrow: 0
-usage.memory_bytes: 1021360
-usage.disk_bytes: 0
+usage.memory_bytes: 969801
+usage.disk_bytes: 35000
 RuntimeStatsSnapshot:
   get_arrow_array_calls: 0
   get_with_selection_calls: 2

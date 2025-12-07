@@ -60,6 +60,7 @@ uuid = { version = "1.18.1", features = ["v4"] }
 fastrace = "0.7"
 fastrace-tonic = "0.1"
 congee = "0.4.1"
+insta = "1.44.0"
 
 [workspace.metadata.cargo-shear]
 ignored = ["kani-verifier"]

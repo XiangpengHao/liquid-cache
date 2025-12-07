@@ -2,7 +2,9 @@ use std::future::{Future, IntoFuture};
 use std::path::PathBuf;
 use std::pin::Pin;
 
-use arrow::array::{ArrayRef, BooleanArray};
+use arrow::array::{
+    Array, ArrayData, ArrayRef, BinaryViewArray, BooleanArray, StringViewArray, make_array,
+};
 use arrow::buffer::BooleanBuffer;
 use datafusion::physical_plan::PhysicalExpr;
 
@@ -134,6 +136,7 @@ pub struct Insert<'a> {
     pub(super) storage: &'a Arc<LiquidCache>,
     pub(super) entry_id: EntryID,
     pub(super) batch: ArrayRef,
+    pub(super) skip_gc: bool,
 }
 
 impl<'a> Insert<'a> {
@@ -142,11 +145,23 @@ impl<'a> Insert<'a> {
             storage,
             entry_id,
             batch,
+            skip_gc: false,
         }
     }
 
+    /// Skip garbage collection of view arrays.
+    pub fn with_skip_gc(mut self) -> Self {
+        self.skip_gc = true;
+        self
+    }
+
     async fn run(self) {
-        let batch = CacheEntry::memory_arrow(self.batch);
+        let batch = if self.skip_gc {
+            self.batch.clone()
+        } else {
+            maybe_gc_view_arrays(&self.batch).unwrap_or_else(|| self.batch.clone())
+        };
+        let batch = CacheEntry::memory_arrow(batch);
         self.storage.insert_inner(self.entry_id, batch).await;
     }
 }
@@ -203,9 +218,9 @@ impl<'a> Get<'a> {
     /// Materialize the cached array as [`ArrayRef`].
     pub async fn read(self) -> Option<ArrayRef> {
         if self.selection.is_some() {
-            self.storage.runtime_stats.incr_get_with_selection();
+            self.storage.runtime_stats().incr_get_with_selection();
         } else {
-            self.storage.runtime_stats.incr_get_arrow_array();
+            self.storage.runtime_stats().incr_get_arrow_array();
         }
         self.storage
             .read_arrow_array(
@@ -224,6 +239,40 @@ impl<'a> IntoFuture for Get<'a> {
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move { self.read().await })
     }
+}
+
+/// Recursively garbage collects view arrays (BinaryView/StringView) within an array tree.
+fn maybe_gc_view_arrays(array: &ArrayRef) -> Option<ArrayRef> {
+    if let Some(binary_view) = array.as_any().downcast_ref::<BinaryViewArray>() {
+        return Some(Arc::new(binary_view.gc()));
+    }
+    if let Some(utf8_view) = array.as_any().downcast_ref::<StringViewArray>() {
+        return Some(Arc::new(utf8_view.gc()));
+    }
+
+    let data = array.to_data();
+    if data.child_data().is_empty() {
+        return None;
+    }
+
+    let mut changed = false;
+    let mut children: Vec<ArrayData> = Vec::with_capacity(data.child_data().len());
+    for child in data.child_data() {
+        let child_array = make_array(child.clone());
+        if let Some(gc_child) = maybe_gc_view_arrays(&child_array) {
+            changed = true;
+            children.push(gc_child.to_data());
+        } else {
+            children.push(child.clone());
+        }
+    }
+
+    if !changed {
+        return None;
+    }
+
+    let new_data = data.into_builder().child_data(children).build().ok()?;
+    Some(make_array(new_data))
 }
 
 /// Builder for predicate evaluation on cached data.
@@ -271,5 +320,142 @@ impl<'a> IntoFuture for EvaluatePredicate<'a> {
 
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move { self.read().await })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::{AsArray, StructArray};
+    use arrow_schema::{DataType, Field, Fields};
+
+    #[tokio::test]
+    async fn insert_gcs_view_arrays_recursively() {
+        // Build view arrays then slice to create non-zero offsets (and larger backing buffers).
+        let bin = Arc::new(BinaryViewArray::from(vec![
+            Some(b"long_prefix_m0" as &[u8]),
+            Some(b"m1"),
+        ])) as ArrayRef;
+        let str_view = Arc::new(StringViewArray::from(vec![
+            Some("long_prefix_s0"),
+            Some("s1"),
+        ])) as ArrayRef;
+        let variant_metadata = Arc::new(BinaryViewArray::from(vec![
+            Some(b"meta0" as &[u8]),
+            Some(b"meta1"),
+        ])) as ArrayRef;
+        let variant_value = Arc::new(BinaryViewArray::from(vec![
+            Some(b"value0" as &[u8]),
+            Some(b"value1"),
+        ])) as ArrayRef;
+
+        // Slice to keep only the second element so buffers still reference unused bytes.
+        let bin_slice = bin.slice(1, 1);
+        let str_slice = str_view.slice(1, 1);
+        let variant_metadata_slice = variant_metadata.slice(1, 1);
+        let variant_value_slice = variant_value.slice(1, 1);
+
+        // Variant-like struct: metadata (BinaryView), value (BinaryView), and a typed string view.
+        let variant_typed_fields = Fields::from(vec![Arc::new(Field::new(
+            "typed_str",
+            DataType::Utf8View,
+            true,
+        ))]);
+        let variant_struct_fields = Fields::from(vec![
+            Arc::new(Field::new("metadata", DataType::BinaryView, true)),
+            Arc::new(Field::new("value", DataType::BinaryView, true)),
+            Arc::new(Field::new(
+                "typed_value",
+                DataType::Struct(variant_typed_fields.clone()),
+                true,
+            )),
+        ]);
+        let variant_struct = Arc::new(StructArray::new(
+            variant_struct_fields.clone(),
+            vec![
+                variant_metadata_slice.clone(),
+                variant_value_slice.clone(),
+                Arc::new(StructArray::new(
+                    variant_typed_fields.clone(),
+                    vec![str_slice.clone()],
+                    None,
+                )) as ArrayRef,
+            ],
+            None,
+        ));
+
+        let root_fields = Fields::from(vec![
+            Arc::new(Field::new("bin_view", DataType::BinaryView, true)),
+            Arc::new(Field::new("str_view", DataType::Utf8View, true)),
+            Arc::new(Field::new(
+                "variant",
+                DataType::Struct(variant_struct_fields.clone()),
+                true,
+            )),
+        ]);
+        let root = Arc::new(StructArray::new(
+            root_fields,
+            vec![
+                bin_slice.clone(),
+                str_slice.clone(),
+                variant_struct.clone() as ArrayRef,
+            ],
+            None,
+        )) as ArrayRef;
+
+        let pre_size = root.get_array_memory_size();
+
+        let cache = LiquidCacheBuilder::new().build();
+        let entry_id = EntryID::from(123usize);
+        cache.insert(entry_id, root.clone()).await;
+
+        let stored = cache.get(&entry_id).await.expect("array present");
+        let post_size = stored.get_array_memory_size();
+
+        // GC should have compacted the view arrays, reducing memory footprint.
+        assert!(post_size < pre_size, "expected gc to reduce memory usage");
+
+        // Validate values are preserved.
+        let struct_out = stored
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .expect("struct array");
+
+        assert_eq!(struct_out.len(), 1);
+
+        let bin_out = struct_out
+            .column_by_name("bin_view")
+            .unwrap()
+            .as_binary_view();
+        assert_eq!(bin_out.value(0), b"m1");
+
+        let str_out = struct_out
+            .column_by_name("str_view")
+            .unwrap()
+            .as_string_view();
+        assert_eq!(str_out.value(0), "s1");
+
+        let variant_out = struct_out.column_by_name("variant").unwrap().as_struct();
+        let meta_out = variant_out
+            .column_by_name("metadata")
+            .unwrap()
+            .as_binary_view();
+        assert_eq!(meta_out.value(0), b"meta1");
+
+        let val_out = variant_out
+            .column_by_name("value")
+            .unwrap()
+            .as_binary_view();
+        assert_eq!(val_out.value(0), b"value1");
+
+        let typed_out = variant_out
+            .column_by_name("typed_value")
+            .unwrap()
+            .as_struct();
+        let typed_str_out = typed_out
+            .column_by_name("typed_str")
+            .unwrap()
+            .as_string_view();
+        assert_eq!(typed_str_out.value(0), "s1");
     }
 }

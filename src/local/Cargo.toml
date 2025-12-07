@@ -20,6 +20,6 @@ fastrace = { workspace = true }
 
 
 [dev-dependencies]
-insta = { version = "1.43.2" }
+insta = { workspace = true }
 tempfile = "3.23.0"
 parquet = { workspace = true }

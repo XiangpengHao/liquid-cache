@@ -41,5 +41,5 @@ liquid-cache-storage = { workspace = true }
 hdrhistogram = "7.5.4"
 
 [dev-dependencies]
-insta = { version = "1.43.2" }
+insta = { workspace = true }
 parquet = { workspace = true }
