@@ -3,7 +3,7 @@ use std::{fmt, fmt::Write};
 
 use crate::cache::{CacheExpression, CachedBatchType, EntryID};
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize)]
 pub(crate) enum InternalEvent {
     InsertFailed {
         entry: EntryID,
@@ -186,7 +186,7 @@ impl EventTracer {
 }
 
 #[cfg(test)]
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, serde::Serialize)]
 pub(crate) struct EventTrace {
     events: Vec<InternalEvent>,
 }

@@ -7,7 +7,7 @@ use arrow_schema::DataType;
 use crate::liquid_array::Date32Field;
 
 /// A typed variant path requested by a query.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize)]
 pub struct VariantRequest {
     path: Arc<str>,
     data_type: Arc<DataType>,
@@ -34,7 +34,7 @@ impl VariantRequest {
 }
 
 /// Experimental expression descriptor for cache lookups.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum CacheExpression {
     /// Extract a specific component (YEAR/MONTH/DAY) from a `Date32` column.
     ExtractDate32 {

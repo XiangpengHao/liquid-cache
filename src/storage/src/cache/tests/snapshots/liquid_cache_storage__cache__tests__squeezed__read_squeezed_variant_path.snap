@@ -1,0 +1,18 @@
+---
+source: src/storage/src/cache/tests/squeezed.rs
+expression: trace
+---
+EventTrace: [
+	insert_success entry=0 kind=MemoryArrow
+	insert_failed entry=1 kind=MemoryArrow
+	squeeze_begin victims=[0]
+	squeeze_victim entry=0
+	io_write entry=0 kind=MemorySqueezedLiquid bytes=1800
+	insert_success entry=0 kind=MemorySqueezedLiquid
+	insert_success entry=1 kind=MemoryArrow
+	read entry=0 selection=false expr=true cached=MemorySqueezedLiquid
+	read_squeezed_date entry=0 expression=VariantGet { requests: [VariantRequest { path: "name", data_type: Utf8 }] }
+	read entry=0 selection=false expr=true cached=MemorySqueezedLiquid
+	io_read_arrow entry=0
+	read_squeezed_date entry=0 expression=VariantGet { requests: [VariantRequest { path: "age", data_type: Int64 }] }
+]

@@ -49,5 +49,7 @@ async fn insert_wont_fit_cache() {
     cache.get(&EntryID::from(1)).read().await.unwrap();
 
     let trace = cache.consume_trace();
+    let json_trace = serde_json::to_string(&trace).unwrap();
+    println!("{}", json_trace);
     insta::assert_snapshot!(trace);
 }

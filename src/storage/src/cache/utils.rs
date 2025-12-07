@@ -78,7 +78,7 @@ pub(crate) fn create_cache_store(
 }
 
 /// EntryID is a unique identifier for a batch of rows, i.e., the cache key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd, serde::Serialize)]
 pub struct EntryID {
     val: usize,
 }
