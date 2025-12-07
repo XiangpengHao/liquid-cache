@@ -24,7 +24,7 @@ use crate::liquid_array::hybrid_primitive_array::{
 use crate::liquid_array::ipc::{LiquidIPCHeader, PhysicalTypeMarker, get_physical_type_id};
 use crate::liquid_array::raw::BitPackedArray;
 use crate::liquid_array::{
-    Date32Field, LiquidArray, LiquidHybridArrayRef, PrimitiveKind, SqueezedDate32Array,
+    Date32Field, LiquidArray, LiquidSqueezedArrayRef, PrimitiveKind, SqueezedDate32Array,
 };
 use crate::utils::get_bit_width;
 use arrow::datatypes::ArrowNativeType;
@@ -393,7 +393,7 @@ where
     fn squeeze(
         &self,
         expression_hint: Option<&CacheExpression>,
-    ) -> Option<(LiquidHybridArrayRef, Bytes)> {
+    ) -> Option<(LiquidSqueezedArrayRef, Bytes)> {
         // Full bytes (original format) are what we store to disk
         let full_bytes = Bytes::from(self.to_bytes_inner());
         let disk_range = 0u64..(full_bytes.len() as u64);
@@ -405,7 +405,7 @@ where
                 .unwrap_or(Date32Field::Year);
             return Some((
                 Arc::new(SqueezedDate32Array::from_liquid_date32(self, field))
-                    as LiquidHybridArrayRef,
+                    as LiquidSqueezedArrayRef,
                 full_bytes,
             ));
         }
@@ -449,7 +449,7 @@ where
                     reference_value: self.reference_value,
                     disk_range,
                 };
-                Some((Arc::new(hybrid) as LiquidHybridArrayRef, full_bytes))
+                Some((Arc::new(hybrid) as LiquidSqueezedArrayRef, full_bytes))
             }
             IntegerSqueezePolicy::Quantize => {
                 // Quantize value offsets into buckets of width W.
@@ -492,7 +492,7 @@ where
                     bucket_width: bucket_width_u64,
                     disk_range,
                 };
-                Some((Arc::new(hybrid) as LiquidHybridArrayRef, full_bytes))
+                Some((Arc::new(hybrid) as LiquidSqueezedArrayRef, full_bytes))
             }
         }
     }
@@ -591,7 +591,7 @@ where
     fn squeeze(
         &self,
         _expression_hint: Option<&CacheExpression>,
-    ) -> Option<(crate::liquid_array::LiquidHybridArrayRef, bytes::Bytes)> {
+    ) -> Option<(crate::liquid_array::LiquidSqueezedArrayRef, bytes::Bytes)> {
         // Not implemented for delta arrays
         None
     }

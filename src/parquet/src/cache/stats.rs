@@ -128,14 +128,14 @@ impl LiquidCacheParquet {
             let row_count = match cached_batch {
                 CacheEntry::MemoryArrow(array) => Some(array.len() as u64),
                 CacheEntry::MemoryLiquid(array) => Some(array.len() as u64),
-                CacheEntry::MemoryHybridLiquid(array) => Some(array.len() as u64),
+                CacheEntry::MemorySqueezedLiquid(array) => Some(array.len() as u64),
                 CacheEntry::DiskLiquid(_) => None,
                 CacheEntry::DiskArrow(_) => None, // We'd need to read it to get the count
             };
             let cache_type = match cached_batch {
                 CacheEntry::MemoryArrow(_) => "InMemory",
                 CacheEntry::MemoryLiquid(_) => "LiquidMemory",
-                CacheEntry::MemoryHybridLiquid(_) => "LiquidHybrid",
+                CacheEntry::MemorySqueezedLiquid(_) => "LiquidSqueezed",
                 CacheEntry::DiskLiquid(_) => "OnDiskLiquid",
                 CacheEntry::DiskArrow(_) => "OnDiskArrow",
             };

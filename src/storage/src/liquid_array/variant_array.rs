@@ -9,21 +9,21 @@ use arrow_schema::{DataType, Field, Fields, Schema};
 use bytes::Bytes;
 
 use crate::liquid_array::{
-    HybridBacking, LiquidArrayRef, LiquidDataType, LiquidHybridArray, NeedsBacking,
+    SqueezedBacking, LiquidArrayRef, LiquidDataType, LiquidSqueezedArray, NeedsBacking,
 };
 use ahash::AHashMap;
 
-/// Hybrid representation for variant arrays that contain multiple typed fields.
+/// Squeezed representation for variant arrays that contain multiple typed fields.
 #[derive(Debug)]
-pub struct VariantStructHybridArray {
+pub struct VariantStructSqueezedArray {
     values: AHashMap<Arc<str>, LiquidArrayRef>,
     len: usize,
     nulls: Option<NullBuffer>,
     original_arrow_type: DataType,
 }
 
-impl VariantStructHybridArray {
-    /// Create a hybrid representation that keeps only the typed variant columns resident.
+impl VariantStructSqueezedArray {
+    /// Create a squeezed representation that keeps only the typed variant columns resident.
     pub fn new(
         values: Vec<(Arc<str>, LiquidArrayRef)>,
         nulls: Option<NullBuffer>,
@@ -82,13 +82,13 @@ impl VariantStructHybridArray {
         root.into_struct_array()
     }
 
-    /// Returns true if the hybrid contains the provided variant path.
+    /// Returns true if the squeezed contains the provided variant path.
     pub fn contains_path(&self, path: &str) -> bool {
         self.values.contains_key(path)
     }
 }
 
-impl LiquidHybridArray for VariantStructHybridArray {
+impl LiquidSqueezedArray for VariantStructSqueezedArray {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
@@ -122,8 +122,8 @@ impl LiquidHybridArray for VariantStructHybridArray {
             .map_err(|_| NeedsBacking)
     }
 
-    fn disk_backing(&self) -> HybridBacking {
-        HybridBacking::Arrow
+    fn disk_backing(&self) -> SqueezedBacking {
+        SqueezedBacking::Arrow
     }
 }
 

@@ -7,7 +7,7 @@ use datafusion::prelude::*;
 use datafusion::scalar::ScalarValue;
 use futures::StreamExt;
 use liquid_cache_storage::liquid_array::{
-    IntegerSqueezePolicy, LiquidArray, LiquidHybridArray, LiquidPrimitiveArray, LiquidPrimitiveType,
+    IntegerSqueezePolicy, LiquidArray, LiquidSqueezedArray, LiquidPrimitiveArray, LiquidPrimitiveType,
 };
 
 #[global_allocator]
@@ -339,7 +339,7 @@ where
 }
 
 fn try_eval_or_fetch<T: LiquidPrimitiveType>(
-    hybrid: &dyn LiquidHybridArray,
+    hybrid: &dyn LiquidSqueezedArray,
     full_bytes: &Bytes,
     expr: &std::sync::Arc<dyn datafusion::physical_plan::PhysicalExpr>,
     filter: &BooleanBuffer,
@@ -357,7 +357,7 @@ fn try_eval_or_fetch<T: LiquidPrimitiveType>(
 }
 
 fn get_with_selection_or_fetch<T: LiquidPrimitiveType>(
-    hybrid: &dyn LiquidHybridArray,
+    hybrid: &dyn LiquidSqueezedArray,
     full_bytes: &Bytes,
     selection: &BooleanBuffer,
     expected: &dyn Array,

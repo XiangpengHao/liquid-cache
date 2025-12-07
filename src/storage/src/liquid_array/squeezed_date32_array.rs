@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use super::LiquidArray;
 use super::primitive_array::LiquidPrimitiveArray;
-use super::{LiquidDataType, LiquidHybridArray, NeedsBacking};
+use super::{LiquidDataType, LiquidSqueezedArray, NeedsBacking};
 use crate::liquid_array::LiquidPrimitiveType;
 use crate::liquid_array::raw::BitPackedArray;
 use crate::utils::get_bit_width;
@@ -229,7 +229,7 @@ fn ymd_to_epoch_days(year: i32, month: u32, day: u32) -> i32 {
     (era * 146_097 + doe - 719_468) as i32
 }
 
-impl LiquidHybridArray for SqueezedDate32Array {
+impl LiquidSqueezedArray for SqueezedDate32Array {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }

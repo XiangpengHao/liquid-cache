@@ -98,15 +98,15 @@ define_runtime_stats! {
     (get_arrow_array_calls, "Number of `get_arrow_array` calls issued via `CachedData`.", incr_get_arrow_array),
     (get_with_selection_calls, "Number of `get_with_selection` calls issued via `CachedData`.", incr_get_with_selection),
     (get_with_predicate_calls, "Number of `get_with_predicate` calls issued via `CachedData`.", incr_get_with_predicate),
-    (get_predicate_hybrid_success, "Number of Hybrid-Liquid predicate evaluations finished without IO.", incr_get_predicate_hybrid_success),
-    (get_predicate_hybrid_needs_io, "Number of Hybrid-Liquid predicate paths that required IO.", incr_get_predicate_hybrid_needs_io),
-    (get_predicate_hybrid_unsupported, "Number of Hybrid-Liquid predicate paths that were unsupported and fell back.", incr_get_predicate_hybrid_unsupported),
-    (get_filter_hybrid_success, "Number of Hybrid-Liquid filter evaluations finished without IO.", incr_get_filter_hybrid_success),
-    (get_filter_hybrid_needs_io, "Number of Hybrid-Liquid filter paths that required IO.", incr_get_filter_hybrid_needs_io),
-    (get_filter_hybrid_unsupported, "Number of Hybrid-Liquid filter paths that were unsupported and fell back.", incr_get_filter_hybrid_unsupported),
-    (get_full_hybrid_success, "Number of Hybrid-Liquid full evaluations finished without IO.", incr_get_full_hybrid_success),
-    (get_full_hybrid_needs_io, "Number of Hybrid-Liquid full paths that required IO.", incr_get_full_hybrid_needs_io),
-    (get_full_hybrid_unsupported, "Number of Hybrid-Liquid full paths that were unsupported and fell back.", incr_get_full_hybrid_unsupported),
+    (get_predicate_squeezed_success, "Number of Squeezed-Liquid predicate evaluations finished without IO.", incr_get_predicate_squeezed_success),
+    (get_predicate_squeezed_needs_io, "Number of Squeezed-Liquid predicate paths that required IO.", incr_get_predicate_squeezed_needs_io),
+    (get_predicate_squeezed_unsupported, "Number of Squeezed-Liquid predicate paths that were unsupported and fell back.", incr_get_predicate_squeezed_unsupported),
+    (get_filter_squeezed_success, "Number of Squeezed-Liquid filter evaluations finished without IO.", incr_get_filter_squeezed_success),
+    (get_filter_squeezed_needs_io, "Number of Squeezed-Liquid filter paths that required IO.", incr_get_filter_squeezed_needs_io),
+    (get_filter_squeezed_unsupported, "Number of Squeezed-Liquid filter paths that were unsupported and fell back.", incr_get_filter_squeezed_unsupported),
+    (get_full_squeezed_success, "Number of Squeezed-Liquid full evaluations finished without IO.", incr_get_full_squeezed_success),
+    (get_full_squeezed_needs_io, "Number of Squeezed-Liquid full paths that required IO.", incr_get_full_squeezed_needs_io),
+    (get_full_squeezed_unsupported, "Number of Squeezed-Liquid full paths that were unsupported and fell back.", incr_get_full_squeezed_unsupported),
     (try_read_liquid_calls, "Number of `try_read_liquid` calls issued via `CachedData`.", incr_try_read_liquid),
     (hit_date32_expression_calls, "Number of `hit_date32_expression` calls.", incr_hit_date32_expression),
 }
@@ -120,8 +120,8 @@ pub struct CacheStats {
     pub memory_arrow_entries: usize,
     /// Number of in-memory Liquid entries.
     pub memory_liquid_entries: usize,
-    /// Number of in-memory Hybrid-Liquid entries.
-    pub memory_hybrid_liquid_entries: usize,
+    /// Number of in-memory Squeezed-Liquid entries.
+    pub memory_squeezed_liquid_entries: usize,
     /// Number of on-disk Liquid entries.
     pub disk_liquid_entries: usize,
     /// Number of on-disk Arrow entries.

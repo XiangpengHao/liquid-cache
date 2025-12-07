@@ -11,7 +11,7 @@ use super::doubly_linked_list::{DoublyLinkedList, DoublyLinkedNode, drop_boxed_n
 enum QueueKind {
     Arrow,
     Liquid,
-    Hybrid,
+    Squeezed,
     Disk,
 }
 
@@ -28,7 +28,7 @@ struct LiquidQueueInternalState {
     map: HashMap<EntryID, NodePtr>,
     arrow: DoublyLinkedList<QueueNode>,
     liquid: DoublyLinkedList<QueueNode>,
-    hybrid: DoublyLinkedList<QueueNode>,
+    squeezed: DoublyLinkedList<QueueNode>,
     disk: DoublyLinkedList<QueueNode>,
 }
 
@@ -37,7 +37,7 @@ impl LiquidQueueInternalState {
         match queue {
             QueueKind::Arrow => &mut self.arrow,
             QueueKind::Liquid => &mut self.liquid,
-            QueueKind::Hybrid => &mut self.hybrid,
+            QueueKind::Squeezed => &mut self.squeezed,
             QueueKind::Disk => &mut self.disk,
         }
     }
@@ -81,7 +81,7 @@ impl LiquidQueueInternalState {
         let list = match queue {
             QueueKind::Arrow => &mut self.arrow,
             QueueKind::Liquid => &mut self.liquid,
-            QueueKind::Hybrid => &mut self.hybrid,
+            QueueKind::Squeezed => &mut self.squeezed,
             QueueKind::Disk => &mut self.disk,
         };
 
@@ -107,7 +107,7 @@ impl Drop for LiquidQueueInternalState {
                 match node_ptr.as_ref().data.queue {
                     QueueKind::Arrow => self.arrow.unlink(node_ptr),
                     QueueKind::Liquid => self.liquid.unlink(node_ptr),
-                    QueueKind::Hybrid => self.hybrid.unlink(node_ptr),
+                    QueueKind::Squeezed => self.squeezed.unlink(node_ptr),
                     QueueKind::Disk => self.disk.unlink(node_ptr),
                 }
                 drop_boxed_node(node_ptr);
@@ -117,7 +117,7 @@ impl Drop for LiquidQueueInternalState {
         unsafe {
             self.arrow.drop_all();
             self.liquid.drop_all();
-            self.hybrid.drop_all();
+            self.squeezed.drop_all();
             self.disk.drop_all();
         }
     }
@@ -148,7 +148,7 @@ impl CachePolicy for LiquidPolicy {
         let target = match batch_type {
             CachedBatchType::MemoryArrow => QueueKind::Arrow,
             CachedBatchType::MemoryLiquid => QueueKind::Liquid,
-            CachedBatchType::MemoryHybridLiquid => QueueKind::Hybrid,
+            CachedBatchType::MemorySqueezedLiquid => QueueKind::Squeezed,
             CachedBatchType::DiskLiquid | CachedBatchType::DiskArrow => QueueKind::Disk,
         };
 
@@ -174,7 +174,7 @@ impl CachePolicy for LiquidPolicy {
                 continue;
             }
 
-            if let Some(entry) = inner.pop_front(QueueKind::Hybrid) {
+            if let Some(entry) = inner.pop_front(QueueKind::Squeezed) {
                 victims.push(entry);
                 continue;
             }
@@ -225,7 +225,7 @@ mod tests {
         let hybrid_entry = entry(3);
 
         policy.notify_insert(&liquid_entry, CachedBatchType::MemoryLiquid);
-        policy.notify_insert(&hybrid_entry, CachedBatchType::MemoryHybridLiquid);
+        policy.notify_insert(&hybrid_entry, CachedBatchType::MemorySqueezedLiquid);
         policy.notify_insert(&arrow_entry, CachedBatchType::MemoryArrow);
 
         // Request more victims than available to ensure we only get what exists.

@@ -6,7 +6,7 @@ use crate::cache::{
     cached_batch::CacheEntry,
     utils::{EntryID, LiquidCompressorStates},
 };
-use crate::liquid_array::HybridBacking;
+use crate::liquid_array::SqueezedBacking;
 use crate::sync::Arc;
 
 /// A trait for objects that can handle IO operations for the cache.
@@ -56,9 +56,9 @@ impl IoContext for DefaultIoContext {
         let ext = match entry {
             CacheEntry::DiskArrow(_) | CacheEntry::MemoryArrow(_) => "arrow",
             CacheEntry::DiskLiquid(_) | CacheEntry::MemoryLiquid(_) => "liquid",
-            CacheEntry::MemoryHybridLiquid(array) => match array.disk_backing() {
-                HybridBacking::Arrow => "arrow",
-                HybridBacking::Liquid => "liquid",
+            CacheEntry::MemorySqueezedLiquid(array) => match array.disk_backing() {
+                SqueezedBacking::Arrow => "arrow",
+                SqueezedBacking::Liquid => "liquid",
             },
         };
         self.base_dir
@@ -126,9 +126,9 @@ impl IoContext for BlockingIoContext {
         let ext = match entry {
             CacheEntry::DiskArrow(_) | CacheEntry::MemoryArrow(_) => "arrow",
             CacheEntry::DiskLiquid(_) | CacheEntry::MemoryLiquid(_) => "liquid",
-            CacheEntry::MemoryHybridLiquid(array) => match array.disk_backing() {
-                HybridBacking::Arrow => "arrow",
-                HybridBacking::Liquid => "liquid",
+            CacheEntry::MemorySqueezedLiquid(array) => match array.disk_backing() {
+                SqueezedBacking::Arrow => "arrow",
+                SqueezedBacking::Liquid => "liquid",
             },
         };
         self.base_dir

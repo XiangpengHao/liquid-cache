@@ -449,10 +449,10 @@ impl Display for IterationResult {
             write_border_sep(f, INNER)?;
             let total_value = format!("{}", cache_stats.total_entries);
             let stats_value = format!(
-                "(Arrow:{} Liquid:{} Hybrid:{} D-L:{} D-A:{})",
+                "(Arrow:{} Liquid:{} Squeezed:{} D-L:{} D-A:{})",
                 cache_stats.memory_arrow_entries,
                 cache_stats.memory_liquid_entries,
-                cache_stats.memory_hybrid_liquid_entries,
+                cache_stats.memory_squeezed_liquid_entries,
                 cache_stats.disk_liquid_entries,
                 cache_stats.disk_arrow_entries
             );

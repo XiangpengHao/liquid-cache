@@ -11,7 +11,7 @@ use crate::cache::{
     CacheExpression, LiquidCompressorStates, VariantRequest, cached_batch::CacheEntry,
     transcode_liquid_inner, utils::arrow_to_bytes,
 };
-use crate::liquid_array::{HybridBacking, LiquidHybridArrayRef, VariantStructHybridArray};
+use crate::liquid_array::{LiquidSqueezedArrayRef, SqueezedBacking, VariantStructSqueezedArray};
 use crate::utils::VariantSchema;
 
 /// What to do when we need to squeeze an entry?
@@ -52,11 +52,11 @@ impl SqueezePolicy for Evict {
                     Some(Bytes::from(disk_data)),
                 )
             }
-            CacheEntry::MemoryHybridLiquid(hybrid_array) => {
-                let data_type = hybrid_array.original_arrow_data_type();
-                let new_entry = match hybrid_array.disk_backing() {
-                    HybridBacking::Liquid => CacheEntry::disk_liquid(data_type),
-                    HybridBacking::Arrow => CacheEntry::disk_arrow(data_type),
+            CacheEntry::MemorySqueezedLiquid(squeezed_array) => {
+                let data_type = squeezed_array.original_arrow_data_type();
+                let new_entry = match squeezed_array.disk_backing() {
+                    SqueezedBacking::Liquid => CacheEntry::disk_liquid(data_type),
+                    SqueezedBacking::Arrow => CacheEntry::disk_arrow(data_type),
                 };
                 (new_entry, None)
             }
@@ -80,10 +80,13 @@ impl SqueezePolicy for TranscodeSqueezeEvict {
             CacheEntry::MemoryArrow(array) => {
                 if let Some(requests) =
                     squeeze_hint.and_then(|expression| expression.variant_requests())
-                    && let Some((hybrid_array, bytes)) =
+                    && let Some((squeezed_array, bytes)) =
                         try_variant_squeeze(array, requests, compressor)
                 {
-                    return (CacheEntry::memory_hybrid_liquid(hybrid_array), Some(bytes));
+                    return (
+                        CacheEntry::memory_squeezed_liquid(squeezed_array),
+                        Some(bytes),
+                    );
                 }
                 match transcode_liquid_inner(array, compressor) {
                     Ok(liquid_array) => (CacheEntry::memory_liquid(liquid_array), None),
@@ -98,7 +101,7 @@ impl SqueezePolicy for TranscodeSqueezeEvict {
                 }
             }
             CacheEntry::MemoryLiquid(liquid_array) => {
-                let (hybrid_array, bytes) = match liquid_array.squeeze(squeeze_hint) {
+                let (squeezed_array, bytes) = match liquid_array.squeeze(squeeze_hint) {
                     Some(result) => result,
                     None => {
                         let bytes = Bytes::from(liquid_array.to_bytes());
@@ -108,13 +111,16 @@ impl SqueezePolicy for TranscodeSqueezeEvict {
                         );
                     }
                 };
-                (CacheEntry::memory_hybrid_liquid(hybrid_array), Some(bytes))
+                (
+                    CacheEntry::memory_squeezed_liquid(squeezed_array),
+                    Some(bytes),
+                )
             }
-            CacheEntry::MemoryHybridLiquid(hybrid_array) => {
-                let data_type = hybrid_array.original_arrow_data_type();
-                let new_entry = match hybrid_array.disk_backing() {
-                    HybridBacking::Liquid => CacheEntry::disk_liquid(data_type),
-                    HybridBacking::Arrow => CacheEntry::disk_arrow(data_type),
+            CacheEntry::MemorySqueezedLiquid(squeezed_array) => {
+                let data_type = squeezed_array.original_arrow_data_type();
+                let new_entry = match squeezed_array.disk_backing() {
+                    SqueezedBacking::Liquid => CacheEntry::disk_liquid(data_type),
+                    SqueezedBacking::Arrow => CacheEntry::disk_arrow(data_type),
                 };
                 (new_entry, None)
             }
@@ -123,7 +129,7 @@ impl SqueezePolicy for TranscodeSqueezeEvict {
     }
 }
 
-/// Squeeze the entry to liquid memory, but don't convert to hybrid.
+/// Squeeze the entry to liquid memory, but don't convert to squeezed.
 #[derive(Debug, Default, Clone)]
 pub struct TranscodeEvict;
 
@@ -152,11 +158,11 @@ impl SqueezePolicy for TranscodeEvict {
                     Some(bytes),
                 )
             }
-            CacheEntry::MemoryHybridLiquid(hybrid_array) => {
-                let data_type = hybrid_array.original_arrow_data_type();
-                let new_entry = match hybrid_array.disk_backing() {
-                    HybridBacking::Liquid => CacheEntry::disk_liquid(data_type),
-                    HybridBacking::Arrow => CacheEntry::disk_arrow(data_type),
+            CacheEntry::MemorySqueezedLiquid(squeezed_array) => {
+                let data_type = squeezed_array.original_arrow_data_type();
+                let new_entry = match squeezed_array.disk_backing() {
+                    SqueezedBacking::Liquid => CacheEntry::disk_liquid(data_type),
+                    SqueezedBacking::Arrow => CacheEntry::disk_arrow(data_type),
                 };
                 (new_entry, None)
             }
@@ -169,7 +175,7 @@ fn try_variant_squeeze(
     array: &ArrayRef,
     requests: &[VariantRequest],
     compressor: &LiquidCompressorStates,
-) -> Option<(LiquidHybridArrayRef, Bytes)> {
+) -> Option<(LiquidSqueezedArrayRef, Bytes)> {
     let struct_array = array.as_any().downcast_ref::<StructArray>()?;
     let mut variant_array = VariantArray::try_new(struct_array).ok()?;
     if variant_array.is_empty() {
@@ -226,9 +232,9 @@ fn try_variant_squeeze(
         };
         liquid_values.push((path, liquid_array));
     }
-    let hybrid =
-        VariantStructHybridArray::new(liquid_values, nulls, backing_array.data_type().clone());
-    Some((Arc::new(hybrid) as LiquidHybridArrayRef, bytes))
+    let squeezed =
+        VariantStructSqueezedArray::new(liquid_values, nulls, backing_array.data_type().clone());
+    Some((Arc::new(squeezed) as LiquidSqueezedArrayRef, bytes))
 }
 
 fn split_variant_path(path: &str) -> Vec<String> {
@@ -286,7 +292,7 @@ mod tests {
     use super::*;
     use crate::cache::CacheExpression;
     use crate::cache::cached_batch::CacheEntry;
-    use crate::liquid_array::{HybridBacking, LiquidHybridArray, VariantStructHybridArray};
+    use crate::liquid_array::{LiquidSqueezedArray, SqueezedBacking, VariantStructSqueezedArray};
     use arrow::array::{Array, ArrayRef, BinaryViewArray, Int32Array, StringArray, StructArray};
     use arrow_schema::Fields;
     use arrow_schema::{DataType, Field};
@@ -405,13 +411,13 @@ mod tests {
             other => panic!("unexpected: {other:?}"),
         }
 
-        // MemoryHybridLiquid -> DiskLiquid, no extra bytes
-        let hybrid = match liquid.squeeze(None) {
+        // MemorySqueezedLiquid -> DiskLiquid, no extra bytes
+        let squeezed = match liquid.squeeze(None) {
             Some((h, _b)) => h,
             None => panic!("squeeze should succeed for byte-view"),
         };
         let (new_batch, bytes) =
-            disk.squeeze(&CacheEntry::memory_hybrid_liquid(hybrid), &states, None);
+            disk.squeeze(&CacheEntry::memory_squeezed_liquid(squeezed), &states, None);
         let data = new_batch;
         match (data, bytes) {
             (CacheEntry::DiskLiquid(_data_type), None) => {}
@@ -442,22 +448,22 @@ mod tests {
             other => panic!("unexpected: {other:?}"),
         }
 
-        // MemoryLiquid (strings) -> MemoryHybridLiquid + bytes
+        // MemoryLiquid (strings) -> MemorySqueezedLiquid + bytes
         let strings = Arc::new(StringArray::from(vec!["x", "y", "x"])) as ArrayRef;
         let liquid = transcode_liquid_inner(&strings, &states).unwrap();
         let (new_batch, bytes) =
             to_liquid.squeeze(&CacheEntry::memory_liquid(liquid), &states, None);
         match (new_batch, bytes) {
-            (CacheEntry::MemoryHybridLiquid(_), Some(b)) => assert!(!b.is_empty()),
+            (CacheEntry::MemorySqueezedLiquid(_), Some(b)) => assert!(!b.is_empty()),
             other => panic!("unexpected: {other:?}"),
         }
 
-        // MemoryHybridLiquid -> DiskLiquid, no bytes
+        // MemorySqueezedLiquid -> DiskLiquid, no bytes
         let strings = Arc::new(StringArray::from(vec!["m", "n"])) as ArrayRef;
         let liquid = transcode_liquid_inner(&strings, &states).unwrap();
-        let hybrid = liquid.squeeze(None).unwrap().0;
+        let squeezed = liquid.squeeze(None).unwrap().0;
         let (new_batch, bytes) =
-            to_liquid.squeeze(&CacheEntry::memory_hybrid_liquid(hybrid), &states, None);
+            to_liquid.squeeze(&CacheEntry::memory_squeezed_liquid(squeezed), &states, None);
         match (new_batch, bytes) {
             (CacheEntry::DiskLiquid(DataType::Utf8), None) => {}
             other => panic!("unexpected: {other:?}"),
@@ -580,14 +586,18 @@ mod tests {
         )) as ArrayRef
     }
 
-    fn assert_variant_hybrid(hybrid: &LiquidHybridArrayRef, expected_path: &str, bytes: &Bytes) {
+    fn assert_variant_squeezed(
+        squeezed: &LiquidSqueezedArrayRef,
+        expected_path: &str,
+        bytes: &Bytes,
+    ) {
         assert!(!bytes.is_empty());
-        assert_eq!(hybrid.disk_backing(), HybridBacking::Arrow);
-        let struct_hybrid = hybrid
+        assert_eq!(squeezed.disk_backing(), SqueezedBacking::Arrow);
+        let struct_squeezed = squeezed
             .as_any()
-            .downcast_ref::<VariantStructHybridArray>()
-            .expect("hybrid variant struct");
-        let arrow_array = struct_hybrid
+            .downcast_ref::<VariantStructSqueezedArray>()
+            .expect("squeezed variant struct");
+        let arrow_array = struct_squeezed
             .to_arrow_array()
             .expect("reconstruct arrow struct");
         let struct_array = arrow_array
@@ -621,10 +631,10 @@ mod tests {
             policy.squeeze(&CacheEntry::memory_arrow(variant_arr), &states, Some(&hint));
 
         match (new_batch, bytes) {
-            (CacheEntry::MemoryHybridLiquid(hybrid), Some(b)) => {
-                assert_variant_hybrid(&hybrid, "name", &b);
+            (CacheEntry::MemorySqueezedLiquid(squeezed), Some(b)) => {
+                assert_variant_squeezed(&squeezed, "name", &b);
             }
-            other => panic!("expected MemoryHybridLiquid with bytes, got {other:?}"),
+            other => panic!("expected MemorySqueezedLiquid with bytes, got {other:?}"),
         }
     }
 
@@ -639,10 +649,10 @@ mod tests {
             policy.squeeze(&CacheEntry::memory_arrow(variant_arr), &states, Some(&hint));
 
         match (new_batch, bytes) {
-            (CacheEntry::MemoryHybridLiquid(hybrid), Some(b)) => {
-                assert_variant_hybrid(&hybrid, "age", &b);
+            (CacheEntry::MemorySqueezedLiquid(squeezed), Some(b)) => {
+                assert_variant_squeezed(&squeezed, "age", &b);
             }
-            other => panic!("expected MemoryHybridLiquid with bytes, got {other:?}"),
+            other => panic!("expected MemorySqueezedLiquid with bytes, got {other:?}"),
         }
     }
 
@@ -660,13 +670,13 @@ mod tests {
             policy.squeeze(&CacheEntry::memory_arrow(variant_arr), &states, Some(&hint));
 
         match (new_batch, bytes) {
-            (CacheEntry::MemoryHybridLiquid(hybrid), Some(b)) => {
+            (CacheEntry::MemorySqueezedLiquid(squeezed), Some(b)) => {
                 assert!(!b.is_empty());
-                let struct_hybrid = hybrid
+                let struct_squeezed = squeezed
                     .as_any()
-                    .downcast_ref::<VariantStructHybridArray>()
-                    .expect("multi-field hybrid array");
-                let arrow_array = struct_hybrid
+                    .downcast_ref::<VariantStructSqueezedArray>()
+                    .expect("multi-field squeezed array");
+                let arrow_array = struct_squeezed
                     .to_arrow_array()
                     .expect("arrow reconstruction");
                 let struct_array = arrow_array
@@ -683,7 +693,7 @@ mod tests {
                 assert!(typed_struct.column_by_name("name").is_some());
                 assert!(typed_struct.column_by_name("age").is_none());
             }
-            other => panic!("expected MemoryHybridLiquid with bytes, got {other:?}"),
+            other => panic!("expected MemorySqueezedLiquid with bytes, got {other:?}"),
         }
     }
 

@@ -14,7 +14,7 @@ use crate::liquid_array::raw::BitPackedArray;
 
 use super::primitive_array::LiquidPrimitiveType;
 use super::{
-    HybridResult, LiquidDataType, LiquidHybridArray, NeedsBacking, Operator, PrimitiveKind,
+    HybridResult, LiquidDataType, LiquidSqueezedArray, NeedsBacking, Operator, PrimitiveKind,
 };
 
 #[derive(Debug, Clone)]
@@ -216,7 +216,7 @@ where
     }
 }
 
-impl<T> LiquidHybridArray for LiquidPrimitiveClampedArray<T>
+impl<T> LiquidSqueezedArray for LiquidPrimitiveClampedArray<T>
 where
     T: LiquidPrimitiveType,
 {
@@ -500,7 +500,7 @@ where
     }
 }
 
-impl<T> LiquidHybridArray for LiquidPrimitiveQuantizedArray<T>
+impl<T> LiquidSqueezedArray for LiquidPrimitiveQuantizedArray<T>
 where
     T: LiquidPrimitiveType + PrimitiveKind,
 {
