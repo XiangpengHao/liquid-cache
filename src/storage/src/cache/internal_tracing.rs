@@ -1,7 +1,7 @@
 use std::sync::Mutex;
 use std::{fmt, fmt::Write};
 
-use crate::cache::{CachedBatchType, EntryID};
+use crate::cache::{CacheExpression, CachedBatchType, EntryID};
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) enum InternalEvent {
@@ -45,6 +45,10 @@ pub(crate) enum InternalEvent {
         entry: EntryID,
         selection: bool,
         cached: CachedBatchType,
+    },
+    ReadSqueezedData {
+        entry: EntryID,
+        expression: CacheExpression,
     },
     TryReadLiquid {
         entry: EntryID,
@@ -143,6 +147,14 @@ impl fmt::Display for InternalEvent {
             ),
             InternalEvent::TryReadLiquid { entry } => {
                 write!(f, "try_read_liquid entry={}", usize::from(*entry))
+            }
+            InternalEvent::ReadSqueezedData { entry, expression } => {
+                write!(
+                    f,
+                    "read_squeezed_date entry={} expression={:?}",
+                    usize::from(*entry),
+                    expression
+                )
             }
         }
     }

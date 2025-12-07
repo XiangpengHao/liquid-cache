@@ -40,14 +40,14 @@ fn reset_disk_read_counter() {
 }
 
 use super::{
-    LiquidArray, LiquidDataType, LiquidHybridArray,
+    LiquidArray, LiquidDataType, LiquidSqueezedArray,
     byte_array::{ArrowByteType, get_string_needle},
 };
 use crate::cache::CacheExpression;
 use crate::liquid_array::ipc::LiquidIPCHeader;
 use crate::liquid_array::raw::BitPackedArray;
 use crate::liquid_array::raw::fsst_array::{RawFsstBuffer, train_compressor};
-use crate::liquid_array::{HybridResult, LiquidHybridArrayRef, NeedsBacking};
+use crate::liquid_array::{HybridResult, LiquidSqueezedArrayRef, NeedsBacking};
 use crate::utils::CheckedDictionaryArray;
 
 // Header for LiquidByteViewArray serialization
@@ -950,7 +950,7 @@ impl LiquidArray for LiquidByteViewArray<MemoryBuffer> {
     fn squeeze(
         &self,
         _expression_hint: Option<&CacheExpression>,
-    ) -> Option<(LiquidHybridArrayRef, bytes::Bytes)> {
+    ) -> Option<(LiquidSqueezedArrayRef, bytes::Bytes)> {
         // Serialize full IPC bytes first
         let bytes = match self.to_bytes_inner() {
             Ok(b) => b,
@@ -987,11 +987,11 @@ impl LiquidArray for LiquidByteViewArray<MemoryBuffer> {
         };
 
         let bytes = bytes::Bytes::from(bytes);
-        Some((Arc::new(hybrid) as LiquidHybridArrayRef, bytes))
+        Some((Arc::new(hybrid) as LiquidSqueezedArrayRef, bytes))
     }
 }
 
-impl LiquidHybridArray for LiquidByteViewArray<DiskBuffer> {
+impl LiquidSqueezedArray for LiquidByteViewArray<DiskBuffer> {
     /// Get the underlying any type.
     fn as_any(&self) -> &dyn Any {
         self

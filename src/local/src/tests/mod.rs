@@ -82,8 +82,8 @@ impl fmt::Display for CacheStatsSummary {
         )?;
         writeln!(
             f,
-            "entries.memory.hybrid_liquid: {}",
-            self.stats.memory_hybrid_liquid_entries
+            "entries.memory.squeezed_liquid: {}",
+            self.stats.memory_squeezed_liquid_entries
         )?;
         writeln!(f, "entries.disk.liquid: {}", self.stats.disk_liquid_entries)?;
         writeln!(f, "entries.disk.arrow: {}", self.stats.disk_arrow_entries)?;

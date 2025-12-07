@@ -42,7 +42,7 @@ pub use primitive_array::{
     LiquidU8Array, LiquidU16Array, LiquidU32Array, LiquidU64Array,
 };
 pub use squeezed_date32_array::{Date32Field, SqueezedDate32Array};
-pub use variant_array::VariantStructHybridArray;
+pub use variant_array::VariantStructSqueezedArray;
 
 use crate::cache::CacheExpression;
 use crate::liquid_array::byte_view_array::MemoryBuffer;
@@ -211,7 +211,7 @@ pub trait LiquidArray: std::fmt::Debug + Send + Sync {
     fn squeeze(
         &self,
         _expression_hint: Option<&CacheExpression>,
-    ) -> Option<(LiquidHybridArrayRef, bytes::Bytes)> {
+    ) -> Option<(LiquidSqueezedArrayRef, bytes::Bytes)> {
         None
     }
 }
@@ -221,7 +221,7 @@ pub type LiquidArrayRef = Arc<dyn LiquidArray>;
 
 /// On-disk backing type for a hybrid array.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HybridBacking {
+pub enum SqueezedBacking {
     /// Bytes are stored using the Liquid IPC format.
     Liquid,
     /// Bytes are stored using Arrow IPC (or another Arrow-compatible encoding).
@@ -229,7 +229,7 @@ pub enum HybridBacking {
 }
 
 /// A reference to a Liquid hybrid array.
-pub type LiquidHybridArrayRef = Arc<dyn LiquidHybridArray>;
+pub type LiquidSqueezedArrayRef = Arc<dyn LiquidSqueezedArray>;
 
 /// Signals that the hybrid representation needs to be hydrated from disk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -263,8 +263,8 @@ impl Operator {
 }
 
 /// A Liquid hybrid array is a Liquid array that part of its data is stored on disk.
-/// `LiquidHybridArray` is more complex than in-memory `LiquidArray` because it needs to handle IO.
-pub trait LiquidHybridArray: std::fmt::Debug + Send + Sync {
+/// `LiquidSqueezedArray` is more complex than in-memory `LiquidArray` because it needs to handle IO.
+pub trait LiquidSqueezedArray: std::fmt::Debug + Send + Sync {
     /// Get the underlying any type.
     fn as_any(&self) -> &dyn Any;
 
@@ -319,8 +319,8 @@ pub trait LiquidHybridArray: std::fmt::Debug + Send + Sync {
     }
 
     /// Describe how the hybrid array persists its backing bytes on disk.
-    fn disk_backing(&self) -> HybridBacking {
-        HybridBacking::Liquid
+    fn disk_backing(&self) -> SqueezedBacking {
+        SqueezedBacking::Liquid
     }
 }
 

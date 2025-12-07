@@ -59,10 +59,10 @@ impl HydrationPolicy for AlwaysHydrate {
             }
             (CachedBatchType::MemoryLiquid, _) => None,
             // When already squeezed/hybrid or liquid in memory, prefer promoting to Arrow if available.
-            (CachedBatchType::MemoryHybridLiquid, MaterializedEntry::Arrow(arr)) => {
+            (CachedBatchType::MemorySqueezedLiquid, MaterializedEntry::Arrow(arr)) => {
                 Some(CacheEntry::memory_arrow((*arr).clone()))
             }
-            (CachedBatchType::MemoryHybridLiquid, MaterializedEntry::Liquid(liq)) => {
+            (CachedBatchType::MemorySqueezedLiquid, MaterializedEntry::Liquid(liq)) => {
                 Some(CacheEntry::memory_liquid((*liq).clone()))
             }
             _ => None,

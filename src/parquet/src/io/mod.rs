@@ -7,7 +7,7 @@ use ahash::AHashMap;
 use bytes::Bytes;
 use liquid_cache_common::IoMode;
 use liquid_cache_storage::cache::{CacheEntry, EntryID, IoContext, LiquidCompressorStates};
-use liquid_cache_storage::liquid_array::HybridBacking;
+use liquid_cache_storage::liquid_array::SqueezedBacking;
 
 use crate::cache::{ColumnAccessPath, ParquetArrayID};
 
@@ -67,9 +67,9 @@ impl IoContext for ParquetIoContext {
             CacheEntry::DiskLiquid(_) | CacheEntry::MemoryLiquid(_) => {
                 parquet_array_id.on_disk_path(&self.base_dir)
             }
-            CacheEntry::MemoryHybridLiquid(array) => match array.disk_backing() {
-                HybridBacking::Arrow => parquet_array_id.on_disk_arrow_path(&self.base_dir),
-                HybridBacking::Liquid => parquet_array_id.on_disk_path(&self.base_dir),
+            CacheEntry::MemorySqueezedLiquid(array) => match array.disk_backing() {
+                SqueezedBacking::Arrow => parquet_array_id.on_disk_arrow_path(&self.base_dir),
+                SqueezedBacking::Liquid => parquet_array_id.on_disk_path(&self.base_dir),
             },
         }
     }

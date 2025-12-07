@@ -11,8 +11,8 @@ EventTrace: [
 	insert_failed entry=1 kind=MemoryArrow
 	squeeze_begin victims=[0]
 	squeeze_victim entry=0
-	io_write entry=0 kind=MemoryHybridLiquid bytes=1320
-	insert_success entry=0 kind=MemoryHybridLiquid
+	io_write entry=0 kind=MemorySqueezedLiquid bytes=1320
+	insert_success entry=0 kind=MemorySqueezedLiquid
 	insert_failed entry=1 kind=MemoryArrow
 	squeeze_begin victims=[0]
 	squeeze_victim entry=0

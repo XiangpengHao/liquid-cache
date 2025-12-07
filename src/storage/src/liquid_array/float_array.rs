@@ -37,7 +37,7 @@ use crate::liquid_array::LiquidArray;
 use crate::liquid_array::ipc::{PhysicalTypeMarker, get_physical_type_id};
 use crate::liquid_array::raw::BitPackedArray;
 use crate::liquid_array::{
-    HybridResult, LiquidHybridArray, LiquidHybridArrayRef, NeedsBacking, Operator,
+    HybridResult, LiquidSqueezedArray, LiquidSqueezedArrayRef, NeedsBacking, Operator,
     ipc::LiquidIPCHeader,
 };
 use crate::utils::get_bit_width;
@@ -339,7 +339,7 @@ where
     fn squeeze(
         &self,
         _expression_hint: Option<&CacheExpression>,
-    ) -> Option<(super::LiquidHybridArrayRef, bytes::Bytes)> {
+    ) -> Option<(super::LiquidSqueezedArrayRef, bytes::Bytes)> {
         let orig_bw = self.bit_packed.bit_width()?;
         if orig_bw.get() < 8 {
             return None;
@@ -383,7 +383,7 @@ where
                     patch_indices: self.patch_indices.clone(),
                     patch_values: self.patch_values.clone(),
                 };
-                Some((Arc::new(hybrid) as LiquidHybridArrayRef, full_bytes))
+                Some((Arc::new(hybrid) as LiquidSqueezedArrayRef, full_bytes))
             }
         }
     }
@@ -936,7 +936,7 @@ where
     }
 }
 
-impl<T> LiquidHybridArray for LiquidFloatQuantizedArray<T>
+impl<T> LiquidSqueezedArray for LiquidFloatQuantizedArray<T>
 where
     T: LiquidFloatType,
 {
