@@ -50,11 +50,7 @@ RuntimeStatsSnapshot:
   get_predicate_squeezed_success: 0
   get_predicate_squeezed_needs_io: 0
   get_predicate_squeezed_unsupported: 0
-  get_filter_squeezed_success: 0
-  get_filter_squeezed_needs_io: 0
-  get_filter_squeezed_unsupported: 0
-  get_full_squeezed_success: 0
-  get_full_squeezed_needs_io: 0
-  get_full_squeezed_unsupported: 0
+  get_squeezed_success: 0
+  get_squeezed_needs_io: 0
   try_read_liquid_calls: 0
   hit_date32_expression_calls: 0

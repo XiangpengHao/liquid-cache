@@ -22,7 +22,8 @@ use crate::cache::stats::{CacheStats, RuntimeStats};
 use crate::cache::utils::{LiquidCompressorStates, arrow_to_bytes};
 use crate::cache::{CacheExpression, ExpressionRegistry, index::ArtIndex, utils::EntryID};
 use crate::liquid_array::{
-    LiquidSqueezedArrayRef, SqueezedBacking, SqueezedDate32Array, VariantStructSqueezedArray,
+    LiquidSqueezedArray, LiquidSqueezedArrayRef, SqueezedBacking, SqueezedDate32Array,
+    VariantStructSqueezedArray,
 };
 use crate::sync::Arc;
 
@@ -564,6 +565,7 @@ impl LiquidCache {
         selection: Option<&BooleanBuffer>,
     ) -> Option<ArrayRef> {
         if let Some(array) = self.try_read_squeezed_date32_array(array, expression, selection) {
+            self.runtime_stats.incr_get_squeezed_success();
             return Some(array);
         }
 
@@ -571,80 +573,46 @@ impl LiquidCache {
             .try_read_squeezed_variant_array(array, entry_id, expression, selection)
             .await
         {
+            self.runtime_stats.incr_get_squeezed_success();
             return Some(array);
         }
 
+        self.runtime_stats.incr_get_squeezed_needs_io();
         let batch = CacheEntry::MemorySqueezedLiquid(array.clone());
-        if let Some(selection) = selection {
-            match array.filter(selection) {
-                Ok(arr) => {
-                    self.runtime_stats.incr_get_filter_squeezed_success();
-                    Some(arr)
+        let arrow = {
+            match array.disk_backing() {
+                SqueezedBacking::Liquid => {
+                    let liquid = self.read_disk_liquid_array(&batch, entry_id).await?;
+                    self.maybe_hydrate(
+                        entry_id,
+                        CachedBatchType::MemorySqueezedLiquid,
+                        MaterializedEntry::Liquid(&liquid),
+                        expression,
+                    )
+                    .await;
+                    liquid.to_arrow_array()
                 }
-                Err(_) => {
-                    self.runtime_stats.incr_get_filter_squeezed_needs_io();
-                    match array.disk_backing() {
-                        SqueezedBacking::Liquid => {
-                            let liquid = self.read_disk_liquid_array(&batch, entry_id).await?;
-                            self.maybe_hydrate(
-                                entry_id,
-                                CachedBatchType::MemorySqueezedLiquid,
-                                MaterializedEntry::Liquid(&liquid),
-                                expression,
-                            )
-                            .await;
-                            Some(liquid.filter(selection))
-                        }
-                        SqueezedBacking::Arrow => {
-                            let full_array = self.read_disk_arrow_array(&batch, entry_id).await?;
-                            self.maybe_hydrate(
-                                entry_id,
-                                CachedBatchType::MemorySqueezedLiquid,
-                                MaterializedEntry::Arrow(&full_array),
-                                expression,
-                            )
-                            .await;
-                            let selection_array = BooleanArray::new(selection.clone(), None);
-                            arrow::compute::filter(&full_array, &selection_array).ok()
-                        }
-                    }
+                SqueezedBacking::Arrow => {
+                    let full_array = self.read_disk_arrow_array(&batch, entry_id).await?;
+                    self.maybe_hydrate(
+                        entry_id,
+                        CachedBatchType::MemorySqueezedLiquid,
+                        MaterializedEntry::Arrow(&full_array),
+                        expression,
+                    )
+                    .await;
+                    full_array
                 }
             }
-        } else {
-            match array.to_arrow_array() {
-                Ok(arr) => {
-                    self.runtime_stats.incr_get_full_squeezed_success();
-                    Some(arr)
-                }
-                Err(_) => {
-                    self.runtime_stats.incr_get_full_squeezed_needs_io();
-                    match array.disk_backing() {
-                        SqueezedBacking::Liquid => {
-                            let liquid = self.read_disk_liquid_array(&batch, entry_id).await?;
-                            self.maybe_hydrate(
-                                entry_id,
-                                CachedBatchType::MemorySqueezedLiquid,
-                                MaterializedEntry::Liquid(&liquid),
-                                expression,
-                            )
-                            .await;
-                            Some(liquid.to_arrow_array())
-                        }
-                        SqueezedBacking::Arrow => {
-                            let full_array = self.read_disk_arrow_array(&batch, entry_id).await?;
-                            self.maybe_hydrate(
-                                entry_id,
-                                CachedBatchType::MemorySqueezedLiquid,
-                                MaterializedEntry::Arrow(&full_array),
-                                expression,
-                            )
-                            .await;
-                            Some(full_array)
-                        }
-                    }
-                }
+        };
+        let filtered = match selection {
+            Some(selection) => {
+                let selection_array = BooleanArray::new(selection.clone(), None);
+                arrow::compute::filter(&arrow, &selection_array).unwrap()
             }
-        }
+            None => arrow,
+        };
+        Some(filtered)
     }
 
     fn try_read_squeezed_date32_array(
@@ -676,15 +644,17 @@ impl LiquidCache {
         expression: Option<&CacheExpression>,
         selection: Option<&BooleanBuffer>,
     ) -> Option<ArrayRef> {
-        if let Some(requests) = expression.and_then(|expr| expr.variant_requests())
-            && let Some(variant_squeezed) =
-                array.as_any().downcast_ref::<VariantStructSqueezedArray>()
-            && !requests
-                .iter()
-                .all(|request| variant_squeezed.contains_path(request.path()))
-        {
+        let requests = expression.and_then(|expr| expr.variant_requests())?;
+        let variant_squeezed = array
+            .as_any()
+            .downcast_ref::<VariantStructSqueezedArray>()?;
+        let all_paths_present = requests
+            .iter()
+            .all(|request| variant_squeezed.contains_path(request.path()));
+
+        let full_array = if !all_paths_present {
             let batch = CacheEntry::MemorySqueezedLiquid(array.clone());
-            self.runtime_stats.incr_get_full_squeezed_needs_io();
+            self.runtime_stats.incr_get_squeezed_needs_io();
             let full_array = self.read_disk_arrow_array(&batch, entry_id).await?;
             self.maybe_hydrate(
                 entry_id,
@@ -693,15 +663,18 @@ impl LiquidCache {
                 expression,
             )
             .await;
-            return match selection {
-                Some(selection) => {
-                    let selection_array = BooleanArray::new(selection.clone(), None);
-                    arrow::compute::filter(&full_array, &selection_array).ok()
-                }
-                None => Some(full_array),
-            };
+            full_array
+        } else {
+            variant_squeezed.to_arrow_array().unwrap()
+        };
+
+        match selection {
+            Some(selection) => {
+                let selection_array = BooleanArray::new(selection.clone(), None);
+                arrow::compute::filter(&full_array, &selection_array).ok()
+            }
+            None => Some(full_array),
         }
-        None
     }
 
     async fn write_batch_to_disk(&self, entry_id: EntryID, batch: &CacheEntry, bytes: Bytes) {
