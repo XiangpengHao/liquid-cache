@@ -4,7 +4,9 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CacheKind {
     MemoryArrow,
+    MemoryLiquid,
     MemorySqueezedLiquid,
+    DiskLiquid,
     DiskArrow,
     Unknown(String),
 }
@@ -13,7 +15,9 @@ impl CacheKind {
     pub fn from_str(s: &str) -> Self {
         match s {
             "MemoryArrow" => CacheKind::MemoryArrow,
+            "MemoryLiquid" => CacheKind::MemoryLiquid,
             "MemorySqueezedLiquid" => CacheKind::MemorySqueezedLiquid,
+            "DiskLiquid" => CacheKind::DiskLiquid,
             "DiskArrow" => CacheKind::DiskArrow,
             _ => CacheKind::Unknown(s.to_string()),
         }
@@ -22,9 +26,11 @@ impl CacheKind {
     /// Get a short display name for UI
     pub fn display_name(&self) -> &str {
         match self {
-            CacheKind::MemoryArrow => "Memory Arrow",
-            CacheKind::MemorySqueezedLiquid => "Memory Squeezed",
-            CacheKind::DiskArrow => "Disk Arrow",
+            CacheKind::MemoryArrow => "MemoryArrow",
+            CacheKind::MemoryLiquid => "MemoryLiquid",
+            CacheKind::MemorySqueezedLiquid => "MemorySqueezed",
+            CacheKind::DiskLiquid => "DiskLiquid",
+            CacheKind::DiskArrow => "DiskArrow",
             CacheKind::Unknown(s) => s.as_str(),
         }
     }

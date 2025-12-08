@@ -27,6 +27,15 @@ pub struct IoStats {
     pub bytes_written: u64,
 }
 
+/// Tracks the delta changes in I/O stats for the current event
+#[derive(Debug, Clone, Default)]
+pub struct IoStatsDelta {
+    pub read_requests_delta: usize,
+    pub write_requests_delta: usize,
+    pub bytes_read_delta: u64,
+    pub bytes_written_delta: u64,
+}
+
 /// Operation happening on an entry
 #[derive(Debug, Clone, PartialEq)]
 pub enum EntryOperation {
@@ -57,6 +66,8 @@ pub struct CacheState {
     pub in_squeeze: bool,
     /// Disk I/O statistics
     pub io_stats: IoStats,
+    /// Delta changes in I/O stats for the current event
+    pub io_stats_delta: IoStatsDelta,
     /// Current operations on entries (entry_id -> operation)
     pub current_operations: BTreeMap<u64, EntryOperation>,
     /// Victim status for entries (entry_id -> status)
@@ -72,6 +83,7 @@ impl CacheState {
             squeeze_victims: Vec::new(),
             in_squeeze: false,
             io_stats: IoStats::default(),
+            io_stats_delta: IoStatsDelta::default(),
             current_operations: BTreeMap::new(),
             victim_status: BTreeMap::new(),
             failed_inserts: BTreeMap::new(),
@@ -170,8 +182,9 @@ impl CacheSimulator {
 
     /// Apply an event to the current state
     fn apply_event(&mut self, event: &TraceEvent) {
-        // Clear previous operations
+        // Clear previous operations and reset I/O deltas
         self.state.current_operations.clear();
+        self.state.io_stats_delta = IoStatsDelta::default();
 
         match event {
             TraceEvent::InsertSuccess { entry, kind } => {
@@ -220,6 +233,8 @@ impl CacheSimulator {
             TraceEvent::IoWrite { entry, bytes, .. } => {
                 self.state.io_stats.write_requests += 1;
                 self.state.io_stats.bytes_written += bytes;
+                self.state.io_stats_delta.write_requests_delta = 1;
+                self.state.io_stats_delta.bytes_written_delta = *bytes;
                 self.state
                     .current_operations
                     .insert(*entry, EntryOperation::IoWrite);
@@ -227,6 +242,8 @@ impl CacheSimulator {
             TraceEvent::IoReadArrow { entry, bytes, .. } => {
                 self.state.io_stats.read_requests += 1;
                 self.state.io_stats.bytes_read += bytes;
+                self.state.io_stats_delta.read_requests_delta = 1;
+                self.state.io_stats_delta.bytes_read_delta = *bytes;
                 self.state
                     .current_operations
                     .insert(*entry, EntryOperation::IoRead);

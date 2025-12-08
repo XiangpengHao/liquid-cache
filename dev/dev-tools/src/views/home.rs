@@ -1,61 +1,45 @@
 use crate::components::{CacheStateView, PlaybackControls, TraceViewer};
-use crate::trace::{CacheSimulator, parse_trace};
+use crate::trace::{CacheSimulator, parse_trace, list_snapshots, load_snapshot};
 use dioxus::prelude::*;
-
-/// Sample trace data for demonstration
-const SAMPLE_TRACE: &str = r#"
-event=insert_success entry=0 kind=MemoryArrow
-event=insert_success entry=1 kind=MemoryArrow
-event=insert_failed entry=2 kind=MemoryArrow
-event=squeeze_begin victims=[0,1]
-event=squeeze_victim entry=0
-event=io_write entry=0 kind=MemorySqueezedLiquid bytes=7816
-event=insert_success entry=0 kind=MemorySqueezedLiquid
-event=squeeze_victim entry=1
-event=io_write entry=1 kind=MemorySqueezedLiquid bytes=7816
-event=insert_success entry=1 kind=MemorySqueezedLiquid
-event=insert_success entry=2 kind=MemoryArrow
-event=read entry=0 selection=false expr=VariantGet[name:Utf8] cached=MemorySqueezedLiquid
-event=read_squeezed_date entry=0 expression=VariantGet[name:Utf8]
-event=read entry=0 selection=false expr=VariantGet[age:Int64] cached=MemorySqueezedLiquid
-event=io_read_arrow entry=0 bytes=7816
-event=hydrate entry=0 cached=DiskArrow new=MemoryArrow
-event=insert_failed entry=0 kind=MemoryArrow
-event=squeeze_begin victims=[2,0,1]
-event=squeeze_victim entry=2
-event=io_write entry=2 kind=MemorySqueezedLiquid bytes=7816
-event=insert_success entry=2 kind=MemorySqueezedLiquid
-event=squeeze_victim entry=0
-event=insert_success entry=0 kind=DiskArrow
-event=squeeze_victim entry=1
-event=insert_success entry=1 kind=DiskArrow
-event=insert_failed entry=0 kind=MemoryArrow
-event=squeeze_begin victims=[2]
-event=squeeze_victim entry=2
-event=insert_success entry=2 kind=DiskArrow
-event=insert_failed entry=0 kind=MemoryArrow
-event=io_write entry=0 kind=DiskArrow bytes=7816
-event=insert_success entry=0 kind=DiskArrow
-event=read_squeezed_date entry=0 expression=VariantGet[age:Int64]
-event=read entry=1 selection=false expr=VariantGet[address.zipcode:Int64] cached=DiskArrow
-event=io_read_arrow entry=1 bytes=7816
-event=hydrate entry=1 cached=DiskArrow new=MemoryArrow
-event=insert_failed entry=1 kind=MemoryArrow
-event=io_write entry=1 kind=DiskArrow bytes=7816
-event=insert_success entry=1 kind=DiskArrow
-"#;
 
 /// The Home page component that will be rendered when the current route is `[Route::Home]`
 #[component]
 pub fn Home() -> Element {
+    // State for snapshot files
+    let mut available_snapshots = use_signal(|| Vec::<String>::new());
+    let mut selected_snapshot = use_signal(|| String::new());
+    let mut is_loading = use_signal(|| false);
+    let mut error_message = use_signal(|| Option::<String>::None);
+    
     // Parse the trace and create a simulator
-    let mut simulator = use_signal(|| {
-        let events = parse_trace(SAMPLE_TRACE);
-        CacheSimulator::new(events)
-    });
+    let mut simulator = use_signal(|| CacheSimulator::new(vec![]));
 
     let mut trace_input = use_signal(|| String::new());
     let mut show_input = use_signal(|| false);
+    
+    // Load available snapshots on mount
+    use_effect(move || {
+        spawn(async move {
+            match list_snapshots().await {
+                Ok(files) => {
+                    if !files.is_empty() {
+                        available_snapshots.set(files.clone());
+                        let first_file = files[0].clone();
+                        selected_snapshot.set(first_file.clone());
+                        
+                        // Auto-load the first snapshot
+                        if let Ok(content) = load_snapshot(first_file).await {
+                            let events = parse_trace(&content);
+                            simulator.set(CacheSimulator::new(events));
+                        }
+                    }
+                }
+                Err(e) => {
+                    error_message.set(Some(format!("Failed to list snapshots: {}", e)));
+                }
+            }
+        });
+    });
 
     rsx! {
         div {
@@ -85,21 +69,86 @@ pub fn Home() -> Element {
             div {
                 class: "header p-4 border-b border-gray-200 bg-white",
                 div {
-                    class: "max-w-screen-2xl mx-auto flex justify-between items-center",
+                    class: "max-w-screen-2xl mx-auto flex justify-between items-center gap-4",
                     h1 {
                         class: "text-2xl font-semibold text-gray-900",
                         "LiquidCache Trace Visualizer"
                     }
+                    
+                    // Snapshot selector
+                    div {
+                        class: "flex items-center gap-2 flex-1 max-w-md",
+                        label {
+                            class: "text-sm font-medium text-gray-700 whitespace-nowrap",
+                            "Snapshot:"
+                        }
+                        select {
+                            class: "flex-1 px-3 py-2 text-sm bg-white border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-transparent",
+                            disabled: is_loading(),
+                            value: "{selected_snapshot}",
+                            onchange: move |evt| {
+                                let filename = evt.value();
+                                selected_snapshot.set(filename.clone());
+                                is_loading.set(true);
+                                error_message.set(None);
+                                
+                                spawn(async move {
+                                    match load_snapshot(filename).await {
+                                        Ok(content) => {
+                                            let events = parse_trace(&content);
+                                            simulator.set(CacheSimulator::new(events));
+                                            error_message.set(None);
+                                        }
+                                        Err(e) => {
+                                            error_message.set(Some(format!("Failed to load snapshot: {}", e)));
+                                        }
+                                    }
+                                    is_loading.set(false);
+                                });
+                            },
+                            
+                            if available_snapshots().is_empty() {
+                                option { value: "", "Loading..." }
+                            } else {
+                                for snapshot in available_snapshots() {
+                                    option {
+                                        key: "{snapshot}",
+                                        value: "{snapshot}",
+                                        "{snapshot}"
+                                    }
+                                }
+                            }
+                        }
+                        
+                        if is_loading() {
+                            span {
+                                class: "text-sm text-gray-500",
+                                "Loading..."
+                            }
+                        }
+                    }
+                    
                     button {
-                        class: "px-4 py-2 text-sm font-medium bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors",
+                        class: "px-4 py-2 text-sm font-medium bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors whitespace-nowrap",
                         onclick: move |_| {
                             show_input.set(!show_input());
                         },
                         if show_input() {
                             "Hide Input"
                         } else {
-                            "Load Trace"
+                            "Load Custom"
                         }
+                    }
+                }
+            }
+            
+            // Error message
+            if let Some(error) = error_message() {
+                div {
+                    class: "bg-red-50 border-b border-red-200 px-4 py-2",
+                    div {
+                        class: "max-w-screen-2xl mx-auto text-sm text-red-700",
+                        "{error}"
                     }
                 }
             }
@@ -139,11 +188,9 @@ pub fn Home() -> Element {
                             button {
                                 class: "px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors",
                                 onclick: move |_| {
-                                    let events = parse_trace(SAMPLE_TRACE);
-                                    simulator.set(CacheSimulator::new(events));
-                                    show_input.set(false);
+                                    trace_input.set(String::new());
                                 },
-                                "Load Sample"
+                                "Clear"
                             }
                         }
                     }

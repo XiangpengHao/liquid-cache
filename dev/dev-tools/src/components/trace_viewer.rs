@@ -15,7 +15,7 @@ pub fn TraceViewer(simulator: Signal<CacheSimulator>) -> Element {
             div {
                 class: "trace-header p-4 border-b border-gray-200",
                 h2 {
-                    class: "text-lg font-semibold text-gray-900 mb-1",
+                    class: "text-lg font-semibold text-gray-900",
                     "Event Trace"
                 }
                 div {
