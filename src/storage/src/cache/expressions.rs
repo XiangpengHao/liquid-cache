@@ -61,7 +61,7 @@ impl std::fmt::Display for CacheExpression {
                 write!(f, "]")
             }
             Self::ExtractDate32 { field } => {
-                write!(f, "ExtractDate32-{:?}", field)
+                write!(f, "ExtractDate32:{:?}", field)
             }
         }
     }
