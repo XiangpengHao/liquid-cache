@@ -36,7 +36,7 @@ pub struct LiquidCacheBuilder {
     cache_policy: Box<dyn CachePolicy>,
     hydration_policy: Box<dyn HydrationPolicy>,
     squeeze_policy: Box<dyn SqueezePolicy>,
-    io_worker: Option<Arc<dyn IoContext>>,
+    io_context: Option<Arc<dyn IoContext>>,
 }
 
 impl Default for LiquidCacheBuilder {
@@ -55,7 +55,7 @@ impl LiquidCacheBuilder {
             cache_policy: Box::new(LiquidPolicy::new()),
             hydration_policy: Box::new(super::NoHydration::new()),
             squeeze_policy: Box::new(TranscodeSqueezeEvict),
-            io_worker: None,
+            io_context: None,
         }
     }
 
@@ -101,10 +101,10 @@ impl LiquidCacheBuilder {
         self
     }
 
-    /// Set the io worker for the cache.
+    /// Set the [IoContext] for the cache.
     /// Default is [DefaultIoContext].
-    pub fn with_io_worker(mut self, io_worker: Arc<dyn IoContext>) -> Self {
-        self.io_worker = Some(io_worker);
+    pub fn with_io_context(mut self, io_context: Arc<dyn IoContext>) -> Self {
+        self.io_context = Some(io_context);
         self
     }
 
@@ -116,7 +116,7 @@ impl LiquidCacheBuilder {
             .cache_dir
             .unwrap_or_else(|| tempfile::tempdir().unwrap().keep());
         let io_worker = self
-            .io_worker
+            .io_context
             .unwrap_or_else(|| Arc::new(DefaultIoContext::new(cache_dir.clone())));
         Arc::new(LiquidCache::new(
             self.batch_size,
@@ -137,6 +137,7 @@ pub struct Insert<'a> {
     pub(super) entry_id: EntryID,
     pub(super) batch: ArrayRef,
     pub(super) skip_gc: bool,
+    pub(super) squeeze_hint: Option<Arc<CacheExpression>>,
 }
 
 impl<'a> Insert<'a> {
@@ -146,6 +147,7 @@ impl<'a> Insert<'a> {
             entry_id,
             batch,
             skip_gc: false,
+            squeeze_hint: None,
         }
     }
 
@@ -155,12 +157,21 @@ impl<'a> Insert<'a> {
         self
     }
 
+    /// Set a squeeze hint for the entry.
+    pub fn with_squeeze_hint(mut self, expression: Arc<CacheExpression>) -> Self {
+        self.squeeze_hint = Some(expression);
+        self
+    }
+
     async fn run(self) {
         let batch = if self.skip_gc {
             self.batch.clone()
         } else {
             maybe_gc_view_arrays(&self.batch).unwrap_or_else(|| self.batch.clone())
         };
+        if let Some(squeeze_hint) = self.squeeze_hint {
+            self.storage.set_squeeze_hint(&self.entry_id, squeeze_hint);
+        }
         let batch = CacheEntry::memory_arrow(batch);
         self.storage.insert_inner(self.entry_id, batch).await;
     }

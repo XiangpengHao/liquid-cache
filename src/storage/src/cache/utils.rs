@@ -59,7 +59,7 @@ pub(crate) fn create_cache_store(
     use tempfile::tempdir;
 
     use crate::cache::{
-        AlwaysHydrate, BlockingIoContext, LiquidCacheBuilder, TranscodeSqueezeEvict,
+        AlwaysHydrate, DefaultIoContext, LiquidCacheBuilder, TranscodeSqueezeEvict,
     };
 
     let temp_dir = tempdir().unwrap();
@@ -73,12 +73,12 @@ pub(crate) fn create_cache_store(
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
         .with_hydration_policy(Box::new(AlwaysHydrate::new()))
         .with_cache_policy(policy)
-        .with_io_worker(Arc::new(BlockingIoContext::new(base_dir)));
+        .with_io_context(Arc::new(DefaultIoContext::new(base_dir)));
     builder.build()
 }
 
 /// EntryID is a unique identifier for a batch of rows, i.e., the cache key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd, serde::Serialize)]
 pub struct EntryID {
     val: usize,
 }

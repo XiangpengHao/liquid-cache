@@ -82,7 +82,7 @@ impl Display for CacheEntry {
 }
 
 /// The type of the cached batch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum CachedBatchType {
     /// Cached batch in memory as Arrow array.
     MemoryArrow,

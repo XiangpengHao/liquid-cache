@@ -747,7 +747,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::{CacheExpression, ColumnID, EntryID, ExpressionRegistry};
     use arrow::array::Array;
 
     macro_rules! test_roundtrip {
@@ -875,75 +874,6 @@ mod tests {
         Date32Type,
         vec![Some(-365), Some(0), Some(365), None, Some(18262)]
     );
-
-    #[test]
-    fn test_date32_squeeze_respects_majority_expression_hint() {
-        let original = vec![Some(0), Some(31), Some(59), None, Some(90)];
-        let array = PrimitiveArray::<Date32Type>::from(original);
-        let liquid = LiquidPrimitiveArray::<Date32Type>::from_arrow_array(array);
-        let registry = ExpressionRegistry::new();
-
-        let entry_id = EntryID::from(0x0001_0000usize);
-        let column_id = ColumnID::from_entry_id(entry_id);
-        let _expr_month = registry.register(
-            CacheExpression::extract_date32(Date32Field::Month),
-            Some(column_id),
-        );
-        let _expr_month2 = registry.register(
-            CacheExpression::extract_date32(Date32Field::Month),
-            Some(column_id),
-        );
-        let _expr_year = registry.register(
-            CacheExpression::extract_date32(Date32Field::Year),
-            Some(column_id),
-        );
-        let majority_expr = registry
-            .column_majority_expression(entry_id)
-            .expect("majority expression");
-
-        let (hybrid, _) = liquid
-            .squeeze(Some(majority_expr.as_ref()))
-            .expect("squeeze should succeed");
-        let squeezed = hybrid
-            .as_any()
-            .downcast_ref::<SqueezedDate32Array>()
-            .expect("expected squeezed date32 array");
-
-        assert_eq!(squeezed.field(), Date32Field::Month);
-    }
-
-    #[test]
-    fn test_date32_squeeze_prefers_recent_on_tie() {
-        let original = vec![Some(0), Some(1), Some(2), Some(3)];
-        let array = PrimitiveArray::<Date32Type>::from(original);
-        let liquid = LiquidPrimitiveArray::<Date32Type>::from_arrow_array(array);
-        let registry = ExpressionRegistry::new();
-
-        let entry_id = EntryID::from(0x0002_0000usize);
-        let column_id = ColumnID::from_entry_id(entry_id);
-        let _expr_year = registry.register(
-            CacheExpression::extract_date32(Date32Field::Year),
-            Some(column_id),
-        );
-        let _expr_day = registry.register(
-            CacheExpression::extract_date32(Date32Field::Day),
-            Some(column_id),
-        );
-
-        let majority_expr = registry
-            .column_majority_expression(entry_id)
-            .expect("majority expression");
-
-        let (hybrid, _) = liquid
-            .squeeze(Some(majority_expr.as_ref()))
-            .expect("squeeze should succeed");
-        let squeezed = hybrid
-            .as_any()
-            .downcast_ref::<SqueezedDate32Array>()
-            .expect("expected squeezed date32 array");
-
-        assert_eq!(squeezed.field(), Date32Field::Day);
-    }
 
     test_roundtrip!(
         test_date64_roundtrip,
