@@ -35,7 +35,7 @@ pub(crate) enum InternalEvent {
     Read {
         entry: EntryID,
         selection: bool,
-        expr: bool,
+        expr: Option<CacheExpression>,
         cached: CachedBatchType,
     },
     Hydrate {
@@ -136,7 +136,9 @@ impl fmt::Display for InternalEvent {
                 "event=read entry={} selection={} expr={} cached={:?}",
                 usize::from(*entry),
                 selection,
-                expr,
+                expr.as_ref()
+                    .map(|e| e.to_string())
+                    .unwrap_or_else(|| "None".to_string()),
                 cached
             ),
             InternalEvent::Hydrate { entry, cached, new } => write!(

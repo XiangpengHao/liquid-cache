@@ -14,9 +14,9 @@ event=squeeze_victim entry=1
 event=io_write entry=1 kind=MemorySqueezedLiquid bytes=7816
 event=insert_success entry=1 kind=MemorySqueezedLiquid
 event=insert_success entry=2 kind=MemoryArrow
-event=read entry=0 selection=false expr=true cached=MemorySqueezedLiquid
+event=read entry=0 selection=false expr=VariantGet[name:Utf8] cached=MemorySqueezedLiquid
 event=read_squeezed_date entry=0 expression=VariantGet[name:Utf8]
-event=read entry=0 selection=false expr=true cached=MemorySqueezedLiquid
+event=read entry=0 selection=false expr=VariantGet[age:Int64] cached=MemorySqueezedLiquid
 event=io_read_arrow entry=0 bytes=7816
 event=hydrate entry=0 cached=DiskArrow new=MemoryArrow
 event=insert_failed entry=0 kind=MemoryArrow
@@ -36,7 +36,7 @@ event=insert_failed entry=0 kind=MemoryArrow
 event=io_write entry=0 kind=DiskArrow bytes=7816
 event=insert_success entry=0 kind=DiskArrow
 event=read_squeezed_date entry=0 expression=VariantGet[age:Int64]
-event=read entry=1 selection=false expr=true cached=DiskArrow
+event=read entry=1 selection=false expr=VariantGet[address.zipcode:Int64] cached=DiskArrow
 event=io_read_arrow entry=1 bytes=7816
 event=hydrate entry=1 cached=DiskArrow new=MemoryArrow
 event=insert_failed entry=1 kind=MemoryArrow

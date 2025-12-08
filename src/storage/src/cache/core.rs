@@ -473,7 +473,7 @@ impl LiquidCache {
         self.trace(InternalEvent::Read {
             entry: *entry_id,
             selection: selection.is_some(),
-            expr: expression.is_some(),
+            expr: expression.cloned(),
             cached: CachedBatchType::from(batch.as_ref()),
         });
 
