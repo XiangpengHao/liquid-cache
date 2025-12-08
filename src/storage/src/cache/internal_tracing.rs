@@ -26,9 +26,11 @@ pub(crate) enum InternalEvent {
     },
     IoReadArrow {
         entry: EntryID,
+        bytes: usize,
     },
     IoReadLiquid {
         entry: EntryID,
+        bytes: usize,
     },
     Read {
         entry: EntryID,
@@ -78,7 +80,7 @@ impl fmt::Display for InternalEvent {
             InternalEvent::InsertFailed { entry, kind } => {
                 write!(
                     f,
-                    "insert_failed entry={} kind={:?}",
+                    "event=insert_failed entry={} kind={:?}",
                     usize::from(*entry),
                     kind
                 )
@@ -86,7 +88,7 @@ impl fmt::Display for InternalEvent {
             InternalEvent::InsertSuccess { entry, kind } => {
                 write!(
                     f,
-                    "insert_success entry={} kind={:?}",
+                    "event=insert_success entry={} kind={:?}",
                     usize::from(*entry),
                     kind
                 )
@@ -94,25 +96,35 @@ impl fmt::Display for InternalEvent {
             InternalEvent::SqueezeBegin { victims } => {
                 let mut buf = String::new();
                 fmt_entry_list(&mut buf, victims)?;
-                write!(f, "squeeze_begin victims={}", buf)
+                write!(f, "event=squeeze_begin victims={}", buf)
             }
             InternalEvent::SqueezeVictim { entry } => {
-                write!(f, "squeeze_victim entry={}", usize::from(*entry))
+                write!(f, "event=squeeze_victim entry={}", usize::from(*entry))
             }
             InternalEvent::IoWrite { entry, kind, bytes } => {
                 write!(
                     f,
-                    "io_write entry={} kind={:?} bytes={}",
+                    "event=io_write entry={} kind={:?} bytes={}",
                     usize::from(*entry),
                     kind,
                     bytes
                 )
             }
-            InternalEvent::IoReadArrow { entry } => {
-                write!(f, "io_read_arrow entry={}", usize::from(*entry))
+            InternalEvent::IoReadArrow { entry, bytes } => {
+                write!(
+                    f,
+                    "event=io_read_arrow entry={} bytes={}",
+                    usize::from(*entry),
+                    bytes
+                )
             }
-            InternalEvent::IoReadLiquid { entry } => {
-                write!(f, "io_read_liquid entry={}", usize::from(*entry))
+            InternalEvent::IoReadLiquid { entry, bytes } => {
+                write!(
+                    f,
+                    "event=io_read_liquid entry={} bytes={}",
+                    usize::from(*entry),
+                    bytes
+                )
             }
             InternalEvent::Read {
                 entry,
@@ -121,7 +133,7 @@ impl fmt::Display for InternalEvent {
                 cached,
             } => write!(
                 f,
-                "read entry={} selection={} expr={} cached={:?}",
+                "event=read entry={} selection={} expr={} cached={:?}",
                 usize::from(*entry),
                 selection,
                 expr,
@@ -129,7 +141,7 @@ impl fmt::Display for InternalEvent {
             ),
             InternalEvent::Hydrate { entry, cached, new } => write!(
                 f,
-                "hydrate entry={} cached={:?} new={:?}",
+                "event=hydrate entry={} cached={:?} new={:?}",
                 usize::from(*entry),
                 cached,
                 new
@@ -140,18 +152,18 @@ impl fmt::Display for InternalEvent {
                 cached,
             } => write!(
                 f,
-                "eval_predicate entry={} selection={} cached={:?}",
+                "event=eval_predicate entry={} selection={} cached={:?}",
                 usize::from(*entry),
                 selection,
                 cached
             ),
             InternalEvent::TryReadLiquid { entry } => {
-                write!(f, "try_read_liquid entry={}", usize::from(*entry))
+                write!(f, "event=try_read_liquid entry={}", usize::from(*entry))
             }
             InternalEvent::ReadSqueezedData { entry, expression } => {
                 write!(
                     f,
-                    "read_squeezed_date entry={} expression={:?}",
+                    "event=read_squeezed_date entry={} expression={}",
                     usize::from(*entry),
                     expression
                 )
@@ -210,7 +222,7 @@ impl fmt::Debug for EventTrace {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "EventTrace: [")?;
         for event in &self.events {
-            writeln!(f, "\t{}", event)?;
+            writeln!(f, "{}", event)?;
         }
         writeln!(f, "]")?;
         Ok(())

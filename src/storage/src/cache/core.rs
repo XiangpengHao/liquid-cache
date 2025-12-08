@@ -201,11 +201,7 @@ impl LiquidCache {
     }
 
     /// Record a squeeze hint for an entry.
-    pub fn set_squeeze_hint(
-        &self,
-        entry_id: &EntryID,
-        expression: Arc<CacheExpression>,
-    ) {
+    pub fn set_squeeze_hint(&self, entry_id: &EntryID, expression: Arc<CacheExpression>) {
         self.io_context.set_squeeze_hint(entry_id, expression);
     }
 
@@ -702,13 +698,16 @@ impl LiquidCache {
         entry: &CacheEntry,
         entry_id: &EntryID,
     ) -> Option<ArrayRef> {
-        self.trace(InternalEvent::IoReadArrow { entry: *entry_id });
         let path = self.io_context.disk_path(entry, entry_id);
         let bytes = self.io_context.read(path, None).await.ok()?;
         let cursor = std::io::Cursor::new(bytes.to_vec());
         let mut reader = arrow::ipc::reader::StreamReader::try_new(cursor, None).ok()?;
         let batch = reader.next()?.ok()?;
         let array = batch.column(0).clone();
+        self.trace(InternalEvent::IoReadArrow {
+            entry: *entry_id,
+            bytes: bytes.len(),
+        });
         Some(array)
     }
 
@@ -717,9 +716,12 @@ impl LiquidCache {
         entry: &CacheEntry,
         entry_id: &EntryID,
     ) -> Option<crate::liquid_array::LiquidArrayRef> {
-        self.trace(InternalEvent::IoReadLiquid { entry: *entry_id });
         let path = self.io_context.disk_path(entry, entry_id);
         let bytes = self.io_context.read(path, None).await.ok()?;
+        self.trace(InternalEvent::IoReadLiquid {
+            entry: *entry_id,
+            bytes: bytes.len(),
+        });
         let compressor_states = self.io_context.get_compressor(entry_id);
         let compressor = compressor_states.fsst_compressor();
         let liquid = crate::liquid_array::ipc::read_from_bytes(

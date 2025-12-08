@@ -48,6 +48,25 @@ pub enum CacheExpression {
     },
 }
 
+impl std::fmt::Display for CacheExpression {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::VariantGet { requests } => {
+                write!(f, "VariantGet[")?;
+                let requests = requests
+                    .iter()
+                    .map(|request| format!("{}:{}", request.path(), request.data_type()))
+                    .collect::<Vec<_>>();
+                write!(f, "{}", requests.join(","))?;
+                write!(f, "]")
+            }
+            Self::ExtractDate32 { field } => {
+                write!(f, "ExtractDate32-{:?}", field)
+            }
+        }
+    }
+}
+
 impl CacheExpression {
     /// Build an extract expression for a `Date32` column.
     pub fn extract_date32(field: Date32Field) -> Self {
