@@ -1,5 +1,5 @@
+use crate::trace::{CacheSimulator, TraceEvent};
 use dioxus::prelude::*;
-use crate::trace::{TraceEvent, CacheSimulator};
 
 #[component]
 pub fn TraceViewer(simulator: Signal<CacheSimulator>) -> Element {
@@ -10,7 +10,7 @@ pub fn TraceViewer(simulator: Signal<CacheSimulator>) -> Element {
     rsx! {
         div {
             class: "trace-viewer h-full flex flex-col bg-white",
-            
+
             // Header
             div {
                 class: "trace-header p-4 border-b border-gray-200",
@@ -32,7 +32,7 @@ pub fn TraceViewer(simulator: Signal<CacheSimulator>) -> Element {
                         // Only highlight the last executed event (current state)
                         let is_current = idx + 1 == current_idx;
                         let is_executed = idx < current_idx;
-                        
+
                         let bg_class = if is_current {
                             "bg-gray-100 border-gray-900"
                         } else if is_executed {
@@ -49,22 +49,22 @@ pub fn TraceViewer(simulator: Signal<CacheSimulator>) -> Element {
                                     let target_idx = idx + 1;
                                     simulator.write().jump_to(target_idx);
                                 },
-                                
+
                                 div {
                                     class: "flex items-start gap-3",
-                                    
+
                                     // Event index
                                     div {
                                         class: "text-xs font-mono text-gray-400 w-12 flex-shrink-0",
                                         "{idx + 1}"
                                     }
-                                    
+
                                     // Event type badge
                                     div {
                                         class: "event-type-badge px-2 py-0.5 rounded text-xs font-medium flex-shrink-0 {get_event_badge_class(event)}",
                                         "{event.event_type()}"
                                     }
-                                    
+
                                     // Event description
                                     div {
                                         class: "text-sm text-gray-700 flex-1",

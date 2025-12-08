@@ -1,5 +1,5 @@
-use dioxus::prelude::*;
 use crate::trace::CacheSimulator;
+use dioxus::prelude::*;
 
 #[component]
 pub fn PlaybackControls(simulator: Signal<CacheSimulator>) -> Element {
@@ -15,7 +15,7 @@ pub fn PlaybackControls(simulator: Signal<CacheSimulator>) -> Element {
     rsx! {
         div {
             class: "playback-controls px-4 py-2 bg-white border-t border-gray-200",
-            
+
             // Progress bar only
             div {
                 class: "progress-bar max-w-screen-2xl mx-auto",

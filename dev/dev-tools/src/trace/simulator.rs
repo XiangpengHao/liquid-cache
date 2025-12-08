@@ -216,14 +216,18 @@ impl CacheSimulator {
                 self.state.squeeze_victims = victims.clone();
                 // Mark all victims as selected
                 for victim in victims {
-                    self.state.victim_status.insert(*victim, VictimStatus::Selected);
+                    self.state
+                        .victim_status
+                        .insert(*victim, VictimStatus::Selected);
                 }
             }
             TraceEvent::SqueezeVictim { entry } => {
                 // Remove from squeeze victims list
                 self.state.squeeze_victims.retain(|v| v != entry);
                 // Mark as squeezed
-                self.state.victim_status.insert(*entry, VictimStatus::Squeezed);
+                self.state
+                    .victim_status
+                    .insert(*entry, VictimStatus::Squeezed);
 
                 // Check if squeeze is complete
                 if self.state.squeeze_victims.is_empty() {
@@ -260,9 +264,12 @@ impl CacheSimulator {
                     .insert(*entry, EntryOperation::Reading { expr: expr.clone() });
             }
             TraceEvent::ReadSqueezedDate { entry, expression } => {
-                self.state
-                    .current_operations
-                    .insert(*entry, EntryOperation::ReadingSqueezed { expr: expression.clone() });
+                self.state.current_operations.insert(
+                    *entry,
+                    EntryOperation::ReadingSqueezed {
+                        expr: expression.clone(),
+                    },
+                );
             }
             TraceEvent::Unknown { .. } => {
                 // Unknown events don't change state

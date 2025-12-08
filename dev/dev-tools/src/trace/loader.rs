@@ -11,19 +11,19 @@ pub async fn list_snapshots() -> Result<Vec<String>, ServerFnError> {
         .parent()
         .unwrap()
         .join("src/storage/src/cache/tests/snapshots");
-    
+
     let mut files = Vec::new();
-    
+
     if let Ok(entries) = fs::read_dir(&snapshots_dir) {
         for entry in entries.flatten() {
-            if let Some(file_name) = entry.file_name().to_str() {
-                if file_name.ends_with(".snap") {
-                    files.push(file_name.to_string());
-                }
+            if let Some(file_name) = entry.file_name().to_str()
+                && file_name.ends_with(".snap")
+            {
+                files.push(file_name.to_string());
             }
         }
     }
-    
+
     files.sort();
     Ok(files)
 }
@@ -39,14 +39,14 @@ pub async fn load_snapshot(filename: String) -> Result<String, ServerFnError> {
         .parent()
         .unwrap()
         .join("src/storage/src/cache/tests/snapshots");
-    
+
     let file_path = snapshots_dir.join(&filename);
-    
+
     // Security check: ensure the path is still within snapshots directory
     if !file_path.starts_with(&snapshots_dir) {
         return Err(ServerFnError::new("Invalid file path"));
     }
-    
+
     fs::read_to_string(&file_path)
         .map_err(|e| ServerFnError::new(format!("Failed to read file: {}", e)))
 }

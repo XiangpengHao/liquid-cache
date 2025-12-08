@@ -1,22 +1,22 @@
 use crate::components::{CacheStateView, PlaybackControls, TraceViewer};
-use crate::trace::{CacheSimulator, parse_trace, list_snapshots, load_snapshot};
+use crate::trace::{CacheSimulator, list_snapshots, load_snapshot, parse_trace};
 use dioxus::prelude::*;
 
 /// The Home page component that will be rendered when the current route is `[Route::Home]`
 #[component]
 pub fn Home() -> Element {
     // State for snapshot files
-    let mut available_snapshots = use_signal(|| Vec::<String>::new());
-    let mut selected_snapshot = use_signal(|| String::new());
+    let mut available_snapshots = use_signal(Vec::<String>::new);
+    let mut selected_snapshot = use_signal(String::new);
     let mut is_loading = use_signal(|| false);
     let mut error_message = use_signal(|| Option::<String>::None);
-    
+
     // Parse the trace and create a simulator
     let mut simulator = use_signal(|| CacheSimulator::new(vec![]));
 
-    let mut trace_input = use_signal(|| String::new());
+    let mut trace_input = use_signal(String::new);
     let mut show_input = use_signal(|| false);
-    
+
     // Load available snapshots on mount
     use_effect(move || {
         spawn(async move {
@@ -26,7 +26,7 @@ pub fn Home() -> Element {
                         available_snapshots.set(files.clone());
                         let first_file = files[0].clone();
                         selected_snapshot.set(first_file.clone());
-                        
+
                         // Auto-load the first snapshot
                         if let Ok(content) = load_snapshot(first_file).await {
                             let events = parse_trace(&content);
@@ -74,7 +74,7 @@ pub fn Home() -> Element {
                         class: "text-2xl font-semibold text-gray-900",
                         "LiquidCache Trace Visualizer"
                     }
-                    
+
                     // Snapshot selector
                     div {
                         class: "flex items-center gap-2 flex-1 max-w-md",
@@ -91,7 +91,7 @@ pub fn Home() -> Element {
                                 selected_snapshot.set(filename.clone());
                                 is_loading.set(true);
                                 error_message.set(None);
-                                
+
                                 spawn(async move {
                                     match load_snapshot(filename).await {
                                         Ok(content) => {
@@ -106,7 +106,7 @@ pub fn Home() -> Element {
                                     is_loading.set(false);
                                 });
                             },
-                            
+
                             if available_snapshots().is_empty() {
                                 option { value: "", "Loading..." }
                             } else {
@@ -119,7 +119,7 @@ pub fn Home() -> Element {
                                 }
                             }
                         }
-                        
+
                         if is_loading() {
                             span {
                                 class: "text-sm text-gray-500",
@@ -127,7 +127,7 @@ pub fn Home() -> Element {
                             }
                         }
                     }
-                    
+
                     button {
                         class: "px-4 py-2 text-sm font-medium bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors whitespace-nowrap",
                         onclick: move |_| {
@@ -141,7 +141,7 @@ pub fn Home() -> Element {
                     }
                 }
             }
-            
+
             // Error message
             if let Some(error) = error_message() {
                 div {

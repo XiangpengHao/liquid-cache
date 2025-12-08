@@ -59,10 +59,7 @@ pub fn Stat(
 
 /// List container for vertical stacking.
 #[component]
-pub fn List(
-    #[props(default = "".to_string())] class: String,
-    children: Element,
-) -> Element {
+pub fn List(#[props(default = "".to_string())] class: String, children: Element) -> Element {
     rsx! {
         div { class: "flex flex-col gap-2 {class}", {children} }
     }
