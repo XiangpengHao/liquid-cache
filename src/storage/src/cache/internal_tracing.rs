@@ -165,7 +165,7 @@ impl fmt::Display for InternalEvent {
             InternalEvent::ReadSqueezedData { entry, expression } => {
                 write!(
                     f,
-                    "event=read_squeezed_date entry={} expression={}",
+                    "event=read_squeezed_data entry={} expression={}",
                     usize::from(*entry),
                     expression
                 )

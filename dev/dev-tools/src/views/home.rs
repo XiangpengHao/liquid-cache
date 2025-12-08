@@ -1,6 +1,6 @@
+use crate::components::{CacheStateView, PlaybackControls, TraceViewer};
+use crate::trace::{CacheSimulator, parse_trace};
 use dioxus::prelude::*;
-use crate::trace::{parse_trace, CacheSimulator};
-use crate::components::{TraceViewer, CacheStateView, PlaybackControls};
 
 /// Sample trace data for demonstration
 const SAMPLE_TRACE: &str = r#"
@@ -60,7 +60,27 @@ pub fn Home() -> Element {
     rsx! {
         div {
             class: "home-page h-screen flex flex-col bg-white",
-            
+            tabindex: 0,
+            onkeydown: move |event| {
+                let key = event.key();
+                match key {
+                    Key::ArrowDown => {
+                        let current = simulator.read().current_index();
+                        let total = simulator.read().total_events();
+                        if current < total {
+                            simulator.write().jump_to(current + 1);
+                        }
+                    }
+                    Key::ArrowUp => {
+                        let current = simulator.read().current_index();
+                        if current > 0 {
+                            simulator.write().jump_to(current - 1);
+                        }
+                    }
+                    _ => {}
+                }
+            },
+
             // Header
             div {
                 class: "header p-4 border-b border-gray-200 bg-white",
@@ -68,7 +88,7 @@ pub fn Home() -> Element {
                     class: "max-w-screen-2xl mx-auto flex justify-between items-center",
                     h1 {
                         class: "text-2xl font-semibold text-gray-900",
-                        "Cache Trace Visualizer"
+                        "LiquidCache Trace Visualizer"
                     }
                     button {
                         class: "px-4 py-2 text-sm font-medium bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors",
@@ -133,13 +153,13 @@ pub fn Home() -> Element {
             // Main content area with two panels
             div {
                 class: "main-content flex-1 flex overflow-hidden max-w-screen-2xl mx-auto w-full",
-                
+
                 // Left panel - Trace viewer
                 div {
                     class: "left-panel w-1/2 border-r border-gray-200 flex flex-col bg-white",
                     TraceViewer { simulator }
                 }
-                
+
                 // Right panel - Cache state
                 div {
                     class: "right-panel w-1/2 flex flex-col bg-white",

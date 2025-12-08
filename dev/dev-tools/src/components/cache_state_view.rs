@@ -1,5 +1,5 @@
 use dioxus::prelude::*;
-use crate::trace::{CacheSimulator, CacheKind};
+use crate::trace::{CacheSimulator, CacheKind, VictimStatus};
 use crate::trace::simulator::EntryOperation;
 
 /// Format bytes into a human-readable string
@@ -19,9 +19,9 @@ fn format_bytes(bytes: u64) -> String {
 fn get_operation_badge_class(op: &EntryOperation) -> &'static str {
     match op {
         EntryOperation::Reading { .. } => "bg-blue-100 text-blue-700 border border-blue-300",
-        EntryOperation::Writing => "bg-amber-100 text-amber-700 border border-amber-300",
-        EntryOperation::Hydrating => "bg-purple-100 text-purple-700 border border-purple-300",
         EntryOperation::ReadingSqueezed { .. } => "bg-cyan-100 text-cyan-700 border border-cyan-300",
+        EntryOperation::Hydrating { .. } => "bg-purple-100 text-purple-700 border border-purple-300",
+        EntryOperation::IoRead | EntryOperation::IoWrite => "bg-amber-100 text-amber-700 border border-amber-300",
     }
 }
 
@@ -29,10 +29,11 @@ fn get_operation_badge_class(op: &EntryOperation) -> &'static str {
 fn get_operation_label(op: &EntryOperation) -> String {
     match op {
         EntryOperation::Reading { expr: Some(e) } => format!("read [{}]", e),
-        EntryOperation::Reading { expr: None } => "reading".to_string(),
-        EntryOperation::Writing => "writing".to_string(),
-        EntryOperation::Hydrating => "hydrating".to_string(),
+        EntryOperation::Reading { expr: None } => "read".to_string(),
         EntryOperation::ReadingSqueezed { expr } => format!("read-sq [{}]", expr),
+        EntryOperation::Hydrating { to } => format!("hydrate → {}", to.display_name()),
+        EntryOperation::IoRead => "io_read".to_string(),
+        EntryOperation::IoWrite => "io_write".to_string(),
     }
 }
 
@@ -161,7 +162,7 @@ pub fn CacheStateView(simulator: Signal<CacheSimulator>) -> Element {
                     "Cache Entries"
                 }
                 
-                if entries.is_empty() {
+                if entries.is_empty() && state.failed_inserts.is_empty() {
                     div {
                         class: "text-center text-gray-400 py-8",
                         "No entries in cache"
@@ -169,9 +170,53 @@ pub fn CacheStateView(simulator: Signal<CacheSimulator>) -> Element {
                 } else {
                     div {
                         class: "grid grid-cols-1 gap-2",
+                        
+                        // Show failed inserts as ghost entries
+                        for (entry_id, kind) in state.failed_inserts.iter() {
+                            {
+                                let current_op = state.current_operations.get(entry_id);
+                                
+                                rsx! {
+                                    div {
+                                        key: "failed-{entry_id}",
+                                        class: "entry-item p-2.5 border-2 border-dashed border-amber-300 rounded-md",
+                                        
+                                        // Entry header with ID and badges
+                                        div {
+                                            class: "flex items-center gap-2 mb-1.5 flex-wrap",
+                                            span {
+                                                class: "text-sm font-mono text-amber-700",
+                                                "Entry {entry_id}"
+                                            }
+                                            span {
+                                                class: "text-xs px-2 py-0.5 bg-amber-100 text-amber-700 border border-amber-400 rounded",
+                                                "not inserted"
+                                            }
+                                            if let Some(op) = current_op {
+                                                span {
+                                                    class: "text-xs px-2 py-0.5 rounded {get_operation_badge_class(op)}",
+                                                    "{get_operation_label(op)}"
+                                                }
+                                            }
+                                        }
+                                        
+                                        // Show attempted kind
+                                        div {
+                                            class: "text-xs flex items-center gap-1 flex-wrap text-amber-600",
+                                            span {
+                                                class: "text-amber-600 italic",
+                                                "attempted: {kind.display_name()}"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // Show actual entries
                         for entry in entries {
                             {
-                                let is_victim = state.squeeze_victims.contains(&entry.entry_id);
+                                let victim_status = state.victim_status.get(&entry.entry_id);
                                 let current_op = state.current_operations.get(&entry.entry_id);
 
                                 rsx! {
@@ -186,10 +231,18 @@ pub fn CacheStateView(simulator: Signal<CacheSimulator>) -> Element {
                                                 class: "text-sm font-mono text-gray-700",
                                                 "Entry {entry.entry_id}"
                                             }
-                                            if is_victim {
+                                            if let Some(status) = victim_status {
                                                 span {
-                                                    class: "text-xs px-2 py-0.5 bg-gray-900 text-white rounded",
-                                                    "victim"
+                                                    class: if status == &VictimStatus::Selected {
+                                                        "text-xs px-2 py-0.5 bg-amber-100 text-amber-700 border border-amber-300 rounded"
+                                                    } else {
+                                                        "text-xs px-2 py-0.5 bg-gray-200 text-gray-600 border border-gray-400 rounded"
+                                                    },
+                                                    if status == &VictimStatus::Selected {
+                                                        "victim"
+                                                    } else {
+                                                        "squeezed"
+                                                    }
                                                 }
                                             }
                                             if let Some(op) = current_op {

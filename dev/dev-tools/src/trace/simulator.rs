@@ -31,9 +31,19 @@ pub struct IoStats {
 #[derive(Debug, Clone, PartialEq)]
 pub enum EntryOperation {
     Reading { expr: Option<String> },
-    Writing,
-    Hydrating,
     ReadingSqueezed { expr: String },
+    Hydrating { to: CacheKind },
+    IoRead,
+    IoWrite,
+}
+
+/// Victim status for entries
+#[derive(Debug, Clone, PartialEq)]
+pub enum VictimStatus {
+    /// Entry is selected as victim but not yet processed
+    Selected,
+    /// Entry has been processed as victim (squeezed)
+    Squeezed,
 }
 
 /// Represents the complete cache state at a point in time
@@ -49,6 +59,10 @@ pub struct CacheState {
     pub io_stats: IoStats,
     /// Current operations on entries (entry_id -> operation)
     pub current_operations: BTreeMap<u64, EntryOperation>,
+    /// Victim status for entries (entry_id -> status)
+    pub victim_status: BTreeMap<u64, VictimStatus>,
+    /// Failed insert attempts (entry_id -> attempted kind) - shown as ghost entries
+    pub failed_inserts: BTreeMap<u64, CacheKind>,
 }
 
 impl CacheState {
@@ -59,6 +73,8 @@ impl CacheState {
             in_squeeze: false,
             io_stats: IoStats::default(),
             current_operations: BTreeMap::new(),
+            victim_status: BTreeMap::new(),
+            failed_inserts: BTreeMap::new(),
         }
     }
 
@@ -174,17 +190,27 @@ impl CacheSimulator {
                         },
                     );
                 }
+                // Clear victim status and failed insert on successful insert
+                self.state.victim_status.remove(entry);
+                self.state.failed_inserts.remove(entry);
             }
-            TraceEvent::InsertFailed { .. } => {
-                // Insert failed doesn't change state
+            TraceEvent::InsertFailed { entry, kind } => {
+                // Track failed insert as ghost entry
+                self.state.failed_inserts.insert(*entry, kind.clone());
             }
             TraceEvent::SqueezeBegin { victims } => {
                 self.state.in_squeeze = true;
                 self.state.squeeze_victims = victims.clone();
+                // Mark all victims as selected
+                for victim in victims {
+                    self.state.victim_status.insert(*victim, VictimStatus::Selected);
+                }
             }
             TraceEvent::SqueezeVictim { entry } => {
                 // Remove from squeeze victims list
                 self.state.squeeze_victims.retain(|v| v != entry);
+                // Mark as squeezed
+                self.state.victim_status.insert(*entry, VictimStatus::Squeezed);
 
                 // Check if squeeze is complete
                 if self.state.squeeze_victims.is_empty() {
@@ -196,20 +222,20 @@ impl CacheSimulator {
                 self.state.io_stats.bytes_written += bytes;
                 self.state
                     .current_operations
-                    .insert(*entry, EntryOperation::Writing);
+                    .insert(*entry, EntryOperation::IoWrite);
             }
             TraceEvent::IoReadArrow { entry, bytes, .. } => {
                 self.state.io_stats.read_requests += 1;
                 self.state.io_stats.bytes_read += bytes;
                 self.state
                     .current_operations
-                    .insert(*entry, EntryOperation::Reading { expr: None });
+                    .insert(*entry, EntryOperation::IoRead);
             }
-            TraceEvent::Hydrate { entry, .. } => {
+            TraceEvent::Hydrate { entry, new, .. } => {
                 // Hydrate is just an indication, doesn't change state
                 self.state
                     .current_operations
-                    .insert(*entry, EntryOperation::Hydrating);
+                    .insert(*entry, EntryOperation::Hydrating { to: new.clone() });
             }
             TraceEvent::Read { entry, expr, .. } => {
                 self.state
