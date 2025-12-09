@@ -100,9 +100,9 @@ impl HydrationPolicy for AlwaysHydrate {
                 if let Some(CacheExpression::VariantGet { requests }) = request.expression
                     && let Some((squeezed, _bytes)) =
                         try_variant_squeeze(arr, requests, request.compressor.as_ref())
-                    {
-                        return Some(CacheEntry::memory_squeezed_liquid(squeezed));
-                    }
+                {
+                    return Some(CacheEntry::memory_squeezed_liquid(squeezed));
+                }
                 Some(CacheEntry::memory_arrow((*arr).clone()))
             }
             (CacheEntry::DiskLiquid(_), MaterializedEntry::Liquid(liq)) => {
@@ -117,9 +117,9 @@ impl HydrationPolicy for AlwaysHydrate {
                         .downcast_ref::<VariantStructSqueezedArray>()
                     && let Some(entry) =
                         hydrate_variant_paths(requests, arr, squeezed, request.compressor.as_ref())
-                    {
-                        return Some(entry);
-                    }
+                {
+                    return Some(entry);
+                }
                 Some(CacheEntry::memory_arrow((*arr).clone()))
             }
             (CacheEntry::MemorySqueezedLiquid(_), MaterializedEntry::Liquid(liq)) => {

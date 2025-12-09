@@ -264,9 +264,16 @@ impl LiquidCache {
                     .await;
                 CacheEntry::disk_liquid(liquid_array.original_arrow_data_type())
             }
-            CacheEntry::DiskLiquid(_)
-            | CacheEntry::DiskArrow(_)
-            | CacheEntry::MemorySqueezedLiquid(_) => {
+            CacheEntry::MemorySqueezedLiquid(squeezed_array) => {
+                // The full data is already on disk, so we just need to mark ourself as disk entry
+                let backing = squeezed_array.disk_backing();
+                if backing == SqueezedBacking::Liquid {
+                    CacheEntry::disk_liquid(squeezed_array.original_arrow_data_type())
+                } else {
+                    CacheEntry::disk_arrow(squeezed_array.original_arrow_data_type())
+                }
+            }
+            CacheEntry::DiskLiquid(_) | CacheEntry::DiskArrow(_) => {
                 unreachable!("Unexpected batch in write_in_memory_batch_to_disk")
             }
         }
