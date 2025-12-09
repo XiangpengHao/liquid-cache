@@ -62,6 +62,10 @@ pub enum TraceEvent {
         entry: u64,
         bytes: u64,
     },
+    IoReadLiquid {
+        entry: u64,
+        bytes: u64,
+    },
     Hydrate {
         entry: u64,
         cached: CacheKind,
@@ -76,9 +80,6 @@ pub enum TraceEvent {
     ReadSqueezedDate {
         entry: u64,
         expression: String,
-    },
-    Unknown {
-        raw: String,
     },
 }
 
@@ -111,6 +112,9 @@ impl TraceEvent {
             }
             TraceEvent::IoReadArrow { entry, bytes } => {
                 format!("Read arrow entry {} ({} bytes)", entry, bytes)
+            }
+            TraceEvent::IoReadLiquid { entry, bytes } => {
+                format!("Read liquid entry {} ({} bytes)", entry, bytes)
             }
             TraceEvent::Hydrate { entry, cached, new } => {
                 format!(
@@ -147,7 +151,6 @@ impl TraceEvent {
             TraceEvent::ReadSqueezedDate { entry, expression } => {
                 format!("Read squeezed entry {} [{}]", entry, expression)
             }
-            TraceEvent::Unknown { raw } => raw.clone(),
         }
     }
 
@@ -159,10 +162,10 @@ impl TraceEvent {
             TraceEvent::SqueezeVictim { .. } => "squeeze_victim",
             TraceEvent::IoWrite { .. } => "io_write",
             TraceEvent::IoReadArrow { .. } => "io_read_arrow",
+            TraceEvent::IoReadLiquid { .. } => "io_read_liquid",
             TraceEvent::Hydrate { .. } => "hydrate",
             TraceEvent::Read { .. } => "read",
             TraceEvent::ReadSqueezedDate { .. } => "read_squeezed_date",
-            TraceEvent::Unknown { .. } => "unknown",
         }
     }
 }
@@ -284,6 +287,16 @@ fn parse_event_line(line: &str) -> TraceEvent {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0),
         },
+        Some("io_read_liquid") => TraceEvent::IoReadLiquid {
+            entry: fields
+                .get("entry")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0),
+            bytes: fields
+                .get("bytes")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0),
+        },
         Some("hydrate") => TraceEvent::Hydrate {
             entry: fields
                 .get("entry")
@@ -331,9 +344,9 @@ fn parse_event_line(line: &str) -> TraceEvent {
                 .map(|s| s.to_string())
                 .unwrap_or_default(),
         },
-        _ => TraceEvent::Unknown {
-            raw: line.to_string(),
-        },
+        _ => {
+            panic!("Unknown event: {}", line);
+        }
     }
 }
 

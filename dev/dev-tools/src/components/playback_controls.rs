@@ -25,7 +25,7 @@ pub fn PlaybackControls(simulator: Signal<CacheSimulator>) -> Element {
                     span { "{total_events} total" }
                 }
                 progress {
-                    class: "progress progress-primary w-full",
+                    class: "progress w-full",
                     value: "{progress_percent}",
                     max: "100"
                 }
