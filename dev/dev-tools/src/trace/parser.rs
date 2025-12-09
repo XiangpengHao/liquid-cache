@@ -214,7 +214,7 @@ fn parse_logfmt(line: &str) -> HashMap<String, String> {
     map
 }
 
-/// Parse a victims string like "[0,1,2]" into a Vec<u64>
+/// Parse a victims string like "\[0,1,2\]" into a `Vec<u64>`.
 fn parse_victims(s: &str) -> Vec<u64> {
     s.trim_start_matches('[')
         .trim_end_matches(']')
@@ -223,7 +223,7 @@ fn parse_victims(s: &str) -> Vec<u64> {
         .collect()
 }
 
-/// Parse a single logfmt line into a TraceEvent
+/// Parse a single logfmt line into a [`TraceEvent`].
 fn parse_event_line(line: &str) -> TraceEvent {
     let fields = parse_logfmt(line);
 

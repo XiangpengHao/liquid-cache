@@ -1,4 +1,4 @@
-use crate::components::{Badge, Card, List, ListItem, Stat};
+use crate::components::{Badge, List, Stat};
 use crate::trace::simulator::EntryOperation;
 use crate::trace::{CacheKind, CacheSimulator, VictimStatus};
 use dioxus::prelude::*;
@@ -13,22 +13,6 @@ fn format_bytes(bytes: u64) -> String {
         format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
     } else {
         format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
-    }
-}
-
-/// Get the CSS class for an operation badge
-fn get_operation_badge_class(op: &EntryOperation) -> &'static str {
-    match op {
-        EntryOperation::Reading { .. } => "bg-blue-100 text-blue-700 border border-blue-300",
-        EntryOperation::ReadingSqueezed { .. } => {
-            "bg-cyan-100 text-cyan-700 border border-cyan-300"
-        }
-        EntryOperation::Hydrating { .. } => {
-            "bg-purple-100 text-purple-700 border border-purple-300"
-        }
-        EntryOperation::IoRead | EntryOperation::IoWrite => {
-            "bg-amber-100 text-amber-700 border border-amber-300"
-        }
     }
 }
 
@@ -87,11 +71,11 @@ pub fn CacheStateView(simulator: Signal<CacheSimulator>) -> Element {
 
     rsx! {
         div {
-            class: "cache-state-view h-full flex flex-col bg-white",
+            class: "cache-state-view h-full flex flex-col",
 
             // Header with I/O stats on the same row
             div {
-                class: "cache-header p-4 border-b border-gray-200",
+                class: "p-4 border-b border-base-300",
                 div {
                     class: "flex items-start gap-4",
 
@@ -99,11 +83,11 @@ pub fn CacheStateView(simulator: Signal<CacheSimulator>) -> Element {
                     div {
                         class: "flex-1",
                         h2 {
-                            class: "text-lg font-semibold text-gray-900",
+                            class: "text-lg font-bold",
                             "Cache State"
                         }
                         div {
-                            class: "text-sm text-gray-500",
+                            class: "text-sm opacity-60",
                             "Total: {state.total_entries()}"
                         }
                     }
@@ -116,35 +100,35 @@ pub fn CacheStateView(simulator: Signal<CacheSimulator>) -> Element {
 
                             // Read stats
                             div { class: "flex items-center gap-1.5",
-                                span { class: "text-gray-500", "Read:" }
-                                span { class: "font-semibold text-gray-900", "{state.io_stats.read_requests}" }
-                                span { class: "text-gray-400", "ops" }
+                                span { class: "opacity-60", "Read:" }
+                                span { class: "font-semibold", "{state.io_stats.read_requests}" }
+                                span { class: "opacity-40", "ops" }
                                 if let Some(delta) = &read_ops_delta {
-                                    span { class: "text-[10px] px-1 py-0.5 bg-amber-100 text-amber-700 rounded font-medium", "{delta}" }
+                                    span { class: "badge badge-warning badge-xs", "{delta}" }
                                 }
                             }
 
                             div { class: "flex items-center gap-1.5",
-                                span { class: "font-semibold text-gray-900", "{format_bytes(state.io_stats.bytes_read)}" }
+                                span { class: "font-semibold", "{format_bytes(state.io_stats.bytes_read)}" }
                                 if let Some(delta) = &read_bytes_delta {
-                                    span { class: "text-[10px] px-1 py-0.5 bg-amber-100 text-amber-700 rounded font-medium", "{delta}" }
+                                    span { class: "badge badge-warning badge-xs", "{delta}" }
                                 }
                             }
 
                             // Write stats
                             div { class: "flex items-center gap-1.5",
-                                span { class: "text-gray-500", "Write:" }
-                                span { class: "font-semibold text-gray-900", "{state.io_stats.write_requests}" }
-                                span { class: "text-gray-400", "ops" }
+                                span { class: "opacity-60", "Write:" }
+                                span { class: "font-semibold", "{state.io_stats.write_requests}" }
+                                span { class: "opacity-40", "ops" }
                                 if let Some(delta) = &write_ops_delta {
-                                    span { class: "text-[10px] px-1 py-0.5 bg-amber-100 text-amber-700 rounded font-medium", "{delta}" }
+                                    span { class: "badge badge-warning badge-xs", "{delta}" }
                                 }
                             }
 
                             div { class: "flex items-center gap-1.5",
-                                span { class: "font-semibold text-gray-900", "{format_bytes(state.io_stats.bytes_written)}" }
+                                span { class: "font-semibold", "{format_bytes(state.io_stats.bytes_written)}" }
                                 if let Some(delta) = &write_bytes_delta {
-                                    span { class: "text-[10px] px-1 py-0.5 bg-amber-100 text-amber-700 rounded font-medium", "{delta}" }
+                                    span { class: "badge badge-warning badge-xs", "{delta}" }
                                 }
                             }
                         }
@@ -152,102 +136,96 @@ pub fn CacheStateView(simulator: Signal<CacheSimulator>) -> Element {
                 }
             }
 
-            // Statistics - Cache Entries by Type
+            // Statistics - Cache Entries by Type using daisyUI stats
             div {
-                class: "stats p-4 border-b border-gray-200",
-
+                class: "p-4 border-b border-base-300",
+                h3 {
+                    class: "text-xs font-medium opacity-60 uppercase tracking-wide mb-2",
+                    "Cache Entries by Type"
+                }
                 div {
-                    h3 {
-                        class: "text-xs font-medium text-gray-500 uppercase tracking-wide mb-2",
-                        "Cache Entries by Type"
-                    }
-                    div {
-                        class: "grid grid-cols-5 gap-2 text-center",
+                    class: "stats stats-horizontal shadow w-full",
 
-                        Stat { class: "bg-gray-50 rounded border border-gray-200 p-1".to_string(), label: "MemoryArrow".to_string(), value: memory_arrow_count.to_string(), delta: None, tone: "neutral" }
-                        Stat { class: "bg-gray-50 rounded border border-gray-200 p-1".to_string(), label: "MemoryLiquid".to_string(), value: memory_liquid_count.to_string(), delta: None, tone: "neutral" }
-                        Stat { class: "bg-gray-50 rounded border border-gray-200 p-1".to_string(), label: "SqueezedLiquid".to_string(), value: memory_squeezed_count.to_string(), delta: None, tone: "neutral" }
-                        Stat { class: "bg-gray-50 rounded border border-gray-200 p-1".to_string(), label: "DiskLiquid".to_string(), value: disk_liquid_count.to_string(), delta: None, tone: "neutral" }
-                        Stat { class: "bg-gray-50 rounded border border-gray-200 p-1".to_string(), label: "DiskArrow".to_string(), value: disk_arrow_count.to_string(), delta: None, tone: "neutral" }
-                    }
+                    Stat { class: "".to_string(), label: "MemoryArrow".to_string(), value: memory_arrow_count.to_string(), delta: None, tone: "neutral" }
+                    Stat { class: "".to_string(), label: "MemoryLiquid".to_string(), value: memory_liquid_count.to_string(), delta: None, tone: "neutral" }
+                    Stat { class: "".to_string(), label: "SqueezedLiquid".to_string(), value: memory_squeezed_count.to_string(), delta: None, tone: "neutral" }
+                    Stat { class: "".to_string(), label: "DiskLiquid".to_string(), value: disk_liquid_count.to_string(), delta: None, tone: "neutral" }
+                    Stat { class: "".to_string(), label: "DiskArrow".to_string(), value: disk_arrow_count.to_string(), delta: None, tone: "neutral" }
                 }
             }
 
             // Entries list
-            Card {
-                class: "entries flex-1 overflow-y-auto p-4".to_string(),
-                children: rsx! {
-                    h3 { class: "text-sm font-medium text-gray-700 mb-3", "Cache Entries" }
+            div {
+                class: "flex-1 overflow-y-auto p-4",
+                h3 { class: "text-sm font-medium mb-3", "Cache Entries" }
 
-                    if entries.is_empty() && state.failed_inserts.is_empty() {
-                        div { class: "text-center text-gray-400 py-8", "No entries in cache" }
-                    } else {
-                        List {
-                            class: "grid grid-cols-1 gap-2".to_string(),
-                            children: rsx! {
-                                // Show failed inserts as ghost entries (only if entry doesn't already exist)
-                                for (entry_id, kind) in state
-                                    .failed_inserts
-                                    .iter()
-                                    .filter(|(id, _)| !entries.iter().any(|e| e.entry_id == **id))
-                                {
-                                    ListItem {
-                                        class: "border-2 border-dashed border-amber-300 bg-amber-50".to_string(),
-                                        title: format!("Entry {}", entry_id),
-                                        meta: Some("not inserted".to_string()),
-                                        children: rsx! {
-                                            div { class: "flex items-center gap-1.5 flex-wrap mb-1",
-                                                if let Some(op) = state.current_operations.get(entry_id) {
-                                                    Badge { label: get_operation_label(op), tone: "warn", class: get_operation_badge_class(op).to_string() }
-                                                }
+                if entries.is_empty() && state.failed_inserts.is_empty() {
+                    div { class: "text-center opacity-40 py-8", "No entries in cache" }
+                } else {
+                    List {
+                        class: "grid grid-cols-1 gap-2".to_string(),
+                        children: rsx! {
+                            // Show failed inserts as ghost entries (only if entry doesn't already exist)
+                            for (entry_id, kind) in state
+                                .failed_inserts
+                                .iter()
+                                .filter(|(id, _)| !entries.iter().any(|e| e.entry_id == **id))
+                            {
+                                div {
+                                    class: "card card-compact bg-base-100 border-2 border-dashed border-warning p-2",
+                                    div { class: "flex items-center justify-between gap-2 mb-1",
+                                        span { class: "text-xs font-mono font-semibold", "Entry {entry_id}" }
+                                        span { class: "text-xs opacity-60", "not inserted" }
+                                    }
+                                    div { class: "flex items-center gap-1 flex-wrap min-h-5",
+                                        if let Some(op) = state.current_operations.get(entry_id) {
+                                            Badge { label: get_operation_label(op), tone: "warn", class: "".to_string() }
+                                        }
+                                        span { class: "text-xs opacity-70 italic", "attempted: {kind.display_name()}" }
+                                    }
+                                }
+                            }
+
+                            // Show actual entries
+                            for entry in entries {
+
+                                div {
+                                    class: format!("card card-compact bg-base-100 border border-base-300 p-2 {}",
+                                        if state.failed_inserts.contains_key(&entry.entry_id) {
+                                            "border-2 border-warning"
+                                        } else {
+                                            ""
+                                        }
+                                    ),
+
+                                    div { class: "flex items-center justify-between gap-2 mb-1",
+                                        span { class: "text-xs font-mono font-semibold", "Entry {entry.entry_id}" }
+                                        div { class: "flex items-center gap-1 flex-wrap min-h-5",
+                                            match state.victim_status.get(&entry.entry_id) {
+                                                Some(VictimStatus::Selected) => rsx!( Badge { label: "victim".to_string(), tone: "warn", class: "".to_string() } ),
+                                                Some(VictimStatus::Squeezed) => rsx!( Badge { label: "squeezed".to_string(), tone: "neutral", class: "".to_string() } ),
+                                                None => rsx! {},
                                             }
-                                            div { class: "text-xs text-amber-700 italic",
-                                                "attempted: {kind.display_name()}"
+                                            if let Some(op) = state.current_operations.get(&entry.entry_id) {
+                                                Badge { label: get_operation_label(op), tone: "info", class: "".to_string() }
+                                            }
+                                            if state.failed_inserts.contains_key(&entry.entry_id) {
+                                                if let Some(kind) = state.failed_inserts.get(&entry.entry_id) {
+                                                    Badge { label: format!("insert failed → {}", kind.display_name()), tone: "warn", class: "".to_string() }
+                                                }
                                             }
                                         }
                                     }
-                                }
 
-                                // Show actual entries
-                                for entry in entries {
-
-                                    ListItem {
-                                        class: format!("entry-item bg-white {}",
-                                            if state.failed_inserts.contains_key(&entry.entry_id) {
-                                                "border-2 border-amber-400"
-                                            } else {
-                                                "border border-gray-200"
+                                    div {
+                                        class: "text-xs flex items-center gap-1 flex-wrap",
+                                        for (idx, kind) in entry.history.iter().enumerate() {
+                                            span {
+                                                class: if idx == entry.history.len() - 1 { "font-semibold" } else { "opacity-60" },
+                                                "{kind.display_name()}"
                                             }
-                                        ),
-                                        title: format!("Entry {}", entry.entry_id),
-                                        meta: None,
-                                        children: rsx! {
-                                            div { class: "flex items-center gap-2 mb-1.5 flex-wrap",
-                                                match state.victim_status.get(&entry.entry_id) {
-                                                    Some(VictimStatus::Selected) => rsx!( Badge { label: "victim".to_string(), tone: "warn", class: "".to_string() } ),
-                                                    Some(VictimStatus::Squeezed) => rsx!( Badge { label: "squeezed".to_string(), tone: "neutral", class: "".to_string() } ),
-                                                    None => rsx! {},
-                                                }
-                                                if let Some(op) = state.current_operations.get(&entry.entry_id) {
-                                                    Badge { label: get_operation_label(op), tone: "warn", class: get_operation_badge_class(op).to_string() }
-                                                }
-                                                if state.failed_inserts.contains_key(&entry.entry_id) {
-                                                    if let Some(kind) = state.failed_inserts.get(&entry.entry_id) {
-                                                        Badge { label: format!("insert failed → {}", kind.display_name()), tone: "warn", class: "".to_string() }
-                                                    }
-                                                }
-                                            }
-                                            div {
-                                                class: "text-xs flex items-center gap-1 flex-wrap",
-                                                for (idx, kind) in entry.history.iter().enumerate() {
-                                                    span {
-                                                        class: if idx == entry.history.len() - 1 { "text-gray-900 font-semibold" } else { "text-gray-500" },
-                                                        "{kind.display_name()}"
-                                                    }
-                                                    if idx < entry.history.len() - 1 {
-                                                        span { class: "text-gray-300", "→" }
-                                                    }
-                                                }
+                                            if idx < entry.history.len() - 1 {
+                                                span { class: "opacity-30", "→" }
                                             }
                                         }
                                     }

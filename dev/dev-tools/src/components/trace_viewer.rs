@@ -1,4 +1,4 @@
-use crate::trace::{CacheSimulator, TraceEvent};
+use crate::trace::CacheSimulator;
 use dioxus::prelude::*;
 
 #[component]
@@ -9,17 +9,17 @@ pub fn TraceViewer(simulator: Signal<CacheSimulator>) -> Element {
 
     rsx! {
         div {
-            class: "trace-viewer h-full flex flex-col bg-white",
+            class: "trace-viewer h-full flex flex-col",
 
             // Header
             div {
-                class: "trace-header p-4 border-b border-gray-200",
+                class: "p-4 border-b border-base-300",
                 h2 {
-                    class: "text-lg font-semibold text-gray-900",
+                    class: "text-lg font-bold",
                     "Event Trace"
                 }
                 div {
-                    class: "text-sm text-gray-500",
+                    class: "text-sm opacity-60",
                     "Event {current_idx} of {events.len()}"
                 }
             }
@@ -33,18 +33,18 @@ pub fn TraceViewer(simulator: Signal<CacheSimulator>) -> Element {
                         let is_current = idx + 1 == current_idx;
                         let is_executed = idx < current_idx;
 
-                        let bg_class = if is_current {
-                            "bg-gray-100 border-gray-900"
+                        let border_class = if is_current {
+                            "border-l-4 border-primary bg-base-200"
                         } else if is_executed {
-                            "bg-white border-gray-300"
+                            "border-l-2 border-base-300"
                         } else {
-                            "bg-white border-gray-200"
+                            "border-l-2 border-base-200 opacity-50"
                         };
 
                         rsx! {
                             div {
                                 key: "{idx}",
-                                class: "event-item p-3 border-l-2 border-b border-gray-100 {bg_class} hover:bg-gray-50 transition-colors cursor-pointer",
+                                class: "event-item p-2 border-b border-base-200 {border_class} hover:bg-base-200 transition-colors cursor-pointer",
                                 onclick: move |_| {
                                     let target_idx = idx + 1;
                                     simulator.write().jump_to(target_idx);
@@ -55,19 +55,19 @@ pub fn TraceViewer(simulator: Signal<CacheSimulator>) -> Element {
 
                                     // Event index
                                     div {
-                                        class: "text-xs font-mono text-gray-400 w-12 flex-shrink-0",
+                                        class: "text-xs font-mono opacity-40 w-10 flex-shrink-0 text-right",
                                         "{idx + 1}"
                                     }
 
-                                    // Event type badge
+                                    // Event type with fixed width for alignment
                                     div {
-                                        class: "event-type-badge px-2 py-0.5 rounded text-xs font-medium flex-shrink-0 {get_event_badge_class(event)}",
+                                        class: "text-xs font-medium opacity-70 w-32 flex-shrink-0",
                                         "{event.event_type()}"
                                     }
 
-                                    // Event description
+                                    // Event description with monospace font
                                     div {
-                                        class: "text-sm text-gray-700 flex-1",
+                                        class: "text-xs font-mono flex-1",
                                         "{event.description()}"
                                     }
                                 }
@@ -77,20 +77,5 @@ pub fn TraceViewer(simulator: Signal<CacheSimulator>) -> Element {
                 }
             }
         }
-    }
-}
-
-fn get_event_badge_class(event: &TraceEvent) -> &'static str {
-    match event {
-        TraceEvent::InsertSuccess { .. } => "bg-gray-100 text-gray-700 border border-gray-300",
-        TraceEvent::InsertFailed { .. } => "bg-red-100 text-red-700 border border-red-300",
-        TraceEvent::SqueezeBegin { .. } => "bg-gray-900 text-white",
-        TraceEvent::SqueezeVictim { .. } => "bg-gray-800 text-white",
-        TraceEvent::IoWrite { .. } => "bg-gray-100 text-gray-600 border border-gray-300",
-        TraceEvent::IoReadArrow { .. } => "bg-gray-100 text-gray-600 border border-gray-300",
-        TraceEvent::Hydrate { .. } => "bg-gray-700 text-white",
-        TraceEvent::Read { .. } => "bg-gray-100 text-gray-600 border border-gray-300",
-        TraceEvent::ReadSqueezedDate { .. } => "bg-gray-100 text-gray-600 border border-gray-300",
-        TraceEvent::Unknown { .. } => "bg-gray-100 text-gray-500 border border-gray-200",
     }
 }

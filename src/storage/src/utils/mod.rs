@@ -161,6 +161,17 @@ pub(crate) fn shuttle_test(test: impl Fn() + Send + Sync + 'static) {
     runner.run(test);
 }
 
+#[allow(unused)]
+#[cfg(all(feature = "shuttle", test))]
+pub(crate) fn shuttle_replay(test: impl Fn() + Send + Sync + 'static, schedule: &str) {
+    _ = tracing_subscriber::fmt()
+        .with_ansi(true)
+        .with_thread_names(false)
+        .with_target(false)
+        .try_init();
+    shuttle::replay(test, schedule);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

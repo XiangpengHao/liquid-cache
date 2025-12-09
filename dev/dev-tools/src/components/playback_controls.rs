@@ -14,22 +14,20 @@ pub fn PlaybackControls(simulator: Signal<CacheSimulator>) -> Element {
 
     rsx! {
         div {
-            class: "playback-controls px-4 py-2 bg-white border-t border-gray-200",
+            class: "playback-controls px-4 py-2 bg-base-100 border-t border-base-300",
 
-            // Progress bar only
+            // Progress bar using daisyUI
             div {
                 class: "progress-bar max-w-screen-2xl mx-auto",
                 div {
-                    class: "flex justify-between text-xs text-gray-500 mb-1.5",
+                    class: "flex justify-between text-xs opacity-60 mb-1.5",
                     span { "Event {current_idx}" }
                     span { "{total_events} total" }
                 }
-                div {
-                    class: "w-full bg-gray-200 rounded-full h-1.5 overflow-hidden",
-                    div {
-                        class: "bg-gray-900 h-full transition-all duration-200",
-                        style: "width: {progress_percent}%",
-                    }
+                progress {
+                    class: "progress progress-primary w-full",
+                    value: "{progress_percent}",
+                    max: "100"
                 }
             }
         }

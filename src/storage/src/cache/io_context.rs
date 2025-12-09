@@ -1,4 +1,4 @@
-use std::{fmt::Debug, ops::Range, path::PathBuf, sync::RwLock};
+use std::{fmt::Debug, ops::Range, path::PathBuf};
 
 use ahash::AHashMap;
 use bytes::Bytes;
@@ -9,7 +9,7 @@ use crate::cache::{
     utils::{EntryID, LiquidCompressorStates},
 };
 use crate::liquid_array::SqueezedBacking;
-use crate::sync::Arc;
+use crate::sync::{Arc, RwLock};
 
 /// A trait for objects that can handle IO operations for the cache.
 #[async_trait::async_trait]
@@ -46,6 +46,7 @@ pub trait IoContext: Debug + Send + Sync {
 }
 
 /// A default implementation of [IoContext] that uses the default compressor.
+/// It uses tokio's async IO by default.
 #[derive(Debug)]
 pub struct DefaultIoContext {
     compressor_state: Arc<LiquidCompressorStates>,
@@ -98,30 +99,53 @@ impl IoContext for DefaultIoContext {
         path: PathBuf,
         range: Option<Range<u64>>,
     ) -> Result<Bytes, std::io::Error> {
-        use tokio::io::AsyncReadExt;
-        use tokio::io::AsyncSeekExt;
-        let mut file = tokio::fs::File::open(path).await?;
-
-        match range {
-            Some(range) => {
-                let len = (range.end - range.start) as usize;
-                let mut bytes = vec![0u8; len];
-                file.seek(tokio::io::SeekFrom::Start(range.start)).await?;
-                file.read_exact(&mut bytes).await?;
-                Ok(Bytes::from(bytes))
+        if cfg!(test) {
+            let mut file = std::fs::File::open(path)?;
+            match range {
+                Some(range) => {
+                    let len = (range.end - range.start) as usize;
+                    let mut bytes = vec![0u8; len];
+                    std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(range.start))?;
+                    std::io::Read::read_exact(&mut file, &mut bytes)?;
+                    Ok(Bytes::from(bytes))
+                }
+                None => {
+                    let mut bytes = Vec::new();
+                    std::io::Read::read_to_end(&mut file, &mut bytes)?;
+                    Ok(Bytes::from(bytes))
+                }
             }
-            None => {
-                let mut bytes = Vec::new();
-                file.read_to_end(&mut bytes).await?;
-                Ok(Bytes::from(bytes))
+        } else {
+            use tokio::io::AsyncReadExt;
+            use tokio::io::AsyncSeekExt;
+            let mut file = tokio::fs::File::open(path).await?;
+
+            match range {
+                Some(range) => {
+                    let len = (range.end - range.start) as usize;
+                    let mut bytes = vec![0u8; len];
+                    file.seek(tokio::io::SeekFrom::Start(range.start)).await?;
+                    file.read_exact(&mut bytes).await?;
+                    Ok(Bytes::from(bytes))
+                }
+                None => {
+                    let mut bytes = Vec::new();
+                    file.read_to_end(&mut bytes).await?;
+                    Ok(Bytes::from(bytes))
+                }
             }
         }
     }
 
     async fn write_file(&self, path: PathBuf, data: Bytes) -> Result<(), std::io::Error> {
-        use tokio::io::AsyncWriteExt;
-        let mut file = tokio::fs::File::create(path).await?;
-        file.write_all(&data).await?;
-        Ok(())
+        if cfg!(test) {
+            std::fs::write(path, data.as_ref())?;
+            Ok(())
+        } else {
+            use tokio::io::AsyncWriteExt;
+            let mut file = tokio::fs::File::create(path).await?;
+            file.write_all(&data).await?;
+            Ok(())
+        }
     }
 }

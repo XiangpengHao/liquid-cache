@@ -1,17 +1,14 @@
 use dioxus::prelude::*;
 
-/// Simple card container with consistent padding/borders.
+/// Simple card container using daisyUI card component.
 #[component]
-pub fn Card(
-    #[props(default = "bg-white border border-gray-200 rounded-md p-3".to_string())] class: String,
-    children: Element,
-) -> Element {
+pub fn Card(#[props(default = "".to_string())] class: String, children: Element) -> Element {
     rsx! {
-        div { class: "{class}", {children} }
+        div { class: "card bg-base-100 {class}", {children} }
     }
 }
 
-/// Badge with small tonal variants.
+/// Badge with tonal variants using daisyUI badge component.
 #[component]
 pub fn Badge(
     label: String,
@@ -19,19 +16,19 @@ pub fn Badge(
     #[props(default = "".to_string())] class: String,
 ) -> Element {
     let tone_class = match tone {
-        "info" => "bg-blue-100 text-blue-700 border border-blue-300",
-        "success" => "bg-green-100 text-green-700 border border-green-300",
-        "warn" => "bg-amber-100 text-amber-700 border border-amber-300",
-        "danger" => "bg-red-100 text-red-700 border border-red-300",
-        _ => "bg-gray-100 text-gray-700 border border-gray-300",
+        "info" => "badge-info",
+        "success" => "badge-success",
+        "warn" => "badge-warning",
+        "danger" => "badge-error",
+        _ => "badge-ghost",
     };
 
     rsx! {
-        span { class: "text-xs px-2 py-0.5 rounded {tone_class} {class}", {label} }
+        span { class: "badge badge-sm {tone_class} {class}", {label} }
     }
 }
 
-/// Compact stat with optional delta badge.
+/// Compact stat with optional delta badge using daisyUI stat component.
 #[component]
 pub fn Stat(
     label: String,
@@ -41,17 +38,19 @@ pub fn Stat(
     #[props(default = "".to_string())] class: String,
 ) -> Element {
     let delta_tone = match tone {
-        "warn" => "bg-amber-100 text-amber-700 border border-amber-300",
-        "success" => "bg-green-100 text-green-700 border border-green-300",
-        _ => "bg-gray-100 text-gray-700 border border-gray-300",
+        "warn" => "badge-warning",
+        "success" => "badge-success",
+        _ => "badge-ghost",
     };
 
     rsx! {
-        div { class: "text-center {class}",
-            div { class: "text-lg font-semibold text-gray-900", "{value}" }
-            div { class: "text-xs text-gray-500", "{label}" }
+        div { class: "stat {class}",
+            div { class: "stat-value text-lg", "{value}" }
+            div { class: "stat-title text-xs", "{label}" }
             if let Some(delta) = delta {
-                span { class: "inline-block mt-1 text-[10px] px-1.5 py-0.5 rounded {delta_tone}", "{delta}" }
+                div { class: "stat-desc",
+                    span { class: "badge badge-xs {delta_tone}", "{delta}" }
+                }
             }
         }
     }
@@ -65,7 +64,7 @@ pub fn List(#[props(default = "".to_string())] class: String, children: Element)
     }
 }
 
-/// List item with optional meta and body content.
+/// List item with optional meta and body content using daisyUI card.
 #[derive(Props, Clone, PartialEq)]
 pub struct ListItemProps {
     pub title: String,
@@ -79,14 +78,16 @@ pub struct ListItemProps {
 #[component]
 pub fn ListItem(props: ListItemProps) -> Element {
     rsx! {
-        div { class: "p-2.5 bg-white border border-gray-200 rounded-md {props.class}",
-            div { class: "flex items-center gap-2 mb-1 flex-wrap",
-                span { class: "text-sm font-mono text-gray-800", "{props.title}" }
-                if let Some(meta) = props.meta.clone() {
-                    span { class: "text-xs text-gray-500", "{meta}" }
+        div { class: "card card-compact bg-base-100 border border-base-300 {props.class}",
+            div { class: "card-body",
+                div { class: "flex items-center gap-2 mb-1 flex-wrap",
+                    span { class: "text-sm font-mono font-semibold", "{props.title}" }
+                    if let Some(meta) = props.meta.clone() {
+                        span { class: "text-xs opacity-60", "{meta}" }
+                    }
                 }
+                {props.children}
             }
-            {props.children}
         }
     }
 }

@@ -43,7 +43,7 @@ pub fn Home() -> Element {
 
     rsx! {
         div {
-            class: "home-page h-screen flex flex-col bg-white",
+            class: "home-page h-screen flex flex-col bg-base-100",
             tabindex: 0,
             onkeydown: move |event| {
                 let key = event.key();
@@ -65,13 +65,13 @@ pub fn Home() -> Element {
                 }
             },
 
-            // Header
+            // Header with navbar
             div {
-                class: "header p-4 border-b border-gray-200 bg-white",
+                class: "navbar bg-base-100 border-b border-base-300 px-4",
                 div {
-                    class: "max-w-screen-2xl mx-auto flex justify-between items-center gap-4",
+                    class: "max-w-screen-2xl mx-auto w-full flex justify-between items-center gap-4",
                     h1 {
-                        class: "text-2xl font-semibold text-gray-900",
+                        class: "text-2xl font-bold",
                         "LiquidCache Trace Visualizer"
                     }
 
@@ -79,11 +79,11 @@ pub fn Home() -> Element {
                     div {
                         class: "flex items-center gap-2 flex-1 max-w-md",
                         label {
-                            class: "text-sm font-medium text-gray-700 whitespace-nowrap",
+                            class: "label-text font-medium whitespace-nowrap",
                             "Snapshot:"
                         }
                         select {
-                            class: "flex-1 px-3 py-2 text-sm bg-white border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-transparent",
+                            class: "select select-bordered select-sm flex-1",
                             disabled: is_loading(),
                             value: "{selected_snapshot}",
                             onchange: move |evt| {
@@ -122,14 +122,13 @@ pub fn Home() -> Element {
 
                         if is_loading() {
                             span {
-                                class: "text-sm text-gray-500",
-                                "Loading..."
+                                class: "loading loading-spinner loading-sm",
                             }
                         }
                     }
 
                     button {
-                        class: "px-4 py-2 text-sm font-medium bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors whitespace-nowrap",
+                        class: "btn btn-sm btn-outline",
                         onclick: move |_| {
                             show_input.set(!show_input());
                         },
@@ -142,13 +141,25 @@ pub fn Home() -> Element {
                 }
             }
 
-            // Error message
+            // Error message with alert
             if let Some(error) = error_message() {
                 div {
-                    class: "bg-red-50 border-b border-red-200 px-4 py-2",
+                    class: "px-4 py-2",
                     div {
-                        class: "max-w-screen-2xl mx-auto text-sm text-red-700",
-                        "{error}"
+                        class: "alert alert-error max-w-screen-2xl mx-auto",
+                        svg {
+                            class: "stroke-current shrink-0 h-6 w-6",
+                            xmlns: "http://www.w3.org/2000/svg",
+                            fill: "none",
+                            view_box: "0 0 24 24",
+                            path {
+                                stroke_linecap: "round",
+                                stroke_linejoin: "round",
+                                stroke_width: "2",
+                                d: "M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"
+                            }
+                        }
+                        span { "{error}" }
                     }
                 }
             }
@@ -156,15 +167,15 @@ pub fn Home() -> Element {
             // Trace input area (collapsible)
             if show_input() {
                 div {
-                    class: "trace-input-area p-4 bg-gray-50 border-b border-gray-200",
+                    class: "p-4 bg-base-200 border-b border-base-300",
                     div {
                         class: "max-w-screen-2xl mx-auto",
                         label {
-                            class: "block text-sm font-medium text-gray-700 mb-2",
-                            "Paste your trace here (logfmt format):"
+                            class: "label",
+                            span { class: "label-text font-medium", "Paste your trace here (logfmt format):" }
                         }
                         textarea {
-                            class: "w-full h-32 p-3 bg-white border border-gray-300 rounded-md text-sm font-mono resize-y focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-transparent",
+                            class: "textarea textarea-bordered w-full h-32 font-mono text-sm",
                             placeholder: "event=insert_success entry=0 kind=MemoryArrow\nevent=insert_success entry=1 kind=DiskArrow\n...",
                             value: "{trace_input}",
                             oninput: move |evt| {
@@ -174,7 +185,7 @@ pub fn Home() -> Element {
                         div {
                             class: "mt-2 flex gap-2",
                             button {
-                                class: "px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-md hover:bg-gray-800 transition-colors",
+                                class: "btn btn-primary btn-sm",
                                 onclick: move |_| {
                                     let input = trace_input();
                                     if !input.is_empty() {
@@ -186,7 +197,7 @@ pub fn Home() -> Element {
                                 "Load"
                             }
                             button {
-                                class: "px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors",
+                                class: "btn btn-ghost btn-sm",
                                 onclick: move |_| {
                                     trace_input.set(String::new());
                                 },
@@ -203,13 +214,13 @@ pub fn Home() -> Element {
 
                 // Left panel - Trace viewer
                 div {
-                    class: "left-panel w-1/2 border-r border-gray-200 flex flex-col bg-white",
+                    class: "left-panel w-1/2 border-r border-base-300 flex flex-col",
                     TraceViewer { simulator }
                 }
 
                 // Right panel - Cache state
                 div {
-                    class: "right-panel w-1/2 flex flex-col bg-white",
+                    class: "right-panel w-1/2 flex flex-col",
                     CacheStateView { simulator }
                 }
             }

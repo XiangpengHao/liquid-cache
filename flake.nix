@@ -47,6 +47,16 @@
           doCheck = false;
           pname = "wasm-bindgen-cli";
         };
+        
+        # Fetch daisyUI bundle files
+        daisyui-bundle = pkgs.fetchurl {
+          url = "https://github.com/saadeghi/daisyui/releases/latest/download/daisyui.mjs";
+          sha256 = "sha256-dH6epo+aSV+eeh3uQbxd7MkWlG+6hCaGaknQ4Bnljj4=";
+        };
+        daisyui-theme-bundle = pkgs.fetchurl {
+          url = "https://github.com/saadeghi/daisyui/releases/latest/download/daisyui-theme.mjs";
+          sha256 = "sha256-iiUODarjHRxAD+tyOPh95xhHJELC40oczt+dsDo86yE=";
+        };
       in
       {
         devShells.default = with pkgs;
@@ -74,6 +84,20 @@
                 targets = [ "x86_64-unknown-linux-gnu" "wasm32-unknown-unknown" ];
               }))
             ];
+            
+            shellHook = ''
+              # Setup daisyUI vendor files for dev-tools
+              VENDOR_DIR="dev/dev-tools/vendor"
+              mkdir -p "$VENDOR_DIR"
+              
+              # Copy daisyUI files from Nix store if they don't exist or are outdated
+              if [ ! -f "$VENDOR_DIR/daisyui.mjs" ] || [ "${daisyui-bundle}" -nt "$VENDOR_DIR/daisyui.mjs" ]; then
+                echo "Setting up daisyUI bundle files..."
+                cp -f "${daisyui-bundle}" "$VENDOR_DIR/daisyui.mjs"
+                cp -f "${daisyui-theme-bundle}" "$VENDOR_DIR/daisyui-theme.mjs"
+                echo "daisyUI files ready in $VENDOR_DIR"
+              fi
+            '';
           };
       }
     );
