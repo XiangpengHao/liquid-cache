@@ -21,7 +21,7 @@ event=insert_failed entry=1 kind=MemoryArrow
 event=insert_failed entry=1 kind=MemoryLiquid
 event=io_write entry=1 kind=MemoryLiquid bytes=34600
 event=insert_success entry=1 kind=DiskLiquid
-event=read entry=1 selection=false expr=false cached=DiskLiquid
+event=read entry=1 selection=false expr=None cached=DiskLiquid
 event=io_read_liquid entry=1 bytes=34600
 event=hydrate entry=1 cached=DiskLiquid new=MemoryLiquid
 event=insert_failed entry=1 kind=MemoryLiquid

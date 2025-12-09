@@ -473,7 +473,7 @@ impl LiquidCache {
         self.trace(InternalEvent::Read {
             entry: *entry_id,
             selection: selection.is_some(),
-            expr: expression.is_some(),
+            expr: expression.cloned(),
             cached: CachedBatchType::from(batch.as_ref()),
         });
 
@@ -1198,14 +1198,13 @@ mod tests {
     }
 
     #[cfg(feature = "shuttle")]
-    #[tokio::test]
-    async fn shuttle_cache_operations() {
+    #[test]
+    fn shuttle_cache_operations() {
         crate::utils::shuttle_test(|| {
-            tokio::runtime::Runtime::new()
-                .unwrap()
-                .block_on(concurrent_cache_operations());
+            block_on(concurrent_cache_operations());
         });
     }
+
     pub fn block_on<F: Future>(future: F) -> F::Output {
         #[cfg(feature = "shuttle")]
         {
