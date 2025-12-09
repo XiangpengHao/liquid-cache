@@ -86,6 +86,19 @@ impl VariantStructSqueezedArray {
     pub fn contains_path(&self, path: &str) -> bool {
         self.values.contains_key(path)
     }
+
+    /// Clone the stored typed values keyed by variant path.
+    pub fn typed_values(&self) -> Vec<(Arc<str>, LiquidArrayRef)> {
+        self.values
+            .iter()
+            .map(|(path, array)| (path.clone(), array.clone()))
+            .collect()
+    }
+
+    /// Null buffer shared by all stored paths, if present.
+    pub fn nulls(&self) -> Option<NullBuffer> {
+        self.nulls.clone()
+    }
 }
 
 impl LiquidSqueezedArray for VariantStructSqueezedArray {

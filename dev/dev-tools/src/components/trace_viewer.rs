@@ -25,9 +25,10 @@ pub fn TraceViewer(simulator: Signal<CacheSimulator>) -> Element {
             if let (Some(container), Some(element)) = (container, element) {
                 spawn(async move {
                     // Get bounding rects to check visibility
-                    if let (Ok(container_rect), Ok(element_rect)) =
-                        (container.get_client_rect().await, element.get_client_rect().await)
-                    {
+                    if let (Ok(container_rect), Ok(element_rect)) = (
+                        container.get_client_rect().await,
+                        element.get_client_rect().await,
+                    ) {
                         let element_top = element_rect.origin.y;
                         let element_bottom = element_top + element_rect.size.height;
                         let container_top = container_rect.origin.y;

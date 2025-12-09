@@ -257,7 +257,9 @@ impl CacheSimulator {
                 self.state.io_stats.bytes_read += bytes;
                 self.state.io_stats_delta.read_requests_delta = 1;
                 self.state.io_stats_delta.bytes_read_delta = *bytes;
-                self.state.current_operations.insert(*entry, EntryOperation::IoRead);
+                self.state
+                    .current_operations
+                    .insert(*entry, EntryOperation::IoRead);
             }
             TraceEvent::Hydrate { entry, new, .. } => {
                 // Hydrate is just an indication, doesn't change state

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use arrow::array::{Array, ArrayRef, StructArray};
 use arrow_schema::DataType;
 use bytes::Bytes;
+use parquet::variant::VariantPath;
 use parquet_variant_compute::{VariantArray, shred_variant, unshred_variant};
 
 use crate::cache::{
@@ -171,7 +172,7 @@ impl SqueezePolicy for TranscodeEvict {
     }
 }
 
-fn try_variant_squeeze(
+pub(crate) fn try_variant_squeeze(
     array: &ArrayRef,
     requests: &[VariantRequest],
     compressor: &LiquidCompressorStates,
@@ -237,13 +238,6 @@ fn try_variant_squeeze(
     Some((Arc::new(squeezed) as LiquidSqueezedArrayRef, bytes))
 }
 
-fn split_variant_path(path: &str) -> Vec<String> {
-    path.split('.')
-        .filter(|segment| !segment.is_empty())
-        .map(|segment| segment.to_string())
-        .collect()
-}
-
 fn build_shredding_schema(
     variant_struct: &StructArray,
     requests: &[VariantRequest],
@@ -268,18 +262,22 @@ fn build_shredding_schema(
 }
 
 fn extract_typed_values_for_path(typed_root: &StructArray, path: &str) -> Option<ArrayRef> {
-    let segments = split_variant_path(path);
-    if segments.is_empty() {
+    let path = VariantPath::from(path);
+    if path.is_empty() {
         return None;
     }
 
     let mut cursor = typed_root;
-    for (idx, segment) in segments.iter().enumerate() {
-        let field = cursor.column_by_name(segment)?;
-        let struct_field = field.as_any().downcast_ref::<StructArray>()?;
-        if idx == segments.len() - 1 {
+    for (idx, element) in path.iter().enumerate() {
+        let field_name = match element {
+            parquet::variant::VariantPathElement::Field { name } => name.as_ref(),
+            parquet::variant::VariantPathElement::Index { .. } => return None,
+        };
+        let field = cursor.column_by_name(field_name)?;
+        if idx == path.len() - 1 {
             return Some(field.clone());
         }
+        let struct_field = field.as_any().downcast_ref::<StructArray>()?;
         let typed_value = struct_field.column_by_name("typed_value")?;
         cursor = typed_value.as_any().downcast_ref::<StructArray>()?;
     }
@@ -293,70 +291,13 @@ mod tests {
     use crate::cache::CacheExpression;
     use crate::cache::cached_batch::CacheEntry;
     use crate::liquid_array::{LiquidSqueezedArray, SqueezedBacking, VariantStructSqueezedArray};
-    use arrow::array::{Array, ArrayRef, BinaryViewArray, Int32Array, StringArray, StructArray};
+    use arrow::array::{Array, ArrayRef, Int32Array, StringArray, StructArray};
     use arrow_schema::Fields;
     use arrow_schema::{DataType, Field};
     use parquet::variant::VariantPath;
     use parquet_variant_compute::{GetOptions, json_to_variant, variant_get};
     use std::collections::BTreeMap;
     use std::sync::Arc;
-
-    #[derive(Default)]
-    struct VariantTestTree {
-        leaf: Option<ArrayRef>,
-        children: BTreeMap<String, VariantTestTree>,
-    }
-
-    impl VariantTestTree {
-        fn insert(&mut self, segments: &[String], values: ArrayRef) {
-            if segments.is_empty() {
-                self.leaf = Some(values);
-                return;
-            }
-            let (head, tail) = segments.split_first().unwrap();
-            self.children
-                .entry(head.clone())
-                .or_default()
-                .insert(tail, values);
-        }
-
-        fn into_typed_value_array(self) -> ArrayRef {
-            if let Some(values) = self.leaf {
-                return values;
-            }
-            let mut fields = Vec::with_capacity(self.children.len());
-            let mut arrays = Vec::with_capacity(self.children.len());
-            for (name, child) in self.children {
-                let field_array = child.into_struct_array();
-                fields.push(Arc::new(Field::new(
-                    name.as_str(),
-                    field_array.data_type().clone(),
-                    false,
-                )));
-                arrays.push(field_array);
-            }
-            Arc::new(StructArray::new(Fields::from(fields), arrays, None)) as ArrayRef
-        }
-
-        fn into_struct_array(self) -> ArrayRef {
-            let typed_value = self.into_typed_value_array();
-            let len = typed_value.len();
-            let value_field = Arc::new(Field::new("value", DataType::BinaryView, true));
-            let typed_field = Arc::new(Field::new(
-                "typed_value",
-                typed_value.data_type().clone(),
-                true,
-            ));
-            Arc::new(StructArray::new(
-                Fields::from(vec![value_field, typed_field]),
-                vec![
-                    Arc::new(BinaryViewArray::from(vec![None::<&[u8]>; len])) as ArrayRef,
-                    typed_value,
-                ],
-                None,
-            )) as ArrayRef
-        }
-    }
 
     fn int_array(n: i32) -> ArrayRef {
         Arc::new(Int32Array::from_iter_values(0..n))
@@ -521,7 +462,7 @@ mod tests {
         let base_variant = json_to_variant(&values).unwrap();
         let base_arr: ArrayRef = Arc::new(base_variant.inner().clone());
 
-        let mut typed_trees: BTreeMap<String, VariantTestTree> = BTreeMap::new();
+        let mut typed_structs: BTreeMap<String, ArrayRef> = BTreeMap::new();
 
         for (path, data_type) in entries.iter() {
             let typed_values = variant_get(
@@ -531,27 +472,29 @@ mod tests {
                 ))),
             )
             .unwrap();
-            let segments = split_variant_path(path);
-            if segments.is_empty() {
-                continue;
-            }
-            let head = segments[0].clone();
-            typed_trees
-                .entry(head)
-                .or_default()
-                .insert(&segments[1..], typed_values.clone());
+
+            typed_structs
+                .entry(path.to_string())
+                .or_insert(Arc::new(StructArray::new(
+                    Fields::from(vec![Arc::new(Field::new(
+                        "typed_value",
+                        data_type.clone(),
+                        true,
+                    ))]),
+                    vec![typed_values.clone()],
+                    None,
+                )));
         }
 
         let mut typed_fields: Vec<Arc<Field>> = Vec::new();
         let mut typed_columns: Vec<ArrayRef> = Vec::new();
-        for (name, tree) in typed_trees {
-            let array = tree.into_struct_array();
+        for (name, tree) in typed_structs {
             typed_fields.push(Arc::new(Field::new(
                 name.as_str(),
-                array.data_type().clone(),
+                tree.data_type().clone(),
                 true,
             )));
-            typed_columns.push(array);
+            typed_columns.push(tree.clone());
         }
 
         let typed_struct = Arc::new(StructArray::new(
@@ -675,23 +618,17 @@ mod tests {
                 let struct_squeezed = squeezed
                     .as_any()
                     .downcast_ref::<VariantStructSqueezedArray>()
-                    .expect("multi-field squeezed array");
-                let arrow_array = struct_squeezed
-                    .to_arrow_array()
-                    .expect("arrow reconstruction");
-                let struct_array = arrow_array
-                    .as_any()
-                    .downcast_ref::<StructArray>()
-                    .expect("variant struct");
+                    .unwrap();
+                let arrow_array = struct_squeezed.to_arrow_array().unwrap();
+                let struct_array = arrow_array.as_any().downcast_ref::<StructArray>().unwrap();
                 let typed_value = struct_array
                     .column_by_name("typed_value")
-                    .expect("typed value column");
-                let typed_struct = typed_value
+                    .unwrap()
                     .as_any()
                     .downcast_ref::<StructArray>()
-                    .expect("typed struct");
-                assert!(typed_struct.column_by_name("name").is_some());
-                assert!(typed_struct.column_by_name("age").is_none());
+                    .unwrap();
+                assert!(typed_value.column_by_name("name").is_some());
+                assert!(typed_value.column_by_name("age").is_none());
             }
             other => panic!("expected MemorySqueezedLiquid with bytes, got {other:?}"),
         }

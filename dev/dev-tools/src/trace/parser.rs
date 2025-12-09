@@ -8,7 +8,6 @@ pub enum CacheKind {
     MemorySqueezedLiquid,
     DiskLiquid,
     DiskArrow,
-    Unknown(String),
 }
 
 impl CacheKind {
@@ -19,7 +18,7 @@ impl CacheKind {
             "MemorySqueezedLiquid" => CacheKind::MemorySqueezedLiquid,
             "DiskLiquid" => CacheKind::DiskLiquid,
             "DiskArrow" => CacheKind::DiskArrow,
-            _ => CacheKind::Unknown(s.to_string()),
+            _ => panic!("Unknown cache kind: {}", s),
         }
     }
 
@@ -28,10 +27,9 @@ impl CacheKind {
         match self {
             CacheKind::MemoryArrow => "MemoryArrow",
             CacheKind::MemoryLiquid => "MemoryLiquid",
-            CacheKind::MemorySqueezedLiquid => "MemorySqueezed",
+            CacheKind::MemorySqueezedLiquid => "SqueezedLiquid",
             CacheKind::DiskLiquid => "DiskLiquid",
             CacheKind::DiskArrow => "DiskArrow",
-            CacheKind::Unknown(s) => s.as_str(),
         }
     }
 }
@@ -236,20 +234,14 @@ fn parse_event_line(line: &str) -> TraceEvent {
                 .get("entry")
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0),
-            kind: fields
-                .get("kind")
-                .map(|s| CacheKind::from_str(s))
-                .unwrap_or(CacheKind::Unknown("".to_string())),
+            kind: fields.get("kind").map(|s| CacheKind::from_str(s)).unwrap(),
         },
         Some("insert_failed") => TraceEvent::InsertFailed {
             entry: fields
                 .get("entry")
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0),
-            kind: fields
-                .get("kind")
-                .map(|s| CacheKind::from_str(s))
-                .unwrap_or(CacheKind::Unknown("".to_string())),
+            kind: fields.get("kind").map(|s| CacheKind::from_str(s)).unwrap(),
         },
         Some("squeeze_begin") => TraceEvent::SqueezeBegin {
             victims: fields
@@ -268,10 +260,7 @@ fn parse_event_line(line: &str) -> TraceEvent {
                 .get("entry")
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0),
-            kind: fields
-                .get("kind")
-                .map(|s| CacheKind::from_str(s))
-                .unwrap_or(CacheKind::Unknown("".to_string())),
+            kind: fields.get("kind").map(|s| CacheKind::from_str(s)).unwrap(),
             bytes: fields
                 .get("bytes")
                 .and_then(|s| s.parse().ok())
@@ -305,11 +294,8 @@ fn parse_event_line(line: &str) -> TraceEvent {
             cached: fields
                 .get("cached")
                 .map(|s| CacheKind::from_str(s))
-                .unwrap_or(CacheKind::Unknown("".to_string())),
-            new: fields
-                .get("new")
-                .map(|s| CacheKind::from_str(s))
-                .unwrap_or(CacheKind::Unknown("".to_string())),
+                .unwrap(),
+            new: fields.get("new").map(|s| CacheKind::from_str(s)).unwrap(),
         },
         Some("read") => TraceEvent::Read {
             entry: fields
@@ -332,7 +318,7 @@ fn parse_event_line(line: &str) -> TraceEvent {
             cached: fields
                 .get("cached")
                 .map(|s| CacheKind::from_str(s))
-                .unwrap_or(CacheKind::Unknown("".to_string())),
+                .unwrap(),
         },
         Some("read_squeezed_data") => TraceEvent::ReadSqueezedData {
             entry: fields

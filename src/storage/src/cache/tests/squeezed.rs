@@ -89,7 +89,7 @@ async fn read_squeezed_variant_path() {
         .with_cache_policy(Box::new(LiquidPolicy::new()))
         .with_hydration_policy(Box::new(AlwaysHydrate::new()))
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
-        .with_max_cache_bytes(array_size * 2)
+        .with_max_cache_bytes(array_size * 3 / 2)
         .with_io_context(Arc::new(DefaultIoContext::new(
             temp_dir.path().to_path_buf(),
         )))
