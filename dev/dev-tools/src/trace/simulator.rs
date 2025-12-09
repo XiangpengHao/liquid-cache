@@ -270,7 +270,7 @@ impl CacheSimulator {
                     .current_operations
                     .insert(*entry, EntryOperation::Reading { expr: expr.clone() });
             }
-            TraceEvent::ReadSqueezedDate { entry, expression } => {
+            TraceEvent::ReadSqueezedData { entry, expression } => {
                 self.state.current_operations.insert(
                     *entry,
                     EntryOperation::ReadingSqueezed {

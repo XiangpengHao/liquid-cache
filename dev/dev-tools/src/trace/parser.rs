@@ -77,7 +77,7 @@ pub enum TraceEvent {
         expr: Option<String>,
         cached: CacheKind,
     },
-    ReadSqueezedDate {
+    ReadSqueezedData {
         entry: u64,
         expression: String,
     },
@@ -148,7 +148,7 @@ impl TraceEvent {
                     )
                 }
             }
-            TraceEvent::ReadSqueezedDate { entry, expression } => {
+            TraceEvent::ReadSqueezedData { entry, expression } => {
                 format!("Read squeezed entry {} [{}]", entry, expression)
             }
         }
@@ -165,7 +165,7 @@ impl TraceEvent {
             TraceEvent::IoReadLiquid { .. } => "io_read_liquid",
             TraceEvent::Hydrate { .. } => "hydrate",
             TraceEvent::Read { .. } => "read",
-            TraceEvent::ReadSqueezedDate { .. } => "read_squeezed_date",
+            TraceEvent::ReadSqueezedData { .. } => "read_squeezed_data",
         }
     }
 }
@@ -334,7 +334,7 @@ fn parse_event_line(line: &str) -> TraceEvent {
                 .map(|s| CacheKind::from_str(s))
                 .unwrap_or(CacheKind::Unknown("".to_string())),
         },
-        Some("read_squeezed_date") => TraceEvent::ReadSqueezedDate {
+        Some("read_squeezed_data") => TraceEvent::ReadSqueezedData {
             entry: fields
                 .get("entry")
                 .and_then(|s| s.parse().ok())
@@ -371,6 +371,8 @@ pub fn parse_trace(input: &str) -> Vec<TraceEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::PathBuf;
 
     #[test]
     fn test_parse_logfmt() {
@@ -386,5 +388,46 @@ mod tests {
         let victims = "[0,1,2]";
         let parsed = parse_victims(victims);
         assert_eq!(parsed, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn parse_all_snapshot_traces() {
+        let snapshots_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("src/storage/src/cache/tests/snapshots");
+
+        let entries = fs::read_dir(&snapshots_dir)
+            .unwrap_or_else(|e| panic!("failed to read snapshots dir {snapshots_dir:?}: {e}"));
+
+        let mut parsed_files = Vec::new();
+
+        for entry in entries {
+            let entry = entry.expect("failed to read directory entry");
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("snap") {
+                continue;
+            }
+
+            let contents = fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+            let events = parse_trace(&contents);
+
+            assert!(
+                !events.is_empty(),
+                "expected events in snapshot {}",
+                path.display()
+            );
+
+            parsed_files.push(path);
+        }
+
+        assert!(
+            !parsed_files.is_empty(),
+            "no .snap files found in {}",
+            snapshots_dir.display()
+        );
     }
 }
