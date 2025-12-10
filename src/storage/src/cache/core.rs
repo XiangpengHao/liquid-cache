@@ -22,8 +22,7 @@ use crate::cache::stats::{CacheStats, RuntimeStats};
 use crate::cache::utils::{LiquidCompressorStates, arrow_to_bytes};
 use crate::cache::{CacheExpression, index::ArtIndex, utils::EntryID};
 use crate::liquid_array::{
-    LiquidSqueezedArray, LiquidSqueezedArrayRef, SqueezedBacking, SqueezedDate32Array,
-    VariantStructSqueezedArray,
+    LiquidSqueezedArrayRef, SqueezedBacking, SqueezedDate32Array, VariantStructSqueezedArray,
 };
 use crate::sync::Arc;
 
@@ -142,13 +141,8 @@ impl LiquidCache {
             CacheEntry::MemoryLiquid(array) => Some(array.clone()),
             entry @ CacheEntry::DiskLiquid(_) => {
                 let liquid = self.read_disk_liquid_array(entry, entry_id).await?;
-                self.maybe_hydrate(
-                    entry_id,
-                    CachedBatchType::DiskLiquid,
-                    MaterializedEntry::Liquid(&liquid),
-                    None,
-                )
-                .await;
+                self.maybe_hydrate(entry_id, entry, MaterializedEntry::Liquid(&liquid), None)
+                    .await;
                 Some(liquid)
             }
             entry @ CacheEntry::MemorySqueezedLiquid(array) => match array.disk_backing() {
@@ -269,9 +263,16 @@ impl LiquidCache {
                     .await;
                 CacheEntry::disk_liquid(liquid_array.original_arrow_data_type())
             }
-            CacheEntry::DiskLiquid(_)
-            | CacheEntry::DiskArrow(_)
-            | CacheEntry::MemorySqueezedLiquid(_) => {
+            CacheEntry::MemorySqueezedLiquid(squeezed_array) => {
+                // The full data is already on disk, so we just need to mark ourself as disk entry
+                let backing = squeezed_array.disk_backing();
+                if backing == SqueezedBacking::Liquid {
+                    CacheEntry::disk_liquid(squeezed_array.original_arrow_data_type())
+                } else {
+                    CacheEntry::disk_arrow(squeezed_array.original_arrow_data_type())
+                }
+            }
+            CacheEntry::DiskLiquid(_) | CacheEntry::DiskArrow(_) => {
                 unreachable!("Unexpected batch in write_in_memory_batch_to_disk")
             }
         }
@@ -374,8 +375,7 @@ impl LiquidCache {
     }
 
     pub(crate) fn trace(&self, event: InternalEvent) {
-        #[cfg(debug_assertions)]
-        {
+        if cfg!(debug_assertions) {
             self.event_tracer.record(event);
         }
     }
@@ -439,20 +439,23 @@ impl LiquidCache {
     async fn maybe_hydrate(
         &self,
         entry_id: &EntryID,
-        cached: CachedBatchType,
+        cached: &CacheEntry,
         materialized: MaterializedEntry<'_>,
         expression: Option<&CacheExpression>,
     ) {
+        let compressor = self.io_context.get_compressor(entry_id);
         if let Some(new_entry) = self.hydration_policy.hydrate(&HydrationRequest {
             entry_id: *entry_id,
             cached,
             materialized,
             expression,
+            compressor,
         }) {
+            let cached_type = CachedBatchType::from(cached);
             let new_type = CachedBatchType::from(&new_entry);
             self.trace(InternalEvent::Hydrate {
                 entry: *entry_id,
-                cached,
+                cached: cached_type,
                 new: new_type,
             });
             self.insert_inner(*entry_id, new_entry).await;
@@ -517,7 +520,7 @@ impl LiquidCache {
                 let full_array = self.read_disk_arrow_array(entry, entry_id).await?;
                 self.maybe_hydrate(
                     entry_id,
-                    CachedBatchType::DiskArrow,
+                    entry,
                     MaterializedEntry::Arrow(&full_array),
                     expression,
                 )
@@ -539,7 +542,7 @@ impl LiquidCache {
                 let liquid = self.read_disk_liquid_array(entry, entry_id).await?;
                 self.maybe_hydrate(
                     entry_id,
-                    CachedBatchType::DiskLiquid,
+                    entry,
                     MaterializedEntry::Liquid(&liquid),
                     expression,
                 )
@@ -589,7 +592,7 @@ impl LiquidCache {
                     let liquid = self.read_disk_liquid_array(&batch, entry_id).await?;
                     self.maybe_hydrate(
                         entry_id,
-                        CachedBatchType::MemorySqueezedLiquid,
+                        &batch,
                         MaterializedEntry::Liquid(&liquid),
                         expression,
                     )
@@ -600,7 +603,7 @@ impl LiquidCache {
                     let full_array = self.read_disk_arrow_array(&batch, entry_id).await?;
                     self.maybe_hydrate(
                         entry_id,
-                        CachedBatchType::MemorySqueezedLiquid,
+                        &batch,
                         MaterializedEntry::Arrow(&full_array),
                         expression,
                     )
@@ -662,14 +665,17 @@ impl LiquidCache {
             let full_array = self.read_disk_arrow_array(&batch, entry_id).await?;
             self.maybe_hydrate(
                 entry_id,
-                CachedBatchType::DiskArrow,
+                &batch,
                 MaterializedEntry::Arrow(&full_array),
                 expression,
             )
             .await;
             full_array
         } else {
-            variant_squeezed.to_arrow_array().unwrap()
+            let requested_paths = requests.iter().map(|r| r.path());
+            variant_squeezed
+                .to_arrow_array_with_paths(requested_paths)
+                .unwrap()
         };
 
         match selection {
@@ -761,15 +767,9 @@ impl LiquidCache {
                 Some(Err(filtered))
             }
             entry @ CacheEntry::DiskArrow(_) => {
-                let cached_type = CachedBatchType::DiskArrow;
                 let array = self.read_disk_arrow_array(entry, entry_id).await?;
-                self.maybe_hydrate(
-                    entry_id,
-                    cached_type,
-                    MaterializedEntry::Arrow(&array),
-                    None,
-                )
-                .await;
+                self.maybe_hydrate(entry_id, entry, MaterializedEntry::Arrow(&array), None)
+                    .await;
                 let mut owned = None;
                 let selection = selection_opt.unwrap_or_else(|| {
                     owned = Some(BooleanBuffer::new_set(array.len()));
@@ -795,13 +795,8 @@ impl LiquidCache {
             }
             entry @ CacheEntry::DiskLiquid(_) => {
                 let liquid = self.read_disk_liquid_array(entry, entry_id).await?;
-                self.maybe_hydrate(
-                    entry_id,
-                    CachedBatchType::DiskLiquid,
-                    MaterializedEntry::Liquid(&liquid),
-                    None,
-                )
-                .await;
+                self.maybe_hydrate(entry_id, entry, MaterializedEntry::Liquid(&liquid), None)
+                    .await;
                 let mut owned = None;
                 let selection = selection_opt.unwrap_or_else(|| {
                     owned = Some(BooleanBuffer::new_set(liquid.len()));
@@ -838,7 +833,7 @@ impl LiquidCache {
                                             self.read_disk_liquid_array(entry, entry_id).await?;
                                         self.maybe_hydrate(
                                             entry_id,
-                                            CachedBatchType::DiskLiquid,
+                                            entry,
                                             MaterializedEntry::Liquid(&hydrated),
                                             None,
                                         )
@@ -856,7 +851,7 @@ impl LiquidCache {
                                             self.read_disk_arrow_array(entry, entry_id).await?;
                                         self.maybe_hydrate(
                                             entry_id,
-                                            CachedBatchType::DiskArrow,
+                                            entry,
                                             MaterializedEntry::Arrow(&full_array),
                                             None,
                                         )
@@ -879,7 +874,7 @@ impl LiquidCache {
                                 let hydrated = self.read_disk_liquid_array(entry, entry_id).await?;
                                 self.maybe_hydrate(
                                     entry_id,
-                                    CachedBatchType::DiskLiquid,
+                                    entry,
                                     MaterializedEntry::Liquid(&hydrated),
                                     None,
                                 )
@@ -897,7 +892,7 @@ impl LiquidCache {
                                     self.read_disk_arrow_array(entry, entry_id).await?;
                                 self.maybe_hydrate(
                                     entry_id,
-                                    CachedBatchType::DiskArrow,
+                                    entry,
                                     MaterializedEntry::Arrow(&full_array),
                                     None,
                                 )
@@ -923,21 +918,15 @@ mod tests {
         policies::LruPolicy,
         transcode_liquid_inner,
         utils::{
-            LiquidCompressorStates, arrow_to_bytes, create_cache_store, create_test_array,
-            create_test_arrow_array,
+            LiquidCompressorStates, create_cache_store, create_test_array, create_test_arrow_array,
         },
     };
     use crate::liquid_array::{
         Date32Field, LiquidPrimitiveArray, LiquidSqueezedArrayRef, SqueezedDate32Array,
-        VariantStructSqueezedArray,
     };
     use crate::sync::thread;
-    use arrow::array::{
-        Array, ArrayRef, BinaryViewArray, Date32Array, Int32Array, StringArray, StructArray,
-    };
+    use arrow::array::{Array, ArrayRef, Date32Array, Int32Array};
     use arrow::datatypes::Date32Type;
-    use arrow_schema::{DataType, Field, Fields};
-    use std::fs;
     use std::future::Future;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -964,66 +953,6 @@ mod tests {
             let id_to_use = self.target_id.unwrap();
             vec![id_to_use]
         }
-    }
-
-    fn build_variant_test_squeezed() -> (LiquidSqueezedArrayRef, Vec<u8>) {
-        let len = 2;
-        let metadata = Arc::new(BinaryViewArray::from(vec![
-            Some(br#"{"m":1}"# as &[u8]),
-            Some(br#"{"m":1}"# as &[u8]),
-        ]));
-        let name_values = Arc::new(StringArray::from(vec![Some("Alice"), Some("Bob")])) as ArrayRef;
-        let value_placeholder =
-            Arc::new(BinaryViewArray::from(vec![None::<&[u8]>; len])) as ArrayRef;
-        let name_struct = Arc::new(StructArray::new(
-            Fields::from(vec![
-                Arc::new(Field::new("value", DataType::BinaryView, true)),
-                Arc::new(Field::new("typed_value", DataType::Utf8, true)),
-            ]),
-            vec![value_placeholder, name_values.clone()],
-            None,
-        )) as ArrayRef;
-        let typed_struct = Arc::new(StructArray::new(
-            Fields::from(vec![Arc::new(Field::new(
-                "name",
-                name_struct.data_type().clone(),
-                true,
-            ))]),
-            vec![name_struct.clone()],
-            None,
-        ));
-        let value_array = Arc::new(BinaryViewArray::from(vec![
-            Some(br#"{"name":"Alice"}"# as &[u8]),
-            Some(br#"{"name":"Bob"}"# as &[u8]),
-        ])) as ArrayRef;
-        let root_fields = Fields::from(vec![
-            Arc::new(Field::new("metadata", DataType::BinaryView, false)),
-            Arc::new(Field::new("value", DataType::BinaryView, true)),
-            Arc::new(Field::new(
-                "typed_value",
-                typed_struct.data_type().clone(),
-                true,
-            )),
-        ]);
-        let root = Arc::new(StructArray::new(
-            root_fields,
-            vec![
-                metadata.clone() as ArrayRef,
-                value_array.clone(),
-                typed_struct.clone() as ArrayRef,
-            ],
-            None,
-        )) as ArrayRef;
-        let compressor = LiquidCompressorStates::new();
-        let name_liquid = transcode_liquid_inner(&name_values, &compressor)
-            .expect("string path transcodes to liquid");
-        let squeezed: LiquidSqueezedArrayRef = Arc::new(VariantStructSqueezedArray::new(
-            vec![(Arc::<str>::from("name"), name_liquid)],
-            None,
-            root.data_type().clone(),
-        ));
-        let bytes = arrow_to_bytes(&root).expect("arrow bytes").to_vec();
-        (squeezed, bytes)
     }
 
     #[tokio::test]
@@ -1098,71 +1027,6 @@ mod tests {
         assert_eq!(result.value(1), 1971);
         assert!(result.is_null(2));
         assert_eq!(result.value(3), 1972);
-    }
-
-    #[tokio::test]
-    async fn read_variant_squeezed_reads_disk_when_path_missing() {
-        let store = create_cache_store(1 << 20, Box::new(LruPolicy::new()));
-        let entry_id = EntryID::from(99);
-        let (squeezed, arrow_bytes) = build_variant_test_squeezed();
-        let entry = CacheEntry::memory_squeezed_liquid(squeezed);
-        let path = store.io_context.disk_path(&entry, &entry_id);
-        store.insert_inner(entry_id, entry).await;
-        fs::write(&path, &arrow_bytes).unwrap();
-
-        let expr = Arc::new(CacheExpression::variant_get_many(vec![
-            ("name", DataType::Utf8),
-            ("age", DataType::Int64),
-        ]));
-        let result = store
-            .get(&entry_id)
-            .with_expression_hint(expr)
-            .read()
-            .await
-            .expect("variant array");
-
-        let struct_array = result
-            .as_any()
-            .downcast_ref::<StructArray>()
-            .expect("struct array");
-        let value_column = struct_array
-            .column_by_name("value")
-            .expect("value column")
-            .as_any()
-            .downcast_ref::<BinaryViewArray>()
-            .expect("binary view array");
-        assert_eq!(value_column.null_count(), 0);
-        assert_eq!(value_column.value(0), br#"{"name":"Alice"}"#);
-    }
-
-    #[tokio::test]
-    async fn read_variant_squeezed_uses_squeezed_when_paths_present() {
-        let store = create_cache_store(1 << 20, Box::new(LruPolicy::new()));
-        let entry_id = EntryID::from(100);
-        let (squeezed, _bytes) = build_variant_test_squeezed();
-        store
-            .insert_inner(entry_id, CacheEntry::memory_squeezed_liquid(squeezed))
-            .await;
-
-        let expr = Arc::new(CacheExpression::variant_get("name", DataType::Utf8));
-        let result = store
-            .get(&entry_id)
-            .with_expression_hint(expr)
-            .read()
-            .await
-            .expect("variant array");
-
-        let struct_array = result
-            .as_any()
-            .downcast_ref::<StructArray>()
-            .expect("struct array");
-        let value_column = struct_array
-            .column_by_name("value")
-            .expect("value column")
-            .as_any()
-            .downcast_ref::<BinaryViewArray>()
-            .expect("binary view array");
-        assert_eq!(value_column.len(), value_column.null_count());
     }
 
     #[tokio::test]

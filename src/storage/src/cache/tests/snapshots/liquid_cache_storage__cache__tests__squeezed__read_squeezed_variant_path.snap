@@ -4,42 +4,32 @@ expression: trace
 ---
 EventTrace: [
 event=insert_success entry=0 kind=MemoryArrow
-event=insert_success entry=1 kind=MemoryArrow
-event=insert_failed entry=2 kind=MemoryArrow
-event=squeeze_begin victims=[0,1]
+event=insert_failed entry=1 kind=MemoryArrow
+event=squeeze_begin victims=[0]
 event=squeeze_victim entry=0
 event=io_write entry=0 kind=MemorySqueezedLiquid bytes=7816
 event=insert_success entry=0 kind=MemorySqueezedLiquid
+event=insert_success entry=1 kind=MemoryArrow
+event=insert_failed entry=2 kind=MemoryArrow
+event=squeeze_begin victims=[1,0]
 event=squeeze_victim entry=1
 event=io_write entry=1 kind=MemorySqueezedLiquid bytes=7816
 event=insert_success entry=1 kind=MemorySqueezedLiquid
-event=insert_success entry=2 kind=MemoryArrow
-event=read entry=0 selection=false expr=VariantGet[name:Utf8] cached=MemorySqueezedLiquid
-event=read_squeezed_data entry=0 expression=VariantGet[name:Utf8]
-event=read entry=0 selection=false expr=VariantGet[age:Int64] cached=MemorySqueezedLiquid
-event=io_read_arrow entry=0 bytes=7816
-event=hydrate entry=0 cached=DiskArrow new=MemoryArrow
-event=insert_failed entry=0 kind=MemoryArrow
-event=squeeze_begin victims=[2,0,1]
-event=squeeze_victim entry=2
-event=io_write entry=2 kind=MemorySqueezedLiquid bytes=7816
-event=insert_success entry=2 kind=MemorySqueezedLiquid
 event=squeeze_victim entry=0
 event=insert_success entry=0 kind=DiskArrow
-event=squeeze_victim entry=1
-event=insert_success entry=1 kind=DiskArrow
-event=insert_failed entry=0 kind=MemoryArrow
-event=squeeze_begin victims=[2]
-event=squeeze_victim entry=2
-event=insert_success entry=2 kind=DiskArrow
-event=insert_failed entry=0 kind=MemoryArrow
-event=io_write entry=0 kind=DiskArrow bytes=7816
-event=insert_success entry=0 kind=DiskArrow
+event=insert_success entry=2 kind=MemoryArrow
+event=read entry=0 selection=false expr=VariantGet[name:Utf8] cached=DiskArrow
+event=io_read_arrow entry=0 bytes=7816
+event=hydrate entry=0 cached=DiskArrow new=MemorySqueezedLiquid
+event=insert_success entry=0 kind=MemorySqueezedLiquid
+event=read entry=0 selection=false expr=VariantGet[age:Int64] cached=MemorySqueezedLiquid
+event=io_read_arrow entry=0 bytes=7816
+event=hydrate entry=0 cached=MemorySqueezedLiquid new=MemorySqueezedLiquid
+event=insert_success entry=0 kind=MemorySqueezedLiquid
 event=read_squeezed_data entry=0 expression=VariantGet[age:Int64]
-event=read entry=1 selection=false expr=VariantGet[address.zipcode:Int64] cached=DiskArrow
+event=read entry=1 selection=false expr=VariantGet[address.zipcode:Int64] cached=MemorySqueezedLiquid
 event=io_read_arrow entry=1 bytes=7816
-event=hydrate entry=1 cached=DiskArrow new=MemoryArrow
-event=insert_failed entry=1 kind=MemoryArrow
-event=io_write entry=1 kind=DiskArrow bytes=7816
-event=insert_success entry=1 kind=DiskArrow
+event=hydrate entry=1 cached=MemorySqueezedLiquid new=MemorySqueezedLiquid
+event=insert_success entry=1 kind=MemorySqueezedLiquid
+event=read_squeezed_data entry=1 expression=VariantGet[address.zipcode:Int64]
 ]

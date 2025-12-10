@@ -8,7 +8,6 @@ pub enum CacheKind {
     MemorySqueezedLiquid,
     DiskLiquid,
     DiskArrow,
-    Unknown(String),
 }
 
 impl CacheKind {
@@ -19,7 +18,7 @@ impl CacheKind {
             "MemorySqueezedLiquid" => CacheKind::MemorySqueezedLiquid,
             "DiskLiquid" => CacheKind::DiskLiquid,
             "DiskArrow" => CacheKind::DiskArrow,
-            _ => CacheKind::Unknown(s.to_string()),
+            _ => panic!("Unknown cache kind: {}", s),
         }
     }
 
@@ -28,10 +27,9 @@ impl CacheKind {
         match self {
             CacheKind::MemoryArrow => "MemoryArrow",
             CacheKind::MemoryLiquid => "MemoryLiquid",
-            CacheKind::MemorySqueezedLiquid => "MemorySqueezed",
+            CacheKind::MemorySqueezedLiquid => "SqueezedLiquid",
             CacheKind::DiskLiquid => "DiskLiquid",
             CacheKind::DiskArrow => "DiskArrow",
-            CacheKind::Unknown(s) => s.as_str(),
         }
     }
 }
@@ -62,6 +60,10 @@ pub enum TraceEvent {
         entry: u64,
         bytes: u64,
     },
+    IoReadLiquid {
+        entry: u64,
+        bytes: u64,
+    },
     Hydrate {
         entry: u64,
         cached: CacheKind,
@@ -73,12 +75,9 @@ pub enum TraceEvent {
         expr: Option<String>,
         cached: CacheKind,
     },
-    ReadSqueezedDate {
+    ReadSqueezedData {
         entry: u64,
         expression: String,
-    },
-    Unknown {
-        raw: String,
     },
 }
 
@@ -112,6 +111,9 @@ impl TraceEvent {
             TraceEvent::IoReadArrow { entry, bytes } => {
                 format!("Read arrow entry {} ({} bytes)", entry, bytes)
             }
+            TraceEvent::IoReadLiquid { entry, bytes } => {
+                format!("Read liquid entry {} ({} bytes)", entry, bytes)
+            }
             TraceEvent::Hydrate { entry, cached, new } => {
                 format!(
                     "Hydrate entry {} from {} to {}",
@@ -144,10 +146,9 @@ impl TraceEvent {
                     )
                 }
             }
-            TraceEvent::ReadSqueezedDate { entry, expression } => {
+            TraceEvent::ReadSqueezedData { entry, expression } => {
                 format!("Read squeezed entry {} [{}]", entry, expression)
             }
-            TraceEvent::Unknown { raw } => raw.clone(),
         }
     }
 
@@ -159,10 +160,10 @@ impl TraceEvent {
             TraceEvent::SqueezeVictim { .. } => "squeeze_victim",
             TraceEvent::IoWrite { .. } => "io_write",
             TraceEvent::IoReadArrow { .. } => "io_read_arrow",
+            TraceEvent::IoReadLiquid { .. } => "io_read_liquid",
             TraceEvent::Hydrate { .. } => "hydrate",
             TraceEvent::Read { .. } => "read",
-            TraceEvent::ReadSqueezedDate { .. } => "read_squeezed_date",
-            TraceEvent::Unknown { .. } => "unknown",
+            TraceEvent::ReadSqueezedData { .. } => "read_squeezed_data",
         }
     }
 }
@@ -233,20 +234,14 @@ fn parse_event_line(line: &str) -> TraceEvent {
                 .get("entry")
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0),
-            kind: fields
-                .get("kind")
-                .map(|s| CacheKind::from_str(s))
-                .unwrap_or(CacheKind::Unknown("".to_string())),
+            kind: fields.get("kind").map(|s| CacheKind::from_str(s)).unwrap(),
         },
         Some("insert_failed") => TraceEvent::InsertFailed {
             entry: fields
                 .get("entry")
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0),
-            kind: fields
-                .get("kind")
-                .map(|s| CacheKind::from_str(s))
-                .unwrap_or(CacheKind::Unknown("".to_string())),
+            kind: fields.get("kind").map(|s| CacheKind::from_str(s)).unwrap(),
         },
         Some("squeeze_begin") => TraceEvent::SqueezeBegin {
             victims: fields
@@ -265,16 +260,23 @@ fn parse_event_line(line: &str) -> TraceEvent {
                 .get("entry")
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0),
-            kind: fields
-                .get("kind")
-                .map(|s| CacheKind::from_str(s))
-                .unwrap_or(CacheKind::Unknown("".to_string())),
+            kind: fields.get("kind").map(|s| CacheKind::from_str(s)).unwrap(),
             bytes: fields
                 .get("bytes")
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0),
         },
         Some("io_read_arrow") => TraceEvent::IoReadArrow {
+            entry: fields
+                .get("entry")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0),
+            bytes: fields
+                .get("bytes")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0),
+        },
+        Some("io_read_liquid") => TraceEvent::IoReadLiquid {
             entry: fields
                 .get("entry")
                 .and_then(|s| s.parse().ok())
@@ -292,11 +294,8 @@ fn parse_event_line(line: &str) -> TraceEvent {
             cached: fields
                 .get("cached")
                 .map(|s| CacheKind::from_str(s))
-                .unwrap_or(CacheKind::Unknown("".to_string())),
-            new: fields
-                .get("new")
-                .map(|s| CacheKind::from_str(s))
-                .unwrap_or(CacheKind::Unknown("".to_string())),
+                .unwrap(),
+            new: fields.get("new").map(|s| CacheKind::from_str(s)).unwrap(),
         },
         Some("read") => TraceEvent::Read {
             entry: fields
@@ -319,9 +318,9 @@ fn parse_event_line(line: &str) -> TraceEvent {
             cached: fields
                 .get("cached")
                 .map(|s| CacheKind::from_str(s))
-                .unwrap_or(CacheKind::Unknown("".to_string())),
+                .unwrap(),
         },
-        Some("read_squeezed_date") => TraceEvent::ReadSqueezedDate {
+        Some("read_squeezed_data") => TraceEvent::ReadSqueezedData {
             entry: fields
                 .get("entry")
                 .and_then(|s| s.parse().ok())
@@ -331,9 +330,9 @@ fn parse_event_line(line: &str) -> TraceEvent {
                 .map(|s| s.to_string())
                 .unwrap_or_default(),
         },
-        _ => TraceEvent::Unknown {
-            raw: line.to_string(),
-        },
+        _ => {
+            panic!("Unknown event: {}", line);
+        }
     }
 }
 
@@ -358,6 +357,8 @@ pub fn parse_trace(input: &str) -> Vec<TraceEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::PathBuf;
 
     #[test]
     fn test_parse_logfmt() {
@@ -373,5 +374,46 @@ mod tests {
         let victims = "[0,1,2]";
         let parsed = parse_victims(victims);
         assert_eq!(parsed, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn parse_all_snapshot_traces() {
+        let snapshots_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("src/storage/src/cache/tests/snapshots");
+
+        let entries = fs::read_dir(&snapshots_dir)
+            .unwrap_or_else(|e| panic!("failed to read snapshots dir {snapshots_dir:?}: {e}"));
+
+        let mut parsed_files = Vec::new();
+
+        for entry in entries {
+            let entry = entry.expect("failed to read directory entry");
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("snap") {
+                continue;
+            }
+
+            let contents = fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+            let events = parse_trace(&contents);
+
+            assert!(
+                !events.is_empty(),
+                "expected events in snapshot {}",
+                path.display()
+            );
+
+            parsed_files.push(path);
+        }
+
+        assert!(
+            !parsed_files.is_empty(),
+            "no .snap files found in {}",
+            snapshots_dir.display()
+        );
     }
 }

@@ -35,20 +35,20 @@ values:
 stats:
 entries.total: 8
 entries.after_first_run: 8
-entries.memory.arrow: 3
-entries.memory.liquid: 0
-entries.memory.squeezed_liquid: 1
-entries.disk.liquid: 4
+entries.memory.arrow: 2
+entries.memory.liquid: 6
+entries.memory.squeezed_liquid: 0
+entries.disk.liquid: 0
 entries.disk.arrow: 0
-usage.memory_bytes: 1041401
+usage.memory_bytes: 880240
 usage.disk_bytes: 719712
 RuntimeStatsSnapshot:
   get_arrow_array_calls: 0
   get_with_selection_calls: 2
   get_with_predicate_calls: 8
   get_predicate_squeezed_success: 0
-  get_predicate_squeezed_needs_io: 1
-  get_predicate_squeezed_unsupported: 1
+  get_predicate_squeezed_needs_io: 0
+  get_predicate_squeezed_unsupported: 0
   get_squeezed_success: 0
   get_squeezed_needs_io: 0
   try_read_liquid_calls: 0

@@ -209,11 +209,11 @@ stats:
 entries.total: 8
 entries.after_first_run: 8
 entries.memory.arrow: 5
-entries.memory.liquid: 1
+entries.memory.liquid: 3
 entries.memory.squeezed_liquid: 0
-entries.disk.liquid: 2
+entries.disk.liquid: 0
 entries.disk.arrow: 0
-usage.memory_bytes: 969801
+usage.memory_bytes: 1005099
 usage.disk_bytes: 35000
 RuntimeStatsSnapshot:
   get_arrow_array_calls: 0
