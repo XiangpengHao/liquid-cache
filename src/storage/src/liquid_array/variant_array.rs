@@ -87,6 +87,31 @@ impl VariantStructSqueezedArray {
         self.values.contains_key(path)
     }
 
+    /// Build an Arrow array that includes only the provided variant paths.
+    /// If `paths` is empty or none match, it falls back to the full array.
+    pub fn to_arrow_array_with_paths<'a>(
+        &self,
+        paths: impl IntoIterator<Item = &'a str>,
+    ) -> Result<ArrayRef, NeedsBacking> {
+        let mut filtered: Vec<(Arc<str>, LiquidArrayRef)> = Vec::new();
+        for path in paths.into_iter() {
+            if let Some(array) = self.values.get(path) {
+                filtered.push((Arc::from(path.to_string()), array.clone()));
+            }
+        }
+
+        if filtered.is_empty() {
+            return self.to_arrow_array();
+        }
+
+        let filtered = VariantStructSqueezedArray::new(
+            filtered,
+            self.nulls.clone(),
+            self.original_arrow_type.clone(),
+        );
+        filtered.to_arrow_array()
+    }
+
     /// Clone the stored typed values keyed by variant path.
     pub fn typed_values(&self) -> Vec<(Arc<str>, LiquidArrayRef)> {
         self.values
@@ -224,4 +249,56 @@ fn wrap_typed_value(len: usize, values: ArrayRef) -> ArrayRef {
         vec![placeholder, values],
         None,
     )) as ArrayRef
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::{Int64Array, StringArray};
+    use arrow_schema::DataType;
+
+    use crate::liquid_array::{LiquidByteArray, LiquidPrimitiveArray};
+
+    #[test]
+    fn to_arrow_array_with_paths_prunes_extra_fields() {
+        // Build squeezed variant with two typed paths: did (utf8) and time_us (int64).
+        let did_arrow = StringArray::from(vec![Some("d")]);
+        let (_comp, did_liquid) = LiquidByteArray::train_from_arrow(&did_arrow);
+        let did_liquid: LiquidArrayRef = Arc::new(did_liquid);
+
+        let time_arrow = Int64Array::from(vec![1_i64]);
+        let time_liquid =
+            LiquidPrimitiveArray::<arrow::datatypes::Int64Type>::from_arrow_array(time_arrow);
+        let time_liquid: LiquidArrayRef = Arc::new(time_liquid);
+
+        let squeezed = VariantStructSqueezedArray::new(
+            vec![
+                (Arc::from("did"), did_liquid),
+                (Arc::from("time_us"), time_liquid),
+            ],
+            None,
+            DataType::Struct(Fields::from(Vec::<Arc<Field>>::new())),
+        );
+
+        // Request only time_us; did should be pruned from typed_value.
+        let array = squeezed
+            .to_arrow_array_with_paths(["time_us"])
+            .expect("arrow array");
+        let root = array
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .expect("struct root");
+        let typed_value = root
+            .column_by_name("typed_value")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .unwrap();
+        let field_names: Vec<_> = typed_value
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect();
+        assert_eq!(field_names, vec!["time_us"]);
+    }
 }

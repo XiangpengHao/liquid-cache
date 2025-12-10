@@ -22,8 +22,7 @@ use crate::cache::stats::{CacheStats, RuntimeStats};
 use crate::cache::utils::{LiquidCompressorStates, arrow_to_bytes};
 use crate::cache::{CacheExpression, index::ArtIndex, utils::EntryID};
 use crate::liquid_array::{
-    LiquidSqueezedArray, LiquidSqueezedArrayRef, SqueezedBacking, SqueezedDate32Array,
-    VariantStructSqueezedArray,
+    LiquidSqueezedArrayRef, SqueezedBacking, SqueezedDate32Array, VariantStructSqueezedArray,
 };
 use crate::sync::Arc;
 
@@ -376,8 +375,7 @@ impl LiquidCache {
     }
 
     pub(crate) fn trace(&self, event: InternalEvent) {
-        #[cfg(debug_assertions)]
-        {
+        if cfg!(debug_assertions) {
             self.event_tracer.record(event);
         }
     }
@@ -674,7 +672,10 @@ impl LiquidCache {
             .await;
             full_array
         } else {
-            variant_squeezed.to_arrow_array().unwrap()
+            let requested_paths = requests.iter().map(|r| r.path());
+            variant_squeezed
+                .to_arrow_array_with_paths(requested_paths)
+                .unwrap()
         };
 
         match selection {
