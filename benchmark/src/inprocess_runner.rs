@@ -11,6 +11,7 @@ use datafusion::prelude::{SessionConfig, SessionContext};
 use liquid_cache_common::IoMode;
 use liquid_cache_local::LiquidCacheLocalBuilder;
 use liquid_cache_parquet::{LiquidCacheParquetRef, extract_execution_metrics};
+use liquid_cache_storage::cache::NoHydration;
 use liquid_cache_storage::cache::squeeze_policies::{Evict, TranscodeEvict, TranscodeSqueezeEvict};
 use liquid_cache_storage::cache_policies::LiquidPolicy;
 use log::info;
@@ -234,6 +235,7 @@ impl InProcessBenchmarkRunner {
                     .with_max_cache_bytes(cache_size)
                     .with_cache_dir(cache_dir)
                     .with_cache_policy(Box::new(LiquidPolicy::new()))
+                    .with_hydration_policy(Box::new(NoHydration::new()))
                     .with_squeeze_policy(Box::new(Evict))
                     .build(session_config)?;
                 (v.0, Some(v.1))
@@ -243,6 +245,7 @@ impl InProcessBenchmarkRunner {
                     .with_max_cache_bytes(cache_size)
                     .with_cache_dir(cache_dir)
                     .with_cache_policy(Box::new(LiquidPolicy::new()))
+                    .with_hydration_policy(Box::new(NoHydration::new()))
                     .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
                     .with_io_mode(self.io_mode)
                     .with_eager_shredding(true)
@@ -254,6 +257,7 @@ impl InProcessBenchmarkRunner {
                     .with_max_cache_bytes(cache_size)
                     .with_cache_dir(cache_dir)
                     .with_cache_policy(Box::new(LiquidPolicy::new()))
+                    .with_hydration_policy(Box::new(NoHydration::new()))
                     .with_squeeze_policy(Box::new(TranscodeEvict))
                     .with_io_mode(self.io_mode)
                     .build(session_config)?;

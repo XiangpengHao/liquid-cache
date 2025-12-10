@@ -16,6 +16,7 @@ use liquid_cache_parquet::{
     LiquidCacheParquet, LiquidCacheParquetRef, VariantGetUdf, VariantPretty, VariantToJsonUdf,
 };
 use liquid_cache_storage::cache::squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict};
+use liquid_cache_storage::cache::{AlwaysHydrate, HydrationPolicy};
 use liquid_cache_storage::cache_policies::CachePolicy;
 use liquid_cache_storage::cache_policies::LiquidPolicy;
 
@@ -65,7 +66,8 @@ pub struct LiquidCacheLocalBuilder {
     cache_policy: Box<dyn CachePolicy>,
     /// Squeeze policy
     squeeze_policy: Box<dyn SqueezePolicy>,
-
+    /// Hydration policy
+    hydration_policy: Box<dyn HydrationPolicy>,
     span: fastrace::Span,
 
     io_mode: IoMode,
@@ -81,6 +83,7 @@ impl Default for LiquidCacheLocalBuilder {
             cache_dir: std::env::temp_dir().join("liquid_cache"),
             cache_policy: Box::new(LiquidPolicy::new()),
             squeeze_policy: Box::new(TranscodeSqueezeEvict),
+            hydration_policy: Box::new(AlwaysHydrate::new()),
             span: fastrace::Span::enter_with_local_parent("liquid_cache_local_builder"),
             io_mode: IoMode::StdBlocking,
             eager_shredding: true,
@@ -121,6 +124,12 @@ impl LiquidCacheLocalBuilder {
     /// Set cache strategy
     pub fn with_cache_policy(mut self, cache_policy: Box<dyn CachePolicy>) -> Self {
         self.cache_policy = cache_policy;
+        self
+    }
+
+    /// Set hydration policy
+    pub fn with_hydration_policy(mut self, hydration_policy: Box<dyn HydrationPolicy>) -> Self {
+        self.hydration_policy = hydration_policy;
         self
     }
 
