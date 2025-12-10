@@ -493,13 +493,13 @@ impl InProcessBenchmarkRunner {
                     .await?;
 
                 query_result.add(iteration_result);
+            }
 
-                if self.reset_cache
-                    && let Some(cache) = &cache
-                {
-                    unsafe {
-                        cache.reset();
-                    }
+            if self.reset_cache
+                && let Some(cache) = &cache
+            {
+                unsafe {
+                    cache.reset();
                 }
             }
 
