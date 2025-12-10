@@ -1,5 +1,6 @@
 use arrow_flight::flight_service_server::FlightServiceServer;
 use datafusion::prelude::SessionContext;
+use liquid_cache_local::storage::cache::AlwaysHydrate;
 use liquid_cache_local::storage::cache::squeeze_policies::TranscodeSqueezeEvict;
 use liquid_cache_server::LiquidCacheService;
 use liquid_cache_server::common::IoMode;
@@ -14,6 +15,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(tempfile::tempdir()?.keep()), // disk cache dir
         Box::new(LruPolicy::new()),
         Box::new(TranscodeSqueezeEvict),
+        Box::new(AlwaysHydrate::new()),
         Some(IoMode::default()),
     )?;
 

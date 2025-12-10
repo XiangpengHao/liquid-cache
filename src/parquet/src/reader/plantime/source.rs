@@ -16,6 +16,7 @@ use datafusion::{
         table_schema::TableSchema,
     },
     error::Result,
+    physical_expr_adapter::DefaultPhysicalExprAdapterFactory,
     physical_optimizer::pruning::PruningPredicate,
     physical_plan::{
         PhysicalExpr,
@@ -279,13 +280,35 @@ impl FileSource for LiquidParquetSource {
             .file_column_projection_indices()
             .unwrap_or_else(|| (0..base_config.file_schema().fields().len()).collect());
 
+        let (expr_adapter_factory, schema_adapter_factory) =
+            match base_config.expr_adapter_factory.as_ref() {
+                Some(expr_adapter_factory) => {
+                    // If no custom schema adapter factory is provided but an expr adapter factory is provided use the expr adapter factory alongside the default schema adapter factory.
+                    // This means that the PhysicalExprAdapterFactory will be used for predicate pushdown and stats pruning, while the default schema adapter factory will be used for projections.
+                    (
+                        Some(Arc::clone(expr_adapter_factory)),
+                        Arc::new(DefaultSchemaAdapterFactory) as _,
+                    )
+                }
+                None => {
+                    // If no custom schema adapter factory or expr adapter factory is provided, use the default schema adapter factory and the default physical expr adapter factory.
+                    // This means that the default SchemaAdapter will be used for projections (e.g. a column was selected that is a UInt32 in the file and a UInt64 in the table schema)
+                    // and the default PhysicalExprAdapterFactory will be used for predicate pushdown and stats pruning.
+                    // This is the default behavior with not customization and means that most users of DataFusion will be cut over to the new PhysicalExprAdapterFactory API.
+                    (
+                        Some(Arc::new(DefaultPhysicalExprAdapterFactory) as _),
+                        Arc::new(DefaultSchemaAdapterFactory) as _,
+                    )
+                }
+            };
+
         let reader_factory = Arc::new(CachedMetaReaderFactory::new(object_store));
-        let schema_adapter = Arc::new(DefaultSchemaAdapterFactory);
 
         let execution_span = self
             .span
             .clone()
             .map(|span| fastrace::Span::enter_with_parent(format!("opener_{partition}"), &span));
+        let partition_fields = base_config.table_partition_cols().clone();
         let opener = LiquidParquetOpener::new(
             partition,
             Arc::from(projection),
@@ -293,14 +316,14 @@ impl FileSource for LiquidParquetSource {
                 .expect("Batch size must be set before creating LiquidParquetOpener"),
             base_config.limit,
             self.predicate.clone(),
-            self.pruning_predicate.clone(),
-            self.page_pruning_predicate.clone(),
             base_config.file_schema().clone(),
+            partition_fields,
             self.metrics.clone(),
             self.liquid_cache.clone(),
             reader_factory,
             self.reorder_filters(),
-            schema_adapter,
+            schema_adapter_factory,
+            expr_adapter_factory,
             execution_span.map(Arc::new),
         );
 

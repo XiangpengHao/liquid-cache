@@ -974,6 +974,7 @@ mod tests {
     };
     use crate::{LiquidCacheParquet, VariantGetUdf, VariantToJsonUdf};
     use liquid_cache_common::IoMode;
+    use liquid_cache_storage::cache::AlwaysHydrate;
 
     use super::*;
     use arrow::array::{ArrayRef, Date32Array, StringArray, TimestampMicrosecondArray};
@@ -1002,6 +1003,7 @@ mod tests {
             PathBuf::from("test"),
             Box::new(LiquidPolicy::new()),
             Box::new(TranscodeSqueezeEvict),
+            Box::new(AlwaysHydrate::new()),
             IoMode::Uring,
         )))
     }

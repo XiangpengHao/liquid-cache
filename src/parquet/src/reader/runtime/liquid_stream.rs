@@ -693,6 +693,7 @@ mod tests {
     use arrow::array::{ArrayRef, Int32Array};
     use arrow_schema::{DataType, Field, Schema};
     use liquid_cache_common::IoMode;
+    use liquid_cache_storage::cache::AlwaysHydrate;
     use liquid_cache_storage::cache::squeeze_policies::Evict;
     use liquid_cache_storage::cache_policies::LiquidPolicy;
     use parquet::arrow::arrow_reader::RowSelection;
@@ -706,6 +707,7 @@ mod tests {
             tmp_dir.path().to_path_buf(),
             Box::new(LiquidPolicy::new()),
             Box::new(Evict),
+            Box::new(AlwaysHydrate::new()),
             IoMode::Uring,
         );
         let file = cache.register_or_get_file("test.parquet".to_string(), schema);

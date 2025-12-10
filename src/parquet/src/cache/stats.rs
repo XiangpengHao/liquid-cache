@@ -175,7 +175,10 @@ mod tests {
         datatypes::UInt64Type,
     };
     use bytes::Bytes;
-    use liquid_cache_storage::{cache::squeeze_policies::Evict, cache_policies::LiquidPolicy};
+    use liquid_cache_storage::{
+        cache::{AlwaysHydrate, squeeze_policies::Evict},
+        cache_policies::LiquidPolicy,
+    };
     use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
     use tempfile::NamedTempFile;
 
@@ -188,6 +191,7 @@ mod tests {
             tmp_dir.path().to_path_buf(),
             Box::new(LiquidPolicy::new()),
             Box::new(Evict),
+            Box::new(AlwaysHydrate::new()),
             IoMode::Uring,
         );
         let fields: Vec<Field> = (0..8)

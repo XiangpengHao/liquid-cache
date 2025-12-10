@@ -280,7 +280,7 @@ mod tests {
     };
     use futures::{StreamExt, pin_mut};
     use liquid_cache_common::IoMode;
-    use liquid_cache_storage::cache::squeeze_policies::Evict;
+    use liquid_cache_storage::cache::{AlwaysHydrate, squeeze_policies::Evict};
     use liquid_cache_storage::cache_policies::LiquidPolicy;
     use parquet::arrow::{
         ArrowWriter,
@@ -299,6 +299,7 @@ mod tests {
             tmp_dir.path().to_path_buf(),
             Box::new(LiquidPolicy::new()),
             Box::new(Evict),
+            Box::new(AlwaysHydrate::new()),
             IoMode::Uring,
         );
         let field = Arc::new(Field::new("col0", DataType::Int32, false));

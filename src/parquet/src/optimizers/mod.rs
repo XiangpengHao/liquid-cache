@@ -313,7 +313,8 @@ mod tests {
 
     use datafusion::{datasource::physical_plan::FileScanConfig, prelude::SessionContext};
     use liquid_cache_storage::{
-        cache::squeeze_policies::TranscodeSqueezeEvict, cache_policies::LiquidPolicy,
+        cache::{AlwaysHydrate, squeeze_policies::TranscodeSqueezeEvict},
+        cache_policies::LiquidPolicy,
     };
 
     use crate::LiquidCacheParquet;
@@ -329,6 +330,7 @@ mod tests {
             PathBuf::from("test"),
             Box::new(LiquidPolicy::new()),
             Box::new(TranscodeSqueezeEvict),
+            Box::new(AlwaysHydrate::new()),
             IoMode::Uring,
         ));
         let rewritten = rewrite_data_source_plan(plan, &liquid_cache, true);

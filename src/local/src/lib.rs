@@ -173,6 +173,7 @@ impl LiquidCacheLocalBuilder {
             self.cache_dir,
             self.cache_policy,
             self.squeeze_policy,
+            self.hydration_policy,
             self.io_mode,
         );
         let cache_ref = Arc::new(cache);

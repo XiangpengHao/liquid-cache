@@ -7,7 +7,10 @@ use datafusion::{
 };
 use liquid_cache_common::IoMode;
 use liquid_cache_storage::{
-    cache::squeeze_policies::{Evict, SqueezePolicy, TranscodeEvict, TranscodeSqueezeEvict},
+    cache::{
+        AlwaysHydrate,
+        squeeze_policies::{Evict, SqueezePolicy, TranscodeEvict, TranscodeSqueezeEvict},
+    },
     cache_policies::LiquidPolicy,
 };
 use uuid::Uuid;
@@ -41,6 +44,7 @@ async fn run_sql(
         tmp_dir.path().to_path_buf(),
         Box::new(LiquidPolicy::new()),
         squeeze_policy,
+        Box::new(AlwaysHydrate::new()),
         IoMode::Uring,
     );
     async fn get_result(service: &LiquidCacheServiceInner, sql: &str) -> String {

@@ -289,8 +289,9 @@ jobs:
             --manifest benchmark/clickbench/benchmark_manifest.json \
             --output benchmark_results/liquid.json \
             --iteration 5 \
+            --reset-cache \
             --bench-mode liquid \
-            --max-cache-mb 256 
+            --max-cache-mb 64 
 
       - name: Run DataFusion benchmark (plain parquet)
         run: |

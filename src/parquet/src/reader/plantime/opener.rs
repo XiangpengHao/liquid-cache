@@ -9,7 +9,7 @@ use crate::{
     },
 };
 use ahash::AHashMap;
-use arrow_schema::{Field, Schema, SchemaRef};
+use arrow_schema::{Field, FieldRef, Schema, SchemaRef};
 use datafusion::{
     common::exec_err,
     datasource::{
@@ -21,8 +21,14 @@ use datafusion::{
         schema_adapter::SchemaAdapterFactory,
     },
     error::DataFusionError,
-    physical_optimizer::pruning::PruningPredicate,
-    physical_plan::{PhysicalExpr, metrics::ExecutionPlanMetricsSet},
+    physical_expr::PhysicalExprSimplifier,
+    physical_expr_adapter::PhysicalExprAdapterFactory,
+    physical_expr_common::physical_expr::is_dynamic_physical_expr,
+    physical_optimizer::pruning::{FilePruner, PruningPredicate, build_pruning_predicate},
+    physical_plan::{
+        PhysicalExpr,
+        metrics::{Count, ExecutionPlanMetricsSet, MetricBuilder},
+    },
 };
 use futures::StreamExt;
 use futures::TryStreamExt;
@@ -41,14 +47,14 @@ pub struct LiquidParquetOpener {
     batch_size: usize,
     limit: Option<usize>,
     predicate: Option<Arc<dyn PhysicalExpr>>,
-    pruning_predicate: Option<Arc<PruningPredicate>>,
-    page_pruning_predicate: Option<Arc<PagePruningAccessPlanFilter>>,
-    downstream_full_schema: SchemaRef,
+    logical_file_schema: SchemaRef,
+    partition_fields: Vec<FieldRef>,
     metrics: ExecutionPlanMetricsSet,
     parquet_file_reader_factory: Arc<CachedMetaReaderFactory>,
     reorder_filters: bool,
     liquid_cache: LiquidCacheParquetRef,
     schema_adapter_factory: Arc<dyn SchemaAdapterFactory>,
+    expr_adapter_factory: Option<Arc<dyn PhysicalExprAdapterFactory>>,
     span: Option<Arc<fastrace::Span>>,
 }
 
@@ -60,14 +66,14 @@ impl LiquidParquetOpener {
         batch_size: usize,
         limit: Option<usize>,
         predicate: Option<Arc<dyn PhysicalExpr>>,
-        pruning_predicate: Option<Arc<PruningPredicate>>,
-        page_pruning_predicate: Option<Arc<PagePruningAccessPlanFilter>>,
-        downstream_full_schema: SchemaRef,
+        logical_file_schema: SchemaRef,
+        partition_fields: Vec<FieldRef>,
         metrics: ExecutionPlanMetricsSet,
         liquid_cache: LiquidCacheParquetRef,
         parquet_file_reader_factory: Arc<CachedMetaReaderFactory>,
         reorder_filters: bool,
         schema_adapter_factory: Arc<dyn SchemaAdapterFactory>,
+        expr_adapter_factory: Option<Arc<dyn PhysicalExprAdapterFactory>>,
         span: Option<Arc<fastrace::Span>>,
     ) -> Self {
         Self {
@@ -76,14 +82,14 @@ impl LiquidParquetOpener {
             batch_size,
             limit,
             predicate,
-            pruning_predicate,
-            page_pruning_predicate,
-            downstream_full_schema,
+            logical_file_schema,
+            partition_fields,
             metrics,
             liquid_cache,
             parquet_file_reader_factory,
             reorder_filters,
             schema_adapter_factory,
+            expr_adapter_factory,
             span,
         }
     }
@@ -116,44 +122,80 @@ fn transfer_lineage_metadata_to_file_schema(
 }
 
 impl FileOpener for LiquidParquetOpener {
-    fn open(&self, file: PartitionedFile) -> Result<FileOpenFuture, DataFusionError> {
-        let file_range = file.range.clone();
-        let extensions = file.extensions.clone();
-        let file_name = file.object_meta.location.to_string();
+    fn open(&self, partitioned_file: PartitionedFile) -> Result<FileOpenFuture, DataFusionError> {
+        let file_range = partitioned_file.range.clone();
+        let extensions = partitioned_file.extensions.clone();
+        let file_name = partitioned_file.object_meta.location.to_string();
         let file_metrics = ParquetFileMetrics::new(self.partition_index, &file_name, &self.metrics);
 
-        let metadata_size_hint = file.metadata_size_hint;
+        let metadata_size_hint = partitioned_file.metadata_size_hint;
 
         let lc = self.liquid_cache.clone();
-        let file_loc = file.object_meta.location.to_string();
+        let file_loc = partitioned_file.object_meta.location.to_string();
 
         let mut async_file_reader = self.parquet_file_reader_factory.create_liquid_reader(
             self.partition_index,
-            file,
+            partitioned_file.clone(),
             metadata_size_hint,
             &self.metrics,
         );
 
         let batch_size = self.batch_size;
 
-        let projected_schema =
-            SchemaRef::from(self.downstream_full_schema.project(&self.projection)?);
+        let projected_schema = SchemaRef::from(self.logical_file_schema.project(&self.projection)?);
         let schema_adapter = self.schema_adapter_factory.create(
             Arc::clone(&projected_schema),
-            Arc::clone(&self.downstream_full_schema),
+            Arc::clone(&self.logical_file_schema),
         );
-        let predicate = self.predicate.clone();
-        let pruning_predicate = self.pruning_predicate.clone();
-        let page_pruning_predicate = self.page_pruning_predicate.clone();
-        let downstream_full_schema = Arc::clone(&self.downstream_full_schema);
+        let mut predicate = self.predicate.clone();
+        let partition_fields = self.partition_fields.clone();
+        let logical_file_schema = Arc::clone(&self.logical_file_schema);
         let reorder_predicates = self.reorder_filters;
-        let enable_page_index = should_enable_page_index(&self.page_pruning_predicate);
         let limit = self.limit;
+
+        let predicate_creation_errors =
+            MetricBuilder::new(&self.metrics).global_counter("num_predicate_creation_errors");
+
         let schema_adapter_factory = Arc::clone(&self.schema_adapter_factory);
+        let expr_adapter_factory = self.expr_adapter_factory.clone();
+        let mut predicate_file_schema = Arc::clone(&logical_file_schema);
         let span = self.span.clone();
         Ok(Box::pin(async move {
-            let mut options = ArrowReaderOptions::new().with_page_index(enable_page_index);
+            // Prune this file using the file level statistics and partition values.
+            // Since dynamic filters may have been updated since planning it is possible that we are able
+            // to prune files now that we couldn't prune at planning time.
+            // It is assumed that there is no point in doing pruning here if the predicate is not dynamic,
+            // as it would have been done at planning time.
+            // We'll also check this after every record batch we read,
+            // and if at some point we are able to prove we can prune the file using just the file level statistics
+            // we can end the stream early.
+            let mut file_pruner = predicate
+                .as_ref()
+                .map(|p| {
+                    Ok::<_, DataFusionError>(
+                        (is_dynamic_physical_expr(p) | partitioned_file.has_statistics())
+                            .then_some(FilePruner::new(
+                                Arc::clone(p),
+                                &logical_file_schema,
+                                partition_fields.clone(),
+                                partitioned_file.clone(),
+                                predicate_creation_errors.clone(),
+                            )?),
+                    )
+                })
+                .transpose()?
+                .flatten();
 
+            if let Some(file_pruner) = &mut file_pruner
+                && file_pruner.should_prune()?
+            {
+                file_metrics.files_ranges_pruned_statistics.add_pruned(1);
+                return Ok(futures::stream::empty().boxed());
+            }
+
+            file_metrics.files_ranges_pruned_statistics.add_matched(1);
+
+            let mut options = ArrowReaderOptions::new().with_page_index(true);
             let mut metadata_timer = file_metrics.metadata_load_time.timer();
 
             // Begin by loading the metadata from the underlying reader (note
@@ -171,7 +213,7 @@ impl FileOpener for LiquidParquetOpener {
             // - The physical file schema: this is the schema as defined by the parquet file. This is what the parquet file actually contains.
             let physical_file_schema = Arc::clone(reader_metadata.schema());
             let physical_file_schema = Arc::new(transfer_lineage_metadata_to_file_schema(
-                Arc::clone(&downstream_full_schema),
+                Arc::clone(&logical_file_schema),
                 Arc::clone(&physical_file_schema),
             ));
             let cache_full_schema = enrich_schema_for_cache(&physical_file_schema);
@@ -181,6 +223,37 @@ impl FileOpener for LiquidParquetOpener {
             debug_assert!(
                 Arc::strong_count(reader_metadata.metadata()) > 1,
                 "meta data must be cached already"
+            );
+
+            if let Some(expr_adapter_factory) = expr_adapter_factory {
+                use itertools::Itertools;
+                predicate = predicate
+                    .map(|p| {
+                        let partition_values = partition_fields
+                            .iter()
+                            .cloned()
+                            .zip(partitioned_file.partition_values.clone())
+                            .collect_vec();
+                        let expr = expr_adapter_factory
+                            .create(
+                                Arc::clone(&logical_file_schema),
+                                Arc::clone(&physical_file_schema),
+                            )
+                            .with_partition_values(partition_values)
+                            .rewrite(p)?;
+                        // After rewriting to the file schema, further simplifications may be possible.
+                        // For example, if `'a' = col_that_is_missing` becomes `'a' = NULL` that can then be simplified to `FALSE`
+                        // and we can avoid doing any more work on the file (bloom filters, loading the page index, etc.).
+                        PhysicalExprSimplifier::new(&physical_file_schema).simplify(expr)
+                    })
+                    .transpose()?;
+                predicate_file_schema = Arc::clone(&physical_file_schema);
+            }
+
+            let (pruning_predicate, page_pruning_predicate) = build_pruning_predicates(
+                predicate.as_ref(),
+                &predicate_file_schema,
+                &predicate_creation_errors,
             );
 
             metadata_timer.stop();
@@ -203,7 +276,7 @@ impl FileOpener for LiquidParquetOpener {
                 let row_filter = build_row_filter(
                     p,
                     &physical_file_schema,
-                    &downstream_full_schema,
+                    &predicate_file_schema,
                     reader_metadata.metadata(),
                     reorder_predicates,
                     &file_metrics,
@@ -259,8 +332,7 @@ impl FileOpener for LiquidParquetOpener {
             // page index pruning: if all data on individual pages can
             // be ruled using page metadata, rows from other columns
             // with that range can be skipped as well
-            if enable_page_index
-                && !access_plan.is_empty()
+            if !access_plan.is_empty()
                 && let Some(p) = page_pruning_predicate
             {
                 access_plan = p.prune_plan_with_page_index(
@@ -305,16 +377,6 @@ impl FileOpener for LiquidParquetOpener {
     }
 }
 
-fn should_enable_page_index(
-    page_pruning_predicate: &Option<Arc<PagePruningAccessPlanFilter>>,
-) -> bool {
-    page_pruning_predicate.is_some()
-        && page_pruning_predicate
-            .as_ref()
-            .map(|p| p.filter_number() > 0)
-            .unwrap_or(false)
-}
-
 fn create_initial_plan(
     file_name: &str,
     extensions: Option<Arc<dyn std::any::Any + Send + Sync>>,
@@ -338,4 +400,37 @@ fn create_initial_plan(
 
     // default to scanning all row groups
     Ok(ParquetAccessPlan::new_all(row_group_count))
+}
+
+pub(crate) fn build_pruning_predicates(
+    predicate: Option<&Arc<dyn PhysicalExpr>>,
+    file_schema: &SchemaRef,
+    predicate_creation_errors: &Count,
+) -> (
+    Option<Arc<PruningPredicate>>,
+    Option<Arc<PagePruningAccessPlanFilter>>,
+) {
+    let Some(predicate) = predicate.as_ref() else {
+        return (None, None);
+    };
+    let pruning_predicate = build_pruning_predicate(
+        Arc::clone(predicate),
+        file_schema,
+        predicate_creation_errors,
+    );
+    let page_pruning_predicate = build_page_pruning_predicate(predicate, file_schema);
+    (pruning_predicate, Some(page_pruning_predicate))
+}
+
+/// Build a page pruning predicate from an optional predicate expression.
+/// If the predicate is None or the predicate cannot be converted to a page pruning
+/// predicate, return None.
+pub(crate) fn build_page_pruning_predicate(
+    predicate: &Arc<dyn PhysicalExpr>,
+    file_schema: &SchemaRef,
+) -> Arc<PagePruningAccessPlanFilter> {
+    Arc::new(PagePruningAccessPlanFilter::new(
+        predicate,
+        Arc::clone(file_schema),
+    ))
 }

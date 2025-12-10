@@ -11,8 +11,8 @@ use liquid_cache_parquet::{
     extract_execution_metrics,
     optimizers::rewrite_data_source_plan,
 };
-use liquid_cache_storage::cache_policies::CachePolicy;
 use liquid_cache_storage::{ByteCache, cache::squeeze_policies::SqueezePolicy};
+use liquid_cache_storage::{cache::HydrationPolicy, cache_policies::CachePolicy};
 use log::{debug, info};
 use object_store::ObjectStore;
 use std::sync::RwLock;
@@ -50,6 +50,7 @@ impl LiquidCacheServiceInner {
         disk_cache_dir: PathBuf,
         cache_policy: Box<dyn CachePolicy>,
         squeeze_policy: Box<dyn SqueezePolicy>,
+        hydration_policy: Box<dyn HydrationPolicy>,
         io_mode: IoMode,
     ) -> Self {
         let batch_size = default_ctx.state().config().batch_size();
@@ -63,6 +64,7 @@ impl LiquidCacheServiceInner {
             liquid_cache_dir,
             cache_policy,
             squeeze_policy,
+            hydration_policy,
             io_mode,
         ));
 
@@ -209,7 +211,8 @@ impl LiquidCacheServiceInner {
 mod tests {
     use super::*;
     use liquid_cache_storage::{
-        cache::squeeze_policies::TranscodeSqueezeEvict, cache_policies::LiquidPolicy,
+        cache::{AlwaysHydrate, squeeze_policies::TranscodeSqueezeEvict},
+        cache_policies::LiquidPolicy,
     };
     #[tokio::test]
     async fn test_register_object_store() {
@@ -219,6 +222,7 @@ mod tests {
             PathBuf::from("test"),
             Box::new(LiquidPolicy::new()),
             Box::new(TranscodeSqueezeEvict),
+            Box::new(AlwaysHydrate::new()),
             IoMode::Uring,
         );
         let url = Url::parse("file:///").unwrap();
