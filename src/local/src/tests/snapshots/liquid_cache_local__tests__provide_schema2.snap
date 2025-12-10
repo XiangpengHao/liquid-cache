@@ -183,7 +183,7 @@ RuntimeStatsSnapshot:
   get_predicate_squeezed_unsupported: 0
   get_squeezed_success: 0
   get_squeezed_needs_io: 0
-  try_read_liquid_calls: 3
+  try_read_liquid_calls: 2
   hit_date32_expression_calls: 0
 
 
