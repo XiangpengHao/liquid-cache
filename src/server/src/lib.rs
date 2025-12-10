@@ -60,7 +60,10 @@ pub use errors::{
 pub use liquid_cache_common as common;
 pub use liquid_cache_storage as storage;
 use liquid_cache_storage::{
-    cache::squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict},
+    cache::{
+        AlwaysHydrate, HydrationPolicy,
+        squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict},
+    },
     cache_policies::{CachePolicy, LiquidPolicy},
 };
 use object_store::path::Path;
@@ -78,6 +81,7 @@ mod tests;
 /// use datafusion::prelude::SessionContext;
 /// use liquid_cache_server::LiquidCacheService;
 /// use liquid_cache_server::storage::cache::squeeze_policies::TranscodeSqueezeEvict;
+/// use liquid_cache_server::storage::cache::AlwaysHydrate;
 /// use liquid_cache_server::storage::cache_policies::LiquidPolicy;
 /// use tonic::transport::Server;
 /// let liquid_cache = LiquidCacheService::new(
@@ -86,6 +90,7 @@ mod tests;
 ///     None,
 ///     Box::new(LiquidPolicy::new()),
 ///     Box::new(TranscodeSqueezeEvict),
+///     Box::new(AlwaysHydrate::new()),
 ///     None,
 /// )
 /// .unwrap();
@@ -115,6 +120,7 @@ impl LiquidCacheService {
             None,
             Box::new(LiquidPolicy::new()),
             Box::new(TranscodeSqueezeEvict),
+            Box::new(AlwaysHydrate::new()),
             None,
         )
     }
@@ -133,6 +139,7 @@ impl LiquidCacheService {
         disk_cache_dir: Option<PathBuf>,
         cache_policy: Box<dyn CachePolicy>,
         squeeze_policy: Box<dyn SqueezePolicy>,
+        hydration_policy: Box<dyn HydrationPolicy>,
         io_mode: Option<IoMode>,
     ) -> anyhow::Result<Self> {
         let disk_cache_dir = match disk_cache_dir {
@@ -154,6 +161,7 @@ impl LiquidCacheService {
                 disk_cache_dir,
                 cache_policy,
                 squeeze_policy,
+                hydration_policy,
                 io_mode,
             ),
         })

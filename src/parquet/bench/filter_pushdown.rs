@@ -3,6 +3,7 @@ use divan::Bencher;
 use liquid_cache_common::IoMode;
 use liquid_cache_parquet::cache::CachedColumn;
 use liquid_cache_parquet::{FilterCandidateBuilder, LiquidPredicate};
+use liquid_cache_storage::cache::AlwaysHydrate;
 use liquid_cache_storage::cache::squeeze_policies::TranscodeSqueezeEvict;
 use liquid_cache_storage::cache_policies::LiquidPolicy;
 use std::sync::Arc;
@@ -46,6 +47,7 @@ fn setup_cache(tmp_dir: &TempDir) -> Arc<CachedColumn> {
         tmp_dir.path().to_path_buf(),
         Box::new(LiquidPolicy::new()),
         Box::new(TranscodeSqueezeEvict),
+        Box::new(AlwaysHydrate::new()),
         IoMode::Uring,
     );
     let field = Arc::new(Field::new("test_column", DataType::Int32, false));

@@ -10,7 +10,7 @@ use arrow::buffer::BooleanBuffer;
 use arrow_schema::{ArrowError, Field, Schema, SchemaRef};
 use liquid_cache_common::IoMode;
 use liquid_cache_storage::cache::squeeze_policies::SqueezePolicy;
-use liquid_cache_storage::cache::{CachePolicy, LiquidCache, LiquidCacheBuilder};
+use liquid_cache_storage::cache::{CachePolicy, HydrationPolicy, LiquidCache, LiquidCacheBuilder};
 use parquet::arrow::arrow_reader::ArrowPredicate;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -242,6 +242,7 @@ impl LiquidCacheParquet {
         cache_dir: PathBuf,
         cache_policy: Box<dyn CachePolicy>,
         squeeze_policy: Box<dyn SqueezePolicy>,
+        hydration_policy: Box<dyn HydrationPolicy>,
         io_mode: IoMode,
     ) -> Self {
         assert!(batch_size.is_power_of_two());
@@ -252,6 +253,7 @@ impl LiquidCacheParquet {
             .with_cache_dir(cache_dir.clone())
             .with_squeeze_policy(squeeze_policy)
             .with_cache_policy(cache_policy)
+            .with_hydration_policy(hydration_policy)
             .with_io_context(io_context);
         let cache_storage = cache_storage_builder.build();
 
@@ -359,6 +361,7 @@ mod tests {
     use datafusion::physical_expr::PhysicalExpr;
     use datafusion::physical_expr::expressions::{BinaryExpr, Literal};
     use datafusion::physical_plan::expressions::Column;
+    use liquid_cache_storage::cache::AlwaysHydrate;
     use liquid_cache_storage::cache::squeeze_policies::TranscodeSqueezeEvict;
     use liquid_cache_storage::cache_policies::LiquidPolicy;
     use parquet::arrow::ArrowWriter;
@@ -373,6 +376,7 @@ mod tests {
             tmp_dir.path().to_path_buf(),
             Box::new(LiquidPolicy::new()),
             Box::new(TranscodeSqueezeEvict),
+            Box::new(AlwaysHydrate::new()),
             IoMode::Uring,
         );
         let file = cache.register_or_get_file("test".to_string(), schema);

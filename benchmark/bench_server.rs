@@ -4,7 +4,7 @@ use fastrace_tonic::FastraceServerLayer;
 use liquid_cache_benchmarks::{BenchmarkMode, setup_observability};
 use liquid_cache_common::IoMode;
 use liquid_cache_server::{LiquidCacheService, run_admin_server};
-use liquid_cache_storage::cache_policies::LiquidPolicy;
+use liquid_cache_storage::{cache::NoHydration, cache_policies::LiquidPolicy};
 use log::info;
 use mimalloc::MiMalloc;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
@@ -79,6 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.disk_cache_dir.clone(),
         Box::new(LiquidPolicy::new()),
         squeeze_policy,
+        Box::new(NoHydration::new()),
         Some(args.io_mode),
     )?;
 
