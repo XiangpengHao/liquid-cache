@@ -95,16 +95,17 @@ macro_rules! define_runtime_stats {
 // Define all runtime statistics metrics here.
 // To add a new metric, add a line: (field_name, "doc comment", method_name)
 define_runtime_stats! {
-    (get_arrow_array_calls, "Number of `get_arrow_array` calls issued via `CachedData`.", incr_get_arrow_array),
-    (get_with_selection_calls, "Number of `get_with_selection` calls issued via `CachedData`.", incr_get_with_selection),
-    (get_with_predicate_calls, "Number of `get_with_predicate` calls issued via `CachedData`.", incr_get_with_predicate),
-    (get_predicate_squeezed_success, "Number of Squeezed-Liquid predicate evaluations finished without IO.", incr_get_predicate_squeezed_success),
-    (get_predicate_squeezed_needs_io, "Number of Squeezed-Liquid predicate paths that required IO.", incr_get_predicate_squeezed_needs_io),
-    (get_predicate_squeezed_unsupported, "Number of Squeezed-Liquid predicate paths that were unsupported and fell back.", incr_get_predicate_squeezed_unsupported),
+    (get, "Number of `get` calls issued via `CachedData`.", incr_get),
+    (get_with_selection, "Number of `get_with_selection` calls issued via `CachedData`.", incr_get_with_selection),
+    (eval_predicate, "Number of `eval_predicate` calls issued via `CachedData`.", incr_eval_predicate),
+    (eval_predicate_squeezed_success, "Number of Squeezed-Liquid predicate evaluations finished without IO.", incr_eval_predicate_squeezed_success),
+    (eval_predicate_squeezed_needs_io, "Number of Squeezed-Liquid predicate paths that required IO.", incr_eval_predicate_squeezed_needs_io),
     (get_squeezed_success, "Number of Squeezed-Liquid full evaluations finished without IO.", incr_get_squeezed_success),
     (get_squeezed_needs_io, "Number of Squeezed-Liquid full paths that required IO.", incr_get_squeezed_needs_io),
     (try_read_liquid_calls, "Number of `try_read_liquid` calls issued via `CachedData`.", incr_try_read_liquid),
     (hit_date32_expression_calls, "Number of `hit_date32_expression` calls.", incr_hit_date32_expression),
+    (read_io_count, "Number of read IO operations.", incr_read_io_count),
+    (write_io_count, "Number of write IO operations.", incr_write_io_count),
 }
 
 /// Snapshot of cache statistics.

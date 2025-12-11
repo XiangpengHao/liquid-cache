@@ -375,6 +375,15 @@ impl LiquidCache {
     }
 
     pub(crate) fn trace(&self, event: InternalEvent) {
+        match event {
+            InternalEvent::IoWrite { .. } => {
+                self.runtime_stats.incr_write_io_count();
+            }
+            InternalEvent::IoReadArrow { .. } | InternalEvent::IoReadLiquid { .. } => {
+                self.runtime_stats.incr_read_io_count();
+            }
+            _ => {}
+        }
         if cfg!(debug_assertions) {
             self.event_tracer.record(event);
         }
@@ -745,7 +754,7 @@ impl LiquidCache {
     ) -> Option<Result<BooleanArray, ArrayRef>> {
         use arrow::array::BooleanArray;
 
-        self.runtime_stats.incr_get_with_predicate();
+        self.runtime_stats.incr_eval_predicate();
         let batch = self.index.get(entry_id)?;
         self.cache_policy
             .notify_access(entry_id, CachedBatchType::from(batch.as_ref()));
@@ -810,99 +819,64 @@ impl LiquidCache {
                     }
                 }
             }
-            entry @ CacheEntry::MemorySqueezedLiquid(array) => {
-                let mut owned = None;
-                let selection = selection_opt.unwrap_or_else(|| {
-                    owned = Some(BooleanBuffer::new_set(array.len()));
-                    owned.as_ref().unwrap()
-                });
-                match array.try_eval_predicate(predicate, selection) {
-                    Ok(Some(buf)) => {
-                        self.runtime_stats.incr_get_predicate_squeezed_success();
-                        Some(Ok(buf))
-                    }
-                    Ok(None) => {
-                        self.runtime_stats.incr_get_predicate_squeezed_unsupported();
-                        match array.filter(selection) {
-                            Ok(arr) => Some(Err(arr)),
-                            Err(_) => {
-                                self.runtime_stats.incr_get_predicate_squeezed_needs_io();
-                                match array.disk_backing() {
-                                    SqueezedBacking::Liquid => {
-                                        let hydrated =
-                                            self.read_disk_liquid_array(entry, entry_id).await?;
-                                        self.maybe_hydrate(
-                                            entry_id,
-                                            entry,
-                                            MaterializedEntry::Liquid(&hydrated),
-                                            None,
-                                        )
-                                        .await;
-                                        match hydrated.try_eval_predicate(predicate, selection) {
-                                            Some(buf) => Some(Ok(buf)),
-                                            None => {
-                                                let filtered = hydrated.filter(selection);
-                                                Some(Err(filtered))
-                                            }
-                                        }
-                                    }
-                                    SqueezedBacking::Arrow => {
-                                        let full_array =
-                                            self.read_disk_arrow_array(entry, entry_id).await?;
-                                        self.maybe_hydrate(
-                                            entry_id,
-                                            entry,
-                                            MaterializedEntry::Arrow(&full_array),
-                                            None,
-                                        )
-                                        .await;
-                                        let selection_array =
-                                            BooleanArray::new(selection.clone(), None);
-                                        let filtered =
-                                            arrow::compute::filter(&full_array, &selection_array)
-                                                .ok()?;
-                                        Some(Err(filtered))
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Err(_) => {
-                        self.runtime_stats.incr_get_predicate_squeezed_needs_io();
-                        match array.disk_backing() {
-                            SqueezedBacking::Liquid => {
-                                let hydrated = self.read_disk_liquid_array(entry, entry_id).await?;
-                                self.maybe_hydrate(
-                                    entry_id,
-                                    entry,
-                                    MaterializedEntry::Liquid(&hydrated),
-                                    None,
-                                )
-                                .await;
-                                match hydrated.try_eval_predicate(predicate, selection) {
-                                    Some(buf) => Some(Ok(buf)),
-                                    None => {
-                                        let filtered = hydrated.filter(selection);
-                                        Some(Err(filtered))
-                                    }
-                                }
-                            }
-                            SqueezedBacking::Arrow => {
-                                let full_array =
-                                    self.read_disk_arrow_array(entry, entry_id).await?;
-                                self.maybe_hydrate(
-                                    entry_id,
-                                    entry,
-                                    MaterializedEntry::Arrow(&full_array),
-                                    None,
-                                )
-                                .await;
-                                let selection_array = BooleanArray::new(selection.clone(), None);
-                                let filtered =
-                                    arrow::compute::filter(&full_array, &selection_array).ok()?;
+            CacheEntry::MemorySqueezedLiquid(array) => {
+                self.eval_predicate_on_squeezed(entry_id, array, selection_opt, predicate)
+                    .await
+            }
+        }
+    }
+
+    async fn eval_predicate_on_squeezed(
+        &self,
+        entry_id: &EntryID,
+        array: &LiquidSqueezedArrayRef,
+        selection_opt: Option<&BooleanBuffer>,
+        predicate: &Arc<dyn PhysicalExpr>,
+    ) -> Option<Result<BooleanArray, ArrayRef>> {
+        let mut owned = None;
+        let selection = selection_opt.unwrap_or_else(|| {
+            owned = Some(BooleanBuffer::new_set(array.len()));
+            owned.as_ref().unwrap()
+        });
+        let entry = CacheEntry::MemorySqueezedLiquid(array.clone());
+        match array.try_eval_predicate(predicate, selection) {
+            Ok(Some(buf)) => {
+                self.runtime_stats.incr_eval_predicate_squeezed_success();
+                Some(Ok(buf))
+            }
+            _ => {
+                self.runtime_stats.incr_eval_predicate_squeezed_needs_io();
+                match array.disk_backing() {
+                    SqueezedBacking::Liquid => {
+                        let hydrated = self.read_disk_liquid_array(&entry, entry_id).await?;
+                        self.maybe_hydrate(
+                            entry_id,
+                            &entry,
+                            MaterializedEntry::Liquid(&hydrated),
+                            None,
+                        )
+                        .await;
+                        match hydrated.try_eval_predicate(predicate, selection) {
+                            Some(buf) => Some(Ok(buf)),
+                            None => {
+                                let filtered = hydrated.filter(selection);
                                 Some(Err(filtered))
                             }
                         }
+                    }
+                    SqueezedBacking::Arrow => {
+                        let full_array = self.read_disk_arrow_array(&entry, entry_id).await?;
+                        self.maybe_hydrate(
+                            entry_id,
+                            &entry,
+                            MaterializedEntry::Arrow(&full_array),
+                            None,
+                        )
+                        .await;
+                        let selection_array = BooleanArray::new(selection.clone(), None);
+                        let filtered =
+                            arrow::compute::filter(&full_array, &selection_array).ok()?;
+                        Some(Err(filtered))
                     }
                 }
             }
