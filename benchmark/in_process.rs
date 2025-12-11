@@ -39,6 +39,10 @@ struct InProcessBenchmark {
     #[arg(long = "reset-cache", default_value = "false")]
     pub reset_cache: bool,
 
+    /// Collect perf events (cycles/instructions/cache) per iteration
+    #[arg(long = "perf-events", default_value_t = false)]
+    pub perf_events: bool,
+
     /// Number of partitions to use
     #[arg(long)]
     pub partitions: Option<usize>,
@@ -77,6 +81,7 @@ impl InProcessBenchmark {
             .with_bench_mode(self.bench_mode)
             .with_iteration(self.iteration)
             .with_reset_cache(self.reset_cache)
+            .with_perf_events(self.perf_events)
             .with_partitions(self.partitions)
             .with_max_cache_mb(self.max_cache_mb)
             .with_flamegraph_dir(self.flamegraph_dir.clone())

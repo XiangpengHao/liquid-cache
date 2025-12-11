@@ -198,6 +198,7 @@ impl BenchmarkRunner {
             disk_bytes_read: disk_read,
             disk_bytes_written: disk_written,
             cache_stats: None,
+            perf_events: None,
         };
 
         info!("\n{result}");

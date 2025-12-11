@@ -1,5 +1,5 @@
 use crate::manifest::BenchmarkManifest;
-use crate::{BenchmarkResult, IterationResult, Query, QueryResult, run_query};
+use crate::{BenchmarkResult, IterationResult, PerfEventStats, Query, QueryResult, run_query};
 use anyhow::Result;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::SchemaRef;
@@ -14,10 +14,15 @@ use liquid_cache_parquet::{LiquidCacheParquetRef, extract_execution_metrics};
 use liquid_cache_storage::cache::NoHydration;
 use liquid_cache_storage::cache::squeeze_policies::{Evict, TranscodeEvict, TranscodeSqueezeEvict};
 use liquid_cache_storage::cache_policies::LiquidPolicy;
-use log::info;
+use log::{info, warn};
+use perf_event::{
+    Builder as PerfBuilder, Counter, Group,
+    events::{Hardware, Software},
+};
 use serde::Serialize;
 use std::{
     fs::{File, create_dir_all},
+    io,
     path::{Path, PathBuf},
     sync::Arc,
     time::Instant,
@@ -68,6 +73,93 @@ impl DiskIoGuard {
     }
 }
 
+struct PerfEventCollector {
+    group: Group,
+    cycles: Counter,
+    instructions: Counter,
+    cache_references: Counter,
+    cache_misses: Counter,
+    context_switches: Counter,
+    page_faults: Counter,
+}
+
+impl PerfEventCollector {
+    fn new() -> io::Result<Self> {
+        let mut group = Group::new()?;
+        // Target the whole benchmark process (all threads), not just the current one.
+        let pid = std::process::id() as i32;
+        let mut cycles_builder = PerfBuilder::new(Hardware::CPU_CYCLES);
+        cycles_builder.observe_pid(pid);
+
+        let mut instructions_builder = PerfBuilder::new(Hardware::INSTRUCTIONS);
+        instructions_builder.observe_pid(pid);
+
+        let mut cache_refs_builder = PerfBuilder::new(Hardware::CACHE_REFERENCES);
+        cache_refs_builder.observe_pid(pid);
+
+        let mut cache_misses_builder = PerfBuilder::new(Hardware::CACHE_MISSES);
+        cache_misses_builder.observe_pid(pid);
+
+        let mut ctx_switch_builder = PerfBuilder::new(Software::CONTEXT_SWITCHES);
+        ctx_switch_builder.observe_pid(pid);
+
+        let mut page_faults_builder = PerfBuilder::new(Software::PAGE_FAULTS);
+        page_faults_builder.observe_pid(pid);
+
+        let cycles = group.add(&cycles_builder)?;
+        let instructions = group.add(&instructions_builder)?;
+        let cache_references = group.add(&cache_refs_builder)?;
+        let cache_misses = group.add(&cache_misses_builder)?;
+        let context_switches = group.add(&ctx_switch_builder)?;
+        let page_faults = group.add(&page_faults_builder)?;
+
+        Ok(Self {
+            group,
+            cycles,
+            instructions,
+            cache_references,
+            cache_misses,
+            context_switches,
+            page_faults,
+        })
+    }
+
+    fn start(&mut self) -> io::Result<()> {
+        self.group.enable()
+    }
+
+    fn stop(mut self) -> io::Result<PerfEventStats> {
+        self.group.disable()?;
+        let counts = self.group.read()?;
+        Ok(PerfEventStats {
+            cpu_cycles: counts
+                .get(&self.cycles)
+                .map(|entry| entry.value())
+                .unwrap_or(0),
+            instructions: counts
+                .get(&self.instructions)
+                .map(|entry| entry.value())
+                .unwrap_or(0),
+            cache_references: counts
+                .get(&self.cache_references)
+                .map(|entry| entry.value())
+                .unwrap_or(0),
+            cache_misses: counts
+                .get(&self.cache_misses)
+                .map(|entry| entry.value())
+                .unwrap_or(0),
+            context_switches: counts
+                .get(&self.context_switches)
+                .map(|entry| entry.value())
+                .unwrap_or(0),
+            page_faults: counts
+                .get(&self.page_faults)
+                .map(|entry| entry.value())
+                .unwrap_or(0),
+        })
+    }
+}
+
 #[derive(Clone, Debug, Default, Copy, PartialEq, Eq, Serialize)]
 pub enum InProcessBenchmarkMode {
     Parquet,
@@ -109,6 +201,7 @@ pub struct InProcessBenchmarkRunner {
     pub cache_dir: Option<PathBuf>,
     pub io_mode: IoMode,
     pub output_dir: Option<PathBuf>,
+    pub collect_perf_events: bool,
 }
 
 impl Default for InProcessBenchmarkRunner {
@@ -130,6 +223,7 @@ impl InProcessBenchmarkRunner {
             cache_dir: None,
             io_mode: IoMode::default(),
             output_dir: None,
+            collect_perf_events: false,
         }
     }
 
@@ -145,6 +239,11 @@ impl InProcessBenchmarkRunner {
 
     pub fn with_reset_cache(mut self, reset_cache: bool) -> Self {
         self.reset_cache = reset_cache;
+        self
+    }
+
+    pub fn with_perf_events(mut self, collect: bool) -> Self {
+        self.collect_perf_events = collect;
         self
     }
 
@@ -398,6 +497,25 @@ impl InProcessBenchmarkRunner {
 
         let io_guard = DiskIoGuard::new();
 
+        let perf_collector = if self.collect_perf_events {
+            match PerfEventCollector::new() {
+                Ok(mut collector) => {
+                    if let Err(err) = collector.start() {
+                        warn!("Failed to enable perf events; skipping counters: {err}");
+                        None
+                    } else {
+                        Some(collector)
+                    }
+                }
+                Err(err) => {
+                    warn!("Failed to initialize perf events; skipping counters: {err}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         let now = Instant::now();
         let starting_timestamp = bench_start_time.elapsed();
 
@@ -411,6 +529,18 @@ impl InProcessBenchmarkRunner {
             }
         };
         let elapsed = now.elapsed();
+
+        let perf_events = if let Some(collector) = perf_collector {
+            match collector.stop() {
+                Ok(stats) => Some(stats),
+                Err(err) => {
+                    warn!("Failed to read perf events; skipping counters: {err}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
         let (disk_read, disk_written) = io_guard.stop();
 
@@ -442,6 +572,7 @@ impl InProcessBenchmarkRunner {
             disk_bytes_written: disk_written,
             starting_timestamp,
             cache_stats,
+            perf_events,
         };
 
         println!("{}", pretty_format_batches(&results).unwrap());

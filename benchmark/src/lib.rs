@@ -373,6 +373,16 @@ pub struct BenchmarkResult<T: Serialize> {
     pub results: Vec<QueryResult>,
 }
 
+#[derive(Serialize, Clone, Copy)]
+pub struct PerfEventStats {
+    pub cpu_cycles: u64,
+    pub instructions: u64,
+    pub cache_references: u64,
+    pub cache_misses: u64,
+    pub context_switches: u64,
+    pub page_faults: u64,
+}
+
 #[derive(Serialize)]
 pub struct QueryResult {
     query: Query,
@@ -403,6 +413,7 @@ pub struct IterationResult {
     pub disk_bytes_read: u64,
     pub disk_bytes_written: u64,
     pub cache_stats: Option<CacheStats>,
+    pub perf_events: Option<PerfEventStats>,
 }
 
 impl Display for IterationResult {
