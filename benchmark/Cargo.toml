@@ -43,6 +43,7 @@ anyhow = "1.0"
 usdt = "0.6"
 csv = "1.3"
 regex = "1.12.2"
+perf-event2 = "0.7.4"
 
 [features]
 trace = ["fastrace/enable"]

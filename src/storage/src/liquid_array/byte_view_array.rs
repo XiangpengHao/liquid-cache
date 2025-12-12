@@ -14,7 +14,9 @@ use bytes::Bytes;
 use datafusion::logical_expr::{ColumnarValue, Operator};
 use datafusion::physical_expr_common::datum::apply_cmp;
 use datafusion::physical_plan::PhysicalExpr;
-use datafusion::physical_plan::expressions::{BinaryExpr, LikeExpr, Literal};
+use datafusion::physical_plan::expressions::{
+    BinaryExpr, DynamicFilterPhysicalExpr, LikeExpr, Literal,
+};
 use fsst::Compressor;
 use std::any::Any;
 use std::fmt::Display;
@@ -1063,23 +1065,41 @@ impl LiquidSqueezedArray for LiquidByteViewArray<DiskBuffer> {
         // Reuse generic filter path first to reduce input rows if any
         let filtered = filter_inner(self, filter);
 
-        // Handle binary expressions (equality/inequality) with prefix optimization
+        let expr = if let Some(dynamic_filter) =
+            expr.as_any().downcast_ref::<DynamicFilterPhysicalExpr>()
+        {
+            dynamic_filter.current().expect("DynamicFilterPhysicalExpr")
+        } else {
+            expr.clone()
+        };
+
+        // Handle binary expressions with prefix-only optimizations
         if let Some(binary_expr) = expr.as_any().downcast_ref::<BinaryExpr>()
             && let Some(literal) = binary_expr.right().as_any().downcast_ref::<Literal>()
         {
             let op = binary_expr.op();
-            if matches!(op, Operator::Eq | Operator::NotEq)
-                && let Some(needle) = get_string_needle(literal.value())
-            {
-                // Try prefix-based equality. On ambiguity, bubble up NeedsBacking for fallback.
-                let eq_mask = filtered
-                    .compare_equals_with_prefix(needle.as_bytes())
-                    .ok_or(NeedsBacking)?;
-                if matches!(op, Operator::Eq) {
-                    return Ok(Some(eq_mask));
-                } else {
-                    let (values, nulls) = eq_mask.into_parts();
-                    return Ok(Some(BooleanArray::new(!&values, nulls)));
+            if let Some(needle) = get_string_needle(literal.value()) {
+                match op {
+                    Operator::Eq | Operator::NotEq => {
+                        // Try prefix-based equality. On ambiguity, bubble up NeedsBacking for fallback.
+                        let eq_mask = filtered
+                            .compare_equals_with_prefix(needle.as_bytes())
+                            .ok_or(NeedsBacking)?;
+                        if matches!(op, Operator::Eq) {
+                            return Ok(Some(eq_mask));
+                        } else {
+                            let (values, nulls) = eq_mask.into_parts();
+                            return Ok(Some(BooleanArray::new(!&values, nulls)));
+                        }
+                    }
+                    Operator::Lt | Operator::LtEq | Operator::Gt | Operator::GtEq => {
+                        // Prefix-only ordering; ambiguous cases ask for backing.
+                        let ord_mask = filtered
+                            .compare_ordering_with_prefix(needle.as_bytes(), op)
+                            .ok_or(NeedsBacking)?;
+                        return Ok(Some(ord_mask));
+                    }
+                    _ => {}
                 }
             }
         }
@@ -1162,6 +1182,70 @@ impl LiquidByteViewArray<DiskBuffer> {
             let matches = dict_results[dict_key as usize];
             builder.append_value(matches);
         }
+        let mut mask = builder.finish();
+        if let Some(nulls) = self.nulls() {
+            let (values, _) = mask.into_parts();
+            mask = BooleanArray::new(values, Some(nulls.clone()));
+        }
+        Some(mask)
+    }
+
+    /// Ordering using prefixes only; returns None if ambiguity requires backing.
+    fn compare_ordering_with_prefix(&self, needle: &[u8], op: &Operator) -> Option<BooleanArray> {
+        if !matches!(
+            op,
+            Operator::Lt | Operator::LtEq | Operator::Gt | Operator::GtEq
+        ) {
+            return None;
+        }
+
+        // Fast path: shared prefix can decide the whole array.
+        if let Some(result) = self.try_shared_prefix_short_circuit(needle, op) {
+            return Some(result);
+        }
+
+        let needle_suffix = &needle[self.shared_prefix.len()..];
+        let num_unique = self.compact_offset_views.len().saturating_sub(1);
+        let mut dict_results = Vec::with_capacity(num_unique);
+
+        for i in 0..num_unique {
+            let prefix7 = self.compact_offset_views.get_prefix7(i);
+
+            let cmp_len = std::cmp::min(OffsetView::prefix_len(), needle_suffix.len());
+            let prefix_slice = &prefix7[..cmp_len];
+            let needle_slice = &needle_suffix[..cmp_len];
+
+            let result = match prefix_slice.cmp(needle_slice) {
+                std::cmp::Ordering::Less => match op {
+                    Operator::Lt | Operator::LtEq => Some(true),
+                    Operator::Gt | Operator::GtEq => Some(false),
+                    _ => None,
+                },
+                std::cmp::Ordering::Greater => match op {
+                    Operator::Lt | Operator::LtEq => Some(false),
+                    Operator::Gt | Operator::GtEq => Some(true),
+                    _ => None,
+                },
+                std::cmp::Ordering::Equal => {
+                    // Need full comparison to disambiguate.
+                    return None;
+                }
+            };
+
+            dict_results.push(result);
+        }
+
+        // Map dictionary-level decisions to row-level mask.
+        let mut builder = BooleanBuilder::with_capacity(self.dictionary_keys.len());
+        for &dict_key in self.dictionary_keys.values().iter() {
+            let matches = if dict_key as usize >= dict_results.len() {
+                false
+            } else {
+                dict_results[dict_key as usize].unwrap_or(false)
+            };
+            builder.append_value(matches);
+        }
+
         let mut mask = builder.finish();
         if let Some(nulls) = self.nulls() {
             let (values, _) = mask.into_parts();
@@ -2916,6 +3000,41 @@ mod tests {
         };
         let ambiguous_long = disk_view.compare_equals_with_prefix(&long_needle);
         assert!(ambiguous_long.is_none(), "long case should be ambiguous");
+    }
+
+    #[test]
+    fn test_compare_ordering_with_prefix_only() {
+        let input = StringArray::from(vec![Some("pre_aaa"), Some("pre_bbb1111"), Some("pre_ccc")]);
+
+        let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
+        let in_mem = LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
+
+        // Squeeze to disk-backed to exercise prefix-only ordering path
+        let (hybrid, _bytes) = in_mem.squeeze(None).unwrap();
+        let disk_view = hybrid
+            .as_any()
+            .downcast_ref::<LiquidByteViewArray<DiskBuffer>>()
+            .unwrap()
+            .clone();
+
+        // Decidable LT: needle between bbb and ccc
+        let lt_mask = disk_view
+            .compare_ordering_with_prefix(b"pre_bcz", &Operator::Lt)
+            .expect("should be decidable without IO");
+        assert_eq!(lt_mask, BooleanArray::from(vec![true, true, false]));
+
+        // Decidable GtEq: needle below bbb1111, so bbb1111 and ccc are >=
+        let gte_mask = disk_view
+            .compare_ordering_with_prefix(b"pre_bbb0000", &Operator::GtEq)
+            .expect("should be decidable without IO");
+        assert_eq!(gte_mask, BooleanArray::from(vec![false, true, true]));
+
+        // Ambiguous: shared prefix matches one value, needs fallback
+        let ambiguous = disk_view.compare_ordering_with_prefix(b"pre_bbb", &Operator::Lt);
+        assert!(
+            ambiguous.is_none(),
+            "equal prefix should require backing for ordering"
+        );
     }
 
     #[test]

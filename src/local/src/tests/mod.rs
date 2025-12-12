@@ -51,10 +51,10 @@ impl CacheStatsSummary {
 
     fn has_cache_hits(&self) -> bool {
         let runtime = &self.stats.runtime;
-        runtime.get_with_selection_calls > 0
+        runtime.get_with_selection > 0
             || runtime.try_read_liquid_calls > 0
-            || runtime.get_arrow_array_calls > 0
-            || runtime.get_with_predicate_calls > 0
+            || runtime.get > 0
+            || runtime.eval_predicate > 0
     }
 
     fn entries_reused(&self) -> bool {

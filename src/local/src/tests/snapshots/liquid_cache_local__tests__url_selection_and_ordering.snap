@@ -44,13 +44,14 @@ entries.disk.arrow: 0
 usage.memory_bytes: 188334
 usage.disk_bytes: 1155261
 RuntimeStatsSnapshot:
-  get_arrow_array_calls: 0
-  get_with_selection_calls: 3
-  get_with_predicate_calls: 4
-  get_predicate_squeezed_success: 0
-  get_predicate_squeezed_needs_io: 0
-  get_predicate_squeezed_unsupported: 0
+  get: 3
+  get_with_selection: 3
+  eval_predicate: 4
+  eval_predicate_squeezed_success: 0
+  eval_predicate_squeezed_needs_io: 0
   get_squeezed_success: 0
   get_squeezed_needs_io: 0
   try_read_liquid_calls: 0
   hit_date32_expression_calls: 0
+  read_io_count: 4
+  write_io_count: 4

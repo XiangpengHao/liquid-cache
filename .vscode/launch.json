@@ -127,13 +127,13 @@
 			},
 			"args": [
 				"--manifest",
-				"benchmark/json_bench/manifest.bluesky.json",
+				"benchmark/clickbench/manifest.json",
 				"--max-cache-mb",
-				"100",
+				"128",
 				"--bench-mode",
 				"liquid",
 				"--query-index",
-				"0",
+				"25",
 				"--partitions",
 				"1"
 			],

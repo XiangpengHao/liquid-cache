@@ -29,16 +29,17 @@ entries.disk.arrow: 0
 usage.memory_bytes: 969801
 usage.disk_bytes: 35000
 RuntimeStatsSnapshot:
-  get_arrow_array_calls: 0
-  get_with_selection_calls: 4
-  get_with_predicate_calls: 2
-  get_predicate_squeezed_success: 0
-  get_predicate_squeezed_needs_io: 0
-  get_predicate_squeezed_unsupported: 0
+  get: 4
+  get_with_selection: 4
+  eval_predicate: 2
+  eval_predicate_squeezed_success: 0
+  eval_predicate_squeezed_needs_io: 0
   get_squeezed_success: 0
   get_squeezed_needs_io: 0
   try_read_liquid_calls: 0
   hit_date32_expression_calls: 0
+  read_io_count: 0
+  write_io_count: 0
 
 
 query[1]: SELECT date_bin(interval '10 second', to_timestamp_micros(_timestamp), to_timestamp('2001-01-01T00:00:00')) AS zo_sql_key, count(*) AS zo_sql_num from default WHERE log like '%hhj%' or message like '%hhj%' GROUP BY zo_sql_key ORDER BY zo_sql_key
@@ -175,16 +176,17 @@ entries.disk.arrow: 0
 usage.memory_bytes: 969801
 usage.disk_bytes: 35000
 RuntimeStatsSnapshot:
-  get_arrow_array_calls: 0
-  get_with_selection_calls: 5
-  get_with_predicate_calls: 0
-  get_predicate_squeezed_success: 0
-  get_predicate_squeezed_needs_io: 0
-  get_predicate_squeezed_unsupported: 0
+  get: 5
+  get_with_selection: 5
+  eval_predicate: 0
+  eval_predicate_squeezed_success: 0
+  eval_predicate_squeezed_needs_io: 0
   get_squeezed_success: 0
   get_squeezed_needs_io: 0
   try_read_liquid_calls: 2
   hit_date32_expression_calls: 0
+  read_io_count: 0
+  write_io_count: 0
 
 
 query[2]: SELECT _timestamp, kubernetes_namespace_name from default order by _timestamp desc limit 100
@@ -216,13 +218,14 @@ entries.disk.arrow: 0
 usage.memory_bytes: 1005099
 usage.disk_bytes: 35000
 RuntimeStatsSnapshot:
-  get_arrow_array_calls: 0
-  get_with_selection_calls: 2
-  get_with_predicate_calls: 2
-  get_predicate_squeezed_success: 0
-  get_predicate_squeezed_needs_io: 0
-  get_predicate_squeezed_unsupported: 0
+  get: 2
+  get_with_selection: 2
+  eval_predicate: 2
+  eval_predicate_squeezed_success: 0
+  eval_predicate_squeezed_needs_io: 0
   get_squeezed_success: 0
   get_squeezed_needs_io: 0
   try_read_liquid_calls: 0
   hit_date32_expression_calls: 0
+  read_io_count: 0
+  write_io_count: 0
