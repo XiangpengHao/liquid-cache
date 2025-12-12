@@ -194,9 +194,9 @@ impl LiquidCache {
         self.io_context.get_compressor(entry_id)
     }
 
-    /// Record a squeeze hint for an entry.
-    pub fn set_squeeze_hint(&self, entry_id: &EntryID, expression: Arc<CacheExpression>) {
-        self.io_context.set_squeeze_hint(entry_id, expression);
+    /// Add a squeeze hint for an entry.
+    pub fn add_squeeze_hint(&self, entry_id: &EntryID, expression: Arc<CacheExpression>) {
+        self.io_context.add_squeeze_hint(entry_id, expression);
     }
 
     /// Flush all entries to disk.
@@ -369,8 +369,9 @@ impl LiquidCache {
         Ok(())
     }
 
+    /// Consume the trace of the cache, for testing only.
     #[cfg(test)]
-    pub(crate) fn consume_trace(&self) -> EventTrace {
+    pub fn consume_trace(&self) -> EventTrace {
         self.event_tracer.drain()
     }
 

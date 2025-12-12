@@ -113,7 +113,14 @@ impl ReaderFactory {
 
         let schema_descr = self.metadata.file_metadata().schema_descr();
         let cache_column_ids = get_root_column_ids(schema_descr, &cache_projection);
-        let cached_row_group = self.cached_file.create_row_group(row_group_idx as u64);
+        let predicate_column_ids = if let Some(ref predicate_projection) = predicate_projection {
+            get_root_column_ids(schema_descr, predicate_projection)
+        } else {
+            Vec::new()
+        };
+        let cached_row_group = self
+            .cached_file
+            .create_row_group(row_group_idx as u64, predicate_column_ids);
 
         let projection_column_ids = get_root_column_ids(schema_descr, &projection);
         let missing_batches =
@@ -711,7 +718,7 @@ mod tests {
             IoMode::Uring,
         );
         let file = cache.register_or_get_file("test.parquet".to_string(), schema);
-        file.create_row_group(0)
+        file.create_row_group(0, vec![])
     }
 
     async fn insert_batches(

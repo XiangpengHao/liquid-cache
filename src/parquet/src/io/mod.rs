@@ -89,7 +89,7 @@ impl ColumnExpressionTracker {
 
 #[async_trait::async_trait]
 impl IoContext for ParquetIoContext {
-    fn set_squeeze_hint(&self, entry_id: &EntryID, expression: Arc<CacheExpression>) {
+    fn add_squeeze_hint(&self, entry_id: &EntryID, expression: Arc<CacheExpression>) {
         let column_path = ColumnAccessPath::from(ParquetArrayID::from(*entry_id));
         let mut guard = self.expression_hints.write().unwrap();
         let expression_tracker = guard.entry(column_path).or_default();
@@ -165,9 +165,9 @@ mod tests {
         let month = Arc::new(CacheExpression::extract_date32(Date32Field::Month));
         let year = Arc::new(CacheExpression::extract_date32(Date32Field::Year));
 
-        ctx.set_squeeze_hint(&e, month.clone());
-        ctx.set_squeeze_hint(&e, month.clone());
-        ctx.set_squeeze_hint(&e, year.clone());
+        ctx.add_squeeze_hint(&e, month.clone());
+        ctx.add_squeeze_hint(&e, month.clone());
+        ctx.add_squeeze_hint(&e, year.clone());
 
         let majority = ctx.squeeze_hint(&e).expect("hint");
         assert_eq!(majority, month);
@@ -181,8 +181,8 @@ mod tests {
         let year = Arc::new(CacheExpression::extract_date32(Date32Field::Year));
         let day = Arc::new(CacheExpression::extract_date32(Date32Field::Day));
 
-        ctx.set_squeeze_hint(&e, year.clone());
-        ctx.set_squeeze_hint(&e, day.clone());
+        ctx.add_squeeze_hint(&e, year.clone());
+        ctx.add_squeeze_hint(&e, day.clone());
 
         let majority = ctx.squeeze_hint(&e).expect("hint");
         assert_eq!(majority, day);

@@ -210,7 +210,7 @@ mod tests {
             let file_name = format!("test_{file_no}.parquet");
             let file = cache.register_or_get_file(file_name, schema.clone());
             for rg in 0..8 {
-                let row_group = file.create_row_group(rg);
+                let row_group = file.create_row_group(rg, vec![]);
                 for col in 0..8 {
                     let column = row_group.get_column(col).unwrap();
                     for batch in 0..8 {

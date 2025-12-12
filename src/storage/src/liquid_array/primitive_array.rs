@@ -24,7 +24,7 @@ use crate::liquid_array::hybrid_primitive_array::{
 use crate::liquid_array::ipc::{LiquidIPCHeader, PhysicalTypeMarker, get_physical_type_id};
 use crate::liquid_array::raw::BitPackedArray;
 use crate::liquid_array::{
-    Date32Field, LiquidArray, LiquidSqueezedArrayRef, PrimitiveKind, SqueezedDate32Array,
+    LiquidArray, LiquidSqueezedArrayRef, PrimitiveKind, SqueezedDate32Array,
 };
 use crate::utils::get_bit_width;
 use arrow::datatypes::ArrowNativeType;
@@ -394,15 +394,14 @@ where
         &self,
         expression_hint: Option<&CacheExpression>,
     ) -> Option<(LiquidSqueezedArrayRef, Bytes)> {
+        let expression_hint = expression_hint?;
         // Full bytes (original format) are what we store to disk
         let full_bytes = Bytes::from(self.to_bytes_inner());
         let disk_range = 0u64..(full_bytes.len() as u64);
 
         if T::DATA_TYPE == DataType::Date32 {
             // Special handle for Date32 arrays with component extraction support.
-            let field = expression_hint
-                .and_then(|expr| expr.as_date32_field())
-                .unwrap_or(Date32Field::Year);
+            let field = expression_hint.as_date32_field()?;
             return Some((
                 Arc::new(SqueezedDate32Array::from_liquid_date32(self, field))
                     as LiquidSqueezedArrayRef,

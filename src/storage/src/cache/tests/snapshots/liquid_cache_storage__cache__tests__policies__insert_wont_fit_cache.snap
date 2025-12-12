@@ -11,11 +11,7 @@ event=insert_success entry=0 kind=MemoryLiquid
 event=insert_failed entry=1 kind=MemoryArrow
 event=squeeze_begin victims=[0]
 event=squeeze_victim entry=0
-event=io_write entry=0 kind=MemorySqueezedLiquid bytes=1320
-event=insert_success entry=0 kind=MemorySqueezedLiquid
-event=insert_failed entry=1 kind=MemoryArrow
-event=squeeze_begin victims=[0]
-event=squeeze_victim entry=0
+event=io_write entry=0 kind=DiskLiquid bytes=1320
 event=insert_success entry=0 kind=DiskLiquid
 event=insert_failed entry=1 kind=MemoryArrow
 event=insert_failed entry=1 kind=MemoryLiquid

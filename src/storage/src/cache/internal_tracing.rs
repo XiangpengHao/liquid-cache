@@ -201,7 +201,7 @@ impl EventTracer {
 
 #[cfg(test)]
 #[derive(PartialEq, Eq, serde::Serialize)]
-pub(crate) struct EventTrace {
+pub struct EventTrace {
     events: Vec<InternalEvent>,
 }
 

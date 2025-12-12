@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use arrow::array::{Array, ArrayRef, Date32Array, StringArray};
+use arrow::array::{Array, ArrayRef, Date32Array, Int64Array, StringArray};
 use arrow_schema::DataType;
 use parquet_variant_compute::json_to_variant;
 
@@ -129,6 +129,55 @@ async fn read_squeezed_variant_path() {
         .read()
         .await
         .unwrap();
+    let trace = cache.consume_trace();
+    insta::assert_snapshot!(trace);
+}
+
+fn create_int64_array() -> ArrayRef {
+    let int64_array = Int64Array::from_iter_values(0..4096);
+    Arc::new(int64_array)
+}
+
+#[tokio::test]
+async fn read_squeezed_int64_array() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let int64_array = create_int64_array();
+    let array_size = int64_array.get_array_memory_size();
+
+    let cache = LiquidCacheBuilder::new()
+        .with_cache_policy(Box::new(LiquidPolicy::new()))
+        .with_hydration_policy(Box::new(AlwaysHydrate::new()))
+        .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+        .with_max_cache_bytes(array_size * 2)
+        .with_io_context(Arc::new(DefaultIoContext::new(
+            temp_dir.path().to_path_buf(),
+        )))
+        .build();
+
+    let expression = Arc::new(CacheExpression::PredicateColumn);
+
+    for i in 0..4 {
+        let entry_id = EntryID::from(i);
+        if i % 2 == 0 {
+            cache
+                .insert(entry_id, int64_array.clone())
+                .with_squeeze_hint(expression.clone())
+                .await;
+        } else {
+            cache.insert(entry_id, int64_array.clone()).await;
+        }
+    }
+
+    for i in 0..4 {
+        let entry_id = EntryID::from(i);
+        let array = cache
+            .get(&entry_id)
+            .with_expression_hint(expression.clone())
+            .read()
+            .await
+            .unwrap();
+        assert_eq!(array.len(), int64_array.len());
+    }
     let trace = cache.consume_trace();
     insta::assert_snapshot!(trace);
 }

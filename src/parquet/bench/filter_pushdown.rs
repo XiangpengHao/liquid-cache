@@ -53,7 +53,7 @@ fn setup_cache(tmp_dir: &TempDir) -> Arc<CachedColumn> {
     let field = Arc::new(Field::new("test_column", DataType::Int32, false));
     let schema = Arc::new(Schema::new(vec![field.clone()]));
     let file = cache.register_or_get_file("test_file.parquet".to_string(), schema);
-    let row_group = file.create_row_group(0);
+    let row_group = file.create_row_group(0, vec![]);
     row_group.get_column(0).unwrap()
 }
 

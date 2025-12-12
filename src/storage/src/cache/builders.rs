@@ -170,7 +170,7 @@ impl<'a> Insert<'a> {
             maybe_gc_view_arrays(&self.batch).unwrap_or_else(|| self.batch.clone())
         };
         if let Some(squeeze_hint) = self.squeeze_hint {
-            self.storage.set_squeeze_hint(&self.entry_id, squeeze_hint);
+            self.storage.add_squeeze_hint(&self.entry_id, squeeze_hint);
         }
         let batch = CacheEntry::memory_arrow(batch);
         self.storage.insert_inner(self.entry_id, batch).await;
