@@ -48,9 +48,11 @@ RuntimeStatsSnapshot:
   get: 9
   get_with_selection: 9
   eval_predicate: 8
-  get_predicate_squeezed_success: 0
-  get_predicate_squeezed_needs_io: 0
+  eval_predicate_squeezed_success: 0
+  eval_predicate_squeezed_needs_io: 0
   get_squeezed_success: 0
   get_squeezed_needs_io: 0
   try_read_liquid_calls: 0
   hit_date32_expression_calls: 0
+  read_io_count: 0
+  write_io_count: 0

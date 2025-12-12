@@ -1095,7 +1095,7 @@ impl LiquidSqueezedArray for LiquidByteViewArray<DiskBuffer> {
                     Operator::Lt | Operator::LtEq | Operator::Gt | Operator::GtEq => {
                         // Prefix-only ordering; ambiguous cases ask for backing.
                         let ord_mask = filtered
-                            .compare_ordering_with_prefix(needle.as_bytes(), &op)
+                            .compare_ordering_with_prefix(needle.as_bytes(), op)
                             .ok_or(NeedsBacking)?;
                         return Ok(Some(ord_mask));
                     }
