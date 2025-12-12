@@ -358,8 +358,11 @@ mod tests {
             Some((h, _b)) => h,
             None => panic!("squeeze should succeed for byte-view"),
         };
-        let (new_batch, bytes) =
-            disk.squeeze(&CacheEntry::memory_squeezed_liquid(squeezed), &states, expression);
+        let (new_batch, bytes) = disk.squeeze(
+            &CacheEntry::memory_squeezed_liquid(squeezed),
+            &states,
+            expression,
+        );
         let data = new_batch;
         match (data, bytes) {
             (CacheEntry::DiskLiquid(_data_type), None) => {}
@@ -369,7 +372,11 @@ mod tests {
         // Disk* -> unchanged, no bytes
         let (b1, w1) = disk.squeeze(&CacheEntry::disk_arrow(DataType::Utf8), &states, expression);
         assert!(matches!(b1, CacheEntry::DiskArrow(DataType::Utf8)) && w1.is_none());
-        let (b2, w2) = disk.squeeze(&CacheEntry::disk_liquid(DataType::Utf8), &states, expression);
+        let (b2, w2) = disk.squeeze(
+            &CacheEntry::disk_liquid(DataType::Utf8),
+            &states,
+            expression,
+        );
         assert!(matches!(b2, CacheEntry::DiskLiquid(DataType::Utf8)) && w2.is_none());
     }
 
@@ -405,17 +412,25 @@ mod tests {
         let strings = Arc::new(StringArray::from(vec!["m", "n"])) as ArrayRef;
         let liquid = transcode_liquid_inner(&strings, &states).unwrap();
         let squeezed = liquid.squeeze(expression).unwrap().0;
-        let (new_batch, bytes) =
-            to_liquid.squeeze(&CacheEntry::memory_squeezed_liquid(squeezed), &states, expression);
+        let (new_batch, bytes) = to_liquid.squeeze(
+            &CacheEntry::memory_squeezed_liquid(squeezed),
+            &states,
+            expression,
+        );
         match (new_batch, bytes) {
             (CacheEntry::DiskLiquid(DataType::Utf8), None) => {}
             other => panic!("unexpected: {other:?}"),
         }
 
         // Disk* -> unchanged
-        let (b1, w1) = to_liquid.squeeze(&CacheEntry::disk_arrow(DataType::Utf8), &states, expression);
+        let (b1, w1) =
+            to_liquid.squeeze(&CacheEntry::disk_arrow(DataType::Utf8), &states, expression);
         assert!(matches!(b1, CacheEntry::DiskArrow(DataType::Utf8)) && w1.is_none());
-        let (b2, w2) = to_liquid.squeeze(&CacheEntry::disk_liquid(DataType::Utf8), &states, expression);
+        let (b2, w2) = to_liquid.squeeze(
+            &CacheEntry::disk_liquid(DataType::Utf8),
+            &states,
+            expression,
+        );
         assert!(matches!(b2, CacheEntry::DiskLiquid(DataType::Utf8)) && w2.is_none());
     }
 

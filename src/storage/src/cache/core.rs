@@ -735,11 +735,11 @@ impl LiquidCache {
         });
         let compressor_states = self.io_context.get_compressor(entry_id);
         let compressor = compressor_states.fsst_compressor();
-        let liquid = crate::liquid_array::ipc::read_from_bytes(
+
+        (crate::liquid_array::ipc::read_from_bytes(
             bytes,
             &crate::liquid_array::ipc::LiquidIPCContext::new(compressor),
-        );
-        liquid
+        )) as _
     }
 
     pub(crate) async fn eval_predicate_internal(
