@@ -145,6 +145,7 @@ impl IoContext for DefaultIoContext {
             use tokio::io::AsyncWriteExt;
             let mut file = tokio::fs::File::create(path).await?;
             file.write_all(&data).await?;
+            file.sync_all().await?;
             Ok(())
         }
     }
