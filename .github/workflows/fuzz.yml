@@ -53,13 +53,13 @@ jobs:
           echo "Fuzz target: ${TARGET} with ${CORES} cores"
 
           # Start fresh each run
-          rm -rf "fuzz/corpus/${TARGET}" "fuzz/artifacts/${TARGET}" "fuzz/coverage/${TARGET}"
+          rm -rf "dev/fuzz/corpus/${TARGET}" "dev/fuzz/artifacts/${TARGET}" "dev/fuzz/coverage/${TARGET}"
 
           # Run fuzzing for 3 hours using all cores
-          cargo fuzz run "${TARGET}" -- -jobs="${CORES}" -workers="${CORES}" -max_total_time=10800
+          cargo fuzz run "${TARGET}" --manifest-path dev/fuzz/Cargo.toml -- -jobs="${CORES}" -workers="${CORES}" -max_total_time=10800
 
           # Generate coverage data (uses llvm-profdata from PATH -> toolchain version)
-          cargo fuzz coverage "${TARGET}"
+          cargo fuzz coverage "${TARGET}" --manifest-path dev/fuzz/Cargo.toml
 
           # Find instrumented binary produced by cargo fuzz coverage
           BIN=$(find target -path "*/coverage/*/release/${TARGET}" -type f -perm -111 | head -n1)
@@ -68,25 +68,25 @@ jobs:
             exit 1
           fi
 
-          mkdir -p "fuzz/coverage/${TARGET}/html"
+          mkdir -p "dev/fuzz/coverage/${TARGET}/html"
 
           # Produce human-readable HTML coverage report (use toolchain llvm-cov)
           "${LLVM_TOOLS_DIR}/llvm-cov" show "${BIN}" \
-            --instr-profile "fuzz/coverage/${TARGET}/coverage.profdata" \
+            --instr-profile "dev/fuzz/coverage/${TARGET}/coverage.profdata" \
             --format html \
             --ignore-filename-regex '\.cargo' \
-            > "fuzz/coverage/${TARGET}/html/index.html"
+            > "dev/fuzz/coverage/${TARGET}/html/index.html"
 
           # Produce text summary and add to job summary
           "${LLVM_TOOLS_DIR}/llvm-cov" report "${BIN}" \
-            --instr-profile "fuzz/coverage/${TARGET}/coverage.profdata" \
+            --instr-profile "dev/fuzz/coverage/${TARGET}/coverage.profdata" \
             --ignore-filename-regex '\.cargo' \
-            > "fuzz/coverage/${TARGET}/coverage.txt"
+            > "dev/fuzz/coverage/${TARGET}/coverage.txt"
 
           {
             echo "### ${TARGET} coverage"
             echo '```'
-            cat "fuzz/coverage/${TARGET}/coverage.txt"
+            cat "dev/fuzz/coverage/${TARGET}/coverage.txt"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -96,7 +96,7 @@ jobs:
         with:
           name: fuzz-coverage-text-${{ matrix.target }}
           path: |
-            fuzz/coverage/${{ matrix.target }}/coverage.txt
+            dev/fuzz/coverage/${{ matrix.target }}/coverage.txt
           if-no-files-found: warn
 
       - name: Upload fuzz artifacts (crashes, reduces, etc.)
@@ -105,7 +105,7 @@ jobs:
         with:
           name: fuzz-artifacts-${{ matrix.target }}
           path: |
-            fuzz/artifacts/${{ matrix.target }}
+            dev/fuzz/artifacts/${{ matrix.target }}
           if-no-files-found: warn
 
   
