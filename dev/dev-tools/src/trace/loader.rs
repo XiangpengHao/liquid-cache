@@ -1,31 +1,66 @@
 use dioxus::prelude::*;
 
-/// Server function to list all snapshot files in the snapshots directory
-#[server]
-pub async fn list_snapshots() -> Result<Vec<String>, ServerFnError> {
+/// Helper function to find all .snap files with EventTrace pattern
+/// Returns absolute paths to matching files
+#[cfg(any(feature = "server", test))]
+pub fn find_event_trace_snapshots(src_dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     use std::fs;
-    use std::path::PathBuf;
-    let snapshots_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("src/storage/src/cache/tests/snapshots");
+    use std::path::{Path, PathBuf};
 
-    let mut files = Vec::new();
+    let mut matching_files = Vec::new();
 
-    if let Ok(entries) = fs::read_dir(&snapshots_dir) {
-        for entry in entries.flatten() {
-            if let Some(file_name) = entry.file_name().to_str()
-                && file_name.ends_with(".snap")
-            {
-                files.push(file_name.to_string());
+    fn visit_dirs(dir: &Path, files: &mut Vec<PathBuf>) {
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    visit_dirs(&path, files);
+                } else if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+                    if file_name.ends_with(".snap") {
+                        // Read the file and check for EventTrace pattern
+                        if let Ok(content) = fs::read_to_string(&path) {
+                            if content.contains("EventTrace: [") {
+                                files.push(path);
+                            }
+                        }
+                    }
+                }
             }
         }
     }
 
-    files.sort();
-    Ok(files)
+    if src_dir.exists() {
+        visit_dirs(src_dir, &mut matching_files);
+    }
+
+    matching_files.sort();
+    matching_files
+}
+
+/// Server function to list all snapshot files containing EventTrace pattern
+/// Recursively scans the entire src/ tree for .snap files with EventTrace: [
+#[server]
+pub async fn list_snapshots() -> Result<Vec<String>, ServerFnError> {
+    let src_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("src");
+
+    let matching_files = find_event_trace_snapshots(&src_dir);
+
+    // Convert to relative paths starting with "src/"
+    let relative_paths: Vec<String> = matching_files
+        .iter()
+        .filter_map(|path| {
+            path.strip_prefix(&src_dir)
+                .ok()
+                .map(|rel| format!("src/{}", rel.display()))
+        })
+        .collect();
+
+    Ok(relative_paths)
 }
 
 /// Server function to load a specific snapshot file
@@ -33,17 +68,18 @@ pub async fn list_snapshots() -> Result<Vec<String>, ServerFnError> {
 pub async fn load_snapshot(filename: String) -> Result<String, ServerFnError> {
     use std::fs;
     use std::path::PathBuf;
-    let snapshots_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+
+    let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
         .parent()
         .unwrap()
-        .join("src/storage/src/cache/tests/snapshots");
+        .to_path_buf();
 
-    let file_path = snapshots_dir.join(&filename);
+    let file_path = project_root.join(&filename);
 
-    // Security check: ensure the path is still within snapshots directory
-    if !file_path.starts_with(&snapshots_dir) {
+    // Security check: ensure the path is within the project and in src/
+    if !file_path.starts_with(&project_root) || !filename.starts_with("src/") {
         return Err(ServerFnError::new("Invalid file path"));
     }
 

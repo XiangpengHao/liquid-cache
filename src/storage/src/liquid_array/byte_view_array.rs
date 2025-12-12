@@ -951,8 +951,12 @@ impl LiquidArray for LiquidByteViewArray<MemoryBuffer> {
 
     fn squeeze(
         &self,
-        _expression_hint: Option<&CacheExpression>,
+        expression_hint: Option<&CacheExpression>,
     ) -> Option<(LiquidSqueezedArrayRef, bytes::Bytes)> {
+        if expression_hint.is_none() {
+            return None;
+        }
+
         // Serialize full IPC bytes first
         let bytes = match self.to_bytes_inner() {
             Ok(b) => b,

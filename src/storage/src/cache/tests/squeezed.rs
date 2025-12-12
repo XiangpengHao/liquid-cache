@@ -59,7 +59,7 @@ async fn read_squeezed_date_time() {
         )))
         .await
         .unwrap();
-    let trace = cache.consume_trace();
+    let trace = cache.consume_event_trace();
     insta::assert_snapshot!(trace);
 }
 
@@ -129,7 +129,7 @@ async fn read_squeezed_variant_path() {
         .read()
         .await
         .unwrap();
-    let trace = cache.consume_trace();
+    let trace = cache.consume_event_trace();
     insta::assert_snapshot!(trace);
 }
 
@@ -178,6 +178,6 @@ async fn read_squeezed_int64_array() {
             .unwrap();
         assert_eq!(array.len(), int64_array.len());
     }
-    let trace = cache.consume_trace();
+    let trace = cache.consume_event_trace();
     insta::assert_snapshot!(trace);
 }

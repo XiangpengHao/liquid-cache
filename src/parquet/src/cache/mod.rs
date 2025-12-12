@@ -10,7 +10,9 @@ use arrow::buffer::BooleanBuffer;
 use arrow_schema::{ArrowError, Field, Schema, SchemaRef};
 use liquid_cache_common::IoMode;
 use liquid_cache_storage::cache::squeeze_policies::SqueezePolicy;
-use liquid_cache_storage::cache::{CachePolicy, HydrationPolicy, LiquidCache, LiquidCacheBuilder};
+use liquid_cache_storage::cache::{
+    CachePolicy, EventTrace, HydrationPolicy, LiquidCache, LiquidCacheBuilder,
+};
 use parquet::arrow::arrow_reader::ArrowPredicate;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -345,6 +347,11 @@ impl LiquidCacheParquet {
     /// Get the storage of the cache.
     pub fn storage(&self) -> &Arc<LiquidCache> {
         &self.cache_store
+    }
+
+    /// Consume the event trace of the cache.
+    pub fn consume_event_trace(&self) -> EventTrace {
+        self.cache_store.consume_event_trace()
     }
 }
 

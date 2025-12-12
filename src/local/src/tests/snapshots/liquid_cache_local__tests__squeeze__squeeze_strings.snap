@@ -1,0 +1,81 @@
+---
+source: src/local/src/tests/squeeze.rs
+expression: trace
+---
+EventTrace: [
+event=insert_success entry=851968 kind=MemoryArrow
+event=insert_failed entry=917504 kind=MemoryArrow
+event=squeeze_begin victims=[851968]
+event=squeeze_victim entry=851968
+event=insert_success entry=851968 kind=MemoryLiquid
+event=insert_failed entry=917504 kind=MemoryArrow
+event=squeeze_begin victims=[851968]
+event=squeeze_victim entry=851968
+event=io_write entry=851968 kind=DiskLiquid bytes=142336
+event=insert_success entry=851968 kind=DiskLiquid
+event=insert_failed entry=917504 kind=MemoryArrow
+event=insert_success entry=917504 kind=MemoryLiquid
+event=insert_success entry=851969 kind=MemoryArrow
+event=insert_failed entry=917505 kind=MemoryArrow
+event=squeeze_begin victims=[851969,917504]
+event=squeeze_victim entry=851969
+event=insert_success entry=851969 kind=MemoryLiquid
+event=squeeze_victim entry=917504
+event=io_write entry=917504 kind=MemorySqueezedLiquid bytes=140272
+event=insert_success entry=917504 kind=MemorySqueezedLiquid
+event=insert_success entry=917505 kind=MemoryArrow
+event=insert_failed entry=851970 kind=MemoryArrow
+event=squeeze_begin victims=[917505,851969,917504]
+event=squeeze_victim entry=917505
+event=insert_success entry=917505 kind=MemoryLiquid
+event=squeeze_victim entry=851969
+event=io_write entry=851969 kind=DiskLiquid bytes=142360
+event=insert_success entry=851969 kind=DiskLiquid
+event=squeeze_victim entry=917504
+event=insert_success entry=917504 kind=DiskLiquid
+event=insert_success entry=851970 kind=MemoryArrow
+event=insert_failed entry=917506 kind=MemoryArrow
+event=squeeze_begin victims=[851970,917505]
+event=squeeze_victim entry=851970
+event=insert_success entry=851970 kind=MemoryLiquid
+event=squeeze_victim entry=917505
+event=io_write entry=917505 kind=MemorySqueezedLiquid bytes=145480
+event=insert_success entry=917505 kind=MemorySqueezedLiquid
+event=insert_failed entry=917506 kind=MemoryArrow
+event=squeeze_begin victims=[851970,917505]
+event=squeeze_victim entry=851970
+event=io_write entry=851970 kind=DiskLiquid bytes=149264
+event=insert_success entry=851970 kind=DiskLiquid
+event=squeeze_victim entry=917505
+event=insert_success entry=917505 kind=DiskLiquid
+event=insert_success entry=917506 kind=MemoryArrow
+event=eval_predicate entry=917504 selection=true cached=DiskLiquid
+event=io_read_liquid entry=917504 bytes=140272
+event=hydrate entry=917504 cached=DiskLiquid new=MemoryLiquid
+event=insert_failed entry=917504 kind=MemoryLiquid
+event=squeeze_begin victims=[917506]
+event=squeeze_victim entry=917506
+event=insert_success entry=917506 kind=MemoryLiquid
+event=insert_success entry=917504 kind=MemoryLiquid
+event=read entry=851968 selection=true expr=None cached=DiskLiquid
+event=io_read_liquid entry=851968 bytes=142336
+event=hydrate entry=851968 cached=DiskLiquid new=MemoryLiquid
+event=insert_success entry=851968 kind=MemoryLiquid
+event=eval_predicate entry=917505 selection=true cached=DiskLiquid
+event=io_read_liquid entry=917505 bytes=145480
+event=hydrate entry=917505 cached=DiskLiquid new=MemoryLiquid
+event=insert_success entry=917505 kind=MemoryLiquid
+event=read entry=851969 selection=true expr=None cached=DiskLiquid
+event=io_read_liquid entry=851969 bytes=142360
+event=hydrate entry=851969 cached=DiskLiquid new=MemoryLiquid
+event=insert_success entry=851969 kind=MemoryLiquid
+event=eval_predicate entry=917506 selection=true cached=MemoryLiquid
+event=read entry=851970 selection=true expr=None cached=DiskLiquid
+event=io_read_liquid entry=851970 bytes=149264
+event=hydrate entry=851970 cached=DiskLiquid new=MemoryLiquid
+event=insert_success entry=851970 kind=MemoryLiquid
+event=insert_success entry=4295819264 kind=MemoryArrow
+event=insert_success entry=4295884800 kind=MemoryArrow
+event=eval_predicate entry=4295884800 selection=true cached=MemoryArrow
+event=read entry=4295819264 selection=true expr=None cached=MemoryArrow
+]

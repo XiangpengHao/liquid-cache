@@ -15,7 +15,6 @@ use super::{
     tracer::CacheTracer,
     utils::CacheConfig,
 };
-#[cfg(test)]
 use crate::cache::internal_tracing::EventTrace;
 use crate::cache::policies::SqueezePolicy;
 use crate::cache::stats::{CacheStats, RuntimeStats};
@@ -370,8 +369,7 @@ impl LiquidCache {
     }
 
     /// Consume the trace of the cache, for testing only.
-    #[cfg(test)]
-    pub fn consume_trace(&self) -> EventTrace {
+    pub fn consume_event_trace(&self) -> EventTrace {
         self.event_tracer.drain()
     }
 
