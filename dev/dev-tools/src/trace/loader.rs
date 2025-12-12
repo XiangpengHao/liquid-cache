@@ -15,14 +15,14 @@ pub fn find_event_trace_snapshots(src_dir: &std::path::Path) -> Vec<std::path::P
                 let path = entry.path();
                 if path.is_dir() {
                     visit_dirs(&path, files);
-                } else if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-                    if file_name.ends_with(".snap") {
-                        // Read the file and check for EventTrace pattern
-                        if let Ok(content) = fs::read_to_string(&path) {
-                            if content.contains("EventTrace: [") {
-                                files.push(path);
-                            }
-                        }
+                } else if let Some(file_name) = path.file_name().and_then(|n| n.to_str())
+                    && file_name.ends_with(".snap")
+                {
+                    // Read the file and check for EventTrace pattern
+                    if let Ok(content) = fs::read_to_string(&path)
+                        && content.contains("EventTrace: [")
+                    {
+                        files.push(path);
                     }
                 }
             }

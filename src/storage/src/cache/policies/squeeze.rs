@@ -352,13 +352,14 @@ mod tests {
             other => panic!("unexpected: {other:?}"),
         }
 
+        let expression = Some(&CacheExpression::PredicateColumn);
         // MemorySqueezedLiquid -> DiskLiquid, no extra bytes
-        let squeezed = match liquid.squeeze(None) {
+        let squeezed = match liquid.squeeze(expression) {
             Some((h, _b)) => h,
             None => panic!("squeeze should succeed for byte-view"),
         };
         let (new_batch, bytes) =
-            disk.squeeze(&CacheEntry::memory_squeezed_liquid(squeezed), &states, None);
+            disk.squeeze(&CacheEntry::memory_squeezed_liquid(squeezed), &states, expression);
         let data = new_batch;
         match (data, bytes) {
             (CacheEntry::DiskLiquid(_data_type), None) => {}
@@ -366,9 +367,9 @@ mod tests {
         }
 
         // Disk* -> unchanged, no bytes
-        let (b1, w1) = disk.squeeze(&CacheEntry::disk_arrow(DataType::Utf8), &states, None);
+        let (b1, w1) = disk.squeeze(&CacheEntry::disk_arrow(DataType::Utf8), &states, expression);
         assert!(matches!(b1, CacheEntry::DiskArrow(DataType::Utf8)) && w1.is_none());
-        let (b2, w2) = disk.squeeze(&CacheEntry::disk_liquid(DataType::Utf8), &states, None);
+        let (b2, w2) = disk.squeeze(&CacheEntry::disk_liquid(DataType::Utf8), &states, expression);
         assert!(matches!(b2, CacheEntry::DiskLiquid(DataType::Utf8)) && w2.is_none());
     }
 
@@ -388,12 +389,13 @@ mod tests {
             }
             other => panic!("unexpected: {other:?}"),
         }
+        let expression = Some(&CacheExpression::PredicateColumn);
 
         // MemoryLiquid (strings) -> MemorySqueezedLiquid + bytes
         let strings = Arc::new(StringArray::from(vec!["x", "y", "x"])) as ArrayRef;
         let liquid = transcode_liquid_inner(&strings, &states).unwrap();
         let (new_batch, bytes) =
-            to_liquid.squeeze(&CacheEntry::memory_liquid(liquid), &states, None);
+            to_liquid.squeeze(&CacheEntry::memory_liquid(liquid), &states, expression);
         match (new_batch, bytes) {
             (CacheEntry::MemorySqueezedLiquid(_), Some(b)) => assert!(!b.is_empty()),
             other => panic!("unexpected: {other:?}"),
@@ -402,18 +404,18 @@ mod tests {
         // MemorySqueezedLiquid -> DiskLiquid, no bytes
         let strings = Arc::new(StringArray::from(vec!["m", "n"])) as ArrayRef;
         let liquid = transcode_liquid_inner(&strings, &states).unwrap();
-        let squeezed = liquid.squeeze(None).unwrap().0;
+        let squeezed = liquid.squeeze(expression).unwrap().0;
         let (new_batch, bytes) =
-            to_liquid.squeeze(&CacheEntry::memory_squeezed_liquid(squeezed), &states, None);
+            to_liquid.squeeze(&CacheEntry::memory_squeezed_liquid(squeezed), &states, expression);
         match (new_batch, bytes) {
             (CacheEntry::DiskLiquid(DataType::Utf8), None) => {}
             other => panic!("unexpected: {other:?}"),
         }
 
         // Disk* -> unchanged
-        let (b1, w1) = to_liquid.squeeze(&CacheEntry::disk_arrow(DataType::Utf8), &states, None);
+        let (b1, w1) = to_liquid.squeeze(&CacheEntry::disk_arrow(DataType::Utf8), &states, expression);
         assert!(matches!(b1, CacheEntry::DiskArrow(DataType::Utf8)) && w1.is_none());
-        let (b2, w2) = to_liquid.squeeze(&CacheEntry::disk_liquid(DataType::Utf8), &states, None);
+        let (b2, w2) = to_liquid.squeeze(&CacheEntry::disk_liquid(DataType::Utf8), &states, expression);
         assert!(matches!(b2, CacheEntry::DiskLiquid(DataType::Utf8)) && w2.is_none());
     }
 
