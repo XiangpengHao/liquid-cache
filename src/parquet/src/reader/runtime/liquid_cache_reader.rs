@@ -305,7 +305,7 @@ mod tests {
         let field = Arc::new(Field::new("col0", DataType::Int32, false));
         let schema = Arc::new(Schema::new(vec![field.clone()]));
         let file = cache.register_or_get_file("test".to_string(), schema.clone());
-        let row_group = file.create_row_group(0);
+        let row_group = file.create_row_group(0, vec![]);
         let column = row_group.get_column(0).unwrap();
 
         for (idx, values) in batches.iter().enumerate() {

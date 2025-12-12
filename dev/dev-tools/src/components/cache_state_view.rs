@@ -25,7 +25,17 @@ fn get_operation_label(op: &EntryOperation) -> String {
         EntryOperation::Hydrating { to } => format!("hydrate → {}", to.display_name()),
         EntryOperation::IoRead => "io_read".to_string(),
         EntryOperation::IoWrite => "io_write".to_string(),
+        EntryOperation::EvalPredicate => "eval_predicate".to_string(),
     }
+}
+
+/// Format entry ID as u16_u16_u16_u16
+fn format_entry_id_parts(entry_id: u64) -> String {
+    let part0 = (entry_id & 0xFFFF) as u16;
+    let part1 = ((entry_id >> 16) & 0xFFFF) as u16;
+    let part2 = ((entry_id >> 32) & 0xFFFF) as u16;
+    let part3 = ((entry_id >> 48) & 0xFFFF) as u16;
+    format!("{}_{}_{}_{}", part3, part2, part1, part0)
 }
 
 #[component]
@@ -33,6 +43,15 @@ pub fn CacheStateView(simulator: Signal<CacheSimulator>) -> Element {
     let sim = simulator.read();
     let state = sim.current_state();
     let entries = state.get_entries();
+
+    // Create a unified sorted list of all entry IDs (both actual and failed)
+    let mut all_entry_ids: Vec<u64> = entries.iter().map(|e| e.entry_id).collect();
+    for (entry_id, _) in state.failed_inserts.iter() {
+        if !all_entry_ids.contains(entry_id) {
+            all_entry_ids.push(*entry_id);
+        }
+    }
+    all_entry_ids.sort();
 
     // Count entries by kind
     let memory_arrow_count = state.count_by_kind(&CacheKind::MemoryArrow);
@@ -159,74 +178,79 @@ pub fn CacheStateView(simulator: Signal<CacheSimulator>) -> Element {
                 class: "flex-1 overflow-y-auto p-4",
                 h3 { class: "text-sm font-medium mb-3", "Cache Entries" }
 
-                if entries.is_empty() && state.failed_inserts.is_empty() {
+                if all_entry_ids.is_empty() {
                     div { class: "text-center opacity-40 py-8", "No entries in cache" }
                 } else {
                     List {
-                        class: "grid grid-cols-1 gap-2".to_string(),
+                        class: "entries-container grid grid-cols-1 gap-2".to_string(),
                         children: rsx! {
-                            // Show failed inserts as ghost entries (only if entry doesn't already exist)
-                            for (entry_id, kind) in state
-                                .failed_inserts
-                                .iter()
-                                .filter(|(id, _)| !entries.iter().any(|e| e.entry_id == **id))
-                            {
-                                div {
-                                    class: "card card-compact bg-base-100 border-2 border-dashed border-warning p-2",
-                                    div { class: "flex items-center justify-between gap-2 mb-1",
-                                        span { class: "text-xs font-mono font-semibold", "Entry {entry_id}" }
-                                        span { class: "text-xs opacity-60", "not inserted" }
-                                    }
-                                    div { class: "flex items-center gap-1 flex-wrap min-h-5",
-                                        if let Some(op) = state.current_operations.get(entry_id) {
-                                            Badge { label: get_operation_label(op), tone: "warn", class: "".to_string() }
-                                        }
-                                        span { class: "text-xs opacity-70 italic", "attempted: {kind.display_name()}" }
-                                    }
-                                }
-                            }
-
-                            // Show actual entries
-                            for entry in entries {
-
-                                div {
-                                    class: format!("card card-compact bg-base-100 border border-base-300 p-2 {}",
-                                        if state.failed_inserts.contains_key(&entry.entry_id) {
-                                            "border-2 border-warning"
-                                        } else {
-                                            ""
-                                        }
-                                    ),
-
-                                    div { class: "flex items-center justify-between gap-2 mb-1",
-                                        span { class: "text-xs font-mono font-semibold", "Entry {entry.entry_id}" }
-                                        div { class: "flex items-center gap-1 flex-wrap min-h-5",
-                                            match state.victim_status.get(&entry.entry_id) {
-                                                Some(VictimStatus::Selected) => rsx!( Badge { label: "victim".to_string(), tone: "warn", class: "".to_string() } ),
-                                                Some(VictimStatus::Squeezed) => rsx!( Badge { label: "squeezed".to_string(), tone: "neutral", class: "".to_string() } ),
-                                                None => rsx! {},
-                                            }
-                                            if let Some(op) = state.current_operations.get(&entry.entry_id) {
-                                                Badge { label: get_operation_label(op), tone: "info", class: "".to_string() }
-                                            }
+                            // Show all entries in sorted order
+                            for entry_id in &all_entry_ids {
+                                // Find if this is an actual entry or just a failed insert
+                                if let Some(entry) = entries.iter().find(|e| e.entry_id == *entry_id) {
+                                    // Actual entry exists
+                                    div {
+                                        key: "{entry_id}",
+                                        class: format!("card card-compact bg-base-100 border border-base-300 p-2 {}",
                                             if state.failed_inserts.contains_key(&entry.entry_id) {
-                                                if let Some(kind) = state.failed_inserts.get(&entry.entry_id) {
-                                                    Badge { label: format!("insert failed → {}", kind.display_name()), tone: "warn", class: "".to_string() }
+                                                "border-2 border-warning"
+                                            } else {
+                                                ""
+                                            }
+                                        ),
+
+                                        div { class: "flex items-center justify-between gap-2 mb-1",
+                                            div { class: "flex items-center gap-2",
+                                                span { class: "text-xs font-mono font-semibold", "Entry {entry.entry_id}" }
+                                                span { class: "text-xs font-mono opacity-50", "({format_entry_id_parts(entry.entry_id)})" }
+                                            }
+                                            div { class: "flex items-center gap-1 flex-wrap min-h-5",
+                                                match state.victim_status.get(&entry.entry_id) {
+                                                    Some(VictimStatus::Selected) => rsx!( Badge { label: "victim".to_string(), tone: "warn", class: "".to_string() } ),
+                                                    Some(VictimStatus::Squeezed) => rsx!( Badge { label: "squeezed".to_string(), tone: "neutral", class: "".to_string() } ),
+                                                    None => rsx! {},
+                                                }
+                                                if let Some(op) = state.current_operations.get(&entry.entry_id) {
+                                                    Badge { label: get_operation_label(op), tone: "info", class: "".to_string() }
+                                                }
+                                                if state.failed_inserts.contains_key(&entry.entry_id) {
+                                                    if let Some(kind) = state.failed_inserts.get(&entry.entry_id) {
+                                                        Badge { label: format!("insert failed → {}", kind.display_name()), tone: "warn", class: "".to_string() }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        div {
+                                            class: "text-xs flex items-center gap-1 flex-wrap",
+                                            for (idx, kind) in entry.history.iter().enumerate() {
+                                                span {
+                                                    class: if idx == entry.history.len() - 1 { "font-semibold" } else { "opacity-60" },
+                                                    "{kind.display_name()}"
+                                                }
+                                                if idx < entry.history.len() - 1 {
+                                                    span { class: "opacity-30", "→" }
                                                 }
                                             }
                                         }
                                     }
-
+                                } else if let Some(kind) = state.failed_inserts.get(entry_id) {
+                                    // Failed insert only (no actual entry yet)
                                     div {
-                                        class: "text-xs flex items-center gap-1 flex-wrap",
-                                        for (idx, kind) in entry.history.iter().enumerate() {
-                                            span {
-                                                class: if idx == entry.history.len() - 1 { "font-semibold" } else { "opacity-60" },
-                                                "{kind.display_name()}"
+                                        key: "{entry_id}",
+                                        class: "card card-compact bg-base-100 border-2 border-dashed border-warning p-2",
+                                        div { class: "flex items-center justify-between gap-2 mb-1",
+                                            div { class: "flex items-center gap-2",
+                                                span { class: "text-xs font-mono font-semibold", "Entry {entry_id}" }
+                                                span { class: "text-xs font-mono opacity-50", "({format_entry_id_parts(*entry_id)})" }
                                             }
-                                            if idx < entry.history.len() - 1 {
-                                                span { class: "opacity-30", "→" }
+                                            span { class: "text-xs opacity-60", "not inserted" }
+                                        }
+                                        div { class: "flex items-center gap-1 flex-wrap min-h-5",
+                                            if let Some(op) = state.current_operations.get(entry_id) {
+                                                Badge { label: get_operation_label(op), tone: "warn", class: "".to_string() }
                                             }
+                                            span { class: "text-xs opacity-70 italic", "attempted: {kind.display_name()}" }
                                         }
                                     }
                                 }

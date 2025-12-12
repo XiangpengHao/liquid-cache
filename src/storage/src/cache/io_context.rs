@@ -14,8 +14,8 @@ use crate::sync::{Arc, RwLock};
 /// A trait for objects that can handle IO operations for the cache.
 #[async_trait::async_trait]
 pub trait IoContext: Debug + Send + Sync {
-    /// Set a squeeze hint for an entry.
-    fn set_squeeze_hint(&self, _entry_id: &EntryID, _expression: Arc<CacheExpression>) {
+    /// Add a squeeze hint for an entry.
+    fn add_squeeze_hint(&self, _entry_id: &EntryID, _expression: Arc<CacheExpression>) {
         // Do nothing by default
     }
 
@@ -67,7 +67,7 @@ impl DefaultIoContext {
 
 #[async_trait::async_trait]
 impl IoContext for DefaultIoContext {
-    fn set_squeeze_hint(&self, entry_id: &EntryID, expression: Arc<CacheExpression>) {
+    fn add_squeeze_hint(&self, entry_id: &EntryID, expression: Arc<CacheExpression>) {
         let mut guard = self.squeeze_hints.write().unwrap();
         guard.insert(*entry_id, expression);
     }

@@ -46,6 +46,8 @@ pub enum CacheExpression {
         /// The set of dotted paths requested by the query.
         requests: Arc<[VariantRequest]>,
     },
+    /// A column used for predicate evaluation.
+    PredicateColumn,
 }
 
 impl std::fmt::Display for CacheExpression {
@@ -62,6 +64,9 @@ impl std::fmt::Display for CacheExpression {
             }
             Self::ExtractDate32 { field } => {
                 write!(f, "ExtractDate32:{:?}", field)
+            }
+            Self::PredicateColumn => {
+                write!(f, "PredicateColumn")
             }
         }
     }
@@ -117,7 +122,7 @@ impl CacheExpression {
     pub fn as_date32_field(&self) -> Option<Date32Field> {
         match self {
             Self::ExtractDate32 { field } => Some(*field),
-            Self::VariantGet { .. } => None,
+            Self::VariantGet { .. } | Self::PredicateColumn => None,
         }
     }
 
@@ -125,7 +130,7 @@ impl CacheExpression {
     pub fn variant_path(&self) -> Option<&str> {
         match self {
             Self::VariantGet { requests } => requests.first().map(|request| request.path()),
-            Self::ExtractDate32 { .. } => None,
+            Self::ExtractDate32 { .. } | Self::PredicateColumn => None,
         }
     }
 
@@ -133,7 +138,7 @@ impl CacheExpression {
     pub fn variant_data_type(&self) -> Option<&DataType> {
         match self {
             Self::VariantGet { requests } => requests.first().map(|request| request.data_type()),
-            Self::ExtractDate32 { .. } => None,
+            Self::ExtractDate32 { .. } | Self::PredicateColumn => None,
         }
     }
 
@@ -141,7 +146,7 @@ impl CacheExpression {
     pub fn variant_requests(&self) -> Option<&[VariantRequest]> {
         match self {
             Self::VariantGet { requests } => Some(requests.as_ref()),
-            Self::ExtractDate32 { .. } => None,
+            Self::ExtractDate32 { .. } | Self::PredicateColumn => None,
         }
     }
 }

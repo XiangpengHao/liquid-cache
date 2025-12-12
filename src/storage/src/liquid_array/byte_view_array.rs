@@ -951,8 +951,10 @@ impl LiquidArray for LiquidByteViewArray<MemoryBuffer> {
 
     fn squeeze(
         &self,
-        _expression_hint: Option<&CacheExpression>,
+        expression_hint: Option<&CacheExpression>,
     ) -> Option<(LiquidSqueezedArrayRef, bytes::Bytes)> {
+        expression_hint?;
+
         // Serialize full IPC bytes first
         let bytes = match self.to_bytes_inner() {
             Ok(b) => b,
@@ -2224,7 +2226,9 @@ mod tests {
         let input = StringArray::from(vec!["foo", "bar"]);
         let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
         let in_memory = LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
-        let (hybrid, _) = in_memory.squeeze(None).expect("squeeze should succeed");
+        let (hybrid, _) = in_memory
+            .squeeze(Some(&CacheExpression::PredicateColumn))
+            .expect("squeeze should succeed");
         let disk_view = hybrid
             .as_any()
             .downcast_ref::<LiquidByteViewArray<DiskBuffer>>()
@@ -2970,7 +2974,9 @@ mod tests {
         let in_mem = LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
 
         // Squeeze to disk-backed so we exercise compare_equals_with_prefix in DiskBuffer path
-        let (hybrid, _bytes) = in_mem.squeeze(None).unwrap();
+        let (hybrid, _bytes) = in_mem
+            .squeeze(Some(&CacheExpression::PredicateColumn))
+            .unwrap();
         let disk_view = hybrid
             .as_any()
             .downcast_ref::<LiquidByteViewArray<DiskBuffer>>()
@@ -3010,7 +3016,9 @@ mod tests {
         let in_mem = LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
 
         // Squeeze to disk-backed to exercise prefix-only ordering path
-        let (hybrid, _bytes) = in_mem.squeeze(None).unwrap();
+        let (hybrid, _bytes) = in_mem
+            .squeeze(Some(&CacheExpression::PredicateColumn))
+            .unwrap();
         let disk_view = hybrid
             .as_any()
             .downcast_ref::<LiquidByteViewArray<DiskBuffer>>()

@@ -62,22 +62,26 @@ impl CachedColumn {
     pub(crate) fn new(
         field: Arc<Field>,
         cache_store: Arc<LiquidCache>,
-        column_id: u64,
-        row_group_id: u64,
-        file_id: u64,
+        column_access_path: ColumnAccessPath,
+        is_predicate_column: bool,
     ) -> Self {
-        let column_path = ColumnAccessPath::new(file_id, row_group_id, column_id);
-        column_path.initialize_dir(cache_store.config().cache_root_dir());
+        column_access_path.initialize_dir(cache_store.config().cache_root_dir());
+
         let expression = infer_expression(field.as_ref()).map(|expr| {
             let expr = Arc::new(expr);
-            let hint_entry_id = column_path.entry_id(BatchID::from_raw(0)).into();
-            cache_store.set_squeeze_hint(&hint_entry_id, expr.clone());
+            let hint_entry_id = column_access_path.entry_id(BatchID::from_raw(0)).into();
+            cache_store.add_squeeze_hint(&hint_entry_id, expr.clone());
             expr
         });
+        if is_predicate_column {
+            let expression = Arc::new(CacheExpression::PredicateColumn);
+            let hint_entry_id = column_access_path.entry_id(BatchID::from_raw(0)).into();
+            cache_store.add_squeeze_hint(&hint_entry_id, expression);
+        }
         Self {
             field,
             cache_store,
-            column_path,
+            column_path: column_access_path,
             expression,
         }
     }

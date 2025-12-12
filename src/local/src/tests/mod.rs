@@ -23,6 +23,7 @@ use datafusion::{
 
 use crate::LiquidCacheLocalBuilder;
 mod date_optimizer;
+mod squeeze;
 mod variants;
 
 const TEST_FILE: &str = "../../examples/nano_hits.parquet";

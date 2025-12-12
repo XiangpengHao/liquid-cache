@@ -191,7 +191,6 @@ impl EventTracer {
         self.events.lock().unwrap().push(event);
     }
 
-    #[cfg(test)]
     pub fn drain(&self) -> EventTrace {
         EventTrace {
             events: std::mem::take(&mut *self.events.lock().unwrap()),
@@ -199,27 +198,25 @@ impl EventTracer {
     }
 }
 
-#[cfg(test)]
+/// A trace of events that occurred in the cache.
+/// This is used for testing only.
 #[derive(PartialEq, Eq, serde::Serialize)]
-pub(crate) struct EventTrace {
+pub struct EventTrace {
     events: Vec<InternalEvent>,
 }
 
-#[cfg(test)]
 impl From<Vec<InternalEvent>> for EventTrace {
     fn from(events: Vec<InternalEvent>) -> Self {
         Self { events }
     }
 }
 
-#[cfg(test)]
 impl fmt::Display for EventTrace {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "{:?}", self)
     }
 }
 
-#[cfg(test)]
 impl fmt::Debug for EventTrace {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "EventTrace: [")?;

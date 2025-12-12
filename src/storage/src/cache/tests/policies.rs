@@ -26,7 +26,7 @@ async fn default_policies() {
         assert_eq!(array.len(), test_array.len());
     }
 
-    let trace = cache.consume_trace();
+    let trace = cache.consume_event_trace();
     insta::assert_snapshot!(trace);
 }
 
@@ -48,7 +48,7 @@ async fn insert_wont_fit_cache() {
     cache.insert(EntryID::from(1), array_27x.clone()).await;
     cache.get(&EntryID::from(1)).read().await.unwrap();
 
-    let trace = cache.consume_trace();
+    let trace = cache.consume_event_trace();
     let json_trace = serde_json::to_string(&trace).unwrap();
     println!("{}", json_trace);
     insta::assert_snapshot!(trace);

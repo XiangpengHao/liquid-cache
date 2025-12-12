@@ -79,6 +79,11 @@ pub enum TraceEvent {
         entry: u64,
         expression: String,
     },
+    EvalPredicate {
+        entry: u64,
+        selection: bool,
+        cached: CacheKind,
+    },
 }
 
 impl TraceEvent {
@@ -149,6 +154,18 @@ impl TraceEvent {
             TraceEvent::ReadSqueezedData { entry, expression } => {
                 format!("Read squeezed entry {} [{}]", entry, expression)
             }
+            TraceEvent::EvalPredicate {
+                entry,
+                selection,
+                cached,
+            } => {
+                format!(
+                    "Eval predicate entry {} ({}) selection={}",
+                    entry,
+                    cached.display_name(),
+                    selection
+                )
+            }
         }
     }
 
@@ -164,6 +181,7 @@ impl TraceEvent {
             TraceEvent::Hydrate { .. } => "hydrate",
             TraceEvent::Read { .. } => "read",
             TraceEvent::ReadSqueezedData { .. } => "read_squeezed_data",
+            TraceEvent::EvalPredicate { .. } => "eval_predicate",
         }
     }
 }
@@ -330,6 +348,20 @@ fn parse_event_line(line: &str) -> TraceEvent {
                 .map(|s| s.to_string())
                 .unwrap_or_default(),
         },
+        Some("eval_predicate") => TraceEvent::EvalPredicate {
+            entry: fields
+                .get("entry")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0),
+            selection: fields
+                .get("selection")
+                .map(|s| s == "true")
+                .unwrap_or(false),
+            cached: fields
+                .get("cached")
+                .map(|s| CacheKind::from_str(s))
+                .unwrap(),
+        },
         _ => {
             panic!("Unknown event: {}", line);
         }
@@ -378,42 +410,32 @@ mod tests {
 
     #[test]
     fn parse_all_snapshot_traces() {
-        let snapshots_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        use crate::trace::loader::find_event_trace_snapshots;
+
+        let src_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()
             .parent()
             .unwrap()
-            .join("src/storage/src/cache/tests/snapshots");
+            .join("src");
 
-        let entries = fs::read_dir(&snapshots_dir)
-            .unwrap_or_else(|e| panic!("failed to read snapshots dir {snapshots_dir:?}: {e}"));
+        let snapshot_files = find_event_trace_snapshots(&src_dir);
 
-        let mut parsed_files = Vec::new();
+        assert!(
+            !snapshot_files.is_empty(),
+            "no .snap files with EventTrace pattern found in {}",
+            src_dir.display()
+        );
 
-        for entry in entries {
-            let entry = entry.expect("failed to read directory entry");
-            let path = entry.path();
-            if path.extension().and_then(|ext| ext.to_str()) != Some("snap") {
-                continue;
-            }
-
-            let contents = fs::read_to_string(&path)
+        for path in &snapshot_files {
+            let contents = fs::read_to_string(path)
                 .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
             let events = parse_trace(&contents);
-
             assert!(
                 !events.is_empty(),
                 "expected events in snapshot {}",
                 path.display()
             );
-
-            parsed_files.push(path);
         }
-
-        assert!(
-            !parsed_files.is_empty(),
-            "no .snap files found in {}",
-            snapshots_dir.display()
-        );
     }
 }

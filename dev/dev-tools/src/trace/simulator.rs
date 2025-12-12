@@ -44,6 +44,7 @@ pub enum EntryOperation {
     Hydrating { to: CacheKind },
     IoRead,
     IoWrite,
+    EvalPredicate,
 }
 
 /// Victim status for entries
@@ -279,6 +280,11 @@ impl CacheSimulator {
                         expr: expression.clone(),
                     },
                 );
+            }
+            TraceEvent::EvalPredicate { entry, .. } => {
+                self.state
+                    .current_operations
+                    .insert(*entry, EntryOperation::EvalPredicate);
             }
         }
     }

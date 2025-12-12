@@ -3,14 +3,16 @@
 
 use crate::io::ParquetIoContext;
 use crate::reader::{LiquidPredicate, extract_multi_column_or};
-use crate::sync::{Mutex, RwLock};
+use crate::sync::Mutex;
 use ahash::AHashMap;
 use arrow::array::{BooleanArray, RecordBatch};
 use arrow::buffer::BooleanBuffer;
 use arrow_schema::{ArrowError, Field, Schema, SchemaRef};
 use liquid_cache_common::IoMode;
 use liquid_cache_storage::cache::squeeze_policies::SqueezePolicy;
-use liquid_cache_storage::cache::{CachePolicy, HydrationPolicy, LiquidCache, LiquidCacheBuilder};
+use liquid_cache_storage::cache::{
+    CachePolicy, EventTrace, HydrationPolicy, LiquidCache, LiquidCacheBuilder,
+};
 use parquet::arrow::arrow_reader::ArrowPredicate;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -35,7 +37,7 @@ struct ColumnMaps {
 /// A row group in the cache.
 #[derive(Debug)]
 pub struct CachedRowGroup {
-    columns: RwLock<ColumnMaps>,
+    columns: ColumnMaps,
     cache_store: Arc<LiquidCache>,
 }
 
@@ -45,32 +47,32 @@ impl CachedRowGroup {
     /// So they may not start from 0.
     fn new(
         cache_store: Arc<LiquidCache>,
-        row_group_id: u64,
-        file_id: u64,
-        columns: &[(u64, Arc<Field>)],
+        row_group_idx: u64,
+        file_idx: u64,
+        columns: &[(u64, Arc<Field>, bool)],
     ) -> Self {
         let cache_dir = cache_store
             .config()
             .cache_root_dir()
-            .join(format!("file_{file_id}"))
-            .join(format!("rg_{row_group_id}"));
+            .join(format!("file_{file_idx}"))
+            .join(format!("rg_{row_group_idx}"));
         std::fs::create_dir_all(&cache_dir).expect("Failed to create cache directory");
 
         let mut column_maps = ColumnMaps::default();
-        for (column_id, field) in columns {
+        for (column_id, field, is_predicate_column) in columns {
+            let column_access_path = ColumnAccessPath::new(file_idx, row_group_idx, *column_id);
             let column = Arc::new(CachedColumn::new(
                 Arc::clone(field),
                 Arc::clone(&cache_store),
-                *column_id,
-                row_group_id,
-                file_id,
+                column_access_path,
+                *is_predicate_column,
             ));
             column_maps.by_id.insert(*column_id, column.clone());
             column_maps.by_name.insert(field.name().to_string(), column);
         }
 
         Self {
-            columns: RwLock::new(column_maps),
+            columns: column_maps,
             cache_store,
         }
     }
@@ -82,17 +84,12 @@ impl CachedRowGroup {
 
     /// Get a column from the row group.
     pub fn get_column(&self, column_id: u64) -> Option<CachedColumnRef> {
-        self.columns.read().unwrap().by_id.get(&column_id).cloned()
+        self.columns.by_id.get(&column_id).cloned()
     }
 
     /// Get a column from the row group by its field name.
     pub fn get_column_by_name(&self, column_name: &str) -> Option<CachedColumnRef> {
-        self.columns
-            .read()
-            .unwrap()
-            .by_name
-            .get(column_name)
-            .cloned()
+        self.columns.by_name.get(column_name).cloned()
     }
 
     /// Evaluate a predicate on a row group.
@@ -189,13 +186,20 @@ impl CachedFile {
     }
 
     /// Create a row group handle scoped to the current query context.
-    pub fn create_row_group(&self, row_group_id: u64) -> CachedRowGroupRef {
-        let columns: Vec<(u64, Arc<Field>)> = self
+    pub fn create_row_group(
+        &self,
+        row_group_id: u64,
+        predicate_column_ids: Vec<usize>,
+    ) -> CachedRowGroupRef {
+        let columns: Vec<(u64, Arc<Field>, bool)> = self
             .file_schema
             .fields()
             .iter()
             .enumerate()
-            .map(|(idx, field)| (idx as u64, Arc::clone(field)))
+            .map(|(idx, field)| {
+                let is_predicate_column = predicate_column_ids.contains(&idx);
+                (idx as u64, Arc::clone(field), is_predicate_column)
+            })
             .collect();
 
         Arc::new(CachedRowGroup::new(
@@ -344,6 +348,11 @@ impl LiquidCacheParquet {
     pub fn storage(&self) -> &Arc<LiquidCache> {
         &self.cache_store
     }
+
+    /// Consume the event trace of the cache.
+    pub fn consume_event_trace(&self) -> EventTrace {
+        self.cache_store.consume_event_trace()
+    }
 }
 
 #[cfg(test)]
@@ -380,7 +389,7 @@ mod tests {
             IoMode::Uring,
         );
         let file = cache.register_or_get_file("test".to_string(), schema);
-        file.create_row_group(0)
+        file.create_row_group(0, vec![])
     }
 
     #[tokio::test]

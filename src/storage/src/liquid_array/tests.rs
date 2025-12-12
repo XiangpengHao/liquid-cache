@@ -2,6 +2,7 @@
 mod random_tests {
     use std::sync::Arc;
 
+    use crate::cache::CacheExpression;
     use crate::liquid_array::byte_view_array::MemoryBuffer;
     use crate::liquid_array::{LiquidArray, LiquidByteArray, LiquidByteViewArray};
     use arrow::array::{
@@ -538,7 +539,7 @@ mod random_tests {
         let baseline = liquid.to_bytes();
 
         // Squeeze
-        let Some((_hybrid, bytes)) = liquid.squeeze(None) else {
+        let Some((_hybrid, bytes)) = liquid.squeeze(Some(&CacheExpression::PredicateColumn)) else {
             panic!("squeeze should succeed");
         };
 

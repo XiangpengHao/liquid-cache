@@ -15,7 +15,6 @@ use super::{
     tracer::CacheTracer,
     utils::CacheConfig,
 };
-#[cfg(test)]
 use crate::cache::internal_tracing::EventTrace;
 use crate::cache::policies::SqueezePolicy;
 use crate::cache::stats::{CacheStats, RuntimeStats};
@@ -140,14 +139,14 @@ impl LiquidCache {
         match batch.as_ref() {
             CacheEntry::MemoryLiquid(array) => Some(array.clone()),
             entry @ CacheEntry::DiskLiquid(_) => {
-                let liquid = self.read_disk_liquid_array(entry, entry_id).await?;
+                let liquid = self.read_disk_liquid_array(entry, entry_id).await;
                 self.maybe_hydrate(entry_id, entry, MaterializedEntry::Liquid(&liquid), None)
                     .await;
                 Some(liquid)
             }
             entry @ CacheEntry::MemorySqueezedLiquid(array) => match array.disk_backing() {
                 SqueezedBacking::Liquid => {
-                    let liquid = self.read_disk_liquid_array(entry, entry_id).await?;
+                    let liquid = self.read_disk_liquid_array(entry, entry_id).await;
                     Some(liquid)
                 }
                 SqueezedBacking::Arrow => None,
@@ -194,9 +193,9 @@ impl LiquidCache {
         self.io_context.get_compressor(entry_id)
     }
 
-    /// Record a squeeze hint for an entry.
-    pub fn set_squeeze_hint(&self, entry_id: &EntryID, expression: Arc<CacheExpression>) {
-        self.io_context.set_squeeze_hint(entry_id, expression);
+    /// Add a squeeze hint for an entry.
+    pub fn add_squeeze_hint(&self, entry_id: &EntryID, expression: Arc<CacheExpression>) {
+        self.io_context.add_squeeze_hint(entry_id, expression);
     }
 
     /// Flush all entries to disk.
@@ -369,8 +368,8 @@ impl LiquidCache {
         Ok(())
     }
 
-    #[cfg(test)]
-    pub(crate) fn consume_trace(&self) -> EventTrace {
+    /// Consume the trace of the cache, for testing only.
+    pub fn consume_event_trace(&self) -> EventTrace {
         self.event_tracer.drain()
     }
 
@@ -526,7 +525,7 @@ impl LiquidCache {
                 {
                     return Some(arrow::array::new_empty_array(data_type));
                 }
-                let full_array = self.read_disk_arrow_array(entry, entry_id).await?;
+                let full_array = self.read_disk_arrow_array(entry, entry_id).await;
                 self.maybe_hydrate(
                     entry_id,
                     entry,
@@ -548,7 +547,7 @@ impl LiquidCache {
                 {
                     return Some(arrow::array::new_empty_array(data_type));
                 }
-                let liquid = self.read_disk_liquid_array(entry, entry_id).await?;
+                let liquid = self.read_disk_liquid_array(entry, entry_id).await;
                 self.maybe_hydrate(
                     entry_id,
                     entry,
@@ -598,7 +597,7 @@ impl LiquidCache {
         let arrow = {
             match array.disk_backing() {
                 SqueezedBacking::Liquid => {
-                    let liquid = self.read_disk_liquid_array(&batch, entry_id).await?;
+                    let liquid = self.read_disk_liquid_array(&batch, entry_id).await;
                     self.maybe_hydrate(
                         entry_id,
                         &batch,
@@ -609,7 +608,7 @@ impl LiquidCache {
                     liquid.to_arrow_array()
                 }
                 SqueezedBacking::Arrow => {
-                    let full_array = self.read_disk_arrow_array(&batch, entry_id).await?;
+                    let full_array = self.read_disk_arrow_array(&batch, entry_id).await;
                     self.maybe_hydrate(
                         entry_id,
                         &batch,
@@ -671,7 +670,7 @@ impl LiquidCache {
         let full_array = if !all_paths_present {
             let batch = CacheEntry::MemorySqueezedLiquid(array.clone());
             self.runtime_stats.incr_get_squeezed_needs_io();
-            let full_array = self.read_disk_arrow_array(&batch, entry_id).await?;
+            let full_array = self.read_disk_arrow_array(&batch, entry_id).await;
             self.maybe_hydrate(
                 entry_id,
                 &batch,
@@ -708,42 +707,39 @@ impl LiquidCache {
         self.budget.add_used_disk_bytes(len);
     }
 
-    async fn read_disk_arrow_array(
-        &self,
-        entry: &CacheEntry,
-        entry_id: &EntryID,
-    ) -> Option<ArrayRef> {
+    async fn read_disk_arrow_array(&self, entry: &CacheEntry, entry_id: &EntryID) -> ArrayRef {
         let path = self.io_context.disk_path(entry, entry_id);
-        let bytes = self.io_context.read(path, None).await.ok()?;
+        let bytes = self.io_context.read(path, None).await.expect("read failed");
         let cursor = std::io::Cursor::new(bytes.to_vec());
-        let mut reader = arrow::ipc::reader::StreamReader::try_new(cursor, None).ok()?;
-        let batch = reader.next()?.ok()?;
+        let mut reader =
+            arrow::ipc::reader::StreamReader::try_new(cursor, None).expect("create reader failed");
+        let batch = reader.next().unwrap().expect("read batch failed");
         let array = batch.column(0).clone();
         self.trace(InternalEvent::IoReadArrow {
             entry: *entry_id,
             bytes: bytes.len(),
         });
-        Some(array)
+        array
     }
 
     async fn read_disk_liquid_array(
         &self,
         entry: &CacheEntry,
         entry_id: &EntryID,
-    ) -> Option<crate::liquid_array::LiquidArrayRef> {
+    ) -> crate::liquid_array::LiquidArrayRef {
         let path = self.io_context.disk_path(entry, entry_id);
-        let bytes = self.io_context.read(path, None).await.ok()?;
+        let bytes = self.io_context.read(path, None).await.expect("read failed");
         self.trace(InternalEvent::IoReadLiquid {
             entry: *entry_id,
             bytes: bytes.len(),
         });
         let compressor_states = self.io_context.get_compressor(entry_id);
         let compressor = compressor_states.fsst_compressor();
-        let liquid = crate::liquid_array::ipc::read_from_bytes(
+
+        (crate::liquid_array::ipc::read_from_bytes(
             bytes,
             &crate::liquid_array::ipc::LiquidIPCContext::new(compressor),
-        );
-        Some(liquid)
+        )) as _
     }
 
     pub(crate) async fn eval_predicate_internal(
@@ -776,7 +772,7 @@ impl LiquidCache {
                 Some(Err(filtered))
             }
             entry @ CacheEntry::DiskArrow(_) => {
-                let array = self.read_disk_arrow_array(entry, entry_id).await?;
+                let array = self.read_disk_arrow_array(entry, entry_id).await;
                 self.maybe_hydrate(entry_id, entry, MaterializedEntry::Arrow(&array), None)
                     .await;
                 let mut owned = None;
@@ -803,7 +799,7 @@ impl LiquidCache {
                 }
             }
             entry @ CacheEntry::DiskLiquid(_) => {
-                let liquid = self.read_disk_liquid_array(entry, entry_id).await?;
+                let liquid = self.read_disk_liquid_array(entry, entry_id).await;
                 self.maybe_hydrate(entry_id, entry, MaterializedEntry::Liquid(&liquid), None)
                     .await;
                 let mut owned = None;
@@ -848,7 +844,7 @@ impl LiquidCache {
                 self.runtime_stats.incr_eval_predicate_squeezed_needs_io();
                 match array.disk_backing() {
                     SqueezedBacking::Liquid => {
-                        let hydrated = self.read_disk_liquid_array(&entry, entry_id).await?;
+                        let hydrated = self.read_disk_liquid_array(&entry, entry_id).await;
                         self.maybe_hydrate(
                             entry_id,
                             &entry,
@@ -865,7 +861,7 @@ impl LiquidCache {
                         }
                     }
                     SqueezedBacking::Arrow => {
-                        let full_array = self.read_disk_arrow_array(&entry, entry_id).await?;
+                        let full_array = self.read_disk_arrow_array(&entry, entry_id).await;
                         self.maybe_hydrate(
                             entry_id,
                             &entry,
