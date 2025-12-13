@@ -102,8 +102,8 @@ impl RawFsstBuffer {
                 let compressed_slice = self.get_compressed_slice(start_offset, end_offset);
 
                 // Decompress into the value buffer
-                let decompressed_len =
-                    decompressor.decompress_into(compressed_slice, value_buffer.spare_capacity_mut());
+                let decompressed_len = decompressor
+                    .decompress_into(compressed_slice, value_buffer.spare_capacity_mut());
 
                 let new_len = value_buffer.len() + decompressed_len;
                 debug_assert!(new_len <= value_buffer.capacity());
