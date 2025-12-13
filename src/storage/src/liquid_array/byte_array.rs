@@ -17,7 +17,6 @@ use datafusion::physical_plan::expressions::{BinaryExpr, LikeExpr, Literal};
 use datafusion::scalar::ScalarValue;
 use fsst::{Compressor, Decompressor};
 use std::any::Any;
-use std::mem::MaybeUninit;
 use std::sync::Arc;
 
 use super::{LiquidArray, LiquidDataType};
@@ -638,13 +637,7 @@ impl LiquidByteArray {
             .filter(|(select, _v)| *select)
         {
             let v = v.expect("values array can't be null");
-            let slice = unsafe {
-                std::slice::from_raw_parts_mut(
-                    value_buffer.as_mut_ptr().add(value_buffer.len()) as *mut MaybeUninit<u8>,
-                    value_buffer.capacity(),
-                )
-            };
-            let len = decompressor.decompress_into(v, slice);
+            let len = decompressor.decompress_into(v, value_buffer.spare_capacity_mut());
             let new_len = value_buffer.len() + len;
             debug_assert!(new_len <= value_buffer.capacity());
             unsafe {

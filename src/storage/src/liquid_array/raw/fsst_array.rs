@@ -65,6 +65,9 @@ impl RawFsstBuffer {
                 uncompressed_len += bytes.len();
 
                 compress_buffer.clear();
+                // `fsst::Compressor::compress_into` requires capacity for the worst-case expansion
+                // (all bytes escaped) which is `2 * plaintext_len`.
+                compress_buffer.reserve(bytes.len().saturating_mul(2));
                 unsafe {
                     compressor.compress_into(bytes, compress_buffer);
                 }
@@ -99,13 +102,8 @@ impl RawFsstBuffer {
                 let compressed_slice = self.get_compressed_slice(start_offset, end_offset);
 
                 // Decompress into the value buffer
-                let slice = unsafe {
-                    std::slice::from_raw_parts_mut(
-                        value_buffer.as_mut_ptr().add(value_buffer.len()) as *mut MaybeUninit<u8>,
-                        value_buffer.capacity() - value_buffer.len(),
-                    )
-                };
-                let decompressed_len = decompressor.decompress_into(compressed_slice, slice);
+                let decompressed_len =
+                    decompressor.decompress_into(compressed_slice, value_buffer.spare_capacity_mut());
 
                 let new_len = value_buffer.len() + decompressed_len;
                 debug_assert!(new_len <= value_buffer.capacity());
@@ -211,6 +209,10 @@ impl FsstArray {
                 Some(bytes) => {
                     let bytes = bytes.as_ref();
                     uncompressed_len += bytes.len();
+                    compress_buffer.clear();
+                    // `fsst::Compressor::compress_into` requires capacity for the worst-case
+                    // expansion (all bytes escaped) which is `2 * plaintext_len`.
+                    compress_buffer.reserve(bytes.len().saturating_mul(2));
                     unsafe {
                         compressor.compress_into(bytes, compress_buffer);
                     }
@@ -374,13 +376,7 @@ impl FsstArray {
         if self.compressed.nulls().is_none() {
             for i in 0..self.compressed.len() {
                 let v = unsafe { self.compressed.value_unchecked(i) };
-                let slice = unsafe {
-                    std::slice::from_raw_parts_mut(
-                        value_buffer.as_mut_ptr().add(value_buffer.len()) as *mut MaybeUninit<u8>,
-                        value_buffer.capacity(), // we don't care about the capacity here
-                    )
-                };
-                let len = decompressor.decompress_into(v, slice);
+                let len = decompressor.decompress_into(v, value_buffer.spare_capacity_mut());
                 let new_len = value_buffer.len() + len;
                 debug_assert!(new_len <= value_buffer.capacity());
                 unsafe {
@@ -392,14 +388,8 @@ impl FsstArray {
             for v in self.compressed.iter() {
                 match v {
                     Some(v) => {
-                        let slice = unsafe {
-                            std::slice::from_raw_parts_mut(
-                                value_buffer.as_mut_ptr().add(value_buffer.len())
-                                    as *mut MaybeUninit<u8>,
-                                value_buffer.capacity(), // we don't care about the capacity here
-                            )
-                        };
-                        let len = decompressor.decompress_into(v, slice);
+                        let len =
+                            decompressor.decompress_into(v, value_buffer.spare_capacity_mut());
                         let new_len = value_buffer.len() + len;
                         debug_assert!(new_len <= value_buffer.capacity());
                         unsafe {
