@@ -23,6 +23,11 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Share one cache across all jobs on the same OS.
+          # Prevent PR runs from consuming cache quota by saving only on main.
+          shared-key: ci-${{ runner.os }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -48,6 +53,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-${{ runner.os }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
       - name: Generate code coverage
@@ -66,6 +74,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-${{ runner.os }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Run shuttle test
         run: |
           cd src/storage
@@ -98,6 +109,9 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-${{ runner.os }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Download ClickBench partition 0
         run: |
           mkdir -p benchmark/data
@@ -139,6 +153,9 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-${{ runner.os }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Setup TPC-H data
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -175,6 +192,9 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-${{ runner.os }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Setup TPC-DS data
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -227,6 +247,9 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-${{ runner.os }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Prepare StackOverflow data
         env:
           UV_CACHE_DIR: ${{ runner.temp }}/uv-cache
@@ -419,6 +442,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-${{ runner.os }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build LiquidCache server
         run: cargo build --bin example_server
