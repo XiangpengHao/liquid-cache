@@ -1962,21 +1962,17 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
             let raw_buffer = self.fsst_buffer.get_fsst_buffer()?;
 
             let mut decompressed_buffer = Vec::with_capacity(1024 * 1024 * 2);
+            let decompressor = self.compressor.decompressor();
             for &i in &needs_full_comparison {
                 let start_offset = self.compact_offset_views.get_offset(i);
                 let end_offset = self.compact_offset_views.get_offset(i + 1);
 
                 let compressed_value = raw_buffer.get_compressed_slice(start_offset, end_offset);
                 decompressed_buffer.clear();
-                let decompressed_len = unsafe {
-                    let slice = std::slice::from_raw_parts_mut(
-                        decompressed_buffer.as_mut_ptr() as *mut std::mem::MaybeUninit<u8>,
-                        decompressed_buffer.capacity(),
-                    );
-                    self.compressor
-                        .decompressor()
-                        .decompress_into(compressed_value, slice)
-                };
+                let required = decompressor.max_decompression_capacity(compressed_value) + 7;
+                decompressed_buffer.reserve(required);
+                let decompressed_len = decompressor
+                    .decompress_into(compressed_value, decompressed_buffer.spare_capacity_mut());
                 unsafe {
                     decompressed_buffer.set_len(decompressed_len);
                 }
@@ -2423,6 +2419,24 @@ mod tests {
         let result = liquid_array.compare_with(b"data", &Operator::Gt).unwrap();
         let expected = BooleanArray::from(vec![false, true, true, true, true]); // All except exact "data" > "data"
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_compare_with_large_value_no_panic() {
+        // Exercise the ordering-compare slow path which must resize its scratch buffer
+        // for large values instead of panicking inside `fsst::Decompressor::decompress_into`.
+        let big = "aaaaaaa".to_string() + &"b".repeat(2 * 1024 * 1024 + 128);
+        let input = StringArray::from(vec![big.as_str()]);
+
+        let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
+        let liquid_array =
+            LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
+
+        let result = liquid_array
+            .compare_with(big.as_bytes(), &Operator::LtEq)
+            .unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(result.value(0));
     }
 
     #[test]
