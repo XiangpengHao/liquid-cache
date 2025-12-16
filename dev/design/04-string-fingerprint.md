@@ -1,5 +1,7 @@
 String fingerprint helps to determine if a pattern is present in a string.
 
+Reference: https://arxiv.org/pdf/2507.10391
+
 It divides the letter space into n buckets, each bucket contains a few letters.
 Then for the original string, we check each bucket, and if the bucket's letter is present in the string, we mark it as 1, otherwise 0. 
 So we get a bit vector of length n, A.
