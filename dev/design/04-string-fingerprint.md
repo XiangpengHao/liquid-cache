@@ -43,6 +43,17 @@ Bucket sizes: 4, 8, 12, 16, 20, 24, 28, 32.
 String data: the URL, Title, Referer columns from clickbench (benchmark/clickbench/data/hits.parquet).
 Patterns: google
 
+## Optimizations
+
+The bucket assignment matters.
+Instead of using a predefined round-robin (or contiguous range), we can build a custom mapping table. 
+
+This is done by:
+1. Sampling the fist few strings (e.g., 100) in the column, and build a histogram of the bytes.
+2. Given a pattern, e.g., "google", we know there're four unique bytes {g, o, l, e}.
+3. We assign the four bytes to four different buckets.
+4. Sort remaining bytes by their frequency, and assign them to the current lowest frequency bucket.
+
 ## Results
 
 | Column | Gram | Mapping | n | Rows | Nulls | Filtered Out | % | Candidates | % | False Pos | % | Actual Present | % |
@@ -51,5 +62,3 @@ Patterns: google
 | Title | One | RoundRobin | 32 | 1,000,000 | 0 | 877,755 | 87.78% | 122,245 | 12.22% | 122,242 | 100.00% | 3 | 0.00% |
 | Referer | One | RoundRobin | 32 | 1,000,000 | 0 | 628,936 | 62.89% | 371,064 | 37.11% | 276,287 | 74.46% | 94,777 | 9.48% |
 
-
-TLDR: not quite useful.

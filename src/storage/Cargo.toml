@@ -105,3 +105,8 @@ harness = false
 name = "primitive_encoding"
 path = "bench/primitive_encoding.rs"
 harness = false
+
+[[bench]]
+name = "string_fingerprint_study"
+path = "study/string-fingerprint.rs"
+harness = false
