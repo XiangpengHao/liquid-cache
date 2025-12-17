@@ -4176,7 +4176,6 @@ dependencies = [
  "object_store",
  "parquet",
  "parquet-variant-compute",
- "paste",
  "rand 0.9.2",
  "serde",
  "serde_json",

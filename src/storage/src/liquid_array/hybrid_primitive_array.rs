@@ -14,7 +14,7 @@ use crate::liquid_array::raw::BitPackedArray;
 
 use super::primitive_array::LiquidPrimitiveType;
 use super::{
-    HybridResult, LiquidDataType, LiquidSqueezedArray, NeedsBacking, Operator, PrimitiveKind,
+    LiquidDataType, LiquidSqueezedArray, NeedsBacking, Operator, PrimitiveKind, SqueezeResult,
 };
 
 #[derive(Debug, Clone)]
@@ -94,7 +94,7 @@ where
         &self,
         op: &Operator,
         literal: &Literal,
-    ) -> HybridResult<Option<BooleanArray>> {
+    ) -> SqueezeResult<Option<BooleanArray>> {
         use datafusion::common::ScalarValue;
 
         // Extract scalar value as T::Native
@@ -232,7 +232,7 @@ where
         LiquidPrimitiveClampedArray::<T>::len(self)
     }
 
-    fn to_arrow_array(&self) -> HybridResult<ArrayRef> {
+    fn to_arrow_array(&self) -> SqueezeResult<ArrayRef> {
         if let Some(arr) = self.to_arrow_known_only() {
             Ok(arr)
         } else {
@@ -248,11 +248,11 @@ where
         T::DATA_TYPE.clone()
     }
 
-    fn to_bytes(&self) -> HybridResult<Vec<u8>> {
+    fn to_bytes(&self) -> SqueezeResult<Vec<u8>> {
         Err(NeedsBacking)
     }
 
-    fn filter(&self, selection: &BooleanBuffer) -> HybridResult<ArrayRef> {
+    fn filter(&self, selection: &BooleanBuffer) -> SqueezeResult<ArrayRef> {
         let filtered = self.filter_inner(selection);
         filtered.to_arrow_array()
     }
@@ -261,7 +261,7 @@ where
         &self,
         expr: &Arc<dyn PhysicalExpr>,
         filter: &BooleanBuffer,
-    ) -> HybridResult<Option<BooleanArray>> {
+    ) -> SqueezeResult<Option<BooleanArray>> {
         // Apply selection first to reduce input rows
         let filtered = self.filter_inner(filter);
 
@@ -327,7 +327,7 @@ where
         &self,
         op: &Operator,
         literal: &Literal,
-    ) -> HybridResult<Option<BooleanArray>> {
+    ) -> SqueezeResult<Option<BooleanArray>> {
         use datafusion::common::ScalarValue;
         type U<TT> = <<TT as LiquidPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native;
 
@@ -516,7 +516,7 @@ where
         LiquidPrimitiveQuantizedArray::<T>::len(self)
     }
 
-    fn to_arrow_array(&self) -> HybridResult<ArrayRef> {
+    fn to_arrow_array(&self) -> SqueezeResult<ArrayRef> {
         Err(NeedsBacking)
     }
 
@@ -528,7 +528,7 @@ where
         T::DATA_TYPE.clone()
     }
 
-    fn to_bytes(&self) -> HybridResult<Vec<u8>> {
+    fn to_bytes(&self) -> SqueezeResult<Vec<u8>> {
         Err(NeedsBacking)
     }
 
@@ -536,7 +536,7 @@ where
         &self,
         expr: &Arc<dyn PhysicalExpr>,
         filter: &BooleanBuffer,
-    ) -> HybridResult<Option<BooleanArray>> {
+    ) -> SqueezeResult<Option<BooleanArray>> {
         // Apply selection first to reduce input rows
         let filtered = self.filter_inner(filter);
 
