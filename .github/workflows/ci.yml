@@ -51,6 +51,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/free-disk-space
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -87,6 +88,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/free-disk-space
       # Sanitizers can only run on nightly
       - uses: dtolnay/rust-toolchain@nightly
         with:
@@ -104,6 +106,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/free-disk-space
       - uses: dtolnay/rust-toolchain@stable
       - run: sudo apt-get update && sudo apt-get install -y wget
       - name: Install cargo-llvm-cov
@@ -187,6 +190,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/free-disk-space
       - uses: dtolnay/rust-toolchain@stable
       - run: sudo apt-get update && sudo apt-get install -y wget
       - name: Install cargo-llvm-cov
@@ -286,6 +290,7 @@ jobs:
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: ./.github/actions/free-disk-space
       - uses: dtolnay/rust-toolchain@stable
       - name: Setup ClickBench partitioned data download
         run: |
@@ -508,6 +513,7 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+      - uses: ./.github/actions/free-disk-space
       - name: Verify storage crate with Kani
         uses: model-checking/kani-github-action@v1.1
         with:
