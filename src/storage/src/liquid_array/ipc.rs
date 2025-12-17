@@ -563,8 +563,7 @@ mod tests {
         let original_bv =
             LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor_bv.clone());
         let bytes_bv = Bytes::from(original_bv.to_bytes());
-        let deserialized_bv =
-            LiquidByteViewArray::<FsstArray>::from_bytes(bytes_bv, compressor_bv);
+        let deserialized_bv = LiquidByteViewArray::<FsstArray>::from_bytes(bytes_bv, compressor_bv);
         let output_bv = deserialized_bv.to_arrow_array().unwrap();
         assert_eq!(output_bv.as_string::<i32>(), &input);
     }
@@ -593,8 +592,7 @@ mod tests {
         let (compressor_bv, original_bv) =
             LiquidByteViewArray::<FsstArray>::train_from_binary_view(&input);
         let bytes_bv = Bytes::from(original_bv.to_bytes());
-        let deserialized_bv =
-            LiquidByteViewArray::<FsstArray>::from_bytes(bytes_bv, compressor_bv);
+        let deserialized_bv = LiquidByteViewArray::<FsstArray>::from_bytes(bytes_bv, compressor_bv);
         let output_bv = deserialized_bv.to_arrow_array().unwrap();
         assert_eq!(output_bv.as_binary_view(), &input);
     }

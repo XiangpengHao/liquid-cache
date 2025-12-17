@@ -151,12 +151,9 @@ mod random_tests {
 
             // ByteViewArray
             {
-                let compressor =
-                    LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
-                let original = LiquidByteViewArray::<FsstArray>::from_string_array(
-                    &input,
-                    compressor.clone(),
-                );
+                let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
+                let original =
+                    LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor.clone());
                 let bytes = original.to_bytes();
                 let decoded =
                     LiquidByteViewArray::<FsstArray>::from_bytes(bytes.into(), compressor);
