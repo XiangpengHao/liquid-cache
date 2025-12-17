@@ -49,7 +49,7 @@ use crate::cache::CacheExpression;
 use crate::liquid_array::ipc::LiquidIPCHeader;
 use crate::liquid_array::raw::BitPackedArray;
 use crate::liquid_array::raw::fsst_array::{RawFsstBuffer, train_compressor};
-use crate::liquid_array::{HybridResult, LiquidSqueezedArrayRef, NeedsBacking};
+use crate::liquid_array::{SqueezeResult, LiquidSqueezedArrayRef, NeedsBacking};
 use crate::utils::CheckedDictionaryArray;
 
 // Header for LiquidByteViewArray serialization
@@ -130,7 +130,7 @@ impl<B: FsstBuffer> LiquidByteViewArray<B> {
     | Shared prefix bytes                              |
     +--------------------------------------------------+
     */
-    pub(crate) fn to_bytes_inner(&self) -> HybridResult<Vec<u8>> {
+    pub(crate) fn to_bytes_inner(&self) -> SqueezeResult<Vec<u8>> {
         let header_size = LiquidIPCHeader::size() + ByteViewArrayHeader::size();
         let mut result = Vec::with_capacity(header_size + 1024);
         result.resize(header_size, 0);
@@ -689,7 +689,7 @@ mod sealed {
 /// Trait for FSST buffer - can be in memory or on disk
 pub trait FsstBuffer: std::fmt::Debug + Clone + sealed::Sealed {
     /// Get the raw FSST buffer, loading from disk if necessary
-    fn get_fsst_buffer(&self) -> HybridResult<Arc<RawFsstBuffer>>;
+    fn get_fsst_buffer(&self) -> SqueezeResult<Arc<RawFsstBuffer>>;
 
     /// Get the memory size of the FSST buffer
     fn get_array_memory_size(&self) -> usize;
@@ -702,7 +702,7 @@ impl sealed::Sealed for MemoryBuffer {}
 impl sealed::Sealed for DiskBuffer {}
 
 impl FsstBuffer for MemoryBuffer {
-    fn get_fsst_buffer(&self) -> HybridResult<Arc<RawFsstBuffer>> {
+    fn get_fsst_buffer(&self) -> SqueezeResult<Arc<RawFsstBuffer>> {
         Ok(self.buffer.clone())
     }
 
@@ -716,7 +716,7 @@ impl FsstBuffer for MemoryBuffer {
 }
 
 impl FsstBuffer for DiskBuffer {
-    fn get_fsst_buffer(&self) -> HybridResult<Arc<RawFsstBuffer>> {
+    fn get_fsst_buffer(&self) -> SqueezeResult<Arc<RawFsstBuffer>> {
         Err(NeedsBacking)
     }
 
@@ -843,14 +843,14 @@ impl LiquidSqueezedArray for LiquidByteViewArray<DiskBuffer> {
     }
 
     /// Convert the Liquid array to an Arrow array.
-    fn to_arrow_array(&self) -> HybridResult<ArrayRef> {
+    fn to_arrow_array(&self) -> SqueezeResult<ArrayRef> {
         self.to_arrow_array()
     }
 
     /// Convert the Liquid array to an Arrow array.
     /// Except that it will pick the best encoding for the arrow array.
     /// Meaning that it may not obey the data type of the original arrow array.
-    fn to_best_arrow_array(&self) -> HybridResult<ArrayRef> {
+    fn to_best_arrow_array(&self) -> SqueezeResult<ArrayRef> {
         self.to_arrow_array()
     }
 
@@ -864,12 +864,12 @@ impl LiquidSqueezedArray for LiquidByteViewArray<DiskBuffer> {
     }
 
     /// Serialize the Liquid array to a byte array.
-    fn to_bytes(&self) -> HybridResult<Vec<u8>> {
+    fn to_bytes(&self) -> SqueezeResult<Vec<u8>> {
         self.to_bytes_inner()
     }
 
     /// Filter the Liquid array with a boolean array and return an **arrow array**.
-    fn filter(&self, selection: &BooleanBuffer) -> HybridResult<ArrayRef> {
+    fn filter(&self, selection: &BooleanBuffer) -> SqueezeResult<ArrayRef> {
         let select_any = selection.count_set_bits() > 0;
         if !select_any {
             return Ok(arrow::array::new_empty_array(
@@ -889,7 +889,7 @@ impl LiquidSqueezedArray for LiquidByteViewArray<DiskBuffer> {
         &self,
         expr: &Arc<dyn PhysicalExpr>,
         filter: &BooleanBuffer,
-    ) -> HybridResult<Option<BooleanArray>> {
+    ) -> SqueezeResult<Option<BooleanArray>> {
         // Reuse generic filter path first to reduce input rows if any
         let filtered = filter_inner(self, filter);
 

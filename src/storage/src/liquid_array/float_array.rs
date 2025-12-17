@@ -37,7 +37,7 @@ use crate::liquid_array::LiquidArray;
 use crate::liquid_array::ipc::{PhysicalTypeMarker, get_physical_type_id};
 use crate::liquid_array::raw::BitPackedArray;
 use crate::liquid_array::{
-    HybridResult, LiquidSqueezedArray, LiquidSqueezedArrayRef, NeedsBacking, Operator,
+    SqueezeResult, LiquidSqueezedArray, LiquidSqueezedArrayRef, NeedsBacking, Operator,
     ipc::LiquidIPCHeader,
 };
 use crate::utils::get_bit_width;
@@ -849,7 +849,7 @@ where
         &self,
         op: &Operator,
         literal: &Literal,
-    ) -> HybridResult<Option<BooleanArray>> {
+    ) -> SqueezeResult<Option<BooleanArray>> {
         // Extract scalar value as T::Native
         let k_opt: Option<T::Native> = match literal.value() {
             ScalarValue::Int8(Some(v)) => T::Native::from_i8(*v),
@@ -956,7 +956,7 @@ where
         LiquidFloatQuantizedArray::<T>::len(self)
     }
 
-    fn to_arrow_array(&self) -> HybridResult<ArrayRef> {
+    fn to_arrow_array(&self) -> SqueezeResult<ArrayRef> {
         Err(NeedsBacking)
     }
 
@@ -968,7 +968,7 @@ where
         T::DATA_TYPE.clone()
     }
 
-    fn to_bytes(&self) -> HybridResult<Vec<u8>> {
+    fn to_bytes(&self) -> SqueezeResult<Vec<u8>> {
         Err(NeedsBacking)
     }
 
@@ -976,7 +976,7 @@ where
         &self,
         expr: &Arc<dyn PhysicalExpr>,
         filter: &BooleanBuffer,
-    ) -> HybridResult<Option<BooleanArray>> {
+    ) -> SqueezeResult<Option<BooleanArray>> {
         // Apply selection first to reduce input rows
         let filtered = self.filter_inner(filter);
 

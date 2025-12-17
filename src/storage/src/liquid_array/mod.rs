@@ -228,15 +228,15 @@ pub enum SqueezedBacking {
     Arrow,
 }
 
-/// A reference to a Liquid hybrid array.
+/// A reference to a Liquid squeezed array.
 pub type LiquidSqueezedArrayRef = Arc<dyn LiquidSqueezedArray>;
 
-/// Signals that the hybrid representation needs to be hydrated from disk.
+/// Signals that the squeezed representation needs to be hydrated from disk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NeedsBacking;
 
-/// Result type for hybrid operations that may require disk hydration.
-pub type HybridResult<T> = Result<T, NeedsBacking>;
+/// Result type for squeezed operations that may require disk hydration.
+pub type SqueezeResult<T> = Result<T, NeedsBacking>;
 
 enum Operator {
     Eq,
@@ -262,7 +262,7 @@ impl Operator {
     }
 }
 
-/// A Liquid hybrid array is a Liquid array that part of its data is stored on disk.
+/// A Liquid squeezed array is a Liquid array that part of its data is stored on disk.
 /// `LiquidSqueezedArray` is more complex than in-memory `LiquidArray` because it needs to handle IO.
 pub trait LiquidSqueezedArray: std::fmt::Debug + Send + Sync {
     /// Get the underlying any type.
@@ -280,26 +280,26 @@ pub trait LiquidSqueezedArray: std::fmt::Debug + Send + Sync {
     }
 
     /// Convert the Liquid array to an Arrow array.
-    fn to_arrow_array(&self) -> HybridResult<ArrayRef>;
+    fn to_arrow_array(&self) -> SqueezeResult<ArrayRef>;
 
     /// Convert the Liquid array to an Arrow array.
     /// Except that it will pick the best encoding for the arrow array.
     /// Meaning that it may not obey the data type of the original arrow array.
-    fn to_best_arrow_array(&self) -> HybridResult<ArrayRef> {
+    fn to_best_arrow_array(&self) -> SqueezeResult<ArrayRef> {
         self.to_arrow_array()
     }
 
     /// Get the logical data type of the Liquid array.
     fn data_type(&self) -> LiquidDataType;
 
-    /// Get the original arrow data type of the Liquid hybrid array.
+    /// Get the original arrow data type of the Liquid squeezed array.
     fn original_arrow_data_type(&self) -> DataType;
 
     /// Serialize the Liquid array to a byte array.
-    fn to_bytes(&self) -> HybridResult<Vec<u8>>;
+    fn to_bytes(&self) -> SqueezeResult<Vec<u8>>;
 
     /// Filter the Liquid array with a boolean array and return an **arrow array**.
-    fn filter(&self, selection: &BooleanBuffer) -> HybridResult<ArrayRef> {
+    fn filter(&self, selection: &BooleanBuffer) -> SqueezeResult<ArrayRef> {
         let arrow_array = self.to_arrow_array()?;
         let selection = BooleanArray::new(selection.clone(), None);
         Ok(arrow::compute::kernels::filter::filter(&arrow_array, &selection).unwrap())
@@ -314,11 +314,11 @@ pub trait LiquidSqueezedArray: std::fmt::Debug + Send + Sync {
         &self,
         _predicate: &Arc<dyn PhysicalExpr>,
         _filter: &BooleanBuffer,
-    ) -> HybridResult<Option<BooleanArray>> {
+    ) -> SqueezeResult<Option<BooleanArray>> {
         Ok(None)
     }
 
-    /// Describe how the hybrid array persists its backing bytes on disk.
+    /// Describe how the squeezed array persists its backing bytes on disk.
     fn disk_backing(&self) -> SqueezedBacking {
         SqueezedBacking::Liquid
     }
