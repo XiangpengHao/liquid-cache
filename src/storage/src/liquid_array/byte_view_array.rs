@@ -1179,11 +1179,11 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
         let mut dict_results = vec![false; num_unique];
         let mut ambiguous = Vec::new();
 
-        for i in 0..num_unique {
-            let known_len = if self.prefix_keys[i].len_byte() == 255 {
+        for (i, prefix_key) in self.prefix_keys.iter().enumerate().take(num_unique) {
+            let known_len = if prefix_key.len_byte() == 255 {
                 None
             } else {
-                Some(self.prefix_keys[i].len_byte() as usize)
+                Some(prefix_key.len_byte() as usize)
             };
 
             // 1) Length gate
@@ -1204,19 +1204,19 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
             match known_len {
                 None => {
                     // Long strings: prefix match => need full comparison.
-                    if self.prefix_keys[i].prefix7()[..prefix_len] == needle_suffix[..prefix_len] {
+                    if prefix_key.prefix7()[..prefix_len] == needle_suffix[..prefix_len] {
                         ambiguous.push(i);
                     }
                 }
                 Some(l) if l <= prefix_len => {
                     // Small strings: exact compare on the known length.
-                    if self.prefix_keys[i].prefix7()[..l] == needle_suffix[..l] {
+                    if prefix_key.prefix7()[..l] == needle_suffix[..l] {
                         dict_results[i] = true;
                     }
                 }
                 Some(_l) => {
                     // Medium strings: prefix match => need full comparison.
-                    if self.prefix_keys[i].prefix7()[..prefix_len] == needle_suffix[..prefix_len] {
+                    if prefix_key.prefix7()[..prefix_len] == needle_suffix[..prefix_len] {
                         ambiguous.push(i);
                     }
                 }
@@ -1225,8 +1225,10 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
 
         // 3) Resolve ambiguous candidates by selective decompression.
         if !ambiguous.is_empty() {
-            let (values_buffer, offsets_buffer) = self.fsst_buffer.to_uncompressed_selected(&ambiguous)?;
-            let binary_array = unsafe { BinaryArray::new_unchecked(offsets_buffer, values_buffer, None) };
+            let (values_buffer, offsets_buffer) =
+                self.fsst_buffer.to_uncompressed_selected(&ambiguous)?;
+            let binary_array =
+                unsafe { BinaryArray::new_unchecked(offsets_buffer, values_buffer, None) };
 
             for (pos, &dict_index) in ambiguous.iter().enumerate() {
                 if binary_array.value(pos) == needle {
@@ -1371,8 +1373,9 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
 
         // For values needing full comparison, load buffer and decompress
         if !needs_full_comparison.is_empty() {
-            let (values_buffer, offsets_buffer) =
-                self.fsst_buffer.to_uncompressed_selected(&needs_full_comparison)?;
+            let (values_buffer, offsets_buffer) = self
+                .fsst_buffer
+                .to_uncompressed_selected(&needs_full_comparison)?;
             let binary_array =
                 unsafe { BinaryArray::new_unchecked(offsets_buffer, values_buffer, None) };
 

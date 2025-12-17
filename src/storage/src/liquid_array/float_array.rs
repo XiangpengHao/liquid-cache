@@ -37,7 +37,7 @@ use crate::liquid_array::LiquidArray;
 use crate::liquid_array::ipc::{PhysicalTypeMarker, get_physical_type_id};
 use crate::liquid_array::raw::BitPackedArray;
 use crate::liquid_array::{
-    SqueezeResult, LiquidSqueezedArray, LiquidSqueezedArrayRef, NeedsBacking, Operator,
+    LiquidSqueezedArray, LiquidSqueezedArrayRef, NeedsBacking, Operator, SqueezeResult,
     ipc::LiquidIPCHeader,
 };
 use crate::utils::get_bit_width;

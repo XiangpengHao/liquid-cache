@@ -2,8 +2,8 @@ use ahash::HashMap;
 use arrow::array::BinaryViewArray;
 use arrow::array::{
     Array, ArrayAccessor, ArrayIter, ArrayRef, BinaryArray, BooleanArray, BooleanBufferBuilder,
-    DictionaryArray, GenericByteArray, StringArray, StringViewArray, UInt16Array,
-    cast::AsArray, types::UInt16Type,
+    DictionaryArray, GenericByteArray, StringArray, StringViewArray, UInt16Array, cast::AsArray,
+    types::UInt16Type,
 };
 use arrow::buffer::{BooleanBuffer, NullBuffer};
 use arrow::compute::cast;
@@ -632,9 +632,13 @@ impl LiquidByteArray {
             .to_uncompressed_selected(&selected)
             .expect("in-memory FSST values must have backing");
         let values: ArrayRef = if self.original_arrow_type.is_string() {
-            Arc::new(unsafe { GenericByteArray::<Utf8Type>::new_unchecked(offsets, value_buffer, None) })
+            Arc::new(unsafe {
+                GenericByteArray::<Utf8Type>::new_unchecked(offsets, value_buffer, None)
+            })
         } else {
-            Arc::new(unsafe { GenericByteArray::<BinaryType>::new_unchecked(offsets, value_buffer, None) })
+            Arc::new(unsafe {
+                GenericByteArray::<BinaryType>::new_unchecked(offsets, value_buffer, None)
+            })
         };
         unsafe { DictionaryArray::<UInt16Type>::new_unchecked(new_keys, values) }
     }

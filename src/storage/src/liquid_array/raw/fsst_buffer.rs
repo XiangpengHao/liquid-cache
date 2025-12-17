@@ -581,7 +581,8 @@ impl FsstBuffer {
     ) -> Self {
         let iter = input.iter();
         let mut compress_buffer = Vec::with_capacity(2 * 1024 * 1024);
-        let (raw, offsets) = RawFsstBuffer::from_byte_slices(iter, compressor.clone(), &mut compress_buffer);
+        let (raw, offsets) =
+            RawFsstBuffer::from_byte_slices(iter, compressor.clone(), &mut compress_buffer);
         Self::from_byte_offsets(Arc::new(raw), &offsets, compressor)
     }
 
@@ -592,7 +593,8 @@ impl FsstBuffer {
     ) -> Self {
         let iter = array.iter().map(|v| v.map(|v| v.to_le_bytes()));
         let mut compress_buffer = Vec::with_capacity(64);
-        let (raw, offsets) = RawFsstBuffer::from_byte_slices(iter, compressor.clone(), &mut compress_buffer);
+        let (raw, offsets) =
+            RawFsstBuffer::from_byte_slices(iter, compressor.clone(), &mut compress_buffer);
         Self::from_byte_offsets(Arc::new(raw), &offsets, compressor)
     }
 
@@ -603,7 +605,8 @@ impl FsstBuffer {
     ) -> Self {
         let iter = array.iter().map(|v| v.map(|v| v.to_le_bytes()));
         let mut compress_buffer = Vec::with_capacity(128);
-        let (raw, offsets) = RawFsstBuffer::from_byte_slices(iter, compressor.clone(), &mut compress_buffer);
+        let (raw, offsets) =
+            RawFsstBuffer::from_byte_slices(iter, compressor.clone(), &mut compress_buffer);
         Self::from_byte_offsets(Arc::new(raw), &offsets, compressor)
     }
 
@@ -674,7 +677,11 @@ impl FsstBuffer {
 
         if compact.len() > 0 {
             let last = compact.get_offset(compact.len().saturating_sub(1)) as usize;
-            debug_assert_eq!(last, raw.values_len(), "offsets must end at raw values length");
+            debug_assert_eq!(
+                last,
+                raw.values_len(),
+                "offsets must end at raw values length"
+            );
         }
 
         Self::new(Arc::new(raw), compact, compressor)
@@ -819,10 +826,8 @@ impl FsstBacking for FsstBuffer {
             let compressed_value = self.raw.get_compressed_slice(start_offset, end_offset);
             let required = decompressor.max_decompression_capacity(compressed_value) + 7;
             value_buffer.reserve(required);
-            let decompressed_len = decompressor.decompress_into(
-                compressed_value,
-                value_buffer.spare_capacity_mut(),
-            );
+            let decompressed_len =
+                decompressor.decompress_into(compressed_value, value_buffer.spare_capacity_mut());
             let new_len = value_buffer.len() + decompressed_len;
             debug_assert!(new_len <= value_buffer.capacity());
             unsafe {
@@ -839,7 +844,9 @@ impl FsstBacking for FsstBuffer {
     }
 
     fn get_array_memory_size(&self) -> usize {
-        self.raw.get_memory_size() + self.compact_offsets.memory_usage() + std::mem::size_of::<Self>()
+        self.raw.get_memory_size()
+            + self.compact_offsets.memory_usage()
+            + std::mem::size_of::<Self>()
     }
 }
 
@@ -928,7 +935,9 @@ fn decode_compact_offsets(bytes: &[u8]) -> CompactOffsets {
             let mut residuals = Vec::with_capacity(count);
             for i in 0..count {
                 let base = i * 2;
-                residuals.push(i16::from_le_bytes(payload[base..base + 2].try_into().unwrap()));
+                residuals.push(i16::from_le_bytes(
+                    payload[base..base + 2].try_into().unwrap(),
+                ));
             }
             CompactOffsets {
                 header,
@@ -939,7 +948,9 @@ fn decode_compact_offsets(bytes: &[u8]) -> CompactOffsets {
             let mut residuals = Vec::with_capacity(count);
             for i in 0..count {
                 let base = i * 4;
-                residuals.push(i32::from_le_bytes(payload[base..base + 4].try_into().unwrap()));
+                residuals.push(i32::from_le_bytes(
+                    payload[base..base + 4].try_into().unwrap(),
+                ));
             }
             CompactOffsets {
                 header,
@@ -1092,10 +1103,10 @@ mod tests {
             "Length mismatch in {}",
             test_name
         );
-        for i in 0..offsets.len() {
+        for (i, offset) in offsets.iter().enumerate() {
             assert_eq!(
                 compact_offsets.get_offset(i),
-                offsets[i],
+                *offset,
                 "Offset mismatch at index {} in {}",
                 i,
                 test_name
@@ -1129,7 +1140,7 @@ mod tests {
     fn test_compact_offset_view_memory_efficiency() {
         // test that compaction actually saves memory
         let offsets = vec![1000u32, 1010, 1020, 1030];
-        let prefixes = vec![
+        let prefixes = [
             PrefixKey::new(b"test1"),
             PrefixKey::new(b"test2"),
             PrefixKey::new(b"test3"),
@@ -1251,7 +1262,8 @@ mod tests {
         let compressor =
             FsstBuffer::train_compressor(original.iter().flat_map(|s| s.map(|s| s.as_bytes())));
         let compressor_arc = Arc::new(compressor);
-        let original_fsst = FsstBuffer::from_byte_array_with_compressor(&original, compressor_arc.clone());
+        let original_fsst =
+            FsstBuffer::from_byte_array_with_compressor(&original, compressor_arc.clone());
 
         let mut buffer = Vec::new();
         original_fsst.to_bytes(&mut buffer);
@@ -1305,7 +1317,8 @@ mod tests {
         let reloaded = load_symbol_table(bytes::Bytes::from(bytes)).unwrap();
 
         let fsst_original = FsstBuffer::from_byte_array_with_compressor(&original, compressor_arc);
-        let fsst_reloaded = FsstBuffer::from_byte_array_with_compressor(&original, Arc::new(reloaded));
+        let fsst_reloaded =
+            FsstBuffer::from_byte_array_with_compressor(&original, Arc::new(reloaded));
 
         let a = fsst_original.to_arrow_byte_array::<arrow::datatypes::Utf8Type>();
         let b = fsst_reloaded.to_arrow_byte_array::<arrow::datatypes::Utf8Type>();

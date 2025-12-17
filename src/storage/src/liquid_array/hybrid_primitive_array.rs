@@ -14,7 +14,7 @@ use crate::liquid_array::raw::BitPackedArray;
 
 use super::primitive_array::LiquidPrimitiveType;
 use super::{
-    SqueezeResult, LiquidDataType, LiquidSqueezedArray, NeedsBacking, Operator, PrimitiveKind,
+    LiquidDataType, LiquidSqueezedArray, NeedsBacking, Operator, PrimitiveKind, SqueezeResult,
 };
 
 #[derive(Debug, Clone)]
