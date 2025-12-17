@@ -6,14 +6,12 @@ use arrow::{
         Array, ArrayRef, AsArray, BooleanBufferBuilder, DictionaryArray, PrimitiveArray,
         UInt16Array,
     },
-    buffer::Buffer,
     compute::kernels::cast,
     datatypes::{Decimal128Type, Decimal256Type, DecimalType, UInt16Type},
 };
 use arrow_schema::DataType;
 use bytes::Bytes;
 use fsst::Compressor;
-use std::mem::MaybeUninit;
 
 use crate::utils::CheckedDictionaryArray;
 
@@ -387,31 +385,20 @@ impl LiquidFixedLenByteArray {
     fn decompress_keyed_values(&self, hit_mask: &arrow::buffer::BooleanBuffer) -> ArrayRef {
         let value_width = self.arrow_type.value_width();
         let selected_cnt = hit_mask.count_set_bits();
-        let decompressor = self.values.compressor().decompressor();
-
-        let mut value_buffer: Vec<u8> = Vec::with_capacity(selected_cnt * value_width + 8);
-        let mut dst = value_buffer.as_mut_ptr();
-
         assert_eq!(hit_mask.len(), self.values.len());
-        for i in 0..hit_mask.len() {
-            if unsafe { hit_mask.value_unchecked(i) } {
-                let v = unsafe { self.values.compressed().value_unchecked(i) };
-                let slice = unsafe {
-                    std::slice::from_raw_parts_mut(dst as *mut MaybeUninit<u8>, value_width + 8)
-                };
-                let len = decompressor.decompress_into(v, slice);
-                debug_assert!(len == value_width);
-                unsafe {
-                    dst = dst.add(value_width);
-                }
-            }
-        }
+        let selected: Vec<usize> = hit_mask
+            .iter()
+            .enumerate()
+            .filter_map(|(i, select)| select.then_some(i))
+            .collect();
 
-        unsafe {
-            value_buffer.set_len(dst as usize - value_buffer.as_ptr() as usize);
-        }
-        value_buffer.shrink_to_fit();
-        let value_buffer = Buffer::from(value_buffer);
+        let (value_buffer, offsets) = self
+            .values
+            .to_uncompressed_selected(&selected)
+            .expect("in-memory FSST values must have backing");
+
+        debug_assert_eq!(offsets.len(), selected_cnt + 1);
+        debug_assert_eq!(value_buffer.len(), selected_cnt * value_width);
 
         match self.arrow_type {
             ArrowFixedLenByteArrayType::Decimal128(precision, scale) => {

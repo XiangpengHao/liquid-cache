@@ -2,10 +2,10 @@ use ahash::HashMap;
 use arrow::array::BinaryViewArray;
 use arrow::array::{
     Array, ArrayAccessor, ArrayIter, ArrayRef, BinaryArray, BooleanArray, BooleanBufferBuilder,
-    BufferBuilder, DictionaryArray, GenericByteArray, StringArray, StringViewArray, UInt16Array,
+    DictionaryArray, GenericByteArray, StringArray, StringViewArray, UInt16Array,
     cast::AsArray, types::UInt16Type,
 };
-use arrow::buffer::{BooleanBuffer, Buffer, NullBuffer, OffsetBuffer, ScalarBuffer};
+use arrow::buffer::{BooleanBuffer, NullBuffer};
 use arrow::compute::cast;
 use arrow::datatypes::{BinaryType, ByteArrayType, Utf8Type};
 use arrow_schema::DataType;
@@ -612,10 +612,12 @@ impl LiquidByteArray {
 
         let mut key_map =
             HashMap::with_capacity_and_hasher(selected_cnt, ahash::RandomState::new());
+        let mut selected = Vec::with_capacity(selected_cnt);
         let mut offset = 0;
         for (i, select) in hit_mask.iter().enumerate() {
             if select {
                 key_map.insert(i, offset);
+                selected.push(i);
                 offset += 1;
             }
         }
@@ -625,45 +627,14 @@ impl LiquidByteArray {
                 .map(|v| v.map(|v| key_map[&(v as usize)])),
         );
 
-        let decompressor = self.values.decompressor();
-        let mut value_buffer: Vec<u8> = Vec::with_capacity(self.values.uncompressed_bytes() + 8);
-        let mut offsets_builder = BufferBuilder::<i32>::new(selected_cnt + 1);
-        offsets_builder.append(0);
-
-        assert_eq!(hit_mask.len(), self.values.len());
-        for (_select, v) in hit_mask
-            .iter()
-            .zip(self.values.compressed().iter())
-            .filter(|(select, _v)| *select)
-        {
-            let v = v.expect("values array can't be null");
-            let len = decompressor.decompress_into(v, value_buffer.spare_capacity_mut());
-            let new_len = value_buffer.len() + len;
-            debug_assert!(new_len <= value_buffer.capacity());
-            unsafe {
-                value_buffer.set_len(new_len);
-            }
-            offsets_builder.append(value_buffer.len() as i32);
-        }
-        value_buffer.shrink_to_fit();
-        let value_buffer = Buffer::from(value_buffer);
-        let offsets_buffer: ScalarBuffer<i32> = ScalarBuffer::from(offsets_builder.finish());
-        let values = if self.original_arrow_type.is_string() {
-            unsafe {
-                Arc::new(GenericByteArray::<Utf8Type>::new_unchecked(
-                    OffsetBuffer::new_unchecked(offsets_buffer),
-                    value_buffer,
-                    None,
-                )) as ArrayRef
-            }
+        let (value_buffer, offsets) = self
+            .values
+            .to_uncompressed_selected(&selected)
+            .expect("in-memory FSST values must have backing");
+        let values: ArrayRef = if self.original_arrow_type.is_string() {
+            Arc::new(unsafe { GenericByteArray::<Utf8Type>::new_unchecked(offsets, value_buffer, None) })
         } else {
-            unsafe {
-                Arc::new(GenericByteArray::<BinaryType>::new_unchecked(
-                    OffsetBuffer::new_unchecked(offsets_buffer),
-                    value_buffer,
-                    None,
-                ))
-            }
+            Arc::new(unsafe { GenericByteArray::<BinaryType>::new_unchecked(offsets, value_buffer, None) })
         };
         unsafe { DictionaryArray::<UInt16Type>::new_unchecked(new_keys, values) }
     }
@@ -678,8 +649,12 @@ impl LiquidByteArray {
             .unwrap()
             .as_primitive::<UInt16Type>()
             .clone();
-        let values: StringArray = StringArray::from(&self.values);
-        unsafe { DictionaryArray::<UInt16Type>::new_unchecked(filtered_keys, Arc::new(values)) }
+        let values: ArrayRef = if self.original_arrow_type.is_string() {
+            Arc::new(self.values.to_arrow_byte_array::<Utf8Type>())
+        } else {
+            Arc::new(self.values.to_arrow_byte_array::<BinaryType>())
+        };
+        unsafe { DictionaryArray::<UInt16Type>::new_unchecked(filtered_keys, values) }
     }
 
     /// Convert the LiquidStringArray to a StringArray.
@@ -708,10 +683,14 @@ impl LiquidByteArray {
         let compressor = self.values.compressor();
         let compressed = compressor.compress(needle.as_bytes());
 
-        let values = self.values.compressed();
         let keys = self.keys.to_primitive();
 
-        let idx = values.iter().position(|v| v == Some(compressed.as_ref()));
+        let idx = (0..self.values.len()).position(|i| {
+            self.values
+                .get_compressed_slice(i)
+                .expect("in-memory FSST values must have backing")
+                == compressed.as_slice()
+        });
 
         if let Some(idx) = idx {
             let to_compare = UInt16Array::new_scalar(idx as u16);
