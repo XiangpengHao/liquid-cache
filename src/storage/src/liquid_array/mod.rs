@@ -44,8 +44,7 @@ pub use primitive_array::{
 pub use squeezed_date32_array::{Date32Field, SqueezedDate32Array};
 pub use variant_array::VariantStructSqueezedArray;
 
-use crate::cache::CacheExpression;
-use crate::liquid_array::byte_view_array::MemoryBuffer;
+use crate::{cache::CacheExpression, liquid_array::raw::FsstArray};
 
 /// Liquid data type is only logical type
 #[derive(Debug, Clone, Copy)]
@@ -98,10 +97,10 @@ pub trait AsLiquidArray {
     }
 
     /// Get the underlying byte view array.
-    fn as_byte_view_array_opt(&self) -> Option<&LiquidByteViewArray<MemoryBuffer>>;
+    fn as_byte_view_array_opt(&self) -> Option<&LiquidByteViewArray<FsstArray>>;
 
     /// Get the underlying byte view array.
-    fn as_byte_view(&self) -> &LiquidByteViewArray<MemoryBuffer> {
+    fn as_byte_view(&self) -> &LiquidByteViewArray<FsstArray> {
         self.as_byte_view_array_opt()
             .expect("liquid byte view array")
     }
@@ -137,7 +136,7 @@ impl AsLiquidArray for dyn LiquidArray + '_ {
         self.as_any().downcast_ref()
     }
 
-    fn as_byte_view_array_opt(&self) -> Option<&LiquidByteViewArray<MemoryBuffer>> {
+    fn as_byte_view_array_opt(&self) -> Option<&LiquidByteViewArray<FsstArray>> {
         self.as_any().downcast_ref()
     }
 

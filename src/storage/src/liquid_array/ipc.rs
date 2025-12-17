@@ -14,7 +14,7 @@ use fsst::Compressor;
 
 use crate::liquid_array::LiquidByteViewArray;
 use crate::liquid_array::LiquidPrimitiveArray;
-use crate::liquid_array::byte_view_array::MemoryBuffer;
+use crate::liquid_array::raw::FsstArray;
 
 use super::linear_integer_array::LiquidLinearArray;
 use super::{
@@ -263,7 +263,7 @@ pub fn read_from_bytes(bytes: Bytes, context: &LiquidIPCContext) -> LiquidArrayR
         }
         LiquidDataType::ByteViewArray => {
             let compressor = context.compressor.as_ref().expect("Expected a compressor");
-            Arc::new(LiquidByteViewArray::<MemoryBuffer>::from_bytes(
+            Arc::new(LiquidByteViewArray::<FsstArray>::from_bytes(
                 bytes,
                 compressor.clone(),
             ))
@@ -559,12 +559,12 @@ mod tests {
         assert_eq!(output_ba.as_string::<i32>(), &input);
 
         // LiquidByteViewArray
-        let compressor_bv = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
+        let compressor_bv = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
         let original_bv =
-            LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor_bv.clone());
+            LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor_bv.clone());
         let bytes_bv = Bytes::from(original_bv.to_bytes());
         let deserialized_bv =
-            LiquidByteViewArray::<MemoryBuffer>::from_bytes(bytes_bv, compressor_bv);
+            LiquidByteViewArray::<FsstArray>::from_bytes(bytes_bv, compressor_bv);
         let output_bv = deserialized_bv.to_arrow_array().unwrap();
         assert_eq!(output_bv.as_string::<i32>(), &input);
     }
@@ -591,10 +591,10 @@ mod tests {
 
         // LiquidByteViewArray via BinaryView
         let (compressor_bv, original_bv) =
-            LiquidByteViewArray::<MemoryBuffer>::train_from_binary_view(&input);
+            LiquidByteViewArray::<FsstArray>::train_from_binary_view(&input);
         let bytes_bv = Bytes::from(original_bv.to_bytes());
         let deserialized_bv =
-            LiquidByteViewArray::<MemoryBuffer>::from_bytes(bytes_bv, compressor_bv);
+            LiquidByteViewArray::<FsstArray>::from_bytes(bytes_bv, compressor_bv);
         let output_bv = deserialized_bv.to_arrow_array().unwrap();
         assert_eq!(output_bv.as_binary_view(), &input);
     }

@@ -5,8 +5,9 @@ extern crate arrow;
 
 use arrow::array::{Array, StringArray, StringBuilder};
 use datafusion::common::ScalarValue;
-use liquid_cache_storage::liquid_array::byte_view_array::MemoryBuffer;
-use liquid_cache_storage::liquid_array::{LiquidArray, LiquidByteArray, LiquidByteViewArray};
+use liquid_cache_storage::liquid_array::{
+    LiquidArray, LiquidByteArray, LiquidByteViewArray, raw::FsstArray,
+};
 use std::fs;
 
 const CHUNK_SIZE: [usize; 5] = [12, 32, 64, 128, 256];
@@ -62,9 +63,9 @@ fn byte_view_array_eq_operation(bencher: Bencher, chunk_size: usize) {
         .find(|(s, _)| *s == chunk_size)
         .unwrap();
 
-    let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(string_array.iter());
+    let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(string_array.iter());
     let liquid_array =
-        LiquidByteViewArray::<MemoryBuffer>::from_string_array(&string_array, compressor);
+        LiquidByteViewArray::<FsstArray>::from_string_array(&string_array, compressor);
 
     // Use the first string as the needle for comparison
     let needle = string_array.value(0).as_bytes();
@@ -115,9 +116,9 @@ fn byte_view_array_gt_operation(bencher: Bencher, chunk_size: usize) {
         .find(|(s, _)| *s == chunk_size)
         .unwrap();
 
-    let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(string_array.iter());
+    let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(string_array.iter());
     let liquid_array =
-        LiquidByteViewArray::<MemoryBuffer>::from_string_array(&string_array, compressor);
+        LiquidByteViewArray::<FsstArray>::from_string_array(&string_array, compressor);
 
     // Use a middle string as the needle for gt comparison
     let needle_idx = string_array.len() / 2;
@@ -154,9 +155,9 @@ fn byte_view_array_to_arrow_conversion(bencher: Bencher, chunk_size: usize) {
         .find(|(s, _)| *s == chunk_size)
         .unwrap();
 
-    let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(string_array.iter());
+    let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(string_array.iter());
     let liquid_array =
-        LiquidByteViewArray::<MemoryBuffer>::from_string_array(&string_array, compressor);
+        LiquidByteViewArray::<FsstArray>::from_string_array(&string_array, compressor);
 
     bencher
         .with_inputs(|| liquid_array.clone())
@@ -172,9 +173,9 @@ fn array_size(_bencher: Bencher, chunk_size: usize) {
         .unwrap();
 
     let byte_view_compressor =
-        LiquidByteViewArray::<MemoryBuffer>::train_compressor(string_array.iter());
+        LiquidByteViewArray::<FsstArray>::train_compressor(string_array.iter());
     let byte_view_array =
-        LiquidByteViewArray::<MemoryBuffer>::from_string_array(&string_array, byte_view_compressor);
+        LiquidByteViewArray::<FsstArray>::from_string_array(&string_array, byte_view_compressor);
 
     let byte_array_compressor = LiquidByteArray::train_compressor(string_array.iter());
     let byte_array_array = LiquidByteArray::from_string_array(&string_array, byte_array_compressor);

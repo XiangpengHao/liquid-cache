@@ -14,7 +14,8 @@ use arrow_schema::{Field, Schema};
 use datafusion::logical_expr::Operator;
 use datafusion::prelude::*;
 use fsst::Compressor;
-use liquid_cache_storage::liquid_array::byte_view_array::{ByteViewArrayMemoryUsage, MemoryBuffer};
+use liquid_cache_storage::liquid_array::byte_view_array::ByteViewArrayMemoryUsage;
+use liquid_cache_storage::liquid_array::raw::FsstArray;
 use liquid_cache_storage::liquid_array::{LiquidArray, LiquidByteArray, LiquidByteViewArray};
 use rand::{rng, seq::SliceRandom};
 use serde::{Deserialize, Serialize};
@@ -531,7 +532,7 @@ struct FsstViewBenchmark {
 }
 
 impl ArrayBenchmark for FsstViewBenchmark {
-    type EncodedData = LiquidByteViewArray<MemoryBuffer>;
+    type EncodedData = LiquidByteViewArray<FsstArray>;
 
     fn workload_name(&self) -> String {
         "FSSTView".to_string()
@@ -543,14 +544,14 @@ impl ArrayBenchmark for FsstViewBenchmark {
             cached_compressor.clone()
         } else {
             let (trained_compressor, _) =
-                LiquidByteViewArray::<MemoryBuffer>::train_from_string_view(array);
+                LiquidByteViewArray::<FsstArray>::train_from_string_view(array);
             self.compressor = Some(trained_compressor.clone());
             trained_compressor
         };
 
         let start = Instant::now();
         let encoded_array =
-            LiquidByteViewArray::<MemoryBuffer>::from_string_view_array(array, compressor);
+            LiquidByteViewArray::<FsstArray>::from_string_view_array(array, compressor);
         let encode_time = start.elapsed().as_secs_f64();
         let size = encoded_array.get_array_memory_size();
         (encoded_array, encode_time, size)
@@ -865,7 +866,7 @@ fn main() {
         );
 
         let (compressor, _) =
-            LiquidByteViewArray::<MemoryBuffer>::train_from_string_view(&column_data.data[0]);
+            LiquidByteViewArray::<FsstArray>::train_from_string_view(&column_data.data[0]);
         let mut total_detailed_memory_usage = ByteViewArrayMemoryUsage {
             dictionary_key: 0,
             offsets: 0,
@@ -876,7 +877,7 @@ fn main() {
 
         for a in &column_data.data {
             let array =
-                LiquidByteViewArray::<MemoryBuffer>::from_string_view_array(a, compressor.clone());
+                LiquidByteViewArray::<FsstArray>::from_string_view_array(a, compressor.clone());
             total_detailed_memory_usage += array.get_detailed_memory_usage();
         }
 

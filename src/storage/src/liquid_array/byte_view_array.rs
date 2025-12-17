@@ -49,14 +49,11 @@ use crate::cache::CacheExpression;
 use crate::liquid_array::ipc::LiquidIPCHeader;
 use crate::liquid_array::raw::BitPackedArray;
 use crate::liquid_array::raw::fsst_buffer::{
-    DiskBuffer, FsstBacking, FsstBuffer, PrefixKey, RawFsstBuffer, decode_offset_views,
+    DiskBuffer, FsstBacking, FsstArray, PrefixKey, RawFsstBuffer, decode_offset_views,
     empty_compact_offsets, train_compressor,
 };
 use crate::liquid_array::{LiquidSqueezedArrayRef, NeedsBacking, SqueezeResult};
 use crate::utils::CheckedDictionaryArray;
-
-/// In-memory FSST backing for `LiquidByteViewArray`.
-pub type MemoryBuffer = FsstBuffer;
 
 // Header for LiquidByteViewArray serialization
 #[repr(C)]
@@ -108,7 +105,7 @@ fn align_up_8(len: usize) -> usize {
     (len + 7) & !7
 }
 
-impl LiquidByteViewArray<MemoryBuffer> {
+impl LiquidByteViewArray<FsstArray> {
     /*
     Serialized LiquidByteViewArray Memory Layout:
 
@@ -230,12 +227,12 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
     }
 }
 
-impl LiquidByteViewArray<MemoryBuffer> {
+impl LiquidByteViewArray<FsstArray> {
     /// Deserialize a LiquidByteViewArray from bytes.
     pub fn from_bytes(
         bytes: Bytes,
         compressor: Arc<Compressor>,
-    ) -> LiquidByteViewArray<MemoryBuffer> {
+    ) -> LiquidByteViewArray<FsstArray> {
         // 0) Read IPC header and our view header
         let ipc = LiquidIPCHeader::from_bytes(&bytes);
         let original_arrow_type = ArrowByteType::from(ipc.physical_type_id);
@@ -293,14 +290,14 @@ impl LiquidByteViewArray<MemoryBuffer> {
         LiquidByteViewArray {
             dictionary_keys,
             prefix_keys,
-            fsst_buffer: FsstBuffer::new(Arc::new(raw_buffer), compact_offsets, compressor),
+            fsst_buffer: FsstArray::new(Arc::new(raw_buffer), compact_offsets, compressor),
             original_arrow_type,
             shared_prefix,
         }
     }
 }
 
-impl LiquidArray for LiquidByteViewArray<MemoryBuffer> {
+impl LiquidArray for LiquidByteViewArray<FsstArray> {
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -787,7 +784,7 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
     pub fn from_string_view_array(
         array: &StringViewArray,
         compressor: Arc<Compressor>,
-    ) -> LiquidByteViewArray<MemoryBuffer> {
+    ) -> LiquidByteViewArray<FsstArray> {
         Self::from_view_array_inner(array, compressor, ArrowByteType::Utf8View)
     }
 
@@ -795,7 +792,7 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
     pub fn from_binary_view_array(
         array: &BinaryViewArray,
         compressor: Arc<Compressor>,
-    ) -> LiquidByteViewArray<MemoryBuffer> {
+    ) -> LiquidByteViewArray<FsstArray> {
         Self::from_view_array_inner(array, compressor, ArrowByteType::BinaryView)
     }
 
@@ -803,7 +800,7 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
     pub fn from_string_array(
         array: &StringArray,
         compressor: Arc<Compressor>,
-    ) -> LiquidByteViewArray<MemoryBuffer> {
+    ) -> LiquidByteViewArray<FsstArray> {
         Self::from_byte_array_inner(array, compressor, ArrowByteType::Utf8)
     }
 
@@ -811,14 +808,14 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
     pub fn from_binary_array(
         array: &BinaryArray,
         compressor: Arc<Compressor>,
-    ) -> LiquidByteViewArray<MemoryBuffer> {
+    ) -> LiquidByteViewArray<FsstArray> {
         Self::from_byte_array_inner(array, compressor, ArrowByteType::Binary)
     }
 
     /// Train a compressor from an Arrow StringViewArray
     pub fn train_from_string_view(
         array: &StringViewArray,
-    ) -> (Arc<Compressor>, LiquidByteViewArray<MemoryBuffer>) {
+    ) -> (Arc<Compressor>, LiquidByteViewArray<FsstArray>) {
         let compressor = Self::train_compressor(array.iter());
         (
             compressor.clone(),
@@ -829,7 +826,7 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
     /// Train a compressor from an Arrow BinaryViewArray
     pub fn train_from_binary_view(
         array: &BinaryViewArray,
-    ) -> (Arc<Compressor>, LiquidByteViewArray<MemoryBuffer>) {
+    ) -> (Arc<Compressor>, LiquidByteViewArray<FsstArray>) {
         let compressor = Self::train_compressor_bytes(array.iter());
         (
             compressor.clone(),
@@ -840,7 +837,7 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
     /// Train a compressor from an Arrow ByteArray.
     pub fn train_from_arrow<T: ByteArrayType>(
         array: &GenericByteArray<T>,
-    ) -> (Arc<Compressor>, LiquidByteViewArray<MemoryBuffer>) {
+    ) -> (Arc<Compressor>, LiquidByteViewArray<FsstArray>) {
         let dict = CheckedDictionaryArray::from_byte_array::<T>(array);
         let value_type = dict.as_ref().values().data_type();
 
@@ -867,7 +864,7 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
     pub unsafe fn from_unique_dict_array(
         array: &DictionaryArray<UInt16Type>,
         compressor: Arc<Compressor>,
-    ) -> LiquidByteViewArray<MemoryBuffer> {
+    ) -> LiquidByteViewArray<FsstArray> {
         let arrow_type = ArrowByteType::from_arrow_type(array.values().data_type());
         Self::from_dict_array_inner(
             unsafe { CheckedDictionaryArray::new_unchecked_i_know_what_i_am_doing(array) },
@@ -879,7 +876,7 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
     /// Train a compressor from an Arrow DictionaryArray.
     pub fn train_from_arrow_dict(
         array: &DictionaryArray<UInt16Type>,
-    ) -> (Arc<Compressor>, LiquidByteViewArray<MemoryBuffer>) {
+    ) -> (Arc<Compressor>, LiquidByteViewArray<FsstArray>) {
         if array.values().data_type() == &DataType::Utf8 {
             let values = array.values().as_string::<i32>();
 
@@ -1030,7 +1027,7 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
         array: &T,
         compressor: Arc<Compressor>,
         arrow_type: ArrowByteType,
-    ) -> LiquidByteViewArray<MemoryBuffer>
+    ) -> LiquidByteViewArray<FsstArray>
     where
         T: Array + 'static,
     {
@@ -1050,7 +1047,7 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
         array: &GenericByteArray<T>,
         compressor: Arc<Compressor>,
         arrow_type: ArrowByteType,
-    ) -> LiquidByteViewArray<MemoryBuffer> {
+    ) -> LiquidByteViewArray<FsstArray> {
         let dict = CheckedDictionaryArray::from_byte_array::<T>(array);
         Self::from_dict_array_inner(dict, compressor, arrow_type)
     }
@@ -1060,7 +1057,7 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
         dict: CheckedDictionaryArray,
         compressor: Arc<Compressor>,
         arrow_type: ArrowByteType,
-    ) -> LiquidByteViewArray<MemoryBuffer> {
+    ) -> LiquidByteViewArray<FsstArray> {
         let (keys, values) = dict.as_ref().clone().into_parts();
 
         // Calculate shared prefix directly from values array without intermediate allocations
@@ -1155,7 +1152,7 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
         LiquidByteViewArray::from_parts(
             keys,
             prefix_keys,
-            FsstBuffer::from_byte_offsets(Arc::new(raw_fsst_buffer), &byte_offsets, compressor),
+            FsstArray::from_byte_offsets(Arc::new(raw_fsst_buffer), &byte_offsets, compressor),
             arrow_type,
             shared_prefix,
         )
@@ -1598,16 +1595,16 @@ mod tests {
     #[test]
     fn test_original_arrow_data_type_returns_utf8() {
         let input = StringArray::from(vec!["foo", "bar"]);
-        let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
-        let array = LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
+        let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
+        let array = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
         assert_eq!(array.original_arrow_data_type(), DataType::Utf8);
     }
 
     #[test]
     fn test_hybrid_original_arrow_data_type_returns_utf8() {
         let input = StringArray::from(vec!["foo", "bar"]);
-        let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
-        let in_memory = LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
+        let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
+        let in_memory = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
         let (hybrid, _) = in_memory
             .squeeze(Some(&CacheExpression::PredicateColumn))
             .expect("squeeze should succeed");
@@ -1619,11 +1616,44 @@ mod tests {
     }
 
     #[test]
+    fn test_ipc_roundtrip_sliced_dictionary_nulls() {
+        let values: ArrayRef = Arc::new(StringArray::from(vec!["a", "b", "c", "d"]));
+        let keys = UInt16Array::from(vec![
+            Some(0u16),
+            None,
+            Some(2),
+            Some(1),
+            None,
+            Some(3),
+            Some(0),
+            Some(2),
+            Some(1),
+        ]);
+        let dict = DictionaryArray::<UInt16Type>::new(keys, values);
+
+        // Slice to create a non-zero offset (and therefore a non-zero null bitmap bit offset).
+        let sliced = dict.slice(1, 7);
+
+        let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(
+            sliced.values().as_string::<i32>().iter(),
+        );
+        let original = unsafe {
+            LiquidByteViewArray::<FsstArray>::from_unique_dict_array(&sliced, compressor.clone())
+        };
+
+        let before = original.to_arrow_array().unwrap();
+        let bytes = original.to_bytes();
+        let decoded = LiquidByteViewArray::<FsstArray>::from_bytes(bytes.into(), compressor);
+        let after = decoded.to_arrow_array().unwrap();
+
+        assert_eq!(before.as_ref(), after.as_ref());
+    }
+
+    #[test]
     fn test_prefix_extraction() {
         let input = StringArray::from(vec!["hello", "world", "test"]);
-        let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
-        let liquid_array =
-            LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
+        let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
+        let liquid_array = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
 
         // With no shared prefix, the offset view prefixes should be the original strings (truncated to 7 bytes)
         assert_eq!(liquid_array.shared_prefix, Vec::<u8>::new());
@@ -1641,9 +1671,8 @@ mod tests {
             "hello_test",
             "hello_code",
         ]);
-        let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
-        let liquid_array =
-            LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
+        let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
+        let liquid_array = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
 
         // Should extract "hello_" as shared prefix
         assert_eq!(liquid_array.shared_prefix, b"hello_");
@@ -1678,9 +1707,8 @@ mod tests {
     fn test_shared_prefix_with_short_strings() {
         // Test case: short strings that fit entirely in the 6-byte prefix
         let input = StringArray::from(vec!["abc", "abcde", "abcdef", "abcdefg"]);
-        let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
-        let liquid_array =
-            LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
+        let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
+        let liquid_array = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
 
         // Should extract "abc" as shared prefix
         assert_eq!(liquid_array.shared_prefix, b"abc");
@@ -1718,9 +1746,8 @@ mod tests {
     fn test_shared_prefix_contains_complete_strings() {
         // Test case: shared prefix completely contains some strings
         let input = StringArray::from(vec!["data", "database", "data_entry", "data_", "datatype"]);
-        let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
-        let liquid_array =
-            LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
+        let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
+        let liquid_array = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
 
         // Should extract "data" as shared prefix
         assert_eq!(liquid_array.shared_prefix, b"data");
@@ -1772,9 +1799,8 @@ mod tests {
         let big = "aaaaaaa".to_string() + &"b".repeat(2 * 1024 * 1024 + 128);
         let input = StringArray::from(vec![big.as_str()]);
 
-        let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
-        let liquid_array =
-            LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
+        let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
+        let liquid_array = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
 
         let result = liquid_array
             .compare_with(big.as_bytes(), &Operator::LtEq)
@@ -1786,9 +1812,8 @@ mod tests {
     #[test]
     fn test_shared_prefix_corner_case() {
         let input = StringArray::from(vec!["data", "database", "data_entry", "data_", "datatype"]);
-        let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
-        let liquid_array =
-            LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
+        let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
+        let liquid_array = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
         let result = liquid_array.compare_with(b"data", &Operator::GtEq).unwrap();
         let expected = BooleanArray::from(vec![true, true, true, true, true]); // All >= "data"
         assert_eq!(result, expected);
@@ -1798,9 +1823,8 @@ mod tests {
     fn test_shared_prefix_edge_cases() {
         // Test case 1: All strings are the same (full shared prefix)
         let input = StringArray::from(vec!["identical", "identical", "identical"]);
-        let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
-        let liquid_array =
-            LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
+        let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
+        let liquid_array = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
 
         assert_eq!(liquid_array.shared_prefix, b"identical");
         // All offset view prefixes should be empty
@@ -1814,9 +1838,8 @@ mod tests {
 
         // Test case 2: One string is a prefix of others
         let input = StringArray::from(vec!["hello", "hello_world", "hello_test"]);
-        let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
-        let liquid_array =
-            LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
+        let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
+        let liquid_array = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
 
         assert_eq!(liquid_array.shared_prefix, b"hello");
         assert_eq!(liquid_array.prefix_keys[0].prefix7(), &[0u8; 7]); // empty after "hello"
@@ -1829,9 +1852,8 @@ mod tests {
 
         // Test case 3: Empty string in array (should limit shared prefix)
         let input = StringArray::from(vec!["", "hello", "hello_world"]);
-        let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
-        let liquid_array =
-            LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
+        let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
+        let liquid_array = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
 
         assert_eq!(liquid_array.shared_prefix, Vec::<u8>::new()); // empty shared prefix
         assert_eq!(liquid_array.prefix_keys[0].prefix7(), &[0u8; 7]);
@@ -1846,9 +1868,8 @@ mod tests {
     #[test]
     fn test_memory_layout() {
         let input = StringArray::from(vec!["hello", "world", "test"]);
-        let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
-        let liquid_array =
-            LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
+        let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
+        let liquid_array = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
 
         // Verify memory layout components
         assert_eq!(liquid_array.dictionary_keys.len(), 3);
@@ -1858,9 +1879,8 @@ mod tests {
     }
 
     fn check_filter_result(input: &StringArray, filter: BooleanBuffer) {
-        let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
-        let liquid_array =
-            LiquidByteViewArray::<MemoryBuffer>::from_string_array(input, compressor);
+        let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
+        let liquid_array = LiquidByteViewArray::<FsstArray>::from_string_array(input, compressor);
         let output = liquid_array.filter(&filter);
         let expected = {
             let selection = BooleanArray::new(filter.clone(), None);
@@ -1892,9 +1912,8 @@ mod tests {
     #[test]
     fn test_memory_efficiency() {
         let input = StringArray::from(vec!["hello", "world", "hello", "world", "hello"]);
-        let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
-        let liquid_array =
-            LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
+        let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
+        let liquid_array = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
 
         // Verify that dictionary views store unique values efficiently
         assert_eq!(liquid_array.dictionary_keys.len(), 5);
@@ -1907,9 +1926,8 @@ mod tests {
     #[test]
     fn test_to_best_arrow_array() {
         let input = StringArray::from(vec!["hello", "world", "test"]);
-        let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
-        let liquid_array =
-            LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
+        let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
+        let liquid_array = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
 
         let best_array = liquid_array.to_best_arrow_array();
         let dict_array = best_array.as_dictionary::<UInt16Type>();
@@ -1922,9 +1940,8 @@ mod tests {
     #[test]
     fn test_data_type() {
         let input = StringArray::from(vec!["hello", "world"]);
-        let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
-        let liquid_array =
-            LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
+        let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
+        let liquid_array = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
 
         // Just verify we can get the data type without errors
         let data_type = liquid_array.data_type();
@@ -1943,9 +1960,8 @@ mod tests {
             "zebra000",  // prefix: "zebra\0"
         ]);
 
-        let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
-        let liquid_array =
-            LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
+        let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
+        let liquid_array = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
 
         // Test Lt with needle "car" (prefix: "car\0\0\0")
         // Expected: "apple123" < "car" => true, "banana456" < "car" => true, others false
@@ -1984,9 +2000,8 @@ mod tests {
             "different",  // prefix: "differ" (different prefix)
         ]);
 
-        let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
-        let liquid_array =
-            LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
+        let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
+        let liquid_array = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
 
         // Test Lt with needle "prefix_b" - this will require decompression for prefix matches
         // Expected: "prefix_aaa" < "prefix_b" => true, "prefix_bbb" < "prefix_b" => false, etc.
@@ -2023,9 +2038,8 @@ mod tests {
             Some("abcdeg"),     // Differs at position 5 (prefix: "abcdeg")
         ]);
 
-        let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
-        let liquid_array =
-            LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
+        let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
+        let liquid_array = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
 
         // Test Lt with empty string needle - should test null handling
         let result = liquid_array.compare_with_inner(b"", &Operator::Lt).unwrap();
@@ -2100,9 +2114,8 @@ mod tests {
             "世界",   // UTF-8: [228, 184, 150, 231, 149, 140]
         ]);
 
-        let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
-        let liquid_array =
-            LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
+        let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
+        let liquid_array = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
 
         // Test Lt with UTF-8 needle "naïve" (UTF-8: [110, 97, 195, 175, 118, 101])
         // Expected: "café" < "naïve" => true (99 < 110), "hello" < "naïve" => true, others false
@@ -2154,9 +2167,8 @@ mod tests {
 
     fn sort_to_indices_test(input: Vec<Option<&str>>, expected_idx: Vec<u32>) {
         let input = StringArray::from(input);
-        let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
-        let liquid_array =
-            LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
+        let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
+        let liquid_array = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
         let indices = liquid_array.sort_to_indices().unwrap();
         assert_eq!(indices, UInt32Array::from(expected_idx));
     }
@@ -2228,9 +2240,8 @@ mod tests {
     }
 
     fn test_compare_equals(input: StringArray, needle: &[u8], expected: BooleanArray) {
-        let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
-        let liquid_array =
-            LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
+        let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
+        let liquid_array = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
         let result = liquid_array.compare_equals(needle).unwrap();
         assert_eq!(result, expected);
     }
@@ -2319,8 +2330,8 @@ mod tests {
             Some(long_value.as_str()), // index 2
         ]);
 
-        let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
-        let in_mem = LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
+        let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
+        let in_mem = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
 
         // Squeeze to disk-backed so we exercise compare_equals_with_prefix in DiskBuffer path
         let (hybrid, _bytes) = in_mem
@@ -2361,8 +2372,8 @@ mod tests {
     fn test_compare_ordering_with_prefix_only() {
         let input = StringArray::from(vec![Some("pre_aaa"), Some("pre_bbb1111"), Some("pre_ccc")]);
 
-        let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
-        let in_mem = LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
+        let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
+        let in_mem = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
 
         // Squeeze to disk-backed to exercise prefix-only ordering path
         let (hybrid, _bytes) = in_mem
@@ -2473,9 +2484,8 @@ mod tests {
         let strings = generate_mixed_size_strings(16384, 42);
         let input = StringArray::from(strings.clone());
 
-        let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
-        let liquid_array =
-            LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
+        let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
+        let liquid_array = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
 
         // Verify correctness
         let output = liquid_array.to_arrow_array().unwrap();
@@ -2493,9 +2503,8 @@ mod tests {
         let strings = generate_zipf_strings(16384, base_patterns, 123);
         let input = StringArray::from(strings.clone());
 
-        let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
-        let liquid_array =
-            LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
+        let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
+        let liquid_array = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
 
         // Verify correctness
         let output = liquid_array.to_arrow_array().unwrap();
@@ -2530,9 +2539,8 @@ mod tests {
         }
 
         let input = StringArray::from(strings);
-        let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(input.iter());
-        let liquid_array =
-            LiquidByteViewArray::<MemoryBuffer>::from_string_array(&input, compressor);
+        let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
+        let liquid_array = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
 
         // Verify correctness
         let output = liquid_array.to_arrow_array().unwrap();

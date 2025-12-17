@@ -524,13 +524,13 @@ where
 /// In-memory FSST dictionary buffer that bundles compressed bytes, compact offsets, and the
 /// compressor needed to (de)compress values.
 #[derive(Clone)]
-pub struct FsstBuffer {
+pub struct FsstArray {
     compressor: Arc<Compressor>,
     raw: Arc<RawFsstBuffer>,
     compact_offsets: CompactOffsets,
 }
 
-impl std::fmt::Debug for FsstBuffer {
+impl std::fmt::Debug for FsstArray {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FsstBuffer")
             .field("raw", &self.raw)
@@ -540,7 +540,7 @@ impl std::fmt::Debug for FsstBuffer {
     }
 }
 
-impl FsstBuffer {
+impl FsstArray {
     pub(crate) fn new(
         raw: Arc<RawFsstBuffer>,
         compact_offsets: CompactOffsets,
@@ -789,10 +789,10 @@ pub trait FsstBacking: std::fmt::Debug + Clone + sealed::Sealed {
     fn get_array_memory_size(&self) -> usize;
 }
 
-impl sealed::Sealed for FsstBuffer {}
+impl sealed::Sealed for FsstArray {}
 impl sealed::Sealed for DiskBuffer {}
 
-impl FsstBacking for FsstBuffer {
+impl FsstBacking for FsstArray {
     fn to_uncompressed(&self) -> SqueezeResult<(Buffer, OffsetBuffer<i32>)> {
         let offsets = self.compact_offsets.offsets();
         Ok(self
@@ -1260,16 +1260,16 @@ mod tests {
         let original = builder.finish();
 
         let compressor =
-            FsstBuffer::train_compressor(original.iter().flat_map(|s| s.map(|s| s.as_bytes())));
+            FsstArray::train_compressor(original.iter().flat_map(|s| s.map(|s| s.as_bytes())));
         let compressor_arc = Arc::new(compressor);
         let original_fsst =
-            FsstBuffer::from_byte_array_with_compressor(&original, compressor_arc.clone());
+            FsstArray::from_byte_array_with_compressor(&original, compressor_arc.clone());
 
         let mut buffer = Vec::new();
         original_fsst.to_bytes(&mut buffer);
 
         let bytes = bytes::Bytes::from(buffer);
-        let deserialized = FsstBuffer::from_bytes(bytes, compressor_arc);
+        let deserialized = FsstArray::from_bytes(bytes, compressor_arc);
 
         let original_strings = original_fsst.to_arrow_byte_array::<arrow::datatypes::Utf8Type>();
         let deserialized_strings = deserialized.to_arrow_byte_array::<arrow::datatypes::Utf8Type>();
@@ -1292,10 +1292,10 @@ mod tests {
             .iter()
             .filter_map(|v| v.map(|v| v.to_le_bytes()))
             .collect::<Vec<_>>();
-        let compressor = FsstBuffer::train_compressor(values.iter().map(|b| b.as_slice()));
+        let compressor = FsstArray::train_compressor(values.iter().map(|b| b.as_slice()));
         let compressor_arc = Arc::new(compressor);
 
-        let fsst = FsstBuffer::from_decimal128_array_with_compressor(&original, compressor_arc);
+        let fsst = FsstArray::from_decimal128_array_with_compressor(&original, compressor_arc);
         let compressed_size = fsst.get_array_memory_size();
         assert!(compressed_size < original_size);
     }
@@ -1309,16 +1309,16 @@ mod tests {
         let original = builder.finish();
 
         let compressor =
-            FsstBuffer::train_compressor(original.iter().flat_map(|s| s.map(|s| s.as_bytes())));
+            FsstArray::train_compressor(original.iter().flat_map(|s| s.map(|s| s.as_bytes())));
         let compressor_arc = Arc::new(compressor);
 
         let mut bytes = Vec::new();
         save_symbol_table(compressor_arc.clone(), &mut bytes).unwrap();
         let reloaded = load_symbol_table(bytes::Bytes::from(bytes)).unwrap();
 
-        let fsst_original = FsstBuffer::from_byte_array_with_compressor(&original, compressor_arc);
+        let fsst_original = FsstArray::from_byte_array_with_compressor(&original, compressor_arc);
         let fsst_reloaded =
-            FsstBuffer::from_byte_array_with_compressor(&original, Arc::new(reloaded));
+            FsstArray::from_byte_array_with_compressor(&original, Arc::new(reloaded));
 
         let a = fsst_original.to_arrow_byte_array::<arrow::datatypes::Utf8Type>();
         let b = fsst_reloaded.to_arrow_byte_array::<arrow::datatypes::Utf8Type>();
