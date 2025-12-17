@@ -15,11 +15,11 @@ use std::mem::MaybeUninit;
 use std::sync::Arc;
 
 use crate::liquid_array::{
-    byte_view_array::OffsetView, fix_len_byte_array::ArrowFixedLenByteArrayType,
+    fix_len_byte_array::ArrowFixedLenByteArrayType,
 };
 
-/// Raw FSST buffer that stores compressed data using Arrow Buffer
-/// Offsets are managed externally in OffsetView array
+/// Raw FSST buffer that stores compressed data using Arrow Buffer.
+/// Offsets are managed externally as a `u32` slice (including the final sentinel offset).
 #[derive(Clone)]
 pub struct RawFsstBuffer {
     values: Buffer,
@@ -43,8 +43,8 @@ impl RawFsstBuffer {
         }
     }
 
-    /// Create RawFsstBuffer from an iterator of byte slices
-    /// Returns the buffer and a vector of byte offsets for OffsetView construction
+    /// Create RawFsstBuffer from an iterator of byte slices.
+    /// Returns the buffer and a vector of byte offsets (including the final sentinel).
     pub fn from_byte_slices<I, T>(
         iter: I,
         compressor: Arc<Compressor>,
@@ -88,14 +88,15 @@ impl RawFsstBuffer {
     pub(crate) fn to_uncompressed(
         &self,
         decompressor: &Decompressor<'_>,
-        offset: &[OffsetView],
+        offsets: &[u32],
     ) -> (Buffer, OffsetBuffer<i32>) {
         let mut value_buffer: Vec<u8> = Vec::with_capacity(self.uncompressed_bytes + 8);
-        let mut offsets: OffsetBufferBuilder<i32> = OffsetBufferBuilder::new(offset.len());
+        let num_values = offsets.len().saturating_sub(1);
+        let mut out_offsets: OffsetBufferBuilder<i32> = OffsetBufferBuilder::new(num_values);
 
-        for i in 0..offset.len().saturating_sub(1) {
-            let start_offset = offset[i].offset();
-            let end_offset = offset[i + 1].offset();
+        for i in 0..num_values {
+            let start_offset = offsets[i];
+            let end_offset = offsets[i + 1];
 
             if start_offset != end_offset {
                 // Get the compressed slice
@@ -110,14 +111,14 @@ impl RawFsstBuffer {
                 unsafe {
                     value_buffer.set_len(new_len);
                 }
-                offsets.push_length(decompressed_len);
+                out_offsets.push_length(decompressed_len);
             } else {
-                offsets.push_length(0);
+                out_offsets.push_length(0);
             }
         }
 
         let buffer = Buffer::from(value_buffer);
-        (buffer, offsets.finish())
+        (buffer, out_offsets.finish())
     }
 
     /// Get compressed data slice using byte offsets
