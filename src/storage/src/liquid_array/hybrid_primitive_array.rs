@@ -216,6 +216,7 @@ where
     }
 }
 
+#[async_trait::async_trait]
 impl<T> LiquidSqueezedArray for LiquidPrimitiveClampedArray<T>
 where
     T: LiquidPrimitiveType,
@@ -232,7 +233,7 @@ where
         LiquidPrimitiveClampedArray::<T>::len(self)
     }
 
-    fn to_arrow_array(&self) -> SqueezeResult<ArrayRef> {
+    async fn to_arrow_array(&self) -> SqueezeResult<ArrayRef> {
         if let Some(arr) = self.to_arrow_known_only() {
             Ok(arr)
         } else {
@@ -248,16 +249,16 @@ where
         T::DATA_TYPE.clone()
     }
 
-    fn to_bytes(&self) -> SqueezeResult<Vec<u8>> {
+    async fn to_bytes(&self) -> SqueezeResult<Vec<u8>> {
         Err(NeedsBacking)
     }
 
-    fn filter(&self, selection: &BooleanBuffer) -> SqueezeResult<ArrayRef> {
+    async fn filter(&self, selection: &BooleanBuffer) -> SqueezeResult<ArrayRef> {
         let filtered = self.filter_inner(selection);
-        filtered.to_arrow_array()
+        filtered.to_arrow_array().await
     }
 
-    fn try_eval_predicate(
+    async fn try_eval_predicate(
         &self,
         expr: &Arc<dyn PhysicalExpr>,
         filter: &BooleanBuffer,
@@ -500,6 +501,7 @@ where
     }
 }
 
+#[async_trait::async_trait]
 impl<T> LiquidSqueezedArray for LiquidPrimitiveQuantizedArray<T>
 where
     T: LiquidPrimitiveType + PrimitiveKind,
@@ -516,7 +518,7 @@ where
         LiquidPrimitiveQuantizedArray::<T>::len(self)
     }
 
-    fn to_arrow_array(&self) -> SqueezeResult<ArrayRef> {
+    async fn to_arrow_array(&self) -> SqueezeResult<ArrayRef> {
         Err(NeedsBacking)
     }
 
@@ -528,11 +530,11 @@ where
         T::DATA_TYPE.clone()
     }
 
-    fn to_bytes(&self) -> SqueezeResult<Vec<u8>> {
+    async fn to_bytes(&self) -> SqueezeResult<Vec<u8>> {
         Err(NeedsBacking)
     }
 
-    fn try_eval_predicate(
+    async fn try_eval_predicate(
         &self,
         expr: &Arc<dyn PhysicalExpr>,
         filter: &BooleanBuffer,
@@ -565,6 +567,7 @@ mod tests {
     use datafusion::logical_expr::Operator;
     use datafusion::physical_plan::expressions::{BinaryExpr, Literal};
     use datafusion::scalar::ScalarValue;
+    use futures::executor::block_on;
     use rand::rngs::StdRng;
     use rand::{Rng, SeedableRng};
     use std::sync::Arc;
@@ -668,8 +671,7 @@ mod tests {
             })
             .collect();
         let mask = BooleanBuffer::from_iter(mask_bits.iter().copied());
-        let filtered_arrow = hybrid
-            .filter(&mask)
+        let filtered_arrow = block_on(hybrid.filter(&mask))
             .expect("known-only selection should be materializable");
 
         let expected = {
@@ -746,7 +748,7 @@ mod tests {
 
         for (op, k) in resolvable_cases {
             let expr = build_expr(op, k);
-            let got = hybrid.try_eval_predicate(&expr, &mask).expect("no IO");
+            let got = block_on(hybrid.try_eval_predicate(&expr, &mask)).expect("no IO");
             let expected = expected_for(op, k);
             assert_eq!(got.unwrap(), expected);
         }
@@ -762,8 +764,7 @@ mod tests {
         ];
         for (op, k) in unresolvable_cases {
             let expr = build_expr(op, k);
-            let err = hybrid
-                .try_eval_predicate(&expr, &mask)
+            let err = block_on(hybrid.try_eval_predicate(&expr, &mask))
                 .expect_err("should request IO");
             assert_eq!(err, NeedsBacking);
         }
@@ -822,7 +823,7 @@ mod tests {
         ];
         for (op, k) in resolvable_cases {
             let expr = build_expr(op, k);
-            let got = hybrid.try_eval_predicate(&expr, &mask).expect("no IO");
+            let got = block_on(hybrid.try_eval_predicate(&expr, &mask)).expect("no IO");
             let expected = expected_for(op, k);
             assert_eq!(got.unwrap(), expected);
         }
@@ -837,8 +838,7 @@ mod tests {
         ];
         for (op, k) in unresolvable_cases {
             let expr = build_expr(op, k);
-            let err = hybrid
-                .try_eval_predicate(&expr, &mask)
+            let err = block_on(hybrid.try_eval_predicate(&expr, &mask))
                 .expect_err("should request IO");
             assert_eq!(err, NeedsBacking);
         }
@@ -873,7 +873,7 @@ mod tests {
         ];
         for (op, k, expected_const) in resolvable_cases {
             let expr = build_expr(op, k);
-            let got = hybrid.try_eval_predicate(&expr, &mask).expect("no IO");
+            let got = block_on(hybrid.try_eval_predicate(&expr, &mask)).expect("no IO");
             let expected = {
                 let vals: Vec<Option<bool>> = (0..arr.len())
                     .map(|i| {
@@ -900,8 +900,7 @@ mod tests {
             })
             .unwrap();
         let expr_eq_present = build_expr(Operator::Eq, k_present);
-        let err = hybrid
-            .try_eval_predicate(&expr_eq_present, &mask)
+        let err = block_on(hybrid.try_eval_predicate(&expr_eq_present, &mask))
             .expect_err("quantized should request IO on ambiguous eq bucket");
         assert_eq!(err, NeedsBacking);
     }
@@ -933,7 +932,7 @@ mod tests {
         ];
         for (op, k, expected_const) in resolvable_cases {
             let expr = build_expr(op, k);
-            let got = hybrid.try_eval_predicate(&expr, &mask).expect("no IO");
+            let got = block_on(hybrid.try_eval_predicate(&expr, &mask)).expect("no IO");
             let expected = {
                 let vals: Vec<Option<bool>> = (0..arr.len())
                     .map(|i| {
@@ -960,8 +959,7 @@ mod tests {
             })
             .unwrap();
         let expr_eq_present = build_expr(Operator::Eq, k_present);
-        let err = hybrid
-            .try_eval_predicate(&expr_eq_present, &mask)
+        let err = block_on(hybrid.try_eval_predicate(&expr_eq_present, &mask))
             .expect_err("quantized should request IO on ambiguous eq bucket");
         assert_eq!(err, NeedsBacking);
     }
@@ -975,6 +973,6 @@ mod tests {
         let hint = crate::cache::CacheExpression::PredicateColumn;
         let (hybrid, _bytes) = liq.squeeze(Some(&hint)).expect("squeezable");
         // Quantized hybrid cannot materialize to Arrow without IO
-        assert!(hybrid.to_arrow_array().is_err());
+        assert!(block_on(hybrid.to_arrow_array()).is_err());
     }
 }

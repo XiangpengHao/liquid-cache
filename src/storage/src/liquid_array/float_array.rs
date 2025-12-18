@@ -936,6 +936,7 @@ where
     }
 }
 
+#[async_trait::async_trait]
 impl<T> LiquidSqueezedArray for LiquidFloatQuantizedArray<T>
 where
     T: LiquidFloatType,
@@ -956,7 +957,7 @@ where
         LiquidFloatQuantizedArray::<T>::len(self)
     }
 
-    fn to_arrow_array(&self) -> SqueezeResult<ArrayRef> {
+    async fn to_arrow_array(&self) -> SqueezeResult<ArrayRef> {
         Err(NeedsBacking)
     }
 
@@ -968,11 +969,11 @@ where
         T::DATA_TYPE.clone()
     }
 
-    fn to_bytes(&self) -> SqueezeResult<Vec<u8>> {
+    async fn to_bytes(&self) -> SqueezeResult<Vec<u8>> {
         Err(NeedsBacking)
     }
 
-    fn try_eval_predicate(
+    async fn try_eval_predicate(
         &self,
         expr: &Arc<dyn PhysicalExpr>,
         filter: &BooleanBuffer,
@@ -996,6 +997,7 @@ where
 #[cfg(test)]
 mod tests {
     use datafusion::logical_expr::Operator;
+    use futures::executor::block_on;
     use rand::{Rng as _, SeedableRng as _, distr::uniform::SampleUniform, rngs::StdRng};
 
     use super::*;
@@ -1221,7 +1223,7 @@ mod tests {
 
         for (op, k, expected_const) in resolvable_cases {
             let expr = build_expr(op, k);
-            let got = hybrid.try_eval_predicate(&expr, &mask).expect("no IO");
+            let got = block_on(hybrid.try_eval_predicate(&expr, &mask)).expect("no IO");
             let expected = {
                 let vals: Vec<Option<bool>> = (0..arr.len())
                     .map(|i| {
@@ -1248,8 +1250,7 @@ mod tests {
             })
             .unwrap();
         let expr_eq_present = build_expr(Operator::Eq, k_present);
-        let err = hybrid
-            .try_eval_predicate(&expr_eq_present, &mask)
+        let err = block_on(hybrid.try_eval_predicate(&expr_eq_present, &mask))
             .expect_err("quantized should request IO on ambiguous eq bucket");
         assert_eq!(err, NeedsBacking);
     }
@@ -1295,7 +1296,7 @@ mod tests {
 
         for (op, k, expected_const) in resolvable_cases {
             let expr = build_expr(op, k);
-            let got = hybrid.try_eval_predicate(&expr, &mask).expect("no IO");
+            let got = block_on(hybrid.try_eval_predicate(&expr, &mask)).expect("no IO");
             let expected = {
                 let vals: Vec<Option<bool>> = (0..arr.len())
                     .map(|i| {
@@ -1322,8 +1323,7 @@ mod tests {
             })
             .unwrap();
         let expr_eq_present = build_expr(Operator::Eq, k_present);
-        let err = hybrid
-            .try_eval_predicate(&expr_eq_present, &mask)
+        let err = block_on(hybrid.try_eval_predicate(&expr_eq_present, &mask))
             .expect_err("quantized should request IO on ambiguous eq bucket");
         assert_eq!(err, NeedsBacking);
     }

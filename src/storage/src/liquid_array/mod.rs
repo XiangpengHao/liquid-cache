@@ -263,6 +263,7 @@ impl Operator {
 
 /// A Liquid squeezed array is a Liquid array that part of its data is stored on disk.
 /// `LiquidSqueezedArray` is more complex than in-memory `LiquidArray` because it needs to handle IO.
+#[async_trait::async_trait]
 pub trait LiquidSqueezedArray: std::fmt::Debug + Send + Sync {
     /// Get the underlying any type.
     fn as_any(&self) -> &dyn Any;
@@ -279,13 +280,13 @@ pub trait LiquidSqueezedArray: std::fmt::Debug + Send + Sync {
     }
 
     /// Convert the Liquid array to an Arrow array.
-    fn to_arrow_array(&self) -> SqueezeResult<ArrayRef>;
+    async fn to_arrow_array(&self) -> SqueezeResult<ArrayRef>;
 
     /// Convert the Liquid array to an Arrow array.
     /// Except that it will pick the best encoding for the arrow array.
     /// Meaning that it may not obey the data type of the original arrow array.
-    fn to_best_arrow_array(&self) -> SqueezeResult<ArrayRef> {
-        self.to_arrow_array()
+    async fn to_best_arrow_array(&self) -> SqueezeResult<ArrayRef> {
+        self.to_arrow_array().await
     }
 
     /// Get the logical data type of the Liquid array.
@@ -295,11 +296,11 @@ pub trait LiquidSqueezedArray: std::fmt::Debug + Send + Sync {
     fn original_arrow_data_type(&self) -> DataType;
 
     /// Serialize the Liquid array to a byte array.
-    fn to_bytes(&self) -> SqueezeResult<Vec<u8>>;
+    async fn to_bytes(&self) -> SqueezeResult<Vec<u8>>;
 
     /// Filter the Liquid array with a boolean array and return an **arrow array**.
-    fn filter(&self, selection: &BooleanBuffer) -> SqueezeResult<ArrayRef> {
-        let arrow_array = self.to_arrow_array()?;
+    async fn filter(&self, selection: &BooleanBuffer) -> SqueezeResult<ArrayRef> {
+        let arrow_array = self.to_arrow_array().await?;
         let selection = BooleanArray::new(selection.clone(), None);
         Ok(arrow::compute::kernels::filter::filter(&arrow_array, &selection).unwrap())
     }
@@ -309,7 +310,7 @@ pub trait LiquidSqueezedArray: std::fmt::Debug + Send + Sync {
     ///
     /// Note that the filter is a boolean buffer, not a boolean array, i.e., filter can't be nullable.
     /// The returned boolean mask is nullable if the the original array is nullable.
-    fn try_eval_predicate(
+    async fn try_eval_predicate(
         &self,
         _predicate: &Arc<dyn PhysicalExpr>,
         _filter: &BooleanBuffer,

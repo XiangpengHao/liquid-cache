@@ -351,6 +351,7 @@ impl LiquidArray for LiquidByteViewArray<FsstArray> {
     }
 }
 
+#[async_trait::async_trait]
 impl LiquidSqueezedArray for LiquidByteViewArray<DiskBuffer> {
     /// Get the underlying any type.
     fn as_any(&self) -> &dyn Any {
@@ -373,15 +374,8 @@ impl LiquidSqueezedArray for LiquidByteViewArray<DiskBuffer> {
     }
 
     /// Convert the Liquid array to an Arrow array.
-    fn to_arrow_array(&self) -> SqueezeResult<ArrayRef> {
-        self.to_arrow_array()
-    }
-
-    /// Convert the Liquid array to an Arrow array.
-    /// Except that it will pick the best encoding for the arrow array.
-    /// Meaning that it may not obey the data type of the original arrow array.
-    fn to_best_arrow_array(&self) -> SqueezeResult<ArrayRef> {
-        self.to_arrow_array()
+    async fn to_arrow_array(&self) -> SqueezeResult<ArrayRef> {
+        LiquidByteViewArray::<DiskBuffer>::to_arrow_array(self)
     }
 
     /// Get the logical data type of the Liquid array.
@@ -394,12 +388,12 @@ impl LiquidSqueezedArray for LiquidByteViewArray<DiskBuffer> {
     }
 
     /// Serialize the Liquid array to a byte array.
-    fn to_bytes(&self) -> SqueezeResult<Vec<u8>> {
+    async fn to_bytes(&self) -> SqueezeResult<Vec<u8>> {
         Err(NeedsBacking)
     }
 
     /// Filter the Liquid array with a boolean array and return an **arrow array**.
-    fn filter(&self, selection: &BooleanBuffer) -> SqueezeResult<ArrayRef> {
+    async fn filter(&self, selection: &BooleanBuffer) -> SqueezeResult<ArrayRef> {
         let select_any = selection.count_set_bits() > 0;
         if !select_any {
             return Ok(arrow::array::new_empty_array(
@@ -407,7 +401,7 @@ impl LiquidSqueezedArray for LiquidByteViewArray<DiskBuffer> {
             ));
         }
         let filtered = helpers::filter_inner(self, selection);
-        filtered.to_best_arrow_array()
+        filtered.to_best_arrow_array().await
     }
 
     /// Try to evaluate a predicate on the Liquid array with a filter.
@@ -415,7 +409,7 @@ impl LiquidSqueezedArray for LiquidByteViewArray<DiskBuffer> {
     ///
     /// Note that the filter is a boolean buffer, not a boolean array, i.e., filter can't be nullable.
     /// The returned boolean mask is nullable if the the original array is nullable.
-    fn try_eval_predicate(
+    async fn try_eval_predicate(
         &self,
         expr: &Arc<dyn PhysicalExpr>,
         filter: &BooleanBuffer,

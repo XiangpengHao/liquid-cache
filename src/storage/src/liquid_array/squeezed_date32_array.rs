@@ -229,6 +229,7 @@ fn ymd_to_epoch_days(year: i32, month: u32, day: u32) -> i32 {
     (era * 146_097 + doe - 719_468) as i32
 }
 
+#[async_trait::async_trait]
 impl LiquidSqueezedArray for SqueezedDate32Array {
     fn as_any(&self) -> &dyn std::any::Any {
         self
@@ -242,7 +243,7 @@ impl LiquidSqueezedArray for SqueezedDate32Array {
         self.len()
     }
 
-    fn to_arrow_array(&self) -> Result<ArrayRef, NeedsBacking> {
+    async fn to_arrow_array(&self) -> Result<ArrayRef, NeedsBacking> {
         let arr = self.to_arrow_date32_lossy();
         Ok(Arc::new(arr))
     }
@@ -255,11 +256,11 @@ impl LiquidSqueezedArray for SqueezedDate32Array {
         DataType::Date32
     }
 
-    fn to_bytes(&self) -> Result<Vec<u8>, NeedsBacking> {
+    async fn to_bytes(&self) -> Result<Vec<u8>, NeedsBacking> {
         Err(NeedsBacking)
     }
 
-    fn filter(&self, selection: &BooleanBuffer) -> Result<ArrayRef, NeedsBacking> {
+    async fn filter(&self, selection: &BooleanBuffer) -> Result<ArrayRef, NeedsBacking> {
         let unsigned_array: PrimitiveArray<UInt32Type> = self.bit_packed.to_primitive();
         let selection = BooleanArray::new(selection.clone(), None);
         let filtered_values =
@@ -293,7 +294,7 @@ impl LiquidSqueezedArray for SqueezedDate32Array {
         Ok(Arc::new(arr))
     }
 
-    fn try_eval_predicate(
+    async fn try_eval_predicate(
         &self,
         _predicate: &Arc<dyn datafusion::physical_plan::PhysicalExpr>,
         _filter: &BooleanBuffer,

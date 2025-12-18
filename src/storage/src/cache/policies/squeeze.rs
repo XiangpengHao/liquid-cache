@@ -551,6 +551,8 @@ mod tests {
         expected_path: &str,
         bytes: &Bytes,
     ) {
+        use futures::executor::block_on;
+
         assert!(!bytes.is_empty());
         assert_eq!(squeezed.disk_backing(), SqueezedBacking::Arrow);
         let struct_squeezed = squeezed
@@ -558,7 +560,8 @@ mod tests {
             .downcast_ref::<VariantStructSqueezedArray>()
             .expect("squeezed variant struct");
         let arrow_array = struct_squeezed
-            .to_arrow_array()
+            .to_arrow_array();
+        let arrow_array = block_on(arrow_array)
             .expect("reconstruct arrow struct");
         let struct_array = arrow_array
             .as_any()
@@ -636,7 +639,8 @@ mod tests {
                     .as_any()
                     .downcast_ref::<VariantStructSqueezedArray>()
                     .unwrap();
-                let arrow_array = struct_squeezed.to_arrow_array().unwrap();
+                let arrow_array = futures::executor::block_on(struct_squeezed.to_arrow_array())
+                    .unwrap();
                 let struct_array = arrow_array.as_any().downcast_ref::<StructArray>().unwrap();
                 let typed_value = struct_array
                     .column_by_name("typed_value")

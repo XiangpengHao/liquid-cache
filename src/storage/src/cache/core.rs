@@ -835,7 +835,7 @@ impl LiquidCache {
             owned.as_ref().unwrap()
         });
         let entry = CacheEntry::MemorySqueezedLiquid(array.clone());
-        match array.try_eval_predicate(predicate, selection) {
+        match array.try_eval_predicate(predicate, selection).await {
             Ok(Some(buf)) => {
                 self.runtime_stats.incr_eval_predicate_squeezed_success();
                 Some(Ok(buf))
