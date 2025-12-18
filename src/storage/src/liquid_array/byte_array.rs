@@ -627,10 +627,7 @@ impl LiquidByteArray {
                 .map(|v| v.map(|v| key_map[&(v as usize)])),
         );
 
-        let (value_buffer, offsets) = self
-            .values
-            .to_uncompressed_selected(&selected)
-            .expect("in-memory FSST values must have backing");
+        let (value_buffer, offsets) = self.values.to_uncompressed_selected(&selected);
         let values: ArrayRef = if self.original_arrow_type.is_string() {
             Arc::new(unsafe {
                 GenericByteArray::<Utf8Type>::new_unchecked(offsets, value_buffer, None)
@@ -689,12 +686,8 @@ impl LiquidByteArray {
 
         let keys = self.keys.to_primitive();
 
-        let idx = (0..self.values.len()).position(|i| {
-            self.values
-                .get_compressed_slice(i)
-                .expect("in-memory FSST values must have backing")
-                == compressed.as_slice()
-        });
+        let idx = (0..self.values.len())
+            .position(|i| self.values.get_compressed_slice(i) == compressed.as_slice());
 
         if let Some(idx) = idx {
             let to_compare = UInt16Array::new_scalar(idx as u16);

@@ -111,7 +111,7 @@ mod random_tests {
 
             let (_compressor_bv, original_bv) =
                 LiquidByteViewArray::<FsstArray>::train_from_binary_view(&input);
-            let output_bv = original_bv.to_arrow_array().expect("InMemoryFsstBuffer");
+            let output_bv = original_bv.to_arrow_array();
             assert_eq!(output_bv.as_binary_view(), &input);
         }
     }
@@ -129,7 +129,7 @@ mod random_tests {
 
             let (_compressor_bv, original_bv) =
                 LiquidByteViewArray::<FsstArray>::train_from_string_view(&input);
-            let output_bv = original_bv.to_arrow_array().expect("InMemoryFsstBuffer");
+            let output_bv = original_bv.to_arrow_array();
             assert_eq!(output_bv.as_string_view(), &input);
         }
     }
@@ -158,7 +158,7 @@ mod random_tests {
                 let bytes = original.to_bytes();
                 let decoded =
                     LiquidByteViewArray::<FsstArray>::from_bytes(bytes.into(), compressor);
-                let dec = decoded.to_arrow_array().expect("InMemory");
+                let dec = decoded.to_arrow_array();
                 assert_eq!(dec.as_string::<i32>(), &input);
             }
         }
@@ -302,7 +302,7 @@ mod random_tests {
         // LiquidByteViewArray via BinaryView
         let (_compressor_bv, original_bv) =
             LiquidByteViewArray::<FsstArray>::train_from_binary_view(&input);
-        let output_bv = original_bv.to_arrow_array().expect("InMemoryFsstBuffer");
+        let output_bv = original_bv.to_arrow_array();
         assert_eq!(output_bv.as_binary_view(), &input);
     }
 
@@ -326,7 +326,7 @@ mod random_tests {
         // ByteViewArray via StringView
         let (_compressor_bv, original_bv) =
             LiquidByteViewArray::<FsstArray>::train_from_string_view(&input);
-        let output_bv = original_bv.to_arrow_array().expect("InMemoryFsstBuffer");
+        let output_bv = original_bv.to_arrow_array();
         assert_eq!(output_bv.as_string_view(), &input);
     }
 
@@ -341,7 +341,7 @@ mod random_tests {
         }
         {
             let (_c, bv) = LiquidByteViewArray::<FsstArray>::train_from_arrow(&input_str);
-            let dict = bv.to_dict_arrow().expect("InMemory");
+            let dict = bv.to_dict_arrow();
             assert_eq!(dict.values().data_type(), &DataType::Utf8);
         }
 
@@ -357,7 +357,7 @@ mod random_tests {
         }
         {
             let (_c, bv) = LiquidByteViewArray::<FsstArray>::train_from_arrow(&input_bin);
-            let dict = bv.to_dict_arrow().expect("InMemory");
+            let dict = bv.to_dict_arrow();
             assert_eq!(dict.values().data_type(), &DataType::Binary);
         }
 
@@ -371,7 +371,7 @@ mod random_tests {
         }
         {
             let (_c, bv) = LiquidByteViewArray::<FsstArray>::train_from_arrow_dict(&dict_array);
-            let dict = bv.to_dict_arrow().expect("InMemory");
+            let dict = bv.to_dict_arrow();
             assert_eq!(dict.values().data_type(), &DataType::Utf8);
         }
     }
@@ -448,8 +448,8 @@ mod random_tests {
                 LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor.clone());
             let bytes = original.to_bytes();
             let decoded = LiquidByteViewArray::<FsstArray>::from_bytes(bytes.into(), compressor);
-            let dec = decoded.to_arrow_array().expect("InMemory");
-            let ori = original.to_arrow_array().expect("InMemory");
+            let dec = decoded.to_arrow_array();
+            let ori = original.to_arrow_array();
             assert_eq!(dec.as_ref(), ori.as_ref());
         }
     }

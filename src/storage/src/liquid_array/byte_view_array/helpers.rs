@@ -7,9 +7,9 @@ use datafusion::physical_plan::expressions::{BinaryExpr, LikeExpr, Literal};
 use std::sync::Arc;
 
 use super::LiquidByteViewArray;
-use crate::liquid_array::NeedsBacking;
 use crate::liquid_array::byte_array::get_string_needle;
-use crate::liquid_array::raw::fsst_buffer::FsstBacking;
+use crate::liquid_array::raw::FsstArray;
+use crate::liquid_array::raw::fsst_buffer::{DiskBuffer, FsstBacking};
 
 pub(super) fn filter_inner<B: FsstBacking>(
     array: &LiquidByteViewArray<B>,
@@ -32,10 +32,10 @@ pub(super) fn filter_inner<B: FsstBacking>(
     }
 }
 
-pub(super) fn try_eval_predicate_inner<B: FsstBacking>(
+pub(super) fn try_eval_predicate_in_memory(
     expr: &Arc<dyn PhysicalExpr>,
-    array: &LiquidByteViewArray<B>,
-) -> Result<Option<BooleanArray>, NeedsBacking> {
+    array: &LiquidByteViewArray<FsstArray>,
+) -> Option<BooleanArray> {
     // Handle binary expressions (comparisons)
     if let Some(binary_expr) = expr.as_any().downcast_ref::<BinaryExpr>() {
         if let Some(literal) = binary_expr.right().as_any().downcast_ref::<Literal>() {
@@ -44,12 +44,12 @@ pub(super) fn try_eval_predicate_inner<B: FsstBacking>(
             // Try to use string needle optimization first
             if let Some(needle) = get_string_needle(literal.value()) {
                 let needle_bytes = needle.as_bytes();
-                let result = array.compare_with(needle_bytes, op)?;
-                return Ok(Some(result));
+                let result = array.compare_with(needle_bytes, op);
+                return Some(result);
             }
 
             // Fallback to Arrow operations
-            let dict_array = array.to_dict_arrow()?;
+            let dict_array = array.to_dict_arrow();
             let lhs = ColumnarValue::Array(Arc::new(dict_array));
             let rhs = ColumnarValue::Scalar(literal.value().clone());
 
@@ -64,11 +64,11 @@ pub(super) fn try_eval_predicate_inner<B: FsstBacking>(
                 Operator::ILikeMatch => apply_cmp(Operator::ILikeMatch, &lhs, &rhs),
                 Operator::NotLikeMatch => apply_cmp(Operator::NotLikeMatch, &lhs, &rhs),
                 Operator::NotILikeMatch => apply_cmp(Operator::NotILikeMatch, &lhs, &rhs),
-                _ => return Ok(None),
+                _ => return None,
             };
             if let Ok(result) = result {
                 let filtered = result.into_array(array.len()).unwrap().as_boolean().clone();
-                return Ok(Some(filtered));
+                return Some(filtered);
             }
         }
     }
@@ -81,7 +81,7 @@ pub(super) fn try_eval_predicate_inner<B: FsstBacking>(
             .is_some()
         && let Some(literal) = like_expr.pattern().as_any().downcast_ref::<Literal>()
     {
-        let arrow_dict = array.to_dict_arrow()?;
+        let arrow_dict = array.to_dict_arrow();
 
         let lhs = ColumnarValue::Array(Arc::new(arrow_dict));
         let rhs = ColumnarValue::Scalar(literal.value().clone());
@@ -94,10 +94,78 @@ pub(super) fn try_eval_predicate_inner<B: FsstBacking>(
         };
         if let Ok(result) = result {
             let filtered = result.into_array(array.len()).unwrap().as_boolean().clone();
-            return Ok(Some(filtered));
+            return Some(filtered);
         }
     }
-    Ok(None)
+    None
+}
+
+pub(super) async fn try_eval_predicate_on_disk(
+    expr: &Arc<dyn PhysicalExpr>,
+    array: &LiquidByteViewArray<DiskBuffer>,
+) -> Option<BooleanArray> {
+    // Handle binary expressions (comparisons)
+    if let Some(binary_expr) = expr.as_any().downcast_ref::<BinaryExpr>() {
+        if let Some(literal) = binary_expr.right().as_any().downcast_ref::<Literal>() {
+            let op = binary_expr.op();
+
+            // Try to use string needle optimization first
+            if let Some(needle) = get_string_needle(literal.value()) {
+                let needle_bytes = needle.as_bytes();
+                let result = array.compare_with(needle_bytes, op).await;
+                return Some(result);
+            }
+
+            // Fallback to Arrow operations
+            let dict_array = array.to_dict_arrow().await;
+            let lhs = ColumnarValue::Array(Arc::new(dict_array));
+            let rhs = ColumnarValue::Scalar(literal.value().clone());
+
+            let result = match op {
+                Operator::NotEq => apply_cmp(Operator::NotEq, &lhs, &rhs),
+                Operator::Eq => apply_cmp(Operator::Eq, &lhs, &rhs),
+                Operator::Lt => apply_cmp(Operator::Lt, &lhs, &rhs),
+                Operator::LtEq => apply_cmp(Operator::LtEq, &lhs, &rhs),
+                Operator::Gt => apply_cmp(Operator::Gt, &lhs, &rhs),
+                Operator::GtEq => apply_cmp(Operator::GtEq, &lhs, &rhs),
+                Operator::LikeMatch => apply_cmp(Operator::LikeMatch, &lhs, &rhs),
+                Operator::ILikeMatch => apply_cmp(Operator::ILikeMatch, &lhs, &rhs),
+                Operator::NotLikeMatch => apply_cmp(Operator::NotLikeMatch, &lhs, &rhs),
+                Operator::NotILikeMatch => apply_cmp(Operator::NotILikeMatch, &lhs, &rhs),
+                _ => return None,
+            };
+            if let Ok(result) = result {
+                let filtered = result.into_array(array.len()).unwrap().as_boolean().clone();
+                return Some(filtered);
+            }
+        }
+    }
+    // Handle like expressions
+    else if let Some(like_expr) = expr.as_any().downcast_ref::<LikeExpr>()
+        && like_expr
+            .pattern()
+            .as_any()
+            .downcast_ref::<Literal>()
+            .is_some()
+        && let Some(literal) = like_expr.pattern().as_any().downcast_ref::<Literal>()
+    {
+        let arrow_dict = array.to_dict_arrow().await;
+
+        let lhs = ColumnarValue::Array(Arc::new(arrow_dict));
+        let rhs = ColumnarValue::Scalar(literal.value().clone());
+
+        let result = match (like_expr.negated(), like_expr.case_insensitive()) {
+            (false, false) => apply_cmp(Operator::LikeMatch, &lhs, &rhs),
+            (true, false) => apply_cmp(Operator::NotLikeMatch, &lhs, &rhs),
+            (false, true) => apply_cmp(Operator::ILikeMatch, &lhs, &rhs),
+            (true, true) => apply_cmp(Operator::NotILikeMatch, &lhs, &rhs),
+        };
+        if let Ok(result) = result {
+            let filtered = result.into_array(array.len()).unwrap().as_boolean().clone();
+            return Some(filtered);
+        }
+    }
+    None
 }
 
 use std::fmt::Display;

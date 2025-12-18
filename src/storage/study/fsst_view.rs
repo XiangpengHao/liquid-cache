@@ -521,9 +521,7 @@ impl ArrayBenchmark for FsstViewBenchmark {
         let start = Instant::now();
         for needle in needles {
             let needle_bytes = needle.as_bytes();
-            let _result = encoded_data
-                .compare_with(needle_bytes, &Operator::Eq)
-                .unwrap();
+            let _result = encoded_data.compare_with(needle_bytes, &Operator::Eq);
         }
         start.elapsed().as_secs_f64()
     }
@@ -532,9 +530,7 @@ impl ArrayBenchmark for FsstViewBenchmark {
         let start = Instant::now();
         for needle in needles {
             let needle_bytes = needle.as_bytes();
-            let _result = encoded_data
-                .compare_with(needle_bytes, &Operator::Gt)
-                .unwrap();
+            let _result = encoded_data.compare_with(needle_bytes, &Operator::Gt);
         }
         start.elapsed().as_secs_f64()
     }

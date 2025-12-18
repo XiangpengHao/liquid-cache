@@ -392,10 +392,7 @@ impl LiquidFixedLenByteArray {
             .filter_map(|(i, select)| select.then_some(i))
             .collect();
 
-        let (value_buffer, offsets) = self
-            .values
-            .to_uncompressed_selected(&selected)
-            .expect("in-memory FSST values must have backing");
+        let (value_buffer, offsets) = self.values.to_uncompressed_selected(&selected);
 
         debug_assert_eq!(offsets.len(), selected_cnt + 1);
         debug_assert_eq!(value_buffer.len(), selected_cnt * value_width);
