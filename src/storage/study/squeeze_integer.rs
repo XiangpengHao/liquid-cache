@@ -9,10 +9,13 @@ use clap::Parser;
 use datafusion::prelude::*;
 use datafusion::scalar::ScalarValue;
 use futures::StreamExt;
+use liquid_cache_storage::cache::CacheExpression;
 use liquid_cache_storage::liquid_array::{
     IntegerSqueezePolicy, LiquidArray, LiquidPrimitiveArray, LiquidPrimitiveType,
     LiquidSqueezedArray, SqueezeIoHandler,
 };
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -267,12 +270,44 @@ async fn run_case(ctx: &SessionContext, case: &FilterCase, limit: Option<usize>)
     stats
 }
 
-struct TestingSqueezeIo;
+#[derive(Debug, Default)]
+struct InMemorySqueezeIo {
+    bytes: Mutex<Option<Bytes>>,
+    bytes_read: AtomicUsize,
+}
+
+impl InMemorySqueezeIo {
+    fn set_bytes(&self, bytes: Bytes) {
+        *self.bytes.lock().unwrap() = Some(bytes);
+    }
+
+    fn bytes(&self) -> Bytes {
+        self.bytes
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("in-memory squeeze bytes set")
+    }
+
+    fn reset_bytes_read(&self) {
+        self.bytes_read.store(0, Ordering::SeqCst);
+    }
+
+    fn bytes_read(&self) -> usize {
+        self.bytes_read.load(Ordering::SeqCst)
+    }
+}
 
 #[async_trait::async_trait]
-impl SqueezeIoHandler for TestingSqueezeIo {
-    async fn read(&self, _range: Option<Range<u64>>) -> std::io::Result<Bytes> {
-        unreachable!()
+impl SqueezeIoHandler for InMemorySqueezeIo {
+    async fn read(&self, range: Option<Range<u64>>) -> std::io::Result<Bytes> {
+        let bytes = self.bytes();
+        let out = match range {
+            Some(range) => bytes.slice(range.start as usize..range.end as usize),
+            None => bytes,
+        };
+        self.bytes_read.fetch_add(out.len(), Ordering::SeqCst);
+        Ok(out)
     }
 }
 
@@ -288,26 +323,32 @@ where
     let liquid = LiquidPrimitiveArray::<T>::from_arrow_array(prim.clone());
     stats.liquid_bytes += liquid.get_array_memory_size();
 
+    let hint = CacheExpression::PredicateColumn;
+
     // Build Liquid primitive array and squeeze with Clamp
     let mut lp = LiquidPrimitiveArray::<T>::from_arrow_array(prim.clone());
+    let clamp_io = Arc::new(InMemorySqueezeIo::default());
     let clamp_hybrid_and_bytes = {
         lp.set_squeeze_policy(IntegerSqueezePolicy::Clamp);
-        lp.squeeze(Arc::new(TestingSqueezeIo), None)
+        lp.squeeze(clamp_io.clone(), Some(&hint))
     };
 
     // Build Quantize
     let mut lq = LiquidPrimitiveArray::<T>::from_arrow_array(prim.clone());
+    let quant_io = Arc::new(InMemorySqueezeIo::default());
     let quant_hybrid_and_bytes = {
         lq.set_squeeze_policy(IntegerSqueezePolicy::Quantize);
-        lq.squeeze(Arc::new(TestingSqueezeIo), None)
+        lq.squeeze(quant_io.clone(), Some(&hint))
     };
 
     // Size accounting (for squeezable ones)
     if let Some((h, bytes)) = clamp_hybrid_and_bytes.as_ref() {
+        clamp_io.set_bytes(bytes.clone());
         stats.clamp_mem_bytes += h.get_array_memory_size();
         stats.clamp_disk_bytes += bytes.len();
     }
     if let Some((h, bytes)) = quant_hybrid_and_bytes.as_ref() {
+        quant_io.set_bytes(bytes.clone());
         stats.quant_mem_bytes += h.get_array_memory_size();
         stats.quant_disk_bytes += bytes.len();
     }
@@ -324,27 +365,29 @@ where
     let all_true = BooleanBuffer::new_set(prim.len());
 
     // Evaluate predicate on clamp
-    if let Some((hy, full_bytes)) = clamp_hybrid_and_bytes.clone() {
-        let (mask, pred_io_bytes) = try_eval_or_fetch::<T>(&*hy, &full_bytes, &expr, &all_true);
+    if let Some((hy, _full_bytes)) = clamp_hybrid_and_bytes.clone() {
+        let (mask, pred_io_bytes) =
+            try_eval_or_fetch::<T>(&*hy, clamp_io.as_ref(), &expr, &all_true);
         stats.clamp_pred_io_bytes += pred_io_bytes;
         let sel = bool_array_to_selection(&mask);
         // Expected selection result from Arrow
         let expected_filtered = filter_expected::<T>(&prim, &case.op, &case.scalar);
         // Try get with selection from hybrid
         let sel_io =
-            get_with_selection_or_fetch::<T>(&*hy, &full_bytes, &sel, expected_filtered.as_ref());
+            get_with_selection::<T>(&*hy, clamp_io.as_ref(), &sel, expected_filtered.as_ref());
         stats.clamp_select_io_bytes += sel_io;
     }
 
     // Evaluate predicate on quantized
-    if let Some((hy, full_bytes)) = quant_hybrid_and_bytes.clone() {
-        let (mask, pred_io_bytes) = try_eval_or_fetch::<T>(&*hy, &full_bytes, &expr, &all_true);
+    if let Some((hy, _full_bytes)) = quant_hybrid_and_bytes.clone() {
+        let (mask, pred_io_bytes) =
+            try_eval_or_fetch::<T>(&*hy, quant_io.as_ref(), &expr, &all_true);
         stats.quant_pred_io_bytes += pred_io_bytes;
         let sel = bool_array_to_selection(&mask);
         // Expected selection result from Arrow
         let expected_filtered = filter_expected::<T>(&prim, &case.op, &case.scalar);
         let sel_io =
-            get_with_selection_or_fetch::<T>(&*hy, &full_bytes, &sel, expected_filtered.as_ref());
+            get_with_selection::<T>(&*hy, quant_io.as_ref(), &sel, expected_filtered.as_ref());
         stats.quant_select_io_bytes += sel_io;
     }
 
@@ -353,14 +396,17 @@ where
 
 fn try_eval_or_fetch<T: LiquidPrimitiveType>(
     hybrid: &dyn LiquidSqueezedArray,
-    full_bytes: &Bytes,
+    io: &InMemorySqueezeIo,
     expr: &std::sync::Arc<dyn datafusion::physical_plan::PhysicalExpr>,
     filter: &BooleanBuffer,
 ) -> (BooleanArray, usize) {
+    io.reset_bytes_read();
     match futures::executor::block_on(hybrid.try_eval_predicate(expr, filter)) {
-        Ok(Some(mask)) => (mask, 0),
-        Ok(None) | Err(_) => {
-            // Not supported in hybrid form: materialize from full bytes and compute via Arrow
+        Some(mask) => (mask, io.bytes_read()),
+        None => {
+            // Not supported in hybrid form: materialize from full bytes and compute via Arrow.
+            // Count this as a full backing read for apples-to-apples IO accounting.
+            let full_bytes = io.bytes();
             let liq = LiquidPrimitiveArray::<T>::from_bytes(full_bytes.clone());
             let arr = liq.to_arrow_array();
             let mask = eval_on_arrow(&arr, expr);
@@ -369,24 +415,16 @@ fn try_eval_or_fetch<T: LiquidPrimitiveType>(
     }
 }
 
-fn get_with_selection_or_fetch<T: LiquidPrimitiveType>(
+fn get_with_selection<T: LiquidPrimitiveType>(
     hybrid: &dyn LiquidSqueezedArray,
-    full_bytes: &Bytes,
+    io: &InMemorySqueezeIo,
     selection: &BooleanBuffer,
     expected: &dyn Array,
 ) -> usize {
-    match futures::executor::block_on(hybrid.filter(selection)) {
-        Ok(arr) => {
-            assert_eq!(arr.as_ref(), expected);
-            0
-        }
-        Err(_) => {
-            let liq = LiquidPrimitiveArray::<T>::from_bytes(full_bytes.clone());
-            let arr = liq.filter(selection);
-            assert_eq!(arr.as_ref(), expected);
-            full_bytes.len()
-        }
-    }
+    io.reset_bytes_read();
+    let arr = futures::executor::block_on(hybrid.filter(selection));
+    assert_eq!(arr.as_ref(), expected);
+    io.bytes_read()
 }
 
 fn eval_on_arrow(

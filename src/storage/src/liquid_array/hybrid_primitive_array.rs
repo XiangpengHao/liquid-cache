@@ -809,9 +809,11 @@ mod tests {
         let liquid = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(arr)
             .with_squeeze_policy(IntegerSqueezePolicy::Clamp);
         let hint = crate::cache::CacheExpression::PredicateColumn;
-        assert!(liquid
-            .squeeze(Arc::new(TestSqueezeIo::default()), Some(&hint))
-            .is_none());
+        assert!(
+            liquid
+                .squeeze(Arc::new(TestSqueezeIo::default()), Some(&hint))
+                .is_none()
+        );
     }
 
     #[test]
@@ -823,9 +825,7 @@ mod tests {
         let bytes_baseline = liq.to_bytes();
         let hint = crate::cache::CacheExpression::PredicateColumn;
         let io = Arc::new(TestSqueezeIo::default());
-        let (hybrid, bytes) = liq
-            .squeeze(io.clone(), Some(&hint))
-            .expect("squeezable");
+        let (hybrid, bytes) = liq.squeeze(io.clone(), Some(&hint)).expect("squeezable");
         io.set_bytes(bytes.clone());
         // ensure we can recover the original by hydrating from full bytes
         let recovered = LiquidPrimitiveArray::<Int32Type>::from_bytes(bytes.clone());
@@ -840,7 +840,7 @@ mod tests {
                     true
                 } else {
                     arr.value(i) < boundary
-        }
+                }
             })
             .collect();
         let mask = BooleanBuffer::from_iter(mask_bits.iter().copied());

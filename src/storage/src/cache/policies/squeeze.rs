@@ -443,10 +443,7 @@ mod tests {
         // MemorySqueezedLiquid -> DiskLiquid, no bytes
         let strings = Arc::new(StringArray::from(vec!["m", "n"])) as ArrayRef;
         let liquid = transcode_liquid_inner(&strings, &states).unwrap();
-        let squeezed = liquid
-            .squeeze(squeeze_io.clone(), expression)
-            .unwrap()
-            .0;
+        let squeezed = liquid.squeeze(squeeze_io.clone(), expression).unwrap().0;
         let (new_batch, bytes) = to_liquid.squeeze(
             &CacheEntry::memory_squeezed_liquid(squeezed),
             &states,
@@ -459,8 +456,12 @@ mod tests {
         }
 
         // Disk* -> unchanged
-        let (b1, w1) =
-            to_liquid.squeeze(&CacheEntry::disk_arrow(DataType::Utf8), &states, expression, &squeeze_io);
+        let (b1, w1) = to_liquid.squeeze(
+            &CacheEntry::disk_arrow(DataType::Utf8),
+            &states,
+            expression,
+            &squeeze_io,
+        );
         assert!(matches!(b1, CacheEntry::DiskArrow(DataType::Utf8)) && w1.is_none());
         let (b2, w2) = to_liquid.squeeze(
             &CacheEntry::disk_liquid(DataType::Utf8),
@@ -477,8 +478,12 @@ mod tests {
         let states = LiquidCompressorStates::new();
         let squeeze_io: Arc<dyn SqueezeIoHandler> = Arc::new(TestingSqueezeIo);
         let struct_arr = struct_array();
-        let (new_batch, bytes) =
-            to_liquid.squeeze(&CacheEntry::memory_arrow(struct_arr.clone()), &states, None, &squeeze_io);
+        let (new_batch, bytes) = to_liquid.squeeze(
+            &CacheEntry::memory_arrow(struct_arr.clone()),
+            &states,
+            None,
+            &squeeze_io,
+        );
         match (new_batch, bytes) {
             (CacheEntry::DiskArrow(dt), Some(b)) => {
                 assert_eq!(&dt, struct_arr.data_type());
@@ -494,8 +499,12 @@ mod tests {
         let states = LiquidCompressorStates::new();
         let squeeze_io: Arc<dyn SqueezeIoHandler> = Arc::new(TestingSqueezeIo);
         let struct_arr = struct_array();
-        let (new_batch, bytes) =
-            to_disk.squeeze(&CacheEntry::memory_arrow(struct_arr.clone()), &states, None, &squeeze_io);
+        let (new_batch, bytes) = to_disk.squeeze(
+            &CacheEntry::memory_arrow(struct_arr.clone()),
+            &states,
+            None,
+            &squeeze_io,
+        );
         match (new_batch, bytes) {
             (CacheEntry::DiskArrow(dt), Some(b)) => {
                 assert_eq!(&dt, struct_arr.data_type());
@@ -627,8 +636,12 @@ mod tests {
         let hint = CacheExpression::variant_get("name", DataType::Utf8);
         let squeeze_io: Arc<dyn SqueezeIoHandler> = Arc::new(TestingSqueezeIo);
 
-        let (new_batch, bytes) =
-            policy.squeeze(&CacheEntry::memory_arrow(variant_arr), &states, Some(&hint), &squeeze_io);
+        let (new_batch, bytes) = policy.squeeze(
+            &CacheEntry::memory_arrow(variant_arr),
+            &states,
+            Some(&hint),
+            &squeeze_io,
+        );
 
         match (new_batch, bytes) {
             (CacheEntry::MemorySqueezedLiquid(squeezed), Some(b)) => {
@@ -646,8 +659,12 @@ mod tests {
         let hint = CacheExpression::variant_get("age", DataType::Int64);
         let squeeze_io: Arc<dyn SqueezeIoHandler> = Arc::new(TestingSqueezeIo);
 
-        let (new_batch, bytes) =
-            policy.squeeze(&CacheEntry::memory_arrow(variant_arr), &states, Some(&hint), &squeeze_io);
+        let (new_batch, bytes) = policy.squeeze(
+            &CacheEntry::memory_arrow(variant_arr),
+            &states,
+            Some(&hint),
+            &squeeze_io,
+        );
 
         match (new_batch, bytes) {
             (CacheEntry::MemorySqueezedLiquid(squeezed), Some(b)) => {
@@ -668,8 +685,12 @@ mod tests {
         let hint = CacheExpression::variant_get("name", DataType::Utf8);
         let squeeze_io: Arc<dyn SqueezeIoHandler> = Arc::new(TestingSqueezeIo);
 
-        let (new_batch, bytes) =
-            policy.squeeze(&CacheEntry::memory_arrow(variant_arr), &states, Some(&hint), &squeeze_io);
+        let (new_batch, bytes) = policy.squeeze(
+            &CacheEntry::memory_arrow(variant_arr),
+            &states,
+            Some(&hint),
+            &squeeze_io,
+        );
 
         match (new_batch, bytes) {
             (CacheEntry::MemorySqueezedLiquid(squeezed), Some(b)) => {
@@ -700,8 +721,12 @@ mod tests {
         let variant_arr = enriched_variant_array("name", DataType::Utf8);
         let squeeze_io: Arc<dyn SqueezeIoHandler> = Arc::new(TestingSqueezeIo);
 
-        let (new_batch, bytes) =
-            policy.squeeze(&CacheEntry::memory_arrow(variant_arr), &states, None, &squeeze_io);
+        let (new_batch, bytes) = policy.squeeze(
+            &CacheEntry::memory_arrow(variant_arr),
+            &states,
+            None,
+            &squeeze_io,
+        );
 
         match (new_batch, bytes) {
             (CacheEntry::DiskArrow(_), Some(b)) => assert!(!b.is_empty()),

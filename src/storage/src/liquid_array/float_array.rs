@@ -32,7 +32,6 @@ use fastlanes::BitPacking;
 use num_traits::{AsPrimitive, Float, FromPrimitive};
 
 use super::LiquidDataType;
-use crate::{cache::CacheExpression, liquid_array::SqueezeIoHandler};
 use crate::liquid_array::LiquidArray;
 use crate::liquid_array::ipc::{PhysicalTypeMarker, get_physical_type_id};
 use crate::liquid_array::raw::BitPackedArray;
@@ -41,6 +40,7 @@ use crate::liquid_array::{
     ipc::LiquidIPCHeader,
 };
 use crate::utils::get_bit_width;
+use crate::{cache::CacheExpression, liquid_array::SqueezeIoHandler};
 use bytes::Bytes;
 
 mod private {
@@ -1066,8 +1066,8 @@ mod tests {
     use super::*;
     use bytes::Bytes;
     use std::ops::Range;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[derive(Debug, Default)]
     struct TestSqueezeIo {
@@ -1283,7 +1283,11 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(0x51_71);
         let arr = make_f_array_with_range::<Float32Type>(64, 10_000.0, 100.0, 0.1, &mut rng);
         let liquid = LiquidFloatArray::<Float32Type>::from_arrow_array(arr);
-        assert!(liquid.squeeze(Arc::new(TestSqueezeIo::default()), None).is_none());
+        assert!(
+            liquid
+                .squeeze(Arc::new(TestSqueezeIo::default()), None)
+                .is_none()
+        );
     }
 
     #[test]

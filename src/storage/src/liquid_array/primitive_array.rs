@@ -403,12 +403,9 @@ where
         if T::DATA_TYPE == DataType::Date32 {
             // Special handle for Date32 arrays with component extraction support.
             let field = expression_hint.as_date32_field()?;
-            let squeezed = SqueezedDate32Array::from_liquid_date32(self, field)
-                .with_backing(io, disk_range);
-            return Some((
-                Arc::new(squeezed) as LiquidSqueezedArrayRef,
-                full_bytes,
-            ));
+            let squeezed =
+                SqueezedDate32Array::from_liquid_date32(self, field).with_backing(io, disk_range);
+            return Some((Arc::new(squeezed) as LiquidSqueezedArrayRef, full_bytes));
         }
 
         // Only squeeze if we have a concrete bit width and it is large enough

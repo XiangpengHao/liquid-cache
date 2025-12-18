@@ -677,11 +677,7 @@ impl LiquidCache {
 
     async fn read_disk_arrow_array(&self, entry_id: &EntryID) -> ArrayRef {
         let path = self.io_context.disk_path(entry_id);
-        let bytes = self
-            .io_context
-            .read(path, None)
-            .await
-            .expect("read failed");
+        let bytes = self.io_context.read(path, None).await.expect("read failed");
         let cursor = std::io::Cursor::new(bytes.to_vec());
         let mut reader =
             arrow::ipc::reader::StreamReader::try_new(cursor, None).expect("create reader failed");
@@ -699,11 +695,7 @@ impl LiquidCache {
         entry_id: &EntryID,
     ) -> crate::liquid_array::LiquidArrayRef {
         let path = self.io_context.disk_path(entry_id);
-        let bytes = self
-            .io_context
-            .read(path, None)
-            .await
-            .expect("read failed");
+        let bytes = self.io_context.read(path, None).await.expect("read failed");
         self.trace(InternalEvent::IoReadLiquid {
             entry: *entry_id,
             bytes: bytes.len(),

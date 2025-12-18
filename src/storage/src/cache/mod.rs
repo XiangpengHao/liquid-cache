@@ -16,16 +16,16 @@ pub use builders::{EvaluatePredicate, Get, Insert, LiquidCacheBuilder};
 pub use cached_batch::{CacheEntry, CachedBatchType};
 pub use core::LiquidCache;
 pub use expressions::{CacheExpression, VariantRequest};
-pub use observer::EventTrace;
-pub use observer::Observer;
 #[cfg(test)]
 pub(crate) use io_context::TestingSqueezeIo;
 pub use io_context::{DefaultIoContext, DefaultSqueezeIo, IoContext};
+pub use observer::EventTrace;
+pub use observer::Observer;
+pub use observer::{CacheStats, RuntimeStats, RuntimeStatsSnapshot};
 pub use policies::{
     AlwaysHydrate, CachePolicy, HydrationPolicy, HydrationRequest, LiquidPolicy, MaterializedEntry,
     NoHydration, SqueezePolicy, TranscodeSqueezeEvict,
 };
-pub use observer::{CacheStats, RuntimeStats, RuntimeStatsSnapshot};
 pub use transcode::transcode_liquid_inner;
 pub use utils::{EntryID, LiquidCompressorStates};
 
