@@ -2,11 +2,10 @@
 
 use arrow::array::BooleanArray;
 use arrow::array::{
-    Array, ArrayRef, BinaryArray, DictionaryArray, StringArray, UInt16Array, UInt32Array,
-    types::UInt16Type,
+    Array, ArrayRef, BinaryArray, DictionaryArray, StringArray, UInt16Array, types::UInt16Type,
 };
 use arrow::buffer::{BooleanBuffer, NullBuffer};
-use arrow::compute::{cast, sort_to_indices};
+use arrow::compute::cast;
 use arrow_schema::DataType;
 use bytes::Bytes;
 use datafusion::logical_expr::Operator;
@@ -144,22 +143,6 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
         }
     }
 
-    /// Sort the array and return indices that would sort the array
-    /// This implements efficient sorting as described in the design document:
-    /// 1. First sort the dictionary using prefixes to delay decompression
-    /// 2. If decompression is needed, decompress the entire array at once
-    /// 3. Use dictionary ranks to sort the final keys
-    pub fn sort_to_indices(&self) -> Result<UInt32Array, NeedsBacking> {
-        // if distinct ratio is more than 10%, use arrow sort.
-        if self.prefix_keys.len() > (self.dictionary_keys.len() / 10) {
-            let array = self.to_dict_arrow()?;
-            let sorted_array = sort_to_indices(&array, None, None).unwrap();
-            Ok(sorted_array)
-        } else {
-            self.sort_to_indices_inner()
-        }
-    }
-
     /// Check if the FSST buffer is currently stored on disk
     pub fn is_fsst_buffer_on_disk(&self) -> bool {
         self.fsst_buffer.get_array_memory_size() == 0 && self.fsst_buffer.uncompressed_bytes() > 0
@@ -190,72 +173,6 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
     #[cfg(test)]
     pub fn reset_disk_read_count(&self) {
         reset_disk_read_counter()
-    }
-
-    fn sort_to_indices_inner(&self) -> Result<UInt32Array, NeedsBacking> {
-        // Step 1: Get dictionary ranks using prefix optimization
-        let dict_ranks = self.get_dictionary_ranks()?;
-
-        // Step 2: Partition array indices into nulls and non-nulls, then sort non-nulls
-        let mut non_null_indices = Vec::with_capacity(self.dictionary_keys.len());
-
-        let mut array_indices = Vec::with_capacity(self.dictionary_keys.len());
-        for array_idx in 0..self.dictionary_keys.len() as u32 {
-            if self.dictionary_keys.is_null(array_idx as usize) {
-                array_indices.push(array_idx);
-            } else {
-                non_null_indices.push(array_idx);
-            }
-        }
-
-        // Sort non-null indices by their dictionary ranks
-        non_null_indices.sort_unstable_by_key(|&array_idx| unsafe {
-            let dict_key = self.dictionary_keys.value_unchecked(array_idx as usize);
-            dict_ranks.get_unchecked(dict_key as usize)
-        });
-
-        array_indices.extend(non_null_indices);
-
-        Ok(UInt32Array::from(array_indices))
-    }
-
-    /// Get dictionary ranks using prefix optimization and lazy decompression
-    /// Returns a mapping from dictionary key to its rank in sorted order
-    fn get_dictionary_ranks(&self) -> Result<Vec<u16>, NeedsBacking> {
-        let num_unique = self.prefix_keys.len().saturating_sub(1);
-        let mut dict_indices: Vec<u32> = (0..num_unique as u32).collect();
-
-        let decompressed = {
-            let (values_buffer, offsets_buffer) = self.fsst_buffer.to_uncompressed()?;
-            unsafe { BinaryArray::new_unchecked(offsets_buffer, values_buffer, None) }
-        };
-
-        // Sort using prefix optimization first, then full strings when needed
-        dict_indices.sort_unstable_by(|&a, &b| unsafe {
-            // First try prefix comparison - no need to include shared_prefix since all strings have it
-            let prefix_a = self.prefix_keys[a as usize].prefix7();
-            let prefix_b = self.prefix_keys[b as usize].prefix7();
-
-            let prefix_cmp = prefix_a.cmp(prefix_b);
-
-            if prefix_cmp != std::cmp::Ordering::Equal {
-                // Prefix comparison is sufficient
-                prefix_cmp
-            } else {
-                // Prefixes are equal, need full string comparison
-                let string_a = decompressed.value_unchecked(a as usize);
-                let string_b = decompressed.value_unchecked(b as usize);
-                string_a.cmp(string_b)
-            }
-        });
-
-        // Convert sorted indices to rank mapping
-        let mut dict_ranks = vec![0u16; dict_indices.len()];
-        for (rank, dict_key) in dict_indices.into_iter().enumerate() {
-            dict_ranks[dict_key as usize] = rank as u16;
-        }
-
-        Ok(dict_ranks)
     }
 }
 
