@@ -24,9 +24,7 @@ event=io_write entry=1 kind=DiskLiquid bytes=6184
 event=insert_success entry=1 kind=DiskLiquid
 event=insert_success entry=3 kind=MemoryArrow
 event=read entry=0 selection=false expr=PredicateColumn cached=MemorySqueezedLiquid
-event=io_read_liquid entry=0 bytes=6184
-event=hydrate entry=0 cached=MemorySqueezedLiquid new=MemoryLiquid
-event=insert_success entry=0 kind=MemoryLiquid
+event=io_read_squeezed_backing entry=0 bytes=6184
 event=read entry=1 selection=false expr=PredicateColumn cached=DiskLiquid
 event=io_read_liquid entry=1 bytes=6184
 event=hydrate entry=1 cached=DiskLiquid new=MemoryLiquid

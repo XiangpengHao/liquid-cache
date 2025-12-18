@@ -30,7 +30,5 @@ event=read_squeezed_data entry=1 expression=ExtractDate32:Year
 event=read entry=2 selection=false expr=ExtractDate32:Year cached=MemoryLiquid
 event=read entry=3 selection=false expr=ExtractDate32:Year cached=MemoryArrow
 event=read entry=1 selection=false expr=ExtractDate32:Month cached=MemorySqueezedLiquid
-event=io_read_liquid entry=1 bytes=6184
-event=hydrate entry=1 cached=MemorySqueezedLiquid new=MemoryLiquid
-event=insert_success entry=1 kind=MemoryLiquid
+event=io_read_squeezed_backing entry=1 bytes=6184
 ]
