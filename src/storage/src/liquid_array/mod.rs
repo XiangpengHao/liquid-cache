@@ -282,12 +282,12 @@ pub trait LiquidSqueezedArray: std::fmt::Debug + Send + Sync {
     }
 
     /// Convert the Liquid array to an Arrow array.
-    async fn to_arrow_array(&self) -> SqueezeResult<ArrayRef>;
+    async fn to_arrow_array(&self) -> ArrayRef;
 
     /// Convert the Liquid array to an Arrow array.
     /// Except that it will pick the best encoding for the arrow array.
     /// Meaning that it may not obey the data type of the original arrow array.
-    async fn to_best_arrow_array(&self) -> SqueezeResult<ArrayRef> {
+    async fn to_best_arrow_array(&self) -> ArrayRef {
         self.to_arrow_array().await
     }
 
@@ -298,13 +298,13 @@ pub trait LiquidSqueezedArray: std::fmt::Debug + Send + Sync {
     fn original_arrow_data_type(&self) -> DataType;
 
     /// Serialize the Liquid array to a byte array.
-    async fn to_bytes(&self) -> SqueezeResult<Vec<u8>>;
+    async fn to_bytes(&self) -> Vec<u8>;
 
     /// Filter the Liquid array with a boolean array and return an **arrow array**.
-    async fn filter(&self, selection: &BooleanBuffer) -> SqueezeResult<ArrayRef> {
-        let arrow_array = self.to_arrow_array().await?;
+    async fn filter(&self, selection: &BooleanBuffer) -> ArrayRef {
+        let arrow_array = self.to_arrow_array().await;
         let selection = BooleanArray::new(selection.clone(), None);
-        Ok(arrow::compute::kernels::filter::filter(&arrow_array, &selection).unwrap())
+        arrow::compute::kernels::filter::filter(&arrow_array, &selection).unwrap()
     }
 
     /// Try to evaluate a predicate on the Liquid array with a filter.
@@ -316,8 +316,8 @@ pub trait LiquidSqueezedArray: std::fmt::Debug + Send + Sync {
         &self,
         _predicate: &Arc<dyn PhysicalExpr>,
         _filter: &BooleanBuffer,
-    ) -> SqueezeResult<Option<BooleanArray>> {
-        Ok(None)
+    ) -> Option<BooleanArray> {
+        None
     }
 
     /// Describe how the squeezed array persists its backing bytes on disk.
@@ -328,7 +328,7 @@ pub trait LiquidSqueezedArray: std::fmt::Debug + Send + Sync {
 
 /// A trait to read the backing bytes of a squeezed array from disk.
 #[async_trait::async_trait]
-pub trait SqueezeIoHandler: Send + Sync {
+pub trait SqueezeIoHandler: std::fmt::Debug + Send + Sync {
     /// Read the backing bytes of a squeezed array from disk.
     async fn read(&self, range: Option<Range<u64>>) -> std::io::Result<Bytes>;
 }

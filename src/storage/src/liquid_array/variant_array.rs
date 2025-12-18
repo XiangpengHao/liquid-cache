@@ -143,8 +143,8 @@ impl LiquidSqueezedArray for VariantStructSqueezedArray {
         self.len
     }
 
-    async fn to_arrow_array(&self) -> Result<ArrayRef, NeedsBacking> {
-        Ok(Arc::new(self.build_root_struct()) as ArrayRef)
+    async fn to_arrow_array(&self) -> ArrayRef {
+        Arc::new(self.build_root_struct()) as ArrayRef
     }
 
     fn data_type(&self) -> LiquidDataType {
@@ -155,10 +155,10 @@ impl LiquidSqueezedArray for VariantStructSqueezedArray {
         self.original_arrow_type.clone()
     }
 
-    async fn to_bytes(&self) -> Result<Vec<u8>, NeedsBacking> {
+    async fn to_bytes(&self) -> Vec<u8> {
         serialize_variant_array(&(Arc::new(self.build_root_struct()) as ArrayRef))
-            .map(|bytes| bytes.to_vec())
-            .map_err(|_| NeedsBacking)
+            .expect("serialize variant array")
+            .to_vec()
     }
 
     fn disk_backing(&self) -> SqueezedBacking {

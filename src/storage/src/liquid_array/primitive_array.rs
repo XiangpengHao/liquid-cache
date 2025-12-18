@@ -392,7 +392,7 @@ where
 
     fn squeeze(
         &self,
-        _io: Arc<dyn SqueezeIoHandler>,
+        io: Arc<dyn SqueezeIoHandler>,
         expression_hint: Option<&CacheExpression>,
     ) -> Option<(LiquidSqueezedArrayRef, Bytes)> {
         let expression_hint = expression_hint?;
@@ -403,9 +403,10 @@ where
         if T::DATA_TYPE == DataType::Date32 {
             // Special handle for Date32 arrays with component extraction support.
             let field = expression_hint.as_date32_field()?;
+            let squeezed = SqueezedDate32Array::from_liquid_date32(self, field)
+                .with_backing(io, disk_range);
             return Some((
-                Arc::new(SqueezedDate32Array::from_liquid_date32(self, field))
-                    as LiquidSqueezedArrayRef,
+                Arc::new(squeezed) as LiquidSqueezedArrayRef,
                 full_bytes,
             ));
         }
@@ -448,6 +449,7 @@ where
                     squeezed: squeezed_bitpacked,
                     reference_value: self.reference_value,
                     disk_range,
+                    io: io.clone(),
                 };
                 Some((Arc::new(hybrid) as LiquidSqueezedArrayRef, full_bytes))
             }
@@ -491,6 +493,7 @@ where
                     reference_value: self.reference_value,
                     bucket_width: bucket_width_u64,
                     disk_range,
+                    io,
                 };
                 Some((Arc::new(hybrid) as LiquidSqueezedArrayRef, full_bytes))
             }

@@ -338,7 +338,7 @@ where
 
     fn squeeze(
         &self,
-        _io: Arc<dyn SqueezeIoHandler>,
+        io: Arc<dyn SqueezeIoHandler>,
         _expression_hint: Option<&CacheExpression>,
     ) -> Option<(super::LiquidSqueezedArrayRef, bytes::Bytes)> {
         let orig_bw = self.bit_packed.bit_width()?;
@@ -381,6 +381,7 @@ where
                     reference_value: self.reference_value,
                     bucket_width: shift,
                     disk_range,
+                    io,
                     patch_indices: self.patch_indices.clone(),
                     patch_values: self.patch_values.clone(),
                 };
@@ -746,6 +747,7 @@ struct LiquidFloatQuantizedArray<T: LiquidFloatType> {
     reference_value: <T::SignedIntType as ArrowPrimitiveType>::Native,
     bucket_width: u8, // Width of each bucket (in bits)
     disk_range: std::ops::Range<u64>,
+    io: Arc<dyn SqueezeIoHandler>,
     patch_indices: Vec<u64>,
     patch_values: Vec<T::Native>,
 }
@@ -778,6 +780,7 @@ where
             quantized,
             reference_value: self.reference_value,
             bucket_width: self.bucket_width,
+            io: self.io.clone(),
             patch_indices: self.patch_indices.clone(),
             patch_values: self.patch_values.clone(),
             disk_range: self.disk_range.clone(),
@@ -790,6 +793,19 @@ where
         let filtered = arrow::compute::kernels::filter::filter(&q_prim, &selection).unwrap();
         let filtered = filtered.as_primitive::<T::UnsignedIntType>().clone();
         self.new_from_filtered(filtered)
+    }
+
+    async fn hydrate_full_arrow(&self) -> ArrayRef {
+        let bytes = self
+            .io
+            .read(Some(self.disk_range.clone()))
+            .await
+            .expect("read squeezed backing");
+        let liquid = crate::liquid_array::ipc::read_from_bytes(
+            bytes,
+            &crate::liquid_array::ipc::LiquidIPCContext::new(None),
+        );
+        liquid.to_arrow_array()
     }
 
     #[inline]
@@ -958,8 +974,8 @@ where
         LiquidFloatQuantizedArray::<T>::len(self)
     }
 
-    async fn to_arrow_array(&self) -> SqueezeResult<ArrayRef> {
-        Err(NeedsBacking)
+    async fn to_arrow_array(&self) -> ArrayRef {
+        self.hydrate_full_arrow().await
     }
 
     fn data_type(&self) -> LiquidDataType {
@@ -970,15 +986,19 @@ where
         T::DATA_TYPE.clone()
     }
 
-    async fn to_bytes(&self) -> SqueezeResult<Vec<u8>> {
-        Err(NeedsBacking)
+    async fn to_bytes(&self) -> Vec<u8> {
+        self.io
+            .read(Some(self.disk_range.clone()))
+            .await
+            .expect("read squeezed backing")
+            .to_vec()
     }
 
     async fn try_eval_predicate(
         &self,
         expr: &Arc<dyn PhysicalExpr>,
         filter: &BooleanBuffer,
-    ) -> SqueezeResult<Option<BooleanArray>> {
+    ) -> Option<BooleanArray> {
         // Apply selection first to reduce input rows
         let filtered = self.filter_inner(filter);
 
@@ -988,10 +1008,50 @@ where
             let op = binary_expr.op();
             let supported_op = Operator::from_datafusion(op);
             if let Some(supported_op) = supported_op {
-                return filtered.try_eval_predicate_inner(&supported_op, literal);
+                match filtered.try_eval_predicate_inner(&supported_op, literal) {
+                    Ok(Some(mask)) => return Some(mask),
+                    Ok(None) => return None,
+                    Err(NeedsBacking) => {}
+                }
+
+                // Fallback: hydrate full Arrow and evaluate predicate on filtered rows.
+                use arrow::array::cast::AsArray;
+                use datafusion::logical_expr::ColumnarValue;
+                use datafusion::physical_expr_common::datum::apply_cmp;
+
+                let full = self.hydrate_full_arrow().await;
+                let selection_array = BooleanArray::new(filter.clone(), None);
+                let filtered_arr = arrow::compute::filter(&full, &selection_array).ok()?;
+                let filtered_len = filtered_arr.len();
+
+                let lhs = ColumnarValue::Array(filtered_arr);
+                let rhs = ColumnarValue::Scalar(literal.value().clone());
+                let result = match op {
+                    datafusion::logical_expr::Operator::NotEq => {
+                        apply_cmp(datafusion::logical_expr::Operator::NotEq, &lhs, &rhs)
+                    }
+                    datafusion::logical_expr::Operator::Eq => {
+                        apply_cmp(datafusion::logical_expr::Operator::Eq, &lhs, &rhs)
+                    }
+                    datafusion::logical_expr::Operator::Lt => {
+                        apply_cmp(datafusion::logical_expr::Operator::Lt, &lhs, &rhs)
+                    }
+                    datafusion::logical_expr::Operator::LtEq => {
+                        apply_cmp(datafusion::logical_expr::Operator::LtEq, &lhs, &rhs)
+                    }
+                    datafusion::logical_expr::Operator::Gt => {
+                        apply_cmp(datafusion::logical_expr::Operator::Gt, &lhs, &rhs)
+                    }
+                    datafusion::logical_expr::Operator::GtEq => {
+                        apply_cmp(datafusion::logical_expr::Operator::GtEq, &lhs, &rhs)
+                    }
+                    _ => return None,
+                };
+                let result = result.ok()?;
+                return Some(result.into_array(filtered_len).ok()?.as_boolean().clone());
             }
         }
-        Ok(None)
+        None
     }
 }
 
@@ -1001,9 +1061,50 @@ mod tests {
     use futures::executor::block_on;
     use rand::{Rng as _, SeedableRng as _, distr::uniform::SampleUniform, rngs::StdRng};
 
-    use crate::cache::TestingSqueezeIo;
+    use crate::liquid_array::SqueezeIoHandler;
 
     use super::*;
+    use bytes::Bytes;
+    use std::ops::Range;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+
+    #[derive(Debug, Default)]
+    struct TestSqueezeIo {
+        bytes: Mutex<Option<Bytes>>,
+        reads: AtomicUsize,
+    }
+
+    impl TestSqueezeIo {
+        fn set_bytes(&self, bytes: Bytes) {
+            *self.bytes.lock().unwrap() = Some(bytes);
+        }
+
+        fn reset_reads(&self) {
+            self.reads.store(0, Ordering::SeqCst);
+        }
+
+        fn reads(&self) -> usize {
+            self.reads.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SqueezeIoHandler for TestSqueezeIo {
+        async fn read(&self, range: Option<Range<u64>>) -> std::io::Result<Bytes> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            let bytes = self
+                .bytes
+                .lock()
+                .unwrap()
+                .clone()
+                .expect("test squeeze backing set");
+            Ok(match range {
+                Some(range) => bytes.slice(range.start as usize..range.end as usize),
+                None => bytes,
+            })
+        }
+    }
     macro_rules! test_roundtrip {
         ($test_name: ident, $type:ty, $values: expr) => {
             #[test]
@@ -1182,7 +1283,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(0x51_71);
         let arr = make_f_array_with_range::<Float32Type>(64, 10_000.0, 100.0, 0.1, &mut rng);
         let liquid = LiquidFloatArray::<Float32Type>::from_arrow_array(arr);
-        assert!(liquid.squeeze(Arc::new(TestingSqueezeIo), None).is_none());
+        assert!(liquid.squeeze(Arc::new(TestSqueezeIo::default()), None).is_none());
     }
 
     #[test]
@@ -1197,7 +1298,9 @@ mod tests {
         );
         let liq = LiquidFloatArray::<Float32Type>::from_arrow_array(arr.clone());
         let bytes_baseline = liq.to_bytes();
-        let (hybrid, bytes) = liq.squeeze(Arc::new(TestingSqueezeIo), None).expect("squeezable");
+        let io = Arc::new(TestSqueezeIo::default());
+        let (hybrid, bytes) = liq.squeeze(io.clone(), None).expect("squeezable");
+        io.set_bytes(bytes.clone());
         // ensure we can recover the original by hydrating from full bytes
         let recovered = LiquidFloatArray::<Float32Type>::from_bytes(bytes.clone());
         assert_eq!(
@@ -1226,7 +1329,8 @@ mod tests {
 
         for (op, k, expected_const) in resolvable_cases {
             let expr = build_expr(op, k);
-            let got = block_on(hybrid.try_eval_predicate(&expr, &mask)).expect("no IO");
+            io.reset_reads();
+            let got = block_on(hybrid.try_eval_predicate(&expr, &mask)).expect("supported");
             let expected = {
                 let vals: Vec<Option<bool>> = (0..arr.len())
                     .map(|i| {
@@ -1239,7 +1343,8 @@ mod tests {
                     .collect();
                 BooleanArray::from(vals)
             };
-            assert_eq!(got.unwrap(), expected);
+            assert_eq!(io.reads(), 0);
+            assert_eq!(got, expected);
         }
 
         // Unresolvable for Eq: pick a present value (ensures ambiguous bucket)
@@ -1253,9 +1358,22 @@ mod tests {
             })
             .unwrap();
         let expr_eq_present = build_expr(Operator::Eq, k_present);
-        let err = block_on(hybrid.try_eval_predicate(&expr_eq_present, &mask))
-            .expect_err("quantized should request IO on ambiguous eq bucket");
-        assert_eq!(err, NeedsBacking);
+        io.reset_reads();
+        let got = block_on(hybrid.try_eval_predicate(&expr_eq_present, &mask)).expect("supported");
+        let expected = {
+            let vals: Vec<Option<bool>> = (0..arr.len())
+                .map(|i| {
+                    if arr.is_null(i) {
+                        None
+                    } else {
+                        Some(arr.value(i) == k_present)
+                    }
+                })
+                .collect();
+            BooleanArray::from(vals)
+        };
+        assert!(io.reads() > 0);
+        assert_eq!(got, expected);
     }
 
     #[test]
@@ -1270,7 +1388,9 @@ mod tests {
         );
         let liq = LiquidFloatArray::<Float64Type>::from_arrow_array(arr.clone());
         let bytes_baseline = liq.to_bytes();
-        let (hybrid, bytes) = liq.squeeze(Arc::new(TestingSqueezeIo), None).expect("squeezable");
+        let io = Arc::new(TestSqueezeIo::default());
+        let (hybrid, bytes) = liq.squeeze(io.clone(), None).expect("squeezable");
+        io.set_bytes(bytes.clone());
         // ensure we can recover the original by hydrating from full bytes
         let recovered = LiquidFloatArray::<Float64Type>::from_bytes(bytes.clone());
         assert_eq!(
@@ -1299,7 +1419,8 @@ mod tests {
 
         for (op, k, expected_const) in resolvable_cases {
             let expr = build_expr(op, k);
-            let got = block_on(hybrid.try_eval_predicate(&expr, &mask)).expect("no IO");
+            io.reset_reads();
+            let got = block_on(hybrid.try_eval_predicate(&expr, &mask)).expect("supported");
             let expected = {
                 let vals: Vec<Option<bool>> = (0..arr.len())
                     .map(|i| {
@@ -1312,7 +1433,8 @@ mod tests {
                     .collect();
                 BooleanArray::from(vals)
             };
-            assert_eq!(got.unwrap(), expected);
+            assert_eq!(io.reads(), 0);
+            assert_eq!(got, expected);
         }
 
         // Unresolvable for Eq: pick a present value (ensures ambiguous bucket)
@@ -1326,8 +1448,21 @@ mod tests {
             })
             .unwrap();
         let expr_eq_present = build_expr(Operator::Eq, k_present);
-        let err = block_on(hybrid.try_eval_predicate(&expr_eq_present, &mask))
-            .expect_err("quantized should request IO on ambiguous eq bucket");
-        assert_eq!(err, NeedsBacking);
+        io.reset_reads();
+        let got = block_on(hybrid.try_eval_predicate(&expr_eq_present, &mask)).expect("supported");
+        let expected = {
+            let vals: Vec<Option<bool>> = (0..arr.len())
+                .map(|i| {
+                    if arr.is_null(i) {
+                        None
+                    } else {
+                        Some(arr.value(i) == k_present)
+                    }
+                })
+                .collect();
+            BooleanArray::from(vals)
+        };
+        assert!(io.reads() > 0);
+        assert_eq!(got, expected);
     }
 }

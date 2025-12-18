@@ -590,42 +590,12 @@ impl LiquidCache {
             return Some(array);
         }
 
-        self.observer.on_get_squeezed_needs_io();
-        let batch = CacheEntry::MemorySqueezedLiquid(array.clone());
-        let arrow = {
-            match array.disk_backing() {
-                SqueezedBacking::Liquid => {
-                    let liquid = self.read_disk_liquid_array(entry_id).await;
-                    self.maybe_hydrate(
-                        entry_id,
-                        &batch,
-                        MaterializedEntry::Liquid(&liquid),
-                        expression,
-                    )
-                    .await;
-                    liquid.to_arrow_array()
-                }
-                SqueezedBacking::Arrow => {
-                    let full_array = self.read_disk_arrow_array(entry_id).await;
-                    self.maybe_hydrate(
-                        entry_id,
-                        &batch,
-                        MaterializedEntry::Arrow(&full_array),
-                        expression,
-                    )
-                    .await;
-                    full_array
-                }
-            }
+        self.observer.on_get_squeezed_success();
+        let out = match selection {
+            Some(selection) => array.filter(selection).await,
+            None => array.to_arrow_array().await,
         };
-        let filtered = match selection {
-            Some(selection) => {
-                let selection_array = BooleanArray::new(selection.clone(), None);
-                arrow::compute::filter(&arrow, &selection_array).unwrap()
-            }
-            None => arrow,
-        };
-        Some(filtered)
+        Some(out)
     }
 
     fn try_read_squeezed_date32_array(
@@ -829,7 +799,7 @@ impl LiquidCache {
 
     async fn eval_predicate_on_squeezed(
         &self,
-        entry_id: &EntryID,
+        _entry_id: &EntryID,
         array: &LiquidSqueezedArrayRef,
         selection_opt: Option<&BooleanBuffer>,
         predicate: &Arc<dyn PhysicalExpr>,
@@ -839,47 +809,14 @@ impl LiquidCache {
             owned = Some(BooleanBuffer::new_set(array.len()));
             owned.as_ref().unwrap()
         });
-        let entry = CacheEntry::MemorySqueezedLiquid(array.clone());
         match array.try_eval_predicate(predicate, selection).await {
-            Ok(Some(buf)) => {
+            Some(buf) => {
                 self.observer.on_eval_predicate_squeezed_success();
                 Some(Ok(buf))
             }
-            _ => {
+            None => {
                 self.observer.on_eval_predicate_squeezed_needs_io();
-                match array.disk_backing() {
-                    SqueezedBacking::Liquid => {
-                        let hydrated = self.read_disk_liquid_array(entry_id).await;
-                        self.maybe_hydrate(
-                            entry_id,
-                            &entry,
-                            MaterializedEntry::Liquid(&hydrated),
-                            None,
-                        )
-                        .await;
-                        match hydrated.try_eval_predicate(predicate, selection) {
-                            Some(buf) => Some(Ok(buf)),
-                            None => {
-                                let filtered = hydrated.filter(selection);
-                                Some(Err(filtered))
-                            }
-                        }
-                    }
-                    SqueezedBacking::Arrow => {
-                        let full_array = self.read_disk_arrow_array(entry_id).await;
-                        self.maybe_hydrate(
-                            entry_id,
-                            &entry,
-                            MaterializedEntry::Arrow(&full_array),
-                            None,
-                        )
-                        .await;
-                        let selection_array = BooleanArray::new(selection.clone(), None);
-                        let filtered =
-                            arrow::compute::filter(&full_array, &selection_array).ok()?;
-                        Some(Err(filtered))
-                    }
-                }
+                Some(Err(array.filter(selection).await))
             }
         }
     }

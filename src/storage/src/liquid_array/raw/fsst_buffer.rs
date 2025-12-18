@@ -9,9 +9,10 @@ use bytes;
 use fsst::{Compressor, Decompressor, Symbol};
 use std::io::Result;
 use std::io::{Error, ErrorKind};
+use std::ops::Range;
 use std::sync::Arc;
 
-use crate::liquid_array::{NeedsBacking, SqueezeResult};
+use crate::liquid_array::{NeedsBacking, SqueezeIoHandler, SqueezeResult};
 
 use crate::liquid_array::fix_len_byte_array::ArrowFixedLenByteArrayType;
 
@@ -654,6 +655,11 @@ impl FsstArray {
         &self.compressor
     }
 
+    /// Returns a clone of the shared compressor.
+    pub fn compressor_arc(&self) -> Arc<Compressor> {
+        self.compressor.clone()
+    }
+
     /// Serializes this FSST buffer (raw bytes + compact offsets) to `out`.
     pub fn to_bytes(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.raw.to_bytes());
@@ -757,14 +763,50 @@ impl FsstArray {
 }
 
 /// Disk buffer for FSST buffer.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct DiskBuffer {
     uncompressed_bytes: usize,
+    io: Arc<dyn SqueezeIoHandler>,
+    disk_range: Range<u64>,
+    compressor: Arc<Compressor>,
+}
+
+impl std::fmt::Debug for DiskBuffer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DiskBuffer")
+            .field("uncompressed_bytes", &self.uncompressed_bytes)
+            .field("disk_range", &self.disk_range)
+            .field("io", &self.io)
+            .field("compressor", &"<Compressor>")
+            .finish()
+    }
 }
 
 impl DiskBuffer {
-    pub(crate) fn new(uncompressed_bytes: usize) -> Self {
-        Self { uncompressed_bytes }
+    pub(crate) fn new(
+        uncompressed_bytes: usize,
+        io: Arc<dyn SqueezeIoHandler>,
+        disk_range: Range<u64>,
+        compressor: Arc<Compressor>,
+    ) -> Self {
+        Self {
+            uncompressed_bytes,
+            io,
+            disk_range,
+            compressor,
+        }
+    }
+
+    pub(crate) fn squeeze_io(&self) -> &Arc<dyn SqueezeIoHandler> {
+        &self.io
+    }
+
+    pub(crate) fn disk_range(&self) -> Range<u64> {
+        self.disk_range.clone()
+    }
+
+    pub(crate) fn compressor_arc(&self) -> Arc<Compressor> {
+        self.compressor.clone()
     }
 }
 

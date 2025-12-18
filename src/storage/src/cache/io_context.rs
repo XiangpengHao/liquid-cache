@@ -143,6 +143,7 @@ impl IoContext for DefaultIoContext {
 }
 
 /// A default implementation of [SqueezeIoHandler] that uses the default [IoContext].
+#[derive(Debug)]
 pub struct DefaultSqueezeIo {
     io_context: Arc<dyn IoContext>,
     entry_id: EntryID,
@@ -175,6 +176,7 @@ impl SqueezeIoHandler for DefaultSqueezeIo {
 }
 
 #[cfg(test)]
+#[derive(Debug)]
 pub(crate) struct TestingSqueezeIo;
 
 #[cfg(test)]

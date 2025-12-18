@@ -20,13 +20,11 @@ use std::cell::Cell;
 
 use crate::cache::CacheExpression;
 use crate::liquid_array::byte_array::ArrowByteType;
-use crate::liquid_array::byte_view_array::serialization::ByteViewArrayHeader;
-use crate::liquid_array::ipc::LiquidIPCHeader;
 use crate::liquid_array::raw::FsstArray;
 use crate::liquid_array::raw::fsst_buffer::{DiskBuffer, FsstBacking, PrefixKey};
 use crate::liquid_array::{
     LiquidArray, LiquidDataType, LiquidSqueezedArray, LiquidSqueezedArrayRef, NeedsBacking,
-    SqueezeIoHandler, SqueezeResult, get_string_needle,
+    SqueezeIoHandler, get_string_needle,
 };
 
 // Declare submodules
@@ -308,7 +306,7 @@ impl LiquidArray for LiquidByteViewArray<FsstArray> {
 
     fn squeeze(
         &self,
-        _io: Arc<dyn SqueezeIoHandler>,
+        io: Arc<dyn SqueezeIoHandler>,
         squeeze_hint: Option<&CacheExpression>,
     ) -> Option<(LiquidSqueezedArrayRef, Bytes)> {
         squeeze_hint?;
@@ -319,26 +317,15 @@ impl LiquidArray for LiquidByteViewArray<FsstArray> {
             Err(_) => return None,
         };
 
-        const IPC_HEADER_SIZE: usize = LiquidIPCHeader::size();
-        const VIEW_HEADER_SIZE: usize = ByteViewArrayHeader::size();
-        let header_size = IPC_HEADER_SIZE + VIEW_HEADER_SIZE;
-
-        assert!(bytes.len() >= header_size);
-
-        let fsst_size = u32::from_le_bytes(
-            bytes[IPC_HEADER_SIZE + 12..IPC_HEADER_SIZE + 16]
-                .try_into()
-                .unwrap(),
-        ) as usize;
-
-        // FSST starts at the first 8-byte boundary after headers
-        let fsst_start = (header_size + 7) & !7;
-        let fsst_end = fsst_start + fsst_size;
-
-        assert!(fsst_end <= bytes.len());
-
         // Build the hybrid (disk-backed FSST) view
-        let disk = DiskBuffer::new(self.fsst_buffer.uncompressed_bytes());
+        let disk_range = 0u64..(bytes.len() as u64);
+        let compressor = self.fsst_buffer.compressor_arc();
+        let disk = DiskBuffer::new(
+            self.fsst_buffer.uncompressed_bytes(),
+            io,
+            disk_range,
+            compressor,
+        );
         let hybrid = LiquidByteViewArray::<DiskBuffer> {
             dictionary_keys: self.dictionary_keys.clone(),
             prefix_keys: self.prefix_keys.clone(),
@@ -375,8 +362,18 @@ impl LiquidSqueezedArray for LiquidByteViewArray<DiskBuffer> {
     }
 
     /// Convert the Liquid array to an Arrow array.
-    async fn to_arrow_array(&self) -> SqueezeResult<ArrayRef> {
-        LiquidByteViewArray::<DiskBuffer>::to_arrow_array(self)
+    async fn to_arrow_array(&self) -> ArrayRef {
+        let bytes = self
+            .fsst_buffer
+            .squeeze_io()
+            .read(Some(self.fsst_buffer.disk_range()))
+            .await
+            .expect("read squeezed backing");
+        let hydrated = LiquidByteViewArray::<FsstArray>::from_bytes(
+            bytes,
+            self.fsst_buffer.compressor_arc(),
+        );
+        LiquidByteViewArray::<FsstArray>::to_arrow_array(&hydrated).expect("hydrate byte view")
     }
 
     /// Get the logical data type of the Liquid array.
@@ -389,20 +386,36 @@ impl LiquidSqueezedArray for LiquidByteViewArray<DiskBuffer> {
     }
 
     /// Serialize the Liquid array to a byte array.
-    async fn to_bytes(&self) -> SqueezeResult<Vec<u8>> {
-        Err(NeedsBacking)
+    async fn to_bytes(&self) -> Vec<u8> {
+        self.fsst_buffer
+            .squeeze_io()
+            .read(Some(self.fsst_buffer.disk_range()))
+            .await
+            .expect("read squeezed backing")
+            .to_vec()
     }
 
     /// Filter the Liquid array with a boolean array and return an **arrow array**.
-    async fn filter(&self, selection: &BooleanBuffer) -> SqueezeResult<ArrayRef> {
+    async fn filter(&self, selection: &BooleanBuffer) -> ArrayRef {
         let select_any = selection.count_set_bits() > 0;
         if !select_any {
-            return Ok(arrow::array::new_empty_array(
+            return arrow::array::new_empty_array(
                 &self.original_arrow_data_type(),
-            ));
+            );
         }
-        let filtered = helpers::filter_inner(self, selection);
-        filtered.to_best_arrow_array().await
+        let bytes = self
+            .fsst_buffer
+            .squeeze_io()
+            .read(Some(self.fsst_buffer.disk_range()))
+            .await
+            .expect("read squeezed backing");
+        let hydrated = LiquidByteViewArray::<FsstArray>::from_bytes(
+            bytes,
+            self.fsst_buffer.compressor_arc(),
+        );
+        let arrow = hydrated.to_best_arrow_array();
+        let selection_array = BooleanArray::new(selection.clone(), None);
+        arrow::compute::filter(&arrow, &selection_array).unwrap()
     }
 
     /// Try to evaluate a predicate on the Liquid array with a filter.
@@ -414,7 +427,7 @@ impl LiquidSqueezedArray for LiquidByteViewArray<DiskBuffer> {
         &self,
         expr: &Arc<dyn PhysicalExpr>,
         filter: &BooleanBuffer,
-    ) -> SqueezeResult<Option<BooleanArray>> {
+    ) -> Option<BooleanArray> {
         // Reuse generic filter path first to reduce input rows if any
         let filtered = helpers::filter_inner(self, filter);
 
@@ -434,29 +447,53 @@ impl LiquidSqueezedArray for LiquidByteViewArray<DiskBuffer> {
             if let Some(needle) = get_string_needle(literal.value()) {
                 match op {
                     Operator::Eq | Operator::NotEq => {
-                        // Try prefix-based equality. On ambiguity, bubble up NeedsBacking for fallback.
-                        let eq_mask = filtered
-                            .compare_equals_with_prefix(needle.as_bytes())
-                            .ok_or(NeedsBacking)?;
+                        // Try prefix-based equality. On ambiguity, hydrate and retry.
+                        let Some(eq_mask) =
+                            filtered.compare_equals_with_prefix(needle.as_bytes())
+                        else {
+                            return self.try_eval_predicate_fully(&expr, filter).await;
+                        };
                         if matches!(op, Operator::Eq) {
-                            return Ok(Some(eq_mask));
+                            return Some(eq_mask);
                         } else {
                             let (values, nulls) = eq_mask.into_parts();
-                            return Ok(Some(BooleanArray::new(!&values, nulls)));
+                            return Some(BooleanArray::new(!&values, nulls));
                         }
                     }
                     Operator::Lt | Operator::LtEq | Operator::Gt | Operator::GtEq => {
-                        // Prefix-only ordering; ambiguous cases ask for backing.
-                        let ord_mask = filtered
-                            .compare_ordering_with_prefix(needle.as_bytes(), op)
-                            .ok_or(NeedsBacking)?;
-                        return Ok(Some(ord_mask));
+                        let Some(ord_mask) =
+                            filtered.compare_ordering_with_prefix(needle.as_bytes(), op)
+                        else {
+                            return self.try_eval_predicate_fully(&expr, filter).await;
+                        };
+                        return Some(ord_mask);
                     }
                     _ => {}
                 }
             }
         }
 
-        Ok(None)
+        self.try_eval_predicate_fully(&expr, filter).await
+    }
+}
+
+impl LiquidByteViewArray<DiskBuffer> {
+    async fn try_eval_predicate_fully(
+        &self,
+        expr: &Arc<dyn PhysicalExpr>,
+        filter: &BooleanBuffer,
+    ) -> Option<BooleanArray> {
+        let bytes = self
+            .fsst_buffer
+            .squeeze_io()
+            .read(Some(self.fsst_buffer.disk_range()))
+            .await
+            .ok()?;
+        let hydrated = LiquidByteViewArray::<FsstArray>::from_bytes(
+            bytes,
+            self.fsst_buffer.compressor_arc(),
+        );
+        let hydrated_filtered = helpers::filter_inner(&hydrated, filter);
+        helpers::try_eval_predicate_inner(expr, &hydrated_filtered).expect("hydrate byte view backing")
     }
 }
