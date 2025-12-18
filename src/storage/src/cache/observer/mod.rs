@@ -111,9 +111,9 @@ impl Observer {
     pub(crate) fn record_internal(&self, event: InternalEvent) {
         match event {
             InternalEvent::IoWrite { .. } => self.runtime.incr_write_io_count(),
-            InternalEvent::IoReadArrow { .. } | InternalEvent::IoReadLiquid { .. } => {
-                self.runtime.incr_read_io_count()
-            }
+            InternalEvent::IoReadArrow { .. }
+            | InternalEvent::IoReadLiquid { .. }
+            | InternalEvent::IoReadSqueezedBacking { .. } => self.runtime.incr_read_io_count(),
             _ => {}
         }
 

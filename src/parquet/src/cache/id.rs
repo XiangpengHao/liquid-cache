@@ -87,23 +87,13 @@ impl ParquetArrayID {
     }
 
     /// Get the on-disk path.
-    pub fn on_disk_path(&self, cache_root_dir: &Path) -> PathBuf {
+    pub fn on_disk_liquid_path(&self, cache_root_dir: &Path) -> PathBuf {
         let batch_id = self.batch_id_inner();
         cache_root_dir
             .join(format!("file_{}", self.file_id_inner()))
             .join(format!("rg_{}", self.row_group_id_inner()))
             .join(format!("col_{}", self.column_id_inner()))
             .join(format!("batch_{batch_id}.liquid"))
-    }
-
-    /// Get the on-disk arrow path.
-    pub fn on_disk_arrow_path(&self, cache_root_dir: &Path) -> PathBuf {
-        let batch_id = self.batch_id_inner();
-        cache_root_dir
-            .join(format!("file_{}", self.file_id_inner()))
-            .join(format!("rg_{}", self.row_group_id_inner()))
-            .join(format!("col_{}", self.column_id_inner()))
-            .join(format!("batch_{batch_id}.arrow"))
     }
 }
 
@@ -275,7 +265,7 @@ mod tests {
             .join("rg_2")
             .join("col_3")
             .join("batch_4.liquid");
-        assert_eq!(entry_id.on_disk_path(cache_root), expected_path);
+        assert_eq!(entry_id.on_disk_liquid_path(cache_root), expected_path);
     }
 
     #[test]
@@ -340,7 +330,7 @@ mod tests {
         let entry_id = column_path.entry_id(batch_id);
 
         // Get the on-disk path
-        let entry_path = entry_id.on_disk_path(cache_root);
+        let entry_path = entry_id.on_disk_liquid_path(cache_root);
 
         // Verify the parent directory of the entry path exists
         assert!(entry_path.parent().unwrap().exists());

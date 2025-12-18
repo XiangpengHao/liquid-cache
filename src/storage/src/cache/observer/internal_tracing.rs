@@ -24,6 +24,10 @@ pub(crate) enum InternalEvent {
         kind: CachedBatchType,
         bytes: usize,
     },
+    IoReadSqueezedBacking {
+        entry: EntryID,
+        bytes: usize,
+    },
     IoReadArrow {
         entry: EntryID,
         bytes: usize,
@@ -107,6 +111,14 @@ impl fmt::Display for InternalEvent {
                     "event=io_write entry={} kind={:?} bytes={}",
                     usize::from(*entry),
                     kind,
+                    bytes
+                )
+            }
+            InternalEvent::IoReadSqueezedBacking { entry, bytes } => {
+                write!(
+                    f,
+                    "event=io_read_squeezed_backing entry={} bytes={}",
+                    usize::from(*entry),
                     bytes
                 )
             }

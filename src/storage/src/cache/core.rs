@@ -55,7 +55,7 @@ pub struct LiquidCache {
     cache_policy: Box<dyn CachePolicy>,
     hydration_policy: Box<dyn HydrationPolicy>,
     squeeze_policy: Box<dyn SqueezePolicy>,
-    observer: Observer,
+    observer: Arc<Observer>,
     io_context: Arc<dyn IoContext>,
 }
 
@@ -137,14 +137,14 @@ impl LiquidCache {
         match batch.as_ref() {
             CacheEntry::MemoryLiquid(array) => Some(array.clone()),
             entry @ CacheEntry::DiskLiquid(_) => {
-                let liquid = self.read_disk_liquid_array(entry, entry_id).await;
+                let liquid = self.read_disk_liquid_array(entry_id).await;
                 self.maybe_hydrate(entry_id, entry, MaterializedEntry::Liquid(&liquid), None)
                     .await;
                 Some(liquid)
             }
-            entry @ CacheEntry::MemorySqueezedLiquid(array) => match array.disk_backing() {
+            CacheEntry::MemorySqueezedLiquid(array) => match array.disk_backing() {
                 SqueezedBacking::Liquid => {
-                    let liquid = self.read_disk_liquid_array(entry, entry_id).await;
+                    let liquid = self.read_disk_liquid_array(entry_id).await;
                     Some(liquid)
                 }
                 SqueezedBacking::Arrow => None,
@@ -248,9 +248,11 @@ impl LiquidCache {
     ) -> CacheEntry {
         match &batch {
             batch @ CacheEntry::MemoryArrow(_) => {
-                let path = self.io_context.disk_path(batch, &entry_id);
-                let squeeze_io: Arc<dyn SqueezeIoHandler> =
-                    Arc::new(DefaultSqueezeIo::new(path, self.io_context.clone()));
+                let squeeze_io: Arc<dyn SqueezeIoHandler> = Arc::new(DefaultSqueezeIo::new(
+                    self.io_context.clone(),
+                    entry_id,
+                    self.observer.clone(),
+                ));
                 let (new_batch, bytes_to_write) = self.squeeze_policy.squeeze(
                     batch,
                     self.io_context.get_compressor(&entry_id).as_ref(),
@@ -331,7 +333,7 @@ impl LiquidCache {
             cache_policy,
             hydration_policy,
             squeeze_policy,
-            observer: Observer::new(),
+            observer: Arc::new(Observer::new()),
             io_context: io_worker,
         }
     }
@@ -403,11 +405,11 @@ impl LiquidCache {
         let compressor = self.io_context.get_compressor(&to_squeeze);
         let squeeze_hint_arc = self.io_context.squeeze_hint(&to_squeeze);
         let squeeze_hint = squeeze_hint_arc.as_deref();
-        let path = self
-            .io_context
-            .disk_path(to_squeeze_batch.as_ref(), &to_squeeze);
-        let squeeze_io: Arc<dyn SqueezeIoHandler> =
-            Arc::new(DefaultSqueezeIo::new(path, self.io_context.clone()));
+        let squeeze_io: Arc<dyn SqueezeIoHandler> = Arc::new(DefaultSqueezeIo::new(
+            self.io_context.clone(),
+            to_squeeze,
+            self.observer.clone(),
+        ));
 
         loop {
             let (new_batch, bytes_to_write) = self.squeeze_policy.squeeze(
@@ -521,7 +523,7 @@ impl LiquidCache {
                 {
                     return Some(arrow::array::new_empty_array(data_type));
                 }
-                let full_array = self.read_disk_arrow_array(entry, entry_id).await;
+                let full_array = self.read_disk_arrow_array(entry_id).await;
                 self.maybe_hydrate(
                     entry_id,
                     entry,
@@ -543,7 +545,7 @@ impl LiquidCache {
                 {
                     return Some(arrow::array::new_empty_array(data_type));
                 }
-                let liquid = self.read_disk_liquid_array(entry, entry_id).await;
+                let liquid = self.read_disk_liquid_array(entry_id).await;
                 self.maybe_hydrate(
                     entry_id,
                     entry,
@@ -593,7 +595,7 @@ impl LiquidCache {
         let arrow = {
             match array.disk_backing() {
                 SqueezedBacking::Liquid => {
-                    let liquid = self.read_disk_liquid_array(&batch, entry_id).await;
+                    let liquid = self.read_disk_liquid_array(entry_id).await;
                     self.maybe_hydrate(
                         entry_id,
                         &batch,
@@ -604,7 +606,7 @@ impl LiquidCache {
                     liquid.to_arrow_array()
                 }
                 SqueezedBacking::Arrow => {
-                    let full_array = self.read_disk_arrow_array(&batch, entry_id).await;
+                    let full_array = self.read_disk_arrow_array(entry_id).await;
                     self.maybe_hydrate(
                         entry_id,
                         &batch,
@@ -666,7 +668,7 @@ impl LiquidCache {
         let full_array = if !all_paths_present {
             let batch = CacheEntry::MemorySqueezedLiquid(array.clone());
             self.observer.on_get_squeezed_needs_io();
-            let full_array = self.read_disk_arrow_array(&batch, entry_id).await;
+            let full_array = self.read_disk_arrow_array(entry_id).await;
             self.maybe_hydrate(
                 entry_id,
                 &batch,
@@ -697,17 +699,17 @@ impl LiquidCache {
             kind: CachedBatchType::from(batch),
             bytes: bytes.len(),
         });
-        let path = self.io_context.disk_path(batch, &entry_id);
+        let path = self.io_context.disk_path(&entry_id);
         let len = bytes.len();
-        self.io_context.write_file(&path, bytes).await.unwrap();
+        self.io_context.write_file(path, bytes).await.unwrap();
         self.budget.add_used_disk_bytes(len);
     }
 
-    async fn read_disk_arrow_array(&self, entry: &CacheEntry, entry_id: &EntryID) -> ArrayRef {
-        let path = self.io_context.disk_path(entry, entry_id);
+    async fn read_disk_arrow_array(&self, entry_id: &EntryID) -> ArrayRef {
+        let path = self.io_context.disk_path(entry_id);
         let bytes = self
             .io_context
-            .read(&path, None)
+            .read(path, None)
             .await
             .expect("read failed");
         let cursor = std::io::Cursor::new(bytes.to_vec());
@@ -724,13 +726,12 @@ impl LiquidCache {
 
     async fn read_disk_liquid_array(
         &self,
-        entry: &CacheEntry,
         entry_id: &EntryID,
     ) -> crate::liquid_array::LiquidArrayRef {
-        let path = self.io_context.disk_path(entry, entry_id);
+        let path = self.io_context.disk_path(entry_id);
         let bytes = self
             .io_context
-            .read(&path, None)
+            .read(path, None)
             .await
             .expect("read failed");
         self.trace(InternalEvent::IoReadLiquid {
@@ -776,7 +777,7 @@ impl LiquidCache {
                 Some(Err(filtered))
             }
             entry @ CacheEntry::DiskArrow(_) => {
-                let array = self.read_disk_arrow_array(entry, entry_id).await;
+                let array = self.read_disk_arrow_array(entry_id).await;
                 self.maybe_hydrate(entry_id, entry, MaterializedEntry::Arrow(&array), None)
                     .await;
                 let mut owned = None;
@@ -803,7 +804,7 @@ impl LiquidCache {
                 }
             }
             entry @ CacheEntry::DiskLiquid(_) => {
-                let liquid = self.read_disk_liquid_array(entry, entry_id).await;
+                let liquid = self.read_disk_liquid_array(entry_id).await;
                 self.maybe_hydrate(entry_id, entry, MaterializedEntry::Liquid(&liquid), None)
                     .await;
                 let mut owned = None;
@@ -848,7 +849,7 @@ impl LiquidCache {
                 self.observer.on_eval_predicate_squeezed_needs_io();
                 match array.disk_backing() {
                     SqueezedBacking::Liquid => {
-                        let hydrated = self.read_disk_liquid_array(&entry, entry_id).await;
+                        let hydrated = self.read_disk_liquid_array(entry_id).await;
                         self.maybe_hydrate(
                             entry_id,
                             &entry,
@@ -865,7 +866,7 @@ impl LiquidCache {
                         }
                     }
                     SqueezedBacking::Arrow => {
-                        let full_array = self.read_disk_arrow_array(&entry, entry_id).await;
+                        let full_array = self.read_disk_arrow_array(entry_id).await;
                         self.maybe_hydrate(
                             entry_id,
                             &entry,
