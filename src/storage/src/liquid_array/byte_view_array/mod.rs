@@ -300,16 +300,6 @@ impl LiquidSqueezedArray for LiquidByteViewArray<DiskBuffer> {
         self.original_arrow_type.to_arrow_type()
     }
 
-    /// Serialize the Liquid array to a byte array.
-    async fn to_bytes(&self) -> Vec<u8> {
-        self.fsst_buffer
-            .squeeze_io()
-            .read(Some(self.fsst_buffer.disk_range()))
-            .await
-            .expect("read squeezed backing")
-            .to_vec()
-    }
-
     /// Filter the Liquid array with a boolean array and return an **arrow array**.
     async fn filter(&self, selection: &BooleanBuffer) -> ArrayRef {
         let select_any = selection.count_set_bits() > 0;
@@ -324,7 +314,7 @@ impl LiquidSqueezedArray for LiquidByteViewArray<DiskBuffer> {
             .expect("read squeezed backing");
         let hydrated =
             LiquidByteViewArray::<FsstArray>::from_bytes(bytes, self.fsst_buffer.compressor_arc());
-        let arrow = hydrated.to_best_arrow_array();
+        let arrow = hydrated.to_arrow_array().unwrap();
         let selection_array = BooleanArray::new(selection.clone(), None);
         arrow::compute::filter(&arrow, &selection_array).unwrap()
     }

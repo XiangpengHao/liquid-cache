@@ -297,9 +297,6 @@ pub trait LiquidSqueezedArray: std::fmt::Debug + Send + Sync {
     /// Get the original arrow data type of the Liquid squeezed array.
     fn original_arrow_data_type(&self) -> DataType;
 
-    /// Serialize the Liquid array to a byte array.
-    async fn to_bytes(&self) -> Vec<u8>;
-
     /// Filter the Liquid array with a boolean array and return an **arrow array**.
     async fn filter(&self, selection: &BooleanBuffer) -> ArrayRef {
         let arrow_array = self.to_arrow_array().await;

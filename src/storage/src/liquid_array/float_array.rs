@@ -986,14 +986,6 @@ where
         T::DATA_TYPE.clone()
     }
 
-    async fn to_bytes(&self) -> Vec<u8> {
-        self.io
-            .read(Some(self.disk_range.clone()))
-            .await
-            .expect("read squeezed backing")
-            .to_vec()
-    }
-
     async fn try_eval_predicate(
         &self,
         expr: &Arc<dyn PhysicalExpr>,

@@ -294,10 +294,6 @@ impl LiquidSqueezedArray for SqueezedDate32Array {
         DataType::Date32
     }
 
-    async fn to_bytes(&self) -> Vec<u8> {
-        self.read_backing().await.to_vec()
-    }
-
     async fn filter(&self, selection: &BooleanBuffer) -> ArrayRef {
         if selection.count_set_bits() == 0 {
             return arrow::array::new_empty_array(&self.original_arrow_data_type());

@@ -264,14 +264,6 @@ where
         T::DATA_TYPE.clone()
     }
 
-    async fn to_bytes(&self) -> Vec<u8> {
-        self.io
-            .read(Some(self.disk_range.clone()))
-            .await
-            .expect("read squeezed backing")
-            .to_vec()
-    }
-
     async fn filter(&self, selection: &BooleanBuffer) -> ArrayRef {
         if selection.count_set_bits() == 0 {
             return arrow::array::new_empty_array(&self.original_arrow_data_type());
@@ -610,14 +602,6 @@ where
 
     fn original_arrow_data_type(&self) -> DataType {
         T::DATA_TYPE.clone()
-    }
-
-    async fn to_bytes(&self) -> Vec<u8> {
-        self.io
-            .read(Some(self.disk_range.clone()))
-            .await
-            .expect("read squeezed backing")
-            .to_vec()
     }
 
     async fn try_eval_predicate(

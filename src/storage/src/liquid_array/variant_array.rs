@@ -2,11 +2,7 @@ use std::sync::Arc;
 
 use arrow::array::{Array, ArrayRef, BinaryViewArray, StructArray};
 use arrow::buffer::NullBuffer;
-use arrow::error::ArrowError;
-use arrow::ipc::writer::StreamWriter;
-use arrow::record_batch::RecordBatch;
-use arrow_schema::{DataType, Field, Fields, Schema};
-use bytes::Bytes;
+use arrow_schema::{DataType, Field, Fields};
 
 use crate::liquid_array::{
     LiquidArrayRef, LiquidDataType, LiquidSqueezedArray, NeedsBacking, SqueezedBacking,
@@ -155,32 +151,9 @@ impl LiquidSqueezedArray for VariantStructSqueezedArray {
         self.original_arrow_type.clone()
     }
 
-    async fn to_bytes(&self) -> Vec<u8> {
-        serialize_variant_array(&(Arc::new(self.build_root_struct()) as ArrayRef))
-            .expect("serialize variant array")
-            .to_vec()
-    }
-
     fn disk_backing(&self) -> SqueezedBacking {
         SqueezedBacking::Arrow
     }
-}
-
-fn serialize_variant_array(array: &ArrayRef) -> Result<Bytes, ArrowError> {
-    let field = Arc::new(Field::new(
-        "column",
-        array.data_type().clone(),
-        array.null_count() > 0,
-    ));
-    let schema = Arc::new(Schema::new(vec![field]));
-    let batch = RecordBatch::try_new(schema.clone(), vec![array.clone()])?;
-    let mut buffer = Vec::new();
-    {
-        let mut writer = StreamWriter::try_new(&mut buffer, &schema)?;
-        writer.write(&batch)?;
-        writer.finish()?;
-    }
-    Ok(Bytes::from(buffer))
 }
 
 #[derive(Default)]
