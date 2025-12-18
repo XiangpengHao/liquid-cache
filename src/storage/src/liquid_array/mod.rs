@@ -16,7 +16,7 @@ mod tests;
 pub(crate) mod utils;
 mod variant_array;
 
-use std::{any::Any, sync::Arc};
+use std::{any::Any, ops::Range, sync::Arc};
 
 use arrow::{
     array::{ArrayRef, BooleanArray},
@@ -25,6 +25,7 @@ use arrow::{
 use arrow_schema::DataType;
 pub use byte_array::{LiquidByteArray, get_string_needle};
 pub use byte_view_array::LiquidByteViewArray;
+use bytes::Bytes;
 use datafusion::logical_expr::Operator as DFOperator;
 use datafusion::physical_plan::PhysicalExpr;
 pub use fix_len_byte_array::LiquidFixedLenByteArray;
@@ -209,6 +210,7 @@ pub trait LiquidArray: std::fmt::Debug + Send + Sync {
     /// Hydrating the hybrid array from the stored bytes should yield the same `LiquidArray`.
     fn squeeze(
         &self,
+        _io: Arc<dyn SqueezeIoHandler>,
         _expression_hint: Option<&CacheExpression>,
     ) -> Option<(LiquidSqueezedArrayRef, bytes::Bytes)> {
         None
@@ -322,6 +324,13 @@ pub trait LiquidSqueezedArray: std::fmt::Debug + Send + Sync {
     fn disk_backing(&self) -> SqueezedBacking {
         SqueezedBacking::Liquid
     }
+}
+
+/// A trait to read the backing bytes of a squeezed array from disk.
+#[async_trait::async_trait]
+pub trait SqueezeIoHandler: Send + Sync {
+    /// Read the backing bytes of a squeezed array from disk.
+    async fn read(&self, range: Option<Range<u64>>) -> std::io::Result<Bytes>;
 }
 
 /// Compile-time info about primitive kind (signed vs unsigned) and bounds.

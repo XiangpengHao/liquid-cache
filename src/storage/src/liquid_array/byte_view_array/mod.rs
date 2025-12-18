@@ -26,7 +26,7 @@ use crate::liquid_array::raw::FsstArray;
 use crate::liquid_array::raw::fsst_buffer::{DiskBuffer, FsstBacking, PrefixKey};
 use crate::liquid_array::{
     LiquidArray, LiquidDataType, LiquidSqueezedArray, LiquidSqueezedArrayRef, NeedsBacking,
-    SqueezeResult, get_string_needle,
+    SqueezeIoHandler, SqueezeResult, get_string_needle,
 };
 
 // Declare submodules
@@ -308,6 +308,7 @@ impl LiquidArray for LiquidByteViewArray<FsstArray> {
 
     fn squeeze(
         &self,
+        _io: Arc<dyn SqueezeIoHandler>,
         squeeze_hint: Option<&CacheExpression>,
     ) -> Option<(LiquidSqueezedArrayRef, Bytes)> {
         squeeze_hint?;

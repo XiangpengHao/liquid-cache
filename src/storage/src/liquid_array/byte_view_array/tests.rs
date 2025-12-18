@@ -10,6 +10,7 @@ use rand::{Rng, SeedableRng};
 use std::sync::Arc;
 
 use crate::cache::CacheExpression;
+use crate::cache::TestingSqueezeIo;
 use crate::liquid_array::raw::fsst_buffer::{DiskBuffer, FsstArray, PrefixKey};
 use crate::liquid_array::{LiquidArray, LiquidDataType, LiquidSqueezedArray};
 
@@ -41,7 +42,10 @@ fn test_hybrid_original_arrow_data_type_returns_utf8() {
     let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
     let in_memory = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
     let (hybrid, _) = in_memory
-        .squeeze(Some(&CacheExpression::PredicateColumn))
+        .squeeze(
+            Arc::new(TestingSqueezeIo),
+            Some(&CacheExpression::PredicateColumn),
+        )
         .expect("squeeze should succeed");
     let disk_view = hybrid
         .as_any()
@@ -770,7 +774,10 @@ fn test_compare_equals_with_prefix_decidable_and_ambiguous() {
 
     // Squeeze to disk-backed so we exercise compare_equals_with_prefix in DiskBuffer path
     let (hybrid, _bytes) = in_mem
-        .squeeze(Some(&CacheExpression::PredicateColumn))
+        .squeeze(
+            Arc::new(TestingSqueezeIo),
+            Some(&CacheExpression::PredicateColumn),
+        )
         .unwrap();
     let disk_view = hybrid
         .as_any()
@@ -812,7 +819,10 @@ fn test_compare_ordering_with_prefix_only() {
 
     // Squeeze to disk-backed to exercise prefix-only ordering path
     let (hybrid, _bytes) = in_mem
-        .squeeze(Some(&CacheExpression::PredicateColumn))
+        .squeeze(
+            Arc::new(TestingSqueezeIo),
+            Some(&CacheExpression::PredicateColumn),
+        )
         .unwrap();
     let disk_view = hybrid
         .as_any()

@@ -1,3 +1,6 @@
+use std::ops::Range;
+use std::sync::Arc;
+
 use arrow::array::{Array, ArrayRef, BooleanArray, PrimitiveArray, cast::AsArray};
 use arrow::buffer::BooleanBuffer;
 use arrow::datatypes::DataType;
@@ -8,7 +11,7 @@ use datafusion::scalar::ScalarValue;
 use futures::StreamExt;
 use liquid_cache_storage::liquid_array::{
     IntegerSqueezePolicy, LiquidArray, LiquidPrimitiveArray, LiquidPrimitiveType,
-    LiquidSqueezedArray,
+    LiquidSqueezedArray, SqueezeIoHandler,
 };
 
 #[global_allocator]
@@ -264,6 +267,15 @@ async fn run_case(ctx: &SessionContext, case: &FilterCase, limit: Option<usize>)
     stats
 }
 
+struct TestingSqueezeIo;
+
+#[async_trait::async_trait]
+impl SqueezeIoHandler for TestingSqueezeIo {
+    async fn read(&self, _range: Option<Range<u64>>) -> std::io::Result<Bytes> {
+        unreachable!()
+    }
+}
+
 fn run_for_array<T: LiquidPrimitiveType>(array: &ArrayRef, case: &FilterCase, stats: &mut Stats)
 where
     <T as arrow::array::ArrowPrimitiveType>::Native: num_traits::cast::AsPrimitive<f64>
@@ -280,14 +292,14 @@ where
     let mut lp = LiquidPrimitiveArray::<T>::from_arrow_array(prim.clone());
     let clamp_hybrid_and_bytes = {
         lp.set_squeeze_policy(IntegerSqueezePolicy::Clamp);
-        lp.squeeze(None)
+        lp.squeeze(Arc::new(TestingSqueezeIo), None)
     };
 
     // Build Quantize
     let mut lq = LiquidPrimitiveArray::<T>::from_arrow_array(prim.clone());
     let quant_hybrid_and_bytes = {
         lq.set_squeeze_policy(IntegerSqueezePolicy::Quantize);
-        lq.squeeze(None)
+        lq.squeeze(Arc::new(TestingSqueezeIo), None)
     };
 
     // Size accounting (for squeezable ones)
@@ -345,7 +357,7 @@ fn try_eval_or_fetch<T: LiquidPrimitiveType>(
     expr: &std::sync::Arc<dyn datafusion::physical_plan::PhysicalExpr>,
     filter: &BooleanBuffer,
 ) -> (BooleanArray, usize) {
-    match hybrid.try_eval_predicate(expr, filter) {
+    match futures::executor::block_on(hybrid.try_eval_predicate(expr, filter)) {
         Ok(Some(mask)) => (mask, 0),
         Ok(None) | Err(_) => {
             // Not supported in hybrid form: materialize from full bytes and compute via Arrow
@@ -363,7 +375,7 @@ fn get_with_selection_or_fetch<T: LiquidPrimitiveType>(
     selection: &BooleanBuffer,
     expected: &dyn Array,
 ) -> usize {
-    match hybrid.filter(selection) {
+    match futures::executor::block_on(hybrid.filter(selection)) {
         Ok(arr) => {
             assert_eq!(arr.as_ref(), expected);
             0

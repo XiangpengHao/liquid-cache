@@ -32,7 +32,7 @@ use fastlanes::BitPacking;
 use num_traits::{AsPrimitive, Float, FromPrimitive};
 
 use super::LiquidDataType;
-use crate::cache::CacheExpression;
+use crate::{cache::CacheExpression, liquid_array::SqueezeIoHandler};
 use crate::liquid_array::LiquidArray;
 use crate::liquid_array::ipc::{PhysicalTypeMarker, get_physical_type_id};
 use crate::liquid_array::raw::BitPackedArray;
@@ -338,6 +338,7 @@ where
 
     fn squeeze(
         &self,
+        _io: Arc<dyn SqueezeIoHandler>,
         _expression_hint: Option<&CacheExpression>,
     ) -> Option<(super::LiquidSqueezedArrayRef, bytes::Bytes)> {
         let orig_bw = self.bit_packed.bit_width()?;
@@ -1000,6 +1001,8 @@ mod tests {
     use futures::executor::block_on;
     use rand::{Rng as _, SeedableRng as _, distr::uniform::SampleUniform, rngs::StdRng};
 
+    use crate::cache::TestingSqueezeIo;
+
     use super::*;
     macro_rules! test_roundtrip {
         ($test_name: ident, $type:ty, $values: expr) => {
@@ -1179,7 +1182,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(0x51_71);
         let arr = make_f_array_with_range::<Float32Type>(64, 10_000.0, 100.0, 0.1, &mut rng);
         let liquid = LiquidFloatArray::<Float32Type>::from_arrow_array(arr);
-        assert!(liquid.squeeze(None).is_none());
+        assert!(liquid.squeeze(Arc::new(TestingSqueezeIo), None).is_none());
     }
 
     #[test]
@@ -1194,7 +1197,7 @@ mod tests {
         );
         let liq = LiquidFloatArray::<Float32Type>::from_arrow_array(arr.clone());
         let bytes_baseline = liq.to_bytes();
-        let (hybrid, bytes) = liq.squeeze(None).expect("squeezable");
+        let (hybrid, bytes) = liq.squeeze(Arc::new(TestingSqueezeIo), None).expect("squeezable");
         // ensure we can recover the original by hydrating from full bytes
         let recovered = LiquidFloatArray::<Float32Type>::from_bytes(bytes.clone());
         assert_eq!(
@@ -1267,7 +1270,7 @@ mod tests {
         );
         let liq = LiquidFloatArray::<Float64Type>::from_arrow_array(arr.clone());
         let bytes_baseline = liq.to_bytes();
-        let (hybrid, bytes) = liq.squeeze(None).expect("squeezable");
+        let (hybrid, bytes) = liq.squeeze(Arc::new(TestingSqueezeIo), None).expect("squeezable");
         // ensure we can recover the original by hydrating from full bytes
         let recovered = LiquidFloatArray::<Float64Type>::from_bytes(bytes.clone());
         assert_eq!(

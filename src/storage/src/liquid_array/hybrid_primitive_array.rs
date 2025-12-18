@@ -558,6 +558,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cache::TestingSqueezeIo;
     use crate::liquid_array::LiquidArray;
     use crate::liquid_array::primitive_array::{IntegerSqueezePolicy, LiquidPrimitiveArray};
     use crate::utils::get_bit_width;
@@ -642,7 +643,7 @@ mod tests {
         let liquid = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(arr)
             .with_squeeze_policy(IntegerSqueezePolicy::Clamp);
         let hint = crate::cache::CacheExpression::PredicateColumn;
-        assert!(liquid.squeeze(Some(&hint)).is_none());
+        assert!(liquid.squeeze(Arc::new(TestingSqueezeIo), Some(&hint)).is_none());
     }
 
     #[test]
@@ -653,7 +654,7 @@ mod tests {
             .with_squeeze_policy(IntegerSqueezePolicy::Clamp);
         let bytes_baseline = liq.to_bytes();
         let hint = crate::cache::CacheExpression::PredicateColumn;
-        let (hybrid, bytes) = liq.squeeze(Some(&hint)).expect("squeezable");
+        let (hybrid, bytes) = liq.squeeze(Arc::new(TestingSqueezeIo), Some(&hint)).expect("squeezable");
         // ensure we can recover the original by hydrating from full bytes
         let recovered = LiquidPrimitiveArray::<Int32Type>::from_bytes(bytes.clone());
         assert_eq!(recovered.to_arrow_array().as_primitive::<Int32Type>(), &arr);
@@ -698,7 +699,7 @@ mod tests {
         let liq = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(arr.clone())
             .with_squeeze_policy(IntegerSqueezePolicy::Clamp);
         let hint = crate::cache::CacheExpression::PredicateColumn;
-        let (hybrid, _bytes) = liq.squeeze(Some(&hint)).expect("squeezable");
+        let (hybrid, _bytes) = liq.squeeze(Arc::new(TestingSqueezeIo), Some(&hint)).expect("squeezable");
 
         let boundary = compute_boundary_i32(&arr).unwrap();
         // selection mask: random subset
@@ -777,7 +778,7 @@ mod tests {
         let liq = LiquidPrimitiveArray::<UInt32Type>::from_arrow_array(arr.clone())
             .with_squeeze_policy(IntegerSqueezePolicy::Clamp);
         let hint = crate::cache::CacheExpression::PredicateColumn;
-        let (hybrid, _bytes) = liq.squeeze(Some(&hint)).expect("squeezable");
+        let (hybrid, _bytes) = liq.squeeze(Arc::new(TestingSqueezeIo), Some(&hint)).expect("squeezable");
 
         let boundary = compute_boundary_u32(&arr).unwrap();
         let mask_bits: Vec<bool> = (0..arr.len()).map(|_| rng.random()).collect();
@@ -851,7 +852,7 @@ mod tests {
         let liq = LiquidPrimitiveArray::<UInt32Type>::from_arrow_array(arr.clone())
             .with_squeeze_policy(IntegerSqueezePolicy::Quantize);
         let hint = crate::cache::CacheExpression::PredicateColumn;
-        let (hybrid, _bytes) = liq.squeeze(Some(&hint)).expect("squeezable");
+        let (hybrid, _bytes) = liq.squeeze(Arc::new(TestingSqueezeIo), Some(&hint)).expect("squeezable");
 
         let min = arrow::compute::kernels::aggregate::min(&arr).unwrap();
 
@@ -912,7 +913,7 @@ mod tests {
         let liq = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(arr.clone())
             .with_squeeze_policy(IntegerSqueezePolicy::Quantize);
         let hint = crate::cache::CacheExpression::PredicateColumn;
-        let (hybrid, _bytes) = liq.squeeze(Some(&hint)).expect("squeezable");
+        let (hybrid, _bytes) = liq.squeeze(Arc::new(TestingSqueezeIo), Some(&hint)).expect("squeezable");
 
         let min = arrow::compute::kernels::aggregate::min(&arr).unwrap();
         let mask = BooleanBuffer::from(vec![true; arr.len()]);
@@ -971,7 +972,7 @@ mod tests {
         let liq = LiquidPrimitiveArray::<UInt32Type>::from_arrow_array(arr)
             .with_squeeze_policy(IntegerSqueezePolicy::Quantize);
         let hint = crate::cache::CacheExpression::PredicateColumn;
-        let (hybrid, _bytes) = liq.squeeze(Some(&hint)).expect("squeezable");
+        let (hybrid, _bytes) = liq.squeeze(Arc::new(TestingSqueezeIo), Some(&hint)).expect("squeezable");
         // Quantized hybrid cannot materialize to Arrow without IO
         assert!(block_on(hybrid.to_arrow_array()).is_err());
     }

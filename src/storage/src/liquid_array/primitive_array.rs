@@ -24,7 +24,7 @@ use crate::liquid_array::hybrid_primitive_array::{
 use crate::liquid_array::ipc::{LiquidIPCHeader, PhysicalTypeMarker, get_physical_type_id};
 use crate::liquid_array::raw::BitPackedArray;
 use crate::liquid_array::{
-    LiquidArray, LiquidSqueezedArrayRef, PrimitiveKind, SqueezedDate32Array,
+    LiquidArray, LiquidSqueezedArrayRef, PrimitiveKind, SqueezeIoHandler, SqueezedDate32Array,
 };
 use crate::utils::get_bit_width;
 use arrow::datatypes::ArrowNativeType;
@@ -392,6 +392,7 @@ where
 
     fn squeeze(
         &self,
+        _io: Arc<dyn SqueezeIoHandler>,
         expression_hint: Option<&CacheExpression>,
     ) -> Option<(LiquidSqueezedArrayRef, Bytes)> {
         let expression_hint = expression_hint?;
@@ -589,6 +590,7 @@ where
 
     fn squeeze(
         &self,
+        _io: Arc<dyn SqueezeIoHandler>,
         _expression_hint: Option<&CacheExpression>,
     ) -> Option<(crate::liquid_array::LiquidSqueezedArrayRef, bytes::Bytes)> {
         // Not implemented for delta arrays

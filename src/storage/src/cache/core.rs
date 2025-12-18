@@ -15,13 +15,15 @@ use super::{
     tracer::CacheTracer,
     utils::CacheConfig,
 };
+use crate::cache::DefaultSqueezeIo;
 use crate::cache::internal_tracing::EventTrace;
 use crate::cache::policies::SqueezePolicy;
 use crate::cache::stats::{CacheStats, RuntimeStats};
 use crate::cache::utils::{LiquidCompressorStates, arrow_to_bytes};
 use crate::cache::{CacheExpression, index::ArtIndex, utils::EntryID};
 use crate::liquid_array::{
-    LiquidSqueezedArrayRef, SqueezedBacking, SqueezedDate32Array, VariantStructSqueezedArray,
+    LiquidSqueezedArrayRef, SqueezeIoHandler, SqueezedBacking, SqueezedDate32Array,
+    VariantStructSqueezedArray,
 };
 use crate::sync::Arc;
 
@@ -245,10 +247,14 @@ impl LiquidCache {
     ) -> CacheEntry {
         match &batch {
             batch @ CacheEntry::MemoryArrow(_) => {
+                let path = self.io_context.disk_path(batch, &entry_id);
+                let squeeze_io: Arc<dyn SqueezeIoHandler> =
+                    Arc::new(DefaultSqueezeIo::new(path, self.io_context.clone()));
                 let (new_batch, bytes_to_write) = self.squeeze_policy.squeeze(
                     batch,
                     self.io_context.get_compressor(&entry_id).as_ref(),
                     None,
+                    &squeeze_io,
                 );
                 if let Some(bytes_to_write) = bytes_to_write {
                     self.write_batch_to_disk(entry_id, &new_batch, bytes_to_write)
@@ -413,12 +419,18 @@ impl LiquidCache {
         let compressor = self.io_context.get_compressor(&to_squeeze);
         let squeeze_hint_arc = self.io_context.squeeze_hint(&to_squeeze);
         let squeeze_hint = squeeze_hint_arc.as_deref();
+        let path = self
+            .io_context
+            .disk_path(to_squeeze_batch.as_ref(), &to_squeeze);
+        let squeeze_io: Arc<dyn SqueezeIoHandler> =
+            Arc::new(DefaultSqueezeIo::new(path, self.io_context.clone()));
 
         loop {
             let (new_batch, bytes_to_write) = self.squeeze_policy.squeeze(
                 to_squeeze_batch.as_ref(),
                 compressor.as_ref(),
                 squeeze_hint,
+                &squeeze_io,
             );
 
             if let Some(bytes_to_write) = bytes_to_write {
@@ -703,13 +715,13 @@ impl LiquidCache {
         });
         let path = self.io_context.disk_path(batch, &entry_id);
         let len = bytes.len();
-        self.io_context.write_file(path, bytes).await.unwrap();
+        self.io_context.write_file(&path, bytes).await.unwrap();
         self.budget.add_used_disk_bytes(len);
     }
 
     async fn read_disk_arrow_array(&self, entry: &CacheEntry, entry_id: &EntryID) -> ArrayRef {
         let path = self.io_context.disk_path(entry, entry_id);
-        let bytes = self.io_context.read(path, None).await.expect("read failed");
+        let bytes = self.io_context.read(&path, None).await.expect("read failed");
         let cursor = std::io::Cursor::new(bytes.to_vec());
         let mut reader =
             arrow::ipc::reader::StreamReader::try_new(cursor, None).expect("create reader failed");
@@ -728,7 +740,7 @@ impl LiquidCache {
         entry_id: &EntryID,
     ) -> crate::liquid_array::LiquidArrayRef {
         let path = self.io_context.disk_path(entry, entry_id);
-        let bytes = self.io_context.read(path, None).await.expect("read failed");
+        let bytes = self.io_context.read(&path, None).await.expect("read failed");
         self.trace(InternalEvent::IoReadLiquid {
             entry: *entry_id,
             bytes: bytes.len(),

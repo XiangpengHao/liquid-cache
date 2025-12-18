@@ -1,6 +1,6 @@
 use std::{
     collections::VecDeque,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, RwLock},
 };
 
@@ -131,18 +131,18 @@ impl IoContext for ParquetIoContext {
 
     #[inline(never)]
     #[fastrace::trace]
-    async fn read(
+    async fn read<'p>(
         &self,
-        path: PathBuf,
+        path: &'p Path,
         range: Option<std::ops::Range<u64>>,
     ) -> Result<Bytes, std::io::Error> {
-        io_backend::read(self.io_mode, path, range).await
+        io_backend::read(self.io_mode, path.to_path_buf(), range).await
     }
 
     #[inline(never)]
     #[fastrace::trace]
-    async fn write_file(&self, path: PathBuf, data: Bytes) -> Result<(), std::io::Error> {
-        io_backend::write(self.io_mode, path, data).await
+    async fn write_file<'p>(&self, path: &'p Path, data: Bytes) -> Result<(), std::io::Error> {
+        io_backend::write(self.io_mode, path.to_path_buf(), data).await
     }
 }
 

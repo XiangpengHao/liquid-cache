@@ -19,7 +19,9 @@ pub use cached_batch::{CacheEntry, CachedBatchType};
 pub use core::LiquidCache;
 pub use expressions::{CacheExpression, VariantRequest};
 pub use internal_tracing::EventTrace;
-pub use io_context::{DefaultIoContext, IoContext};
+#[cfg(test)]
+pub(crate) use io_context::TestingSqueezeIo;
+pub use io_context::{DefaultIoContext, DefaultSqueezeIo, IoContext};
 pub use policies::{
     AlwaysHydrate, CachePolicy, HydrationPolicy, HydrationRequest, LiquidPolicy, MaterializedEntry,
     NoHydration, SqueezePolicy, TranscodeSqueezeEvict,

@@ -1,15 +1,19 @@
+use std::path::Path;
 use std::{fmt::Debug, ops::Range, path::PathBuf};
 
 use ahash::AHashMap;
 use bytes::Bytes;
 
-use crate::cache::{
-    CacheExpression,
-    cached_batch::CacheEntry,
-    utils::{EntryID, LiquidCompressorStates},
-};
 use crate::liquid_array::SqueezedBacking;
 use crate::sync::{Arc, RwLock};
+use crate::{
+    cache::{
+        CacheExpression,
+        cached_batch::CacheEntry,
+        utils::{EntryID, LiquidCompressorStates},
+    },
+    liquid_array::SqueezeIoHandler,
+};
 
 /// A trait for objects that can handle IO operations for the cache.
 #[async_trait::async_trait]
@@ -38,11 +42,14 @@ pub trait IoContext: Debug + Send + Sync {
     fn disk_path(&self, entry: &CacheEntry, entry_id: &EntryID) -> PathBuf;
 
     /// Read bytes from the file at the given path, optionally restricted to the provided range.
-    async fn read(&self, path: PathBuf, range: Option<Range<u64>>)
-    -> Result<Bytes, std::io::Error>;
+    async fn read<'p>(
+        &self,
+        path: &'p Path,
+        range: Option<Range<u64>>,
+    ) -> Result<Bytes, std::io::Error>;
 
     /// Write the entire buffer to a file at the given path.
-    async fn write_file(&self, path: PathBuf, data: Bytes) -> Result<(), std::io::Error>;
+    async fn write_file<'p>(&self, path: &'p Path, data: Bytes) -> Result<(), std::io::Error>;
 }
 
 /// A default implementation of [IoContext] that uses the default compressor.
@@ -94,9 +101,9 @@ impl IoContext for DefaultIoContext {
             .join(format!("{:016x}.{}", usize::from(*entry_id), ext))
     }
 
-    async fn read(
+    async fn read<'p>(
         &self,
-        path: PathBuf,
+        path: &'p Path,
         range: Option<Range<u64>>,
     ) -> Result<Bytes, std::io::Error> {
         if cfg!(test) {
@@ -137,7 +144,7 @@ impl IoContext for DefaultIoContext {
         }
     }
 
-    async fn write_file(&self, path: PathBuf, data: Bytes) -> Result<(), std::io::Error> {
+    async fn write_file<'p>(&self, path: &'p Path, data: Bytes) -> Result<(), std::io::Error> {
         if cfg!(test) {
             std::fs::write(path, data.as_ref())?;
             Ok(())
@@ -148,5 +155,36 @@ impl IoContext for DefaultIoContext {
             file.sync_all().await?;
             Ok(())
         }
+    }
+}
+
+/// A default implementation of [SqueezeIo] that uses the default [IoContext].
+pub struct DefaultSqueezeIo {
+    path: PathBuf,
+    io_context: Arc<dyn IoContext>,
+}
+
+impl DefaultSqueezeIo {
+    /// Create a new instance of [DefaultSqueezeIo].
+    pub fn new(path: PathBuf, io_context: Arc<dyn IoContext>) -> Self {
+        Self { path, io_context }
+    }
+}
+
+#[async_trait::async_trait]
+impl SqueezeIoHandler for DefaultSqueezeIo {
+    async fn read(&self, range: Option<Range<u64>>) -> std::io::Result<Bytes> {
+        self.io_context.read(&self.path, range).await
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct TestingSqueezeIo;
+
+#[cfg(test)]
+#[async_trait::async_trait]
+impl SqueezeIoHandler for TestingSqueezeIo {
+    async fn read(&self, _range: Option<Range<u64>>) -> std::io::Result<Bytes> {
+        unreachable!()
     }
 }
