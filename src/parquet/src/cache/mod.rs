@@ -309,17 +309,17 @@ impl LiquidCacheParquet {
 
     /// Flush the cache trace to a file.
     pub fn flush_trace(&self, to_file: impl AsRef<Path>) {
-        self.cache_store.tracer().flush(to_file);
+        self.cache_store.observer().flush_cache_trace(to_file);
     }
 
     /// Enable the cache trace.
     pub fn enable_trace(&self) {
-        self.cache_store.tracer().enable();
+        self.cache_store.observer().enable_cache_trace();
     }
 
     /// Disable the cache trace.
     pub fn disable_trace(&self) {
-        self.cache_store.tracer().disable();
+        self.cache_store.observer().disable_cache_trace();
     }
 
     /// Reset the cache.

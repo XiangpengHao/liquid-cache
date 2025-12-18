@@ -6,11 +6,9 @@ mod cached_batch;
 mod core;
 mod expressions;
 mod index;
-mod internal_tracing;
 mod io_context;
+mod observer;
 pub mod policies;
-mod stats;
-mod tracer;
 mod transcode;
 mod utils;
 
@@ -18,7 +16,8 @@ pub use builders::{EvaluatePredicate, Get, Insert, LiquidCacheBuilder};
 pub use cached_batch::{CacheEntry, CachedBatchType};
 pub use core::LiquidCache;
 pub use expressions::{CacheExpression, VariantRequest};
-pub use internal_tracing::EventTrace;
+pub use observer::EventTrace;
+pub use observer::Observer;
 #[cfg(test)]
 pub(crate) use io_context::TestingSqueezeIo;
 pub use io_context::{DefaultIoContext, DefaultSqueezeIo, IoContext};
@@ -26,7 +25,7 @@ pub use policies::{
     AlwaysHydrate, CachePolicy, HydrationPolicy, HydrationRequest, LiquidPolicy, MaterializedEntry,
     NoHydration, SqueezePolicy, TranscodeSqueezeEvict,
 };
-pub use stats::{CacheStats, RuntimeStats, RuntimeStatsSnapshot};
+pub use observer::{CacheStats, RuntimeStats, RuntimeStatsSnapshot};
 pub use transcode::transcode_liquid_inner;
 pub use utils::{EntryID, LiquidCompressorStates};
 

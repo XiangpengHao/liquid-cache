@@ -9,18 +9,16 @@ use super::{
     budget::BudgetAccounting,
     builders::{EvaluatePredicate, Get, Insert},
     cached_batch::{CacheEntry, CachedBatchType},
-    internal_tracing::{EventTracer, InternalEvent},
     io_context::IoContext,
+    observer::{CacheTracer, InternalEvent, Observer},
     policies::{CachePolicy, HydrationPolicy, HydrationRequest, MaterializedEntry},
-    tracer::CacheTracer,
     utils::CacheConfig,
 };
 use crate::cache::DefaultSqueezeIo;
-use crate::cache::internal_tracing::EventTrace;
 use crate::cache::policies::SqueezePolicy;
-use crate::cache::stats::{CacheStats, RuntimeStats};
 use crate::cache::utils::{LiquidCompressorStates, arrow_to_bytes};
 use crate::cache::{CacheExpression, index::ArtIndex, utils::EntryID};
+use crate::cache::{CacheStats, EventTrace};
 use crate::liquid_array::{
     LiquidSqueezedArrayRef, SqueezeIoHandler, SqueezedBacking, SqueezedDate32Array,
     VariantStructSqueezedArray,
@@ -57,10 +55,8 @@ pub struct LiquidCache {
     cache_policy: Box<dyn CachePolicy>,
     hydration_policy: Box<dyn HydrationPolicy>,
     squeeze_policy: Box<dyn SqueezePolicy>,
-    tracer: CacheTracer,
-    event_tracer: EventTracer,
+    observer: Observer,
     io_context: Arc<dyn IoContext>,
-    runtime_stats: RuntimeStats,
 }
 
 /// Builder returned by [`LiquidCache::insert`] for configuring cache writes.
@@ -86,7 +82,7 @@ impl LiquidCache {
 
         let memory_usage_bytes = self.budget.memory_usage_bytes();
         let disk_usage_bytes = self.budget.disk_usage_bytes();
-        let runtime = self.runtime_stats.consume_snapshot();
+        let runtime = self.observer.runtime_snapshot();
 
         CacheStats {
             total_entries,
@@ -132,7 +128,7 @@ impl LiquidCache {
         &self,
         entry_id: &EntryID,
     ) -> Option<crate::liquid_array::LiquidArrayRef> {
-        self.runtime_stats.incr_try_read_liquid();
+        self.observer.on_try_read_liquid();
         self.trace(InternalEvent::TryReadLiquid { entry: *entry_id });
         let batch = self.index.get(entry_id)?;
         self.cache_policy
@@ -187,7 +183,12 @@ impl LiquidCache {
 
     /// Get the tracer of the cache.
     pub fn tracer(&self) -> &CacheTracer {
-        &self.tracer
+        self.observer.cache_tracer()
+    }
+
+    /// Access the cache observer (runtime stats, debug event trace, and optional cache tracing).
+    pub fn observer(&self) -> &Observer {
+        &self.observer
     }
 
     /// Get the compressor states of the cache.
@@ -312,10 +313,6 @@ impl LiquidCache {
         }
     }
 
-    pub(crate) fn runtime_stats(&self) -> &RuntimeStats {
-        &self.runtime_stats
-    }
-
     /// Create a new instance of CacheStorage.
     pub(crate) fn new(
         batch_size: usize,
@@ -334,10 +331,8 @@ impl LiquidCache {
             cache_policy,
             hydration_policy,
             squeeze_policy,
-            tracer: CacheTracer::new(),
-            event_tracer: EventTracer::new(),
+            observer: Observer::new(),
             io_context: io_worker,
-            runtime_stats: RuntimeStats::default(),
         }
     }
 
@@ -376,22 +371,11 @@ impl LiquidCache {
 
     /// Consume the trace of the cache, for testing only.
     pub fn consume_event_trace(&self) -> EventTrace {
-        self.event_tracer.drain()
+        self.observer.consume_event_trace()
     }
 
     pub(crate) fn trace(&self, event: InternalEvent) {
-        match event {
-            InternalEvent::IoWrite { .. } => {
-                self.runtime_stats.incr_write_io_count();
-            }
-            InternalEvent::IoReadArrow { .. } | InternalEvent::IoReadLiquid { .. } => {
-                self.runtime_stats.incr_read_io_count();
-            }
-            _ => {}
-        }
-        if cfg!(debug_assertions) {
-            self.event_tracer.record(event);
-        }
+        self.observer.record_internal(event);
     }
 
     /// Get the index of the cache.
@@ -584,7 +568,7 @@ impl LiquidCache {
         selection: Option<&BooleanBuffer>,
     ) -> Option<ArrayRef> {
         if let Some(array) = self.try_read_squeezed_date32_array(array, expression, selection) {
-            self.runtime_stats.incr_get_squeezed_success();
+            self.observer.on_get_squeezed_success();
             self.trace(InternalEvent::ReadSqueezedData {
                 entry: *entry_id,
                 expression: expression.unwrap().clone(),
@@ -596,7 +580,7 @@ impl LiquidCache {
             .try_read_squeezed_variant_array(array, entry_id, expression, selection)
             .await
         {
-            self.runtime_stats.incr_get_squeezed_success();
+            self.observer.on_get_squeezed_success();
             self.trace(InternalEvent::ReadSqueezedData {
                 entry: *entry_id,
                 expression: expression.unwrap().clone(),
@@ -604,7 +588,7 @@ impl LiquidCache {
             return Some(array);
         }
 
-        self.runtime_stats.incr_get_squeezed_needs_io();
+        self.observer.on_get_squeezed_needs_io();
         let batch = CacheEntry::MemorySqueezedLiquid(array.clone());
         let arrow = {
             match array.disk_backing() {
@@ -653,7 +637,7 @@ impl LiquidCache {
             && squeezed.field() == *field
         {
             let component = Arc::new(squeezed.to_component_date32()) as ArrayRef;
-            self.runtime_stats.incr_hit_date32_expression();
+            self.observer.on_hit_date32_expression();
             if let Some(selection) = selection {
                 let selection_array = BooleanArray::new(selection.clone(), None);
                 let filtered = arrow::compute::filter(&component, &selection_array).ok()?;
@@ -681,7 +665,7 @@ impl LiquidCache {
 
         let full_array = if !all_paths_present {
             let batch = CacheEntry::MemorySqueezedLiquid(array.clone());
-            self.runtime_stats.incr_get_squeezed_needs_io();
+            self.observer.on_get_squeezed_needs_io();
             let full_array = self.read_disk_arrow_array(&batch, entry_id).await;
             self.maybe_hydrate(
                 entry_id,
@@ -721,7 +705,11 @@ impl LiquidCache {
 
     async fn read_disk_arrow_array(&self, entry: &CacheEntry, entry_id: &EntryID) -> ArrayRef {
         let path = self.io_context.disk_path(entry, entry_id);
-        let bytes = self.io_context.read(&path, None).await.expect("read failed");
+        let bytes = self
+            .io_context
+            .read(&path, None)
+            .await
+            .expect("read failed");
         let cursor = std::io::Cursor::new(bytes.to_vec());
         let mut reader =
             arrow::ipc::reader::StreamReader::try_new(cursor, None).expect("create reader failed");
@@ -740,7 +728,11 @@ impl LiquidCache {
         entry_id: &EntryID,
     ) -> crate::liquid_array::LiquidArrayRef {
         let path = self.io_context.disk_path(entry, entry_id);
-        let bytes = self.io_context.read(&path, None).await.expect("read failed");
+        let bytes = self
+            .io_context
+            .read(&path, None)
+            .await
+            .expect("read failed");
         self.trace(InternalEvent::IoReadLiquid {
             entry: *entry_id,
             bytes: bytes.len(),
@@ -762,7 +754,7 @@ impl LiquidCache {
     ) -> Option<Result<BooleanArray, ArrayRef>> {
         use arrow::array::BooleanArray;
 
-        self.runtime_stats.incr_eval_predicate();
+        self.observer.on_eval_predicate();
         let batch = self.index.get(entry_id)?;
         self.cache_policy
             .notify_access(entry_id, CachedBatchType::from(batch.as_ref()));
@@ -849,11 +841,11 @@ impl LiquidCache {
         let entry = CacheEntry::MemorySqueezedLiquid(array.clone());
         match array.try_eval_predicate(predicate, selection).await {
             Ok(Some(buf)) => {
-                self.runtime_stats.incr_eval_predicate_squeezed_success();
+                self.observer.on_eval_predicate_squeezed_success();
                 Some(Ok(buf))
             }
             _ => {
-                self.runtime_stats.incr_eval_predicate_squeezed_needs_io();
+                self.observer.on_eval_predicate_squeezed_needs_io();
                 match array.disk_backing() {
                     SqueezedBacking::Liquid => {
                         let hydrated = self.read_disk_liquid_array(&entry, entry_id).await;
