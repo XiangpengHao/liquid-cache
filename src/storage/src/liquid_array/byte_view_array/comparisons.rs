@@ -1,6 +1,8 @@
 use arrow::array::DictionaryArray;
 use arrow::array::{BinaryArray, BooleanArray, BooleanBufferBuilder, cast::AsArray};
 use arrow::datatypes::UInt16Type;
+use arrow_schema::DataType;
+use datafusion::common::ScalarValue;
 use datafusion::logical_expr::{ColumnarValue, Operator};
 use datafusion::physical_expr_common::datum::apply_cmp;
 use fsst::Compressor;
@@ -469,7 +471,27 @@ fn compare_with_arrow_inner(
     needle: &[u8],
     op: &Operator,
 ) -> BooleanArray {
-    let needle_scalar = datafusion::common::ScalarValue::Binary(Some(needle.to_vec()));
+    let needle_scalar = match dict_array.values().data_type() {
+        DataType::Utf8 => ScalarValue::Utf8(Some(
+            std::str::from_utf8(needle)
+                .expect("utf8 needle")
+                .to_string(),
+        )),
+        DataType::Utf8View => ScalarValue::Utf8View(Some(
+            std::str::from_utf8(needle)
+                .expect("utf8 needle")
+                .to_string(),
+        )),
+        DataType::LargeUtf8 => ScalarValue::LargeUtf8(Some(
+            std::str::from_utf8(needle)
+                .expect("utf8 needle")
+                .to_string(),
+        )),
+        DataType::Binary => ScalarValue::Binary(Some(needle.to_vec())),
+        DataType::BinaryView => ScalarValue::BinaryView(Some(needle.to_vec())),
+        DataType::LargeBinary => ScalarValue::LargeBinary(Some(needle.to_vec())),
+        _ => ScalarValue::Binary(Some(needle.to_vec())),
+    };
     let lhs = ColumnarValue::Array(Arc::new(dict_array));
     let rhs = ColumnarValue::Scalar(needle_scalar);
 
