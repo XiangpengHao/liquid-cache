@@ -119,9 +119,7 @@ impl LiquidByteViewArray<FsstArray> {
                 let result = match (op, value_cmp) {
                     (Operator::Lt, std::cmp::Ordering::Less) => true,
                     (Operator::Lt, _) => false,
-                    (Operator::LtEq, std::cmp::Ordering::Less | std::cmp::Ordering::Equal) => {
-                        true
-                    }
+                    (Operator::LtEq, std::cmp::Ordering::Less | std::cmp::Ordering::Equal) => true,
                     (Operator::LtEq, _) => false,
                     (Operator::Gt, std::cmp::Ordering::Greater) => true,
                     (Operator::Gt, _) => false,
@@ -213,9 +211,7 @@ impl LiquidByteViewArray<DiskBuffer> {
                 let result = match (op, value_cmp) {
                     (Operator::Lt, std::cmp::Ordering::Less) => true,
                     (Operator::Lt, _) => false,
-                    (Operator::LtEq, std::cmp::Ordering::Less | std::cmp::Ordering::Equal) => {
-                        true
-                    }
+                    (Operator::LtEq, std::cmp::Ordering::Less | std::cmp::Ordering::Equal) => true,
                     (Operator::LtEq, _) => false,
                     (Operator::Gt, std::cmp::Ordering::Greater) => true,
                     (Operator::Gt, _) => false,
