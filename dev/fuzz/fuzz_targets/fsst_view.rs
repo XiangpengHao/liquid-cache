@@ -8,8 +8,7 @@ use arrow::error::ArrowError;
 use datafusion::logical_expr::Operator;
 use libfuzzer_sys::fuzz_target;
 use liquid_cache_storage::liquid_array::LiquidByteViewArray;
-use liquid_cache_storage::liquid_array::byte_view_array::MemoryBuffer;
-
+use liquid_cache_storage::liquid_array::raw::FsstArray;
 #[derive(Debug, Clone, Arbitrary)]
 struct FuzzInput {
     strings: Vec<Option<String>>,
@@ -63,16 +62,16 @@ fuzz_target!(|data: &[u8]| {
     test_compare_with(&liquid_array, &original_array, &input.compare_operations);
 });
 
-fn test_roundtrip(strings: &[Option<String>]) -> (LiquidByteViewArray<MemoryBuffer>, StringArray) {
+fn test_roundtrip(strings: &[Option<String>]) -> (LiquidByteViewArray<FsstArray>, StringArray) {
     let original_array = StringArray::from(strings.to_vec());
 
     // Train compressor and create LiquidByteViewArray
-    let compressor = LiquidByteViewArray::<MemoryBuffer>::train_compressor(original_array.iter());
+    let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(original_array.iter());
     let liquid_array =
-        LiquidByteViewArray::<MemoryBuffer>::from_string_array(&original_array, compressor);
+        LiquidByteViewArray::<FsstArray>::from_string_array(&original_array, compressor);
 
     // Convert back to StringArray
-    let roundtrip_array = liquid_array.to_arrow_array().unwrap();
+    let roundtrip_array = liquid_array.to_arrow_array();
     let roundtrip_string_array = roundtrip_array.as_string::<i32>();
 
     assert_eq!(&original_array, roundtrip_string_array);
@@ -81,7 +80,7 @@ fn test_roundtrip(strings: &[Option<String>]) -> (LiquidByteViewArray<MemoryBuff
 }
 
 fn test_compare_with(
-    liquid_array: &LiquidByteViewArray<MemoryBuffer>,
+    liquid_array: &LiquidByteViewArray<FsstArray>,
     arrow_array: &StringArray,
     operations: &[CompareOperation],
 ) {
@@ -94,11 +93,7 @@ fn test_compare_with(
 
         // Get result from LiquidByteViewArray
         let liquid_result = liquid_array.compare_with(needle_bytes, &operator);
-        if let Ok(arrow_result) = arrow_result {
-            assert_eq!(arrow_result, liquid_result.unwrap());
-        } else {
-            assert!(liquid_result.is_err());
-        }
+        assert_eq!(arrow_result.unwrap(), liquid_result);
     }
 }
 

@@ -244,6 +244,15 @@ impl CacheSimulator {
                     .current_operations
                     .insert(*entry, EntryOperation::IoWrite);
             }
+            TraceEvent::IoReadSqueezedBacking { entry, bytes, .. } => {
+                self.state.io_stats.read_requests += 1;
+                self.state.io_stats.bytes_read += bytes;
+                self.state.io_stats_delta.read_requests_delta = 1;
+                self.state.io_stats_delta.bytes_read_delta = *bytes;
+                self.state
+                    .current_operations
+                    .insert(*entry, EntryOperation::IoRead);
+            }
             TraceEvent::IoReadArrow { entry, bytes, .. } => {
                 self.state.io_stats.read_requests += 1;
                 self.state.io_stats.bytes_read += bytes;

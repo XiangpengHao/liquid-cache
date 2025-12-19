@@ -3,13 +3,15 @@ use std::{fmt::Debug, ops::Range, path::PathBuf};
 use ahash::AHashMap;
 use bytes::Bytes;
 
-use crate::cache::{
-    CacheExpression,
-    cached_batch::CacheEntry,
-    utils::{EntryID, LiquidCompressorStates},
-};
-use crate::liquid_array::SqueezedBacking;
 use crate::sync::{Arc, RwLock};
+use crate::{
+    cache::{
+        CacheExpression, Observer,
+        observer::InternalEvent,
+        utils::{EntryID, LiquidCompressorStates},
+    },
+    liquid_array::SqueezeIoHandler,
+};
 
 /// A trait for objects that can handle IO operations for the cache.
 #[async_trait::async_trait]
@@ -32,10 +34,7 @@ pub trait IoContext: Debug + Send + Sync {
     fn get_compressor(&self, entry_id: &EntryID) -> Arc<LiquidCompressorStates>;
 
     /// Get the disk path for a cache entry.
-    ///
-    /// The implementation should determine the appropriate path based on the entry type
-    /// (e.g., different extensions for Arrow vs Liquid formats).
-    fn disk_path(&self, entry: &CacheEntry, entry_id: &EntryID) -> PathBuf;
+    fn disk_path(&self, entry_id: &EntryID) -> PathBuf;
 
     /// Read bytes from the file at the given path, optionally restricted to the provided range.
     async fn read(&self, path: PathBuf, range: Option<Range<u64>>)
@@ -81,17 +80,9 @@ impl IoContext for DefaultIoContext {
         self.compressor_state.clone()
     }
 
-    fn disk_path(&self, entry: &CacheEntry, entry_id: &EntryID) -> PathBuf {
-        let ext = match entry {
-            CacheEntry::DiskArrow(_) | CacheEntry::MemoryArrow(_) => "arrow",
-            CacheEntry::DiskLiquid(_) | CacheEntry::MemoryLiquid(_) => "liquid",
-            CacheEntry::MemorySqueezedLiquid(array) => match array.disk_backing() {
-                SqueezedBacking::Arrow => "arrow",
-                SqueezedBacking::Liquid => "liquid",
-            },
-        };
+    fn disk_path(&self, entry_id: &EntryID) -> PathBuf {
         self.base_dir
-            .join(format!("{:016x}.{}", usize::from(*entry_id), ext))
+            .join(format!("{:016x}.liquid", usize::from(*entry_id)))
     }
 
     async fn read(
@@ -148,5 +139,50 @@ impl IoContext for DefaultIoContext {
             file.sync_all().await?;
             Ok(())
         }
+    }
+}
+
+/// A default implementation of [SqueezeIoHandler] that uses the default [IoContext].
+#[derive(Debug)]
+pub struct DefaultSqueezeIo {
+    io_context: Arc<dyn IoContext>,
+    entry_id: EntryID,
+    observer: Arc<Observer>,
+}
+
+impl DefaultSqueezeIo {
+    /// Create a new instance of [DefaultSqueezeIo].
+    pub fn new(io_context: Arc<dyn IoContext>, entry_id: EntryID, observer: Arc<Observer>) -> Self {
+        Self {
+            io_context,
+            entry_id,
+            observer,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl SqueezeIoHandler for DefaultSqueezeIo {
+    async fn read(&self, range: Option<Range<u64>>) -> std::io::Result<Bytes> {
+        let path = self.io_context.disk_path(&self.entry_id);
+        let bytes = self.io_context.read(path, range).await?;
+        self.observer
+            .record_internal(InternalEvent::IoReadSqueezedBacking {
+                entry: self.entry_id,
+                bytes: bytes.len(),
+            });
+        Ok(bytes)
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct TestingSqueezeIo;
+
+#[cfg(test)]
+#[async_trait::async_trait]
+impl SqueezeIoHandler for TestingSqueezeIo {
+    async fn read(&self, _range: Option<Range<u64>>) -> std::io::Result<Bytes> {
+        unreachable!()
     }
 }

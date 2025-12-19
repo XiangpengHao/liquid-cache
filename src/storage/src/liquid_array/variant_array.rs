@@ -2,11 +2,7 @@ use std::sync::Arc;
 
 use arrow::array::{Array, ArrayRef, BinaryViewArray, StructArray};
 use arrow::buffer::NullBuffer;
-use arrow::error::ArrowError;
-use arrow::ipc::writer::StreamWriter;
-use arrow::record_batch::RecordBatch;
-use arrow_schema::{DataType, Field, Fields, Schema};
-use bytes::Bytes;
+use arrow_schema::{DataType, Field, Fields};
 
 use crate::liquid_array::{
     LiquidArrayRef, LiquidDataType, LiquidSqueezedArray, NeedsBacking, SqueezedBacking,
@@ -101,7 +97,7 @@ impl VariantStructSqueezedArray {
         }
 
         if filtered.is_empty() {
-            return self.to_arrow_array();
+            return Ok(Arc::new(self.build_root_struct()) as ArrayRef);
         }
 
         let filtered = VariantStructSqueezedArray::new(
@@ -109,7 +105,7 @@ impl VariantStructSqueezedArray {
             self.nulls.clone(),
             self.original_arrow_type.clone(),
         );
-        filtered.to_arrow_array()
+        Ok(Arc::new(filtered.build_root_struct()) as ArrayRef)
     }
 
     /// Clone the stored typed values keyed by variant path.
@@ -126,6 +122,7 @@ impl VariantStructSqueezedArray {
     }
 }
 
+#[async_trait::async_trait]
 impl LiquidSqueezedArray for VariantStructSqueezedArray {
     fn as_any(&self) -> &dyn std::any::Any {
         self
@@ -142,8 +139,8 @@ impl LiquidSqueezedArray for VariantStructSqueezedArray {
         self.len
     }
 
-    fn to_arrow_array(&self) -> Result<ArrayRef, NeedsBacking> {
-        Ok(Arc::new(self.build_root_struct()) as ArrayRef)
+    async fn to_arrow_array(&self) -> ArrayRef {
+        Arc::new(self.build_root_struct()) as ArrayRef
     }
 
     fn data_type(&self) -> LiquidDataType {
@@ -154,32 +151,9 @@ impl LiquidSqueezedArray for VariantStructSqueezedArray {
         self.original_arrow_type.clone()
     }
 
-    fn to_bytes(&self) -> Result<Vec<u8>, NeedsBacking> {
-        serialize_variant_array(&(Arc::new(self.build_root_struct()) as ArrayRef))
-            .map(|bytes| bytes.to_vec())
-            .map_err(|_| NeedsBacking)
-    }
-
     fn disk_backing(&self) -> SqueezedBacking {
         SqueezedBacking::Arrow
     }
-}
-
-fn serialize_variant_array(array: &ArrayRef) -> Result<Bytes, ArrowError> {
-    let field = Arc::new(Field::new(
-        "column",
-        array.data_type().clone(),
-        array.null_count() > 0,
-    ));
-    let schema = Arc::new(Schema::new(vec![field]));
-    let batch = RecordBatch::try_new(schema.clone(), vec![array.clone()])?;
-    let mut buffer = Vec::new();
-    {
-        let mut writer = StreamWriter::try_new(&mut buffer, &schema)?;
-        writer.write(&batch)?;
-        writer.finish()?;
-    }
-    Ok(Bytes::from(buffer))
 }
 
 #[derive(Default)]

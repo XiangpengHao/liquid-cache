@@ -1,5 +1,6 @@
 use std::{
     collections::VecDeque,
+    ops::Range,
     path::PathBuf,
     sync::{Arc, RwLock},
 };
@@ -7,10 +8,7 @@ use std::{
 use ahash::AHashMap;
 use bytes::Bytes;
 use liquid_cache_common::IoMode;
-use liquid_cache_storage::cache::{
-    CacheEntry, CacheExpression, EntryID, IoContext, LiquidCompressorStates,
-};
-use liquid_cache_storage::liquid_array::SqueezedBacking;
+use liquid_cache_storage::cache::{CacheExpression, EntryID, IoContext, LiquidCompressorStates};
 
 use crate::cache::{ColumnAccessPath, ParquetArrayID};
 
@@ -113,20 +111,9 @@ impl IoContext for ParquetIoContext {
             .clone()
     }
 
-    fn disk_path(&self, entry: &CacheEntry, entry_id: &EntryID) -> PathBuf {
+    fn disk_path(&self, entry_id: &EntryID) -> PathBuf {
         let parquet_array_id = ParquetArrayID::from(*entry_id);
-        match entry {
-            CacheEntry::DiskArrow(_) | CacheEntry::MemoryArrow(_) => {
-                parquet_array_id.on_disk_arrow_path(&self.base_dir)
-            }
-            CacheEntry::DiskLiquid(_) | CacheEntry::MemoryLiquid(_) => {
-                parquet_array_id.on_disk_path(&self.base_dir)
-            }
-            CacheEntry::MemorySqueezedLiquid(array) => match array.disk_backing() {
-                SqueezedBacking::Arrow => parquet_array_id.on_disk_arrow_path(&self.base_dir),
-                SqueezedBacking::Liquid => parquet_array_id.on_disk_path(&self.base_dir),
-            },
-        }
+        parquet_array_id.on_disk_liquid_path(&self.base_dir)
     }
 
     #[inline(never)]
@@ -134,7 +121,7 @@ impl IoContext for ParquetIoContext {
     async fn read(
         &self,
         path: PathBuf,
-        range: Option<std::ops::Range<u64>>,
+        range: Option<Range<u64>>,
     ) -> Result<Bytes, std::io::Error> {
         io_backend::read(self.io_mode, path, range).await
     }

@@ -16,7 +16,7 @@ mod tests;
 pub(crate) mod utils;
 mod variant_array;
 
-use std::{any::Any, sync::Arc};
+use std::{any::Any, ops::Range, sync::Arc};
 
 use arrow::{
     array::{ArrayRef, BooleanArray},
@@ -25,6 +25,7 @@ use arrow::{
 use arrow_schema::DataType;
 pub use byte_array::{LiquidByteArray, get_string_needle};
 pub use byte_view_array::LiquidByteViewArray;
+use bytes::Bytes;
 use datafusion::logical_expr::Operator as DFOperator;
 use datafusion::physical_plan::PhysicalExpr;
 pub use fix_len_byte_array::LiquidFixedLenByteArray;
@@ -44,8 +45,7 @@ pub use primitive_array::{
 pub use squeezed_date32_array::{Date32Field, SqueezedDate32Array};
 pub use variant_array::VariantStructSqueezedArray;
 
-use crate::cache::CacheExpression;
-use crate::liquid_array::byte_view_array::MemoryBuffer;
+use crate::{cache::CacheExpression, liquid_array::raw::FsstArray};
 
 /// Liquid data type is only logical type
 #[derive(Debug, Clone, Copy)]
@@ -98,10 +98,10 @@ pub trait AsLiquidArray {
     }
 
     /// Get the underlying byte view array.
-    fn as_byte_view_array_opt(&self) -> Option<&LiquidByteViewArray<MemoryBuffer>>;
+    fn as_byte_view_array_opt(&self) -> Option<&LiquidByteViewArray<FsstArray>>;
 
     /// Get the underlying byte view array.
-    fn as_byte_view(&self) -> &LiquidByteViewArray<MemoryBuffer> {
+    fn as_byte_view(&self) -> &LiquidByteViewArray<FsstArray> {
         self.as_byte_view_array_opt()
             .expect("liquid byte view array")
     }
@@ -137,7 +137,7 @@ impl AsLiquidArray for dyn LiquidArray + '_ {
         self.as_any().downcast_ref()
     }
 
-    fn as_byte_view_array_opt(&self) -> Option<&LiquidByteViewArray<MemoryBuffer>> {
+    fn as_byte_view_array_opt(&self) -> Option<&LiquidByteViewArray<FsstArray>> {
         self.as_any().downcast_ref()
     }
 
@@ -210,6 +210,7 @@ pub trait LiquidArray: std::fmt::Debug + Send + Sync {
     /// Hydrating the hybrid array from the stored bytes should yield the same `LiquidArray`.
     fn squeeze(
         &self,
+        _io: Arc<dyn SqueezeIoHandler>,
         _expression_hint: Option<&CacheExpression>,
     ) -> Option<(LiquidSqueezedArrayRef, bytes::Bytes)> {
         None
@@ -264,6 +265,7 @@ impl Operator {
 
 /// A Liquid squeezed array is a Liquid array that part of its data is stored on disk.
 /// `LiquidSqueezedArray` is more complex than in-memory `LiquidArray` because it needs to handle IO.
+#[async_trait::async_trait]
 pub trait LiquidSqueezedArray: std::fmt::Debug + Send + Sync {
     /// Get the underlying any type.
     fn as_any(&self) -> &dyn Any;
@@ -280,13 +282,13 @@ pub trait LiquidSqueezedArray: std::fmt::Debug + Send + Sync {
     }
 
     /// Convert the Liquid array to an Arrow array.
-    fn to_arrow_array(&self) -> SqueezeResult<ArrayRef>;
+    async fn to_arrow_array(&self) -> ArrayRef;
 
     /// Convert the Liquid array to an Arrow array.
     /// Except that it will pick the best encoding for the arrow array.
     /// Meaning that it may not obey the data type of the original arrow array.
-    fn to_best_arrow_array(&self) -> SqueezeResult<ArrayRef> {
-        self.to_arrow_array()
+    async fn to_best_arrow_array(&self) -> ArrayRef {
+        self.to_arrow_array().await
     }
 
     /// Get the logical data type of the Liquid array.
@@ -295,14 +297,11 @@ pub trait LiquidSqueezedArray: std::fmt::Debug + Send + Sync {
     /// Get the original arrow data type of the Liquid squeezed array.
     fn original_arrow_data_type(&self) -> DataType;
 
-    /// Serialize the Liquid array to a byte array.
-    fn to_bytes(&self) -> SqueezeResult<Vec<u8>>;
-
     /// Filter the Liquid array with a boolean array and return an **arrow array**.
-    fn filter(&self, selection: &BooleanBuffer) -> SqueezeResult<ArrayRef> {
-        let arrow_array = self.to_arrow_array()?;
+    async fn filter(&self, selection: &BooleanBuffer) -> ArrayRef {
+        let arrow_array = self.to_arrow_array().await;
         let selection = BooleanArray::new(selection.clone(), None);
-        Ok(arrow::compute::kernels::filter::filter(&arrow_array, &selection).unwrap())
+        arrow::compute::kernels::filter::filter(&arrow_array, &selection).unwrap()
     }
 
     /// Try to evaluate a predicate on the Liquid array with a filter.
@@ -310,18 +309,25 @@ pub trait LiquidSqueezedArray: std::fmt::Debug + Send + Sync {
     ///
     /// Note that the filter is a boolean buffer, not a boolean array, i.e., filter can't be nullable.
     /// The returned boolean mask is nullable if the the original array is nullable.
-    fn try_eval_predicate(
+    async fn try_eval_predicate(
         &self,
         _predicate: &Arc<dyn PhysicalExpr>,
         _filter: &BooleanBuffer,
-    ) -> SqueezeResult<Option<BooleanArray>> {
-        Ok(None)
+    ) -> Option<BooleanArray> {
+        None
     }
 
     /// Describe how the squeezed array persists its backing bytes on disk.
     fn disk_backing(&self) -> SqueezedBacking {
         SqueezedBacking::Liquid
     }
+}
+
+/// A trait to read the backing bytes of a squeezed array from disk.
+#[async_trait::async_trait]
+pub trait SqueezeIoHandler: std::fmt::Debug + Send + Sync {
+    /// Read the backing bytes of a squeezed array from disk.
+    async fn read(&self, range: Option<Range<u64>>) -> std::io::Result<Bytes>;
 }
 
 /// Compile-time info about primitive kind (signed vs unsigned) and bounds.

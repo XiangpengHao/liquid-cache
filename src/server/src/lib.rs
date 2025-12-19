@@ -286,9 +286,10 @@ impl LiquidCacheService {
                 let path = Path::from(cmd.location);
 
                 // Create a range for the specific chunk we want to prefetch, if specified
-                let get_options = if cmd.range_start.is_some() && cmd.range_end.is_some() {
-                    let chunk_range =
-                        GetRange::Bounded(cmd.range_start.unwrap()..cmd.range_end.unwrap());
+                let get_options = if let (Some(range_start), Some(range_end)) =
+                    (cmd.range_start, cmd.range_end)
+                {
+                    let chunk_range = GetRange::Bounded(range_start..range_end);
                     GetOptions {
                         range: Some(chunk_range),
                         ..GetOptions::default()

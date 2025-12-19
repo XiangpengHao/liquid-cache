@@ -144,7 +144,7 @@ impl LiquidCacheParquet {
             writer
                 .append_entry(
                     entry_id
-                        .on_disk_path(self.cache_store.config().cache_root_dir())
+                        .on_disk_liquid_path(self.cache_store.config().cache_root_dir())
                         .to_str()
                         .unwrap(),
                     entry_id.row_group_id_inner(),

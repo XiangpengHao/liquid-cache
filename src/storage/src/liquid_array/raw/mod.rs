@@ -5,5 +5,4 @@ pub(super) mod bit_pack_array;
 /// FSST dictionary backing used by byte-view arrays.
 pub mod fsst_buffer;
 pub use bit_pack_array::BitPackedArray;
-pub use fsst_buffer::FsstBuffer;
-pub use fsst_buffer::FsstBuffer as FsstArray;
+pub use fsst_buffer::FsstArray;

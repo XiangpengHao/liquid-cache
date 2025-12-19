@@ -14,7 +14,8 @@ use crate::liquid_array::raw::BitPackedArray;
 
 use super::primitive_array::LiquidPrimitiveType;
 use super::{
-    LiquidDataType, LiquidSqueezedArray, NeedsBacking, Operator, PrimitiveKind, SqueezeResult,
+    LiquidDataType, LiquidSqueezedArray, NeedsBacking, Operator, PrimitiveKind, SqueezeIoHandler,
+    SqueezeResult,
 };
 
 #[derive(Debug, Clone)]
@@ -23,6 +24,7 @@ pub(crate) struct LiquidPrimitiveClampedArray<T: LiquidPrimitiveType> {
     pub(crate) reference_value: T::Native,
     // Range in the on-disk payload needed to reconstruct the full array (we use full bytes)
     pub(crate) disk_range: std::ops::Range<u64>,
+    pub(crate) io: Arc<dyn SqueezeIoHandler>,
 }
 
 impl<T> LiquidPrimitiveClampedArray<T>
@@ -47,6 +49,7 @@ where
             squeezed,
             reference_value: self.reference_value,
             disk_range: self.disk_range.clone(),
+            io: self.io.clone(),
         }
     }
 
@@ -57,6 +60,19 @@ where
             arrow::compute::kernels::filter::filter(&unsigned_array, &selection).unwrap();
         let filtered_values = filtered_values.as_primitive::<T::UnSignedType>().clone();
         self.new_from_filtered(filtered_values)
+    }
+
+    async fn hydrate_full_arrow(&self) -> ArrayRef {
+        let bytes = self
+            .io
+            .read(Some(self.disk_range.clone()))
+            .await
+            .expect("read squeezed backing");
+        let liquid = crate::liquid_array::ipc::read_from_bytes(
+            bytes,
+            &crate::liquid_array::ipc::LiquidIPCContext::new(None),
+        );
+        liquid.to_arrow_array()
     }
 
     pub(crate) fn to_arrow_known_only(&self) -> Option<ArrayRef> {
@@ -216,6 +232,7 @@ where
     }
 }
 
+#[async_trait::async_trait]
 impl<T> LiquidSqueezedArray for LiquidPrimitiveClampedArray<T>
 where
     T: LiquidPrimitiveType,
@@ -232,12 +249,11 @@ where
         LiquidPrimitiveClampedArray::<T>::len(self)
     }
 
-    fn to_arrow_array(&self) -> SqueezeResult<ArrayRef> {
+    async fn to_arrow_array(&self) -> ArrayRef {
         if let Some(arr) = self.to_arrow_known_only() {
-            Ok(arr)
-        } else {
-            Err(NeedsBacking)
+            return arr;
         }
+        self.hydrate_full_arrow().await
     }
 
     fn data_type(&self) -> LiquidDataType {
@@ -248,20 +264,24 @@ where
         T::DATA_TYPE.clone()
     }
 
-    fn to_bytes(&self) -> SqueezeResult<Vec<u8>> {
-        Err(NeedsBacking)
-    }
-
-    fn filter(&self, selection: &BooleanBuffer) -> SqueezeResult<ArrayRef> {
+    async fn filter(&self, selection: &BooleanBuffer) -> ArrayRef {
+        if selection.count_set_bits() == 0 {
+            return arrow::array::new_empty_array(&self.original_arrow_data_type());
+        }
         let filtered = self.filter_inner(selection);
-        filtered.to_arrow_array()
+        if let Some(arr) = filtered.to_arrow_known_only() {
+            return arr;
+        }
+        let full = self.hydrate_full_arrow().await;
+        let selection_array = BooleanArray::new(selection.clone(), None);
+        arrow::compute::kernels::filter::filter(&full, &selection_array).unwrap()
     }
 
-    fn try_eval_predicate(
+    async fn try_eval_predicate(
         &self,
         expr: &Arc<dyn PhysicalExpr>,
         filter: &BooleanBuffer,
-    ) -> SqueezeResult<Option<BooleanArray>> {
+    ) -> Option<BooleanArray> {
         // Apply selection first to reduce input rows
         let filtered = self.filter_inner(filter);
 
@@ -271,10 +291,50 @@ where
             let op = binary_expr.op();
             let supported_op = Operator::from_datafusion(op);
             if let Some(supported_op) = supported_op {
-                return filtered.try_eval_predicate_inner(&supported_op, literal);
+                match filtered.try_eval_predicate_inner(&supported_op, literal) {
+                    Ok(Some(mask)) => return Some(mask),
+                    Ok(None) => return None,
+                    Err(NeedsBacking) => {}
+                }
+
+                // Fallback: hydrate full Arrow and evaluate predicate on filtered rows.
+                use arrow::array::cast::AsArray;
+                use datafusion::logical_expr::ColumnarValue;
+                use datafusion::physical_expr_common::datum::apply_cmp;
+
+                let full = self.hydrate_full_arrow().await;
+                let selection_array = BooleanArray::new(filter.clone(), None);
+                let filtered_arr = arrow::compute::filter(&full, &selection_array).ok()?;
+                let filtered_len = filtered_arr.len();
+
+                let lhs = ColumnarValue::Array(filtered_arr);
+                let rhs = ColumnarValue::Scalar(literal.value().clone());
+                let result = match op {
+                    datafusion::logical_expr::Operator::NotEq => {
+                        apply_cmp(datafusion::logical_expr::Operator::NotEq, &lhs, &rhs)
+                    }
+                    datafusion::logical_expr::Operator::Eq => {
+                        apply_cmp(datafusion::logical_expr::Operator::Eq, &lhs, &rhs)
+                    }
+                    datafusion::logical_expr::Operator::Lt => {
+                        apply_cmp(datafusion::logical_expr::Operator::Lt, &lhs, &rhs)
+                    }
+                    datafusion::logical_expr::Operator::LtEq => {
+                        apply_cmp(datafusion::logical_expr::Operator::LtEq, &lhs, &rhs)
+                    }
+                    datafusion::logical_expr::Operator::Gt => {
+                        apply_cmp(datafusion::logical_expr::Operator::Gt, &lhs, &rhs)
+                    }
+                    datafusion::logical_expr::Operator::GtEq => {
+                        apply_cmp(datafusion::logical_expr::Operator::GtEq, &lhs, &rhs)
+                    }
+                    _ => return None,
+                };
+                let result = result.ok()?;
+                return Some(result.into_array(filtered_len).ok()?.as_boolean().clone());
             }
         }
-        Ok(None)
+        None
     }
 }
 
@@ -286,6 +346,7 @@ pub(crate) struct LiquidPrimitiveQuantizedArray<T: LiquidPrimitiveType> {
     // bucket width in terms of absolute offset units
     pub(crate) bucket_width: u64,
     pub(crate) disk_range: std::ops::Range<u64>,
+    pub(crate) io: Arc<dyn SqueezeIoHandler>,
 }
 
 impl<T> LiquidPrimitiveQuantizedArray<T>
@@ -311,6 +372,7 @@ where
             reference_value: self.reference_value,
             bucket_width: self.bucket_width,
             disk_range: self.disk_range.clone(),
+            io: self.io.clone(),
         }
     }
 
@@ -320,6 +382,19 @@ where
         let filtered = arrow::compute::kernels::filter::filter(&q_prim, &selection).unwrap();
         let filtered = filtered.as_primitive::<T::UnSignedType>().clone();
         self.new_from_filtered(filtered)
+    }
+
+    async fn hydrate_full_arrow(&self) -> ArrayRef {
+        let bytes = self
+            .io
+            .read(Some(self.disk_range.clone()))
+            .await
+            .expect("read squeezed backing");
+        let liquid = crate::liquid_array::ipc::read_from_bytes(
+            bytes,
+            &crate::liquid_array::ipc::LiquidIPCContext::new(None),
+        );
+        liquid.to_arrow_array()
     }
 
     // Evaluate using bucket interval semantics; return Err if any ambiguous bucket is encountered
@@ -500,6 +575,7 @@ where
     }
 }
 
+#[async_trait::async_trait]
 impl<T> LiquidSqueezedArray for LiquidPrimitiveQuantizedArray<T>
 where
     T: LiquidPrimitiveType + PrimitiveKind,
@@ -516,8 +592,8 @@ where
         LiquidPrimitiveQuantizedArray::<T>::len(self)
     }
 
-    fn to_arrow_array(&self) -> SqueezeResult<ArrayRef> {
-        Err(NeedsBacking)
+    async fn to_arrow_array(&self) -> ArrayRef {
+        self.hydrate_full_arrow().await
     }
 
     fn data_type(&self) -> LiquidDataType {
@@ -528,15 +604,11 @@ where
         T::DATA_TYPE.clone()
     }
 
-    fn to_bytes(&self) -> SqueezeResult<Vec<u8>> {
-        Err(NeedsBacking)
-    }
-
-    fn try_eval_predicate(
+    async fn try_eval_predicate(
         &self,
         expr: &Arc<dyn PhysicalExpr>,
         filter: &BooleanBuffer,
-    ) -> SqueezeResult<Option<BooleanArray>> {
+    ) -> Option<BooleanArray> {
         // Apply selection first to reduce input rows
         let filtered = self.filter_inner(filter);
 
@@ -546,10 +618,50 @@ where
             let op = binary_expr.op();
             let supported_op = Operator::from_datafusion(op);
             if let Some(supported_op) = supported_op {
-                return filtered.try_eval_predicate_inner(&supported_op, literal);
+                match filtered.try_eval_predicate_inner(&supported_op, literal) {
+                    Ok(Some(mask)) => return Some(mask),
+                    Ok(None) => return None,
+                    Err(NeedsBacking) => {}
+                }
+
+                // Fallback: hydrate full Arrow and evaluate predicate on filtered rows.
+                use arrow::array::cast::AsArray;
+                use datafusion::logical_expr::ColumnarValue;
+                use datafusion::physical_expr_common::datum::apply_cmp;
+
+                let full = self.hydrate_full_arrow().await;
+                let selection_array = BooleanArray::new(filter.clone(), None);
+                let filtered_arr = arrow::compute::filter(&full, &selection_array).ok()?;
+                let filtered_len = filtered_arr.len();
+
+                let lhs = ColumnarValue::Array(filtered_arr);
+                let rhs = ColumnarValue::Scalar(literal.value().clone());
+                let result = match op {
+                    datafusion::logical_expr::Operator::NotEq => {
+                        apply_cmp(datafusion::logical_expr::Operator::NotEq, &lhs, &rhs)
+                    }
+                    datafusion::logical_expr::Operator::Eq => {
+                        apply_cmp(datafusion::logical_expr::Operator::Eq, &lhs, &rhs)
+                    }
+                    datafusion::logical_expr::Operator::Lt => {
+                        apply_cmp(datafusion::logical_expr::Operator::Lt, &lhs, &rhs)
+                    }
+                    datafusion::logical_expr::Operator::LtEq => {
+                        apply_cmp(datafusion::logical_expr::Operator::LtEq, &lhs, &rhs)
+                    }
+                    datafusion::logical_expr::Operator::Gt => {
+                        apply_cmp(datafusion::logical_expr::Operator::Gt, &lhs, &rhs)
+                    }
+                    datafusion::logical_expr::Operator::GtEq => {
+                        apply_cmp(datafusion::logical_expr::Operator::GtEq, &lhs, &rhs)
+                    }
+                    _ => return None,
+                };
+                let result = result.ok()?;
+                return Some(result.into_array(filtered_len).ok()?.as_boolean().clone());
             }
         }
-        Ok(None)
+        None
     }
 }
 
@@ -557,17 +669,59 @@ where
 mod tests {
     use super::*;
     use crate::liquid_array::LiquidArray;
+    use crate::liquid_array::SqueezeIoHandler;
     use crate::liquid_array::primitive_array::{IntegerSqueezePolicy, LiquidPrimitiveArray};
     use crate::utils::get_bit_width;
     use arrow::array::{Array, BooleanArray, PrimitiveArray};
     use arrow::buffer::BooleanBuffer;
     use arrow::datatypes::{Int32Type, UInt32Type};
+    use bytes::Bytes;
     use datafusion::logical_expr::Operator;
     use datafusion::physical_plan::expressions::{BinaryExpr, Literal};
     use datafusion::scalar::ScalarValue;
+    use futures::executor::block_on;
     use rand::rngs::StdRng;
     use rand::{Rng, SeedableRng};
-    use std::sync::Arc;
+    use std::ops::Range;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Debug, Default)]
+    struct TestSqueezeIo {
+        bytes: Mutex<Option<Bytes>>,
+        reads: AtomicUsize,
+    }
+
+    impl TestSqueezeIo {
+        fn set_bytes(&self, bytes: Bytes) {
+            *self.bytes.lock().unwrap() = Some(bytes);
+        }
+
+        fn reset_reads(&self) {
+            self.reads.store(0, Ordering::SeqCst);
+        }
+
+        fn reads(&self) -> usize {
+            self.reads.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SqueezeIoHandler for TestSqueezeIo {
+        async fn read(&self, range: Option<Range<u64>>) -> std::io::Result<Bytes> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            let bytes = self
+                .bytes
+                .lock()
+                .unwrap()
+                .clone()
+                .expect("test squeeze backing set");
+            Ok(match range {
+                Some(range) => bytes.slice(range.start as usize..range.end as usize),
+                None => bytes,
+            })
+        }
+    }
 
     // ---------- Hybrid (squeeze) tests ----------
 
@@ -639,7 +793,11 @@ mod tests {
         let liquid = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(arr)
             .with_squeeze_policy(IntegerSqueezePolicy::Clamp);
         let hint = crate::cache::CacheExpression::PredicateColumn;
-        assert!(liquid.squeeze(Some(&hint)).is_none());
+        assert!(
+            liquid
+                .squeeze(Arc::new(TestSqueezeIo::default()), Some(&hint))
+                .is_none()
+        );
     }
 
     #[test]
@@ -650,7 +808,9 @@ mod tests {
             .with_squeeze_policy(IntegerSqueezePolicy::Clamp);
         let bytes_baseline = liq.to_bytes();
         let hint = crate::cache::CacheExpression::PredicateColumn;
-        let (hybrid, bytes) = liq.squeeze(Some(&hint)).expect("squeezable");
+        let io = Arc::new(TestSqueezeIo::default());
+        let (hybrid, bytes) = liq.squeeze(io.clone(), Some(&hint)).expect("squeezable");
+        io.set_bytes(bytes.clone());
         // ensure we can recover the original by hydrating from full bytes
         let recovered = LiquidPrimitiveArray::<Int32Type>::from_bytes(bytes.clone());
         assert_eq!(recovered.to_arrow_array().as_primitive::<Int32Type>(), &arr);
@@ -668,9 +828,9 @@ mod tests {
             })
             .collect();
         let mask = BooleanBuffer::from_iter(mask_bits.iter().copied());
-        let filtered_arrow = hybrid
-            .filter(&mask)
-            .expect("known-only selection should be materializable");
+        io.reset_reads();
+        let filtered_arrow = block_on(hybrid.filter(&mask));
+        assert_eq!(io.reads(), 0);
 
         let expected = {
             let vals: Vec<Option<i32>> = (0..arr.len())
@@ -696,7 +856,9 @@ mod tests {
         let liq = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(arr.clone())
             .with_squeeze_policy(IntegerSqueezePolicy::Clamp);
         let hint = crate::cache::CacheExpression::PredicateColumn;
-        let (hybrid, _bytes) = liq.squeeze(Some(&hint)).expect("squeezable");
+        let io = Arc::new(TestSqueezeIo::default());
+        let (hybrid, bytes) = liq.squeeze(io.clone(), Some(&hint)).expect("squeezable");
+        io.set_bytes(bytes);
 
         let boundary = compute_boundary_i32(&arr).unwrap();
         // selection mask: random subset
@@ -746,9 +908,11 @@ mod tests {
 
         for (op, k) in resolvable_cases {
             let expr = build_expr(op, k);
-            let got = hybrid.try_eval_predicate(&expr, &mask).expect("no IO");
+            io.reset_reads();
+            let got = block_on(hybrid.try_eval_predicate(&expr, &mask)).expect("supported");
             let expected = expected_for(op, k);
-            assert_eq!(got.unwrap(), expected);
+            assert_eq!(io.reads(), 0);
+            assert_eq!(got, expected);
         }
 
         // Unresolvable: choose constants >= boundary for ops that require disk
@@ -762,10 +926,11 @@ mod tests {
         ];
         for (op, k) in unresolvable_cases {
             let expr = build_expr(op, k);
-            let err = hybrid
-                .try_eval_predicate(&expr, &mask)
-                .expect_err("should request IO");
-            assert_eq!(err, NeedsBacking);
+            io.reset_reads();
+            let got = block_on(hybrid.try_eval_predicate(&expr, &mask)).expect("supported");
+            let expected = expected_for(op, k);
+            assert!(io.reads() > 0);
+            assert_eq!(got, expected);
         }
     }
 
@@ -776,7 +941,9 @@ mod tests {
         let liq = LiquidPrimitiveArray::<UInt32Type>::from_arrow_array(arr.clone())
             .with_squeeze_policy(IntegerSqueezePolicy::Clamp);
         let hint = crate::cache::CacheExpression::PredicateColumn;
-        let (hybrid, _bytes) = liq.squeeze(Some(&hint)).expect("squeezable");
+        let io = Arc::new(TestSqueezeIo::default());
+        let (hybrid, bytes) = liq.squeeze(io.clone(), Some(&hint)).expect("squeezable");
+        io.set_bytes(bytes);
 
         let boundary = compute_boundary_u32(&arr).unwrap();
         let mask_bits: Vec<bool> = (0..arr.len()).map(|_| rng.random()).collect();
@@ -822,9 +989,11 @@ mod tests {
         ];
         for (op, k) in resolvable_cases {
             let expr = build_expr(op, k);
-            let got = hybrid.try_eval_predicate(&expr, &mask).expect("no IO");
+            io.reset_reads();
+            let got = block_on(hybrid.try_eval_predicate(&expr, &mask)).expect("supported");
             let expected = expected_for(op, k);
-            assert_eq!(got.unwrap(), expected);
+            assert_eq!(io.reads(), 0);
+            assert_eq!(got, expected);
         }
 
         let unresolvable_cases: Vec<(Operator, u32)> = vec![
@@ -837,10 +1006,11 @@ mod tests {
         ];
         for (op, k) in unresolvable_cases {
             let expr = build_expr(op, k);
-            let err = hybrid
-                .try_eval_predicate(&expr, &mask)
-                .expect_err("should request IO");
-            assert_eq!(err, NeedsBacking);
+            io.reset_reads();
+            let got = block_on(hybrid.try_eval_predicate(&expr, &mask)).expect("supported");
+            let expected = expected_for(op, k);
+            assert!(io.reads() > 0);
+            assert_eq!(got, expected);
         }
     }
 
@@ -851,7 +1021,9 @@ mod tests {
         let liq = LiquidPrimitiveArray::<UInt32Type>::from_arrow_array(arr.clone())
             .with_squeeze_policy(IntegerSqueezePolicy::Quantize);
         let hint = crate::cache::CacheExpression::PredicateColumn;
-        let (hybrid, _bytes) = liq.squeeze(Some(&hint)).expect("squeezable");
+        let io = Arc::new(TestSqueezeIo::default());
+        let (hybrid, bytes) = liq.squeeze(io.clone(), Some(&hint)).expect("squeezable");
+        io.set_bytes(bytes);
 
         let min = arrow::compute::kernels::aggregate::min(&arr).unwrap();
 
@@ -873,7 +1045,8 @@ mod tests {
         ];
         for (op, k, expected_const) in resolvable_cases {
             let expr = build_expr(op, k);
-            let got = hybrid.try_eval_predicate(&expr, &mask).expect("no IO");
+            io.reset_reads();
+            let got = block_on(hybrid.try_eval_predicate(&expr, &mask)).expect("supported");
             let expected = {
                 let vals: Vec<Option<bool>> = (0..arr.len())
                     .map(|i| {
@@ -886,7 +1059,8 @@ mod tests {
                     .collect();
                 BooleanArray::from(vals)
             };
-            assert_eq!(got.unwrap(), expected);
+            assert_eq!(io.reads(), 0);
+            assert_eq!(got, expected);
         }
 
         // Unresolvable for Eq: pick a present value (ensures ambiguous bucket)
@@ -900,10 +1074,22 @@ mod tests {
             })
             .unwrap();
         let expr_eq_present = build_expr(Operator::Eq, k_present);
-        let err = hybrid
-            .try_eval_predicate(&expr_eq_present, &mask)
-            .expect_err("quantized should request IO on ambiguous eq bucket");
-        assert_eq!(err, NeedsBacking);
+        io.reset_reads();
+        let got = block_on(hybrid.try_eval_predicate(&expr_eq_present, &mask)).expect("supported");
+        let expected = {
+            let vals: Vec<Option<bool>> = (0..arr.len())
+                .map(|i| {
+                    if arr.is_null(i) {
+                        None
+                    } else {
+                        Some(arr.value(i) == k_present)
+                    }
+                })
+                .collect();
+            BooleanArray::from(vals)
+        };
+        assert!(io.reads() > 0);
+        assert_eq!(got, expected);
     }
 
     #[test]
@@ -913,7 +1099,9 @@ mod tests {
         let liq = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(arr.clone())
             .with_squeeze_policy(IntegerSqueezePolicy::Quantize);
         let hint = crate::cache::CacheExpression::PredicateColumn;
-        let (hybrid, _bytes) = liq.squeeze(Some(&hint)).expect("squeezable");
+        let io = Arc::new(TestSqueezeIo::default());
+        let (hybrid, bytes) = liq.squeeze(io.clone(), Some(&hint)).expect("squeezable");
+        io.set_bytes(bytes);
 
         let min = arrow::compute::kernels::aggregate::min(&arr).unwrap();
         let mask = BooleanBuffer::from(vec![true; arr.len()]);
@@ -933,7 +1121,8 @@ mod tests {
         ];
         for (op, k, expected_const) in resolvable_cases {
             let expr = build_expr(op, k);
-            let got = hybrid.try_eval_predicate(&expr, &mask).expect("no IO");
+            io.reset_reads();
+            let got = block_on(hybrid.try_eval_predicate(&expr, &mask)).expect("supported");
             let expected = {
                 let vals: Vec<Option<bool>> = (0..arr.len())
                     .map(|i| {
@@ -946,7 +1135,8 @@ mod tests {
                     .collect();
                 BooleanArray::from(vals)
             };
-            assert_eq!(got.unwrap(), expected);
+            assert_eq!(io.reads(), 0);
+            assert_eq!(got, expected);
         }
 
         // Unresolvable for Eq: pick a present value
@@ -960,21 +1150,37 @@ mod tests {
             })
             .unwrap();
         let expr_eq_present = build_expr(Operator::Eq, k_present);
-        let err = hybrid
-            .try_eval_predicate(&expr_eq_present, &mask)
-            .expect_err("quantized should request IO on ambiguous eq bucket");
-        assert_eq!(err, NeedsBacking);
+        io.reset_reads();
+        let got = block_on(hybrid.try_eval_predicate(&expr_eq_present, &mask)).expect("supported");
+        let expected = {
+            let vals: Vec<Option<bool>> = (0..arr.len())
+                .map(|i| {
+                    if arr.is_null(i) {
+                        None
+                    } else {
+                        Some(arr.value(i) == k_present)
+                    }
+                })
+                .collect();
+            BooleanArray::from(vals)
+        };
+        assert!(io.reads() > 0);
+        assert_eq!(got, expected);
     }
 
     #[test]
     fn quantize_to_arrow_is_err() {
         let mut rng = StdRng::seed_from_u64(0x51_86);
         let arr = make_u32_array_with_range(64, 1000, 1 << 12, 0.0, &mut rng);
-        let liq = LiquidPrimitiveArray::<UInt32Type>::from_arrow_array(arr)
+        let liq = LiquidPrimitiveArray::<UInt32Type>::from_arrow_array(arr.clone())
             .with_squeeze_policy(IntegerSqueezePolicy::Quantize);
         let hint = crate::cache::CacheExpression::PredicateColumn;
-        let (hybrid, _bytes) = liq.squeeze(Some(&hint)).expect("squeezable");
-        // Quantized hybrid cannot materialize to Arrow without IO
-        assert!(hybrid.to_arrow_array().is_err());
+        let io = Arc::new(TestSqueezeIo::default());
+        let (hybrid, bytes) = liq.squeeze(io.clone(), Some(&hint)).expect("squeezable");
+        io.set_bytes(bytes);
+        io.reset_reads();
+        let materialized = block_on(hybrid.to_arrow_array());
+        assert!(io.reads() > 0);
+        assert_eq!(materialized.as_primitive::<UInt32Type>(), &arr);
     }
 }

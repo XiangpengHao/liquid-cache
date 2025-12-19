@@ -2,12 +2,15 @@ use arrow::array::{ArrayRef, BooleanArray, PrimitiveArray, cast::AsArray};
 use arrow::buffer::{BooleanBuffer, ScalarBuffer};
 use arrow::datatypes::{ArrowPrimitiveType, Date32Type, Int32Type, UInt32Type};
 use arrow_schema::DataType;
+use bytes::Bytes;
+use std::ops::Range;
 use std::sync::Arc;
 
 use super::LiquidArray;
 use super::primitive_array::LiquidPrimitiveArray;
-use super::{LiquidDataType, LiquidSqueezedArray, NeedsBacking};
+use super::{LiquidDataType, LiquidSqueezedArray};
 use crate::liquid_array::LiquidPrimitiveType;
+use crate::liquid_array::SqueezeIoHandler;
 use crate::liquid_array::raw::BitPackedArray;
 use crate::utils::get_bit_width;
 
@@ -33,6 +36,13 @@ pub struct SqueezedDate32Array {
     bit_packed: BitPackedArray<UInt32Type>,
     /// The minimum extracted value used as reference for offsetting.
     reference_value: i32,
+    backing: Option<SqueezedBacking>,
+}
+
+#[derive(Debug, Clone)]
+struct SqueezedBacking {
+    io: Arc<dyn SqueezeIoHandler>,
+    disk_range: Range<u64>,
 }
 
 impl SqueezedDate32Array {
@@ -60,6 +70,7 @@ impl SqueezedDate32Array {
                 field,
                 bit_packed: BitPackedArray::new_null_array(values.len()),
                 reference_value: 0,
+                backing: None,
             };
         }
 
@@ -90,6 +101,7 @@ impl SqueezedDate32Array {
                 field,
                 bit_packed: BitPackedArray::new_null_array(values.len()),
                 reference_value: 0,
+                backing: None,
             };
         }
 
@@ -120,7 +132,29 @@ impl SqueezedDate32Array {
             field,
             bit_packed,
             reference_value: min_component,
+            backing: None,
         }
+    }
+
+    pub(crate) fn with_backing(
+        mut self,
+        io: Arc<dyn SqueezeIoHandler>,
+        disk_range: Range<u64>,
+    ) -> Self {
+        self.backing = Some(SqueezedBacking { io, disk_range });
+        self
+    }
+
+    async fn read_backing(&self) -> Bytes {
+        let backing = self
+            .backing
+            .as_ref()
+            .expect("SqueezedDate32Array backing not set");
+        backing
+            .io
+            .read(Some(backing.disk_range.clone()))
+            .await
+            .expect("read squeezed backing")
     }
 
     /// Length of the array.
@@ -229,6 +263,7 @@ fn ymd_to_epoch_days(year: i32, month: u32, day: u32) -> i32 {
     (era * 146_097 + doe - 719_468) as i32
 }
 
+#[async_trait::async_trait]
 impl LiquidSqueezedArray for SqueezedDate32Array {
     fn as_any(&self) -> &dyn std::any::Any {
         self
@@ -242,9 +277,13 @@ impl LiquidSqueezedArray for SqueezedDate32Array {
         self.len()
     }
 
-    fn to_arrow_array(&self) -> Result<ArrayRef, NeedsBacking> {
-        let arr = self.to_arrow_date32_lossy();
-        Ok(Arc::new(arr))
+    async fn to_arrow_array(&self) -> ArrayRef {
+        let bytes = self.read_backing().await;
+        let liquid = crate::liquid_array::ipc::read_from_bytes(
+            bytes,
+            &crate::liquid_array::ipc::LiquidIPCContext::new(None),
+        );
+        liquid.to_arrow_array()
     }
 
     fn data_type(&self) -> LiquidDataType {
@@ -255,50 +294,21 @@ impl LiquidSqueezedArray for SqueezedDate32Array {
         DataType::Date32
     }
 
-    fn to_bytes(&self) -> Result<Vec<u8>, NeedsBacking> {
-        Err(NeedsBacking)
+    async fn filter(&self, selection: &BooleanBuffer) -> ArrayRef {
+        if selection.count_set_bits() == 0 {
+            return arrow::array::new_empty_array(&self.original_arrow_data_type());
+        }
+        let full = self.to_arrow_array().await;
+        let selection_array = BooleanArray::new(selection.clone(), None);
+        arrow::compute::filter(&full, &selection_array).unwrap()
     }
 
-    fn filter(&self, selection: &BooleanBuffer) -> Result<ArrayRef, NeedsBacking> {
-        let unsigned_array: PrimitiveArray<UInt32Type> = self.bit_packed.to_primitive();
-        let selection = BooleanArray::new(selection.clone(), None);
-        let filtered_values =
-            arrow::compute::kernels::filter::filter(&unsigned_array, &selection).unwrap();
-        let filtered_values = filtered_values.as_primitive::<UInt32Type>().clone();
-        // Reconstruct lossy Date32 directly from filtered offsets
-        let (_dt, values, nulls) = filtered_values.into_parts();
-        let ref_v = self.reference_value;
-        let days_values: ScalarBuffer<<Date32Type as ArrowPrimitiveType>::Native> =
-            ScalarBuffer::from_iter(values.iter().enumerate().map(|(i, &off)| {
-                if nulls.as_ref().is_some_and(|n| n.is_null(i)) {
-                    0i32
-                } else {
-                    match self.field {
-                        Date32Field::Year => {
-                            let y = ref_v + off as i32;
-                            ymd_to_epoch_days(y, 1, 1)
-                        }
-                        Date32Field::Month => {
-                            let m = (ref_v + off as i32) as u32;
-                            ymd_to_epoch_days(1970, m, 1)
-                        }
-                        Date32Field::Day => {
-                            let d = (ref_v + off as i32) as u32;
-                            ymd_to_epoch_days(1970, 1, d)
-                        }
-                    }
-                }
-            }));
-        let arr = PrimitiveArray::<Date32Type>::new(days_values, nulls);
-        Ok(Arc::new(arr))
-    }
-
-    fn try_eval_predicate(
+    async fn try_eval_predicate(
         &self,
         _predicate: &Arc<dyn datafusion::physical_plan::PhysicalExpr>,
         _filter: &BooleanBuffer,
-    ) -> Result<Option<BooleanArray>, NeedsBacking> {
-        Ok(None)
+    ) -> Option<BooleanArray> {
+        None
     }
 }
 

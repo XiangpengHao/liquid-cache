@@ -24,7 +24,7 @@ use crate::liquid_array::hybrid_primitive_array::{
 use crate::liquid_array::ipc::{LiquidIPCHeader, PhysicalTypeMarker, get_physical_type_id};
 use crate::liquid_array::raw::BitPackedArray;
 use crate::liquid_array::{
-    LiquidArray, LiquidSqueezedArrayRef, PrimitiveKind, SqueezedDate32Array,
+    LiquidArray, LiquidSqueezedArrayRef, PrimitiveKind, SqueezeIoHandler, SqueezedDate32Array,
 };
 use crate::utils::get_bit_width;
 use arrow::datatypes::ArrowNativeType;
@@ -392,6 +392,7 @@ where
 
     fn squeeze(
         &self,
+        io: Arc<dyn SqueezeIoHandler>,
         expression_hint: Option<&CacheExpression>,
     ) -> Option<(LiquidSqueezedArrayRef, Bytes)> {
         let expression_hint = expression_hint?;
@@ -402,11 +403,9 @@ where
         if T::DATA_TYPE == DataType::Date32 {
             // Special handle for Date32 arrays with component extraction support.
             let field = expression_hint.as_date32_field()?;
-            return Some((
-                Arc::new(SqueezedDate32Array::from_liquid_date32(self, field))
-                    as LiquidSqueezedArrayRef,
-                full_bytes,
-            ));
+            let squeezed =
+                SqueezedDate32Array::from_liquid_date32(self, field).with_backing(io, disk_range);
+            return Some((Arc::new(squeezed) as LiquidSqueezedArrayRef, full_bytes));
         }
 
         // Only squeeze if we have a concrete bit width and it is large enough
@@ -447,6 +446,7 @@ where
                     squeezed: squeezed_bitpacked,
                     reference_value: self.reference_value,
                     disk_range,
+                    io: io.clone(),
                 };
                 Some((Arc::new(hybrid) as LiquidSqueezedArrayRef, full_bytes))
             }
@@ -490,6 +490,7 @@ where
                     reference_value: self.reference_value,
                     bucket_width: bucket_width_u64,
                     disk_range,
+                    io,
                 };
                 Some((Arc::new(hybrid) as LiquidSqueezedArrayRef, full_bytes))
             }
@@ -589,6 +590,7 @@ where
 
     fn squeeze(
         &self,
+        _io: Arc<dyn SqueezeIoHandler>,
         _expression_hint: Option<&CacheExpression>,
     ) -> Option<(crate::liquid_array::LiquidSqueezedArrayRef, bytes::Bytes)> {
         // Not implemented for delta arrays

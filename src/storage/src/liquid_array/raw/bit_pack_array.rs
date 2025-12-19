@@ -212,9 +212,15 @@ where
     pub fn to_bytes(&self, buffer: &mut Vec<u8>) {
         let has_nulls = self.nulls.is_some() as u8;
 
+        let nulls_sliced;
         let nulls_bytes = if has_nulls == 1 {
             let nulls = self.nulls.as_ref().unwrap();
-            nulls.buffer().as_slice()
+            if nulls.offset() == 0 {
+                nulls.buffer().as_slice()
+            } else {
+                nulls_sliced = Some(nulls.inner().sliced());
+                nulls_sliced.as_ref().unwrap().as_slice()
+            }
         } else {
             &[]
         };
@@ -341,7 +347,10 @@ fn best_arrow_primitive_width(bit_width: NonZero<u8>) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::{array::Array, datatypes::UInt32Type};
+    use arrow::{
+        array::Array,
+        datatypes::{UInt16Type, UInt32Type},
+    };
 
     #[test]
     fn test_bit_pack_roundtrip() {
@@ -498,6 +507,27 @@ mod tests {
                 assert_eq!(original_primitive.value(i), deserialized_primitive.value(i));
             }
         }
+    }
+
+    #[test]
+    fn test_to_bytes_from_bytes_with_nulls_and_offset() {
+        let values: Vec<Option<u16>> = (0..32)
+            .map(|i| if i % 3 == 0 { None } else { Some(i as u16) })
+            .collect();
+        let array = PrimitiveArray::<UInt16Type>::from(values);
+
+        // Slice to create a non-zero offset (and therefore a non-zero null bitmap bit offset).
+        let sliced = array.slice(1, 23);
+
+        let bit_width = NonZero::new(16).unwrap();
+        let original = BitPackedArray::from_primitive(sliced.clone(), bit_width);
+
+        let mut buffer = Vec::new();
+        original.to_bytes(&mut buffer);
+        let deserialized = BitPackedArray::<UInt16Type>::from_bytes(buffer.into());
+
+        let roundtripped = deserialized.to_primitive();
+        assert_eq!(roundtripped, sliced);
     }
 
     #[test]

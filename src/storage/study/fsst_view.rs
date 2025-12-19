@@ -8,13 +8,14 @@ use std::time::Instant;
 use clap::Parser;
 
 use arrow::array::{Array, AsArray, RecordBatch, StringViewArray};
-use arrow::compute::{cast, sort_to_indices};
+use arrow::compute::cast;
 use arrow::datatypes::{DataType, Float64Type};
 use arrow_schema::{Field, Schema};
 use datafusion::logical_expr::Operator;
 use datafusion::prelude::*;
 use fsst::Compressor;
-use liquid_cache_storage::liquid_array::byte_view_array::{ByteViewArrayMemoryUsage, MemoryBuffer};
+use liquid_cache_storage::liquid_array::byte_view_array::ByteViewArrayMemoryUsage;
+use liquid_cache_storage::liquid_array::raw::FsstArray;
 use liquid_cache_storage::liquid_array::{LiquidArray, LiquidByteArray, LiquidByteViewArray};
 use rand::{rng, seq::SliceRandom};
 use serde::{Deserialize, Serialize};
@@ -27,7 +28,6 @@ enum WorkloadType {
     EncodeDecode,
     FindNeedle,
     CmpNeedle,
-    Sort,
 }
 
 impl WorkloadType {
@@ -36,19 +36,13 @@ impl WorkloadType {
             "encode_decode" => Ok(Self::EncodeDecode),
             "find_needle" => Ok(Self::FindNeedle),
             "cmp_needle" => Ok(Self::CmpNeedle),
-            "sort" => Ok(Self::Sort),
             _ => Err(format!("Unknown workload: {s}")),
         }
     }
 
     fn parse_workloads(s: &str) -> Result<Vec<Self>, String> {
         if s == "all" {
-            Ok(vec![
-                Self::EncodeDecode,
-                Self::FindNeedle,
-                Self::CmpNeedle,
-                Self::Sort,
-            ])
+            Ok(vec![Self::EncodeDecode, Self::FindNeedle, Self::CmpNeedle])
         } else {
             s.split(',')
                 .map(|w| Self::from_str(w.trim()))
@@ -200,17 +194,10 @@ struct CmpNeedleResult {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-struct SortResult {
-    total_sort_time_sec: f64,
-    workload: String,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
 struct BenchmarkResults {
     encode_results: Vec<EncodeResult>,
     find_needle_results: Vec<FindNeedleResult>,
     cmp_needle_results: Vec<CmpNeedleResult>,
-    sort_results: Vec<SortResult>,
 }
 
 /// Trait for running benchmarks on different array types
@@ -221,7 +208,6 @@ trait ArrayBenchmark {
     fn run_decode(&self, encoded_data: &Self::EncodedData) -> f64;
     fn run_find_needle(&self, encoded_data: &Self::EncodedData, needles: &[String]) -> f64;
     fn run_cmp_needle(&self, encoded_data: &Self::EncodedData, needles: &[String]) -> f64;
-    fn run_sort(&self, encoded_data: &Self::EncodedData) -> f64;
     fn workload_name(&self) -> String;
 }
 
@@ -237,7 +223,6 @@ impl BenchmarkRunner {
         let mut encode_results = Vec::new();
         let mut find_needle_results = Vec::new();
         let mut cmp_needle_results = Vec::new();
-        let mut sort_results = Vec::new();
 
         // Repeat each workload 3 times
         for iteration in 0..3 {
@@ -246,7 +231,6 @@ impl BenchmarkRunner {
             let mut total_size = 0;
             let mut total_find_needle_time = 0.0;
             let mut total_cmp_needle_time = 0.0;
-            let mut total_sort_time = 0.0;
 
             // First, encode all arrays (this is common for all workloads)
             let mut encoded_arrays = Vec::new();
@@ -328,24 +312,6 @@ impl BenchmarkRunner {
                         );
                         cmp_needle_results.push(result);
                     }
-                    WorkloadType::Sort => {
-                        for encoded_data in &encoded_arrays {
-                            let sort_time = benchmark.run_sort(encoded_data);
-                            total_sort_time += sort_time;
-                        }
-
-                        let result = SortResult {
-                            total_sort_time_sec: total_sort_time,
-                            workload: benchmark.workload_name(),
-                        };
-                        println!(
-                            "{} sort (iteration {}): {}",
-                            benchmark.workload_name(),
-                            iteration + 1,
-                            result
-                        );
-                        sort_results.push(result);
-                    }
                 }
             }
         }
@@ -354,7 +320,6 @@ impl BenchmarkRunner {
             encode_results,
             find_needle_results,
             cmp_needle_results,
-            sort_results,
         }
     }
 
@@ -495,16 +460,6 @@ impl Display for CmpNeedleResult {
     }
 }
 
-impl Display for SortResult {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{} -- total: {:.4} s",
-            self.workload, self.total_sort_time_sec
-        )
-    }
-}
-
 /// Select 10 random different strings from the first batch of the array
 fn select_random_needles(first_batch: &StringViewArray) -> Vec<String> {
     let mut unique_strings = HashSet::new();
@@ -531,7 +486,7 @@ struct FsstViewBenchmark {
 }
 
 impl ArrayBenchmark for FsstViewBenchmark {
-    type EncodedData = LiquidByteViewArray<MemoryBuffer>;
+    type EncodedData = LiquidByteViewArray<FsstArray>;
 
     fn workload_name(&self) -> String {
         "FSSTView".to_string()
@@ -543,14 +498,14 @@ impl ArrayBenchmark for FsstViewBenchmark {
             cached_compressor.clone()
         } else {
             let (trained_compressor, _) =
-                LiquidByteViewArray::<MemoryBuffer>::train_from_string_view(array);
+                LiquidByteViewArray::<FsstArray>::train_from_string_view(array);
             self.compressor = Some(trained_compressor.clone());
             trained_compressor
         };
 
         let start = Instant::now();
         let encoded_array =
-            LiquidByteViewArray::<MemoryBuffer>::from_string_view_array(array, compressor);
+            LiquidByteViewArray::<FsstArray>::from_string_view_array(array, compressor);
         let encode_time = start.elapsed().as_secs_f64();
         let size = encoded_array.get_array_memory_size();
         (encoded_array, encode_time, size)
@@ -566,9 +521,7 @@ impl ArrayBenchmark for FsstViewBenchmark {
         let start = Instant::now();
         for needle in needles {
             let needle_bytes = needle.as_bytes();
-            let _result = encoded_data
-                .compare_with(needle_bytes, &Operator::Eq)
-                .unwrap();
+            let _result = encoded_data.compare_with(needle_bytes, &Operator::Eq);
         }
         start.elapsed().as_secs_f64()
     }
@@ -577,16 +530,8 @@ impl ArrayBenchmark for FsstViewBenchmark {
         let start = Instant::now();
         for needle in needles {
             let needle_bytes = needle.as_bytes();
-            let _result = encoded_data
-                .compare_with(needle_bytes, &Operator::Gt)
-                .unwrap();
+            let _result = encoded_data.compare_with(needle_bytes, &Operator::Gt);
         }
-        start.elapsed().as_secs_f64()
-    }
-
-    fn run_sort(&self, encoded_data: &Self::EncodedData) -> f64 {
-        let start = Instant::now();
-        let _indices = encoded_data.sort_to_indices().unwrap();
         start.elapsed().as_secs_f64()
     }
 }
@@ -642,13 +587,6 @@ impl ArrayBenchmark for ByteArrayBenchmark {
         }
         start.elapsed().as_secs_f64()
     }
-
-    fn run_sort(&self, encoded_data: &Self::EncodedData) -> f64 {
-        let start = Instant::now();
-        let arrow_array = encoded_data.to_dict_arrow();
-        let _indices = sort_to_indices(&arrow_array, None, None).unwrap();
-        start.elapsed().as_secs_f64()
-    }
 }
 
 struct StringArrayBenchmark;
@@ -690,12 +628,6 @@ impl ArrayBenchmark for StringArrayBenchmark {
             let needle_scalar = arrow::array::StringViewArray::new_scalar(needle.clone());
             let _result = arrow::compute::kernels::cmp::gt(encoded_data, &needle_scalar).unwrap();
         }
-        start.elapsed().as_secs_f64()
-    }
-
-    fn run_sort(&self, encoded_data: &Self::EncodedData) -> f64 {
-        let start = Instant::now();
-        let _indices = sort_to_indices(encoded_data, None, None).unwrap();
         start.elapsed().as_secs_f64()
     }
 }
@@ -770,17 +702,6 @@ impl ArrayBenchmark for StringArrayLz4Benchmark {
             let needle_scalar = arrow::array::StringArray::new_scalar(needle.clone());
             let _result = arrow::compute::kernels::cmp::gt(&string_array, &needle_scalar).unwrap();
         }
-        start.elapsed().as_secs_f64()
-    }
-
-    fn run_sort(&self, encoded_data: &Self::EncodedData) -> f64 {
-        let start = Instant::now();
-        // Decompress and sort
-        let mut file = Cursor::new(encoded_data);
-        let mut reader = arrow::ipc::reader::FileReader::try_new(&mut file, None).unwrap();
-        let batch = reader.next().unwrap().unwrap();
-        let string_array = batch.column(0).as_string::<i32>();
-        let _indices = sort_to_indices(&string_array, None, None).unwrap();
         start.elapsed().as_secs_f64()
     }
 }
@@ -865,7 +786,7 @@ fn main() {
         );
 
         let (compressor, _) =
-            LiquidByteViewArray::<MemoryBuffer>::train_from_string_view(&column_data.data[0]);
+            LiquidByteViewArray::<FsstArray>::train_from_string_view(&column_data.data[0]);
         let mut total_detailed_memory_usage = ByteViewArrayMemoryUsage {
             dictionary_key: 0,
             offsets: 0,
@@ -876,7 +797,7 @@ fn main() {
 
         for a in &column_data.data {
             let array =
-                LiquidByteViewArray::<MemoryBuffer>::from_string_view_array(a, compressor.clone());
+                LiquidByteViewArray::<FsstArray>::from_string_view_array(a, compressor.clone());
             total_detailed_memory_usage += array.get_detailed_memory_usage();
         }
 

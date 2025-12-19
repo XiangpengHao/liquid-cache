@@ -9,11 +9,11 @@ use bytes;
 use fsst::{Compressor, Decompressor, Symbol};
 use std::io::Result;
 use std::io::{Error, ErrorKind};
+use std::ops::Range;
 use std::sync::Arc;
 
-use crate::liquid_array::{NeedsBacking, SqueezeResult};
-
 use crate::liquid_array::fix_len_byte_array::ArrowFixedLenByteArrayType;
+use crate::liquid_array::{LiquidByteViewArray, SqueezeIoHandler};
 
 mod sealed {
     pub trait Sealed {}
@@ -524,13 +524,13 @@ where
 /// In-memory FSST dictionary buffer that bundles compressed bytes, compact offsets, and the
 /// compressor needed to (de)compress values.
 #[derive(Clone)]
-pub struct FsstBuffer {
+pub struct FsstArray {
     compressor: Arc<Compressor>,
     raw: Arc<RawFsstBuffer>,
     compact_offsets: CompactOffsets,
 }
 
-impl std::fmt::Debug for FsstBuffer {
+impl std::fmt::Debug for FsstArray {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FsstBuffer")
             .field("raw", &self.raw)
@@ -540,7 +540,7 @@ impl std::fmt::Debug for FsstBuffer {
     }
 }
 
-impl FsstBuffer {
+impl FsstArray {
     pub(crate) fn new(
         raw: Arc<RawFsstBuffer>,
         compact_offsets: CompactOffsets,
@@ -610,24 +610,6 @@ impl FsstBuffer {
         Self::from_byte_offsets(Arc::new(raw), &offsets, compressor)
     }
 
-    /// Decompress all values and return Arrow buffers (values + offsets).
-    pub fn to_uncompressed(&self) -> SqueezeResult<(Buffer, OffsetBuffer<i32>)> {
-        <Self as FsstBacking>::to_uncompressed(self)
-    }
-
-    /// Get a compressed value slice by index.
-    pub fn get_compressed_slice(&self, index: usize) -> SqueezeResult<&[u8]> {
-        <Self as FsstBacking>::get_compressed_slice(self, index)
-    }
-
-    /// Decompress selected values into Arrow buffers, preserving selection order (and duplicates).
-    pub fn to_uncompressed_selected(
-        &self,
-        selected: &[usize],
-    ) -> SqueezeResult<(Buffer, OffsetBuffer<i32>)> {
-        <Self as FsstBacking>::to_uncompressed_selected(self, selected)
-    }
-
     /// Returns the uncompressed byte size of this buffer.
     pub fn uncompressed_bytes(&self) -> usize {
         <Self as FsstBacking>::uncompressed_bytes(self)
@@ -652,6 +634,11 @@ impl FsstBuffer {
     /// Returns a reference to the compressor.
     pub fn compressor(&self) -> &Compressor {
         &self.compressor
+    }
+
+    /// Returns a clone of the shared compressor.
+    pub fn compressor_arc(&self) -> Arc<Compressor> {
+        self.compressor.clone()
     }
 
     /// Serializes this FSST buffer (raw bytes + compact offsets) to `out`.
@@ -689,9 +676,7 @@ impl FsstBuffer {
 
     /// Decompress all values into an Arrow byte array.
     pub fn to_arrow_byte_array<T: ByteArrayType<Offset = i32>>(&self) -> GenericByteArray<T> {
-        let (value_buffer, offsets) = self
-            .to_uncompressed()
-            .expect("in-memory FSST buffer must have backing");
+        let (value_buffer, offsets) = self.to_uncompressed();
         unsafe { GenericByteArray::<T>::new_unchecked(offsets, value_buffer, None) }
     }
 
@@ -700,9 +685,7 @@ impl FsstBuffer {
         let mut value_buffer: Vec<u8> = Vec::with_capacity(self.len() * value_width + 8);
 
         for i in 0..self.len() {
-            let compressed = self
-                .get_compressed_slice(i)
-                .expect("in-memory FSST buffer must have backing");
+            let compressed = self.get_compressed_slice(i);
             let required = decompressor.max_decompression_capacity(compressed) + 8;
             value_buffer.reserve(required);
             let len = decompressor.decompress_into(compressed, value_buffer.spare_capacity_mut());
@@ -757,31 +740,55 @@ impl FsstBuffer {
 }
 
 /// Disk buffer for FSST buffer.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct DiskBuffer {
     uncompressed_bytes: usize,
+    io: Arc<dyn SqueezeIoHandler>,
+    disk_range: Range<u64>,
+    compressor: Arc<Compressor>,
+}
+
+impl std::fmt::Debug for DiskBuffer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DiskBuffer")
+            .field("uncompressed_bytes", &self.uncompressed_bytes)
+            .field("disk_range", &self.disk_range)
+            .field("io", &self.io)
+            .field("compressor", &"<Compressor>")
+            .finish()
+    }
 }
 
 impl DiskBuffer {
-    pub(crate) fn new(uncompressed_bytes: usize) -> Self {
-        Self { uncompressed_bytes }
+    pub(crate) fn new(
+        uncompressed_bytes: usize,
+        io: Arc<dyn SqueezeIoHandler>,
+        disk_range: Range<u64>,
+        compressor: Arc<Compressor>,
+    ) -> Self {
+        Self {
+            uncompressed_bytes,
+            io,
+            disk_range,
+            compressor,
+        }
+    }
+
+    pub(crate) fn squeeze_io(&self) -> &Arc<dyn SqueezeIoHandler> {
+        &self.io
+    }
+
+    pub(crate) fn disk_range(&self) -> Range<u64> {
+        self.disk_range.clone()
+    }
+
+    pub(crate) fn compressor_arc(&self) -> Arc<Compressor> {
+        self.compressor.clone()
     }
 }
 
 /// FSST backing store for `LiquidByteViewArray` (in-memory or disk-only handle).
 pub trait FsstBacking: std::fmt::Debug + Clone + sealed::Sealed {
-    /// Decompress all dictionary values and return Arrow buffers (values + offsets).
-    fn to_uncompressed(&self) -> SqueezeResult<(Buffer, OffsetBuffer<i32>)>;
-
-    /// Get a compressed dictionary value slice by dictionary index.
-    fn get_compressed_slice(&self, dict_index: usize) -> SqueezeResult<&[u8]>;
-
-    /// Decompress a subset of dictionary values, preserving `selected` order (and duplicates).
-    fn to_uncompressed_selected(
-        &self,
-        selected: &[usize],
-    ) -> SqueezeResult<(Buffer, OffsetBuffer<i32>)>;
-
     /// Get the uncompressed bytes of the FSST buffer (used for sizing / squeeze bookkeeping).
     fn uncompressed_bytes(&self) -> usize;
 
@@ -789,27 +796,26 @@ pub trait FsstBacking: std::fmt::Debug + Clone + sealed::Sealed {
     fn get_array_memory_size(&self) -> usize;
 }
 
-impl sealed::Sealed for FsstBuffer {}
+impl sealed::Sealed for FsstArray {}
 impl sealed::Sealed for DiskBuffer {}
 
-impl FsstBacking for FsstBuffer {
-    fn to_uncompressed(&self) -> SqueezeResult<(Buffer, OffsetBuffer<i32>)> {
+impl FsstArray {
+    pub(crate) fn to_uncompressed(&self) -> (Buffer, OffsetBuffer<i32>) {
         let offsets = self.compact_offsets.offsets();
-        Ok(self
-            .raw
-            .to_uncompressed(&self.compressor.decompressor(), &offsets))
+        self.raw
+            .to_uncompressed(&self.compressor.decompressor(), &offsets)
     }
 
-    fn get_compressed_slice(&self, dict_index: usize) -> SqueezeResult<&[u8]> {
+    pub(crate) fn get_compressed_slice(&self, dict_index: usize) -> &[u8] {
         let start_offset = self.compact_offsets.get_offset(dict_index);
         let end_offset = self.compact_offsets.get_offset(dict_index + 1);
-        Ok(self.raw.get_compressed_slice(start_offset, end_offset))
+        self.raw.get_compressed_slice(start_offset, end_offset)
     }
 
-    fn to_uncompressed_selected(
+    pub(crate) fn to_uncompressed_selected(
         &self,
         selected: &[usize],
-    ) -> SqueezeResult<(Buffer, OffsetBuffer<i32>)> {
+    ) -> (Buffer, OffsetBuffer<i32>) {
         let decompressor = self.compressor.decompressor();
         let mut value_buffer: Vec<u8> = Vec::new();
         let mut out_offsets: OffsetBufferBuilder<i32> = OffsetBufferBuilder::new(selected.len());
@@ -836,9 +842,11 @@ impl FsstBacking for FsstBuffer {
             out_offsets.push_length(decompressed_len);
         }
 
-        Ok((Buffer::from(value_buffer), out_offsets.finish()))
+        (Buffer::from(value_buffer), out_offsets.finish())
     }
+}
 
+impl FsstBacking for FsstArray {
     fn uncompressed_bytes(&self) -> usize {
         self.raw.uncompressed_bytes()
     }
@@ -850,22 +858,26 @@ impl FsstBacking for FsstBuffer {
     }
 }
 
-impl FsstBacking for DiskBuffer {
-    fn to_uncompressed(&self) -> SqueezeResult<(Buffer, OffsetBuffer<i32>)> {
-        Err(NeedsBacking)
+impl DiskBuffer {
+    pub(crate) async fn to_uncompressed(&self) -> (Buffer, OffsetBuffer<i32>) {
+        let bytes = self.io.read(Some(self.disk_range.clone())).await.unwrap();
+        let byte_view =
+            LiquidByteViewArray::<FsstArray>::from_bytes(bytes, self.compressor.clone());
+        byte_view.fsst_buffer.to_uncompressed()
     }
 
-    fn get_compressed_slice(&self, _dict_index: usize) -> SqueezeResult<&[u8]> {
-        Err(NeedsBacking)
-    }
-
-    fn to_uncompressed_selected(
+    pub(crate) async fn to_uncompressed_selected(
         &self,
-        _selected: &[usize],
-    ) -> SqueezeResult<(Buffer, OffsetBuffer<i32>)> {
-        Err(NeedsBacking)
+        selected: &[usize],
+    ) -> (Buffer, OffsetBuffer<i32>) {
+        let bytes = self.io.read(Some(self.disk_range.clone())).await.unwrap();
+        let byte_view =
+            LiquidByteViewArray::<FsstArray>::from_bytes(bytes, self.compressor.clone());
+        byte_view.fsst_buffer.to_uncompressed_selected(selected)
     }
+}
 
+impl FsstBacking for DiskBuffer {
     fn uncompressed_bytes(&self) -> usize {
         self.uncompressed_bytes
     }
@@ -1260,16 +1272,16 @@ mod tests {
         let original = builder.finish();
 
         let compressor =
-            FsstBuffer::train_compressor(original.iter().flat_map(|s| s.map(|s| s.as_bytes())));
+            FsstArray::train_compressor(original.iter().flat_map(|s| s.map(|s| s.as_bytes())));
         let compressor_arc = Arc::new(compressor);
         let original_fsst =
-            FsstBuffer::from_byte_array_with_compressor(&original, compressor_arc.clone());
+            FsstArray::from_byte_array_with_compressor(&original, compressor_arc.clone());
 
         let mut buffer = Vec::new();
         original_fsst.to_bytes(&mut buffer);
 
         let bytes = bytes::Bytes::from(buffer);
-        let deserialized = FsstBuffer::from_bytes(bytes, compressor_arc);
+        let deserialized = FsstArray::from_bytes(bytes, compressor_arc);
 
         let original_strings = original_fsst.to_arrow_byte_array::<arrow::datatypes::Utf8Type>();
         let deserialized_strings = deserialized.to_arrow_byte_array::<arrow::datatypes::Utf8Type>();
@@ -1292,10 +1304,10 @@ mod tests {
             .iter()
             .filter_map(|v| v.map(|v| v.to_le_bytes()))
             .collect::<Vec<_>>();
-        let compressor = FsstBuffer::train_compressor(values.iter().map(|b| b.as_slice()));
+        let compressor = FsstArray::train_compressor(values.iter().map(|b| b.as_slice()));
         let compressor_arc = Arc::new(compressor);
 
-        let fsst = FsstBuffer::from_decimal128_array_with_compressor(&original, compressor_arc);
+        let fsst = FsstArray::from_decimal128_array_with_compressor(&original, compressor_arc);
         let compressed_size = fsst.get_array_memory_size();
         assert!(compressed_size < original_size);
     }
@@ -1309,16 +1321,16 @@ mod tests {
         let original = builder.finish();
 
         let compressor =
-            FsstBuffer::train_compressor(original.iter().flat_map(|s| s.map(|s| s.as_bytes())));
+            FsstArray::train_compressor(original.iter().flat_map(|s| s.map(|s| s.as_bytes())));
         let compressor_arc = Arc::new(compressor);
 
         let mut bytes = Vec::new();
         save_symbol_table(compressor_arc.clone(), &mut bytes).unwrap();
         let reloaded = load_symbol_table(bytes::Bytes::from(bytes)).unwrap();
 
-        let fsst_original = FsstBuffer::from_byte_array_with_compressor(&original, compressor_arc);
+        let fsst_original = FsstArray::from_byte_array_with_compressor(&original, compressor_arc);
         let fsst_reloaded =
-            FsstBuffer::from_byte_array_with_compressor(&original, Arc::new(reloaded));
+            FsstArray::from_byte_array_with_compressor(&original, Arc::new(reloaded));
 
         let a = fsst_original.to_arrow_byte_array::<arrow::datatypes::Utf8Type>();
         let b = fsst_reloaded.to_arrow_byte_array::<arrow::datatypes::Utf8Type>();

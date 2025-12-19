@@ -56,6 +56,10 @@ pub enum TraceEvent {
         kind: CacheKind,
         bytes: u64,
     },
+    IoReadSqueezedBacking {
+        entry: u64,
+        bytes: u64,
+    },
     IoReadArrow {
         entry: u64,
         bytes: u64,
@@ -112,6 +116,9 @@ impl TraceEvent {
                     kind.display_name(),
                     bytes
                 )
+            }
+            TraceEvent::IoReadSqueezedBacking { entry, bytes } => {
+                format!("Read squeezed backing entry {} ({} bytes)", entry, bytes)
             }
             TraceEvent::IoReadArrow { entry, bytes } => {
                 format!("Read arrow entry {} ({} bytes)", entry, bytes)
@@ -176,6 +183,7 @@ impl TraceEvent {
             TraceEvent::SqueezeBegin { .. } => "squeeze_begin",
             TraceEvent::SqueezeVictim { .. } => "squeeze_victim",
             TraceEvent::IoWrite { .. } => "io_write",
+            TraceEvent::IoReadSqueezedBacking { .. } => "io_read_squeezed_backing",
             TraceEvent::IoReadArrow { .. } => "io_read_arrow",
             TraceEvent::IoReadLiquid { .. } => "io_read_liquid",
             TraceEvent::Hydrate { .. } => "hydrate",
@@ -279,6 +287,16 @@ fn parse_event_line(line: &str) -> TraceEvent {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0),
             kind: fields.get("kind").map(|s| CacheKind::from_str(s)).unwrap(),
+            bytes: fields
+                .get("bytes")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0),
+        },
+        Some("io_read_squeezed_backing") => TraceEvent::IoReadSqueezedBacking {
+            entry: fields
+                .get("entry")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0),
             bytes: fields
                 .get("bytes")
                 .and_then(|s| s.parse().ok())
