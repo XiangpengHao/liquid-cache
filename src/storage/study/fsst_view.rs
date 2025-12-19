@@ -791,6 +791,7 @@ fn main() {
             dictionary_key: 0,
             offsets: 0,
             fsst_buffer: 0,
+            string_fingerprints: 0,
             shared_prefix: 0,
             struct_size: 0,
         };

@@ -108,6 +108,40 @@ fn test_squeeze_builds_string_fingerprints() {
     assert!(disk_view.string_fingerprints.is_some());
 }
 
+#[tokio::test]
+async fn test_string_fingerprint_skips_disk_read_for_impossible_substring() {
+    let input = StringArray::from(vec!["alpha", "ALP", "beta", "gamma"]);
+    let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
+    let in_memory = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
+
+    let io = Arc::new(TestSqueezeIo::default());
+    let (hybrid, bytes) = in_memory
+        .squeeze(io.clone(), Some(&CacheExpression::substring_search()))
+        .expect("squeeze should succeed");
+    io.set_bytes(bytes);
+
+    let disk_view = hybrid
+        .as_any()
+        .downcast_ref::<LiquidByteViewArray<DiskBuffer>>()
+        .expect("should downcast to disk array");
+
+    let result = disk_view
+        .compare_like_substring(b"zzz", false)
+        .await
+        .expect("fingerprint result");
+    let expected = BooleanArray::from(vec![false, false, false, false]);
+    assert_eq!(result, expected);
+    assert_eq!(io.reads(), 0);
+
+    let result = disk_view
+        .compare_like_substring(b"alp", false)
+        .await
+        .expect("fingerprint result");
+    let expected = BooleanArray::from(vec![true, false, false, false]);
+    assert_eq!(result, expected);
+    assert_eq!(io.reads(), 1);
+}
+
 #[test]
 fn test_ipc_roundtrip_sliced_dictionary_nulls() {
     let values: ArrayRef = Arc::new(StringArray::from(vec!["a", "b", "c", "d"]));

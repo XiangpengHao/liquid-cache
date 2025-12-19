@@ -1,4 +1,4 @@
-use arrow::array::DictionaryArray;
+use arrow::array::{Array, DictionaryArray};
 use arrow::array::{BinaryArray, BooleanArray, BooleanBufferBuilder, StringArray, cast::AsArray};
 use arrow::datatypes::UInt16Type;
 use arrow_schema::DataType;
