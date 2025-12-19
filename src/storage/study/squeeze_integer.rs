@@ -373,8 +373,7 @@ where
         // Expected selection result from Arrow
         let expected_filtered = filter_expected::<T>(&prim, &case.op, &case.scalar);
         // Try get with selection from hybrid
-        let sel_io =
-            get_with_selection(&*hy, clamp_io.as_ref(), &sel, expected_filtered.as_ref());
+        let sel_io = get_with_selection(&*hy, clamp_io.as_ref(), &sel, expected_filtered.as_ref());
         stats.clamp_select_io_bytes += sel_io;
     }
 
@@ -386,8 +385,7 @@ where
         let sel = bool_array_to_selection(&mask);
         // Expected selection result from Arrow
         let expected_filtered = filter_expected::<T>(&prim, &case.op, &case.scalar);
-        let sel_io =
-            get_with_selection(&*hy, quant_io.as_ref(), &sel, expected_filtered.as_ref());
+        let sel_io = get_with_selection(&*hy, quant_io.as_ref(), &sel, expected_filtered.as_ref());
         stats.quant_select_io_bytes += sel_io;
     }
 
