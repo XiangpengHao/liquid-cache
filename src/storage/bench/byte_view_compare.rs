@@ -1,6 +1,6 @@
 use divan::Bencher;
-use rand::seq::SliceRandom;
 use rand::SeedableRng;
+use rand::seq::SliceRandom;
 use std::fmt::Write;
 use std::sync::Arc;
 
@@ -8,8 +8,8 @@ extern crate arrow;
 
 use arrow::array::{DictionaryArray, StringArray, UInt16Array};
 use datafusion::logical_expr::Operator;
-use liquid_cache_storage::liquid_array::raw::FsstArray;
 use liquid_cache_storage::liquid_array::LiquidByteViewArray;
+use liquid_cache_storage::liquid_array::raw::FsstArray;
 
 const ROW_COUNT: usize = 10_000;
 const STRING_LEN: usize = 16;

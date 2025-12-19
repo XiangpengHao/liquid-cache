@@ -34,10 +34,11 @@ impl LiquidByteViewArray<FsstArray> {
                 } else {
                     Some(prefix_key.len_byte() as usize)
                 };
-                if let Some(l) = known_len {
-                    if l == needle_len && prefix_key.prefix7()[..l] == needle_suffix[..l] {
-                        dict_results[i] = true;
-                    }
+                if let Some(l) = known_len
+                    && l == needle_len
+                    && prefix_key.prefix7()[..l] == needle_suffix[..l]
+                {
+                    dict_results[i] = true;
                 }
             }
 
@@ -118,9 +119,7 @@ impl LiquidByteViewArray<FsstArray> {
                 let result = match (op, value_cmp) {
                     (Operator::Lt, std::cmp::Ordering::Less) => true,
                     (Operator::Lt, _) => false,
-                    (Operator::LtEq, std::cmp::Ordering::Less | std::cmp::Ordering::Equal) => {
-                        true
-                    }
+                    (Operator::LtEq, std::cmp::Ordering::Less | std::cmp::Ordering::Equal) => true,
                     (Operator::LtEq, _) => false,
                     (Operator::Gt, std::cmp::Ordering::Greater) => true,
                     (Operator::Gt, _) => false,
@@ -212,9 +211,7 @@ impl LiquidByteViewArray<DiskBuffer> {
                 let result = match (op, value_cmp) {
                     (Operator::Lt, std::cmp::Ordering::Less) => true,
                     (Operator::Lt, _) => false,
-                    (Operator::LtEq, std::cmp::Ordering::Less | std::cmp::Ordering::Equal) => {
-                        true
-                    }
+                    (Operator::LtEq, std::cmp::Ordering::Less | std::cmp::Ordering::Equal) => true,
                     (Operator::LtEq, _) => false,
                     (Operator::Gt, std::cmp::Ordering::Greater) => true,
                     (Operator::Gt, _) => false,
