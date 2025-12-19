@@ -212,7 +212,7 @@ where
     pub fn to_bytes(&self, buffer: &mut Vec<u8>) {
         let has_nulls = self.nulls.is_some() as u8;
 
-        let mut nulls_sliced = None;
+        let nulls_sliced;
         let nulls_bytes = if has_nulls == 1 {
             let nulls = self.nulls.as_ref().unwrap();
             if nulls.offset() == 0 {
