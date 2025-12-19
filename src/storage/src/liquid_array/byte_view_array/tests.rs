@@ -5,14 +5,50 @@ use arrow::array::{
 };
 use arrow::buffer::BooleanBuffer;
 use arrow_schema::DataType;
+use bytes::Bytes;
 use datafusion::logical_expr::Operator;
 use rand::{Rng, SeedableRng};
-use std::sync::Arc;
+use std::ops::Range;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use crate::cache::CacheExpression;
 use crate::cache::TestingSqueezeIo;
 use crate::liquid_array::raw::fsst_buffer::{DiskBuffer, FsstArray, PrefixKey};
-use crate::liquid_array::{LiquidArray, LiquidDataType, LiquidSqueezedArray};
+use crate::liquid_array::{LiquidArray, LiquidDataType, LiquidSqueezedArray, SqueezeIoHandler};
+
+#[derive(Debug, Default)]
+struct TestSqueezeIo {
+    bytes: Mutex<Option<Bytes>>,
+    reads: AtomicUsize,
+}
+
+impl TestSqueezeIo {
+    fn set_bytes(&self, bytes: Bytes) {
+        *self.bytes.lock().unwrap() = Some(bytes);
+    }
+
+    fn reads(&self) -> usize {
+        self.reads.load(Ordering::SeqCst)
+    }
+}
+
+#[async_trait::async_trait]
+impl SqueezeIoHandler for TestSqueezeIo {
+    async fn read(&self, range: Option<Range<u64>>) -> std::io::Result<Bytes> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        let bytes = self
+            .bytes
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("test squeeze backing set");
+        Ok(match range {
+            Some(range) => bytes.slice(range.start as usize..range.end as usize),
+            None => bytes,
+        })
+    }
+}
 
 #[test]
 fn test_dictionary_view_structure() {
@@ -644,6 +680,124 @@ fn test_compare_equals_on_disk() {
             Some(false),
         ]),
     );
+}
+
+#[test]
+fn test_compare_equals_long_string_len_byte_255() {
+    let common = "prefix_";
+    let long_len = 260;
+    let suffix_len = long_len - common.len();
+    let long_a = format!("{}{}", common, "a".repeat(suffix_len));
+    let long_b = format!("{}{}", common, "b".repeat(suffix_len));
+
+    let input = StringArray::from(vec![long_a.as_str(), long_b.as_str(), "z"]);
+    let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
+    let liquid_array = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
+
+    let result = liquid_array.compare_equals(long_a.as_bytes());
+    let expected = BooleanArray::from(vec![true, false, false]);
+    assert_eq!(result, expected);
+
+    let shorter = format!("{}{}", common, "a".repeat(200));
+    let result = liquid_array.compare_equals(shorter.as_bytes());
+    let expected = BooleanArray::from(vec![false, false, false]);
+    assert_eq!(result, expected);
+}
+
+#[test]
+fn test_compare_not_equals_preserves_nulls() {
+    let input = StringArray::from(vec![Some("alpha"), None, Some("beta"), Some("alpha")]);
+    let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
+    let liquid_array = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
+
+    let result = liquid_array.compare_with(b"alpha", &Operator::NotEq);
+    let expected = BooleanArray::from(vec![Some(false), None, Some(true), Some(false)]);
+    assert_eq!(result, expected);
+}
+
+#[test]
+fn test_compare_with_shared_prefix_shorter_needle_lt() {
+    let input = StringArray::from(vec!["hello_world", "hello_rust"]);
+    let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
+    let liquid_array = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
+
+    let result = liquid_array.compare_with(b"hell", &Operator::Lt);
+    let expected = BooleanArray::from(vec![false, false]);
+    assert_eq!(result, expected);
+
+    let result = liquid_array.compare_with(b"hell", &Operator::LtEq);
+    let expected = BooleanArray::from(vec![false, false]);
+    assert_eq!(result, expected);
+}
+
+#[test]
+fn test_compare_with_like_fallback() {
+    let input = StringArray::from(vec![
+        Some("Alpha"),
+        Some("alphabet"),
+        Some("beta"),
+        None,
+        Some("ALPHA"),
+    ]);
+    let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
+    let liquid_array = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
+
+    let result = liquid_array.compare_with(b"Al%", &Operator::LikeMatch);
+    let expected = BooleanArray::from(vec![
+        Some(true),
+        Some(false),
+        Some(false),
+        None,
+        Some(false),
+    ]);
+    assert_eq!(result, expected);
+
+    let result = liquid_array.compare_with(b"al%", &Operator::ILikeMatch);
+    let expected = BooleanArray::from(vec![Some(true), Some(true), Some(false), None, Some(true)]);
+    assert_eq!(result, expected);
+
+    let result = liquid_array.compare_with(b"Al%", &Operator::NotLikeMatch);
+    let expected = BooleanArray::from(vec![Some(false), Some(true), Some(true), None, Some(true)]);
+    assert_eq!(result, expected);
+
+    let result = liquid_array.compare_with(b"al%", &Operator::NotILikeMatch);
+    let expected = BooleanArray::from(vec![
+        Some(false),
+        Some(false),
+        Some(true),
+        None,
+        Some(false),
+    ]);
+    assert_eq!(result, expected);
+}
+
+#[tokio::test]
+async fn test_compare_equals_on_disk_long_prefix() {
+    let common = "prefix_";
+    let long_len = 260;
+    let suffix_len = long_len - common.len();
+    let long_a = format!("{}{}", common, "a".repeat(suffix_len));
+    let long_b = format!("{}{}", common, "b".repeat(suffix_len));
+
+    let input = StringArray::from(vec![long_a.as_str(), long_b.as_str(), "z"]);
+    let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
+    let in_memory = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
+
+    let io = Arc::new(TestSqueezeIo::default());
+    let (hybrid, bytes) = in_memory
+        .squeeze(io.clone(), Some(&CacheExpression::PredicateColumn))
+        .expect("squeeze should succeed");
+    io.set_bytes(bytes);
+
+    let disk_view = hybrid
+        .as_any()
+        .downcast_ref::<LiquidByteViewArray<DiskBuffer>>()
+        .expect("should downcast to disk array");
+
+    let result = disk_view.compare_equals(long_b.as_bytes()).await;
+    let expected = BooleanArray::from(vec![false, true, false]);
+    assert_eq!(result, expected);
+    assert_eq!(io.reads(), 1);
 }
 
 // Benchmark tests for v2 offset compression improvements

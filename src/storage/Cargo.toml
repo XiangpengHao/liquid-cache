@@ -71,6 +71,11 @@ path = "bench/byte_array_vs_byte_view.rs"
 harness = false
 
 [[bench]]
+name = "byte_view_compare"
+path = "bench/byte_view_compare.rs"
+harness = false
+
+[[bench]]
 name = "bitpacking"
 path = "bench/bitpacking.rs"
 harness = false
