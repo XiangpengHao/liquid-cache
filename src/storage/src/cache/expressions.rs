@@ -48,6 +48,8 @@ pub enum CacheExpression {
     },
     /// A column used for predicate evaluation.
     PredicateColumn,
+    /// A column used primarily for substring search (LIKE '%foo%').
+    SubstringSearch,
 }
 
 impl std::fmt::Display for CacheExpression {
@@ -67,6 +69,9 @@ impl std::fmt::Display for CacheExpression {
             }
             Self::PredicateColumn => {
                 write!(f, "PredicateColumn")
+            }
+            Self::SubstringSearch => {
+                write!(f, "SubstringSearch")
             }
         }
     }
@@ -104,6 +109,11 @@ impl CacheExpression {
         }
     }
 
+    /// Build a substring-search expression hint.
+    pub fn substring_search() -> Self {
+        Self::SubstringSearch
+    }
+
     /// Attempt to parse a metadata value (e.g. `"YEAR"`) into an expression.
     ///
     /// The value is compared case-insensitively against supported components.
@@ -122,7 +132,7 @@ impl CacheExpression {
     pub fn as_date32_field(&self) -> Option<Date32Field> {
         match self {
             Self::ExtractDate32 { field } => Some(*field),
-            Self::VariantGet { .. } | Self::PredicateColumn => None,
+            Self::VariantGet { .. } | Self::PredicateColumn | Self::SubstringSearch => None,
         }
     }
 
@@ -130,7 +140,7 @@ impl CacheExpression {
     pub fn variant_path(&self) -> Option<&str> {
         match self {
             Self::VariantGet { requests } => requests.first().map(|request| request.path()),
-            Self::ExtractDate32 { .. } | Self::PredicateColumn => None,
+            Self::ExtractDate32 { .. } | Self::PredicateColumn | Self::SubstringSearch => None,
         }
     }
 
@@ -138,7 +148,7 @@ impl CacheExpression {
     pub fn variant_data_type(&self) -> Option<&DataType> {
         match self {
             Self::VariantGet { requests } => requests.first().map(|request| request.data_type()),
-            Self::ExtractDate32 { .. } | Self::PredicateColumn => None,
+            Self::ExtractDate32 { .. } | Self::PredicateColumn | Self::SubstringSearch => None,
         }
     }
 
@@ -146,7 +156,7 @@ impl CacheExpression {
     pub fn variant_requests(&self) -> Option<&[VariantRequest]> {
         match self {
             Self::VariantGet { requests } => Some(requests.as_ref()),
-            Self::ExtractDate32 { .. } | Self::PredicateColumn => None,
+            Self::ExtractDate32 { .. } | Self::PredicateColumn | Self::SubstringSearch => None,
         }
     }
 }

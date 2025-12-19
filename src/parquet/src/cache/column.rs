@@ -14,7 +14,7 @@ use parquet_variant_compute::{VariantArray, VariantType, shred_variant, unshred_
 use crate::{
     LiquidPredicate,
     cache::{BatchID, ColumnAccessPath, ParquetArrayID},
-    optimizers::{DATE_MAPPING_METADATA_KEY, variant_mappings_from_field},
+    optimizers::{DATE_MAPPING_METADATA_KEY, STRING_FINGERPRINT_METADATA_KEY, variant_mappings_from_field},
 };
 use std::sync::Arc;
 
@@ -36,6 +36,11 @@ fn infer_expression(field: &Field) -> Option<CacheExpression> {
         && let Some(expr) = CacheExpression::try_from_date_part_str(mapping)
     {
         return Some(expr);
+    }
+    if field.metadata().contains_key(STRING_FINGERPRINT_METADATA_KEY)
+        && is_string_type(field.data_type())
+    {
+        return Some(CacheExpression::substring_search());
     }
     if field.try_extension_type::<VariantType>().is_ok()
         && let Some(mappings) = variant_mappings_from_field(field)
@@ -67,16 +72,16 @@ impl CachedColumn {
     ) -> Self {
         column_access_path.initialize_dir(cache_store.config().cache_root_dir());
 
-        let expression = infer_expression(field.as_ref()).map(|expr| {
-            let expr = Arc::new(expr);
+        let expression = infer_expression(field.as_ref()).map(Arc::new);
+        if let Some(expr) = expression.as_ref() {
             let hint_entry_id = column_access_path.entry_id(BatchID::from_raw(0)).into();
             cache_store.add_squeeze_hint(&hint_entry_id, expr.clone());
-            expr
-        });
-        if is_predicate_column {
-            let expression = Arc::new(CacheExpression::PredicateColumn);
+        } else if is_predicate_column {
             let hint_entry_id = column_access_path.entry_id(BatchID::from_raw(0)).into();
-            cache_store.add_squeeze_hint(&hint_entry_id, expression);
+            cache_store.add_squeeze_hint(
+                &hint_entry_id,
+                Arc::new(CacheExpression::PredicateColumn),
+            );
         }
         Self {
             field,
@@ -249,6 +254,14 @@ fn variant_contains_typed_field(array: &VariantArray, path: &str) -> bool {
         return false;
     };
     typed_struct_contains_path(typed_root, path)
+}
+
+fn is_string_type(data_type: &DataType) -> bool {
+    match data_type {
+        DataType::Utf8 | DataType::Utf8View | DataType::LargeUtf8 => true,
+        DataType::Dictionary(_, value_type) => is_string_type(value_type.as_ref()),
+        _ => false,
+    }
 }
 
 #[cfg(test)]

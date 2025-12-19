@@ -62,3 +62,9 @@ This is done by:
 | Title | One | RoundRobin | 32 | 1,000,000 | 0 | 877,755 | 87.78% | 122,245 | 12.22% | 122,242 | 100.00% | 3 | 0.00% |
 | Referer | One | RoundRobin | 32 | 1,000,000 | 0 | 628,936 | 62.89% | 371,064 | 37.11% | 276,287 | 74.46% | 94,777 | 9.48% |
 
+
+## How it helps LiquidCache
+1. Accelerates substring search evaluation.
+2. Reduces number of io, if the entire batch can be filtered out.
+3. Reduces number of strings to be decompressed, if the batch of strings can't be filtered out.
+

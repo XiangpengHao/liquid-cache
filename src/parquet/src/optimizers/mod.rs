@@ -31,6 +31,7 @@ use serde::{Deserialize, Serialize};
 pub(crate) const DATE_MAPPING_METADATA_KEY: &str = "liquid.cache.date_mapping";
 pub(crate) const VARIANT_MAPPING_METADATA_KEY: &str = "liquid.cache.variant_path";
 pub(crate) const VARIANT_MAPPING_TYPE_METADATA_KEY: &str = "liquid.cache.variant_type";
+pub(crate) const STRING_FINGERPRINT_METADATA_KEY: &str = "liquid.cache.string_fingerprint";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct VariantMappingSerdeEntry {
@@ -231,6 +232,9 @@ fn process_field_annotation(
                 }
                 updated_field = enrich_variant_field_type(&updated_field, &paths);
             }
+        }
+        ColumnAnnotation::SubstringSearch => {
+            field_metadata.insert(STRING_FINGERPRINT_METADATA_KEY.to_string(), "substring".into());
         }
     }
     Arc::new(updated_field.with_metadata(field_metadata))

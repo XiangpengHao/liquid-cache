@@ -91,6 +91,24 @@ fn test_hybrid_original_arrow_data_type_returns_utf8() {
 }
 
 #[test]
+fn test_squeeze_builds_string_fingerprints() {
+    let input = StringArray::from(vec!["alpha", "beta", "alphabet"]);
+    let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
+    let in_memory = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
+    let (hybrid, _) = in_memory
+        .squeeze(
+            Arc::new(TestingSqueezeIo),
+            Some(&CacheExpression::substring_search()),
+        )
+        .expect("squeeze should succeed");
+    let disk_view = hybrid
+        .as_any()
+        .downcast_ref::<LiquidByteViewArray<DiskBuffer>>()
+        .expect("should downcast to disk array");
+    assert!(disk_view.string_fingerprints.is_some());
+}
+
+#[test]
 fn test_ipc_roundtrip_sliced_dictionary_nulls() {
     let values: ArrayRef = Arc::new(StringArray::from(vec!["a", "b", "c", "d"]));
     let keys = UInt16Array::from(vec![

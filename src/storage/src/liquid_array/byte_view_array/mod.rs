@@ -23,10 +23,12 @@ use crate::liquid_array::raw::fsst_buffer::{DiskBuffer, FsstBacking, PrefixKey};
 use crate::liquid_array::{
     LiquidArray, LiquidDataType, LiquidSqueezedArray, LiquidSqueezedArrayRef, SqueezeIoHandler,
 };
+use crate::liquid_array::byte_view_array::fingerprint::build_fingerprints;
 
 // Declare submodules
 mod comparisons;
 mod conversions;
+mod fingerprint;
 mod helpers;
 mod serialization;
 
@@ -82,6 +84,8 @@ pub struct LiquidByteViewArray<B: FsstBacking> {
     pub(super) original_arrow_type: ArrowByteType,
     /// Shared prefix across all strings in the array
     pub(super) shared_prefix: Vec<u8>,
+    /// Optional per-dictionary string fingerprints (32 bins).
+    pub(super) string_fingerprints: Option<Arc<[u32]>>,
 }
 
 impl<B: FsstBacking> std::fmt::Debug for LiquidByteViewArray<B> {
@@ -92,6 +96,7 @@ impl<B: FsstBacking> std::fmt::Debug for LiquidByteViewArray<B> {
             .field("fsst_buffer", &self.fsst_buffer)
             .field("original_arrow_type", &self.original_arrow_type)
             .field("shared_prefix", &self.shared_prefix)
+            .field("string_fingerprints", &self.string_fingerprints)
             .finish()
     }
 }
@@ -127,11 +132,17 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
 
     /// Get detailed memory usage of the byte view array
     pub fn get_detailed_memory_usage(&self) -> ByteViewArrayMemoryUsage {
+        let fingerprint_bytes = self
+            .string_fingerprints
+            .as_ref()
+            .map(|fingerprints| fingerprints.len() * std::mem::size_of::<u32>())
+            .unwrap_or(0);
         ByteViewArrayMemoryUsage {
             dictionary_key: self.dictionary_keys.get_array_memory_size(),
             offsets: self.prefix_keys.len() * std::mem::size_of::<PrefixKey>(),
             fsst_buffer: self.fsst_buffer.get_array_memory_size(),
             shared_prefix: self.shared_prefix.len(),
+            string_fingerprints: fingerprint_bytes,
             struct_size: std::mem::size_of::<Self>(),
         }
     }
@@ -249,6 +260,14 @@ impl LiquidArray for LiquidByteViewArray<FsstArray> {
     ) -> Option<(LiquidSqueezedArrayRef, Bytes)> {
         squeeze_hint?;
 
+        let string_fingerprints = if matches!(squeeze_hint, Some(CacheExpression::SubstringSearch))
+        {
+            let (values_buffer, offsets_buffer) = self.fsst_buffer.to_uncompressed();
+            Some(build_fingerprints(&values_buffer, &offsets_buffer))
+        } else {
+            None
+        };
+
         // Serialize full IPC bytes first
         let bytes = match self.to_bytes_inner() {
             Ok(b) => b,
@@ -270,6 +289,7 @@ impl LiquidArray for LiquidByteViewArray<FsstArray> {
             fsst_buffer: disk,
             original_arrow_type: self.original_arrow_type,
             shared_prefix: self.shared_prefix.clone(),
+            string_fingerprints,
         };
 
         let bytes = Bytes::from(bytes);

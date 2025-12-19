@@ -7,6 +7,7 @@ use datafusion::physical_plan::expressions::{BinaryExpr, LikeExpr, Literal};
 use std::sync::Arc;
 
 use super::LiquidByteViewArray;
+use super::fingerprint::substring_pattern_bytes;
 use crate::liquid_array::byte_array::get_string_needle;
 use crate::liquid_array::raw::FsstArray;
 use crate::liquid_array::raw::fsst_buffer::{DiskBuffer, FsstBacking};
@@ -29,6 +30,7 @@ pub(super) fn filter_inner<B: FsstBacking>(
         fsst_buffer: array.fsst_buffer.clone(),
         original_arrow_type: array.original_arrow_type,
         shared_prefix: array.shared_prefix.clone(),
+        string_fingerprints: array.string_fingerprints.clone(),
     }
 }
 
@@ -149,6 +151,15 @@ pub(super) async fn try_eval_predicate_on_disk(
             .is_some()
         && let Some(literal) = like_expr.pattern().as_any().downcast_ref::<Literal>()
     {
+        if !like_expr.case_insensitive()
+            && let Some(pattern) = get_string_needle(literal.value())
+            && let Some(needle) = substring_pattern_bytes(pattern.as_bytes())
+            && let Some(result) = array
+                .compare_like_substring(needle, like_expr.negated())
+                .await
+        {
+            return Some(result);
+        }
         let arrow_dict = array.to_dict_arrow().await;
 
         let lhs = ColumnarValue::Array(Arc::new(arrow_dict));
@@ -180,6 +191,8 @@ pub struct ByteViewArrayMemoryUsage {
     pub fsst_buffer: usize,
     /// Memory usage of the shared prefix
     pub shared_prefix: usize,
+    /// Memory usage of the string fingerprints
+    pub string_fingerprints: usize,
     /// Memory usage of the struct size
     pub struct_size: usize,
 }
@@ -191,6 +204,7 @@ impl Display for ByteViewArrayMemoryUsage {
             .field("offsets", &self.offsets)
             .field("fsst_buffer", &self.fsst_buffer)
             .field("shared_prefix", &self.shared_prefix)
+            .field("string_fingerprints", &self.string_fingerprints)
             .field("struct_size", &self.struct_size)
             .field("total", &self.total())
             .finish()
@@ -204,6 +218,7 @@ impl ByteViewArrayMemoryUsage {
             + self.offsets
             + self.fsst_buffer
             + self.shared_prefix
+            + self.string_fingerprints
             + self.struct_size
     }
 }
@@ -214,6 +229,7 @@ impl std::ops::AddAssign for ByteViewArrayMemoryUsage {
         self.offsets += other.offsets;
         self.fsst_buffer += other.fsst_buffer;
         self.shared_prefix += other.shared_prefix;
+        self.string_fingerprints += other.string_fingerprints;
         self.struct_size += other.struct_size;
     }
 }
