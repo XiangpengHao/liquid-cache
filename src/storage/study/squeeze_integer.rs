@@ -374,7 +374,7 @@ where
         let expected_filtered = filter_expected::<T>(&prim, &case.op, &case.scalar);
         // Try get with selection from hybrid
         let sel_io =
-            get_with_selection::<T>(&*hy, clamp_io.as_ref(), &sel, expected_filtered.as_ref());
+            get_with_selection(&*hy, clamp_io.as_ref(), &sel, expected_filtered.as_ref());
         stats.clamp_select_io_bytes += sel_io;
     }
 
@@ -387,7 +387,7 @@ where
         // Expected selection result from Arrow
         let expected_filtered = filter_expected::<T>(&prim, &case.op, &case.scalar);
         let sel_io =
-            get_with_selection::<T>(&*hy, quant_io.as_ref(), &sel, expected_filtered.as_ref());
+            get_with_selection(&*hy, quant_io.as_ref(), &sel, expected_filtered.as_ref());
         stats.quant_select_io_bytes += sel_io;
     }
 
@@ -415,7 +415,7 @@ fn try_eval_or_fetch<T: LiquidPrimitiveType>(
     }
 }
 
-fn get_with_selection<T: LiquidPrimitiveType>(
+fn get_with_selection(
     hybrid: &dyn LiquidSqueezedArray,
     io: &InMemorySqueezeIo,
     selection: &BooleanBuffer,

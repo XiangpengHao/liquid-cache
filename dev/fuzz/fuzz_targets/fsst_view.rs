@@ -71,7 +71,7 @@ fn test_roundtrip(strings: &[Option<String>]) -> (LiquidByteViewArray<FsstArray>
         LiquidByteViewArray::<FsstArray>::from_string_array(&original_array, compressor);
 
     // Convert back to StringArray
-    let roundtrip_array = liquid_array.to_arrow_array().unwrap();
+    let roundtrip_array = liquid_array.to_arrow_array();
     let roundtrip_string_array = roundtrip_array.as_string::<i32>();
 
     assert_eq!(&original_array, roundtrip_string_array);
@@ -93,11 +93,7 @@ fn test_compare_with(
 
         // Get result from LiquidByteViewArray
         let liquid_result = liquid_array.compare_with(needle_bytes, &operator);
-        if let Ok(arrow_result) = arrow_result {
-            assert_eq!(arrow_result, liquid_result.unwrap());
-        } else {
-            assert!(liquid_result.is_err());
-        }
+        assert_eq!(arrow_result.unwrap(), liquid_result);
     }
 }
 

@@ -29,22 +29,7 @@ impl LiquidByteViewArray<FsstArray> {
             }
         }
 
-        // Map dict-level results to row-level mask.
-        let mut builder = BooleanBuilder::with_capacity(self.dictionary_keys.len());
-        for &dict_key in self.dictionary_keys.values().iter() {
-            let matches = dict_results
-                .get(dict_key as usize)
-                .copied()
-                .unwrap_or(false);
-            builder.append_value(matches);
-        }
-
-        let mut mask = builder.finish();
-        if let Some(nulls) = self.nulls() {
-            let (values, _) = mask.into_parts();
-            mask = BooleanArray::new(values, Some(nulls.clone()));
-        }
-        mask
+        self.map_dictionary_results_to_array_results(dict_results)
     }
 
     /// Compare not equals with a byte needle
@@ -102,15 +87,7 @@ impl LiquidByteViewArray<FsstArray> {
             }
         }
 
-        // Map dictionary results to array results
-        let mut result = BooleanArray::from(dict_results);
-        // Preserve nulls from dictionary keys
-        if let Some(nulls) = self.nulls() {
-            let (values, _) = result.into_parts();
-            result = BooleanArray::new(values, Some(nulls.clone()));
-        }
-
-        result
+        self.map_dictionary_results_to_array_results(dict_results)
     }
 
     /// Fallback to Arrow operations for unsupported operations
@@ -162,22 +139,7 @@ impl LiquidByteViewArray<DiskBuffer> {
             }
         }
 
-        // Map dict-level results to row-level mask.
-        let mut builder = BooleanBuilder::with_capacity(self.dictionary_keys.len());
-        for &dict_key in self.dictionary_keys.values().iter() {
-            let matches = dict_results
-                .get(dict_key as usize)
-                .copied()
-                .unwrap_or(false);
-            builder.append_value(matches);
-        }
-
-        let mut mask = builder.finish();
-        if let Some(nulls) = self.nulls() {
-            let (values, _) = mask.into_parts();
-            mask = BooleanArray::new(values, Some(nulls.clone()));
-        }
-        mask
+        self.map_dictionary_results_to_array_results(dict_results)
     }
 
     /// Prefix optimization for ordering operations
@@ -210,16 +172,7 @@ impl LiquidByteViewArray<DiskBuffer> {
             }
         }
 
-        // Map dictionary results to array results
-        let mut result = BooleanArray::from(dict_results);
-
-        // Preserve nulls from dictionary keys
-        if let Some(nulls) = self.nulls() {
-            let (values, _) = result.into_parts();
-            result = BooleanArray::new(values, Some(nulls.clone()));
-        }
-
-        result
+        self.map_dictionary_results_to_array_results(dict_results)
     }
 
     /// Fallback to Arrow operations for unsupported operations
@@ -230,6 +183,24 @@ impl LiquidByteViewArray<DiskBuffer> {
 }
 
 impl<B: FsstBacking> LiquidByteViewArray<B> {
+    fn map_dictionary_results_to_array_results(&self, dict_results: Vec<bool>) -> BooleanArray {
+        let mut builder = BooleanBuilder::with_capacity(self.dictionary_keys.len());
+        for &dict_key in self.dictionary_keys.values().iter() {
+            let matches = dict_results
+                .get(dict_key as usize)
+                .copied()
+                .unwrap_or(false);
+            builder.append_value(matches);
+        }
+
+        let mut mask = builder.finish();
+        if let Some(nulls) = self.nulls() {
+            let (values, _) = mask.into_parts();
+            mask = BooleanArray::new(values, Some(nulls.clone()));
+        }
+        mask
+    }
+
     // returns a tuple of compare_results and ambiguous indices
     fn compare_with_prefix(&self, needle: &[u8], op: &Operator) -> (Vec<bool>, Vec<usize>) {
         // Try to short-circuit based on shared prefix comparison
@@ -243,8 +214,8 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
         let mut ambiguous = Vec::new();
 
         // Try prefix comparison for each unique value
-        for i in 0..num_unique {
-            let prefix7 = self.prefix_keys[i].prefix7();
+        for (i, prefix_key) in self.prefix_keys.iter().take(num_unique).enumerate() {
+            let prefix7 = prefix_key.prefix7();
 
             // Compare prefix with needle_suffix
             let cmp_len = std::cmp::min(PrefixKey::prefix_len(), needle_suffix.len());

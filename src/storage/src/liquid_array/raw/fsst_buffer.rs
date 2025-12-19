@@ -12,8 +12,8 @@ use std::io::{Error, ErrorKind};
 use std::ops::Range;
 use std::sync::Arc;
 
-use crate::liquid_array::SqueezeIoHandler;
 use crate::liquid_array::fix_len_byte_array::ArrowFixedLenByteArrayType;
+use crate::liquid_array::{LiquidByteViewArray, SqueezeIoHandler};
 
 mod sealed {
     pub trait Sealed {}
@@ -860,14 +860,20 @@ impl FsstBacking for FsstArray {
 
 impl DiskBuffer {
     pub(crate) async fn to_uncompressed(&self) -> (Buffer, OffsetBuffer<i32>) {
-        todo!()
+        let bytes = self.io.read(Some(self.disk_range.clone())).await.unwrap();
+        let byte_view =
+            LiquidByteViewArray::<FsstArray>::from_bytes(bytes, self.compressor.clone());
+        byte_view.fsst_buffer.to_uncompressed()
     }
 
     pub(crate) async fn to_uncompressed_selected(
         &self,
-        _selected: &[usize],
+        selected: &[usize],
     ) -> (Buffer, OffsetBuffer<i32>) {
-        todo!()
+        let bytes = self.io.read(Some(self.disk_range.clone())).await.unwrap();
+        let byte_view =
+            LiquidByteViewArray::<FsstArray>::from_bytes(bytes, self.compressor.clone());
+        byte_view.fsst_buffer.to_uncompressed_selected(selected)
     }
 }
 
