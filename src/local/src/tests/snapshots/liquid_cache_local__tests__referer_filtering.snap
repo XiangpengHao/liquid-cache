@@ -46,8 +46,6 @@ RuntimeStatsSnapshot:
   get: 2
   get_with_selection: 2
   eval_predicate: 8
-  eval_predicate_squeezed_success: 0
-  eval_predicate_squeezed_needs_io: 0
   get_squeezed_success: 0
   get_squeezed_needs_io: 0
   try_read_liquid_calls: 0

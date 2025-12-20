@@ -173,6 +173,14 @@ impl SqueezeIoHandler for DefaultSqueezeIo {
             });
         Ok(bytes)
     }
+
+    fn tracing_decompress_count(&self, count: usize) {
+        self.observer
+            .record_internal(InternalEvent::DecompressSqueezed {
+                entry: self.entry_id,
+                count,
+            });
+    }
 }
 
 #[cfg(test)]

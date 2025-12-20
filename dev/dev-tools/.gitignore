@@ -8,3 +8,5 @@
 
 # daisyUI vendor files
 /vendor
+
+assets/tailwind.css
