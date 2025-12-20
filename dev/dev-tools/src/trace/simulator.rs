@@ -45,6 +45,7 @@ pub enum EntryOperation {
     IoRead,
     IoWrite,
     EvalPredicate,
+    DecompressSqueezed { decompressed: usize, total: usize },
 }
 
 /// Victim status for entries
@@ -294,6 +295,19 @@ impl CacheSimulator {
                 self.state
                     .current_operations
                     .insert(*entry, EntryOperation::EvalPredicate);
+            }
+            TraceEvent::DecompressSqueezed {
+                entry,
+                decompressed,
+                total,
+            } => {
+                self.state.current_operations.insert(
+                    *entry,
+                    EntryOperation::DecompressSqueezed {
+                        decompressed: *decompressed,
+                        total: *total,
+                    },
+                );
             }
         }
     }

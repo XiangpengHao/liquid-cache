@@ -88,6 +88,11 @@ pub enum TraceEvent {
         selection: bool,
         cached: CacheKind,
     },
+    DecompressSqueezed {
+        entry: u64,
+        decompressed: usize,
+        total: usize,
+    },
 }
 
 impl TraceEvent {
@@ -173,6 +178,16 @@ impl TraceEvent {
                     selection
                 )
             }
+            TraceEvent::DecompressSqueezed {
+                entry,
+                decompressed,
+                total,
+            } => {
+                format!(
+                    "Decompress squeezed entry {} ({} / {})",
+                    entry, decompressed, total
+                )
+            }
         }
     }
 
@@ -183,13 +198,14 @@ impl TraceEvent {
             TraceEvent::SqueezeBegin { .. } => "squeeze_begin",
             TraceEvent::SqueezeVictim { .. } => "squeeze_victim",
             TraceEvent::IoWrite { .. } => "io_write",
-            TraceEvent::IoReadSqueezedBacking { .. } => "io_read_squeezed_backing",
+            TraceEvent::IoReadSqueezedBacking { .. } => "io_r_squeezed",
             TraceEvent::IoReadArrow { .. } => "io_read_arrow",
             TraceEvent::IoReadLiquid { .. } => "io_read_liquid",
             TraceEvent::Hydrate { .. } => "hydrate",
             TraceEvent::Read { .. } => "read",
             TraceEvent::ReadSqueezedData { .. } => "read_squeezed_data",
             TraceEvent::EvalPredicate { .. } => "eval_predicate",
+            TraceEvent::DecompressSqueezed { .. } => "decompress_squeezed",
         }
     }
 }
@@ -379,6 +395,20 @@ fn parse_event_line(line: &str) -> TraceEvent {
                 .get("cached")
                 .map(|s| CacheKind::from_str(s))
                 .unwrap(),
+        },
+        Some("decompress_squeezed") => TraceEvent::DecompressSqueezed {
+            entry: fields
+                .get("entry")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0),
+            decompressed: fields
+                .get("decompressed")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0),
+            total: fields
+                .get("total")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0),
         },
         _ => {
             panic!("Unknown event: {}", line);

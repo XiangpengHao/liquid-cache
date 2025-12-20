@@ -61,7 +61,8 @@ pub(crate) enum InternalEvent {
     },
     DecompressSqueezed {
         entry: EntryID,
-        count: usize,
+        decompressed: usize,
+        total: usize,
     },
 }
 
@@ -186,12 +187,17 @@ impl fmt::Display for InternalEvent {
                     expression
                 )
             }
-            InternalEvent::DecompressSqueezed { entry, count } => {
+            InternalEvent::DecompressSqueezed {
+                entry,
+                decompressed,
+                total,
+            } => {
                 write!(
                     f,
-                    "event=decompress_squeezed entry={} count={}",
+                    "event=decompress_squeezed entry={} decompressed={} total={}",
                     usize::from(*entry),
-                    count
+                    decompressed,
+                    total
                 )
             }
         }

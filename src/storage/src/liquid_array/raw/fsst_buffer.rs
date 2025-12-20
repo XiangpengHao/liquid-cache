@@ -872,7 +872,8 @@ impl DiskBuffer {
         let bytes = self.io.read(Some(self.disk_range.clone())).await.unwrap();
         let byte_view =
             LiquidByteViewArray::<FsstArray>::from_bytes(bytes, self.compressor.clone());
-        self.io.tracing_decompress_count(selected.len());
+        let total_count = byte_view.fsst_buffer.compact_offsets.len();
+        self.io.tracing_decompress_count(selected.len(), total_count);
         byte_view.fsst_buffer.to_uncompressed_selected(selected)
     }
 }

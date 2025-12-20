@@ -331,7 +331,7 @@ pub trait SqueezeIoHandler: std::fmt::Debug + Send + Sync {
 
     /// Trace the number of decompressions performed.
     // TODO: this is ugly.
-    fn tracing_decompress_count(&self, _count: usize) {
+    fn tracing_decompress_count(&self, _decompress_cnt: usize, _total_cnt: usize) {
         // Do nothing by default
     }
 }
