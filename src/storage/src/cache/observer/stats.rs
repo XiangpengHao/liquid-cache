@@ -98,8 +98,6 @@ define_runtime_stats! {
     (get, "Number of `get` calls issued via `CachedData`.", incr_get),
     (get_with_selection, "Number of `get_with_selection` calls issued via `CachedData`.", incr_get_with_selection),
     (eval_predicate, "Number of `eval_predicate` calls issued via `CachedData`.", incr_eval_predicate),
-    (eval_predicate_squeezed_success, "Number of Squeezed-Liquid predicate evaluations finished without IO.", incr_eval_predicate_squeezed_success),
-    (eval_predicate_squeezed_needs_io, "Number of Squeezed-Liquid predicate paths that required IO.", incr_eval_predicate_squeezed_needs_io),
     (get_squeezed_success, "Number of Squeezed-Liquid full evaluations finished without IO.", incr_get_squeezed_success),
     (get_squeezed_needs_io, "Number of Squeezed-Liquid full paths that required IO.", incr_get_squeezed_needs_io),
     (try_read_liquid_calls, "Number of `try_read_liquid` calls issued via `CachedData`.", incr_try_read_liquid),

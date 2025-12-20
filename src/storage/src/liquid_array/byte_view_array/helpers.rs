@@ -144,11 +144,6 @@ pub(super) async fn try_eval_predicate_on_disk(
     }
     // Handle like expressions
     else if let Some(like_expr) = expr.as_any().downcast_ref::<LikeExpr>()
-        && like_expr
-            .pattern()
-            .as_any()
-            .downcast_ref::<Literal>()
-            .is_some()
         && let Some(literal) = like_expr.pattern().as_any().downcast_ref::<Literal>()
     {
         if !like_expr.case_insensitive()

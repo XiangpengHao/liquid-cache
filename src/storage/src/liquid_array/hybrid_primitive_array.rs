@@ -668,60 +668,20 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cache::TestSqueezeIo;
     use crate::liquid_array::LiquidArray;
-    use crate::liquid_array::SqueezeIoHandler;
     use crate::liquid_array::primitive_array::{IntegerSqueezePolicy, LiquidPrimitiveArray};
     use crate::utils::get_bit_width;
     use arrow::array::{Array, BooleanArray, PrimitiveArray};
     use arrow::buffer::BooleanBuffer;
     use arrow::datatypes::{Int32Type, UInt32Type};
-    use bytes::Bytes;
     use datafusion::logical_expr::Operator;
     use datafusion::physical_plan::expressions::{BinaryExpr, Literal};
     use datafusion::scalar::ScalarValue;
     use futures::executor::block_on;
     use rand::rngs::StdRng;
     use rand::{Rng, SeedableRng};
-    use std::ops::Range;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Mutex};
-
-    #[derive(Debug, Default)]
-    struct TestSqueezeIo {
-        bytes: Mutex<Option<Bytes>>,
-        reads: AtomicUsize,
-    }
-
-    impl TestSqueezeIo {
-        fn set_bytes(&self, bytes: Bytes) {
-            *self.bytes.lock().unwrap() = Some(bytes);
-        }
-
-        fn reset_reads(&self) {
-            self.reads.store(0, Ordering::SeqCst);
-        }
-
-        fn reads(&self) -> usize {
-            self.reads.load(Ordering::SeqCst)
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl SqueezeIoHandler for TestSqueezeIo {
-        async fn read(&self, range: Option<Range<u64>>) -> std::io::Result<Bytes> {
-            self.reads.fetch_add(1, Ordering::SeqCst);
-            let bytes = self
-                .bytes
-                .lock()
-                .unwrap()
-                .clone()
-                .expect("test squeeze backing set");
-            Ok(match range {
-                Some(range) => bytes.slice(range.start as usize..range.end as usize),
-                None => bytes,
-            })
-        }
-    }
+    use std::sync::Arc;
 
     // ---------- Hybrid (squeeze) tests ----------
 

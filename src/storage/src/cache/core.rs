@@ -802,14 +802,8 @@ impl LiquidCache {
             owned.as_ref().unwrap()
         });
         match array.try_eval_predicate(predicate, selection).await {
-            Some(buf) => {
-                self.observer.on_eval_predicate_squeezed_success();
-                Some(Ok(buf))
-            }
-            None => {
-                self.observer.on_eval_predicate_squeezed_needs_io();
-                Some(Err(array.filter(selection).await))
-            }
+            Some(buf) => Some(Ok(buf)),
+            None => Some(Err(array.filter(selection).await)),
         }
     }
 }
