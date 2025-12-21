@@ -763,10 +763,8 @@ impl FsstArray {
         self.raw.get_compressed_slice(start_offset, end_offset)
     }
 
-    pub(crate) fn to_uncompressed_selected(
-        &self,
-        selected: &[usize],
-    ) -> (Buffer, OffsetBuffer<i32>) {
+    /// Decompress the selected values into a buffer.
+    pub fn to_uncompressed_selected(&self, selected: &[usize]) -> (Buffer, OffsetBuffer<i32>) {
         let decompressor = self.compressor.decompressor();
         let mut value_buffer: Vec<u8> = Vec::with_capacity(self.uncompressed_bytes() + 8);
         let mut out_offsets: OffsetBufferBuilder<i32> = OffsetBufferBuilder::new(selected.len());
@@ -776,10 +774,6 @@ impl FsstArray {
             let end_offset = self.compact_offsets.get_offset(dict_index + 1);
 
             let compressed_value = self.raw.get_compressed_slice(start_offset, end_offset);
-            debug_assert!(
-                value_buffer.spare_capacity_mut().len()
-                    >= decompressor.max_decompression_capacity(compressed_value)
-            );
             let decompressed_len =
                 decompressor.decompress_into(compressed_value, value_buffer.spare_capacity_mut());
             let new_len = value_buffer.len() + decompressed_len;

@@ -3,6 +3,7 @@ use arrow::buffer::BooleanBuffer;
 use arrow_schema::DataType;
 use bytes::Bytes;
 use datafusion::physical_plan::PhysicalExpr;
+use futures::StreamExt;
 use std::path::PathBuf;
 
 use super::{
@@ -392,9 +393,11 @@ impl LiquidCache {
         self.trace(InternalEvent::SqueezeBegin {
             victims: victims.clone(),
         });
-        for victim in victims {
-            self.squeeze_victim_inner(victim).await;
-        }
+        futures::stream::iter(victims)
+            .for_each_concurrent(None, |victim| async move {
+                self.squeeze_victim_inner(victim).await;
+            })
+            .await;
     }
 
     async fn squeeze_victim_inner(&self, to_squeeze: EntryID) {

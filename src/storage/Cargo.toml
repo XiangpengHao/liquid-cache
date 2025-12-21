@@ -61,6 +61,11 @@ path = "study/fsst_view.rs"
 harness = false
 
 [[bench]]
+name = "fsst_selectivity"
+path = "study/fsst_selectivity.rs"
+harness = false
+
+[[bench]]
 name = "fsstarray"
 path = "bench/fsstarray.rs"
 harness = false
