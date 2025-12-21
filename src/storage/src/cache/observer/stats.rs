@@ -104,6 +104,18 @@ define_runtime_stats! {
     (hit_date32_expression_calls, "Number of `hit_date32_expression` calls.", incr_hit_date32_expression),
     (read_io_count, "Number of read IO operations.", incr_read_io_count),
     (write_io_count, "Number of write IO operations.", incr_write_io_count),
+    (squeezed_decompressed_count, "Number of decompressed Squeezed-Liquid entries.", __incr_squeezed_decompressed_count),
+    (squeezed_total_count, "Total number of Squeezed-Liquid entries.", __incr_squeezed_total_count),
+}
+
+impl RuntimeStats {
+    /// Track the number of decompressed Squeezed-Liquid entries.
+    pub fn track_decompress_squeezed_count(&self, decompressed: usize, total: usize) {
+        self.squeezed_decompressed_count
+            .fetch_add(decompressed as u64, Ordering::Relaxed);
+        self.squeezed_total_count
+            .fetch_add(total as u64, Ordering::Relaxed);
+    }
 }
 
 /// Snapshot of cache statistics.

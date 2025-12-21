@@ -38,6 +38,8 @@ RuntimeStatsSnapshot:
   hit_date32_expression_calls: 0
   read_io_count: 0
   write_io_count: 0
+  squeezed_decompressed_count: 0
+  squeezed_total_count: 0
 
 
 query[1]: SELECT date_bin(interval '10 second', to_timestamp_micros(_timestamp), to_timestamp('2001-01-01T00:00:00')) AS zo_sql_key, count(*) AS zo_sql_num from default WHERE log like '%hhj%' or message like '%hhj%' GROUP BY zo_sql_key ORDER BY zo_sql_key
@@ -183,6 +185,8 @@ RuntimeStatsSnapshot:
   hit_date32_expression_calls: 0
   read_io_count: 0
   write_io_count: 0
+  squeezed_decompressed_count: 0
+  squeezed_total_count: 0
 
 
 query[2]: SELECT _timestamp, kubernetes_namespace_name from default order by _timestamp desc limit 100
@@ -223,3 +227,5 @@ RuntimeStatsSnapshot:
   hit_date32_expression_calls: 0
   read_io_count: 0
   write_io_count: 0
+  squeezed_decompressed_count: 0
+  squeezed_total_count: 0

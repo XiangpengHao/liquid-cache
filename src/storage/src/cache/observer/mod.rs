@@ -109,6 +109,14 @@ impl Observer {
                 self.runtime.incr_read_io_count();
                 self.runtime.incr_get_squeezed_needs_io();
             }
+            InternalEvent::DecompressSqueezed {
+                decompressed,
+                total,
+                ..
+            } => {
+                self.runtime
+                    .track_decompress_squeezed_count(decompressed, total);
+            }
             _ => {}
         }
 

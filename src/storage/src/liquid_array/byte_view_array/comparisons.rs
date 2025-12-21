@@ -269,7 +269,8 @@ impl LiquidByteViewArray<DiskBuffer> {
         if !ambiguous.is_empty() {
             let (values_buffer, offsets_buffer) =
                 self.fsst_buffer.to_uncompressed_selected(&ambiguous).await;
-            let values = StringArray::new(offsets_buffer, values_buffer, None);
+            // Safety: the offsets and values are valid because they are from fsst buffer, which already checked utf-8.
+            let values = unsafe { StringArray::new_unchecked(offsets_buffer, values_buffer, None) };
             let pattern = std::str::from_utf8(needle).ok()?;
             let pattern = format!("%{}%", pattern);
 
