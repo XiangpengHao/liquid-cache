@@ -213,8 +213,8 @@ fn build_selection(len: usize, pct: u8, rng: &mut StdRng) -> Vec<usize> {
             remove[idx] = true;
         }
         let mut indices = Vec::with_capacity(target);
-        for idx in 0..len {
-            if !remove[idx] {
+        for (idx, should_remove) in remove.iter().enumerate() {
+            if !should_remove {
                 indices.push(idx);
             }
         }

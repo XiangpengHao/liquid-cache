@@ -18,12 +18,12 @@ use std::cell::Cell;
 
 use crate::cache::CacheExpression;
 use crate::liquid_array::byte_array::ArrowByteType;
+use crate::liquid_array::byte_view_array::fingerprint::build_fingerprints;
 use crate::liquid_array::raw::FsstArray;
 use crate::liquid_array::raw::fsst_buffer::{DiskBuffer, FsstBacking, PrefixKey};
 use crate::liquid_array::{
     LiquidArray, LiquidDataType, LiquidSqueezedArray, LiquidSqueezedArrayRef, SqueezeIoHandler,
 };
-use crate::liquid_array::byte_view_array::fingerprint::build_fingerprints;
 
 // Declare submodules
 mod comparisons;

@@ -14,7 +14,9 @@ use parquet_variant_compute::{VariantArray, VariantType, shred_variant, unshred_
 use crate::{
     LiquidPredicate,
     cache::{BatchID, ColumnAccessPath, ParquetArrayID},
-    optimizers::{DATE_MAPPING_METADATA_KEY, STRING_FINGERPRINT_METADATA_KEY, variant_mappings_from_field},
+    optimizers::{
+        DATE_MAPPING_METADATA_KEY, STRING_FINGERPRINT_METADATA_KEY, variant_mappings_from_field,
+    },
 };
 use std::sync::Arc;
 
@@ -37,7 +39,9 @@ fn infer_expression(field: &Field) -> Option<CacheExpression> {
     {
         return Some(expr);
     }
-    if field.metadata().contains_key(STRING_FINGERPRINT_METADATA_KEY)
+    if field
+        .metadata()
+        .contains_key(STRING_FINGERPRINT_METADATA_KEY)
         && is_string_type(field.data_type())
     {
         return Some(CacheExpression::substring_search());
@@ -78,10 +82,8 @@ impl CachedColumn {
             cache_store.add_squeeze_hint(&hint_entry_id, expr.clone());
         } else if is_predicate_column {
             let hint_entry_id = column_access_path.entry_id(BatchID::from_raw(0)).into();
-            cache_store.add_squeeze_hint(
-                &hint_entry_id,
-                Arc::new(CacheExpression::PredicateColumn),
-            );
+            cache_store
+                .add_squeeze_hint(&hint_entry_id, Arc::new(CacheExpression::PredicateColumn));
         }
         Self {
             field,

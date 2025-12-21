@@ -230,7 +230,8 @@ mod random_tests {
             let decode_compressor = compressor.clone();
             let liquid = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
 
-            if let Some((_hybrid, bytes)) = liquid.squeeze(Arc::new(TestSqueezeIo::default()), None) {
+            if let Some((_hybrid, bytes)) = liquid.squeeze(Arc::new(TestSqueezeIo::default()), None)
+            {
                 let restored = crate::liquid_array::ipc::read_from_bytes(
                     bytes.clone(),
                     &crate::liquid_array::ipc::LiquidIPCContext::new(Some(decode_compressor)),

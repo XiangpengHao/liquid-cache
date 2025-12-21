@@ -31,10 +31,7 @@ impl StringFingerprint {
     }
 }
 
-pub(super) fn build_fingerprints(
-    values: &Buffer,
-    offsets: &OffsetBuffer<i32>,
-) -> Arc<[u32]> {
+pub(super) fn build_fingerprints(values: &Buffer, offsets: &OffsetBuffer<i32>) -> Arc<[u32]> {
     let offsets = offsets.as_ref();
     if offsets.len() < 2 {
         return Arc::from([]);

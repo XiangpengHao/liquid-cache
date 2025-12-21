@@ -234,7 +234,10 @@ fn process_field_annotation(
             }
         }
         ColumnAnnotation::SubstringSearch => {
-            field_metadata.insert(STRING_FINGERPRINT_METADATA_KEY.to_string(), "substring".into());
+            field_metadata.insert(
+                STRING_FINGERPRINT_METADATA_KEY.to_string(),
+                "substring".into(),
+            );
         }
     }
     Arc::new(updated_field.with_metadata(field_metadata))

@@ -163,9 +163,10 @@ impl OptimizerRule for LineageOptimizer {
         variant_findings.sort();
 
         let mut substring_findings = table_usage.find_substring_searches();
-        substring_findings.sort_by(|a, b| a.flat_name().cmp(&b.flat_name()));
+        substring_findings.sort_by_key(|a| a.flat_name());
 
-        let annotations = build_annotation_map(&date_findings, &variant_findings, &substring_findings);
+        let annotations =
+            build_annotation_map(&date_findings, &variant_findings, &substring_findings);
         annotate_plan_with_extractions(plan, &annotations)
     }
 }
