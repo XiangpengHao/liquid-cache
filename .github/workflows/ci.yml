@@ -29,6 +29,12 @@ jobs:
           shared-key: ci-${{ runner.os }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
       
+      - name: tailwindcss
+        run: |
+          npm install -g tailwindcss
+          cd dev/dev-tools
+          tailwindcss -i tailwind.css -o assets/tailwind.css 
+      
       - name: Check formatting
         run: cargo fmt --all -- --check
 
