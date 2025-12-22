@@ -31,9 +31,8 @@ jobs:
       
       - name: tailwindcss
         run: |
-          npm install -g tailwindcss
           cd dev/dev-tools
-          tailwindcss -i tailwind.css -o assets/tailwind.css 
+          npx @tailwindcss/cli -i tailwind.css -o assets/tailwind.css 
       
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -65,6 +64,10 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
+      - name: tailwindcss
+        run: |
+          cd dev/dev-tools
+          npx @tailwindcss/cli -i tailwind.css -o assets/tailwind.css 
       - name: Generate code coverage
         run: cargo llvm-cov --workspace --codecov --output-path codecov.json
       - name: Upload coverage to Codecov
