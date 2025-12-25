@@ -32,6 +32,7 @@ jobs:
       - name: tailwindcss
         run: |
           cd dev/dev-tools
+          npm install tailwindcss @tailwindcss/cli 
           npx @tailwindcss/cli -i tailwind.css -o assets/tailwind.css 
       
       - name: Check formatting
@@ -67,6 +68,7 @@ jobs:
       - name: tailwindcss
         run: |
           cd dev/dev-tools
+          npm install tailwindcss @tailwindcss/cli 
           npx @tailwindcss/cli -i tailwind.css -o assets/tailwind.css 
       - name: Generate code coverage
         run: cargo llvm-cov --workspace --codecov --output-path codecov.json
