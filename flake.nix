@@ -47,7 +47,7 @@
           doCheck = false;
           pname = "wasm-bindgen-cli";
         };
-        
+
         # Fetch daisyUI bundle files
         daisyui-bundle = pkgs.fetchurl {
           url = "https://github.com/saadeghi/daisyui/releases/latest/download/daisyui.mjs";
@@ -84,12 +84,12 @@
                 targets = [ "x86_64-unknown-linux-gnu" "wasm32-unknown-unknown" ];
               }))
             ];
-            
+
             shellHook = ''
               # Setup daisyUI vendor files for dev-tools
               VENDOR_DIR="dev/dev-tools/vendor"
               mkdir -p "$VENDOR_DIR"
-              
+
               # Copy daisyUI files from Nix store if they don't exist or are outdated
               if [ ! -f "$VENDOR_DIR/daisyui.mjs" ] || [ "${daisyui-bundle}" -nt "$VENDOR_DIR/daisyui.mjs" ]; then
                 echo "Setting up daisyUI bundle files..."
