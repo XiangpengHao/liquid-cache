@@ -108,6 +108,7 @@ impl Ord for VariantField {
 pub(crate) enum ColumnAnnotation {
     DatePart(HashSet<SupportedIntervalUnit>),
     VariantPaths(Vec<VariantField>),
+    SubstringSearch,
 }
 
 pub(crate) fn serialize_date_part(units: &HashSet<SupportedIntervalUnit>) -> String {
@@ -161,7 +162,11 @@ impl OptimizerRule for LineageOptimizer {
         let mut variant_findings = table_usage.find_variant_gets();
         variant_findings.sort();
 
-        let annotations = build_annotation_map(&date_findings, &variant_findings);
+        let mut substring_findings = table_usage.find_substring_searches();
+        substring_findings.sort_by_key(|a| a.flat_name());
+
+        let annotations =
+            build_annotation_map(&date_findings, &variant_findings, &substring_findings);
         annotate_plan_with_extractions(plan, &annotations)
     }
 }
@@ -218,6 +223,7 @@ enum Operation {
         path: String,
         data_type: Option<DataType>,
     },
+    SubstringSearch,
     Other,
 }
 
@@ -645,11 +651,46 @@ impl TableColumnUsage {
         }
         gets
     }
+
+    fn find_substring_searches(&self) -> Vec<Column> {
+        let mut columns = Vec::new();
+        for (key, stats) in self.usage.iter() {
+            if !is_string_type(&stats.data_type) {
+                continue;
+            }
+
+            if stats.usages.is_empty() {
+                continue;
+            }
+
+            let mut saw_substring = false;
+            let mut valid = true;
+            for usage in &stats.usages {
+                let has_substring = usage
+                    .iter()
+                    .any(|op| matches!(op, Operation::SubstringSearch));
+                if has_substring {
+                    saw_substring = true;
+                    continue;
+                }
+                if !usage.is_empty() {
+                    valid = false;
+                    break;
+                }
+            }
+
+            if valid && saw_substring {
+                columns.push(key.to_column());
+            }
+        }
+        columns
+    }
 }
 
 fn build_annotation_map(
     date_findings: &[DateExtraction],
     variant_findings: &[VariantExtraction],
+    substring_findings: &[Column],
 ) -> HashMap<ColumnKey, ColumnAnnotation> {
     let mut annotations: HashMap<ColumnKey, ColumnAnnotation> = HashMap::new();
     for extraction in date_findings {
@@ -662,6 +703,12 @@ fn build_annotation_map(
         annotations.insert(
             ColumnKey::from_column(&extraction.column),
             ColumnAnnotation::VariantPaths(extraction.fields.clone()),
+        );
+    }
+    for column in substring_findings {
+        annotations.insert(
+            ColumnKey::from_column(column),
+            ColumnAnnotation::SubstringSearch,
         );
     }
     annotations
@@ -884,6 +931,20 @@ fn lineage_for_expr(
             }
             propagate_other(expr, input_lineage, schema)
         }
+        Expr::Like(like) => {
+            if !like.case_insensitive
+                && like.escape_char.is_none()
+                && let Some(pattern) = literal_utf8(&like.pattern)
+                && is_substring_pattern(pattern.as_bytes())
+            {
+                let mut usages = lineage_for_expr(&like.expr, input_lineage, schema)?;
+                for usage in &mut usages {
+                    usage.operations.push(Operation::SubstringSearch);
+                }
+                return Ok(usages);
+            }
+            propagate_other(expr, input_lineage, schema)
+        }
         Expr::Cast(cast) => {
             let mut usages = lineage_for_expr(&cast.expr, input_lineage, schema)?;
             for usage in &mut usages {
@@ -938,6 +999,28 @@ fn literal_utf8(expr: &Expr) -> Option<String> {
             _ => None,
         },
         _ => None,
+    }
+}
+
+fn is_substring_pattern(pattern: &[u8]) -> bool {
+    if pattern.len() < 2 {
+        return false;
+    }
+    if pattern[0] != b'%' || pattern[pattern.len() - 1] != b'%' {
+        return false;
+    }
+    let inner = &pattern[1..pattern.len() - 1];
+    if inner.is_empty() {
+        return false;
+    }
+    !inner.iter().any(|b| *b == b'%' || *b == b'_')
+}
+
+fn is_string_type(data_type: &DataType) -> bool {
+    match data_type {
+        DataType::Utf8 | DataType::Utf8View | DataType::LargeUtf8 => true,
+        DataType::Dictionary(_, value_type) => is_string_type(value_type.as_ref()),
+        _ => false,
     }
 }
 

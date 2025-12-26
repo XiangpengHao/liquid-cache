@@ -296,7 +296,7 @@ fn extract_typed_values_for_path(typed_root: &StructArray, path: &str) -> Option
 mod tests {
     use super::*;
     use crate::cache::cached_batch::CacheEntry;
-    use crate::cache::{CacheExpression, TestingSqueezeIo};
+    use crate::cache::{CacheExpression, io_context::TestSqueezeIo};
     use crate::liquid_array::{LiquidSqueezedArray, SqueezedBacking, VariantStructSqueezedArray};
     use arrow::array::{Array, ArrayRef, Int32Array, StringArray, StructArray};
     use arrow_schema::Fields;
@@ -331,8 +331,7 @@ mod tests {
     fn test_squeeze_to_disk_policy() {
         let disk = Evict;
         let states = LiquidCompressorStates::new();
-        let squeeze_io: Arc<dyn SqueezeIoHandler> = Arc::new(TestingSqueezeIo);
-
+        let squeeze_io: Arc<dyn SqueezeIoHandler> = Arc::new(TestSqueezeIo::default());
         // MemoryArrow -> DiskArrow + bytes (Arrow IPC)
         let arr = int_array(8);
         let (new_batch, bytes) = disk.squeeze(
@@ -407,7 +406,7 @@ mod tests {
     fn test_squeeze_to_liquid_policy() {
         let to_liquid = TranscodeSqueezeEvict;
         let states = LiquidCompressorStates::new();
-        let squeeze_io: Arc<dyn SqueezeIoHandler> = Arc::new(TestingSqueezeIo);
+        let squeeze_io: Arc<dyn SqueezeIoHandler> = Arc::new(TestSqueezeIo::default());
 
         // MemoryArrow -> MemoryLiquid, no bytes
         let arr = int_array(8);
@@ -476,7 +475,7 @@ mod tests {
     fn transcode_squeeze_struct_falls_back_to_disk_arrow() {
         let to_liquid = TranscodeSqueezeEvict;
         let states = LiquidCompressorStates::new();
-        let squeeze_io: Arc<dyn SqueezeIoHandler> = Arc::new(TestingSqueezeIo);
+        let squeeze_io: Arc<dyn SqueezeIoHandler> = Arc::new(TestSqueezeIo::default());
         let struct_arr = struct_array();
         let (new_batch, bytes) = to_liquid.squeeze(
             &CacheEntry::memory_arrow(struct_arr.clone()),
@@ -497,7 +496,7 @@ mod tests {
     fn transcode_evict_struct_falls_back_to_disk_arrow() {
         let to_disk = TranscodeEvict;
         let states = LiquidCompressorStates::new();
-        let squeeze_io: Arc<dyn SqueezeIoHandler> = Arc::new(TestingSqueezeIo);
+        let squeeze_io: Arc<dyn SqueezeIoHandler> = Arc::new(TestSqueezeIo::default());
         let struct_arr = struct_array();
         let (new_batch, bytes) = to_disk.squeeze(
             &CacheEntry::memory_arrow(struct_arr.clone()),
@@ -634,7 +633,7 @@ mod tests {
         let states = LiquidCompressorStates::new();
         let variant_arr = enriched_variant_array("name", DataType::Utf8);
         let hint = CacheExpression::variant_get("name", DataType::Utf8);
-        let squeeze_io: Arc<dyn SqueezeIoHandler> = Arc::new(TestingSqueezeIo);
+        let squeeze_io: Arc<dyn SqueezeIoHandler> = Arc::new(TestSqueezeIo::default());
 
         let (new_batch, bytes) = policy.squeeze(
             &CacheEntry::memory_arrow(variant_arr),
@@ -657,7 +656,7 @@ mod tests {
         let states = LiquidCompressorStates::new();
         let variant_arr = enriched_variant_array("age", DataType::Int64);
         let hint = CacheExpression::variant_get("age", DataType::Int64);
-        let squeeze_io: Arc<dyn SqueezeIoHandler> = Arc::new(TestingSqueezeIo);
+        let squeeze_io: Arc<dyn SqueezeIoHandler> = Arc::new(TestSqueezeIo::default());
 
         let (new_batch, bytes) = policy.squeeze(
             &CacheEntry::memory_arrow(variant_arr),
@@ -683,7 +682,7 @@ mod tests {
             ("age", DataType::Int64),
         ]);
         let hint = CacheExpression::variant_get("name", DataType::Utf8);
-        let squeeze_io: Arc<dyn SqueezeIoHandler> = Arc::new(TestingSqueezeIo);
+        let squeeze_io: Arc<dyn SqueezeIoHandler> = Arc::new(TestSqueezeIo::default());
 
         let (new_batch, bytes) = policy.squeeze(
             &CacheEntry::memory_arrow(variant_arr),
@@ -719,7 +718,7 @@ mod tests {
         let policy = TranscodeSqueezeEvict;
         let states = LiquidCompressorStates::new();
         let variant_arr = enriched_variant_array("name", DataType::Utf8);
-        let squeeze_io: Arc<dyn SqueezeIoHandler> = Arc::new(TestingSqueezeIo);
+        let squeeze_io: Arc<dyn SqueezeIoHandler> = Arc::new(TestSqueezeIo::default());
 
         let (new_batch, bytes) = policy.squeeze(
             &CacheEntry::memory_arrow(variant_arr),
@@ -739,7 +738,7 @@ mod tests {
     fn test_variant_squeeze_skips_when_path_missing() {
         let policy = TranscodeSqueezeEvict;
         let states = LiquidCompressorStates::new();
-        let squeeze_io: Arc<dyn SqueezeIoHandler> = Arc::new(TestingSqueezeIo);
+        let squeeze_io: Arc<dyn SqueezeIoHandler> = Arc::new(TestSqueezeIo::default());
         let variant_arr = enriched_variant_array("name", DataType::Utf8);
         let hint = CacheExpression::variant_get("age", DataType::Int64);
 

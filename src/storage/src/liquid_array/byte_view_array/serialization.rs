@@ -226,6 +226,7 @@ impl LiquidByteViewArray<FsstArray> {
             fsst_buffer: FsstArray::new(Arc::new(raw_buffer), compact_offsets, compressor),
             original_arrow_type,
             shared_prefix,
+            string_fingerprints: None,
         }
     }
 }

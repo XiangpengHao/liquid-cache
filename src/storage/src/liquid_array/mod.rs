@@ -328,6 +328,12 @@ pub trait LiquidSqueezedArray: std::fmt::Debug + Send + Sync {
 pub trait SqueezeIoHandler: std::fmt::Debug + Send + Sync {
     /// Read the backing bytes of a squeezed array from disk.
     async fn read(&self, range: Option<Range<u64>>) -> std::io::Result<Bytes>;
+
+    /// Trace the number of decompressions performed.
+    // TODO: this is ugly.
+    fn tracing_decompress_count(&self, _decompress_cnt: usize, _total_cnt: usize) {
+        // Do nothing by default
+    }
 }
 
 /// Compile-time info about primitive kind (signed vs unsigned) and bounds.

@@ -1,5 +1,5 @@
-use arrow::array::DictionaryArray;
-use arrow::array::{BinaryArray, BooleanArray, BooleanBufferBuilder, cast::AsArray};
+use arrow::array::{Array, DictionaryArray};
+use arrow::array::{BinaryArray, BooleanArray, BooleanBufferBuilder, StringArray, cast::AsArray};
 use arrow::datatypes::UInt16Type;
 use arrow_schema::DataType;
 use datafusion::common::ScalarValue;
@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::vec;
 
 use super::LiquidByteViewArray;
+use super::fingerprint::{StringFingerprint, substring_pattern_bytes};
 use crate::liquid_array::raw::FsstArray;
 use crate::liquid_array::raw::fsst_buffer::{DiskBuffer, FsstBacking, PrefixKey};
 
@@ -156,6 +157,17 @@ impl LiquidByteViewArray<DiskBuffer> {
             }
 
             // For other operations, fall back to Arrow operations
+            Operator::LikeMatch | Operator::NotLikeMatch => {
+                if let Some(inner) = substring_pattern_bytes(needle)
+                    && let Some(result) = self
+                        .compare_like_substring(inner, matches!(op, Operator::NotLikeMatch))
+                        .await
+                {
+                    result
+                } else {
+                    self.compare_with_arrow_fallback(needle, op).await
+                }
+            }
             _ => self.compare_with_arrow_fallback(needle, op).await,
         }
     }
@@ -232,6 +244,56 @@ impl LiquidByteViewArray<DiskBuffer> {
     async fn compare_with_arrow_fallback(&self, needle: &[u8], op: &Operator) -> BooleanArray {
         let dict_array = self.to_dict_arrow().await;
         compare_with_arrow_inner(dict_array, needle, op)
+    }
+
+    pub(super) async fn compare_like_substring(
+        &self,
+        needle: &[u8],
+        negated: bool,
+    ) -> Option<BooleanArray> {
+        if needle.is_empty() {
+            return None;
+        }
+        let fingerprints = self.string_fingerprints.as_ref()?;
+        let needle_fp = StringFingerprint::from_bytes(needle);
+
+        let mut dict_results = vec![false; fingerprints.len()];
+        let mut ambiguous = Vec::new();
+
+        for (index, &bits) in fingerprints.iter().enumerate() {
+            if StringFingerprint::from_bits(bits).might_contain(needle_fp) {
+                ambiguous.push(index);
+            }
+        }
+
+        if !ambiguous.is_empty() {
+            let (values_buffer, offsets_buffer) =
+                self.fsst_buffer.to_uncompressed_selected(&ambiguous).await;
+            // Safety: the offsets and values are valid because they are from fsst buffer, which already checked utf-8.
+            let values = unsafe { StringArray::new_unchecked(offsets_buffer, values_buffer, None) };
+            let pattern = std::str::from_utf8(needle).ok()?;
+            let pattern = format!("%{}%", pattern);
+
+            let lhs = ColumnarValue::Array(Arc::new(values));
+            let rhs = ColumnarValue::Scalar(ScalarValue::Utf8(Some(pattern)));
+            let result = apply_cmp(Operator::LikeMatch, &lhs, &rhs).ok()?;
+            let result = result.into_array(ambiguous.len()).ok()?;
+            let matches = result.as_boolean();
+
+            for (pos, &dict_index) in ambiguous.iter().enumerate() {
+                if !matches.is_null(pos) && matches.value(pos) {
+                    dict_results[dict_index] = true;
+                }
+            }
+        }
+
+        if negated {
+            for value in &mut dict_results {
+                *value = !*value;
+            }
+        }
+
+        Some(self.map_dictionary_results_to_array_results(dict_results))
     }
 }
 

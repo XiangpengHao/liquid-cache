@@ -59,6 +59,11 @@ pub(crate) enum InternalEvent {
     TryReadLiquid {
         entry: EntryID,
     },
+    DecompressSqueezed {
+        entry: EntryID,
+        decompressed: usize,
+        total: usize,
+    },
 }
 
 #[derive(Debug)]
@@ -180,6 +185,19 @@ impl fmt::Display for InternalEvent {
                     "event=read_squeezed_data entry={} expression={}",
                     usize::from(*entry),
                     expression
+                )
+            }
+            InternalEvent::DecompressSqueezed {
+                entry,
+                decompressed,
+                total,
+            } => {
+                write!(
+                    f,
+                    "event=decompress_squeezed entry={} decompressed={} total={}",
+                    usize::from(*entry),
+                    decompressed,
+                    total
                 )
             }
         }

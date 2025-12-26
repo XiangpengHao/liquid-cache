@@ -3,7 +3,7 @@ mod random_tests {
     use std::sync::Arc;
 
     use crate::cache::CacheExpression;
-    use crate::cache::TestingSqueezeIo;
+    use crate::cache::TestSqueezeIo;
     use crate::liquid_array::raw::FsstArray;
     use crate::liquid_array::{LiquidArray, LiquidByteArray, LiquidByteViewArray};
     use arrow::array::{
@@ -230,7 +230,8 @@ mod random_tests {
             let decode_compressor = compressor.clone();
             let liquid = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
 
-            if let Some((_hybrid, bytes)) = liquid.squeeze(Arc::new(TestingSqueezeIo), None) {
+            if let Some((_hybrid, bytes)) = liquid.squeeze(Arc::new(TestSqueezeIo::default()), None)
+            {
                 let restored = crate::liquid_array::ipc::read_from_bytes(
                     bytes.clone(),
                     &crate::liquid_array::ipc::LiquidIPCContext::new(Some(decode_compressor)),
@@ -538,7 +539,7 @@ mod random_tests {
 
         // Squeeze
         let Some((_hybrid, bytes)) = liquid.squeeze(
-            Arc::new(TestingSqueezeIo),
+            Arc::new(TestSqueezeIo::default()),
             Some(&CacheExpression::PredicateColumn),
         ) else {
             panic!("squeeze should succeed");

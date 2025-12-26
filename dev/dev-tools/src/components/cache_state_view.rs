@@ -26,6 +26,10 @@ fn get_operation_label(op: &EntryOperation) -> String {
         EntryOperation::IoRead => "io_read".to_string(),
         EntryOperation::IoWrite => "io_write".to_string(),
         EntryOperation::EvalPredicate => "eval_predicate".to_string(),
+        EntryOperation::DecompressSqueezed {
+            decompressed,
+            total,
+        } => format!("decompress_squeezed {} / {}", decompressed, total),
     }
 }
 

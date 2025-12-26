@@ -173,16 +173,53 @@ impl SqueezeIoHandler for DefaultSqueezeIo {
             });
         Ok(bytes)
     }
+
+    fn tracing_decompress_count(&self, decompress_cnt: usize, total_cnt: usize) {
+        self.observer
+            .record_internal(InternalEvent::DecompressSqueezed {
+                entry: self.entry_id,
+                decompressed: decompress_cnt,
+                total: total_cnt,
+            });
+    }
 }
 
 #[cfg(test)]
-#[derive(Debug)]
-pub(crate) struct TestingSqueezeIo;
+#[derive(Debug, Default)]
+pub(crate) struct TestSqueezeIo {
+    bytes: std::sync::Mutex<Option<Bytes>>,
+    reads: std::sync::atomic::AtomicUsize,
+}
+
+#[cfg(test)]
+impl TestSqueezeIo {
+    pub(crate) fn set_bytes(&self, bytes: Bytes) {
+        *self.bytes.lock().unwrap() = Some(bytes);
+    }
+
+    pub(crate) fn reads(&self) -> usize {
+        self.reads.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub(crate) fn reset_reads(&self) {
+        self.reads.store(0, std::sync::atomic::Ordering::SeqCst);
+    }
+}
 
 #[cfg(test)]
 #[async_trait::async_trait]
-impl SqueezeIoHandler for TestingSqueezeIo {
-    async fn read(&self, _range: Option<Range<u64>>) -> std::io::Result<Bytes> {
-        unreachable!()
+impl SqueezeIoHandler for TestSqueezeIo {
+    async fn read(&self, range: Option<Range<u64>>) -> std::io::Result<Bytes> {
+        self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let bytes = self
+            .bytes
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("test squeeze backing set");
+        Ok(match range {
+            Some(range) => bytes.slice(range.start as usize..range.end as usize),
+            None => bytes,
+        })
     }
 }

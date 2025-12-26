@@ -33,7 +33,16 @@ pub fn find_event_trace_snapshots(src_dir: &std::path::Path) -> Vec<std::path::P
         visit_dirs(src_dir, &mut matching_files);
     }
 
-    matching_files.sort();
+    // Sort by modification time (most recent first)
+    matching_files.sort_by(|a, b| {
+        let a_time = fs::metadata(a)
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        let b_time = fs::metadata(b)
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        b_time.cmp(&a_time) // Reverse order: newest first
+    });
     matching_files
 }
 

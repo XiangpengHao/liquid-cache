@@ -1,520 +1,537 @@
 name: Rust CI
 
 on:
-  push:
-    branches:
-      - main
-  pull_request:
-    branches:
-      - '*'
+    push:
+        branches:
+            - main
+    pull_request:
+        branches:
+            - "*"
 
 env:
-  CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: 1
-  RUSTFLAGS: "-C debuginfo=line-tables-only -C incremental=false"
+    CARGO_TERM_COLOR: always
+    RUST_BACKTRACE: 1
+    RUSTFLAGS: "-C debuginfo=line-tables-only -C incremental=false"
 
 jobs:
-  check:
-    name: Basic check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
-        with:
-          # Share one cache across all jobs on the same OS.
-          # Prevent PR runs from consuming cache quota by saving only on main.
-          shared-key: ci-${{ runner.os }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      
-      - name: Check formatting
-        run: cargo fmt --all -- --check
+    check:
+        name: Basic check
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: dtolnay/rust-toolchain@stable
+              with:
+                  components: clippy, rustfmt
+            - uses: Swatinem/rust-cache@v2
+              with:
+                  # Share one cache across all jobs on the same OS.
+                  # Prevent PR runs from consuming cache quota by saving only on main.
+                  shared-key: ci-${{ runner.os }}
+                  save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Check documentation
-        run: cargo doc --no-deps --document-private-items
-        env:
-          RUSTDOCFLAGS: -D warnings
+            - name: tailwindcss
+              run: |
+                  cd dev/dev-tools
+                  mkdir -p vendor
+                  npm install tailwindcss @tailwindcss/cli
+                  wget https://github.com/saadeghi/daisyui/releases/latest/download/daisyui.mjs -O vendor/daisyui.mjs
+                  wget https://github.com/saadeghi/daisyui/releases/latest/download/daisyui-theme.mjs -O vendor/daisyui-theme.mjs
+                  npx @tailwindcss/cli -i tailwind.css -o assets/tailwind.css
 
-      - name: Run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+            - name: Check formatting
+              run: cargo fmt --all -- --check
 
-      - name: Install cargo-shear
-        run: cargo install cargo-shear --locked
+            - name: Check documentation
+              run: cargo doc --no-deps --document-private-items
+              env:
+                  RUSTDOCFLAGS: -D warnings
 
-      - name: Check for unused dependencies
-        run: cargo shear
+            - name: Run clippy
+              run: cargo clippy --all-targets --all-features -- -D warnings
 
-  unit_test:
-    name: Unit Test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/free-disk-space
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ci-${{ runner.os }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
-      - name: Generate code coverage
-        run: cargo llvm-cov --workspace --codecov --output-path codecov.json
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }} 
-          files: codecov.json
-          fail_ci_if_error: true
-  
-  shuttle_test:
-    name: Shuttle Test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ci-${{ runner.os }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Run shuttle test
-        run: |
-          cd src/storage
-          cargo test --features "shuttle" --release -- --test-threads=1 shuttle 
+            - name: Install cargo-shear
+              run: cargo install cargo-shear --locked
 
-  address_san:
-    name: Address Sanitizer
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/free-disk-space
-      # Sanitizers can only run on nightly
-      - uses: dtolnay/rust-toolchain@nightly
-        with:
-          toolchain: nightly-2025-08-01
-          components: rust-src
+            - name: Check for unused dependencies
+              run: cargo shear
 
-      # Address sanitizers can't be cached: https://github.com/Swatinem/rust-cache/issues/161
-      - run: sudo apt-get update && sudo apt-get install -y llvm-dev
-      - name: Run address sanitizer
-        run: >
-          env RUSTFLAGS="-Z sanitizer=address" cargo test -Zbuild-std --target x86_64-unknown-linux-gnu --tests -p liquid-cache-parquet
+    unit_test:
+        name: Unit Test
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: ./.github/actions/free-disk-space
+            - uses: dtolnay/rust-toolchain@stable
+            - uses: Swatinem/rust-cache@v2
+              with:
+                  shared-key: ci-${{ runner.os }}
+                  save-if: ${{ github.ref == 'refs/heads/main' }}
+            - name: Install cargo-llvm-cov
+              uses: taiki-e/install-action@cargo-llvm-cov
+            - name: tailwindcss
+              run: |
+                  cd dev/dev-tools
+                  mkdir -p vendor
+                  npm install tailwindcss @tailwindcss/cli
+                  wget https://github.com/saadeghi/daisyui/releases/latest/download/daisyui.mjs -O vendor/daisyui.mjs
+                  wget https://github.com/saadeghi/daisyui/releases/latest/download/daisyui-theme.mjs -O vendor/daisyui-theme.mjs
+                  npx @tailwindcss/cli -i tailwind.css -o assets/tailwind.css
+            - name: Generate code coverage
+              run: cargo llvm-cov --workspace --codecov --output-path codecov.json
+            - name: Upload coverage to Codecov
+              uses: codecov/codecov-action@v5
+              with:
+                  token: ${{ secrets.CODECOV_TOKEN }}
+                  files: codecov.json
+                  fail_ci_if_error: true
 
-  clickbench:
-    name: ClickBench
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/free-disk-space
-      - uses: dtolnay/rust-toolchain@stable
-      - run: sudo apt-get update && sudo apt-get install -y wget
-      - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ci-${{ runner.os }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Download ClickBench partition 0
-        run: |
-          mkdir -p benchmark/data
-          wget https://datasets.clickhouse.com/hits_compatible/athena_partitioned/hits_0.parquet -O benchmark/data/hits_0.parquet
-      - name: Update manifest for partitioned data
-        run: |
-          # Update the manifest to point to the partitioned data directory
-          sed 's|"benchmark/clickbench/data/hits.parquet"|"benchmark/data/hits_0.parquet"|' \
-            benchmark/clickbench/manifest.json > benchmark/clickbench/benchmark_manifest.json
+    shuttle_test:
+        name: Shuttle Test
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: dtolnay/rust-toolchain@stable
+            - uses: Swatinem/rust-cache@v2
+              with:
+                  shared-key: ci-${{ runner.os }}
+                  save-if: ${{ github.ref == 'refs/heads/main' }}
+            - name: Run shuttle test
+              run: |
+                  cd src/storage
+                  cargo test --features "shuttle" --release -- --test-threads=1 shuttle
 
-      - name: Run ClickBench
-        run: |
-          source <(cargo llvm-cov show-env --export-prefix)
-          cargo llvm-cov clean --workspace
-          cargo build --bin bench_server
-          cargo build --bin clickbench_client
-          env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic --cache-mode liquid --max-cache-mb 256 &> server.log &
-          sleep 2  # Wait for server to start up
-          env RUST_LOG=info cargo run --bin clickbench_client -- --manifest benchmark/clickbench/benchmark_manifest.json
-          echo "=== Server logs ==="
-          cat server.log || echo "No server log found"
-          curl http://localhost:53703/shutdown
-          env RUST_LOG=info cargo run --bin in_process -- --manifest benchmark/clickbench/benchmark_manifest.json --bench-mode liquid --max-cache-mb 256
-          cargo llvm-cov report --codecov --output-path codecov_clickbench.json
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: codecov_clickbench.json
-          fail_ci_if_error: true
+    address_san:
+        name: Address Sanitizer
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: ./.github/actions/free-disk-space
+            # Sanitizers can only run on nightly
+            - uses: dtolnay/rust-toolchain@nightly
+              with:
+                  toolchain: nightly-2025-08-01
+                  components: rust-src
 
-  tpch:
-    name: TPC-H
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/free-disk-space
-      - uses: dtolnay/rust-toolchain@stable
-      - run: sudo apt-get update && sudo apt-get install -y wget
-      - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ci-${{ runner.os }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Setup TPC-H data
-        run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
-          cd benchmark/tpch
-          uvx --from duckdb python tpch_gen.py --scale 0.1
-      - name: Run TPC-H
-        run: |
-          source <(cargo llvm-cov show-env --export-prefix)
-          cargo llvm-cov clean --workspace
-          cargo build --bin bench_server
-          cargo build --bin tpch_client
-          env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic --cache-mode liquid --max-cache-mb 256 &> server.log &
-          sleep 2  # Wait for server to start up
-          env RUST_LOG=info cargo run --bin tpch_client -- --manifest benchmark/tpch/manifest.json --answer-dir benchmark/tpch/answers/sf0.1
-          echo "=== Server logs ==="
-          cat server.log || echo "No server log found"
-          curl http://localhost:53703/shutdown
-          env RUST_LOG=info cargo run --bin in_process -- --manifest benchmark/tpch/manifest.json --bench-mode liquid --max-cache-mb 256
-          cargo llvm-cov report --codecov --output-path codecov_tpch.json
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: codecov_tpch.json
-          fail_ci_if_error: true
+            # Address sanitizers can't be cached: https://github.com/Swatinem/rust-cache/issues/161
+            - run: sudo apt-get update && sudo apt-get install -y llvm-dev
+            - name: Run address sanitizer
+              run: >
+                  env RUSTFLAGS="-Z sanitizer=address" cargo test -Zbuild-std --target x86_64-unknown-linux-gnu --tests -p liquid-cache-parquet
 
-  tpcds:
-    name: TPC-DS
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/free-disk-space
-      - uses: dtolnay/rust-toolchain@stable
-      - run: sudo apt-get update && sudo apt-get install -y wget
-      - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ci-${{ runner.os }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Setup TPC-DS data
-        run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
-          cd benchmark/tpcds
-          uvx --from duckdb python tpcds_gen.py --scale 0.1 --answers-dir answers --data-dir data --queries-dir queries
-      - name: Run TPC-DS
-        run: |
-          source <(cargo llvm-cov show-env --export-prefix)
-          cargo llvm-cov clean --workspace
-          cargo build --bin bench_server
-          cargo build --bin tpcds_client
-          env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic --cache-mode liquid --max-cache-mb 256 &> server.log &
-          sleep 2  # Wait for server to start up
-          env RUST_LOG=info cargo run --bin tpcds_client -- --manifest benchmark/tpcds/manifest.json --answer-dir benchmark/tpcds/answers/sf0.1
-          echo "=== Server logs ==="
-          cat server.log || echo "No server log found"
-          curl http://localhost:53703/shutdown
-          env RUST_LOG=info cargo run --bin in_process -- --manifest benchmark/tpcds/manifest.json --bench-mode liquid --max-cache-mb 256
-          cargo llvm-cov report --codecov --output-path codecov_tpcds.json
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: codecov_tpcds.json
-          fail_ci_if_error: true
+    clickbench:
+        name: ClickBench
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: ./.github/actions/free-disk-space
+            - uses: dtolnay/rust-toolchain@stable
+            - run: sudo apt-get update && sudo apt-get install -y wget
+            - name: Install cargo-llvm-cov
+              uses: taiki-e/install-action@cargo-llvm-cov
+            - uses: Swatinem/rust-cache@v2
+              with:
+                  shared-key: ci-${{ runner.os }}
+                  save-if: ${{ github.ref == 'refs/heads/main' }}
+            - name: Download ClickBench partition 0
+              run: |
+                  mkdir -p benchmark/data
+                  wget https://datasets.clickhouse.com/hits_compatible/athena_partitioned/hits_0.parquet -O benchmark/data/hits_0.parquet
+            - name: Update manifest for partitioned data
+              run: |
+                  # Update the manifest to point to the partitioned data directory
+                  sed 's|"benchmark/clickbench/data/hits.parquet"|"benchmark/data/hits_0.parquet"|' \
+                    benchmark/clickbench/manifest.json > benchmark/clickbench/benchmark_manifest.json
 
-  stackoverflow:
-    name: StackOverflow
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y wget
-      - name: Prepare dataset directories
-        run: |
-          mkdir -p benchmark/stackoverflow/data/dba
-          mkdir -p benchmark/stackoverflow/downloads
-      - name: Cache StackOverflow dataset
-        uses: actions/cache@v4
-        with:
-          path: |
-            benchmark/stackoverflow/data/dba
-            benchmark/stackoverflow/downloads
-          key: stackoverflow-${{ runner.os }}-dba-v1
-          restore-keys: |
-            stackoverflow-${{ runner.os }}-dba-
-      - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ci-${{ runner.os }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Prepare StackOverflow data
-        env:
-          UV_CACHE_DIR: ${{ runner.temp }}/uv-cache
-          UV_PYTHON: python3
-        run: |
-          if [ ! -f benchmark/stackoverflow/data/dba/Posts.parquet ]; then
-            curl -LsSf https://astral.sh/uv/install.sh | sh
-            uv run --with duckdb python benchmark/stackoverflow/setup_stackoverflow.py --mode dba 
-          else
-            echo "StackOverflow dataset already prepared, skipping rebuild"
-          fi
-      - name: Run StackOverflow
-        run: |
-          source <(cargo llvm-cov show-env --export-prefix)
-          cargo llvm-cov clean --workspace
-          cargo build --bin in_process 
-          env RUST_LOG=info cargo run --bin in_process -- --manifest benchmark/stackoverflow/manifest.dba.json --bench-mode liquid --max-cache-mb 10
-          cargo llvm-cov report --codecov --output-path codecov_stackoverflow.json
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: codecov_stackoverflow.json
-          fail_ci_if_error: true
+            - name: Run ClickBench
+              run: |
+                  source <(cargo llvm-cov show-env --export-prefix)
+                  cargo llvm-cov clean --workspace
+                  cargo build --bin bench_server
+                  cargo build --bin clickbench_client
+                  env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic --cache-mode liquid --max-cache-mb 256 &> server.log &
+                  sleep 2  # Wait for server to start up
+                  env RUST_LOG=info cargo run --bin clickbench_client -- --manifest benchmark/clickbench/benchmark_manifest.json
+                  echo "=== Server logs ==="
+                  cat server.log || echo "No server log found"
+                  curl http://localhost:53703/shutdown
+                  env RUST_LOG=info cargo run --bin in_process -- --manifest benchmark/clickbench/benchmark_manifest.json --bench-mode liquid --max-cache-mb 256
+                  cargo llvm-cov report --codecov --output-path codecov_clickbench.json
+            - name: Upload coverage to Codecov
+              uses: codecov/codecov-action@v5
+              with:
+                  token: ${{ secrets.CODECOV_TOKEN }}
+                  files: codecov_clickbench.json
+                  fail_ci_if_error: true
 
-  benchmark:
-    name: Performance Benchmark
-    runs-on: pittsburgh
-    permissions:
-      contents: write
-      pull-requests: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Setup ClickBench partitioned data download
-        run: |
-          mkdir -p benchmark/clickbench/data
-          for partition in 0 1 2 3; do
-            echo "Downloading partition ${partition}..."
-            wget "https://datasets.clickhouse.com/hits_compatible/athena_partitioned/hits_${partition}.parquet" \
-              -O "benchmark/clickbench/data/hits_${partition}.parquet"
-          done
+    tpch:
+        name: TPC-H
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: ./.github/actions/free-disk-space
+            - uses: dtolnay/rust-toolchain@stable
+            - run: sudo apt-get update && sudo apt-get install -y wget
+            - name: Install cargo-llvm-cov
+              uses: taiki-e/install-action@cargo-llvm-cov
+            - uses: Swatinem/rust-cache@v2
+              with:
+                  shared-key: ci-${{ runner.os }}
+                  save-if: ${{ github.ref == 'refs/heads/main' }}
+            - name: Setup TPC-H data
+              run: |
+                  curl -LsSf https://astral.sh/uv/install.sh | sh
+                  cd benchmark/tpch
+                  uvx --from duckdb python tpch_gen.py --scale 0.1
+            - name: Run TPC-H
+              run: |
+                  source <(cargo llvm-cov show-env --export-prefix)
+                  cargo llvm-cov clean --workspace
+                  cargo build --bin bench_server
+                  cargo build --bin tpch_client
+                  env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic --cache-mode liquid --max-cache-mb 256 &> server.log &
+                  sleep 2  # Wait for server to start up
+                  env RUST_LOG=info cargo run --bin tpch_client -- --manifest benchmark/tpch/manifest.json --answer-dir benchmark/tpch/answers/sf0.1
+                  echo "=== Server logs ==="
+                  cat server.log || echo "No server log found"
+                  curl http://localhost:53703/shutdown
+                  env RUST_LOG=info cargo run --bin in_process -- --manifest benchmark/tpch/manifest.json --bench-mode liquid --max-cache-mb 256
+                  cargo llvm-cov report --codecov --output-path codecov_tpch.json
+            - name: Upload coverage to Codecov
+              uses: codecov/codecov-action@v5
+              with:
+                  token: ${{ secrets.CODECOV_TOKEN }}
+                  files: codecov_tpch.json
+                  fail_ci_if_error: true
 
-      - name: Update manifest for partitioned data
-        run: |
-          # Update the manifest to point to the partitioned data directory
-          sed 's|"benchmark/clickbench/data/hits.parquet"|"benchmark/clickbench/data"|' \
-            benchmark/clickbench/manifest.json > benchmark/clickbench/benchmark_manifest.json
+    tpcds:
+        name: TPC-DS
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: ./.github/actions/free-disk-space
+            - uses: dtolnay/rust-toolchain@stable
+            - run: sudo apt-get update && sudo apt-get install -y wget
+            - name: Install cargo-llvm-cov
+              uses: taiki-e/install-action@cargo-llvm-cov
+            - uses: Swatinem/rust-cache@v2
+              with:
+                  shared-key: ci-${{ runner.os }}
+                  save-if: ${{ github.ref == 'refs/heads/main' }}
+            - name: Setup TPC-DS data
+              run: |
+                  curl -LsSf https://astral.sh/uv/install.sh | sh
+                  cd benchmark/tpcds
+                  uvx --from duckdb python tpcds_gen.py --scale 0.1 --answers-dir answers --data-dir data --queries-dir queries
+            - name: Run TPC-DS
+              run: |
+                  source <(cargo llvm-cov show-env --export-prefix)
+                  cargo llvm-cov clean --workspace
+                  cargo build --bin bench_server
+                  cargo build --bin tpcds_client
+                  env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic --cache-mode liquid --max-cache-mb 256 &> server.log &
+                  sleep 2  # Wait for server to start up
+                  env RUST_LOG=info cargo run --bin tpcds_client -- --manifest benchmark/tpcds/manifest.json --answer-dir benchmark/tpcds/answers/sf0.1
+                  echo "=== Server logs ==="
+                  cat server.log || echo "No server log found"
+                  curl http://localhost:53703/shutdown
+                  env RUST_LOG=info cargo run --bin in_process -- --manifest benchmark/tpcds/manifest.json --bench-mode liquid --max-cache-mb 256
+                  cargo llvm-cov report --codecov --output-path codecov_tpcds.json
+            - name: Upload coverage to Codecov
+              uses: codecov/codecov-action@v5
+              with:
+                  token: ${{ secrets.CODECOV_TOKEN }}
+                  files: codecov_tpcds.json
+                  fail_ci_if_error: true
 
-      - name: Build benchmark binary
-        run: cargo build --release --bin in_process
+    stackoverflow:
+        name: StackOverflow
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: dtolnay/rust-toolchain@stable
+            - name: Install system dependencies
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y wget
+            - name: Prepare dataset directories
+              run: |
+                  mkdir -p benchmark/stackoverflow/data/dba
+                  mkdir -p benchmark/stackoverflow/downloads
+            - name: Cache StackOverflow dataset
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      benchmark/stackoverflow/data/dba
+                      benchmark/stackoverflow/downloads
+                  key: stackoverflow-${{ runner.os }}-dba-v1
+                  restore-keys: |
+                      stackoverflow-${{ runner.os }}-dba-
+            - name: Install cargo-llvm-cov
+              uses: taiki-e/install-action@cargo-llvm-cov
+            - uses: Swatinem/rust-cache@v2
+              with:
+                  shared-key: ci-${{ runner.os }}
+                  save-if: ${{ github.ref == 'refs/heads/main' }}
+            - name: Prepare StackOverflow data
+              env:
+                  UV_CACHE_DIR: ${{ runner.temp }}/uv-cache
+                  UV_PYTHON: python3
+              run: |
+                  if [ ! -f benchmark/stackoverflow/data/dba/Posts.parquet ]; then
+                    curl -LsSf https://astral.sh/uv/install.sh | sh
+                    uv run --with duckdb python benchmark/stackoverflow/setup_stackoverflow.py --mode dba
+                  else
+                    echo "StackOverflow dataset already prepared, skipping rebuild"
+                  fi
+            - name: Run StackOverflow
+              run: |
+                  source <(cargo llvm-cov show-env --export-prefix)
+                  cargo llvm-cov clean --workspace
+                  cargo build --bin in_process
+                  env RUST_LOG=info cargo run --bin in_process -- --manifest benchmark/stackoverflow/manifest.dba.json --bench-mode liquid --max-cache-mb 10
+                  cargo llvm-cov report --codecov --output-path codecov_stackoverflow.json
+            - name: Upload coverage to Codecov
+              uses: codecov/codecov-action@v5
+              with:
+                  token: ${{ secrets.CODECOV_TOKEN }}
+                  files: codecov_stackoverflow.json
+                  fail_ci_if_error: true
 
-      - name: Run LiquidCache benchmark (in-process)
-        run: |
-          mkdir -p benchmark_results
-          env RUST_LOG=info cargo run --release --bin in_process -- \
-            --manifest benchmark/clickbench/benchmark_manifest.json \
-            --output benchmark_results/liquid.json \
-            --iteration 5 \
-            --reset-cache \
-            --bench-mode liquid \
-            --max-cache-mb 64 
+    benchmark:
+        name: Performance Benchmark
+        runs-on: pittsburgh
+        permissions:
+            contents: write
+            pull-requests: write
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+                  token: ${{ secrets.GITHUB_TOKEN }}
+            - uses: dtolnay/rust-toolchain@stable
+            - name: Setup ClickBench partitioned data download
+              run: |
+                  mkdir -p benchmark/clickbench/data
+                  for partition in 0 1 2 3; do
+                    echo "Downloading partition ${partition}..."
+                    wget "https://datasets.clickhouse.com/hits_compatible/athena_partitioned/hits_${partition}.parquet" \
+                      -O "benchmark/clickbench/data/hits_${partition}.parquet"
+                  done
 
-      - name: Run DataFusion benchmark (plain parquet)
-        run: |
-          env RUST_LOG=info cargo run --release --bin in_process -- \
-            --manifest benchmark/clickbench/benchmark_manifest.json \
-            --output benchmark_results/parquet.json \
-            --iteration 5 \
-            --bench-mode parquet
+            - name: Update manifest for partitioned data
+              run: |
+                  # Update the manifest to point to the partitioned data directory
+                  sed 's|"benchmark/clickbench/data/hits.parquet"|"benchmark/clickbench/data"|' \
+                    benchmark/clickbench/manifest.json > benchmark/clickbench/benchmark_manifest.json
 
-      - name: Run DataFusion benchmark (default config)
-        run: |
-          env RUST_LOG=info cargo run --release --bin in_process -- \
-            --manifest benchmark/clickbench/benchmark_manifest.json \
-            --output benchmark_results/df_default.json \
-            --iteration 5 \
-            --bench-mode datafusion-default
+            - name: Build benchmark binary
+              run: cargo build --release --bin in_process
 
-      - name: Annotate results with commit/timestamp
-        run: |
-          jq --arg timestamp "$(date -Iminutes)" --arg commit "${{ github.sha }}" \
-             '. + {"timestamp": $timestamp, "commit": $commit}' \
-             benchmark_results/liquid.json > benchmark_results/liquid_final.json
-          jq --arg timestamp "$(date -Iminutes)" --arg commit "${{ github.sha }}" \
-             '. + {"timestamp": $timestamp, "commit": $commit}' \
-             benchmark_results/parquet.json > benchmark_results/parquet_final.json
-          jq --arg timestamp "$(date -Iminutes)" --arg commit "${{ github.sha }}" \
-             '. + {"timestamp": $timestamp, "commit": $commit}' \
-             benchmark_results/df_default.json > benchmark_results/df_default_final.json
+            - name: Run LiquidCache benchmark (in-process)
+              run: |
+                  mkdir -p benchmark_results
+                  env RUST_LOG=info cargo run --release --bin in_process -- \
+                    --manifest benchmark/clickbench/benchmark_manifest.json \
+                    --output benchmark_results/liquid.json \
+                    --iteration 5 \
+                    --reset-cache \
+                    --bench-mode liquid \
+                    --max-cache-mb 64
 
-      - name: Generate cache policy Mermaid chart
-        run: |
-          cargo run -p liquid-cache-benchmarks --bin benchmark_cache_policies --release -- \
-            --trace-dir benchmark/clickbench/official_traces \
-            --output benchmark/data/cache_policy_results.csv \
-            --sizes 7 \
-            --mermaid cache_policy.mmd || echo "Mermaid generation skipped"
+            - name: Run DataFusion benchmark (plain parquet)
+              run: |
+                  env RUST_LOG=info cargo run --release --bin in_process -- \
+                    --manifest benchmark/clickbench/benchmark_manifest.json \
+                    --output benchmark_results/parquet.json \
+                    --iteration 5 \
+                    --bench-mode parquet
 
-      - name: Compare LiquidCache vs DataFusion (same runner)
-        id: compare
-        run: |
-          python3 .github/compare_benchmarks.py \
-            benchmark_results/liquid_final.json \
-            benchmark_results/df_default_final.json \
-            --output comparison.md
-          echo "COMPARISON_AVAILABLE=true" >> $GITHUB_OUTPUT
+            - name: Run DataFusion benchmark (default config)
+              run: |
+                  env RUST_LOG=info cargo run --release --bin in_process -- \
+                    --manifest benchmark/clickbench/benchmark_manifest.json \
+                    --output benchmark_results/df_default.json \
+                    --iteration 5 \
+                    --bench-mode datafusion-default
 
-      - name: Comment PR with benchmark results
-        if: steps.compare.outputs.COMPARISON_AVAILABLE == 'true' && github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            
-            let comment = '';
-            try {
-              comment = fs.readFileSync('comparison.md', 'utf8');
-            } catch (error) {
-              comment = 'Error reading benchmark comparison results';
-            }
-            
-            // Add Mermaid chart if available
-            try {
-              if (fs.existsSync('cache_policy.mmd')) {
-                const mermaidChart = fs.readFileSync('cache_policy.mmd', 'utf8');
-                comment += `\n\n## 📈 Cache Policy Performance\n\n\`\`\`mermaid\n${mermaidChart}\n\`\`\`\n`;
-              }
-            } catch (error) {
-              console.log('Note: Could not embed cache policy chart:', error.message);
-            }
-            
-            // Check if this is an external PR (from a fork)
-            const isExternalPR = context.payload.pull_request.head.repo.full_name !== context.payload.pull_request.base.repo.full_name;
-            
-            if (isExternalPR) {
-              console.log('Skipping comment for external PR due to permission restrictions');
-              console.log('Benchmark results:');
-              console.log(comment);
-              return;
-            }
-            
-            try {
-              // Find existing benchmark comment
-              const comments = await github.rest.issues.listComments({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-              });
-              
-              const botComment = comments.data.find(comment => 
-                comment.user.type === 'Bot' && 
-                comment.body.includes('## 📊 Benchmark Comparison')
-              );
-              
-              if (botComment) {
-                // Update existing comment
-                await github.rest.issues.updateComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  comment_id: botComment.id,
-                  body: comment
-                });
-              } else {
-                // Create new comment
-                await github.rest.issues.createComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: context.issue.number,
-                  body: comment
-                });
-              }
-            } catch (error) {
-              console.log('Failed to post comment, likely due to permissions:', error.message);
-              console.log('Benchmark results:');
-              console.log(comment);
-            }
+            - name: Annotate results with commit/timestamp
+              run: |
+                  jq --arg timestamp "$(date -Iminutes)" --arg commit "${{ github.sha }}" \
+                     '. + {"timestamp": $timestamp, "commit": $commit}' \
+                     benchmark_results/liquid.json > benchmark_results/liquid_final.json
+                  jq --arg timestamp "$(date -Iminutes)" --arg commit "${{ github.sha }}" \
+                     '. + {"timestamp": $timestamp, "commit": $commit}' \
+                     benchmark_results/parquet.json > benchmark_results/parquet_final.json
+                  jq --arg timestamp "$(date -Iminutes)" --arg commit "${{ github.sha }}" \
+                     '. + {"timestamp": $timestamp, "commit": $commit}' \
+                     benchmark_results/df_default.json > benchmark_results/df_default_final.json
 
-  examples:
-    name: Run client/server/inprocess examples (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-      fail-fast: false
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ci-${{ runner.os }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+            - name: Generate cache policy Mermaid chart
+              run: |
+                  cargo run -p liquid-cache-benchmarks --bin benchmark_cache_policies --release -- \
+                    --trace-dir benchmark/clickbench/official_traces \
+                    --output benchmark/data/cache_policy_results.csv \
+                    --sizes 7 \
+                    --mermaid cache_policy.mmd || echo "Mermaid generation skipped"
 
-      - name: Build LiquidCache server
-        run: cargo build --bin example_server
-      - name: Build LiquidCache client
-        run: cargo build --bin example_client
-      - name: Build LiquidCache client projection pushdown
-        run: cargo build --bin example_projection_pushdown      
-      - name: Build LiquidCache in process eviction
-        run: cargo build --bin example_inprocess_cache_eviction 
-      - name: Build LiquidCache in process insertion
-        run: cargo build --bin example_inprocess_insertion
-      - name: Build LiquidCache in process read
-        run: cargo build --bin example_inprocess_read
+            - name: Compare LiquidCache vs DataFusion (same runner)
+              id: compare
+              run: |
+                  python3 .github/compare_benchmarks.py \
+                    benchmark_results/liquid_final.json \
+                    benchmark_results/df_default_final.json \
+                    --output comparison.md
+                  echo "COMPARISON_AVAILABLE=true" >> $GITHUB_OUTPUT
 
-      - name: Start LiquidCache server
-        run: |
-          env RUST_LOG=info nohup cargo run --bin example_server -- --abort-on-panic &> server.log &
-          echo $! > server.pid  # Save PID for later cleanup
-          sleep 2  # Wait for server to start up
+            - name: Comment PR with benchmark results
+              if: steps.compare.outputs.COMPARISON_AVAILABLE == 'true' && github.event_name == 'pull_request'
+              uses: actions/github-script@v7
+              with:
+                  script: |
+                      const fs = require('fs');
 
-      - name: Start LiquidCache client
-        run: |
-          # First run to populate the cache
-          env RUST_LOG=info cargo run --bin example_client
-          # Run twice to test the cache
-          env RUST_LOG=info cargo run --bin example_client
+                      let comment = '';
+                      try {
+                        comment = fs.readFileSync('comparison.md', 'utf8');
+                      } catch (error) {
+                        comment = 'Error reading benchmark comparison results';
+                      }
 
-      - name: Start LiquidCache client projection pushdown
-        run: |
-          # First run to populate the cache
-          env RUST_LOG=info cargo run --bin example_projection_pushdown
-          # Run twice to test the cache
-          env RUST_LOG=info cargo run --bin example_projection_pushdown
+                      // Add Mermaid chart if available
+                      try {
+                        if (fs.existsSync('cache_policy.mmd')) {
+                          const mermaidChart = fs.readFileSync('cache_policy.mmd', 'utf8');
+                          comment += `\n\n## 📈 Cache Policy Performance\n\n\`\`\`mermaid\n${mermaidChart}\n\`\`\`\n`;
+                        }
+                      } catch (error) {
+                        console.log('Note: Could not embed cache policy chart:', error.message);
+                      }
 
-      - name: Kill LiquidCache server and show logs
-        if: always()
-        run: |
-          echo "=== Server logs ==="
-          cat server.log || echo "No server log found"
-          pkill -F server.pid || true
-          rm -f server.pid
+                      // Check if this is an external PR (from a fork)
+                      const isExternalPR = context.payload.pull_request.head.repo.full_name !== context.payload.pull_request.base.repo.full_name;
 
-      - name: Start LiquidCache in process projection pushdown
-        run: |
-          # Run to populate to evict cache
-          env RUST_LOG=info cargo run --bin example_inprocess_cache_eviction
+                      if (isExternalPR) {
+                        console.log('Skipping comment for external PR due to permission restrictions');
+                        console.log('Benchmark results:');
+                        console.log(comment);
+                        return;
+                      }
 
-      - name: Start LiquidCache in process insert
-        run: |
-          # Run to populate cache with arrow array
-          env RUST_LOG=info cargo run --bin example_inprocess_insertion
+                      try {
+                        // Find existing benchmark comment
+                        const comments = await github.rest.issues.listComments({
+                          owner: context.repo.owner,
+                          repo: context.repo.repo,
+                          issue_number: context.issue.number,
+                        });
 
-      - name: Start LiquidCache in process read arrow array
-        run: |
-          # Run to populate cache and read arrow array
-          env RUST_LOG=info cargo run --bin example_inprocess_read   
+                        const botComment = comments.data.find(comment =>
+                          comment.user.type === 'Bot' &&
+                          comment.body.includes('## 📊 Benchmark Comparison')
+                        );
 
-  kani:
-    name: Run Kani proofs
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-      - uses: ./.github/actions/free-disk-space
-      - name: Verify storage crate with Kani
-        uses: model-checking/kani-github-action@v1.1
-        with:
-          working-directory: src/storage
+                        if (botComment) {
+                          // Update existing comment
+                          await github.rest.issues.updateComment({
+                            owner: context.repo.owner,
+                            repo: context.repo.repo,
+                            comment_id: botComment.id,
+                            body: comment
+                          });
+                        } else {
+                          // Create new comment
+                          await github.rest.issues.createComment({
+                            owner: context.repo.owner,
+                            repo: context.repo.repo,
+                            issue_number: context.issue.number,
+                            body: comment
+                          });
+                        }
+                      } catch (error) {
+                        console.log('Failed to post comment, likely due to permissions:', error.message);
+                        console.log('Benchmark results:');
+                        console.log(comment);
+                      }
+
+    examples:
+        name: Run client/server/inprocess examples (${{ matrix.os }})
+        runs-on: ${{ matrix.os }}
+        strategy:
+            matrix:
+                os: [ubuntu-latest, macos-latest]
+            fail-fast: false
+        steps:
+            - uses: actions/checkout@v4
+            - uses: dtolnay/rust-toolchain@stable
+            - uses: Swatinem/rust-cache@v2
+              with:
+                  shared-key: ci-${{ runner.os }}
+                  save-if: ${{ github.ref == 'refs/heads/main' }}
+
+            - name: Build LiquidCache server
+              run: cargo build --bin example_server
+            - name: Build LiquidCache client
+              run: cargo build --bin example_client
+            - name: Build LiquidCache client projection pushdown
+              run: cargo build --bin example_projection_pushdown
+            - name: Build LiquidCache in process eviction
+              run: cargo build --bin example_inprocess_cache_eviction
+            - name: Build LiquidCache in process insertion
+              run: cargo build --bin example_inprocess_insertion
+            - name: Build LiquidCache in process read
+              run: cargo build --bin example_inprocess_read
+
+            - name: Start LiquidCache server
+              run: |
+                  env RUST_LOG=info nohup cargo run --bin example_server -- --abort-on-panic &> server.log &
+                  echo $! > server.pid  # Save PID for later cleanup
+                  sleep 2  # Wait for server to start up
+
+            - name: Start LiquidCache client
+              run: |
+                  # First run to populate the cache
+                  env RUST_LOG=info cargo run --bin example_client
+                  # Run twice to test the cache
+                  env RUST_LOG=info cargo run --bin example_client
+
+            - name: Start LiquidCache client projection pushdown
+              run: |
+                  # First run to populate the cache
+                  env RUST_LOG=info cargo run --bin example_projection_pushdown
+                  # Run twice to test the cache
+                  env RUST_LOG=info cargo run --bin example_projection_pushdown
+
+            - name: Kill LiquidCache server and show logs
+              if: always()
+              run: |
+                  echo "=== Server logs ==="
+                  cat server.log || echo "No server log found"
+                  pkill -F server.pid || true
+                  rm -f server.pid
+
+            - name: Start LiquidCache in process projection pushdown
+              run: |
+                  # Run to populate to evict cache
+                  env RUST_LOG=info cargo run --bin example_inprocess_cache_eviction
+
+            - name: Start LiquidCache in process insert
+              run: |
+                  # Run to populate cache with arrow array
+                  env RUST_LOG=info cargo run --bin example_inprocess_insertion
+
+            - name: Start LiquidCache in process read arrow array
+              run: |
+                  # Run to populate cache and read arrow array
+                  env RUST_LOG=info cargo run --bin example_inprocess_read
+
+    kani:
+        name: Run Kani proofs
+        runs-on: ubuntu-22.04
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+            - uses: ./.github/actions/free-disk-space
+            - name: Verify storage crate with Kani
+              uses: model-checking/kani-github-action@v1.1
+              with:
+                  working-directory: src/storage

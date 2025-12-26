@@ -17,7 +17,7 @@ pub use cached_batch::{CacheEntry, CachedBatchType};
 pub use core::LiquidCache;
 pub use expressions::{CacheExpression, VariantRequest};
 #[cfg(test)]
-pub(crate) use io_context::TestingSqueezeIo;
+pub(crate) use io_context::TestSqueezeIo;
 pub use io_context::{DefaultIoContext, DefaultSqueezeIo, IoContext};
 pub use observer::EventTrace;
 pub use observer::Observer;

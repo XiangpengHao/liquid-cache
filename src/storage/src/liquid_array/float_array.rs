@@ -1053,50 +1053,10 @@ mod tests {
     use futures::executor::block_on;
     use rand::{Rng as _, SeedableRng as _, distr::uniform::SampleUniform, rngs::StdRng};
 
-    use crate::liquid_array::SqueezeIoHandler;
+    use crate::cache::TestSqueezeIo;
 
     use super::*;
-    use bytes::Bytes;
-    use std::ops::Range;
-    use std::sync::Mutex;
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    #[derive(Debug, Default)]
-    struct TestSqueezeIo {
-        bytes: Mutex<Option<Bytes>>,
-        reads: AtomicUsize,
-    }
-
-    impl TestSqueezeIo {
-        fn set_bytes(&self, bytes: Bytes) {
-            *self.bytes.lock().unwrap() = Some(bytes);
-        }
-
-        fn reset_reads(&self) {
-            self.reads.store(0, Ordering::SeqCst);
-        }
-
-        fn reads(&self) -> usize {
-            self.reads.load(Ordering::SeqCst)
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl SqueezeIoHandler for TestSqueezeIo {
-        async fn read(&self, range: Option<Range<u64>>) -> std::io::Result<Bytes> {
-            self.reads.fetch_add(1, Ordering::SeqCst);
-            let bytes = self
-                .bytes
-                .lock()
-                .unwrap()
-                .clone()
-                .expect("test squeeze backing set");
-            Ok(match range {
-                Some(range) => bytes.slice(range.start as usize..range.end as usize),
-                None => bytes,
-            })
-        }
-    }
     macro_rules! test_roundtrip {
         ($test_name: ident, $type:ty, $values: expr) => {
             #[test]

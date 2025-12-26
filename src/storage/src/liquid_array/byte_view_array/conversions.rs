@@ -308,6 +308,7 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
             fsst_buffer,
             original_arrow_type,
             shared_prefix,
+            string_fingerprints: None,
         }
     }
 }

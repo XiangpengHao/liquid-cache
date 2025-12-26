@@ -9,6 +9,7 @@ pub use tracer::CacheTracer;
 use std::path::Path;
 
 use internal_tracing::EventTracer;
+pub(crate) use internal_tracing::InternalEvent;
 use stats::{RuntimeStats as RuntimeStatsInner, RuntimeStatsSnapshot as RuntimeStatsSnapshotInner};
 
 #[derive(Debug)]
@@ -84,16 +85,6 @@ impl Observer {
     }
 
     #[inline]
-    pub(crate) fn on_eval_predicate_squeezed_success(&self) {
-        self.runtime.incr_eval_predicate_squeezed_success();
-    }
-
-    #[inline]
-    pub(crate) fn on_eval_predicate_squeezed_needs_io(&self) {
-        self.runtime.incr_eval_predicate_squeezed_needs_io();
-    }
-
-    #[inline]
     pub(crate) fn on_get_squeezed_success(&self) {
         self.runtime.incr_get_squeezed_success();
     }
@@ -111,9 +102,21 @@ impl Observer {
     pub(crate) fn record_internal(&self, event: InternalEvent) {
         match event {
             InternalEvent::IoWrite { .. } => self.runtime.incr_write_io_count(),
-            InternalEvent::IoReadArrow { .. }
-            | InternalEvent::IoReadLiquid { .. }
-            | InternalEvent::IoReadSqueezedBacking { .. } => self.runtime.incr_read_io_count(),
+            InternalEvent::IoReadArrow { .. } | InternalEvent::IoReadLiquid { .. } => {
+                self.runtime.incr_read_io_count()
+            }
+            InternalEvent::IoReadSqueezedBacking { .. } => {
+                self.runtime.incr_read_io_count();
+                self.runtime.incr_get_squeezed_needs_io();
+            }
+            InternalEvent::DecompressSqueezed {
+                decompressed,
+                total,
+                ..
+            } => {
+                self.runtime
+                    .track_decompress_squeezed_count(decompressed, total);
+            }
             _ => {}
         }
 
@@ -122,5 +125,3 @@ impl Observer {
         }
     }
 }
-
-pub(crate) use internal_tracing::InternalEvent;

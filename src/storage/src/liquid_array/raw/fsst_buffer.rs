@@ -738,6 +738,67 @@ impl FsstArray {
         self.compact_offsets.offsets()
     }
 }
+/// FSST backing store for `LiquidByteViewArray` (in-memory or disk-only handle).
+pub trait FsstBacking: std::fmt::Debug + Clone + sealed::Sealed {
+    /// Get the uncompressed bytes of the FSST buffer (used for sizing / squeeze bookkeeping).
+    fn uncompressed_bytes(&self) -> usize;
+
+    /// Get the in-memory size of the FSST backing (raw bytes + any in-memory indices).
+    fn get_array_memory_size(&self) -> usize;
+}
+
+impl sealed::Sealed for FsstArray {}
+impl sealed::Sealed for DiskBuffer {}
+
+impl FsstArray {
+    pub(crate) fn to_uncompressed(&self) -> (Buffer, OffsetBuffer<i32>) {
+        let offsets = self.compact_offsets.offsets();
+        self.raw
+            .to_uncompressed(&self.compressor.decompressor(), &offsets)
+    }
+
+    pub(crate) fn get_compressed_slice(&self, dict_index: usize) -> &[u8] {
+        let start_offset = self.compact_offsets.get_offset(dict_index);
+        let end_offset = self.compact_offsets.get_offset(dict_index + 1);
+        self.raw.get_compressed_slice(start_offset, end_offset)
+    }
+
+    /// Decompress the selected values into a buffer.
+    pub fn to_uncompressed_selected(&self, selected: &[usize]) -> (Buffer, OffsetBuffer<i32>) {
+        let decompressor = self.compressor.decompressor();
+        let mut value_buffer: Vec<u8> = Vec::with_capacity(self.uncompressed_bytes() + 8);
+        let mut out_offsets: OffsetBufferBuilder<i32> = OffsetBufferBuilder::new(selected.len());
+
+        for &dict_index in selected {
+            let start_offset = self.compact_offsets.get_offset(dict_index);
+            let end_offset = self.compact_offsets.get_offset(dict_index + 1);
+
+            let compressed_value = self.raw.get_compressed_slice(start_offset, end_offset);
+            let decompressed_len =
+                decompressor.decompress_into(compressed_value, value_buffer.spare_capacity_mut());
+            let new_len = value_buffer.len() + decompressed_len;
+            debug_assert!(new_len <= value_buffer.capacity());
+            unsafe {
+                value_buffer.set_len(new_len);
+            }
+            out_offsets.push_length(decompressed_len);
+        }
+
+        (Buffer::from(value_buffer), out_offsets.finish())
+    }
+}
+
+impl FsstBacking for FsstArray {
+    fn uncompressed_bytes(&self) -> usize {
+        self.raw.uncompressed_bytes()
+    }
+
+    fn get_array_memory_size(&self) -> usize {
+        self.raw.get_memory_size()
+            + self.compact_offsets.memory_usage()
+            + std::mem::size_of::<Self>()
+    }
+}
 
 /// Disk buffer for FSST buffer.
 #[derive(Clone)]
@@ -787,77 +848,6 @@ impl DiskBuffer {
     }
 }
 
-/// FSST backing store for `LiquidByteViewArray` (in-memory or disk-only handle).
-pub trait FsstBacking: std::fmt::Debug + Clone + sealed::Sealed {
-    /// Get the uncompressed bytes of the FSST buffer (used for sizing / squeeze bookkeeping).
-    fn uncompressed_bytes(&self) -> usize;
-
-    /// Get the in-memory size of the FSST backing (raw bytes + any in-memory indices).
-    fn get_array_memory_size(&self) -> usize;
-}
-
-impl sealed::Sealed for FsstArray {}
-impl sealed::Sealed for DiskBuffer {}
-
-impl FsstArray {
-    pub(crate) fn to_uncompressed(&self) -> (Buffer, OffsetBuffer<i32>) {
-        let offsets = self.compact_offsets.offsets();
-        self.raw
-            .to_uncompressed(&self.compressor.decompressor(), &offsets)
-    }
-
-    pub(crate) fn get_compressed_slice(&self, dict_index: usize) -> &[u8] {
-        let start_offset = self.compact_offsets.get_offset(dict_index);
-        let end_offset = self.compact_offsets.get_offset(dict_index + 1);
-        self.raw.get_compressed_slice(start_offset, end_offset)
-    }
-
-    pub(crate) fn to_uncompressed_selected(
-        &self,
-        selected: &[usize],
-    ) -> (Buffer, OffsetBuffer<i32>) {
-        let decompressor = self.compressor.decompressor();
-        let mut value_buffer: Vec<u8> = Vec::new();
-        let mut out_offsets: OffsetBufferBuilder<i32> = OffsetBufferBuilder::new(selected.len());
-
-        for &dict_index in selected {
-            let start_offset = self.compact_offsets.get_offset(dict_index);
-            let end_offset = self.compact_offsets.get_offset(dict_index + 1);
-
-            if start_offset == end_offset {
-                out_offsets.push_length(0);
-                continue;
-            }
-
-            let compressed_value = self.raw.get_compressed_slice(start_offset, end_offset);
-            let required = decompressor.max_decompression_capacity(compressed_value) + 7;
-            value_buffer.reserve(required);
-            let decompressed_len =
-                decompressor.decompress_into(compressed_value, value_buffer.spare_capacity_mut());
-            let new_len = value_buffer.len() + decompressed_len;
-            debug_assert!(new_len <= value_buffer.capacity());
-            unsafe {
-                value_buffer.set_len(new_len);
-            }
-            out_offsets.push_length(decompressed_len);
-        }
-
-        (Buffer::from(value_buffer), out_offsets.finish())
-    }
-}
-
-impl FsstBacking for FsstArray {
-    fn uncompressed_bytes(&self) -> usize {
-        self.raw.uncompressed_bytes()
-    }
-
-    fn get_array_memory_size(&self) -> usize {
-        self.raw.get_memory_size()
-            + self.compact_offsets.memory_usage()
-            + std::mem::size_of::<Self>()
-    }
-}
-
 impl DiskBuffer {
     pub(crate) async fn to_uncompressed(&self) -> (Buffer, OffsetBuffer<i32>) {
         let bytes = self.io.read(Some(self.disk_range.clone())).await.unwrap();
@@ -873,6 +863,9 @@ impl DiskBuffer {
         let bytes = self.io.read(Some(self.disk_range.clone())).await.unwrap();
         let byte_view =
             LiquidByteViewArray::<FsstArray>::from_bytes(bytes, self.compressor.clone());
+        let total_count = byte_view.fsst_buffer.compact_offsets.len();
+        self.io
+            .tracing_decompress_count(selected.len(), total_count);
         byte_view.fsst_buffer.to_uncompressed_selected(selected)
     }
 }
