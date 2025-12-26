@@ -32,9 +32,10 @@ jobs:
             - name: tailwindcss
               run: |
                   cd dev/dev-tools
+                  mkdir -p vendor
                   npm install tailwindcss @tailwindcss/cli
                   wget https://github.com/saadeghi/daisyui/releases/latest/download/daisyui.mjs -O vendor/daisyui.mjs
-                  wget https://github.com/saadeghi/daisyui/releases/latest/download/daisyui-theme.mjs -o vendor/daisyui-theme.mjs
+                  wget https://github.com/saadeghi/daisyui/releases/latest/download/daisyui-theme.mjs -O vendor/daisyui-theme.mjs
                   npx @tailwindcss/cli -i tailwind.css -o assets/tailwind.css
 
             - name: Check formatting
@@ -70,11 +71,11 @@ jobs:
             - name: tailwindcss
               run: |
                   cd dev/dev-tools
-                  mkdir vendor
+                  mkdir -p vendor
                   npm install tailwindcss @tailwindcss/cli
                   wget https://github.com/saadeghi/daisyui/releases/latest/download/daisyui.mjs -o vendor/daisyui.mjs
                   wget https://github.com/saadeghi/daisyui/releases/latest/download/daisyui-theme.mjs -o vendor/daisyui-theme.mjs
-                  npx @tailwindcss/cli -i tailwind.css -o assets/tailwind.css
+                  npx @tailwindcss/cli -i tailwind.css -O assets/tailwind.css
             - name: Generate code coverage
               run: cargo llvm-cov --workspace --codecov --output-path codecov.json
             - name: Upload coverage to Codecov
