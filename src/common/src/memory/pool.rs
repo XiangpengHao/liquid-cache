@@ -6,7 +6,7 @@ use std::{cmp::min, sync::{Arc, Mutex, OnceLock, atomic::{AtomicBool, AtomicU64,
 use futures::io;
 use io_uring::IoUring;
 
-use crate::memory::{arena::Arena, segment::Segment, tcache::{TCache, TCacheStats}};
+use crate::memory::{arena::Arena, page::PAGE_SIZE, segment::Segment, tcache::{TCache, TCacheStats}};
 
 static FIXED_BUFFER_POOL: OnceLock<FixedBufferPool> = OnceLock::new();
 
@@ -403,4 +403,25 @@ mod tests {
         assert_eq!(buffer, &random_bytes[..]);
     }
 
+    #[test]
+    fn test_edge_case() {
+        FixedBufferPool::init(128);
+        let len = 4 * 1024;
+        let ptr1 = FixedBufferPool::malloc(len);
+        let ptr2 = FixedBufferPool::malloc(len << 1);
+        let ptr3 = FixedBufferPool::malloc(len << 2);
+        let ptr4 = FixedBufferPool::malloc(len << 4);
+
+        FixedBufferPool::free(ptr1);
+        FixedBufferPool::free(ptr3);
+        FixedBufferPool::free(ptr2);
+        FixedBufferPool::free(ptr4);
+        let cur_cpu = unsafe { libc::sched_getcpu() as usize };
+        let stats = FixedBufferPool::get_stats(cur_cpu);
+
+        assert_eq!(stats.allocations_from_arena, 1);
+        assert_eq!(stats.pages_retired, 4);
+        assert_eq!(stats.segments_retired, 1);
+        // assert_eq
+    }
 }
