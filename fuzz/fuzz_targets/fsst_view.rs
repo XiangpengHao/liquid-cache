@@ -5,9 +5,9 @@ use arrow::array::cast::AsArray;
 use arrow::array::{Array, StringArray};
 use arrow::compute::kernels::cmp;
 use arrow::error::ArrowError;
-use datafusion::logical_expr::Operator;
 use libfuzzer_sys::fuzz_target;
 use liquid_cache_storage::liquid_array::LiquidByteViewArray;
+use liquid_cache_storage::liquid_array::byte_view_array::{ByteViewOperator, Comparison, Equality};
 use liquid_cache_storage::liquid_array::raw::FsstArray;
 #[derive(Debug, Clone, Arbitrary)]
 struct FuzzInput {
@@ -32,14 +32,14 @@ enum FuzzOperator {
 }
 
 impl FuzzOperator {
-    fn to_datafusion_operator(&self) -> Operator {
+    fn to_byte_view_operator(&self) -> ByteViewOperator {
         match self {
-            FuzzOperator::Eq => Operator::Eq,
-            FuzzOperator::NotEq => Operator::NotEq,
-            FuzzOperator::Lt => Operator::Lt,
-            FuzzOperator::LtEq => Operator::LtEq,
-            FuzzOperator::Gt => Operator::Gt,
-            FuzzOperator::GtEq => Operator::GtEq,
+            FuzzOperator::Eq => ByteViewOperator::Equality(Equality::Eq),
+            FuzzOperator::NotEq => ByteViewOperator::Equality(Equality::NotEq),
+            FuzzOperator::Lt => ByteViewOperator::Comparison(Comparison::Lt),
+            FuzzOperator::LtEq => ByteViewOperator::Comparison(Comparison::LtEq),
+            FuzzOperator::Gt => ByteViewOperator::Comparison(Comparison::Gt),
+            FuzzOperator::GtEq => ByteViewOperator::Comparison(Comparison::GtEq),
         }
     }
 }
@@ -86,10 +86,10 @@ fn test_compare_with(
 ) {
     for op in operations {
         let needle_bytes = op.needle.as_bytes();
-        let operator = op.operator.to_datafusion_operator();
+        let operator = op.operator.to_byte_view_operator();
 
         // Get expected result from Arrow operations
-        let arrow_result = compute_arrow_comparison(arrow_array, &op.needle, &operator);
+        let arrow_result = compute_arrow_comparison(arrow_array, &op.needle, &op.operator);
 
         // Get result from LiquidByteViewArray
         let liquid_result = liquid_array.compare_with(needle_bytes, &operator);
@@ -100,18 +100,17 @@ fn test_compare_with(
 fn compute_arrow_comparison(
     array: &StringArray,
     needle: &str,
-    operator: &Operator,
+    operator: &FuzzOperator,
 ) -> Result<arrow::array::BooleanArray, ArrowError> {
     let needle_array = StringArray::from(vec![needle; array.len()]);
 
     let result = match operator {
-        Operator::Eq => cmp::eq(array, &needle_array)?,
-        Operator::NotEq => cmp::neq(array, &needle_array)?,
-        Operator::Lt => cmp::lt(array, &needle_array)?,
-        Operator::LtEq => cmp::lt_eq(array, &needle_array)?,
-        Operator::Gt => cmp::gt(array, &needle_array)?,
-        Operator::GtEq => cmp::gt_eq(array, &needle_array)?,
-        _ => unreachable!(),
+        FuzzOperator::Eq => cmp::eq(array, &needle_array)?,
+        FuzzOperator::NotEq => cmp::neq(array, &needle_array)?,
+        FuzzOperator::Lt => cmp::lt(array, &needle_array)?,
+        FuzzOperator::LtEq => cmp::lt_eq(array, &needle_array)?,
+        FuzzOperator::Gt => cmp::gt(array, &needle_array)?,
+        FuzzOperator::GtEq => cmp::gt_eq(array, &needle_array)?,
     };
 
     Ok(result)

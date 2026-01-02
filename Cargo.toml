@@ -18,7 +18,7 @@ members = [
 	"src/storage",
 	"src/local",
 	"examples",
-	"dev/fuzz",
+	"fuzz",
 	"dev/dev-tools",
 ]
 resolver = "3"

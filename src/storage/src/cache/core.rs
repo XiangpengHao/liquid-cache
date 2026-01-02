@@ -193,7 +193,7 @@ impl LiquidCache {
     }
 
     fn runtime_stats(&self) -> &RuntimeStats {
-        &self.observer.runtime_stats()
+        self.observer.runtime_stats()
     }
 
     /// Get the compressor states of the cache.

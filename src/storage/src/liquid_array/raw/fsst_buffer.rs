@@ -1001,8 +1001,8 @@ mod tests {
             "Reconstructed length mismatch in {}",
             test_name
         );
-        for i in 0..offsets.len() {
-            assert_eq!(offsets[i], reconstructed.get_offset(i));
+        for (i, o) in offsets.iter().enumerate() {
+            assert_eq!(*o, reconstructed.get_offset(i));
         }
     }
 
@@ -1092,8 +1092,8 @@ mod tests {
 
         // Verify they match
         assert_eq!(offsets.len(), reconstructed.len());
-        for i in 0..offsets.len() {
-            assert_eq!(offsets[i], reconstructed.get_offset(i));
+        for (i, o) in offsets.iter().enumerate() {
+            assert_eq!(*o, reconstructed.get_offset(i));
         }
     }
 

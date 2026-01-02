@@ -5,6 +5,7 @@ extern crate arrow;
 
 use arrow::array::{Array, StringArray, StringBuilder};
 use datafusion::common::ScalarValue;
+use liquid_cache_storage::liquid_array::byte_view_array::{ByteViewOperator, Comparison, Equality};
 use liquid_cache_storage::liquid_array::{
     LiquidArray, LiquidByteArray, LiquidByteViewArray, raw::FsstArray,
 };
@@ -73,7 +74,7 @@ fn byte_view_array_eq_operation(bencher: Bencher, chunk_size: usize) {
     bencher
         .with_inputs(|| (liquid_array.clone(), needle))
         .bench_values(|(arr, needle)| {
-            arr.compare_with(needle, &datafusion::logical_expr::Operator::Eq)
+            arr.compare_with(needle, &ByteViewOperator::Equality(Equality::Eq))
         });
 }
 
@@ -127,7 +128,7 @@ fn byte_view_array_gt_operation(bencher: Bencher, chunk_size: usize) {
     bencher
         .with_inputs(|| (liquid_array.clone(), needle))
         .bench_values(|(arr, needle)| {
-            arr.compare_with(needle, &datafusion::logical_expr::Operator::Gt)
+            arr.compare_with(needle, &ByteViewOperator::Comparison(Comparison::Gt))
         });
 }
 

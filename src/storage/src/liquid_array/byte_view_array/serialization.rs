@@ -64,7 +64,7 @@ pub(super) fn align_up_8(len: usize) -> usize {
 
 fn decode_prefix_keys(bytes: &[u8]) -> Arc<[PrefixKey]> {
     let entry_size = std::mem::size_of::<PrefixKey>();
-    if bytes.len() % entry_size != 0 {
+    if !bytes.len().is_multiple_of(entry_size) {
         panic!("Invalid prefix keys size");
     }
     if bytes.is_empty() {

@@ -9,7 +9,6 @@ use arrow::compute::cast;
 use arrow_schema::DataType;
 use bytes::Bytes;
 use datafusion::physical_plan::PhysicalExpr;
-use datafusion::physical_plan::expressions::DynamicFilterPhysicalExpr;
 use std::any::Any;
 use std::sync::Arc;
 
@@ -25,17 +24,18 @@ use crate::liquid_array::{
     LiquidArray, LiquidDataType, LiquidSqueezedArray, LiquidSqueezedArrayRef, SqueezeIoHandler,
 };
 
-// Declare submodules
 mod comparisons;
 mod conversions;
 mod fingerprint;
 mod helpers;
+mod operator;
 mod serialization;
 
 #[cfg(test)]
 mod tests;
 
 pub use helpers::ByteViewArrayMemoryUsage;
+pub use operator::{ByteViewOperator, Comparison, Equality, SubString};
 
 #[cfg(test)]
 thread_local! {
@@ -241,14 +241,7 @@ impl LiquidArray for LiquidByteViewArray<FsstArray> {
     ) -> Option<BooleanArray> {
         let filtered = helpers::filter_inner(self, filter);
 
-        let expr = if let Some(dynamic_filter) =
-            expr.as_any().downcast_ref::<DynamicFilterPhysicalExpr>()
-        {
-            dynamic_filter.current().expect("DynamicFilterPhysicalExpr")
-        } else {
-            expr.clone()
-        };
-        helpers::try_eval_predicate_in_memory(&expr, &filtered)
+        helpers::try_eval_predicate_in_memory(expr, &filtered)
     }
 
     fn to_bytes(&self) -> Vec<u8> {
@@ -382,15 +375,6 @@ impl LiquidSqueezedArray for LiquidByteViewArray<DiskBuffer> {
     ) -> Option<BooleanArray> {
         // Reuse generic filter path first to reduce input rows if any
         let filtered = helpers::filter_inner(self, filter);
-
-        let expr = if let Some(dynamic_filter) =
-            expr.as_any().downcast_ref::<DynamicFilterPhysicalExpr>()
-        {
-            dynamic_filter.current().expect("DynamicFilterPhysicalExpr")
-        } else {
-            expr.clone()
-        };
-
-        helpers::try_eval_predicate_on_disk(&expr, &filtered).await
+        helpers::try_eval_predicate_on_disk(expr, &filtered).await
     }
 }

@@ -11,10 +11,10 @@ use arrow::array::{Array, AsArray, RecordBatch, StringViewArray};
 use arrow::compute::cast;
 use arrow::datatypes::{DataType, Float64Type};
 use arrow_schema::{Field, Schema};
-use datafusion::logical_expr::Operator;
 use datafusion::prelude::*;
 use fsst::Compressor;
 use liquid_cache_storage::liquid_array::byte_view_array::ByteViewArrayMemoryUsage;
+use liquid_cache_storage::liquid_array::byte_view_array::{ByteViewOperator, Comparison, Equality};
 use liquid_cache_storage::liquid_array::raw::FsstArray;
 use liquid_cache_storage::liquid_array::{LiquidArray, LiquidByteArray, LiquidByteViewArray};
 use rand::{rng, seq::SliceRandom};
@@ -521,7 +521,8 @@ impl ArrayBenchmark for FsstViewBenchmark {
         let start = Instant::now();
         for needle in needles {
             let needle_bytes = needle.as_bytes();
-            let _result = encoded_data.compare_with(needle_bytes, &Operator::Eq);
+            let _result =
+                encoded_data.compare_with(needle_bytes, &ByteViewOperator::Equality(Equality::Eq));
         }
         start.elapsed().as_secs_f64()
     }
@@ -530,7 +531,8 @@ impl ArrayBenchmark for FsstViewBenchmark {
         let start = Instant::now();
         for needle in needles {
             let needle_bytes = needle.as_bytes();
-            let _result = encoded_data.compare_with(needle_bytes, &Operator::Gt);
+            let _result = encoded_data
+                .compare_with(needle_bytes, &ByteViewOperator::Comparison(Comparison::Gt));
         }
         start.elapsed().as_secs_f64()
     }
@@ -708,10 +710,12 @@ impl ArrayBenchmark for StringArrayLz4Benchmark {
 
 #[derive(Serialize, Deserialize, Clone)]
 struct SerializableMemoryUsage {
-    dictionary_views: usize,
-    offsets: usize,
+    dictionary_keys: usize,
+    compact_offsets: usize,
+    prefix_keys: usize,
     fsst_buffer: usize,
     shared_prefix: usize,
+    string_fingerprints: usize,
     struct_size: usize,
     total: usize,
 }
@@ -719,10 +723,12 @@ struct SerializableMemoryUsage {
 impl From<ByteViewArrayMemoryUsage> for SerializableMemoryUsage {
     fn from(usage: ByteViewArrayMemoryUsage) -> Self {
         Self {
-            dictionary_views: usage.dictionary_key,
-            offsets: usage.offsets,
+            dictionary_keys: usage.dictionary_key,
+            compact_offsets: usage.offsets,
+            prefix_keys: usage.prefix_keys,
             fsst_buffer: usage.fsst_buffer,
             shared_prefix: usage.shared_prefix,
+            string_fingerprints: usage.string_fingerprints,
             struct_size: usage.struct_size,
             total: usage.total(),
         }
