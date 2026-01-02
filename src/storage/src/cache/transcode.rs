@@ -12,6 +12,25 @@ use crate::liquid_array::{
 
 use super::utils::LiquidCompressorStates;
 
+fn with_fsst_compressor_or_train(
+    state: &LiquidCompressorStates,
+    use_compressor: impl FnOnce(Arc<fsst::Compressor>) -> LiquidArrayRef,
+    train: impl FnOnce() -> (Arc<fsst::Compressor>, LiquidArrayRef),
+) -> LiquidArrayRef {
+    if let Some(compressor) = state.fsst_compressor() {
+        return use_compressor(compressor);
+    }
+
+    let mut compressors = state.fsst_compressor_raw().write().unwrap();
+    if let Some(compressor) = compressors.as_ref() {
+        return use_compressor(compressor.clone());
+    }
+
+    let (compressor, liquid_array) = train();
+    *compressors = Some(compressor);
+    liquid_array
+}
+
 /// This method is used to transcode an arrow array into a liquid array.
 ///
 /// Returns the transcoded liquid array if successful, otherwise returns the original arrow array.
@@ -84,38 +103,42 @@ pub fn transcode_liquid_inner<'a>(
                 array.as_primitive::<Float64Type>().clone(),
             )),
             DataType::Decimal128(_, _) => {
-                let compressor = state.fsst_compressor().clone();
-                if let Some(compressor) = compressor.as_ref() {
-                    let compressed = LiquidFixedLenByteArray::from_decimal_array(
-                        array.as_primitive::<Decimal128Type>(),
-                        compressor.clone(),
-                    );
-                    return Ok(Arc::new(compressed));
-                }
-                drop(compressor);
-                let mut compressors = state.fsst_compressor_raw().write().unwrap();
-                let (compressor, liquid_array) = LiquidFixedLenByteArray::train_from_decimal_array(
-                    array.as_primitive::<Decimal128Type>(),
+                let liquid_array = with_fsst_compressor_or_train(
+                    state,
+                    |compressor| {
+                        Arc::new(LiquidFixedLenByteArray::from_decimal_array(
+                            array.as_primitive::<Decimal128Type>(),
+                            compressor,
+                        ))
+                    },
+                    || {
+                        let (compressor, liquid_array) =
+                            LiquidFixedLenByteArray::train_from_decimal_array(
+                                array.as_primitive::<Decimal128Type>(),
+                            );
+                        (compressor, Arc::new(liquid_array))
+                    },
                 );
-                *compressors = Some(compressor);
-                return Ok(Arc::new(liquid_array));
+                return Ok(liquid_array);
             }
             DataType::Decimal256(_, _) => {
-                let compressor = state.fsst_compressor().clone();
-                if let Some(compressor) = compressor.as_ref() {
-                    let compressed = LiquidFixedLenByteArray::from_decimal_array(
-                        array.as_primitive::<Decimal256Type>(),
-                        compressor.clone(),
-                    );
-                    return Ok(Arc::new(compressed));
-                }
-                drop(compressor);
-                let mut compressors = state.fsst_compressor_raw().write().unwrap();
-                let (compressor, liquid_array) = LiquidFixedLenByteArray::train_from_decimal_array(
-                    array.as_primitive::<Decimal256Type>(),
+                let liquid_array = with_fsst_compressor_or_train(
+                    state,
+                    |compressor| {
+                        Arc::new(LiquidFixedLenByteArray::from_decimal_array(
+                            array.as_primitive::<Decimal256Type>(),
+                            compressor,
+                        ))
+                    },
+                    || {
+                        let (compressor, liquid_array) =
+                            LiquidFixedLenByteArray::train_from_decimal_array(
+                                array.as_primitive::<Decimal256Type>(),
+                            );
+                        (compressor, Arc::new(liquid_array))
+                    },
                 );
-                *compressors = Some(compressor);
-                return Ok(Arc::new(liquid_array));
+                return Ok(liquid_array);
             }
             _ => {
                 // For unsupported primitive types, leave the value unchanged.
@@ -129,87 +152,97 @@ pub fn transcode_liquid_inner<'a>(
     // Handle string/dictionary types.
     match array.data_type() {
         DataType::Utf8View => {
-            let compressor = state.fsst_compressor().clone();
-            if let Some(compressor) = compressor.as_ref() {
-                let compressed = LiquidByteViewArray::<FsstArray>::from_string_view_array(
-                    array.as_string_view(),
-                    compressor.clone(),
-                );
-                return Ok(Arc::new(compressed));
-            }
-            drop(compressor);
-            let mut compressors = state.fsst_compressor_raw().write().unwrap();
-            let (compressor, compressed) =
-                LiquidByteViewArray::<FsstArray>::train_from_string_view(array.as_string_view());
-            *compressors = Some(compressor);
-            Ok(Arc::new(compressed))
+            let liquid_array = with_fsst_compressor_or_train(
+                state,
+                |compressor| {
+                    Arc::new(LiquidByteViewArray::<FsstArray>::from_string_view_array(
+                        array.as_string_view(),
+                        compressor,
+                    ))
+                },
+                || {
+                    let (compressor, compressed) =
+                        LiquidByteViewArray::<FsstArray>::train_from_string_view(
+                            array.as_string_view(),
+                        );
+                    (compressor, Arc::new(compressed))
+                },
+            );
+            Ok(liquid_array)
         }
         DataType::BinaryView => {
-            let compressor = state.fsst_compressor().clone();
-            if let Some(compressor) = compressor.as_ref() {
-                let compressed = LiquidByteViewArray::<FsstArray>::from_binary_view_array(
-                    array.as_binary_view(),
-                    compressor.clone(),
-                );
-                return Ok(Arc::new(compressed));
-            }
-            drop(compressor);
-            let mut compressors = state.fsst_compressor_raw().write().unwrap();
-            let (compressor, compressed) =
-                LiquidByteViewArray::<FsstArray>::train_from_binary_view(array.as_binary_view());
-            *compressors = Some(compressor);
-            Ok(Arc::new(compressed))
+            let liquid_array = with_fsst_compressor_or_train(
+                state,
+                |compressor| {
+                    Arc::new(LiquidByteViewArray::<FsstArray>::from_binary_view_array(
+                        array.as_binary_view(),
+                        compressor,
+                    ))
+                },
+                || {
+                    let (compressor, compressed) =
+                        LiquidByteViewArray::<FsstArray>::train_from_binary_view(
+                            array.as_binary_view(),
+                        );
+                    (compressor, Arc::new(compressed))
+                },
+            );
+            Ok(liquid_array)
         }
         DataType::Utf8 => {
-            let compressor = state.fsst_compressor().clone();
-            if let Some(compressor) = compressor.as_ref() {
-                let compressed = LiquidByteViewArray::<FsstArray>::from_string_array(
-                    array.as_string::<i32>(),
-                    compressor.clone(),
-                );
-                return Ok(Arc::new(compressed));
-            }
-            drop(compressor);
-            let mut compressors = state.fsst_compressor_raw().write().unwrap();
-            let (compressor, compressed) =
-                LiquidByteViewArray::<FsstArray>::train_from_arrow(array.as_string::<i32>());
-            *compressors = Some(compressor);
-            Ok(Arc::new(compressed))
+            let liquid_array = with_fsst_compressor_or_train(
+                state,
+                |compressor| {
+                    Arc::new(LiquidByteViewArray::<FsstArray>::from_string_array(
+                        array.as_string::<i32>(),
+                        compressor,
+                    ))
+                },
+                || {
+                    let (compressor, compressed) =
+                        LiquidByteViewArray::<FsstArray>::train_from_arrow(
+                            array.as_string::<i32>(),
+                        );
+                    (compressor, Arc::new(compressed))
+                },
+            );
+            Ok(liquid_array)
         }
         DataType::Binary => {
-            let compressor = state.fsst_compressor().clone();
-            if let Some(compressor) = compressor.as_ref() {
-                let compressed = LiquidByteViewArray::<FsstArray>::from_binary_array(
-                    array.as_binary::<i32>(),
-                    compressor.clone(),
-                );
-                return Ok(Arc::new(compressed));
-            }
-            drop(compressor);
-            let mut compressors = state.fsst_compressor_raw().write().unwrap();
-            let (compressor, compressed) =
-                LiquidByteViewArray::<FsstArray>::train_from_arrow(array.as_binary::<i32>());
-            *compressors = Some(compressor);
-            Ok(Arc::new(compressed))
+            let liquid_array = with_fsst_compressor_or_train(
+                state,
+                |compressor| {
+                    Arc::new(LiquidByteViewArray::<FsstArray>::from_binary_array(
+                        array.as_binary::<i32>(),
+                        compressor,
+                    ))
+                },
+                || {
+                    let (compressor, compressed) =
+                        LiquidByteViewArray::<FsstArray>::train_from_arrow(
+                            array.as_binary::<i32>(),
+                        );
+                    (compressor, Arc::new(compressed))
+                },
+            );
+            Ok(liquid_array)
         }
         DataType::Dictionary(_, _) => {
             if let Some(dict_array) = array.as_dictionary_opt::<UInt16Type>() {
-                let compressor = state.fsst_compressor().clone();
-                if let Some(compressor) = compressor.as_ref() {
-                    let liquid_array = unsafe {
-                        LiquidByteViewArray::<FsstArray>::from_unique_dict_array(
-                            dict_array,
-                            compressor.clone(),
-                        )
-                    };
-                    return Ok(Arc::new(liquid_array));
-                }
-                drop(compressor);
-                let mut compressors = state.fsst_compressor_raw().write().unwrap();
-                let (compressor, liquid_array) =
-                    LiquidByteViewArray::<FsstArray>::train_from_arrow_dict(dict_array);
-                *compressors = Some(compressor);
-                return Ok(Arc::new(liquid_array));
+                let liquid_array = with_fsst_compressor_or_train(
+                    state,
+                    |compressor| unsafe {
+                        Arc::new(LiquidByteViewArray::<FsstArray>::from_unique_dict_array(
+                            dict_array, compressor,
+                        ))
+                    },
+                    || {
+                        let (compressor, liquid_array) =
+                            LiquidByteViewArray::<FsstArray>::train_from_arrow_dict(dict_array);
+                        (compressor, Arc::new(liquid_array))
+                    },
+                );
+                return Ok(liquid_array);
             }
             log::warn!("unsupported data type {:?}", array.data_type());
             Err(array)
