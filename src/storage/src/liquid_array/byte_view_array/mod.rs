@@ -240,7 +240,15 @@ impl LiquidArray for LiquidByteViewArray<FsstArray> {
         filter: &BooleanBuffer,
     ) -> Option<BooleanArray> {
         let filtered = helpers::filter_inner(self, filter);
-        helpers::try_eval_predicate_in_memory(expr, &filtered)
+
+        let expr = if let Some(dynamic_filter) =
+            expr.as_any().downcast_ref::<DynamicFilterPhysicalExpr>()
+        {
+            dynamic_filter.current().expect("DynamicFilterPhysicalExpr")
+        } else {
+            expr.clone()
+        };
+        helpers::try_eval_predicate_in_memory(&expr, &filtered)
     }
 
     fn to_bytes(&self) -> Vec<u8> {

@@ -99,7 +99,6 @@ pub(super) fn try_eval_predicate_in_memory(
             return Some(filtered);
         }
     }
-    println!("unsupported expression: {:?}", expr);
     None
 }
 
