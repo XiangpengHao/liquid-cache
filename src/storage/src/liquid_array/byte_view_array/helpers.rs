@@ -37,6 +37,11 @@ pub(super) fn try_eval_predicate_in_memory(
     let expr = ByteViewExpression::try_from(expr).ok()?;
     let op = expr.op();
     let needle = expr.literal();
+    if let ByteViewOperator::SubString(_substring_op) = op
+        && array.string_fingerprints.as_ref().is_none()
+    {
+        return None;
+    }
     Some(array.compare_with(needle, op))
 }
 
