@@ -124,4 +124,8 @@ impl Observer {
             self.event_tracer.record(event);
         }
     }
+
+    pub(crate) fn runtime_stats(&self) -> &RuntimeStats {
+        &self.runtime
+    }
 }

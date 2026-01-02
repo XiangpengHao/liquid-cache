@@ -146,7 +146,7 @@ fn test_prefix_extraction() {
     let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
     let liquid_array = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
 
-    // With no shared prefix, the offset view prefixes should be the original strings (truncated to 7 bytes)
+    // With no shared prefix, the prefix keys should be the original strings (truncated to 7 bytes)
     assert_eq!(liquid_array.shared_prefix, Vec::<u8>::new());
     assert_eq!(liquid_array.prefix_keys[0].prefix7(), b"hello\0\0");
     assert_eq!(liquid_array.prefix_keys[1].prefix7(), b"world\0\0");
@@ -316,7 +316,7 @@ fn test_shared_prefix_edge_cases() {
     let liquid_array = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
 
     assert_eq!(liquid_array.shared_prefix, b"identical");
-    // All offset view prefixes should be empty
+    // All prefix keys should be empty
     for i in 0..liquid_array.prefix_keys.len() {
         assert_eq!(liquid_array.prefix_keys[i].prefix7(), &[0u8; 7]);
     }
@@ -867,7 +867,7 @@ fn generate_zipf_strings(count: usize, base_strings: &[&str], seed: u64) -> Vec<
         let base_idx = if zipf_choice < 50 {
             0 // 50% chance of first string
         } else if zipf_choice < 75 {
-            1 // 25% chance of second string  
+            1 // 25% chance of second string
         } else if zipf_choice < 87 {
             2 // 12% chance of third string
         } else {
@@ -925,7 +925,7 @@ fn test_zipf_offset_views() {
 
     assert!(
         offset_bytes <= 2,
-        "Zipf patterns with short strings should use 1 or 2 bytes offset views, got {} bytes",
+        "Zipf patterns with short strings should use 1 or 2 byte compact offsets, got {} bytes",
         offset_bytes
     );
 }

@@ -16,7 +16,7 @@ pub(super) fn filter_inner<B: FsstBacking>(
     array: &LiquidByteViewArray<B>,
     filter: &BooleanBuffer,
 ) -> LiquidByteViewArray<B> {
-    // Only filter the dictionary keys, not the offset views!
+    // Only filter the dictionary keys, not the offsets!
     // Offset views reference unique values in FSST buffer and should remain unchanged
 
     // Filter the dictionary keys using Arrow's built-in filter functionality
@@ -99,6 +99,7 @@ pub(super) fn try_eval_predicate_in_memory(
             return Some(filtered);
         }
     }
+    println!("unsupported expression: {:?}", expr);
     None
 }
 
@@ -171,6 +172,7 @@ pub(super) async fn try_eval_predicate_on_disk(
             return Some(filtered);
         }
     }
+    println!("unsupported expression: {:?}", expr);
     None
 }
 
@@ -180,9 +182,11 @@ use std::fmt::Display;
 pub struct ByteViewArrayMemoryUsage {
     /// Memory usage of the dictionary key
     pub dictionary_key: usize,
-    /// Memory usage of the offset views
+    /// Memory usage of the compact offsets
     pub offsets: usize,
-    /// Memory usage of the FSST buffer
+    /// Memory usage of the prefix keys
+    pub prefix_keys: usize,
+    /// Memory usage of the raw FSST buffer
     pub fsst_buffer: usize,
     /// Memory usage of the shared prefix
     pub shared_prefix: usize,
@@ -197,6 +201,7 @@ impl Display for ByteViewArrayMemoryUsage {
         f.debug_struct("ByteViewArrayMemoryUsage")
             .field("dictionary_key", &self.dictionary_key)
             .field("offsets", &self.offsets)
+            .field("prefix_keys", &self.prefix_keys)
             .field("fsst_buffer", &self.fsst_buffer)
             .field("shared_prefix", &self.shared_prefix)
             .field("string_fingerprints", &self.string_fingerprints)
@@ -211,6 +216,7 @@ impl ByteViewArrayMemoryUsage {
     pub fn total(&self) -> usize {
         self.dictionary_key
             + self.offsets
+            + self.prefix_keys
             + self.fsst_buffer
             + self.shared_prefix
             + self.string_fingerprints
@@ -222,6 +228,7 @@ impl std::ops::AddAssign for ByteViewArrayMemoryUsage {
     fn add_assign(&mut self, other: Self) {
         self.dictionary_key += other.dictionary_key;
         self.offsets += other.offsets;
+        self.prefix_keys += other.prefix_keys;
         self.fsst_buffer += other.fsst_buffer;
         self.shared_prefix += other.shared_prefix;
         self.string_fingerprints += other.string_fingerprints;

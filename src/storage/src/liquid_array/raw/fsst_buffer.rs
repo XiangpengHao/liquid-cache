@@ -380,135 +380,10 @@ impl CompactOffsets {
         };
         header_size + residuals_size
     }
-
-    pub(crate) fn write_interleaved(&self, prefixes: &[PrefixKey], out: &mut Vec<u8>) {
-        debug_assert_eq!(
-            self.len(),
-            prefixes.len(),
-            "residuals and prefixes must have the same length"
-        );
-
-        out.extend_from_slice(&self.header.slope.to_le_bytes());
-        out.extend_from_slice(&self.header.intercept.to_le_bytes());
-        out.push(self.header.offset_bytes);
-
-        match &self.residuals {
-            OffsetResiduals::One(residuals) => {
-                for (residual, prefix) in residuals.iter().zip(prefixes.iter()) {
-                    out.push(*residual as u8);
-                    out.extend_from_slice(prefix.prefix7());
-                    out.push(prefix.len_byte());
-                }
-            }
-            OffsetResiduals::Two(residuals) => {
-                for (residual, prefix) in residuals.iter().zip(prefixes.iter()) {
-                    out.extend_from_slice(&residual.to_le_bytes());
-                    out.extend_from_slice(prefix.prefix7());
-                    out.push(prefix.len_byte());
-                }
-            }
-            OffsetResiduals::Four(residuals) => {
-                for (residual, prefix) in residuals.iter().zip(prefixes.iter()) {
-                    out.extend_from_slice(&residual.to_le_bytes());
-                    out.extend_from_slice(prefix.prefix7());
-                    out.push(prefix.len_byte());
-                }
-            }
-        }
-    }
 }
 
 pub(crate) fn empty_compact_offsets() -> CompactOffsets {
     CompactOffsets::from_offsets(&[])
-}
-
-/// Decode interleaved compact offsets + prefix keys from bytes.
-pub(crate) fn decode_offset_views(bytes: &[u8]) -> (CompactOffsets, Arc<[PrefixKey]>) {
-    if bytes.len() < 9 {
-        panic!("CompactOffsets requires at least 9 bytes for header");
-    }
-
-    let slope = i32::from_le_bytes(bytes[0..4].try_into().unwrap());
-    let intercept = i32::from_le_bytes(bytes[4..8].try_into().unwrap());
-    let offset_bytes = bytes[8] as usize;
-    if !matches!(offset_bytes, 1 | 2 | 4) {
-        panic!("Invalid offset_bytes value: {}", offset_bytes);
-    }
-
-    let header = CompactOffsetHeader {
-        slope,
-        intercept,
-        offset_bytes: offset_bytes as u8,
-    };
-
-    let payload = &bytes[9..];
-    let entry_size = offset_bytes + std::mem::size_of::<PrefixKey>();
-    if !payload.len().is_multiple_of(entry_size) {
-        panic!("Invalid payload size for CompactOffsets");
-    }
-    let count = payload.len() / entry_size;
-
-    let mut prefixes = Vec::with_capacity(count);
-    match offset_bytes {
-        1 => {
-            let mut residuals = Vec::with_capacity(count);
-            for i in 0..count {
-                let base = i * entry_size;
-                let residual = payload[base] as i8;
-                let mut prefix7 = [0u8; 7];
-                prefix7.copy_from_slice(&payload[base + 1..base + 8]);
-                let len = payload[base + 8];
-                residuals.push(residual);
-                prefixes.push(PrefixKey::from_parts(prefix7, len));
-            }
-            (
-                CompactOffsets {
-                    header,
-                    residuals: OffsetResiduals::One(residuals.into()),
-                },
-                prefixes.into(),
-            )
-        }
-        2 => {
-            let mut residuals = Vec::with_capacity(count);
-            for i in 0..count {
-                let base = i * entry_size;
-                let residual = i16::from_le_bytes(payload[base..base + 2].try_into().unwrap());
-                let mut prefix7 = [0u8; 7];
-                prefix7.copy_from_slice(&payload[base + 2..base + 9]);
-                let len = payload[base + 9];
-                residuals.push(residual);
-                prefixes.push(PrefixKey::from_parts(prefix7, len));
-            }
-            (
-                CompactOffsets {
-                    header,
-                    residuals: OffsetResiduals::Two(residuals.into()),
-                },
-                prefixes.into(),
-            )
-        }
-        4 => {
-            let mut residuals = Vec::with_capacity(count);
-            for i in 0..count {
-                let base = i * entry_size;
-                let residual = i32::from_le_bytes(payload[base..base + 4].try_into().unwrap());
-                let mut prefix7 = [0u8; 7];
-                prefix7.copy_from_slice(&payload[base + 4..base + 11]);
-                let len = payload[base + 11];
-                residuals.push(residual);
-                prefixes.push(PrefixKey::from_parts(prefix7, len));
-            }
-            (
-                CompactOffsets {
-                    header,
-                    residuals: OffsetResiduals::Four(residuals.into()),
-                },
-                prefixes.into(),
-            )
-        }
-        _ => unreachable!("validated offset_bytes"),
-    }
 }
 
 const SYMBOL_SIZE_BYTES: usize = std::mem::size_of::<Symbol>();
@@ -565,8 +440,8 @@ impl FsstArray {
         self.raw.to_bytes()
     }
 
-    pub(crate) fn write_offset_views(&self, prefixes: &[PrefixKey], out: &mut Vec<u8>) {
-        self.compact_offsets.write_interleaved(prefixes, out)
+    pub(crate) fn write_compact_offsets(&self, out: &mut Vec<u8>) {
+        self.compact_offsets.write_residuals(out)
     }
 
     /// Trains a compressor on a sequence of strings.
@@ -745,6 +620,12 @@ pub trait FsstBacking: std::fmt::Debug + Clone + sealed::Sealed {
 
     /// Get the in-memory size of the FSST backing (raw bytes + any in-memory indices).
     fn get_array_memory_size(&self) -> usize;
+
+    /// Get the in-memory size of compact offsets.
+    fn compact_offsets_memory_usage(&self) -> usize;
+
+    /// Get the in-memory size of the raw FSST buffer (excluding compact offsets).
+    fn raw_memory_usage(&self) -> usize;
 }
 
 impl sealed::Sealed for FsstArray {}
@@ -797,6 +678,14 @@ impl FsstBacking for FsstArray {
         self.raw.get_memory_size()
             + self.compact_offsets.memory_usage()
             + std::mem::size_of::<Self>()
+    }
+
+    fn compact_offsets_memory_usage(&self) -> usize {
+        self.compact_offsets.memory_usage()
+    }
+
+    fn raw_memory_usage(&self) -> usize {
+        self.raw.get_memory_size() + std::mem::size_of::<Self>()
     }
 }
 
@@ -878,6 +767,14 @@ impl FsstBacking for DiskBuffer {
     fn get_array_memory_size(&self) -> usize {
         0
     }
+
+    fn compact_offsets_memory_usage(&self) -> usize {
+        0
+    }
+
+    fn raw_memory_usage(&self) -> usize {
+        0
+    }
 }
 
 impl CompactOffsets {
@@ -904,7 +801,7 @@ impl CompactOffsets {
     }
 }
 
-fn decode_compact_offsets(bytes: &[u8]) -> CompactOffsets {
+pub(crate) fn decode_compact_offsets(bytes: &[u8]) -> CompactOffsets {
     if bytes.len() < 9 {
         panic!("CompactOffsets requires at least 9 bytes for header");
     }
@@ -1051,55 +948,31 @@ mod tests {
     #[test]
     fn test_compact_offset_view_round_trip() {
         // Test 1: Small offsets (should use OneByte variant)
-        let small_offsets = vec![100u32, 105, 110];
-        let small_prefixes = vec![
-            PrefixKey::new(b"hello"),
-            PrefixKey::new(b"world"),
-            PrefixKey::new(b"test"),
-        ];
-        test_round_trip(&small_offsets, &small_prefixes, "small offsets");
+        let small_offsets = vec![100u32, 105, 110, 115];
+        test_round_trip(&small_offsets, "small offsets");
 
         // Test 2: Medium offsets (should use TwoBytes variant)
-        let medium_offsets = vec![1000u32, 2000, 3000];
-        let medium_prefixes = vec![
-            PrefixKey::new(b"medium1"),
-            PrefixKey::new(b"medium2"),
-            PrefixKey::new(b"medium3"),
-        ];
-        test_round_trip(&medium_offsets, &medium_prefixes, "medium offsets");
+        let medium_offsets = vec![1000u32, 2000, 3000, 3500];
+        test_round_trip(&medium_offsets, "medium offsets");
 
         // Test 3: Large offsets (should use FourBytes variant)
-        let large_offsets = vec![100000u32, 200000, 300000];
-        let large_prefixes = vec![
-            PrefixKey::new(b"large1"),
-            PrefixKey::new(b"large2"),
-            PrefixKey::new(b"large3"),
-        ];
-        test_round_trip(&large_offsets, &large_prefixes, "large offsets");
+        let large_offsets = vec![100000u32, 200000, 300000, 310000];
+        test_round_trip(&large_offsets, "large offsets");
 
         // Test 4: Mixed scenario with varying prefix lengths
-        let mixed_offsets = vec![1000u32, 1010, 1020, 1030, 1040];
-        let mixed_prefixes = vec![
-            PrefixKey::new(b"a"),             // 1 byte prefix
-            PrefixKey::new(b"abcdef"),        // 6 byte prefix
-            PrefixKey::new(b"abcdefg"),       // 7 byte prefix (max)
-            PrefixKey::new(b"abcdefgh"),      // 8 bytes (7 stored + len)
-            PrefixKey::new(&vec![b'x'; 300]), // 300 bytes (long string, len=255)
-        ];
-        test_round_trip(&mixed_offsets, &mixed_prefixes, "mixed scenarios");
+        let mixed_offsets = vec![1000u32, 1010, 1020, 1030, 1040, 1050];
+        test_round_trip(&mixed_offsets, "mixed scenarios");
 
-        // Test 5: Edge case - empty offsets
-        let empty_offsets: Vec<u32> = vec![];
-        let empty_prefixes: Vec<PrefixKey> = vec![];
-        test_round_trip(&empty_offsets, &empty_prefixes, "empty offsets");
+        // Test 5: Edge case - empty values (single sentinel offset)
+        let empty_offsets: Vec<u32> = vec![0];
+        test_round_trip(&empty_offsets, "empty values");
 
-        // Test 6: Single offset
-        let single_offset = vec![42u32];
-        let single_prefixes = vec![PrefixKey::new(b"single")];
-        test_round_trip(&single_offset, &single_prefixes, "single offset");
+        // Test 6: Single value (one prefix, two offsets)
+        let single_offset = vec![42u32, 50];
+        test_round_trip(&single_offset, "single offset");
     }
 
-    fn test_round_trip(offsets: &[u32], prefixes: &[PrefixKey], test_name: &str) {
+    fn test_round_trip(offsets: &[u32], test_name: &str) {
         let compact_offsets = CompactOffsets::from_offsets(offsets);
 
         assert_eq!(
@@ -1119,8 +992,8 @@ mod tests {
         }
 
         let mut bytes = Vec::new();
-        compact_offsets.write_interleaved(prefixes, &mut bytes);
-        let (reconstructed, reconstructed_prefixes) = decode_offset_views(&bytes);
+        compact_offsets.write_residuals(&mut bytes);
+        let reconstructed = decode_compact_offsets(&bytes);
 
         assert_eq!(
             offsets.len(),
@@ -1128,35 +1001,19 @@ mod tests {
             "Reconstructed length mismatch in {}",
             test_name
         );
-        assert_eq!(
-            prefixes.len(),
-            reconstructed_prefixes.len(),
-            "Reconstructed prefix length mismatch in {}",
-            test_name
-        );
         for i in 0..offsets.len() {
             assert_eq!(offsets[i], reconstructed.get_offset(i));
-            assert_eq!(prefixes[i].prefix7(), reconstructed_prefixes[i].prefix7());
-            assert_eq!(prefixes[i].len_byte(), reconstructed_prefixes[i].len_byte());
         }
     }
 
     #[test]
     fn test_compact_offset_view_memory_efficiency() {
         // test that compaction actually saves memory
-        let offsets = vec![1000u32, 1010, 1020, 1030];
-        let prefixes = [
-            PrefixKey::new(b"test1"),
-            PrefixKey::new(b"test2"),
-            PrefixKey::new(b"test3"),
-            PrefixKey::new(b"test4"),
-        ];
+        let offsets = vec![1000u32, 1010, 1020, 1030, 1040];
 
-        let original_size =
-            offsets.len() * (std::mem::size_of::<u32>() + std::mem::size_of::<PrefixKey>());
+        let original_size = offsets.len() * std::mem::size_of::<u32>();
         let compact_offsets = CompactOffsets::from_offsets(&offsets);
-        let compact_size =
-            compact_offsets.memory_usage() + prefixes.len() * std::mem::size_of::<PrefixKey>();
+        let compact_size = compact_offsets.memory_usage();
 
         // for this test case, we should see some savings due to using smaller residuals
         assert!(
@@ -1195,37 +1052,28 @@ mod tests {
     fn test_compact_offset_view_group_from_bytes_errors() {
         // Test with insufficient bytes for header
         let short_bytes = vec![1, 2, 3]; // only 3 bytes, need at least 9
-        let result = std::panic::catch_unwind(|| decode_offset_views(&short_bytes));
+        let result = std::panic::catch_unwind(|| decode_compact_offsets(&short_bytes));
         assert!(result.is_err(), "Should panic with insufficient bytes");
 
         // Test with invalid offset_bytes value
         let mut invalid_header = vec![0; 9];
         invalid_header[8] = 3; // invalid offset_bytes (should be 1, 2, or 4)
-        let result = std::panic::catch_unwind(|| decode_offset_views(&invalid_header));
+        let result = std::panic::catch_unwind(|| decode_compact_offsets(&invalid_header));
         assert!(result.is_err(), "Should panic with invalid offset_bytes");
 
-        // Test with misaligned residual data for OneByte variant
-        let mut misaligned_one_byte = vec![0; 9 + 8]; // header + incomplete residual
-        misaligned_one_byte[8] = 1; // offset_bytes = 1
-        let result = std::panic::catch_unwind(|| decode_offset_views(&misaligned_one_byte));
-        assert!(
-            result.is_err(),
-            "Should panic with misaligned OneByte residuals"
-        );
-
         // Test with misaligned residual data for TwoBytes variant
-        let mut misaligned_two_bytes = vec![0; 9 + 9]; // header + incomplete residual
+        let mut misaligned_two_bytes = vec![0; 9 + 1]; // header + incomplete residual
         misaligned_two_bytes[8] = 2; // offset_bytes = 2
-        let result = std::panic::catch_unwind(|| decode_offset_views(&misaligned_two_bytes));
+        let result = std::panic::catch_unwind(|| decode_compact_offsets(&misaligned_two_bytes));
         assert!(
             result.is_err(),
             "Should panic with misaligned TwoBytes residuals"
         );
 
         // Test with misaligned residual data for FourBytes variant
-        let mut misaligned_four_bytes = vec![0; 9 + 11]; // header + incomplete residual
+        let mut misaligned_four_bytes = vec![0; 9 + 2]; // header + incomplete residual
         misaligned_four_bytes[8] = 4; // offset_bytes = 4
-        let result = std::panic::catch_unwind(|| decode_offset_views(&misaligned_four_bytes));
+        let result = std::panic::catch_unwind(|| decode_compact_offsets(&misaligned_four_bytes));
         assert!(
             result.is_err(),
             "Should panic with misaligned FourBytes residuals"
@@ -1235,24 +1083,17 @@ mod tests {
     #[test]
     fn test_compact_offset_view_group_from_bytes_valid() {
         // Test OneByte variant roundtrip
-        let offsets = vec![100u32, 101];
-        let prefixes = vec![
-            PrefixKey::from_parts([1, 2, 3, 4, 5, 6, 7], 10),
-            PrefixKey::from_parts([7, 6, 5, 4, 3, 2, 1], 20),
-        ];
+        let offsets = vec![100u32, 101, 105];
         let original = CompactOffsets::from_offsets(&offsets);
 
         let mut bytes = Vec::new();
-        original.write_interleaved(&prefixes, &mut bytes);
-
-        let (reconstructed, reconstructed_prefixes) = decode_offset_views(&bytes);
+        original.write_residuals(&mut bytes);
+        let reconstructed = decode_compact_offsets(&bytes);
 
         // Verify they match
         assert_eq!(offsets.len(), reconstructed.len());
         for i in 0..offsets.len() {
             assert_eq!(offsets[i], reconstructed.get_offset(i));
-            assert_eq!(prefixes[i].prefix7(), reconstructed_prefixes[i].prefix7());
-            assert_eq!(prefixes[i].len_byte(), reconstructed_prefixes[i].len_byte());
         }
     }
 

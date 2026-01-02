@@ -121,7 +121,7 @@ async fn download_clickbench_column(column: &str) -> ColumnData {
     // Get average string length, distinct count ratio, and non-empty ratio in one query
     let stats_batches = ctx
         .sql(&format!(
-            "SELECT 
+            "SELECT
                 AVG(LENGTH(\"{column}\")) AS avg_length,
                 COUNT(DISTINCT \"{column}\") * 1.0 / COUNT(\"{column}\") AS distinct_ratio,
                 COUNT(CASE WHEN \"{column}\" IS NOT NULL AND \"{column}\" != '' THEN 1 END) * 1.0 / COUNT(*) AS non_empty_ratio
@@ -790,6 +790,7 @@ fn main() {
         let mut total_detailed_memory_usage = ByteViewArrayMemoryUsage {
             dictionary_key: 0,
             offsets: 0,
+            prefix_keys: 0,
             fsst_buffer: 0,
             string_fingerprints: 0,
             shared_prefix: 0,

@@ -239,8 +239,8 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
 
         let shared_prefix_len = shared_prefix.len();
 
-        // Prefix keys - one per unique value in dictionary, plus one sentinel (empty) entry.
-        let mut prefix_keys = Vec::with_capacity(values.len() + 1);
+        // Prefix keys - one per unique value in dictionary.
+        let mut prefix_keys = Vec::with_capacity(values.len());
 
         let mut compress_buffer = Vec::with_capacity(1024 * 1024 * 2);
 
@@ -281,7 +281,6 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
         }
 
         assert_eq!(values.len(), byte_offsets.len() - 1);
-        prefix_keys.push(PrefixKey::from_parts([0u8; 7], 0));
 
         let prefix_keys: Arc<[PrefixKey]> = prefix_keys.into();
 

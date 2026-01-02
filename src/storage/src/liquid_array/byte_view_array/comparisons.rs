@@ -18,7 +18,7 @@ impl LiquidByteViewArray<FsstArray> {
     /// Compare equality with a byte needle
     pub(super) fn compare_equals(&self, needle: &[u8]) -> BooleanArray {
         let shared_prefix_len = self.shared_prefix.len();
-        let num_unique = self.prefix_keys.len().saturating_sub(1);
+        let num_unique = self.prefix_keys.len();
         if needle.len() < shared_prefix_len || needle[..shared_prefix_len] != self.shared_prefix {
             return self.map_dictionary_results_to_array_results(vec![false; num_unique]);
         }
@@ -219,7 +219,7 @@ impl LiquidByteViewArray<DiskBuffer> {
                 unsafe { BinaryArray::new_unchecked(offsets_buffer, values_buffer, None) };
 
             for (pos, &dict_index) in ambiguous.iter().enumerate() {
-                let value_cmp = binary_array.value(pos).cmp(needle);
+                let value_cmp = bytes_cmp_short_auto(binary_array.value(pos), needle);
                 let result = match (op, value_cmp) {
                     (Operator::Lt, std::cmp::Ordering::Less) => true,
                     (Operator::Lt, _) => false,
@@ -320,6 +320,7 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
     }
 
     // returns a tuple of compare_results and ambiguous indices
+    #[inline(never)]
     fn compare_with_prefix(&self, needle: &[u8], op: &Operator) -> (Vec<bool>, Vec<usize>) {
         // Try to short-circuit based on shared prefix comparison
         if let Some(result) = self.compare_with_shared_prefix(needle, op) {
@@ -327,94 +328,43 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
         }
 
         let needle_suffix = &needle[self.shared_prefix.len()..];
-        let num_unique = self.prefix_keys.len().saturating_sub(1);
+        let num_unique = self.prefix_keys.len();
         let mut dict_results = vec![false; num_unique];
         let mut ambiguous = Vec::new();
 
-        if needle_suffix.len() >= PrefixKey::prefix_len() {
-            let needle_prefix: [u8; 7] = needle_suffix[..PrefixKey::prefix_len()]
-                .try_into()
-                .expect("prefix_len must be 7");
+        let cmp_len = needle_suffix.len().min(PrefixKey::prefix_len());
+        if cmp_len == 0 {
+            ambiguous.extend(0..num_unique);
+            return (dict_results, ambiguous);
+        }
 
-            // Try prefix comparison for each unique value
-            for (i, prefix_key) in self.prefix_keys.iter().take(num_unique).enumerate() {
-                let prefix7 = prefix_key.prefix7();
-
-                match prefix7.cmp(&needle_prefix) {
-                    std::cmp::Ordering::Less => {
-                        // Prefix < needle, so full string < needle
-                        match op {
-                            Operator::Lt | Operator::LtEq => {
-                                dict_results[i] = true;
-                            }
-                            Operator::Gt | Operator::GtEq => {
-                                dict_results[i] = false;
-                            }
-                            _ => {
-                                ambiguous.push(i);
-                            }
-                        };
+        for (i, prefix_key) in self.prefix_keys.iter().enumerate() {
+            let ordering = bytes_cmp_short(prefix_key.prefix7(), needle_suffix, cmp_len);
+            match ordering {
+                std::cmp::Ordering::Less => match op {
+                    Operator::Lt | Operator::LtEq => {
+                        dict_results[i] = true;
                     }
-                    std::cmp::Ordering::Greater => {
-                        // Prefix > needle, so full string > needle
-                        match op {
-                            Operator::Lt | Operator::LtEq => {
-                                dict_results[i] = false;
-                            }
-                            Operator::Gt | Operator::GtEq => {
-                                dict_results[i] = true;
-                            }
-                            _ => {
-                                ambiguous.push(i);
-                            }
-                        };
+                    Operator::Gt | Operator::GtEq => {
+                        dict_results[i] = false;
                     }
-                    std::cmp::Ordering::Equal => {
+                    _ => {
                         ambiguous.push(i);
                     }
-                }
-            }
-        } else {
-            let cmp_len = needle_suffix.len();
-            let needle_slice = &needle_suffix[..cmp_len];
-
-            // Try prefix comparison for each unique value
-            for (i, prefix_key) in self.prefix_keys.iter().take(num_unique).enumerate() {
-                let prefix7 = prefix_key.prefix7();
-
-                let prefix_slice = &prefix7[..cmp_len];
-                match prefix_slice.cmp(needle_slice) {
-                    std::cmp::Ordering::Less => {
-                        // Prefix < needle, so full string < needle
-                        match op {
-                            Operator::Lt | Operator::LtEq => {
-                                dict_results[i] = true;
-                            }
-                            Operator::Gt | Operator::GtEq => {
-                                dict_results[i] = false;
-                            }
-                            _ => {
-                                ambiguous.push(i);
-                            }
-                        };
+                },
+                std::cmp::Ordering::Greater => match op {
+                    Operator::Lt | Operator::LtEq => {
+                        dict_results[i] = false;
                     }
-                    std::cmp::Ordering::Greater => {
-                        // Prefix > needle, so full string > needle
-                        match op {
-                            Operator::Lt | Operator::LtEq => {
-                                dict_results[i] = false;
-                            }
-                            Operator::Gt | Operator::GtEq => {
-                                dict_results[i] = true;
-                            }
-                            _ => {
-                                ambiguous.push(i);
-                            }
-                        };
+                    Operator::Gt | Operator::GtEq => {
+                        dict_results[i] = true;
                     }
-                    std::cmp::Ordering::Equal => {
+                    _ => {
                         ambiguous.push(i);
                     }
+                },
+                std::cmp::Ordering::Equal => {
+                    ambiguous.push(i);
                 }
             }
         }
@@ -424,7 +374,7 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
     // returns a tuple of compare_results and ambiguous indices
     fn compare_equals_with_prefix(&self, needle: &[u8]) -> (Vec<bool>, Vec<usize>) {
         let shared_prefix_len = self.shared_prefix.len();
-        let num_unique = self.prefix_keys.len().saturating_sub(1);
+        let num_unique = self.prefix_keys.len();
         if needle.len() < shared_prefix_len || needle[..shared_prefix_len] != self.shared_prefix {
             return (vec![false; num_unique], Vec::new());
         }
@@ -576,4 +526,53 @@ fn compress_needle(compressor: &Compressor, needle: &[u8]) -> Vec<u8> {
         compressor.compress_into(needle, &mut compressed);
     }
     compressed
+}
+
+fn bytes_cmp_const<const N: usize>(left: &[u8; N], right: &[u8; N]) -> std::cmp::Ordering {
+    left.cmp(right)
+}
+
+fn bytes_cmp_short(left: &[u8], right: &[u8], len: usize) -> std::cmp::Ordering {
+    match len {
+        0 => std::cmp::Ordering::Equal,
+        1 => bytes_cmp_const::<1>(
+            &left[..1].try_into().unwrap(),
+            &right[..1].try_into().unwrap(),
+        ),
+        2 => bytes_cmp_const::<2>(
+            &left[..2].try_into().unwrap(),
+            &right[..2].try_into().unwrap(),
+        ),
+        3 => bytes_cmp_const::<3>(
+            &left[..3].try_into().unwrap(),
+            &right[..3].try_into().unwrap(),
+        ),
+        4 => bytes_cmp_const::<4>(
+            &left[..4].try_into().unwrap(),
+            &right[..4].try_into().unwrap(),
+        ),
+        5 => bytes_cmp_const::<5>(
+            &left[..5].try_into().unwrap(),
+            &right[..5].try_into().unwrap(),
+        ),
+        6 => bytes_cmp_const::<6>(
+            &left[..6].try_into().unwrap(),
+            &right[..6].try_into().unwrap(),
+        ),
+        7 => bytes_cmp_const::<7>(
+            &left[..7].try_into().unwrap(),
+            &right[..7].try_into().unwrap(),
+        ),
+        _ => left[..len].cmp(&right[..len]),
+    }
+}
+
+fn bytes_cmp_short_auto(left: &[u8], right: &[u8]) -> std::cmp::Ordering {
+    let len = left.len().min(right.len());
+    let ordering = bytes_cmp_short(left, right, len);
+    if ordering == std::cmp::Ordering::Equal {
+        left.len().cmp(&right.len())
+    } else {
+        ordering
+    }
 }

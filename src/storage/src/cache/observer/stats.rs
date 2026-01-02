@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 ///
 /// This generates:
 /// - Fields in `RuntimeStats` struct
-/// - Fields in `RuntimeStatsSnapshot` struct  
+/// - Fields in `RuntimeStatsSnapshot` struct
 /// - Increment methods (`incr_*`)
 /// - `consume_snapshot` implementation
 /// - `reset` implementation
@@ -104,6 +104,7 @@ define_runtime_stats! {
     (hit_date32_expression_calls, "Number of `hit_date32_expression` calls.", incr_hit_date32_expression),
     (read_io_count, "Number of read IO operations.", incr_read_io_count),
     (write_io_count, "Number of write IO operations.", incr_write_io_count),
+    (eval_predicate_on_liquid_failed, "Number of `eval_predicate` calls that failed on Liquid array.", incr_eval_predicate_on_liquid_failed),
     (squeezed_decompressed_count, "Number of decompressed Squeezed-Liquid entries.", __incr_squeezed_decompressed_count),
     (squeezed_total_count, "Total number of Squeezed-Liquid entries.", __incr_squeezed_total_count),
 }
