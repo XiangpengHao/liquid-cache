@@ -41,6 +41,7 @@ impl Page {
         self.block_size = block_size;
         let mut offset: usize = 0;
         let mut guard = self.free_list.lock().unwrap();
+        guard.clear();
         while offset < self.capacity {
             let ptr = unsafe { self.page_start.add(offset) };
             guard.push_back(Block {ptr});
@@ -48,9 +49,6 @@ impl Page {
         }
     }
 
-    /**
-     * Returns (block, buffer id) pair
-     */
     #[inline]
     pub fn get_free_block(self: &mut Self) -> *mut u8 {
         let mut guard = self.free_list.lock().unwrap();

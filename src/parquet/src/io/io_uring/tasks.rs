@@ -294,7 +294,8 @@ impl IoTask for FixedFileReadTask {
     fn prepare_sqe(&mut self) -> Vec<squeue::Entry> {        
         let buffers = FixedBufferPool::get_fixed_buffers(&self.fixed_buffer);
         let mut sqes = Vec::<squeue::Entry>::new();
-        let mut file_offset = 0;
+        let (start_padding, _) = self.padding();
+        let mut file_offset = self.range.start - start_padding as u64;
         for buffer in buffers {
             let sqe = opcode::ReadFixed::new(
                 io_uring::types::Fd(self.file),
@@ -327,7 +328,6 @@ pub(crate) struct FileWriteTask {
     data: Bytes,
     fd: RawFd,
     error: Option<std::io::Error>,
-    use_fixed_buffers: bool,
 }
 
 impl FileWriteTask {
@@ -336,7 +336,6 @@ impl FileWriteTask {
             data,
             fd,
             error: None,
-            use_fixed_buffers,
         }
     }
 

@@ -110,12 +110,14 @@ impl TCache {
     fn remove_slice_from_span(self: &mut Self, slice: &mut Page) -> bool {
         let span_idx = Self::get_span_idx_from_slice_count(slice.slice_count);
         for i in 0..self.spans[span_idx].len() {
-            if self.spans[span_idx][i] == slice {
+            let page_start = unsafe { (*self.spans[span_idx][i]).page_start };
+            if page_start == slice.page_start {
                 self.spans[span_idx].remove(i);
-                break;
+                return true;
             }
         }
-        return true;
+        log::info!("[thread_id: {}] Slice not found in span with index: {}, slice count: {}", self.thread_id, span_idx, slice.slice_count);
+        return false;
     }
 
     fn retire_segment(self: &mut Self, segment: *mut Segment) {
@@ -125,7 +127,7 @@ impl TCache {
         let pages = unsafe { &mut (*segment).pages };
         let mut slice_idx: usize = 0;
         while slice_idx < PAGES_PER_SEGMENT {
-            self.remove_slice_from_span(&mut pages[slice_idx]);
+            assert!(pages[slice_idx].block_size != 0 || self.remove_slice_from_span(&mut pages[slice_idx]));
             slice_idx += pages[slice_idx].slice_count;
         }
         let mut guard = self.arena.lock().unwrap();
@@ -153,11 +155,11 @@ impl TCache {
     }
 
     pub(crate) fn retire_page(self: &mut Self, page: *mut Page) {
+        assert!(unsafe { (*page).used.load(Ordering::Relaxed) == 0 });
         self.stats.pages_retired += 1;
         self.remove_page_from_used_queue(page);
         self.remove_page_from_free_queue(page);
         let page_ref = unsafe { &mut (*page) };
-        page_ref.block_size = 0;
 
         let segment_ptr = Segment::get_segment_from_ptr(page as *mut u8);
         let segment = unsafe { &mut *segment_ptr };
@@ -167,17 +169,20 @@ impl TCache {
             self.retire_segment(segment_ptr);
             return;
         }
+        page_ref.block_size = 0;
 
         let next_slice = page.wrapping_add(page_ref.slice_count);
         if next_slice <= (&mut segment.pages[PAGES_PER_SEGMENT - 1]) as *mut Page {
             let next_slice_ref = unsafe { &mut (*next_slice) };
             if next_slice_ref.block_size == 0 {
-                // log::info!("[thread_id: {}, segment_id: {}] Merging released slice with next slice. Slice count of next slice: {}", self.thread_id, segment.segment_id, next_slice_ref.slice_count);
+                log::debug!("[thread_id: {}] Merging released slice with next slice. Slice count of next slice: {}", self.thread_id, next_slice_ref.slice_count);
                 // Page is not in use, remove it
-                self.remove_slice_from_span(next_slice_ref);
+                assert!(self.remove_slice_from_span(next_slice_ref));
                 segment.coalesce_slices(page_ref, unsafe { &mut (*next_slice) });
             }
         }
+
+        let mut merged_with_prev = false;
 
         if unsafe { page.offset_from(&mut segment.pages[0] as *mut Page) > 0 } {
             let mut prev_slice = page.wrapping_sub(1);
@@ -185,17 +190,21 @@ impl TCache {
             let prev_slice_ref = unsafe { &mut (*prev_slice) };
             if prev_slice_ref.block_size == 0 {
                 // Merge with the previous slice
-                // log::info!("[thread_id: {}, segment_id: {}] Merging slice with previous slice. Slice count of previous slice: {}", self.thread_id, segment.segment_id, prev_slice_ref.slice_count);
-                self.remove_slice_from_span(prev_slice_ref);
+                log::info!("[thread_id: {}] Merging slice with previous slice. Slice count of previous slice: {}", self.thread_id, prev_slice_ref.slice_count);
+                assert!(self.remove_slice_from_span(prev_slice_ref));
                 segment.coalesce_slices(prev_slice_ref, page_ref);
                 let span_idx = Self::get_span_idx_from_slice_count(prev_slice_ref.slice_count);
                 self.spans[span_idx].push(prev_slice);
+                log::debug!("[thread_id: {}] Added page with slice count {} to span with index: {}", self.thread_id, prev_slice_ref.slice_count, span_idx);
+                merged_with_prev = true;
             }
-        } else {
+        }
+        if !merged_with_prev {
             let span_idx = Self::get_span_idx_from_slice_count(page_ref.slice_count);
             self.spans[span_idx].push(page);
+            log::debug!("[thread_id: {}] Added page with slice count {} to span with index: {}", self.thread_id, page_ref.slice_count, span_idx);
         }
-        segment.check_valid_segment();        
+        segment.check_valid_segment();
     }
 
     fn cleanup_pages(self: &mut Self) {
@@ -251,8 +260,9 @@ impl TCache {
                     unsafe { (*segment).check_valid_segment() } ;
                     let bin = Self::get_span_idx_from_slice_count(num_slices_original - num_slices_required);
                     self.spans[bin].push(next_slice);
+                    log::debug!("[thread_id: {}] Added page with slice count {} to span with index: {}", self.thread_id, num_slices_original - num_slices_required, bin);
                 }
-                unsafe {
+                                unsafe {
                     (*slice).set_block_size(block_size);
                 }
                 return slice;
@@ -283,7 +293,7 @@ impl TCache {
         if segment_opt.is_none() {
             return false;
         }
-        log::info!("Allocating segment to thread with id: {}", thread_id);
+        // log::info!("Allocating segment to thread with id: {}", thread_id);
         unsafe {
             (*segment_opt.unwrap()).thread_id = thread_id;
         }
@@ -324,6 +334,7 @@ impl TCache {
         let block_size = SIZE_CLASSES[size_class];
         let mut free_page = self.free_pages[size_class];
         if !free_page.is_null() {
+            debug_assert_eq!(unsafe {(*free_page).block_size}, block_size);
             // allocate from free page
             let page = free_page.clone();
             unsafe {
@@ -354,7 +365,7 @@ impl TCache {
         if !res {
             return null_mut()
         }
-        free_page = self.find_page_from_spans(1, size);
+        free_page = self.find_page_from_spans(1, block_size);
         assert_ne!(free_page, null_mut());
         let free_block = unsafe { (*free_page).get_free_block() };
         self.free_pages[size_class] = free_page;

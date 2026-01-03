@@ -13,6 +13,7 @@ static FIXED_BUFFER_POOL: OnceLock<FixedBufferPool> = OnceLock::new();
 pub const FIXED_BUFFER_SIZE_BYTES: usize = 1 << 20;
 pub const FIXED_BUFFER_BITS: u32 = FIXED_BUFFER_SIZE_BYTES.trailing_zeros();
 
+#[derive(Debug)]
 pub struct FixedBuffer {
     pub ptr: *mut u8,
     pub buf_id: usize,
@@ -90,8 +91,10 @@ impl FixedBufferPool {
     }
 
     pub fn malloc(size: usize) -> *mut u8 {
+        let cpu = unsafe { libc::sched_getcpu() };
         let local_cache = Self::get_thread_local_cache();
         let ptr = local_cache.lock().unwrap().allocate(size);
+        log::debug!("Allocated pointer: {:?}, size: {}, cpu: {}", ptr, size, cpu);
         if ptr.is_null() {
             let pool = FIXED_BUFFER_POOL.get().unwrap();
             log::info!("Foreign frees: {}", pool.foreign_free.load(Ordering::Relaxed));
@@ -151,11 +154,12 @@ impl FixedBufferPool {
     fn free(ptr: *mut u8) {
         let segment_ptr = Segment::get_segment_from_ptr(ptr);
         let page_ptr = unsafe { (*segment_ptr).get_page_from_ptr(ptr) };
+        let thread_id = unsafe { (*segment_ptr).thread_id };
+        log::debug!("Freed pointer: {:?}, size: {}, owner thread id: {}", ptr, unsafe { (*page_ptr).block_size }, thread_id);
         unsafe {
             (*page_ptr).free(ptr);
         }
-        // If page is local and unused after free, return it to segment
-        let thread_id = unsafe { (*segment_ptr).thread_id };
+        // If page is local and unused after free, return it to segment        
         let cur_cpu = unsafe { libc::sched_getcpu() as usize };
         if cur_cpu == thread_id {
             let should_free_page = unsafe { (*page_ptr).used.load(Ordering::Relaxed) == 0 };
@@ -165,6 +169,7 @@ impl FixedBufferPool {
                 guard.retire_page(page_ptr);
             }
         } else {
+            log::debug!("Freeing from foreign thread");
             let pool = FIXED_BUFFER_POOL.get().unwrap();
             pool.foreign_free.fetch_add(1, Ordering::Relaxed);
         }
