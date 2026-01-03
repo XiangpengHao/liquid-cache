@@ -195,7 +195,7 @@ mod random_tests {
     #[test]
     fn randomized_predicate_eq_shared() {
         use datafusion::logical_expr::Operator;
-        use datafusion::physical_plan::expressions::{BinaryExpr, Literal};
+        use datafusion::physical_plan::expressions::{BinaryExpr, Column, Literal};
         use datafusion::scalar::ScalarValue;
 
         for seed in 0..50u64 {
@@ -206,8 +206,10 @@ mod random_tests {
             let mask = BooleanBuffer::new_set(input.len());
             let lit: Arc<dyn datafusion::physical_plan::PhysicalExpr> =
                 Arc::new(Literal::new(ScalarValue::Utf8(Some(needle.clone()))));
+            let col: Arc<dyn datafusion::physical_plan::PhysicalExpr> =
+                Arc::new(Column::new("test_col", 0));
             let expr: Arc<dyn datafusion::physical_plan::PhysicalExpr> =
-                Arc::new(BinaryExpr::new(lit.clone(), Operator::Eq, lit));
+                Arc::new(BinaryExpr::new(col, Operator::Eq, lit));
 
             for (_name, la) in make_impls_from_strings(&input) {
                 if let Some(result) = la.try_eval_predicate(&expr, &mask) {
@@ -406,13 +408,15 @@ mod random_tests {
             let input = StringArray::from(vals);
             // Build a predicate: array == literal(needle)
             use datafusion::logical_expr::Operator;
-            use datafusion::physical_plan::expressions::{BinaryExpr, Literal};
+            use datafusion::physical_plan::expressions::{BinaryExpr, Column, Literal};
             use datafusion::scalar::ScalarValue;
             let mask = BooleanBuffer::new_set(input.len());
             let lit: Arc<dyn datafusion::physical_plan::PhysicalExpr> =
                 Arc::new(Literal::new(ScalarValue::Utf8(Some(needle.to_string()))));
+            let col: Arc<dyn datafusion::physical_plan::PhysicalExpr> =
+                Arc::new(Column::new("test_col", 0));
             let expr: Arc<dyn datafusion::physical_plan::PhysicalExpr> =
-                Arc::new(BinaryExpr::new(lit.clone(), Operator::Eq, lit));
+                Arc::new(BinaryExpr::new(col, Operator::Eq, lit));
 
             for (_name, la) in make_impls_from_strings(&input) {
                 if let Some(result) = la.try_eval_predicate(&expr, &mask) {
@@ -488,7 +492,7 @@ mod random_tests {
     #[test]
     fn predicate_eq_shared() {
         use datafusion::logical_expr::Operator;
-        use datafusion::physical_plan::expressions::{BinaryExpr, Literal};
+        use datafusion::physical_plan::expressions::{BinaryExpr, Column, Literal};
         use datafusion::scalar::ScalarValue;
         let input = StringArray::from(vec![
             Some("hello"),
@@ -501,8 +505,10 @@ mod random_tests {
         let mask = BooleanBuffer::new_set(input.len());
         let lit: Arc<dyn datafusion::physical_plan::PhysicalExpr> =
             Arc::new(Literal::new(ScalarValue::Utf8(Some("hello".to_string()))));
+        let col: Arc<dyn datafusion::physical_plan::PhysicalExpr> =
+            Arc::new(Column::new("test_col", 0));
         let expr: Arc<dyn datafusion::physical_plan::PhysicalExpr> =
-            Arc::new(BinaryExpr::new(lit.clone(), Operator::Eq, lit));
+            Arc::new(BinaryExpr::new(col, Operator::Eq, lit));
 
         for (_name, la) in make_impls_from_strings(&input) {
             if let Some(result) = la.try_eval_predicate(&expr, &mask) {

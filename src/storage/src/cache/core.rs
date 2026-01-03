@@ -15,11 +15,11 @@ use super::{
     policies::{CachePolicy, HydrationPolicy, HydrationRequest, MaterializedEntry},
     utils::CacheConfig,
 };
-use crate::cache::DefaultSqueezeIo;
 use crate::cache::policies::SqueezePolicy;
 use crate::cache::utils::{LiquidCompressorStates, arrow_to_bytes};
 use crate::cache::{CacheExpression, index::ArtIndex, utils::EntryID};
 use crate::cache::{CacheStats, EventTrace};
+use crate::cache::{DefaultSqueezeIo, RuntimeStats};
 use crate::liquid_array::{
     LiquidSqueezedArrayRef, SqueezeIoHandler, SqueezedBacking, SqueezedDate32Array,
     VariantStructSqueezedArray,
@@ -190,6 +190,10 @@ impl LiquidCache {
     /// Access the cache observer (runtime stats, debug event trace, and optional cache tracing).
     pub fn observer(&self) -> &Observer {
         &self.observer
+    }
+
+    fn runtime_stats(&self) -> &RuntimeStats {
+        self.observer.runtime_stats()
     }
 
     /// Get the compressor states of the cache.
@@ -763,6 +767,7 @@ impl LiquidCache {
                 match array.try_eval_predicate(predicate, selection) {
                     Some(buf) => Some(Ok(buf)),
                     None => {
+                        self.runtime_stats().incr_eval_predicate_on_liquid_failed();
                         let filtered = array.filter(selection);
                         Some(Err(filtered))
                     }
@@ -780,6 +785,7 @@ impl LiquidCache {
                 match liquid.try_eval_predicate(predicate, selection) {
                     Some(buf) => Some(Ok(buf)),
                     None => {
+                        self.runtime_stats().incr_eval_predicate_on_liquid_failed();
                         let filtered = liquid.filter(selection);
                         Some(Err(filtered))
                     }

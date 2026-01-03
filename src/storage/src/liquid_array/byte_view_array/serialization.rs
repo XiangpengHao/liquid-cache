@@ -8,7 +8,7 @@ use crate::liquid_array::byte_array::ArrowByteType;
 use crate::liquid_array::ipc::LiquidIPCHeader;
 use crate::liquid_array::raw::BitPackedArray;
 use crate::liquid_array::raw::fsst_buffer::{
-    FsstArray, PrefixKey, RawFsstBuffer, decode_offset_views, empty_compact_offsets,
+    FsstArray, PrefixKey, RawFsstBuffer, decode_compact_offsets, empty_compact_offsets,
 };
 use crate::liquid_array::{LiquidDataType, SqueezeResult};
 
@@ -16,7 +16,7 @@ use crate::liquid_array::{LiquidDataType, SqueezeResult};
 #[repr(C)]
 pub(super) struct ByteViewArrayHeader {
     pub(super) keys_size: u32,
-    pub(super) offset_views_size: u32,
+    pub(super) compact_offsets_size: u32,
     pub(super) shared_prefix_size: u32,
     pub(super) fsst_raw_size: u32,
 }
@@ -31,7 +31,7 @@ impl ByteViewArrayHeader {
     pub(super) fn to_bytes(&self) -> [u8; Self::size()] {
         let mut bytes = [0u8; Self::size()];
         bytes[0..4].copy_from_slice(&self.keys_size.to_le_bytes());
-        bytes[4..8].copy_from_slice(&self.offset_views_size.to_le_bytes());
+        bytes[4..8].copy_from_slice(&self.compact_offsets_size.to_le_bytes());
         bytes[8..12].copy_from_slice(&self.shared_prefix_size.to_le_bytes());
         bytes[12..16].copy_from_slice(&self.fsst_raw_size.to_le_bytes());
         bytes
@@ -46,12 +46,12 @@ impl ByteViewArrayHeader {
             );
         }
         let keys_size = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
-        let offset_views_size = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+        let compact_offsets_size = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
         let shared_prefix_size = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
         let fsst_raw_size = u32::from_le_bytes(bytes[12..16].try_into().unwrap());
         Self {
             keys_size,
-            offset_views_size,
+            compact_offsets_size,
             shared_prefix_size,
             fsst_raw_size,
         }
@@ -62,6 +62,24 @@ pub(super) fn align_up_8(len: usize) -> usize {
     (len + 7) & !7
 }
 
+fn decode_prefix_keys(bytes: &[u8]) -> Arc<[PrefixKey]> {
+    let entry_size = std::mem::size_of::<PrefixKey>();
+    if !bytes.len().is_multiple_of(entry_size) {
+        panic!("Invalid prefix keys size");
+    }
+    if bytes.is_empty() {
+        return Arc::<[PrefixKey]>::from([]);
+    }
+    let mut keys = Vec::with_capacity(bytes.len() / entry_size);
+    for chunk in bytes.chunks_exact(entry_size) {
+        let mut prefix7 = [0u8; 7];
+        prefix7.copy_from_slice(&chunk[..7]);
+        let len = chunk[7];
+        keys.push(PrefixKey::from_parts(prefix7, len));
+    }
+    keys.into()
+}
+
 impl LiquidByteViewArray<FsstArray> {
     /*
     Serialized LiquidByteViewArray Memory Layout:
@@ -69,7 +87,7 @@ impl LiquidByteViewArray<FsstArray> {
     +--------------------------------------------------+
     | LiquidIPCHeader (16 bytes)                       |
     +--------------------------------------------------+
-    | ByteViewArrayHeader (16 bytes)                   |  // keys_size, offsets_size, prefix_size, fsst_size
+    | ByteViewArrayHeader (16 bytes)                   |  // keys_size, compact_offsets_size, shared_prefix_size, fsst_size
     +--------------------------------------------------+
     | Padding (to 8-byte alignment)                    |
     +--------------------------------------------------+
@@ -83,7 +101,11 @@ impl LiquidByteViewArray<FsstArray> {
     +--------------------------------------------------+
     | Padding (to 8-byte alignment)                    |
     +--------------------------------------------------+
-    | Compact offset index bytes (header + residuals + prefixes) |
+    | Compact offsets bytes (header + residuals)       |
+    +--------------------------------------------------+
+    | Padding (to 8-byte alignment)                    |
+    +--------------------------------------------------+
+    | Prefix keys bytes (prefix7 + len)                |
     +--------------------------------------------------+
     | Padding (to 8-byte alignment)                    |
     +--------------------------------------------------+
@@ -121,25 +143,33 @@ impl LiquidByteViewArray<FsstArray> {
         }
         let keys_size = result.len() - keys_start;
 
-        // D) Alignment before offset views
+        // D) Alignment before compact offsets
         while !result.len().is_multiple_of(8) {
             result.push(0);
         }
 
-        // E) Serialize compact offset views (header + residuals)
+        // E) Serialize compact offsets (header + residuals)
         let offsets_start = result.len();
-        {
-            self.fsst_buffer
-                .write_offset_views(&self.prefix_keys, &mut result);
-        }
-        let offset_views_size = result.len() - offsets_start;
+        self.fsst_buffer.write_compact_offsets(&mut result);
+        let compact_offsets_size = result.len() - offsets_start;
 
-        // F) Alignment before shared prefix
+        // F) Alignment before prefix keys
         while !result.len().is_multiple_of(8) {
             result.push(0);
         }
 
-        // G) Serialize shared prefix
+        // G) Serialize prefix keys (prefix7 + len)
+        for prefix in self.prefix_keys.iter() {
+            result.extend_from_slice(prefix.prefix7());
+            result.push(prefix.len_byte());
+        }
+
+        // H) Alignment before shared prefix
+        while !result.len().is_multiple_of(8) {
+            result.push(0);
+        }
+
+        // I) Serialize shared prefix
         let prefix_start = result.len();
         result.extend_from_slice(&self.shared_prefix);
         let shared_prefix_size = result.len() - prefix_start;
@@ -151,7 +181,7 @@ impl LiquidByteViewArray<FsstArray> {
         );
         let view_header = ByteViewArrayHeader {
             keys_size: keys_size as u32,
-            offset_views_size: offset_views_size as u32,
+            compact_offsets_size: compact_offsets_size as u32,
             shared_prefix_size: shared_prefix_size as u32,
             fsst_raw_size: fsst_raw_size as u32,
         };
@@ -196,23 +226,38 @@ impl LiquidByteViewArray<FsstArray> {
         let dictionary_keys = bit_packed.to_primitive();
         cursor = keys_end;
 
-        // C) Align and read offset views
+        // C) Align and read compact offsets
         cursor = align_up_8(cursor);
-        let offsets_end = cursor + view_header.offset_views_size as usize;
+        let offsets_end = cursor + view_header.compact_offsets_size as usize;
         if offsets_end > bytes.len() {
-            panic!("Offset views data extends beyond input buffer");
+            panic!("Compact offsets data extends beyond input buffer");
         }
 
-        // Deserialize compact offsets + prefix keys.
-        let (compact_offsets, prefix_keys) = if view_header.offset_views_size > 0 {
+        // Deserialize compact offsets.
+        let compact_offsets = if view_header.compact_offsets_size > 0 {
             let chunk = bytes.slice(cursor..offsets_end);
-            decode_offset_views(chunk.as_ref())
+            decode_compact_offsets(chunk.as_ref())
         } else {
-            (empty_compact_offsets(), Arc::<[PrefixKey]>::from([]))
+            empty_compact_offsets()
         };
         cursor = offsets_end;
 
-        // D) Align and read shared prefix
+        // D) Align and read prefix keys
+        cursor = align_up_8(cursor);
+        let prefix_count = compact_offsets.len().saturating_sub(1);
+        let prefix_keys_size = prefix_count * std::mem::size_of::<PrefixKey>();
+        let prefix_keys_end = cursor + prefix_keys_size;
+        if prefix_keys_end > bytes.len() {
+            panic!("Prefix keys data extends beyond input buffer");
+        }
+        let prefix_keys = if prefix_keys_size > 0 {
+            decode_prefix_keys(&bytes[cursor..prefix_keys_end])
+        } else {
+            Arc::<[PrefixKey]>::from([])
+        };
+        cursor = prefix_keys_end;
+
+        // E) Align and read shared prefix
         cursor = align_up_8(cursor);
         let prefix_end = cursor + view_header.shared_prefix_size as usize;
         if prefix_end > bytes.len() {

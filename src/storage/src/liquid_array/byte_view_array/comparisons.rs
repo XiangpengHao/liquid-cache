@@ -11,6 +11,7 @@ use std::vec;
 
 use super::LiquidByteViewArray;
 use super::fingerprint::{StringFingerprint, substring_pattern_bytes};
+use crate::liquid_array::byte_view_array::operator::{self, ByteViewOperator};
 use crate::liquid_array::raw::FsstArray;
 use crate::liquid_array::raw::fsst_buffer::{DiskBuffer, FsstBacking, PrefixKey};
 
@@ -18,7 +19,7 @@ impl LiquidByteViewArray<FsstArray> {
     /// Compare equality with a byte needle
     pub(super) fn compare_equals(&self, needle: &[u8]) -> BooleanArray {
         let shared_prefix_len = self.shared_prefix.len();
-        let num_unique = self.prefix_keys.len().saturating_sub(1);
+        let num_unique = self.prefix_keys.len();
         if needle.len() < shared_prefix_len || needle[..shared_prefix_len] != self.shared_prefix {
             return self.map_dictionary_results_to_array_results(vec![false; num_unique]);
         }
@@ -88,24 +89,23 @@ impl LiquidByteViewArray<FsstArray> {
     }
 
     /// Compare with prefix optimization and fallback to Arrow operations
-    pub fn compare_with(&self, needle: &[u8], op: &Operator) -> BooleanArray {
+    pub fn compare_with(&self, needle: &[u8], op: &ByteViewOperator) -> BooleanArray {
         match op {
-            // Handle equality operations with existing optimized methods
-            Operator::Eq => self.compare_equals(needle),
-            Operator::NotEq => self.compare_not_equals(needle),
-
-            // Handle ordering operations with prefix optimization
-            Operator::Lt | Operator::LtEq | Operator::Gt | Operator::GtEq => {
-                self.compare_with_inner(needle, op)
+            ByteViewOperator::Comparison(cmp) => self.compare_with_inner(needle, cmp),
+            ByteViewOperator::Equality(operator::Equality::Eq) => self.compare_equals(needle),
+            ByteViewOperator::Equality(operator::Equality::NotEq) => {
+                self.compare_not_equals(needle)
             }
-
-            // For other operations, fall back to Arrow operations
-            _ => self.compare_with_arrow_fallback(needle, op),
+            ByteViewOperator::SubString(_) => self.compare_with_arrow_fallback(needle, op),
         }
     }
 
     /// Prefix optimization for ordering operations
-    pub(super) fn compare_with_inner(&self, needle: &[u8], op: &Operator) -> BooleanArray {
+    pub(super) fn compare_with_inner(
+        &self,
+        needle: &[u8],
+        op: &operator::Comparison,
+    ) -> BooleanArray {
         let (mut dict_results, ambiguous) = self.compare_with_prefix(needle, op);
 
         // For values needing full comparison, load buffer and decompress
@@ -118,17 +118,20 @@ impl LiquidByteViewArray<FsstArray> {
             for (pos, &dict_index) in ambiguous.iter().enumerate() {
                 let value_cmp = binary_array.value(pos).cmp(needle);
                 let result = match (op, value_cmp) {
-                    (Operator::Lt, std::cmp::Ordering::Less) => true,
-                    (Operator::Lt, _) => false,
-                    (Operator::LtEq, std::cmp::Ordering::Less | std::cmp::Ordering::Equal) => true,
-                    (Operator::LtEq, _) => false,
-                    (Operator::Gt, std::cmp::Ordering::Greater) => true,
-                    (Operator::Gt, _) => false,
-                    (Operator::GtEq, std::cmp::Ordering::Greater | std::cmp::Ordering::Equal) => {
-                        true
-                    }
-                    (Operator::GtEq, _) => false,
-                    _ => unreachable!(),
+                    (operator::Comparison::Lt, std::cmp::Ordering::Less) => true,
+                    (operator::Comparison::Lt, _) => false,
+                    (
+                        operator::Comparison::LtEq,
+                        std::cmp::Ordering::Less | std::cmp::Ordering::Equal,
+                    ) => true,
+                    (operator::Comparison::LtEq, _) => false,
+                    (operator::Comparison::Gt, std::cmp::Ordering::Greater) => true,
+                    (operator::Comparison::Gt, _) => false,
+                    (
+                        operator::Comparison::GtEq,
+                        std::cmp::Ordering::Greater | std::cmp::Ordering::Equal,
+                    ) => true,
+                    (operator::Comparison::GtEq, _) => false,
                 };
                 dict_results[dict_index] = result;
             }
@@ -138,37 +141,29 @@ impl LiquidByteViewArray<FsstArray> {
     }
 
     /// Fallback to Arrow operations for unsupported operations
-    fn compare_with_arrow_fallback(&self, needle: &[u8], op: &Operator) -> BooleanArray {
+    fn compare_with_arrow_fallback(&self, needle: &[u8], op: &ByteViewOperator) -> BooleanArray {
         let dict_array = self.to_dict_arrow();
         compare_with_arrow_inner(dict_array, needle, op)
     }
 }
 
 impl LiquidByteViewArray<DiskBuffer> {
-    pub(crate) async fn compare_with(&self, needle: &[u8], op: &Operator) -> BooleanArray {
+    pub(crate) async fn compare_with(&self, needle: &[u8], op: &ByteViewOperator) -> BooleanArray {
         match op {
-            // Handle equality operations with existing optimized methods
-            Operator::Eq => self.compare_equals(needle).await,
-            Operator::NotEq => self.compare_not_equals(needle).await,
-
-            // Handle ordering operations with prefix optimization
-            Operator::Lt | Operator::LtEq | Operator::Gt | Operator::GtEq => {
-                self.compare_with_inner(needle, op).await
+            ByteViewOperator::Equality(operator::Equality::Eq) => self.compare_equals(needle).await,
+            ByteViewOperator::Equality(operator::Equality::NotEq) => {
+                self.compare_not_equals(needle).await
             }
-
-            // For other operations, fall back to Arrow operations
-            Operator::LikeMatch | Operator::NotLikeMatch => {
-                if let Some(inner) = substring_pattern_bytes(needle)
-                    && let Some(result) = self
-                        .compare_like_substring(inner, matches!(op, Operator::NotLikeMatch))
-                        .await
-                {
-                    result
-                } else {
-                    self.compare_with_arrow_fallback(needle, op).await
-                }
+            ByteViewOperator::Comparison(op) => self.compare_with_inner(needle, op).await,
+            ByteViewOperator::SubString(op) => {
+                let pattern = substring_pattern_bytes(needle).expect("Invalid substring pattern");
+                let fingerprints = self
+                    .string_fingerprints
+                    .as_ref()
+                    .expect("Fingerprints not initialized");
+                self.compare_like_substring(pattern, *op, fingerprints)
+                    .await
             }
-            _ => self.compare_with_arrow_fallback(needle, op).await,
         }
     }
 
@@ -208,7 +203,11 @@ impl LiquidByteViewArray<DiskBuffer> {
     }
 
     /// Prefix optimization for ordering operations
-    pub(super) async fn compare_with_inner(&self, needle: &[u8], op: &Operator) -> BooleanArray {
+    pub(super) async fn compare_with_inner(
+        &self,
+        needle: &[u8],
+        op: &operator::Comparison,
+    ) -> BooleanArray {
         let (mut dict_results, ambiguous) = self.compare_with_prefix(needle, op);
 
         // For values needing full comparison, load buffer and decompress
@@ -219,19 +218,22 @@ impl LiquidByteViewArray<DiskBuffer> {
                 unsafe { BinaryArray::new_unchecked(offsets_buffer, values_buffer, None) };
 
             for (pos, &dict_index) in ambiguous.iter().enumerate() {
-                let value_cmp = binary_array.value(pos).cmp(needle);
+                let value_cmp = bytes_cmp_short_auto(binary_array.value(pos), needle);
                 let result = match (op, value_cmp) {
-                    (Operator::Lt, std::cmp::Ordering::Less) => true,
-                    (Operator::Lt, _) => false,
-                    (Operator::LtEq, std::cmp::Ordering::Less | std::cmp::Ordering::Equal) => true,
-                    (Operator::LtEq, _) => false,
-                    (Operator::Gt, std::cmp::Ordering::Greater) => true,
-                    (Operator::Gt, _) => false,
-                    (Operator::GtEq, std::cmp::Ordering::Greater | std::cmp::Ordering::Equal) => {
-                        true
-                    }
-                    (Operator::GtEq, _) => false,
-                    _ => unreachable!(),
+                    (operator::Comparison::Lt, std::cmp::Ordering::Less) => true,
+                    (operator::Comparison::Lt, _) => false,
+                    (
+                        operator::Comparison::LtEq,
+                        std::cmp::Ordering::Less | std::cmp::Ordering::Equal,
+                    ) => true,
+                    (operator::Comparison::LtEq, _) => false,
+                    (operator::Comparison::Gt, std::cmp::Ordering::Greater) => true,
+                    (operator::Comparison::Gt, _) => false,
+                    (
+                        operator::Comparison::GtEq,
+                        std::cmp::Ordering::Greater | std::cmp::Ordering::Equal,
+                    ) => true,
+                    (operator::Comparison::GtEq, _) => false,
                 };
                 dict_results[dict_index] = result;
             }
@@ -240,21 +242,12 @@ impl LiquidByteViewArray<DiskBuffer> {
         self.map_dictionary_results_to_array_results(dict_results)
     }
 
-    /// Fallback to Arrow operations for unsupported operations
-    async fn compare_with_arrow_fallback(&self, needle: &[u8], op: &Operator) -> BooleanArray {
-        let dict_array = self.to_dict_arrow().await;
-        compare_with_arrow_inner(dict_array, needle, op)
-    }
-
     pub(super) async fn compare_like_substring(
         &self,
         needle: &[u8],
-        negated: bool,
-    ) -> Option<BooleanArray> {
-        if needle.is_empty() {
-            return None;
-        }
-        let fingerprints = self.string_fingerprints.as_ref()?;
+        operator: operator::SubString,
+        fingerprints: &Arc<[u32]>,
+    ) -> BooleanArray {
         let needle_fp = StringFingerprint::from_bytes(needle);
 
         let mut dict_results = vec![false; fingerprints.len()];
@@ -271,13 +264,13 @@ impl LiquidByteViewArray<DiskBuffer> {
                 self.fsst_buffer.to_uncompressed_selected(&ambiguous).await;
             // Safety: the offsets and values are valid because they are from fsst buffer, which already checked utf-8.
             let values = unsafe { StringArray::new_unchecked(offsets_buffer, values_buffer, None) };
-            let pattern = std::str::from_utf8(needle).ok()?;
+            let pattern = std::str::from_utf8(needle).ok().unwrap();
             let pattern = format!("%{}%", pattern);
 
             let lhs = ColumnarValue::Array(Arc::new(values));
             let rhs = ColumnarValue::Scalar(ScalarValue::Utf8(Some(pattern)));
-            let result = apply_cmp(Operator::LikeMatch, &lhs, &rhs).ok()?;
-            let result = result.into_array(ambiguous.len()).ok()?;
+            let result = apply_cmp(Operator::LikeMatch, &lhs, &rhs).unwrap();
+            let result = result.into_array(ambiguous.len()).unwrap();
             let matches = result.as_boolean();
 
             for (pos, &dict_index) in ambiguous.iter().enumerate() {
@@ -287,13 +280,13 @@ impl LiquidByteViewArray<DiskBuffer> {
             }
         }
 
-        if negated {
+        if operator == operator::SubString::NotContains {
             for value in &mut dict_results {
                 *value = !*value;
             }
         }
 
-        Some(self.map_dictionary_results_to_array_results(dict_results))
+        self.map_dictionary_results_to_array_results(dict_results)
     }
 }
 
@@ -320,101 +313,49 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
     }
 
     // returns a tuple of compare_results and ambiguous indices
-    fn compare_with_prefix(&self, needle: &[u8], op: &Operator) -> (Vec<bool>, Vec<usize>) {
+    #[inline(never)]
+    fn compare_with_prefix(
+        &self,
+        needle: &[u8],
+        op: &operator::Comparison,
+    ) -> (Vec<bool>, Vec<usize>) {
         // Try to short-circuit based on shared prefix comparison
         if let Some(result) = self.compare_with_shared_prefix(needle, op) {
             return (vec![result; self.dictionary_keys.len()], Vec::new());
         }
 
         let needle_suffix = &needle[self.shared_prefix.len()..];
-        let num_unique = self.prefix_keys.len().saturating_sub(1);
+        let num_unique = self.prefix_keys.len();
         let mut dict_results = vec![false; num_unique];
         let mut ambiguous = Vec::new();
 
-        if needle_suffix.len() >= PrefixKey::prefix_len() {
-            let needle_prefix: [u8; 7] = needle_suffix[..PrefixKey::prefix_len()]
-                .try_into()
-                .expect("prefix_len must be 7");
+        let cmp_len = needle_suffix.len().min(PrefixKey::prefix_len());
+        if cmp_len == 0 {
+            ambiguous.extend(0..num_unique);
+            return (dict_results, ambiguous);
+        }
 
-            // Try prefix comparison for each unique value
-            for (i, prefix_key) in self.prefix_keys.iter().take(num_unique).enumerate() {
-                let prefix7 = prefix_key.prefix7();
-
-                match prefix7.cmp(&needle_prefix) {
-                    std::cmp::Ordering::Less => {
-                        // Prefix < needle, so full string < needle
-                        match op {
-                            Operator::Lt | Operator::LtEq => {
-                                dict_results[i] = true;
-                            }
-                            Operator::Gt | Operator::GtEq => {
-                                dict_results[i] = false;
-                            }
-                            _ => {
-                                ambiguous.push(i);
-                            }
-                        };
+        for (i, prefix_key) in self.prefix_keys.iter().enumerate() {
+            let ordering = bytes_cmp_short(prefix_key.prefix7(), needle_suffix, cmp_len);
+            match ordering {
+                std::cmp::Ordering::Less => match op {
+                    operator::Comparison::Lt | operator::Comparison::LtEq => {
+                        dict_results[i] = true;
                     }
-                    std::cmp::Ordering::Greater => {
-                        // Prefix > needle, so full string > needle
-                        match op {
-                            Operator::Lt | Operator::LtEq => {
-                                dict_results[i] = false;
-                            }
-                            Operator::Gt | Operator::GtEq => {
-                                dict_results[i] = true;
-                            }
-                            _ => {
-                                ambiguous.push(i);
-                            }
-                        };
+                    operator::Comparison::Gt | operator::Comparison::GtEq => {
+                        dict_results[i] = false;
                     }
-                    std::cmp::Ordering::Equal => {
-                        ambiguous.push(i);
+                },
+                std::cmp::Ordering::Greater => match op {
+                    operator::Comparison::Lt | operator::Comparison::LtEq => {
+                        dict_results[i] = false;
                     }
-                }
-            }
-        } else {
-            let cmp_len = needle_suffix.len();
-            let needle_slice = &needle_suffix[..cmp_len];
-
-            // Try prefix comparison for each unique value
-            for (i, prefix_key) in self.prefix_keys.iter().take(num_unique).enumerate() {
-                let prefix7 = prefix_key.prefix7();
-
-                let prefix_slice = &prefix7[..cmp_len];
-                match prefix_slice.cmp(needle_slice) {
-                    std::cmp::Ordering::Less => {
-                        // Prefix < needle, so full string < needle
-                        match op {
-                            Operator::Lt | Operator::LtEq => {
-                                dict_results[i] = true;
-                            }
-                            Operator::Gt | Operator::GtEq => {
-                                dict_results[i] = false;
-                            }
-                            _ => {
-                                ambiguous.push(i);
-                            }
-                        };
+                    operator::Comparison::Gt | operator::Comparison::GtEq => {
+                        dict_results[i] = true;
                     }
-                    std::cmp::Ordering::Greater => {
-                        // Prefix > needle, so full string > needle
-                        match op {
-                            Operator::Lt | Operator::LtEq => {
-                                dict_results[i] = false;
-                            }
-                            Operator::Gt | Operator::GtEq => {
-                                dict_results[i] = true;
-                            }
-                            _ => {
-                                ambiguous.push(i);
-                            }
-                        };
-                    }
-                    std::cmp::Ordering::Equal => {
-                        ambiguous.push(i);
-                    }
+                },
+                std::cmp::Ordering::Equal => {
+                    ambiguous.push(i);
                 }
             }
         }
@@ -424,7 +365,7 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
     // returns a tuple of compare_results and ambiguous indices
     fn compare_equals_with_prefix(&self, needle: &[u8]) -> (Vec<bool>, Vec<usize>) {
         let shared_prefix_len = self.shared_prefix.len();
-        let num_unique = self.prefix_keys.len().saturating_sub(1);
+        let num_unique = self.prefix_keys.len();
         if needle.len() < shared_prefix_len || needle[..shared_prefix_len] != self.shared_prefix {
             return (vec![false; num_unique], Vec::new());
         }
@@ -483,44 +424,37 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
     }
 
     /// Check if shared prefix comparison can short-circuit the entire operation
-    fn compare_with_shared_prefix(&self, needle: &[u8], op: &Operator) -> Option<bool> {
+    fn compare_with_shared_prefix(&self, needle: &[u8], op: &operator::Comparison) -> Option<bool> {
         let shared_prefix_len = self.shared_prefix.len();
 
         let needle_shared_len = std::cmp::min(needle.len(), shared_prefix_len);
         let shared_cmp = self.shared_prefix[..needle_shared_len].cmp(&needle[..needle_shared_len]);
-
         match (op, shared_cmp) {
-            (Operator::Lt | Operator::LtEq, std::cmp::Ordering::Less) => Some(true),
-            (Operator::Lt | Operator::LtEq, std::cmp::Ordering::Greater) => Some(false),
-            (Operator::Gt | Operator::GtEq, std::cmp::Ordering::Greater) => Some(true),
-            (Operator::Gt | Operator::GtEq, std::cmp::Ordering::Less) => Some(false),
-
-            // Handle case where compared parts are equal but lengths differ
-            (op, std::cmp::Ordering::Equal) => {
+            (operator::Comparison::Lt | operator::Comparison::LtEq, std::cmp::Ordering::Less) => {
+                Some(true)
+            }
+            (
+                operator::Comparison::Lt | operator::Comparison::LtEq,
+                std::cmp::Ordering::Greater,
+            ) => Some(false),
+            (
+                operator::Comparison::Gt | operator::Comparison::GtEq,
+                std::cmp::Ordering::Greater,
+            ) => Some(true),
+            (operator::Comparison::Gt | operator::Comparison::GtEq, std::cmp::Ordering::Less) => {
+                Some(false)
+            }
+            (_, std::cmp::Ordering::Equal) => {
                 if needle.len() < shared_prefix_len {
-                    // All strings start with shared_prefix which is longer than needle
-                    // So all strings > needle (for Gt/GtEq) or all strings not < needle (for Lt/LtEq)
                     match op {
-                        Operator::Gt | Operator::GtEq => Some(true),
-                        Operator::Lt => Some(false),
-                        Operator::LtEq => {
-                            // Only true if some string equals the needle exactly
-                            // Since all strings start with shared_prefix (longer than needle), none can equal needle
-                            Some(false)
-                        }
-                        _ => None,
+                        operator::Comparison::Gt | operator::Comparison::GtEq => Some(true),
+                        operator::Comparison::Lt => Some(false),
+                        operator::Comparison::LtEq => Some(false),
                     }
-                } else if needle.len() > shared_prefix_len {
-                    // Needle is longer than shared prefix - can't determine from shared prefix alone
-                    None
                 } else {
-                    // needle.len() == shared_prefix_len
-                    // All strings start with exactly needle, so need to check if any string equals needle exactly
                     None
                 }
             }
-
-            _ => None,
         }
     }
 }
@@ -528,7 +462,7 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
 fn compare_with_arrow_inner(
     dict_array: DictionaryArray<UInt16Type>,
     needle: &[u8],
-    op: &Operator,
+    op: &ByteViewOperator,
 ) -> BooleanArray {
     let needle_scalar = match dict_array.values().data_type() {
         DataType::Utf8 => ScalarValue::Utf8(Some(
@@ -553,16 +487,8 @@ fn compare_with_arrow_inner(
     };
     let lhs = ColumnarValue::Array(Arc::new(dict_array));
     let rhs = ColumnarValue::Scalar(needle_scalar);
-
-    let result = match op {
-        Operator::LikeMatch => apply_cmp(Operator::LikeMatch, &lhs, &rhs),
-        Operator::ILikeMatch => apply_cmp(Operator::ILikeMatch, &lhs, &rhs),
-        Operator::NotLikeMatch => apply_cmp(Operator::NotLikeMatch, &lhs, &rhs),
-        Operator::NotILikeMatch => apply_cmp(Operator::NotILikeMatch, &lhs, &rhs),
-        _ => {
-            unreachable!()
-        }
-    };
+    let op = Operator::from(op);
+    let result = apply_cmp(op, &lhs, &rhs);
 
     match result.expect("ArrowError") {
         ColumnarValue::Array(arr) => arr.as_boolean().clone(),
@@ -576,4 +502,53 @@ fn compress_needle(compressor: &Compressor, needle: &[u8]) -> Vec<u8> {
         compressor.compress_into(needle, &mut compressed);
     }
     compressed
+}
+
+fn bytes_cmp_const<const N: usize>(left: &[u8; N], right: &[u8; N]) -> std::cmp::Ordering {
+    left.cmp(right)
+}
+
+fn bytes_cmp_short(left: &[u8], right: &[u8], len: usize) -> std::cmp::Ordering {
+    match len {
+        0 => std::cmp::Ordering::Equal,
+        1 => bytes_cmp_const::<1>(
+            &left[..1].try_into().unwrap(),
+            &right[..1].try_into().unwrap(),
+        ),
+        2 => bytes_cmp_const::<2>(
+            &left[..2].try_into().unwrap(),
+            &right[..2].try_into().unwrap(),
+        ),
+        3 => bytes_cmp_const::<3>(
+            &left[..3].try_into().unwrap(),
+            &right[..3].try_into().unwrap(),
+        ),
+        4 => bytes_cmp_const::<4>(
+            &left[..4].try_into().unwrap(),
+            &right[..4].try_into().unwrap(),
+        ),
+        5 => bytes_cmp_const::<5>(
+            &left[..5].try_into().unwrap(),
+            &right[..5].try_into().unwrap(),
+        ),
+        6 => bytes_cmp_const::<6>(
+            &left[..6].try_into().unwrap(),
+            &right[..6].try_into().unwrap(),
+        ),
+        7 => bytes_cmp_const::<7>(
+            &left[..7].try_into().unwrap(),
+            &right[..7].try_into().unwrap(),
+        ),
+        _ => left[..len].cmp(&right[..len]),
+    }
+}
+
+fn bytes_cmp_short_auto(left: &[u8], right: &[u8]) -> std::cmp::Ordering {
+    let len = left.len().min(right.len());
+    let ordering = bytes_cmp_short(left, right, len);
+    if ordering == std::cmp::Ordering::Equal {
+        left.len().cmp(&right.len())
+    } else {
+        ordering
+    }
 }

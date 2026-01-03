@@ -4061,7 +4061,6 @@ version = "0.1.10"
 dependencies = [
  "arbitrary",
  "arrow",
- "datafusion",
  "libfuzzer-sys",
  "liquid-cache-storage",
 ]

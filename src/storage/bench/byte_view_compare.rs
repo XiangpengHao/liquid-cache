@@ -7,8 +7,8 @@ use std::sync::Arc;
 extern crate arrow;
 
 use arrow::array::{DictionaryArray, StringArray, UInt16Array};
-use datafusion::logical_expr::Operator;
 use liquid_cache_storage::liquid_array::LiquidByteViewArray;
+use liquid_cache_storage::liquid_array::byte_view_array::{ByteViewOperator, Comparison, Equality};
 use liquid_cache_storage::liquid_array::raw::FsstArray;
 
 const ROW_COUNT: usize = 10_000;
@@ -83,7 +83,9 @@ fn byte_view_eq_prefix_decidable(bencher: Bencher, decidable_pct: u8) {
         .with_inputs(|| (array.clone(), needle.clone()))
         .input_counter(|_| divan::counter::BytesCount::new(ROW_COUNT * STRING_LEN))
         .bench_values(|(array, needle)| {
-            std::hint::black_box(array.compare_with(&needle, &Operator::Eq))
+            std::hint::black_box(
+                array.compare_with(&needle, &ByteViewOperator::Equality(Equality::Eq)),
+            )
         });
 }
 
@@ -95,7 +97,9 @@ fn byte_view_lt_prefix_decidable(bencher: Bencher, decidable_pct: u8) {
         .with_inputs(|| (array.clone(), needle.clone()))
         .input_counter(|_| divan::counter::BytesCount::new(ROW_COUNT * STRING_LEN))
         .bench_values(|(array, needle)| {
-            std::hint::black_box(array.compare_with(&needle, &Operator::Lt))
+            std::hint::black_box(
+                array.compare_with(&needle, &ByteViewOperator::Comparison(Comparison::Lt)),
+            )
         });
 }
 

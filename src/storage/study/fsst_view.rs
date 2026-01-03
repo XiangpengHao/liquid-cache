@@ -11,10 +11,10 @@ use arrow::array::{Array, AsArray, RecordBatch, StringViewArray};
 use arrow::compute::cast;
 use arrow::datatypes::{DataType, Float64Type};
 use arrow_schema::{Field, Schema};
-use datafusion::logical_expr::Operator;
 use datafusion::prelude::*;
 use fsst::Compressor;
 use liquid_cache_storage::liquid_array::byte_view_array::ByteViewArrayMemoryUsage;
+use liquid_cache_storage::liquid_array::byte_view_array::{ByteViewOperator, Comparison, Equality};
 use liquid_cache_storage::liquid_array::raw::FsstArray;
 use liquid_cache_storage::liquid_array::{LiquidArray, LiquidByteArray, LiquidByteViewArray};
 use rand::{rng, seq::SliceRandom};
@@ -121,7 +121,7 @@ async fn download_clickbench_column(column: &str) -> ColumnData {
     // Get average string length, distinct count ratio, and non-empty ratio in one query
     let stats_batches = ctx
         .sql(&format!(
-            "SELECT 
+            "SELECT
                 AVG(LENGTH(\"{column}\")) AS avg_length,
                 COUNT(DISTINCT \"{column}\") * 1.0 / COUNT(\"{column}\") AS distinct_ratio,
                 COUNT(CASE WHEN \"{column}\" IS NOT NULL AND \"{column}\" != '' THEN 1 END) * 1.0 / COUNT(*) AS non_empty_ratio
@@ -521,7 +521,8 @@ impl ArrayBenchmark for FsstViewBenchmark {
         let start = Instant::now();
         for needle in needles {
             let needle_bytes = needle.as_bytes();
-            let _result = encoded_data.compare_with(needle_bytes, &Operator::Eq);
+            let _result =
+                encoded_data.compare_with(needle_bytes, &ByteViewOperator::Equality(Equality::Eq));
         }
         start.elapsed().as_secs_f64()
     }
@@ -530,7 +531,8 @@ impl ArrayBenchmark for FsstViewBenchmark {
         let start = Instant::now();
         for needle in needles {
             let needle_bytes = needle.as_bytes();
-            let _result = encoded_data.compare_with(needle_bytes, &Operator::Gt);
+            let _result = encoded_data
+                .compare_with(needle_bytes, &ByteViewOperator::Comparison(Comparison::Gt));
         }
         start.elapsed().as_secs_f64()
     }
@@ -708,10 +710,12 @@ impl ArrayBenchmark for StringArrayLz4Benchmark {
 
 #[derive(Serialize, Deserialize, Clone)]
 struct SerializableMemoryUsage {
-    dictionary_views: usize,
-    offsets: usize,
+    dictionary_keys: usize,
+    compact_offsets: usize,
+    prefix_keys: usize,
     fsst_buffer: usize,
     shared_prefix: usize,
+    string_fingerprints: usize,
     struct_size: usize,
     total: usize,
 }
@@ -719,10 +723,12 @@ struct SerializableMemoryUsage {
 impl From<ByteViewArrayMemoryUsage> for SerializableMemoryUsage {
     fn from(usage: ByteViewArrayMemoryUsage) -> Self {
         Self {
-            dictionary_views: usage.dictionary_key,
-            offsets: usage.offsets,
+            dictionary_keys: usage.dictionary_key,
+            compact_offsets: usage.offsets,
+            prefix_keys: usage.prefix_keys,
             fsst_buffer: usage.fsst_buffer,
             shared_prefix: usage.shared_prefix,
+            string_fingerprints: usage.string_fingerprints,
             struct_size: usage.struct_size,
             total: usage.total(),
         }
@@ -790,6 +796,7 @@ fn main() {
         let mut total_detailed_memory_usage = ByteViewArrayMemoryUsage {
             dictionary_key: 0,
             offsets: 0,
+            prefix_keys: 0,
             fsst_buffer: 0,
             string_fingerprints: 0,
             shared_prefix: 0,

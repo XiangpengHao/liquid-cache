@@ -72,6 +72,7 @@
               cargo-fuzz
               bpftrace
               perf
+              nixd
               inferno
               cargo-flamegraph
               nodejs
@@ -97,6 +98,7 @@
                 cp -f "${daisyui-theme-bundle}" "$VENDOR_DIR/daisyui-theme.mjs"
                 echo "daisyUI files ready in $VENDOR_DIR"
               fi
+              tailwindcss -i dev/dev-tools/tailwind.css -o dev/dev-tools/assets/tailwind.css
             '';
           };
       }

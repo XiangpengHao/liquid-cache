@@ -1,14 +1,10 @@
 use arrow::array::{BooleanArray, cast::AsArray, types::UInt16Type};
 use arrow::buffer::BooleanBuffer;
-use datafusion::logical_expr::{ColumnarValue, Operator};
-use datafusion::physical_expr_common::datum::apply_cmp;
 use datafusion::physical_plan::PhysicalExpr;
-use datafusion::physical_plan::expressions::{BinaryExpr, LikeExpr, Literal};
 use std::sync::Arc;
 
 use super::LiquidByteViewArray;
-use super::fingerprint::substring_pattern_bytes;
-use crate::liquid_array::byte_array::get_string_needle;
+use super::operator::{ByteViewExpression, ByteViewOperator};
 use crate::liquid_array::raw::FsstArray;
 use crate::liquid_array::raw::fsst_buffer::{DiskBuffer, FsstBacking};
 
@@ -16,7 +12,7 @@ pub(super) fn filter_inner<B: FsstBacking>(
     array: &LiquidByteViewArray<B>,
     filter: &BooleanBuffer,
 ) -> LiquidByteViewArray<B> {
-    // Only filter the dictionary keys, not the offset views!
+    // Only filter the dictionary keys, not the offsets!
     // Offset views reference unique values in FSST buffer and should remain unchanged
 
     // Filter the dictionary keys using Arrow's built-in filter functionality
@@ -38,140 +34,32 @@ pub(super) fn try_eval_predicate_in_memory(
     expr: &Arc<dyn PhysicalExpr>,
     array: &LiquidByteViewArray<FsstArray>,
 ) -> Option<BooleanArray> {
-    // Handle binary expressions (comparisons)
-    if let Some(binary_expr) = expr.as_any().downcast_ref::<BinaryExpr>() {
-        if let Some(literal) = binary_expr.right().as_any().downcast_ref::<Literal>() {
-            let op = binary_expr.op();
-
-            // Try to use string needle optimization first
-            if let Some(needle) = get_string_needle(literal.value()) {
-                let needle_bytes = needle.as_bytes();
-                let result = array.compare_with(needle_bytes, op);
-                return Some(result);
-            }
-
-            // Fallback to Arrow operations
-            let dict_array = array.to_dict_arrow();
-            let lhs = ColumnarValue::Array(Arc::new(dict_array));
-            let rhs = ColumnarValue::Scalar(literal.value().clone());
-
-            let result = match op {
-                Operator::NotEq => apply_cmp(Operator::NotEq, &lhs, &rhs),
-                Operator::Eq => apply_cmp(Operator::Eq, &lhs, &rhs),
-                Operator::Lt => apply_cmp(Operator::Lt, &lhs, &rhs),
-                Operator::LtEq => apply_cmp(Operator::LtEq, &lhs, &rhs),
-                Operator::Gt => apply_cmp(Operator::Gt, &lhs, &rhs),
-                Operator::GtEq => apply_cmp(Operator::GtEq, &lhs, &rhs),
-                Operator::LikeMatch => apply_cmp(Operator::LikeMatch, &lhs, &rhs),
-                Operator::ILikeMatch => apply_cmp(Operator::ILikeMatch, &lhs, &rhs),
-                Operator::NotLikeMatch => apply_cmp(Operator::NotLikeMatch, &lhs, &rhs),
-                Operator::NotILikeMatch => apply_cmp(Operator::NotILikeMatch, &lhs, &rhs),
-                _ => return None,
-            };
-            if let Ok(result) = result {
-                let filtered = result.into_array(array.len()).unwrap().as_boolean().clone();
-                return Some(filtered);
-            }
-        }
-    }
-    // Handle like expressions
-    else if let Some(like_expr) = expr.as_any().downcast_ref::<LikeExpr>()
-        && like_expr
-            .pattern()
-            .as_any()
-            .downcast_ref::<Literal>()
-            .is_some()
-        && let Some(literal) = like_expr.pattern().as_any().downcast_ref::<Literal>()
+    let expr = ByteViewExpression::try_from(expr).ok()?;
+    let op = expr.op();
+    let needle = expr.literal();
+    if let ByteViewOperator::SubString(_substring_op) = op
+        && array.string_fingerprints.as_ref().is_none()
     {
-        let arrow_dict = array.to_dict_arrow();
-
-        let lhs = ColumnarValue::Array(Arc::new(arrow_dict));
-        let rhs = ColumnarValue::Scalar(literal.value().clone());
-
-        let result = match (like_expr.negated(), like_expr.case_insensitive()) {
-            (false, false) => apply_cmp(Operator::LikeMatch, &lhs, &rhs),
-            (true, false) => apply_cmp(Operator::NotLikeMatch, &lhs, &rhs),
-            (false, true) => apply_cmp(Operator::ILikeMatch, &lhs, &rhs),
-            (true, true) => apply_cmp(Operator::NotILikeMatch, &lhs, &rhs),
-        };
-        if let Ok(result) = result {
-            let filtered = result.into_array(array.len()).unwrap().as_boolean().clone();
-            return Some(filtered);
-        }
+        return None;
     }
-    None
+    Some(array.compare_with(needle, op))
 }
 
 pub(super) async fn try_eval_predicate_on_disk(
     expr: &Arc<dyn PhysicalExpr>,
     array: &LiquidByteViewArray<DiskBuffer>,
 ) -> Option<BooleanArray> {
-    // Handle binary expressions (comparisons)
-    if let Some(binary_expr) = expr.as_any().downcast_ref::<BinaryExpr>() {
-        if let Some(literal) = binary_expr.right().as_any().downcast_ref::<Literal>() {
-            let op = binary_expr.op();
+    let expr = ByteViewExpression::try_from(expr).ok()?;
+    let op = expr.op();
+    let needle = expr.literal();
 
-            // Try to use string needle optimization first
-            if let Some(needle) = get_string_needle(literal.value()) {
-                let needle_bytes = needle.as_bytes();
-                let result = array.compare_with(needle_bytes, op).await;
-                return Some(result);
-            }
-
-            // Fallback to Arrow operations
-            let dict_array = array.to_dict_arrow().await;
-            let lhs = ColumnarValue::Array(Arc::new(dict_array));
-            let rhs = ColumnarValue::Scalar(literal.value().clone());
-
-            let result = match op {
-                Operator::NotEq => apply_cmp(Operator::NotEq, &lhs, &rhs),
-                Operator::Eq => apply_cmp(Operator::Eq, &lhs, &rhs),
-                Operator::Lt => apply_cmp(Operator::Lt, &lhs, &rhs),
-                Operator::LtEq => apply_cmp(Operator::LtEq, &lhs, &rhs),
-                Operator::Gt => apply_cmp(Operator::Gt, &lhs, &rhs),
-                Operator::GtEq => apply_cmp(Operator::GtEq, &lhs, &rhs),
-                Operator::LikeMatch => apply_cmp(Operator::LikeMatch, &lhs, &rhs),
-                Operator::ILikeMatch => apply_cmp(Operator::ILikeMatch, &lhs, &rhs),
-                Operator::NotLikeMatch => apply_cmp(Operator::NotLikeMatch, &lhs, &rhs),
-                Operator::NotILikeMatch => apply_cmp(Operator::NotILikeMatch, &lhs, &rhs),
-                _ => return None,
-            };
-            if let Ok(result) = result {
-                let filtered = result.into_array(array.len()).unwrap().as_boolean().clone();
-                return Some(filtered);
-            }
-        }
-    }
-    // Handle like expressions
-    else if let Some(like_expr) = expr.as_any().downcast_ref::<LikeExpr>()
-        && let Some(literal) = like_expr.pattern().as_any().downcast_ref::<Literal>()
+    if let ByteViewOperator::SubString(_substring_op) = op
+        && array.string_fingerprints.as_ref().is_none()
     {
-        if !like_expr.case_insensitive()
-            && let Some(pattern) = get_string_needle(literal.value())
-            && let Some(needle) = substring_pattern_bytes(pattern.as_bytes())
-            && let Some(result) = array
-                .compare_like_substring(needle, like_expr.negated())
-                .await
-        {
-            return Some(result);
-        }
-        let arrow_dict = array.to_dict_arrow().await;
-
-        let lhs = ColumnarValue::Array(Arc::new(arrow_dict));
-        let rhs = ColumnarValue::Scalar(literal.value().clone());
-
-        let result = match (like_expr.negated(), like_expr.case_insensitive()) {
-            (false, false) => apply_cmp(Operator::LikeMatch, &lhs, &rhs),
-            (true, false) => apply_cmp(Operator::NotLikeMatch, &lhs, &rhs),
-            (false, true) => apply_cmp(Operator::ILikeMatch, &lhs, &rhs),
-            (true, true) => apply_cmp(Operator::NotILikeMatch, &lhs, &rhs),
-        };
-        if let Ok(result) = result {
-            let filtered = result.into_array(array.len()).unwrap().as_boolean().clone();
-            return Some(filtered);
-        }
+        return None;
     }
-    None
+    let result = array.compare_with(needle, op).await;
+    Some(result)
 }
 
 use std::fmt::Display;
@@ -180,9 +68,11 @@ use std::fmt::Display;
 pub struct ByteViewArrayMemoryUsage {
     /// Memory usage of the dictionary key
     pub dictionary_key: usize,
-    /// Memory usage of the offset views
+    /// Memory usage of the compact offsets
     pub offsets: usize,
-    /// Memory usage of the FSST buffer
+    /// Memory usage of the prefix keys
+    pub prefix_keys: usize,
+    /// Memory usage of the raw FSST buffer
     pub fsst_buffer: usize,
     /// Memory usage of the shared prefix
     pub shared_prefix: usize,
@@ -197,6 +87,7 @@ impl Display for ByteViewArrayMemoryUsage {
         f.debug_struct("ByteViewArrayMemoryUsage")
             .field("dictionary_key", &self.dictionary_key)
             .field("offsets", &self.offsets)
+            .field("prefix_keys", &self.prefix_keys)
             .field("fsst_buffer", &self.fsst_buffer)
             .field("shared_prefix", &self.shared_prefix)
             .field("string_fingerprints", &self.string_fingerprints)
@@ -211,6 +102,7 @@ impl ByteViewArrayMemoryUsage {
     pub fn total(&self) -> usize {
         self.dictionary_key
             + self.offsets
+            + self.prefix_keys
             + self.fsst_buffer
             + self.shared_prefix
             + self.string_fingerprints
@@ -222,6 +114,7 @@ impl std::ops::AddAssign for ByteViewArrayMemoryUsage {
     fn add_assign(&mut self, other: Self) {
         self.dictionary_key += other.dictionary_key;
         self.offsets += other.offsets;
+        self.prefix_keys += other.prefix_keys;
         self.fsst_buffer += other.fsst_buffer;
         self.shared_prefix += other.shared_prefix;
         self.string_fingerprints += other.string_fingerprints;

@@ -23,7 +23,7 @@ use arrow::{
     buffer::BooleanBuffer,
 };
 use arrow_schema::DataType;
-pub use byte_array::{LiquidByteArray, get_string_needle};
+pub use byte_array::{LiquidByteArray, get_bytes_needle, get_string_needle};
 pub use byte_view_array::LiquidByteViewArray;
 use bytes::Bytes;
 use datafusion::logical_expr::Operator as DFOperator;

@@ -9,7 +9,6 @@ use arrow::compute::cast;
 use arrow_schema::DataType;
 use bytes::Bytes;
 use datafusion::physical_plan::PhysicalExpr;
-use datafusion::physical_plan::expressions::DynamicFilterPhysicalExpr;
 use std::any::Any;
 use std::sync::Arc;
 
@@ -25,17 +24,18 @@ use crate::liquid_array::{
     LiquidArray, LiquidDataType, LiquidSqueezedArray, LiquidSqueezedArrayRef, SqueezeIoHandler,
 };
 
-// Declare submodules
 mod comparisons;
 mod conversions;
 mod fingerprint;
 mod helpers;
+mod operator;
 mod serialization;
 
 #[cfg(test)]
 mod tests;
 
 pub use helpers::ByteViewArrayMemoryUsage;
+pub use operator::{ByteViewOperator, Comparison, Equality, SubString};
 
 #[cfg(test)]
 thread_local! {
@@ -53,9 +53,10 @@ fn reset_disk_read_counter() {
     DISK_READ_COUNTER.with(|counter| counter.set(0));
 }
 
-/// An array that stores strings using the FSST view format with compact offset compression:
+/// An array that stores strings using the FSST format with compact offsets:
 /// - Dictionary keys with 2-byte keys stored in memory
-/// - Compact offset views with variable-size offsets (1, 2, or 4 bytes) and 7-byte prefixes stored in memory
+/// - Compact offsets with variable-size residuals (1, 2, or 4 bytes) stored in memory
+/// - Per-value prefix keys (7-byte prefix + len) stored in memory
 /// - FSST buffer can be stored in memory or on disk
 ///
 /// # Initialization
@@ -68,15 +69,15 @@ fn reset_disk_read_counter() {
 /// ```
 ///
 /// Data access flow:
-/// 1. Use dictionary key to index into compact offset views buffer
+/// 1. Use dictionary key to index into compact offsets buffer
 /// 2. Reconstruct actual offset from linear regression (predicted + residual)
-/// 3. Use prefix from offset views for quick comparisons to avoid decompression when possible
+/// 3. Use prefix keys for quick comparisons to avoid decompression when possible
 /// 4. Decompress bytes from FSST buffer to get the full value when needed
 #[derive(Clone)]
 pub struct LiquidByteViewArray<B: FsstBacking> {
     /// Dictionary keys (u16) - one per array element, using Arrow's UInt16Array for zero-copy
     pub(super) dictionary_keys: UInt16Array,
-    /// Per-value prefix keys (prefix7 + len metadata), includes the final sentinel entry.
+    /// Per-value prefix keys (prefix7 + len metadata).
     pub(super) prefix_keys: Arc<[PrefixKey]>,
     /// FSST-compressed buffer (can be in memory or on disk)
     pub(super) fsst_buffer: B,
@@ -139,8 +140,9 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
             .unwrap_or(0);
         ByteViewArrayMemoryUsage {
             dictionary_key: self.dictionary_keys.get_array_memory_size(),
-            offsets: self.prefix_keys.len() * std::mem::size_of::<PrefixKey>(),
-            fsst_buffer: self.fsst_buffer.get_array_memory_size(),
+            offsets: self.fsst_buffer.compact_offsets_memory_usage(),
+            prefix_keys: self.prefix_keys.len() * std::mem::size_of::<PrefixKey>(),
+            fsst_buffer: self.fsst_buffer.raw_memory_usage(),
             shared_prefix: self.shared_prefix.len(),
             string_fingerprints: fingerprint_bytes,
             struct_size: std::mem::size_of::<Self>(),
@@ -238,6 +240,7 @@ impl LiquidArray for LiquidByteViewArray<FsstArray> {
         filter: &BooleanBuffer,
     ) -> Option<BooleanArray> {
         let filtered = helpers::filter_inner(self, filter);
+
         helpers::try_eval_predicate_in_memory(expr, &filtered)
     }
 
@@ -372,15 +375,6 @@ impl LiquidSqueezedArray for LiquidByteViewArray<DiskBuffer> {
     ) -> Option<BooleanArray> {
         // Reuse generic filter path first to reduce input rows if any
         let filtered = helpers::filter_inner(self, filter);
-
-        let expr = if let Some(dynamic_filter) =
-            expr.as_any().downcast_ref::<DynamicFilterPhysicalExpr>()
-        {
-            dynamic_filter.current().expect("DynamicFilterPhysicalExpr")
-        } else {
-            expr.clone()
-        };
-
-        helpers::try_eval_predicate_on_disk(&expr, &filtered).await
+        helpers::try_eval_predicate_on_disk(expr, &filtered).await
     }
 }

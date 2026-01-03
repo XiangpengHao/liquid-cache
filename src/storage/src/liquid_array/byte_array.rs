@@ -10,6 +10,7 @@ use arrow::compute::cast;
 use arrow::datatypes::{BinaryType, ByteArrayType, Utf8Type};
 use arrow_schema::DataType;
 use bytes::Bytes;
+use core::panic;
 use datafusion::logical_expr::{ColumnarValue, Operator};
 use datafusion::physical_expr_common::datum::apply_cmp;
 use datafusion::physical_plan::PhysicalExpr;
@@ -301,16 +302,26 @@ fn try_eval_predicate_inner(
 /// This function handles various string scalar value types including Utf8, Utf8View,
 /// LargeUtf8, and Dictionary types. Returns `None` for non-string types or null values.
 pub fn get_string_needle(value: &ScalarValue) -> Option<&str> {
-    if let ScalarValue::Utf8(Some(v)) = value {
-        Some(v)
-    } else if let ScalarValue::Utf8View(Some(v)) = value {
-        Some(v)
-    } else if let ScalarValue::LargeUtf8(Some(v)) = value {
-        Some(v)
-    } else if let ScalarValue::Dictionary(_, value) = value {
-        get_string_needle(value.as_ref())
-    } else {
-        None
+    match value {
+        ScalarValue::Utf8(Some(v)) => Some(v.as_str()),
+        ScalarValue::Utf8View(Some(v)) => Some(v.as_str()),
+        ScalarValue::LargeUtf8(Some(v)) => Some(v.as_str()),
+        ScalarValue::Dictionary(_, value) => get_string_needle(value.as_ref()),
+        _ => None,
+    }
+}
+/// Extract a byte needle from a scalar value for string comparison operations.
+pub fn get_bytes_needle(value: &ScalarValue) -> Option<Vec<u8>> {
+    match value {
+        ScalarValue::Utf8(Some(v)) => Some(v.as_bytes().to_vec()),
+        ScalarValue::Utf8View(Some(v)) => Some(v.as_bytes().to_vec()),
+        ScalarValue::LargeUtf8(Some(v)) => Some(v.as_bytes().to_vec()),
+        ScalarValue::Binary(Some(v)) => Some(v.clone()),
+        ScalarValue::BinaryView(Some(v)) => Some(v.clone()),
+        ScalarValue::FixedSizeBinary(_, Some(v)) => Some(v.clone()),
+        ScalarValue::LargeBinary(Some(v)) => Some(v.clone()),
+        ScalarValue::Dictionary(_, value) => get_bytes_needle(value.as_ref()),
+        _ => None,
     }
 }
 

@@ -38,5 +38,6 @@ RuntimeStatsSnapshot:
   hit_date32_expression_calls: 0
   read_io_count: 0
   write_io_count: 0
+  eval_predicate_on_liquid_failed: 0
   squeezed_decompressed_count: 0
   squeezed_total_count: 0
