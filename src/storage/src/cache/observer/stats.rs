@@ -134,6 +134,12 @@ pub struct CacheStats {
     pub disk_liquid_entries: usize,
     /// Number of on-disk Arrow entries.
     pub disk_arrow_entries: usize,
+    /// Total size of in-memory Arrow entries in bytes.
+    pub memory_arrow_bytes: usize,
+    /// Total size of in-memory Liquid entries in bytes.
+    pub memory_liquid_bytes: usize,
+    /// Total size of in-memory Squeezed-Liquid entries in bytes.
+    pub memory_squeezed_liquid_bytes: usize,
     /// Total memory usage of the cache.
     pub memory_usage_bytes: usize,
     /// Total disk usage of the cache.

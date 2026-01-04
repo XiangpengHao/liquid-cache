@@ -14,12 +14,12 @@ event=squeeze_begin victims=[2555905,2555904]
 event=squeeze_victim entry=2555905
 event=insert_success entry=2555905 kind=MemoryLiquid
 event=squeeze_victim entry=2555904
-event=io_write entry=2555904 kind=MemorySqueezedLiquid bytes=27488
+event=io_write entry=2555904 kind=MemorySqueezedLiquid bytes=27496
 event=insert_success entry=2555904 kind=MemorySqueezedLiquid
 event=insert_success entry=2555906 kind=MemoryArrow
 event=eval_predicate entry=2555904 selection=true cached=MemorySqueezedLiquid
 event=read entry=2555904 selection=true expr=None cached=MemorySqueezedLiquid
-event=io_read_squeezed_backing entry=2555904 bytes=27488
+event=io_read_squeezed_backing entry=2555904 bytes=27496
 event=eval_predicate entry=2555905 selection=true cached=MemoryLiquid
 event=read entry=2555905 selection=true expr=None cached=MemoryLiquid
 event=eval_predicate entry=2555906 selection=true cached=MemoryArrow
@@ -29,7 +29,7 @@ event=eval_predicate entry=4297523200 selection=true cached=MemoryArrow
 event=read entry=4297523200 selection=true expr=None cached=MemoryArrow
 event=eval_predicate entry=2555904 selection=true cached=MemorySqueezedLiquid
 event=read entry=2555904 selection=true expr=None cached=MemorySqueezedLiquid
-event=io_read_squeezed_backing entry=2555904 bytes=27488
+event=io_read_squeezed_backing entry=2555904 bytes=27496
 event=eval_predicate entry=2555905 selection=true cached=MemoryLiquid
 event=read entry=2555905 selection=true expr=None cached=MemoryLiquid
 event=eval_predicate entry=2555906 selection=true cached=MemoryArrow

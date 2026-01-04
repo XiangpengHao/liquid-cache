@@ -10,7 +10,7 @@ use parquet_variant_compute::{VariantArray, shred_variant, unshred_variant};
 
 use crate::cache::{
     CacheExpression, LiquidCompressorStates, VariantRequest, cached_batch::CacheEntry,
-    transcode_liquid_inner, utils::arrow_to_bytes,
+    transcode_liquid_inner, transcode_liquid_inner_with_hint, utils::arrow_to_bytes,
 };
 use crate::liquid_array::{
     LiquidSqueezedArrayRef, SqueezeIoHandler, SqueezedBacking, VariantStructSqueezedArray,
@@ -94,7 +94,7 @@ impl SqueezePolicy for TranscodeSqueezeEvict {
                         Some(bytes),
                     );
                 }
-                match transcode_liquid_inner(array, compressor) {
+                match transcode_liquid_inner_with_hint(array, compressor, squeeze_hint) {
                     Ok(liquid_array) => (CacheEntry::memory_liquid(liquid_array), None),
                     Err(_) => {
                         let bytes =
@@ -145,20 +145,23 @@ impl SqueezePolicy for TranscodeEvict {
         &self,
         entry: &CacheEntry,
         compressor: &LiquidCompressorStates,
-        _squeeze_hint: Option<&CacheExpression>,
+        squeeze_hint: Option<&CacheExpression>,
         _squeeze_io: &Arc<dyn SqueezeIoHandler>,
     ) -> (CacheEntry, Option<Bytes>) {
         match entry {
-            CacheEntry::MemoryArrow(array) => match transcode_liquid_inner(array, compressor) {
-                Ok(liquid_array) => (CacheEntry::memory_liquid(liquid_array), None),
-                Err(_) => {
-                    let bytes = arrow_to_bytes(array).expect("failed to convert arrow to bytes");
-                    (
-                        CacheEntry::disk_arrow(array.data_type().clone()),
-                        Some(bytes),
-                    )
+            CacheEntry::MemoryArrow(array) => {
+                match transcode_liquid_inner_with_hint(array, compressor, squeeze_hint) {
+                    Ok(liquid_array) => (CacheEntry::memory_liquid(liquid_array), None),
+                    Err(_) => {
+                        let bytes =
+                            arrow_to_bytes(array).expect("failed to convert arrow to bytes");
+                        (
+                            CacheEntry::disk_arrow(array.data_type().clone()),
+                            Some(bytes),
+                        )
+                    }
                 }
-            },
+            }
             CacheEntry::MemoryLiquid(liquid_array) => {
                 let bytes = Bytes::from(liquid_array.to_bytes());
                 (
