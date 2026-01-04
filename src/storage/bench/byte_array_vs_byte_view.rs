@@ -201,6 +201,11 @@ fn array_size(_bencher: Bencher, chunk_size: usize) {
     println!("  - FSST buffer: {} bytes", byte_view_usage.fsst_buffer);
     println!("  - Shared prefix: {} bytes", byte_view_usage.shared_prefix);
     println!("  - Struct overhead: {} bytes", byte_view_usage.struct_size);
+    println!("  - Prefix: {} bytes", byte_view_usage.prefix_keys);
+    println!(
+        "  - Fingerprints: {} bytes",
+        byte_view_usage.string_fingerprints
+    );
 
     println!(
         "\nLiquidByteArray size: {} bytes",

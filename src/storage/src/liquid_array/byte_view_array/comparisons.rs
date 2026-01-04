@@ -291,6 +291,17 @@ impl LiquidByteViewArray<DiskBuffer> {
 }
 
 impl<B: FsstBacking> LiquidByteViewArray<B> {
+    /// Return (selected_rows, ambiguous_rows, unique_rows) based on prefix-only comparison.
+    pub fn prefix_compare_counts(
+        &self,
+        needle: &[u8],
+        op: &operator::Comparison,
+    ) -> (usize, usize, usize) {
+        let (dict_results, ambiguous) = self.compare_with_prefix(needle, op);
+        let selected_rows = dict_results.iter().filter(|&x| *x).count();
+        (selected_rows, ambiguous.len(), self.dictionary_keys.len())
+    }
+
     fn map_dictionary_results_to_array_results(&self, dict_results: Vec<bool>) -> BooleanArray {
         let len = self.dictionary_keys.len();
         let mut builder = BooleanBufferBuilder::new(len);
@@ -314,7 +325,7 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
 
     // returns a tuple of compare_results and ambiguous indices
     #[inline(never)]
-    fn compare_with_prefix(
+    pub(super) fn compare_with_prefix(
         &self,
         needle: &[u8],
         op: &operator::Comparison,
@@ -331,7 +342,15 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
 
         let cmp_len = needle_suffix.len().min(PrefixKey::prefix_len());
         if cmp_len == 0 {
-            ambiguous.extend(0..num_unique);
+            for (i, prefix_key) in self.prefix_keys.iter().enumerate() {
+                let is_empty_suffix = prefix_key.len_byte() == 0;
+                dict_results[i] = match op {
+                    operator::Comparison::Lt => false,
+                    operator::Comparison::LtEq => is_empty_suffix,
+                    operator::Comparison::Gt => !is_empty_suffix,
+                    operator::Comparison::GtEq => true,
+                };
+            }
             return (dict_results, ambiguous);
         }
 

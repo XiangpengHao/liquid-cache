@@ -597,7 +597,7 @@ impl LiquidCache {
             return Some(array);
         }
 
-        self.observer.on_get_squeezed_success();
+        // no shortcut, needs to read full data
         let out = match selection {
             Some(selection) => array.filter(selection).await,
             None => array.to_arrow_array().await,
@@ -792,7 +792,7 @@ impl LiquidCache {
                 }
             }
             CacheEntry::MemorySqueezedLiquid(array) => {
-                self.eval_predicate_on_squeezed(entry_id, array, selection_opt, predicate)
+                self.eval_predicate_on_squeezed(array, selection_opt, predicate)
                     .await
             }
         }
@@ -800,7 +800,6 @@ impl LiquidCache {
 
     async fn eval_predicate_on_squeezed(
         &self,
-        _entry_id: &EntryID,
         array: &LiquidSqueezedArrayRef,
         selection_opt: Option<&BooleanBuffer>,
         predicate: &Arc<dyn PhysicalExpr>,

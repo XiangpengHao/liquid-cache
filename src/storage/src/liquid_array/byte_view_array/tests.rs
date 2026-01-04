@@ -583,6 +583,21 @@ fn test_compare_with_prefix_optimization_edge_cases_and_nulls() {
 }
 
 #[test]
+fn test_compare_with_prefix_empty_suffix() {
+    let input = StringArray::from(vec!["x", "x1"]);
+    let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
+    let liquid_array = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
+
+    let result = liquid_array.compare_with_inner(b"x", &Comparison::LtEq);
+    let expected = BooleanArray::from(vec![true, false]);
+    assert_eq!(result, expected);
+
+    let result = liquid_array.compare_with_inner(b"x", &Comparison::Gt);
+    let expected = BooleanArray::from(vec![false, true]);
+    assert_eq!(result, expected);
+}
+
+#[test]
 fn test_compare_with_prefix_optimization_utf8_and_binary() {
     // Test case 4: UTF-8 encoded strings and binary data comparisons
     // This demonstrates the advantage of byte-level comparison

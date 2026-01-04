@@ -19,7 +19,7 @@ event=insert_success entry=131072 kind=MemorySqueezedLiquid
 event=insert_success entry=131074 kind=MemoryArrow
 event=eval_predicate entry=131072 selection=true cached=MemorySqueezedLiquid
 event=io_read_squeezed_backing entry=131072 bytes=260424
-event=decompress_squeezed entry=131072 decompressed=1054 total=1725
+event=decompress_squeezed entry=131072 decompressed=1054 total=1724
 event=eval_predicate entry=131073 selection=true cached=MemoryLiquid
 event=eval_predicate entry=131074 selection=true cached=MemoryArrow
 event=insert_success entry=4295098368 kind=MemoryArrow

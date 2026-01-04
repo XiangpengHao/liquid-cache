@@ -6,11 +6,13 @@ use datafusion::{
         PhysicalExpr,
         expressions::{BinaryExpr, DynamicFilterPhysicalExpr, LikeExpr, Literal},
     },
+    scalar::ScalarValue,
 };
 
 use crate::liquid_array::get_bytes_needle;
 
 /// Supported ordering comparisons for byte views.
+#[derive(Debug)]
 pub enum Comparison {
     /// Less-than.
     Lt,
@@ -23,6 +25,7 @@ pub enum Comparison {
 }
 
 /// Supported equality comparisons for byte views.
+#[derive(Debug)]
 pub enum Equality {
     /// Equal.
     Eq,
@@ -40,6 +43,7 @@ pub enum SubString {
 }
 
 /// Supported operators for byte view predicates.
+#[derive(Debug)]
 pub enum ByteViewOperator {
     /// Ordering comparison.
     Comparison(Comparison),
@@ -100,6 +104,7 @@ impl From<&ByteViewOperator> for Operator {
     }
 }
 
+#[derive(Debug)]
 pub(super) struct ByteViewExpression {
     op: ByteViewOperator,
     literal: Vec<u8>,
@@ -108,6 +113,8 @@ pub(super) struct ByteViewExpression {
 pub(super) enum UnsupportedExpression {
     Op,
     Expr,
+    // This is frequently the case with dynamic filters
+    Constant(bool),
 }
 
 impl From<UnsupportedOperator> for UnsupportedExpression {
@@ -136,6 +143,12 @@ impl TryFrom<&Arc<dyn PhysicalExpr>> for ByteViewExpression {
         } else {
             expr.clone()
         };
+
+        if let Some(literal) = expr.as_any().downcast_ref::<Literal>() {
+            if let ScalarValue::Boolean(Some(v)) = literal.value() {
+                return Err(UnsupportedExpression::Constant(*v));
+            }
+        }
 
         if let Some(binary_expr) = expr.as_any().downcast_ref::<BinaryExpr>() {
             if let Some(literal) = binary_expr.right().as_any().downcast_ref::<Literal>() {
