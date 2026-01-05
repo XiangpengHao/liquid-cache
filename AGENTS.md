@@ -13,6 +13,15 @@
 - `src/client` and `src/server`, Client/Server library, this enables distributed LiquidCache.
 - `src/local`, this is a in-process LiquidCache, used for local DataFusion instances.
 
+## Study guide
+
+This repo has many studies, they are not for production use, but only for research purposes to understand how the system behaves.
+The coding guidelines for study are different:
+
+1. Focus on concise, minimal intrusive, easy to understand code.
+2. No error handling, no robust edge case handling, just one shot code.
+3. Ok to hard code if it can simplify the implementation.
+
 ### Lineage-based cache expression
 
 1. The lineage_opt.rs analyze the input query's column usage, and passes it down to LiquidCache.
