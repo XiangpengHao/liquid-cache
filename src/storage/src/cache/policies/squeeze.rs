@@ -145,12 +145,12 @@ impl SqueezePolicy for TranscodeEvict {
         &self,
         entry: &CacheEntry,
         compressor: &LiquidCompressorStates,
-        squeeze_hint: Option<&CacheExpression>,
+        _squeeze_hint: Option<&CacheExpression>,
         _squeeze_io: &Arc<dyn SqueezeIoHandler>,
     ) -> (CacheEntry, Option<Bytes>) {
         match entry {
             CacheEntry::MemoryArrow(array) => {
-                match transcode_liquid_inner_with_hint(array, compressor, squeeze_hint) {
+                match transcode_liquid_inner_with_hint(array, compressor, None) {
                     Ok(liquid_array) => (CacheEntry::memory_liquid(liquid_array), None),
                     Err(_) => {
                         let bytes =

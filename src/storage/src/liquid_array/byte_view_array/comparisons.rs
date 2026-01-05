@@ -96,7 +96,16 @@ impl LiquidByteViewArray<FsstArray> {
             ByteViewOperator::Equality(operator::Equality::NotEq) => {
                 self.compare_not_equals(needle)
             }
-            ByteViewOperator::SubString(_) => self.compare_with_arrow_fallback(needle, op),
+            ByteViewOperator::SubString(op) => {
+                if let Some(fingerprints) = self.string_fingerprints.as_ref() {
+                    let pattern =
+                        substring_pattern_bytes(needle).expect("Invalid substring pattern");
+                    self.compare_like_substring(pattern, *op, fingerprints)
+                } else {
+                    let fallback = ByteViewOperator::SubString(*op);
+                    self.compare_with_arrow_fallback(needle, &fallback)
+                }
+            }
         }
     }
 
@@ -144,6 +153,32 @@ impl LiquidByteViewArray<FsstArray> {
     fn compare_with_arrow_fallback(&self, needle: &[u8], op: &ByteViewOperator) -> BooleanArray {
         let dict_array = self.to_dict_arrow();
         compare_with_arrow_inner(dict_array, needle, op)
+    }
+
+    pub(super) fn compare_like_substring(
+        &self,
+        needle: &[u8],
+        operator: operator::SubString,
+        fingerprints: &Arc<[u32]>,
+    ) -> BooleanArray {
+        let (dict_results, ambiguous) = compute_fingerprint_candidates(needle, fingerprints);
+
+        let dict_results = if !ambiguous.is_empty() {
+            let (values_buffer, offsets_buffer) =
+                self.fsst_buffer.to_uncompressed_selected(&ambiguous);
+            apply_like_match_on_candidates(
+                dict_results,
+                ambiguous,
+                values_buffer,
+                offsets_buffer,
+                needle,
+                operator,
+            )
+        } else {
+            dict_results
+        };
+
+        self.map_dictionary_results_to_array_results(dict_results)
     }
 }
 
@@ -248,43 +283,22 @@ impl LiquidByteViewArray<DiskBuffer> {
         operator: operator::SubString,
         fingerprints: &Arc<[u32]>,
     ) -> BooleanArray {
-        let needle_fp = StringFingerprint::from_bytes(needle);
+        let (dict_results, ambiguous) = compute_fingerprint_candidates(needle, fingerprints);
 
-        let mut dict_results = vec![false; fingerprints.len()];
-        let mut ambiguous = Vec::new();
-
-        for (index, &bits) in fingerprints.iter().enumerate() {
-            if StringFingerprint::from_bits(bits).might_contain(needle_fp) {
-                ambiguous.push(index);
-            }
-        }
-
-        if !ambiguous.is_empty() {
+        let dict_results = if !ambiguous.is_empty() {
             let (values_buffer, offsets_buffer) =
                 self.fsst_buffer.to_uncompressed_selected(&ambiguous).await;
-            // Safety: the offsets and values are valid because they are from fsst buffer, which already checked utf-8.
-            let values = unsafe { StringArray::new_unchecked(offsets_buffer, values_buffer, None) };
-            let pattern = std::str::from_utf8(needle).ok().unwrap();
-            let pattern = format!("%{}%", pattern);
-
-            let lhs = ColumnarValue::Array(Arc::new(values));
-            let rhs = ColumnarValue::Scalar(ScalarValue::Utf8(Some(pattern)));
-            let result = apply_cmp(Operator::LikeMatch, &lhs, &rhs).unwrap();
-            let result = result.into_array(ambiguous.len()).unwrap();
-            let matches = result.as_boolean();
-
-            for (pos, &dict_index) in ambiguous.iter().enumerate() {
-                if !matches.is_null(pos) && matches.value(pos) {
-                    dict_results[dict_index] = true;
-                }
-            }
-        }
-
-        if operator == operator::SubString::NotContains {
-            for value in &mut dict_results {
-                *value = !*value;
-            }
-        }
+            apply_like_match_on_candidates(
+                dict_results,
+                ambiguous,
+                values_buffer,
+                offsets_buffer,
+                needle,
+                operator,
+            )
+        } else {
+            dict_results
+        };
 
         self.map_dictionary_results_to_array_results(dict_results)
     }
@@ -570,4 +584,59 @@ fn bytes_cmp_short_auto(left: &[u8], right: &[u8]) -> std::cmp::Ordering {
     } else {
         ordering
     }
+}
+
+/// Compute which dictionary entries are candidates for matching based on fingerprints.
+/// Returns a tuple of (dict_results, ambiguous_indices).
+fn compute_fingerprint_candidates(
+    needle: &[u8],
+    fingerprints: &Arc<[u32]>,
+) -> (Vec<bool>, Vec<usize>) {
+    let needle_fp = StringFingerprint::from_bytes(needle);
+    let dict_results = vec![false; fingerprints.len()];
+    let mut ambiguous = Vec::new();
+
+    for (index, &bits) in fingerprints.iter().enumerate() {
+        if StringFingerprint::from_bits(bits).might_contain(needle_fp) {
+            ambiguous.push(index);
+        }
+    }
+
+    (dict_results, ambiguous)
+}
+
+/// Apply LIKE match operation on candidate dictionary entries.
+/// Returns updated dict_results with matches marked as true.
+fn apply_like_match_on_candidates(
+    mut dict_results: Vec<bool>,
+    ambiguous: Vec<usize>,
+    values_buffer: arrow::buffer::Buffer,
+    offsets_buffer: arrow::buffer::OffsetBuffer<i32>,
+    needle: &[u8],
+    operator: operator::SubString,
+) -> Vec<bool> {
+    // Safety: the offsets and values are valid because they are from fsst buffer, which already checked utf-8.
+    let values = unsafe { StringArray::new_unchecked(offsets_buffer, values_buffer, None) };
+    let pattern = std::str::from_utf8(needle).ok().unwrap();
+    let pattern = format!("%{}%", pattern);
+
+    let lhs = ColumnarValue::Array(Arc::new(values));
+    let rhs = ColumnarValue::Scalar(ScalarValue::Utf8(Some(pattern)));
+    let result = apply_cmp(Operator::LikeMatch, &lhs, &rhs).unwrap();
+    let result = result.into_array(ambiguous.len()).unwrap();
+    let matches = result.as_boolean();
+
+    for (pos, &dict_index) in ambiguous.iter().enumerate() {
+        if !matches.is_null(pos) && matches.value(pos) {
+            dict_results[dict_index] = true;
+        }
+    }
+
+    if operator == operator::SubString::NotContains {
+        for value in &mut dict_results {
+            *value = !*value;
+        }
+    }
+
+    dict_results
 }
