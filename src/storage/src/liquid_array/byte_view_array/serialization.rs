@@ -301,15 +301,14 @@ impl LiquidByteViewArray<FsstArray> {
         let string_fingerprints = if view_header.fingerprint_size == 0 {
             None
         } else {
-            if view_header.fingerprint_size as usize % std::mem::size_of::<u32>() != 0 {
+            if !(view_header.fingerprint_size as usize).is_multiple_of(std::mem::size_of::<u32>()) {
                 panic!("Invalid fingerprint data size");
             }
             let expected = prefix_count * std::mem::size_of::<u32>();
             if view_header.fingerprint_size as usize != expected {
                 panic!("Fingerprint data size does not match dictionary size");
             }
-            let mut fingerprints =
-                Vec::with_capacity(view_header.fingerprint_size as usize / 4);
+            let mut fingerprints = Vec::with_capacity(view_header.fingerprint_size as usize / 4);
             for chunk in bytes[cursor..fingerprint_end].chunks_exact(4) {
                 fingerprints.push(u32::from_le_bytes(chunk.try_into().unwrap()));
             }

@@ -8,8 +8,8 @@ use arrow_schema::DataType;
 use rand::{Rng, SeedableRng};
 use std::sync::Arc;
 
-use crate::cache::{CacheExpression, LiquidCompressorStates, TestSqueezeIo};
 use crate::cache::transcode_liquid_inner_with_hint;
+use crate::cache::{CacheExpression, LiquidCompressorStates, TestSqueezeIo};
 use crate::liquid_array::byte_view_array::operator::{
     ByteViewOperator, Comparison, Equality, SubString,
 };

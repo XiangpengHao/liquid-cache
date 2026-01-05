@@ -144,10 +144,10 @@ impl TryFrom<&Arc<dyn PhysicalExpr>> for ByteViewExpression {
             expr.clone()
         };
 
-        if let Some(literal) = expr.as_any().downcast_ref::<Literal>() {
-            if let ScalarValue::Boolean(Some(v)) = literal.value() {
-                return Err(UnsupportedExpression::Constant(*v));
-            }
+        if let Some(literal) = expr.as_any().downcast_ref::<Literal>()
+            && let ScalarValue::Boolean(Some(v)) = literal.value()
+        {
+            return Err(UnsupportedExpression::Constant(*v));
         }
 
         if let Some(binary_expr) = expr.as_any().downcast_ref::<BinaryExpr>() {

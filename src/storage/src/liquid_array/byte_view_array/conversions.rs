@@ -311,8 +311,9 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
 
         // Prefix keys - one per unique value in dictionary.
         let mut prefix_keys = Vec::with_capacity(values.len());
-        let mut fingerprints =
-            options.build_fingerprints.then(|| Vec::with_capacity(values.len()));
+        let mut fingerprints = options
+            .build_fingerprints
+            .then(|| Vec::with_capacity(values.len()));
 
         let mut compress_buffer = Vec::with_capacity(1024 * 1024 * 2);
 

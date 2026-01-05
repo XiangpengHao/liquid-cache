@@ -93,7 +93,10 @@ async fn main() {
         println!("Column {column} (batches: {})", stats.batches);
         for (prefix_len, sum_ratio) in stats.prefix_lengths.iter().zip(stats.sum_ratios.iter()) {
             let avg = sum_ratio / stats.batches as f64;
-            println!("  prefix {:>2} -> avg differentiability {:.6}", prefix_len, avg);
+            println!(
+                "  prefix {:>2} -> avg differentiability {:.6}",
+                prefix_len, avg
+            );
         }
     }
 }
