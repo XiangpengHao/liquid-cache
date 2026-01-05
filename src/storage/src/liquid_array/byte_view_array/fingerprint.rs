@@ -25,6 +25,10 @@ impl StringFingerprint {
         Self(bits)
     }
 
+    pub(super) fn bits(self) -> u32 {
+        self.0
+    }
+
     // Returns false only when a substring cannot be present.
     pub(super) fn might_contain(self, needle: Self) -> bool {
         (self.0 & needle.0) == needle.0

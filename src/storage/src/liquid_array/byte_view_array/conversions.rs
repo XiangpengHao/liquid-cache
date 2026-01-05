@@ -7,8 +7,9 @@ use arrow_schema::DataType;
 use fsst::Compressor;
 use std::sync::Arc;
 
-use super::LiquidByteViewArray;
+use super::{ByteViewBuildOptions, LiquidByteViewArray};
 use crate::liquid_array::byte_array::ArrowByteType;
+use crate::liquid_array::byte_view_array::fingerprint::StringFingerprint;
 use crate::liquid_array::raw::fsst_buffer::{
     FsstArray, FsstBacking, PrefixKey, RawFsstBuffer, train_compressor,
 };
@@ -20,7 +21,11 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
         array: &StringViewArray,
         compressor: Arc<Compressor>,
     ) -> LiquidByteViewArray<FsstArray> {
-        Self::from_view_array_inner(array, compressor, ArrowByteType::Utf8View)
+        Self::from_view_array_inner(
+            array,
+            compressor,
+            ByteViewBuildOptions::new(ArrowByteType::Utf8View),
+        )
     }
 
     /// Create a LiquidByteViewArray from an Arrow BinaryViewArray
@@ -28,7 +33,11 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
         array: &BinaryViewArray,
         compressor: Arc<Compressor>,
     ) -> LiquidByteViewArray<FsstArray> {
-        Self::from_view_array_inner(array, compressor, ArrowByteType::BinaryView)
+        Self::from_view_array_inner(
+            array,
+            compressor,
+            ByteViewBuildOptions::new(ArrowByteType::BinaryView),
+        )
     }
 
     /// Create a LiquidByteViewArray from an Arrow StringArray
@@ -36,7 +45,11 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
         array: &StringArray,
         compressor: Arc<Compressor>,
     ) -> LiquidByteViewArray<FsstArray> {
-        Self::from_byte_array_inner(array, compressor, ArrowByteType::Utf8)
+        Self::from_byte_array_inner(
+            array,
+            compressor,
+            ByteViewBuildOptions::new(ArrowByteType::Utf8),
+        )
     }
 
     /// Create a LiquidByteViewArray from an Arrow BinaryArray
@@ -44,17 +57,20 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
         array: &BinaryArray,
         compressor: Arc<Compressor>,
     ) -> LiquidByteViewArray<FsstArray> {
-        Self::from_byte_array_inner(array, compressor, ArrowByteType::Binary)
+        Self::from_byte_array_inner(
+            array,
+            compressor,
+            ByteViewBuildOptions::new(ArrowByteType::Binary),
+        )
     }
 
     /// Train a compressor from an Arrow StringViewArray
     pub fn train_from_string_view(
         array: &StringViewArray,
     ) -> (Arc<Compressor>, LiquidByteViewArray<FsstArray>) {
-        let compressor = Self::train_compressor(array.iter());
-        (
-            compressor.clone(),
-            Self::from_view_array_inner(array, compressor, ArrowByteType::Utf8View),
+        Self::train_from_string_view_inner(
+            array,
+            ByteViewBuildOptions::new(ArrowByteType::Utf8View),
         )
     }
 
@@ -62,10 +78,9 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
     pub fn train_from_binary_view(
         array: &BinaryViewArray,
     ) -> (Arc<Compressor>, LiquidByteViewArray<FsstArray>) {
-        let compressor = Self::train_compressor_bytes(array.iter());
-        (
-            compressor.clone(),
-            Self::from_view_array_inner(array, compressor, ArrowByteType::BinaryView),
+        Self::train_from_binary_view_inner(
+            array,
+            ByteViewBuildOptions::new(ArrowByteType::BinaryView),
         )
     }
 
@@ -73,21 +88,9 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
     pub fn train_from_arrow<T: ByteArrayType>(
         array: &GenericByteArray<T>,
     ) -> (Arc<Compressor>, LiquidByteViewArray<FsstArray>) {
-        let dict = CheckedDictionaryArray::from_byte_array::<T>(array);
-        let value_type = dict.as_ref().values().data_type();
-
-        let compressor = if value_type == &DataType::Utf8 {
-            Self::train_compressor(dict.as_ref().values().as_string::<i32>().iter())
-        } else {
-            Self::train_compressor_bytes(dict.as_ref().values().as_binary::<i32>().iter())
-        };
-        (
-            compressor.clone(),
-            Self::from_dict_array_inner(
-                dict,
-                compressor,
-                ArrowByteType::from_arrow_type(&T::DATA_TYPE),
-            ),
+        Self::train_from_arrow_inner(
+            array,
+            ByteViewBuildOptions::new(ArrowByteType::from_arrow_type(&T::DATA_TYPE)),
         )
     }
 
@@ -104,13 +107,79 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
         Self::from_dict_array_inner(
             unsafe { CheckedDictionaryArray::new_unchecked_i_know_what_i_am_doing(array) },
             compressor,
-            arrow_type,
+            ByteViewBuildOptions::new(arrow_type),
+        )
+    }
+
+    pub(crate) unsafe fn from_unique_dict_array_with_options(
+        array: &DictionaryArray<UInt16Type>,
+        compressor: Arc<Compressor>,
+        options: ByteViewBuildOptions,
+    ) -> LiquidByteViewArray<FsstArray> {
+        Self::from_dict_array_inner(
+            unsafe { CheckedDictionaryArray::new_unchecked_i_know_what_i_am_doing(array) },
+            compressor,
+            options,
         )
     }
 
     /// Train a compressor from an Arrow DictionaryArray.
     pub fn train_from_arrow_dict(
         array: &DictionaryArray<UInt16Type>,
+    ) -> (Arc<Compressor>, LiquidByteViewArray<FsstArray>) {
+        let options = if array.values().data_type() == &DataType::Utf8 {
+            ByteViewBuildOptions::new(ArrowByteType::Dict16Utf8)
+        } else if array.values().data_type() == &DataType::Binary {
+            ByteViewBuildOptions::new(ArrowByteType::Dict16Binary)
+        } else {
+            panic!("Unsupported dictionary type: {:?}", array.data_type())
+        };
+        Self::train_from_arrow_dict_inner(array, options)
+    }
+
+    pub(crate) fn train_from_string_view_inner(
+        array: &StringViewArray,
+        options: ByteViewBuildOptions,
+    ) -> (Arc<Compressor>, LiquidByteViewArray<FsstArray>) {
+        let compressor = Self::train_compressor(array.iter());
+        (
+            compressor.clone(),
+            Self::from_view_array_inner(array, compressor, options),
+        )
+    }
+
+    pub(crate) fn train_from_binary_view_inner(
+        array: &BinaryViewArray,
+        options: ByteViewBuildOptions,
+    ) -> (Arc<Compressor>, LiquidByteViewArray<FsstArray>) {
+        let compressor = Self::train_compressor_bytes(array.iter());
+        (
+            compressor.clone(),
+            Self::from_view_array_inner(array, compressor, options),
+        )
+    }
+
+    pub(crate) fn train_from_arrow_inner<T: ByteArrayType>(
+        array: &GenericByteArray<T>,
+        options: ByteViewBuildOptions,
+    ) -> (Arc<Compressor>, LiquidByteViewArray<FsstArray>) {
+        let dict = CheckedDictionaryArray::from_byte_array::<T>(array);
+        let value_type = dict.as_ref().values().data_type();
+
+        let compressor = if value_type == &DataType::Utf8 {
+            Self::train_compressor(dict.as_ref().values().as_string::<i32>().iter())
+        } else {
+            Self::train_compressor_bytes(dict.as_ref().values().as_binary::<i32>().iter())
+        };
+        (
+            compressor.clone(),
+            Self::from_dict_array_inner(dict, compressor, options),
+        )
+    }
+
+    pub(crate) fn train_from_arrow_dict_inner(
+        array: &DictionaryArray<UInt16Type>,
+        options: ByteViewBuildOptions,
     ) -> (Arc<Compressor>, LiquidByteViewArray<FsstArray>) {
         if array.values().data_type() == &DataType::Utf8 {
             let values = array.values().as_string::<i32>();
@@ -121,7 +190,7 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
                 Self::from_dict_array_inner(
                     CheckedDictionaryArray::new_checked(array),
                     compressor,
-                    ArrowByteType::Dict16Utf8,
+                    options,
                 ),
             )
         } else if array.values().data_type() == &DataType::Binary {
@@ -132,7 +201,7 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
                 Self::from_dict_array_inner(
                     CheckedDictionaryArray::new_checked(array),
                     compressor,
-                    ArrowByteType::Dict16Binary,
+                    options,
                 ),
             )
         } else {
@@ -159,10 +228,10 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
     }
 
     /// Generic implementation for view arrays (StringViewArray and BinaryViewArray)
-    fn from_view_array_inner<T>(
+    pub(crate) fn from_view_array_inner<T>(
         array: &T,
         compressor: Arc<Compressor>,
-        arrow_type: ArrowByteType,
+        options: ByteViewBuildOptions,
     ) -> LiquidByteViewArray<FsstArray>
     where
         T: Array + 'static,
@@ -176,25 +245,26 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
             panic!("Unsupported view array type")
         };
 
-        Self::from_dict_array_inner(dict, compressor, arrow_type)
+        Self::from_dict_array_inner(dict, compressor, options)
     }
 
-    fn from_byte_array_inner<T: ByteArrayType>(
+    pub(crate) fn from_byte_array_inner<T: ByteArrayType>(
         array: &GenericByteArray<T>,
         compressor: Arc<Compressor>,
-        arrow_type: ArrowByteType,
+        options: ByteViewBuildOptions,
     ) -> LiquidByteViewArray<FsstArray> {
         let dict = CheckedDictionaryArray::from_byte_array::<T>(array);
-        Self::from_dict_array_inner(dict, compressor, arrow_type)
+        Self::from_dict_array_inner(dict, compressor, options)
     }
 
     /// Core implementation that converts a CheckedDictionaryArray to LiquidByteViewArray
     fn from_dict_array_inner(
         dict: CheckedDictionaryArray,
         compressor: Arc<Compressor>,
-        arrow_type: ArrowByteType,
+        options: ByteViewBuildOptions,
     ) -> LiquidByteViewArray<FsstArray> {
         let (keys, values) = dict.as_ref().clone().into_parts();
+        let arrow_type = options.arrow_type;
 
         // Calculate shared prefix directly from values array without intermediate allocations
         let shared_prefix = if values.is_empty() {
@@ -241,6 +311,9 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
 
         // Prefix keys - one per unique value in dictionary.
         let mut prefix_keys = Vec::with_capacity(values.len());
+        let mut fingerprints = options
+            .build_fingerprints
+            .then(|| Vec::with_capacity(values.len()));
 
         let mut compress_buffer = Vec::with_capacity(1024 * 1024 * 2);
 
@@ -278,19 +351,26 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
             };
 
             prefix_keys.push(PrefixKey::new(remaining_bytes));
+            if let Some(ref mut fingerprints) = fingerprints {
+                fingerprints.push(StringFingerprint::from_bytes(value_bytes).bits());
+            }
         }
 
         assert_eq!(values.len(), byte_offsets.len() - 1);
 
         let prefix_keys: Arc<[PrefixKey]> = prefix_keys.into();
 
-        LiquidByteViewArray::from_parts(
+        let mut array = LiquidByteViewArray::from_parts(
             keys,
             prefix_keys,
             FsstArray::from_byte_offsets(Arc::new(raw_fsst_buffer), &byte_offsets, compressor),
             arrow_type,
             shared_prefix,
-        )
+        );
+        if let Some(fingerprints) = fingerprints {
+            array.string_fingerprints = Some(Arc::from(fingerprints.into_boxed_slice()));
+        }
+        array
     }
 
     /// Create LiquidByteViewArray from parts

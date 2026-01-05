@@ -19,13 +19,14 @@ pub(super) struct ByteViewArrayHeader {
     pub(super) compact_offsets_size: u32,
     pub(super) shared_prefix_size: u32,
     pub(super) fsst_raw_size: u32,
+    pub(super) fingerprint_size: u32,
 }
 
 impl ByteViewArrayHeader {
     pub(super) const fn size() -> usize {
         const _: () =
             assert!(std::mem::size_of::<ByteViewArrayHeader>() == ByteViewArrayHeader::size());
-        16
+        20
     }
 
     pub(super) fn to_bytes(&self) -> [u8; Self::size()] {
@@ -34,6 +35,7 @@ impl ByteViewArrayHeader {
         bytes[4..8].copy_from_slice(&self.compact_offsets_size.to_le_bytes());
         bytes[8..12].copy_from_slice(&self.shared_prefix_size.to_le_bytes());
         bytes[12..16].copy_from_slice(&self.fsst_raw_size.to_le_bytes());
+        bytes[16..20].copy_from_slice(&self.fingerprint_size.to_le_bytes());
         bytes
     }
 
@@ -49,11 +51,13 @@ impl ByteViewArrayHeader {
         let compact_offsets_size = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
         let shared_prefix_size = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
         let fsst_raw_size = u32::from_le_bytes(bytes[12..16].try_into().unwrap());
+        let fingerprint_size = u32::from_le_bytes(bytes[16..20].try_into().unwrap());
         Self {
             keys_size,
             compact_offsets_size,
             shared_prefix_size,
             fsst_raw_size,
+            fingerprint_size,
         }
     }
 }
@@ -87,7 +91,7 @@ impl LiquidByteViewArray<FsstArray> {
     +--------------------------------------------------+
     | LiquidIPCHeader (16 bytes)                       |
     +--------------------------------------------------+
-    | ByteViewArrayHeader (16 bytes)                   |  // keys_size, compact_offsets_size, shared_prefix_size, fsst_size
+    | ByteViewArrayHeader (20 bytes)                   |  // keys_size, compact_offsets_size, shared_prefix_size, fsst_size, fingerprint_size
     +--------------------------------------------------+
     | Padding (to 8-byte alignment)                    |
     +--------------------------------------------------+
@@ -110,6 +114,10 @@ impl LiquidByteViewArray<FsstArray> {
     | Padding (to 8-byte alignment)                    |
     +--------------------------------------------------+
     | Shared prefix bytes                              |
+    +--------------------------------------------------+
+    | Padding (to 8-byte alignment)                    |
+    +--------------------------------------------------+
+    | Optional string fingerprints (u32 per entry)     |
     +--------------------------------------------------+
     */
     pub(crate) fn to_bytes_inner(&self) -> SqueezeResult<Vec<u8>> {
@@ -174,6 +182,18 @@ impl LiquidByteViewArray<FsstArray> {
         result.extend_from_slice(&self.shared_prefix);
         let shared_prefix_size = result.len() - prefix_start;
 
+        // J) Alignment before fingerprints
+        while !result.len().is_multiple_of(8) {
+            result.push(0);
+        }
+
+        // K) Serialize string fingerprints (u32 per entry)
+        if let Some(fingerprints) = self.string_fingerprints.as_ref() {
+            for &fingerprint in fingerprints.iter() {
+                result.extend_from_slice(&fingerprint.to_le_bytes());
+            }
+        }
+
         // Prepare headers
         let ipc = LiquidIPCHeader::new(
             LiquidDataType::ByteViewArray as u16,
@@ -184,6 +204,12 @@ impl LiquidByteViewArray<FsstArray> {
             compact_offsets_size: compact_offsets_size as u32,
             shared_prefix_size: shared_prefix_size as u32,
             fsst_raw_size: fsst_raw_size as u32,
+            fingerprint_size: (self
+                .string_fingerprints
+                .as_ref()
+                .map(|fingerprints| fingerprints.len())
+                .unwrap_or(0)
+                * std::mem::size_of::<u32>()) as u32,
         };
 
         // Write headers into reserved space at start
@@ -264,6 +290,30 @@ impl LiquidByteViewArray<FsstArray> {
             panic!("Shared prefix data extends beyond input buffer");
         }
         let shared_prefix = bytes[cursor..prefix_end].to_vec();
+        cursor = prefix_end;
+
+        // F) String fingerprints
+        cursor = align_up_8(cursor);
+        let fingerprint_end = cursor + view_header.fingerprint_size as usize;
+        if fingerprint_end > bytes.len() {
+            panic!("Fingerprint data extends beyond input buffer");
+        }
+        let string_fingerprints = if view_header.fingerprint_size == 0 {
+            None
+        } else {
+            if !(view_header.fingerprint_size as usize).is_multiple_of(std::mem::size_of::<u32>()) {
+                panic!("Invalid fingerprint data size");
+            }
+            let expected = prefix_count * std::mem::size_of::<u32>();
+            if view_header.fingerprint_size as usize != expected {
+                panic!("Fingerprint data size does not match dictionary size");
+            }
+            let mut fingerprints = Vec::with_capacity(view_header.fingerprint_size as usize / 4);
+            for chunk in bytes[cursor..fingerprint_end].chunks_exact(4) {
+                fingerprints.push(u32::from_le_bytes(chunk.try_into().unwrap()));
+            }
+            Some(Arc::from(fingerprints.into_boxed_slice()))
+        };
 
         LiquidByteViewArray {
             dictionary_keys,
@@ -271,7 +321,7 @@ impl LiquidByteViewArray<FsstArray> {
             fsst_buffer: FsstArray::new(Arc::new(raw_buffer), compact_offsets, compressor),
             original_arrow_type,
             shared_prefix,
-            string_fingerprints: None,
+            string_fingerprints,
         }
     }
 }

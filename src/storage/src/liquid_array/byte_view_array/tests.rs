@@ -8,8 +8,8 @@ use arrow_schema::DataType;
 use rand::{Rng, SeedableRng};
 use std::sync::Arc;
 
-use crate::cache::CacheExpression;
-use crate::cache::TestSqueezeIo;
+use crate::cache::transcode_liquid_inner_with_hint;
+use crate::cache::{CacheExpression, LiquidCompressorStates, TestSqueezeIo};
 use crate::liquid_array::byte_view_array::operator::{
     ByteViewOperator, Comparison, Equality, SubString,
 };
@@ -72,6 +72,35 @@ fn test_squeeze_builds_string_fingerprints() {
         .downcast_ref::<LiquidByteViewArray<DiskBuffer>>()
         .expect("should downcast to disk array");
     assert!(disk_view.string_fingerprints.is_some());
+}
+
+#[test]
+fn test_ipc_roundtrip_preserves_string_fingerprints() {
+    let input = StringArray::from(vec!["alpha", "beta", "alphabet"]);
+    let array: ArrayRef = Arc::new(input);
+    let state = LiquidCompressorStates::new();
+    let liquid = transcode_liquid_inner_with_hint(
+        &array,
+        &state,
+        Some(&CacheExpression::substring_search()),
+    )
+    .expect("transcode should succeed");
+    let byte_view = liquid
+        .as_any()
+        .downcast_ref::<LiquidByteViewArray<FsstArray>>()
+        .expect("expected byte view array");
+    assert!(byte_view.string_fingerprints.is_some());
+
+    let bytes = byte_view.to_bytes();
+    let decoded = LiquidByteViewArray::<FsstArray>::from_bytes(
+        bytes.into(),
+        byte_view.fsst_buffer.compressor_arc(),
+    );
+    assert!(decoded.string_fingerprints.is_some());
+    assert_eq!(
+        byte_view.string_fingerprints.as_ref().unwrap().as_ref(),
+        decoded.string_fingerprints.as_ref().unwrap().as_ref()
+    );
 }
 
 #[tokio::test]
@@ -579,6 +608,21 @@ fn test_compare_with_prefix_optimization_edge_cases_and_nulls() {
         Some(false),
         Some(true),
     ]);
+    assert_eq!(result, expected);
+}
+
+#[test]
+fn test_compare_with_prefix_empty_suffix() {
+    let input = StringArray::from(vec!["x", "x1"]);
+    let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
+    let liquid_array = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
+
+    let result = liquid_array.compare_with_inner(b"x", &Comparison::LtEq);
+    let expected = BooleanArray::from(vec![true, false]);
+    assert_eq!(result, expected);
+
+    let result = liquid_array.compare_with_inner(b"x", &Comparison::Gt);
+    let expected = BooleanArray::from(vec![false, true]);
     assert_eq!(result, expected);
 }
 

@@ -42,12 +42,12 @@ entries.memory.squeezed_liquid: 2
 entries.disk.liquid: 0
 entries.disk.arrow: 0
 usage.memory_bytes: 230378
-usage.disk_bytes: 576264
+usage.disk_bytes: 576296
 RuntimeStatsSnapshot:
   get: 3
   get_with_selection: 3
   eval_predicate: 4
-  get_squeezed_success: 2
+  get_squeezed_success: 0
   get_squeezed_needs_io: 4
   try_read_liquid_calls: 0
   hit_date32_expression_calls: 0
@@ -55,4 +55,4 @@ RuntimeStatsSnapshot:
   write_io_count: 0
   eval_predicate_on_liquid_failed: 1
   squeezed_decompressed_count: 4359
-  squeezed_total_count: 4409
+  squeezed_total_count: 4407

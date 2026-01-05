@@ -4,6 +4,7 @@
 2. Always cargo check after coding.
 3. Consider refactoring when a function needs more than 3 args.
 4. Whenever writing a if or edge case condition, (1) think why it is needed here, whether it is a real edge case, (2) think whether we can move the condition upper to the caller, i.e., is this the best place to handle edge case?
+5. Never need to consider backward compatibility.
 
 ## Code structure
 
@@ -11,6 +12,15 @@
 - `src/parquet`, Parquet and DataFusion integration, this allows datafusion/parquet users to use LiquidCache with minimal effort.
 - `src/client` and `src/server`, Client/Server library, this enables distributed LiquidCache.
 - `src/local`, this is a in-process LiquidCache, used for local DataFusion instances.
+
+## Study guide
+
+This repo has many studies, they are not for production use, but only for research purposes to understand how the system behaves.
+The coding guidelines for study are different:
+
+1. Focus on concise, minimal intrusive, easy to understand code.
+2. No error handling, no robust edge case handling, just one shot code.
+3. Ok to hard code if it can simplify the implementation.
 
 ### Lineage-based cache expression
 

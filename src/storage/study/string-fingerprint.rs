@@ -125,8 +125,20 @@ struct CliArgs {
     pattern: String,
 
     /// Number of buckets (n). More buckets => longer fingerprint (up to 256).
-    #[arg(long, value_delimiter = ',', default_value = "4,8,12,16,20,24,28,32")]
+    #[arg(long, value_delimiter = ',', default_value = "4,8,16,32,64")]
     buckets: Vec<u16>,
+
+    /// Sweep bucket counts from start to end (inclusive).
+    #[arg(long)]
+    bucket_start: Option<u16>,
+
+    /// Sweep bucket counts from start to end (inclusive).
+    #[arg(long)]
+    bucket_end: Option<u16>,
+
+    /// Step for --bucket-start/--bucket-end.
+    #[arg(long, default_value_t = 1)]
+    bucket_step: u16,
 
     /// Bucket mapping strategy.
     #[arg(long, value_enum, default_value_t = MappingKind::RoundRobin)]
@@ -184,11 +196,13 @@ async fn main() {
         .expect("register parquet");
 
     println!(
-        "| Column | Gram | Mapping | n | Rows | Nulls | Filtered Out | % | Candidates | % | False Pos | % | Actual Present | % |"
+        "| Column | Pattern | Gram | Mapping | n | Rows | Nulls | Filtered Out | % | Candidates | % | False Pos | % | Actual Present | % |"
     );
     println!(
-        "|--------|------|---------|---|------|-------|--------------|---|------------|---|-----------|---|----------------|---|"
+        "|--------|---------|------|---------|---|------|-------|--------------|---|------------|---|-----------|---|----------------|---|"
     );
+
+    let bucket_counts = resolve_bucket_counts(&args);
 
     for column in &args.columns {
         let sql = if let Some(limit) = args.limit {
@@ -208,7 +222,7 @@ async fn main() {
             ([0u64; 256], [false; 256])
         };
 
-        for &bucket_count in &args.buckets {
+        for &bucket_count in &bucket_counts {
             let mapping = build_mapping(
                 bucket_count,
                 args.mapping,
@@ -231,7 +245,8 @@ async fn main() {
             let actual_present_pct = pct(stats.actual_present, non_null);
 
             println!(
-                "| {column} | One | {} | {bucket_count} | {} | {} | {} | {:.2}% | {} | {:.2}% | {} | {:.2}% | {} | {:.2}% |",
+                "| {column} | {} | One | {} | {bucket_count} | {} | {} | {} | {:.2}% | {} | {:.2}% | {} | {:.2}% | {} | {:.2}% |",
+                args.pattern,
                 mapping_label(args.mapping),
                 stats.rows,
                 stats.nulls,
@@ -245,6 +260,32 @@ async fn main() {
                 actual_present_pct,
             );
         }
+    }
+}
+
+fn resolve_bucket_counts(args: &CliArgs) -> Vec<u16> {
+    match (args.bucket_start, args.bucket_end) {
+        (Some(start), Some(end)) => {
+            assert!(args.bucket_step > 0, "bucket_step must be > 0");
+            assert!(
+                (1..=256).contains(&start) && (1..=256).contains(&end),
+                "bucket_start and bucket_end must be in 1..=256"
+            );
+            assert!(start <= end, "bucket_start must be <= bucket_end");
+            let mut buckets = Vec::new();
+            let mut value = start;
+            while value <= end {
+                buckets.push(value);
+                let next = value.saturating_add(args.bucket_step);
+                if next == value {
+                    break;
+                }
+                value = next;
+            }
+            buckets
+        }
+        (None, None) => args.buckets.clone(),
+        _ => panic!("bucket_start and bucket_end must be set together"),
     }
 }
 

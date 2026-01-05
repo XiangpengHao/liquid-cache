@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use super::LiquidByteViewArray;
 use super::operator::{ByteViewExpression, ByteViewOperator};
+use crate::liquid_array::byte_view_array::operator::UnsupportedExpression;
 use crate::liquid_array::raw::FsstArray;
 use crate::liquid_array::raw::fsst_buffer::{DiskBuffer, FsstBacking};
 
@@ -34,7 +35,20 @@ pub(super) fn try_eval_predicate_in_memory(
     expr: &Arc<dyn PhysicalExpr>,
     array: &LiquidByteViewArray<FsstArray>,
 ) -> Option<BooleanArray> {
-    let expr = ByteViewExpression::try_from(expr).ok()?;
+    let expr = match ByteViewExpression::try_from(expr) {
+        Ok(expr) => expr,
+        Err(UnsupportedExpression::Constant(v)) => {
+            let bool_array = if v {
+                BooleanBuffer::new_set(array.len())
+            } else {
+                BooleanBuffer::new_unset(array.len())
+            };
+            return Some(BooleanArray::new(bool_array, array.nulls().cloned()));
+        }
+        Err(UnsupportedExpression::Expr) | Err(UnsupportedExpression::Op) => {
+            return None;
+        }
+    };
     let op = expr.op();
     let needle = expr.literal();
     if let ByteViewOperator::SubString(_substring_op) = op
@@ -49,9 +63,23 @@ pub(super) async fn try_eval_predicate_on_disk(
     expr: &Arc<dyn PhysicalExpr>,
     array: &LiquidByteViewArray<DiskBuffer>,
 ) -> Option<BooleanArray> {
-    let expr = ByteViewExpression::try_from(expr).ok()?;
-    let op = expr.op();
-    let needle = expr.literal();
+    let cur_expr = match ByteViewExpression::try_from(expr) {
+        Ok(expr) => expr,
+        Err(UnsupportedExpression::Constant(v)) => {
+            let bool_array = if v {
+                BooleanBuffer::new_set(array.len())
+            } else {
+                BooleanBuffer::new_unset(array.len())
+            };
+            return Some(BooleanArray::new(bool_array, array.nulls().cloned()));
+        }
+        Err(UnsupportedExpression::Expr) | Err(UnsupportedExpression::Op) => {
+            return None;
+        }
+    };
+
+    let op = cur_expr.op();
+    let needle = cur_expr.literal();
 
     if let ByteViewOperator::SubString(_substring_op) = op
         && array.string_fingerprints.as_ref().is_none()

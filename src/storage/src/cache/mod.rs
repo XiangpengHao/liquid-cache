@@ -26,7 +26,7 @@ pub use policies::{
     AlwaysHydrate, CachePolicy, HydrationPolicy, HydrationRequest, LiquidPolicy, MaterializedEntry,
     NoHydration, SqueezePolicy, TranscodeSqueezeEvict,
 };
-pub use transcode::transcode_liquid_inner;
+pub use transcode::{transcode_liquid_inner, transcode_liquid_inner_with_hint};
 pub use utils::{EntryID, LiquidCompressorStates};
 
 // Backwards-compatible module paths for existing imports.

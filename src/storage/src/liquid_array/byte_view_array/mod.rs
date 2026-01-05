@@ -89,6 +89,28 @@ pub struct LiquidByteViewArray<B: FsstBacking> {
     pub(super) string_fingerprints: Option<Arc<[u32]>>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ByteViewBuildOptions {
+    pub(super) arrow_type: ArrowByteType,
+    pub(super) build_fingerprints: bool,
+}
+
+impl ByteViewBuildOptions {
+    pub(crate) fn new(arrow_type: ArrowByteType) -> Self {
+        Self {
+            arrow_type,
+            build_fingerprints: false,
+        }
+    }
+
+    pub(crate) fn for_data_type(data_type: &DataType, build_fingerprints: bool) -> Self {
+        Self {
+            arrow_type: ArrowByteType::from_arrow_type(data_type),
+            build_fingerprints,
+        }
+    }
+}
+
 impl<B: FsstBacking> std::fmt::Debug for LiquidByteViewArray<B> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LiquidByteViewArray")
@@ -265,8 +287,10 @@ impl LiquidArray for LiquidByteViewArray<FsstArray> {
 
         let string_fingerprints = if matches!(squeeze_hint, Some(CacheExpression::SubstringSearch))
         {
-            let (values_buffer, offsets_buffer) = self.fsst_buffer.to_uncompressed();
-            Some(build_fingerprints(&values_buffer, &offsets_buffer))
+            self.string_fingerprints.clone().or_else(|| {
+                let (values_buffer, offsets_buffer) = self.fsst_buffer.to_uncompressed();
+                Some(build_fingerprints(&values_buffer, &offsets_buffer))
+            })
         } else {
             None
         };

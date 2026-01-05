@@ -119,3 +119,13 @@ harness = false
 name = "string_fingerprint_study"
 path = "study/string-fingerprint.rs"
 harness = false
+
+[[bench]]
+name = "filter_selectivity_ambiguity"
+path = "study/filter_selectivity_ambiguity.rs"
+harness = false
+
+[[bench]]
+name = "prefix_differentiability"
+path = "study/prefix_differentiability.rs"
+harness = false

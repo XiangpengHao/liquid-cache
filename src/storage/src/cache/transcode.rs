@@ -4,13 +4,14 @@ use arrow::array::types::*;
 use arrow::array::{ArrayRef, AsArray};
 use arrow_schema::{DataType, TimeUnit};
 
+use crate::liquid_array::byte_view_array::ByteViewBuildOptions;
 use crate::liquid_array::raw::FsstArray;
 use crate::liquid_array::{
     LiquidArrayRef, LiquidByteViewArray, LiquidFixedLenByteArray, LiquidFloatArray,
     LiquidPrimitiveArray,
 };
 
-use super::utils::LiquidCompressorStates;
+use super::{CacheExpression, utils::LiquidCompressorStates};
 
 fn with_fsst_compressor_or_train(
     state: &LiquidCompressorStates,
@@ -37,6 +38,15 @@ fn with_fsst_compressor_or_train(
 pub fn transcode_liquid_inner<'a>(
     array: &'a ArrayRef,
     state: &LiquidCompressorStates,
+) -> Result<LiquidArrayRef, &'a ArrayRef> {
+    transcode_liquid_inner_with_hint(array, state, None)
+}
+
+/// Transcode with an optional hint to precompute metadata (e.g., substring fingerprints).
+pub fn transcode_liquid_inner_with_hint<'a>(
+    array: &'a ArrayRef,
+    state: &LiquidCompressorStates,
+    squeeze_hint: Option<&CacheExpression>,
 ) -> Result<LiquidArrayRef, &'a ArrayRef> {
     let data_type = array.data_type();
     if data_type.is_primitive() {
@@ -150,20 +160,25 @@ pub fn transcode_liquid_inner<'a>(
     }
 
     // Handle string/dictionary types.
+    let build_fingerprints = matches!(squeeze_hint, Some(CacheExpression::SubstringSearch));
     match array.data_type() {
         DataType::Utf8View => {
+            let options =
+                ByteViewBuildOptions::for_data_type(array.data_type(), build_fingerprints);
             let liquid_array = with_fsst_compressor_or_train(
                 state,
                 |compressor| {
-                    Arc::new(LiquidByteViewArray::<FsstArray>::from_string_view_array(
+                    Arc::new(LiquidByteViewArray::<FsstArray>::from_view_array_inner(
                         array.as_string_view(),
                         compressor,
+                        options,
                     ))
                 },
                 || {
                     let (compressor, compressed) =
-                        LiquidByteViewArray::<FsstArray>::train_from_string_view(
+                        LiquidByteViewArray::<FsstArray>::train_from_string_view_inner(
                             array.as_string_view(),
+                            options,
                         );
                     (compressor, Arc::new(compressed))
                 },
@@ -171,18 +186,22 @@ pub fn transcode_liquid_inner<'a>(
             Ok(liquid_array)
         }
         DataType::BinaryView => {
+            let options =
+                ByteViewBuildOptions::for_data_type(array.data_type(), build_fingerprints);
             let liquid_array = with_fsst_compressor_or_train(
                 state,
                 |compressor| {
-                    Arc::new(LiquidByteViewArray::<FsstArray>::from_binary_view_array(
+                    Arc::new(LiquidByteViewArray::<FsstArray>::from_view_array_inner(
                         array.as_binary_view(),
                         compressor,
+                        options,
                     ))
                 },
                 || {
                     let (compressor, compressed) =
-                        LiquidByteViewArray::<FsstArray>::train_from_binary_view(
+                        LiquidByteViewArray::<FsstArray>::train_from_binary_view_inner(
                             array.as_binary_view(),
+                            options,
                         );
                     (compressor, Arc::new(compressed))
                 },
@@ -190,18 +209,22 @@ pub fn transcode_liquid_inner<'a>(
             Ok(liquid_array)
         }
         DataType::Utf8 => {
+            let options =
+                ByteViewBuildOptions::for_data_type(array.data_type(), build_fingerprints);
             let liquid_array = with_fsst_compressor_or_train(
                 state,
                 |compressor| {
-                    Arc::new(LiquidByteViewArray::<FsstArray>::from_string_array(
+                    Arc::new(LiquidByteViewArray::<FsstArray>::from_byte_array_inner(
                         array.as_string::<i32>(),
                         compressor,
+                        options,
                     ))
                 },
                 || {
                     let (compressor, compressed) =
-                        LiquidByteViewArray::<FsstArray>::train_from_arrow(
+                        LiquidByteViewArray::<FsstArray>::train_from_arrow_inner(
                             array.as_string::<i32>(),
+                            options,
                         );
                     (compressor, Arc::new(compressed))
                 },
@@ -209,18 +232,22 @@ pub fn transcode_liquid_inner<'a>(
             Ok(liquid_array)
         }
         DataType::Binary => {
+            let options =
+                ByteViewBuildOptions::for_data_type(array.data_type(), build_fingerprints);
             let liquid_array = with_fsst_compressor_or_train(
                 state,
                 |compressor| {
-                    Arc::new(LiquidByteViewArray::<FsstArray>::from_binary_array(
+                    Arc::new(LiquidByteViewArray::<FsstArray>::from_byte_array_inner(
                         array.as_binary::<i32>(),
                         compressor,
+                        options,
                     ))
                 },
                 || {
                     let (compressor, compressed) =
-                        LiquidByteViewArray::<FsstArray>::train_from_arrow(
+                        LiquidByteViewArray::<FsstArray>::train_from_arrow_inner(
                             array.as_binary::<i32>(),
+                            options,
                         );
                     (compressor, Arc::new(compressed))
                 },
@@ -229,16 +256,22 @@ pub fn transcode_liquid_inner<'a>(
         }
         DataType::Dictionary(_, _) => {
             if let Some(dict_array) = array.as_dictionary_opt::<UInt16Type>() {
+                let options =
+                    ByteViewBuildOptions::for_data_type(array.data_type(), build_fingerprints);
                 let liquid_array = with_fsst_compressor_or_train(
                     state,
                     |compressor| unsafe {
-                        Arc::new(LiquidByteViewArray::<FsstArray>::from_unique_dict_array(
-                            dict_array, compressor,
-                        ))
+                        Arc::new(
+                            LiquidByteViewArray::<FsstArray>::from_unique_dict_array_with_options(
+                                dict_array, compressor, options,
+                            ),
+                        )
                     },
                     || {
                         let (compressor, liquid_array) =
-                            LiquidByteViewArray::<FsstArray>::train_from_arrow_dict(dict_array);
+                            LiquidByteViewArray::<FsstArray>::train_from_arrow_dict_inner(
+                                dict_array, options,
+                            );
                         (compressor, Arc::new(liquid_array))
                     },
                 );

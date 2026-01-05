@@ -73,10 +73,23 @@ impl LiquidCache {
         let mut disk_liquid_entries = 0usize;
         let mut disk_arrow_entries = 0usize;
 
+        let mut memory_arrow_bytes = 0usize;
+        let mut memory_liquid_bytes = 0usize;
+        let mut memory_squeezed_liquid_bytes = 0usize;
+
         self.index.for_each(|_, batch| match batch {
-            CacheEntry::MemoryArrow(_) => memory_arrow_entries += 1,
-            CacheEntry::MemoryLiquid(_) => memory_liquid_entries += 1,
-            CacheEntry::MemorySqueezedLiquid(_) => memory_squeezed_liquid_entries += 1,
+            CacheEntry::MemoryArrow(array) => {
+                memory_arrow_entries += 1;
+                memory_arrow_bytes += array.get_array_memory_size();
+            }
+            CacheEntry::MemoryLiquid(array) => {
+                memory_liquid_entries += 1;
+                memory_liquid_bytes += array.get_array_memory_size();
+            }
+            CacheEntry::MemorySqueezedLiquid(array) => {
+                memory_squeezed_liquid_entries += 1;
+                memory_squeezed_liquid_bytes += array.get_array_memory_size();
+            }
             CacheEntry::DiskLiquid(_) => disk_liquid_entries += 1,
             CacheEntry::DiskArrow(_) => disk_arrow_entries += 1,
         });
@@ -92,6 +105,9 @@ impl LiquidCache {
             memory_squeezed_liquid_entries,
             disk_liquid_entries,
             disk_arrow_entries,
+            memory_arrow_bytes,
+            memory_liquid_bytes,
+            memory_squeezed_liquid_bytes,
             memory_usage_bytes,
             disk_usage_bytes,
             max_cache_bytes: self.config.max_cache_bytes(),
@@ -597,7 +613,7 @@ impl LiquidCache {
             return Some(array);
         }
 
-        self.observer.on_get_squeezed_success();
+        // no shortcut, needs to read full data
         let out = match selection {
             Some(selection) => array.filter(selection).await,
             None => array.to_arrow_array().await,
@@ -792,7 +808,7 @@ impl LiquidCache {
                 }
             }
             CacheEntry::MemorySqueezedLiquid(array) => {
-                self.eval_predicate_on_squeezed(entry_id, array, selection_opt, predicate)
+                self.eval_predicate_on_squeezed(array, selection_opt, predicate)
                     .await
             }
         }
@@ -800,7 +816,6 @@ impl LiquidCache {
 
     async fn eval_predicate_on_squeezed(
         &self,
-        _entry_id: &EntryID,
         array: &LiquidSqueezedArrayRef,
         selection_opt: Option<&BooleanBuffer>,
         predicate: &Arc<dyn PhysicalExpr>,
