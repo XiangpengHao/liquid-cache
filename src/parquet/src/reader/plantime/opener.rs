@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::{
@@ -9,20 +10,22 @@ use crate::{
     },
 };
 use ahash::AHashMap;
-use arrow_schema::{Field, FieldRef, Schema, SchemaRef};
+use arrow::array::RecordBatch;
+use arrow::record_batch::RecordBatchOptions;
+use arrow_schema::{Field, Schema, SchemaRef};
 use datafusion::{
-    common::exec_err,
+    common::{ColumnStatistics, ScalarValue, Statistics, exec_err, stats::Precision},
     datasource::{
         listing::PartitionedFile,
         physical_plan::{
             FileOpenFuture, FileOpener, ParquetFileMetrics,
             parquet::{PagePruningAccessPlanFilter, ParquetAccessPlan},
         },
-        schema_adapter::SchemaAdapterFactory,
+        table_schema::TableSchema,
     },
     error::DataFusionError,
-    physical_expr::PhysicalExprSimplifier,
-    physical_expr_adapter::PhysicalExprAdapterFactory,
+    physical_expr::{PhysicalExprSimplifier, projection::ProjectionExprs, utils::reassign_expr_columns},
+    physical_expr_adapter::{PhysicalExprAdapterFactory, replace_columns_with_literals},
     physical_expr_common::physical_expr::is_dynamic_physical_expr,
     physical_optimizer::pruning::{FilePruner, PruningPredicate, build_pruning_predicate},
     physical_plan::{
@@ -43,18 +46,17 @@ use super::source::CachedMetaReaderFactory;
 
 pub struct LiquidParquetOpener {
     partition_index: usize,
-    projection: Arc<[usize]>,
+    projection: ProjectionExprs,
     batch_size: usize,
     limit: Option<usize>,
     predicate: Option<Arc<dyn PhysicalExpr>>,
-    logical_file_schema: SchemaRef,
-    partition_fields: Vec<FieldRef>,
+    table_schema: TableSchema,
     metrics: ExecutionPlanMetricsSet,
     parquet_file_reader_factory: Arc<CachedMetaReaderFactory>,
+    pushdown_filters: bool,
     reorder_filters: bool,
     liquid_cache: LiquidCacheParquetRef,
-    schema_adapter_factory: Arc<dyn SchemaAdapterFactory>,
-    expr_adapter_factory: Option<Arc<dyn PhysicalExprAdapterFactory>>,
+    expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory>,
     span: Option<Arc<fastrace::Span>>,
 }
 
@@ -62,18 +64,17 @@ impl LiquidParquetOpener {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         partition_index: usize,
-        projection: Arc<[usize]>,
+        projection: ProjectionExprs,
         batch_size: usize,
         limit: Option<usize>,
         predicate: Option<Arc<dyn PhysicalExpr>>,
-        logical_file_schema: SchemaRef,
-        partition_fields: Vec<FieldRef>,
+        table_schema: TableSchema,
         metrics: ExecutionPlanMetricsSet,
         liquid_cache: LiquidCacheParquetRef,
         parquet_file_reader_factory: Arc<CachedMetaReaderFactory>,
+        pushdown_filters: bool,
         reorder_filters: bool,
-        schema_adapter_factory: Arc<dyn SchemaAdapterFactory>,
-        expr_adapter_factory: Option<Arc<dyn PhysicalExprAdapterFactory>>,
+        expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory>,
         span: Option<Arc<fastrace::Span>>,
     ) -> Self {
         Self {
@@ -82,13 +83,12 @@ impl LiquidParquetOpener {
             batch_size,
             limit,
             predicate,
-            logical_file_schema,
-            partition_fields,
+            table_schema,
             metrics,
             liquid_cache,
             parquet_file_reader_factory,
+            pushdown_filters,
             reorder_filters,
-            schema_adapter_factory,
             expr_adapter_factory,
             span,
         }
@@ -142,23 +142,43 @@ impl FileOpener for LiquidParquetOpener {
 
         let batch_size = self.batch_size;
 
-        let projected_schema = SchemaRef::from(self.logical_file_schema.project(&self.projection)?);
-        let schema_adapter = self.schema_adapter_factory.create(
-            Arc::clone(&projected_schema),
-            Arc::clone(&self.logical_file_schema),
+        let logical_file_schema = Arc::clone(self.table_schema.file_schema());
+        let output_schema = Arc::new(
+            self.projection
+                .project_schema(self.table_schema.table_schema().as_ref())?,
         );
+
+        let mut literal_columns: HashMap<String, ScalarValue> = self
+            .table_schema
+            .table_partition_cols()
+            .iter()
+            .zip(partitioned_file.partition_values.iter())
+            .map(|(field, value)| (field.name().clone(), value.clone()))
+            .collect();
+        literal_columns.extend(constant_columns_from_stats(
+            partitioned_file.statistics.as_deref(),
+            &logical_file_schema,
+        ));
+
+        let mut projection = self.projection.clone();
         let mut predicate = self.predicate.clone();
-        let partition_fields = self.partition_fields.clone();
-        let logical_file_schema = Arc::clone(&self.logical_file_schema);
+        if !literal_columns.is_empty() {
+            projection = projection.try_map_exprs(|expr| {
+                replace_columns_with_literals(Arc::clone(&expr), &literal_columns)
+            })?;
+            predicate = predicate
+                .map(|p| replace_columns_with_literals(p, &literal_columns))
+                .transpose()?;
+        }
+
         let reorder_predicates = self.reorder_filters;
+        let pushdown_filters = self.pushdown_filters;
         let limit = self.limit;
 
         let predicate_creation_errors =
             MetricBuilder::new(&self.metrics).global_counter("num_predicate_creation_errors");
 
-        let schema_adapter_factory = Arc::clone(&self.schema_adapter_factory);
-        let expr_adapter_factory = self.expr_adapter_factory.clone();
-        let mut predicate_file_schema = Arc::clone(&logical_file_schema);
+        let expr_adapter_factory = Arc::clone(&self.expr_adapter_factory);
         let span = self.span.clone();
         Ok(Box::pin(async move {
             // Prune this file using the file level statistics and partition values.
@@ -171,20 +191,15 @@ impl FileOpener for LiquidParquetOpener {
             // we can end the stream early.
             let mut file_pruner = predicate
                 .as_ref()
-                .map(|p| {
-                    Ok::<_, DataFusionError>(
-                        (is_dynamic_physical_expr(p) | partitioned_file.has_statistics())
-                            .then_some(FilePruner::new(
-                                Arc::clone(p),
-                                &logical_file_schema,
-                                partition_fields.clone(),
-                                partitioned_file.clone(),
-                                predicate_creation_errors.clone(),
-                            )?),
+                .filter(|p| is_dynamic_physical_expr(p) || partitioned_file.has_statistics())
+                .and_then(|p| {
+                    FilePruner::try_new(
+                        Arc::clone(p),
+                        &logical_file_schema,
+                        &partitioned_file,
+                        predicate_creation_errors.clone(),
                     )
-                })
-                .transpose()?
-                .flatten();
+                });
 
             if let Some(file_pruner) = &mut file_pruner
                 && file_pruner.should_prune()?
@@ -225,34 +240,21 @@ impl FileOpener for LiquidParquetOpener {
                 "meta data must be cached already"
             );
 
-            if let Some(expr_adapter_factory) = expr_adapter_factory {
-                use itertools::Itertools;
-                predicate = predicate
-                    .map(|p| {
-                        let partition_values = partition_fields
-                            .iter()
-                            .cloned()
-                            .zip(partitioned_file.partition_values.clone())
-                            .collect_vec();
-                        let expr = expr_adapter_factory
-                            .create(
-                                Arc::clone(&logical_file_schema),
-                                Arc::clone(&physical_file_schema),
-                            )
-                            .with_partition_values(partition_values)
-                            .rewrite(p)?;
-                        // After rewriting to the file schema, further simplifications may be possible.
-                        // For example, if `'a' = col_that_is_missing` becomes `'a' = NULL` that can then be simplified to `FALSE`
-                        // and we can avoid doing any more work on the file (bloom filters, loading the page index, etc.).
-                        PhysicalExprSimplifier::new(&physical_file_schema).simplify(expr)
-                    })
-                    .transpose()?;
-                predicate_file_schema = Arc::clone(&physical_file_schema);
-            }
+            // Adapt predicate and projection to the physical file schema.
+            let rewriter = expr_adapter_factory.create(
+                Arc::clone(&logical_file_schema),
+                Arc::clone(&physical_file_schema),
+            );
+            let simplifier = PhysicalExprSimplifier::new(&physical_file_schema);
+            predicate = predicate
+                .map(|p| simplifier.simplify(rewriter.rewrite(p)?))
+                .transpose()?;
+            projection = projection
+                .try_map_exprs(|p| simplifier.simplify(rewriter.rewrite(p)?))?;
 
             let (pruning_predicate, page_pruning_predicate) = build_pruning_predicates(
                 predicate.as_ref(),
-                &predicate_file_schema,
+                &physical_file_schema,
                 &predicate_creation_errors,
             );
 
@@ -263,35 +265,33 @@ impl FileOpener for LiquidParquetOpener {
                 reader_metadata.clone(),
             );
 
-            let (schema_mapping, adapted_projections) =
-                schema_adapter.map_schema(&physical_file_schema)?;
-
-            let mask = ProjectionMask::roots(
-                builder.parquet_schema(),
-                adapted_projections.iter().cloned(),
-            );
+            let indices = projection.column_indices();
+            let mask = ProjectionMask::roots(builder.parquet_schema(), indices);
 
             // Filter pushdown: evaluate predicates during scan
-            let row_filter = predicate.as_ref().and_then(|p| {
-                let row_filter = build_row_filter(
-                    p,
-                    &physical_file_schema,
-                    &predicate_file_schema,
-                    reader_metadata.metadata(),
-                    reorder_predicates,
-                    &file_metrics,
-                    &schema_adapter_factory,
-                );
+            let row_filter = pushdown_filters
+                .then_some(predicate.as_ref())
+                .flatten()
+                .and_then(|p| {
+                    let row_filter = build_row_filter(
+                        p,
+                        &physical_file_schema,
+                        reader_metadata.metadata(),
+                        reorder_predicates,
+                        &file_metrics,
+                    );
 
-                match row_filter {
-                    Ok(Some(filter)) => Some(filter),
-                    Ok(None) => None,
-                    Err(e) => {
-                        debug!("Ignoring error building row filter for '{predicate:?}': {e:?}");
-                        None
+                    match row_filter {
+                        Ok(Some(filter)) => Some(filter),
+                        Ok(None) => None,
+                        Err(e) => {
+                            debug!(
+                                "Ignoring error building row filter for '{predicate:?}': {e:?}"
+                            );
+                            None
+                        }
                     }
-                }
-            });
+                });
 
             // Determine which row groups to actually read. The idea is to skip
             // as many row groups as possible based on the metadata and query
@@ -368,13 +368,94 @@ impl FileOpener for LiquidParquetOpener {
 
             let stream = liquid_builder.build(liquid_cache)?;
 
+            let stream_schema = stream.schema();
+            let replace_schema = !stream_schema.eq(&output_schema);
+
+            let projection = projection
+                .try_map_exprs(|expr| reassign_expr_columns(expr, &stream_schema))?;
+            let projector = projection.make_projector(&stream_schema)?;
+
             let adapted = stream
                 .map_err(|e| DataFusionError::External(Box::new(e)))
-                .map(move |batch| batch.and_then(|batch| schema_mapping.map_batch(batch)));
+                .map(move |batch| {
+                    batch.and_then(|mut batch| {
+                        batch = projector.project_batch(&batch)?;
+                        if replace_schema {
+                            let (_stream_schema, arrays, num_rows) = batch.into_parts();
+                            let options =
+                                RecordBatchOptions::new().with_row_count(Some(num_rows));
+                            RecordBatch::try_new_with_options(
+                                Arc::clone(&output_schema),
+                                arrays,
+                                &options,
+                            )
+                            .map_err(Into::into)
+                        } else {
+                            Ok(batch)
+                        }
+                    })
+                });
 
             Ok(adapted.boxed())
         }))
     }
+}
+
+type ConstantColumns = HashMap<String, ScalarValue>;
+
+fn constant_columns_from_stats(
+    statistics: Option<&Statistics>,
+    file_schema: &SchemaRef,
+) -> ConstantColumns {
+    let mut constants = HashMap::new();
+    let Some(statistics) = statistics else {
+        return constants;
+    };
+
+    let num_rows = match statistics.num_rows {
+        Precision::Exact(num_rows) => Some(num_rows),
+        _ => None,
+    };
+
+    for (idx, column_stats) in statistics
+        .column_statistics
+        .iter()
+        .take(file_schema.fields().len())
+        .enumerate()
+    {
+        let field = file_schema.field(idx);
+        if let Some(value) =
+            constant_value_from_stats(column_stats, num_rows, field.data_type())
+        {
+            constants.insert(field.name().clone(), value);
+        }
+    }
+
+    constants
+}
+
+fn constant_value_from_stats(
+    column_stats: &ColumnStatistics,
+    num_rows: Option<usize>,
+    data_type: &arrow_schema::DataType,
+) -> Option<ScalarValue> {
+    if let (Precision::Exact(min), Precision::Exact(max)) =
+        (&column_stats.min_value, &column_stats.max_value)
+        && min == max
+        && !min.is_null()
+        && matches!(column_stats.null_count, Precision::Exact(0))
+    {
+        return Some(min.clone());
+    }
+
+    if let (Some(num_rows), Precision::Exact(nulls)) =
+        (num_rows, &column_stats.null_count)
+        && *nulls == num_rows
+    {
+        return ScalarValue::try_new_null(data_type).ok();
+    }
+
+    None
 }
 
 fn create_initial_plan(

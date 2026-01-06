@@ -587,6 +587,12 @@ impl std::fmt::Debug for LiquidStream {
     }
 }
 
+impl LiquidStream {
+    pub fn schema(&self) -> SchemaRef {
+        Arc::clone(&self.schema)
+    }
+}
+
 impl Stream for LiquidStream {
     type Item = Result<RecordBatch, parquet::errors::ParquetError>;
 

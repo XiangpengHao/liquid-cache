@@ -40,8 +40,8 @@ parquet = { version = "57.0.0", features = [
 	"experimental",
 	"variant_experimental",
 ] }
-parquet-variant-json = { version = "0.2.0" }
-parquet-variant-compute = { version = "0.2.0" }
+parquet-variant-json = { version = "57.1.0" }
+parquet-variant-compute = { version = "57.1.0" }
 datafusion = { version = "51.0.0" }
 datafusion-proto = { version = "51.0.0" }
 async-trait = "0.1.89"

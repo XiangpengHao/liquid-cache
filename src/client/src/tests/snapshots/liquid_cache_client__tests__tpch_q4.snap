@@ -35,12 +35,6 @@ expression: displayable.tree_render().to_string()
 │      FinalPartitioned     │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
-│    CoalesceBatchesExec    │
-│    --------------------   │
-│     target_batch_size:    │
-│           16384           │
-└─────────────┬─────────────┘
-┌─────────────┴─────────────┐
 │      RepartitionExec      │
 │    --------------------   │
 │ partition_count(in->out): │
@@ -61,18 +55,12 @@ expression: displayable.tree_render().to_string()
 │       mode: Partial       │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
-│    CoalesceBatchesExec    │
-│    --------------------   │
-│     target_batch_size:    │
-│           16384           │
-└─────────────┬─────────────┘
-┌─────────────┴─────────────┐
 │        HashJoinExec       │
 │    --------------------   │
-│    join_type: RightSemi   │
+│    join_type: LeftSemi    │
 │                           ├──────────────┐
 │            on:            │              │
-│ (l_orderkey = o_orderkey) │              │
+│ (o_orderkey = l_orderkey) │              │
 └─────────────┬─────────────┘              │
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
 │   LiquidCacheClientExec   ││   LiquidCacheClientExec   │
@@ -88,8 +76,9 @@ expression: displayable.tree_render().to_string()
 │      format: parquet      ││           1 -> 8          │
 │                           ││                           │
 │         predicate:        ││    partitioning_scheme:   │
-│      l_receiptdate >      ││     RoundRobinBatch(8)    │
-│        l_commitdate       ││                           │
+│ o_orderdate >= 1993-07-01 ││     RoundRobinBatch(8)    │
+│   AND o_orderdate < 1993  ││                           │
+│           -10-01          ││                           │
 └───────────────────────────┘└─────────────┬─────────────┘
                              ┌─────────────┴─────────────┐
                              │       DataSourceExec      │
@@ -98,7 +87,6 @@ expression: displayable.tree_render().to_string()
                              │      format: parquet      │
                              │                           │
                              │         predicate:        │
-                             │ o_orderdate >= 1993-07-01 │
-                             │   AND o_orderdate < 1993  │
-                             │           -10-01          │
+                             │      l_receiptdate >      │
+                             │        l_commitdate       │
                              └───────────────────────────┘

@@ -31,12 +31,6 @@ expression: displayable.tree_render().to_string()
 │      FinalPartitioned     │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
-│    CoalesceBatchesExec    │
-│    --------------------   │
-│     target_batch_size:    │
-│           16384           │
-└─────────────┬─────────────┘
-┌─────────────┴─────────────┐
 │      RepartitionExec      │
 │    --------------------   │
 │ partition_count(in->out): │
@@ -70,12 +64,6 @@ expression: displayable.tree_render().to_string()
 │      FinalPartitioned     │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
-│    CoalesceBatchesExec    │
-│    --------------------   │
-│     target_batch_size:    │
-│           16384           │
-└─────────────┬─────────────┘
-┌─────────────┴─────────────┐
 │      RepartitionExec      │
 │    --------------------   │
 │ partition_count(in->out): │
@@ -94,35 +82,12 @@ expression: displayable.tree_render().to_string()
 │       mode: Partial       │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
-│      RepartitionExec      │
-│    --------------------   │
-│ partition_count(in->out): │
-│           1 -> 8          │
-│                           │
-│    partitioning_scheme:   │
-│     RoundRobinBatch(8)    │
-└─────────────┬─────────────┘
-┌─────────────┴─────────────┐
-│       ProjectionExec      │
-│    --------------------   │
-│    c_custkey: c_custkey   │
-│                           │
-│        o_orderkey:        │
-│         o_orderkey        │
-└─────────────┬─────────────┘
-┌─────────────┴─────────────┐
-│    CoalesceBatchesExec    │
-│    --------------------   │
-│     target_batch_size:    │
-│           16384           │
-└─────────────┬─────────────┘
-┌─────────────┴─────────────┐
 │        HashJoinExec       │
 │    --------------------   │
-│      join_type: Right     │
+│      join_type: Left      │
 │                           ├──────────────┐
 │            on:            │              │
-│  (o_custkey = c_custkey)  │              │
+│  (c_custkey = o_custkey)  │              │
 └─────────────┬─────────────┘              │
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
 │   LiquidCacheClientExec   ││   LiquidCacheClientExec   │
@@ -132,12 +97,21 @@ expression: displayable.tree_render().to_string()
 │      object_stores=[]     ││      object_stores=[]     │
 └─────────────┬─────────────┘└─────────────┬─────────────┘
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-│       DataSourceExec      ││       DataSourceExec      │
+│       DataSourceExec      ││      RepartitionExec      │
 │    --------------------   ││    --------------------   │
-│          files: 1         ││          files: 1         │
-│      format: parquet      ││      format: parquet      │
+│          files: 1         ││ partition_count(in->out): │
+│      format: parquet      ││           1 -> 8          │
 │                           ││                           │
-│         predicate:        ││                           │
-│    o_comment NOT LIKE     ││                           │
-│     %special%requests%    ││                           │
-└───────────────────────────┘└───────────────────────────┘
+│                           ││    partitioning_scheme:   │
+│                           ││     RoundRobinBatch(8)    │
+└───────────────────────────┘└─────────────┬─────────────┘
+                             ┌─────────────┴─────────────┐
+                             │       DataSourceExec      │
+                             │    --------------------   │
+                             │          files: 1         │
+                             │      format: parquet      │
+                             │                           │
+                             │         predicate:        │
+                             │    o_comment NOT LIKE     │
+                             │     %special%requests%    │
+                             └───────────────────────────┘

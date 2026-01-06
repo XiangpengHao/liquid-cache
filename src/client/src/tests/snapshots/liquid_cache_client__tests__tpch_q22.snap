@@ -36,12 +36,6 @@ expression: displayable.tree_render().to_string()
 │      FinalPartitioned     │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
-│    CoalesceBatchesExec    │
-│    --------------------   │
-│     target_batch_size:    │
-│           16384           │
-└─────────────┬─────────────┘
-┌─────────────┴─────────────┐
 │      RepartitionExec      │
 │    --------------------   │
 │ partition_count(in->out): │
@@ -92,38 +86,41 @@ expression: displayable.tree_render().to_string()
 │                           ││     RoundRobinBatch(8)    │
 └─────────────┬─────────────┘└─────────────┬─────────────┘
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-│   LiquidCacheClientExec   ││    CoalesceBatchesExec    │
+│   LiquidCacheClientExec   ││        HashJoinExec       │
 │    --------------------   ││    --------------------   │
-│          server:          ││     target_batch_size:    │
-│  http://localhost:50051,  ││           16384           │
-│      object_stores=[]     ││                           │
-└─────────────┬─────────────┘└─────────────┬─────────────┘
-┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-│       AggregateExec       ││        HashJoinExec       │
-│    --------------------   ││    --------------------   │
-│           aggr:           ││    join_type: LeftAnti    │
-│  avg(customer.c_acctbal)  ││                           ├──────────────┐
-│                           ││            on:            │              │
-│       mode: Partial       ││  (c_custkey = o_custkey)  │              │
+│          server:          ││    join_type: LeftAnti    │
+│  http://localhost:50051,  ││                           ├──────────────┐
+│      object_stores=[]     ││            on:            │              │
+│                           ││  (c_custkey = o_custkey)  │              │
 └─────────────┬─────────────┘└─────────────┬─────────────┘              │
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-│      RepartitionExec      ││   LiquidCacheClientExec   ││   LiquidCacheClientExec   │
+│       AggregateExec       ││   LiquidCacheClientExec   ││   LiquidCacheClientExec   │
 │    --------------------   ││    --------------------   ││    --------------------   │
-│ partition_count(in->out): ││          server:          ││          server:          │
-│           1 -> 8          ││  http://localhost:50051,  ││  http://localhost:50051,  │
+│           aggr:           ││          server:          ││          server:          │
+│  avg(customer.c_acctbal)  ││  http://localhost:50051,  ││  http://localhost:50051,  │
 │                           ││      object_stores=[]     ││      object_stores=[]     │
-│    partitioning_scheme:   ││                           ││                           │
-│     RoundRobinBatch(8)    ││                           ││                           │
+│       mode: Partial       ││                           ││                           │
 └─────────────┬─────────────┘└─────────────┬─────────────┘└─────────────┬─────────────┘
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-│       DataSourceExec      ││       DataSourceExec      ││       DataSourceExec      │
+│      RepartitionExec      ││       DataSourceExec      ││       DataSourceExec      │
 │    --------------------   ││    --------------------   ││    --------------------   │
-│          files: 1         ││          files: 1         ││          files: 1         │
-│      format: parquet      ││      format: parquet      ││      format: parquet      │
+│ partition_count(in->out): ││          files: 1         ││          files: 1         │
+│           1 -> 8          ││      format: parquet      ││      format: parquet      │
 │                           ││                           ││                           │
-│         predicate:        ││         predicate:        ││                           │
-│  c_acctbal > Some(0),15,2 ││ substr(c_phone, 1, 2) IN  ││                           │
-│   AND substr(c_phone, 1,  ││  (13, 31, 23, 29, 30, 18, ││                           │
-│   2) IN (13, 31, 23, 29,  ││             17)           ││                           │
-│         30, 18, 17)       ││                           ││                           │
-└───────────────────────────┘└───────────────────────────┘└───────────────────────────┘
+│    partitioning_scheme:   ││         predicate:        ││                           │
+│     RoundRobinBatch(8)    ││ substr(c_phone, 1, 2) IN  ││                           │
+│                           ││  (13, 31, 23, 29, 30, 18, ││                           │
+│                           ││             17)           ││                           │
+└─────────────┬─────────────┘└───────────────────────────┘└───────────────────────────┘
+┌─────────────┴─────────────┐
+│       DataSourceExec      │
+│    --------------------   │
+│          files: 1         │
+│      format: parquet      │
+│                           │
+│         predicate:        │
+│  c_acctbal > Some(0),15,2 │
+│   AND substr(c_phone, 1,  │
+│   2) IN (13, 31, 23, 29,  │
+│         30, 18, 17)       │
+└───────────────────────────┘

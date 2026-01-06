@@ -34,12 +34,6 @@ expression: displayable.tree_render().to_string()
 │       mode: Partial       │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
-│    CoalesceBatchesExec    │
-│    --------------------   │
-│     target_batch_size:    │
-│           16384           │
-└─────────────┬─────────────┘
-┌─────────────┴─────────────┐
 │        HashJoinExec       │
 │    --------------------   │
 │          filter:          │
@@ -66,21 +60,15 @@ expression: displayable.tree_render().to_string()
 │                           │                             │    l_partkey: l_partkey   │
 └─────────────┬─────────────┘                             └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
-│    CoalesceBatchesExec    │                             │       AggregateExec       │
+│        HashJoinExec       │                             │       AggregateExec       │
 │    --------------------   │                             │    --------------------   │
-│     target_batch_size:    │                             │           aggr:           │
-│           16384           │                             │  avg(lineitem.l_quantity) │
-│                           │                             │                           │
-│                           │                             │    group_by: l_partkey    │
-│                           │                             │                           │
-│                           │                             │           mode:           │
-│                           │                             │      FinalPartitioned     │
-└─────────────┬─────────────┘                             └─────────────┬─────────────┘
-┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
-│        HashJoinExec       │                             │    CoalesceBatchesExec    │
-│    --------------------   │                             │    --------------------   │
-│            on:            ├──────────────┐              │     target_batch_size:    │
-│  (p_partkey = l_partkey)  │              │              │           16384           │
+│            on:            │                             │           aggr:           │
+│  (p_partkey = l_partkey)  │                             │  avg(lineitem.l_quantity) │
+│                           ├──────────────┐              │                           │
+│                           │              │              │    group_by: l_partkey    │
+│                           │              │              │                           │
+│                           │              │              │           mode:           │
+│                           │              │              │      FinalPartitioned     │
 └─────────────┬─────────────┘              │              └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐
 │   LiquidCacheClientExec   ││   LiquidCacheClientExec   ││      RepartitionExec      │

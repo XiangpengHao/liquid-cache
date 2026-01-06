@@ -365,7 +365,6 @@ mod tests {
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
     use datafusion::common::ScalarValue;
-    use datafusion::datasource::schema_adapter::DefaultSchemaAdapterFactory;
     use datafusion::logical_expr::Operator;
     use datafusion::physical_expr::PhysicalExpr;
     use datafusion::physical_expr::expressions::{BinaryExpr, Literal};
@@ -436,13 +435,7 @@ mod tests {
         ));
         let expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(expr_a, Operator::Or, expr_b));
 
-        let adapter_factory = Arc::new(DefaultSchemaAdapterFactory);
-        let builder = FilterCandidateBuilder::new(
-            expr,
-            Arc::clone(&schema),
-            Arc::clone(&schema),
-            adapter_factory,
-        );
+        let builder = FilterCandidateBuilder::new(expr, Arc::clone(&schema));
         let candidate = builder.build(metadata.metadata()).unwrap().unwrap();
         let projection = candidate.projection(metadata.metadata());
         let mut predicate = LiquidPredicate::try_new(candidate, projection).unwrap();
@@ -518,13 +511,7 @@ mod tests {
         let expr_ab = Arc::new(BinaryExpr::new(expr_a, Operator::Or, expr_b));
         let expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(expr_ab, Operator::Or, expr_c));
 
-        let adapter_factory = Arc::new(DefaultSchemaAdapterFactory);
-        let builder = FilterCandidateBuilder::new(
-            expr,
-            Arc::clone(&schema),
-            Arc::clone(&schema),
-            adapter_factory,
-        );
+        let builder = FilterCandidateBuilder::new(expr, Arc::clone(&schema));
         let candidate = builder.build(metadata.metadata()).unwrap().unwrap();
         let projection = candidate.projection(metadata.metadata());
         let mut predicate = LiquidPredicate::try_new(candidate, projection).unwrap();
@@ -595,13 +582,7 @@ mod tests {
         let expr: Arc<dyn PhysicalExpr> =
             Arc::new(BinaryExpr::new(expr_name, Operator::Or, expr_city));
 
-        let adapter_factory = Arc::new(DefaultSchemaAdapterFactory);
-        let builder = FilterCandidateBuilder::new(
-            expr,
-            Arc::clone(&schema),
-            Arc::clone(&schema),
-            adapter_factory,
-        );
+        let builder = FilterCandidateBuilder::new(expr, Arc::clone(&schema));
         let candidate = builder.build(metadata.metadata()).unwrap().unwrap();
         let projection = candidate.projection(metadata.metadata());
         let mut predicate = LiquidPredicate::try_new(candidate, projection).unwrap();

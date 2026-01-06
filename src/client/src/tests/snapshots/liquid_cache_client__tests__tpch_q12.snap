@@ -58,12 +58,6 @@ expression: displayable.tree_render().to_string()
 │      FinalPartitioned     │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
-│    CoalesceBatchesExec    │
-│    --------------------   │
-│     target_batch_size:    │
-│           16384           │
-└─────────────┬─────────────┘
-┌─────────────┴─────────────┐
 │      RepartitionExec      │
 │    --------------------   │
 │ partition_count(in->out): │
@@ -99,12 +93,6 @@ expression: displayable.tree_render().to_string()
 │                           │
 │    partitioning_scheme:   │
 │     RoundRobinBatch(8)    │
-└─────────────┬─────────────┘
-┌─────────────┴─────────────┐
-│    CoalesceBatchesExec    │
-│    --------------------   │
-│     target_batch_size:    │
-│           16384           │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
 │        HashJoinExec       │

@@ -1,7 +1,8 @@
 //! This module has a logical optimizer that detects columns that are only used via compatible `EXTRACT` projections.
-//! It then attaches the metadata to schema adapter, which is then passed to the physical plan.
+//! It then attaches the metadata to the physical expression adapter, which is then passed to the physical plan.
 //! The physical optimizer will move the metadata to the fields of the schema.
 
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
@@ -9,22 +10,29 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use arrow::compute::kernels::cast_utils::IntervalUnit;
-use arrow_schema::{DataType, Schema, SchemaRef};
+use arrow_schema::{DataType, SchemaRef};
+use async_trait::async_trait;
+use datafusion::catalog::Session;
+use datafusion::catalog::{ScanArgs, ScanResult};
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{
-    Column, DFSchema, DataFusionError, ExprSchema, Result, ScalarValue, TableReference,
+    Column, Constraints, DFSchema, DataFusionError, ExprSchema, Result, ScalarValue, Statistics,
+    TableReference,
 };
+use datafusion::datasource::physical_plan::FileScanConfig;
 use datafusion::datasource::listing::ListingTable;
-use datafusion::datasource::schema_adapter::{
-    DefaultSchemaAdapterFactory, SchemaAdapter, SchemaAdapterFactory, SchemaMapper,
-};
 use datafusion::datasource::{TableProvider, provider_as_source, source_as_provider};
 use datafusion::logical_expr::logical_plan::{
     Aggregate, Distinct, DistinctOn, Filter, Join, Limit, LogicalPlan, Partitioning, Projection,
     Repartition, Sort, SubqueryAlias, TableScan, Union, Window,
 };
-use datafusion::logical_expr::{Expr, TableSource};
+use datafusion::logical_expr::{Expr, TableProviderFilterPushDown, TableSource, TableType};
 use datafusion::optimizer::{ApplyOrder, OptimizerConfig, OptimizerRule};
+use datafusion::physical_expr_adapter::{
+    DefaultPhysicalExprAdapterFactory, PhysicalExprAdapter, PhysicalExprAdapterFactory,
+};
+use datafusion::physical_plan::ExecutionPlan;
+use datafusion::catalog::memory::DataSourceExec;
 
 /// Supported components for `EXTRACT` clauses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -780,32 +788,144 @@ fn annotate_listing_table_source(
         Err(_) => return Ok(None),
     };
 
-    let Some(listing) = provider.as_any().downcast_ref::<ListingTable>() else {
+    if provider.as_any().downcast_ref::<ListingTable>().is_none() {
         return Ok(None);
     };
 
-    let base_factory = listing.schema_adapter_factory().map(Arc::clone);
-
-    let metadata_copy = annotations.clone();
-    let new_factory: Arc<dyn SchemaAdapterFactory> = Arc::new(
-        LineageExtractSchemaAdapterFactory::new(base_factory, annotations.clone()),
-    );
-    register_factory_metadata(&new_factory, metadata_copy);
-    let new_listing = listing.clone().with_schema_adapter_factory(new_factory);
-
-    let new_provider: Arc<dyn TableProvider> = Arc::new(new_listing);
-    Ok(Some(provider_as_source(new_provider)))
+    let wrapped_provider: Arc<dyn TableProvider> = Arc::new(LineageTableProvider::new(
+        Arc::clone(&provider),
+        annotations.clone(),
+    ));
+    Ok(Some(provider_as_source(wrapped_provider)))
 }
 
 #[derive(Debug)]
-struct LineageExtractSchemaAdapterFactory {
-    base: Option<Arc<dyn SchemaAdapterFactory>>,
+struct LineageTableProvider {
+    inner: Arc<dyn TableProvider>,
+    annotations: HashMap<String, ColumnAnnotation>,
+}
+
+impl LineageTableProvider {
+    fn new(
+        inner: Arc<dyn TableProvider>,
+        annotations: HashMap<String, ColumnAnnotation>,
+    ) -> Self {
+        Self {
+            inner,
+            annotations,
+        }
+    }
+
+    fn wrap_plan(&self, plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+        let annotations = self.annotations.clone();
+        let rewritten = plan
+            .transform_up(|node| {
+                let Some(data_source_exec) = node.as_any().downcast_ref::<DataSourceExec>()
+                else {
+                    return Ok(Transformed::no(node));
+                };
+                let Some(file_scan_config) = data_source_exec
+                    .data_source()
+                    .as_any()
+                    .downcast_ref::<FileScanConfig>()
+                else {
+                    return Ok(Transformed::no(node));
+                };
+
+                let mut new_config = file_scan_config.clone();
+                let base_factory = new_config.expr_adapter_factory.clone();
+                let new_factory: Arc<dyn PhysicalExprAdapterFactory> = Arc::new(
+                    LineageExtractExprAdapterFactory::new(base_factory, annotations.clone()),
+                );
+                register_factory_metadata(&new_factory, annotations.clone());
+                new_config.expr_adapter_factory = Some(new_factory);
+
+                let new_plan = Arc::new(DataSourceExec::new(Arc::new(new_config)));
+                Ok(Transformed::new(
+                    new_plan,
+                    true,
+                    TreeNodeRecursion::Continue,
+                ))
+            })
+            .unwrap();
+        rewritten.data
+    }
+}
+
+#[async_trait]
+impl TableProvider for LineageTableProvider {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn schema(&self) -> SchemaRef {
+        self.inner.schema()
+    }
+
+    fn constraints(&self) -> Option<&Constraints> {
+        self.inner.constraints()
+    }
+
+    fn table_type(&self) -> TableType {
+        self.inner.table_type()
+    }
+
+    fn get_table_definition(&self) -> Option<&str> {
+        self.inner.get_table_definition()
+    }
+
+    fn get_logical_plan(&'_ self) -> Option<Cow<'_, LogicalPlan>> {
+        self.inner.get_logical_plan()
+    }
+
+    fn get_column_default(&self, column: &str) -> Option<&Expr> {
+        self.inner.get_column_default(column)
+    }
+
+    fn supports_filters_pushdown(
+        &self,
+        filters: &[&Expr],
+    ) -> Result<Vec<TableProviderFilterPushDown>> {
+        self.inner.supports_filters_pushdown(filters)
+    }
+
+    fn statistics(&self) -> Option<Statistics> {
+        self.inner.statistics()
+    }
+
+    async fn scan(
+        &self,
+        state: &dyn Session,
+        projection: Option<&Vec<usize>>,
+        filters: &[Expr],
+        limit: Option<usize>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let plan = self
+            .inner
+            .scan(state, projection, filters, limit)
+            .await?;
+        Ok(self.wrap_plan(plan))
+    }
+
+    async fn scan_with_args<'a>(
+        &self,
+        state: &dyn Session,
+        args: ScanArgs<'a>,
+    ) -> Result<ScanResult> {
+        let result = self.inner.scan_with_args(state, args).await?;
+        Ok(ScanResult::new(self.wrap_plan(result.into_inner())))
+    }
+}
+
+#[derive(Debug)]
+struct LineageExtractExprAdapterFactory {
+    base: Option<Arc<dyn PhysicalExprAdapterFactory>>,
     _annotations: HashMap<String, ColumnAnnotation>,
 }
 
-impl LineageExtractSchemaAdapterFactory {
+impl LineageExtractExprAdapterFactory {
     fn new(
-        base: Option<Arc<dyn SchemaAdapterFactory>>,
+        base: Option<Arc<dyn PhysicalExprAdapterFactory>>,
         annotations: HashMap<String, ColumnAnnotation>,
     ) -> Self {
         Self {
@@ -815,34 +935,19 @@ impl LineageExtractSchemaAdapterFactory {
     }
 }
 
-impl SchemaAdapterFactory for LineageExtractSchemaAdapterFactory {
+impl PhysicalExprAdapterFactory for LineageExtractExprAdapterFactory {
     fn create(
         &self,
-        projected_table_schema: SchemaRef,
-        table_schema: SchemaRef,
-    ) -> Box<dyn SchemaAdapter> {
-        let inner = match &self.base {
-            Some(base) => base.create(projected_table_schema, table_schema),
-            None => DefaultSchemaAdapterFactory.create(projected_table_schema, table_schema),
-        };
-        Box::new(DateExtractSchemaAdapter { inner })
-    }
-}
-
-struct DateExtractSchemaAdapter {
-    inner: Box<dyn SchemaAdapter>,
-}
-
-impl SchemaAdapter for DateExtractSchemaAdapter {
-    fn map_column_index(&self, index: usize, file_schema: &Schema) -> Option<usize> {
-        self.inner.map_column_index(index, file_schema)
-    }
-
-    fn map_schema(
-        &self,
-        file_schema: &Schema,
-    ) -> datafusion::common::Result<(Arc<dyn SchemaMapper>, Vec<usize>)> {
-        self.inner.map_schema(file_schema)
+        logical_file_schema: SchemaRef,
+        physical_file_schema: SchemaRef,
+    ) -> Arc<dyn PhysicalExprAdapter> {
+        match &self.base {
+            Some(base) => base.create(logical_file_schema, physical_file_schema),
+            None => DefaultPhysicalExprAdapterFactory.create(
+                logical_file_schema,
+                physical_file_schema,
+            ),
+        }
     }
 }
 
@@ -853,7 +958,7 @@ fn factory_registry() -> &'static Mutex<HashMap<usize, HashMap<String, ColumnAnn
 }
 
 fn register_factory_metadata(
-    factory: &Arc<dyn SchemaAdapterFactory>,
+    factory: &Arc<dyn PhysicalExprAdapterFactory>,
     metadata: HashMap<String, ColumnAnnotation>,
 ) {
     let key = Arc::as_ptr(factory) as *const () as usize;
@@ -861,7 +966,7 @@ fn register_factory_metadata(
 }
 
 pub(crate) fn metadata_from_factory(
-    factory: &Arc<dyn SchemaAdapterFactory>,
+    factory: &Arc<dyn PhysicalExprAdapterFactory>,
     column: &str,
 ) -> Option<ColumnAnnotation> {
     let key = Arc::as_ptr(factory) as *const () as usize;
