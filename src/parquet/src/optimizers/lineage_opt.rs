@@ -13,14 +13,15 @@ use arrow::compute::kernels::cast_utils::IntervalUnit;
 use arrow_schema::{DataType, SchemaRef};
 use async_trait::async_trait;
 use datafusion::catalog::Session;
+use datafusion::catalog::memory::DataSourceExec;
 use datafusion::catalog::{ScanArgs, ScanResult};
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{
     Column, Constraints, DFSchema, DataFusionError, ExprSchema, Result, ScalarValue, Statistics,
     TableReference,
 };
-use datafusion::datasource::physical_plan::FileScanConfig;
 use datafusion::datasource::listing::ListingTable;
+use datafusion::datasource::physical_plan::FileScanConfig;
 use datafusion::datasource::{TableProvider, provider_as_source, source_as_provider};
 use datafusion::logical_expr::logical_plan::{
     Aggregate, Distinct, DistinctOn, Filter, Join, Limit, LogicalPlan, Partitioning, Projection,
@@ -32,7 +33,6 @@ use datafusion::physical_expr_adapter::{
     DefaultPhysicalExprAdapterFactory, PhysicalExprAdapter, PhysicalExprAdapterFactory,
 };
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion::catalog::memory::DataSourceExec;
 
 /// Supported components for `EXTRACT` clauses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -806,22 +806,15 @@ struct LineageTableProvider {
 }
 
 impl LineageTableProvider {
-    fn new(
-        inner: Arc<dyn TableProvider>,
-        annotations: HashMap<String, ColumnAnnotation>,
-    ) -> Self {
-        Self {
-            inner,
-            annotations,
-        }
+    fn new(inner: Arc<dyn TableProvider>, annotations: HashMap<String, ColumnAnnotation>) -> Self {
+        Self { inner, annotations }
     }
 
     fn wrap_plan(&self, plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
         let annotations = self.annotations.clone();
         let rewritten = plan
             .transform_up(|node| {
-                let Some(data_source_exec) = node.as_any().downcast_ref::<DataSourceExec>()
-                else {
+                let Some(data_source_exec) = node.as_any().downcast_ref::<DataSourceExec>() else {
                     return Ok(Transformed::no(node));
                 };
                 let Some(file_scan_config) = data_source_exec
@@ -900,10 +893,7 @@ impl TableProvider for LineageTableProvider {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        let plan = self
-            .inner
-            .scan(state, projection, filters, limit)
-            .await?;
+        let plan = self.inner.scan(state, projection, filters, limit).await?;
         Ok(self.wrap_plan(plan))
     }
 
@@ -943,10 +933,9 @@ impl PhysicalExprAdapterFactory for LineageExtractExprAdapterFactory {
     ) -> Arc<dyn PhysicalExprAdapter> {
         match &self.base {
             Some(base) => base.create(logical_file_schema, physical_file_schema),
-            None => DefaultPhysicalExprAdapterFactory.create(
-                logical_file_schema,
-                physical_file_schema,
-            ),
+            None => {
+                DefaultPhysicalExprAdapterFactory.create(logical_file_schema, physical_file_schema)
+            }
         }
     }
 }

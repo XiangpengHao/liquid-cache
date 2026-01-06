@@ -288,10 +288,7 @@ pub struct FilterCandidateBuilder {
 
 impl FilterCandidateBuilder {
     /// Create a new `FilterCandidateBuilder`
-    pub fn new(
-        expr: Arc<dyn PhysicalExpr>,
-        file_schema: SchemaRef,
-    ) -> Self {
+    pub fn new(expr: Arc<dyn PhysicalExpr>, file_schema: SchemaRef) -> Self {
         Self { expr, file_schema }
     }
 
@@ -309,8 +306,10 @@ impl FilterCandidateBuilder {
             return Ok(None);
         };
 
-        let projected_schema =
-            Arc::new(self.file_schema.project(&required_indices_into_file_schema)?);
+        let projected_schema = Arc::new(
+            self.file_schema
+                .project(&required_indices_into_file_schema)?,
+        );
 
         let required_bytes = size_of_columns(&required_indices_into_file_schema, metadata)?;
         let can_use_index = columns_sorted(&required_indices_into_file_schema, metadata)?;

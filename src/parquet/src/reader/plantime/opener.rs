@@ -24,7 +24,9 @@ use datafusion::{
         table_schema::TableSchema,
     },
     error::DataFusionError,
-    physical_expr::{PhysicalExprSimplifier, projection::ProjectionExprs, utils::reassign_expr_columns},
+    physical_expr::{
+        PhysicalExprSimplifier, projection::ProjectionExprs, utils::reassign_expr_columns,
+    },
     physical_expr_adapter::{PhysicalExprAdapterFactory, replace_columns_with_literals},
     physical_expr_common::physical_expr::is_dynamic_physical_expr,
     physical_optimizer::pruning::{FilePruner, PruningPredicate, build_pruning_predicate},
@@ -249,8 +251,7 @@ impl FileOpener for LiquidParquetOpener {
             predicate = predicate
                 .map(|p| simplifier.simplify(rewriter.rewrite(p)?))
                 .transpose()?;
-            projection = projection
-                .try_map_exprs(|p| simplifier.simplify(rewriter.rewrite(p)?))?;
+            projection = projection.try_map_exprs(|p| simplifier.simplify(rewriter.rewrite(p)?))?;
 
             let (pruning_predicate, page_pruning_predicate) = build_pruning_predicates(
                 predicate.as_ref(),
@@ -285,9 +286,7 @@ impl FileOpener for LiquidParquetOpener {
                         Ok(Some(filter)) => Some(filter),
                         Ok(None) => None,
                         Err(e) => {
-                            debug!(
-                                "Ignoring error building row filter for '{predicate:?}': {e:?}"
-                            );
+                            debug!("Ignoring error building row filter for '{predicate:?}': {e:?}");
                             None
                         }
                     }
@@ -371,8 +370,8 @@ impl FileOpener for LiquidParquetOpener {
             let stream_schema = stream.schema();
             let replace_schema = !stream_schema.eq(&output_schema);
 
-            let projection = projection
-                .try_map_exprs(|expr| reassign_expr_columns(expr, &stream_schema))?;
+            let projection =
+                projection.try_map_exprs(|expr| reassign_expr_columns(expr, &stream_schema))?;
             let projector = projection.make_projector(&stream_schema)?;
 
             let adapted = stream
@@ -382,8 +381,7 @@ impl FileOpener for LiquidParquetOpener {
                         batch = projector.project_batch(&batch)?;
                         if replace_schema {
                             let (_stream_schema, arrays, num_rows) = batch.into_parts();
-                            let options =
-                                RecordBatchOptions::new().with_row_count(Some(num_rows));
+                            let options = RecordBatchOptions::new().with_row_count(Some(num_rows));
                             RecordBatch::try_new_with_options(
                                 Arc::clone(&output_schema),
                                 arrays,
@@ -424,9 +422,7 @@ fn constant_columns_from_stats(
         .enumerate()
     {
         let field = file_schema.field(idx);
-        if let Some(value) =
-            constant_value_from_stats(column_stats, num_rows, field.data_type())
-        {
+        if let Some(value) = constant_value_from_stats(column_stats, num_rows, field.data_type()) {
             constants.insert(field.name().clone(), value);
         }
     }
@@ -448,8 +444,7 @@ fn constant_value_from_stats(
         return Some(min.clone());
     }
 
-    if let (Some(num_rows), Precision::Exact(nulls)) =
-        (num_rows, &column_stats.null_count)
+    if let (Some(num_rows), Precision::Exact(nulls)) = (num_rows, &column_stats.null_count)
         && *nulls == num_rows
     {
         return ScalarValue::try_new_null(data_type).ok();

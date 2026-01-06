@@ -7,8 +7,7 @@ use datafusion::{
     datasource::{
         listing::PartitionedFile,
         physical_plan::{
-            FileScanConfig, FileSource, ParquetFileMetrics, ParquetFileReaderFactory,
-            ParquetSource,
+            FileScanConfig, FileSource, ParquetFileMetrics, ParquetFileReaderFactory, ParquetSource,
         },
         table_schema::TableSchema,
     },
@@ -355,9 +354,7 @@ impl FileSource for LiquidParquetSource {
             .collect::<Vec<_>>();
 
         let predicate = match source.predicate {
-            Some(predicate) => {
-                conjunction(std::iter::once(predicate).chain(allowed_filters))
-            }
+            Some(predicate) => conjunction(std::iter::once(predicate).chain(allowed_filters)),
             None => conjunction(allowed_filters),
         };
         source.predicate = Some(predicate);
@@ -365,9 +362,10 @@ impl FileSource for LiquidParquetSource {
         let source = Arc::new(source);
 
         if !pushdown_filters {
-            return Ok(FilterPushdownPropagation::with_parent_pushdown_result(
-                vec![PushedDown::No; filters.len()],
-            )
+            return Ok(FilterPushdownPropagation::with_parent_pushdown_result(vec![
+                PushedDown::No;
+                filters.len()
+            ])
             .with_updated_node(source));
         }
 

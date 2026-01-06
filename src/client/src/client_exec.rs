@@ -4,13 +4,13 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 use std::{any::Any, fmt::Formatter, sync::Arc};
 
-use arrow::array::RecordBatch;
+use arrow::array::{RecordBatch, new_null_array};
+use arrow::record_batch::RecordBatchOptions;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::flight_service_client::FlightServiceClient;
-use arrow_schema::SchemaRef;
-use datafusion::common::Statistics;
+use arrow_schema::{Schema, SchemaRef};
+use datafusion::common::{Statistics, format::DEFAULT_CAST_OPTIONS, nested_struct::cast_column};
 use datafusion::config::ConfigOptions;
-use datafusion::datasource::schema_adapter::{DefaultSchemaAdapterFactory, SchemaMapper};
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::physical_plan::execution_plan::CardinalityEffect;
 use datafusion::physical_plan::filter_pushdown::{
@@ -316,7 +316,7 @@ struct FlightStream {
     future_stream: Option<BoxFuture<'static, Result<SendableRecordBatchStream>>>,
     state: FlightStreamState,
     schema: SchemaRef,
-    schema_mapper: Option<Arc<dyn SchemaMapper>>,
+    schema_mapping: Option<BatchSchemaMapping>,
     metrics: FlightStreamMetrics,
     poll_stream_span: fastrace::Span,
     create_stream_span: Option<fastrace::Span>,
@@ -334,7 +334,7 @@ impl FlightStream {
             future_stream,
             state: FlightStreamState::Init,
             schema,
-            schema_mapper: None,
+            schema_mapping: None,
             metrics,
             poll_stream_span,
             create_stream_span: Some(create_stream_span),
@@ -381,17 +381,18 @@ impl Stream for FlightStream {
         let result = self.poll_inner(cx);
         match result {
             Poll::Ready(Some(Ok(batch))) => {
-                let coerced_batch = if let Some(schema_mapper) = &self.schema_mapper {
-                    schema_mapper.map_batch(batch).unwrap()
-                } else {
-                    let (schema_mapper, _) =
-                        DefaultSchemaAdapterFactory::from_schema(self.schema.clone())
-                            .map_schema(&batch.schema())
-                            .unwrap();
-                    let batch = schema_mapper.map_batch(batch).unwrap();
-
-                    self.schema_mapper = Some(schema_mapper);
-                    batch
+                let coerced_batch = match &self.schema_mapping {
+                    Some(mapping) => mapping.map_batch(batch).unwrap(),
+                    None => {
+                        let mapping = BatchSchemaMapping::try_new(
+                            self.schema.clone(),
+                            batch.schema().as_ref(),
+                        )
+                        .unwrap();
+                        let batch = mapping.map_batch(batch).unwrap();
+                        self.schema_mapping = Some(mapping);
+                        batch
+                    }
                 };
                 self.metrics.output_rows.add(coerced_batch.num_rows());
                 self.metrics
@@ -420,5 +421,45 @@ impl Stream for FlightStream {
 impl RecordBatchStream for FlightStream {
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
+    }
+}
+
+#[derive(Debug, Clone)]
+struct BatchSchemaMapping {
+    output_schema: SchemaRef,
+    field_mappings: Vec<Option<usize>>,
+}
+
+impl BatchSchemaMapping {
+    fn try_new(output_schema: SchemaRef, input_schema: &Schema) -> Result<Self> {
+        let field_mappings = output_schema
+            .fields()
+            .iter()
+            .map(|field| input_schema.index_of(field.name()).ok())
+            .collect();
+        Ok(Self {
+            output_schema,
+            field_mappings,
+        })
+    }
+
+    fn map_batch(&self, batch: RecordBatch) -> Result<RecordBatch> {
+        let (_batch_schema, batch_cols, batch_rows) = batch.into_parts();
+        let cols = self
+            .output_schema
+            .fields()
+            .iter()
+            .zip(&self.field_mappings)
+            .map(|(field, batch_idx)| {
+                batch_idx.map_or_else(
+                    || Ok(new_null_array(field.data_type(), batch_rows)),
+                    |idx| cast_column(&batch_cols[idx], field.as_ref(), &DEFAULT_CAST_OPTIONS),
+                )
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let options = RecordBatchOptions::new().with_row_count(Some(batch_rows));
+        let schema = Arc::clone(&self.output_schema);
+        Ok(RecordBatch::try_new_with_options(schema, cols, &options)?)
     }
 }
