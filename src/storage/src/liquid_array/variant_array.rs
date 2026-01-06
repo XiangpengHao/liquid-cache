@@ -40,12 +40,8 @@ impl VariantStructSqueezedArray {
     }
 
     fn build_root_struct(&self) -> StructArray {
-        let metadata = Arc::new(BinaryViewArray::from_iter_values(std::iter::repeat_n(
-            b"" as &[u8],
-            self.len,
-        ))) as ArrayRef;
-        let value_placeholder =
-            Arc::new(BinaryViewArray::from(vec![None::<&[u8]>; self.len])) as ArrayRef;
+        let metadata = Arc::new(BinaryViewArray::from(vec![b"" as &[u8]; self.len])) as ArrayRef;
+        let value_placeholder = Arc::new(BinaryViewArray::new_null(self.len)) as ArrayRef;
         let typed_struct = self.build_typed_struct();
 
         let metadata_field = Arc::new(Field::new("metadata", DataType::BinaryView, false));
@@ -214,7 +210,7 @@ impl VariantTreeNode {
 }
 
 fn wrap_typed_value(len: usize, values: ArrayRef) -> ArrayRef {
-    let placeholder = Arc::new(BinaryViewArray::from(vec![None::<&[u8]>; len])) as ArrayRef;
+    let placeholder = Arc::new(BinaryViewArray::new_null(len)) as ArrayRef;
     Arc::new(StructArray::new(
         Fields::from(vec![
             Arc::new(Field::new("value", DataType::BinaryView, true)),

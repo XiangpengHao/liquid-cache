@@ -193,6 +193,10 @@ impl CachedColumn {
             return Err(InsertArrowArrayError::AlreadyCached);
         }
 
+        let mut array = array;
+        if let Some(transformed) = maybe_shred_variant_array(&array, self.field.as_ref()) {
+            array = transformed;
+        }
         self.cache_store
             .insert(self.entry_id(batch_id).into(), array)
             .await;

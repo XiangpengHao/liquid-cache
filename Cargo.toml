@@ -40,8 +40,8 @@ parquet = { version = "57.0.0", features = [
 	"experimental",
 	"variant_experimental",
 ] }
-parquet-variant-json = { version = "0.2.0" }
-parquet-variant-compute = { version = "0.2.0" }
+parquet-variant-json = { version = "57.1.0" }
+parquet-variant-compute = { version = "57.1.0" }
 datafusion = { version = "51.0.0" }
 datafusion-proto = { version = "51.0.0" }
 async-trait = "0.1.89"
@@ -79,17 +79,17 @@ datafusion-proto = { git = "https://github.com/apache/datafusion.git", branch = 
 
 
 # Arrow/Parquet from main — include all the subcrates DF uses
-arrow = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
-arrow-array = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
-arrow-buffer = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
-arrow-cast = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
-arrow-data = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
-arrow-ipc = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
-arrow-ord = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
-arrow-row = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
-arrow-schema = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
-arrow-select = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
-arrow-flight = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
-parquet = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
-parquet-variant-json = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
-parquet-variant-compute = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
+arrow = { git = "https://github.com/apache/arrow-rs.git", rev = "b1dfb697babcb614040ea2ae17e842e9db557f69" }
+arrow-array = { git = "https://github.com/apache/arrow-rs.git", rev = "b1dfb697babcb614040ea2ae17e842e9db557f69" }
+arrow-buffer = { git = "https://github.com/apache/arrow-rs.git", rev = "b1dfb697babcb614040ea2ae17e842e9db557f69" }
+arrow-cast = { git = "https://github.com/apache/arrow-rs.git", rev = "b1dfb697babcb614040ea2ae17e842e9db557f69" }
+arrow-data = { git = "https://github.com/apache/arrow-rs.git", rev = "b1dfb697babcb614040ea2ae17e842e9db557f69" }
+arrow-ipc = { git = "https://github.com/apache/arrow-rs.git", rev = "b1dfb697babcb614040ea2ae17e842e9db557f69" }
+arrow-ord = { git = "https://github.com/apache/arrow-rs.git", rev = "b1dfb697babcb614040ea2ae17e842e9db557f69" }
+arrow-row = { git = "https://github.com/apache/arrow-rs.git", rev = "b1dfb697babcb614040ea2ae17e842e9db557f69" }
+arrow-schema = { git = "https://github.com/apache/arrow-rs.git", rev = "b1dfb697babcb614040ea2ae17e842e9db557f69" }
+arrow-select = { git = "https://github.com/apache/arrow-rs.git", rev = "b1dfb697babcb614040ea2ae17e842e9db557f69" }
+arrow-flight = { git = "https://github.com/apache/arrow-rs.git", rev = "b1dfb697babcb614040ea2ae17e842e9db557f69" }
+parquet = { git = "https://github.com/apache/arrow-rs.git", rev = "b1dfb697babcb614040ea2ae17e842e9db557f69" }
+parquet-variant-json = { git = "https://github.com/apache/arrow-rs.git", rev = "b1dfb697babcb614040ea2ae17e842e9db557f69" }
+parquet-variant-compute = { git = "https://github.com/apache/arrow-rs.git", rev = "b1dfb697babcb614040ea2ae17e842e9db557f69" }
