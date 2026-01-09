@@ -34,7 +34,10 @@ pub type CachedColumnRef = Arc<CachedColumn>;
 
 fn infer_expression(field: &Field) -> Option<CacheExpression> {
     if let Some(mapping) = field.metadata().get(DATE_MAPPING_METADATA_KEY)
-        && field.data_type() == &DataType::Date32
+        && matches!(
+            field.data_type(),
+            DataType::Date32 | DataType::Timestamp(_, _)
+        )
         && let Some(expr) = CacheExpression::try_from_date_part_str(mapping)
     {
         return Some(expr);
@@ -193,6 +196,10 @@ impl CachedColumn {
             return Err(InsertArrowArrayError::AlreadyCached);
         }
 
+        let mut array = array;
+        if let Some(transformed) = maybe_shred_variant_array(&array, self.field.as_ref()) {
+            array = transformed;
+        }
         self.cache_store
             .insert(self.entry_id(batch_id).into(), array)
             .await;

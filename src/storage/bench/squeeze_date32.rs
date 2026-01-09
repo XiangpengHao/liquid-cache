@@ -63,6 +63,7 @@ async fn run_for_column(ctx: &SessionContext, col: &str, limit: Option<usize>) {
     let mut total_year_bytes = 0usize;
     let mut total_month_bytes = 0usize;
     let mut total_day_bytes = 0usize;
+    let mut total_dow_bytes = 0usize;
 
     while let Some(batch_res) = stream.next().await {
         let batch = batch_res.expect("stream batch");
@@ -79,13 +80,15 @@ async fn run_for_column(ctx: &SessionContext, col: &str, limit: Option<usize>) {
         let squeezed_year = SqueezedDate32Array::from_liquid_date32(&liquid, Date32Field::Year);
         let squeezed_month = SqueezedDate32Array::from_liquid_date32(&liquid, Date32Field::Month);
         let squeezed_day = SqueezedDate32Array::from_liquid_date32(&liquid, Date32Field::Day);
+        let squeezed_dow = SqueezedDate32Array::from_liquid_date32(&liquid, Date32Field::DayOfWeek);
 
         total_year_bytes += squeezed_year.get_array_memory_size();
         total_month_bytes += squeezed_month.get_array_memory_size();
         total_day_bytes += squeezed_day.get_array_memory_size();
+        total_dow_bytes += squeezed_dow.get_array_memory_size();
     }
 
     println!(
-        "Column {col} on {total_rows} rows:\n  Arrow(Date32): {total_arrow_bytes} bytes\n  Liquid(Date32): {total_liquid_bytes} bytes\n  Squeezed YEAR: {total_year_bytes} bytes\n  Squeezed MONTH: {total_month_bytes} bytes\n  Squeezed DAY: {total_day_bytes} bytes"
+        "Column {col} on {total_rows} rows:\n  Arrow(Date32): {total_arrow_bytes} bytes\n  Liquid(Date32): {total_liquid_bytes} bytes\n  Squeezed YEAR: {total_year_bytes} bytes\n  Squeezed MONTH: {total_month_bytes} bytes\n  Squeezed DAY: {total_day_bytes} bytes\n  Squeezed DOW: {total_dow_bytes} bytes"
     );
 }
