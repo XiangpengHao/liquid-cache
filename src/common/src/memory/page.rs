@@ -7,7 +7,7 @@ pub struct Block {
     ptr: *mut u8,
 }
 
-pub const PAGE_SIZE: usize = 256<<10;
+pub const PAGE_SIZE: usize = 64<<10;    // 64KB
 
 pub struct Page {
     pub(crate) block_size: usize,                  // Size of objects that are being allocated to this page
@@ -64,11 +64,6 @@ impl Page {
     #[inline(always)]
     pub fn is_unused(self: &Self) -> bool {
         self.used == 0
-    }
-
-    #[inline(always)]
-    pub fn get_size(self: &Self) -> usize {
-        self.capacity
     }
 
     /// Pointer freed on the same core

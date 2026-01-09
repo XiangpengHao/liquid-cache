@@ -15,8 +15,6 @@ const SIZE_CLASSES: &'static [usize] = &[
     16 << 10,
     32 << 10,
     64 << 10,
-    128 << 10,
-    256 << 10,
 ];
 
 const NUM_SIZE_CLASSES: usize = SIZE_CLASSES.len();

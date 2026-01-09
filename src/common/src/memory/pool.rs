@@ -6,7 +6,7 @@ use std::{cmp::min, sync::{Arc, Mutex, OnceLock, atomic::{AtomicBool, AtomicU64,
 use futures::io;
 use io_uring::IoUring;
 
-use crate::memory::{arena::Arena, page::PAGE_SIZE, segment::Segment, tcache::{TCache, TCacheStats}};
+use crate::memory::{arena::Arena, segment::Segment, tcache::{TCache, TCacheStats}};
 
 static FIXED_BUFFER_POOL: OnceLock<FixedBufferPool> = OnceLock::new();
 
@@ -96,8 +96,7 @@ impl FixedBufferPool {
         let ptr = local_cache.lock().unwrap().allocate(size);
         log::debug!("Allocated pointer: {:?}, size: {}, cpu: {}", ptr, size, cpu);
         if ptr.is_null() {
-            let pool = FIXED_BUFFER_POOL.get().unwrap();
-            log::info!("Foreign frees: {}", pool.foreign_free.load(Ordering::Relaxed));
+            log::info!("Unsuccessful allocation of {} bytes", size);
         }
         ptr
     }

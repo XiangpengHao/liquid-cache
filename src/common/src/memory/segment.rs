@@ -1,12 +1,12 @@
-use std::ptr::null_mut;
+use std::ptr::{null_mut, write};
 
 use crate::memory::{page::{PAGE_SIZE, Page, Slice}};
 
-pub const SEGMENT_SIZE: usize = 32 * 1024 * 1024;
+pub const SEGMENT_SIZE: usize = 32 * 1024 * 1024;       // 32 MB
 pub const SEGMENT_SIZE_BITS: usize = SEGMENT_SIZE.ilog2() as usize;
 
 // The metadata is stored at the beginning of the slice. So we don't get the entirety of it for pages
-pub const PAGES_PER_SEGMENT: usize = (SEGMENT_SIZE / PAGE_SIZE) - 1;
+pub const PAGES_PER_SEGMENT: usize = (SEGMENT_SIZE - 3 * size_of::<usize>()) / (PAGE_SIZE + size_of::<Page>());
 
 pub struct Segment {
     pub(crate) allocated: usize,
@@ -17,15 +17,19 @@ pub struct Segment {
 
 impl Segment {
     pub fn new_from_slice(slice: Slice) -> *mut Segment {
-        // First sizeof(Segment) bytes should hold the Segment object
         let segment_ptr = slice.ptr as *mut Segment;
-        let mut start_ptr = unsafe { slice.ptr.add(PAGE_SIZE) };
-        
+        let segment_end_ptr = slice.ptr.wrapping_add(SEGMENT_SIZE);
+        let mut start_ptr = unsafe { segment_end_ptr.sub(PAGES_PER_SEGMENT * PAGE_SIZE) };
         unsafe {
+            let pages_ptr = (*segment_ptr).pages.as_mut_ptr();
             (*segment_ptr).allocated = 0;
             (*segment_ptr).num_slices = PAGES_PER_SEGMENT;
-            for i in 0..(*segment_ptr).num_slices {
-                (*segment_ptr).pages[i] = Page::from_slice(Slice {ptr: start_ptr, size: PAGE_SIZE});
+            for i in 0..PAGES_PER_SEGMENT {
+                // Use ptr::write after dropping to initialize new Pages
+                write(
+                    pages_ptr.add(i),
+                    Page::from_slice(Slice {ptr: start_ptr, size: PAGE_SIZE})
+                );
                 start_ptr = start_ptr.wrapping_add(PAGE_SIZE);
             }
         }
