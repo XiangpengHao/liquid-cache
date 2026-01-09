@@ -183,6 +183,10 @@ impl SqueezeIoHandler for DefaultSqueezeIo {
                 total: total_cnt,
             });
     }
+
+    fn trace_io_saved(&self) {
+        self.observer.runtime_stats().incr_squeeze_io_saved();
+    }
 }
 
 #[cfg(test)]

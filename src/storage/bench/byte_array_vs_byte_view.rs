@@ -197,7 +197,6 @@ fn array_size(_bencher: Bencher, chunk_size: usize) {
         "  - Dictionary keys: {} bytes",
         byte_view_usage.dictionary_key
     );
-    println!("  - Offsets: {} bytes", byte_view_usage.offsets);
     println!("  - FSST buffer: {} bytes", byte_view_usage.fsst_buffer);
     println!("  - Shared prefix: {} bytes", byte_view_usage.shared_prefix);
     println!("  - Struct overhead: {} bytes", byte_view_usage.struct_size);

@@ -620,12 +620,6 @@ pub trait FsstBacking: std::fmt::Debug + Clone + sealed::Sealed {
 
     /// Get the in-memory size of the FSST backing (raw bytes + any in-memory indices).
     fn get_array_memory_size(&self) -> usize;
-
-    /// Get the in-memory size of compact offsets.
-    fn compact_offsets_memory_usage(&self) -> usize;
-
-    /// Get the in-memory size of the raw FSST buffer (excluding compact offsets).
-    fn raw_memory_usage(&self) -> usize;
 }
 
 impl sealed::Sealed for FsstArray {}
@@ -678,14 +672,6 @@ impl FsstBacking for FsstArray {
         self.raw.get_memory_size()
             + self.compact_offsets.memory_usage()
             + std::mem::size_of::<Self>()
-    }
-
-    fn compact_offsets_memory_usage(&self) -> usize {
-        self.compact_offsets.memory_usage()
-    }
-
-    fn raw_memory_usage(&self) -> usize {
-        self.raw.get_memory_size() + std::mem::size_of::<Self>()
     }
 }
 
@@ -765,14 +751,6 @@ impl FsstBacking for DiskBuffer {
     }
 
     fn get_array_memory_size(&self) -> usize {
-        0
-    }
-
-    fn compact_offsets_memory_usage(&self) -> usize {
-        0
-    }
-
-    fn raw_memory_usage(&self) -> usize {
         0
     }
 }

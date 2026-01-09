@@ -334,6 +334,12 @@ pub trait SqueezeIoHandler: std::fmt::Debug + Send + Sync {
     fn tracing_decompress_count(&self, _decompress_cnt: usize, _total_cnt: usize) {
         // Do nothing by default
     }
+
+    /// Trace the number of IO saved by squeezing.
+    // TODO: this is ugly.
+    fn trace_io_saved(&self) {
+        // Do nothing by default
+    }
 }
 
 /// Compile-time info about primitive kind (signed vs unsigned) and bounds.

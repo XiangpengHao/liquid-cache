@@ -107,6 +107,7 @@ define_runtime_stats! {
     (eval_predicate_on_liquid_failed, "Number of `eval_predicate` calls that failed on Liquid array.", incr_eval_predicate_on_liquid_failed),
     (squeezed_decompressed_count, "Number of decompressed Squeezed-Liquid entries.", __incr_squeezed_decompressed_count),
     (squeezed_total_count, "Total number of Squeezed-Liquid entries.", __incr_squeezed_total_count),
+    (squeeze_io_saved, "Number of io saved by squeezing.", incr_squeeze_io_saved),
 }
 
 impl RuntimeStats {

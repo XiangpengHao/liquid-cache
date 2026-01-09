@@ -96,8 +96,6 @@ use std::fmt::Display;
 pub struct ByteViewArrayMemoryUsage {
     /// Memory usage of the dictionary key
     pub dictionary_key: usize,
-    /// Memory usage of the compact offsets
-    pub offsets: usize,
     /// Memory usage of the prefix keys
     pub prefix_keys: usize,
     /// Memory usage of the raw FSST buffer
@@ -114,7 +112,6 @@ impl Display for ByteViewArrayMemoryUsage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ByteViewArrayMemoryUsage")
             .field("dictionary_key", &self.dictionary_key)
-            .field("offsets", &self.offsets)
             .field("prefix_keys", &self.prefix_keys)
             .field("fsst_buffer", &self.fsst_buffer)
             .field("shared_prefix", &self.shared_prefix)
@@ -129,7 +126,6 @@ impl ByteViewArrayMemoryUsage {
     /// Get the total memory usage of the byte view array
     pub fn total(&self) -> usize {
         self.dictionary_key
-            + self.offsets
             + self.prefix_keys
             + self.fsst_buffer
             + self.shared_prefix
@@ -141,7 +137,6 @@ impl ByteViewArrayMemoryUsage {
 impl std::ops::AddAssign for ByteViewArrayMemoryUsage {
     fn add_assign(&mut self, other: Self) {
         self.dictionary_key += other.dictionary_key;
-        self.offsets += other.offsets;
         self.prefix_keys += other.prefix_keys;
         self.fsst_buffer += other.fsst_buffer;
         self.shared_prefix += other.shared_prefix;

@@ -711,7 +711,6 @@ impl ArrayBenchmark for StringArrayLz4Benchmark {
 #[derive(Serialize, Deserialize, Clone)]
 struct SerializableMemoryUsage {
     dictionary_keys: usize,
-    compact_offsets: usize,
     prefix_keys: usize,
     fsst_buffer: usize,
     shared_prefix: usize,
@@ -724,7 +723,6 @@ impl From<ByteViewArrayMemoryUsage> for SerializableMemoryUsage {
     fn from(usage: ByteViewArrayMemoryUsage) -> Self {
         Self {
             dictionary_keys: usage.dictionary_key,
-            compact_offsets: usage.offsets,
             prefix_keys: usage.prefix_keys,
             fsst_buffer: usage.fsst_buffer,
             shared_prefix: usage.shared_prefix,
@@ -795,7 +793,6 @@ fn main() {
             LiquidByteViewArray::<FsstArray>::train_from_string_view(&column_data.data[0]);
         let mut total_detailed_memory_usage = ByteViewArrayMemoryUsage {
             dictionary_key: 0,
-            offsets: 0,
             prefix_keys: 0,
             fsst_buffer: 0,
             string_fingerprints: 0,
