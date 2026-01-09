@@ -80,8 +80,7 @@ async fn run_for_column(ctx: &SessionContext, col: &str, limit: Option<usize>) {
         let squeezed_year = SqueezedDate32Array::from_liquid_date32(&liquid, Date32Field::Year);
         let squeezed_month = SqueezedDate32Array::from_liquid_date32(&liquid, Date32Field::Month);
         let squeezed_day = SqueezedDate32Array::from_liquid_date32(&liquid, Date32Field::Day);
-        let squeezed_dow =
-            SqueezedDate32Array::from_liquid_date32(&liquid, Date32Field::DayOfWeek);
+        let squeezed_dow = SqueezedDate32Array::from_liquid_date32(&liquid, Date32Field::DayOfWeek);
 
         total_year_bytes += squeezed_year.get_array_memory_size();
         total_month_bytes += squeezed_month.get_array_memory_size();

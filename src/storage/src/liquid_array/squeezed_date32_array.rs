@@ -469,8 +469,8 @@ impl LiquidSqueezedArray for SqueezedDate32Array {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Array, PrimitiveArray};
     use arrow::array::types::TimestampMicrosecondType;
+    use arrow::array::{Array, PrimitiveArray};
     use std::sync::Arc;
 
     fn dates(vals: &[Option<i32>]) -> PrimitiveArray<Date32Type> {
