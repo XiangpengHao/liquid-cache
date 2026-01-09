@@ -1,6 +1,6 @@
 use std::{
     ptr::null_mut,
-    sync::{Arc, Mutex, atomic::Ordering},
+    sync::{Arc, Mutex},
 };
 
 use crate::memory::{
@@ -29,6 +29,7 @@ const SEGMENT_BINS: usize = (SEGMENT_SIZE/PAGE_SIZE).ilog2() as usize + 1;
 pub(crate) struct TCacheStats {
     // Allocation stats
     pub(crate) total_allocations: usize,
+    pub(crate) unsuccessful_allocations: usize,
     pub(crate) total_segments_allocated: usize,
     pub(crate) fast_allocations: usize,             // Allocations from self.free_pages
     pub(crate) allocations_from_pages: usize,       // Allocations from self.used_pages
@@ -49,6 +50,7 @@ impl TCacheStats {
     #[allow(unused)]
     pub(crate) fn print(self: &Self) {
         println!("Total allocations: {}", self.total_allocations);
+        println!("Unsuccessful allocations: {}", self.unsuccessful_allocations);
         println!("Fast allocations: {}", self.fast_allocations);
         println!("Allocations from pages: {}", self.allocations_from_pages);
         println!("Allocations from segment: {}", self.allocations_from_segment);
@@ -60,7 +62,8 @@ impl TCacheStats {
 
 pub(crate) struct TCache {
     free_pages: [*mut Page; NUM_SIZE_CLASSES],
-    used_pages: [Vec<*mut Page>; NUM_SIZE_CLASSES],
+    // Last size class holds slices that serve large allocations (>256KB)
+    used_pages: [Vec<*mut Page>; NUM_SIZE_CLASSES + 1],
     // TODO: Use a linked list for O(1) deletion
     spans: [Vec<*mut Page>; SEGMENT_BINS],
     arena: Arc<Mutex<Arena>>,
@@ -75,7 +78,7 @@ impl TCache {
     pub(crate) fn new(arena: Arc<Mutex<Arena>>, thread_id: usize) -> TCache {
         TCache {
             free_pages: [const { null_mut() }; NUM_SIZE_CLASSES],
-            used_pages: [const { Vec::<*mut Page>::new() }; NUM_SIZE_CLASSES],
+            used_pages: [const { Vec::<*mut Page>::new() }; NUM_SIZE_CLASSES + 1],
             spans: [const { Vec::<*mut Page>::new() }; SEGMENT_BINS],
             arena: arena.clone(),
             thread_id,
@@ -90,13 +93,6 @@ impl TCache {
         }
         (size.next_power_of_two() / MIN_SIZE_FROM_PAGES).trailing_zeros() as usize
     }
-
-    // #[inline]
-    // fn get_span_idx_from_size(size: usize) -> usize {
-    //     ((size + PAGE_SIZE - 1) / PAGE_SIZE)
-    //         .next_power_of_two()
-    //         .trailing_zeros() as usize
-    // }
 
     /**
      * Get the smallest bin which can hold contiguous runs of `slice_count` pages
@@ -135,9 +131,9 @@ impl TCache {
     }
 
     fn remove_page_from_used_queue(self: &mut Self, page_ptr: *mut Page) {
-        let size_class = Self::get_size_class(unsafe { (*page_ptr).block_size });
+        let mut size_class = Self::get_size_class(unsafe { (*page_ptr).block_size });
         if size_class >= NUM_SIZE_CLASSES {
-            return
+            size_class = NUM_SIZE_CLASSES;
         }
         for i in 0..self.used_pages[size_class].len() {
             if self.used_pages[size_class][i] == page_ptr {
@@ -155,7 +151,7 @@ impl TCache {
     }
 
     pub(crate) fn retire_page(self: &mut Self, page: *mut Page) {
-        assert!(unsafe { (*page).used.load(Ordering::Relaxed) == 0 });
+        assert!(unsafe { (*page).is_unused() });
         self.stats.pages_retired += 1;
         self.remove_page_from_used_queue(page);
         self.remove_page_from_free_queue(page);
@@ -190,7 +186,7 @@ impl TCache {
             let prev_slice_ref = unsafe { &mut (*prev_slice) };
             if prev_slice_ref.block_size == 0 {
                 // Merge with the previous slice
-                log::info!("[thread_id: {}] Merging slice with previous slice. Slice count of previous slice: {}", self.thread_id, prev_slice_ref.slice_count);
+                log::debug!("[thread_id: {}] Merging slice with previous slice. Slice count of previous slice: {}", self.thread_id, prev_slice_ref.slice_count);
                 assert!(self.remove_slice_from_span(prev_slice_ref));
                 segment.coalesce_slices(prev_slice_ref, page_ref);
                 let span_idx = Self::get_span_idx_from_slice_count(prev_slice_ref.slice_count);
@@ -208,13 +204,28 @@ impl TCache {
     }
 
     fn cleanup_pages(self: &mut Self) {
+        for i in 0..self.free_pages.len() {
+            let page = self.free_pages[i];
+            if page != null_mut() {
+                unsafe {
+                    (*page).collect_foreign_frees();
+                    if (*page).is_unused() {
+                        self.retire_page(page);
+                        self.free_pages[i] = null_mut();
+                    }
+                }
+            }
+        }
         for i in 0..self.used_pages.len() {
-            for page_idx in 0..self.used_pages[i].len() {
+            let mut page_idx = 0;
+            while page_idx < self.used_pages[i].len() {
                 let page = self.used_pages[i][page_idx];
                 unsafe {
-                    if (*page).used.load(Ordering::Relaxed) == 0 {
+                    (*page).collect_foreign_frees();
+                    if (*page).is_unused() {
                         self.retire_page(page);
-                        self.used_pages[i].remove(page_idx);
+                    } else {
+                        page_idx += 1;
                     }
                 }
             }
@@ -224,6 +235,7 @@ impl TCache {
     fn find_page_from_used(self: &mut Self, bin: usize) -> *mut u8 {
         for i in 0..self.used_pages[bin].len() {
             unsafe {
+                (*self.used_pages[bin][i]).collect_foreign_frees();
                 if (*self.used_pages[bin][i]).is_full() {
                     continue;
                 }
@@ -262,7 +274,7 @@ impl TCache {
                     self.spans[bin].push(next_slice);
                     log::debug!("[thread_id: {}] Added page with slice count {} to span with index: {}", self.thread_id, num_slices_original - num_slices_required, bin);
                 }
-                                unsafe {
+                unsafe {
                     (*slice).set_block_size(block_size);
                 }
                 return slice;
@@ -302,31 +314,50 @@ impl TCache {
         true
     }
 
-    pub(crate) fn allocate(self: &mut Self, size: usize) -> *mut u8 {
-        self.stats.total_allocations += 1;
-        if size > PAGE_SIZE {
-            // Directly get page from segment
-            let num_pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
-            let block_size = num_pages * PAGE_SIZE;
-            let mut free_page = self.find_page_from_spans(num_pages, block_size);
-            if free_page != null_mut() {
-                self.stats.allocations_from_segment += 1;
-                let free_block = unsafe { (*free_page).get_free_block() };
-                return free_block
-            }
-            self.stats.allocations_from_arena += 1;
-            let res = self.allocate_segment_from_arena(self.thread_id);
-            if !res {
-                return null_mut()
-            }
-            free_page = self.find_page_from_spans(num_pages, block_size);
-            if free_page == null_mut() {
-                return null_mut()
-            }
-            debug_assert_eq!(block_size, unsafe { (*free_page).block_size });
-            assert_ne!(free_page, null_mut());
+    fn allocate_large(self: &mut Self, size: usize) -> *mut u8 {
+        // Directly get page from segment
+        let num_pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
+        let block_size = num_pages * PAGE_SIZE;
+        let mut free_page = self.find_page_from_spans(num_pages, block_size);
+        if free_page != null_mut() {
+            self.stats.allocations_from_segment += 1;
             let free_block = unsafe { (*free_page).get_free_block() };
             return free_block
+        }
+        self.cleanup_pages();
+        // Retry after cleanup
+        free_page = self.find_page_from_spans(num_pages, block_size);
+        if free_page != null_mut() {
+            self.stats.allocations_from_segment += 1;
+            self.used_pages[NUM_SIZE_CLASSES].push(free_page);
+            let free_block = unsafe { (*free_page).get_free_block() };
+            return free_block
+        }
+
+        let res = self.allocate_segment_from_arena(self.thread_id);
+        if !res {
+            return null_mut()
+        }
+        self.stats.allocations_from_arena += 1;
+        free_page = self.find_page_from_spans(num_pages, block_size);
+        if free_page == null_mut() {
+            self.stats.unsuccessful_allocations += 1;
+            return null_mut()
+        }
+        self.used_pages[NUM_SIZE_CLASSES].push(free_page);
+        assert_ne!(free_page, null_mut());
+        let free_block = unsafe { (*free_page).get_free_block() };
+        return free_block
+    }
+
+    pub(crate) fn allocate(self: &mut Self, size: usize) -> *mut u8 {
+        self.stats.total_allocations = self.stats.total_allocations.wrapping_add(1);
+        if self.stats.total_allocations & 0x7f == 0 {
+            // Periodically cleanup pages
+            self.cleanup_pages();
+        }
+        if size > PAGE_SIZE {
+            return self.allocate_large(size)
         }
         let size_class = Self::get_size_class(size);
         debug_assert!(size_class < NUM_SIZE_CLASSES);
@@ -338,12 +369,17 @@ impl TCache {
             // allocate from free page
             let page = free_page.clone();
             unsafe {
-                if (*page).is_full() {
-                    self.used_pages[size_class].push(page);
-                    self.free_pages[size_class] = null_mut();
-                } else {
+                if !(*page).is_full() {
                     self.stats.fast_allocations += 1;
                     return (*page).get_free_block()
+                } else {
+                    // Try collecting frees from other threads and retrying
+                    (*page).collect_foreign_frees();
+                    if !(*page).is_full() {
+                        return (*page).get_free_block()
+                    }
+                    self.used_pages[size_class].push(page);
+                    self.free_pages[size_class] = null_mut();
                 }
             }
         }
@@ -360,11 +396,12 @@ impl TCache {
             return free_block;
         }
         // No space available in segments, allocate a new one
-        self.stats.allocations_from_arena += 1;
         let res = self.allocate_segment_from_arena(self.thread_id);
         if !res {
+            self.stats.unsuccessful_allocations += 1;
             return null_mut()
         }
+        self.stats.allocations_from_arena += 1;
         free_page = self.find_page_from_spans(1, block_size);
         assert_ne!(free_page, null_mut());
         let free_block = unsafe { (*free_page).get_free_block() };

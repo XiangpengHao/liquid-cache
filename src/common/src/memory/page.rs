@@ -1,4 +1,6 @@
-use std::{collections::VecDeque, ptr::null_mut, sync::{Mutex, atomic::{AtomicUsize, Ordering}}};
+use std::{collections::VecDeque, ptr::null_mut};
+
+use crate::memory::tcache::MIN_SIZE_FROM_PAGES;
 
 #[derive(Clone, Copy)]
 pub struct Block {
@@ -10,10 +12,9 @@ pub const PAGE_SIZE: usize = 256<<10;
 pub struct Page {
     pub(crate) block_size: usize,                  // Size of objects that are being allocated to this page
     // TODO(): Remove dependency on dynamically allocated memory
-    free_list: Mutex<VecDeque<Block>>,
-    pub(crate) used: AtomicUsize,
-    // local_free_list: VecDeque<Block>,
-    // thread_free_list: VecDeque<Block>,
+    free_list: VecDeque<Block>,
+    pub(crate) used: usize,
+    pub(crate) thread_free_list: crossbeam::queue::ArrayQueue<Block>,
     pub(crate) capacity: usize,
     pub(crate) slice_count: usize,      // No. of pages in the slice containing this page
     pub(crate) slice_offset: usize,     // Offset of this page from the start of this slice
@@ -22,14 +23,11 @@ pub struct Page {
 
 impl Page {
     pub fn from_slice(slice: Slice) -> Page {
-        // let mut start_ptr = slice.ptr;
-        let free_list = VecDeque::<Block>::new();
         Page {
             block_size: 0usize,
-            free_list: Mutex::new(free_list),
-            used: AtomicUsize::new(0),
-            // local_free_list: VecDeque::new(),
-            // thread_free_list: VecDeque::new(),
+            free_list: VecDeque::<Block>::with_capacity(PAGE_SIZE/MIN_SIZE_FROM_PAGES),
+            used: 0,
+            thread_free_list: crossbeam::queue::ArrayQueue::new(PAGE_SIZE/MIN_SIZE_FROM_PAGES),
             capacity: slice.size,
             slice_count: 1,
             slice_offset: 0,
@@ -40,43 +38,62 @@ impl Page {
     pub fn set_block_size(self: &mut Self, block_size: usize) {
         self.block_size = block_size;
         let mut offset: usize = 0;
-        let mut guard = self.free_list.lock().unwrap();
-        guard.clear();
+        self.free_list.clear();
         while offset < self.capacity {
             let ptr = unsafe { self.page_start.add(offset) };
-            guard.push_back(Block {ptr});
+            self.free_list.push_back(Block {ptr});
             offset += self.block_size;
         }
     }
 
     #[inline]
     pub fn get_free_block(self: &mut Self) -> *mut u8 {
-        let mut guard = self.free_list.lock().unwrap();
-        let block = guard.pop_front();
+        let block = self.free_list.pop_front();
         if block.is_none() {
             return null_mut()
         }
-        self.used.fetch_add(1usize, Ordering::Relaxed);
+        self.used += 1;
         block.unwrap().ptr
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn is_full(self: &Self) -> bool {
-        let guard = self.free_list.lock().unwrap();
-        guard.is_empty()
+        self.free_list.is_empty()
     }
 
-    #[inline]
+    #[inline(always)]
+    pub fn is_unused(self: &Self) -> bool {
+        self.used == 0
+    }
+
+    #[inline(always)]
     pub fn get_size(self: &Self) -> usize {
         self.capacity
     }
 
-    #[inline]
+    /// Pointer freed on the same core
+    #[inline(always)]
     pub fn free(self: &mut Self, ptr: *mut u8) {
+        self.free_list.push_back(Block {ptr});
+        self.used -= 1;
+    }
+
+    /// Pointer freed on a different core
+    #[inline(always)]
+    pub(crate) fn foreign_free(self: &mut Self, ptr: *mut u8) {
         let blk = Block {ptr};
-        let mut guard = self.free_list.lock().unwrap();
-        guard.push_back(blk);
-        self.used.fetch_sub(1usize, Ordering::Relaxed);
+        let r = self.thread_free_list.push(blk);
+        debug_assert!(r.is_ok());
+    }
+
+    /// Collect pointers freed by other threads
+    #[inline]
+    pub(crate) fn collect_foreign_frees(self: &mut Self) {
+        while !self.thread_free_list.is_empty() {
+            let blk = self.thread_free_list.pop().unwrap();
+            self.free_list.push_back(blk);
+            self.used -= 1;
+        }
     }
 }
 

@@ -69,6 +69,8 @@ pub struct LiquidCacheLocalBuilder {
     span: fastrace::Span,
 
     io_mode: IoMode,
+
+    fixed_buffer_pool_size_mb: usize,
 }
 
 impl Default for LiquidCacheLocalBuilder {
@@ -81,6 +83,7 @@ impl Default for LiquidCacheLocalBuilder {
             squeeze_policy: Box::new(TranscodeSqueezeEvict),
             span: fastrace::Span::enter_with_local_parent("liquid_cache_local_builder"),
             io_mode: IoMode::StdBlocking,
+            fixed_buffer_pool_size_mb: 0,
         }
     }
 }
@@ -133,6 +136,12 @@ impl LiquidCacheLocalBuilder {
         self
     }
 
+    /// Set size of fixed buffer pool
+    pub fn with_fixed_buffer_pool_size_mb(mut self, fixed_buffer_pool_size_mb: usize) -> Self {
+        self.fixed_buffer_pool_size_mb = fixed_buffer_pool_size_mb;
+        self
+    }
+
     /// Build a SessionContext with liquid cache configured
     /// Returns the SessionContext and the liquid cache reference
     pub fn build(self, mut config: SessionConfig) -> Result<(SessionContext, LiquidCacheRef)> {
@@ -153,7 +162,7 @@ impl LiquidCacheLocalBuilder {
             self.cache_policy,
             self.squeeze_policy,
             self.io_mode,
-            0,
+            self.fixed_buffer_pool_size_mb,
         );
         let cache_ref = Arc::new(cache);
 

@@ -12,6 +12,7 @@ arrow-flight = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 chrono = "0.4.42"
+crossbeam = "0.8.4"
 futures = { workspace = true }
 io-uring = "0.7.11"
 libc = "0.2.177"

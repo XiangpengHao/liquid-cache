@@ -156,23 +156,45 @@ impl FixedBufferPool {
         let page_ptr = unsafe { (*segment_ptr).get_page_from_ptr(ptr) };
         let thread_id = unsafe { (*segment_ptr).thread_id };
         log::debug!("Freed pointer: {:?}, size: {}, owner thread id: {}", ptr, unsafe { (*page_ptr).block_size }, thread_id);
-        unsafe {
-            (*page_ptr).free(ptr);
-        }
+
         // If page is local and unused after free, return it to segment        
         let cur_cpu = unsafe { libc::sched_getcpu() as usize };
         if cur_cpu == thread_id {
-            let should_free_page = unsafe { (*page_ptr).used.load(Ordering::Relaxed) == 0 };
+            unsafe {
+                (*page_ptr).free(ptr);
+            }
+            let should_free_page = unsafe { (*page_ptr).is_unused() };
             if should_free_page {
                 let local_cache = Self::get_thread_local_cache();
                 let mut guard = local_cache.lock().unwrap();
                 guard.retire_page(page_ptr);
             }
         } else {
-            log::debug!("Freeing from foreign thread");
+            unsafe { (*page_ptr).foreign_free(ptr); }
             let pool = FIXED_BUFFER_POOL.get().unwrap();
             pool.foreign_free.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    pub fn print_stats() {
+        if FIXED_BUFFER_POOL.get().is_none() {
+            return
+        }
+        let num_cpus = std::thread::available_parallelism().unwrap();
+        let mut agg_stats = TCacheStats::new();
+        for i in 0..num_cpus.get() {
+            let stats = Self::get_stats(i);
+            agg_stats.allocations_from_arena += stats.allocations_from_arena;
+            agg_stats.allocations_from_pages += stats.allocations_from_pages;
+            agg_stats.allocations_from_segment += stats.allocations_from_segment;
+            agg_stats.fast_allocations += stats.fast_allocations;
+            agg_stats.pages_retired += stats.pages_retired;
+            agg_stats.segments_retired += stats.segments_retired;
+            agg_stats.total_segments_allocated += stats.total_segments_allocated;
+            agg_stats.unsuccessful_allocations += stats.unsuccessful_allocations;
+            agg_stats.total_allocations += stats.total_allocations;
+        }
+        agg_stats.print();
     }
 }
 
