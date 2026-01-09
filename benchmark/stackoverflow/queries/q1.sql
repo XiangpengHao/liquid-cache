@@ -3,6 +3,4 @@ SELECT
     EXTRACT(DOW FROM "CreationDate") AS day_of_week,
     COUNT(*) AS post_count,
 FROM "Posts"
-WHERE "CreationDate" IS NOT NULL
-GROUP BY day_of_week
-ORDER BY day_of_week;
+GROUP BY day_of_week;

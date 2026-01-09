@@ -407,6 +407,12 @@ where
                 SqueezedDate32Array::from_liquid_date32(self, field).with_backing(io, disk_range);
             return Some((Arc::new(squeezed) as LiquidSqueezedArrayRef, full_bytes));
         }
+        if matches!(T::DATA_TYPE, DataType::Timestamp(_, _)) {
+            let field = expression_hint.as_date32_field()?;
+            let squeezed = SqueezedDate32Array::from_liquid_timestamp(self, field)
+                .with_backing(io, disk_range);
+            return Some((Arc::new(squeezed) as LiquidSqueezedArrayRef, full_bytes));
+        }
 
         // Only squeeze if we have a concrete bit width and it is large enough
         let orig_bw = self.bit_packed.bit_width()?;

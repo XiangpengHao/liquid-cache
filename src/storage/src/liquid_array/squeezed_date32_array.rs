@@ -1,8 +1,16 @@
-use arrow::array::{ArrayRef, BooleanArray, PrimitiveArray, cast::AsArray};
+use arrow::array::{
+    ArrayRef, BooleanArray, PrimitiveArray,
+    cast::AsArray,
+    types::{
+        TimestampMicrosecondType, TimestampMillisecondType, TimestampNanosecondType,
+        TimestampSecondType,
+    },
+};
 use arrow::buffer::{BooleanBuffer, ScalarBuffer};
 use arrow::datatypes::{ArrowPrimitiveType, Date32Type, Int32Type, UInt32Type};
-use arrow_schema::DataType;
+use arrow_schema::{DataType, TimeUnit};
 use bytes::Bytes;
+use num_traits::AsPrimitive;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -14,7 +22,7 @@ use crate::liquid_array::SqueezeIoHandler;
 use crate::liquid_array::raw::BitPackedArray;
 use crate::utils::get_bit_width;
 
-/// Which component to extract from a `Date32` (days since UNIX epoch).
+/// Which component to extract from a `Date32`/Timestamp (days since UNIX epoch).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum Date32Field {
     /// Year component
@@ -23,10 +31,12 @@ pub enum Date32Field {
     Month,
     /// Day component
     Day,
+    /// Day-of-week component (Sunday=0).
+    DayOfWeek,
 }
 
-/// A bit-packed array that stores a single extracted component (YEAR/MONTH/DAY)
-/// from a `Date32` array.
+/// A bit-packed array that stores a single extracted component (YEAR/MONTH/DAY/DOW)
+/// from a `Date32`/Timestamp array.
 ///
 /// Values are stored as unsigned offsets from `reference_value`, using the same
 /// bit-packing machinery as primitive arrays.
@@ -36,6 +46,7 @@ pub struct SqueezedDate32Array {
     bit_packed: BitPackedArray<UInt32Type>,
     /// The minimum extracted value used as reference for offsetting.
     reference_value: i32,
+    original_data_type: DataType,
     backing: Option<SqueezedBacking>,
 }
 
@@ -46,7 +57,7 @@ struct SqueezedBacking {
 }
 
 impl SqueezedDate32Array {
-    /// Build a squeezed representation (YEAR/MONTH/DAY) from a `LiquidPrimitiveArray<Date32Type>`.
+    /// Build a squeezed representation (YEAR/MONTH/DAY/DAYOFWEEK) from a `Date32` array.
     pub fn from_liquid_date32<T: LiquidPrimitiveType>(
         array: &LiquidPrimitiveArray<T>,
         field: Date32Field,
@@ -70,6 +81,7 @@ impl SqueezedDate32Array {
                 field,
                 bit_packed: BitPackedArray::new_null_array(values.len()),
                 reference_value: 0,
+                original_data_type: DataType::Date32,
                 backing: None,
             };
         }
@@ -80,12 +92,7 @@ impl SqueezedDate32Array {
             {
                 continue;
             }
-            let (year, month, day) = ymd_from_epoch_days(days);
-            let comp = match field {
-                Date32Field::Year => year,
-                Date32Field::Month => month as i32,
-                Date32Field::Day => day as i32,
-            };
+            let comp = component_from_days(field, days);
             has_value = true;
             if comp < min_component {
                 min_component = comp;
@@ -101,6 +108,7 @@ impl SqueezedDate32Array {
                 field,
                 bit_packed: BitPackedArray::new_null_array(values.len()),
                 reference_value: 0,
+                original_data_type: DataType::Date32,
                 backing: None,
             };
         }
@@ -115,12 +123,7 @@ impl SqueezedDate32Array {
                 if nulls.as_ref().is_some_and(|n| n.is_null(idx)) {
                     0u32
                 } else {
-                    let (year, month, day) = ymd_from_epoch_days(values[idx]);
-                    let comp = match field {
-                        Date32Field::Year => year,
-                        Date32Field::Month => month as i32,
-                        Date32Field::Day => day as i32,
-                    };
+                    let comp = component_from_days(field, values[idx]);
                     (comp - min_component) as u32
                 }
             }));
@@ -132,6 +135,85 @@ impl SqueezedDate32Array {
             field,
             bit_packed,
             reference_value: min_component,
+            original_data_type: DataType::Date32,
+            backing: None,
+        }
+    }
+
+    /// Build a squeezed representation (YEAR/MONTH/DAY/DAYOFWEEK) from a timestamp array.
+    pub fn from_liquid_timestamp<T: LiquidPrimitiveType>(
+        array: &LiquidPrimitiveArray<T>,
+        field: Date32Field,
+    ) -> Self {
+        let unit = timestamp_unit(&T::DATA_TYPE).expect("timestamp data type");
+        let arrow_array: PrimitiveArray<T> = array.to_arrow_array().as_primitive::<T>().clone();
+        let (_dt, values, nulls) = arrow_array.into_parts();
+
+        let mut has_value = false;
+        let mut min_component: i32 = i32::MAX;
+        let mut max_component: i32 = i32::MIN;
+
+        if let Some(nulls_buf) = &nulls
+            && nulls_buf.null_count() == values.len()
+        {
+            return Self {
+                field,
+                bit_packed: BitPackedArray::new_null_array(values.len()),
+                reference_value: 0,
+                original_data_type: T::DATA_TYPE.clone(),
+                backing: None,
+            };
+        }
+
+        for (idx, &value) in values.iter().enumerate() {
+            if let Some(nulls_buf) = &nulls
+                && nulls_buf.is_null(idx)
+            {
+                continue;
+            }
+            let days = timestamp_to_days_since_epoch(value.as_(), unit);
+            let comp = component_from_days(field, days);
+            has_value = true;
+            if comp < min_component {
+                min_component = comp;
+            }
+            if comp > max_component {
+                max_component = comp;
+            }
+        }
+
+        if !has_value {
+            return Self {
+                field,
+                bit_packed: BitPackedArray::new_null_array(values.len()),
+                reference_value: 0,
+                original_data_type: T::DATA_TYPE.clone(),
+                backing: None,
+            };
+        }
+
+        let max_offset = (max_component as i64 - min_component as i64) as u64;
+        let bit_width = get_bit_width(max_offset);
+
+        let offsets: ScalarBuffer<<UInt32Type as ArrowPrimitiveType>::Native> =
+            ScalarBuffer::from_iter((0..values.len()).map(|idx| {
+                if nulls.as_ref().is_some_and(|n| n.is_null(idx)) {
+                    0u32
+                } else {
+                    let days = timestamp_to_days_since_epoch(values[idx].as_(), unit);
+                    let comp = component_from_days(field, days);
+                    (comp - min_component) as u32
+                }
+            }));
+
+        let unsigned_array = PrimitiveArray::<UInt32Type>::new(offsets, nulls);
+        let bit_packed = BitPackedArray::from_primitive(unsigned_array, bit_width);
+
+        Self {
+            field,
+            bit_packed,
+            reference_value: min_component,
+            original_data_type: T::DATA_TYPE.clone(),
             backing: None,
         }
     }
@@ -177,6 +259,15 @@ impl SqueezedDate32Array {
         self.field
     }
 
+    /// Convert to an Arrow array holding the extracted component.
+    pub fn to_component_array(&self) -> ArrayRef {
+        match &self.original_data_type {
+            DataType::Date32 => Arc::new(self.to_component_date32()) as ArrayRef,
+            DataType::Timestamp(unit, _) => self.to_component_timestamp(*unit),
+            _ => Arc::new(self.to_component_date32()) as ArrayRef,
+        }
+    }
+
     /// Convert back to an Arrow `Int32` array representing the extracted component values.
     /// Useful for verification or future pushdown logic.
     pub fn to_component_date32(&self) -> PrimitiveArray<Date32Type> {
@@ -188,12 +279,40 @@ impl SqueezedDate32Array {
         PrimitiveArray::<Date32Type>::new(signed_values, nulls)
     }
 
+    fn to_component_timestamp(&self, unit: TimeUnit) -> ArrayRef {
+        let unsigned: PrimitiveArray<UInt32Type> = self.bit_packed.to_primitive();
+        let (_dt, values, nulls) = unsigned.into_parts();
+        let ref_v = self.reference_value;
+        let signed_values: ScalarBuffer<i64> =
+            ScalarBuffer::from_iter(values.iter().map(|&v| (v as i32 + ref_v) as i64));
+
+        match unit {
+            TimeUnit::Second => Arc::new(PrimitiveArray::<TimestampSecondType>::new(
+                signed_values,
+                nulls,
+            )),
+            TimeUnit::Millisecond => Arc::new(PrimitiveArray::<TimestampMillisecondType>::new(
+                signed_values.clone(),
+                nulls,
+            )),
+            TimeUnit::Microsecond => Arc::new(PrimitiveArray::<TimestampMicrosecondType>::new(
+                signed_values.clone(),
+                nulls,
+            )),
+            TimeUnit::Nanosecond => Arc::new(PrimitiveArray::<TimestampNanosecondType>::new(
+                signed_values,
+                nulls,
+            )),
+        }
+    }
+
     /// Lossy reconstruction to Arrow `Date32` (days since epoch).
     ///
     /// Mapping used:
     /// - Year: (year, 1, 1)
     /// - Month: (1970, month, 1)
     /// - Day: (1970, 1, day)
+    /// - DayOfWeek: (1970, 1, 4 + dow) where 1970-01-04 is Sunday
     pub fn to_arrow_date32_lossy(&self) -> PrimitiveArray<Date32Type> {
         let unsigned: PrimitiveArray<UInt32Type> = self.bit_packed.to_primitive();
         let (_dt, values, nulls) = unsigned.into_parts();
@@ -216,6 +335,10 @@ impl SqueezedDate32Array {
                         Date32Field::Day => {
                             let d = (ref_v + off as i32) as u32;
                             ymd_to_epoch_days(1970, 1, d)
+                        }
+                        Date32Field::DayOfWeek => {
+                            let dow = ref_v + off as i32;
+                            ymd_to_epoch_days(1970, 1, 4).saturating_add(dow)
                         }
                     }
                 }
@@ -246,6 +369,37 @@ fn ymd_from_epoch_days(days_since_epoch: i32) -> (i32, u32, u32) {
         y += 1;
     }
     (y as i32, m as u32, d as u32)
+}
+
+fn component_from_days(field: Date32Field, days: i32) -> i32 {
+    let (year, month, day) = ymd_from_epoch_days(days);
+    match field {
+        Date32Field::Year => year,
+        Date32Field::Month => month as i32,
+        Date32Field::Day => day as i32,
+        Date32Field::DayOfWeek => day_of_week_sunday0(days),
+    }
+}
+
+fn day_of_week_sunday0(days_since_epoch: i32) -> i32 {
+    (days_since_epoch + 4).rem_euclid(7)
+}
+
+fn timestamp_unit(data_type: &DataType) -> Option<TimeUnit> {
+    match data_type {
+        DataType::Timestamp(unit, _) => Some(*unit),
+        _ => None,
+    }
+}
+
+fn timestamp_to_days_since_epoch(value: i64, unit: TimeUnit) -> i32 {
+    let ticks_per_day = match unit {
+        TimeUnit::Second => 86_400,
+        TimeUnit::Millisecond => 86_400_000,
+        TimeUnit::Microsecond => 86_400_000_000,
+        TimeUnit::Nanosecond => 86_400_000_000_000,
+    };
+    (value.div_euclid(ticks_per_day)) as i32
 }
 
 /// Convert a date (year, month, day) in proleptic Gregorian calendar to
@@ -291,7 +445,7 @@ impl LiquidSqueezedArray for SqueezedDate32Array {
     }
 
     fn original_arrow_data_type(&self) -> DataType {
-        DataType::Date32
+        self.original_data_type.clone()
     }
 
     async fn filter(&self, selection: &BooleanBuffer) -> ArrayRef {
@@ -315,7 +469,8 @@ impl LiquidSqueezedArray for SqueezedDate32Array {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::PrimitiveArray;
+    use arrow::array::{Array, PrimitiveArray};
+    use arrow::array::types::TimestampMicrosecondType;
     use std::sync::Arc;
 
     fn dates(vals: &[Option<i32>]) -> PrimitiveArray<Date32Type> {
@@ -374,6 +529,16 @@ mod tests {
         ];
         let expected = PrimitiveArray::<Date32Type>::from(vec![Some(1), Some(31), Some(1), None]);
         assert_prim_eq(extract(Date32Field::Day, input), expected);
+
+        // DAYOFWEEK (Sunday=0)
+        let input = vec![
+            Some(ymd_to_epoch_days(1970, 1, 4)),
+            Some(ymd_to_epoch_days(1970, 1, 5)),
+            Some(ymd_to_epoch_days(1970, 1, 10)),
+            None,
+        ];
+        let expected = PrimitiveArray::<Date32Type>::from(vec![Some(0), Some(1), Some(6), None]);
+        assert_prim_eq(extract(Date32Field::DayOfWeek, input), expected);
     }
 
     #[test]
@@ -416,6 +581,19 @@ mod tests {
             None,
         ]);
         assert_prim_eq(lossy(Date32Field::Day, input), expected);
+
+        // DAYOFWEEK → (1970,1,4 + dow)
+        let input = vec![
+            Some(ymd_to_epoch_days(2020, 5, 17)),
+            Some(ymd_to_epoch_days(2020, 5, 18)),
+            None,
+        ];
+        let expected = PrimitiveArray::<Date32Type>::from(vec![
+            Some(ymd_to_epoch_days(1970, 1, 4)),
+            Some(ymd_to_epoch_days(1970, 1, 5)),
+            None,
+        ]);
+        assert_prim_eq(lossy(Date32Field::DayOfWeek, input), expected);
     }
 
     #[test]
@@ -429,7 +607,12 @@ mod tests {
             None,
         ];
 
-        for &field in &[Date32Field::Year, Date32Field::Month, Date32Field::Day] {
+        for &field in &[
+            Date32Field::Year,
+            Date32Field::Month,
+            Date32Field::Day,
+            Date32Field::DayOfWeek,
+        ] {
             let comp1 = extract(field, input.clone());
             let lossy_dt = lossy(field, input.clone());
             let liquid2 = LiquidPrimitiveArray::<Date32Type>::from_arrow_array(lossy_dt);
@@ -443,7 +626,12 @@ mod tests {
     fn test_all_nulls_behavior() {
         let input = vec![None, None, None];
 
-        for &field in &[Date32Field::Year, Date32Field::Month, Date32Field::Day] {
+        for &field in &[
+            Date32Field::Year,
+            Date32Field::Month,
+            Date32Field::Day,
+            Date32Field::DayOfWeek,
+        ] {
             let comp = extract(field, input.clone());
             let expected_comp = PrimitiveArray::<Date32Type>::from(vec![None, None, None]);
             assert_prim_eq(comp, expected_comp);
@@ -452,5 +640,26 @@ mod tests {
             let expected_dt = PrimitiveArray::<Date32Type>::from(vec![None, None, None]);
             assert_prim_eq(lossy_dt, expected_dt);
         }
+    }
+
+    #[test]
+    fn test_timestamp_extraction() {
+        let input = vec![
+            Some(1_609_459_200_000_000),
+            Some(1_640_995_200_000_000),
+            None,
+        ];
+        let arr = PrimitiveArray::<TimestampMicrosecondType>::from(input);
+        let liquid = LiquidPrimitiveArray::<TimestampMicrosecondType>::from_arrow_array(arr);
+        let squeezed = SqueezedDate32Array::from_liquid_timestamp(&liquid, Date32Field::Year);
+        let component = squeezed.to_component_array();
+        let out = component
+            .as_any()
+            .downcast_ref::<PrimitiveArray<TimestampMicrosecondType>>()
+            .expect("timestamp array");
+
+        assert_eq!(out.value(0), 2021);
+        assert_eq!(out.value(1), 2022);
+        assert!(out.is_null(2));
     }
 }

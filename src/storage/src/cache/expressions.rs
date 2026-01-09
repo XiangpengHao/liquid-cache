@@ -36,7 +36,7 @@ impl VariantRequest {
 /// Experimental expression descriptor for cache lookups.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum CacheExpression {
-    /// Extract a specific component (YEAR/MONTH/DAY) from a `Date32` column.
+    /// Extract a specific component (YEAR/MONTH/DAY/DOW) from a `Date32` column.
     ExtractDate32 {
         /// Component to extract (YEAR/MONTH/DAY).
         field: Date32Field,
@@ -78,7 +78,7 @@ impl std::fmt::Display for CacheExpression {
 }
 
 impl CacheExpression {
-    /// Build an extract expression for a `Date32` column.
+    /// Build an extract expression for a `Date32`/timestamp column.
     pub fn extract_date32(field: Date32Field) -> Self {
         Self::ExtractDate32 { field }
     }
@@ -123,6 +123,7 @@ impl CacheExpression {
             "YEAR" => Date32Field::Year,
             "MONTH" => Date32Field::Month,
             "DAY" => Date32Field::Day,
+            "DOW" | "DAYOFWEEK" | "DAY_OF_WEEK" => Date32Field::DayOfWeek,
             _ => return None,
         };
         Some(Self::ExtractDate32 { field })

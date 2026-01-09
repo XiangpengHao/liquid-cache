@@ -32,6 +32,7 @@ pub(crate) enum SupportedIntervalUnit {
     Year,
     Month,
     Day,
+    DayOfWeek,
 }
 
 impl SupportedIntervalUnit {
@@ -40,11 +41,12 @@ impl SupportedIntervalUnit {
             SupportedIntervalUnit::Year => "YEAR",
             SupportedIntervalUnit::Month => "MONTH",
             SupportedIntervalUnit::Day => "DAY",
+            SupportedIntervalUnit::DayOfWeek => "DOW",
         }
     }
 }
 
-/// Metadata describing a Date32 column that participates in an `EXTRACT`.
+/// Metadata describing a Date32/Timestamp column that participates in an `EXTRACT`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DateExtraction {
     pub(crate) column: Column,
@@ -113,11 +115,12 @@ pub(crate) enum ColumnAnnotation {
 
 pub(crate) fn serialize_date_part(units: &HashSet<SupportedIntervalUnit>) -> String {
     let mut sorted_units: Vec<&SupportedIntervalUnit> = units.iter().collect();
-    // Sort by a consistent order: Year, Month, Day
+    // Sort by a consistent order: Year, Month, Day, DayOfWeek
     sorted_units.sort_by_key(|unit| match unit {
         SupportedIntervalUnit::Year => 0,
         SupportedIntervalUnit::Month => 1,
         SupportedIntervalUnit::Day => 2,
+        SupportedIntervalUnit::DayOfWeek => 3,
     });
     sorted_units
         .iter()
@@ -554,7 +557,7 @@ impl TableColumnUsage {
     fn find_date32_extractions(&self) -> Vec<DateExtraction> {
         let mut extractions = Vec::new();
         for (key, stats) in self.usage.iter() {
-            if matches!(stats.data_type, DataType::Date32) {
+            if is_date_part_type(&stats.data_type) {
                 // Collect all extract units from paths where the first n operations are all extracts
                 let mut all_units = HashSet::new();
                 let mut all_paths_valid = true;
@@ -1024,6 +1027,10 @@ fn is_string_type(data_type: &DataType) -> bool {
     }
 }
 
+fn is_date_part_type(data_type: &DataType) -> bool {
+    matches!(data_type, DataType::Date32 | DataType::Timestamp(_, _))
+}
+
 fn literal_data_type(expr: &Expr) -> Option<DataType> {
     literal_utf8(expr).and_then(|spec| DataType::from_str(&spec).ok())
 }
@@ -1039,6 +1046,13 @@ fn part_to_unit(expr: &Expr) -> Option<SupportedIntervalUnit> {
         | ScalarValue::Utf8View(Some(v)) => v.as_str(),
         _ => return None,
     };
+    let lowered = text.to_ascii_lowercase();
+    match lowered.as_str() {
+        "dow" | "dayofweek" | "day_of_week" => {
+            return Some(SupportedIntervalUnit::DayOfWeek);
+        }
+        _ => {}
+    }
     let unit = IntervalUnit::from_str(text).ok()?;
     match unit {
         IntervalUnit::Year => Some(SupportedIntervalUnit::Year),
@@ -1382,6 +1396,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn extract_dow_basic() {
+        let (_dir, ctx, _) = setup_single_date_table().await;
+        assert_metadata(
+            &ctx,
+            "SELECT date_part('dow', date) AS dow FROM table_a",
+            vec![("date", "DOW")],
+            vec![],
+        )
+        .await;
+    }
+
+    #[tokio::test]
     async fn extract_day_lowercase() {
         let (_dir, ctx, _) = setup_single_date_table().await;
         assert_metadata(
@@ -1535,13 +1561,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_extraction_for_timestamp() {
+    async fn timestamp_extraction_supported() {
         let (_dir, ctx, _) = setup_single_date_table().await;
-        // Timestamp extraction not supported yet
         assert_metadata(
             &ctx,
             "SELECT EXTRACT(YEAR FROM event_ts) AS year FROM table_a",
+            vec![("event_ts", "YEAR")],
             vec![],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn timestamp_dow_extraction() {
+        let (_dir, ctx, _) = setup_single_date_table().await;
+        assert_metadata(
+            &ctx,
+            "SELECT date_part('dow', event_ts) AS dow FROM table_a",
+            vec![("event_ts", "DOW")],
             vec![],
         )
         .await;

@@ -631,7 +631,7 @@ impl LiquidCache {
             && let Some(squeezed) = array.as_any().downcast_ref::<SqueezedDate32Array>()
             && squeezed.field() == *field
         {
-            let component = Arc::new(squeezed.to_component_date32()) as ArrayRef;
+            let component = squeezed.to_component_array();
             self.observer.on_hit_date32_expression();
             if let Some(selection) = selection {
                 let selection_array = BooleanArray::new(selection.clone(), None);
