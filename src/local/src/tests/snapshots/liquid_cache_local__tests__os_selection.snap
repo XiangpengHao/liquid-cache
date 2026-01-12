@@ -56,3 +56,4 @@ RuntimeStatsSnapshot:
   eval_predicate_on_liquid_failed: 0
   squeezed_decompressed_count: 2141
   squeezed_total_count: 2164
+  squeeze_io_saved: 0

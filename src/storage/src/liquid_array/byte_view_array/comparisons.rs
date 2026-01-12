@@ -232,6 +232,8 @@ impl LiquidByteViewArray<DiskBuffer> {
                     dict_results[dict_index] = true;
                 }
             }
+        } else {
+            self.fsst_buffer.squeeze_io().trace_io_saved();
         }
 
         self.map_dictionary_results_to_array_results(dict_results)
@@ -272,6 +274,8 @@ impl LiquidByteViewArray<DiskBuffer> {
                 };
                 dict_results[dict_index] = result;
             }
+        } else {
+            self.fsst_buffer.squeeze_io().trace_io_saved();
         }
 
         self.map_dictionary_results_to_array_results(dict_results)
@@ -297,6 +301,7 @@ impl LiquidByteViewArray<DiskBuffer> {
                 operator,
             )
         } else {
+            self.fsst_buffer.squeeze_io().trace_io_saved();
             dict_results
         };
 

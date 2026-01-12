@@ -397,6 +397,33 @@ impl ArrowByteType {
     }
 }
 
+pub(crate) fn build_dict_selection(
+    keys: &UInt16Array,
+    dict_len: usize,
+) -> (Vec<usize>, UInt16Array) {
+    let mut hit_mask = BooleanBufferBuilder::new(dict_len);
+    hit_mask.advance(dict_len);
+    for v in keys.iter().flatten() {
+        hit_mask.set_bit(v as usize, true);
+    }
+    let hit_mask = hit_mask.finish();
+    let selected_cnt = hit_mask.count_set_bits();
+
+    let mut key_map = HashMap::with_capacity_and_hasher(selected_cnt, ahash::RandomState::new());
+    let mut selected = Vec::with_capacity(selected_cnt);
+    let mut offset: u16 = 0;
+    for (i, select) in hit_mask.iter().enumerate() {
+        if select {
+            key_map.insert(i, offset);
+            selected.push(i);
+            offset += 1;
+        }
+    }
+
+    let new_keys = UInt16Array::from_iter(keys.iter().map(|v| v.map(|v| key_map[&(v as usize)])));
+    (selected, new_keys)
+}
+
 /// An array that stores strings in a dictionary format, with a bit-packed array for the keys and a FSST array for the values.
 #[derive(Debug, Clone)]
 pub struct LiquidByteArray {
@@ -613,30 +640,7 @@ impl LiquidByteArray {
 
     fn to_dict_arrow_decompress_keyed(&self) -> DictionaryArray<UInt16Type> {
         let primitive_key = self.keys.to_primitive();
-        let mut hit_mask = BooleanBufferBuilder::new(self.values.len());
-        hit_mask.advance(self.values.len());
-        for v in primitive_key.iter().flatten() {
-            hit_mask.set_bit(v as usize, true);
-        }
-        let hit_mask = hit_mask.finish();
-        let selected_cnt = hit_mask.count_set_bits();
-
-        let mut key_map =
-            HashMap::with_capacity_and_hasher(selected_cnt, ahash::RandomState::new());
-        let mut selected = Vec::with_capacity(selected_cnt);
-        let mut offset = 0;
-        for (i, select) in hit_mask.iter().enumerate() {
-            if select {
-                key_map.insert(i, offset);
-                selected.push(i);
-                offset += 1;
-            }
-        }
-        let new_keys = UInt16Array::from_iter(
-            primitive_key
-                .iter()
-                .map(|v| v.map(|v| key_map[&(v as usize)])),
-        );
+        let (selected, new_keys) = build_dict_selection(&primitive_key, self.values.len());
 
         let (value_buffer, offsets) = self.values.to_uncompressed_selected(&selected);
         let values: ArrayRef = if self.original_arrow_type.is_string() {

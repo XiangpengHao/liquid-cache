@@ -54,5 +54,6 @@ RuntimeStatsSnapshot:
   read_io_count: 4
   write_io_count: 0
   eval_predicate_on_liquid_failed: 1
-  squeezed_decompressed_count: 4359
-  squeezed_total_count: 4407
+  squeezed_decompressed_count: 4362
+  squeezed_total_count: 8814
+  squeeze_io_saved: 0

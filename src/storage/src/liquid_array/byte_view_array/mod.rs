@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::cell::Cell;
 
 use crate::cache::CacheExpression;
-use crate::liquid_array::byte_array::ArrowByteType;
+use crate::liquid_array::byte_array::{ArrowByteType, build_dict_selection};
 use crate::liquid_array::byte_view_array::fingerprint::build_fingerprints;
 use crate::liquid_array::raw::FsstArray;
 use crate::liquid_array::raw::fsst_buffer::{DiskBuffer, FsstBacking, PrefixKey};
@@ -128,10 +128,10 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
     /// Convert to Arrow DictionaryArray
     fn to_dict_arrow_inner(
         &self,
+        keys_array: UInt16Array,
         values_buffer: Buffer,
         offsets_buffer: OffsetBuffer<i32>,
     ) -> DictionaryArray<UInt16Type> {
-        let keys_array = self.dictionary_keys.clone();
         let values = if self.original_arrow_type == ArrowByteType::Utf8
             || self.original_arrow_type == ArrowByteType::Utf8View
             || self.original_arrow_type == ArrowByteType::Dict16Utf8
@@ -148,6 +148,10 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
         unsafe { DictionaryArray::<UInt16Type>::new_unchecked(keys_array, values) }
     }
 
+    fn should_decompress_keyed(&self) -> bool {
+        self.dictionary_keys.len() < 2048 || self.dictionary_keys.len() < self.prefix_keys.len()
+    }
+
     /// Get the nulls buffer
     pub fn nulls(&self) -> Option<&NullBuffer> {
         self.dictionary_keys.nulls()
@@ -162,9 +166,8 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
             .unwrap_or(0);
         ByteViewArrayMemoryUsage {
             dictionary_key: self.dictionary_keys.get_array_memory_size(),
-            offsets: self.fsst_buffer.compact_offsets_memory_usage(),
             prefix_keys: self.prefix_keys.len() * std::mem::size_of::<PrefixKey>(),
-            fsst_buffer: self.fsst_buffer.raw_memory_usage(),
+            fsst_buffer: self.fsst_buffer.get_array_memory_size(),
             shared_prefix: self.shared_prefix.len(),
             string_fingerprints: fingerprint_bytes,
             struct_size: std::mem::size_of::<Self>(),
@@ -197,8 +200,23 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
 impl LiquidByteViewArray<FsstArray> {
     /// Convert to Arrow DictionaryArray
     pub fn to_dict_arrow(&self) -> DictionaryArray<UInt16Type> {
+        if self.should_decompress_keyed() {
+            self.to_dict_arrow_decompress_keyed()
+        } else {
+            self.to_dict_arrow_decompress_all()
+        }
+    }
+
+    fn to_dict_arrow_decompress_all(&self) -> DictionaryArray<UInt16Type> {
         let (values_buffer, offsets_buffer) = self.fsst_buffer.to_uncompressed();
-        self.to_dict_arrow_inner(values_buffer, offsets_buffer)
+        self.to_dict_arrow_inner(self.dictionary_keys.clone(), values_buffer, offsets_buffer)
+    }
+
+    fn to_dict_arrow_decompress_keyed(&self) -> DictionaryArray<UInt16Type> {
+        let (selected, new_keys) =
+            build_dict_selection(&self.dictionary_keys, self.prefix_keys.len());
+        let (values_buffer, offsets_buffer) = self.fsst_buffer.to_uncompressed_selected(&selected);
+        self.to_dict_arrow_inner(new_keys, values_buffer, offsets_buffer)
     }
 
     /// Convert to Arrow array with original type
@@ -221,8 +239,24 @@ impl LiquidByteViewArray<DiskBuffer> {
 
     /// Convert to Arrow DictionaryArray
     pub async fn to_dict_arrow(&self) -> DictionaryArray<UInt16Type> {
+        if self.should_decompress_keyed() {
+            self.to_dict_arrow_decompress_keyed().await
+        } else {
+            self.to_dict_arrow_decompress_all().await
+        }
+    }
+
+    async fn to_dict_arrow_decompress_all(&self) -> DictionaryArray<UInt16Type> {
         let (values_buffer, offsets_buffer) = self.fsst_buffer.to_uncompressed().await;
-        self.to_dict_arrow_inner(values_buffer, offsets_buffer)
+        self.to_dict_arrow_inner(self.dictionary_keys.clone(), values_buffer, offsets_buffer)
+    }
+
+    async fn to_dict_arrow_decompress_keyed(&self) -> DictionaryArray<UInt16Type> {
+        let (selected, new_keys) =
+            build_dict_selection(&self.dictionary_keys, self.prefix_keys.len());
+        let (values_buffer, offsets_buffer) =
+            self.fsst_buffer.to_uncompressed_selected(&selected).await;
+        self.to_dict_arrow_inner(new_keys, values_buffer, offsets_buffer)
     }
 
     /// Convert to Arrow array with original type
@@ -322,6 +356,11 @@ impl LiquidArray for LiquidByteViewArray<FsstArray> {
         let bytes = Bytes::from(bytes);
         Some((Arc::new(hybrid) as LiquidSqueezedArrayRef, bytes))
     }
+
+    fn filter(&self, selection: &BooleanBuffer) -> ArrayRef {
+        let filtered = helpers::filter_inner(self, selection);
+        filtered.to_arrow_array()
+    }
 }
 
 #[async_trait::async_trait]
@@ -374,17 +413,8 @@ impl LiquidSqueezedArray for LiquidByteViewArray<DiskBuffer> {
         if !select_any {
             return arrow::array::new_empty_array(&self.original_arrow_data_type());
         }
-        let bytes = self
-            .fsst_buffer
-            .squeeze_io()
-            .read(Some(self.fsst_buffer.disk_range()))
-            .await
-            .expect("read squeezed backing");
-        let hydrated =
-            LiquidByteViewArray::<FsstArray>::from_bytes(bytes, self.fsst_buffer.compressor_arc());
-        let arrow = hydrated.to_arrow_array();
-        let selection_array = BooleanArray::new(selection.clone(), None);
-        arrow::compute::filter(&arrow, &selection_array).unwrap()
+        let filtered = helpers::filter_inner(self, selection);
+        filtered.to_arrow_array().await
     }
 
     /// Try to evaluate a predicate on the Liquid array with a filter.
