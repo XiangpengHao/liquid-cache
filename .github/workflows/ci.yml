@@ -19,6 +19,7 @@ jobs:
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@v4
+            - uses: ./.github/actions/free-disk-space
             - uses: dtolnay/rust-toolchain@stable
               with:
                   components: clippy, rustfmt
