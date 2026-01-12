@@ -758,7 +758,7 @@ mod tests {
     use arrow::buffer::BooleanBuffer;
     use arrow::datatypes::{Int32Type, UInt32Type};
     use datafusion::logical_expr::Operator;
-    use datafusion::physical_plan::expressions::{BinaryExpr, Literal};
+    use datafusion::physical_plan::expressions::{BinaryExpr, Column, Literal};
     use datafusion::scalar::ScalarValue;
     use futures::executor::block_on;
     use rand::rngs::StdRng;
@@ -907,10 +907,11 @@ mod tests {
         let mask_bits: Vec<bool> = (0..arr.len()).map(|_| rng.random()).collect();
         let mask = BooleanBuffer::from_iter(mask_bits.iter().copied());
 
+        let col = Arc::new(Column::new("col", 0));
         let build_expr =
             |op: Operator, k: i32| -> Arc<dyn datafusion::physical_plan::PhysicalExpr> {
                 let lit = Arc::new(Literal::new(ScalarValue::Int32(Some(k))));
-                Arc::new(BinaryExpr::new(lit.clone(), op, lit))
+                Arc::new(BinaryExpr::new(col.clone(), op, lit))
             };
 
         // Helper to compute expected boolean array on selected rows
@@ -991,10 +992,11 @@ mod tests {
         let mask_bits: Vec<bool> = (0..arr.len()).map(|_| rng.random()).collect();
         let mask = BooleanBuffer::from_iter(mask_bits.iter().copied());
 
+        let col = Arc::new(Column::new("col", 0));
         let build_expr =
             |op: Operator, k: u32| -> Arc<dyn datafusion::physical_plan::PhysicalExpr> {
                 let lit = Arc::new(Literal::new(ScalarValue::UInt32(Some(k))));
-                Arc::new(BinaryExpr::new(lit.clone(), op, lit))
+                Arc::new(BinaryExpr::new(col.clone(), op, lit))
             };
 
         let expected_for = |op: Operator, k: u32| -> BooleanArray {
@@ -1070,10 +1072,11 @@ mod tests {
         let min = arrow::compute::kernels::aggregate::min(&arr).unwrap();
 
         let mask = BooleanBuffer::from(vec![true; arr.len()]);
+        let col = Arc::new(Column::new("col", 0));
         let build_expr =
             |op: Operator, k: u32| -> Arc<dyn datafusion::physical_plan::PhysicalExpr> {
                 let lit = Arc::new(Literal::new(ScalarValue::UInt32(Some(k))));
-                Arc::new(BinaryExpr::new(lit.clone(), op, lit))
+                Arc::new(BinaryExpr::new(col.clone(), op, lit))
             };
 
         // Expect resolvable results without IO
@@ -1147,10 +1150,11 @@ mod tests {
 
         let min = arrow::compute::kernels::aggregate::min(&arr).unwrap();
         let mask = BooleanBuffer::from(vec![true; arr.len()]);
+        let col = Arc::new(Column::new("col", 0));
         let build_expr =
             |op: Operator, k: i32| -> Arc<dyn datafusion::physical_plan::PhysicalExpr> {
                 let lit = Arc::new(Literal::new(ScalarValue::Int32(Some(k))));
-                Arc::new(BinaryExpr::new(lit.clone(), op, lit))
+                Arc::new(BinaryExpr::new(col.clone(), op, lit))
             };
 
         let resolvable_cases: Vec<(Operator, i32, bool)> = vec![
