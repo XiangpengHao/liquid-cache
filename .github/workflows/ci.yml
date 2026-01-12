@@ -90,6 +90,7 @@ jobs:
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@v4
+            - uses: ./.github/actions/free-disk-space
             - uses: dtolnay/rust-toolchain@stable
             - uses: Swatinem/rust-cache@v2
               with:
