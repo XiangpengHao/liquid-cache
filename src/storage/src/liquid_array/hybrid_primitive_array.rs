@@ -5,9 +5,12 @@ use arrow::array::ArrowNativeTypeOp;
 use arrow::array::{ArrayRef, BooleanArray, PrimitiveArray, cast::AsArray};
 use arrow::buffer::{BooleanBuffer, ScalarBuffer};
 use arrow::datatypes::{ArrowNativeType, ArrowPrimitiveType};
-use arrow_schema::DataType;
+use arrow_schema::{DataType, TimeUnit};
+use datafusion::physical_expr::ScalarFunctionExpr;
 use datafusion::physical_plan::PhysicalExpr;
-use datafusion::physical_plan::expressions::{BinaryExpr, Literal};
+use datafusion::physical_plan::expressions::{
+    BinaryExpr, Column, DynamicFilterPhysicalExpr, Literal,
+};
 use num_traits::{AsPrimitive, FromPrimitive};
 
 use crate::liquid_array::raw::BitPackedArray;
@@ -17,6 +20,49 @@ use super::{
     LiquidDataType, LiquidSqueezedArray, NeedsBacking, Operator, PrimitiveKind, SqueezeIoHandler,
     SqueezeResult,
 };
+
+#[derive(Clone, Copy)]
+enum PredicateLhs {
+    Plain,
+    ToTimestampSeconds,
+}
+
+fn unwrap_dynamic_filter(expr: &Arc<dyn PhysicalExpr>) -> Option<Arc<dyn PhysicalExpr>> {
+    if let Some(dynamic_filter) = expr.as_any().downcast_ref::<DynamicFilterPhysicalExpr>() {
+        dynamic_filter.current().ok()
+    } else {
+        Some(expr.clone())
+    }
+}
+
+fn predicate_lhs_kind(expr: &Arc<dyn PhysicalExpr>) -> Option<PredicateLhs> {
+    if expr.as_any().downcast_ref::<Column>().is_some() {
+        return Some(PredicateLhs::Plain);
+    }
+    if let Some(func) = expr.as_any().downcast_ref::<ScalarFunctionExpr>()
+        && func.name() == "to_timestamp_seconds"
+        && let [arg] = func.args()
+        && arg.as_any().downcast_ref::<Column>().is_some()
+    {
+        return Some(PredicateLhs::ToTimestampSeconds);
+    }
+    None
+}
+
+fn can_eval_to_timestamp_seconds_direct<T: LiquidPrimitiveType>() -> bool {
+    matches!(
+        T::DATA_TYPE,
+        DataType::Int8
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::Int64
+            | DataType::UInt8
+            | DataType::UInt16
+            | DataType::UInt32
+            | DataType::UInt64
+            | DataType::Timestamp(TimeUnit::Second, _)
+    )
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct LiquidPrimitiveClampedArray<T: LiquidPrimitiveType> {
@@ -125,6 +171,10 @@ where
             ScalarValue::UInt64(Some(v)) => T::Native::from_u64(*v),
             ScalarValue::Date32(Some(v)) => T::Native::from_i32(*v),
             ScalarValue::Date64(Some(v)) => T::Native::from_i64(*v),
+            ScalarValue::TimestampSecond(Some(v), _) => T::Native::from_i64(*v),
+            ScalarValue::TimestampMillisecond(Some(v), _) => T::Native::from_i64(*v),
+            ScalarValue::TimestampMicrosecond(Some(v), _) => T::Native::from_i64(*v),
+            ScalarValue::TimestampNanosecond(Some(v), _) => T::Native::from_i64(*v),
             _ => None,
         };
         let Some(k) = k_opt else { return Ok(None) };
@@ -285,56 +335,70 @@ where
         // Apply selection first to reduce input rows
         let filtered = self.filter_inner(filter);
 
-        if let Some(binary_expr) = expr.as_any().downcast_ref::<BinaryExpr>()
-            && let Some(literal) = binary_expr.right().as_any().downcast_ref::<Literal>()
-        {
-            let op = binary_expr.op();
-            let supported_op = Operator::from_datafusion(op);
-            if let Some(supported_op) = supported_op {
-                match filtered.try_eval_predicate_inner(&supported_op, literal) {
-                    Ok(Some(mask)) => return Some(mask),
-                    Ok(None) => return None,
-                    Err(NeedsBacking) => {}
+        let expr = unwrap_dynamic_filter(expr)?;
+        let binary_expr = expr.as_any().downcast_ref::<BinaryExpr>()?;
+        let lhs_kind = predicate_lhs_kind(binary_expr.left())?;
+        let literal = binary_expr.right().as_any().downcast_ref::<Literal>()?;
+
+        let op = binary_expr.op();
+        let supported_op = Operator::from_datafusion(op)?;
+        let can_eval_without_cast = match lhs_kind {
+            PredicateLhs::Plain => true,
+            PredicateLhs::ToTimestampSeconds => can_eval_to_timestamp_seconds_direct::<T>(),
+        };
+        if can_eval_without_cast {
+            match filtered.try_eval_predicate_inner(&supported_op, literal) {
+                Ok(Some(mask)) => {
+                    self.io.trace_io_saved();
+                    return Some(mask);
                 }
-
-                // Fallback: hydrate full Arrow and evaluate predicate on filtered rows.
-                use arrow::array::cast::AsArray;
-                use datafusion::logical_expr::ColumnarValue;
-                use datafusion::physical_expr_common::datum::apply_cmp;
-
-                let full = self.hydrate_full_arrow().await;
-                let selection_array = BooleanArray::new(filter.clone(), None);
-                let filtered_arr = arrow::compute::filter(&full, &selection_array).ok()?;
-                let filtered_len = filtered_arr.len();
-
-                let lhs = ColumnarValue::Array(filtered_arr);
-                let rhs = ColumnarValue::Scalar(literal.value().clone());
-                let result = match op {
-                    datafusion::logical_expr::Operator::NotEq => {
-                        apply_cmp(datafusion::logical_expr::Operator::NotEq, &lhs, &rhs)
-                    }
-                    datafusion::logical_expr::Operator::Eq => {
-                        apply_cmp(datafusion::logical_expr::Operator::Eq, &lhs, &rhs)
-                    }
-                    datafusion::logical_expr::Operator::Lt => {
-                        apply_cmp(datafusion::logical_expr::Operator::Lt, &lhs, &rhs)
-                    }
-                    datafusion::logical_expr::Operator::LtEq => {
-                        apply_cmp(datafusion::logical_expr::Operator::LtEq, &lhs, &rhs)
-                    }
-                    datafusion::logical_expr::Operator::Gt => {
-                        apply_cmp(datafusion::logical_expr::Operator::Gt, &lhs, &rhs)
-                    }
-                    datafusion::logical_expr::Operator::GtEq => {
-                        apply_cmp(datafusion::logical_expr::Operator::GtEq, &lhs, &rhs)
-                    }
-                    _ => return None,
-                };
-                let result = result.ok()?;
-                return Some(result.into_array(filtered_len).ok()?.as_boolean().clone());
+                Ok(None) => return None,
+                Err(NeedsBacking) => {}
             }
         }
-        None
+
+        // Fallback: hydrate full Arrow and evaluate predicate on filtered rows.
+        use arrow::array::cast::AsArray;
+        use datafusion::logical_expr::ColumnarValue;
+        use datafusion::physical_expr_common::datum::apply_cmp;
+
+        let full = self.hydrate_full_arrow().await;
+        let selection_array = BooleanArray::new(filter.clone(), None);
+        let filtered_arr = arrow::compute::filter(&full, &selection_array).ok()?;
+        let filtered_len = filtered_arr.len();
+        let lhs_array = match lhs_kind {
+            PredicateLhs::Plain => filtered_arr,
+            PredicateLhs::ToTimestampSeconds => {
+                let target_type = literal.value().data_type();
+                arrow::compute::cast(&filtered_arr, &target_type).ok()?
+            }
+        };
+
+        let lhs = ColumnarValue::Array(lhs_array);
+        let rhs = ColumnarValue::Scalar(literal.value().clone());
+        let result = match op {
+            datafusion::logical_expr::Operator::NotEq => {
+                apply_cmp(datafusion::logical_expr::Operator::NotEq, &lhs, &rhs)
+            }
+            datafusion::logical_expr::Operator::Eq => {
+                apply_cmp(datafusion::logical_expr::Operator::Eq, &lhs, &rhs)
+            }
+            datafusion::logical_expr::Operator::Lt => {
+                apply_cmp(datafusion::logical_expr::Operator::Lt, &lhs, &rhs)
+            }
+            datafusion::logical_expr::Operator::LtEq => {
+                apply_cmp(datafusion::logical_expr::Operator::LtEq, &lhs, &rhs)
+            }
+            datafusion::logical_expr::Operator::Gt => {
+                apply_cmp(datafusion::logical_expr::Operator::Gt, &lhs, &rhs)
+            }
+            datafusion::logical_expr::Operator::GtEq => {
+                apply_cmp(datafusion::logical_expr::Operator::GtEq, &lhs, &rhs)
+            }
+            _ => return None,
+        };
+        let result = result.ok()?;
+        Some(result.into_array(filtered_len).ok()?.as_boolean().clone())
     }
 }
 
@@ -418,6 +482,10 @@ where
             ScalarValue::UInt64(Some(v)) => T::Native::from_u64(*v),
             ScalarValue::Date32(Some(v)) => T::Native::from_i32(*v),
             ScalarValue::Date64(Some(v)) => T::Native::from_i64(*v),
+            ScalarValue::TimestampSecond(Some(v), _) => T::Native::from_i64(*v),
+            ScalarValue::TimestampMillisecond(Some(v), _) => T::Native::from_i64(*v),
+            ScalarValue::TimestampMicrosecond(Some(v), _) => T::Native::from_i64(*v),
+            ScalarValue::TimestampNanosecond(Some(v), _) => T::Native::from_i64(*v),
             _ => None,
         };
         let Some(k) = k_opt else { return Ok(None) };
@@ -612,56 +680,70 @@ where
         // Apply selection first to reduce input rows
         let filtered = self.filter_inner(filter);
 
-        if let Some(binary_expr) = expr.as_any().downcast_ref::<BinaryExpr>()
-            && let Some(literal) = binary_expr.right().as_any().downcast_ref::<Literal>()
-        {
-            let op = binary_expr.op();
-            let supported_op = Operator::from_datafusion(op);
-            if let Some(supported_op) = supported_op {
-                match filtered.try_eval_predicate_inner(&supported_op, literal) {
-                    Ok(Some(mask)) => return Some(mask),
-                    Ok(None) => return None,
-                    Err(NeedsBacking) => {}
+        let expr = unwrap_dynamic_filter(expr)?;
+        let binary_expr = expr.as_any().downcast_ref::<BinaryExpr>()?;
+        let lhs_kind = predicate_lhs_kind(binary_expr.left())?;
+        let literal = binary_expr.right().as_any().downcast_ref::<Literal>()?;
+
+        let op = binary_expr.op();
+        let supported_op = Operator::from_datafusion(op)?;
+        let can_eval_without_cast = match lhs_kind {
+            PredicateLhs::Plain => true,
+            PredicateLhs::ToTimestampSeconds => can_eval_to_timestamp_seconds_direct::<T>(),
+        };
+        if can_eval_without_cast {
+            match filtered.try_eval_predicate_inner(&supported_op, literal) {
+                Ok(Some(mask)) => {
+                    self.io.trace_io_saved();
+                    return Some(mask);
                 }
-
-                // Fallback: hydrate full Arrow and evaluate predicate on filtered rows.
-                use arrow::array::cast::AsArray;
-                use datafusion::logical_expr::ColumnarValue;
-                use datafusion::physical_expr_common::datum::apply_cmp;
-
-                let full = self.hydrate_full_arrow().await;
-                let selection_array = BooleanArray::new(filter.clone(), None);
-                let filtered_arr = arrow::compute::filter(&full, &selection_array).ok()?;
-                let filtered_len = filtered_arr.len();
-
-                let lhs = ColumnarValue::Array(filtered_arr);
-                let rhs = ColumnarValue::Scalar(literal.value().clone());
-                let result = match op {
-                    datafusion::logical_expr::Operator::NotEq => {
-                        apply_cmp(datafusion::logical_expr::Operator::NotEq, &lhs, &rhs)
-                    }
-                    datafusion::logical_expr::Operator::Eq => {
-                        apply_cmp(datafusion::logical_expr::Operator::Eq, &lhs, &rhs)
-                    }
-                    datafusion::logical_expr::Operator::Lt => {
-                        apply_cmp(datafusion::logical_expr::Operator::Lt, &lhs, &rhs)
-                    }
-                    datafusion::logical_expr::Operator::LtEq => {
-                        apply_cmp(datafusion::logical_expr::Operator::LtEq, &lhs, &rhs)
-                    }
-                    datafusion::logical_expr::Operator::Gt => {
-                        apply_cmp(datafusion::logical_expr::Operator::Gt, &lhs, &rhs)
-                    }
-                    datafusion::logical_expr::Operator::GtEq => {
-                        apply_cmp(datafusion::logical_expr::Operator::GtEq, &lhs, &rhs)
-                    }
-                    _ => return None,
-                };
-                let result = result.ok()?;
-                return Some(result.into_array(filtered_len).ok()?.as_boolean().clone());
+                Ok(None) => return None,
+                Err(NeedsBacking) => {}
             }
         }
-        None
+
+        // Fallback: hydrate full Arrow and evaluate predicate on filtered rows.
+        use arrow::array::cast::AsArray;
+        use datafusion::logical_expr::ColumnarValue;
+        use datafusion::physical_expr_common::datum::apply_cmp;
+
+        let full = self.hydrate_full_arrow().await;
+        let selection_array = BooleanArray::new(filter.clone(), None);
+        let filtered_arr = arrow::compute::filter(&full, &selection_array).ok()?;
+        let filtered_len = filtered_arr.len();
+        let lhs_array = match lhs_kind {
+            PredicateLhs::Plain => filtered_arr,
+            PredicateLhs::ToTimestampSeconds => {
+                let target_type = literal.value().data_type();
+                arrow::compute::cast(&filtered_arr, &target_type).ok()?
+            }
+        };
+
+        let lhs = ColumnarValue::Array(lhs_array);
+        let rhs = ColumnarValue::Scalar(literal.value().clone());
+        let result = match op {
+            datafusion::logical_expr::Operator::NotEq => {
+                apply_cmp(datafusion::logical_expr::Operator::NotEq, &lhs, &rhs)
+            }
+            datafusion::logical_expr::Operator::Eq => {
+                apply_cmp(datafusion::logical_expr::Operator::Eq, &lhs, &rhs)
+            }
+            datafusion::logical_expr::Operator::Lt => {
+                apply_cmp(datafusion::logical_expr::Operator::Lt, &lhs, &rhs)
+            }
+            datafusion::logical_expr::Operator::LtEq => {
+                apply_cmp(datafusion::logical_expr::Operator::LtEq, &lhs, &rhs)
+            }
+            datafusion::logical_expr::Operator::Gt => {
+                apply_cmp(datafusion::logical_expr::Operator::Gt, &lhs, &rhs)
+            }
+            datafusion::logical_expr::Operator::GtEq => {
+                apply_cmp(datafusion::logical_expr::Operator::GtEq, &lhs, &rhs)
+            }
+            _ => return None,
+        };
+        let result = result.ok()?;
+        Some(result.into_array(filtered_len).ok()?.as_boolean().clone())
     }
 }
 

@@ -356,6 +356,11 @@ impl LiquidArray for LiquidByteViewArray<FsstArray> {
         let bytes = Bytes::from(bytes);
         Some((Arc::new(hybrid) as LiquidSqueezedArrayRef, bytes))
     }
+
+    fn filter(&self, selection: &BooleanBuffer) -> ArrayRef {
+        let filtered = helpers::filter_inner(self, selection);
+        filtered.to_arrow_array()
+    }
 }
 
 #[async_trait::async_trait]
@@ -408,17 +413,8 @@ impl LiquidSqueezedArray for LiquidByteViewArray<DiskBuffer> {
         if !select_any {
             return arrow::array::new_empty_array(&self.original_arrow_data_type());
         }
-        let bytes = self
-            .fsst_buffer
-            .squeeze_io()
-            .read(Some(self.fsst_buffer.disk_range()))
-            .await
-            .expect("read squeezed backing");
-        let hydrated =
-            LiquidByteViewArray::<FsstArray>::from_bytes(bytes, self.fsst_buffer.compressor_arc());
-        let arrow = hydrated.to_arrow_array();
-        let selection_array = BooleanArray::new(selection.clone(), None);
-        arrow::compute::filter(&arrow, &selection_array).unwrap()
+        let filtered = helpers::filter_inner(self, selection);
+        filtered.to_arrow_array().await
     }
 
     /// Try to evaluate a predicate on the Liquid array with a filter.
