@@ -1,13 +1,8 @@
 use std::{
-    any::Any,
-    ffi::CString,
-    fs, mem,
-    ops::Range,
-    os::{
+    any::Any, cell::RefCell, ffi::CString, fs, mem, ops::Range, os::{
         fd::{AsRawFd, FromRawFd, RawFd},
         unix::ffi::OsStringExt,
-    },
-    path::PathBuf,
+    }, path::PathBuf, rc::Rc
 };
 
 use bytes::Bytes;
@@ -16,7 +11,7 @@ use io_uring::{cqueue, opcode, squeue};
 pub(crate) const BLOCK_ALIGN: usize = 4096;
 
 /// Represents an IO request to the uring worker thread.
-pub(crate) trait IoTask: Send + Any + std::fmt::Debug {
+pub trait IoTask: Send + Any + std::fmt::Debug {
     /// Convert the request to an io-uring submission queue entry.
     fn prepare_sqe(&mut self) -> squeue::Entry;
 
@@ -28,7 +23,7 @@ pub(crate) trait IoTask: Send + Any + std::fmt::Debug {
 }
 
 #[derive(Debug)]
-pub(crate) struct FileOpenTask {
+pub struct FileOpenTask {
     path: CString,
     direct_io: bool,
     fd: Option<RawFd>,
@@ -53,6 +48,18 @@ impl FileOpenTask {
     }
 
     pub(crate) fn into_result(mut self) -> Result<fs::File, std::io::Error> {
+        if let Some(err) = self.error.take() {
+            return Err(err);
+        }
+        let fd = self.fd.take().ok_or_else(|| {
+            std::io::Error::other("open operation completed without returning file descriptor")
+        })?;
+        // SAFETY: `fd` has been received from the kernel for this task and is uniquely owned here.
+        let file = unsafe { fs::File::from_raw_fd(fd) };
+        Ok(file)
+    }
+
+    pub(crate) fn get_result(self: &mut Self) -> Result<fs::File, std::io::Error> {
         if let Some(err) = self.error.take() {
             return Err(err);
         }
@@ -104,7 +111,7 @@ impl Drop for FileOpenTask {
 }
 
 #[derive(Debug)]
-pub(crate) struct FileReadTask {
+pub struct FileReadTask {
     buffer: Vec<u8>,
     aligned_offset: usize,
     file: fs::File,
@@ -180,6 +187,24 @@ impl FileReadTask {
 
         Ok(bytes.slice(data_start..data_end))
     }
+
+    /// Return a bytes object holding the result of the read operation.
+    #[inline]
+    pub(crate) fn get_result(self: &mut Self) -> Result<Bytes, std::io::Error> {
+        if let Some(err) = self.error.take() {
+            return Err(err);
+        }
+
+        let (start_padding, _) = self.padding();
+        let range_len = (self.range.end - self.range.start) as usize;
+        let data_start = self.aligned_offset + start_padding;
+        let data_end = data_start + range_len;
+
+        let buffer = mem::take(&mut self.buffer);
+        let bytes = Bytes::from(buffer);
+
+        Ok(bytes.slice(data_start..data_end))
+    }
 }
 
 impl IoTask for FileReadTask {
@@ -216,7 +241,7 @@ impl IoTask for FileReadTask {
 }
 
 #[derive(Debug)]
-pub(crate) struct FileWriteTask {
+pub struct FileWriteTask {
     data: Bytes,
     fd: RawFd,
     error: Option<std::io::Error>,
@@ -234,6 +259,14 @@ impl FileWriteTask {
     pub(crate) fn into_result(self: Box<Self>) -> Result<(), std::io::Error> {
         let mut this = self;
         if let Some(err) = this.error.take() {
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    #[inline]
+    pub(crate) fn get_result(self: &mut Self) -> Result<(), std::io::Error> {
+        if let Some(err) = self.error.take() {
             return Err(err);
         }
         Ok(())
