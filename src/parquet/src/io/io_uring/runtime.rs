@@ -108,7 +108,6 @@ impl RuntimeWorker {
             cq.sync();
             match cq.next() {
                 Some(cqe) => {
-                    println!("Received completion");
                     let token = cqe.user_data() as usize;
                     let task = self.inflight_tasks[token]
                         .take()
@@ -125,7 +124,6 @@ impl RuntimeWorker {
     }
 
     fn submit_task(self: &mut Self, task: AsyncTask) {
-        println!("Submitting task");
         let token = self.tokens.pop_front().expect("No more tokens");
         let sq = &mut self.ring.submission();
         let sqe = task.inner.borrow_mut().prepare_sqe().user_data(token as u64);
@@ -151,22 +149,18 @@ fn worker_main_loop(receiver: crossbeam_channel::Receiver<ExecutorTask>) {
         while !receiver.is_empty() {
             let task = receiver.recv()
                 .expect("Failed to receive task");
-            println!("Spawning task");
             executor.spawn(task).detach();
         }
         let task_found = executor.try_tick();
         LOCAL_WORKER.with(|worker| {
             let mut worker = worker.borrow_mut();
-            let mut num_completions = 0;
             if worker.need_submit {
-                num_completions = worker.ring.submit().expect("Failed to submit");
+                worker.ring.submit().expect("Failed to submit");
                 worker.need_submit = false;
             } else if !task_found && worker.tokens.len() < MAX_CONCURRENT_TASKS as usize {
-                num_completions = worker.ring.submit_and_wait(1).expect("Failed to submit");
+                worker.ring.submit_and_wait(1).expect("Failed to submit");
             }
-            if num_completions > 0 {
-                worker.poll_completions();
-            }
+            worker.poll_completions();
         });
     }
 }
