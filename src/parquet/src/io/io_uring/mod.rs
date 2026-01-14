@@ -7,5 +7,7 @@ pub(crate) use thread_pool_uring::initialize_uring_pool;
 
 pub(crate) mod single_uring;
 
+pub(crate) mod runtime;
+
 #[cfg(test)]
 mod tests;

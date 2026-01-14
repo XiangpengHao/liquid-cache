@@ -55,6 +55,16 @@ pub(super) async fn read(
                 panic!("io_uring modes are only supported on Linux");
             }
         }
+        IoMode::UringNonBlocking => {
+            #[cfg(target_os = "linux")]
+            {
+                super::io_uring::runtime::read(path, range, false).await
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                panic!("io_uring modes are only supported on Linux");
+            }
+        }
         IoMode::UringMultiAsync => {
             #[cfg(target_os = "linux")]
             {
@@ -103,6 +113,16 @@ pub(super) async fn write(
             #[cfg(target_os = "linux")]
             {
                 super::io_uring::multi_blocking_uring::write(path, &data)
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                panic!("io_uring modes are only supported on Linux");
+            }
+        }
+        IoMode::UringNonBlocking => {
+            #[cfg(target_os = "linux")]
+            {
+                super::io_uring::runtime::write(path, &data).await
             }
             #[cfg(not(target_os = "linux"))]
             {
