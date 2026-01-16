@@ -168,7 +168,7 @@ pub(crate) fn read(
     run_blocking_task(Box::new(read_task))?.into_result()
 }
 
-pub(crate) fn write(path: PathBuf, data: &Bytes) -> Result<(), std::io::Error> {
+pub(crate) fn write(path: PathBuf, data: &Bytes, direct_io: bool) -> Result<(), std::io::Error> {
     use std::fs::OpenOptions;
 
     let file = OpenOptions::new()
@@ -176,6 +176,6 @@ pub(crate) fn write(path: PathBuf, data: &Bytes) -> Result<(), std::io::Error> {
         .truncate(true)
         .write(true)
         .open(path)?;
-    let write_task = FileWriteTask::build(data.clone(), file.as_raw_fd(), false);
+    let write_task = FileWriteTask::build(data.clone(), file.as_raw_fd(), direct_io, false);
     run_blocking_task(Box::new(write_task))?.into_result()
 }

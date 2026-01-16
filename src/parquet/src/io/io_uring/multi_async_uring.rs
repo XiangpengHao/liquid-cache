@@ -256,7 +256,7 @@ pub(crate) async fn read(
     submit_async_task(read_task).await.into_result()
 }
 
-pub(crate) async fn write(path: PathBuf, data: &Bytes) -> Result<(), std::io::Error> {
+pub(crate) async fn write(path: PathBuf, data: &Bytes, direct_io: bool) -> Result<(), std::io::Error> {
     let file = OpenOptions::new()
         .create(true)
         .truncate(true)
@@ -264,6 +264,6 @@ pub(crate) async fn write(path: PathBuf, data: &Bytes) -> Result<(), std::io::Er
         .open(path)
         .expect("failed to create file");
 
-    let write_task = FileWriteTask::build(data.clone(), file.as_raw_fd(), false);
+    let write_task = FileWriteTask::build(data.clone(), file.as_raw_fd(), direct_io, false);
     submit_async_task(write_task).await.into_result()
 }

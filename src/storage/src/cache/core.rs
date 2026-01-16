@@ -759,7 +759,7 @@ impl CacheStorage {
                         return Some(arrow::array::new_empty_array(data_type));
                     }
                     let path = self.io_context.liquid_path(entry_id);
-                    let bytes = self.io_context.read(path, None).await.ok()?;
+                    let bytes = self.io_context.read(path, None).await.unwrap();
                     let compressor_states = self.io_context.get_compressor(entry_id);
                     let compressor = compressor_states.fsst_compressor();
                     let liquid = crate::liquid_array::ipc::read_from_bytes(
@@ -770,7 +770,7 @@ impl CacheStorage {
                 }
                 None => {
                     let path = self.io_context.liquid_path(entry_id);
-                    let bytes = self.io_context.read(path, None).await.ok()?;
+                    let bytes = self.io_context.read(path, None).await.unwrap();
                     let compressor_states = self.io_context.get_compressor(entry_id);
                     let compressor = compressor_states.fsst_compressor();
                     let liquid = crate::liquid_array::ipc::read_from_bytes(
@@ -834,7 +834,7 @@ impl CacheStorage {
             }
             CachedData::DiskArrow(_) => {
                 let path = self.io_context.arrow_path(entry_id);
-                let bytes = self.io_context.read(path, None).await.ok()?;
+                let bytes = self.io_context.read(path, None).await.unwrap();
                 let cursor = std::io::Cursor::new(bytes.to_vec());
                 let mut reader = arrow::ipc::reader::StreamReader::try_new(cursor, None).ok()?;
                 let batch = reader.next()?.ok()?;

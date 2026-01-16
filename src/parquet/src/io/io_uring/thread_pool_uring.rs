@@ -1,17 +1,8 @@
 use std::{
-    collections::VecDeque,
-    fs::OpenOptions,
-    future::Future,
-    ops::Range,
-    os::fd::AsRawFd,
-    path::PathBuf,
-    pin::Pin,
-    sync::{
+    collections::VecDeque, fs::OpenOptions, future::Future, io, ops::Range, os::{fd::AsRawFd, unix::fs::OpenOptionsExt}, path::PathBuf, pin::Pin, sync::{
         OnceLock,
         atomic::{AtomicBool, AtomicUsize, Ordering},
-    },
-    task::{Context, Poll},
-    thread,
+    }, task::{Context, Poll}, thread
 };
 
 use bytes::Bytes;
@@ -108,8 +99,10 @@ impl IoUringThreadpool {
     fn new(io_type: IoMode, register_buffers: bool) -> IoUringThreadpool {
         let (sender, receiver) = crossbeam_channel::unbounded::<Submission>();
 
-        let builder = IoUring::<squeue::Entry, cqueue::Entry>::builder();
+        let mut builder = IoUring::<squeue::Entry, cqueue::Entry>::builder();
         let ring = builder
+            .setup_iopoll()
+            // .setup_sqpoll(50000)
             .build(URING_NUM_ENTRIES)
             .expect("Failed to build IoUring instance");
 
@@ -251,8 +244,21 @@ impl UringWorker {
             self.submitted_tasks[token as usize] = Some(submission);
             need_submit = true;
         }
-        if need_submit {
-            self.ring.submit().expect("Failed to submit");
+        let need_poll = self.tokens.len() < URING_NUM_ENTRIES as usize;
+        if need_submit || need_poll {
+            loop {
+                match self.ring.submit() {
+                    Ok(_num_entries) => {
+                        break;
+                    }
+                    Err(e) => {
+                        if e.kind() == io::ErrorKind::Interrupted {
+                            continue;
+                        }
+                        panic!("Failed to submit: {}", e.to_string());
+                    }
+                }
+            }
         }
     }
 
@@ -372,8 +378,12 @@ pub(crate) async fn read(
     direct_io: bool,
     use_fixed_buffers: bool,
 ) -> Result<Bytes, std::io::Error> {
-    let open_task = FileOpenTask::build(path, direct_io)?;
-    let file = submit_async_task(open_task).await.into_result()?;
+    // Perform open operations in a blocking manner as they are not compatible with a io_uring instance that uses polled mode IO
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECT)
+        .open(path)
+        .expect("failed to create file");
 
     let effective_range = if let Some(range) = range {
         range
@@ -393,14 +403,20 @@ pub(crate) async fn read(
     return submit_async_task(read_task).await.into_result()
 }
 
-pub(crate) async fn write(path: PathBuf, data: &Bytes, use_fixed_buffers: bool) -> Result<(), std::io::Error> {
+pub(crate) async fn write(
+    path: PathBuf,
+    data: &Bytes,
+    direct_io: bool,
+    use_fixed_buffers: bool
+) -> Result<(), std::io::Error> {
     let file = OpenOptions::new()
         .create(true)
         .truncate(true)
         .write(true)
+        .custom_flags(libc::O_DIRECT)
         .open(path)
         .expect("failed to create file");
 
-    let write_task = FileWriteTask::build(data.clone(), file.as_raw_fd(), use_fixed_buffers);
+    let write_task = FileWriteTask::build(data.clone(), file.as_raw_fd(), direct_io, use_fixed_buffers);
     submit_async_task(write_task).await.into_result()
 }

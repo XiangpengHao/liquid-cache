@@ -1,13 +1,8 @@
 use std::{
-    any::Any,
-    ffi::CString,
-    fs, mem,
-    ops::Range,
-    os::{
+    alloc::{Layout, alloc}, any::Any, error::Error, ffi::CString, fs, mem, ops::Range, os::{
         fd::{AsRawFd, FromRawFd, RawFd},
         unix::ffi::OsStringExt,
-    },
-    path::PathBuf,
+    }, path::PathBuf
 };
 
 use bytes::Bytes;
@@ -325,16 +320,33 @@ impl IoTask for FixedFileReadTask {
 
 #[derive(Debug)]
 pub(crate) struct FileWriteTask {
-    data: Bytes,
+    data: *const u8,
     fd: RawFd,
+    size: usize,
     error: Option<std::io::Error>,
 }
 
+unsafe impl Send for FileWriteTask {}
+
 impl FileWriteTask {
-    pub(crate) fn build(data: Bytes, fd: RawFd, use_fixed_buffers: bool) -> FileWriteTask {
+    pub(crate) fn build(data: Bytes, fd: RawFd, direct_io: bool, use_fixed_buffers: bool) -> FileWriteTask {
+        let mut ptr = data.as_ptr();
+        let bytes = data.len();
+        let mut padding = 0;
+        if direct_io {
+            padding = (4096 - (data.len() & 4095)) & 4095;
+            let layout = Layout::from_size_align(data.len() + padding, 4096).expect("Failed to create layout");
+            assert!((data.len() + padding) % 4096 == 0);
+            unsafe {
+                let new_ptr = alloc(layout);
+                std::ptr::copy_nonoverlapping(ptr, new_ptr, data.len());
+                ptr = new_ptr;
+            }
+        }
         FileWriteTask {
-            data,
+            data: ptr,
             fd,
+            size: bytes + padding,
             error: None,
         }
     }
@@ -353,8 +365,8 @@ impl IoTask for FileWriteTask {
     fn prepare_sqe(&mut self) -> Vec<squeue::Entry> {
         let write_op = opcode::Write::new(
             io_uring::types::Fd(self.fd),
-            self.data.as_ptr(),
-            self.data.len() as u32,
+            self.data,
+            self.size as u32,
         );
 
        vec![write_op.offset(0u64).build()]
@@ -362,9 +374,9 @@ impl IoTask for FileWriteTask {
 
     #[inline]
     fn complete(&mut self, cqes: Vec<&cqueue::Entry>) {
-        debug_assert_eq!(cqes.len(), 1, "Should receive a single completion for a FileRead task");
+        debug_assert_eq!(cqes.len(), 1, "Should receive a single completion for a FileWrite task");
         let result = cqes[0].result();
-        if result < 0 {
+        if result != self.size as i32 {
             self.error = Some(std::io::Error::from_raw_os_error(-result));
         }
     }
