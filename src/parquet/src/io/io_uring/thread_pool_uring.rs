@@ -2,7 +2,7 @@ use std::{
     collections::VecDeque, fs::OpenOptions, future::Future, io, ops::Range, os::{fd::AsRawFd, unix::fs::OpenOptionsExt}, path::PathBuf, pin::Pin, sync::{
         OnceLock,
         atomic::{AtomicBool, AtomicUsize, Ordering},
-    }, task::{Context, Poll}, thread
+    }, task::{Context, Poll}, thread, time::{Duration, SystemTime}
 };
 
 use bytes::Bytes;
@@ -15,6 +15,8 @@ use crate::io::io_uring::tasks::FixedFileReadTask;
 use super::tasks::{FileOpenTask, FileReadTask, FileWriteTask, IoTask};
 
 pub(crate) const URING_NUM_ENTRIES: u32 = 256;
+
+const URING_BATCH_SIZE: u32 = 32;
 
 static ENABLED: AtomicBool = AtomicBool::new(true);
 
@@ -162,6 +164,9 @@ struct UringWorker {
      */
     queued_entries: VecDeque<squeue::Entry>,
     io_performed: AtomicUsize,
+    last_syscall: SystemTime,
+    // Number of entries that will be submitted upon calling io_uring_enter
+    queued_submissions: u32,
 }
 
 impl UringWorker {
@@ -177,6 +182,8 @@ impl UringWorker {
             submitted_tasks: tasks,
             io_performed: AtomicUsize::new(0),
             queued_entries: VecDeque::with_capacity(URING_NUM_ENTRIES as usize),
+            last_syscall: SystemTime::now(),
+            queued_submissions: 0,
         }
     }
 
@@ -193,7 +200,6 @@ impl UringWorker {
     }
 
     fn drain_intermediate_queue(&mut self) {
-        let mut need_submit = false;
         {
             let sq = &mut self.ring.submission();            
             while !sq.is_full() && !self.queued_entries.is_empty() {
@@ -202,17 +208,13 @@ impl UringWorker {
                     sq.push(&sqe).expect("Failed to push to submission queue");
                 }
                 sq.sync();
-                need_submit = true;
+                self.queued_submissions += 1;
             }
-        }
-        if need_submit {
-            self.ring.submit().expect("Failed to submit");
         }
     }
 
     #[inline(never)]
     fn drain_submissions(&mut self) {
-        let mut need_submit = false;
         while !self.receiver.is_empty() && !self.tokens.is_empty() {
             let sq = &mut self.ring.submission();
             sq.sync();
@@ -225,6 +227,7 @@ impl UringWorker {
             let mut submission = self.receiver.recv().unwrap();
             let task = submission.task.as_mut();
             let mut sqes = task.prepare_sqe();
+            self.queued_submissions += sqes.len() as u32;
             submission.set_completions(sqes.len());
             let mut tasks_submitted = 0;
             
@@ -242,10 +245,12 @@ impl UringWorker {
                 self.queued_entries.push_back(sqes[i].clone().user_data(token as u64));
             }
             self.submitted_tasks[token as usize] = Some(submission);
-            need_submit = true;
         }
-        let need_poll = self.tokens.len() < URING_NUM_ENTRIES as usize;
-        if need_submit || need_poll {
+        // let need_poll = self.tokens.len() < URING_NUM_ENTRIES as u32;
+        let current_time = SystemTime::now();
+        let time_from_last_submit = current_time.duration_since(self.last_syscall).expect("Failed to get duration");
+        let need_syscall = self.queued_submissions >= URING_BATCH_SIZE || time_from_last_submit > Duration::from_micros(20);
+        if need_syscall {
             loop {
                 match self.ring.submit() {
                     Ok(_num_entries) => {
@@ -259,6 +264,8 @@ impl UringWorker {
                     }
                 }
             }
+            self.last_syscall = SystemTime::now();
+            self.queued_submissions = 0;
         }
     }
 
