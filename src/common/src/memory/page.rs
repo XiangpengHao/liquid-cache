@@ -19,6 +19,9 @@ pub struct Page {
     pub(crate) slice_count: usize,      // No. of pages in the slice containing this page
     pub(crate) slice_offset: usize,     // Offset of this page from the start of this slice
     pub(crate) page_start: *mut u8,
+    // Next and previous pages in the span which is a doubly-linked list  
+    pub(crate) next_page: *mut Page,
+    pub(crate) previous_page: *mut Page,
 }
 
 impl Page {
@@ -32,6 +35,8 @@ impl Page {
             slice_count: 1,
             slice_offset: 0,
             page_start: slice.ptr,
+            next_page: null_mut(),
+            previous_page: null_mut(),
         }
     }
 

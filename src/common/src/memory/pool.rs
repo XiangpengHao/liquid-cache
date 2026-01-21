@@ -205,6 +205,7 @@ impl Drop for FixedBufferPool {
 }
 
 mod tests {
+    #[allow(unused_imports)]
     use std::{io::Write, os::fd::AsRawFd, ptr::{null, null_mut}};
 
     use bytes::Bytes;

@@ -58,12 +58,18 @@ impl TCacheStats {
     }
 }
 
+#[derive(Copy, Clone)]
+struct Span {
+    pub(crate) first: *mut Page,
+    pub(crate) last: *mut Page,
+}
+
 pub(crate) struct TCache {
     free_pages: [*mut Page; NUM_SIZE_CLASSES],
     // Last size class holds slices that serve large allocations (>256KB)
     used_pages: [Vec<*mut Page>; NUM_SIZE_CLASSES + 1],
     // TODO: Use a linked list for O(1) deletion
-    spans: [Vec<*mut Page>; SEGMENT_BINS],
+    spans: [Span; SEGMENT_BINS],
     arena: Arc<Mutex<Arena>>,
     thread_id: usize,
     stats: TCacheStats,
@@ -77,7 +83,7 @@ impl TCache {
         TCache {
             free_pages: [const { null_mut() }; NUM_SIZE_CLASSES],
             used_pages: [const { Vec::<*mut Page>::new() }; NUM_SIZE_CLASSES + 1],
-            spans: [const { Vec::<*mut Page>::new() }; SEGMENT_BINS],
+            spans: [Span { first: null_mut(), last: null_mut() }; SEGMENT_BINS],
             arena: arena.clone(),
             thread_id,
             stats: TCacheStats::new(),
@@ -100,18 +106,42 @@ impl TCache {
         (slice_count + 1).next_power_of_two().trailing_zeros() as usize - 1usize
     }
 
-    // TODO(): Use per-page pointers to speed up the removal
-    fn remove_slice_from_span(self: &mut Self, slice: &mut Page) -> bool {
-        let span_idx = Self::get_span_idx_from_slice_count(slice.slice_count);
-        for i in 0..self.spans[span_idx].len() {
-            let page_start = unsafe { (*self.spans[span_idx][i]).page_start };
-            if page_start == slice.page_start {
-                self.spans[span_idx].remove(i);
-                return true;
-            }
+    fn add_slice_to_span(span: &mut Span, slice: &mut Page) {
+        if span.first == null_mut() {
+            debug_assert!(span.last == null_mut());
+            span.first = slice as *mut Page;
+            span.last = slice as *mut Page;
+            return
         }
-        log::info!("[thread_id: {}] Slice not found in span with index: {}, slice count: {}", self.thread_id, span_idx, slice.slice_count);
-        return false;
+        debug_assert!(span.last != null_mut());
+        unsafe { (*span.last).next_page = slice; }
+        slice.previous_page = span.last;
+        span.last = slice as *mut Page;
+    }
+
+    fn remove_slice_from_span(self: &mut Self, slice: &mut Page) {
+        let span_idx = Self::get_span_idx_from_slice_count(slice.slice_count);
+        let span = &mut self.spans[span_idx];
+        if span.first == slice as *mut Page {
+            span.first = slice.next_page;
+            if slice.next_page != null_mut() {
+                unsafe { (*slice.next_page).previous_page = null_mut(); }
+            } else {
+                span.last = null_mut();
+            }
+        } else if span.last == slice as *mut Page {
+            span.last = slice.previous_page;
+            debug_assert!(slice.previous_page != null_mut());
+            unsafe { (*span.last).next_page = null_mut(); }
+        } else {
+            debug_assert!(slice.previous_page != null_mut());
+            debug_assert!(slice.next_page != null_mut());
+            unsafe { (*slice.previous_page).next_page = slice.next_page; }
+            unsafe { (*slice.next_page).previous_page = slice.previous_page; }
+        }
+        
+        slice.next_page = null_mut();
+        slice.previous_page = null_mut();
     }
 
     fn retire_segment(self: &mut Self, segment: *mut Segment) {
@@ -121,7 +151,9 @@ impl TCache {
         let pages = unsafe { &mut (*segment).pages };
         let mut slice_idx: usize = 0;
         while slice_idx < PAGES_PER_SEGMENT {
-            assert!(pages[slice_idx].block_size != 0 || self.remove_slice_from_span(&mut pages[slice_idx]));
+            if pages[slice_idx].block_size == 0 {
+                self.remove_slice_from_span(&mut pages[slice_idx]);
+            }
             slice_idx += pages[slice_idx].slice_count;
         }
         let mut guard = self.arena.lock().unwrap();
@@ -171,7 +203,7 @@ impl TCache {
             if next_slice_ref.block_size == 0 {
                 log::debug!("[thread_id: {}] Merging released slice with next slice. Slice count of next slice: {}", self.thread_id, next_slice_ref.slice_count);
                 // Page is not in use, remove it
-                assert!(self.remove_slice_from_span(next_slice_ref));
+                self.remove_slice_from_span(next_slice_ref);
                 segment.coalesce_slices(page_ref, unsafe { &mut (*next_slice) });
             }
         }
@@ -185,17 +217,17 @@ impl TCache {
             if prev_slice_ref.block_size == 0 {
                 // Merge with the previous slice
                 log::debug!("[thread_id: {}] Merging slice with previous slice. Slice count of previous slice: {}", self.thread_id, prev_slice_ref.slice_count);
-                assert!(self.remove_slice_from_span(prev_slice_ref));
+                self.remove_slice_from_span(prev_slice_ref);
                 segment.coalesce_slices(prev_slice_ref, page_ref);
                 let span_idx = Self::get_span_idx_from_slice_count(prev_slice_ref.slice_count);
-                self.spans[span_idx].push(prev_slice);
+                Self::add_slice_to_span(&mut self.spans[span_idx], prev_slice_ref);
                 log::debug!("[thread_id: {}] Added page with slice count {} to span with index: {}", self.thread_id, prev_slice_ref.slice_count, span_idx);
                 merged_with_prev = true;
             }
         }
         if !merged_with_prev {
             let span_idx = Self::get_span_idx_from_slice_count(page_ref.slice_count);
-            self.spans[span_idx].push(page);
+            Self::add_slice_to_span(&mut self.spans[span_idx], page_ref);
             log::debug!("[thread_id: {}] Added page with slice count {} to span with index: {}", self.thread_id, page_ref.slice_count, span_idx);
         }
         segment.check_valid_segment();
@@ -250,15 +282,17 @@ impl TCache {
         debug_assert!(block_size >= MIN_SIZE_FROM_PAGES);
         let min_bin = Self::get_span_idx_from_slice_count(num_slices_required);
         for i in min_bin..SEGMENT_BINS {
-            let bin = &mut self.spans[i];
-            for j in 0..bin.len() {
-                let slice = bin[j];
+            // let span = &mut self.spans[i];
+            let mut slice = self.spans[i].first;
+            while slice != null_mut() {
                 let num_slices_original = unsafe { (*slice).slice_count };
                 debug_assert!(num_slices_original >= 1 << i);
                 if num_slices_original < num_slices_required {
+                    unsafe { slice = (*slice).next_page; }
                     continue;
                 }
-                bin.remove(j);
+                self.remove_slice_from_span(unsafe { &mut *slice });
+
                 let segment = Segment::get_segment_from_ptr(slice as *mut u8);
                 unsafe {
                     (*segment).allocated += num_slices_required;
@@ -269,7 +303,7 @@ impl TCache {
                     debug_assert!(unsafe { (*slice).slice_count == num_slices_required});
                     unsafe { (*segment).check_valid_segment() } ;
                     let bin = Self::get_span_idx_from_slice_count(num_slices_original - num_slices_required);
-                    self.spans[bin].push(next_slice);
+                    Self::add_slice_to_span(&mut self.spans[bin], unsafe { &mut (*next_slice) } );
                     log::debug!("[thread_id: {}] Added page with slice count {} to span with index: {}", self.thread_id, num_slices_original - num_slices_required, bin);
                 }
                 unsafe {
@@ -288,7 +322,7 @@ impl TCache {
         let page = &mut segment_ref.pages[0];
         page.slice_count = slice_count;
         page.slice_offset = 0;
-        self.spans[span_idx].push(page as *mut Page);
+        Self::add_slice_to_span(&mut self.spans[span_idx], page);
 
         let last_page = &mut segment_ref.pages[PAGES_PER_SEGMENT - 1];
         last_page.slice_offset = PAGES_PER_SEGMENT - 1;
