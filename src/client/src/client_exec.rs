@@ -5,6 +5,7 @@ use std::time::Duration;
 use std::{any::Any, fmt::Formatter, sync::Arc};
 
 use arrow::array::RecordBatch;
+use arrow::ipc::{MessageHeader, root_as_message};
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_schema::SchemaRef;
@@ -16,7 +17,7 @@ use datafusion::physical_plan::execution_plan::CardinalityEffect;
 use datafusion::physical_plan::filter_pushdown::{
     ChildPushdownResult, FilterDescription, FilterPushdownPhase, FilterPushdownPropagation,
 };
-use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricsSet};
+use datafusion::physical_plan::metrics::{Count, ExecutionPlanMetricsSet, MetricsSet};
 use datafusion::physical_plan::{ExecutionPlanProperties, PhysicalExpr, PlanProperties};
 use datafusion::{
     error::Result,
@@ -169,6 +170,9 @@ impl ExecutionPlan for LiquidCacheClientExec {
             self.uuid,
             partition,
             self.object_stores.clone(),
+            stream_metrics.flight_data_bytes.clone(),
+            stream_metrics.flight_record_batch_bytes.clone(),
+            stream_metrics.flight_dictionary_bytes.clone(),
         );
         Ok(Box::pin(FlightStream::new(
             Some(Box::pin(stream)),
@@ -237,6 +241,9 @@ async fn flight_stream(
     handle: Uuid,
     partition: usize,
     object_stores: Vec<(ObjectStoreUrl, HashMap<String, String>)>,
+    flight_data_bytes: Count,
+    flight_record_batch_bytes: Count,
+    flight_dictionary_bytes: Count,
 ) -> Result<SendableRecordBatchStream> {
     let channel = flight_channel(server)
         .in_span(Span::enter_with_local_parent("connect_channel"))
@@ -299,11 +306,40 @@ async fn flight_stream(
     let ticket = fetch_results.into_ticket();
     let (md, response_stream, _ext) = client.do_get(ticket).await.map_err(to_df_err)?.into_parts();
     LocalSpan::add_event(Event::new("get_flight_stream"));
-    let stream =
-        FlightRecordBatchStream::new_from_flight_data(response_stream.map_err(|e| e.into()))
-            .with_headers(md)
-            .map_err(to_df_err);
+    let response_stream = response_stream.map_ok(move |data| {
+        let (record_bytes, dictionary_bytes) = flight_data_bytes_for_message(&data);
+        let total_bytes = record_bytes + dictionary_bytes;
+        if total_bytes > 0 {
+            flight_data_bytes.add(total_bytes);
+        }
+        if record_bytes > 0 {
+            flight_record_batch_bytes.add(record_bytes);
+        }
+        if dictionary_bytes > 0 {
+            flight_dictionary_bytes.add(dictionary_bytes);
+        }
+        data
+    });
+    let stream = FlightRecordBatchStream::new_from_flight_data(
+        response_stream.map_err(|e| e.into()),
+    )
+    .with_headers(md)
+    .map_err(to_df_err);
     Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
+}
+
+fn flight_data_bytes_for_message(data: &arrow_flight::FlightData) -> (usize, usize) {
+    if data.data_header.is_empty() {
+        return (0, 0);
+    }
+    let Ok(message) = root_as_message(&data.data_header) else {
+        return (0, 0);
+    };
+    match message.header_type() {
+        MessageHeader::RecordBatch => (data.data_body.len(), 0),
+        MessageHeader::DictionaryBatch => (0, data.data_body.len()),
+        _ => (0, 0),
+    }
 }
 
 enum FlightStreamState {

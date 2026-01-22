@@ -1,2 +1,9 @@
-SELECT "SearchPhrase" FROM hits WHERE "SearchPhrase" <> '' ORDER BY "SearchPhrase" LIMIT 10;
-
+SELECT COUNT(*)
+  FROM hits h
+  JOIN (
+    SELECT DISTINCT "UserID"
+    FROM hits
+    WHERE "UserID" % 1000 = 1
+    LIMIT 1000
+  ) d
+  ON h."UserID" = d."UserID";

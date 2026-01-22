@@ -3988,6 +3988,7 @@ dependencies = [
  "fastrace-opentelemetry",
  "fastrace-tonic",
  "fsst-rs",
+ "futures",
  "liquid-cache-client",
  "liquid-cache-common",
  "liquid-cache-local",

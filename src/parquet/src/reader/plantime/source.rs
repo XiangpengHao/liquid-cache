@@ -183,6 +183,10 @@ impl LiquidParquetSource {
         self.table_parquet_options.global.reorder_filters
     }
 
+    fn row_filter_enabled(&self) -> bool {
+        self.table_parquet_options.global.pushdown_filters
+    }
+
     /// Set the span for the LiquidParquetSource
     pub fn with_span(&self, span: fastrace::Span) -> Self {
         Self {
@@ -324,6 +328,7 @@ impl FileSource for LiquidParquetSource {
             self.reorder_filters(),
             schema_adapter_factory,
             expr_adapter_factory,
+            self.row_filter_enabled(),
             execution_span.map(Arc::new),
         );
 

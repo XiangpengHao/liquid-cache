@@ -177,6 +177,13 @@ impl LiquidCache {
         self.index.for_each(&mut f);
     }
 
+    /// Squeeze all entries in the cache.
+    pub async fn squeeze_all_entries(&self) {
+        let mut entries = Vec::new();
+        self.for_each_entry(|entry_id, _| entries.push(*entry_id));
+        self.squeeze_victims(entries).await;
+    }
+
     /// Reset the cache.
     pub fn reset(&self) {
         self.index.reset();

@@ -1,22 +1,34 @@
+use arrow_flight::flight_service_server::FlightServiceServer;
 use clap::Parser;
 use datafusion::arrow::array::RecordBatch;
+use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
+use datafusion::execution::{SessionStateBuilder, object_store::ObjectStoreUrl, runtime_env::RuntimeEnv};
 use datafusion::physical_plan::collect;
 use datafusion::prelude::SessionContext;
+use datafusion::prelude::SessionConfig;
 use datafusion::{error::Result, physical_plan::ExecutionPlan};
 use fastrace::Span;
 use fastrace::future::FutureExt as _;
+use fastrace_tonic::FastraceServerLayer;
+use liquid_cache_common::IoMode;
 use liquid_cache_common::rpc::ExecutionMetricsResponse;
-use liquid_cache_server::{ApiResponse, ExecutionStats};
+use liquid_cache_server::{ApiResponse, ExecutionStats, LiquidCacheService};
+use liquid_cache_storage::cache::NoHydration;
 use liquid_cache_storage::cache::CacheStats;
 use liquid_cache_storage::cache::squeeze_policies::{
     Evict, SqueezePolicy, TranscodeEvict, TranscodeSqueezeEvict,
 };
+use liquid_cache_storage::cache_policies::LiquidPolicy;
 use log::info;
 use serde::Serialize;
+use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 use std::{fmt::Display, str::FromStr, sync::Arc};
+use tokio::sync::oneshot;
+use tonic::transport::Server;
 use uuid::Uuid;
 
 pub mod client_runner;
@@ -30,6 +42,172 @@ pub use client_runner::*;
 pub use inprocess_runner::*;
 pub use manifest::BenchmarkManifest;
 pub use observability::*;
+
+#[derive(Clone)]
+pub struct MinimalServerConfig {
+    pub address: SocketAddr,
+    pub max_cache_mb: Option<usize>,
+    pub disk_cache_dir: Option<PathBuf>,
+    pub enable_squeeze: bool,
+    pub io_mode: IoMode,
+    pub zone_mapping: bool,
+    pub filter_pushdown: bool,
+}
+
+pub struct MinimalServerHandle {
+    shutdown_tx: Option<oneshot::Sender<()>>,
+    join_handle: tokio::task::JoinHandle<anyhow::Result<()>>,
+    liquid_cache: Arc<LiquidCacheService>,
+}
+
+impl MinimalServerHandle {
+    pub async fn shutdown(mut self) -> anyhow::Result<()> {
+        if let Some(tx) = self.shutdown_tx.take() {
+            let _ = tx.send(());
+        }
+        self.join_handle
+            .await
+            .map_err(|e| anyhow::anyhow!("server task failed: {e}"))?
+    }
+
+    pub fn cache_usage_bytes(&self) -> (u64, u64) {
+        let cache = self.liquid_cache.cache();
+        (
+            cache.memory_usage_bytes() as u64,
+            cache.disk_usage_bytes() as u64,
+        )
+    }
+
+    pub async fn squeeze_all_entries(&self) {
+        self.liquid_cache.cache().squeeze_all_entries().await;
+    }
+}
+
+pub fn start_minimal_server(config: MinimalServerConfig) -> anyhow::Result<MinimalServerHandle> {
+    let max_cache_bytes = config.max_cache_mb.map(|size| size * 1024 * 1024);
+    let squeeze_policy: Box<dyn SqueezePolicy> = if config.enable_squeeze {
+        Box::new(TranscodeSqueezeEvict)
+    } else {
+        Box::new(TranscodeEvict)
+    };
+
+    let ctx = server_context(config.zone_mapping, config.filter_pushdown)?;
+    let liquid_cache_server = LiquidCacheService::new(
+        ctx,
+        max_cache_bytes,
+        config.disk_cache_dir.clone(),
+        Box::new(LiquidPolicy::new()),
+        squeeze_policy,
+        Box::new(NoHydration::new()),
+        Some(config.io_mode),
+    )?;
+
+    let liquid_cache_server = Arc::new(liquid_cache_server);
+    let flight = FlightServiceServer::from_arc(liquid_cache_server.clone());
+
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let address = config.address;
+    let join_handle = tokio::spawn(async move {
+        Server::builder()
+            .layer(FastraceServerLayer)
+            .add_service(flight)
+            .serve_with_shutdown(address, async move {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("server failed: {e}"))
+    });
+
+    Ok(MinimalServerHandle {
+        shutdown_tx: Some(shutdown_tx),
+        join_handle,
+        liquid_cache: liquid_cache_server,
+    })
+}
+
+#[derive(Clone)]
+pub struct MinimalClientConfig {
+    pub server: String,
+    pub partitions: Option<usize>,
+    pub zone_mapping: bool,
+    pub filter_pushdown: bool,
+    pub dynamic_filtering: bool,
+}
+
+pub fn manifest_object_store_options(
+    manifest: &BenchmarkManifest,
+) -> anyhow::Result<Vec<(ObjectStoreUrl, HashMap<String, String>)>> {
+    let Some(configs) = manifest.object_stores.as_ref() else {
+        return Ok(Vec::new());
+    };
+    let mut stores = Vec::with_capacity(configs.len());
+    for config in configs {
+        let url = ObjectStoreUrl::parse(&config.url)?;
+        stores.push((url, config.options.clone()));
+    }
+    Ok(stores)
+}
+
+pub fn build_client_context(
+    config: &MinimalClientConfig,
+    object_store_options: &[(ObjectStoreUrl, HashMap<String, String>)],
+) -> datafusion::error::Result<SessionContext> {
+    let mut session_config = SessionConfig::from_env()?;
+    if let Some(partitions) = config.partitions {
+        session_config.options_mut().execution.target_partitions = partitions;
+    }
+
+    let options = session_config.options_mut();
+    options.execution.parquet.pruning = config.zone_mapping;
+    options.execution.parquet.pushdown_filters = config.filter_pushdown;
+    options.optimizer.enable_dynamic_filter_pushdown = config.dynamic_filtering;
+    options.execution.parquet.schema_force_view_types = false;
+    options.execution.parquet.binary_as_string = true;
+    options.execution.batch_size = 8192 * 2;
+
+    let runtime_env = Arc::new(RuntimeEnv::default());
+    for (url, options) in object_store_options {
+        let (object_store, _path) =
+            object_store::parse_url_opts(url.as_ref(), options.clone())
+                .map_err(|e| DataFusionError::External(Box::new(e)))?;
+        runtime_env.register_object_store(url.as_ref(), Arc::new(object_store));
+    }
+
+    let session_state = SessionStateBuilder::new()
+        .with_config(session_config)
+        .with_runtime_env(runtime_env)
+        .with_default_features()
+        .with_physical_optimizer_rule(Arc::new(
+            liquid_cache_client::PushdownOptimizer::new(
+                config.server.clone(),
+                object_store_options.to_vec(),
+            ),
+        ))
+        .build();
+
+    Ok(SessionContext::new_with_state(session_state))
+}
+
+fn server_context(zone_mapping: bool, filter_pushdown: bool) -> anyhow::Result<SessionContext> {
+    let mut session_config = SessionConfig::from_env()?;
+    let options = session_config.options_mut();
+    options.execution.parquet.pruning = zone_mapping;
+    options.execution.parquet.pushdown_filters = filter_pushdown;
+    options.execution.parquet.schema_force_view_types = false;
+    options.execution.parquet.binary_as_string = true;
+    options.execution.batch_size = 8192 * 2;
+
+    let object_store_url = ObjectStoreUrl::parse("file://")?;
+    let object_store = object_store::local::LocalFileSystem::new();
+
+    let state = SessionStateBuilder::new()
+        .with_config(session_config)
+        .with_default_features()
+        .with_object_store(object_store_url.as_ref(), Arc::new(object_store))
+        .build();
+
+    Ok(SessionContext::new_with_state(state))
+}
 
 #[derive(Serialize, Clone)]
 pub struct Query {

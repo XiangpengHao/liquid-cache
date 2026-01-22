@@ -55,6 +55,7 @@ pub struct LiquidParquetOpener {
     liquid_cache: LiquidCacheParquetRef,
     schema_adapter_factory: Arc<dyn SchemaAdapterFactory>,
     expr_adapter_factory: Option<Arc<dyn PhysicalExprAdapterFactory>>,
+    row_filter_enabled: bool,
     span: Option<Arc<fastrace::Span>>,
 }
 
@@ -74,6 +75,7 @@ impl LiquidParquetOpener {
         reorder_filters: bool,
         schema_adapter_factory: Arc<dyn SchemaAdapterFactory>,
         expr_adapter_factory: Option<Arc<dyn PhysicalExprAdapterFactory>>,
+        row_filter_enabled: bool,
         span: Option<Arc<fastrace::Span>>,
     ) -> Self {
         Self {
@@ -90,6 +92,7 @@ impl LiquidParquetOpener {
             reorder_filters,
             schema_adapter_factory,
             expr_adapter_factory,
+            row_filter_enabled,
             span,
         }
     }
@@ -152,6 +155,7 @@ impl FileOpener for LiquidParquetOpener {
         let logical_file_schema = Arc::clone(&self.logical_file_schema);
         let reorder_predicates = self.reorder_filters;
         let limit = self.limit;
+        let row_filter_enabled = self.row_filter_enabled;
 
         let predicate_creation_errors =
             MetricBuilder::new(&self.metrics).global_counter("num_predicate_creation_errors");
@@ -272,26 +276,37 @@ impl FileOpener for LiquidParquetOpener {
             );
 
             // Filter pushdown: evaluate predicates during scan
-            let row_filter = predicate.as_ref().and_then(|p| {
-                let row_filter = build_row_filter(
-                    p,
-                    &physical_file_schema,
-                    &predicate_file_schema,
-                    reader_metadata.metadata(),
-                    reorder_predicates,
-                    &file_metrics,
-                    &schema_adapter_factory,
-                );
+            let row_filter = if row_filter_enabled {
+                predicate.as_ref().and_then(|p| {
+                    let row_filter = build_row_filter(
+                        p,
+                        &physical_file_schema,
+                        &predicate_file_schema,
+                        reader_metadata.metadata(),
+                        reorder_predicates,
+                        &file_metrics,
+                        &schema_adapter_factory,
+                    );
 
-                match row_filter {
-                    Ok(Some(filter)) => Some(filter),
-                    Ok(None) => None,
-                    Err(e) => {
-                        debug!("Ignoring error building row filter for '{predicate:?}': {e:?}");
-                        None
+                    match row_filter {
+                        Ok(Some(filter)) => {
+                            debug!("Row filter enabled for {file_name}");
+                            Some(filter)
+                        }
+                        Ok(None) => {
+                            debug!("Row filter disabled for {file_name}");
+                            None
+                        }
+                        Err(e) => {
+                            debug!("Ignoring error building row filter for '{predicate:?}': {e:?}");
+                            None
+                        }
                     }
-                }
-            });
+                })
+            } else {
+                debug!("Row filter disabled by config for {file_name}");
+                None
+            };
 
             // Determine which row groups to actually read. The idea is to skip
             // as many row groups as possible based on the metadata and query

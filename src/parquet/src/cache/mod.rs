@@ -307,6 +307,11 @@ impl LiquidCacheParquet {
         self.cache_store.budget().disk_usage_bytes()
     }
 
+    /// Squeeze all cached entries.
+    pub async fn squeeze_all_entries(&self) {
+        self.cache_store.squeeze_all_entries().await;
+    }
+
     /// Flush the cache trace to a file.
     pub fn flush_trace(&self, to_file: impl AsRef<Path>) {
         self.cache_store.observer().flush_cache_trace(to_file);

@@ -16,6 +16,7 @@ tokio = { workspace = true }
 log = { workspace = true }
 arrow-flight = { workspace = true }
 tonic = { workspace = true }
+futures = { workspace = true }
 clap = { version = "4.5.48", features = ["derive"] }
 url = { workspace = true }
 mimalloc = "0.1.48"
@@ -63,6 +64,22 @@ path = "tpcds/tpcds_client.rs"
 [[bin]]
 name = "bench_server"
 path = "bench_server.rs"
+
+[[bin]]
+name = "minimal_server"
+path = "minimal_server.rs"
+
+[[bin]]
+name = "minimal_client"
+path = "minimal_client.rs"
+
+[[bin]]
+name = "data_pruning_runner"
+path = "data_pruning_runner.rs"
+
+[[bin]]
+name = "data_pruning_local_runner"
+path = "data_pruning_local_runner.rs"
 
 [[bin]]
 name = "in_process"
