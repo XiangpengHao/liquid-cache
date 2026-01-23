@@ -121,15 +121,12 @@ pub fn transcode_liquid_inner_with_hint<'a>(
                     state,
                     |compressor| {
                         Arc::new(LiquidFixedLenByteArray::from_decimal_array(
-                            decimals,
-                            compressor,
+                            decimals, compressor,
                         ))
                     },
                     || {
                         let (compressor, liquid_array) =
-                            LiquidFixedLenByteArray::train_from_decimal_array(
-                                decimals,
-                            );
+                            LiquidFixedLenByteArray::train_from_decimal_array(decimals);
                         (compressor, Arc::new(liquid_array))
                     },
                 );
@@ -144,15 +141,12 @@ pub fn transcode_liquid_inner_with_hint<'a>(
                     state,
                     |compressor| {
                         Arc::new(LiquidFixedLenByteArray::from_decimal_array(
-                            decimals,
-                            compressor,
+                            decimals, compressor,
                         ))
                     },
                     || {
                         let (compressor, liquid_array) =
-                            LiquidFixedLenByteArray::train_from_decimal_array(
-                                decimals,
-                            );
+                            LiquidFixedLenByteArray::train_from_decimal_array(decimals);
                         (compressor, Arc::new(liquid_array))
                     },
                 );
