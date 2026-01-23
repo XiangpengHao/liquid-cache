@@ -13,6 +13,7 @@ use bytes::Bytes;
 use fsst::Compressor;
 
 use crate::liquid_array::LiquidByteViewArray;
+use crate::liquid_array::LiquidDecimalArray;
 use crate::liquid_array::LiquidPrimitiveArray;
 use crate::liquid_array::raw::FsstArray;
 
@@ -283,6 +284,7 @@ pub fn read_from_bytes(bytes: Bytes, context: &LiquidIPCContext) -> LiquidArrayR
             let physical_type = expect_physical_type(header.physical_type_id, "linear-integer");
             physical_type.deserialize_linear_integer(bytes)
         }
+        LiquidDataType::Decimal => Arc::new(LiquidDecimalArray::from_bytes(bytes)),
     }
 }
 

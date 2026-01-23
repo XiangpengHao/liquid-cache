@@ -827,7 +827,9 @@ impl LiquidCache {
         });
         match array.try_eval_predicate(predicate, selection).await {
             Some(buf) => Some(Ok(buf)),
-            None => Some(Err(array.filter(selection).await)),
+            None => {
+                Some(Err(array.filter(selection).await))
+            }
         }
     }
 }

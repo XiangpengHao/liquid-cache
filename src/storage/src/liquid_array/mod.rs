@@ -3,6 +3,7 @@
 //! Instead, use `liquid_cache_server` or `liquid_cache_client` to interact with LiquidCache.
 mod byte_array;
 pub mod byte_view_array;
+mod decimal_array;
 mod fix_len_byte_array;
 mod float_array;
 mod hybrid_primitive_array;
@@ -25,6 +26,7 @@ use arrow::{
 use arrow_schema::DataType;
 pub use byte_array::{LiquidByteArray, get_bytes_needle, get_string_needle};
 pub use byte_view_array::LiquidByteViewArray;
+pub use decimal_array::LiquidDecimalArray;
 use bytes::Bytes;
 use datafusion::logical_expr::Operator as DFOperator;
 use datafusion::physical_plan::PhysicalExpr;
@@ -61,6 +63,8 @@ pub enum LiquidDataType {
     Float = 2,
     /// A fixed length byte array.
     FixedLenByteArray = 3,
+    /// A decimal encoded as a primitive u64 array.
+    Decimal = 6,
     /// A linear-model based integer (signed residuals + model params).
     LinearInteger = 5,
 }
@@ -74,6 +78,7 @@ impl From<u16> for LiquidDataType {
             2 => LiquidDataType::Float,
             3 => LiquidDataType::FixedLenByteArray,
             5 => LiquidDataType::LinearInteger,
+            6 => LiquidDataType::Decimal,
             _ => panic!("Invalid liquid data type: {value}"),
         }
     }
