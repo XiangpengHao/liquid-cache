@@ -542,14 +542,8 @@ impl LiquidSqueezedArray for LiquidDecimalQuantizedArray {
 
         let expr = unwrap_dynamic_filter(expr)?;
         let binary_expr = expr.as_any().downcast_ref::<BinaryExpr>()?;
-        if binary_expr
-            .left()
-            .as_any()
-            .downcast_ref::<Column>()
-            .is_none()
-        {
-            return None;
-        }
+        binary_expr.left().as_any().downcast_ref::<Column>()?;
+
         let literal = binary_expr.right().as_any().downcast_ref::<Literal>()?;
 
         let op = Operator::from_datafusion(binary_expr.op())?;
