@@ -2,7 +2,7 @@ use std::{
     collections::VecDeque, fs::OpenOptions, future::Future, io, ops::Range, os::{fd::AsRawFd, unix::fs::OpenOptionsExt}, path::PathBuf, pin::Pin, sync::{
         OnceLock,
         atomic::{AtomicBool, AtomicUsize, Ordering},
-    }, task::{Context, Poll}, thread, time::{Duration, SystemTime}
+    }, task::{Context, Poll}, thread, time::{Duration, Instant}
 };
 
 use bytes::Bytes;
@@ -164,7 +164,7 @@ struct UringWorker {
      */
     queued_entries: VecDeque<squeue::Entry>,
     io_performed: AtomicUsize,
-    last_syscall: SystemTime,
+    last_syscall: Instant,
     // Number of entries that will be submitted upon calling io_uring_enter
     queued_submissions: u32,
 }
@@ -182,7 +182,7 @@ impl UringWorker {
             submitted_tasks: tasks,
             io_performed: AtomicUsize::new(0),
             queued_entries: VecDeque::with_capacity(URING_NUM_ENTRIES as usize),
-            last_syscall: SystemTime::now(),
+            last_syscall: Instant::now(),
             queued_submissions: 0,
         }
     }
@@ -247,8 +247,7 @@ impl UringWorker {
             self.submitted_tasks[token as usize] = Some(submission);
         }
         // let need_poll = self.tokens.len() < URING_NUM_ENTRIES as u32;
-        let current_time = SystemTime::now();
-        let time_from_last_submit = current_time.duration_since(self.last_syscall).expect("Failed to get duration");
+        let time_from_last_submit = self.last_syscall.elapsed();
         let need_syscall = self.queued_submissions >= URING_BATCH_SIZE || time_from_last_submit > Duration::from_micros(20);
         if need_syscall {
             loop {
@@ -264,7 +263,7 @@ impl UringWorker {
                     }
                 }
             }
-            self.last_syscall = SystemTime::now();
+            self.last_syscall = Instant::now();
             self.queued_submissions = 0;
         }
     }
