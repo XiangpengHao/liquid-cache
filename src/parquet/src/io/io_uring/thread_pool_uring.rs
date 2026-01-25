@@ -11,6 +11,25 @@ use liquid_cache_common::{IoMode, memory::pool::FixedBufferPool};
 use tokio::sync::oneshot;
 
 use crate::io::io_uring::tasks::FixedFileReadTask;
+use rand::Rng;
+
+#[usdt::provider]
+mod liquid_parquet {
+    fn io_submitted(id: u64) {}
+    fn io_completed(id: u64) {}
+}
+
+static REGISTRATION_SUCCEEDED: OnceLock<bool> = OnceLock::new();
+
+fn ensure_registered() -> bool {
+    *REGISTRATION_SUCCEEDED.get_or_init(|| match usdt::register_probes() {
+        Ok(()) => true,
+        Err(err) => {
+            log::debug!("failed to register USDT probes: {err}");
+            false
+        }
+    })
+}
 
 use super::tasks::{FileOpenTask, FileReadTask, FileWriteTask, IoTask};
 
@@ -317,6 +336,7 @@ where
     T: IoTask + 'static,
 {
     state: UringState<T>,
+    id: u64,
 }
 
 impl<T> UringFuture<T>
@@ -326,6 +346,7 @@ where
     fn new(task: Box<T>) -> UringFuture<T> {
         UringFuture {
             state: UringState::Created(task),
+            id: rand::rng().random(),
         }
     }
 }
@@ -344,6 +365,9 @@ where
                     let pool = IO_URING_THREAD_POOL_INST
                         .get()
                         .expect("Uring threadpool not initialized");
+                    if ensure_registered() {
+                        liquid_parquet::io_submitted!(|| self.id);
+                    }
                     let (tx, rx) = oneshot::channel::<Box<dyn IoTask>>();
                     let boxed_task: Box<dyn IoTask> = task;
                     pool.submit_task(boxed_task, tx);
@@ -351,6 +375,9 @@ where
                 }
                 UringState::Submitted(mut receiver) => match Pin::new(&mut receiver).poll(cx) {
                     Poll::Ready(Ok(task)) => {
+                        if ensure_registered() {
+                             liquid_parquet::io_completed!(|| self.id);
+                        }
                         let typed_task = task
                             .into_any()
                             .downcast::<T>()
