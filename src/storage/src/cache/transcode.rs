@@ -7,8 +7,8 @@ use arrow_schema::{DataType, TimeUnit};
 use crate::liquid_array::byte_view_array::ByteViewBuildOptions;
 use crate::liquid_array::raw::FsstArray;
 use crate::liquid_array::{
-    LiquidArrayRef, LiquidByteViewArray, LiquidFixedLenByteArray, LiquidFloatArray,
-    LiquidPrimitiveArray,
+    LiquidArrayRef, LiquidByteViewArray, LiquidDecimalArray, LiquidFixedLenByteArray,
+    LiquidFloatArray, LiquidPrimitiveArray,
 };
 
 use super::{CacheExpression, utils::LiquidCompressorStates};
@@ -113,38 +113,40 @@ pub fn transcode_liquid_inner_with_hint<'a>(
                 array.as_primitive::<Float64Type>().clone(),
             )),
             DataType::Decimal128(_, _) => {
+                let decimals = array.as_primitive::<Decimal128Type>();
+                if LiquidDecimalArray::fits_u64(decimals) {
+                    return Ok(Arc::new(LiquidDecimalArray::from_decimal_array(decimals)));
+                }
                 let liquid_array = with_fsst_compressor_or_train(
                     state,
                     |compressor| {
                         Arc::new(LiquidFixedLenByteArray::from_decimal_array(
-                            array.as_primitive::<Decimal128Type>(),
-                            compressor,
+                            decimals, compressor,
                         ))
                     },
                     || {
                         let (compressor, liquid_array) =
-                            LiquidFixedLenByteArray::train_from_decimal_array(
-                                array.as_primitive::<Decimal128Type>(),
-                            );
+                            LiquidFixedLenByteArray::train_from_decimal_array(decimals);
                         (compressor, Arc::new(liquid_array))
                     },
                 );
                 return Ok(liquid_array);
             }
             DataType::Decimal256(_, _) => {
+                let decimals = array.as_primitive::<Decimal256Type>();
+                if LiquidDecimalArray::fits_u64(decimals) {
+                    return Ok(Arc::new(LiquidDecimalArray::from_decimal_array(decimals)));
+                }
                 let liquid_array = with_fsst_compressor_or_train(
                     state,
                     |compressor| {
                         Arc::new(LiquidFixedLenByteArray::from_decimal_array(
-                            array.as_primitive::<Decimal256Type>(),
-                            compressor,
+                            decimals, compressor,
                         ))
                     },
                     || {
                         let (compressor, liquid_array) =
-                            LiquidFixedLenByteArray::train_from_decimal_array(
-                                array.as_primitive::<Decimal256Type>(),
-                            );
+                            LiquidFixedLenByteArray::train_from_decimal_array(decimals);
                         (compressor, Arc::new(liquid_array))
                     },
                 );
