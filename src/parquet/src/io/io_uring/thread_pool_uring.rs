@@ -6,7 +6,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use io_uring::{IoUring, cqueue, squeue};
+use io_uring::{EnterFlags, IoUring, cqueue, squeue};
 use liquid_cache_common::{IoMode, memory::pool::FixedBufferPool};
 use tokio::sync::oneshot;
 
@@ -31,7 +31,7 @@ fn ensure_registered() -> bool {
     })
 }
 
-use super::tasks::{FileOpenTask, FileReadTask, FileWriteTask, IoTask};
+use super::tasks::{FileReadTask, FileWriteTask, IoTask};
 
 pub(crate) const URING_NUM_ENTRIES: u32 = 256;
 
@@ -120,24 +120,10 @@ impl IoUringThreadpool {
     fn new(io_type: IoMode, register_buffers: bool) -> IoUringThreadpool {
         let (sender, receiver) = crossbeam_channel::unbounded::<Submission>();
 
-        let mut builder = IoUring::<squeue::Entry, cqueue::Entry>::builder();
-        let ring = builder
-            .setup_iopoll()
-            // .setup_sqpoll(50000)
-            .build(URING_NUM_ENTRIES)
-            .expect("Failed to build IoUring instance");
-
-        if register_buffers {
-            let res = FixedBufferPool::register_buffers_with_ring(&ring);
-            if res.is_err() {
-                log::error!("Failed to register buffers with io-uring ring: {:?}", res);
-            }
-        }
-
         let worker = thread::Builder::new()
             .name("lc-io-worker".to_string())
             .spawn(move || {
-                let mut uring_worker = UringWorker::new(receiver, ring);
+                let mut uring_worker = UringWorker::new(receiver, register_buffers);
                 uring_worker.thread_loop();
             })
             .expect("Failed to spawn io-uring worker thread");
@@ -190,7 +176,23 @@ struct UringWorker {
 
 impl UringWorker {
     #[allow(clippy::new_ret_no_self)]
-    fn new(channel: crossbeam_channel::Receiver<Submission>, ring: IoUring) -> UringWorker {
+    fn new(channel: crossbeam_channel::Receiver<Submission>, register_buffers: bool) -> UringWorker {
+        let mut builder = IoUring::<squeue::Entry, cqueue::Entry>::builder();
+        let ring = builder
+            .setup_single_issuer()      // Only the worker thread will issue IO and poll completions
+            .setup_defer_taskrun()
+            // .setup_iopoll()
+            // .setup_sqpoll(50000)
+            .build(URING_NUM_ENTRIES)
+            .expect("Failed to build IoUring instance");
+
+        if register_buffers {
+            let res = FixedBufferPool::register_buffers_with_ring(&ring);
+            if res.is_err() {
+                log::error!("Failed to register buffers with io-uring ring: {:?}", res);
+            }
+        }
+
         let tokens = (0..URING_NUM_ENTRIES as u16).collect();
         let mut tasks = Vec::with_capacity(URING_NUM_ENTRIES as usize);
         tasks.resize_with(URING_NUM_ENTRIES as usize, || None);
@@ -265,12 +267,18 @@ impl UringWorker {
             }
             self.submitted_tasks[token as usize] = Some(submission);
         }
-        // let need_poll = self.tokens.len() < URING_NUM_ENTRIES as u32;
+        // let need_poll = self.tokens.len() < URING_NUM_ENTRIES as usize;
         let time_from_last_submit = self.last_syscall.elapsed();
-        let need_syscall = self.queued_submissions >= URING_BATCH_SIZE || time_from_last_submit > Duration::from_micros(20);
+        let is_batch_full = self.queued_submissions >= URING_BATCH_SIZE;
+        let need_syscall = is_batch_full || time_from_last_submit > Duration::from_micros(20);
         if need_syscall {
+            let mut flags = EnterFlags::empty();
+            flags.insert(EnterFlags::GETEVENTS);
             loop {
-                match self.ring.submit() {
+                let res = unsafe {
+                    self.ring.submitter().enter::<libc::sigset_t>(self.queued_submissions, 0, flags.bits(), None)
+                };
+                match res {
                     Ok(_num_entries) => {
                         break;
                     }
