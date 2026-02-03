@@ -26,6 +26,10 @@ pub enum IoMode {
     #[serde(rename = "uring-blocking")]
     UringBlocking,
 
+    /// Uses an io_uring runtime
+    #[serde(rename = "uring-non-blocking")]
+    UringNonBlocking,
+
     /// Uses rust's std::fs::File, this is blocking IO.
     /// On Linux, this is essentially `pread/pwrite`
     /// This is the default on non-Linux platforms.
@@ -57,6 +61,7 @@ impl Display for IoMode {
                 IoMode::StdBlocking => "std-blocking",
                 IoMode::TokioIO => "tokio",
                 IoMode::StdSpawnBlocking => "std-spawn-blocking",
+                IoMode::UringNonBlocking => "uring-non-blocking",
             }
         )
     }
@@ -75,6 +80,7 @@ impl FromStr for IoMode {
             "std-blocking" => IoMode::StdBlocking,
             "tokio" => IoMode::TokioIO,
             "std-spawn-blocking" => IoMode::StdSpawnBlocking,
+            "uring-non-blocking" => IoMode::UringNonBlocking,
             _ => return Err(format!("Invalid IO mode: {s}")),
         })
     }

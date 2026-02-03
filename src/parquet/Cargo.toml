@@ -27,6 +27,7 @@ parquet-variant-compute = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 itertools = "0.14.0"
+async-executor = "1.13.3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 io-uring = "0.7.10"
