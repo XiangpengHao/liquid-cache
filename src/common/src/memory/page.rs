@@ -34,13 +34,13 @@ impl LocalFreeList {
         for i in 0..num_blocks {
             blocks[i] = i as u8;
         }
-        LocalFreeList { head: 0, tail: num_blocks as u8 - 1, num_blocks: num_blocks as u8, blocks: blocks }
+        LocalFreeList { head: 0, tail: num_blocks as u8, num_blocks: num_blocks as u8, blocks: blocks }
     }
 
     fn push(&mut self, block: u8) {
         debug_assert!(self.tail.wrapping_sub(self.head) < self.num_blocks);
-        self.tail = self.tail.wrapping_add(1);
         self.blocks[self.tail as usize & (MAX_BLOCKS_PER_PAGE - 1)] = block;
+        self.tail = self.tail.wrapping_add(1);
     }
 
     fn is_empty(&self) -> bool {
@@ -145,7 +145,7 @@ impl Page {
 
     pub fn set_block_size(self: &mut Self, block_size: usize) {
         self.block_size = block_size;
-        let num_blocks = self.capacity / block_size;
+        let num_blocks = (self.slice_count * PAGE_SIZE) / block_size;
         self.free_list = LocalFreeList::new(num_blocks);
     }
 
