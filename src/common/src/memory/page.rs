@@ -1,20 +1,123 @@
-use std::{collections::VecDeque, ptr::null_mut};
+use std::{ptr::null_mut, sync::atomic::{AtomicU8, Ordering}, u8};
+
+use crossbeam::utils::CachePadded;
 
 use crate::memory::tcache::MIN_SIZE_FROM_PAGES;
 
-#[derive(Clone, Copy)]
-pub struct Block {
-    ptr: *mut u8,
+pub const PAGE_SIZE: usize = 64<<10;    // 64KB
+const MAX_BLOCKS_PER_PAGE: usize = PAGE_SIZE/MIN_SIZE_FROM_PAGES;
+
+struct LocalFreeList {
+    head: u8,
+    tail: u8,
+    num_blocks: u8,
+    /**
+     * Stores the block indices within the page for a compact representation, rather than storing pointers.
+     * That is, if block index=i, it represents ith block from the start of the page.
+     */
+    blocks: [u8; MAX_BLOCKS_PER_PAGE],
 }
 
-pub const PAGE_SIZE: usize = 64<<10;    // 64KB
+impl LocalFreeList {
+    fn empty() -> LocalFreeList {
+        LocalFreeList {
+            head: 0,
+            tail: 0,
+            num_blocks: 0,
+            blocks: [0; MAX_BLOCKS_PER_PAGE],
+        }
+    }
+
+    fn new(num_blocks: usize) -> LocalFreeList {
+        debug_assert!(num_blocks <= MAX_BLOCKS_PER_PAGE);
+        let mut blocks = [0u8; MAX_BLOCKS_PER_PAGE];
+        for i in 0..num_blocks {
+            blocks[i] = i as u8;
+        }
+        LocalFreeList { head: 0, tail: num_blocks as u8 - 1, num_blocks: num_blocks as u8, blocks: blocks }
+    }
+
+    fn push(&mut self, block: u8) {
+        debug_assert!(self.tail.wrapping_sub(self.head) < self.num_blocks);
+        self.tail = self.tail.wrapping_add(1);
+        self.blocks[self.tail as usize & (MAX_BLOCKS_PER_PAGE - 1)] = block;
+    }
+
+    fn is_empty(&self) -> bool {
+        self.head == self.tail
+    }
+
+    fn pop(&mut self) -> Option<u8> {
+        if self.head == self.tail {
+            return None
+        }
+        let ret = self.blocks[self.head as usize & (MAX_BLOCKS_PER_PAGE - 1)];
+        self.head = self.head.wrapping_add(1);
+        Some(ret)
+    }
+}
+
+struct MPSCQueue {
+    head: u8,
+    tail: CachePadded<AtomicU8>,
+    num_blocks: u8,
+    blocks: [u8; MAX_BLOCKS_PER_PAGE],
+}
+
+impl MPSCQueue {
+    const HAZARD: u8 = u8::MAX;
+
+    fn new(num_blocks: usize) -> MPSCQueue {
+        debug_assert!(num_blocks <= MAX_BLOCKS_PER_PAGE);
+        MPSCQueue {
+            head: 0,
+            num_blocks: num_blocks as u8,
+            tail: CachePadded::new(AtomicU8::new(0)),
+            blocks: [Self::HAZARD; MAX_BLOCKS_PER_PAGE],
+        }
+    }
+
+    fn push(&mut self, block: u8) {
+        loop {
+            let cur_tail = self.tail.load(Ordering::Relaxed);
+            assert!(cur_tail.wrapping_sub(self.head) < self.num_blocks);
+            let new_tail = cur_tail.wrapping_add(1);
+            if self.tail.compare_exchange(cur_tail, new_tail, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
+                unsafe {
+                    std::ptr::write_volatile(&mut self.blocks[cur_tail as usize & (MAX_BLOCKS_PER_PAGE - 1)] as *mut u8, block);
+                }
+                return
+            }
+        }
+    }
+
+    fn pop(&mut self) -> Option<u8> {
+        if self.head == self.tail.load(Ordering::Relaxed) {
+            return None
+        }
+        let idx = self.head as usize & (MAX_BLOCKS_PER_PAGE - 1);
+        loop {
+            let ret = unsafe { std::ptr::read_volatile(&self.blocks[idx] as *const u8) };
+            /*
+             * The hazard value prevents the following race condition:
+             * The producer has reserved a slot, but before it can write to the slot, the consumer calls pop.
+             */
+            if ret != Self::HAZARD {
+                unsafe {
+                    std::ptr::write_volatile(&mut self.blocks[idx] as *mut u8, Self::HAZARD);
+                }
+                self.head = self.head.wrapping_add(1);
+                return Some(ret);
+            }
+        }
+    }
+}
 
 pub struct Page {
     pub(crate) block_size: usize,                  // Size of objects that are being allocated to this page
-    // TODO(): Remove dependency on dynamically allocated memory
-    free_list: VecDeque<Block>,
+    free_list: LocalFreeList,
     pub(crate) used: usize,
-    pub(crate) thread_free_list: crossbeam::queue::ArrayQueue<Block>,
+    thread_free_list: MPSCQueue,
     pub(crate) capacity: usize,
     pub(crate) slice_count: usize,      // No. of pages in the slice containing this page
     pub(crate) slice_offset: usize,     // Offset of this page from the start of this slice
@@ -28,9 +131,9 @@ impl Page {
     pub fn from_slice(slice: Slice) -> Page {
         Page {
             block_size: 0usize,
-            free_list: VecDeque::<Block>::with_capacity(PAGE_SIZE/MIN_SIZE_FROM_PAGES),
+            free_list: LocalFreeList::empty(),
             used: 0,
-            thread_free_list: crossbeam::queue::ArrayQueue::new(PAGE_SIZE/MIN_SIZE_FROM_PAGES),
+            thread_free_list: MPSCQueue::new(PAGE_SIZE/MIN_SIZE_FROM_PAGES),
             capacity: slice.size,
             slice_count: 1,
             slice_offset: 0,
@@ -42,23 +145,19 @@ impl Page {
 
     pub fn set_block_size(self: &mut Self, block_size: usize) {
         self.block_size = block_size;
-        let mut offset: usize = 0;
-        self.free_list.clear();
-        while offset < self.capacity {
-            let ptr = unsafe { self.page_start.add(offset) };
-            self.free_list.push_back(Block {ptr});
-            offset += self.block_size;
-        }
+        let num_blocks = self.capacity / block_size;
+        self.free_list = LocalFreeList::new(num_blocks);
     }
 
     #[inline]
     pub fn get_free_block(self: &mut Self) -> *mut u8 {
-        let block = self.free_list.pop_front();
-        if block.is_none() {
-            return null_mut()
-        }
+        let block_idx = self.free_list.pop();
+        let block_idx = match block_idx {
+            Some(i) => i,
+            None => return null_mut(),
+        };
         self.used += 1;
-        block.unwrap().ptr
+        unsafe { self.page_start.add(block_idx as usize * self.block_size) }
     }
 
     #[inline(always)]
@@ -74,24 +173,23 @@ impl Page {
     /// Pointer freed on the same core
     #[inline(always)]
     pub fn free(self: &mut Self, ptr: *mut u8) {
-        self.free_list.push_back(Block {ptr});
+        let block_idx = (ptr as usize - self.page_start as usize) / self.block_size;
+        self.free_list.push(block_idx as u8);
         self.used -= 1;
     }
 
     /// Pointer freed on a different core
     #[inline(always)]
     pub(crate) fn foreign_free(self: &mut Self, ptr: *mut u8) {
-        let blk = Block {ptr};
-        let r = self.thread_free_list.push(blk);
-        debug_assert!(r.is_ok());
+        let blk_idx = unsafe {ptr.offset_from(self.page_start) as usize / self.block_size};
+        self.thread_free_list.push(blk_idx as u8);
     }
 
     /// Collect pointers freed by other threads
     #[inline]
     pub(crate) fn collect_foreign_frees(self: &mut Self) {
-        while !self.thread_free_list.is_empty() {
-            let blk = self.thread_free_list.pop().unwrap();
-            self.free_list.push_back(blk);
+        while let Some(blk) = self.thread_free_list.pop() {
+            self.free_list.push(blk as u8);
             self.used -= 1;
         }
     }
@@ -116,23 +214,3 @@ impl Slice {
         (slice1, slice2)
     }
 }
-
-// pub struct PageQueue {
-//     page: *mut Page,
-//     next: *mut PageQueue,
-// }
-
-// impl PageQueue {
-//     pub fn new() -> PageQueue {
-//         PageQueue { page: null_mut(), next: null_mut() }
-//     }
-
-//     pub(crate) fn get_page(self: &mut Self) -> Option<*mut Page> {
-//         if self.page.is_null() {
-//             return None;
-//         }
-//         let result = self.page;
-//         self = *self.next;
-//         Some(result)
-//     }
-// }

@@ -301,6 +301,7 @@ impl TCache {
                     // split slice
                     let next_slice = unsafe { (*segment).split_page(slice, num_slices_required) };
                     debug_assert!(unsafe { (*slice).slice_count == num_slices_required});
+                    #[cfg(debug_assertions)]
                     unsafe { (*segment).check_valid_segment() } ;
                     let bin = Self::get_span_idx_from_slice_count(num_slices_original - num_slices_required);
                     Self::add_slice_to_span(&mut self.spans[bin], unsafe { &mut (*next_slice) } );
