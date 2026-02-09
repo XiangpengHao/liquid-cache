@@ -354,6 +354,7 @@ impl TCache {
         let mut free_page = self.find_page_from_spans(num_pages, block_size);
         if free_page != null_mut() {
             self.stats.allocations_from_segment += 1;
+            self.used_pages[NUM_SIZE_CLASSES].push(free_page);
             let free_block = unsafe { (*free_page).get_free_block() };
             return free_block
         }
@@ -369,6 +370,7 @@ impl TCache {
 
         let res = self.allocate_segment_from_arena(self.thread_id);
         if !res {
+            self.stats.unsuccessful_allocations += 1;
             return null_mut()
         }
         self.stats.allocations_from_arena += 1;
@@ -378,8 +380,9 @@ impl TCache {
             return null_mut()
         }
         self.used_pages[NUM_SIZE_CLASSES].push(free_page);
-        assert_ne!(free_page, null_mut());
+        debug_assert_ne!(free_page, null_mut());
         let free_block = unsafe { (*free_page).get_free_block() };
+        debug_assert_ne!(free_block, null_mut());
         return free_block
     }
 
@@ -425,6 +428,7 @@ impl TCache {
         if free_page != null_mut() {
             self.stats.allocations_from_segment += 1;
             let free_block = unsafe { (*free_page).get_free_block() };
+            debug_assert_ne!(free_block, null_mut());
             self.free_pages[size_class] = free_page;
             return free_block;
         }
