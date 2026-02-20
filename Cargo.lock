@@ -4210,7 +4210,6 @@ dependencies = [
  "fastrace",
  "futures",
  "io-uring",
- "itertools",
  "libc",
  "liquid-cache-common",
  "liquid-cache-storage",
