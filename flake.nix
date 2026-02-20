@@ -6,7 +6,6 @@
     rust-overlay.url = "github:oxalica/rust-overlay";
     flake-utils.url = "github:numtide/flake-utils";
     crane.url = "github:ipetkov/crane";
-    dioxus.url = "github:DioxusLabs/dioxus/v0.7.1";
   };
 
   outputs =
@@ -14,7 +13,6 @@
     , rust-overlay
     , flake-utils
     , crane
-    , dioxus
     , ...
     }:
     flake-utils.lib.eachDefaultSystem (
@@ -27,27 +25,15 @@
         craneLib = crane.mkLib pkgs;
         kaniVerifier = craneLib.buildPackage {
           pname = "kani-verifier";
-          version = "0.65.0";
+          version = "0.67.0";
           src = craneLib.downloadCargoPackage {
             name = "kani-verifier";
-            version = "0.65.0";
+            version = "0.67.0";
             source = "registry+https://github.com/rust-lang/crates.io-index";
-            checksum = "sha256-QkoxbyMal3l0dX/henO4ft6N1A6HzSohpLJzzhRmbqY=";
+            checksum = "sha256-1iJafsEwN+mE9r692jPTQ5DmQ6HNKkUiy11ejm7YXis=";
           };
           doCheck = false;
         };
-        wasm-bindgen-cli = craneLib.buildPackage {
-          version = "0.2.105";
-          src = craneLib.downloadCargoPackage {
-            name = "wasm-bindgen-cli";
-            version = "0.2.105";
-            source = "registry+https://github.com/rust-lang/crates.io-index";
-            checksum = "sha256-Dm323jfd6JPt71KlTvEnfeMTd44f4/G2eMFdmMk9OlA=";
-          };
-          doCheck = false;
-          pname = "wasm-bindgen-cli";
-        };
-
         # Fetch daisyUI bundle files
         daisyui-bundle = pkgs.fetchurl {
           url = "https://github.com/saadeghi/daisyui/releases/latest/download/daisyui.mjs";
@@ -77,8 +63,8 @@
               cargo-flamegraph
               nodejs
               tailwindcss_4
-              dioxus.packages.${system}.dioxus-cli
-              wasm-bindgen-cli
+              dioxus-cli
+              wasm-bindgen-cli_0_2_108
               binaryen
               (rust-bin.selectLatestNightlyWith (toolchain: toolchain.default.override {
                 extensions = [ "rust-src" "llvm-tools-preview" ];
