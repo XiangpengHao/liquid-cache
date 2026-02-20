@@ -16,110 +16,77 @@
 [![TPC-DS](https://img.shields.io/badge/TPC--DS-passing-brightgreen)](https://github.com/XiangpengHao/liquid-cache/actions/workflows/ci.yml)
 </div>
 
-LiquidCache understands both your _data_ and your _query_.
-- It transcodes storage data into into an optimized, cache-only format, so you can continue using your favorite formats without worrying about performance.
-- It keeps truly important data in memory and makes efficient use of modern SSDs. For example, if your query group by `year`, LiquidCache store only year in memory, and keeps the full timestamp on disk.
+LiquidCache understands both your **data** and your **query**.
+- It transcodes storage **data** into into an optimized, cache-only format, so you can continue using your favorite formats without worrying about performance.
+- It keeps truly important data in memory and makes efficient use of modern SSDs. For example, if your **query** group by `year`, LiquidCache store only year in memory, and keeps the full timestamp on disk.
 
 LiquidCache is a research project [funded](https://xiangpeng.systems/fund/) by [InfluxData](https://www.influxdata.com/), [SpiralDB](https://spiraldb.com/), and [Bauplan](https://www.bauplanlabs.com).
 
-## Features
-LiquidCache is a radical redesign of caching: it **caches logical data** rather than its physical representations.
+You may want to consider [Foyer](https://github.com/foyer-rs/foyer) if you're looking for a black-box cache: easier to setup, but not as "smart" as LiquidCache.
 
-This means that:
-- LiquidCache transcodes S3 data (e.g., JSON, CSV, Parquet) into an in-house format -- more compressed, more NVMe friendly, more efficient for DataFusion operations. 
-- LiquidCache returns filtered/aggregated data to DataFusion, significantly reducing network IO.
+## Quick start
 
-Cons:
-- LiquidCache is not a transparent cache (consider [Foyer](https://github.com/foyer-rs/foyer) instead), it leverages query semantics to optimize caching. 
-
-## Architecture
-
-Multiple DataFusion nodes share the same LiquidCache instance through network connections. 
-Each component can be scaled independently as the workload grows. 
-
-<img src="https://raw.githubusercontent.com/XiangpengHao/liquid-cache/main/dev/doc/arch.png" alt="architecture" width="400"/>
-
-
-## Start a LiquidCache Server in 5 Minutes
-Check out the [examples](https://github.com/XiangpengHao/liquid-cache/tree/main/examples) folder for more details. 
-
-
-#### 1. Create a Cache Server:
-```rust
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let liquid_cache = LiquidCacheService::new(
-        SessionContext::new(),
-        Some(1024 * 1024 * 1024),               // max memory cache size 1GB
-        Some(tempfile::tempdir()?.into_path()), // disk cache dir
-    )?;
-
-    let flight = FlightServiceServer::new(liquid_cache);
-
-    Server::builder()
-        .add_service(flight)
-        .serve("0.0.0.0:15214".parse()?)
-        .await?;
-
-    Ok(())
-}
-```
-
-#### 2. Connect to the cache server:
-Add the following dependency to your existing DataFusion project:
-```toml
-[dependencies]
-liquid-cache-datafusion-client = "0.1.0"
-```
-
-Then, create a new DataFusion context with LiquidCache:
-```rust
-#[tokio::main]
-pub async fn main() -> Result<()> {
-    let ctx = LiquidCacheBuilder::new(cache_server)
-        .with_object_store(ObjectStoreUrl::parse(object_store_url.as_str())?, None)
-        .build(SessionConfig::from_env()?)?;
-
-    let ctx: Arc<SessionContext> = Arc::new(ctx);
-    ctx.register_table(table_name, ...)
-        .await?;
-    ctx.sql(&sql).await?.show().await?;
-    Ok(())
-}
-```
-
-## In-process mode 
-
-If you are uncomfortable with a dedicated server, LiquidCache also provides an in-process mode via the
-`liquid-cache-datafusion-local` crate.
+This quickstart uses the core cache API from `src/core`.
+Add these dependencies in your project: `liquid-cache`, `arrow`, and `datafusion`.
+The example below demonstrates insert, get, get filtered, and get with predicate in one place.
 
 ```rust
-use datafusion::prelude::SessionConfig;
-use liquid_cache_datafusion_local::storage::cache::squeeze_policies::TranscodeSqueezeEvict;
-use liquid_cache_datafusion_local::storage::cache_policies::FiloPolicy;
-use liquid_cache_datafusion_local::LiquidCacheLocalBuilder;
-use tempfile::TempDir;
+use arrow::array::{BooleanArray, UInt64Array};
+use arrow::buffer::BooleanBuffer;
+use datafusion::logical_expr::Operator;
+use datafusion::physical_plan::PhysicalExpr;
+use datafusion::physical_plan::expressions::{BinaryExpr, Column, Literal};
+use datafusion::scalar::ScalarValue;
+use liquid_cache::cache::{EntryID, LiquidCacheBuilder};
+use std::sync::Arc;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let temp_dir = TempDir::new().unwrap();
+tokio_test::block_on(async {
+    let cache = LiquidCacheBuilder::new().build();
+    let entry_id = EntryID::from(1);
+    let values = Arc::new(UInt64Array::from(vec![10, 11, 12, 13, 14, 15]));
 
-    let (ctx, _cache) = LiquidCacheLocalBuilder::new()
-        .with_max_cache_bytes(1024 * 1024 * 1024) // 1GB
-        .with_cache_dir(temp_dir.path().to_path_buf())
-        .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
-        .with_cache_policy(Box::new(FiloPolicy::new()))
-        .build(SessionConfig::new())?;
+    // 1) insert
+    cache.insert(entry_id, values.clone()).await;
 
-    ctx.register_parquet("hits", "examples/nano_hits.parquet", Default::default())
-        .await?;
+    // 2) get
+    let all_rows = cache.get(&entry_id).await.expect("entry should exist");
 
-    ctx.sql("SELECT COUNT(*) FROM hits").await?.show().await?;
-    Ok(())
-}
+    // 3) get filtered (selection pushdown): keep rows 0, 2, 4
+    let selection = BooleanBuffer::from(vec![true, false, true, false, true, false]);
+    let selected_rows = cache
+        .get(&entry_id)
+        .with_selection(&selection)
+        .await
+        .expect("entry should exist");
 
+    // 4) get with predicate pushdown: col > 12
+    let predicate: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+        Arc::new(Column::new("col", 0)),
+        Operator::Gt,
+        Arc::new(Literal::new(ScalarValue::UInt64(Some(12)))),
+    ));
+    let predicate_mask = cache
+        .eval_predicate(&entry_id, &predicate)
+        .await
+        .expect("entry should exist")
+        .expect("predicate should be evaluated in cache");
+
+    // Conceptual expectations:
+    assert_eq!(all_rows.as_ref(), values.as_ref()); // [10, 11, 12, 13, 14, 15]
+    assert_eq!(selected_rows.as_ref(), &UInt64Array::from(vec![10, 12, 14]));
+    assert_eq!(
+        predicate_mask,
+        BooleanArray::from(vec![
+        Some(false),
+        Some(false),
+        Some(false),
+        Some(true),
+        Some(true),
+        Some(true),
+        ]),
+    );
+});
 ```
-
 
 ## Development
 
@@ -178,7 +145,7 @@ LiquidCache began as a research project exploring new approaches to build cost-e
 
 #### How does LiquidCache work?
 
-Check out our [paper](/dev/doc/liquid-cache-vldb.pdf) (to appear in VLDB 2026) for more details. Meanwhile, we are working on a technical blog to introduce LiquidCache in a more accessible way.
+Check out our [paper](/dev/doc/liquid-cache-vldb.pdf) for more details. Meanwhile, we are working on a technical blog to introduce LiquidCache in a more accessible way.
 
 #### How can I get involved?
 
