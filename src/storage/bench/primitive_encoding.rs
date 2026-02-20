@@ -2,7 +2,7 @@ use datafusion::arrow::{array::PrimitiveArray, buffer::ScalarBuffer, datatypes::
 use liquid_cache_storage::liquid_array::{
     LiquidArray, LiquidPrimitiveArray, LiquidPrimitiveDeltaArray,
 };
-use rand::{Rng, SeedableRng, rngs::StdRng};
+use rand::{RngExt as _, SeedableRng, rngs::StdRng};
 use std::time::Instant;
 
 fn main() {

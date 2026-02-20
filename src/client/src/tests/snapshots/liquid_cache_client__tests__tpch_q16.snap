@@ -42,12 +42,6 @@ expression: displayable.tree_render().to_string()
 │      FinalPartitioned     │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
-│    CoalesceBatchesExec    │
-│    --------------------   │
-│     target_batch_size:    │
-│           16384           │
-└─────────────┬─────────────┘
-┌─────────────┴─────────────┐
 │      RepartitionExec      │
 │    --------------------   │
 │ partition_count(in->out): │
@@ -78,12 +72,6 @@ expression: displayable.tree_render().to_string()
 │      FinalPartitioned     │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
-│    CoalesceBatchesExec    │
-│    --------------------   │
-│     target_batch_size:    │
-│           16384           │
-└─────────────┬─────────────┘
-┌─────────────┴─────────────┐
 │      RepartitionExec      │
 │    --------------------   │
 │ partition_count(in->out): │
@@ -101,12 +89,6 @@ expression: displayable.tree_render().to_string()
 │    ps_suppkey as alias1   │
 │                           │
 │       mode: Partial       │
-└─────────────┬─────────────┘
-┌─────────────┴─────────────┐
-│    CoalesceBatchesExec    │
-│    --------------------   │
-│     target_batch_size:    │
-│           16384           │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
 │        HashJoinExec       │
@@ -135,12 +117,6 @@ expression: displayable.tree_render().to_string()
 │  s_comment LIKE %Customer ││        ps_suppkey:        │
 │        %Complaints%       ││         ps_suppkey        │
 └───────────────────────────┘└─────────────┬─────────────┘
-                             ┌─────────────┴─────────────┐
-                             │    CoalesceBatchesExec    │
-                             │    --------------------   │
-                             │     target_batch_size:    │
-                             │           16384           │
-                             └─────────────┬─────────────┘
                              ┌─────────────┴─────────────┐
                              │        HashJoinExec       │
                              │    --------------------   │

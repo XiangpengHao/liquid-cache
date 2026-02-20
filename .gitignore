@@ -16,3 +16,4 @@ profile.json.gz
 perf.data*
 .zed
 .vscode
+probex*.parquet

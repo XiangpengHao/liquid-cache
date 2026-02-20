@@ -1,5 +1,5 @@
 //! This module has a logical optimizer that detects columns that are only used via compatible `EXTRACT` projections.
-//! It then attaches the metadata to schema adapter, which is then passed to the physical plan.
+//! It then attaches the metadata to expression adapter factory, which is then passed to the physical plan.
 //! The physical optimizer will move the metadata to the fields of the schema.
 
 use std::cmp::Ordering;
@@ -12,12 +12,9 @@ use arrow::compute::kernels::cast_utils::IntervalUnit;
 use arrow_schema::{DataType, Schema, SchemaRef};
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{
-    Column, DFSchema, DataFusionError, ExprSchema, Result, ScalarValue, TableReference,
+    Column, Constraints, DFSchema, DataFusionError, ExprSchema, Result, ScalarValue, TableReference,
 };
-use datafusion::datasource::listing::ListingTable;
-use datafusion::datasource::schema_adapter::{
-    DefaultSchemaAdapterFactory, SchemaAdapter, SchemaAdapterFactory, SchemaMapper,
-};
+use datafusion::datasource::listing::{ListingTable, ListingTableConfig};
 use datafusion::datasource::{TableProvider, provider_as_source, source_as_provider};
 use datafusion::logical_expr::logical_plan::{
     Aggregate, Distinct, DistinctOn, Filter, Join, Limit, LogicalPlan, Partitioning, Projection,
@@ -25,6 +22,9 @@ use datafusion::logical_expr::logical_plan::{
 };
 use datafusion::logical_expr::{Expr, TableSource};
 use datafusion::optimizer::{ApplyOrder, OptimizerConfig, OptimizerRule};
+use datafusion::physical_expr_adapter::{
+    DefaultPhysicalExprAdapterFactory, PhysicalExprAdapter, PhysicalExprAdapterFactory,
+};
 
 /// Supported components for `EXTRACT` clauses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -787,66 +787,70 @@ fn annotate_listing_table_source(
         return Ok(None);
     };
 
-    let base_factory = listing.schema_adapter_factory().map(Arc::clone);
-
     let metadata_copy = annotations.clone();
-    let new_factory: Arc<dyn SchemaAdapterFactory> = Arc::new(
-        LineageExtractSchemaAdapterFactory::new(base_factory, annotations.clone()),
+    let new_factory: Arc<dyn PhysicalExprAdapterFactory> = Arc::new(
+        LineageExtractPhysicalExprAdapterFactory::new(annotations.clone()),
     );
     register_factory_metadata(&new_factory, metadata_copy);
-    let new_listing = listing.clone().with_schema_adapter_factory(new_factory);
+    let mut new_listing = ListingTable::try_new(
+        ListingTableConfig::new_with_multi_paths(listing.table_paths().clone())
+            .with_listing_options(listing.options().clone())
+            .with_schema(listing_file_schema(listing))
+            .with_expr_adapter_factory(new_factory),
+    )?;
+    new_listing = new_listing.with_constraints(listing_constraints(listing));
+    new_listing = new_listing.with_definition(
+        listing
+            .get_table_definition()
+            .map(std::string::ToString::to_string),
+    );
 
     let new_provider: Arc<dyn TableProvider> = Arc::new(new_listing);
     Ok(Some(provider_as_source(new_provider)))
 }
 
 #[derive(Debug)]
-struct LineageExtractSchemaAdapterFactory {
-    base: Option<Arc<dyn SchemaAdapterFactory>>,
+struct LineageExtractPhysicalExprAdapterFactory {
+    base: Arc<dyn PhysicalExprAdapterFactory>,
     _annotations: HashMap<String, ColumnAnnotation>,
 }
 
-impl LineageExtractSchemaAdapterFactory {
-    fn new(
-        base: Option<Arc<dyn SchemaAdapterFactory>>,
-        annotations: HashMap<String, ColumnAnnotation>,
-    ) -> Self {
+impl LineageExtractPhysicalExprAdapterFactory {
+    fn new(annotations: HashMap<String, ColumnAnnotation>) -> Self {
         Self {
-            base,
+            base: Arc::new(DefaultPhysicalExprAdapterFactory),
             _annotations: annotations,
         }
     }
 }
 
-impl SchemaAdapterFactory for LineageExtractSchemaAdapterFactory {
+impl PhysicalExprAdapterFactory for LineageExtractPhysicalExprAdapterFactory {
     fn create(
         &self,
-        projected_table_schema: SchemaRef,
-        table_schema: SchemaRef,
-    ) -> Box<dyn SchemaAdapter> {
-        let inner = match &self.base {
-            Some(base) => base.create(projected_table_schema, table_schema),
-            None => DefaultSchemaAdapterFactory.create(projected_table_schema, table_schema),
-        };
-        Box::new(DateExtractSchemaAdapter { inner })
+        logical_file_schema: SchemaRef,
+        physical_file_schema: SchemaRef,
+    ) -> Arc<dyn PhysicalExprAdapter> {
+        self.base.create(logical_file_schema, physical_file_schema)
     }
 }
 
-struct DateExtractSchemaAdapter {
-    inner: Box<dyn SchemaAdapter>,
+fn listing_file_schema(listing: &ListingTable) -> SchemaRef {
+    let table_schema = listing.schema();
+    let file_field_count = table_schema
+        .fields()
+        .len()
+        .saturating_sub(listing.options().table_partition_cols.len());
+    let fields = table_schema
+        .fields()
+        .iter()
+        .take(file_field_count)
+        .cloned()
+        .collect::<Vec<_>>();
+    Arc::new(Schema::new(fields).with_metadata(table_schema.metadata().clone()))
 }
 
-impl SchemaAdapter for DateExtractSchemaAdapter {
-    fn map_column_index(&self, index: usize, file_schema: &Schema) -> Option<usize> {
-        self.inner.map_column_index(index, file_schema)
-    }
-
-    fn map_schema(
-        &self,
-        file_schema: &Schema,
-    ) -> datafusion::common::Result<(Arc<dyn SchemaMapper>, Vec<usize>)> {
-        self.inner.map_schema(file_schema)
-    }
+fn listing_constraints(listing: &ListingTable) -> Constraints {
+    listing.constraints().cloned().unwrap_or_default()
 }
 
 fn factory_registry() -> &'static Mutex<HashMap<usize, HashMap<String, ColumnAnnotation>>> {
@@ -856,7 +860,7 @@ fn factory_registry() -> &'static Mutex<HashMap<usize, HashMap<String, ColumnAnn
 }
 
 fn register_factory_metadata(
-    factory: &Arc<dyn SchemaAdapterFactory>,
+    factory: &Arc<dyn PhysicalExprAdapterFactory>,
     metadata: HashMap<String, ColumnAnnotation>,
 ) {
     let key = Arc::as_ptr(factory) as *const () as usize;
@@ -864,7 +868,7 @@ fn register_factory_metadata(
 }
 
 pub(crate) fn metadata_from_factory(
-    factory: &Arc<dyn SchemaAdapterFactory>,
+    factory: &Arc<dyn PhysicalExprAdapterFactory>,
     column: &str,
 ) -> Option<ColumnAnnotation> {
     let key = Arc::as_ptr(factory) as *const () as usize;

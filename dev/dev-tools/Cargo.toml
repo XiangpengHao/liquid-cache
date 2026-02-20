@@ -6,7 +6,7 @@ edition = "2024"
 
 
 [dependencies]
-dioxus = { version = "0.7.1", features = ["router", "fullstack"] }
+dioxus = { version = "0.7.3", features = ["router", "fullstack"] }
 
 [features]
 default = ["web"]

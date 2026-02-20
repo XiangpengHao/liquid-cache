@@ -40,6 +40,6 @@ tokio = { workspace = true }
 arrow-flight = { workspace = true }
 tonic = { workspace = true }
 url = { workspace = true }
-tempfile = "3.23.0"
-clap = { version = "4.5.48", features = ["derive"] }
+tempfile = "3.25.0"
+clap = { version = "4.5.60", features = ["derive"] }
 object_store = { workspace = true, features = ["http"] }

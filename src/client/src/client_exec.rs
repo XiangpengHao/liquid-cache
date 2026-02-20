@@ -10,8 +10,8 @@ use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_schema::SchemaRef;
 use datafusion::common::Statistics;
 use datafusion::config::ConfigOptions;
-use datafusion::datasource::schema_adapter::{DefaultSchemaAdapterFactory, SchemaMapper};
 use datafusion::execution::object_store::ObjectStoreUrl;
+use datafusion::physical_expr_adapter::{BatchAdapter, BatchAdapterFactory};
 use datafusion::physical_plan::execution_plan::CardinalityEffect;
 use datafusion::physical_plan::filter_pushdown::{
     ChildPushdownResult, FilterDescription, FilterPushdownPhase, FilterPushdownPropagation,
@@ -316,7 +316,7 @@ struct FlightStream {
     future_stream: Option<BoxFuture<'static, Result<SendableRecordBatchStream>>>,
     state: FlightStreamState,
     schema: SchemaRef,
-    schema_mapper: Option<Arc<dyn SchemaMapper>>,
+    batch_adapter: Option<BatchAdapter>,
     metrics: FlightStreamMetrics,
     poll_stream_span: fastrace::Span,
     create_stream_span: Option<fastrace::Span>,
@@ -334,7 +334,7 @@ impl FlightStream {
             future_stream,
             state: FlightStreamState::Init,
             schema,
-            schema_mapper: None,
+            batch_adapter: None,
             metrics,
             poll_stream_span,
             create_stream_span: Some(create_stream_span),
@@ -381,16 +381,23 @@ impl Stream for FlightStream {
         let result = self.poll_inner(cx);
         match result {
             Poll::Ready(Some(Ok(batch))) => {
-                let coerced_batch = if let Some(schema_mapper) = &self.schema_mapper {
-                    schema_mapper.map_batch(batch).unwrap()
+                let coerced_batch = if let Some(adapter) = &self.batch_adapter {
+                    match adapter.adapt_batch(&batch) {
+                        Ok(batch) => batch,
+                        Err(e) => return Poll::Ready(Some(Err(e))),
+                    }
                 } else {
-                    let (schema_mapper, _) =
-                        DefaultSchemaAdapterFactory::from_schema(self.schema.clone())
-                            .map_schema(&batch.schema())
-                            .unwrap();
-                    let batch = schema_mapper.map_batch(batch).unwrap();
-
-                    self.schema_mapper = Some(schema_mapper);
+                    let adapter = match BatchAdapterFactory::new(self.schema.clone())
+                        .make_adapter(batch.schema())
+                    {
+                        Ok(adapter) => adapter,
+                        Err(e) => return Poll::Ready(Some(Err(e))),
+                    };
+                    let batch = match adapter.adapt_batch(&batch) {
+                        Ok(batch) => batch,
+                        Err(e) => return Poll::Ready(Some(Err(e))),
+                    };
+                    self.batch_adapter = Some(adapter);
                     batch
                 };
                 self.metrics.output_rows.add(coerced_batch.num_rows());

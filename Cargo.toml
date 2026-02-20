@@ -30,66 +30,41 @@ liquid-cache-parquet = { path = "src/parquet", version = "0.1.10" }
 liquid-cache-common = { path = "src/common", version = "0.1.10" }
 liquid-cache-storage = { path = "src/storage", version = "0.1.10" }
 liquid-cache-local = { path = "src/local", version = "0.1.10" }
-arrow = { version = "57.0.0", default-features = false, features = [
+arrow = { version = "57.3.0", default-features = false, features = [
 	"prettyprint",
 ] }
-arrow-flight = { version = "57.0.0", features = ["flight-sql-experimental"] }
-arrow-schema = { version = "57.0.0", features = ["serde"] }
-parquet = { version = "57.0.0", features = [
+arrow-flight = { version = "57.3.0", features = ["flight-sql-experimental"] }
+arrow-schema = { version = "57.3.0", features = ["serde"] }
+parquet = { version = "57.3.0", features = [
 	"async",
 	"experimental",
 	"variant_experimental",
 ] }
-parquet-variant-json = { version = "57.1.0" }
-parquet-variant-compute = { version = "57.1.0" }
-datafusion = { version = "51.0.0" }
-datafusion-proto = { version = "51.0.0" }
+parquet-variant-json = { version = "57.3.0" }
+parquet-variant-compute = { version = "57.3.0" }
+datafusion = { version = "52.1.0" }
+datafusion-proto = { version = "52.1.0" }
 async-trait = "0.1.89"
-futures = { version = "0.3.31", default-features = false, features = ["std"] }
-tokio = { version = "1.47.1", features = ["rt-multi-thread"] }
-log = "0.4.28"
-tonic = { version = "0.14.1" }
-url = "2.5.7"
-bytes = { version = "1.10.1", default-features = false }
+futures = { version = "0.3.32", default-features = false, features = ["std"] }
+tokio = { version = "1.49.0", features = ["rt-multi-thread"] }
+log = "0.4.29"
+tonic = { version = "0.14.5" }
+url = "2.5.8"
+bytes = { version = "1.11.1", default-features = false }
 ahash = "0.8.12"
-prost = "0.14.1"
-object_store = { version = "0.12.4", default-features = false }
+prost = "0.14.3"
+object_store = { version = "0.12.5", default-features = false }
 serde = { version = "1.0", default-features = false, features = ["derive"] }
 serde_json = { version = "1.0", default-features = false, features = ["std"] }
-tempfile = "3.23.0"
-uuid = { version = "1.18.1", features = ["v4"] }
+tempfile = "3.25.0"
+uuid = { version = "1.21.0", features = ["v4"] }
 fastrace = "0.7"
 fastrace-tonic = "0.1"
 congee = "0.4.1"
-insta = "1.44.0"
+insta = "1.46.3"
 
 [workspace.metadata.cargo-shear]
 ignored = ["kani-verifier"]
 
 [profile.dev.package]
 insta.opt-level = 3
-
-[patch.crates-io]
-datafusion = { git = "https://github.com/apache/datafusion.git", branch = "main" }
-datafusion-proto = { git = "https://github.com/apache/datafusion.git", branch = "main" }
-# arrow = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
-# arrow-schema = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
-# arrow-flight = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
-# parquet = { git = "https://github.com/apache/arrow-rs.git", branch = "main" }
-
-
-# Arrow/Parquet from main — include all the subcrates DF uses
-arrow = { git = "https://github.com/apache/arrow-rs.git", rev = "b1dfb697babcb614040ea2ae17e842e9db557f69" }
-arrow-array = { git = "https://github.com/apache/arrow-rs.git", rev = "b1dfb697babcb614040ea2ae17e842e9db557f69" }
-arrow-buffer = { git = "https://github.com/apache/arrow-rs.git", rev = "b1dfb697babcb614040ea2ae17e842e9db557f69" }
-arrow-cast = { git = "https://github.com/apache/arrow-rs.git", rev = "b1dfb697babcb614040ea2ae17e842e9db557f69" }
-arrow-data = { git = "https://github.com/apache/arrow-rs.git", rev = "b1dfb697babcb614040ea2ae17e842e9db557f69" }
-arrow-ipc = { git = "https://github.com/apache/arrow-rs.git", rev = "b1dfb697babcb614040ea2ae17e842e9db557f69" }
-arrow-ord = { git = "https://github.com/apache/arrow-rs.git", rev = "b1dfb697babcb614040ea2ae17e842e9db557f69" }
-arrow-row = { git = "https://github.com/apache/arrow-rs.git", rev = "b1dfb697babcb614040ea2ae17e842e9db557f69" }
-arrow-schema = { git = "https://github.com/apache/arrow-rs.git", rev = "b1dfb697babcb614040ea2ae17e842e9db557f69" }
-arrow-select = { git = "https://github.com/apache/arrow-rs.git", rev = "b1dfb697babcb614040ea2ae17e842e9db557f69" }
-arrow-flight = { git = "https://github.com/apache/arrow-rs.git", rev = "b1dfb697babcb614040ea2ae17e842e9db557f69" }
-parquet = { git = "https://github.com/apache/arrow-rs.git", rev = "b1dfb697babcb614040ea2ae17e842e9db557f69" }
-parquet-variant-json = { git = "https://github.com/apache/arrow-rs.git", rev = "b1dfb697babcb614040ea2ae17e842e9db557f69" }
-parquet-variant-compute = { git = "https://github.com/apache/arrow-rs.git", rev = "b1dfb697babcb614040ea2ae17e842e9db557f69" }

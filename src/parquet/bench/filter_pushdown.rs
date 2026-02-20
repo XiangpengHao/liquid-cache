@@ -12,7 +12,6 @@ use tempfile::TempDir;
 use arrow::array::{ArrayRef, Int32Array, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema};
 use datafusion::common::ScalarValue;
-use datafusion::datasource::schema_adapter::DefaultSchemaAdapterFactory;
 use datafusion::logical_expr::Operator;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr::expressions::{BinaryExpr, Literal};
@@ -21,7 +20,7 @@ use datafusion::physical_plan::metrics;
 use liquid_cache_parquet::cache::{BatchID, LiquidCacheParquet};
 use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
-use rand::Rng;
+use rand::RngExt as _;
 
 const BATCH_SIZE: usize = 8192 * 2;
 const SELECTIVITIES: [f64; 4] = [0.01, 0.1, 0.3, 0.7];
@@ -116,13 +115,7 @@ fn get_arrow_array_with_filter_liquid_cache(bencher: Bencher, selectivity: f64) 
         Arc::new(Literal::new(ScalarValue::Int32(Some(500)))),
     ));
 
-    let adapter_factory = Arc::new(DefaultSchemaAdapterFactory);
-    let builder = FilterCandidateBuilder::new(
-        expr,
-        Arc::clone(&schema),
-        Arc::clone(&schema),
-        adapter_factory,
-    );
+    let builder = FilterCandidateBuilder::new(expr, Arc::clone(&schema));
     let candidate = builder.build(metadata.metadata()).unwrap().unwrap();
     let projection = candidate.projection(metadata.metadata());
     let predicate = LiquidPredicate::try_new_with_metrics(

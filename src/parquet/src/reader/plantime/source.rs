@@ -4,7 +4,6 @@ use ahash::{HashMap, HashMapExt};
 use arrow_schema::Schema;
 use bytes::Bytes;
 use datafusion::{
-    common::Statistics,
     config::TableParquetOptions,
     datasource::{
         listing::PartitionedFile,
@@ -12,10 +11,10 @@ use datafusion::{
             FileScanConfig, FileSource, ParquetFileMetrics, ParquetFileReaderFactory,
             ParquetSource, parquet::PagePruningAccessPlanFilter,
         },
-        schema_adapter::DefaultSchemaAdapterFactory,
         table_schema::TableSchema,
     },
     error::Result,
+    physical_expr::projection::ProjectionExprs,
     physical_expr_adapter::DefaultPhysicalExprAdapterFactory,
     physical_optimizer::pruning::PruningPredicate,
     physical_plan::{
@@ -173,7 +172,7 @@ pub struct LiquidParquetSource {
     table_parquet_options: TableParquetOptions,
     liquid_cache: LiquidCacheParquetRef,
     batch_size: Option<usize>,
-    projected_statistics: Option<Statistics>,
+    projection: ProjectionExprs,
     table_schema: TableSchema,
     span: Option<Arc<fastrace::Span>>,
 }
@@ -239,16 +238,23 @@ impl LiquidParquetSource {
 
         let table_schema = source.table_schema().clone();
         let file_schema = table_schema.file_schema().clone();
+        let projection = source.projection().cloned().unwrap_or_else(|| {
+            let table_schema = table_schema.table_schema();
+            ProjectionExprs::from_indices(
+                &(0..table_schema.fields().len()).collect::<Vec<_>>(),
+                table_schema,
+            )
+        });
         let mut v = Self {
             table_schema,
             table_parquet_options: source.table_parquet_options().clone(),
             batch_size: Some(liquid_cache.batch_size()),
             liquid_cache,
+            projection,
             metrics: source.metrics().clone(),
             predicate: None,
             pruning_predicate: None,
             page_pruning_predicate: None,
-            projected_statistics: Some(source.statistics().unwrap()),
             span: None,
         };
 
@@ -275,32 +281,11 @@ impl FileSource for LiquidParquetSource {
         object_store: Arc<dyn ObjectStore>,
         base_config: &FileScanConfig,
         partition: usize,
-    ) -> Arc<dyn datafusion::datasource::physical_plan::FileOpener> {
-        let projection = base_config
-            .file_column_projection_indices()
-            .unwrap_or_else(|| (0..base_config.file_schema().fields().len()).collect());
-
-        let (expr_adapter_factory, schema_adapter_factory) =
-            match base_config.expr_adapter_factory.as_ref() {
-                Some(expr_adapter_factory) => {
-                    // If no custom schema adapter factory is provided but an expr adapter factory is provided use the expr adapter factory alongside the default schema adapter factory.
-                    // This means that the PhysicalExprAdapterFactory will be used for predicate pushdown and stats pruning, while the default schema adapter factory will be used for projections.
-                    (
-                        Some(Arc::clone(expr_adapter_factory)),
-                        Arc::new(DefaultSchemaAdapterFactory) as _,
-                    )
-                }
-                None => {
-                    // If no custom schema adapter factory or expr adapter factory is provided, use the default schema adapter factory and the default physical expr adapter factory.
-                    // This means that the default SchemaAdapter will be used for projections (e.g. a column was selected that is a UInt32 in the file and a UInt64 in the table schema)
-                    // and the default PhysicalExprAdapterFactory will be used for predicate pushdown and stats pruning.
-                    // This is the default behavior with not customization and means that most users of DataFusion will be cut over to the new PhysicalExprAdapterFactory API.
-                    (
-                        Some(Arc::new(DefaultPhysicalExprAdapterFactory) as _),
-                        Arc::new(DefaultSchemaAdapterFactory) as _,
-                    )
-                }
-            };
+    ) -> Result<Arc<dyn datafusion::datasource::physical_plan::FileOpener>> {
+        let expr_adapter_factory = base_config
+            .expr_adapter_factory
+            .clone()
+            .unwrap_or_else(|| Arc::new(DefaultPhysicalExprAdapterFactory) as _);
 
         let reader_factory = Arc::new(CachedMetaReaderFactory::new(object_store));
 
@@ -308,26 +293,23 @@ impl FileSource for LiquidParquetSource {
             .span
             .clone()
             .map(|span| fastrace::Span::enter_with_parent(format!("opener_{partition}"), &span));
-        let partition_fields = base_config.table_partition_cols().clone();
         let opener = LiquidParquetOpener::new(
             partition,
-            Arc::from(projection),
+            self.projection.clone(),
             self.batch_size
                 .expect("Batch size must be set before creating LiquidParquetOpener"),
             base_config.limit,
             self.predicate.clone(),
-            base_config.file_schema().clone(),
-            partition_fields,
+            self.table_schema.clone(),
             self.metrics.clone(),
             self.liquid_cache.clone(),
             reader_factory,
             self.reorder_filters(),
-            schema_adapter_factory,
             expr_adapter_factory,
             execution_span.map(Arc::new),
         );
 
-        Arc::new(opener)
+        Ok(Arc::new(opener))
     }
 
     fn with_batch_size(&self, batch_size: usize) -> Arc<dyn FileSource> {
@@ -340,37 +322,21 @@ impl FileSource for LiquidParquetSource {
         &self.table_schema
     }
 
-    fn with_projection(&self, _config: &FileScanConfig) -> Arc<dyn FileSource> {
-        Arc::new(Self { ..self.clone() })
+    fn try_pushdown_projection(
+        &self,
+        projection: &ProjectionExprs,
+    ) -> Result<Option<Arc<dyn FileSource>>> {
+        let mut source = self.clone();
+        source.projection = self.projection.try_merge(projection)?;
+        Ok(Some(Arc::new(source)))
     }
 
-    fn with_statistics(&self, statistics: Statistics) -> Arc<dyn FileSource> {
-        Arc::new(Self {
-            projected_statistics: Some(statistics),
-            ..self.clone()
-        })
+    fn projection(&self) -> Option<&ProjectionExprs> {
+        Some(&self.projection)
     }
 
     fn metrics(&self) -> &ExecutionPlanMetricsSet {
         &self.metrics
-    }
-
-    fn statistics(&self) -> Result<Statistics> {
-        let statistics = &self.projected_statistics;
-        let statistics = statistics
-            .clone()
-            .expect("projected_statistics must be set");
-        // When filters are pushed down, we have no way of knowing the exact statistics.
-        // Note that pruning predicate is also a kind of filter pushdown.
-        // (bloom filters use `pruning_predicate` too)
-        if self.pruning_predicate.is_some()
-            || self.page_pruning_predicate.is_some()
-            || (self.predicate.is_some() && self.reorder_filters())
-        {
-            Ok(statistics.to_inexact())
-        } else {
-            Ok(statistics)
-        }
     }
 
     fn file_type(&self) -> &str {

@@ -2,8 +2,9 @@ use std::sync::Arc;
 
 use datafusion::logical_expr::Operator;
 use datafusion::physical_expr::PhysicalExpr;
-use datafusion::physical_expr::expressions::{BinaryExpr, LikeExpr, Literal};
-use datafusion::physical_plan::expressions::{CastExpr, Column};
+use datafusion::physical_expr::expressions::{
+    BinaryExpr, CastColumnExpr, CastExpr, Column, LikeExpr, Literal, TryCastExpr,
+};
 
 /// Extract multiple column-literal expressions from a nested OR structure.
 /// Returns a vector of (column_name, expression) pairs if all leaf expressions
@@ -55,7 +56,11 @@ fn extract_column_literal(expr: &Arc<dyn PhysicalExpr>) -> Option<(&str, Arc<dyn
     {
         return extract_column_literal(like_expr.expr());
     } else if let Some(cast_expr) = expr.as_any().downcast_ref::<CastExpr>() {
-        return extract_column_literal(&cast_expr.expr);
+        return extract_column_literal(cast_expr.expr());
+    } else if let Some(cast_column_expr) = expr.as_any().downcast_ref::<CastColumnExpr>() {
+        return extract_column_literal(cast_column_expr.expr());
+    } else if let Some(try_cast_expr) = expr.as_any().downcast_ref::<TryCastExpr>() {
+        return extract_column_literal(try_cast_expr.expr());
     } else if let Some(column) = expr.as_any().downcast_ref::<Column>() {
         return Some((column.name(), Arc::clone(expr)));
     }

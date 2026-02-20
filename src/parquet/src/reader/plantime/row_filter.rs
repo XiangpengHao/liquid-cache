@@ -80,7 +80,6 @@ use parquet::file::metadata::ParquetMetaData;
 use datafusion::common::Result;
 use datafusion::common::cast::as_boolean_array;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion, TreeNodeVisitor};
-use datafusion::datasource::schema_adapter::{SchemaAdapterFactory, SchemaMapper};
 use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::{PhysicalExpr, split_conjunction};
 
@@ -149,8 +148,6 @@ pub struct LiquidPredicate {
     rows_matched: metrics::Count,
     /// how long was spent evaluating this predicate
     time: metrics::Time,
-    /// used to perform type coercion while filtering rows
-    schema_mapper: Arc<dyn SchemaMapper>,
 }
 
 impl std::fmt::Display for LiquidPredicate {
@@ -178,7 +175,6 @@ impl LiquidPredicate {
             rows_pruned,
             rows_matched,
             time,
-            schema_mapper: candidate.schema_mapper,
         })
     }
 
@@ -211,8 +207,6 @@ impl ArrowPredicate for LiquidPredicate {
     }
 
     fn evaluate(&mut self, batch: RecordBatch) -> ArrowResult<BooleanArray> {
-        let batch = self.schema_mapper.map_batch(batch)?;
-
         // scoped timer updates on drop
         let mut timer = self.time.timer();
 
@@ -245,10 +239,7 @@ pub struct FilterCandidate {
     required_bytes: usize,
     can_use_index: bool,
     projection: Vec<usize>,
-    ///  A `SchemaMapper` used to map batches read from the file schema to
-    /// the filter's projection of the table schema.
-    schema_mapper: Arc<dyn SchemaMapper>,
-    /// The projected table schema that this filter references
+    /// The projected file schema that this filter references
     filter_schema: SchemaRef,
 }
 
@@ -266,66 +257,17 @@ impl FilterCandidate {
 /// This will do several things
 /// 1. Determine the columns required to evaluate the expression
 /// 2. Calculate data required to estimate the cost of evaluating the filter
-/// 3. Rewrite column expressions in the predicate which reference columns not
-///    in the particular file schema.
-///
-/// # Schema Rewrite
-///
-/// When parquet files are read in the context of "schema evolution" there are
-/// potentially wo schemas:
-///
-/// 1. The table schema (the columns of the table that the parquet file is part of)
-/// 2. The file schema (the columns actually in the parquet file)
-///
-/// There are times when the table schema contains columns that are not in the
-/// file schema, such as when new columns have been added in new parquet files
-/// but old files do not have the columns.
-///
-/// When a file is missing a column from the table schema, the value of the
-/// missing column is filled in with `NULL`  via a `SchemaAdapter`.
-///
-/// When a predicate is pushed down to the parquet reader, the predicate is
-/// evaluated in the context of the file schema. If the predicate references a
-/// column that is in the table schema but not in the file schema, the column
-/// reference must be rewritten to a literal expression that represents the
-/// `NULL` value that would be produced by the `SchemaAdapter`.
-///
-/// For example, if:
-/// * The table schema is `id, name, address`
-/// * The file schema is  `id, name` (missing the `address` column)
-/// * predicate is `address = 'foo'`
-///
-/// When evaluating the predicate as a filter on the parquet file, the predicate
-/// must be rewritten to `NULL = 'foo'` as the `address` column will be filled
-/// in with `NULL` values during the rest of the evaluation.
 pub struct FilterCandidateBuilder {
     expr: Arc<dyn PhysicalExpr>,
     /// The schema of this parquet file.
-    /// Columns may have different types from the table schema and there may be
-    /// columns in the file schema that are not in the table schema or columns that
-    /// are in the table schema that are not in the file schema.
+    /// Expressions are already adapted to this schema before row-filter construction.
     file_schema: SchemaRef,
-    /// The schema of the table (merged schema) -- columns may be in different
-    /// order than in the file and have columns that are not in the file schema
-    table_schema: SchemaRef,
-    /// A `SchemaAdapterFactory` used to map the file schema to the table schema.
-    schema_adapter_factory: Arc<dyn SchemaAdapterFactory>,
 }
 
 impl FilterCandidateBuilder {
     /// Create a new `FilterCandidateBuilder`
-    pub fn new(
-        expr: Arc<dyn PhysicalExpr>,
-        file_schema: SchemaRef,
-        table_schema: SchemaRef,
-        schema_adapter_factory: Arc<dyn SchemaAdapterFactory>,
-    ) -> Self {
-        Self {
-            expr,
-            file_schema,
-            table_schema,
-            schema_adapter_factory,
-        }
+    pub fn new(expr: Arc<dyn PhysicalExpr>, file_schema: SchemaRef) -> Self {
+        Self { expr, file_schema }
     }
 
     /// Attempt to build a `FilterCandidate` from the expression
@@ -336,36 +278,30 @@ impl FilterCandidateBuilder {
     /// * `Ok(None)` if the expression cannot be used as an ArrowFilter
     /// * `Err(e)` if an error occurs while building the candidate
     pub fn build(self, metadata: &ParquetMetaData) -> Result<Option<FilterCandidate>> {
-        let Some(required_indices_into_table_schema) =
-            pushdown_columns(&self.expr, &self.table_schema)?
+        let Some(required_indices_into_file_schema) =
+            pushdown_columns(&self.expr, &self.file_schema)?
         else {
             return Ok(None);
         };
 
-        if required_indices_into_table_schema.is_empty() {
+        if required_indices_into_file_schema.is_empty() {
             return Ok(None);
         }
 
-        let projected_table_schema = Arc::new(
-            self.table_schema
-                .project(&required_indices_into_table_schema)?,
+        let projected_file_schema = Arc::new(
+            self.file_schema
+                .project(&required_indices_into_file_schema)?,
         );
 
-        let (schema_mapper, projection_into_file_schema) = self
-            .schema_adapter_factory
-            .create(Arc::clone(&projected_table_schema), self.table_schema)
-            .map_schema(&self.file_schema)?;
-
-        let required_bytes = size_of_columns(&projection_into_file_schema, metadata)?;
-        let can_use_index = columns_sorted(&projection_into_file_schema, metadata)?;
+        let required_bytes = size_of_columns(&required_indices_into_file_schema, metadata)?;
+        let can_use_index = columns_sorted(&required_indices_into_file_schema, metadata)?;
 
         Ok(Some(FilterCandidate {
             expr: self.expr,
             required_bytes,
             can_use_index,
-            projection: projection_into_file_schema,
-            schema_mapper: Arc::clone(&schema_mapper),
-            filter_schema: Arc::clone(&projected_table_schema),
+            projection: required_indices_into_file_schema,
+            filter_schema: Arc::clone(&projected_file_schema),
         }))
     }
 }
@@ -377,34 +313,32 @@ impl FilterCandidateBuilder {
 struct PushdownChecker<'schema> {
     /// Does the expression require any non-primitive columns (like structs)?
     non_primitive_columns: bool,
-    /// Does the expression reference any columns that are in the table
-    /// schema but not in the file schema?
+    /// Does the expression reference any columns that are not in the file schema?
     projected_columns: bool,
-    // Indices into the table schema of the columns required to evaluate the expression
+    // Indices into the file schema of the columns required to evaluate the expression
     required_columns: BTreeSet<usize>,
-    table_schema: &'schema Schema,
+    file_schema: &'schema Schema,
 }
 
 impl<'schema> PushdownChecker<'schema> {
-    fn new(table_schema: &'schema Schema) -> Self {
+    fn new(file_schema: &'schema Schema) -> Self {
         Self {
             non_primitive_columns: false,
             projected_columns: false,
             required_columns: BTreeSet::default(),
-            table_schema,
+            file_schema,
         }
     }
 
     fn check_single_column(&mut self, column_name: &str) -> Option<TreeNodeRecursion> {
-        if let Ok(idx) = self.table_schema.index_of(column_name) {
+        if let Ok(idx) = self.file_schema.index_of(column_name) {
             self.required_columns.insert(idx);
-            if DataType::is_nested(self.table_schema.field(idx).data_type()) {
+            if DataType::is_nested(self.file_schema.field(idx).data_type()) {
                 self.non_primitive_columns = true;
                 return Some(TreeNodeRecursion::Jump);
             }
         } else {
-            // If the column does not exist in the (un-projected) table schema then
-            // it must be a projected column.
+            // If the column does not exist in the file schema then it cannot be pushed down.
             self.projected_columns = true;
             return Some(TreeNodeRecursion::Jump);
         }
@@ -438,9 +372,9 @@ impl TreeNodeVisitor<'_> for PushdownChecker<'_> {
 // expression rewritten as defined in [`PushdownChecker::f_up`]
 fn pushdown_columns(
     expr: &Arc<dyn PhysicalExpr>,
-    table_schema: &Schema,
+    file_schema: &Schema,
 ) -> Result<Option<Vec<usize>>> {
-    let mut checker = PushdownChecker::new(table_schema);
+    let mut checker = PushdownChecker::new(file_schema);
     expr.visit(&mut checker)?;
     Ok((!checker.prevents_pushdown()).then_some(checker.required_columns.into_iter().collect()))
 }
@@ -489,11 +423,9 @@ fn columns_sorted(_columns: &[usize], _metadata: &ParquetMetaData) -> Result<boo
 pub fn build_row_filter(
     expr: &Arc<dyn PhysicalExpr>,
     physical_file_schema: &SchemaRef,
-    predicate_file_schema: &SchemaRef,
     metadata: &ParquetMetaData,
     reorder_predicates: bool,
     file_metrics: &ParquetFileMetrics,
-    schema_adapter_factory: &Arc<dyn SchemaAdapterFactory>,
 ) -> Result<Option<LiquidRowFilter>> {
     let rows_pruned = &file_metrics.pushdown_rows_pruned;
     let rows_matched = &file_metrics.pushdown_rows_matched;
@@ -507,13 +439,8 @@ pub fn build_row_filter(
     let mut candidates: Vec<FilterCandidate> = predicates
         .into_iter()
         .map(|expr| {
-            FilterCandidateBuilder::new(
-                Arc::clone(expr),
-                physical_file_schema.clone(),
-                predicate_file_schema.clone(),
-                Arc::clone(schema_adapter_factory),
-            )
-            .build(metadata)
+            FilterCandidateBuilder::new(Arc::clone(expr), physical_file_schema.clone())
+                .build(metadata)
         })
         .collect::<Result<Vec<_>, _>>()?
         .into_iter()
