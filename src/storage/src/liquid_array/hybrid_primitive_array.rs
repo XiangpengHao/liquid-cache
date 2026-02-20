@@ -762,7 +762,7 @@ mod tests {
     use datafusion::scalar::ScalarValue;
     use futures::executor::block_on;
     use rand::rngs::StdRng;
-    use rand::{Rng, SeedableRng};
+    use rand::{RngExt as _, SeedableRng};
     use std::sync::Arc;
 
     // ---------- Hybrid (squeeze) tests ----------

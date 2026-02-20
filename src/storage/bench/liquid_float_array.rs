@@ -5,7 +5,7 @@ use datafusion::arrow::{
 };
 use divan::Bencher;
 use liquid_cache_storage::liquid_array::{LiquidArray, LiquidFloatArray};
-use rand::Rng;
+use rand::RngExt as _;
 
 const BENCH_SIZES: [usize; 3] = [8192, 16384, 24576];
 

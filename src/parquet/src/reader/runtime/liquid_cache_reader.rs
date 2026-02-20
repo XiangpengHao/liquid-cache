@@ -272,7 +272,6 @@ mod tests {
     use arrow::record_batch::RecordBatch;
     use arrow_schema::{DataType, Field, Schema, SchemaRef};
     use datafusion::{
-        datasource::schema_adapter::DefaultSchemaAdapterFactory,
         logical_expr::Operator,
         physical_expr::PhysicalExpr,
         physical_expr::expressions::{BinaryExpr, Column, Literal},
@@ -356,13 +355,7 @@ mod tests {
         let file = std::fs::File::open(tmp_meta.path()).unwrap();
         let metadata = ArrowReaderMetadata::load(&file, ArrowReaderOptions::new()).unwrap();
 
-        let adapter_factory = Arc::new(DefaultSchemaAdapterFactory);
-        let builder = FilterCandidateBuilder::new(
-            expr,
-            Arc::clone(&schema),
-            Arc::clone(&schema),
-            adapter_factory,
-        );
+        let builder = FilterCandidateBuilder::new(expr, Arc::clone(&schema));
         let candidate = builder.build(metadata.metadata()).unwrap().unwrap();
         let projection = candidate.projection(metadata.metadata());
         let predicate = LiquidPredicate::try_new(candidate, projection).unwrap();

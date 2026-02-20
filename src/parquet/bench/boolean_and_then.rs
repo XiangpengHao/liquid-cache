@@ -1,7 +1,7 @@
 use arrow::{array::BooleanBufferBuilder, buffer::BooleanBuffer};
 use divan::Bencher;
 use liquid_cache_parquet::boolean_buffer_and_then;
-use rand::Rng;
+use rand::RngExt as _;
 
 const BUFFER_SIZE: usize = 8192 * 2; // 16384
 

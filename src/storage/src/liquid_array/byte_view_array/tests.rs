@@ -5,7 +5,7 @@ use arrow::array::{
 };
 use arrow::buffer::BooleanBuffer;
 use arrow_schema::DataType;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt as _, SeedableRng};
 use std::sync::Arc;
 
 use crate::cache::transcode_liquid_inner_with_hint;

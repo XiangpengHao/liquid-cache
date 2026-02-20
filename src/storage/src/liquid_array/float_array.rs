@@ -1051,7 +1051,7 @@ where
 mod tests {
     use datafusion::logical_expr::Operator;
     use futures::executor::block_on;
-    use rand::{Rng as _, SeedableRng as _, distr::uniform::SampleUniform, rngs::StdRng};
+    use rand::{RngExt as _, SeedableRng as _, distr::uniform::SampleUniform, rngs::StdRng};
 
     use crate::cache::TestSqueezeIo;
 

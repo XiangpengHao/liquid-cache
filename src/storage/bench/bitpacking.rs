@@ -6,7 +6,7 @@ use std::num::NonZero;
 use arrow::array::PrimitiveArray;
 use liquid_cache_storage::liquid_array::raw::BitPackedArray;
 use liquid_cache_storage::liquid_array::{LiquidArray, LiquidPrimitiveArray};
-use rand::Rng;
+use rand::RngExt as _;
 
 const ARRAY_SIZES: [usize; 4] = [8192, 16384, 32768, 65536];
 const BIT_WIDTHS: [u8; 6] = [1, 3, 7, 11, 19, 27];

@@ -54,12 +54,6 @@ expression: displayable.tree_render().to_string()
 │      FinalPartitioned     │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
-│    CoalesceBatchesExec    │
-│    --------------------   │
-│     target_batch_size:    │
-│           16384           │
-└─────────────┬─────────────┘
-┌─────────────┴─────────────┐
 │      RepartitionExec      │
 │    --------------------   │
 │ partition_count(in->out): │
@@ -86,12 +80,6 @@ expression: displayable.tree_render().to_string()
 │       mode: Partial       │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
-│    CoalesceBatchesExec    │
-│    --------------------   │
-│     target_batch_size:    │
-│           16384           │
-└─────────────┬─────────────┘
-┌─────────────┴─────────────┐
 │        HashJoinExec       │
 │    --------------------   │
 │            on:            ├───────────────────────────────────────────┐
@@ -105,32 +93,25 @@ expression: displayable.tree_render().to_string()
 │                           │                             │      object_stores=[]     │
 └─────────────┬─────────────┘                             └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
-│    CoalesceBatchesExec    │                             │      RepartitionExec      │
+│        HashJoinExec       │                             │      RepartitionExec      │
 │    --------------------   │                             │    --------------------   │
-│     target_batch_size:    │                             │ partition_count(in->out): │
-│           16384           │                             │           1 -> 8          │
-│                           │                             │                           │
-│                           │                             │    partitioning_scheme:   │
-│                           │                             │     RoundRobinBatch(8)    │
-└─────────────┬─────────────┘                             └─────────────┬─────────────┘
-┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
-│        HashJoinExec       │                             │       DataSourceExec      │
-│    --------------------   │                             │    --------------------   │
-│            on:            │                             │          files: 1         │
-│  (c_custkey = o_custkey)  │                             │      format: parquet      │
-│                           ├──────────────┐              │                           │
-│                           │              │              │         predicate:        │
-│                           │              │              │  l_shipdate > 1995-03-15  │
-│                           │              │              │     AND DynamicFilter [   │
-│                           │              │              │           empty ]         │
-└─────────────┬─────────────┘              │              └───────────────────────────┘
-┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-│   LiquidCacheClientExec   ││   LiquidCacheClientExec   │
-│    --------------------   ││    --------------------   │
-│          server:          ││          server:          │
-│  http://localhost:50051,  ││  http://localhost:50051,  │
-│      object_stores=[]     ││      object_stores=[]     │
-└─────────────┬─────────────┘└─────────────┬─────────────┘
+│            on:            │                             │ partition_count(in->out): │
+│  (c_custkey = o_custkey)  ├──────────────┐              │           1 -> 8          │
+│                           │              │              │                           │
+│                           │              │              │    partitioning_scheme:   │
+│                           │              │              │     RoundRobinBatch(8)    │
+└─────────────┬─────────────┘              │              └─────────────┬─────────────┘
+┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+│   LiquidCacheClientExec   ││   LiquidCacheClientExec   ││       DataSourceExec      │
+│    --------------------   ││    --------------------   ││    --------------------   │
+│          server:          ││          server:          ││          files: 1         │
+│  http://localhost:50051,  ││  http://localhost:50051,  ││      format: parquet      │
+│      object_stores=[]     ││      object_stores=[]     ││                           │
+│                           ││                           ││         predicate:        │
+│                           ││                           ││  l_shipdate > 1995-03-15  │
+│                           ││                           ││     AND DynamicFilter [   │
+│                           ││                           ││           empty ]         │
+└─────────────┬─────────────┘└─────────────┬─────────────┘└───────────────────────────┘
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
 │       DataSourceExec      ││      RepartitionExec      │
 │    --------------------   ││    --------------------   │

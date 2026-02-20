@@ -7,7 +7,7 @@ use datafusion::datasource::source::DataSource;
 use datafusion::physical_plan::ExecutionPlan;
 use fastrace_opentelemetry::OpenTelemetryReporter;
 use liquid_cache_parquet::LiquidParquetSource;
-use logforth::filter::EnvFilter;
+use logforth::filter::env_filter::EnvFilterBuilder;
 use opentelemetry::InstrumentationScope;
 use opentelemetry::KeyValue;
 use opentelemetry_otlp::SpanExporter;
@@ -54,12 +54,12 @@ pub fn instrument_liquid_source_with_span(
 }
 
 pub fn setup_observability(service_name: &str, jaeger_endpoint: Option<&str>) {
-    let mut builder = logforth::builder();
-    builder = builder.dispatch(|d| {
-        d.filter(EnvFilter::from_default_env())
-            .append(logforth::append::Stdout::default())
-    });
-    builder.apply();
+    logforth::starter_log::builder()
+        .dispatch(|d| {
+            d.filter(EnvFilterBuilder::from_default_env().build())
+                .append(logforth::append::Stdout::default())
+        })
+        .apply();
 
     let endpoint = jaeger_endpoint
         .map(|s| s.to_string())

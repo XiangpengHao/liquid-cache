@@ -46,12 +46,6 @@ expression: displayable.tree_render().to_string()
 │      FinalPartitioned     │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
-│    CoalesceBatchesExec    │
-│    --------------------   │
-│     target_batch_size:    │
-│           16384           │
-└─────────────┬─────────────┘
-┌─────────────┴─────────────┐
 │      RepartitionExec      │
 │    --------------------   │
 │ partition_count(in->out): │
@@ -89,12 +83,6 @@ expression: displayable.tree_render().to_string()
 │    ,20,0 - l_discount)    │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
-│    CoalesceBatchesExec    │
-│    --------------------   │
-│     target_batch_size:    │
-│           16384           │
-└─────────────┬─────────────┘
-┌─────────────┴─────────────┐
 │        HashJoinExec       │
 │    --------------------   │
 │          filter:          │
@@ -124,21 +112,15 @@ expression: displayable.tree_render().to_string()
 │                           ││       n_name: n_name      │
 └─────────────┬─────────────┘└─────────────┬─────────────┘
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-│       DataSourceExec      ││    CoalesceBatchesExec    │
+│       DataSourceExec      ││        HashJoinExec       │
 │    --------------------   ││    --------------------   │
-│          files: 1         ││     target_batch_size:    │
-│      format: parquet      ││           16384           │
-│                           ││                           │
-│         predicate:        ││                           │
-│ n_name = GERMANY OR n_name││                           │
-│          = FRANCE         ││                           │
-└───────────────────────────┘└─────────────┬─────────────┘
-                             ┌─────────────┴─────────────┐
-                             │        HashJoinExec       │
-                             │    --------------------   │
-                             │            on:            ├──────────────┐
-                             │(n_nationkey = s_nationkey)│              │
-                             └─────────────┬─────────────┘              │
+│          files: 1         ││            on:            │
+│      format: parquet      ││(n_nationkey = s_nationkey)│
+│                           ││                           ├──────────────┐
+│         predicate:        ││                           │              │
+│ n_name = GERMANY OR n_name││                           │              │
+│          = FRANCE         ││                           │              │
+└───────────────────────────┘└─────────────┬─────────────┘              │
                              ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
                              │   LiquidCacheClientExec   ││       ProjectionExec      │
                              │    --------------------   ││    --------------------   │
@@ -158,94 +140,77 @@ expression: displayable.tree_render().to_string()
                              │                           ││        s_nationkey        │
                              └─────────────┬─────────────┘└─────────────┬─────────────┘
                              ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-                             │       DataSourceExec      ││    CoalesceBatchesExec    │
+                             │       DataSourceExec      ││        HashJoinExec       │
                              │    --------------------   ││    --------------------   │
-                             │          files: 1         ││     target_batch_size:    │
-                             │      format: parquet      ││           16384           │
-                             │                           ││                           │
-                             │         predicate:        ││                           │
-                             │ n_name = FRANCE OR n_name ││                           │
-                             │         = GERMANY         ││                           │
-                             └───────────────────────────┘└─────────────┬─────────────┘
-                                                          ┌─────────────┴─────────────┐
-                                                          │        HashJoinExec       │
-                                                          │    --------------------   │
-                                                          │            on:            ├──────────────┐
-                                                          │  (c_custkey = o_custkey)  │              │
-                                                          └─────────────┬─────────────┘              │
+                             │          files: 1         ││            on:            │
+                             │      format: parquet      ││  (c_custkey = o_custkey)  │
+                             │                           ││                           ├──────────────┐
+                             │         predicate:        ││                           │              │
+                             │ n_name = FRANCE OR n_name ││                           │              │
+                             │         = GERMANY         ││                           │              │
+                             └───────────────────────────┘└─────────────┬─────────────┘              │
                                                           ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-                                                          │   LiquidCacheClientExec   ││      RepartitionExec      │
+                                                          │   LiquidCacheClientExec   ││       ProjectionExec      │
                                                           │    --------------------   ││    --------------------   │
-                                                          │          server:          ││ partition_count(in->out): │
-                                                          │  http://localhost:50051,  ││           1 -> 8          │
+                                                          │          server:          ││        l_discount:        │
+                                                          │  http://localhost:50051,  ││         l_discount        │
                                                           │      object_stores=[]     ││                           │
-                                                          │                           ││    partitioning_scheme:   │
-                                                          │                           ││     RoundRobinBatch(8)    │
+                                                          │                           ││      l_extendedprice:     │
+                                                          │                           ││      l_extendedprice      │
+                                                          │                           ││                           │
+                                                          │                           ││        l_shipdate:        │
+                                                          │                           ││         l_shipdate        │
+                                                          │                           ││                           │
+                                                          │                           ││    o_custkey: o_custkey   │
+                                                          │                           ││                           │
+                                                          │                           ││        s_nationkey:       │
+                                                          │                           ││        s_nationkey        │
                                                           └─────────────┬─────────────┘└─────────────┬─────────────┘
                                                           ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-                                                          │       DataSourceExec      ││    CoalesceBatchesExec    │
+                                                          │       DataSourceExec      ││        HashJoinExec       │
                                                           │    --------------------   ││    --------------------   │
-                                                          │          files: 1         ││     target_batch_size:    │
-                                                          │      format: parquet      ││           16384           │
-                                                          │                           ││                           │
-                                                          │         predicate:        ││                           │
-                                                          │  DynamicFilter [ empty ]  ││                           │
-                                                          └───────────────────────────┘└─────────────┬─────────────┘
-                                                                                       ┌─────────────┴─────────────┐
-                                                                                       │        HashJoinExec       │
-                                                                                       │    --------------------   │
-                                                                                       │            on:            ├───────────────────────────────────────────┐
-                                                                                       │ (l_orderkey = o_orderkey) │                                           │
-                                                                                       └─────────────┬─────────────┘                                           │
-                                                                                       ┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
-                                                                                       │   CoalescePartitionsExec  │                             │   LiquidCacheClientExec   │
-                                                                                       │                           │                             │    --------------------   │
-                                                                                       │                           │                             │          server:          │
-                                                                                       │                           │                             │  http://localhost:50051,  │
-                                                                                       │                           │                             │      object_stores=[]     │
-                                                                                       └─────────────┬─────────────┘                             └─────────────┬─────────────┘
-                                                                                       ┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
-                                                                                       │    CoalesceBatchesExec    │                             │       DataSourceExec      │
-                                                                                       │    --------------------   │                             │    --------------------   │
-                                                                                       │     target_batch_size:    │                             │          files: 1         │
-                                                                                       │           16384           │                             │      format: parquet      │
-                                                                                       │                           │                             │                           │
-                                                                                       │                           │                             │         predicate:        │
-                                                                                       │                           │                             │  DynamicFilter [ empty ]  │
-                                                                                       │                           │                             │     AND DynamicFilter [   │
-                                                                                       │                           │                             │           empty ]         │
-                                                                                       └─────────────┬─────────────┘                             └───────────────────────────┘
-                                                                                       ┌─────────────┴─────────────┐
-                                                                                       │        HashJoinExec       │
-                                                                                       │    --------------------   │
-                                                                                       │            on:            ├──────────────┐
-                                                                                       │  (s_suppkey = l_suppkey)  │              │
-                                                                                       └─────────────┬─────────────┘              │
+                                                          │          files: 1         ││            on:            │
+                                                          │      format: parquet      ││ (o_orderkey = l_orderkey) ├──────────────┐
+                                                          │                           ││                           │              │
+                                                          │         predicate:        ││                           │              │
+                                                          │  DynamicFilter [ empty ]  ││                           │              │
+                                                          └───────────────────────────┘└─────────────┬─────────────┘              │
                                                                                        ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-                                                                                       │   LiquidCacheClientExec   ││   LiquidCacheClientExec   │
+                                                                                       │   LiquidCacheClientExec   ││        HashJoinExec       │
                                                                                        │    --------------------   ││    --------------------   │
-                                                                                       │          server:          ││          server:          │
-                                                                                       │  http://localhost:50051,  ││  http://localhost:50051,  │
-                                                                                       │      object_stores=[]     ││      object_stores=[]     │
-                                                                                       └─────────────┬─────────────┘└─────────────┬─────────────┘
-                                                                                       ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-                                                                                       │       DataSourceExec      ││      RepartitionExec      │
-                                                                                       │    --------------------   ││    --------------------   │
-                                                                                       │          files: 1         ││ partition_count(in->out): │
-                                                                                       │      format: parquet      ││           1 -> 8          │
-                                                                                       │                           ││                           │
-                                                                                       │         predicate:        ││    partitioning_scheme:   │
-                                                                                       │  DynamicFilter [ empty ]  ││     RoundRobinBatch(8)    │
-                                                                                       └───────────────────────────┘└─────────────┬─────────────┘
-                                                                                                                    ┌─────────────┴─────────────┐
-                                                                                                                    │       DataSourceExec      │
-                                                                                                                    │    --------------------   │
-                                                                                                                    │          files: 1         │
-                                                                                                                    │      format: parquet      │
-                                                                                                                    │                           │
-                                                                                                                    │         predicate:        │
-                                                                                                                    │  l_shipdate >= 1995-01-01 │
-                                                                                                                    │   AND l_shipdate <= 1996  │
-                                                                                                                    │ -12-31 AND DynamicFilter  │
-                                                                                                                    │         [ empty ]         │
-                                                                                                                    └───────────────────────────┘
+                                                                                       │          server:          ││            on:            ├──────────────┐
+                                                                                       │  http://localhost:50051,  ││  (s_suppkey = l_suppkey)  │              │
+                                                                                       │      object_stores=[]     ││                           │              │
+                                                                                       └─────────────┬─────────────┘└─────────────┬─────────────┘              │
+                                                                                       ┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+                                                                                       │       DataSourceExec      ││   LiquidCacheClientExec   ││   LiquidCacheClientExec   │
+                                                                                       │    --------------------   ││    --------------------   ││    --------------------   │
+                                                                                       │          files: 1         ││          server:          ││          server:          │
+                                                                                       │      format: parquet      ││  http://localhost:50051,  ││  http://localhost:50051,  │
+                                                                                       │                           ││      object_stores=[]     ││      object_stores=[]     │
+                                                                                       │         predicate:        ││                           ││                           │
+                                                                                       │  DynamicFilter [ empty ]  ││                           ││                           │
+                                                                                       └───────────────────────────┘└─────────────┬─────────────┘└─────────────┬─────────────┘
+                                                                                                                    ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+                                                                                                                    │       DataSourceExec      ││      RepartitionExec      │
+                                                                                                                    │    --------------------   ││    --------------------   │
+                                                                                                                    │          files: 1         ││ partition_count(in->out): │
+                                                                                                                    │      format: parquet      ││           1 -> 8          │
+                                                                                                                    │                           ││                           │
+                                                                                                                    │         predicate:        ││    partitioning_scheme:   │
+                                                                                                                    │  DynamicFilter [ empty ]  ││     RoundRobinBatch(8)    │
+                                                                                                                    └───────────────────────────┘└─────────────┬─────────────┘
+                                                                                                                                                 ┌─────────────┴─────────────┐
+                                                                                                                                                 │       DataSourceExec      │
+                                                                                                                                                 │    --------------------   │
+                                                                                                                                                 │          files: 1         │
+                                                                                                                                                 │      format: parquet      │
+                                                                                                                                                 │                           │
+                                                                                                                                                 │         predicate:        │
+                                                                                                                                                 │  l_shipdate >= 1995-01-01 │
+                                                                                                                                                 │   AND l_shipdate <= 1996  │
+                                                                                                                                                 │ -12-31 AND DynamicFilter  │
+                                                                                                                                                 │       [ empty ] AND       │
+                                                                                                                                                 │        DynamicFilter      │
+                                                                                                                                                 │          [ empty ]        │
+                                                                                                                                                 └───────────────────────────┘

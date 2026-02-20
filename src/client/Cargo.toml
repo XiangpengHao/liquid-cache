@@ -20,7 +20,7 @@ uuid = { workspace = true }
 liquid-cache-common = { workspace = true }
 fastrace = { workspace = true }
 fastrace-tonic = { workspace = true }
-tower = "0.5.2"
+tower = "0.5.3"
 tokio = { workspace = true }
 object_store = { workspace = true }
 

@@ -11,10 +11,10 @@ use datafusion::{
     config::ConfigOptions,
     datasource::{
         physical_plan::{FileSource, ParquetSource},
-        schema_adapter::SchemaAdapterFactory,
         source::DataSource,
         table_schema::TableSchema,
     },
+    physical_expr_adapter::PhysicalExprAdapterFactory,
     physical_optimizer::PhysicalOptimizerRule,
     physical_plan::ExecutionPlan,
 };
@@ -170,10 +170,10 @@ fn try_optimize_parquet_source(
 
         let mut new_source =
             LiquidParquetSource::from_parquet_source(parquet_source.clone(), cache.clone());
-        if let Some(schema_factory) = file_scan_config.file_source().schema_adapter_factory() {
+        if let Some(expr_adapter_factory) = file_scan_config.expr_adapter_factory.as_ref() {
             let new_schema = enrich_source_schema(
                 file_scan_config.file_schema(),
-                &schema_factory,
+                expr_adapter_factory,
                 eager_shredding,
             );
             let table_partition_cols = new_source.table_schema().table_partition_cols();
@@ -197,12 +197,12 @@ fn try_optimize_parquet_source(
 
 fn enrich_source_schema(
     file_schema: &SchemaRef,
-    schema_factory: &Arc<dyn SchemaAdapterFactory>,
+    expr_adapter_factory: &Arc<dyn PhysicalExprAdapterFactory>,
     eager_shredding: bool,
 ) -> Schema {
     let mut new_fields = vec![];
     for field in file_schema.fields() {
-        if let Some(annotation) = metadata_from_factory(schema_factory, field.name()) {
+        if let Some(annotation) = metadata_from_factory(expr_adapter_factory, field.name()) {
             new_fields.push(process_field_annotation(field, annotation, eager_shredding));
         } else {
             new_fields.push(field.clone());
