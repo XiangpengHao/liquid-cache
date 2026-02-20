@@ -3,7 +3,7 @@ use arrow::array::{
     Array, ArrayRef, BooleanArray, DictionaryArray, StringArray, UInt16Array, cast::AsArray,
     types::UInt16Type,
 };
-use arrow::buffer::BooleanBuffer;
+use arrow::buffer::{BooleanBuffer, NullBuffer, ScalarBuffer};
 use arrow_schema::DataType;
 use rand::{RngExt as _, SeedableRng};
 use std::sync::Arc;
@@ -781,6 +781,26 @@ fn test_compare_not_equals_preserves_nulls() {
 
     let result = liquid_array.compare_with(b"alpha", &ByteViewOperator::Equality(Equality::NotEq));
     let expected = BooleanArray::from(vec![Some(false), None, Some(true), Some(false)]);
+    assert_eq!(result, expected);
+}
+
+#[test]
+fn test_compare_equals_ignores_raw_key_value_in_null_slot() {
+    let values: ArrayRef = Arc::new(StringArray::from(vec!["alpha", "beta"]));
+    let keys = UInt16Array::new(
+        ScalarBuffer::from(vec![0u16, u16::MAX, 1u16]),
+        Some(NullBuffer::from(BooleanBuffer::from(vec![true, false, true]))),
+    );
+    let dict = DictionaryArray::<UInt16Type>::new(keys, values);
+
+    let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(
+        dict.values().as_string::<i32>().iter(),
+    );
+    let liquid_array =
+        unsafe { LiquidByteViewArray::<FsstArray>::from_unique_dict_array(&dict, compressor) };
+
+    let result = liquid_array.compare_equals(b"alpha");
+    let expected = BooleanArray::from(vec![Some(true), None, Some(false)]);
     assert_eq!(result, expected);
 }
 

@@ -325,11 +325,14 @@ impl<B: FsstBacking> LiquidByteViewArray<B> {
         let len = self.dictionary_keys.len();
         let mut builder = BooleanBufferBuilder::new(len);
         builder.advance(len);
-        for (index, &dict_key) in self.dictionary_keys.values().iter().enumerate() {
-            let dict_index = dict_key as usize;
+        for index in 0..len {
+            if !self.dictionary_keys.is_valid(index) {
+                continue;
+            }
+
+            let dict_index = self.dictionary_keys.value(index) as usize;
             debug_assert!(dict_index < dict_results.len());
-            // Safety: dictionary keys are within the dictionary value range.
-            if unsafe { *dict_results.get_unchecked(dict_index) } {
+            if dict_results.get(dict_index).copied().unwrap_or(false) {
                 builder.set_bit(index, true);
             }
         }
