@@ -124,12 +124,6 @@ It will generate:
 
 ```
 
-### Deploy a LiquidCache server with Docker
-
-```bash
-docker run -p 15214:15214 -p 53793:53793 ghcr.io/xiangpenghao/liquid-cache/liquid-cache-datafusion-server:latest
-```
-
 ### Git hooks
 
 After cloning the repository, run the following command to set up git hooks: 
