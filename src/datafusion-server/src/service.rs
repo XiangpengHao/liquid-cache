@@ -5,14 +5,14 @@ use datafusion::{
     physical_plan::{ExecutionPlan, display::DisplayableExecutionPlan},
     prelude::SessionContext,
 };
+use liquid_cache::{ByteCache, cache::squeeze_policies::SqueezePolicy};
+use liquid_cache::{cache::HydrationPolicy, cache_policies::CachePolicy};
 use liquid_cache_common::{IoMode, rpc::ExecutionMetricsResponse};
 use liquid_cache_datafusion::{
     cache::{LiquidCacheParquet, LiquidCacheParquetRef},
     extract_execution_metrics,
     optimizers::rewrite_data_source_plan,
 };
-use liquid_cache::{ByteCache, cache::squeeze_policies::SqueezePolicy};
-use liquid_cache::{cache::HydrationPolicy, cache_policies::CachePolicy};
 use log::{debug, info};
 use object_store::ObjectStore;
 use std::sync::RwLock;

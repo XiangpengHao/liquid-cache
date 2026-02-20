@@ -278,9 +278,9 @@ mod tests {
         scalar::ScalarValue,
     };
     use futures::{StreamExt, pin_mut};
-    use liquid_cache_common::IoMode;
     use liquid_cache::cache::{AlwaysHydrate, squeeze_policies::Evict};
     use liquid_cache::cache_policies::LiquidPolicy;
+    use liquid_cache_common::IoMode;
     use parquet::arrow::{
         ArrowWriter,
         arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions, RowSelection, RowSelector},

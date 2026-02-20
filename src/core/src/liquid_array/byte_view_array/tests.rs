@@ -789,13 +789,14 @@ fn test_compare_equals_ignores_raw_key_value_in_null_slot() {
     let values: ArrayRef = Arc::new(StringArray::from(vec!["alpha", "beta"]));
     let keys = UInt16Array::new(
         ScalarBuffer::from(vec![0u16, u16::MAX, 1u16]),
-        Some(NullBuffer::from(BooleanBuffer::from(vec![true, false, true]))),
+        Some(NullBuffer::from(BooleanBuffer::from(vec![
+            true, false, true,
+        ]))),
     );
     let dict = DictionaryArray::<UInt16Type>::new(keys, values);
 
-    let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(
-        dict.values().as_string::<i32>().iter(),
-    );
+    let compressor =
+        LiquidByteViewArray::<FsstArray>::train_compressor(dict.values().as_string::<i32>().iter());
     let liquid_array =
         unsafe { LiquidByteViewArray::<FsstArray>::from_unique_dict_array(&dict, compressor) };
 

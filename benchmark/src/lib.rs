@@ -6,12 +6,12 @@ use datafusion::prelude::SessionContext;
 use datafusion::{error::Result, physical_plan::ExecutionPlan};
 use fastrace::Span;
 use fastrace::future::FutureExt as _;
-use liquid_cache_common::rpc::ExecutionMetricsResponse;
-use liquid_cache_datafusion_server::{ApiResponse, ExecutionStats};
 use liquid_cache::cache::CacheStats;
 use liquid_cache::cache::squeeze_policies::{
     Evict, SqueezePolicy, TranscodeEvict, TranscodeSqueezeEvict,
 };
+use liquid_cache_common::rpc::ExecutionMetricsResponse;
+use liquid_cache_datafusion_server::{ApiResponse, ExecutionStats};
 use log::info;
 use serde::Serialize;
 use std::path::PathBuf;

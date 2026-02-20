@@ -5,7 +5,6 @@ use datafusion::{
     physical_plan::{ExecutionPlan, collect},
     prelude::SessionContext,
 };
-use liquid_cache_common::IoMode;
 use liquid_cache::{
     cache::{
         AlwaysHydrate,
@@ -13,6 +12,7 @@ use liquid_cache::{
     },
     cache_policies::LiquidPolicy,
 };
+use liquid_cache_common::IoMode;
 use uuid::Uuid;
 
 mod cases;

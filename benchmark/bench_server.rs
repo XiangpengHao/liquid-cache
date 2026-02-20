@@ -1,10 +1,10 @@
 use arrow_flight::flight_service_server::FlightServiceServer;
 use clap::Parser;
 use fastrace_tonic::FastraceServerLayer;
+use liquid_cache::{cache::NoHydration, cache_policies::LiquidPolicy};
 use liquid_cache_benchmarks::{BenchmarkMode, setup_observability};
 use liquid_cache_common::IoMode;
 use liquid_cache_datafusion_server::{LiquidCacheService, run_admin_server};
-use liquid_cache::{cache::NoHydration, cache_policies::LiquidPolicy};
 use log::info;
 use mimalloc::MiMalloc;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
@@ -56,7 +56,10 @@ struct CliArgs {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = CliArgs::parse();
-    setup_observability("liquid-cache-datafusion-server", args.jaeger_endpoint.as_deref());
+    setup_observability(
+        "liquid-cache-datafusion-server",
+        args.jaeger_endpoint.as_deref(),
+    );
 
     let max_cache_bytes = args.max_cache_mb.map(|size| size * 1024 * 1024);
 

@@ -1,5 +1,4 @@
 use arrow_schema::{DataType, Field, Schema};
-use liquid_cache_datafusion::LiquidCacheParquetRef;
 use liquid_cache::{
     cache::{
         CacheStats,
@@ -7,6 +6,7 @@ use liquid_cache::{
     },
     cache_policies::LiquidPolicy,
 };
+use liquid_cache_datafusion::LiquidCacheParquetRef;
 use std::{fmt, path::Path, sync::Arc};
 use tempfile::TempDir;
 

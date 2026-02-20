@@ -10,18 +10,18 @@ use std::sync::Arc;
 use datafusion::error::Result;
 use datafusion::logical_expr::ScalarUDF;
 use datafusion::prelude::{SessionConfig, SessionContext};
+use liquid_cache::cache::squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict};
+use liquid_cache::cache::{AlwaysHydrate, HydrationPolicy};
+use liquid_cache::cache_policies::CachePolicy;
+use liquid_cache::cache_policies::LiquidPolicy;
 use liquid_cache_common::IoMode;
 use liquid_cache_datafusion::optimizers::{LineageOptimizer, LocalModeOptimizer};
 use liquid_cache_datafusion::{
     LiquidCacheParquet, LiquidCacheParquetRef, VariantGetUdf, VariantPretty, VariantToJsonUdf,
 };
-use liquid_cache::cache::squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict};
-use liquid_cache::cache::{AlwaysHydrate, HydrationPolicy};
-use liquid_cache::cache_policies::CachePolicy;
-use liquid_cache::cache_policies::LiquidPolicy;
 
-pub use liquid_cache_common as common;
 pub use liquid_cache as storage;
+pub use liquid_cache_common as common;
 
 /// Builder for in-process liquid cache session context
 ///

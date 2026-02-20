@@ -117,8 +117,8 @@ trait PolicyLike: std::fmt::Debug + Send + Sync {
     fn notify_access(&self, entry_id: &EntryID, batch: CachedBatchType);
 }
 
-impl<T: liquid_cache::cache_policies::CachePolicy + std::fmt::Debug + Send + Sync>
-    PolicyLike for T
+impl<T: liquid_cache::cache_policies::CachePolicy + std::fmt::Debug + Send + Sync> PolicyLike
+    for T
 {
     fn find_victim(&self, cnt: usize) -> Vec<EntryID> {
         liquid_cache::cache_policies::CachePolicy::find_victim(self, cnt)

@@ -57,7 +57,6 @@ pub use admin_server::{models::*, run_admin_server};
 pub use errors::{
     LiquidCacheErrorExt, LiquidCacheResult, anyhow_to_status, df_error_to_status_with_trace,
 };
-pub use liquid_cache_common as common;
 pub use liquid_cache as storage;
 use liquid_cache::{
     cache::{
@@ -66,6 +65,7 @@ use liquid_cache::{
     },
     cache_policies::{CachePolicy, LiquidPolicy},
 };
+pub use liquid_cache_common as common;
 use object_store::path::Path;
 use object_store::{GetOptions, GetRange};
 
@@ -363,8 +363,8 @@ impl FlightSqlService for LiquidCacheService {
 #[cfg(test)]
 mod server_actions_tests {
     use super::*;
-    use liquid_cache_common::rpc::PrefetchFromObjectStoreRequest;
     use liquid_cache::ByteCache;
+    use liquid_cache_common::rpc::PrefetchFromObjectStoreRequest;
     use std::collections::HashMap;
     use tokio::fs::File;
     use tokio::io::AsyncWriteExt;

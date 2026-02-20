@@ -1074,8 +1074,8 @@ mod tests {
         DATE_MAPPING_METADATA_KEY, LocalModeOptimizer, VARIANT_MAPPING_METADATA_KEY,
     };
     use crate::{LiquidCacheParquet, VariantGetUdf, VariantToJsonUdf};
-    use liquid_cache_common::IoMode;
     use liquid_cache::cache::AlwaysHydrate;
+    use liquid_cache_common::IoMode;
 
     use super::*;
     use arrow::array::{ArrayRef, Date32Array, StringArray, TimestampMicrosecondArray};

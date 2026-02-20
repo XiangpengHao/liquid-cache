@@ -40,9 +40,7 @@ async fn general_test(sql: &str) -> CacheStatsSummary {
         .with_max_cache_bytes(1024 * 1024)
         .with_cache_dir(cache_dir.path().to_path_buf())
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
-        .with_cache_policy(Box::new(
-            liquid_cache::cache_policies::LiquidPolicy::new(),
-        ));
+        .with_cache_policy(Box::new(liquid_cache::cache_policies::LiquidPolicy::new()));
     let mut config = SessionConfig::new();
     config.options_mut().execution.target_partitions = 1;
     let (ctx, cache) = lc_builder.build(config).unwrap();

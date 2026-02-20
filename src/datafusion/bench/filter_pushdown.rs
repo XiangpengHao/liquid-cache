@@ -1,11 +1,11 @@
 use arrow::buffer::BooleanBuffer;
 use divan::Bencher;
-use liquid_cache_common::IoMode;
-use liquid_cache_datafusion::cache::CachedColumn;
-use liquid_cache_datafusion::{FilterCandidateBuilder, LiquidPredicate};
 use liquid_cache::cache::AlwaysHydrate;
 use liquid_cache::cache::squeeze_policies::TranscodeSqueezeEvict;
 use liquid_cache::cache_policies::LiquidPolicy;
+use liquid_cache_common::IoMode;
+use liquid_cache_datafusion::cache::CachedColumn;
+use liquid_cache_datafusion::{FilterCandidateBuilder, LiquidPredicate};
 use std::sync::Arc;
 use tempfile::TempDir;
 

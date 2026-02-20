@@ -705,10 +705,10 @@ mod tests {
     use crate::cache::LiquidCacheParquet;
     use arrow::array::{ArrayRef, Int32Array};
     use arrow_schema::{DataType, Field, Schema};
-    use liquid_cache_common::IoMode;
     use liquid_cache::cache::AlwaysHydrate;
     use liquid_cache::cache::squeeze_policies::Evict;
     use liquid_cache::cache_policies::LiquidPolicy;
+    use liquid_cache_common::IoMode;
     use parquet::arrow::arrow_reader::RowSelection;
     use std::sync::Arc;
 

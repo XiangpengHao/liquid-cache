@@ -8,11 +8,11 @@ use ahash::AHashMap;
 use arrow::array::{BooleanArray, RecordBatch};
 use arrow::buffer::BooleanBuffer;
 use arrow_schema::{ArrowError, Field, Schema, SchemaRef};
-use liquid_cache_common::IoMode;
 use liquid_cache::cache::squeeze_policies::SqueezePolicy;
 use liquid_cache::cache::{
     CachePolicy, EventTrace, HydrationPolicy, LiquidCache, LiquidCacheBuilder,
 };
+use liquid_cache_common::IoMode;
 use parquet::arrow::arrow_reader::ArrowPredicate;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

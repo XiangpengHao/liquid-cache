@@ -7,8 +7,8 @@ use std::{
 
 use ahash::AHashMap;
 use bytes::Bytes;
-use liquid_cache_common::IoMode;
 use liquid_cache::cache::{CacheExpression, EntryID, IoContext, LiquidCompressorStates};
+use liquid_cache_common::IoMode;
 
 use crate::cache::{ColumnAccessPath, ParquetArrayID};
 
