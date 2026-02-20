@@ -1,7 +1,7 @@
 use datafusion::prelude::SessionConfig;
-use liquid_cache_local::LiquidCacheLocalBuilder;
-use liquid_cache_local::storage::cache::squeeze_policies::TranscodeSqueezeEvict;
-use liquid_cache_local::storage::cache_policies::LiquidPolicy;
+use liquid_cache_datafusion_local::LiquidCacheLocalBuilder;
+use liquid_cache_datafusion_local::storage::cache::squeeze_policies::TranscodeSqueezeEvict;
+use liquid_cache_datafusion_local::storage::cache_policies::LiquidPolicy;
 use tempfile::TempDir;
 
 #[tokio::main]

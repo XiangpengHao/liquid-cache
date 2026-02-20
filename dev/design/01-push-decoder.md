@@ -43,4 +43,4 @@ We first write a benchmark to measure the performance of existing cache.
 
 4. We will read all previously inserted data (simulate a scan), and measure the time.
 
-5. The benchmark file will be in src/storage/study/cache_storage.rs. 
+5. The benchmark file will be in src/core/study/cache_storage.rs. 

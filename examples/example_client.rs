@@ -1,6 +1,6 @@
 use clap::Parser;
 use datafusion::{error::Result, execution::object_store::ObjectStoreUrl, prelude::*};
-use liquid_cache_client::LiquidCacheClientBuilder;
+use liquid_cache_datafusion_client::LiquidCacheClientBuilder;
 use std::path::Path;
 use std::sync::Arc;
 use url::Url;

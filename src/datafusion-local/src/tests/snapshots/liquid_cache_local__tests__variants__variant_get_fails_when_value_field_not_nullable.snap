@@ -1,0 +1,11 @@
+---
+source: src/datafusion-local/src/tests/variants.rs
+expression: pretty_format_batches(&batches).unwrap()
+---
++-------+
+| name  |
++-------+
+| Alice |
+| Bob   |
+|       |
++-------+

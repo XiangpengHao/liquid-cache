@@ -1,0 +1,107 @@
+---
+source: src/datafusion-client/src/tests/mod.rs
+expression: displayable.tree_render().to_string()
+---
+┌───────────────────────────┐
+│       ProjectionExec      │
+│    --------------------   │
+│        avg_yearly:        │
+│     CAST(sum(lineitem     │
+│      .l_extendedprice     │
+│     ) AS Float64) / 7     │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       AggregateExec       │
+│    --------------------   │
+│           aggr:           │
+│        sum(lineitem       │
+│        .l_extendedp       │
+│           rice)           │
+│                           │
+│        mode: Final        │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│   CoalescePartitionsExec  │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       AggregateExec       │
+│    --------------------   │
+│           aggr:           │
+│        sum(lineitem       │
+│        .l_extendedp       │
+│           rice)           │
+│                           │
+│       mode: Partial       │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│        HashJoinExec       │
+│    --------------------   │
+│          filter:          │
+│     CAST(l_quantity AS    │
+│       Decimal128(30,      │
+│    15)) < Float64(0.2) *  ├───────────────────────────────────────────┐
+│  avg(lineitem.l_quantity) │                                           │
+│                           │                                           │
+│            on:            │                                           │
+│  (p_partkey = l_partkey)  │                                           │
+└─────────────┬─────────────┘                                           │
+┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
+│       ProjectionExec      │                             │       ProjectionExec      │
+│    --------------------   │                             │    --------------------   │
+│      l_extendedprice:     │                             │     Float64(0.2) * avg    │
+│      l_extendedprice      │                             │         (lineitem         │
+│                           │                             │       .l_quantity):       │
+│        l_quantity:        │                             │    CAST(0.2 * CAST(avg    │
+│         l_quantity        │                             │         (lineitem         │
+│                           │                             │      .l_quantity) AS      │
+│    p_partkey: p_partkey   │                             │   Float64) AS Decimal128  │
+│                           │                             │         (30, 15))         │
+│                           │                             │                           │
+│                           │                             │    l_partkey: l_partkey   │
+└─────────────┬─────────────┘                             └─────────────┬─────────────┘
+┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
+│        HashJoinExec       │                             │       AggregateExec       │
+│    --------------------   │                             │    --------------------   │
+│            on:            │                             │           aggr:           │
+│  (p_partkey = l_partkey)  │                             │  avg(lineitem.l_quantity) │
+│                           ├──────────────┐              │                           │
+│                           │              │              │    group_by: l_partkey    │
+│                           │              │              │                           │
+│                           │              │              │           mode:           │
+│                           │              │              │      FinalPartitioned     │
+└─────────────┬─────────────┘              │              └─────────────┬─────────────┘
+┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+│   LiquidCacheClientExec   ││   LiquidCacheClientExec   ││      RepartitionExec      │
+│    --------------------   ││    --------------------   ││    --------------------   │
+│          server:          ││          server:          ││ partition_count(in->out): │
+│  http://localhost:50051,  ││  http://localhost:50051,  ││           1 -> 8          │
+│      object_stores=[]     ││      object_stores=[]     ││                           │
+│                           ││                           ││    partitioning_scheme:   │
+│                           ││                           ││   Hash([l_partkey@0], 8)  │
+└─────────────┬─────────────┘└─────────────┬─────────────┘└─────────────┬─────────────┘
+┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+│       DataSourceExec      ││       DataSourceExec      ││       AggregateExec       │
+│    --------------------   ││    --------------------   ││    --------------------   │
+│          files: 1         ││          files: 1         ││           aggr:           │
+│      format: parquet      ││      format: parquet      ││  avg(lineitem.l_quantity) │
+│                           ││                           ││                           │
+│         predicate:        ││         predicate:        ││    group_by: l_partkey    │
+│   p_brand = Brand#23 AND  ││  DynamicFilter [ empty ]  ││       mode: Partial       │
+│    p_container = MED BOX  ││                           ││                           │
+└───────────────────────────┘└───────────────────────────┘└─────────────┬─────────────┘
+                                                          ┌─────────────┴─────────────┐
+                                                          │   LiquidCacheClientExec   │
+                                                          │    --------------------   │
+                                                          │          server:          │
+                                                          │  http://localhost:50051,  │
+                                                          │      object_stores=[]     │
+                                                          └─────────────┬─────────────┘
+                                                          ┌─────────────┴─────────────┐
+                                                          │       DataSourceExec      │
+                                                          │    --------------------   │
+                                                          │          files: 1         │
+                                                          │      format: parquet      │
+                                                          │                           │
+                                                          │         predicate:        │
+                                                          │  DynamicFilter [ empty ]  │
+                                                          └───────────────────────────┘

@@ -1,0 +1,131 @@
+[package]
+name = "liquid-cache"
+version = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+readme = "README.md"
+description = { workspace = true }
+repository = { workspace = true }
+
+
+[dependencies]
+async-stream = "0.3.6"
+async-trait = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+object_store = { workspace = true }
+tokio = { workspace = true, features = ["fs"] }
+liquid-cache-common = { workspace = true }
+datafusion = { workspace = true }
+arrow = { workspace = true }
+arrow-schema = { workspace = true }
+fastlanes = "0.5.0"
+num-traits = "0.2.19"
+fsst-rs = "0.5.6"
+ahash = { workspace = true }
+tempfile = { workspace = true }
+congee = { workspace = true }
+log = { workspace = true }
+parquet = { workspace = true }
+parquet-variant-compute = { workspace = true }
+fastrace = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+shuttle = "0.8.1"
+tokio-test = "0.4"
+tracing-subscriber = "0.3.22"
+rand = "0.10.0"
+serde.workspace = true
+serde_json = { workspace = true }
+mimalloc = "0.1.48"
+clap = { version = "4.5.60", features = ["derive"] }
+divan = "0.1.21"
+kani-verifier = "0.67.0"
+insta = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+	'cfg(rust_analyzer)',
+	'cfg(kani)',
+] }
+
+
+[features]
+shuttle = []
+
+[[bench]]
+name = "fsst_view_study"
+path = "study/fsst_view.rs"
+harness = false
+
+[[bench]]
+name = "fsst_selectivity"
+path = "study/fsst_selectivity.rs"
+harness = false
+
+[[bench]]
+name = "fsstarray"
+path = "bench/fsstarray.rs"
+harness = false
+
+[[bench]]
+name = "byte_array_vs_byte_view"
+path = "bench/byte_array_vs_byte_view.rs"
+harness = false
+
+[[bench]]
+name = "byte_view_compare"
+path = "bench/byte_view_compare.rs"
+harness = false
+
+[[bench]]
+name = "bitpacking"
+path = "bench/bitpacking.rs"
+harness = false
+
+[[bench]]
+name = "liquid_float_array"
+harness = false
+path = "bench/liquid_float_array.rs"
+
+[[bench]]
+name = "cache_storage"
+path = "study/cache_storage.rs"
+harness = false
+
+[[bench]]
+name = "linear_integer_study"
+path = "study/linear_integer.rs"
+harness = false
+
+[[bench]]
+name = "squeeze_integer_study"
+path = "study/squeeze_integer.rs"
+harness = false
+
+[[bench]]
+name = "squeeze_date32"
+path = "bench/squeeze_date32.rs"
+harness = false
+
+[[bench]]
+name = "primitive_encoding"
+path = "bench/primitive_encoding.rs"
+harness = false
+
+[[bench]]
+name = "string_fingerprint_study"
+path = "study/string-fingerprint.rs"
+harness = false
+
+[[bench]]
+name = "filter_selectivity_ambiguity"
+path = "study/filter_selectivity_ambiguity.rs"
+harness = false
+
+[[bench]]
+name = "prefix_differentiability"
+path = "study/prefix_differentiability.rs"
+harness = false

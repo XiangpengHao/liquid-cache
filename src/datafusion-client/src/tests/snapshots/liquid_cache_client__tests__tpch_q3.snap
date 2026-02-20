@@ -1,0 +1,134 @@
+---
+source: src/datafusion-client/src/tests/mod.rs
+expression: displayable.tree_render().to_string()
+---
+┌───────────────────────────┐
+│  SortPreservingMergeExec  │
+│    --------------------   │
+│         limit: 10         │
+│                           │
+│ revenue DESC, o_orderdate │
+│       ASC NULLS LAST      │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       SortExec(TopK)      │
+│    --------------------   │
+│         limit: 10         │
+│                           │
+│      revenue@1 DESC,      │
+│        o_orderdate@2      │
+│       ASC NULLS LAST      │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       ProjectionExec      │
+│    --------------------   │
+│        l_orderkey:        │
+│         l_orderkey        │
+│                           │
+│        o_orderdate:       │
+│        o_orderdate        │
+│                           │
+│      o_shippriority:      │
+│       o_shippriority      │
+│                           │
+│          revenue:         │
+│        sum(lineitem       │
+│        .l_extendedp       │
+│ rice * Int64(1) - lineitem│
+│        .l_discount)       │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       AggregateExec       │
+│    --------------------   │
+│           aggr:           │
+│        sum(lineitem       │
+│        .l_extendedp       │
+│ rice * Int64(1) - lineitem│
+│        .l_discount)       │
+│                           │
+│         group_by:         │
+│  l_orderkey, o_orderdate, │
+│       o_shippriority      │
+│                           │
+│           mode:           │
+│      FinalPartitioned     │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│      RepartitionExec      │
+│    --------------------   │
+│ partition_count(in->out): │
+│           8 -> 8          │
+│                           │
+│    partitioning_scheme:   │
+│    Hash([l_orderkey@0,    │
+│       o_orderdate@1,      │
+│    o_shippriority@2], 8)  │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       AggregateExec       │
+│    --------------------   │
+│           aggr:           │
+│        sum(lineitem       │
+│        .l_extendedp       │
+│ rice * Int64(1) - lineitem│
+│        .l_discount)       │
+│                           │
+│         group_by:         │
+│  l_orderkey, o_orderdate, │
+│       o_shippriority      │
+│                           │
+│       mode: Partial       │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│        HashJoinExec       │
+│    --------------------   │
+│            on:            ├───────────────────────────────────────────┐
+│ (o_orderkey = l_orderkey) │                                           │
+└─────────────┬─────────────┘                                           │
+┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
+│   CoalescePartitionsExec  │                             │   LiquidCacheClientExec   │
+│                           │                             │    --------------------   │
+│                           │                             │          server:          │
+│                           │                             │  http://localhost:50051,  │
+│                           │                             │      object_stores=[]     │
+└─────────────┬─────────────┘                             └─────────────┬─────────────┘
+┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
+│        HashJoinExec       │                             │      RepartitionExec      │
+│    --------------------   │                             │    --------------------   │
+│            on:            │                             │ partition_count(in->out): │
+│  (c_custkey = o_custkey)  ├──────────────┐              │           1 -> 8          │
+│                           │              │              │                           │
+│                           │              │              │    partitioning_scheme:   │
+│                           │              │              │     RoundRobinBatch(8)    │
+└─────────────┬─────────────┘              │              └─────────────┬─────────────┘
+┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+│   LiquidCacheClientExec   ││   LiquidCacheClientExec   ││       DataSourceExec      │
+│    --------------------   ││    --------------------   ││    --------------------   │
+│          server:          ││          server:          ││          files: 1         │
+│  http://localhost:50051,  ││  http://localhost:50051,  ││      format: parquet      │
+│      object_stores=[]     ││      object_stores=[]     ││                           │
+│                           ││                           ││         predicate:        │
+│                           ││                           ││  l_shipdate > 1995-03-15  │
+│                           ││                           ││     AND DynamicFilter [   │
+│                           ││                           ││           empty ]         │
+└─────────────┬─────────────┘└─────────────┬─────────────┘└───────────────────────────┘
+┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+│       DataSourceExec      ││      RepartitionExec      │
+│    --------------------   ││    --------------------   │
+│          files: 1         ││ partition_count(in->out): │
+│      format: parquet      ││           1 -> 8          │
+│                           ││                           │
+│         predicate:        ││    partitioning_scheme:   │
+│  c_mktsegment = BUILDING  ││     RoundRobinBatch(8)    │
+└───────────────────────────┘└─────────────┬─────────────┘
+                             ┌─────────────┴─────────────┐
+                             │       DataSourceExec      │
+                             │    --------------------   │
+                             │          files: 1         │
+                             │      format: parquet      │
+                             │                           │
+                             │         predicate:        │
+                             │  o_orderdate < 1995-03-15 │
+                             │     AND DynamicFilter [   │
+                             │           empty ]         │
+                             └───────────────────────────┘

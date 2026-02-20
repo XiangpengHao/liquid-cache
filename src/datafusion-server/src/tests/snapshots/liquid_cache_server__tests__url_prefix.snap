@@ -1,0 +1,9 @@
+---
+source: src/datafusion-server/src/tests/mod.rs
+expression: eager
+---
++----------+
+| count(*) |
++----------+
+| 23113    |
++----------+

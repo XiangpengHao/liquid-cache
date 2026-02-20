@@ -33,9 +33,9 @@ path = "example_inprocess_read.rs"
 
 [dependencies]
 datafusion = { workspace = true }
-liquid-cache-server = { workspace = true }
-liquid-cache-client = { workspace = true }
-liquid-cache-local = { workspace = true }
+liquid-cache-datafusion-server = { workspace = true }
+liquid-cache-datafusion-client = { workspace = true }
+liquid-cache-datafusion-local = { workspace = true }
 tokio = { workspace = true }
 arrow-flight = { workspace = true }
 tonic = { workspace = true }

@@ -2,10 +2,8 @@
 
 <div align="center">
 
-[![Crates.io Version](https://img.shields.io/crates/v/liquid-cache-client?label=liquid-cache-client)](https://crates.io/crates/liquid-cache-client)
-[![Crates.io Version](https://img.shields.io/crates/v/liquid-cache-server?label=liquid-cache-server)](https://crates.io/crates/liquid-cache-server)
-[![docs.rs](https://img.shields.io/docsrs/liquid-cache-client?style=flat&label=client-doc)](https://docs.rs/liquid-cache-client/latest/liquid_cache_client/)
-[![docs.rs](https://img.shields.io/docsrs/liquid-cache-server?style=flat&label=server-doc)](https://docs.rs/liquid-cache-server/latest/liquid_cache_server/)
+[![Crates.io Version](https://img.shields.io/crates/v/liquid-cache?label=liquid-cache)](https://crates.io/crates/liquid-cache)
+[![docs.rs](https://img.shields.io/docsrs/liquid-cache?style=flat&label=docs)](https://docs.rs/liquid-cache/latest/liquid_cache/)
 
 </div>
 <div align="center">
@@ -18,8 +16,10 @@
 [![TPC-DS](https://img.shields.io/badge/TPC--DS-passing-brightgreen)](https://github.com/XiangpengHao/liquid-cache/actions/workflows/ci.yml)
 </div>
 
-LiquidCache is a pushdown cache for S3 --
-projections, filters, and aggregations are evaluated at the cache server before sending to [DataFusion](https://github.com/apache/datafusion).
+LiquidCache understands both your _data_ and your _query_.
+- It transcodes storage data into into an optimized, cache-only format, so you can continue using your favorite formats without worrying about performance.
+- It keeps truly important data in memory and makes efficient use of modern SSDs. For example, if your query group by `year`, LiquidCache store only year in memory, and keeps the full timestamp on disk.
+
 LiquidCache is a research project [funded](https://xiangpeng.systems/fund/) by [InfluxData](https://www.influxdata.com/), [SpiralDB](https://spiraldb.com/), and [Bauplan](https://www.bauplanlabs.com).
 
 ## Features
@@ -69,7 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 Add the following dependency to your existing DataFusion project:
 ```toml
 [dependencies]
-liquid-cache-client = "0.1.0"
+liquid-cache-datafusion-client = "0.1.0"
 ```
 
 Then, create a new DataFusion context with LiquidCache:
@@ -91,13 +91,13 @@ pub async fn main() -> Result<()> {
 ## In-process mode 
 
 If you are uncomfortable with a dedicated server, LiquidCache also provides an in-process mode via the
-`liquid-cache-local` crate.
+`liquid-cache-datafusion-local` crate.
 
 ```rust
 use datafusion::prelude::SessionConfig;
-use liquid_cache_local::storage::cache::squeeze_policies::TranscodeSqueezeEvict;
-use liquid_cache_local::storage::cache_policies::FiloPolicy;
-use liquid_cache_local::LiquidCacheLocalBuilder;
+use liquid_cache_datafusion_local::storage::cache::squeeze_policies::TranscodeSqueezeEvict;
+use liquid_cache_datafusion_local::storage::cache_policies::FiloPolicy;
+use liquid_cache_datafusion_local::LiquidCacheLocalBuilder;
 use tempfile::TempDir;
 
 #[tokio::main]

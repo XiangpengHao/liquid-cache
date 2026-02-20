@@ -2895,9 +2895,9 @@ dependencies = [
  "arrow-flight",
  "clap",
  "datafusion",
- "liquid-cache-client",
- "liquid-cache-local",
- "liquid-cache-server",
+ "liquid-cache-datafusion-client",
+ "liquid-cache-datafusion-local",
+ "liquid-cache-datafusion-server",
  "object_store",
  "tempfile",
  "tokio",
@@ -4087,180 +4087,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df1d3c3b53da64cf5760482273a98e575c651a67eec7f77df96b5b642de8f039"
 
 [[package]]
-name = "liquid-cache-benchmarks"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "arrow",
- "arrow-flight",
- "clap",
- "csv",
- "datafusion",
- "fastrace",
- "fastrace-opentelemetry",
- "fastrace-tonic",
- "fsst-rs",
- "liquid-cache-client",
- "liquid-cache-common",
- "liquid-cache-local",
- "liquid-cache-parquet",
- "liquid-cache-server",
- "liquid-cache-storage",
- "log",
- "logforth",
- "mimalloc",
- "object_store",
- "opentelemetry",
- "opentelemetry-otlp",
- "opentelemetry_sdk",
- "parquet",
- "perf-event2",
- "pprof",
- "regex",
- "reqwest 0.13.2",
- "serde",
- "serde_json",
- "sysinfo",
- "tokio",
- "tonic",
- "url",
- "usdt",
- "uuid",
-]
-
-[[package]]
-name = "liquid-cache-client"
-version = "0.1.10"
-dependencies = [
- "arrow",
- "arrow-flight",
- "arrow-schema",
- "datafusion",
- "datafusion-proto",
- "fastrace",
- "fastrace-tonic",
- "futures",
- "insta",
- "liquid-cache-common",
- "object_store",
- "tokio",
- "tonic",
- "tower",
- "uuid",
-]
-
-[[package]]
-name = "liquid-cache-common"
-version = "0.1.10"
-dependencies = [
- "arrow-flight",
- "async-trait",
- "bytes",
- "chrono",
- "futures",
- "object_store",
- "prost",
- "serde",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "url",
-]
-
-[[package]]
-name = "liquid-cache-fuzz"
-version = "0.1.10"
-dependencies = [
- "arbitrary",
- "arrow",
- "libfuzzer-sys",
- "liquid-cache-storage",
-]
-
-[[package]]
-name = "liquid-cache-local"
-version = "0.1.10"
-dependencies = [
- "arrow",
- "arrow-schema",
- "datafusion",
- "fastrace",
- "insta",
- "liquid-cache-common",
- "liquid-cache-parquet",
- "liquid-cache-storage",
- "parquet",
- "tempfile",
- "tokio",
-]
-
-[[package]]
-name = "liquid-cache-parquet"
-version = "0.1.10"
-dependencies = [
- "ahash",
- "arrow",
- "arrow-schema",
- "async-trait",
- "bytes",
- "crossbeam-channel",
- "crossbeam-queue",
- "datafusion",
- "divan",
- "fastrace",
- "futures",
- "io-uring",
- "libc",
- "liquid-cache-common",
- "liquid-cache-storage",
- "log",
- "object_store",
- "parquet",
- "parquet-variant-compute",
- "parquet-variant-json",
- "rand 0.10.0",
- "serde",
- "serde_json",
- "shuttle",
- "tempfile",
- "tokio",
- "tokio-test",
-]
-
-[[package]]
-name = "liquid-cache-server"
-version = "0.1.10"
-dependencies = [
- "anyhow",
- "arrow",
- "arrow-flight",
- "axum",
- "datafusion",
- "datafusion-proto",
- "fastrace",
- "futures",
- "hdrhistogram",
- "insta",
- "liquid-cache-common",
- "liquid-cache-parquet",
- "liquid-cache-storage",
- "log",
- "object_store",
- "parquet",
- "pprof",
- "prost",
- "serde",
- "sysinfo",
- "tempfile",
- "tokio",
- "tonic",
- "tower-http",
- "url",
- "uuid",
-]
-
-[[package]]
-name = "liquid-cache-storage"
+name = "liquid-cache"
 version = "0.1.10"
 dependencies = [
  "ahash",
@@ -4294,6 +4121,179 @@ dependencies = [
  "tokio",
  "tokio-test",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "liquid-cache-benchmarks"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "arrow",
+ "arrow-flight",
+ "clap",
+ "csv",
+ "datafusion",
+ "fastrace",
+ "fastrace-opentelemetry",
+ "fastrace-tonic",
+ "fsst-rs",
+ "liquid-cache",
+ "liquid-cache-common",
+ "liquid-cache-datafusion",
+ "liquid-cache-datafusion-client",
+ "liquid-cache-datafusion-local",
+ "liquid-cache-datafusion-server",
+ "log",
+ "logforth",
+ "mimalloc",
+ "object_store",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
+ "parquet",
+ "perf-event2",
+ "pprof",
+ "regex",
+ "reqwest 0.13.2",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "tokio",
+ "tonic",
+ "url",
+ "usdt",
+ "uuid",
+]
+
+[[package]]
+name = "liquid-cache-common"
+version = "0.1.10"
+dependencies = [
+ "arrow-flight",
+ "async-trait",
+ "bytes",
+ "chrono",
+ "futures",
+ "object_store",
+ "prost",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "liquid-cache-datafusion"
+version = "0.1.10"
+dependencies = [
+ "ahash",
+ "arrow",
+ "arrow-schema",
+ "async-trait",
+ "bytes",
+ "crossbeam-channel",
+ "crossbeam-queue",
+ "datafusion",
+ "divan",
+ "fastrace",
+ "futures",
+ "io-uring",
+ "libc",
+ "liquid-cache",
+ "liquid-cache-common",
+ "log",
+ "object_store",
+ "parquet",
+ "parquet-variant-compute",
+ "parquet-variant-json",
+ "rand 0.10.0",
+ "serde",
+ "serde_json",
+ "shuttle",
+ "tempfile",
+ "tokio",
+ "tokio-test",
+]
+
+[[package]]
+name = "liquid-cache-datafusion-client"
+version = "0.1.10"
+dependencies = [
+ "arrow",
+ "arrow-flight",
+ "arrow-schema",
+ "datafusion",
+ "datafusion-proto",
+ "fastrace",
+ "fastrace-tonic",
+ "futures",
+ "insta",
+ "liquid-cache-common",
+ "object_store",
+ "tokio",
+ "tonic",
+ "tower",
+ "uuid",
+]
+
+[[package]]
+name = "liquid-cache-datafusion-local"
+version = "0.1.10"
+dependencies = [
+ "arrow",
+ "arrow-schema",
+ "datafusion",
+ "fastrace",
+ "insta",
+ "liquid-cache",
+ "liquid-cache-common",
+ "liquid-cache-datafusion",
+ "parquet",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "liquid-cache-datafusion-server"
+version = "0.1.10"
+dependencies = [
+ "anyhow",
+ "arrow",
+ "arrow-flight",
+ "axum",
+ "datafusion",
+ "datafusion-proto",
+ "fastrace",
+ "futures",
+ "hdrhistogram",
+ "insta",
+ "liquid-cache",
+ "liquid-cache-common",
+ "liquid-cache-datafusion",
+ "log",
+ "object_store",
+ "parquet",
+ "pprof",
+ "prost",
+ "serde",
+ "sysinfo",
+ "tempfile",
+ "tokio",
+ "tonic",
+ "tower-http",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "liquid-cache-fuzz"
+version = "0.1.10"
+dependencies = [
+ "arbitrary",
+ "arrow",
+ "libfuzzer-sys",
+ "liquid-cache",
 ]
 
 [[package]]

@@ -12,7 +12,7 @@ use datafusion::arrow::{
 };
 use datafusion::common::tree_node::TreeNode;
 use datafusion::physical_plan::ExecutionPlan;
-use liquid_cache_client::LiquidCacheClientExec;
+use liquid_cache_datafusion_client::LiquidCacheClientExec;
 use log::warn;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use uuid::Uuid;

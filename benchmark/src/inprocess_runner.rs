@@ -9,11 +9,11 @@ use datafusion::parquet::{
 };
 use datafusion::prelude::{SessionConfig, SessionContext};
 use liquid_cache_common::IoMode;
-use liquid_cache_local::LiquidCacheLocalBuilder;
-use liquid_cache_parquet::{LiquidCacheParquetRef, extract_execution_metrics};
-use liquid_cache_storage::cache::NoHydration;
-use liquid_cache_storage::cache::squeeze_policies::{Evict, TranscodeEvict, TranscodeSqueezeEvict};
-use liquid_cache_storage::cache_policies::LiquidPolicy;
+use liquid_cache_datafusion_local::LiquidCacheLocalBuilder;
+use liquid_cache_datafusion::{LiquidCacheParquetRef, extract_execution_metrics};
+use liquid_cache::cache::NoHydration;
+use liquid_cache::cache::squeeze_policies::{Evict, TranscodeEvict, TranscodeSqueezeEvict};
+use liquid_cache::cache_policies::LiquidPolicy;
 use log::{info, warn};
 use perf_event::{
     Builder as PerfBuilder, Counter, Group,

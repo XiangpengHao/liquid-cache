@@ -1,9 +1,0 @@
----
-source: src/local/src/tests/variants.rs
-expression: pretty_format_batches(&batches).unwrap()
----
-+---------------------------------------------------------------+
-| variant_to_json(variant_get(variants_test.data,Utf8("name"))) |
-+---------------------------------------------------------------+
-| "Bob"                                                         |
-+---------------------------------------------------------------+

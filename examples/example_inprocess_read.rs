@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use datafusion::arrow::array::UInt64Array;
-use liquid_cache_local::storage::cache::{EntryID, LiquidCacheBuilder};
+use liquid_cache_datafusion_local::storage::cache::{EntryID, LiquidCacheBuilder};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
