@@ -79,7 +79,7 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           # Publish in dependency order
-          cargo publish -p liquid-cache-common -p liquid-cache-storage -p liquid-cache-parquet -p liquid-cache-local -p liquid-cache-client -p liquid-cache-server  
+          cargo publish -p liquid-cache-common -p liquid-cache -p liquid-cache-datafusion -p liquid-cache-datafusion-local -p liquid-cache-datafusion-client -p liquid-cache-datafusion-server  
       - name: Create GitHub Release
         uses: ncipollo/release-action@v1
         with:

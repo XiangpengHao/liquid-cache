@@ -38,7 +38,7 @@ pub enum IoMode {
     TokioIO,
 
     /// Use rust's std::fs::File, but will try to `spawn_blocking`, just like `object_store` does:
-    /// <https://github.com/apache/arrow-rs-object-store/blob/28b2fc563feb44bb3d15718cf58036772334a704/src/local.rs#L440-L448>
+    /// <https://github.com/apache/arrow-rs-object-store/blob/28b2fc563feb44bb3d15718cf58036772334a704/src/datafusion-local.rs#L440-L448>
     #[serde(rename = "std-spawn-blocking")]
     StdSpawnBlocking,
 }

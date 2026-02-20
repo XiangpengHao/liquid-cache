@@ -1,0 +1,60 @@
+---
+source: src/datafusion-local/src/tests/mod.rs
+expression: "format!(\"plan: \\n{}\\nvalues: \\n{}\\nstats:\\n{}\", plan, values, stats)"
+---
+plan: 
+┌───────────────────────────┐
+│       SortExec(TopK)      │
+│    --------------------   │
+│       WatchID@0 DESC      │
+│                           │
+│         limit: 10         │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       DataSourceExec      │
+│    --------------------   │
+│          files: 1         │
+│                           │
+│          format:          │
+│       liquid_parquet      │
+└───────────────────────────┘
+
+values: 
++---------------------+----+------------+
+| WatchID             | OS | EventTime  |
++---------------------+----+------------+
+| 9223293557789499343 | 44 | 1373872327 |
+| 9223247512111991176 | 44 | 1373911908 |
+| 9223229607482000671 | 77 | 1373833003 |
+| 9222952846921702972 | 44 | 1373889267 |
+| 9222910629637340291 | 77 | 1373836473 |
+| 9222450121739726704 | 44 | 1373913677 |
+| 9222148957862209006 | 44 | 1373901630 |
+| 9221544107040413752 | 44 | 1373876943 |
+| 9221368504820084611 | 44 | 1373865339 |
+| 9221104190405362536 | 44 | 1373852020 |
++---------------------+----+------------+
+stats:
+entries.total: 12
+entries.after_first_run: 12
+entries.memory.arrow: 12
+entries.memory.liquid: 0
+entries.memory.squeezed_liquid: 0
+entries.disk.liquid: 0
+entries.disk.arrow: 0
+usage.memory_bytes: 443700
+usage.disk_bytes: 0
+RuntimeStatsSnapshot:
+  get: 9
+  get_with_selection: 9
+  eval_predicate: 8
+  get_squeezed_success: 0
+  get_squeezed_needs_io: 0
+  try_read_liquid_calls: 0
+  hit_date32_expression_calls: 0
+  read_io_count: 0
+  write_io_count: 0
+  eval_predicate_on_liquid_failed: 0
+  squeezed_decompressed_count: 0
+  squeezed_total_count: 0
+  squeeze_io_saved: 0

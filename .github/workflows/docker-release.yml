@@ -50,5 +50,5 @@ jobs:
         with:
           context: .
           push: true
-          tags: ghcr.io/${{ env.OWNER_LC }}/liquid-cache/liquid-cache-server:latest,ghcr.io/${{ env.OWNER_LC }}/liquid-cache/liquid-cache-server:v${{ inputs.version }}
-          file: dev/liquid_cache_server.dockerfile
+          tags: ghcr.io/${{ env.OWNER_LC }}/liquid-cache/liquid-cache-datafusion-server:latest,ghcr.io/${{ env.OWNER_LC }}/liquid-cache/liquid-cache-datafusion-server:v${{ inputs.version }}
+          file: dev/liquid_cache_datafusion_server.dockerfile

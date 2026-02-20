@@ -1,6 +1,6 @@
 //! RPC definitions for the LiquidCache service.
 //! You should not use this module directly.
-//! Instead, use the `liquid_cache_server` and `liquid_cache_client` crates to interact with the LiquidCache service.
+//! Instead, use the `liquid_cache_datafusion_server` and `liquid_cache_datafusion_client` crates to interact with the LiquidCache service.
 use std::collections::HashMap;
 
 use arrow_flight::{

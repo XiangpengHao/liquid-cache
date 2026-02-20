@@ -1,5 +1,5 @@
 use datafusion::{arrow::array::UInt64Array, prelude::SessionConfig};
-use liquid_cache_local::{
+use liquid_cache_datafusion_local::{
     LiquidCacheLocalBuilder,
     storage::{
         cache::{EntryID, squeeze_policies::TranscodeSqueezeEvict},

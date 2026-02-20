@@ -11,7 +11,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 arbitrary = { version = "1.4", features = ["derive"] }
 arrow = { workspace = true }
-liquid-cache-storage = { workspace = true }
+liquid-cache = { workspace = true }
 
 [[bin]]
 name = "fsst_view_fuzz"

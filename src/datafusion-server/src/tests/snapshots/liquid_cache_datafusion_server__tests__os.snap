@@ -1,0 +1,19 @@
+---
+source: src/datafusion-server/src/tests/mod.rs
+expression: reference
+---
++----+
+| OS |
++----+
+| 44 |
+| 44 |
+| 44 |
+| 44 |
+| 44 |
+| 2  |
+| 2  |
+| 2  |
+| 2  |
+| 2  |
+| 2  |
++----+

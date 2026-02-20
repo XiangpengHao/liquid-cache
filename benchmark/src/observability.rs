@@ -6,7 +6,7 @@ use datafusion::datasource::physical_plan::FileScanConfig;
 use datafusion::datasource::source::DataSource;
 use datafusion::physical_plan::ExecutionPlan;
 use fastrace_opentelemetry::OpenTelemetryReporter;
-use liquid_cache_parquet::LiquidParquetSource;
+use liquid_cache_datafusion::LiquidParquetSource;
 use logforth::filter::env_filter::EnvFilterBuilder;
 use opentelemetry::InstrumentationScope;
 use opentelemetry::KeyValue;

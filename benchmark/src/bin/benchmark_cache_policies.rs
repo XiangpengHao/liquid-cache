@@ -1,6 +1,6 @@
 use clap::Parser;
-use liquid_cache_storage::cache::{CachedBatchType, EntryID};
-use liquid_cache_storage::cache_policies::{
+use liquid_cache::cache::{CachedBatchType, EntryID};
+use liquid_cache::cache_policies::{
     ClockPolicy, FifoPolicy, FiloPolicy, LiquidPolicy, LruPolicy, S3FifoPolicy, SievePolicy,
 };
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -117,17 +117,17 @@ trait PolicyLike: std::fmt::Debug + Send + Sync {
     fn notify_access(&self, entry_id: &EntryID, batch: CachedBatchType);
 }
 
-impl<T: liquid_cache_storage::cache_policies::CachePolicy + std::fmt::Debug + Send + Sync>
-    PolicyLike for T
+impl<T: liquid_cache::cache_policies::CachePolicy + std::fmt::Debug + Send + Sync> PolicyLike
+    for T
 {
     fn find_victim(&self, cnt: usize) -> Vec<EntryID> {
-        liquid_cache_storage::cache_policies::CachePolicy::find_victim(self, cnt)
+        liquid_cache::cache_policies::CachePolicy::find_victim(self, cnt)
     }
     fn notify_insert(&self, entry_id: &EntryID, batch: CachedBatchType) {
-        liquid_cache_storage::cache_policies::CachePolicy::notify_insert(self, entry_id, batch)
+        liquid_cache::cache_policies::CachePolicy::notify_insert(self, entry_id, batch)
     }
     fn notify_access(&self, entry_id: &EntryID, batch: CachedBatchType) {
-        liquid_cache_storage::cache_policies::CachePolicy::notify_access(self, entry_id, batch)
+        liquid_cache::cache_policies::CachePolicy::notify_access(self, entry_id, batch)
     }
 }
 

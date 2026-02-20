@@ -5,12 +5,12 @@ edition = { workspace = true }
 publish = false
 
 [dependencies]
-liquid-cache-server = { workspace = true }
-liquid-cache-client = { workspace = true }
-liquid-cache-parquet = { workspace = true }
-liquid-cache-storage = { workspace = true }
+liquid-cache-datafusion-server = { workspace = true }
+liquid-cache-datafusion-client = { workspace = true }
+liquid-cache-datafusion = { workspace = true }
+liquid-cache = { workspace = true }
 liquid-cache-common = { workspace = true }
-liquid-cache-local = { workspace = true }
+liquid-cache-datafusion-local = { workspace = true }
 datafusion = { workspace = true }
 tokio = { workspace = true }
 log = { workspace = true }

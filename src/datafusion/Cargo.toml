@@ -1,0 +1,60 @@
+[package]
+name = "liquid-cache-datafusion"
+version = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+readme = "README.md"
+description = { workspace = true }
+repository = { workspace = true }
+
+[dependencies]
+arrow = { workspace = true }
+arrow-schema = { workspace = true }
+parquet = { workspace = true }
+datafusion = { workspace = true }
+futures = { workspace = true }
+tokio = { workspace = true }
+ahash = { workspace = true }
+bytes = { workspace = true }
+log = { workspace = true }
+object_store = { workspace = true, features = ["http"] }
+liquid-cache-common = { workspace = true }
+liquid-cache = { workspace = true }
+fastrace = { workspace = true }
+async-trait = { workspace = true }
+parquet-variant-json = { workspace = true }
+parquet-variant-compute = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+io-uring = "0.7.11"
+libc = "0.2.182"
+crossbeam-channel = "0.5.15"
+crossbeam-queue = "0.3.12"
+
+[dev-dependencies]
+tempfile = "3.25.0"
+divan = "0.1"
+rand = "0.10.0"
+shuttle = "0.8.1"
+tokio-test = "0.4"
+serde_json = { workspace = true }
+
+[features]
+shuttle = []
+
+
+[[bench]]
+name = "bench_eviction"
+path = "bench/bench_eviction.rs"
+
+[[bench]]
+name = "filter_pushdown"
+path = "bench/filter_pushdown.rs"
+harness = false
+
+[[bench]]
+name = "boolean_and_then"
+harness = false
+path = "bench/boolean_and_then.rs"

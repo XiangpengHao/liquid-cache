@@ -6,9 +6,9 @@ use arrow::array::{Array, StringArray};
 use arrow::compute::kernels::cmp;
 use arrow::error::ArrowError;
 use libfuzzer_sys::fuzz_target;
-use liquid_cache_storage::liquid_array::LiquidByteViewArray;
-use liquid_cache_storage::liquid_array::byte_view_array::{ByteViewOperator, Comparison, Equality};
-use liquid_cache_storage::liquid_array::raw::FsstArray;
+use liquid_cache::liquid_array::LiquidByteViewArray;
+use liquid_cache::liquid_array::byte_view_array::{ByteViewOperator, Comparison, Equality};
+use liquid_cache::liquid_array::raw::FsstArray;
 #[derive(Debug, Clone, Arbitrary)]
 struct FuzzInput {
     strings: Vec<Option<String>>,

@@ -99,7 +99,7 @@ jobs:
                   save-if: ${{ github.ref == 'refs/heads/main' }}
             - name: Run shuttle test
               run: |
-                  cd src/storage
+                  cd src/core
                   cargo test --features "shuttle" --release -- --test-threads=1 shuttle
 
     address_san:
@@ -118,7 +118,7 @@ jobs:
             - run: sudo apt-get update && sudo apt-get install -y llvm-dev
             - name: Run address sanitizer
               run: >
-                  env RUSTFLAGS="-Z sanitizer=address" cargo test -Zbuild-std --target x86_64-unknown-linux-gnu --tests -p liquid-cache-parquet
+                  env RUSTFLAGS="-Z sanitizer=address" cargo test -Zbuild-std --target x86_64-unknown-linux-gnu --tests -p liquid-cache-datafusion
 
     clickbench:
         name: ClickBench
@@ -537,4 +537,4 @@ jobs:
             - name: Verify storage crate with Kani
               uses: model-checking/kani-github-action@v1.1
               with:
-                  working-directory: src/storage
+                  working-directory: src/core
