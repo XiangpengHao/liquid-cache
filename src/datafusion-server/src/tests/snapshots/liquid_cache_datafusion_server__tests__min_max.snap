@@ -1,6 +1,6 @@
 ---
 source: src/datafusion-server/src/tests/mod.rs
-expression: eager
+expression: reference
 ---
 +----------------------------------------------------------------+-----------------------------------------------------------+
 | min(hits.Referer)                                              | max(hits.Referer)                                         |
