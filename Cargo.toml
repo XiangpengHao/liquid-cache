@@ -1,5 +1,5 @@
 [workspace.package]
-version = "0.1.10"
+version = "0.1.11"
 edition = "2024"
 repository = "https://github.com/XiangpengHao/liquid-cache"
 authors = ["XiangpengHao <xiangpeng.hao@wisc.edu>"]
@@ -24,12 +24,12 @@ members = [
 resolver = "3"
 
 [workspace.dependencies]
-liquid-cache-datafusion-server = { path = "src/datafusion-server", version = "0.1.10" }
-liquid-cache-datafusion-client = { path = "src/datafusion-client", version = "0.1.10" }
-liquid-cache-datafusion = { path = "src/datafusion", version = "0.1.10" }
-liquid-cache-common = { path = "src/common", version = "0.1.10" }
-liquid-cache = { path = "src/core", version = "0.1.10" }
-liquid-cache-datafusion-local = { path = "src/datafusion-local", version = "0.1.10" }
+liquid-cache-datafusion-server = { path = "src/datafusion-server", version = "0.1.11" }
+liquid-cache-datafusion-client = { path = "src/datafusion-client", version = "0.1.11" }
+liquid-cache-datafusion = { path = "src/datafusion", version = "0.1.11" }
+liquid-cache-common = { path = "src/common", version = "0.1.11" }
+liquid-cache = { path = "src/core", version = "0.1.11" }
+liquid-cache-datafusion-local = { path = "src/datafusion-local", version = "0.1.11" }
 arrow = { version = "57.3.0", default-features = false, features = [
 	"prettyprint",
 ] }
