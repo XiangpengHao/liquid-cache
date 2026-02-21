@@ -1,0 +1,85 @@
+name: Prepare Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_bump:
+        description: 'Version bump type'
+        required: true
+        default: 'patch'
+        type: 'choice'
+        options:
+          - patch
+          - minor
+          - major
+      custom_version:
+        description: 'Custom version (optional, overrides version_bump if provided)'
+        required: false
+        type: 'string'
+      release_notes:
+        description: 'Additional notes for the GitHub release'
+        required: false
+        type: 'string'
+
+jobs:
+  prepare-release:
+    name: Prepare Release PR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: ./.github/actions/free-disk-space
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-release
+        run: cargo install cargo-release
+
+      - name: Configure Git
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+
+      - name: Execute version bump
+        id: bump
+        run: |
+          LEVEL="${{ github.event.inputs.version_bump }}"
+          CUSTOM_VERSION="${{ github.event.inputs.custom_version }}"
+
+          if [ -n "$CUSTOM_VERSION" ]; then
+            cargo release "$CUSTOM_VERSION" --execute --no-confirm --no-push --no-tag --no-publish
+            echo "new_version=$CUSTOM_VERSION" >> $GITHUB_OUTPUT
+          else
+            cargo release $LEVEL --execute --no-confirm --no-push --no-tag --no-publish
+            NEW_VERSION=$(grep -m 1 'version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+            echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: release/v${{ steps.bump.outputs.new_version }}
+          title: "chore: release v${{ steps.bump.outputs.new_version }}"
+          body: |
+            ## Release v${{ steps.bump.outputs.new_version }}
+
+            This PR bumps all workspace crate versions to `${{ steps.bump.outputs.new_version }}`.
+
+            ${{ github.event.inputs.release_notes }}
+
+            ---
+
+            **On merge**, the `publish.yml` workflow will automatically:
+            1. Publish all crates to crates.io
+            2. Create a GitHub Release with tag `v${{ steps.bump.outputs.new_version }}`
+          commit-message: "chore: release v${{ steps.bump.outputs.new_version }}"
+          labels: release
+          delete-branch: true

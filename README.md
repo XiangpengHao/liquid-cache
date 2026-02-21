@@ -17,8 +17,8 @@
 </div>
 
 LiquidCache understands both your **data** and your **query**.
-- It transcodes storage **data** into into an optimized, cache-only format, so you can continue using your favorite formats without worrying about performance.
-- It keeps truly important data in memory and makes efficient use of modern SSDs. For example, if your **query** group by `year`, LiquidCache store only year in memory, and keeps the full timestamp on disk.
+- It transcodes storage **data** into an optimized, cache-only format, so you can keep using your favorite formats without worrying about performance.
+- It keeps the data that matters in memory and uses modern SSDs efficiently. For example, if your **query** groups by `year`, LiquidCache stores only the year in memory and keeps the full timestamp on disk.
 
 LiquidCache is a research project [funded](https://xiangpeng.systems/fund/) by [InfluxData](https://www.influxdata.com/), [SpiralDB](https://spiraldb.com/), and [Bauplan](https://www.bauplanlabs.com).
 
@@ -26,9 +26,9 @@ You may want to consider [Foyer](https://github.com/foyer-rs/foyer) if you're lo
 
 ## Quick start
 
-This quickstart uses the core cache API from `src/core`.
-Add these dependencies in your project: `liquid-cache`, `arrow`, and `datafusion`.
-The example below demonstrates insert, get, get filtered, and get with predicate in one place.
+This quick start uses the core cache API from `src/core`.
+Add these dependencies to your project: `liquid-cache`, `arrow`, and `datafusion`.
+The example below shows insert, get, get with selection, and get with predicate pushdown.
 
 ```rust
 use arrow::array::{BooleanArray, UInt64Array};
@@ -98,7 +98,7 @@ See [benchmark/README.md](./benchmark/README.md)
 
 ## Performance troubleshooting
 
-### Inherit LiquidCache configurations
+### Use LiquidCache with DataFusion
 
 LiquidCache requires a few non-default DataFusion configurations:
 
@@ -133,24 +133,24 @@ let (ctx, _) = LiquidCacheLocalBuilder::new()
 
 ### x86-64 optimization
 
-LiquidCache is optimized for x86-64 with specific [instructions](https://github.com/XiangpengHao/liquid-cache/blob/f8d5b77829fa7996a56c031eb25503f7b0b0428d/src/liquid_parquet/src/utils.rs#L229-L327). ARM chips (e.g., Apple Silicon) use fallback implementations. Contributions welcome!
+LiquidCache is optimized for x86-64 with specific [instructions](https://github.com/XiangpengHao/liquid-cache/blob/f8d5b77829fa7996a56c031eb25503f7b0b0428d/src/liquid_parquet/src/utils.rs#L229-L327). On ARM (e.g., Apple Silicon), fallback implementations are used. Contributions are welcome.
 
 
 ## FAQ
 
 #### Can I use LiquidCache in production today?
 
-Not yet. While production readiness is our goal, we are still implementing features and polishing the system.
-LiquidCache began as a research project exploring new approaches to build cost-effective caching systems. Like most research projects, it takes time to mature, and we welcome your help!
+Not yet. Production readiness is our goal, but we are still implementing features and polishing the system.
+LiquidCache began as a research project exploring new approaches to cost-effective caching. Like most research projects, it takes time to mature—we welcome your help.
 
 #### How does LiquidCache work?
 
-Check out our [paper](/dev/doc/liquid-cache-vldb.pdf) for more details. Meanwhile, we are working on a technical blog to introduce LiquidCache in a more accessible way.
+See our [paper](/dev/doc/liquid-cache-vldb.pdf) for details. We are also working on a technical blog to introduce LiquidCache in a more accessible way.
 
 #### How can I get involved?
 
-We are always looking for contributors! Any feedback or improvements are welcome. Feel free to explore the issue list and contribute to the project.
-If you want to get involved in the research process, feel free to [reach out](https://xiangpeng.systems/work-with-me/).
+We are always looking for contributors. Feedback and improvements are welcome—explore the issue list and contribute where you can.
+If you want to get involved in the research side, [reach out](https://xiangpeng.systems/work-with-me/).
 
 #### Who is behind LiquidCache?
 
@@ -160,7 +160,7 @@ LiquidCache is a research project funded by:
 - [Bauplan](https://www.bauplanlabs.com)
 - Taxpayers of the state of Wisconsin and the federal government. 
 
-As such, LiquidCache is and will always be open source and free to use.
+LiquidCache is and will remain open source and free to use.
 
 Your support for science is greatly appreciated!
 
