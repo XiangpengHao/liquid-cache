@@ -66,7 +66,8 @@ struct Span {
 
 pub(crate) struct TCache {
     free_pages: [*mut Page; NUM_SIZE_CLASSES],
-    // Last size class holds slices that serve large allocations (>256KB)
+    // TODO(): Make this a linked list
+    // Last size class holds slices that serve large allocations (>64KB)
     used_pages: [Vec<*mut Page>; NUM_SIZE_CLASSES + 1],
     // TODO: Use a linked list for O(1) deletion
     spans: [Span; SEGMENT_BINS],
