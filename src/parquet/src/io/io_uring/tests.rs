@@ -57,7 +57,7 @@ impl BackendKind {
                     } else {
                         IoMode::Uring
                     };
-                    initialize_uring_pool(mode);
+                    initialize_uring_pool(mode, false);
                 });
             }
             BackendKind::MultiBlocking => {
@@ -81,21 +81,21 @@ impl BackendKind {
             BackendKind::MultiBlocking => {
                 async move { multi_blocking_uring::read(path, range, direct_io) }.boxed()
             }
-            BackendKind::ThreadPool => thread_pool_uring::read(path, range, direct_io).boxed(),
+            BackendKind::ThreadPool => thread_pool_uring::read(path, range, direct_io, true).boxed(),
         }
     }
 
     fn write_future(self, path: PathBuf, data: Bytes) -> IoFuture<()> {
         match self {
-            BackendKind::Shared => async move { single_uring::write(path, &data).await }.boxed(),
+            BackendKind::Shared => async move { single_uring::write(path, &data, false).await }.boxed(),
             BackendKind::MultiAsync => {
-                async move { multi_async_uring::write(path, &data).await }.boxed()
+                async move { multi_async_uring::write(path, &data, false).await }.boxed()
             }
             BackendKind::MultiBlocking => {
-                async move { multi_blocking_uring::write(path, &data) }.boxed()
+                async move { multi_blocking_uring::write(path, &data, false) }.boxed()
             }
             BackendKind::ThreadPool => {
-                async move { thread_pool_uring::write(path, &data).await }.boxed()
+                async move { thread_pool_uring::write(path, &data, false, false).await }.boxed()
             }
         }
     }

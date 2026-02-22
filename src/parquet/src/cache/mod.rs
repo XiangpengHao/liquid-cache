@@ -248,9 +248,10 @@ impl LiquidCacheParquet {
         squeeze_policy: Box<dyn SqueezePolicy>,
         hydration_policy: Box<dyn HydrationPolicy>,
         io_mode: IoMode,
+        fixed_buffer_pool_size_mb: usize,
     ) -> Self {
         assert!(batch_size.is_power_of_two());
-        let io_context = Arc::new(ParquetIoContext::new(cache_dir.clone(), io_mode));
+        let io_context = Arc::new(ParquetIoContext::new(cache_dir.clone(), io_mode, fixed_buffer_pool_size_mb));
         let cache_storage_builder = LiquidCacheBuilder::new()
             .with_batch_size(batch_size)
             .with_max_cache_bytes(max_cache_bytes)
@@ -387,6 +388,7 @@ mod tests {
             Box::new(TranscodeSqueezeEvict),
             Box::new(AlwaysHydrate::new()),
             IoMode::Uring,
+            0,
         );
         let file = cache.register_or_get_file("test".to_string(), schema);
         file.create_row_group(0, vec![])

@@ -301,6 +301,7 @@ mod tests {
             Box::new(Evict),
             Box::new(AlwaysHydrate::new()),
             IoMode::Uring,
+            0,
         );
         let field = Arc::new(Field::new("col0", DataType::Int32, false));
         let schema = Arc::new(Schema::new(vec![field.clone()]));

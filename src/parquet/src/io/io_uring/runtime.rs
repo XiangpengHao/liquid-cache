@@ -8,7 +8,7 @@ use tokio::sync::oneshot;
 
 use crate::io::io_uring::tasks::{FileOpenTask, FileReadTask, FileWriteTask, IoTask};
 
-const URING_NUM_ENTRIES: u32 = 128;
+const URING_NUM_ENTRIES: u32 = 256;
 
 const MAX_CONCURRENT_TASKS: u32 = 128;
 
@@ -112,7 +112,7 @@ impl RuntimeWorker {
                     let task = self.inflight_tasks[token]
                         .take()
                         .expect("Task not found in submitted tasks");
-                    task.inner.borrow_mut().complete(&cqe);
+                    task.inner.borrow_mut().complete(vec![&cqe]);
                     unsafe { (*task.completed).store(true, Ordering::Relaxed); }
                     task.waker.wake();
                     self.tokens.push_back(token as u16);
@@ -126,7 +126,8 @@ impl RuntimeWorker {
     fn submit_task(self: &mut Self, task: AsyncTask) {
         let token = self.tokens.pop_front().expect("No more tokens");
         let sq = &mut self.ring.submission();
-        let sqe = task.inner.borrow_mut().prepare_sqe().user_data(token as u64);
+        let entries = task.inner.borrow_mut().prepare_sqe();
+        let sqe = entries[0].clone().user_data(token as u64);
         unsafe {
             sq.push(&sqe).expect("Failed to push to submission queue");
         }
@@ -272,6 +273,6 @@ pub(crate) async fn write(path: PathBuf, data: &Bytes) -> Result<(), std::io::Er
         .open(path)
         .expect("failed to create file");
 
-    let write_task = FileWriteTask::build(data.clone(), file.as_raw_fd());
+    let write_task = FileWriteTask::build(data.clone(), file.as_raw_fd(), true, false);
     submit_async_task(write_task).await.borrow_mut().get_result()
 }

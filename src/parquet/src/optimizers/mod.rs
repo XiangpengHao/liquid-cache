@@ -339,6 +339,7 @@ mod tests {
             Box::new(TranscodeSqueezeEvict),
             Box::new(AlwaysHydrate::new()),
             IoMode::Uring,
+            0,
         ));
         let rewritten = rewrite_data_source_plan(plan, &liquid_cache, true);
 

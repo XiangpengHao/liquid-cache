@@ -26,19 +26,25 @@ pub(crate) struct ParquetIoContext {
 }
 
 impl ParquetIoContext {
-    pub fn new(base_dir: PathBuf, io_mode: IoMode) -> Self {
+    pub fn new(base_dir: PathBuf, io_mode: IoMode, fixed_buffer_pool_size_mb: usize) -> Self {
         if matches!(
             io_mode,
             IoMode::UringDirect | IoMode::Uring | IoMode::UringBlocking
         ) {
             #[cfg(target_os = "linux")]
             {
-                crate::io::io_uring::initialize_uring_pool(io_mode);
+                use liquid_cache_common::memory::pool::FixedBufferPool;
+                if fixed_buffer_pool_size_mb > 0 {
+                    FixedBufferPool::init(fixed_buffer_pool_size_mb);
+                }
+                crate::io::io_uring::initialize_uring_pool(io_mode, fixed_buffer_pool_size_mb > 0);
             }
             #[cfg(not(target_os = "linux"))]
             {
                 panic!("io_mode {:?} is only supported on Linux", io_mode);
             }
+        } else if fixed_buffer_pool_size_mb > 0 {
+            panic!("Fixed buffers are only supported for UringDirect, Uring and UringBlocking");
         }
 
         Self {
@@ -147,7 +153,7 @@ mod tests {
     #[test]
     fn squeeze_hint_tracks_majority() {
         let tmp = tempdir().unwrap();
-        let ctx = ParquetIoContext::new(tmp.path().to_path_buf(), IoMode::StdBlocking);
+        let ctx = ParquetIoContext::new(tmp.path().to_path_buf(), IoMode::StdBlocking, 0);
         let e = entry(1, 2, 3);
         let month = Arc::new(CacheExpression::extract_date32(Date32Field::Month));
         let year = Arc::new(CacheExpression::extract_date32(Date32Field::Year));
@@ -163,7 +169,7 @@ mod tests {
     #[test]
     fn squeeze_hint_prefers_recent_on_tie() {
         let tmp = tempdir().unwrap();
-        let ctx = ParquetIoContext::new(tmp.path().to_path_buf(), IoMode::StdBlocking);
+        let ctx = ParquetIoContext::new(tmp.path().to_path_buf(), IoMode::StdBlocking, 0);
         let e = entry(9, 9, 9);
         let year = Arc::new(CacheExpression::extract_date32(Date32Field::Year));
         let day = Arc::new(CacheExpression::extract_date32(Date32Field::Day));

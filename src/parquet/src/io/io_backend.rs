@@ -16,7 +16,7 @@ pub(super) async fn read(
         IoMode::Uring => {
             #[cfg(target_os = "linux")]
             {
-                super::io_uring::thread_pool_uring::read(path, range, false).await
+                super::io_uring::thread_pool_uring::read(path, range, false, false).await
             }
             #[cfg(not(target_os = "linux"))]
             {
@@ -38,7 +38,7 @@ pub(super) async fn read(
         IoMode::UringDirect => {
             #[cfg(target_os = "linux")]
             {
-                super::io_uring::thread_pool_uring::read(path, range, true).await
+                super::io_uring::thread_pool_uring::read(path, range, true, true).await
             }
             #[cfg(not(target_os = "linux"))]
             {
@@ -89,10 +89,20 @@ pub(super) async fn write(
     data: Bytes,
 ) -> Result<(), std::io::Error> {
     match io_mode {
-        IoMode::Uring | IoMode::UringDirect => {
+        IoMode::Uring =>  {
             #[cfg(target_os = "linux")]
             {
-                super::io_uring::thread_pool_uring::write(path, &data).await
+                super::io_uring::thread_pool_uring::write(path, &data, false, false).await
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                panic!("io_uring modes are only supported on Linux");
+            }
+        }
+        IoMode::UringDirect => {
+            #[cfg(target_os = "linux")]
+            {
+                super::io_uring::thread_pool_uring::write(path, &data, true, false).await
             }
             #[cfg(not(target_os = "linux"))]
             {
@@ -102,7 +112,7 @@ pub(super) async fn write(
         IoMode::UringShared => {
             #[cfg(target_os = "linux")]
             {
-                super::io_uring::single_uring::write(path, &data).await
+                super::io_uring::single_uring::write(path, &data, false).await
             }
             #[cfg(not(target_os = "linux"))]
             {
@@ -112,7 +122,7 @@ pub(super) async fn write(
         IoMode::UringBlocking => {
             #[cfg(target_os = "linux")]
             {
-                super::io_uring::multi_blocking_uring::write(path, &data)
+                super::io_uring::multi_blocking_uring::write(path, &data, false)
             }
             #[cfg(not(target_os = "linux"))]
             {
@@ -132,7 +142,7 @@ pub(super) async fn write(
         IoMode::UringMultiAsync => {
             #[cfg(target_os = "linux")]
             {
-                super::io_uring::multi_async_uring::write(path, &data).await
+                super::io_uring::multi_async_uring::write(path, &data, false).await
             }
             #[cfg(not(target_os = "linux"))]
             {

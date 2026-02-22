@@ -46,6 +46,7 @@ async fn run_sql(
         squeeze_policy,
         Box::new(AlwaysHydrate::new()),
         IoMode::Uring,
+        0,
     );
     async fn get_result(service: &LiquidCacheServiceInner, sql: &str) -> String {
         let handle = Uuid::new_v4();

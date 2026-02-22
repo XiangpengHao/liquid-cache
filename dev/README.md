@@ -22,13 +22,14 @@ LiquidCache exports OpenTelemetry traces. Spin up a Jaeger v2
 ```bash
 docker run  \
       --name jaeger \
-      --replace \
       -e COLLECTOR_OTLP_ENABLED=true \
       -p 16686:16686 \
       -p 4317:4317 \
       -p 4318:4318 \
       cr.jaegertracing.io/jaegertracing/jaeger:2.11.0
 ```
+
+If a container named `jaeger` already exists, remove it first: `docker rm -f jaeger` (or `podman rm -f jaeger`).
 
 This image contains the Jaeger v2 distribution. 
 Port 16686 exposes the frontend UI at http://localhost:16686.
@@ -74,6 +75,21 @@ This will trace the execution of `iteration = 2` (`arg1 == 2`) and print the `io
 [128, 256)          3192 |@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@|
 [256, 512)          2012 |@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@                    |
 [512, 1K)            194 |@@@                                                 |
+```
+
+```bash
+sudo bpftrace -e '
+  usdt:./target/release/in_process:liquid_benchmark:iteration_start /arg1 == 2/ {@enable = 1;}
+  usdt:./target/release/in_process:liquid_benchmark:iteration_start /arg1 > 2/ {@enable = 0;}
+  usdt:./target/release/in_process:io_submitted /@enable/ {
+    @t[arg0] = nsecs;
+  }
+  usdt:./target/release/in_process:io_completed /@enable && @t[arg0]/ {
+    $us = (nsecs - @t[arg0]) / 1000;
+    @lat = hist($us);
+    delete(@t[arg0]);
+  }
+  '
 ```
 
 If you're using blocking io mode, try this:

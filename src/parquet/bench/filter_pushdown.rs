@@ -49,6 +49,7 @@ fn setup_cache(tmp_dir: &TempDir) -> Arc<CachedColumn> {
         Box::new(TranscodeSqueezeEvict),
         Box::new(AlwaysHydrate::new()),
         IoMode::Uring,
+        0,
     );
     let field = Arc::new(Field::new("test_column", DataType::Int32, false));
     let schema = Arc::new(Schema::new(vec![field.clone()]));

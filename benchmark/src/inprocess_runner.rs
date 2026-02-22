@@ -202,6 +202,7 @@ pub struct InProcessBenchmarkRunner {
     pub io_mode: IoMode,
     pub output_dir: Option<PathBuf>,
     pub collect_perf_events: bool,
+    pub fixed_buffer_pool_size_mb: usize,
 }
 
 impl Default for InProcessBenchmarkRunner {
@@ -224,6 +225,7 @@ impl InProcessBenchmarkRunner {
             io_mode: IoMode::default(),
             output_dir: None,
             collect_perf_events: false,
+            fixed_buffer_pool_size_mb: 0,
         }
     }
 
@@ -279,6 +281,11 @@ impl InProcessBenchmarkRunner {
 
     pub fn with_output_dir(mut self, output_dir: Option<PathBuf>) -> Self {
         self.output_dir = output_dir;
+        self
+    }
+
+    pub fn with_fixed_buffer_pool_size_mb(mut self, fixed_buffer_pool_size_mb: usize) -> Self {
+        self.fixed_buffer_pool_size_mb = fixed_buffer_pool_size_mb;
         self
     }
 
@@ -348,6 +355,7 @@ impl InProcessBenchmarkRunner {
                     .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
                     .with_io_mode(self.io_mode)
                     .with_eager_shredding(true)
+                    .with_fixed_buffer_pool_size_mb(self.fixed_buffer_pool_size_mb)
                     .build(session_config)?;
                 (v.0, Some(v.1))
             }
@@ -359,6 +367,7 @@ impl InProcessBenchmarkRunner {
                     .with_hydration_policy(Box::new(NoHydration::new()))
                     .with_squeeze_policy(Box::new(TranscodeEvict))
                     .with_io_mode(self.io_mode)
+                    .with_fixed_buffer_pool_size_mb(self.fixed_buffer_pool_size_mb)
                     .build(session_config)?;
                 (v.0, Some(v.1))
             }

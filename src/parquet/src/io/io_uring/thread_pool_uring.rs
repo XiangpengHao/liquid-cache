@@ -1,33 +1,49 @@
 use std::{
-    collections::VecDeque,
-    fs::OpenOptions,
-    future::Future,
-    ops::Range,
-    os::fd::AsRawFd,
-    path::PathBuf,
-    pin::Pin,
-    sync::{
+    collections::VecDeque, fs::OpenOptions, future::Future, io, ops::Range, os::{fd::AsRawFd, unix::fs::OpenOptionsExt}, path::PathBuf, pin::Pin, sync::{
         OnceLock,
         atomic::{AtomicBool, AtomicUsize, Ordering},
-    },
-    task::{Context, Poll},
-    thread,
+    }, task::{Context, Poll}, thread, time::{Duration, Instant}
 };
 
 use bytes::Bytes;
-use io_uring::{IoUring, cqueue, squeue};
-use liquid_cache_common::IoMode;
+use io_uring::{EnterFlags, IoUring, cqueue, squeue};
+use liquid_cache_common::{IoMode, memory::pool::FixedBufferPool};
 use tokio::sync::oneshot;
 
-use super::tasks::{FileOpenTask, FileReadTask, FileWriteTask, IoTask};
+use crate::io::io_uring::tasks::FixedFileReadTask;
+use rand::Rng;
+
+#[usdt::provider]
+mod liquid_parquet {
+    fn io_submitted(id: u64) {}
+    fn io_completed(id: u64) {}
+}
+
+static REGISTRATION_SUCCEEDED: OnceLock<bool> = OnceLock::new();
+
+fn ensure_registered() -> bool {
+    *REGISTRATION_SUCCEEDED.get_or_init(|| match usdt::register_probes() {
+        Ok(()) => true,
+        Err(err) => {
+            log::debug!("failed to register USDT probes: {err}");
+            false
+        }
+    })
+}
+
+use super::tasks::{FileReadTask, FileWriteTask, IoTask};
 
 pub(crate) const URING_NUM_ENTRIES: u32 = 256;
+
+const URING_BATCH_SIZE: u32 = 32;
 
 static ENABLED: AtomicBool = AtomicBool::new(true);
 
 struct Submission {
     task: Box<dyn IoTask>,
     completion_tx: oneshot::Sender<Box<dyn IoTask>>,
+    pending_completions: usize,   // No. of pending completions. Will be populated later by the uring worker
+    completions: Vec<cqueue::Entry>,
 }
 
 impl Submission {
@@ -35,14 +51,31 @@ impl Submission {
         Submission {
             task,
             completion_tx,
+            pending_completions: 0,
+            completions: Vec::new(),
         }
     }
 
-    fn send_back(mut self, cqe: &cqueue::Entry) {
-        self.task.complete(cqe);
+    fn send_back(mut self) {
+        self.task.complete(self.completions.iter().collect());
         self.completion_tx
             .send(self.task)
             .expect("Failed to send task back to caller");
+    }
+
+    #[inline]
+    fn set_completions(&mut self, count: usize) {
+        self.pending_completions = count;
+    }
+
+    #[inline]
+    fn reduce_completions(&mut self) {
+        self.pending_completions -= 1;
+    }
+
+    #[inline]
+    fn push_completion(&mut self, cqe: cqueue::Entry) {
+        self.completions.push(cqe);
     }
 }
 
@@ -74,9 +107,9 @@ unsafe impl Sync for IoUringThreadpool {}
 
 static IO_URING_THREAD_POOL_INST: OnceLock<IoUringThreadpool> = OnceLock::new();
 
-pub(crate) fn initialize_uring_pool(io_mode: IoMode) {
+pub(crate) fn initialize_uring_pool(io_mode: IoMode, register_buffers: bool) {
     if matches!(io_mode, IoMode::Uring | IoMode::UringDirect) {
-        IO_URING_THREAD_POOL_INST.get_or_init(|| IoUringThreadpool::new(io_mode));
+        IO_URING_THREAD_POOL_INST.get_or_init(|| IoUringThreadpool::new(io_mode, register_buffers));
     }
     if matches!(io_mode, IoMode::UringBlocking) {
         super::multi_blocking_uring::initialize_blocking_rings();
@@ -84,18 +117,13 @@ pub(crate) fn initialize_uring_pool(io_mode: IoMode) {
 }
 
 impl IoUringThreadpool {
-    fn new(io_type: IoMode) -> IoUringThreadpool {
+    fn new(io_type: IoMode, register_buffers: bool) -> IoUringThreadpool {
         let (sender, receiver) = crossbeam_channel::unbounded::<Submission>();
-
-        let builder = IoUring::<squeue::Entry, cqueue::Entry>::builder();
-        let ring = builder
-            .build(URING_NUM_ENTRIES)
-            .expect("Failed to build IoUring instance");
 
         let worker = thread::Builder::new()
             .name("lc-io-worker".to_string())
             .spawn(move || {
-                let mut uring_worker = UringWorker::new(receiver, ring);
+                let mut uring_worker = UringWorker::new(receiver, register_buffers);
                 uring_worker.thread_loop();
             })
             .expect("Failed to spawn io-uring worker thread");
@@ -134,12 +162,37 @@ struct UringWorker {
     ring: IoUring,
     tokens: VecDeque<u16>,
     submitted_tasks: Vec<Option<Submission>>,
+    /**
+     * When using fixed buffers, a single task can produce multiple submission queue entries.
+     * It is possible that we aren't able to submit all of them at one go. Hold them in an 
+     * intermediate queue in that case
+     */
+    queued_entries: VecDeque<squeue::Entry>,
     io_performed: AtomicUsize,
+    last_syscall: Instant,
+    // Number of entries that will be submitted upon calling io_uring_enter
+    queued_submissions: u32,
 }
 
 impl UringWorker {
     #[allow(clippy::new_ret_no_self)]
-    fn new(channel: crossbeam_channel::Receiver<Submission>, ring: IoUring) -> UringWorker {
+    fn new(channel: crossbeam_channel::Receiver<Submission>, register_buffers: bool) -> UringWorker {
+        let mut builder = IoUring::<squeue::Entry, cqueue::Entry>::builder();
+        let ring = builder
+            .setup_single_issuer()      // Only the worker thread will issue IO and poll completions
+            .setup_defer_taskrun()
+            // .setup_iopoll()
+            // .setup_sqpoll(50000)
+            .build(URING_NUM_ENTRIES)
+            .expect("Failed to build IoUring instance");
+
+        if register_buffers {
+            let res = FixedBufferPool::register_buffers_with_ring(&ring);
+            if res.is_err() {
+                log::error!("Failed to register buffers with io-uring ring: {:?}", res);
+            }
+        }
+
         let tokens = (0..URING_NUM_ENTRIES as u16).collect();
         let mut tasks = Vec::with_capacity(URING_NUM_ENTRIES as usize);
         tasks.resize_with(URING_NUM_ENTRIES as usize, || None);
@@ -149,6 +202,9 @@ impl UringWorker {
             tokens,
             submitted_tasks: tasks,
             io_performed: AtomicUsize::new(0),
+            queued_entries: VecDeque::with_capacity(URING_NUM_ENTRIES as usize),
+            last_syscall: Instant::now(),
+            queued_submissions: 0,
         }
     }
 
@@ -158,31 +214,84 @@ impl UringWorker {
                 break;
             }
 
+            self.drain_intermediate_queue();
             self.drain_submissions();
             self.poll_completions();
         }
     }
 
-    #[inline(never)]
-    fn drain_submissions(&mut self) {
-        let mut need_submit = false;
-        while !self.receiver.is_empty() && !self.tokens.is_empty() {
-            let mut submission = self.receiver.recv().unwrap();
-            let token = self.tokens.pop_front().unwrap();
-            {
-                let sq = &mut self.ring.submission();
-                let task = submission.task.as_mut();
-                let sqe = task.prepare_sqe().user_data(token as u64);
+    fn drain_intermediate_queue(&mut self) {
+        {
+            let sq = &mut self.ring.submission();            
+            while !sq.is_full() && !self.queued_entries.is_empty() {
+                let sqe = self.queued_entries.pop_front().unwrap();
                 unsafe {
                     sq.push(&sqe).expect("Failed to push to submission queue");
                 }
                 sq.sync();
+                self.queued_submissions += 1;
+            }
+        }
+    }
+
+    #[inline(never)]
+    fn drain_submissions(&mut self) {
+        while !self.receiver.is_empty() && !self.tokens.is_empty() {
+            let sq = &mut self.ring.submission();
+            sq.sync();
+            if sq.is_full() {
+                // A single token might have multiple associated sqes. Free token doesn't always imply that we have free submission slots
+                break;
+            }
+
+            let token = self.tokens.pop_front().unwrap();
+            let mut submission = self.receiver.recv().unwrap();
+            let task = submission.task.as_mut();
+            let mut sqes = task.prepare_sqe();
+            self.queued_submissions += sqes.len() as u32;
+            submission.set_completions(sqes.len());
+            let mut tasks_submitted = 0;
+            
+            for sqe in sqes.iter_mut() {
+                let res = unsafe {
+                    sq.push(&sqe.clone().user_data(token as u64))
+                };
+                if res.is_err() {
+                    break;
+                }
+                tasks_submitted += 1;
+                sq.sync();
+            }
+            for i in tasks_submitted..sqes.len() {
+                self.queued_entries.push_back(sqes[i].clone().user_data(token as u64));
             }
             self.submitted_tasks[token as usize] = Some(submission);
-            need_submit = true;
         }
-        if need_submit {
-            self.ring.submit().expect("Failed to submit");
+        // let need_poll = self.tokens.len() < URING_NUM_ENTRIES as usize;
+        let time_from_last_submit = self.last_syscall.elapsed();
+        let is_batch_full = self.queued_submissions >= URING_BATCH_SIZE;
+        let need_syscall = is_batch_full || time_from_last_submit > Duration::from_micros(20);
+        if need_syscall {
+            let mut flags = EnterFlags::empty();
+            flags.insert(EnterFlags::GETEVENTS);
+            loop {
+                let res = unsafe {
+                    self.ring.submitter().enter::<libc::sigset_t>(self.queued_submissions, 0, flags.bits(), None)
+                };
+                match res {
+                    Ok(_num_entries) => {
+                        break;
+                    }
+                    Err(e) => {
+                        if e.kind() == io::ErrorKind::Interrupted {
+                            continue;
+                        }
+                        panic!("Failed to submit: {}", e.to_string());
+                    }
+                }
+            }
+            self.last_syscall = Instant::now();
+            self.queued_submissions = 0;
         }
     }
 
@@ -194,12 +303,26 @@ impl UringWorker {
             match cq.next() {
                 Some(cqe) => {
                     let token = cqe.user_data() as usize;
-                    let submission = self.submitted_tasks[token]
-                        .take()
-                        .expect("Task not found in submitted tasks");
-                    submission.send_back(&cqe);
-                    self.tokens.push_back(token as u16);
-                    self.io_performed.fetch_add(1, Ordering::Relaxed);
+                    let pending_completions = self.submitted_tasks[token]
+                        .as_ref()
+                        .expect("Task not found in submitted tasks")
+                        .pending_completions;
+                    
+                    if pending_completions == 1 {
+                        let mut submission = self.submitted_tasks[token]
+                            .take()
+                            .expect("Task not found in submitted tasks");
+                        submission.push_completion(cqe);
+                        submission.send_back();
+                        self.tokens.push_back(token as u16);
+                        self.io_performed.fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        let submission = self.submitted_tasks[token]
+                            .as_mut()
+                            .expect("Task not found in submitted tasks");
+                        submission.reduce_completions();
+                        submission.push_completion(cqe);
+                    }
                 }
                 None => break,
             }
@@ -221,6 +344,7 @@ where
     T: IoTask + 'static,
 {
     state: UringState<T>,
+    id: u64,
 }
 
 impl<T> UringFuture<T>
@@ -230,6 +354,7 @@ where
     fn new(task: Box<T>) -> UringFuture<T> {
         UringFuture {
             state: UringState::Created(task),
+            id: rand::rng().random(),
         }
     }
 }
@@ -248,6 +373,9 @@ where
                     let pool = IO_URING_THREAD_POOL_INST
                         .get()
                         .expect("Uring threadpool not initialized");
+                    if ensure_registered() {
+                        liquid_parquet::io_submitted!(|| self.id);
+                    }
                     let (tx, rx) = oneshot::channel::<Box<dyn IoTask>>();
                     let boxed_task: Box<dyn IoTask> = task;
                     pool.submit_task(boxed_task, tx);
@@ -255,6 +383,9 @@ where
                 }
                 UringState::Submitted(mut receiver) => match Pin::new(&mut receiver).poll(cx) {
                     Poll::Ready(Ok(task)) => {
+                        if ensure_registered() {
+                             liquid_parquet::io_completed!(|| self.id);
+                        }
                         let typed_task = task
                             .into_any()
                             .downcast::<T>()
@@ -286,9 +417,14 @@ pub(crate) async fn read(
     path: PathBuf,
     range: Option<Range<u64>>,
     direct_io: bool,
+    use_fixed_buffers: bool,
 ) -> Result<Bytes, std::io::Error> {
-    let open_task = FileOpenTask::build(path, direct_io)?;
-    let file = submit_async_task(open_task).await.into_result()?;
+    // Perform open operations in a blocking manner as they are not compatible with a io_uring instance that uses polled mode IO
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECT)
+        .open(path)
+        .expect("failed to create file");
 
     let effective_range = if let Some(range) = range {
         range
@@ -297,18 +433,31 @@ pub(crate) async fn read(
         0..len
     };
 
+    if use_fixed_buffers {
+        let read_task = FixedFileReadTask::build(effective_range.clone(), &file, direct_io);
+        // Fall back to normal read if fixed buffers are not available
+        if read_task.is_ok() {
+            return submit_async_task(read_task.unwrap()).await.into_result()
+        }
+    }
     let read_task = FileReadTask::build(effective_range, file, direct_io);
-    submit_async_task(read_task).await.into_result()
+    return submit_async_task(read_task).await.into_result()
 }
 
-pub(crate) async fn write(path: PathBuf, data: &Bytes) -> Result<(), std::io::Error> {
+pub(crate) async fn write(
+    path: PathBuf,
+    data: &Bytes,
+    direct_io: bool,
+    use_fixed_buffers: bool
+) -> Result<(), std::io::Error> {
     let file = OpenOptions::new()
         .create(true)
         .truncate(true)
         .write(true)
+        .custom_flags(libc::O_DIRECT)
         .open(path)
         .expect("failed to create file");
 
-    let write_task = FileWriteTask::build(data.clone(), file.as_raw_fd());
+    let write_task = FileWriteTask::build(data.clone(), file.as_raw_fd(), direct_io, use_fixed_buffers);
     submit_async_task(write_task).await.into_result()
 }

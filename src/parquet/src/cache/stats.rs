@@ -193,6 +193,7 @@ mod tests {
             Box::new(Evict),
             Box::new(AlwaysHydrate::new()),
             IoMode::Uring,
+            0,
         );
         let fields: Vec<Field> = (0..8)
             .map(|i| Field::new(format!("test_{i}"), DataType::Int32, false))

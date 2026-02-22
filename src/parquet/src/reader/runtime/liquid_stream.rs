@@ -716,6 +716,7 @@ mod tests {
             Box::new(Evict),
             Box::new(AlwaysHydrate::new()),
             IoMode::Uring,
+            0,
         );
         let file = cache.register_or_get_file("test.parquet".to_string(), schema);
         file.create_row_group(0, vec![])
