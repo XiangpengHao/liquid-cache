@@ -1094,26 +1094,31 @@ mod tests {
     // Setup helpers - lean versions for different test scenarios
     // ─────────────────────────────────────────────────────────────────────────────
 
-    fn create_physical_optimizer() -> LocalModeOptimizer {
+    async fn create_physical_optimizer() -> LocalModeOptimizer {
         let tmp_dir = tempfile::tempdir().unwrap();
-        let store =
-            tokio_test::block_on(t4::mount(tmp_dir.path().join("liquid_cache.t4"))).unwrap();
-        LocalModeOptimizer::with_cache(Arc::new(tokio_test::block_on(LiquidCacheParquet::new(
-            1024,
-            1024 * 1024 * 1024,
-            store,
-            Box::new(LiquidPolicy::new()),
-            Box::new(TranscodeSqueezeEvict),
-            Box::new(AlwaysHydrate::new()),
-        ))))
+        let store = t4::mount(tmp_dir.path().join("liquid_cache.t4"))
+            .await
+            .unwrap();
+        LocalModeOptimizer::with_cache(Arc::new(
+            LiquidCacheParquet::new(
+                1024,
+                1024 * 1024 * 1024,
+                store,
+                Box::new(LiquidPolicy::new()),
+                Box::new(TranscodeSqueezeEvict),
+                Box::new(AlwaysHydrate::new()),
+            )
+            .await,
+        ))
     }
 
-    fn create_session_context(optimizer: Arc<LineageOptimizer>) -> SessionContext {
+    async fn create_session_context(optimizer: Arc<LineageOptimizer>) -> SessionContext {
+        let physical_optimizer = create_physical_optimizer().await;
         let state = SessionStateBuilder::new()
             .with_config(SessionConfig::new())
             .with_default_features()
             .with_optimizer_rule(optimizer as Arc<dyn OptimizerRule + Send + Sync>)
-            .with_physical_optimizer_rule(Arc::new(create_physical_optimizer()))
+            .with_physical_optimizer_rule(Arc::new(physical_optimizer))
             .build();
         SessionContext::new_with_state(state)
     }
@@ -1182,7 +1187,7 @@ mod tests {
         write_date_parquet(&table_path);
 
         let optimizer = Arc::new(LineageOptimizer::new());
-        let ctx = create_session_context(optimizer.clone());
+        let ctx = create_session_context(optimizer.clone()).await;
         ctx.register_parquet(
             "table_a",
             table_path.to_str().unwrap(),
@@ -1203,7 +1208,7 @@ mod tests {
         write_date_parquet(&table_b_path);
 
         let optimizer = Arc::new(LineageOptimizer::new());
-        let ctx = create_session_context(optimizer.clone());
+        let ctx = create_session_context(optimizer.clone()).await;
         ctx.register_parquet(
             "table_a",
             table_a_path.to_str().unwrap(),
@@ -1229,7 +1234,7 @@ mod tests {
         write_variant_parquet(&variant_path);
 
         let optimizer = Arc::new(LineageOptimizer::new());
-        let ctx = create_session_context(optimizer.clone());
+        let ctx = create_session_context(optimizer.clone()).await;
         ctx.register_udf(ScalarUDF::new_from_impl(VariantGetUdf::default()));
         ctx.register_udf(ScalarUDF::new_from_impl(VariantToJsonUdf::default()));
         ctx.register_parquet(
@@ -1252,7 +1257,7 @@ mod tests {
         write_variant_parquet(&variant_path);
 
         let optimizer = Arc::new(LineageOptimizer::new());
-        let ctx = create_session_context(optimizer.clone());
+        let ctx = create_session_context(optimizer.clone()).await;
         ctx.register_udf(ScalarUDF::new_from_impl(VariantGetUdf::default()));
         ctx.register_udf(ScalarUDF::new_from_impl(VariantToJsonUdf::default()));
         ctx.register_parquet(
