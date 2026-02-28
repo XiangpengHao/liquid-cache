@@ -217,10 +217,11 @@ mod tests {
     };
     #[tokio::test]
     async fn test_register_object_store() {
+        let temp_dir = tempfile::tempdir().unwrap();
         let server = LiquidCacheServiceInner::new(
             Arc::new(SessionContext::new()),
             None,
-            PathBuf::from("test"),
+            temp_dir.path().to_path_buf(),
             Box::new(LiquidPolicy::new()),
             Box::new(TranscodeSqueezeEvict),
             Box::new(AlwaysHydrate::new()),
