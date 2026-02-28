@@ -4,21 +4,18 @@ use crate::sync::{Arc, RwLock};
 use arrow::array::ArrayRef;
 use arrow_schema::ArrowError;
 use bytes::Bytes;
-use std::path::PathBuf;
 
 #[derive(Debug)]
 pub struct CacheConfig {
     batch_size: usize,
     max_cache_bytes: usize,
-    cache_root_dir: PathBuf,
 }
 
 impl CacheConfig {
-    pub(super) fn new(batch_size: usize, max_cache_bytes: usize, cache_root_dir: PathBuf) -> Self {
+    pub(super) fn new(batch_size: usize, max_cache_bytes: usize) -> Self {
         Self {
             batch_size,
             max_cache_bytes,
-            cache_root_dir,
         }
     }
 
@@ -28,10 +25,6 @@ impl CacheConfig {
 
     pub fn max_cache_bytes(&self) -> usize {
         self.max_cache_bytes
-    }
-
-    pub fn cache_root_dir(&self) -> &PathBuf {
-        &self.cache_root_dir
     }
 }
 
@@ -56,24 +49,16 @@ pub(crate) fn create_cache_store(
     max_cache_bytes: usize,
     policy: Box<dyn super::policies::CachePolicy>,
 ) -> Arc<super::core::LiquidCache> {
-    use tempfile::tempdir;
+    use crate::cache::{AlwaysHydrate, LiquidCacheBuilder, TranscodeSqueezeEvict};
 
-    use crate::cache::{
-        AlwaysHydrate, DefaultIoContext, LiquidCacheBuilder, TranscodeSqueezeEvict,
-    };
-
-    let temp_dir = tempdir().unwrap();
-    let base_dir = temp_dir.keep();
     let batch_size = 128;
 
     let builder = LiquidCacheBuilder::new()
         .with_batch_size(batch_size)
         .with_max_cache_bytes(max_cache_bytes)
-        .with_cache_dir(base_dir.clone())
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
         .with_hydration_policy(Box::new(AlwaysHydrate::new()))
-        .with_cache_policy(policy)
-        .with_io_context(Arc::new(DefaultIoContext::new(base_dir)));
+        .with_cache_policy(policy);
     builder.build()
 }
 

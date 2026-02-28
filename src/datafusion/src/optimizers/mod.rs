@@ -316,8 +316,6 @@ fn build_variant_typed_value_field(
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use datafusion::{datasource::physical_plan::FileScanConfig, prelude::SessionContext};
     use liquid_cache::{
         cache::{AlwaysHydrate, squeeze_policies::TranscodeSqueezeEvict},
@@ -325,20 +323,20 @@ mod tests {
     };
 
     use crate::LiquidCacheParquet;
-    use liquid_cache_common::IoMode;
 
     use super::*;
 
     fn rewrite_plan_inner(plan: Arc<dyn ExecutionPlan>) {
         let expected_schema = plan.schema();
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let store = pollster::block_on(t4::mount(tmp_dir.path().join("liquid_cache.t4"))).unwrap();
         let liquid_cache = Arc::new(LiquidCacheParquet::new(
             8192,
             1000000,
-            PathBuf::from("test"),
+            store,
             Box::new(LiquidPolicy::new()),
             Box::new(TranscodeSqueezeEvict),
             Box::new(AlwaysHydrate::new()),
-            IoMode::Uring,
         ));
         let rewritten = rewrite_data_source_plan(plan, &liquid_cache, true);
 

@@ -1,5 +1,4 @@
 use std::future::{Future, IntoFuture};
-use std::path::PathBuf;
 use std::pin::Pin;
 
 use arrow::array::{
@@ -32,7 +31,6 @@ use crate::sync::Arc;
 pub struct LiquidCacheBuilder {
     batch_size: usize,
     max_cache_bytes: usize,
-    cache_dir: Option<PathBuf>,
     cache_policy: Box<dyn CachePolicy>,
     hydration_policy: Box<dyn HydrationPolicy>,
     squeeze_policy: Box<dyn SqueezePolicy>,
@@ -51,19 +49,11 @@ impl LiquidCacheBuilder {
         Self {
             batch_size: 8192,
             max_cache_bytes: 1024 * 1024 * 1024,
-            cache_dir: None,
             cache_policy: Box::new(LiquidPolicy::new()),
             hydration_policy: Box::new(super::AlwaysHydrate::new()),
             squeeze_policy: Box::new(TranscodeSqueezeEvict),
             io_context: None,
         }
-    }
-
-    /// Set the cache directory for the cache.
-    /// Default is a temporary directory.
-    pub fn with_cache_dir(mut self, cache_dir: PathBuf) -> Self {
-        self.cache_dir = Some(cache_dir);
-        self
     }
 
     /// Set the batch size for the cache.
@@ -111,17 +101,19 @@ impl LiquidCacheBuilder {
     /// Build the cache storage.
     ///
     /// The cache storage is wrapped in an [Arc] to allow for concurrent access.
+    /// When no custom [IoContext] is provided, a [`t4::Store`] is mounted at a
+    /// temporary directory using `pollster::block_on`.
     pub fn build(self) -> Arc<LiquidCache> {
-        let cache_dir = self
-            .cache_dir
-            .unwrap_or_else(|| tempfile::tempdir().unwrap().keep());
-        let io_worker = self
-            .io_context
-            .unwrap_or_else(|| Arc::new(DefaultIoContext::new(cache_dir.clone())));
+        let io_worker = self.io_context.unwrap_or_else(|| {
+            let cache_dir = tempfile::tempdir().unwrap().keep();
+            let store_path = cache_dir.join("liquid_cache.t4");
+            let store =
+                pollster::block_on(t4::mount(&store_path)).expect("failed to mount t4 store");
+            Arc::new(DefaultIoContext::new(store))
+        });
         Arc::new(LiquidCache::new(
             self.batch_size,
             self.max_cache_bytes,
-            cache_dir,
             self.squeeze_policy,
             self.cache_policy,
             self.hydration_policy,

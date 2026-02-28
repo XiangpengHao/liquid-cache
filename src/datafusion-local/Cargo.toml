@@ -17,6 +17,8 @@ arrow = { workspace = true }
 arrow-schema = { workspace = true }
 tokio = { workspace = true }
 fastrace = { workspace = true }
+t4 = { workspace = true }
+pollster = { workspace = true }
 
 
 [dev-dependencies]

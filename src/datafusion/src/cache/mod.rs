@@ -12,9 +12,8 @@ use liquid_cache::cache::squeeze_policies::SqueezePolicy;
 use liquid_cache::cache::{
     CachePolicy, EventTrace, HydrationPolicy, LiquidCache, LiquidCacheBuilder,
 };
-use liquid_cache_common::IoMode;
 use parquet::arrow::arrow_reader::ArrowPredicate;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -51,13 +50,6 @@ impl CachedRowGroup {
         file_idx: u64,
         columns: &[(u64, Arc<Field>, bool)],
     ) -> Self {
-        let cache_dir = cache_store
-            .config()
-            .cache_root_dir()
-            .join(format!("file_{file_idx}"))
-            .join(format!("rg_{row_group_idx}"));
-        std::fs::create_dir_all(&cache_dir).expect("Failed to create cache directory");
-
         let mut column_maps = ColumnMaps::default();
         for (column_id, field, is_predicate_column) in columns {
             let column_access_path = ColumnAccessPath::new(file_idx, row_group_idx, *column_id);
@@ -250,18 +242,16 @@ impl LiquidCacheParquet {
     pub fn new(
         batch_size: usize,
         max_cache_bytes: usize,
-        cache_dir: PathBuf,
+        store: t4::Store,
         cache_policy: Box<dyn CachePolicy>,
         squeeze_policy: Box<dyn SqueezePolicy>,
         hydration_policy: Box<dyn HydrationPolicy>,
-        io_mode: IoMode,
     ) -> Self {
         assert!(batch_size.is_power_of_two());
-        let io_context = Arc::new(ParquetIoContext::new(cache_dir.clone(), io_mode));
+        let io_context = Arc::new(ParquetIoContext::new(store));
         let cache_storage_builder = LiquidCacheBuilder::new()
             .with_batch_size(batch_size)
             .with_max_cache_bytes(max_cache_bytes)
-            .with_cache_dir(cache_dir.clone())
             .with_squeeze_policy(squeeze_policy)
             .with_cache_policy(cache_policy)
             .with_hydration_policy(hydration_policy)
@@ -385,14 +375,14 @@ mod tests {
 
     fn setup_cache(batch_size: usize, schema: SchemaRef) -> CachedRowGroupRef {
         let tmp_dir = tempfile::tempdir().unwrap();
+        let store = pollster::block_on(t4::mount(tmp_dir.path().join("liquid_cache.t4"))).unwrap();
         let cache = LiquidCacheParquet::new(
             batch_size,
             usize::MAX,
-            tmp_dir.path().to_path_buf(),
+            store,
             Box::new(LiquidPolicy::new()),
             Box::new(TranscodeSqueezeEvict),
             Box::new(AlwaysHydrate::new()),
-            IoMode::Uring,
         );
         let file = cache.register_or_get_file("test".to_string(), schema);
         file.create_row_group(0, vec![])

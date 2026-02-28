@@ -9,6 +9,7 @@ use datafusion::logical_expr::Operator;
 use datafusion::prelude::*;
 use datafusion::scalar::ScalarValue;
 use futures::StreamExt;
+use liquid_cache::cache::DefaultIoContext;
 use liquid_cache::cache::EntryID;
 use liquid_cache::cache::LiquidCache;
 use liquid_cache::cache::LiquidCacheBuilder;
@@ -38,15 +39,20 @@ struct CliArgs {
 fn main() {
     let args = CliArgs::parse();
 
-    // 1) Build cache storage with FILO and a small budget (100 MB)
-    let mut builder = LiquidCacheBuilder::new()
+    // 1) Build cache storage with FILO and a small budget (500 MB)
+    let cache_dir = args
+        .cache_dir
+        .clone()
+        .unwrap_or_else(|| tempfile::tempdir().unwrap().keep());
+    let store_path = cache_dir.join("liquid_cache.t4");
+    let store = pollster::block_on(t4::mount(&store_path)).expect("failed to mount t4 store");
+    let io_context = Arc::new(DefaultIoContext::new(store));
+    let storage = LiquidCacheBuilder::new()
         .with_max_cache_bytes(500 * 1024 * 1024)
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
-        .with_cache_policy(Box::new(FiloPolicy::new()));
-    if let Some(dir) = args.cache_dir.clone() {
-        builder = builder.with_cache_dir(dir);
-    }
-    let storage = builder.build();
+        .with_cache_policy(Box::new(FiloPolicy::new()))
+        .with_io_context(io_context)
+        .build();
 
     // 2) Load Referer column from parquet using DataFusion
     let (ids, lens, total_size) = load_and_insert_referer(&storage, &args.parquet);

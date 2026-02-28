@@ -61,6 +61,8 @@ uuid = { version = "1.21.0", features = ["v4"] }
 fastrace = "0.7"
 fastrace-tonic = "0.1"
 congee = "0.4.1"
+t4 = { git = "https://github.com/XiangpengHao/t4" }
+pollster = "0.4"
 insta = "1.46.3"
 
 [workspace.metadata.cargo-shear]

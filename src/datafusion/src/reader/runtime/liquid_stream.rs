@@ -708,20 +708,19 @@ mod tests {
     use liquid_cache::cache::AlwaysHydrate;
     use liquid_cache::cache::squeeze_policies::Evict;
     use liquid_cache::cache_policies::LiquidPolicy;
-    use liquid_cache_common::IoMode;
     use parquet::arrow::arrow_reader::RowSelection;
     use std::sync::Arc;
 
     fn make_cache(batch_size: usize, schema: SchemaRef) -> CachedRowGroupRef {
         let tmp_dir = tempfile::tempdir().unwrap();
+        let store = pollster::block_on(t4::mount(tmp_dir.path().join("liquid_cache.t4"))).unwrap();
         let cache = LiquidCacheParquet::new(
             batch_size,
             usize::MAX,
-            tmp_dir.path().to_path_buf(),
+            store,
             Box::new(LiquidPolicy::new()),
             Box::new(Evict),
             Box::new(AlwaysHydrate::new()),
-            IoMode::Uring,
         );
         let file = cache.register_or_get_file("test.parquet".to_string(), schema);
         file.create_row_group(0, vec![])

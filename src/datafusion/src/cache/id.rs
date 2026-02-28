@@ -1,7 +1,4 @@
-use std::{
-    ops::Deref,
-    path::{Path, PathBuf},
-};
+use std::ops::Deref;
 
 use liquid_cache::cache::EntryID;
 
@@ -86,14 +83,16 @@ impl ParquetArrayID {
         self.col_id as u64
     }
 
-    /// Get the on-disk path.
-    pub fn on_disk_liquid_path(&self, cache_root_dir: &Path) -> PathBuf {
-        let batch_id = self.batch_id_inner();
-        cache_root_dir
-            .join(format!("file_{}", self.file_id_inner()))
-            .join(format!("rg_{}", self.row_group_id_inner()))
-            .join(format!("col_{}", self.column_id_inner()))
-            .join(format!("batch_{batch_id}.liquid"))
+    /// Returns a human-readable string representation of this entry
+    /// (e.g. `file_1/rg_2/col_3/batch_4`).
+    pub fn display_path(&self) -> String {
+        format!(
+            "file_{}/rg_{}/col_{}/batch_{}",
+            self.file_id_inner(),
+            self.row_group_id_inner(),
+            self.column_id_inner(),
+            self.batch_id_inner()
+        )
     }
 }
 
@@ -158,15 +157,6 @@ impl ColumnAccessPath {
         }
     }
 
-    /// Initialize the directory for the column access path.
-    pub fn initialize_dir(&self, cache_root_dir: &Path) {
-        let path = cache_root_dir
-            .join(format!("file_{}", self.file_id_inner()))
-            .join(format!("rg_{}", self.row_group_id_inner()))
-            .join(format!("col_{}", self.column_id_inner()));
-        std::fs::create_dir_all(&path).expect("Failed to create cache directory");
-    }
-
     /// Get the file id.
     fn file_id_inner(&self) -> u64 {
         self.file_id as u64
@@ -205,8 +195,6 @@ impl From<ParquetArrayID> for ColumnAccessPath {
 
 #[cfg(test)]
 mod tests {
-    use tempfile::tempdir;
-
     use super::*;
 
     #[test]
@@ -256,16 +244,9 @@ mod tests {
     }
 
     #[test]
-    fn test_cache_entry_id_on_disk_path() {
-        let temp_dir = tempdir().unwrap();
-        let cache_root = temp_dir.path();
+    fn test_cache_entry_id_display_path() {
         let entry_id = ParquetArrayID::new(1, 2, 3, BatchID::from_raw(4));
-        let expected_path = cache_root
-            .join("file_1")
-            .join("rg_2")
-            .join("col_3")
-            .join("batch_4.liquid");
-        assert_eq!(entry_id.on_disk_liquid_path(cache_root), expected_path);
+        assert_eq!(entry_id.display_path(), "file_1/rg_2/col_3/batch_4");
     }
 
     #[test]
@@ -312,39 +293,18 @@ mod tests {
     }
 
     #[test]
-    fn test_column_path_directory_hosts_cache_entry_path() {
-        let temp_dir = tempdir().unwrap();
-        let cache_root = temp_dir.path();
-
-        // Create a column path
+    fn test_column_path_entry_id() {
         let file_id = 5u64;
         let row_group_id = 6u64;
         let column_id = 7u64;
         let column_path = ColumnAccessPath::new(file_id, row_group_id, column_id);
 
-        // Initialize the directory
-        column_path.initialize_dir(cache_root);
-
-        // Create a cache entry ID from the column path
         let batch_id = BatchID::from_raw(8);
         let entry_id = column_path.entry_id(batch_id);
 
-        // Get the on-disk path
-        let entry_path = entry_id.on_disk_liquid_path(cache_root);
-
-        // Verify the parent directory of the entry path exists
-        assert!(entry_path.parent().unwrap().exists());
-
-        // Verify the directory structure matches
-        let expected_dir = cache_root
-            .join(format!("file_{file_id}"))
-            .join(format!("rg_{row_group_id}"))
-            .join(format!("col_{column_id}"));
-
-        assert_eq!(entry_path.parent().unwrap(), &expected_dir);
-
-        // Verify we can create a file at the entry path
-        std::fs::write(&entry_path, b"test data").unwrap();
-        assert!(entry_path.exists());
+        assert_eq!(entry_id.file_id_inner(), file_id);
+        assert_eq!(entry_id.row_group_id_inner(), row_group_id);
+        assert_eq!(entry_id.column_id_inner(), column_id);
+        assert_eq!(entry_id.batch_id_inner(), *batch_id as u64);
     }
 }

@@ -1,51 +1,33 @@
 use std::{
     collections::VecDeque,
     ops::Range,
-    path::PathBuf,
     sync::{Arc, RwLock},
 };
 
 use ahash::AHashMap;
 use bytes::Bytes;
 use liquid_cache::cache::{CacheExpression, EntryID, IoContext, LiquidCompressorStates};
-use liquid_cache_common::IoMode;
 
 use crate::cache::{ColumnAccessPath, ParquetArrayID};
 
-#[cfg(target_os = "linux")]
-mod io_uring;
-
-mod io_backend;
+/// Convert an [`EntryID`] to a t4 key (8-byte little-endian representation).
+fn entry_id_to_key(entry_id: &EntryID) -> Vec<u8> {
+    usize::from(*entry_id).to_le_bytes().to_vec()
+}
 
 #[derive(Debug)]
 pub(crate) struct ParquetIoContext {
     compressor_states: RwLock<AHashMap<ColumnAccessPath, Arc<LiquidCompressorStates>>>,
     expression_hints: RwLock<AHashMap<ColumnAccessPath, ColumnExpressionTracker>>,
-    base_dir: PathBuf,
-    io_mode: IoMode,
+    store: t4::Store,
 }
 
 impl ParquetIoContext {
-    pub fn new(base_dir: PathBuf, io_mode: IoMode) -> Self {
-        if matches!(
-            io_mode,
-            IoMode::UringDirect | IoMode::Uring | IoMode::UringBlocking
-        ) {
-            #[cfg(target_os = "linux")]
-            {
-                crate::io::io_uring::initialize_uring_pool(io_mode);
-            }
-            #[cfg(not(target_os = "linux"))]
-            {
-                panic!("io_mode {:?} is only supported on Linux", io_mode);
-            }
-        }
-
+    pub fn new(store: t4::Store) -> Self {
         Self {
             compressor_states: RwLock::new(AHashMap::new()),
             expression_hints: RwLock::new(AHashMap::new()),
-            base_dir,
-            io_mode,
+            store,
         }
     }
 }
@@ -111,25 +93,44 @@ impl IoContext for ParquetIoContext {
             .clone()
     }
 
-    fn disk_path(&self, entry_id: &EntryID) -> PathBuf {
-        let parquet_array_id = ParquetArrayID::from(*entry_id);
-        parquet_array_id.on_disk_liquid_path(&self.base_dir)
-    }
-
     #[inline(never)]
     #[fastrace::trace]
     async fn read(
         &self,
-        path: PathBuf,
+        entry_id: &EntryID,
         range: Option<Range<u64>>,
     ) -> Result<Bytes, std::io::Error> {
-        io_backend::read(self.io_mode, path, range).await
+        let key = entry_id_to_key(entry_id);
+        match range {
+            Some(range) => {
+                let len = range.end - range.start;
+                let bytes = self
+                    .store
+                    .get_range(&key, range.start, len)
+                    .await
+                    .map_err(|e| std::io::Error::other(e.to_string()))?;
+                Ok(Bytes::from(bytes))
+            }
+            None => {
+                let bytes = self
+                    .store
+                    .get(&key)
+                    .await
+                    .map_err(|e| std::io::Error::other(e.to_string()))?;
+                Ok(Bytes::from(bytes))
+            }
+        }
     }
 
     #[inline(never)]
     #[fastrace::trace]
-    async fn write_file(&self, path: PathBuf, data: Bytes) -> Result<(), std::io::Error> {
-        io_backend::write(self.io_mode, path, data).await
+    async fn write(&self, entry_id: &EntryID, data: Bytes) -> Result<(), std::io::Error> {
+        let key = entry_id_to_key(entry_id);
+        self.store
+            .put(key, data.to_vec())
+            .await
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        Ok(())
     }
 }
 
@@ -137,17 +138,21 @@ impl IoContext for ParquetIoContext {
 mod tests {
     use super::*;
     use liquid_cache::liquid_array::Date32Field;
-    use tempfile::tempdir;
 
     fn entry(file: u64, rg: u64, col: u64) -> EntryID {
         let id = ParquetArrayID::new(file, rg, col, crate::cache::BatchID::from_raw(0));
         EntryID::from(usize::from(id))
     }
 
+    fn make_ctx() -> ParquetIoContext {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = pollster::block_on(t4::mount(tmp.path().join("liquid_cache.t4"))).unwrap();
+        ParquetIoContext::new(store)
+    }
+
     #[test]
     fn squeeze_hint_tracks_majority() {
-        let tmp = tempdir().unwrap();
-        let ctx = ParquetIoContext::new(tmp.path().to_path_buf(), IoMode::StdBlocking);
+        let ctx = make_ctx();
         let e = entry(1, 2, 3);
         let month = Arc::new(CacheExpression::extract_date32(Date32Field::Month));
         let year = Arc::new(CacheExpression::extract_date32(Date32Field::Year));
@@ -162,8 +167,7 @@ mod tests {
 
     #[test]
     fn squeeze_hint_prefers_recent_on_tie() {
-        let tmp = tempdir().unwrap();
-        let ctx = ParquetIoContext::new(tmp.path().to_path_buf(), IoMode::StdBlocking);
+        let ctx = make_ctx();
         let e = entry(9, 9, 9);
         let year = Arc::new(CacheExpression::extract_date32(Date32Field::Year));
         let day = Arc::new(CacheExpression::extract_date32(Date32Field::Day));

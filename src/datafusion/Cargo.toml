@@ -27,11 +27,8 @@ parquet-variant-compute = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
-[target.'cfg(target_os = "linux")'.dependencies]
-io-uring = "0.7.11"
-libc = "0.2.182"
-crossbeam-channel = "0.5.15"
-crossbeam-queue = "0.3.12"
+t4 = { workspace = true }
+pollster = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3.25.0"
