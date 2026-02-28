@@ -3,11 +3,9 @@ use divan::Bencher;
 use liquid_cache::cache::AlwaysHydrate;
 use liquid_cache::cache::squeeze_policies::TranscodeSqueezeEvict;
 use liquid_cache::cache_policies::LiquidPolicy;
-use liquid_cache_common::IoMode;
 use liquid_cache_datafusion::cache::CachedColumn;
 use liquid_cache_datafusion::{FilterCandidateBuilder, LiquidPredicate};
 use std::sync::Arc;
-use tempfile::TempDir;
 
 use arrow::array::{ArrayRef, Int32Array, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema};
@@ -39,27 +37,28 @@ fn create_boolean_filter(array_size: usize, selectivity: f64) -> BooleanBuffer {
     BooleanBuffer::from(values)
 }
 
-fn setup_cache(tmp_dir: &TempDir) -> Arc<CachedColumn> {
+fn setup_cache() -> (Arc<CachedColumn>, tempfile::TempDir) {
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let store_path = tmp_dir.path().join("liquid_cache.t4");
+    let store = pollster::block_on(t4::mount(&store_path)).expect("failed to mount t4 store");
     let cache = LiquidCacheParquet::new(
         BATCH_SIZE,
         1024 * 1024 * 1024, // max_cache_bytes (1GB)
-        tmp_dir.path().to_path_buf(),
+        store,
         Box::new(LiquidPolicy::new()),
         Box::new(TranscodeSqueezeEvict),
         Box::new(AlwaysHydrate::new()),
-        IoMode::Uring,
     );
     let field = Arc::new(Field::new("test_column", DataType::Int32, false));
     let schema = Arc::new(Schema::new(vec![field.clone()]));
     let file = cache.register_or_get_file("test_file.parquet".to_string(), schema);
     let row_group = file.create_row_group(0, vec![]);
-    row_group.get_column(0).unwrap()
+    (row_group.get_column(0).unwrap(), tmp_dir)
 }
 
 #[divan::bench(args = SELECTIVITIES, sample_count = 1000)]
 fn get_arrow_array_with_filter_arrow_cache(bencher: Bencher, selectivity: f64) {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let column = setup_cache(&temp_dir);
+    let (column, _tmp_dir) = setup_cache();
 
     // Create and insert test data
     let test_data = create_test_data(BATCH_SIZE);
@@ -79,8 +78,7 @@ fn get_arrow_array_with_filter_arrow_cache(bencher: Bencher, selectivity: f64) {
 
 #[divan::bench(args = SELECTIVITIES, sample_count = 1000)]
 fn get_arrow_array_with_filter_liquid_cache(bencher: Bencher, selectivity: f64) {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let column = setup_cache(&temp_dir);
+    let (column, _tmp_dir) = setup_cache();
 
     // Create and insert test data
     let test_data = create_test_data(BATCH_SIZE);

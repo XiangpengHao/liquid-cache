@@ -7,7 +7,7 @@ use datafusion::{
 };
 use liquid_cache::{ByteCache, cache::squeeze_policies::SqueezePolicy};
 use liquid_cache::{cache::HydrationPolicy, cache_policies::CachePolicy};
-use liquid_cache_common::{IoMode, rpc::ExecutionMetricsResponse};
+use liquid_cache_common::rpc::ExecutionMetricsResponse;
 use liquid_cache_datafusion::{
     cache::{LiquidCacheParquet, LiquidCacheParquetRef},
     extract_execution_metrics,
@@ -51,21 +51,22 @@ impl LiquidCacheServiceInner {
         cache_policy: Box<dyn CachePolicy>,
         squeeze_policy: Box<dyn SqueezePolicy>,
         hydration_policy: Box<dyn HydrationPolicy>,
-        io_mode: IoMode,
     ) -> Self {
         let batch_size = default_ctx.state().config().batch_size();
 
         let parquet_cache_dir = disk_cache_dir.join("parquet");
         let liquid_cache_dir = disk_cache_dir.join("liquid");
+        std::fs::create_dir_all(&liquid_cache_dir).expect("Failed to create liquid cache dir");
 
+        let store = pollster::block_on(t4::mount(liquid_cache_dir.join("liquid_cache.t4")))
+            .expect("Failed to mount t4 store");
         let liquid_cache = Arc::new(LiquidCacheParquet::new(
             batch_size,
             max_cache_bytes.unwrap_or(usize::MAX),
-            liquid_cache_dir,
+            store,
             cache_policy,
             squeeze_policy,
             hydration_policy,
-            io_mode,
         ));
 
         Self {
@@ -223,7 +224,6 @@ mod tests {
             Box::new(LiquidPolicy::new()),
             Box::new(TranscodeSqueezeEvict),
             Box::new(AlwaysHydrate::new()),
-            IoMode::Uring,
         );
         let url = Url::parse("file:///").unwrap();
         server

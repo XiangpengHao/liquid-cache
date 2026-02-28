@@ -14,7 +14,6 @@ use liquid_cache::cache::squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict
 use liquid_cache::cache::{AlwaysHydrate, HydrationPolicy};
 use liquid_cache::cache_policies::CachePolicy;
 use liquid_cache::cache_policies::LiquidPolicy;
-use liquid_cache_common::IoMode;
 use liquid_cache_datafusion::optimizers::{LineageOptimizer, LocalModeOptimizer};
 use liquid_cache_datafusion::{
     LiquidCacheParquet, LiquidCacheParquetRef, VariantGetUdf, VariantPretty, VariantToJsonUdf,
@@ -70,8 +69,6 @@ pub struct LiquidCacheLocalBuilder {
     hydration_policy: Box<dyn HydrationPolicy>,
     span: fastrace::Span,
 
-    io_mode: IoMode,
-
     eager_shredding: bool,
 }
 
@@ -85,7 +82,6 @@ impl Default for LiquidCacheLocalBuilder {
             squeeze_policy: Box::new(TranscodeSqueezeEvict),
             hydration_policy: Box::new(AlwaysHydrate::new()),
             span: fastrace::Span::enter_with_local_parent("liquid_cache_datafusion_local_builder"),
-            io_mode: IoMode::StdBlocking,
             eager_shredding: true,
         }
     }
@@ -139,12 +135,6 @@ impl LiquidCacheLocalBuilder {
         self
     }
 
-    /// Set IO mode
-    pub fn with_io_mode(mut self, io_mode: IoMode) -> Self {
-        self.io_mode = io_mode;
-        self
-    }
-
     /// Set enable shredding
     pub fn with_eager_shredding(mut self, eager_shredding: bool) -> Self {
         self.eager_shredding = eager_shredding;
@@ -167,14 +157,15 @@ impl LiquidCacheLocalBuilder {
         config.options_mut().execution.parquet.skip_metadata = false;
         config.options_mut().execution.batch_size = self.batch_size;
 
+        let store = pollster::block_on(t4::mount(self.cache_dir.join("liquid_cache.t4")))
+            .expect("Failed to mount t4 store");
         let cache = LiquidCacheParquet::new(
             self.batch_size,
             self.max_cache_bytes,
-            self.cache_dir,
+            store,
             self.cache_policy,
             self.squeeze_policy,
             self.hydration_policy,
-            self.io_mode,
         );
         let cache_ref = Arc::new(cache);
 

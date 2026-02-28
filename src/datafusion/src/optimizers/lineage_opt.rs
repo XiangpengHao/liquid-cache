@@ -160,7 +160,7 @@ impl OptimizerRule for LineageOptimizer {
         let _ = analyzer.analyze_plan(&plan)?;
         let table_usage = analyzer.finish();
         let mut date_findings = table_usage.find_date32_extractions();
-        date_findings.sort_by(|a, b| a.column.flat_name().cmp(&b.column.flat_name()));
+        date_findings.sort_by_key(|a| a.column.flat_name());
 
         let mut variant_findings = table_usage.find_variant_gets();
         variant_findings.sort();
@@ -1068,14 +1068,11 @@ fn part_to_unit(expr: &Expr) -> Option<SupportedIntervalUnit> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use crate::optimizers::{
         DATE_MAPPING_METADATA_KEY, LocalModeOptimizer, VARIANT_MAPPING_METADATA_KEY,
     };
     use crate::{LiquidCacheParquet, VariantGetUdf, VariantToJsonUdf};
     use liquid_cache::cache::AlwaysHydrate;
-    use liquid_cache_common::IoMode;
 
     use super::*;
     use arrow::array::{ArrayRef, Date32Array, StringArray, TimestampMicrosecondArray};
@@ -1098,14 +1095,15 @@ mod tests {
     // ─────────────────────────────────────────────────────────────────────────────
 
     fn create_physical_optimizer() -> LocalModeOptimizer {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let store = pollster::block_on(t4::mount(tmp_dir.path().join("liquid_cache.t4"))).unwrap();
         LocalModeOptimizer::with_cache(Arc::new(LiquidCacheParquet::new(
             1024,
             1024 * 1024 * 1024,
-            PathBuf::from("test"),
+            store,
             Box::new(LiquidPolicy::new()),
             Box::new(TranscodeSqueezeEvict),
             Box::new(AlwaysHydrate::new()),
-            IoMode::Uring,
         )))
     }
 

@@ -11,7 +11,6 @@ use datafusion::prelude::{SessionConfig, SessionContext};
 use liquid_cache::cache::NoHydration;
 use liquid_cache::cache::squeeze_policies::{Evict, TranscodeEvict, TranscodeSqueezeEvict};
 use liquid_cache::cache_policies::LiquidPolicy;
-use liquid_cache_common::IoMode;
 use liquid_cache_datafusion::{LiquidCacheParquetRef, extract_execution_metrics};
 use liquid_cache_datafusion_local::LiquidCacheLocalBuilder;
 use log::{info, warn};
@@ -199,7 +198,6 @@ pub struct InProcessBenchmarkRunner {
     pub flamegraph_dir: Option<PathBuf>,
     pub query_filter: Option<usize>,
     pub cache_dir: Option<PathBuf>,
-    pub io_mode: IoMode,
     pub output_dir: Option<PathBuf>,
     pub collect_perf_events: bool,
 }
@@ -221,7 +219,6 @@ impl InProcessBenchmarkRunner {
             flamegraph_dir: None,
             query_filter: None,
             cache_dir: None,
-            io_mode: IoMode::default(),
             output_dir: None,
             collect_perf_events: false,
         }
@@ -269,11 +266,6 @@ impl InProcessBenchmarkRunner {
 
     pub fn with_cache_dir(mut self, cache_dir: Option<PathBuf>) -> Self {
         self.cache_dir = cache_dir;
-        self
-    }
-
-    pub fn with_io_mode(mut self, io_mode: IoMode) -> Self {
-        self.io_mode = io_mode;
         self
     }
 
@@ -346,7 +338,6 @@ impl InProcessBenchmarkRunner {
                     .with_cache_policy(Box::new(LiquidPolicy::new()))
                     .with_hydration_policy(Box::new(NoHydration::new()))
                     .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
-                    .with_io_mode(self.io_mode)
                     .with_eager_shredding(true)
                     .build(session_config)?;
                 (v.0, Some(v.1))
@@ -358,7 +349,6 @@ impl InProcessBenchmarkRunner {
                     .with_cache_policy(Box::new(LiquidPolicy::new()))
                     .with_hydration_policy(Box::new(NoHydration::new()))
                     .with_squeeze_policy(Box::new(TranscodeEvict))
-                    .with_io_mode(self.io_mode)
                     .build(session_config)?;
                 (v.0, Some(v.1))
             }

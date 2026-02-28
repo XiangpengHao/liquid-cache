@@ -4,7 +4,6 @@ use arrow_schema::DataType;
 use bytes::Bytes;
 use datafusion::physical_plan::PhysicalExpr;
 use futures::StreamExt;
-use std::path::PathBuf;
 
 use super::{
     budget::BudgetAccounting,
@@ -111,7 +110,6 @@ impl LiquidCache {
             memory_usage_bytes,
             disk_usage_bytes,
             max_cache_bytes: self.config.max_cache_bytes(),
-            cache_root_dir: self.config.cache_root_dir().clone(),
             runtime,
         }
     }
@@ -340,13 +338,12 @@ impl LiquidCache {
     pub(crate) fn new(
         batch_size: usize,
         max_cache_bytes: usize,
-        cache_dir: PathBuf,
         squeeze_policy: Box<dyn SqueezePolicy>,
         cache_policy: Box<dyn CachePolicy>,
         hydration_policy: Box<dyn HydrationPolicy>,
         io_worker: Arc<dyn IoContext>,
     ) -> Self {
-        let config = CacheConfig::new(batch_size, max_cache_bytes, cache_dir);
+        let config = CacheConfig::new(batch_size, max_cache_bytes);
         Self {
             index: ArtIndex::new(),
             budget: BudgetAccounting::new(config.max_cache_bytes()),
@@ -692,15 +689,17 @@ impl LiquidCache {
             kind: CachedBatchType::from(batch),
             bytes: bytes.len(),
         });
-        let path = self.io_context.disk_path(&entry_id);
         let len = bytes.len();
-        self.io_context.write_file(path, bytes).await.unwrap();
+        self.io_context.write(&entry_id, bytes).await.unwrap();
         self.budget.add_used_disk_bytes(len);
     }
 
     async fn read_disk_arrow_array(&self, entry_id: &EntryID) -> ArrayRef {
-        let path = self.io_context.disk_path(entry_id);
-        let bytes = self.io_context.read(path, None).await.expect("read failed");
+        let bytes = self
+            .io_context
+            .read(entry_id, None)
+            .await
+            .expect("read failed");
         let cursor = std::io::Cursor::new(bytes.to_vec());
         let mut reader =
             arrow::ipc::reader::StreamReader::try_new(cursor, None).expect("create reader failed");
@@ -717,8 +716,11 @@ impl LiquidCache {
         &self,
         entry_id: &EntryID,
     ) -> crate::liquid_array::LiquidArrayRef {
-        let path = self.io_context.disk_path(entry_id);
-        let bytes = self.io_context.read(path, None).await.expect("read failed");
+        let bytes = self
+            .io_context
+            .read(entry_id, None)
+            .await
+            .expect("read failed");
         self.trace(InternalEvent::IoReadLiquid {
             entry: *entry_id,
             bytes: bytes.len(),

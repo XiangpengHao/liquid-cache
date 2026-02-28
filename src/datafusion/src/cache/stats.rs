@@ -143,10 +143,7 @@ impl LiquidCacheParquet {
             let entry_id = ParquetArrayID::from(*entry_id);
             writer
                 .append_entry(
-                    entry_id
-                        .on_disk_liquid_path(self.cache_store.config().cache_root_dir())
-                        .to_str()
-                        .unwrap(),
+                    &entry_id.display_path(),
                     entry_id.row_group_id_inner(),
                     entry_id.column_id_inner(),
                     entry_id.batch_id_inner() * self.batch_size() as u64,
@@ -167,7 +164,7 @@ impl LiquidCacheParquet {
 mod tests {
     use std::io::Read;
 
-    use crate::cache::{IoMode, id::BatchID};
+    use crate::cache::id::BatchID;
 
     use super::*;
     use arrow::{
@@ -185,14 +182,14 @@ mod tests {
     #[tokio::test]
     async fn test_stats_writer() -> Result<(), ParquetError> {
         let tmp_dir = tempfile::tempdir().unwrap();
+        let store = pollster::block_on(t4::mount(tmp_dir.path().join("liquid_cache.t4"))).unwrap();
         let cache = LiquidCacheParquet::new(
             1024,
             usize::MAX,
-            tmp_dir.path().to_path_buf(),
+            store,
             Box::new(LiquidPolicy::new()),
             Box::new(Evict),
             Box::new(AlwaysHydrate::new()),
-            IoMode::Uring,
         );
         let fields: Vec<Field> = (0..8)
             .map(|i| Field::new(format!("test_{i}"), DataType::Int32, false))

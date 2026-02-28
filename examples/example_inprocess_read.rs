@@ -5,10 +5,7 @@ use liquid_cache_datafusion_local::storage::cache::{EntryID, LiquidCacheBuilder}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let temp_dir = tempfile::tempdir()?;
-    let storage = LiquidCacheBuilder::new()
-        .with_cache_dir(temp_dir.path().to_path_buf())
-        .build();
+    let storage = LiquidCacheBuilder::new().build();
 
     let entry_id = EntryID::from(7);
     let arrow_array = Arc::new(UInt64Array::from_iter_values(0..16));

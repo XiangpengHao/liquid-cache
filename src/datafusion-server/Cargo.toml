@@ -38,6 +38,8 @@ fastrace = { workspace = true }
 pprof = { version = "0.15.0", features = ["flamegraph"] }
 anyhow = "1.0"
 liquid-cache = { workspace = true }
+t4 = { workspace = true }
+pollster = { workspace = true }
 hdrhistogram = "7.5.4"
 
 [dev-dependencies]

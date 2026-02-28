@@ -1,4 +1,4 @@
-use std::{fmt::Debug, ops::Range, path::PathBuf};
+use std::{fmt::Debug, ops::Range};
 
 use ahash::AHashMap;
 use bytes::Bytes;
@@ -14,6 +14,9 @@ use crate::{
 };
 
 /// A trait for objects that can handle IO operations for the cache.
+///
+/// All IO is key-based: entries are identified by their [`EntryID`] and stored
+/// in a [`t4::Store`] rather than as individual files on disk.
 #[async_trait::async_trait]
 pub trait IoContext: Debug + Send + Sync {
     /// Add a squeeze hint for an entry.
@@ -34,32 +37,36 @@ pub trait IoContext: Debug + Send + Sync {
     /// Get the compressor for an entry.
     fn get_compressor(&self, entry_id: &EntryID) -> Arc<LiquidCompressorStates>;
 
-    /// Get the disk path for a cache entry.
-    fn disk_path(&self, entry_id: &EntryID) -> PathBuf;
+    /// Read bytes for the given entry, optionally restricted to the provided range.
+    async fn read(
+        &self,
+        entry_id: &EntryID,
+        range: Option<Range<u64>>,
+    ) -> Result<Bytes, std::io::Error>;
 
-    /// Read bytes from the file at the given path, optionally restricted to the provided range.
-    async fn read(&self, path: PathBuf, range: Option<Range<u64>>)
-    -> Result<Bytes, std::io::Error>;
-
-    /// Write the entire buffer to a file at the given path.
-    async fn write_file(&self, path: PathBuf, data: Bytes) -> Result<(), std::io::Error>;
+    /// Write data for the given entry.
+    async fn write(&self, entry_id: &EntryID, data: Bytes) -> Result<(), std::io::Error>;
 }
 
-/// A default implementation of [IoContext] that uses the default compressor.
-/// It uses tokio's async IO by default.
+/// Convert an [`EntryID`] to a t4 key (8-byte little-endian representation).
+fn entry_id_to_key(entry_id: &EntryID) -> Vec<u8> {
+    usize::from(*entry_id).to_le_bytes().to_vec()
+}
+
+/// A default implementation of [`IoContext`] backed by a [`t4::Store`].
 #[derive(Debug)]
 pub struct DefaultIoContext {
     compressor_state: Arc<LiquidCompressorStates>,
     squeeze_hints: RwLock<AHashMap<EntryID, Arc<CacheExpression>>>,
-    base_dir: PathBuf,
+    store: t4::Store,
 }
 
 impl DefaultIoContext {
-    /// Create a new instance of [DefaultIoContext].
-    pub fn new(base_dir: PathBuf) -> Self {
+    /// Create a new instance of [`DefaultIoContext`] backed by the given [`t4::Store`].
+    pub fn new(store: t4::Store) -> Self {
         Self {
             compressor_state: Arc::new(LiquidCompressorStates::new()),
-            base_dir,
+            store,
             squeeze_hints: RwLock::new(AHashMap::new()),
         }
     }
@@ -81,65 +88,40 @@ impl IoContext for DefaultIoContext {
         self.compressor_state.clone()
     }
 
-    fn disk_path(&self, entry_id: &EntryID) -> PathBuf {
-        self.base_dir
-            .join(format!("{:016x}.liquid", usize::from(*entry_id)))
-    }
-
     async fn read(
         &self,
-        path: PathBuf,
+        entry_id: &EntryID,
         range: Option<Range<u64>>,
     ) -> Result<Bytes, std::io::Error> {
-        if cfg!(test) {
-            let mut file = std::fs::File::open(path)?;
-            match range {
-                Some(range) => {
-                    let len = (range.end - range.start) as usize;
-                    let mut bytes = vec![0u8; len];
-                    std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(range.start))?;
-                    std::io::Read::read_exact(&mut file, &mut bytes)?;
-                    Ok(Bytes::from(bytes))
-                }
-                None => {
-                    let mut bytes = Vec::new();
-                    std::io::Read::read_to_end(&mut file, &mut bytes)?;
-                    Ok(Bytes::from(bytes))
-                }
+        let key = entry_id_to_key(entry_id);
+        match range {
+            Some(range) => {
+                let len = range.end - range.start;
+                let bytes = self
+                    .store
+                    .get_range(&key, range.start, len)
+                    .await
+                    .map_err(|e| std::io::Error::other(e.to_string()))?;
+                Ok(Bytes::from(bytes))
             }
-        } else {
-            use tokio::io::AsyncReadExt;
-            use tokio::io::AsyncSeekExt;
-            let mut file = tokio::fs::File::open(path).await?;
-
-            match range {
-                Some(range) => {
-                    let len = (range.end - range.start) as usize;
-                    let mut bytes = vec![0u8; len];
-                    file.seek(tokio::io::SeekFrom::Start(range.start)).await?;
-                    file.read_exact(&mut bytes).await?;
-                    Ok(Bytes::from(bytes))
-                }
-                None => {
-                    let mut bytes = Vec::new();
-                    file.read_to_end(&mut bytes).await?;
-                    Ok(Bytes::from(bytes))
-                }
+            None => {
+                let bytes = self
+                    .store
+                    .get(&key)
+                    .await
+                    .map_err(|e| std::io::Error::other(e.to_string()))?;
+                Ok(Bytes::from(bytes))
             }
         }
     }
 
-    async fn write_file(&self, path: PathBuf, data: Bytes) -> Result<(), std::io::Error> {
-        if cfg!(test) {
-            std::fs::write(path, data.as_ref())?;
-            Ok(())
-        } else {
-            use tokio::io::AsyncWriteExt;
-            let mut file = tokio::fs::File::create(path).await?;
-            file.write_all(&data).await?;
-            file.sync_all().await?;
-            Ok(())
-        }
+    async fn write(&self, entry_id: &EntryID, data: Bytes) -> Result<(), std::io::Error> {
+        let key = entry_id_to_key(entry_id);
+        self.store
+            .put(key, data.to_vec())
+            .await
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        Ok(())
     }
 }
 
@@ -165,8 +147,7 @@ impl DefaultSqueezeIo {
 #[async_trait::async_trait]
 impl SqueezeIoHandler for DefaultSqueezeIo {
     async fn read(&self, range: Option<Range<u64>>) -> std::io::Result<Bytes> {
-        let path = self.io_context.disk_path(&self.entry_id);
-        let bytes = self.io_context.read(path, range).await?;
+        let bytes = self.io_context.read(&self.entry_id, range).await?;
         self.observer
             .record_internal(InternalEvent::IoReadSqueezedBacking {
                 entry: self.entry_id,

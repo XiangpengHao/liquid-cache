@@ -29,7 +29,7 @@ async fn read_squeezed_date_time() {
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
         .with_max_cache_bytes(array_size * 2)
         .with_io_context(Arc::new(DefaultIoContext::new(
-            temp_dir.path().to_path_buf(),
+            pollster::block_on(t4::mount(temp_dir.path().join("liquid_cache.t4"))).unwrap(),
         )))
         .build();
 
@@ -91,7 +91,7 @@ async fn read_squeezed_variant_path() {
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
         .with_max_cache_bytes(array_size * 3 / 2)
         .with_io_context(Arc::new(DefaultIoContext::new(
-            temp_dir.path().to_path_buf(),
+            pollster::block_on(t4::mount(temp_dir.path().join("liquid_cache.t4"))).unwrap(),
         )))
         .build();
 
@@ -150,7 +150,7 @@ async fn read_squeezed_int64_array() {
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
         .with_max_cache_bytes(array_size * 2)
         .with_io_context(Arc::new(DefaultIoContext::new(
-            temp_dir.path().to_path_buf(),
+            pollster::block_on(t4::mount(temp_dir.path().join("liquid_cache.t4"))).unwrap(),
         )))
         .build();
 

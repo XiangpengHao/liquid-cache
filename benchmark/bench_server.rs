@@ -3,7 +3,6 @@ use clap::Parser;
 use fastrace_tonic::FastraceServerLayer;
 use liquid_cache::{cache::NoHydration, cache_policies::LiquidPolicy};
 use liquid_cache_benchmarks::{BenchmarkMode, setup_observability};
-use liquid_cache_common::IoMode;
 use liquid_cache_datafusion_server::{LiquidCacheService, run_admin_server};
 use log::info;
 use mimalloc::MiMalloc;
@@ -47,10 +46,6 @@ struct CliArgs {
     /// Jaeger OTLP gRPC endpoint (for example: http://localhost:4317)
     #[arg(long = "jaeger-endpoint")]
     jaeger_endpoint: Option<String>,
-
-    /// IO mode, available options: uring, uring-direct, std-blocking, tokio, std-spawn-blocking
-    #[arg(long = "io-mode", default_value = "uring-multi-async")]
-    io_mode: IoMode,
 }
 
 #[tokio::main]
@@ -83,7 +78,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Box::new(LiquidPolicy::new()),
         squeeze_policy,
         Box::new(NoHydration::new()),
-        Some(args.io_mode),
     )?;
 
     let liquid_cache_datafusion_server = Arc::new(liquid_cache_datafusion_server);
