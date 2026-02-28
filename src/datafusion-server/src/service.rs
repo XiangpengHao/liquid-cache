@@ -44,7 +44,7 @@ pub(crate) struct LiquidCacheServiceInner {
 }
 
 impl LiquidCacheServiceInner {
-    pub fn new(
+    pub async fn new(
         default_ctx: Arc<SessionContext>,
         max_cache_bytes: Option<usize>,
         disk_cache_dir: PathBuf,
@@ -58,16 +58,20 @@ impl LiquidCacheServiceInner {
         let liquid_cache_dir = disk_cache_dir.join("liquid");
         std::fs::create_dir_all(&liquid_cache_dir).expect("Failed to create liquid cache dir");
 
-        let store = pollster::block_on(t4::mount(liquid_cache_dir.join("liquid_cache.t4")))
+        let store = t4::mount(liquid_cache_dir.join("liquid_cache.t4"))
+            .await
             .expect("Failed to mount t4 store");
-        let liquid_cache = Arc::new(LiquidCacheParquet::new(
-            batch_size,
-            max_cache_bytes.unwrap_or(usize::MAX),
-            store,
-            cache_policy,
-            squeeze_policy,
-            hydration_policy,
-        ));
+        let liquid_cache = Arc::new(
+            LiquidCacheParquet::new(
+                batch_size,
+                max_cache_bytes.unwrap_or(usize::MAX),
+                store,
+                cache_policy,
+                squeeze_policy,
+                hydration_policy,
+            )
+            .await,
+        );
 
         Self {
             execution_plans: Default::default(),
@@ -225,7 +229,8 @@ mod tests {
             Box::new(LiquidPolicy::new()),
             Box::new(TranscodeSqueezeEvict),
             Box::new(AlwaysHydrate::new()),
-        );
+        )
+        .await;
         let url = Url::parse("file:///").unwrap();
         server
             .register_object_store(&url, HashMap::new())

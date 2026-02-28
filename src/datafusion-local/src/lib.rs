@@ -44,7 +44,8 @@ pub use liquid_cache_common as common;
 ///         .with_max_cache_bytes(1024 * 1024 * 1024) // 1GB
 ///         .with_cache_dir(temp_dir.path().to_path_buf())
 ///         .with_cache_policy(Box::new(LiquidPolicy::new()))
-///         .build(SessionConfig::new())?;
+///         .build(SessionConfig::new())
+///         .await?;
 ///
 ///     // Register the test parquet file
 ///     ctx.register_parquet("hits", "../../examples/nano_hits.parquet", Default::default())
@@ -143,7 +144,7 @@ impl LiquidCacheLocalBuilder {
 
     /// Build a SessionContext with liquid cache configured
     /// Returns the SessionContext and the liquid cache reference
-    pub fn build(
+    pub async fn build(
         self,
         mut config: SessionConfig,
     ) -> Result<(SessionContext, LiquidCacheParquetRef)> {
@@ -157,7 +158,8 @@ impl LiquidCacheLocalBuilder {
         config.options_mut().execution.parquet.skip_metadata = false;
         config.options_mut().execution.batch_size = self.batch_size;
 
-        let store = pollster::block_on(t4::mount(self.cache_dir.join("liquid_cache.t4")))
+        let store = t4::mount(self.cache_dir.join("liquid_cache.t4"))
+            .await
             .expect("Failed to mount t4 store");
         let cache = LiquidCacheParquet::new(
             self.batch_size,
@@ -166,7 +168,8 @@ impl LiquidCacheLocalBuilder {
             self.cache_policy,
             self.squeeze_policy,
             self.hydration_policy,
-        );
+        )
+        .await;
         let cache_ref = Arc::new(cache);
 
         let date_extract_optimizer = Arc::new(LineageOptimizer::new());
@@ -203,7 +206,9 @@ mod local_tests {
         let file_format = ParquetFormat::default().with_enable_pruning(true);
         let listing_options =
             ListingOptions::new(Arc::new(file_format)).with_file_extension(".parquet");
-        let (ctx, _) = LiquidCacheLocalBuilder::new().build(SessionConfig::new())?;
+        let (ctx, _) = LiquidCacheLocalBuilder::new()
+            .build(SessionConfig::new())
+            .await?;
         let table_path = ListingTableUrl::parse("../../examples/nano_hits.parquet")?;
         ctx.register_listing_table("hits", &table_path, listing_options.clone(), None, None)
             .await?;
@@ -217,7 +222,9 @@ mod local_tests {
 
     #[tokio::test]
     async fn test_provide_schema() -> Result<()> {
-        let (ctx, _) = LiquidCacheLocalBuilder::new().build(SessionConfig::new())?;
+        let (ctx, _) = LiquidCacheLocalBuilder::new()
+            .build(SessionConfig::new())
+            .await?;
 
         let file_format = ParquetFormat::default().with_enable_pruning(true);
         let listing_options =

@@ -711,9 +711,11 @@ mod tests {
     use parquet::arrow::arrow_reader::RowSelection;
     use std::sync::Arc;
 
-    fn make_cache(batch_size: usize, schema: SchemaRef) -> CachedRowGroupRef {
+    async fn make_cache(batch_size: usize, schema: SchemaRef) -> CachedRowGroupRef {
         let tmp_dir = tempfile::tempdir().unwrap();
-        let store = pollster::block_on(t4::mount(tmp_dir.path().join("liquid_cache.t4"))).unwrap();
+        let store = t4::mount(tmp_dir.path().join("liquid_cache.t4"))
+            .await
+            .unwrap();
         let cache = LiquidCacheParquet::new(
             batch_size,
             usize::MAX,
@@ -721,7 +723,8 @@ mod tests {
             Box::new(LiquidPolicy::new()),
             Box::new(Evict),
             Box::new(AlwaysHydrate::new()),
-        );
+        )
+        .await;
         let file = cache.register_or_get_file("test.parquet".to_string(), schema);
         file.create_row_group(0, vec![])
     }
@@ -788,7 +791,7 @@ mod tests {
             Field::new("col_1", DataType::Int32, false),
             Field::new("col_2", DataType::Int32, false),
         ]));
-        let row_group = make_cache(4, schema.clone());
+        let row_group = make_cache(4, schema.clone()).await;
         insert_batches(&row_group, 0, &[(0, &[1, 2, 3, 4]), (2, &[9, 9, 9, 9])]).await;
         insert_batches(&row_group, 2, &[(0, &[5, 6, 7, 8])]).await;
 

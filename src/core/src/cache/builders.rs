@@ -21,12 +21,14 @@ use crate::sync::Arc;
 /// use liquid_cache::cache::LiquidCacheBuilder;
 /// use liquid_cache::cache_policies::LiquidPolicy;
 ///
-///
-/// let _storage = LiquidCacheBuilder::new()
-///     .with_batch_size(8192)
-///     .with_max_cache_bytes(1024 * 1024 * 1024)
-///     .with_cache_policy(Box::new(LiquidPolicy::new()))
-///     .build();
+/// tokio_test::block_on(async {
+///     let _storage = LiquidCacheBuilder::new()
+///         .with_batch_size(8192)
+///         .with_max_cache_bytes(1024 * 1024 * 1024)
+///         .with_cache_policy(Box::new(LiquidPolicy::new()))
+///         .build()
+///         .await;
+/// });
 /// ```
 pub struct LiquidCacheBuilder {
     batch_size: usize,
@@ -102,15 +104,19 @@ impl LiquidCacheBuilder {
     ///
     /// The cache storage is wrapped in an [Arc] to allow for concurrent access.
     /// When no custom [IoContext] is provided, a [`t4::Store`] is mounted at a
-    /// temporary directory using `pollster::block_on`.
-    pub fn build(self) -> Arc<LiquidCache> {
-        let io_worker = self.io_context.unwrap_or_else(|| {
-            let cache_dir = tempfile::tempdir().unwrap().keep();
-            let store_path = cache_dir.join("liquid_cache.t4");
-            let store =
-                pollster::block_on(t4::mount(&store_path)).expect("failed to mount t4 store");
-            Arc::new(DefaultIoContext::new(store))
-        });
+    /// temporary directory.
+    pub async fn build(self) -> Arc<LiquidCache> {
+        let io_worker = match self.io_context {
+            Some(io_context) => io_context,
+            None => {
+                let cache_dir = tempfile::tempdir().unwrap().keep();
+                let store_path = cache_dir.join("liquid_cache.t4");
+                let store = t4::mount(&store_path)
+                    .await
+                    .expect("failed to mount t4 store");
+                Arc::new(DefaultIoContext::new(store))
+            }
+        };
         Arc::new(LiquidCache::new(
             self.batch_size,
             self.max_cache_bytes,
@@ -404,7 +410,7 @@ mod tests {
 
         let pre_size = root.get_array_memory_size();
 
-        let cache = LiquidCacheBuilder::new().build();
+        let cache = LiquidCacheBuilder::new().build().await;
         let entry_id = EntryID::from(123usize);
         cache.insert(entry_id, root.clone()).await;
 

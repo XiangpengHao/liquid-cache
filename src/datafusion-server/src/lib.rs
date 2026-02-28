@@ -81,14 +81,18 @@ mod tests;
 /// use liquid_cache_datafusion_server::storage::cache::AlwaysHydrate;
 /// use liquid_cache_datafusion_server::storage::cache_policies::LiquidPolicy;
 /// use tonic::transport::Server;
-/// let liquid_cache = LiquidCacheService::new(
-///     SessionContext::new(),
-///     None,
-///     None,
-///     Box::new(LiquidPolicy::new()),
-///     Box::new(TranscodeSqueezeEvict),
-///     Box::new(AlwaysHydrate::new()),
-/// )
+/// let rt = tokio::runtime::Runtime::new().unwrap();
+/// let liquid_cache = rt.block_on(async {
+///     LiquidCacheService::new(
+///         SessionContext::new(),
+///         None,
+///         None,
+///         Box::new(LiquidPolicy::new()),
+///         Box::new(TranscodeSqueezeEvict),
+///         Box::new(AlwaysHydrate::new()),
+///     )
+///     .await
+/// })
 /// .unwrap();
 /// let flight = FlightServiceServer::new(liquid_cache);
 /// Server::builder()
@@ -99,16 +103,10 @@ pub struct LiquidCacheService {
     inner: LiquidCacheServiceInner,
 }
 
-impl Default for LiquidCacheService {
-    fn default() -> Self {
-        Self::try_new().unwrap()
-    }
-}
-
 impl LiquidCacheService {
     /// Create a new [LiquidCacheService] with a default [SessionContext]
     /// With no disk cache and unbounded memory usage.
-    pub fn try_new() -> anyhow::Result<Self> {
+    pub async fn try_new() -> anyhow::Result<Self> {
         let ctx = Self::context()?;
         Self::new(
             ctx,
@@ -118,6 +116,7 @@ impl LiquidCacheService {
             Box::new(TranscodeSqueezeEvict),
             Box::new(AlwaysHydrate::new()),
         )
+        .await
     }
 
     /// Create a new [LiquidCacheService] with a custom [SessionContext]
@@ -127,7 +126,7 @@ impl LiquidCacheService {
     /// * `ctx` - The [SessionContext] to use
     /// * `max_cache_bytes` - The maximum number of bytes to cache in memory
     /// * `disk_cache_dir` - The directory to store the disk cache
-    pub fn new(
+    pub async fn new(
         ctx: SessionContext,
         max_cache_bytes: Option<usize>,
         disk_cache_dir: Option<PathBuf>,
@@ -151,7 +150,8 @@ impl LiquidCacheService {
                 cache_policy,
                 squeeze_policy,
                 hydration_policy,
-            ),
+            )
+            .await,
         })
     }
 
@@ -378,7 +378,7 @@ mod server_actions_tests {
 
     #[tokio::test]
     async fn test_prefetch_from_object_store() {
-        let service = LiquidCacheService::default();
+        let service = LiquidCacheService::try_new().await.unwrap();
 
         // Create temporary test file
         let temp_dir = tempfile::tempdir().unwrap();
@@ -411,7 +411,7 @@ mod server_actions_tests {
 
     #[tokio::test]
     async fn test_prefetch_from_object_store_with_range() {
-        let service = LiquidCacheService::default();
+        let service = LiquidCacheService::try_new().await.unwrap();
 
         // Create temporary test file
         let temp_dir = tempfile::tempdir().unwrap();
@@ -448,7 +448,7 @@ mod server_actions_tests {
 
     #[tokio::test]
     async fn test_prefetch_invalid_object_store() {
-        let service = LiquidCacheService::default();
+        let service = LiquidCacheService::try_new().await.unwrap();
 
         let request = PrefetchFromObjectStoreRequest {
             url: "invalid://url".to_string(),
@@ -465,7 +465,7 @@ mod server_actions_tests {
 
     #[tokio::test]
     async fn test_prefetch_invalid_location() {
-        let service = LiquidCacheService::default();
+        let service = LiquidCacheService::try_new().await.unwrap();
 
         let url = Url::parse("file:///").unwrap();
         let request = PrefetchFromObjectStoreRequest {
@@ -489,7 +489,7 @@ mod server_actions_tests {
 
         const BLOCK_SIZE: u64 = 1024 * 1024 * 4;
 
-        let service = LiquidCacheService::default();
+        let service = LiquidCacheService::try_new().await.unwrap();
 
         let url = Url::parse("s3://mock").unwrap();
 

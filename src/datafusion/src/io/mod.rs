@@ -146,7 +146,7 @@ mod tests {
 
     fn make_ctx() -> ParquetIoContext {
         let tmp = tempfile::tempdir().unwrap();
-        let store = pollster::block_on(t4::mount(tmp.path().join("liquid_cache.t4"))).unwrap();
+        let store = tokio_test::block_on(t4::mount(tmp.path().join("liquid_cache.t4"))).unwrap();
         ParquetIoContext::new(store)
     }
 

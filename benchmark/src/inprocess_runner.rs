@@ -328,7 +328,8 @@ impl InProcessBenchmarkRunner {
                     .with_cache_policy(Box::new(LiquidPolicy::new()))
                     .with_hydration_policy(Box::new(NoHydration::new()))
                     .with_squeeze_policy(Box::new(Evict))
-                    .build(session_config)?;
+                    .build(session_config)
+                    .await?;
                 (v.0, Some(v.1))
             }
             InProcessBenchmarkMode::Liquid => {
@@ -339,7 +340,8 @@ impl InProcessBenchmarkRunner {
                     .with_hydration_policy(Box::new(NoHydration::new()))
                     .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
                     .with_eager_shredding(true)
-                    .build(session_config)?;
+                    .build(session_config)
+                    .await?;
                 (v.0, Some(v.1))
             }
             InProcessBenchmarkMode::LiquidNoSqueeze => {
@@ -349,7 +351,8 @@ impl InProcessBenchmarkRunner {
                     .with_cache_policy(Box::new(LiquidPolicy::new()))
                     .with_hydration_policy(Box::new(NoHydration::new()))
                     .with_squeeze_policy(Box::new(TranscodeEvict))
-                    .build(session_config)?;
+                    .build(session_config)
+                    .await?;
                 (v.0, Some(v.1))
             }
         };

@@ -78,7 +78,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Box::new(LiquidPolicy::new()),
         squeeze_policy,
         Box::new(NoHydration::new()),
-    )?;
+    )
+    .await?;
 
     let liquid_cache_datafusion_server = Arc::new(liquid_cache_datafusion_server);
     let flight = FlightServiceServer::from_arc(liquid_cache_datafusion_server.clone());

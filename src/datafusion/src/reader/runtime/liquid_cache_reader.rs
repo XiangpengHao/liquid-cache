@@ -291,7 +291,9 @@ mod tests {
         batches: &[Vec<i32>],
     ) -> (CachedRowGroupRef, SchemaRef) {
         let tmp_dir = tempfile::tempdir().unwrap();
-        let store = pollster::block_on(t4::mount(tmp_dir.path().join("liquid_cache.t4"))).unwrap();
+        let store = t4::mount(tmp_dir.path().join("liquid_cache.t4"))
+            .await
+            .unwrap();
         let cache = LiquidCacheParquet::new(
             batch_size,
             usize::MAX,
@@ -299,7 +301,8 @@ mod tests {
             Box::new(LiquidPolicy::new()),
             Box::new(Evict),
             Box::new(AlwaysHydrate::new()),
-        );
+        )
+        .await;
         let field = Arc::new(Field::new("col0", DataType::Int32, false));
         let schema = Arc::new(Schema::new(vec![field.clone()]));
         let file = cache.register_or_get_file("test".to_string(), schema.clone());

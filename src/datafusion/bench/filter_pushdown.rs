@@ -40,15 +40,15 @@ fn create_boolean_filter(array_size: usize, selectivity: f64) -> BooleanBuffer {
 fn setup_cache() -> (Arc<CachedColumn>, tempfile::TempDir) {
     let tmp_dir = tempfile::tempdir().unwrap();
     let store_path = tmp_dir.path().join("liquid_cache.t4");
-    let store = pollster::block_on(t4::mount(&store_path)).expect("failed to mount t4 store");
-    let cache = LiquidCacheParquet::new(
+    let store = tokio_test::block_on(t4::mount(&store_path)).expect("failed to mount t4 store");
+    let cache = tokio_test::block_on(LiquidCacheParquet::new(
         BATCH_SIZE,
         1024 * 1024 * 1024, // max_cache_bytes (1GB)
         store,
         Box::new(LiquidPolicy::new()),
         Box::new(TranscodeSqueezeEvict),
         Box::new(AlwaysHydrate::new()),
-    );
+    ));
     let field = Arc::new(Field::new("test_column", DataType::Int32, false));
     let schema = Arc::new(Schema::new(vec![field.clone()]));
     let file = cache.register_or_get_file("test_file.parquet".to_string(), schema);

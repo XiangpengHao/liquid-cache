@@ -329,15 +329,16 @@ mod tests {
     fn rewrite_plan_inner(plan: Arc<dyn ExecutionPlan>) {
         let expected_schema = plan.schema();
         let tmp_dir = tempfile::tempdir().unwrap();
-        let store = pollster::block_on(t4::mount(tmp_dir.path().join("liquid_cache.t4"))).unwrap();
-        let liquid_cache = Arc::new(LiquidCacheParquet::new(
+        let store =
+            tokio_test::block_on(t4::mount(tmp_dir.path().join("liquid_cache.t4"))).unwrap();
+        let liquid_cache = Arc::new(tokio_test::block_on(LiquidCacheParquet::new(
             8192,
             1000000,
             store,
             Box::new(LiquidPolicy::new()),
             Box::new(TranscodeSqueezeEvict),
             Box::new(AlwaysHydrate::new()),
-        ));
+        )));
         let rewritten = rewrite_data_source_plan(plan, &liquid_cache, true);
 
         rewritten

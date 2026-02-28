@@ -238,7 +238,7 @@ mod tests {
     #[tokio::test]
     async fn test_clock_policy_integration_with_store() {
         let advisor = ClockPolicy::new();
-        let store = create_cache_store(3100, Box::new(advisor));
+        let store = create_cache_store(3100, Box::new(advisor)).await;
 
         let entry_id1 = EntryID::from(1);
         let entry_id2 = EntryID::from(2);

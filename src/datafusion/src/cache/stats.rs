@@ -182,7 +182,9 @@ mod tests {
     #[tokio::test]
     async fn test_stats_writer() -> Result<(), ParquetError> {
         let tmp_dir = tempfile::tempdir().unwrap();
-        let store = pollster::block_on(t4::mount(tmp_dir.path().join("liquid_cache.t4"))).unwrap();
+        let store = t4::mount(tmp_dir.path().join("liquid_cache.t4"))
+            .await
+            .unwrap();
         let cache = LiquidCacheParquet::new(
             1024,
             usize::MAX,
@@ -190,7 +192,8 @@ mod tests {
             Box::new(LiquidPolicy::new()),
             Box::new(Evict),
             Box::new(AlwaysHydrate::new()),
-        );
+        )
+        .await;
         let fields: Vec<Field> = (0..8)
             .map(|i| Field::new(format!("test_{i}"), DataType::Int32, false))
             .collect();

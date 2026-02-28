@@ -19,7 +19,7 @@ use arrow::array::UInt64Array;
 use std::sync::Arc;
 
 tokio_test::block_on(async {
-let storage = LiquidCacheBuilder::new().build();
+let storage = LiquidCacheBuilder::new().build().await;
 
 let entry_id = EntryID::from(42);
 let arrow_array = Arc::new(UInt64Array::from_iter_values(0..1000));
@@ -39,14 +39,14 @@ use arrow::array::UInt64Array;
 use std::sync::Arc;
 
 tokio_test::block_on(async {
-let storage = LiquidCacheBuilder::new().build();
+let storage = LiquidCacheBuilder::new().build().await;
 
 let entry_id = EntryID::from(7);
 let arrow_array = Arc::new(UInt64Array::from_iter_values(0..16));
 storage.insert(entry_id, arrow_array.clone()).await;
 
 // Move data to disk so the read will demonstrate async I/O
-storage.flush_all_to_disk();
+storage.flush_all_to_disk().await;
 
 // Read asynchronously
 let retrieved = storage.get(&entry_id).await.unwrap();
@@ -67,7 +67,7 @@ use datafusion::scalar::ScalarValue;
 use std::sync::Arc;
 
 tokio_test::block_on(async {
-let storage = LiquidCacheBuilder::new().build();
+let storage = LiquidCacheBuilder::new().build().await;
 
 let entry_id = EntryID::from(8);
 let data = Arc::new(StringArray::from(vec![
@@ -76,7 +76,7 @@ let data = Arc::new(StringArray::from(vec![
 storage.insert(entry_id, data.clone()).await;
 
 // Move data to disk so the read will demonstrate async I/O
-storage.flush_all_to_disk();
+storage.flush_all_to_disk().await;
 
 let selection = BooleanBuffer::from(vec![true, true, false, true, true]);
 let expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(

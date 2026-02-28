@@ -45,7 +45,7 @@ pub(crate) fn create_test_arrow_array(size: usize) -> ArrayRef {
 }
 
 #[cfg(test)]
-pub(crate) fn create_cache_store(
+pub(crate) async fn create_cache_store(
     max_cache_bytes: usize,
     policy: Box<dyn super::policies::CachePolicy>,
 ) -> Arc<super::core::LiquidCache> {
@@ -59,7 +59,7 @@ pub(crate) fn create_cache_store(
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
         .with_hydration_policy(Box::new(AlwaysHydrate::new()))
         .with_cache_policy(policy);
-    builder.build()
+    builder.build().await
 }
 
 /// EntryID is a unique identifier for a batch of rows, i.e., the cache key.

@@ -107,7 +107,8 @@ async fn create_session_context_with_liquid_cache(
         .with_cache_dir(cache_dir.to_path_buf())
         .with_squeeze_policy(squeeze_policy)
         .with_cache_policy(Box::new(LiquidPolicy::new()))
-        .build(config)?;
+        .build(config)
+        .await?;
 
     // Register the test parquet file
     ctx.register_parquet("hits", TEST_FILE, ParquetReadOptions::default())
@@ -344,6 +345,7 @@ async fn test_provide_schema2() {
         .with_max_cache_bytes(1024 * 1024)
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
         .build(config)
+        .await
         .unwrap();
 
     let file_format = ParquetFormat::default().with_enable_pruning(true);
@@ -444,6 +446,7 @@ async fn test_provide_schema_with_filter() {
     let (ctx, _) = LiquidCacheLocalBuilder::new()
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
         .build(SessionConfig::new())
+        .await
         .unwrap();
 
     let file_format = ParquetFormat::default().with_enable_pruning(true);

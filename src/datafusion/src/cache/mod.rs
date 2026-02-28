@@ -239,7 +239,7 @@ pub type LiquidCacheParquetRef = Arc<LiquidCacheParquet>;
 
 impl LiquidCacheParquet {
     /// Create a new cache for parquet files.
-    pub fn new(
+    pub async fn new(
         batch_size: usize,
         max_cache_bytes: usize,
         store: t4::Store,
@@ -249,14 +249,15 @@ impl LiquidCacheParquet {
     ) -> Self {
         assert!(batch_size.is_power_of_two());
         let io_context = Arc::new(ParquetIoContext::new(store));
-        let cache_storage_builder = LiquidCacheBuilder::new()
+        let cache_storage = LiquidCacheBuilder::new()
             .with_batch_size(batch_size)
             .with_max_cache_bytes(max_cache_bytes)
             .with_squeeze_policy(squeeze_policy)
             .with_cache_policy(cache_policy)
             .with_hydration_policy(hydration_policy)
-            .with_io_context(io_context);
-        let cache_storage = cache_storage_builder.build();
+            .with_io_context(io_context)
+            .build()
+            .await;
 
         LiquidCacheParquet {
             files: Mutex::new(AHashMap::new()),
@@ -373,9 +374,11 @@ mod tests {
     use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
     use std::sync::Arc;
 
-    fn setup_cache(batch_size: usize, schema: SchemaRef) -> CachedRowGroupRef {
+    async fn setup_cache(batch_size: usize, schema: SchemaRef) -> CachedRowGroupRef {
         let tmp_dir = tempfile::tempdir().unwrap();
-        let store = pollster::block_on(t4::mount(tmp_dir.path().join("liquid_cache.t4"))).unwrap();
+        let store = t4::mount(tmp_dir.path().join("liquid_cache.t4"))
+            .await
+            .unwrap();
         let cache = LiquidCacheParquet::new(
             batch_size,
             usize::MAX,
@@ -383,7 +386,8 @@ mod tests {
             Box::new(LiquidPolicy::new()),
             Box::new(TranscodeSqueezeEvict),
             Box::new(AlwaysHydrate::new()),
-        );
+        )
+        .await;
         let file = cache.register_or_get_file("test".to_string(), schema);
         file.create_row_group(0, vec![])
     }
@@ -396,7 +400,7 @@ mod tests {
             Field::new("a", DataType::Int32, false),
             Field::new("b", DataType::Int32, false),
         ]));
-        let row_group = setup_cache(batch_size, schema.clone());
+        let row_group = setup_cache(batch_size, schema.clone()).await;
 
         let col_a = row_group.get_column(0).unwrap();
         let col_b = row_group.get_column(1).unwrap();
@@ -458,7 +462,7 @@ mod tests {
             Field::new("c", DataType::Int32, false),
         ]));
 
-        let row_group = setup_cache(batch_size, schema.clone());
+        let row_group = setup_cache(batch_size, schema.clone()).await;
 
         let col_a = row_group.get_column(0).unwrap();
         let col_b = row_group.get_column(1).unwrap();
@@ -535,7 +539,7 @@ mod tests {
             Field::new("city", DataType::Utf8View, false),
         ]));
 
-        let row_group = setup_cache(batch_size, schema.clone());
+        let row_group = setup_cache(batch_size, schema.clone()).await;
 
         let col_name = row_group.get_column(0).unwrap();
         let col_city = row_group.get_column(1).unwrap();

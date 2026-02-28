@@ -43,7 +43,7 @@ async fn general_test(sql: &str) -> CacheStatsSummary {
         .with_cache_policy(Box::new(liquid_cache::cache_policies::LiquidPolicy::new()));
     let mut config = SessionConfig::new();
     config.options_mut().execution.target_partitions = 1;
-    let (ctx, cache) = lc_builder.build(config).unwrap();
+    let (ctx, cache) = lc_builder.build(config).await.unwrap();
 
     // Register the parquet file as "date_a" table
     ctx.register_parquet(

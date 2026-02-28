@@ -1096,15 +1096,16 @@ mod tests {
 
     fn create_physical_optimizer() -> LocalModeOptimizer {
         let tmp_dir = tempfile::tempdir().unwrap();
-        let store = pollster::block_on(t4::mount(tmp_dir.path().join("liquid_cache.t4"))).unwrap();
-        LocalModeOptimizer::with_cache(Arc::new(LiquidCacheParquet::new(
+        let store =
+            tokio_test::block_on(t4::mount(tmp_dir.path().join("liquid_cache.t4"))).unwrap();
+        LocalModeOptimizer::with_cache(Arc::new(tokio_test::block_on(LiquidCacheParquet::new(
             1024,
             1024 * 1024 * 1024,
             store,
             Box::new(LiquidPolicy::new()),
             Box::new(TranscodeSqueezeEvict),
             Box::new(AlwaysHydrate::new()),
-        )))
+        ))))
     }
 
     fn create_session_context(optimizer: Arc<LineageOptimizer>) -> SessionContext {

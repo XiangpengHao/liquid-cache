@@ -36,7 +36,7 @@ use crate::sync::Arc;
 /// use std::sync::Arc;
 ///
 /// tokio_test::block_on(async {
-/// let storage = LiquidCacheBuilder::new().build();
+/// let storage = LiquidCacheBuilder::new().build().await;
 ///
 /// let entry_id = EntryID::from(0);
 /// let arrow_array = Arc::new(UInt64Array::from_iter_values(0..32));
@@ -883,7 +883,7 @@ mod tests {
     async fn test_basic_cache_operations() {
         // Test basic insert, get, and size tracking in one test
         let budget_size = 10 * 1024;
-        let store = create_cache_store(budget_size, Box::new(LruPolicy::new()));
+        let store = create_cache_store(budget_size, Box::new(LruPolicy::new())).await;
 
         // 1. Initial budget should be empty
         assert_eq!(store.budget.memory_usage_bytes(), 0);
@@ -919,7 +919,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_arrow_array_with_expression_extracts_year() {
-        let store = create_cache_store(1 << 20, Box::new(LruPolicy::new()));
+        let store = create_cache_store(1 << 20, Box::new(LruPolicy::new())).await;
         let entry_id = EntryID::from(42);
 
         let date_values = Date32Array::from(vec![Some(0), Some(365), None, Some(730)]);
@@ -964,7 +964,7 @@ mod tests {
         // 1. Test EVICT advice
         {
             let advisor = TestPolicy::new(Some(entry_id1));
-            let store = create_cache_store(8000, Box::new(advisor)); // Small budget to force advice
+            let store = create_cache_store(8000, Box::new(advisor)).await; // Small budget to force advice
 
             store.insert_inner(entry_id1, create_test_array(800)).await;
             match store.index().get(&entry_id1).unwrap().as_ref() {
@@ -1009,7 +1009,7 @@ mod tests {
         let ops_per_thread = 50;
 
         let budget_size = num_threads * ops_per_thread * 100 * 8 / 2;
-        let store = Arc::new(create_cache_store(budget_size, Box::new(LruPolicy::new())));
+        let store = create_cache_store(budget_size, Box::new(LruPolicy::new())).await;
 
         let mut handles = vec![];
         for thread_id in 0..num_threads {
@@ -1048,7 +1048,8 @@ mod tests {
         let storage = LiquidCacheBuilder::new()
             .with_max_cache_bytes(10 * 1024 * 1024)
             .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
-            .build();
+            .build()
+            .await;
 
         // Insert two small batches
         let arr1: ArrayRef = Arc::new(Int32Array::from_iter_values(0..64));
@@ -1074,7 +1075,7 @@ mod tests {
 
     #[tokio::test]
     async fn hydrate_disk_arrow_on_get_promotes_to_memory() {
-        let store = create_cache_store(1 << 20, Box::new(LruPolicy::new()));
+        let store = create_cache_store(1 << 20, Box::new(LruPolicy::new())).await;
         let entry_id = EntryID::from(321usize);
         let array = create_test_arrow_array(8);
 
@@ -1095,7 +1096,7 @@ mod tests {
 
     #[tokio::test]
     async fn hydrate_disk_liquid_on_get_promotes_to_memory_liquid() {
-        let store = create_cache_store(1 << 20, Box::new(LruPolicy::new()));
+        let store = create_cache_store(1 << 20, Box::new(LruPolicy::new())).await;
         let entry_id = EntryID::from(322usize);
         let arrow_array: ArrayRef = Arc::new(Int32Array::from(vec![1, 2, 3, 4]));
         let compressor = LiquidCompressorStates::new();
