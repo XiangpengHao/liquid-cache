@@ -78,7 +78,7 @@ impl Default for LiquidCacheLocalBuilder {
         Self {
             batch_size: 8192,
             max_cache_bytes: 1024 * 1024 * 1024, // 1GB
-            cache_dir: std::env::temp_dir().join("liquid_cache"),
+            cache_dir: std::env::temp_dir(),
             cache_policy: Box::new(LiquidPolicy::new()),
             squeeze_policy: Box::new(TranscodeSqueezeEvict),
             hydration_policy: Box::new(AlwaysHydrate::new()),
@@ -160,7 +160,7 @@ impl LiquidCacheLocalBuilder {
 
         let store = t4::mount(self.cache_dir.join("liquid_cache.t4"))
             .await
-            .expect("Failed to mount t4 store");
+            .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
         let cache = LiquidCacheParquet::new(
             self.batch_size,
             self.max_cache_bytes,
