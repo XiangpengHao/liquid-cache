@@ -280,7 +280,6 @@ mod tests {
     use futures::{StreamExt, pin_mut};
     use liquid_cache::cache::{AlwaysHydrate, squeeze_policies::Evict};
     use liquid_cache::cache_policies::LiquidPolicy;
-    use liquid_cache_common::IoMode;
     use parquet::arrow::{
         ArrowWriter,
         arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions, RowSelection, RowSelector},
@@ -292,15 +291,18 @@ mod tests {
         batches: &[Vec<i32>],
     ) -> (CachedRowGroupRef, SchemaRef) {
         let tmp_dir = tempfile::tempdir().unwrap();
+        let store = t4::mount(tmp_dir.path().join("liquid_cache.t4"))
+            .await
+            .unwrap();
         let cache = LiquidCacheParquet::new(
             batch_size,
             usize::MAX,
-            tmp_dir.path().to_path_buf(),
+            store,
             Box::new(LiquidPolicy::new()),
             Box::new(Evict),
             Box::new(AlwaysHydrate::new()),
-            IoMode::Uring,
-        );
+        )
+        .await;
         let field = Arc::new(Field::new("col0", DataType::Int32, false));
         let schema = Arc::new(Schema::new(vec![field.clone()]));
         let file = cache.register_or_get_file("test".to_string(), schema.clone());

@@ -25,6 +25,7 @@ fsst-rs = "0.5.6"
 ahash = { workspace = true }
 tempfile = { workspace = true }
 congee = { workspace = true }
+t4 = { workspace = true }
 log = { workspace = true }
 parquet = { workspace = true }
 parquet-variant-compute = { workspace = true }
@@ -53,7 +54,7 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 
 
 [features]
-shuttle = []
+shuttle = ["t4/shuttle"]
 
 [[bench]]
 name = "fsst_view_study"

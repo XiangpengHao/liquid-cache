@@ -7,7 +7,7 @@ use datafusion::{
 };
 use liquid_cache::{ByteCache, cache::squeeze_policies::SqueezePolicy};
 use liquid_cache::{cache::HydrationPolicy, cache_policies::CachePolicy};
-use liquid_cache_common::{IoMode, rpc::ExecutionMetricsResponse};
+use liquid_cache_common::rpc::ExecutionMetricsResponse;
 use liquid_cache_datafusion::{
     cache::{LiquidCacheParquet, LiquidCacheParquetRef},
     extract_execution_metrics,
@@ -44,29 +44,34 @@ pub(crate) struct LiquidCacheServiceInner {
 }
 
 impl LiquidCacheServiceInner {
-    pub fn new(
+    pub async fn new(
         default_ctx: Arc<SessionContext>,
         max_cache_bytes: Option<usize>,
         disk_cache_dir: PathBuf,
         cache_policy: Box<dyn CachePolicy>,
         squeeze_policy: Box<dyn SqueezePolicy>,
         hydration_policy: Box<dyn HydrationPolicy>,
-        io_mode: IoMode,
     ) -> Self {
         let batch_size = default_ctx.state().config().batch_size();
 
         let parquet_cache_dir = disk_cache_dir.join("parquet");
         let liquid_cache_dir = disk_cache_dir.join("liquid");
+        std::fs::create_dir_all(&liquid_cache_dir).expect("Failed to create liquid cache dir");
 
-        let liquid_cache = Arc::new(LiquidCacheParquet::new(
-            batch_size,
-            max_cache_bytes.unwrap_or(usize::MAX),
-            liquid_cache_dir,
-            cache_policy,
-            squeeze_policy,
-            hydration_policy,
-            io_mode,
-        ));
+        let store = t4::mount(liquid_cache_dir.join("liquid_cache.t4"))
+            .await
+            .expect("Failed to mount t4 store");
+        let liquid_cache = Arc::new(
+            LiquidCacheParquet::new(
+                batch_size,
+                max_cache_bytes.unwrap_or(usize::MAX),
+                store,
+                cache_policy,
+                squeeze_policy,
+                hydration_policy,
+            )
+            .await,
+        );
 
         Self {
             execution_plans: Default::default(),
@@ -216,15 +221,16 @@ mod tests {
     };
     #[tokio::test]
     async fn test_register_object_store() {
+        let temp_dir = tempfile::tempdir().unwrap();
         let server = LiquidCacheServiceInner::new(
             Arc::new(SessionContext::new()),
             None,
-            PathBuf::from("test"),
+            temp_dir.path().to_path_buf(),
             Box::new(LiquidPolicy::new()),
             Box::new(TranscodeSqueezeEvict),
             Box::new(AlwaysHydrate::new()),
-            IoMode::Uring,
-        );
+        )
+        .await;
         let url = Url::parse("file:///").unwrap();
         server
             .register_object_store(&url, HashMap::new())

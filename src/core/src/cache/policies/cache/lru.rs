@@ -365,7 +365,7 @@ mod tests {
     #[tokio::test]
     async fn test_lru_integration() {
         let policy = LruPolicy::new();
-        let store = create_cache_store(3000, Box::new(policy));
+        let store = create_cache_store(3000, Box::new(policy)).await;
 
         let entry_id1 = EntryID::from(1);
         let entry_id2 = EntryID::from(2);

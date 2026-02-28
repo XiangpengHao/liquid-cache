@@ -12,9 +12,8 @@ use liquid_cache::cache::squeeze_policies::SqueezePolicy;
 use liquid_cache::cache::{
     CachePolicy, EventTrace, HydrationPolicy, LiquidCache, LiquidCacheBuilder,
 };
-use liquid_cache_common::IoMode;
 use parquet::arrow::arrow_reader::ArrowPredicate;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -51,13 +50,6 @@ impl CachedRowGroup {
         file_idx: u64,
         columns: &[(u64, Arc<Field>, bool)],
     ) -> Self {
-        let cache_dir = cache_store
-            .config()
-            .cache_root_dir()
-            .join(format!("file_{file_idx}"))
-            .join(format!("rg_{row_group_idx}"));
-        std::fs::create_dir_all(&cache_dir).expect("Failed to create cache directory");
-
         let mut column_maps = ColumnMaps::default();
         for (column_id, field, is_predicate_column) in columns {
             let column_access_path = ColumnAccessPath::new(file_idx, row_group_idx, *column_id);
@@ -247,26 +239,25 @@ pub type LiquidCacheParquetRef = Arc<LiquidCacheParquet>;
 
 impl LiquidCacheParquet {
     /// Create a new cache for parquet files.
-    pub fn new(
+    pub async fn new(
         batch_size: usize,
         max_cache_bytes: usize,
-        cache_dir: PathBuf,
+        store: t4::Store,
         cache_policy: Box<dyn CachePolicy>,
         squeeze_policy: Box<dyn SqueezePolicy>,
         hydration_policy: Box<dyn HydrationPolicy>,
-        io_mode: IoMode,
     ) -> Self {
         assert!(batch_size.is_power_of_two());
-        let io_context = Arc::new(ParquetIoContext::new(cache_dir.clone(), io_mode));
-        let cache_storage_builder = LiquidCacheBuilder::new()
+        let io_context = Arc::new(ParquetIoContext::new(store));
+        let cache_storage = LiquidCacheBuilder::new()
             .with_batch_size(batch_size)
             .with_max_cache_bytes(max_cache_bytes)
-            .with_cache_dir(cache_dir.clone())
             .with_squeeze_policy(squeeze_policy)
             .with_cache_policy(cache_policy)
             .with_hydration_policy(hydration_policy)
-            .with_io_context(io_context);
-        let cache_storage = cache_storage_builder.build();
+            .with_io_context(io_context)
+            .build()
+            .await;
 
         LiquidCacheParquet {
             files: Mutex::new(AHashMap::new()),
@@ -383,17 +374,20 @@ mod tests {
     use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
     use std::sync::Arc;
 
-    fn setup_cache(batch_size: usize, schema: SchemaRef) -> CachedRowGroupRef {
+    async fn setup_cache(batch_size: usize, schema: SchemaRef) -> CachedRowGroupRef {
         let tmp_dir = tempfile::tempdir().unwrap();
+        let store = t4::mount(tmp_dir.path().join("liquid_cache.t4"))
+            .await
+            .unwrap();
         let cache = LiquidCacheParquet::new(
             batch_size,
             usize::MAX,
-            tmp_dir.path().to_path_buf(),
+            store,
             Box::new(LiquidPolicy::new()),
             Box::new(TranscodeSqueezeEvict),
             Box::new(AlwaysHydrate::new()),
-            IoMode::Uring,
-        );
+        )
+        .await;
         let file = cache.register_or_get_file("test".to_string(), schema);
         file.create_row_group(0, vec![])
     }
@@ -406,7 +400,7 @@ mod tests {
             Field::new("a", DataType::Int32, false),
             Field::new("b", DataType::Int32, false),
         ]));
-        let row_group = setup_cache(batch_size, schema.clone());
+        let row_group = setup_cache(batch_size, schema.clone()).await;
 
         let col_a = row_group.get_column(0).unwrap();
         let col_b = row_group.get_column(1).unwrap();
@@ -468,7 +462,7 @@ mod tests {
             Field::new("c", DataType::Int32, false),
         ]));
 
-        let row_group = setup_cache(batch_size, schema.clone());
+        let row_group = setup_cache(batch_size, schema.clone()).await;
 
         let col_a = row_group.get_column(0).unwrap();
         let col_b = row_group.get_column(1).unwrap();
@@ -545,7 +539,7 @@ mod tests {
             Field::new("city", DataType::Utf8View, false),
         ]));
 
-        let row_group = setup_cache(batch_size, schema.clone());
+        let row_group = setup_cache(batch_size, schema.clone()).await;
 
         let col_name = row_group.get_column(0).unwrap();
         let col_city = row_group.get_column(1).unwrap();

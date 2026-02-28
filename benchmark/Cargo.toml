@@ -31,7 +31,7 @@ parquet = { workspace = true }
 arrow = { workspace = true }
 fastrace = { version = "0.7.16" }
 fastrace-tonic = { workspace = true }
-fastrace-opentelemetry = "0.15"
+fastrace-opentelemetry = "0.16"
 opentelemetry = "0.31.0"
 opentelemetry_sdk = "0.31.0"
 opentelemetry-otlp = { version = "0.31.0", features = ["trace", "grpc-tonic"] }

@@ -3,7 +3,6 @@ use datafusion::prelude::SessionContext;
 use liquid_cache_datafusion_local::storage::cache::AlwaysHydrate;
 use liquid_cache_datafusion_local::storage::cache::squeeze_policies::TranscodeSqueezeEvict;
 use liquid_cache_datafusion_server::LiquidCacheService;
-use liquid_cache_datafusion_server::common::IoMode;
 use liquid_cache_datafusion_server::storage::cache_policies::LruPolicy;
 use tonic::transport::Server;
 
@@ -16,8 +15,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Box::new(LruPolicy::new()),
         Box::new(TranscodeSqueezeEvict),
         Box::new(AlwaysHydrate::new()),
-        Some(IoMode::default()),
-    )?;
+    )
+    .await?;
 
     let flight = FlightServiceServer::new(liquid_cache);
 

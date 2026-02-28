@@ -160,7 +160,7 @@ impl OptimizerRule for LineageOptimizer {
         let _ = analyzer.analyze_plan(&plan)?;
         let table_usage = analyzer.finish();
         let mut date_findings = table_usage.find_date32_extractions();
-        date_findings.sort_by(|a, b| a.column.flat_name().cmp(&b.column.flat_name()));
+        date_findings.sort_by_key(|a| a.column.flat_name());
 
         let mut variant_findings = table_usage.find_variant_gets();
         variant_findings.sort();
@@ -1068,14 +1068,11 @@ fn part_to_unit(expr: &Expr) -> Option<SupportedIntervalUnit> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use crate::optimizers::{
         DATE_MAPPING_METADATA_KEY, LocalModeOptimizer, VARIANT_MAPPING_METADATA_KEY,
     };
     use crate::{LiquidCacheParquet, VariantGetUdf, VariantToJsonUdf};
     use liquid_cache::cache::AlwaysHydrate;
-    use liquid_cache_common::IoMode;
 
     use super::*;
     use arrow::array::{ArrayRef, Date32Array, StringArray, TimestampMicrosecondArray};
@@ -1097,24 +1094,31 @@ mod tests {
     // Setup helpers - lean versions for different test scenarios
     // ─────────────────────────────────────────────────────────────────────────────
 
-    fn create_physical_optimizer() -> LocalModeOptimizer {
-        LocalModeOptimizer::with_cache(Arc::new(LiquidCacheParquet::new(
-            1024,
-            1024 * 1024 * 1024,
-            PathBuf::from("test"),
-            Box::new(LiquidPolicy::new()),
-            Box::new(TranscodeSqueezeEvict),
-            Box::new(AlwaysHydrate::new()),
-            IoMode::Uring,
-        )))
+    async fn create_physical_optimizer() -> LocalModeOptimizer {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let store = t4::mount(tmp_dir.path().join("liquid_cache.t4"))
+            .await
+            .unwrap();
+        LocalModeOptimizer::with_cache(Arc::new(
+            LiquidCacheParquet::new(
+                1024,
+                1024 * 1024 * 1024,
+                store,
+                Box::new(LiquidPolicy::new()),
+                Box::new(TranscodeSqueezeEvict),
+                Box::new(AlwaysHydrate::new()),
+            )
+            .await,
+        ))
     }
 
-    fn create_session_context(optimizer: Arc<LineageOptimizer>) -> SessionContext {
+    async fn create_session_context(optimizer: Arc<LineageOptimizer>) -> SessionContext {
+        let physical_optimizer = create_physical_optimizer().await;
         let state = SessionStateBuilder::new()
             .with_config(SessionConfig::new())
             .with_default_features()
             .with_optimizer_rule(optimizer as Arc<dyn OptimizerRule + Send + Sync>)
-            .with_physical_optimizer_rule(Arc::new(create_physical_optimizer()))
+            .with_physical_optimizer_rule(Arc::new(physical_optimizer))
             .build();
         SessionContext::new_with_state(state)
     }
@@ -1183,7 +1187,7 @@ mod tests {
         write_date_parquet(&table_path);
 
         let optimizer = Arc::new(LineageOptimizer::new());
-        let ctx = create_session_context(optimizer.clone());
+        let ctx = create_session_context(optimizer.clone()).await;
         ctx.register_parquet(
             "table_a",
             table_path.to_str().unwrap(),
@@ -1204,7 +1208,7 @@ mod tests {
         write_date_parquet(&table_b_path);
 
         let optimizer = Arc::new(LineageOptimizer::new());
-        let ctx = create_session_context(optimizer.clone());
+        let ctx = create_session_context(optimizer.clone()).await;
         ctx.register_parquet(
             "table_a",
             table_a_path.to_str().unwrap(),
@@ -1230,7 +1234,7 @@ mod tests {
         write_variant_parquet(&variant_path);
 
         let optimizer = Arc::new(LineageOptimizer::new());
-        let ctx = create_session_context(optimizer.clone());
+        let ctx = create_session_context(optimizer.clone()).await;
         ctx.register_udf(ScalarUDF::new_from_impl(VariantGetUdf::default()));
         ctx.register_udf(ScalarUDF::new_from_impl(VariantToJsonUdf::default()));
         ctx.register_parquet(
@@ -1253,7 +1257,7 @@ mod tests {
         write_variant_parquet(&variant_path);
 
         let optimizer = Arc::new(LineageOptimizer::new());
-        let ctx = create_session_context(optimizer.clone());
+        let ctx = create_session_context(optimizer.clone()).await;
         ctx.register_udf(ScalarUDF::new_from_impl(VariantGetUdf::default()));
         ctx.register_udf(ScalarUDF::new_from_impl(VariantToJsonUdf::default()));
         ctx.register_parquet(

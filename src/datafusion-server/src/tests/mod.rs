@@ -12,7 +12,6 @@ use liquid_cache::{
     },
     cache_policies::LiquidPolicy,
 };
-use liquid_cache_common::IoMode;
 use uuid::Uuid;
 
 mod cases;
@@ -45,8 +44,8 @@ async fn run_sql(
         Box::new(LiquidPolicy::new()),
         squeeze_policy,
         Box::new(AlwaysHydrate::new()),
-        IoMode::Uring,
-    );
+    )
+    .await;
     async fn get_result(service: &LiquidCacheServiceInner, sql: &str) -> String {
         let handle = Uuid::new_v4();
         let ctx = service.get_ctx();

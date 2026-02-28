@@ -137,6 +137,7 @@ async fn test_variant_parquet_naive_read() {
         .with_cache_dir(cache_dir.path().to_path_buf())
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
         .build(SessionConfig::new())
+        .await
         .unwrap();
     ctx.register_parquet("variants", parquet_path_str, ParquetReadOptions::default())
         .await
@@ -173,6 +174,7 @@ async fn test_variant_transcoding_falls_back_to_disk_arrow() {
         .with_cache_dir(cache_dir.path().to_path_buf())
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
         .build(SessionConfig::new())
+        .await
         .unwrap();
 
     ctx.register_parquet(
@@ -236,6 +238,7 @@ async fn test_variant_get() {
         .with_cache_dir(cache_dir.path().to_path_buf())
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
         .build(SessionConfig::new())
+        .await
         .unwrap();
 
     ctx.register_parquet(
@@ -267,6 +270,7 @@ async fn test_variant_predicate() {
         .with_cache_dir(cache_dir.path().to_path_buf())
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
         .build(SessionConfig::new())
+        .await
         .unwrap();
 
     ctx.register_parquet(
@@ -298,6 +302,7 @@ async fn test_variant_get_fails_when_value_field_not_nullable() {
         .with_cache_dir(cache_dir.path().to_path_buf())
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
         .build(SessionConfig::new())
+        .await
         .unwrap();
 
     ctx.register_parquet(
@@ -374,6 +379,7 @@ async fn test_large_variant_squeeze() {
         .with_max_cache_bytes(1024)
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
         .build(SessionConfig::new())
+        .await
         .unwrap();
 
     ctx.register_parquet(
@@ -413,6 +419,7 @@ async fn variant_multi_queries() {
         .with_max_cache_bytes(1024)
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
         .build(SessionConfig::new())
+        .await
         .unwrap();
 
     ctx.register_parquet(
@@ -462,6 +469,7 @@ async fn variant_multi_queries_complex() {
         .with_batch_size(8)
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
         .build(SessionConfig::new())
+        .await
         .unwrap();
 
     ctx.register_parquet(

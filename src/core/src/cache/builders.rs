@@ -1,5 +1,4 @@
 use std::future::{Future, IntoFuture};
-use std::path::PathBuf;
 use std::pin::Pin;
 
 use arrow::array::{
@@ -22,17 +21,18 @@ use crate::sync::Arc;
 /// use liquid_cache::cache::LiquidCacheBuilder;
 /// use liquid_cache::cache_policies::LiquidPolicy;
 ///
-///
-/// let _storage = LiquidCacheBuilder::new()
-///     .with_batch_size(8192)
-///     .with_max_cache_bytes(1024 * 1024 * 1024)
-///     .with_cache_policy(Box::new(LiquidPolicy::new()))
-///     .build();
+/// tokio_test::block_on(async {
+///     let _storage = LiquidCacheBuilder::new()
+///         .with_batch_size(8192)
+///         .with_max_cache_bytes(1024 * 1024 * 1024)
+///         .with_cache_policy(Box::new(LiquidPolicy::new()))
+///         .build()
+///         .await;
+/// });
 /// ```
 pub struct LiquidCacheBuilder {
     batch_size: usize,
     max_cache_bytes: usize,
-    cache_dir: Option<PathBuf>,
     cache_policy: Box<dyn CachePolicy>,
     hydration_policy: Box<dyn HydrationPolicy>,
     squeeze_policy: Box<dyn SqueezePolicy>,
@@ -51,19 +51,11 @@ impl LiquidCacheBuilder {
         Self {
             batch_size: 8192,
             max_cache_bytes: 1024 * 1024 * 1024,
-            cache_dir: None,
             cache_policy: Box::new(LiquidPolicy::new()),
             hydration_policy: Box::new(super::AlwaysHydrate::new()),
             squeeze_policy: Box::new(TranscodeSqueezeEvict),
             io_context: None,
         }
-    }
-
-    /// Set the cache directory for the cache.
-    /// Default is a temporary directory.
-    pub fn with_cache_dir(mut self, cache_dir: PathBuf) -> Self {
-        self.cache_dir = Some(cache_dir);
-        self
     }
 
     /// Set the batch size for the cache.
@@ -111,17 +103,23 @@ impl LiquidCacheBuilder {
     /// Build the cache storage.
     ///
     /// The cache storage is wrapped in an [Arc] to allow for concurrent access.
-    pub fn build(self) -> Arc<LiquidCache> {
-        let cache_dir = self
-            .cache_dir
-            .unwrap_or_else(|| tempfile::tempdir().unwrap().keep());
-        let io_worker = self
-            .io_context
-            .unwrap_or_else(|| Arc::new(DefaultIoContext::new(cache_dir.clone())));
+    /// When no custom [IoContext] is provided, a [`t4::Store`] is mounted at a
+    /// temporary directory.
+    pub async fn build(self) -> Arc<LiquidCache> {
+        let io_worker = match self.io_context {
+            Some(io_context) => io_context,
+            None => {
+                let cache_dir = tempfile::tempdir().unwrap().keep();
+                let store_path = cache_dir.join("liquid_cache.t4");
+                let store = t4::mount(&store_path)
+                    .await
+                    .expect("failed to mount t4 store");
+                Arc::new(DefaultIoContext::new(store))
+            }
+        };
         Arc::new(LiquidCache::new(
             self.batch_size,
             self.max_cache_bytes,
-            cache_dir,
             self.squeeze_policy,
             self.cache_policy,
             self.hydration_policy,
@@ -412,7 +410,7 @@ mod tests {
 
         let pre_size = root.get_array_memory_size();
 
-        let cache = LiquidCacheBuilder::new().build();
+        let cache = LiquidCacheBuilder::new().build().await;
         let entry_id = EntryID::from(123usize);
         cache.insert(entry_id, root.clone()).await;
 

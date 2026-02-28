@@ -279,7 +279,7 @@ mod tests {
     #[tokio::test]
     async fn test_sieve_integration() {
         let advisor = SievePolicy::new();
-        let store = create_cache_store(3000, Box::new(advisor));
+        let store = create_cache_store(3000, Box::new(advisor)).await;
 
         let entry_id1 = EntryID::from(1);
         let entry_id2 = EntryID::from(2);

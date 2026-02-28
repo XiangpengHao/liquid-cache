@@ -18,9 +18,9 @@ event=squeeze_victim entry=2
 event=insert_success entry=2 kind=MemoryLiquid
 event=squeeze_victim entry=0
 event=io_write entry=0 kind=MemorySqueezedLiquid bytes=6184
-event=insert_success entry=0 kind=MemorySqueezedLiquid
 event=squeeze_victim entry=1
 event=io_write entry=1 kind=DiskLiquid bytes=6184
+event=insert_success entry=0 kind=MemorySqueezedLiquid
 event=insert_success entry=1 kind=DiskLiquid
 event=insert_success entry=3 kind=MemoryArrow
 event=read entry=0 selection=false expr=PredicateColumn cached=MemorySqueezedLiquid

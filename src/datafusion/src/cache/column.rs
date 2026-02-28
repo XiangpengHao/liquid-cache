@@ -77,8 +77,6 @@ impl CachedColumn {
         column_access_path: ColumnAccessPath,
         is_predicate_column: bool,
     ) -> Self {
-        column_access_path.initialize_dir(cache_store.config().cache_root_dir());
-
         let expression = infer_expression(field.as_ref()).map(Arc::new);
         if let Some(expr) = expression.as_ref() {
             let hint_entry_id = column_access_path.entry_id(BatchID::from_raw(0)).into();

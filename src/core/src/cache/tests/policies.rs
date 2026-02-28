@@ -13,7 +13,8 @@ async fn default_policies() {
         .with_hydration_policy(Box::new(AlwaysHydrate::new()))
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
         .with_max_cache_bytes(capacity)
-        .build();
+        .build()
+        .await;
 
     for i in 0..5 {
         let entry_id = EntryID::from(i);
@@ -40,7 +41,8 @@ async fn insert_wont_fit_cache() {
         .with_hydration_policy(Box::new(AlwaysHydrate::new()))
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
         .with_max_cache_bytes(capacity)
-        .build();
+        .build()
+        .await;
     cache.insert(EntryID::from(0), test_array.clone()).await;
     let array_3x = arrow::compute::concat(&[&test_array, &test_array, &test_array]).unwrap();
     let array_9x = arrow::compute::concat(&[&array_3x, &array_3x, &array_3x]).unwrap();

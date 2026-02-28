@@ -13,6 +13,7 @@ async fn basic_squeeze() {
         .with_max_cache_bytes(1024 * 128)
         .with_cache_dir(cache_dir.path().to_path_buf())
         .build(SessionConfig::new())
+        .await
         .unwrap();
     ctx.register_parquet("hits", TEST_FILE, Default::default())
         .await
@@ -39,6 +40,7 @@ async fn squeeze_strings() {
         .with_max_cache_bytes(1024 * 1024)
         .with_cache_dir(cache_dir.path().to_path_buf())
         .build(SessionConfig::new())
+        .await
         .unwrap();
     ctx.register_parquet("hits", TEST_FILE, Default::default())
         .await
@@ -65,6 +67,7 @@ async fn squeeze_substrings_search() {
         .with_max_cache_bytes(1024 * 256)
         .with_cache_dir(cache_dir.path().to_path_buf())
         .build(SessionConfig::new())
+        .await
         .unwrap();
     ctx.register_parquet("hits", TEST_FILE, Default::default())
         .await
@@ -88,6 +91,7 @@ async fn squeeze_substrings_search_title() {
         .with_max_cache_bytes(1024 * 1024 * 4)
         .with_cache_dir(cache_dir.path().to_path_buf())
         .build(SessionConfig::new())
+        .await
         .unwrap();
     ctx.register_parquet("hits", TEST_FILE, Default::default())
         .await
@@ -112,6 +116,7 @@ async fn squeeze_distinct_search_phase() {
         .with_max_cache_bytes(1024 * 256)
         .with_cache_dir(cache_dir.path().to_path_buf())
         .build(SessionConfig::new())
+        .await
         .unwrap();
     ctx.register_parquet("hits", TEST_FILE, Default::default())
         .await

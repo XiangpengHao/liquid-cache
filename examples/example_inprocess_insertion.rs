@@ -18,7 +18,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_cache_dir(temp_dir.path().to_path_buf())
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
         .with_cache_policy(Box::new(LiquidPolicy::new()))
-        .build(SessionConfig::new())?;
+        .build(SessionConfig::new())
+        .await?;
 
     let entry_id = EntryID::from(42);
     let arrow_array = Arc::new(UInt64Array::from_iter_values(0..1000));

@@ -41,7 +41,7 @@ use liquid_cache::cache::{EntryID, LiquidCacheBuilder};
 use std::sync::Arc;
 
 tokio_test::block_on(async {
-    let cache = LiquidCacheBuilder::new().build();
+    let cache = LiquidCacheBuilder::new().build().await;
     let entry_id = EntryID::from(1);
     let values = Arc::new(UInt64Array::from(vec![10, 11, 12, 13, 14, 15]));
 
@@ -104,7 +104,7 @@ LiquidCache requires a few non-default DataFusion configurations:
 
 **ListingTable:**
 ```rust
-let (ctx, _) = LiquidCacheLocalBuilder::new().build(config)?;
+let (ctx, _) = LiquidCacheLocalBuilder::new().build(config).await?;
 
 let listing_options = ParquetReadOptions::default()
     .to_listing_options(&ctx.copied_config(), ctx.copied_table_options());
@@ -114,7 +114,7 @@ ctx.register_listing_table("default", &table_path, listing_options, None, None)
 
 **Or register Parquet directly:**
 ```rust
-let (ctx, _) = LiquidCacheLocalBuilder::new().build(config)?;
+let (ctx, _) = LiquidCacheLocalBuilder::new().build(config).await?;
 ctx.register_parquet("default", "examples/nano_hits.parquet", Default::default())
     .await?;
 ```
@@ -128,7 +128,8 @@ let (ctx, _) = LiquidCacheLocalBuilder::new()
     .with_squeeze_policy(Box::new(
         squeeze_policies::Evict,
     ))
-    .build(config)?;
+    .build(config)
+    .await?;
 ```
 
 ### x86-64 optimization

@@ -14,7 +14,6 @@ use liquid_cache::cache::squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict
 use liquid_cache::cache::{AlwaysHydrate, HydrationPolicy};
 use liquid_cache::cache_policies::CachePolicy;
 use liquid_cache::cache_policies::LiquidPolicy;
-use liquid_cache_common::IoMode;
 use liquid_cache_datafusion::optimizers::{LineageOptimizer, LocalModeOptimizer};
 use liquid_cache_datafusion::{
     LiquidCacheParquet, LiquidCacheParquetRef, VariantGetUdf, VariantPretty, VariantToJsonUdf,
@@ -45,7 +44,8 @@ pub use liquid_cache_common as common;
 ///         .with_max_cache_bytes(1024 * 1024 * 1024) // 1GB
 ///         .with_cache_dir(temp_dir.path().to_path_buf())
 ///         .with_cache_policy(Box::new(LiquidPolicy::new()))
-///         .build(SessionConfig::new())?;
+///         .build(SessionConfig::new())
+///         .await?;
 ///
 ///     // Register the test parquet file
 ///     ctx.register_parquet("hits", "../../examples/nano_hits.parquet", Default::default())
@@ -70,8 +70,6 @@ pub struct LiquidCacheLocalBuilder {
     hydration_policy: Box<dyn HydrationPolicy>,
     span: fastrace::Span,
 
-    io_mode: IoMode,
-
     eager_shredding: bool,
 }
 
@@ -80,12 +78,11 @@ impl Default for LiquidCacheLocalBuilder {
         Self {
             batch_size: 8192,
             max_cache_bytes: 1024 * 1024 * 1024, // 1GB
-            cache_dir: std::env::temp_dir().join("liquid_cache"),
+            cache_dir: std::env::temp_dir(),
             cache_policy: Box::new(LiquidPolicy::new()),
             squeeze_policy: Box::new(TranscodeSqueezeEvict),
             hydration_policy: Box::new(AlwaysHydrate::new()),
             span: fastrace::Span::enter_with_local_parent("liquid_cache_datafusion_local_builder"),
-            io_mode: IoMode::StdBlocking,
             eager_shredding: true,
         }
     }
@@ -139,12 +136,6 @@ impl LiquidCacheLocalBuilder {
         self
     }
 
-    /// Set IO mode
-    pub fn with_io_mode(mut self, io_mode: IoMode) -> Self {
-        self.io_mode = io_mode;
-        self
-    }
-
     /// Set enable shredding
     pub fn with_eager_shredding(mut self, eager_shredding: bool) -> Self {
         self.eager_shredding = eager_shredding;
@@ -153,7 +144,7 @@ impl LiquidCacheLocalBuilder {
 
     /// Build a SessionContext with liquid cache configured
     /// Returns the SessionContext and the liquid cache reference
-    pub fn build(
+    pub async fn build(
         self,
         mut config: SessionConfig,
     ) -> Result<(SessionContext, LiquidCacheParquetRef)> {
@@ -167,15 +158,18 @@ impl LiquidCacheLocalBuilder {
         config.options_mut().execution.parquet.skip_metadata = false;
         config.options_mut().execution.batch_size = self.batch_size;
 
+        let store = t4::mount(self.cache_dir.join("liquid_cache.t4"))
+            .await
+            .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
         let cache = LiquidCacheParquet::new(
             self.batch_size,
             self.max_cache_bytes,
-            self.cache_dir,
+            store,
             self.cache_policy,
             self.squeeze_policy,
             self.hydration_policy,
-            self.io_mode,
-        );
+        )
+        .await;
         let cache_ref = Arc::new(cache);
 
         let date_extract_optimizer = Arc::new(LineageOptimizer::new());
@@ -212,7 +206,9 @@ mod local_tests {
         let file_format = ParquetFormat::default().with_enable_pruning(true);
         let listing_options =
             ListingOptions::new(Arc::new(file_format)).with_file_extension(".parquet");
-        let (ctx, _) = LiquidCacheLocalBuilder::new().build(SessionConfig::new())?;
+        let (ctx, _) = LiquidCacheLocalBuilder::new()
+            .build(SessionConfig::new())
+            .await?;
         let table_path = ListingTableUrl::parse("../../examples/nano_hits.parquet")?;
         ctx.register_listing_table("hits", &table_path, listing_options.clone(), None, None)
             .await?;
@@ -226,7 +222,9 @@ mod local_tests {
 
     #[tokio::test]
     async fn test_provide_schema() -> Result<()> {
-        let (ctx, _) = LiquidCacheLocalBuilder::new().build(SessionConfig::new())?;
+        let (ctx, _) = LiquidCacheLocalBuilder::new()
+            .build(SessionConfig::new())
+            .await?;
 
         let file_format = ParquetFormat::default().with_enable_pruning(true);
         let listing_options =

@@ -22,7 +22,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_max_cache_bytes(1024 * 1024 * 1024) // 1GB
         .with_cache_dir(temp_dir.path().to_path_buf())
         .with_cache_policy(Box::new(FiloPolicy::new()))
-        .build(SessionConfig::new())?;
+        .build(SessionConfig::new())
+        .await?;
 
     // Register the test parquet file
     ctx.register_parquet("hits", "../../examples/nano_hits.parquet", Default::default())

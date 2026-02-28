@@ -203,7 +203,7 @@ mod tests {
     #[tokio::test]
     async fn test_filo_advisor() {
         let advisor = FiloPolicy::new();
-        let store = create_cache_store(3100, Box::new(advisor));
+        let store = create_cache_store(3100, Box::new(advisor)).await;
 
         let entry_id1 = EntryID::from(1);
         let entry_id2 = EntryID::from(2);

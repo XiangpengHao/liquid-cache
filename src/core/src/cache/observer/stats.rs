@@ -1,5 +1,4 @@
 use std::fmt;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Macro to define runtime statistics metrics.
@@ -147,8 +146,6 @@ pub struct CacheStats {
     pub disk_usage_bytes: usize,
     /// Maximum cache size.
     pub max_cache_bytes: usize,
-    /// Cache root directory.
-    pub cache_root_dir: PathBuf,
     /// Runtime counters snapshot.
     pub runtime: RuntimeStatsSnapshot,
 }
