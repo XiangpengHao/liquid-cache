@@ -19,4 +19,4 @@ pub use utils::{boolean_buffer_and_then, extract_execution_metrics};
 #[cfg(target_os = "linux")]
 pub use crate::io::io_uring::runtime::UringExecutor;
 
-pub use crate::io::ParquetIoContext;
+pub use crate::io::{ParquetIoContext, SimpleIoContext};

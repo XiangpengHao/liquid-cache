@@ -16,8 +16,8 @@ use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion::scalar::ScalarValue;
 use futures::StreamExt;
 use liquid_cache_common::IoMode;
-use liquid_cache_storage::cache::{EntryID, LiquidCacheBuilder, LiquidCache};
-use liquid_cache_parquet::{ParquetIoContext, UringExecutor};
+use liquid_cache_storage::cache::{EntryID, LiquidCache, LiquidCacheBuilder};
+use liquid_cache_parquet::{SimpleIoContext, UringExecutor};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -51,6 +51,7 @@ struct Args {
 /// ClickBench query descriptor: filter column(s) and predicate expression(s).
 /// Each expression is evaluated on a single column (column index 0 in the cached array).
 /// TODO(): Add support for columns that are projected.
+#[derive(Clone)]
 struct FilterQuery {
     /// Column names to load and cache (in schema order).
     filter_columns: Vec<&'static str>,
@@ -250,7 +251,7 @@ fn run_bench(
     num_workers: usize,
 ) {
     let _ = std::fs::create_dir_all(&cache_dir);
-    let io_context = Arc::new(ParquetIoContext::new(
+    let io_context = Arc::new(SimpleIoContext::new(
         cache_dir.clone(),
         IoMode::UringNonBlocking,
         4096,
@@ -260,27 +261,25 @@ fn run_bench(
         .with_cache_dir(cache_dir)
         .build();
 
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime");
+    let mut executor = UringExecutor::new(num_workers);
     let storage_clone = storage.clone();
-    let (num_batches, entry_ids, batch_lengths) = rt.block_on(
+    let query_owned = query.clone();
+    let (num_batches, entry_ids, batch_lengths) = executor.run_to_completion(
     async move {
         // 1) Load parquet into record batches (filter columns only) and insert into cache.
-        let (entry_ids, batch_lengths) = load_and_insert(storage_clone.clone(), parquet_path, query).await;
-        let num_batches = entry_ids.len() / query.filter_columns.len();
+        let (entry_ids, batch_lengths) = load_and_insert(storage_clone.clone(), parquet_path, &query_owned).await;
+        let num_batches = entry_ids.len() / query_owned.filter_columns.len();
         log::info!(
             "Populated cache: {} batches, {} filter columns, {} entries",
             num_batches,
-            query.filter_columns.len(),
+            query_owned.filter_columns.len(),
             entry_ids.len()
         );
 
         storage_clone.flush_all_to_disk().await;
         (num_batches, entry_ids, batch_lengths)
     });
-    let mut executor = UringExecutor::new(num_workers);
+    
 
     for _i in 0..num_iter {
         run_single_iter(num_batches, 
