@@ -1,13 +1,13 @@
-use std::{cell::RefCell, collections::VecDeque, fs::OpenOptions, ops::Range, os::fd::AsRawFd as _, path::PathBuf, pin::Pin, rc::Rc, sync::atomic::{AtomicBool, Ordering}, task::{Context, Poll, Waker}, thread::{self, JoinHandle}, time::{Duration, Instant}};
+use std::{cell::RefCell, collections::VecDeque, fs::OpenOptions, ops::Range, os::{fd::AsRawFd as _, unix::fs::OpenOptionsExt}, path::PathBuf, pin::Pin, rc::Rc, sync::atomic::{AtomicBool, Ordering}, task::{Context, Poll, Waker}, thread::{self, JoinHandle}, time::{Duration, Instant}};
 
 use async_executor::LocalExecutor;
 use bytes::Bytes;
 use futures::Future;
-use io_uring::{IoUring, squeue, cqueue};
+use io_uring::{EnterFlags, IoUring, cqueue, squeue};
 use rand::Rng;
 use tokio::sync::oneshot;
 
-use crate::io::io_uring::tasks::{FileOpenTask, FileReadTask, FileWriteTask, FixedFileReadTask, IoTask};
+use crate::io::io_uring::tasks::{FileReadTask, FileWriteTask, FixedFileReadTask, IoTask};
 
 const URING_NUM_ENTRIES: u32 = 256;
 
@@ -255,7 +255,29 @@ fn worker_main_loop(receiver: crossbeam_channel::Receiver<ExecutorTask>) {
             let mut worker = worker.borrow_mut();
             worker.drain_intermediate_queue();
             if worker.need_syscall() {
-                worker.ring.submit().expect("Failed to submit");
+                let mut flags = EnterFlags::empty();
+                flags.insert(EnterFlags::GETEVENTS);
+                loop {
+                    let res = unsafe {
+                        worker.ring.submitter().enter::<libc::sigset_t>(
+                            worker.queued_submissions as u32, 
+                            0, 
+                            flags.bits(), 
+                            None
+                        )
+                    };
+                    match res {
+                        Ok(_num_entries) => {
+                            break;
+                        }
+                        Err(e) => {
+                            if e.kind() == std::io::ErrorKind::Interrupted {
+                                continue;
+                            }
+                            panic!("Failed to submit: {}", e.to_string());
+                        }
+                    }
+                }
                 worker.queued_submissions = 0;
                 worker.last_syscall = Instant::now();
             }
@@ -373,8 +395,11 @@ pub(crate) async fn read(
     range: Option<Range<u64>>,
     direct_io: bool,
 ) -> Result<Bytes, std::io::Error> {
-    let open_task = FileOpenTask::build(path, direct_io)?;
-    let file = submit_async_task(open_task).await.borrow_mut().get_result()?;
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECT)
+        .open(path)
+        .expect("failed to open file");
 
     let effective_range = if let Some(range) = range {
         range
