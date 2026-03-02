@@ -174,10 +174,7 @@ impl RuntimeWorker {
                         .expect("Task not found in submitted tasks");
                     submission.push_completion(cqe);
                     if pending_completions == 1 {
-                        unsafe {
-                            (*submission.completed).store(true, Ordering::Relaxed);
-                        }
-                        submission.waker.wake();
+                        submission.complete();
                         self.tokens.push_back(token as u16);
                         self.io_performed += 1;
                     } else {
@@ -292,13 +289,22 @@ fn worker_main_loop(receiver: crossbeam_channel::Receiver<ExecutorTask>) {
 struct AsyncTask {
     // Note: Should change this to Arc in case of a work-stealing scheduler
     pub inner: Rc<RefCell<dyn IoTask>>,
-    pub waker: Waker,
-    pub completed: *mut AtomicBool,
+    waker: Waker,
+    completed: *mut AtomicBool,
     pending_completions: usize,   // No. of pending completions. Will be populated later by the uring worker
     completions: Vec<cqueue::Entry>,
 }
 
 impl AsyncTask {
+    #[inline]
+    fn complete(self) {
+        self.inner.borrow_mut().complete(self.completions.iter().collect());
+        unsafe {
+            (*self.completed).store(true, Ordering::Relaxed);
+        }
+        self.waker.wake();
+    }
+
     #[inline]
     fn set_completions(&mut self, count: usize) {
         self.pending_completions = count;
