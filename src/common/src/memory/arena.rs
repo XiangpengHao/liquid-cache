@@ -27,11 +27,11 @@ impl Arena {
         let mem_start = Self::allocate_memory_from_os(capacity);
         assert_ne!(mem_start, null_mut());
         let mem_end = mem_start.wrapping_add(capacity);
-        let ptr_aligned = (mem_start as usize >> SEGMENT_SIZE_BITS) << SEGMENT_SIZE_BITS;
-        let mut slice_start = ptr_aligned;
+        let mut ptr_aligned = (mem_start as usize >> SEGMENT_SIZE_BITS) << SEGMENT_SIZE_BITS;
         if ptr_aligned != (mem_start as usize) {
-            slice_start = ptr_aligned + SEGMENT_SIZE;
+            ptr_aligned += SEGMENT_SIZE;
         }
+        let mut slice_start = ptr_aligned;
         let mut slices = Vec::new();
         while slice_start + SEGMENT_SIZE <= mem_end as usize {
             slices.push(Slice {
@@ -100,7 +100,9 @@ impl Arena {
     }
 
     pub(crate) fn register_buffers_with_ring(self: &mut Self, ring: &IoUring) -> io::Result<()> {
-        let num_buffers = self.size >> FIXED_BUFFER_BITS;
+        let usable_bytes = self.size
+            .saturating_sub(self.aligned_start_ptr as usize - self.actual_start_ptr as usize);
+        let num_buffers = usable_bytes >> FIXED_BUFFER_BITS;
         let mut buffers = Vec::<libc::iovec>::new();
         buffers.reserve(num_buffers);
         let mut base_ptr = self.aligned_start_ptr;
