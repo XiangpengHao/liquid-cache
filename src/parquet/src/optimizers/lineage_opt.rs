@@ -1102,6 +1102,7 @@ mod tests {
             Box::new(TranscodeSqueezeEvict),
             Box::new(AlwaysHydrate::new()),
             IoMode::Uring,
+            0
         )))
     }
 

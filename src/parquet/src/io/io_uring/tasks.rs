@@ -297,7 +297,7 @@ impl FixedFileReadTask {
         })
     }
 
-    /// Return a bytes object holding the result of the read operation.
+    /// Return a bytes object holding the result of the read operation (consumes the task).
     #[inline]
     pub(crate) fn into_result(self: Box<Self>) -> Result<Bytes, std::io::Error> {
         let mut this = self;
@@ -311,6 +311,21 @@ impl FixedFileReadTask {
         let bytes = Bytes::from_owner(this.fixed_buffer);
 
         Ok(bytes.slice(start_padding..data_end))
+    }
+
+    /// Return a bytes object holding the result of the read operation (by copy, for use with RefCell).
+    #[inline]
+    pub(crate) fn get_result(&mut self) -> Result<Bytes, std::io::Error> {
+        if let Some(err) = self.error.take() {
+            return Err(err);
+        }
+
+        let (start_padding, _) = self.padding();
+        let range_len = (self.range.end - self.range.start) as usize;
+        let data_end = start_padding + range_len;
+        let slice = &self.fixed_buffer.as_ref()[start_padding..data_end];
+
+        Ok(Bytes::copy_from_slice(slice))
     }
 }
 
