@@ -18,6 +18,7 @@ use liquid_cache_storage::cache::{EntryID, LiquidCache, LiquidCacheBuilder};
 use liquid_cache_parquet::{SimpleIoContext, UringExecutor};
 use logforth::filter::EnvFilter;
 use parquet::arrow::{arrow_reader::ParquetRecordBatchReaderBuilder, ProjectionMask};
+use std::fs::create_dir_all;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -46,6 +47,10 @@ struct Args {
     /// Directory for the liquid-cache storage. Default: $TMPDIR/liquid_cache_storage_runner
     #[arg(long)]
     cache_dir: Option<PathBuf>,
+
+    /// Directory to write flamegraph SVG files to (one per query iteration).
+    #[arg(long = "flamegraph-dir")]
+    flamegraph_dir: Option<PathBuf>,
 }
 
 /// ClickBench query descriptor: filter column(s) and predicate expression(s).
@@ -242,13 +247,41 @@ fn run_single_iter(
     log::info!("Partitions: {}, Time: {:.3}s, Total rows: {}", num_partitions, elapsed.as_secs_f64(), total_rows);
 }
 
+fn write_flamegraph(
+    profiler: &pprof::ProfilerGuard<'_>,
+    flamegraph_dir: &std::path::Path,
+    query_index: usize,
+    iteration: u32,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let report = profiler.report().build()?;
+    let mut svg_data = Vec::new();
+    report.flamegraph(&mut svg_data)?;
+    create_dir_all(flamegraph_dir)?;
+
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?;
+    let secs = now.as_secs();
+    let hour = (secs / 3600) % 24;
+    let minute = (secs / 60) % 60;
+    let second = secs % 60;
+
+    let filename = format!(
+        "{hour:02}h{minute:02}m{second:02}s_q{query_index:02}_i{iteration:02}.svg"
+    );
+    let filepath = flamegraph_dir.join(filename);
+    std::fs::write(&filepath, svg_data)?;
+    log::info!("Flamegraph written to: {}", filepath.display());
+    Ok(())
+}
+
 fn run_bench(
     cache_dir: PathBuf,
     parquet_path: PathBuf,
     query: &FilterQuery,
+    query_index: usize,
     num_partitions: usize,
     num_iter: usize,
     num_workers: usize,
+    flamegraph_dir: Option<PathBuf>,
 ) {
     let _ = std::fs::create_dir_all(&cache_dir);
     let io_context = Arc::new(SimpleIoContext::new(
@@ -281,15 +314,34 @@ fn run_bench(
     });
     
 
-    for _i in 0..num_iter {
-        run_single_iter(num_batches, 
-            num_partitions, 
-            &query, 
-            storage.clone(), 
-            &entry_ids, 
-            &batch_lengths, 
-            &mut executor
+    for i in 0..num_iter {
+        let profiler_guard = if flamegraph_dir.is_some() {
+            Some(
+                pprof::ProfilerGuardBuilder::default()
+                    .frequency(500)
+                    .blocklist(&["libpthread.so.0", "libm.so.6", "libgcc_s.so.1"])
+                    .build()
+                    .expect("pprof ProfilerGuardBuilder::build"),
+            )
+        } else {
+            None
+        };
+
+        run_single_iter(
+            num_batches,
+            num_partitions,
+            &query,
+            storage.clone(),
+            &entry_ids,
+            &batch_lengths,
+            &mut executor,
         );
+
+        if let (Some(profiler), Some(dir)) = (profiler_guard, flamegraph_dir.as_ref()) {
+            if let Err(e) = write_flamegraph(&profiler, dir, query_index, i as u32) {
+                log::warn!("Failed to write flamegraph for iteration {}: {}", i, e);
+            }
+        }
     }
 }
 
@@ -434,11 +486,14 @@ fn main() {
     let cache_dir = args.cache_dir.unwrap_or_else(|| {
         std::env::temp_dir().join("lc_cache_dir")
     });
-    run_bench(cache_dir, 
-        args.parquet, 
-        query, 
-        args.partitions, 
+    run_bench(
+        cache_dir,
+        args.parquet,
+        query,
+        args.query_index,
+        args.partitions,
         args.iterations,
-        args.worker_threads
+        args.worker_threads,
+        args.flamegraph_dir,
     );
 }
