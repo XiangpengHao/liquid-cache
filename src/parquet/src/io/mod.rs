@@ -13,12 +13,12 @@ use liquid_cache_storage::cache::{CacheExpression, EntryID, IoContext, LiquidCom
 use crate::cache::{ColumnAccessPath, ParquetArrayID};
 
 #[cfg(target_os = "linux")]
-mod io_uring;
+pub mod io_uring;
 
 mod io_backend;
 
 #[derive(Debug)]
-pub(crate) struct ParquetIoContext {
+pub struct ParquetIoContext {
     compressor_states: RwLock<AHashMap<ColumnAccessPath, Arc<LiquidCompressorStates>>>,
     expression_hints: RwLock<AHashMap<ColumnAccessPath, ColumnExpressionTracker>>,
     base_dir: PathBuf,

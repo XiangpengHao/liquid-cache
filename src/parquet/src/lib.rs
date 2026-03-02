@@ -15,3 +15,8 @@ pub use liquid_cache_storage as storage;
 pub use reader::variant_udf::{VariantGetUdf, VariantPretty, VariantToJsonUdf};
 pub use reader::{FilterCandidateBuilder, LiquidParquetSource, LiquidPredicate, LiquidRowFilter};
 pub use utils::{boolean_buffer_and_then, extract_execution_metrics};
+
+#[cfg(target_os = "linux")]
+pub use crate::io::io_uring::runtime::UringExecutor;
+
+pub use crate::io::ParquetIoContext;

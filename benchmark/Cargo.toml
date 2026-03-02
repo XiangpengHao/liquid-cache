@@ -12,6 +12,7 @@ liquid-cache-storage = { workspace = true }
 liquid-cache-common = { workspace = true }
 liquid-cache-local = { workspace = true }
 datafusion = { workspace = true }
+futures = { workspace = true }
 tokio = { workspace = true }
 log = { workspace = true }
 arrow-flight = { workspace = true }
@@ -67,3 +68,7 @@ path = "bench_server.rs"
 [[bin]]
 name = "in_process"
 path = "in_process.rs"
+
+[[bin]]
+name = "storage_runner"
+path = "src/storage_runner.rs"
