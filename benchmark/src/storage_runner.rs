@@ -16,6 +16,7 @@ use datafusion::scalar::ScalarValue;
 use liquid_cache_common::IoMode;
 use liquid_cache_storage::cache::{EntryID, LiquidCache, LiquidCacheBuilder};
 use liquid_cache_parquet::{SimpleIoContext, UringExecutor};
+use logforth::filter::EnvFilter;
 use parquet::arrow::{arrow_reader::ParquetRecordBatchReaderBuilder, ProjectionMask};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -385,8 +386,18 @@ async fn load_and_insert(
     (entry_ids, batch_lengths)
 }
 
+fn setup_logging() {
+    let mut builder = logforth::builder();
+    builder = builder.dispatch(|d| {
+        d.filter(EnvFilter::from_default_env())
+            .append(logforth::append::Stdout::default())
+    });
+    builder.apply();
+}
+
 fn main() {
     let args = Args::parse();
+    setup_logging();
 
     let queries = all_filter_queries();
     let query = match args.query_index {
