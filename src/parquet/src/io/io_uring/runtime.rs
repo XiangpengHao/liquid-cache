@@ -4,6 +4,7 @@ use async_executor::LocalExecutor;
 use bytes::Bytes;
 use futures::Future;
 use io_uring::{EnterFlags, IoUring, cqueue, squeue};
+use liquid_cache_common::memory::pool::FixedBufferPool;
 use rand::Rng;
 use tokio::sync::oneshot;
 
@@ -132,6 +133,9 @@ impl RuntimeWorker {
             .setup_defer_taskrun()
             .build(URING_NUM_ENTRIES)
             .expect("Failed to build IoUring instance");
+        if FixedBufferPool::register_buffers_with_ring(&ring).is_err() {
+            log::warn!("Failed to register fixed buffers with runtime worker ring");
+        }
         let mut tokens = VecDeque::<u16>::with_capacity(MAX_CONCURRENT_TASKS as usize);
         let mut inflight_tasks = Vec::<Option<AsyncTask>>::with_capacity(MAX_CONCURRENT_TASKS as usize);
         for i in 0..MAX_CONCURRENT_TASKS {
@@ -399,7 +403,6 @@ where
 pub(crate) async fn read(
     path: PathBuf,
     range: Option<Range<u64>>,
-    direct_io: bool,
 ) -> Result<Bytes, std::io::Error> {
     let file = OpenOptions::new()
         .read(true)
@@ -415,7 +418,7 @@ pub(crate) async fn read(
     };
 
     {
-        let read_task = FixedFileReadTask::build(effective_range.clone(), &file, direct_io);
+        let read_task = FixedFileReadTask::build(effective_range.clone(), &file, true);
         if read_task.is_ok() {
             let rc = submit_async_task(read_task.unwrap()).await;
             return match Rc::try_unwrap(rc) {
@@ -425,7 +428,7 @@ pub(crate) async fn read(
         }
     }
     // Fall back to normal read if fixed buffers are not available
-    let read_task = FileReadTask::build(effective_range, file, direct_io);
+    let read_task = FileReadTask::build(effective_range, file, true);
     submit_async_task(read_task).await.borrow_mut().get_result()
 }
 
@@ -434,6 +437,7 @@ pub(crate) async fn write(path: PathBuf, data: &Bytes) -> Result<(), std::io::Er
         .create(true)
         .truncate(true)
         .write(true)
+        .custom_flags(libc::O_DIRECT)
         .open(path)
         .expect("failed to create file");
 
