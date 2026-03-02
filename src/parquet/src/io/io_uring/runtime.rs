@@ -172,16 +172,19 @@ impl RuntimeWorker {
                         .as_ref()
                         .expect("Task not found in submitted tasks")
                         .pending_completions;
-                    
-                    let mut submission = self.submitted_tasks[token]
-                        .take()
-                        .expect("Task not found in submitted tasks");
-                    submission.push_completion(cqe);
                     if pending_completions == 1 {
+                        let mut submission = self.submitted_tasks[token]
+                            .take()
+                            .expect("Task not found in submitted tasks");
+                        submission.push_completion(cqe);
                         submission.complete();
                         self.tokens.push_back(token as u16);
                         self.io_performed += 1;
                     } else {
+                        let submission = self.submitted_tasks[token]
+                            .as_mut()
+                            .expect("Task not found in submitted tasks");
+                        submission.push_completion(cqe);
                         submission.reduce_completions();
                     }
                 }
