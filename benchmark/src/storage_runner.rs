@@ -12,12 +12,11 @@ use clap::Parser;
 use datafusion::logical_expr::Operator;
 use datafusion::physical_plan::expressions::{BinaryExpr, Column};
 use datafusion::physical_plan::PhysicalExpr;
-use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion::scalar::ScalarValue;
-use futures::StreamExt;
 use liquid_cache_common::IoMode;
 use liquid_cache_storage::cache::{EntryID, LiquidCache, LiquidCacheBuilder};
 use liquid_cache_parquet::{SimpleIoContext, UringExecutor};
+use parquet::arrow::{arrow_reader::ParquetRecordBatchReaderBuilder, ProjectionMask};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -340,29 +339,38 @@ async fn load_and_insert(
     parquet_path: PathBuf,
     query: &FilterQuery,
 ) -> (Vec<EntryID>, Vec<usize>) {
-    let config = SessionConfig::default().with_batch_size(8192);
-    let ctx = SessionContext::new_with_config(config);
-    ctx.register_parquet("hits", parquet_path.to_string_lossy().as_ref(), Default::default())
-        .await
-        .expect("register parquet");
+    let Ok(parquet_file) = std::fs::File::open(parquet_path.clone()) else {
+        panic!("Failed to open {:?}", parquet_path.to_str());
+    };
 
-    let cols: String = query
+    let builder = ParquetRecordBatchReaderBuilder::try_new(parquet_file).unwrap();
+    let schema = builder.parquet_schema();
+    let root_fields = schema.root_schema().get_fields();
+    let projection_root_indices: Vec<usize> = query
         .filter_columns
         .iter()
-        .map(|c| format!("\"{}\"", c))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let sql = format!("SELECT {} FROM \"hits\"", cols);
-    let df = ctx.sql(&sql).await.expect("sql");
-    let mut stream = df.execute_stream().await.expect("execute");
+        .map(|name| {
+            root_fields
+                .iter()
+                .position(|f| f.name() == *name)
+                .unwrap_or_else(|| panic!("parquet schema has no column '{name}'"))
+        })
+        .collect();
+    let projection_mask = ProjectionMask::roots(schema, projection_root_indices);
+
+    let mut reader = builder
+        .with_batch_size(8192)
+        .with_projection(projection_mask)
+        .build()
+        .unwrap();
 
     let num_cols = query.filter_columns.len();
     let mut entry_ids = Vec::new();
     let mut batch_lengths = Vec::new();
     let mut batch_idx = 0usize;
 
-    while let Some(batch_res) = stream.next().await {
-        let batch = batch_res.expect("batch");
+    while let Some(batch_res) = reader.next() {
+        let batch = batch_res.expect("parquet read batch");
         let nrows = batch.num_rows();
         for col_idx in 0..num_cols {
             let entry_id = EntryID::from(batch_idx * num_cols + col_idx);

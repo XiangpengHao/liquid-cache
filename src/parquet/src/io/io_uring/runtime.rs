@@ -15,6 +15,8 @@ const MAX_CONCURRENT_TASKS: u32 = 128;
 
 type ExecutorTask = Pin<Box<dyn Future<Output = ()> + Send>>;
 
+/// A dedicated runtime for io_uring, in which the worker threads are responsible for submitting IO and polling for completions.
+/// Each worker thread has its own ring, and an executor which is responsible for scheduling.
 pub struct UringExecutor {
     workers: Vec<JoinHandle<()>>,
     /// One sender per worker; tasks are submitted to a worker's dedicated channel.
