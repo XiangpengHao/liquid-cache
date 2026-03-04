@@ -17,8 +17,8 @@ use crate::liquid_array::raw::BitPackedArray;
 
 use super::primitive_array::LiquidPrimitiveType;
 use super::{
-    LiquidDataType, LiquidSqueezedArray, NeedsBacking, Operator, PrimitiveKind, SqueezeIoHandler,
-    SqueezeResult,
+    LiquidDataType, LiquidExpr, LiquidSqueezedArray, NeedsBacking, Operator, PrimitiveKind,
+    SqueezeIoHandler, SqueezeResult,
 };
 
 #[derive(Clone, Copy)]
@@ -329,13 +329,13 @@ where
 
     async fn try_eval_predicate(
         &self,
-        expr: &Arc<dyn PhysicalExpr>,
+        expr: &dyn LiquidExpr,
         filter: &BooleanBuffer,
     ) -> Option<BooleanArray> {
         // Apply selection first to reduce input rows
         let filtered = self.filter_inner(filter);
 
-        let expr = unwrap_dynamic_filter(expr)?;
+        let expr = unwrap_dynamic_filter(expr.as_physical_expr())?;
         let binary_expr = expr.as_any().downcast_ref::<BinaryExpr>()?;
         let lhs_kind = predicate_lhs_kind(binary_expr.left())?;
         let literal = binary_expr.right().as_any().downcast_ref::<Literal>()?;
@@ -674,13 +674,13 @@ where
 
     async fn try_eval_predicate(
         &self,
-        expr: &Arc<dyn PhysicalExpr>,
+        expr: &dyn LiquidExpr,
         filter: &BooleanBuffer,
     ) -> Option<BooleanArray> {
         // Apply selection first to reduce input rows
         let filtered = self.filter_inner(filter);
 
-        let expr = unwrap_dynamic_filter(expr)?;
+        let expr = unwrap_dynamic_filter(expr.as_physical_expr())?;
         let binary_expr = expr.as_any().downcast_ref::<BinaryExpr>()?;
         let lhs_kind = predicate_lhs_kind(binary_expr.left())?;
         let literal = binary_expr.right().as_any().downcast_ref::<Literal>()?;
@@ -951,8 +951,12 @@ mod tests {
 
         for (op, k) in resolvable_cases {
             let expr = build_expr(op, k);
+            let liquid_expr = crate::liquid_array::DefaultLiquidExpr::new(
+                expr.clone(),
+                Arc::new(arrow_schema::Field::new("col", arrow_schema::DataType::Int32, true)),
+            );
             io.reset_reads();
-            let got = block_on(hybrid.try_eval_predicate(&expr, &mask)).expect("supported");
+            let got = block_on(hybrid.try_eval_predicate(&liquid_expr, &mask)).expect("supported");
             let expected = expected_for(op, k);
             assert_eq!(io.reads(), 0);
             assert_eq!(got, expected);
@@ -969,8 +973,12 @@ mod tests {
         ];
         for (op, k) in unresolvable_cases {
             let expr = build_expr(op, k);
+            let liquid_expr = crate::liquid_array::DefaultLiquidExpr::new(
+                expr.clone(),
+                Arc::new(arrow_schema::Field::new("col", arrow_schema::DataType::Int32, true)),
+            );
             io.reset_reads();
-            let got = block_on(hybrid.try_eval_predicate(&expr, &mask)).expect("supported");
+            let got = block_on(hybrid.try_eval_predicate(&liquid_expr, &mask)).expect("supported");
             let expected = expected_for(op, k);
             assert!(io.reads() > 0);
             assert_eq!(got, expected);
@@ -1033,8 +1041,12 @@ mod tests {
         ];
         for (op, k) in resolvable_cases {
             let expr = build_expr(op, k);
+            let liquid_expr = crate::liquid_array::DefaultLiquidExpr::new(
+                expr.clone(),
+                Arc::new(arrow_schema::Field::new("col", arrow_schema::DataType::UInt32, true)),
+            );
             io.reset_reads();
-            let got = block_on(hybrid.try_eval_predicate(&expr, &mask)).expect("supported");
+            let got = block_on(hybrid.try_eval_predicate(&liquid_expr, &mask)).expect("supported");
             let expected = expected_for(op, k);
             assert_eq!(io.reads(), 0);
             assert_eq!(got, expected);
@@ -1050,8 +1062,12 @@ mod tests {
         ];
         for (op, k) in unresolvable_cases {
             let expr = build_expr(op, k);
+            let liquid_expr = crate::liquid_array::DefaultLiquidExpr::new(
+                expr.clone(),
+                Arc::new(arrow_schema::Field::new("col", arrow_schema::DataType::UInt32, true)),
+            );
             io.reset_reads();
-            let got = block_on(hybrid.try_eval_predicate(&expr, &mask)).expect("supported");
+            let got = block_on(hybrid.try_eval_predicate(&liquid_expr, &mask)).expect("supported");
             let expected = expected_for(op, k);
             assert!(io.reads() > 0);
             assert_eq!(got, expected);
@@ -1090,8 +1106,12 @@ mod tests {
         ];
         for (op, k, expected_const) in resolvable_cases {
             let expr = build_expr(op, k);
+            let liquid_expr = crate::liquid_array::DefaultLiquidExpr::new(
+                expr.clone(),
+                Arc::new(arrow_schema::Field::new("col", arrow_schema::DataType::UInt32, true)),
+            );
             io.reset_reads();
-            let got = block_on(hybrid.try_eval_predicate(&expr, &mask)).expect("supported");
+            let got = block_on(hybrid.try_eval_predicate(&liquid_expr, &mask)).expect("supported");
             let expected = {
                 let vals: Vec<Option<bool>> = (0..arr.len())
                     .map(|i| {
@@ -1119,8 +1139,12 @@ mod tests {
             })
             .unwrap();
         let expr_eq_present = build_expr(Operator::Eq, k_present);
+        let liquid_expr = crate::liquid_array::DefaultLiquidExpr::new(
+            expr_eq_present.clone(),
+            Arc::new(arrow_schema::Field::new("col", arrow_schema::DataType::UInt32, true)),
+        );
         io.reset_reads();
-        let got = block_on(hybrid.try_eval_predicate(&expr_eq_present, &mask)).expect("supported");
+        let got = block_on(hybrid.try_eval_predicate(&liquid_expr, &mask)).expect("supported");
         let expected = {
             let vals: Vec<Option<bool>> = (0..arr.len())
                 .map(|i| {
@@ -1167,8 +1191,12 @@ mod tests {
         ];
         for (op, k, expected_const) in resolvable_cases {
             let expr = build_expr(op, k);
+            let liquid_expr = crate::liquid_array::DefaultLiquidExpr::new(
+                expr.clone(),
+                Arc::new(arrow_schema::Field::new("col", arrow_schema::DataType::Int32, true)),
+            );
             io.reset_reads();
-            let got = block_on(hybrid.try_eval_predicate(&expr, &mask)).expect("supported");
+            let got = block_on(hybrid.try_eval_predicate(&liquid_expr, &mask)).expect("supported");
             let expected = {
                 let vals: Vec<Option<bool>> = (0..arr.len())
                     .map(|i| {
@@ -1196,8 +1224,12 @@ mod tests {
             })
             .unwrap();
         let expr_eq_present = build_expr(Operator::Eq, k_present);
+        let liquid_expr = crate::liquid_array::DefaultLiquidExpr::new(
+            expr_eq_present.clone(),
+            Arc::new(arrow_schema::Field::new("col", arrow_schema::DataType::Int32, true)),
+        );
         io.reset_reads();
-        let got = block_on(hybrid.try_eval_predicate(&expr_eq_present, &mask)).expect("supported");
+        let got = block_on(hybrid.try_eval_predicate(&liquid_expr, &mask)).expect("supported");
         let expected = {
             let vals: Vec<Option<bool>> = (0..arr.len())
                 .map(|i| {

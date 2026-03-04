@@ -459,7 +459,7 @@ impl LiquidSqueezedArray for SqueezedDate32Array {
 
     async fn try_eval_predicate(
         &self,
-        _predicate: &Arc<dyn datafusion::physical_plan::PhysicalExpr>,
+        _predicate: &dyn crate::liquid_array::LiquidExpr,
         _filter: &BooleanBuffer,
     ) -> Option<BooleanArray> {
         None

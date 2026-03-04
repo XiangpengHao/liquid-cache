@@ -12,11 +12,10 @@ use arrow::array::{
 };
 use arrow::buffer::{BooleanBuffer, ScalarBuffer};
 use arrow_schema::DataType;
-use datafusion::physical_plan::PhysicalExpr;
 use fastlanes::BitPacking;
 use num_traits::{AsPrimitive, FromPrimitive};
 
-use super::LiquidDataType;
+use super::{LiquidDataType, LiquidExpr};
 use crate::cache::CacheExpression;
 use crate::liquid_array::hybrid_primitive_array::{
     LiquidPrimitiveClampedArray, LiquidPrimitiveQuantizedArray,
@@ -375,7 +374,7 @@ where
 
     fn try_eval_predicate(
         &self,
-        _predicate: &Arc<dyn PhysicalExpr>,
+        _predicate: &dyn LiquidExpr,
         _filter: &BooleanBuffer,
     ) -> Option<BooleanArray> {
         // primitive array is not supported for liquid predicate
@@ -579,7 +578,7 @@ where
 
     fn try_eval_predicate(
         &self,
-        _predicate: &Arc<dyn PhysicalExpr>,
+        _predicate: &dyn LiquidExpr,
         _filter: &BooleanBuffer,
     ) -> Option<BooleanArray> {
         // primitive delta array is not supported for liquid predicate

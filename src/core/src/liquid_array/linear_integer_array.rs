@@ -351,7 +351,7 @@ where
 
     fn try_eval_predicate(
         &self,
-        _predicate: &Arc<dyn datafusion::physical_plan::PhysicalExpr>,
+        _predicate: &dyn super::LiquidExpr,
         _filter: &BooleanBuffer,
     ) -> Option<BooleanArray> {
         // No special predicate pushdown here.

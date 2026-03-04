@@ -4,6 +4,7 @@
 mod byte_array;
 pub mod byte_view_array;
 mod decimal_array;
+mod expr;
 mod fix_len_byte_array;
 mod float_array;
 mod hybrid_primitive_array;
@@ -26,9 +27,9 @@ use arrow::{
 use arrow_schema::DataType;
 pub use byte_array::{LiquidByteArray, get_bytes_needle, get_string_needle};
 pub use byte_view_array::LiquidByteViewArray;
+pub use expr::{DefaultLiquidExpr, LiquidExpr};
 use bytes::Bytes;
 use datafusion::logical_expr::Operator as DFOperator;
-use datafusion::physical_plan::PhysicalExpr;
 pub use decimal_array::LiquidDecimalArray;
 pub use fix_len_byte_array::LiquidFixedLenByteArray;
 use float_array::LiquidFloatType;
@@ -200,7 +201,7 @@ pub trait LiquidArray: std::fmt::Debug + Send + Sync {
     /// The returned boolean mask is nullable if the the original array is nullable.
     fn try_eval_predicate(
         &self,
-        _predicate: &Arc<dyn PhysicalExpr>,
+        _predicate: &dyn LiquidExpr,
         _filter: &BooleanBuffer,
     ) -> Option<BooleanArray> {
         None
@@ -316,7 +317,7 @@ pub trait LiquidSqueezedArray: std::fmt::Debug + Send + Sync {
     /// The returned boolean mask is nullable if the the original array is nullable.
     async fn try_eval_predicate(
         &self,
-        _predicate: &Arc<dyn PhysicalExpr>,
+        _predicate: &dyn LiquidExpr,
         _filter: &BooleanBuffer,
     ) -> Option<BooleanArray> {
         None

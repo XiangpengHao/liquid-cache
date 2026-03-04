@@ -8,7 +8,6 @@ use arrow::buffer::{BooleanBuffer, Buffer, NullBuffer, OffsetBuffer};
 use arrow::compute::cast;
 use arrow_schema::DataType;
 use bytes::Bytes;
-use datafusion::physical_plan::PhysicalExpr;
 use std::any::Any;
 use std::sync::Arc;
 
@@ -21,7 +20,8 @@ use crate::liquid_array::byte_view_array::fingerprint::build_fingerprints;
 use crate::liquid_array::raw::FsstArray;
 use crate::liquid_array::raw::fsst_buffer::{DiskBuffer, FsstBacking, PrefixKey};
 use crate::liquid_array::{
-    LiquidArray, LiquidDataType, LiquidSqueezedArray, LiquidSqueezedArrayRef, SqueezeIoHandler,
+    LiquidArray, LiquidDataType, LiquidExpr, LiquidSqueezedArray, LiquidSqueezedArrayRef,
+    SqueezeIoHandler,
 };
 
 mod comparisons;
@@ -292,12 +292,12 @@ impl LiquidArray for LiquidByteViewArray<FsstArray> {
 
     fn try_eval_predicate(
         &self,
-        expr: &Arc<dyn PhysicalExpr>,
+        expr: &dyn LiquidExpr,
         filter: &BooleanBuffer,
     ) -> Option<BooleanArray> {
         let filtered = helpers::filter_inner(self, filter);
 
-        helpers::try_eval_predicate_in_memory(expr, &filtered)
+        helpers::try_eval_predicate_in_memory(expr.as_physical_expr(), &filtered)
     }
 
     fn to_bytes(&self) -> Vec<u8> {
@@ -424,11 +424,11 @@ impl LiquidSqueezedArray for LiquidByteViewArray<DiskBuffer> {
     /// The returned boolean mask is nullable if the the original array is nullable.
     async fn try_eval_predicate(
         &self,
-        expr: &Arc<dyn PhysicalExpr>,
+        expr: &dyn LiquidExpr,
         filter: &BooleanBuffer,
     ) -> Option<BooleanArray> {
         // Reuse generic filter path first to reduce input rows if any
         let filtered = helpers::filter_inner(self, filter);
-        helpers::try_eval_predicate_on_disk(expr, &filtered).await
+        helpers::try_eval_predicate_on_disk(expr.as_physical_expr(), &filtered).await
     }
 }

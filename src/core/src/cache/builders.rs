@@ -5,13 +5,13 @@ use arrow::array::{
     Array, ArrayData, ArrayRef, BinaryViewArray, BooleanArray, StringViewArray, make_array,
 };
 use arrow::buffer::BooleanBuffer;
-use datafusion::physical_plan::PhysicalExpr;
 
 use super::cached_batch::CacheEntry;
 use super::core::LiquidCache;
 use super::io_context::{DefaultIoContext, IoContext};
 use super::policies::{CachePolicy, HydrationPolicy, SqueezePolicy, TranscodeSqueezeEvict};
 use super::{CacheExpression, EntryID, LiquidPolicy};
+use crate::liquid_array::LiquidExpr;
 use crate::sync::Arc;
 
 /// Builder for [LiquidCache].
@@ -285,7 +285,7 @@ fn maybe_gc_view_arrays(array: &ArrayRef) -> Option<ArrayRef> {
 pub struct EvaluatePredicate<'a> {
     pub(super) storage: &'a LiquidCache,
     pub(super) entry_id: &'a EntryID,
-    pub(super) predicate: &'a Arc<dyn PhysicalExpr>,
+    pub(super) predicate: &'a dyn LiquidExpr,
     pub(super) selection: Option<&'a BooleanBuffer>,
 }
 
@@ -293,7 +293,7 @@ impl<'a> EvaluatePredicate<'a> {
     pub(super) fn new(
         storage: &'a LiquidCache,
         entry_id: &'a EntryID,
-        predicate: &'a Arc<dyn PhysicalExpr>,
+        predicate: &'a dyn LiquidExpr,
     ) -> Self {
         Self {
             storage,
@@ -310,7 +310,7 @@ impl<'a> EvaluatePredicate<'a> {
     }
 
     /// Evaluate the predicate against the cached data.
-    pub async fn read(self) -> Option<Result<BooleanArray, ArrayRef>> {
+    pub async fn read(self) -> Option<BooleanArray> {
         self.storage
             .eval_predicate_internal(self.entry_id, self.selection, self.predicate)
             .await
@@ -318,10 +318,8 @@ impl<'a> EvaluatePredicate<'a> {
 }
 
 impl<'a> IntoFuture for EvaluatePredicate<'a> {
-    type Output = Option<Result<BooleanArray, ArrayRef>>;
-    type IntoFuture = Pin<
-        Box<dyn std::future::Future<Output = Option<Result<BooleanArray, ArrayRef>>> + Send + 'a>,
-    >;
+    type Output = Option<BooleanArray>;
+    type IntoFuture = Pin<Box<dyn std::future::Future<Output = Option<BooleanArray>> + Send + 'a>>;
 
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move { self.read().await })

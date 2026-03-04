@@ -33,11 +33,13 @@ The example below shows insert, get, get with selection, and get with predicate 
 ```rust
 use arrow::array::{BooleanArray, UInt64Array};
 use arrow::buffer::BooleanBuffer;
+use arrow_schema::{DataType, Field};
 use datafusion::logical_expr::Operator;
 use datafusion::physical_plan::PhysicalExpr;
 use datafusion::physical_plan::expressions::{BinaryExpr, Column, Literal};
 use datafusion::scalar::ScalarValue;
 use liquid_cache::cache::{EntryID, LiquidCacheBuilder};
+use liquid_cache::liquid_array::DefaultLiquidExpr;
 use std::sync::Arc;
 
 tokio_test::block_on(async {
@@ -60,16 +62,19 @@ tokio_test::block_on(async {
         .expect("entry should exist");
 
     // 4) get with predicate pushdown: col > 12
-    let predicate: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+    let physical_expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
         Arc::new(Column::new("col", 0)),
         Operator::Gt,
         Arc::new(Literal::new(ScalarValue::UInt64(Some(12)))),
     ));
+    let predicate = DefaultLiquidExpr::new(
+        physical_expr,
+        Arc::new(Field::new("col", DataType::UInt64, false)),
+    );
     let predicate_mask = cache
         .eval_predicate(&entry_id, &predicate)
         .await
-        .expect("entry should exist")
-        .expect("predicate should be evaluated in cache");
+        .expect("entry should exist");
 
     // Conceptual expectations:
     assert_eq!(all_rows.as_ref(), values.as_ref()); // [10, 11, 12, 13, 14, 15]

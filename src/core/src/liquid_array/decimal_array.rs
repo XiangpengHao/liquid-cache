@@ -15,8 +15,8 @@ use datafusion::physical_plan::expressions::{
 use num_traits::ToPrimitive;
 
 use super::{
-    LiquidArray, LiquidDataType, LiquidSqueezedArray, LiquidSqueezedArrayRef, NeedsBacking,
-    Operator, SqueezeIoHandler, SqueezeResult,
+    LiquidArray, LiquidDataType, LiquidExpr, LiquidSqueezedArray, LiquidSqueezedArrayRef,
+    NeedsBacking, Operator, SqueezeIoHandler, SqueezeResult,
 };
 use crate::cache::CacheExpression;
 use crate::liquid_array::ipc::{LiquidIPCHeader, get_physical_type_id};
@@ -535,12 +535,12 @@ impl LiquidSqueezedArray for LiquidDecimalQuantizedArray {
 
     async fn try_eval_predicate(
         &self,
-        expr: &Arc<dyn PhysicalExpr>,
+        expr: &dyn LiquidExpr,
         filter: &BooleanBuffer,
     ) -> Option<BooleanArray> {
         let filtered = self.filter_inner(filter);
 
-        let expr = unwrap_dynamic_filter(expr)?;
+        let expr = unwrap_dynamic_filter(expr.as_physical_expr())?;
         let binary_expr = expr.as_any().downcast_ref::<BinaryExpr>()?;
         binary_expr.left().as_any().downcast_ref::<Column>()?;
 
@@ -660,7 +660,11 @@ mod tests {
         let col = Arc::new(Column::new("col", 0));
         let expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(col, DFOperator::GtEq, lit));
 
-        let got = block_on(hybrid.try_eval_predicate(&expr, &mask)).expect("supported");
+        let liquid_expr = crate::liquid_array::DefaultLiquidExpr::new(
+            expr.clone(),
+            Arc::new(arrow_schema::Field::new("col", arrow_schema::DataType::Decimal128(10, 2), true)),
+        );
+        let got = block_on(hybrid.try_eval_predicate(&liquid_expr, &mask)).expect("supported");
         let expected = BooleanArray::from(vec![Some(true), Some(true), None, Some(true)]);
         assert_eq!(got, expected);
         assert_eq!(io.reads(), 0);

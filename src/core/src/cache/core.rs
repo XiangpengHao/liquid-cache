@@ -2,7 +2,6 @@ use arrow::array::{ArrayRef, BooleanArray};
 use arrow::buffer::BooleanBuffer;
 use arrow_schema::DataType;
 use bytes::Bytes;
-use datafusion::physical_plan::PhysicalExpr;
 use futures::StreamExt;
 
 use super::{
@@ -20,7 +19,7 @@ use crate::cache::{CacheExpression, index::ArtIndex, utils::EntryID};
 use crate::cache::{CacheStats, EventTrace};
 use crate::cache::{DefaultSqueezeIo, RuntimeStats};
 use crate::liquid_array::{
-    LiquidSqueezedArrayRef, SqueezeIoHandler, SqueezedBacking, SqueezedDate32Array,
+    LiquidExpr, LiquidSqueezedArrayRef, SqueezeIoHandler, SqueezedBacking, SqueezedDate32Array,
     VariantStructSqueezedArray,
 };
 use crate::sync::Arc;
@@ -132,7 +131,7 @@ impl LiquidCache {
     pub fn eval_predicate<'a>(
         &'a self,
         entry_id: &'a EntryID,
-        predicate: &'a Arc<dyn PhysicalExpr>,
+        predicate: &'a dyn LiquidExpr,
     ) -> EvaluatePredicate<'a> {
         EvaluatePredicate::new(self, entry_id, predicate)
     }
@@ -738,8 +737,8 @@ impl LiquidCache {
         &self,
         entry_id: &EntryID,
         selection_opt: Option<&BooleanBuffer>,
-        predicate: &Arc<dyn PhysicalExpr>,
-    ) -> Option<Result<BooleanArray, ArrayRef>> {
+        predicate: &dyn LiquidExpr,
+    ) -> Option<BooleanArray> {
         use arrow::array::BooleanArray;
 
         self.observer.on_eval_predicate();
@@ -761,7 +760,7 @@ impl LiquidCache {
                 });
                 let selection_array = BooleanArray::new(selection.clone(), None);
                 let filtered = arrow::compute::filter(array, &selection_array).ok()?;
-                Some(Err(filtered))
+                Some(predicate.evaluate_arrow(&filtered))
             }
             entry @ CacheEntry::DiskArrow(_) => {
                 let array = self.read_disk_arrow_array(entry_id).await;
@@ -774,7 +773,7 @@ impl LiquidCache {
                 });
                 let selection_array = BooleanArray::new(selection.clone(), None);
                 let filtered = arrow::compute::filter(&array, &selection_array).ok()?;
-                Some(Err(filtered))
+                Some(predicate.evaluate_arrow(&filtered))
             }
             CacheEntry::MemoryLiquid(array) => {
                 let mut owned = None;
@@ -783,11 +782,11 @@ impl LiquidCache {
                     owned.as_ref().unwrap()
                 });
                 match array.try_eval_predicate(predicate, selection) {
-                    Some(buf) => Some(Ok(buf)),
+                    Some(buf) => Some(buf),
                     None => {
                         self.runtime_stats().incr_eval_predicate_on_liquid_failed();
                         let filtered = array.filter(selection);
-                        Some(Err(filtered))
+                        Some(predicate.evaluate_arrow(&filtered))
                     }
                 }
             }
@@ -801,11 +800,11 @@ impl LiquidCache {
                     owned.as_ref().unwrap()
                 });
                 match liquid.try_eval_predicate(predicate, selection) {
-                    Some(buf) => Some(Ok(buf)),
+                    Some(buf) => Some(buf),
                     None => {
                         self.runtime_stats().incr_eval_predicate_on_liquid_failed();
                         let filtered = liquid.filter(selection);
-                        Some(Err(filtered))
+                        Some(predicate.evaluate_arrow(&filtered))
                     }
                 }
             }
@@ -820,16 +819,19 @@ impl LiquidCache {
         &self,
         array: &LiquidSqueezedArrayRef,
         selection_opt: Option<&BooleanBuffer>,
-        predicate: &Arc<dyn PhysicalExpr>,
-    ) -> Option<Result<BooleanArray, ArrayRef>> {
+        predicate: &dyn LiquidExpr,
+    ) -> Option<BooleanArray> {
         let mut owned = None;
         let selection = selection_opt.unwrap_or_else(|| {
             owned = Some(BooleanBuffer::new_set(array.len()));
             owned.as_ref().unwrap()
         });
         match array.try_eval_predicate(predicate, selection).await {
-            Some(buf) => Some(Ok(buf)),
-            None => Some(Err(array.filter(selection).await)),
+            Some(buf) => Some(buf),
+            None => {
+                let filtered = array.filter(selection).await;
+                Some(predicate.evaluate_arrow(&filtered))
+            }
         }
     }
 }

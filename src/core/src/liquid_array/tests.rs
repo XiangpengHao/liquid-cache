@@ -211,8 +211,12 @@ mod random_tests {
             let expr: Arc<dyn datafusion::physical_plan::PhysicalExpr> =
                 Arc::new(BinaryExpr::new(col, Operator::Eq, lit));
 
+            let liquid_expr = crate::liquid_array::DefaultLiquidExpr::new(
+                expr.clone(),
+                Arc::new(arrow_schema::Field::new("test_col", arrow_schema::DataType::Utf8, true)),
+            );
             for (_name, la) in make_impls_from_strings(&input) {
-                if let Some(result) = la.try_eval_predicate(&expr, &mask) {
+                if let Some(result) = la.try_eval_predicate(&liquid_expr, &mask) {
                     let expected: Vec<Option<bool>> =
                         input.iter().map(|o| o.map(|s| s == needle)).collect();
                     assert_eq!(result, BooleanArray::from(expected));
@@ -418,8 +422,12 @@ mod random_tests {
             let expr: Arc<dyn datafusion::physical_plan::PhysicalExpr> =
                 Arc::new(BinaryExpr::new(col, Operator::Eq, lit));
 
+            let liquid_expr = crate::liquid_array::DefaultLiquidExpr::new(
+                expr.clone(),
+                Arc::new(arrow_schema::Field::new("test_col", arrow_schema::DataType::Utf8, true)),
+            );
             for (_name, la) in make_impls_from_strings(&input) {
-                if let Some(result) = la.try_eval_predicate(&expr, &mask) {
+                if let Some(result) = la.try_eval_predicate(&liquid_expr, &mask) {
                     assert_eq!(result, BooleanArray::from(expected.clone()));
                 }
             }
@@ -510,8 +518,12 @@ mod random_tests {
         let expr: Arc<dyn datafusion::physical_plan::PhysicalExpr> =
             Arc::new(BinaryExpr::new(col, Operator::Eq, lit));
 
+        let liquid_expr = crate::liquid_array::DefaultLiquidExpr::new(
+            expr.clone(),
+            Arc::new(arrow_schema::Field::new("test_col", arrow_schema::DataType::Utf8, true)),
+        );
         for (_name, la) in make_impls_from_strings(&input) {
-            if let Some(result) = la.try_eval_predicate(&expr, &mask) {
+            if let Some(result) = la.try_eval_predicate(&liquid_expr, &mask) {
                 // Build expected
                 let expected = BooleanArray::from(vec![
                     Some(true),

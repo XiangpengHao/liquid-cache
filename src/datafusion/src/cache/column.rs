@@ -5,10 +5,11 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use arrow_schema::{ArrowError, DataType, Field, Schema};
+use datafusion::physical_plan::PhysicalExpr;
 use liquid_cache::cache::{CacheExpression, LiquidCache};
+use liquid_cache::liquid_array::LiquidExpr;
 use liquid_cache::utils::VariantSchema;
 use liquid_cache::utils::typed_struct_contains_path;
-use parquet::arrow::arrow_reader::ArrowPredicate;
 use parquet_variant_compute::{VariantArray, VariantType, shred_variant, unshred_variant};
 
 use crate::{
@@ -31,6 +32,39 @@ pub struct CachedColumn {
 
 /// A reference to a cached column.
 pub type CachedColumnRef = Arc<CachedColumn>;
+
+/// DataFusion-specific [`LiquidExpr`] that handles variant shredding in the fallback path.
+///
+/// Stores two copies of the expression:
+/// - `expr`: uses the original file-schema column indices (for fast-path downcasting)
+/// - `fallback_expr`: uses reassigned column indices (column 0) for single-column evaluation
+#[derive(Debug)]
+struct DataFusionLiquidExpr {
+    expr: Arc<dyn PhysicalExpr>,
+    fallback_expr: Arc<dyn PhysicalExpr>,
+    field: Arc<Field>,
+}
+
+impl LiquidExpr for DataFusionLiquidExpr {
+    fn as_physical_expr(&self) -> &Arc<dyn PhysicalExpr> {
+        &self.expr
+    }
+
+    fn evaluate_arrow(&self, array: &ArrayRef) -> BooleanArray {
+        let mut array = array.clone();
+        if let Some(transformed) = maybe_shred_variant_array(&array, self.field.as_ref()) {
+            array = transformed;
+        }
+        let schema = Arc::new(Schema::new(vec![(*self.field).clone()]));
+        let batch = RecordBatch::try_new(schema, vec![array]).unwrap();
+        let result = self.fallback_expr.evaluate(&batch).unwrap();
+        result
+            .into_array(batch.num_rows())
+            .unwrap()
+            .as_boolean()
+            .clone()
+    }
+}
 
 fn infer_expression(field: &Field) -> Option<CacheExpression> {
     if let Some(mapping) = field.metadata().get(DATE_MAPPING_METADATA_KEY)
@@ -113,11 +147,6 @@ impl CachedColumn {
         self.expression.clone()
     }
 
-    fn array_to_record_batch(&self, array: ArrayRef) -> RecordBatch {
-        let schema = Arc::new(Schema::new(vec![self.field.clone()]));
-        RecordBatch::try_new(schema, vec![array]).unwrap()
-    }
-
     /// Evaluates a predicate on a cached column.
     pub async fn eval_predicate_with_filter(
         &self,
@@ -126,36 +155,28 @@ impl CachedColumn {
         predicate: &mut LiquidPredicate,
     ) -> Option<Result<BooleanArray, ArrowError>> {
         let entry_id = self.entry_id(batch_id).into();
-        let result = self
+        let original_expr = predicate.physical_expr_physical_column_index().clone();
+        let fallback_schema = Schema::new(vec![(*self.field).clone()]);
+        let fallback_expr = datafusion::physical_expr::utils::reassign_expr_columns(
+            original_expr.clone(),
+            &fallback_schema,
+        )
+        .unwrap();
+        let liquid_expr = DataFusionLiquidExpr {
+            expr: original_expr,
+            fallback_expr,
+            field: self.field.clone(),
+        };
+        let boolean_array = self
             .cache_store
-            .eval_predicate(&entry_id, predicate.physical_expr_physical_column_index())
+            .eval_predicate(&entry_id, &liquid_expr)
             .with_selection(filter)
             .await?;
-        match result {
-            Ok(boolean_array) => {
-                let predicate_filter = match boolean_array.null_count() {
-                    0 => boolean_array,
-                    _ => prep_null_mask_filter(&boolean_array),
-                };
-                Some(Ok(predicate_filter))
-            }
-            Err(array) => {
-                let mut array = array;
-                if let Some(transformed) = maybe_shred_variant_array(&array, self.field.as_ref()) {
-                    array = transformed;
-                }
-                let record_batch = self.array_to_record_batch(array);
-                let boolean_array = match predicate.evaluate(record_batch) {
-                    Ok(arr) => arr,
-                    Err(err) => return Some(Err(err)),
-                };
-                let predicate_filter = match boolean_array.null_count() {
-                    0 => boolean_array,
-                    _ => prep_null_mask_filter(&boolean_array),
-                };
-                Some(Ok(predicate_filter))
-            }
-        }
+        let predicate_filter = match boolean_array.null_count() {
+            0 => boolean_array,
+            _ => prep_null_mask_filter(&boolean_array),
+        };
+        Some(Ok(predicate_filter))
     }
 
     /// Get an arrow array with a filter applied.

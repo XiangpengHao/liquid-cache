@@ -126,8 +126,10 @@ impl CachedRowGroup {
                         }
                         Some(array) => array,
                     };
+                    let liquid_expr =
+                        liquid_cache::liquid_array::DefaultLiquidExpr::new(expr, column.field());
                     let buffer =
-                        if let Some(buffer) = liquid_array.try_eval_predicate(&expr, selection) {
+                        if let Some(buffer) = liquid_array.try_eval_predicate(&liquid_expr, selection) {
                             buffer
                         } else {
                             combined_buffer = None;

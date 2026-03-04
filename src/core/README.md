@@ -58,8 +58,10 @@ assert_eq!(retrieved.as_ref(), arrow_array.as_ref());
 
 ```rust
 use liquid_cache::cache::{LiquidCacheBuilder, EntryID};
+use liquid_cache::liquid_array::DefaultLiquidExpr;
 use arrow::array::{BooleanArray, StringArray};
 use arrow::buffer::BooleanBuffer;
+use arrow_schema::{DataType, Field};
 use datafusion::logical_expr::Operator;
 use datafusion::physical_plan::expressions::{BinaryExpr, Column, Literal};
 use datafusion::physical_plan::PhysicalExpr;
@@ -79,33 +81,22 @@ storage.insert(entry_id, data.clone()).await;
 storage.flush_all_to_disk().await;
 
 let selection = BooleanBuffer::from(vec![true, true, false, true, true]);
-let expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+let physical_expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
     Arc::new(Column::new("col", 0)),
     Operator::Eq,
     Arc::new(Literal::new(ScalarValue::Utf8(Some("apple".to_string())))),
 ));
+let predicate = DefaultLiquidExpr::new(
+    physical_expr,
+    Arc::new(Field::new("col", DataType::Utf8, true)),
+);
 
-// Read with predicate pushdown
-let result = storage
-    .eval_predicate(&entry_id, &expr)
+// Read with predicate pushdown 
+let mask = storage
+    .eval_predicate(&entry_id, &predicate)
     .with_selection(&selection)
     .await
     .unwrap();
-let mask = match result {
-    Ok(mask) => mask,
-    Err(filtered) => {
-        // Fallback path when the predicate cannot be evaluated inside the cache.
-        BooleanArray::from(
-            filtered
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .unwrap()
-                .iter()
-                .map(|value| Some(value == Some("apple")))
-                .collect::<Vec<_>>(),
-        )
-    }
-};
 let expected_mask = BooleanArray::from(vec![Some(true), Some(false), Some(true), Some(false)]);
 assert_eq!(mask, expected_mask);
 });
