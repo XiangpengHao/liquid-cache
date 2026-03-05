@@ -10,8 +10,8 @@ mod byte_view_tests {
     use datafusion::logical_expr::Operator;
     use datafusion::physical_plan::expressions::{BinaryExpr, Column, Literal};
     use datafusion::scalar::ScalarValue;
-    use rand::prelude::*;
     use rand::SeedableRng;
+    use rand::prelude::*;
 
     use crate::cache::{CacheExpression, TestSqueezeIo};
     use crate::liquid_array::raw::FsstArray;
