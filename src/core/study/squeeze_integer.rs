@@ -11,7 +11,8 @@ use datafusion::scalar::ScalarValue;
 use futures::StreamExt;
 use liquid_cache::cache::CacheExpression;
 use liquid_cache::liquid_array::{
-    IntegerSqueezePolicy, LiquidArray, LiquidPrimitiveArray, LiquidPrimitiveType,
+    DefaultLiquidExpr, IntegerSqueezePolicy, LiquidArray, LiquidExpr, LiquidPrimitiveArray,
+    LiquidPrimitiveType,
     LiquidSqueezedArray, SqueezeIoHandler,
 };
 use std::sync::Mutex;
@@ -361,13 +362,21 @@ where
             case.op,
             std::sync::Arc::new(Literal::new(case.scalar.clone())),
         ));
+    let liquid_expr = DefaultLiquidExpr::new(
+        expr.clone(),
+        Arc::new(arrow_schema::Field::new(
+            "col",
+            array.data_type().clone(),
+            true,
+        )),
+    );
 
     let all_true = BooleanBuffer::new_set(prim.len());
 
     // Evaluate predicate on clamp
     if let Some((hy, _full_bytes)) = clamp_hybrid_and_bytes.clone() {
         let (mask, pred_io_bytes) =
-            try_eval_or_fetch::<T>(&*hy, clamp_io.as_ref(), &expr, &all_true);
+            try_eval_or_fetch::<T>(&*hy, clamp_io.as_ref(), &liquid_expr, &all_true);
         stats.clamp_pred_io_bytes += pred_io_bytes;
         let sel = bool_array_to_selection(&mask);
         // Expected selection result from Arrow
@@ -380,7 +389,7 @@ where
     // Evaluate predicate on quantized
     if let Some((hy, _full_bytes)) = quant_hybrid_and_bytes.clone() {
         let (mask, pred_io_bytes) =
-            try_eval_or_fetch::<T>(&*hy, quant_io.as_ref(), &expr, &all_true);
+            try_eval_or_fetch::<T>(&*hy, quant_io.as_ref(), &liquid_expr, &all_true);
         stats.quant_pred_io_bytes += pred_io_bytes;
         let sel = bool_array_to_selection(&mask);
         // Expected selection result from Arrow
@@ -395,7 +404,7 @@ where
 fn try_eval_or_fetch<T: LiquidPrimitiveType>(
     hybrid: &dyn LiquidSqueezedArray,
     io: &InMemorySqueezeIo,
-    expr: &std::sync::Arc<dyn datafusion::physical_plan::PhysicalExpr>,
+    expr: &DefaultLiquidExpr,
     filter: &BooleanBuffer,
 ) -> (BooleanArray, usize) {
     io.reset_bytes_read();
@@ -407,7 +416,7 @@ fn try_eval_or_fetch<T: LiquidPrimitiveType>(
             let full_bytes = io.bytes();
             let liq = LiquidPrimitiveArray::<T>::from_bytes(full_bytes.clone());
             let arr = liq.to_arrow_array();
-            let mask = eval_on_arrow(&arr, expr);
+            let mask = eval_on_arrow(&arr, expr.as_physical_expr());
             (mask, full_bytes.len())
         }
     }

@@ -15,6 +15,7 @@ use liquid_cache::cache::LiquidCache;
 use liquid_cache::cache::LiquidCacheBuilder;
 use liquid_cache::cache::squeeze_policies::TranscodeSqueezeEvict;
 use liquid_cache::cache_policies::FiloPolicy;
+use liquid_cache::liquid_array::DefaultLiquidExpr;
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -74,6 +75,14 @@ fn main() {
         Operator::Eq,
         Arc::new(Literal::new(ScalarValue::Utf8View(Some(String::new())))),
     ));
+    let pred = DefaultLiquidExpr::new(
+        pred_expr,
+        Arc::new(arrow_schema::Field::new(
+            "col",
+            arrow_schema::DataType::Utf8View,
+            true,
+        )),
+    );
 
     // 4) Scan all entries with selection=all-true and time get_with_predicate
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
@@ -83,11 +92,11 @@ fn main() {
         for (i, id) in ids.iter().enumerate() {
             let len = lens[i];
             let selection = BooleanBuffer::new_set(len);
-            if let Some(result) = storage
-                .eval_predicate(id, &pred_expr)
+            if storage
+                .eval_predicate(id, &pred)
                 .with_selection(&selection)
                 .await
-                && result.is_ok()
+                .is_some()
             {
                 evaluated += 1;
             }
