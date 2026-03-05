@@ -1,5 +1,5 @@
-use arrow::array::{ArrayRef, BooleanArray};
 use arrow::array::cast::AsArray;
+use arrow::array::{ArrayRef, BooleanArray};
 use arrow::buffer::BooleanBuffer;
 use arrow::record_batch::RecordBatch;
 use arrow_schema::{DataType, Field, Schema};

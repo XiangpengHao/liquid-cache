@@ -46,7 +46,10 @@ pub use primitive_array::{
 pub use squeezed_date32_array::{Date32Field, SqueezedDate32Array};
 pub use variant_array::VariantStructSqueezedArray;
 
-use crate::{cache::{CacheExpression, LiquidExpr}, liquid_array::raw::FsstArray};
+use crate::{
+    cache::{CacheExpression, LiquidExpr},
+    liquid_array::raw::FsstArray,
+};
 
 /// Liquid data type is only logical type
 #[derive(Debug, Clone, Copy)]

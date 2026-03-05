@@ -660,7 +660,11 @@ mod tests {
         let col = Arc::new(Column::new("col", 0));
         let expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(col, DFOperator::GtEq, lit));
 
-        let got = block_on(hybrid.try_eval_predicate(&crate::cache::LiquidExpr::new_unchecked(expr.clone()), &mask)).expect("supported");
+        let got = block_on(hybrid.try_eval_predicate(
+            &crate::cache::LiquidExpr::new_unchecked(expr.clone()),
+            &mask,
+        ))
+        .expect("supported");
         let expected = BooleanArray::from(vec![Some(true), Some(true), None, Some(true)]);
         assert_eq!(got, expected);
         assert_eq!(io.reads(), 0);

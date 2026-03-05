@@ -318,9 +318,7 @@ impl<'a> EvaluatePredicate<'a> {
 
 impl<'a> IntoFuture for EvaluatePredicate<'a> {
     type Output = Option<BooleanArray>;
-    type IntoFuture = Pin<
-        Box<dyn std::future::Future<Output = Option<BooleanArray>> + Send + 'a>,
-    >;
+    type IntoFuture = Pin<Box<dyn std::future::Future<Output = Option<BooleanArray>> + Send + 'a>>;
 
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move { self.read().await })
