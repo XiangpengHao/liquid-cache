@@ -15,7 +15,6 @@ use std::sync::Arc;
 use std::cell::Cell;
 
 use crate::cache::{CacheExpression, LiquidExpr};
-use crate::liquid_array::byte_array::{ArrowByteType, build_dict_selection};
 use crate::liquid_array::byte_view_array::fingerprint::build_fingerprints;
 use crate::liquid_array::raw::FsstArray;
 use crate::liquid_array::raw::fsst_buffer::{DiskBuffer, FsstBacking, PrefixKey};
@@ -107,6 +106,71 @@ impl ByteViewBuildOptions {
         Self {
             arrow_type: ArrowByteType::from_arrow_type(data_type),
             build_fingerprints,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[repr(u16)]
+pub(crate) enum ArrowByteType {
+    Utf8 = 0,
+    Utf8View = 1,
+    Dict16Binary = 2,
+    Dict16Utf8 = 3,
+    Binary = 4,
+    BinaryView = 5,
+}
+
+impl From<u16> for ArrowByteType {
+    fn from(value: u16) -> Self {
+        match value {
+            0 => ArrowByteType::Utf8,
+            1 => ArrowByteType::Utf8View,
+            2 => ArrowByteType::Dict16Binary,
+            3 => ArrowByteType::Dict16Utf8,
+            4 => ArrowByteType::Binary,
+            5 => ArrowByteType::BinaryView,
+            _ => panic!("Invalid arrow byte type: {value}"),
+        }
+    }
+}
+
+impl ArrowByteType {
+    pub fn to_arrow_type(self) -> DataType {
+        match self {
+            ArrowByteType::Utf8 => DataType::Utf8,
+            ArrowByteType::Utf8View => DataType::Utf8View,
+            ArrowByteType::Dict16Binary => {
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Binary))
+            }
+            ArrowByteType::Dict16Utf8 => {
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8))
+            }
+            ArrowByteType::Binary => DataType::Binary,
+            ArrowByteType::BinaryView => DataType::BinaryView,
+        }
+    }
+
+    pub fn from_arrow_type(ty: &DataType) -> Self {
+        match ty {
+            DataType::Utf8 => ArrowByteType::Utf8,
+            DataType::Utf8View => ArrowByteType::Utf8View,
+            DataType::Binary => ArrowByteType::Binary,
+            DataType::BinaryView => ArrowByteType::BinaryView,
+            DataType::Dictionary(_, _) => {
+                if ty
+                    == &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Binary))
+                {
+                    ArrowByteType::Dict16Binary
+                } else if ty
+                    == &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8))
+                {
+                    ArrowByteType::Dict16Utf8
+                } else {
+                    panic!("Unsupported arrow type: {ty:?}")
+                }
+            }
+            _ => panic!("Unsupported arrow type: {ty:?}"),
         }
     }
 }
@@ -214,7 +278,7 @@ impl LiquidByteViewArray<FsstArray> {
 
     fn to_dict_arrow_decompress_keyed(&self) -> DictionaryArray<UInt16Type> {
         let (selected, new_keys) =
-            build_dict_selection(&self.dictionary_keys, self.prefix_keys.len());
+            helpers::build_dict_selection(&self.dictionary_keys, self.prefix_keys.len());
         let (values_buffer, offsets_buffer) = self.fsst_buffer.to_uncompressed_selected(&selected);
         self.to_dict_arrow_inner(new_keys, values_buffer, offsets_buffer)
     }
@@ -253,7 +317,7 @@ impl LiquidByteViewArray<DiskBuffer> {
 
     async fn to_dict_arrow_decompress_keyed(&self) -> DictionaryArray<UInt16Type> {
         let (selected, new_keys) =
-            build_dict_selection(&self.dictionary_keys, self.prefix_keys.len());
+            helpers::build_dict_selection(&self.dictionary_keys, self.prefix_keys.len());
         let (values_buffer, offsets_buffer) =
             self.fsst_buffer.to_uncompressed_selected(&selected).await;
         self.to_dict_arrow_inner(new_keys, values_buffer, offsets_buffer)

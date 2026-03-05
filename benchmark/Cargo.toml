@@ -26,7 +26,6 @@ sysinfo = { version = "0.38.2", default-features = false, features = [
 	"disk",
 ] }
 object_store = { workspace = true, features = ["http"] }
-fsst-rs = "0.5.6"
 parquet = { workspace = true }
 arrow = { workspace = true }
 fastrace = { version = "0.7.16" }
@@ -41,7 +40,6 @@ uuid = { version = "1.21.0", features = ["v4"] }
 pprof = { version = "0.15.0", features = ["flamegraph"] }
 anyhow = "1.0"
 usdt = "0.6"
-csv = "1.4"
 regex = "1.12.3"
 perf-event2 = "0.7.4"
 

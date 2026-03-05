@@ -1,7 +1,6 @@
 //! LiquidArray is the core data structure of LiquidCache.
 //! You should not use this module directly.
 //! Instead, use `liquid_cache_datafusion_server` or `liquid_cache_datafusion_client` to interact with LiquidCache.
-mod byte_array;
 pub mod byte_view_array;
 mod decimal_array;
 mod fix_len_byte_array;
@@ -25,13 +24,11 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use arrow_schema::{DataType, Field, Schema};
-pub use byte_array::{LiquidByteArray, get_bytes_needle, get_string_needle};
 pub use byte_view_array::LiquidByteViewArray;
 use bytes::Bytes;
 use datafusion::logical_expr::Operator as DFOperator;
 pub use decimal_array::LiquidDecimalArray;
 pub use fix_len_byte_array::LiquidFixedLenByteArray;
-use float_array::LiquidFloatType;
 pub use float_array::{LiquidFloat32Array, LiquidFloat64Array, LiquidFloatArray};
 pub use linear_integer_array::{
     LiquidLinearArray, LiquidLinearDate32Array, LiquidLinearDate64Array, LiquidLinearI8Array,
@@ -47,17 +44,12 @@ pub use primitive_array::{
 pub use squeezed_date32_array::{Date32Field, SqueezedDate32Array};
 pub use variant_array::VariantStructSqueezedArray;
 
-use crate::{
-    cache::{CacheExpression, LiquidExpr},
-    liquid_array::raw::FsstArray,
-};
+use crate::cache::{CacheExpression, LiquidExpr};
 
 /// Liquid data type is only logical type
 #[derive(Debug, Clone, Copy)]
 #[repr(u16)]
 pub enum LiquidDataType {
-    /// A byte array.
-    ByteArray = 0,
     /// A byte-view array (dictionary + FSST raw + views).
     ByteViewArray = 4,
     /// An integer.
@@ -75,7 +67,6 @@ pub enum LiquidDataType {
 impl From<u16> for LiquidDataType {
     fn from(value: u16) -> Self {
         match value {
-            0 => LiquidDataType::ByteArray,
             4 => LiquidDataType::ByteViewArray,
             1 => LiquidDataType::Integer,
             2 => LiquidDataType::Float,
@@ -84,73 +75,6 @@ impl From<u16> for LiquidDataType {
             6 => LiquidDataType::Decimal,
             _ => panic!("Invalid liquid data type: {value}"),
         }
-    }
-}
-
-/// A trait to access the underlying Liquid array.
-pub trait AsLiquidArray {
-    /// Get the underlying string array.
-    fn as_string_array_opt(&self) -> Option<&LiquidByteArray>;
-
-    /// Get the underlying string array.
-    fn as_string(&self) -> &LiquidByteArray {
-        self.as_string_array_opt().expect("liquid string array")
-    }
-
-    /// Get the underlying binary array.
-    fn as_binary_array_opt(&self) -> Option<&LiquidByteArray>;
-
-    /// Get the underlying binary array.
-    fn as_binary(&self) -> &LiquidByteArray {
-        self.as_binary_array_opt().expect("liquid binary array")
-    }
-
-    /// Get the underlying byte view array.
-    fn as_byte_view_array_opt(&self) -> Option<&LiquidByteViewArray<FsstArray>>;
-
-    /// Get the underlying byte view array.
-    fn as_byte_view(&self) -> &LiquidByteViewArray<FsstArray> {
-        self.as_byte_view_array_opt()
-            .expect("liquid byte view array")
-    }
-
-    /// Get the underlying primitive array.
-    fn as_primitive_array_opt<T: LiquidPrimitiveType>(&self) -> Option<&LiquidPrimitiveArray<T>>;
-
-    /// Get the underlying primitive array.
-    fn as_primitive<T: LiquidPrimitiveType>(&self) -> &LiquidPrimitiveArray<T> {
-        self.as_primitive_array_opt()
-            .expect("liquid primitive array")
-    }
-
-    /// Get the underlying float array.
-    fn as_float_array_opt<T: LiquidFloatType>(&self) -> Option<&LiquidFloatArray<T>>;
-
-    /// Get the underlying float array.
-    fn as_float<T: LiquidFloatType>(&self) -> &LiquidFloatArray<T> {
-        self.as_float_array_opt().expect("liquid float array")
-    }
-}
-
-impl AsLiquidArray for dyn LiquidArray + '_ {
-    fn as_string_array_opt(&self) -> Option<&LiquidByteArray> {
-        self.as_any().downcast_ref()
-    }
-
-    fn as_primitive_array_opt<T: LiquidPrimitiveType>(&self) -> Option<&LiquidPrimitiveArray<T>> {
-        self.as_any().downcast_ref()
-    }
-
-    fn as_binary_array_opt(&self) -> Option<&LiquidByteArray> {
-        self.as_any().downcast_ref()
-    }
-
-    fn as_byte_view_array_opt(&self) -> Option<&LiquidByteViewArray<FsstArray>> {
-        self.as_any().downcast_ref()
-    }
-
-    fn as_float_array_opt<T: LiquidFloatType>(&self) -> Option<&LiquidFloatArray<T>> {
-        self.as_any().downcast_ref()
     }
 }
 

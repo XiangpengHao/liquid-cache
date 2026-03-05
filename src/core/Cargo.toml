@@ -7,6 +7,9 @@ readme = "README.md"
 description = { workspace = true }
 repository = { workspace = true }
 
+[package.metadata.cargo-shear]
+ignored = ["kani-verifier"]
+
 
 [dependencies]
 async-stream = "0.3.6"
@@ -69,11 +72,6 @@ harness = false
 [[bench]]
 name = "fsstarray"
 path = "bench/fsstarray.rs"
-harness = false
-
-[[bench]]
-name = "byte_array_vs_byte_view"
-path = "bench/byte_array_vs_byte_view.rs"
 harness = false
 
 [[bench]]

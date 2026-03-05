@@ -7,8 +7,7 @@ use arrow_schema::DataType;
 use fsst::Compressor;
 use std::sync::Arc;
 
-use super::{ByteViewBuildOptions, LiquidByteViewArray};
-use crate::liquid_array::byte_array::ArrowByteType;
+use super::{ArrowByteType, ByteViewBuildOptions, LiquidByteViewArray};
 use crate::liquid_array::byte_view_array::fingerprint::StringFingerprint;
 use crate::liquid_array::raw::fsst_buffer::{
     FsstArray, FsstBacking, PrefixKey, RawFsstBuffer, train_compressor,

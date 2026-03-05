@@ -181,11 +181,3 @@ To collect cache trace, simply add `--cache-trace-dir benchmark/data/cache_trace
 env RUST_LOG=info cargo run --bin clickbench_client --release -- --manifest benchmark/clickbench/manifest.json --query 20 --iteration 2 --partitions 8 --cache-trace-dir benchmark/data/
 ```
 It will generate a parquet file that contains the cache trace for each query that the server executed.
-
-
-### Run encoding benchmarks
-
-```bash
-RUST_LOG=info RUSTFLAGS='-C target-cpu=native' cargo run --release --bin encoding -- --file benchmark/clickbench/data/hits.parquet --column 2
-```
-This will benchmark the encoding time of the `URL` column.

@@ -1,4 +1,6 @@
-use arrow::array::{BooleanArray, cast::AsArray, types::UInt16Type};
+use arrow::array::{
+    BooleanArray, BooleanBufferBuilder, UInt16Array, cast::AsArray, types::UInt16Type,
+};
 use arrow::buffer::BooleanBuffer;
 use datafusion::physical_plan::PhysicalExpr;
 use std::sync::Arc;
@@ -8,6 +10,36 @@ use super::operator::{ByteViewExpression, ByteViewOperator};
 use crate::liquid_array::byte_view_array::operator::UnsupportedExpression;
 use crate::liquid_array::raw::FsstArray;
 use crate::liquid_array::raw::fsst_buffer::{DiskBuffer, FsstBacking};
+
+pub(super) fn build_dict_selection(
+    keys: &UInt16Array,
+    dict_len: usize,
+) -> (Vec<usize>, UInt16Array) {
+    let mut hit_mask = BooleanBufferBuilder::new(dict_len);
+    hit_mask.advance(dict_len);
+    for value in keys.iter().flatten() {
+        hit_mask.set_bit(value as usize, true);
+    }
+    let hit_mask = hit_mask.finish();
+    let selected_cnt = hit_mask.count_set_bits();
+
+    let mut key_map = vec![u16::MAX; dict_len];
+    let mut selected = Vec::with_capacity(selected_cnt);
+    let mut remapped: u16 = 0;
+    for (index, selected_flag) in hit_mask.iter().enumerate() {
+        if selected_flag {
+            key_map[index] = remapped;
+            selected.push(index);
+            remapped += 1;
+        }
+    }
+
+    let new_keys = UInt16Array::from_iter(
+        keys.iter()
+            .map(|value| value.map(|value| key_map[value as usize])),
+    );
+    (selected, new_keys)
+}
 
 pub(super) fn filter_inner<B: FsstBacking>(
     array: &LiquidByteViewArray<B>,
