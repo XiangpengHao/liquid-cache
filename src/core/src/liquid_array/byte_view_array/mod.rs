@@ -8,20 +8,20 @@ use arrow::buffer::{BooleanBuffer, Buffer, NullBuffer, OffsetBuffer};
 use arrow::compute::cast;
 use arrow_schema::DataType;
 use bytes::Bytes;
-use datafusion::physical_plan::PhysicalExpr;
 use std::any::Any;
 use std::sync::Arc;
 
 #[cfg(test)]
 use std::cell::Cell;
 
-use crate::cache::CacheExpression;
+use crate::cache::{CacheExpression, LiquidExpr};
 use crate::liquid_array::byte_array::{ArrowByteType, build_dict_selection};
 use crate::liquid_array::byte_view_array::fingerprint::build_fingerprints;
 use crate::liquid_array::raw::FsstArray;
 use crate::liquid_array::raw::fsst_buffer::{DiskBuffer, FsstBacking, PrefixKey};
 use crate::liquid_array::{
     LiquidArray, LiquidDataType, LiquidSqueezedArray, LiquidSqueezedArrayRef, SqueezeIoHandler,
+    eval_predicate_on_array,
 };
 
 mod comparisons;
@@ -290,14 +290,11 @@ impl LiquidArray for LiquidByteViewArray<FsstArray> {
         Arc::new(dict)
     }
 
-    fn try_eval_predicate(
-        &self,
-        expr: &Arc<dyn PhysicalExpr>,
-        filter: &BooleanBuffer,
-    ) -> Option<BooleanArray> {
+    fn try_eval_predicate(&self, expr: &LiquidExpr, filter: &BooleanBuffer) -> BooleanArray {
         let filtered = helpers::filter_inner(self, filter);
 
-        helpers::try_eval_predicate_in_memory(expr, &filtered)
+        helpers::try_eval_predicate_in_memory(expr.physical_expr(), &filtered)
+            .unwrap_or_else(|| eval_predicate_on_array(filtered.to_arrow_array(), expr))
     }
 
     fn to_bytes(&self) -> Vec<u8> {
@@ -422,13 +419,15 @@ impl LiquidSqueezedArray for LiquidByteViewArray<DiskBuffer> {
     ///
     /// Note that the filter is a boolean buffer, not a boolean array, i.e., filter can't be nullable.
     /// The returned boolean mask is nullable if the the original array is nullable.
-    async fn try_eval_predicate(
-        &self,
-        expr: &Arc<dyn PhysicalExpr>,
-        filter: &BooleanBuffer,
-    ) -> Option<BooleanArray> {
+    async fn try_eval_predicate(&self, expr: &LiquidExpr, filter: &BooleanBuffer) -> BooleanArray {
         // Reuse generic filter path first to reduce input rows if any
         let filtered = helpers::filter_inner(self, filter);
-        helpers::try_eval_predicate_on_disk(expr, &filtered).await
+        if let Some(mask) =
+            helpers::try_eval_predicate_on_disk(expr.physical_expr(), &filtered).await
+        {
+            mask
+        } else {
+            eval_predicate_on_array(filtered.to_arrow_array().await, expr)
+        }
     }
 }

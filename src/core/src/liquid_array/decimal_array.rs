@@ -18,7 +18,8 @@ use super::{
     LiquidArray, LiquidDataType, LiquidSqueezedArray, LiquidSqueezedArrayRef, NeedsBacking,
     Operator, SqueezeIoHandler, SqueezeResult,
 };
-use crate::cache::CacheExpression;
+use crate::cache::{CacheExpression, LiquidExpr};
+use crate::liquid_array::eval_predicate_on_array;
 use crate::liquid_array::ipc::{LiquidIPCHeader, get_physical_type_id};
 use crate::liquid_array::raw::BitPackedArray;
 use crate::utils::get_bit_width;
@@ -535,24 +536,49 @@ impl LiquidSqueezedArray for LiquidDecimalQuantizedArray {
 
     async fn try_eval_predicate(
         &self,
-        expr: &Arc<dyn PhysicalExpr>,
+        liquid_expr: &LiquidExpr,
         filter: &BooleanBuffer,
-    ) -> Option<BooleanArray> {
+    ) -> BooleanArray {
         let filtered = self.filter_inner(filter);
 
-        let expr = unwrap_dynamic_filter(expr)?;
-        let binary_expr = expr.as_any().downcast_ref::<BinaryExpr>()?;
-        binary_expr.left().as_any().downcast_ref::<Column>()?;
+        let expr = if let Some(expr) = unwrap_dynamic_filter(liquid_expr.physical_expr()) {
+            expr
+        } else {
+            let fallback = self.filter(filter).await;
+            return eval_predicate_on_array(fallback, liquid_expr);
+        };
+        let Some(binary_expr) = expr.as_any().downcast_ref::<BinaryExpr>() else {
+            let fallback = self.filter(filter).await;
+            return eval_predicate_on_array(fallback, liquid_expr);
+        };
+        if binary_expr
+            .left()
+            .as_any()
+            .downcast_ref::<Column>()
+            .is_none()
+        {
+            let fallback = self.filter(filter).await;
+            return eval_predicate_on_array(fallback, liquid_expr);
+        }
 
-        let literal = binary_expr.right().as_any().downcast_ref::<Literal>()?;
+        let Some(literal) = binary_expr.right().as_any().downcast_ref::<Literal>() else {
+            let fallback = self.filter(filter).await;
+            return eval_predicate_on_array(fallback, liquid_expr);
+        };
 
-        let op = Operator::from_datafusion(binary_expr.op())?;
+        let Some(op) = Operator::from_datafusion(binary_expr.op()) else {
+            let fallback = self.filter(filter).await;
+            return eval_predicate_on_array(fallback, liquid_expr);
+        };
         match filtered.try_eval_predicate_inner(&op, literal) {
             Ok(Some(mask)) => {
                 self.io.trace_io_saved();
-                return Some(mask);
+                return mask;
             }
-            Ok(None) => return None,
+            Ok(None) => {
+                let fallback = self.filter(filter).await;
+                return eval_predicate_on_array(fallback, liquid_expr);
+            }
             Err(NeedsBacking) => {}
         }
 
@@ -562,7 +588,8 @@ impl LiquidSqueezedArray for LiquidDecimalQuantizedArray {
 
         let full = self.hydrate_full_arrow().await;
         let selection_array = BooleanArray::new(filter.clone(), None);
-        let filtered_arr = arrow::compute::filter(&full, &selection_array).ok()?;
+        let filtered_arr = arrow::compute::filter(&full, &selection_array)
+            .expect("selection must match array length");
         let filtered_len = filtered_arr.len();
 
         let lhs = ColumnarValue::Array(filtered_arr);
@@ -586,10 +613,17 @@ impl LiquidSqueezedArray for LiquidDecimalQuantizedArray {
             datafusion::logical_expr::Operator::GtEq => {
                 apply_cmp(datafusion::logical_expr::Operator::GtEq, &lhs, &rhs)
             }
-            _ => return None,
+            _ => {
+                let fallback = self.filter(filter).await;
+                return eval_predicate_on_array(fallback, liquid_expr);
+            }
         };
-        let result = result.ok()?;
-        Some(result.into_array(filtered_len).ok()?.as_boolean().clone())
+        let result = result.expect("validated LiquidExpr comparison must evaluate");
+        result
+            .into_array(filtered_len)
+            .expect("comparison output must be an array")
+            .as_boolean()
+            .clone()
     }
 }
 
@@ -660,7 +694,10 @@ mod tests {
         let col = Arc::new(Column::new("col", 0));
         let expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(col, DFOperator::GtEq, lit));
 
-        let got = block_on(hybrid.try_eval_predicate(&expr, &mask)).expect("supported");
+        let got = block_on(hybrid.try_eval_predicate(
+            &crate::cache::LiquidExpr::new_unchecked(expr.clone()),
+            &mask,
+        ));
         let expected = BooleanArray::from(vec![Some(true), Some(true), None, Some(true)]);
         assert_eq!(got, expected);
         assert_eq!(io.reads(), 0);

@@ -9,7 +9,7 @@ use clap::Parser;
 use datafusion::prelude::*;
 use datafusion::scalar::ScalarValue;
 use futures::StreamExt;
-use liquid_cache::cache::CacheExpression;
+use liquid_cache::cache::{CacheExpression, LiquidExpr};
 use liquid_cache::liquid_array::{
     IntegerSqueezePolicy, LiquidArray, LiquidPrimitiveArray, LiquidPrimitiveType,
     LiquidSqueezedArray, SqueezeIoHandler,
@@ -399,18 +399,18 @@ fn try_eval_or_fetch<T: LiquidPrimitiveType>(
     filter: &BooleanBuffer,
 ) -> (BooleanArray, usize) {
     io.reset_bytes_read();
-    match futures::executor::block_on(hybrid.try_eval_predicate(expr, filter)) {
-        Some(mask) => (mask, io.bytes_read()),
-        None => {
-            // Not supported in hybrid form: materialize from full bytes and compute via Arrow.
-            // Count this as a full backing read for apples-to-apples IO accounting.
-            let full_bytes = io.bytes();
-            let liq = LiquidPrimitiveArray::<T>::from_bytes(full_bytes.clone());
-            let arr = liq.to_arrow_array();
-            let mask = eval_on_arrow(&arr, expr);
-            (mask, full_bytes.len())
-        }
+    let maybe_expr = LiquidExpr::try_new(expr.clone(), &hybrid.original_arrow_data_type(), None);
+    if let Some(liquid_expr) = maybe_expr {
+        let mask = futures::executor::block_on(hybrid.try_eval_predicate(&liquid_expr, filter));
+        return (mask, io.bytes_read());
     }
+    // Not supported in hybrid form: materialize from full bytes and compute via Arrow.
+    // Count this as a full backing read for apples-to-apples IO accounting.
+    let full_bytes = io.bytes();
+    let liq = LiquidPrimitiveArray::<T>::from_bytes(full_bytes.clone());
+    let arr = liq.to_arrow_array();
+    let mask = eval_on_arrow(&arr, expr);
+    (mask, full_bytes.len())
 }
 
 fn get_with_selection(

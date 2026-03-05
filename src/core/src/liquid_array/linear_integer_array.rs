@@ -5,7 +5,9 @@ use std::sync::Arc;
 
 use super::PrimitiveKind;
 use super::{LiquidArray, LiquidDataType, LiquidPrimitiveType};
+use crate::cache::LiquidExpr;
 use crate::liquid_array::LiquidPrimitiveArray;
+use crate::liquid_array::eval_predicate_on_array;
 use crate::liquid_array::ipc::{LiquidIPCHeader, get_physical_type_id};
 use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, BooleanArray, PrimitiveArray,
@@ -349,13 +351,9 @@ where
         filter::filter(&arr, &selection).unwrap()
     }
 
-    fn try_eval_predicate(
-        &self,
-        _predicate: &Arc<dyn datafusion::physical_plan::PhysicalExpr>,
-        _filter: &BooleanBuffer,
-    ) -> Option<BooleanArray> {
-        // No special predicate pushdown here.
-        None
+    fn try_eval_predicate(&self, predicate: &LiquidExpr, filter: &BooleanBuffer) -> BooleanArray {
+        let arr = self.filter(filter);
+        eval_predicate_on_array(arr, predicate)
     }
 
     fn to_bytes(&self) -> Vec<u8> {

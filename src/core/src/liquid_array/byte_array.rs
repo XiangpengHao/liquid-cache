@@ -20,7 +20,8 @@ use fsst::{Compressor, Decompressor};
 use std::any::Any;
 use std::sync::Arc;
 
-use super::{LiquidArray, LiquidDataType};
+use super::{LiquidArray, LiquidDataType, eval_predicate_on_array};
+use crate::cache::LiquidExpr;
 use crate::liquid_array::ipc::LiquidIPCHeader;
 use crate::liquid_array::{raw::BitPackedArray, raw::FsstArray};
 use crate::utils::CheckedDictionaryArray;
@@ -50,13 +51,10 @@ impl LiquidArray for LiquidByteArray {
         Arc::new(dict)
     }
 
-    fn try_eval_predicate(
-        &self,
-        expr: &Arc<dyn PhysicalExpr>,
-        filter: &BooleanBuffer,
-    ) -> Option<BooleanArray> {
+    fn try_eval_predicate(&self, expr: &LiquidExpr, filter: &BooleanBuffer) -> BooleanArray {
         let filtered = filter_inner(self, filter);
-        try_eval_predicate_inner(expr, &filtered)
+        try_eval_predicate_inner(expr.physical_expr(), &filtered)
+            .unwrap_or_else(|| eval_predicate_on_array(filtered.to_arrow_array(), expr))
     }
 
     fn to_bytes(&self) -> Vec<u8> {
@@ -1108,7 +1106,7 @@ mod tests {
 
     #[test]
     fn test_try_eval_predicate_inner_numeric_not_supported() {
-        // Test that numeric comparisons are not supported and return None
+        // Numeric predicates are evaluated by the default Arrow fallback path.
         let numeric_data = vec![10, 20, 30, 15, 25];
         let arrow_array = Int32Array::from(numeric_data);
         let liquid_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(arrow_array);
@@ -1122,9 +1120,13 @@ mod tests {
         ));
 
         let filter = BooleanBuffer::from(vec![true; liquid_ref.len()]);
+        let expr = crate::cache::LiquidExpr::try_new(expr, &arrow_schema::DataType::Int32, None)
+            .expect("numeric comparison should validate");
         let result = liquid_ref.try_eval_predicate(&expr, &filter);
-        // Numeric comparisons are not supported, should return None
-        assert!(result.is_none());
+        assert_eq!(
+            result,
+            BooleanArray::from(vec![false, false, true, false, true])
+        );
 
         // Test other numeric operators that are also not supported
         let eq_expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
@@ -1133,17 +1135,21 @@ mod tests {
             Arc::new(Literal::new(ScalarValue::Int32(Some(20)))),
         ));
 
+        let eq_expr =
+            crate::cache::LiquidExpr::try_new(eq_expr, &arrow_schema::DataType::Int32, None)
+                .expect("numeric comparison should validate");
         let result = liquid_ref.try_eval_predicate(&eq_expr, &filter);
-        assert!(result.is_none());
+        assert_eq!(
+            result,
+            BooleanArray::from(vec![false, true, false, false, false])
+        );
     }
 
     #[test]
     fn test_try_eval_predicate_inner_unsupported_expression() {
-        // Test unsupported expression types that should return None
+        // Unsupported expressions should be rejected when building LiquidExpr.
         let numeric_data = vec![10, 20, 30, 15, 25];
         let arrow_array = Int32Array::from(numeric_data);
-        let liquid_array = LiquidPrimitiveArray::<Int32Type>::from_arrow_array(arrow_array);
-        let liquid_ref: LiquidArrayRef = Arc::new(liquid_array);
 
         // Create unsupported predicate: column + 5 (not column op literal)
         let add_expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
@@ -1151,9 +1157,7 @@ mod tests {
             Operator::Plus,
             Arc::new(Literal::new(ScalarValue::Int32(Some(5)))),
         ));
-
-        let filter = BooleanBuffer::from(vec![true; liquid_ref.len()]);
-        let result = liquid_ref.try_eval_predicate(&add_expr, &filter);
+        let result = crate::cache::LiquidExpr::try_new(add_expr, arrow_array.data_type(), None);
         assert!(result.is_none());
 
         // Test another unsupported case: literal op column (wrong order)
@@ -1163,7 +1167,8 @@ mod tests {
             Arc::new(Column::new("test_col", 0)),
         ));
 
-        let result = liquid_ref.try_eval_predicate(&wrong_order_expr, &filter);
+        let result =
+            crate::cache::LiquidExpr::try_new(wrong_order_expr, arrow_array.data_type(), None);
         assert!(result.is_none());
 
         // Test column-column comparison (not column-literal)
@@ -1173,7 +1178,7 @@ mod tests {
             Arc::new(Column::new("col2", 1)),
         ));
 
-        let result = liquid_ref.try_eval_predicate(&col_col_expr, &filter);
+        let result = crate::cache::LiquidExpr::try_new(col_col_expr, arrow_array.data_type(), None);
         assert!(result.is_none());
     }
 

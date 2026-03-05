@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use arrow::array::ArrayRef;
 use arrow::buffer::BooleanBuffer;
+use arrow_schema::DataType;
 use clap::Parser;
 use datafusion::logical_expr::Operator;
 use datafusion::prelude::*;
@@ -13,6 +14,7 @@ use liquid_cache::cache::DefaultIoContext;
 use liquid_cache::cache::EntryID;
 use liquid_cache::cache::LiquidCache;
 use liquid_cache::cache::LiquidCacheBuilder;
+use liquid_cache::cache::LiquidExpr;
 use liquid_cache::cache::squeeze_policies::TranscodeSqueezeEvict;
 use liquid_cache::cache_policies::FiloPolicy;
 
@@ -83,11 +85,18 @@ fn main() {
         for (i, id) in ids.iter().enumerate() {
             let len = lens[i];
             let selection = BooleanBuffer::new_set(len);
-            if let Some(result) = storage
-                .eval_predicate(id, &pred_expr)
+            let Some(liquid_expr) = LiquidExpr::try_new(
+                Arc::clone(&pred_expr),
+                &DataType::Utf8View,
+                Some(&liquid_cache::cache::CacheExpression::PredicateColumn),
+            ) else {
+                continue;
+            };
+            if storage
+                .eval_predicate(id, &liquid_expr)
                 .with_selection(&selection)
                 .await
-                && result.is_ok()
+                .is_some()
             {
                 evaluated += 1;
             }

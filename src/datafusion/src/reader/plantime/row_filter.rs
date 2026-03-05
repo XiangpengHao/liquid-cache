@@ -194,6 +194,11 @@ impl LiquidPredicate {
         &self.physical_expr_physical_column_index
     }
 
+    /// Get the physical expression rewritten to the projected batch schema.
+    pub fn physical_expr(&self) -> &Arc<dyn PhysicalExpr> {
+        &self.physical_expr
+    }
+
     /// Get the column ids of the predicate.
     pub fn predicate_column_ids(&self) -> Vec<usize> {
         let projection = self.projection();

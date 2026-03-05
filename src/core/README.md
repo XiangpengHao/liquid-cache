@@ -60,6 +60,7 @@ assert_eq!(retrieved.as_ref(), arrow_array.as_ref());
 use liquid_cache::cache::{LiquidCacheBuilder, EntryID};
 use arrow::array::{BooleanArray, StringArray};
 use arrow::buffer::BooleanBuffer;
+use arrow_schema::DataType;
 use datafusion::logical_expr::Operator;
 use datafusion::physical_plan::expressions::{BinaryExpr, Column, Literal};
 use datafusion::physical_plan::PhysicalExpr;
@@ -84,28 +85,19 @@ let expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
     Operator::Eq,
     Arc::new(Literal::new(ScalarValue::Utf8(Some("apple".to_string())))),
 ));
+let liquid_expr = liquid_cache::cache::LiquidExpr::try_new(
+    expr,
+    &DataType::Utf8,
+    Some(&liquid_cache::cache::CacheExpression::PredicateColumn),
+)
+.unwrap();
 
 // Read with predicate pushdown
-let result = storage
-    .eval_predicate(&entry_id, &expr)
+let mask = storage
+    .eval_predicate(&entry_id, &liquid_expr)
     .with_selection(&selection)
     .await
     .unwrap();
-let mask = match result {
-    Ok(mask) => mask,
-    Err(filtered) => {
-        // Fallback path when the predicate cannot be evaluated inside the cache.
-        BooleanArray::from(
-            filtered
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .unwrap()
-                .iter()
-                .map(|value| Some(value == Some("apple")))
-                .collect::<Vec<_>>(),
-        )
-    }
-};
 let expected_mask = BooleanArray::from(vec![Some(true), Some(false), Some(true), Some(false)]);
 assert_eq!(mask, expected_mask);
 });

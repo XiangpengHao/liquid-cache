@@ -117,6 +117,14 @@ impl CachedRowGroup {
 
                 for (col_name, expr) in column_exprs {
                     let column = self.get_column_by_name(col_name)?;
+                    let liquid_expr = column.liquid_expr_for_predicate(Arc::clone(&expr));
+                    let liquid_expr = match liquid_expr {
+                        Some(expr) => expr,
+                        None => {
+                            combined_buffer = None;
+                            break;
+                        }
+                    };
                     let entry_id = column.entry_id(batch_id).into();
                     let liquid_array = self.cache_store.try_read_liquid(&entry_id).await;
                     let liquid_array = match liquid_array {
@@ -126,13 +134,7 @@ impl CachedRowGroup {
                         }
                         Some(array) => array,
                     };
-                    let buffer =
-                        if let Some(buffer) = liquid_array.try_eval_predicate(&expr, selection) {
-                            buffer
-                        } else {
-                            combined_buffer = None;
-                            break;
-                        };
+                    let buffer = liquid_array.try_eval_predicate(&liquid_expr, selection);
 
                     combined_buffer = Some(match combined_buffer {
                         None => buffer,

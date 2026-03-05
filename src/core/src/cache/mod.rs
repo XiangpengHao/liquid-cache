@@ -7,6 +7,7 @@ mod core;
 mod expressions;
 mod index;
 mod io_context;
+mod liquid_expr;
 mod observer;
 pub mod policies;
 mod transcode;
@@ -19,6 +20,7 @@ pub use expressions::{CacheExpression, VariantRequest};
 #[cfg(test)]
 pub(crate) use io_context::TestSqueezeIo;
 pub use io_context::{DefaultIoContext, DefaultSqueezeIo, IoContext};
+pub use liquid_expr::LiquidExpr;
 pub use observer::EventTrace;
 pub use observer::Observer;
 pub use observer::{CacheStats, RuntimeStats, RuntimeStatsSnapshot};
