@@ -3,8 +3,7 @@ use bytes::Bytes;
 use fsst::Compressor;
 use std::sync::Arc;
 
-use super::LiquidByteViewArray;
-use crate::liquid_array::byte_array::ArrowByteType;
+use super::{ArrowByteType, LiquidByteViewArray};
 use crate::liquid_array::ipc::LiquidIPCHeader;
 use crate::liquid_array::raw::BitPackedArray;
 use crate::liquid_array::raw::fsst_buffer::{

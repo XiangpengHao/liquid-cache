@@ -16,7 +16,7 @@ use fsst::Compressor;
 use liquid_cache::liquid_array::byte_view_array::ByteViewArrayMemoryUsage;
 use liquid_cache::liquid_array::byte_view_array::{ByteViewOperator, Comparison, Equality};
 use liquid_cache::liquid_array::raw::FsstArray;
-use liquid_cache::liquid_array::{LiquidArray, LiquidByteArray, LiquidByteViewArray};
+use liquid_cache::liquid_array::{LiquidArray, LiquidByteViewArray};
 use rand::{rng, seq::SliceRandom};
 use serde::{Deserialize, Serialize};
 
@@ -64,9 +64,7 @@ struct CliArgs {
 
     /// Benchmark type to run
     #[arg(long)]
-    #[arg(
-        help = "Benchmark type to run: fsst_view, byte_array, string_array, string_array_lz4, or all"
-    )]
+    #[arg(help = "Benchmark type to run: fsst_view, string_array, string_array_lz4, or all")]
     benchmark: Option<String>,
 
     /// Columns to process
@@ -341,14 +339,6 @@ impl BenchmarkRunner {
                     &needles,
                 ));
             }
-            Some("byte_array") => {
-                results.push(Self::run_benchmark(
-                    ByteArrayBenchmark { compressor: None },
-                    arrays,
-                    workloads,
-                    &needles,
-                ));
-            }
             Some("string_array") => {
                 results.push(Self::run_benchmark(
                     StringArrayBenchmark,
@@ -373,12 +363,6 @@ impl BenchmarkRunner {
                     &needles,
                 ));
                 results.push(Self::run_benchmark(
-                    ByteArrayBenchmark { compressor: None },
-                    arrays,
-                    workloads,
-                    &needles,
-                ));
-                results.push(Self::run_benchmark(
                     StringArrayBenchmark,
                     arrays,
                     workloads,
@@ -395,12 +379,6 @@ impl BenchmarkRunner {
                 eprintln!("Unknown benchmark type: {unknown}. Using all benchmarks.");
                 results.push(Self::run_benchmark(
                     FsstViewBenchmark { compressor: None },
-                    arrays,
-                    workloads,
-                    &needles,
-                ));
-                results.push(Self::run_benchmark(
-                    ByteArrayBenchmark { compressor: None },
                     arrays,
                     workloads,
                     &needles,
@@ -533,59 +511,6 @@ impl ArrayBenchmark for FsstViewBenchmark {
             let needle_bytes = needle.as_bytes();
             let _result = encoded_data
                 .compare_with(needle_bytes, &ByteViewOperator::Comparison(Comparison::Gt));
-        }
-        start.elapsed().as_secs_f64()
-    }
-}
-
-struct ByteArrayBenchmark {
-    compressor: Option<Arc<Compressor>>,
-}
-
-impl ArrayBenchmark for ByteArrayBenchmark {
-    type EncodedData = LiquidByteArray;
-
-    fn workload_name(&self) -> String {
-        "ByteArray".to_string()
-    }
-
-    fn encode(&mut self, array: &StringViewArray) -> (Self::EncodedData, f64, usize) {
-        // Train compressor only on the first call
-        let compressor = if let Some(cached_compressor) = &self.compressor {
-            cached_compressor.clone()
-        } else {
-            let (trained_compressor, _) = LiquidByteArray::train_from_string_view(array);
-            self.compressor = Some(trained_compressor.clone());
-            trained_compressor
-        };
-
-        let start = Instant::now();
-        let encoded_array = LiquidByteArray::from_string_view_array(array, compressor);
-        let encode_time = start.elapsed().as_secs_f64();
-        let size = encoded_array.get_array_memory_size();
-        (encoded_array, encode_time, size)
-    }
-
-    fn run_decode(&self, encoded_data: &Self::EncodedData) -> f64 {
-        let start = Instant::now();
-        let _array = encoded_data.to_arrow_array();
-        start.elapsed().as_secs_f64()
-    }
-
-    fn run_find_needle(&self, encoded_data: &Self::EncodedData, needles: &[String]) -> f64 {
-        let start = Instant::now();
-        for needle in needles {
-            let _result = encoded_data.compare_equals(needle);
-        }
-        start.elapsed().as_secs_f64()
-    }
-
-    fn run_cmp_needle(&self, encoded_data: &Self::EncodedData, needles: &[String]) -> f64 {
-        let start = Instant::now();
-        for needle in needles {
-            let arrow_array = encoded_data.to_dict_arrow();
-            let needle_scalar = arrow::array::StringArray::new_scalar(needle.clone());
-            let _result = arrow::compute::kernels::cmp::gt(&arrow_array, &needle_scalar).unwrap();
         }
         start.elapsed().as_secs_f64()
     }

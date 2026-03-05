@@ -17,7 +17,7 @@ use datafusion::{
     },
 };
 use fsst::Compressor;
-use liquid_cache::liquid_array::{LiquidByteArray, raw::BitPackedArray, raw::FsstArray};
+use liquid_cache::liquid_array::raw::{BitPackedArray, FsstArray};
 use std::{
     fs::File,
     num::NonZero,
@@ -199,7 +199,9 @@ pub(crate) fn get_bit_width(max_value: u64) -> u8 {
 }
 
 fn train_compressor(values: &StringArray) -> Arc<Compressor> {
-    LiquidByteArray::train_compressor(values.iter())
+    Arc::new(FsstArray::train_compressor(
+        values.iter().flatten().map(str::as_bytes),
+    ))
 }
 
 fn build_reader(path: &Path, column_id: usize) -> ParquetRecordBatchReader {

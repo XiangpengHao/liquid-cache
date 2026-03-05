@@ -140,7 +140,7 @@ impl LiquidSqueezedArray for VariantStructSqueezedArray {
     }
 
     fn data_type(&self) -> LiquidDataType {
-        LiquidDataType::ByteArray
+        LiquidDataType::ByteViewArray
     }
 
     fn original_arrow_data_type(&self) -> DataType {
@@ -227,13 +227,13 @@ mod tests {
     use arrow::array::{Int64Array, StringArray};
     use arrow_schema::DataType;
 
-    use crate::liquid_array::{LiquidByteArray, LiquidPrimitiveArray};
+    use crate::liquid_array::{LiquidByteViewArray, LiquidPrimitiveArray, raw::FsstArray};
 
     #[test]
     fn to_arrow_array_with_paths_prunes_extra_fields() {
         // Build squeezed variant with two typed paths: did (utf8) and time_us (int64).
         let did_arrow = StringArray::from(vec![Some("d")]);
-        let (_comp, did_liquid) = LiquidByteArray::train_from_arrow(&did_arrow);
+        let (_comp, did_liquid) = LiquidByteViewArray::<FsstArray>::train_from_arrow(&did_arrow);
         let did_liquid: LiquidArrayRef = Arc::new(did_liquid);
 
         let time_arrow = Int64Array::from(vec![1_i64]);

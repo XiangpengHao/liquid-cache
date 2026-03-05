@@ -18,9 +18,7 @@ use crate::liquid_array::LiquidPrimitiveArray;
 use crate::liquid_array::raw::FsstArray;
 
 use super::linear_integer_array::LiquidLinearArray;
-use super::{
-    LiquidArrayRef, LiquidByteArray, LiquidDataType, LiquidFixedLenByteArray, LiquidFloatArray,
-};
+use super::{LiquidArrayRef, LiquidDataType, LiquidFixedLenByteArray, LiquidFloatArray};
 
 const MAGIC: u32 = 0x4C51_4441; // "LQDA" for LiQuid Data Array
 const VERSION: u16 = 1;
@@ -257,10 +255,6 @@ pub fn read_from_bytes(bytes: Bytes, context: &LiquidIPCContext) -> LiquidArrayR
         LiquidDataType::Integer => {
             let physical_type = expect_physical_type(header.physical_type_id, "integer");
             physical_type.deserialize_integer(bytes)
-        }
-        LiquidDataType::ByteArray => {
-            let compressor = context.compressor.as_ref().expect("Expected a compressor");
-            Arc::new(LiquidByteArray::from_bytes(bytes, compressor.clone()))
         }
         LiquidDataType::ByteViewArray => {
             let compressor = context.compressor.as_ref().expect("Expected a compressor");
@@ -507,41 +501,7 @@ mod tests {
     }
 
     #[test]
-    fn test_byte_array_roundtrip() {
-        let string_array = StringArray::from(vec![
-            Some("hello"),
-            Some("world"),
-            None,
-            Some("liquid"),
-            Some("byte"),
-            Some("array"),
-        ]);
-
-        // Create a compressor and LiquidByteArray
-        let compressor =
-            FsstArray::train_compressor(string_array.iter().flat_map(|s| s.map(|s| s.as_bytes())));
-        let compressor_arc = Arc::new(compressor);
-
-        let original = LiquidByteArray::from_string_array(&string_array, compressor_arc.clone());
-
-        let bytes = original.to_bytes_inner();
-        let bytes = Bytes::from(bytes);
-        let deserialized = LiquidByteArray::from_bytes(bytes, compressor_arc);
-
-        let original_arrow = original.to_arrow_array();
-        let deserialized_arrow = deserialized.to_arrow_array();
-
-        assert_eq!(original_arrow.as_ref(), deserialized_arrow.as_ref());
-
-        // Verify the original arrow type is preserved via Arrow array types
-        assert_eq!(
-            original.to_arrow_array().data_type(),
-            deserialized.to_arrow_array().data_type()
-        );
-    }
-
-    #[test]
-    fn test_ipc_roundtrip_utf8_for_both_byte_and_view() {
+    fn test_ipc_roundtrip_utf8_byte_view() {
         let input = StringArray::from(vec![
             Some("hello"),
             Some("world"),
@@ -551,14 +511,6 @@ mod tests {
             Some("array"),
             Some("hello"),
         ]);
-
-        // LiquidByteArray
-        let compressor_ba = LiquidByteArray::train_compressor(input.iter());
-        let original_ba = LiquidByteArray::from_string_array(&input, compressor_ba.clone());
-        let bytes_ba = Bytes::from(original_ba.to_bytes());
-        let deserialized_ba = LiquidByteArray::from_bytes(bytes_ba, compressor_ba);
-        let output_ba = deserialized_ba.to_arrow_array();
-        assert_eq!(output_ba.as_string::<i32>(), &input);
 
         // LiquidByteViewArray
         let compressor_bv = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
@@ -571,7 +523,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ipc_roundtrip_binaryview_for_both_byte_and_view() {
+    fn test_ipc_roundtrip_binaryview_byte_view() {
         let input = BinaryViewArray::from(vec![
             Some(b"hello".as_slice()),
             Some(b"world".as_slice()),
@@ -582,13 +534,6 @@ mod tests {
             Some(b""),
             Some(b"This is a very long string that should be compressed well"),
         ]);
-
-        // LiquidByteArray via BinaryView
-        let (compressor_ba, original_ba) = LiquidByteArray::train_from_binary_view(&input);
-        let bytes_ba = Bytes::from(original_ba.to_bytes());
-        let deserialized_ba = LiquidByteArray::from_bytes(bytes_ba, compressor_ba);
-        let output_ba = deserialized_ba.to_arrow_array();
-        assert_eq!(output_ba.as_binary_view(), &input);
 
         // LiquidByteViewArray via BinaryView
         let (compressor_bv, original_bv) =

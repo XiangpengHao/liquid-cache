@@ -9,8 +9,8 @@ use datafusion::physical_plan::expressions::{
 use datafusion::scalar::ScalarValue;
 
 use crate::cache::CacheExpression;
-use crate::liquid_array::get_bytes_needle;
 use crate::sync::Arc;
+use crate::utils::get_bytes_needle;
 
 /// A predicate expression validated for LiquidCache predicate evaluation.
 #[derive(Clone)]

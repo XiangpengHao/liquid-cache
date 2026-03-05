@@ -9,7 +9,7 @@ use datafusion::{
     scalar::ScalarValue,
 };
 
-use crate::liquid_array::get_bytes_needle;
+use crate::utils::get_bytes_needle;
 
 /// Supported ordering comparisons for byte views.
 #[derive(Debug)]
