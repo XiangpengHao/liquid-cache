@@ -991,7 +991,10 @@ where
         // Apply selection first to reduce input rows
         let filtered = self.filter_inner(filter);
 
-        if let Some(binary_expr) = expr.as_physical_expr().as_any().downcast_ref::<BinaryExpr>()
+        if let Some(binary_expr) = expr
+            .as_physical_expr()
+            .as_any()
+            .downcast_ref::<BinaryExpr>()
             && let Some(literal) = binary_expr.right().as_any().downcast_ref::<Literal>()
         {
             let op = binary_expr.op();
@@ -1284,7 +1287,11 @@ mod tests {
             let expr = build_expr(op, k);
             let liquid_expr = crate::liquid_array::DefaultLiquidExpr::new(
                 expr.clone(),
-                Arc::new(arrow_schema::Field::new("col", arrow_schema::DataType::Float32, true)),
+                Arc::new(arrow_schema::Field::new(
+                    "col",
+                    arrow_schema::DataType::Float32,
+                    true,
+                )),
             );
             io.reset_reads();
             let got = block_on(hybrid.try_eval_predicate(&liquid_expr, &mask)).expect("supported");
@@ -1317,7 +1324,11 @@ mod tests {
         let expr_eq_present = build_expr(Operator::Eq, k_present);
         let liquid_expr = crate::liquid_array::DefaultLiquidExpr::new(
             expr_eq_present.clone(),
-            Arc::new(arrow_schema::Field::new("col", arrow_schema::DataType::Float32, true)),
+            Arc::new(arrow_schema::Field::new(
+                "col",
+                arrow_schema::DataType::Float32,
+                true,
+            )),
         );
         io.reset_reads();
         let got = block_on(hybrid.try_eval_predicate(&liquid_expr, &mask)).expect("supported");
@@ -1382,7 +1393,11 @@ mod tests {
             let expr = build_expr(op, k);
             let liquid_expr = crate::liquid_array::DefaultLiquidExpr::new(
                 expr.clone(),
-                Arc::new(arrow_schema::Field::new("col", arrow_schema::DataType::Float64, true)),
+                Arc::new(arrow_schema::Field::new(
+                    "col",
+                    arrow_schema::DataType::Float64,
+                    true,
+                )),
             );
             io.reset_reads();
             let got = block_on(hybrid.try_eval_predicate(&liquid_expr, &mask)).expect("supported");
@@ -1415,7 +1430,11 @@ mod tests {
         let expr_eq_present = build_expr(Operator::Eq, k_present);
         let liquid_expr = crate::liquid_array::DefaultLiquidExpr::new(
             expr_eq_present.clone(),
-            Arc::new(arrow_schema::Field::new("col", arrow_schema::DataType::Float64, true)),
+            Arc::new(arrow_schema::Field::new(
+                "col",
+                arrow_schema::DataType::Float64,
+                true,
+            )),
         );
         io.reset_reads();
         let got = block_on(hybrid.try_eval_predicate(&liquid_expr, &mask)).expect("supported");

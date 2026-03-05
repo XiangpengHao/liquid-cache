@@ -213,7 +213,11 @@ mod random_tests {
 
             let liquid_expr = crate::liquid_array::DefaultLiquidExpr::new(
                 expr.clone(),
-                Arc::new(arrow_schema::Field::new("test_col", arrow_schema::DataType::Utf8, true)),
+                Arc::new(arrow_schema::Field::new(
+                    "test_col",
+                    arrow_schema::DataType::Utf8,
+                    true,
+                )),
             );
             for (_name, la) in make_impls_from_strings(&input) {
                 if let Some(result) = la.try_eval_predicate(&liquid_expr, &mask) {
@@ -424,7 +428,11 @@ mod random_tests {
 
             let liquid_expr = crate::liquid_array::DefaultLiquidExpr::new(
                 expr.clone(),
-                Arc::new(arrow_schema::Field::new("test_col", arrow_schema::DataType::Utf8, true)),
+                Arc::new(arrow_schema::Field::new(
+                    "test_col",
+                    arrow_schema::DataType::Utf8,
+                    true,
+                )),
             );
             for (_name, la) in make_impls_from_strings(&input) {
                 if let Some(result) = la.try_eval_predicate(&liquid_expr, &mask) {
@@ -520,7 +528,11 @@ mod random_tests {
 
         let liquid_expr = crate::liquid_array::DefaultLiquidExpr::new(
             expr.clone(),
-            Arc::new(arrow_schema::Field::new("test_col", arrow_schema::DataType::Utf8, true)),
+            Arc::new(arrow_schema::Field::new(
+                "test_col",
+                arrow_schema::DataType::Utf8,
+                true,
+            )),
         );
         for (_name, la) in make_impls_from_strings(&input) {
             if let Some(result) = la.try_eval_predicate(&liquid_expr, &mask) {

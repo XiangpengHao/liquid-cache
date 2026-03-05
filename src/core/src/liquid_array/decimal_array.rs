@@ -662,7 +662,11 @@ mod tests {
 
         let liquid_expr = crate::liquid_array::DefaultLiquidExpr::new(
             expr.clone(),
-            Arc::new(arrow_schema::Field::new("col", arrow_schema::DataType::Decimal128(10, 2), true)),
+            Arc::new(arrow_schema::Field::new(
+                "col",
+                arrow_schema::DataType::Decimal128(10, 2),
+                true,
+            )),
         );
         let got = block_on(hybrid.try_eval_predicate(&liquid_expr, &mask)).expect("supported");
         let expected = BooleanArray::from(vec![Some(true), Some(true), None, Some(true)]);

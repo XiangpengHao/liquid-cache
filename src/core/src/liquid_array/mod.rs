@@ -27,10 +27,10 @@ use arrow::{
 use arrow_schema::DataType;
 pub use byte_array::{LiquidByteArray, get_bytes_needle, get_string_needle};
 pub use byte_view_array::LiquidByteViewArray;
-pub use expr::{DefaultLiquidExpr, LiquidExpr};
 use bytes::Bytes;
 use datafusion::logical_expr::Operator as DFOperator;
 pub use decimal_array::LiquidDecimalArray;
+pub use expr::{DefaultLiquidExpr, LiquidExpr};
 pub use fix_len_byte_array::LiquidFixedLenByteArray;
 use float_array::LiquidFloatType;
 pub use float_array::{LiquidFloat32Array, LiquidFloat64Array, LiquidFloatArray};

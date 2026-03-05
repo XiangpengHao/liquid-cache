@@ -1124,7 +1124,11 @@ mod tests {
         let filter = BooleanBuffer::from(vec![true; liquid_ref.len()]);
         let liquid_expr = crate::liquid_array::DefaultLiquidExpr::new(
             expr.clone(),
-            Arc::new(arrow_schema::Field::new("test_col", arrow_schema::DataType::Int32, true)),
+            Arc::new(arrow_schema::Field::new(
+                "test_col",
+                arrow_schema::DataType::Int32,
+                true,
+            )),
         );
         let result = liquid_ref.try_eval_predicate(&liquid_expr, &filter);
         // Numeric comparisons are not supported, should return None
@@ -1139,7 +1143,11 @@ mod tests {
 
         let liquid_expr = crate::liquid_array::DefaultLiquidExpr::new(
             eq_expr.clone(),
-            Arc::new(arrow_schema::Field::new("test_col", arrow_schema::DataType::Int32, true)),
+            Arc::new(arrow_schema::Field::new(
+                "test_col",
+                arrow_schema::DataType::Int32,
+                true,
+            )),
         );
         let result = liquid_ref.try_eval_predicate(&liquid_expr, &filter);
         assert!(result.is_none());
@@ -1163,7 +1171,11 @@ mod tests {
         let filter = BooleanBuffer::from(vec![true; liquid_ref.len()]);
         let liquid_expr = crate::liquid_array::DefaultLiquidExpr::new(
             add_expr.clone(),
-            Arc::new(arrow_schema::Field::new("test_col", arrow_schema::DataType::Int32, true)),
+            Arc::new(arrow_schema::Field::new(
+                "test_col",
+                arrow_schema::DataType::Int32,
+                true,
+            )),
         );
         let result = liquid_ref.try_eval_predicate(&liquid_expr, &filter);
         assert!(result.is_none());
@@ -1177,7 +1189,11 @@ mod tests {
 
         let liquid_expr = crate::liquid_array::DefaultLiquidExpr::new(
             wrong_order_expr.clone(),
-            Arc::new(arrow_schema::Field::new("test_col", arrow_schema::DataType::Int32, true)),
+            Arc::new(arrow_schema::Field::new(
+                "test_col",
+                arrow_schema::DataType::Int32,
+                true,
+            )),
         );
         let result = liquid_ref.try_eval_predicate(&liquid_expr, &filter);
         assert!(result.is_none());
@@ -1191,7 +1207,11 @@ mod tests {
 
         let liquid_expr = crate::liquid_array::DefaultLiquidExpr::new(
             col_col_expr.clone(),
-            Arc::new(arrow_schema::Field::new("test_col", arrow_schema::DataType::Int32, true)),
+            Arc::new(arrow_schema::Field::new(
+                "test_col",
+                arrow_schema::DataType::Int32,
+                true,
+            )),
         );
         let result = liquid_ref.try_eval_predicate(&liquid_expr, &filter);
         assert!(result.is_none());

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use arrow::array::{AsArray, BooleanArray};
 use arrow::array::ArrayRef;
+use arrow::array::{AsArray, BooleanArray};
 use arrow::record_batch::RecordBatch;
 use arrow_schema::{Field, Schema};
 use datafusion::physical_plan::PhysicalExpr;

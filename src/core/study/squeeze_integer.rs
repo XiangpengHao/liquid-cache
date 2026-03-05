@@ -12,8 +12,7 @@ use futures::StreamExt;
 use liquid_cache::cache::CacheExpression;
 use liquid_cache::liquid_array::{
     DefaultLiquidExpr, IntegerSqueezePolicy, LiquidArray, LiquidExpr, LiquidPrimitiveArray,
-    LiquidPrimitiveType,
-    LiquidSqueezedArray, SqueezeIoHandler,
+    LiquidPrimitiveType, LiquidSqueezedArray, SqueezeIoHandler,
 };
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
