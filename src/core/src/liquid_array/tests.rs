@@ -212,7 +212,7 @@ mod random_tests {
                 Arc::new(BinaryExpr::new(col, Operator::Eq, lit));
 
             for (_name, la) in make_impls_from_strings(&input) {
-                if let Some(result) = la.try_eval_predicate(&expr, &mask) {
+                if let Some(result) = la.try_eval_predicate(&crate::cache::LiquidExpr::new_unchecked(expr.clone()), &mask) {
                     let expected: Vec<Option<bool>> =
                         input.iter().map(|o| o.map(|s| s == needle)).collect();
                     assert_eq!(result, BooleanArray::from(expected));
@@ -419,7 +419,7 @@ mod random_tests {
                 Arc::new(BinaryExpr::new(col, Operator::Eq, lit));
 
             for (_name, la) in make_impls_from_strings(&input) {
-                if let Some(result) = la.try_eval_predicate(&expr, &mask) {
+                if let Some(result) = la.try_eval_predicate(&crate::cache::LiquidExpr::new_unchecked(expr.clone()), &mask) {
                     assert_eq!(result, BooleanArray::from(expected.clone()));
                 }
             }
@@ -511,7 +511,7 @@ mod random_tests {
             Arc::new(BinaryExpr::new(col, Operator::Eq, lit));
 
         for (_name, la) in make_impls_from_strings(&input) {
-            if let Some(result) = la.try_eval_predicate(&expr, &mask) {
+            if let Some(result) = la.try_eval_predicate(&crate::cache::LiquidExpr::new_unchecked(expr.clone()), &mask) {
                 // Build expected
                 let expected = BooleanArray::from(vec![
                     Some(true),

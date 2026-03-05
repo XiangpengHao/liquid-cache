@@ -1,8 +1,9 @@
 use arrow::array::{ArrayRef, BooleanArray};
+use arrow::array::cast::AsArray;
 use arrow::buffer::BooleanBuffer;
-use arrow_schema::DataType;
+use arrow::record_batch::RecordBatch;
+use arrow_schema::{DataType, Field, Schema};
 use bytes::Bytes;
-use datafusion::physical_plan::PhysicalExpr;
 use futures::StreamExt;
 
 use super::{
@@ -16,7 +17,7 @@ use super::{
 };
 use crate::cache::policies::SqueezePolicy;
 use crate::cache::utils::{LiquidCompressorStates, arrow_to_bytes};
-use crate::cache::{CacheExpression, index::ArtIndex, utils::EntryID};
+use crate::cache::{CacheExpression, LiquidExpr, index::ArtIndex, utils::EntryID};
 use crate::cache::{CacheStats, EventTrace};
 use crate::cache::{DefaultSqueezeIo, RuntimeStats};
 use crate::liquid_array::{
@@ -132,7 +133,7 @@ impl LiquidCache {
     pub fn eval_predicate<'a>(
         &'a self,
         entry_id: &'a EntryID,
-        predicate: &'a Arc<dyn PhysicalExpr>,
+        predicate: &'a LiquidExpr,
     ) -> EvaluatePredicate<'a> {
         EvaluatePredicate::new(self, entry_id, predicate)
     }
@@ -738,8 +739,8 @@ impl LiquidCache {
         &self,
         entry_id: &EntryID,
         selection_opt: Option<&BooleanBuffer>,
-        predicate: &Arc<dyn PhysicalExpr>,
-    ) -> Option<Result<BooleanArray, ArrayRef>> {
+        predicate: &LiquidExpr,
+    ) -> Option<BooleanArray> {
         use arrow::array::BooleanArray;
 
         self.observer.on_eval_predicate();
@@ -760,8 +761,9 @@ impl LiquidCache {
                     owned.as_ref().unwrap()
                 });
                 let selection_array = BooleanArray::new(selection.clone(), None);
-                let filtered = arrow::compute::filter(array, &selection_array).ok()?;
-                Some(Err(filtered))
+                let filtered = arrow::compute::filter(array, &selection_array)
+                    .expect("selection must match array length");
+                Some(self.eval_predicate_on_array(filtered, predicate))
             }
             entry @ CacheEntry::DiskArrow(_) => {
                 let array = self.read_disk_arrow_array(entry_id).await;
@@ -773,8 +775,9 @@ impl LiquidCache {
                     owned.as_ref().unwrap()
                 });
                 let selection_array = BooleanArray::new(selection.clone(), None);
-                let filtered = arrow::compute::filter(&array, &selection_array).ok()?;
-                Some(Err(filtered))
+                let filtered = arrow::compute::filter(&array, &selection_array)
+                    .expect("selection must match array length");
+                Some(self.eval_predicate_on_array(filtered, predicate))
             }
             CacheEntry::MemoryLiquid(array) => {
                 let mut owned = None;
@@ -783,11 +786,11 @@ impl LiquidCache {
                     owned.as_ref().unwrap()
                 });
                 match array.try_eval_predicate(predicate, selection) {
-                    Some(buf) => Some(Ok(buf)),
+                    Some(buf) => Some(buf),
                     None => {
                         self.runtime_stats().incr_eval_predicate_on_liquid_failed();
                         let filtered = array.filter(selection);
-                        Some(Err(filtered))
+                        Some(self.eval_predicate_on_array(filtered, predicate))
                     }
                 }
             }
@@ -801,11 +804,11 @@ impl LiquidCache {
                     owned.as_ref().unwrap()
                 });
                 match liquid.try_eval_predicate(predicate, selection) {
-                    Some(buf) => Some(Ok(buf)),
+                    Some(buf) => Some(buf),
                     None => {
                         self.runtime_stats().incr_eval_predicate_on_liquid_failed();
                         let filtered = liquid.filter(selection);
-                        Some(Err(filtered))
+                        Some(self.eval_predicate_on_array(filtered, predicate))
                     }
                 }
             }
@@ -820,17 +823,38 @@ impl LiquidCache {
         &self,
         array: &LiquidSqueezedArrayRef,
         selection_opt: Option<&BooleanBuffer>,
-        predicate: &Arc<dyn PhysicalExpr>,
-    ) -> Option<Result<BooleanArray, ArrayRef>> {
+        predicate: &LiquidExpr,
+    ) -> Option<BooleanArray> {
         let mut owned = None;
         let selection = selection_opt.unwrap_or_else(|| {
             owned = Some(BooleanBuffer::new_set(array.len()));
             owned.as_ref().unwrap()
         });
         match array.try_eval_predicate(predicate, selection).await {
-            Some(buf) => Some(Ok(buf)),
-            None => Some(Err(array.filter(selection).await)),
+            Some(buf) => Some(buf),
+            None => {
+                let filtered = array.filter(selection).await;
+                Some(self.eval_predicate_on_array(filtered, predicate))
+            }
         }
+    }
+
+    fn eval_predicate_on_array(&self, array: ArrayRef, predicate: &LiquidExpr) -> BooleanArray {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "liquid_predicate_col",
+            array.data_type().clone(),
+            true,
+        )]));
+        let record_batch =
+            RecordBatch::try_new(schema, vec![array]).expect("single-column predicate batch");
+        let result = predicate
+            .physical_expr()
+            .evaluate(&record_batch)
+            .expect("validated LiquidExpr must evaluate");
+        let boolean_array = result
+            .into_array(record_batch.num_rows())
+            .expect("predicate output must be an array");
+        boolean_array.as_boolean().clone()
     }
 }
 

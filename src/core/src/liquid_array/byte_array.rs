@@ -21,6 +21,7 @@ use std::any::Any;
 use std::sync::Arc;
 
 use super::{LiquidArray, LiquidDataType};
+use crate::cache::LiquidExpr;
 use crate::liquid_array::ipc::LiquidIPCHeader;
 use crate::liquid_array::{raw::BitPackedArray, raw::FsstArray};
 use crate::utils::CheckedDictionaryArray;
@@ -52,11 +53,11 @@ impl LiquidArray for LiquidByteArray {
 
     fn try_eval_predicate(
         &self,
-        expr: &Arc<dyn PhysicalExpr>,
+        expr: &LiquidExpr,
         filter: &BooleanBuffer,
     ) -> Option<BooleanArray> {
         let filtered = filter_inner(self, filter);
-        try_eval_predicate_inner(expr, &filtered)
+        try_eval_predicate_inner(expr.physical_expr(), &filtered)
     }
 
     fn to_bytes(&self) -> Vec<u8> {
@@ -1122,6 +1123,7 @@ mod tests {
         ));
 
         let filter = BooleanBuffer::from(vec![true; liquid_ref.len()]);
+        let expr = crate::cache::LiquidExpr::new_unchecked(expr);
         let result = liquid_ref.try_eval_predicate(&expr, &filter);
         // Numeric comparisons are not supported, should return None
         assert!(result.is_none());
@@ -1133,6 +1135,7 @@ mod tests {
             Arc::new(Literal::new(ScalarValue::Int32(Some(20)))),
         ));
 
+        let eq_expr = crate::cache::LiquidExpr::new_unchecked(eq_expr);
         let result = liquid_ref.try_eval_predicate(&eq_expr, &filter);
         assert!(result.is_none());
     }
@@ -1153,6 +1156,7 @@ mod tests {
         ));
 
         let filter = BooleanBuffer::from(vec![true; liquid_ref.len()]);
+        let add_expr = crate::cache::LiquidExpr::new_unchecked(add_expr);
         let result = liquid_ref.try_eval_predicate(&add_expr, &filter);
         assert!(result.is_none());
 
@@ -1163,6 +1167,7 @@ mod tests {
             Arc::new(Column::new("test_col", 0)),
         ));
 
+        let wrong_order_expr = crate::cache::LiquidExpr::new_unchecked(wrong_order_expr);
         let result = liquid_ref.try_eval_predicate(&wrong_order_expr, &filter);
         assert!(result.is_none());
 
@@ -1173,6 +1178,7 @@ mod tests {
             Arc::new(Column::new("col2", 1)),
         ));
 
+        let col_col_expr = crate::cache::LiquidExpr::new_unchecked(col_col_expr);
         let result = liquid_ref.try_eval_predicate(&col_col_expr, &filter);
         assert!(result.is_none());
     }

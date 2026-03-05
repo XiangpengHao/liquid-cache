@@ -5,7 +5,7 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use arrow_schema::{ArrowError, DataType, Field, Schema};
-use liquid_cache::cache::{CacheExpression, LiquidCache};
+use liquid_cache::cache::{CacheExpression, LiquidCache, LiquidExpr};
 use liquid_cache::utils::VariantSchema;
 use liquid_cache::utils::typed_struct_contains_path;
 use parquet::arrow::arrow_reader::ArrowPredicate;
@@ -126,36 +126,51 @@ impl CachedColumn {
         predicate: &mut LiquidPredicate,
     ) -> Option<Result<BooleanArray, ArrowError>> {
         let entry_id = self.entry_id(batch_id).into();
-        let result = self
-            .cache_store
-            .eval_predicate(&entry_id, predicate.physical_expr_physical_column_index())
-            .with_selection(filter)
-            .await?;
-        match result {
-            Ok(boolean_array) => {
-                let predicate_filter = match boolean_array.null_count() {
-                    0 => boolean_array,
-                    _ => prep_null_mask_filter(&boolean_array),
-                };
-                Some(Ok(predicate_filter))
-            }
-            Err(array) => {
-                let mut array = array;
-                if let Some(transformed) = maybe_shred_variant_array(&array, self.field.as_ref()) {
-                    array = transformed;
-                }
-                let record_batch = self.array_to_record_batch(array);
-                let boolean_array = match predicate.evaluate(record_batch) {
-                    Ok(arr) => arr,
-                    Err(err) => return Some(Err(err)),
-                };
-                let predicate_filter = match boolean_array.null_count() {
-                    0 => boolean_array,
-                    _ => prep_null_mask_filter(&boolean_array),
-                };
-                Some(Ok(predicate_filter))
-            }
+        let liquid_expr = LiquidExpr::try_new(
+            Arc::clone(predicate.physical_expr()),
+            self.field.data_type(),
+            self.expression.as_deref(),
+        );
+
+        if let Some(liquid_expr) = liquid_expr
+            && let Some(boolean_array) = self
+                .cache_store
+                .eval_predicate(&entry_id, &liquid_expr)
+                .with_selection(filter)
+                .await
+        {
+            let predicate_filter = match boolean_array.null_count() {
+                0 => boolean_array,
+                _ => prep_null_mask_filter(&boolean_array),
+            };
+            return Some(Ok(predicate_filter));
         }
+
+        let array = self.get_arrow_array_with_filter(batch_id, filter).await?;
+        let record_batch = self.array_to_record_batch(array);
+        let boolean_array = match predicate.evaluate(record_batch) {
+            Ok(arr) => arr,
+            Err(err) => return Some(Err(err)),
+        };
+        let predicate_filter = match boolean_array.null_count() {
+            0 => boolean_array,
+            _ => prep_null_mask_filter(&boolean_array),
+        };
+        Some(Ok(predicate_filter))
+    }
+
+    fn liquid_expr_for(
+        &self,
+        expr: Arc<dyn datafusion::physical_plan::PhysicalExpr>,
+    ) -> Option<LiquidExpr> {
+        LiquidExpr::try_new(expr, self.field.data_type(), self.expression.as_deref())
+    }
+
+    pub(crate) fn liquid_expr_for_predicate(
+        &self,
+        expr: Arc<dyn datafusion::physical_plan::PhysicalExpr>,
+    ) -> Option<LiquidExpr> {
+        self.liquid_expr_for(expr)
     }
 
     /// Get an arrow array with a filter applied.

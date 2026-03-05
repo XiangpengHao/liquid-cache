@@ -13,6 +13,7 @@ use datafusion::physical_plan::expressions::{
 };
 use num_traits::{AsPrimitive, FromPrimitive};
 
+use crate::cache::LiquidExpr;
 use crate::liquid_array::raw::BitPackedArray;
 
 use super::primitive_array::LiquidPrimitiveType;
@@ -329,13 +330,13 @@ where
 
     async fn try_eval_predicate(
         &self,
-        expr: &Arc<dyn PhysicalExpr>,
+        expr: &LiquidExpr,
         filter: &BooleanBuffer,
     ) -> Option<BooleanArray> {
         // Apply selection first to reduce input rows
         let filtered = self.filter_inner(filter);
 
-        let expr = unwrap_dynamic_filter(expr)?;
+        let expr = unwrap_dynamic_filter(expr.physical_expr())?;
         let binary_expr = expr.as_any().downcast_ref::<BinaryExpr>()?;
         let lhs_kind = predicate_lhs_kind(binary_expr.left())?;
         let literal = binary_expr.right().as_any().downcast_ref::<Literal>()?;
@@ -674,13 +675,13 @@ where
 
     async fn try_eval_predicate(
         &self,
-        expr: &Arc<dyn PhysicalExpr>,
+        expr: &LiquidExpr,
         filter: &BooleanBuffer,
     ) -> Option<BooleanArray> {
         // Apply selection first to reduce input rows
         let filtered = self.filter_inner(filter);
 
-        let expr = unwrap_dynamic_filter(expr)?;
+        let expr = unwrap_dynamic_filter(expr.physical_expr())?;
         let binary_expr = expr.as_any().downcast_ref::<BinaryExpr>()?;
         let lhs_kind = predicate_lhs_kind(binary_expr.left())?;
         let literal = binary_expr.right().as_any().downcast_ref::<Literal>()?;
@@ -952,7 +953,7 @@ mod tests {
         for (op, k) in resolvable_cases {
             let expr = build_expr(op, k);
             io.reset_reads();
-            let got = block_on(hybrid.try_eval_predicate(&expr, &mask)).expect("supported");
+            let got = block_on(hybrid.try_eval_predicate(&crate::cache::LiquidExpr::new_unchecked(expr.clone()), &mask)).expect("supported");
             let expected = expected_for(op, k);
             assert_eq!(io.reads(), 0);
             assert_eq!(got, expected);
@@ -970,7 +971,7 @@ mod tests {
         for (op, k) in unresolvable_cases {
             let expr = build_expr(op, k);
             io.reset_reads();
-            let got = block_on(hybrid.try_eval_predicate(&expr, &mask)).expect("supported");
+            let got = block_on(hybrid.try_eval_predicate(&crate::cache::LiquidExpr::new_unchecked(expr.clone()), &mask)).expect("supported");
             let expected = expected_for(op, k);
             assert!(io.reads() > 0);
             assert_eq!(got, expected);
@@ -1034,7 +1035,7 @@ mod tests {
         for (op, k) in resolvable_cases {
             let expr = build_expr(op, k);
             io.reset_reads();
-            let got = block_on(hybrid.try_eval_predicate(&expr, &mask)).expect("supported");
+            let got = block_on(hybrid.try_eval_predicate(&crate::cache::LiquidExpr::new_unchecked(expr.clone()), &mask)).expect("supported");
             let expected = expected_for(op, k);
             assert_eq!(io.reads(), 0);
             assert_eq!(got, expected);
@@ -1051,7 +1052,7 @@ mod tests {
         for (op, k) in unresolvable_cases {
             let expr = build_expr(op, k);
             io.reset_reads();
-            let got = block_on(hybrid.try_eval_predicate(&expr, &mask)).expect("supported");
+            let got = block_on(hybrid.try_eval_predicate(&crate::cache::LiquidExpr::new_unchecked(expr.clone()), &mask)).expect("supported");
             let expected = expected_for(op, k);
             assert!(io.reads() > 0);
             assert_eq!(got, expected);
@@ -1091,7 +1092,7 @@ mod tests {
         for (op, k, expected_const) in resolvable_cases {
             let expr = build_expr(op, k);
             io.reset_reads();
-            let got = block_on(hybrid.try_eval_predicate(&expr, &mask)).expect("supported");
+            let got = block_on(hybrid.try_eval_predicate(&crate::cache::LiquidExpr::new_unchecked(expr.clone()), &mask)).expect("supported");
             let expected = {
                 let vals: Vec<Option<bool>> = (0..arr.len())
                     .map(|i| {
@@ -1120,7 +1121,7 @@ mod tests {
             .unwrap();
         let expr_eq_present = build_expr(Operator::Eq, k_present);
         io.reset_reads();
-        let got = block_on(hybrid.try_eval_predicate(&expr_eq_present, &mask)).expect("supported");
+        let got = block_on(hybrid.try_eval_predicate(&crate::cache::LiquidExpr::new_unchecked(expr_eq_present.clone()), &mask)).expect("supported");
         let expected = {
             let vals: Vec<Option<bool>> = (0..arr.len())
                 .map(|i| {
@@ -1168,7 +1169,7 @@ mod tests {
         for (op, k, expected_const) in resolvable_cases {
             let expr = build_expr(op, k);
             io.reset_reads();
-            let got = block_on(hybrid.try_eval_predicate(&expr, &mask)).expect("supported");
+            let got = block_on(hybrid.try_eval_predicate(&crate::cache::LiquidExpr::new_unchecked(expr.clone()), &mask)).expect("supported");
             let expected = {
                 let vals: Vec<Option<bool>> = (0..arr.len())
                     .map(|i| {
@@ -1197,7 +1198,7 @@ mod tests {
             .unwrap();
         let expr_eq_present = build_expr(Operator::Eq, k_present);
         io.reset_reads();
-        let got = block_on(hybrid.try_eval_predicate(&expr_eq_present, &mask)).expect("supported");
+        let got = block_on(hybrid.try_eval_predicate(&crate::cache::LiquidExpr::new_unchecked(expr_eq_present.clone()), &mask)).expect("supported");
         let expected = {
             let vals: Vec<Option<bool>> = (0..arr.len())
                 .map(|i| {

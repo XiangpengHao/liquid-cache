@@ -28,7 +28,6 @@ pub use byte_array::{LiquidByteArray, get_bytes_needle, get_string_needle};
 pub use byte_view_array::LiquidByteViewArray;
 use bytes::Bytes;
 use datafusion::logical_expr::Operator as DFOperator;
-use datafusion::physical_plan::PhysicalExpr;
 pub use decimal_array::LiquidDecimalArray;
 pub use fix_len_byte_array::LiquidFixedLenByteArray;
 use float_array::LiquidFloatType;
@@ -47,7 +46,7 @@ pub use primitive_array::{
 pub use squeezed_date32_array::{Date32Field, SqueezedDate32Array};
 pub use variant_array::VariantStructSqueezedArray;
 
-use crate::{cache::CacheExpression, liquid_array::raw::FsstArray};
+use crate::{cache::{CacheExpression, LiquidExpr}, liquid_array::raw::FsstArray};
 
 /// Liquid data type is only logical type
 #[derive(Debug, Clone, Copy)]
@@ -200,7 +199,7 @@ pub trait LiquidArray: std::fmt::Debug + Send + Sync {
     /// The returned boolean mask is nullable if the the original array is nullable.
     fn try_eval_predicate(
         &self,
-        _predicate: &Arc<dyn PhysicalExpr>,
+        _predicate: &LiquidExpr,
         _filter: &BooleanBuffer,
     ) -> Option<BooleanArray> {
         None
@@ -316,7 +315,7 @@ pub trait LiquidSqueezedArray: std::fmt::Debug + Send + Sync {
     /// The returned boolean mask is nullable if the the original array is nullable.
     async fn try_eval_predicate(
         &self,
-        _predicate: &Arc<dyn PhysicalExpr>,
+        _predicate: &LiquidExpr,
         _filter: &BooleanBuffer,
     ) -> Option<BooleanArray> {
         None

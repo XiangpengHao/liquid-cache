@@ -23,7 +23,6 @@ use arrow::{
 use arrow_schema::DataType;
 use datafusion::{
     physical_plan::{
-        PhysicalExpr,
         expressions::{BinaryExpr, Literal},
     },
     scalar::ScalarValue,
@@ -32,6 +31,7 @@ use fastlanes::BitPacking;
 use num_traits::{AsPrimitive, Float, FromPrimitive};
 
 use super::LiquidDataType;
+use crate::cache::LiquidExpr;
 use crate::liquid_array::LiquidArray;
 use crate::liquid_array::ipc::{PhysicalTypeMarker, get_physical_type_id};
 use crate::liquid_array::raw::BitPackedArray;
@@ -988,11 +988,12 @@ where
 
     async fn try_eval_predicate(
         &self,
-        expr: &Arc<dyn PhysicalExpr>,
+        expr: &LiquidExpr,
         filter: &BooleanBuffer,
     ) -> Option<BooleanArray> {
         // Apply selection first to reduce input rows
         let filtered = self.filter_inner(filter);
+        let expr = expr.physical_expr();
 
         if let Some(binary_expr) = expr.as_any().downcast_ref::<BinaryExpr>()
             && let Some(literal) = binary_expr.right().as_any().downcast_ref::<Literal>()
@@ -1286,7 +1287,7 @@ mod tests {
         for (op, k, expected_const) in resolvable_cases {
             let expr = build_expr(op, k);
             io.reset_reads();
-            let got = block_on(hybrid.try_eval_predicate(&expr, &mask)).expect("supported");
+            let got = block_on(hybrid.try_eval_predicate(&crate::cache::LiquidExpr::new_unchecked(expr.clone()), &mask)).expect("supported");
             let expected = {
                 let vals: Vec<Option<bool>> = (0..arr.len())
                     .map(|i| {
@@ -1315,7 +1316,7 @@ mod tests {
             .unwrap();
         let expr_eq_present = build_expr(Operator::Eq, k_present);
         io.reset_reads();
-        let got = block_on(hybrid.try_eval_predicate(&expr_eq_present, &mask)).expect("supported");
+        let got = block_on(hybrid.try_eval_predicate(&crate::cache::LiquidExpr::new_unchecked(expr_eq_present.clone()), &mask)).expect("supported");
         let expected = {
             let vals: Vec<Option<bool>> = (0..arr.len())
                 .map(|i| {
@@ -1376,7 +1377,7 @@ mod tests {
         for (op, k, expected_const) in resolvable_cases {
             let expr = build_expr(op, k);
             io.reset_reads();
-            let got = block_on(hybrid.try_eval_predicate(&expr, &mask)).expect("supported");
+            let got = block_on(hybrid.try_eval_predicate(&crate::cache::LiquidExpr::new_unchecked(expr.clone()), &mask)).expect("supported");
             let expected = {
                 let vals: Vec<Option<bool>> = (0..arr.len())
                     .map(|i| {
@@ -1405,7 +1406,7 @@ mod tests {
             .unwrap();
         let expr_eq_present = build_expr(Operator::Eq, k_present);
         io.reset_reads();
-        let got = block_on(hybrid.try_eval_predicate(&expr_eq_present, &mask)).expect("supported");
+        let got = block_on(hybrid.try_eval_predicate(&crate::cache::LiquidExpr::new_unchecked(expr_eq_present.clone()), &mask)).expect("supported");
         let expected = {
             let vals: Vec<Option<bool>> = (0..arr.len())
                 .map(|i| {

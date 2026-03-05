@@ -7,6 +7,7 @@ mod core;
 mod expressions;
 mod index;
 mod io_context;
+mod liquid_expr;
 mod observer;
 pub mod policies;
 mod transcode;
@@ -16,6 +17,7 @@ pub use builders::{EvaluatePredicate, Get, Insert, LiquidCacheBuilder};
 pub use cached_batch::{CacheEntry, CachedBatchType};
 pub use core::LiquidCache;
 pub use expressions::{CacheExpression, VariantRequest};
+pub use liquid_expr::LiquidExpr;
 #[cfg(test)]
 pub(crate) use io_context::TestSqueezeIo;
 pub use io_context::{DefaultIoContext, DefaultSqueezeIo, IoContext};
