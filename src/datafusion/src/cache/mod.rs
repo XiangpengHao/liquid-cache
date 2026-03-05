@@ -134,14 +134,7 @@ impl CachedRowGroup {
                         }
                         Some(array) => array,
                     };
-                    let buffer = if let Some(buffer) =
-                        liquid_array.try_eval_predicate(&liquid_expr, selection)
-                    {
-                        buffer
-                    } else {
-                        combined_buffer = None;
-                        break;
-                    };
+                    let buffer = liquid_array.try_eval_predicate(&liquid_expr, selection);
 
                     combined_buffer = Some(match combined_buffer {
                         None => buffer,

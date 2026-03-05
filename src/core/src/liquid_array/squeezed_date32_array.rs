@@ -20,6 +20,7 @@ use super::{LiquidDataType, LiquidSqueezedArray};
 use crate::cache::LiquidExpr;
 use crate::liquid_array::LiquidPrimitiveType;
 use crate::liquid_array::SqueezeIoHandler;
+use crate::liquid_array::eval_predicate_on_array;
 use crate::liquid_array::raw::BitPackedArray;
 use crate::utils::get_bit_width;
 
@@ -460,10 +461,11 @@ impl LiquidSqueezedArray for SqueezedDate32Array {
 
     async fn try_eval_predicate(
         &self,
-        _predicate: &LiquidExpr,
-        _filter: &BooleanBuffer,
-    ) -> Option<BooleanArray> {
-        None
+        predicate: &LiquidExpr,
+        filter: &BooleanBuffer,
+    ) -> BooleanArray {
+        let filtered = self.filter(filter).await;
+        eval_predicate_on_array(filtered, predicate)
     }
 }
 

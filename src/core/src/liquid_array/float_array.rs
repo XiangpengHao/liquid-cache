@@ -35,7 +35,7 @@ use crate::liquid_array::ipc::{PhysicalTypeMarker, get_physical_type_id};
 use crate::liquid_array::raw::BitPackedArray;
 use crate::liquid_array::{
     LiquidSqueezedArray, LiquidSqueezedArrayRef, NeedsBacking, Operator, SqueezeResult,
-    ipc::LiquidIPCHeader,
+    eval_predicate_on_array, ipc::LiquidIPCHeader,
 };
 use crate::utils::get_bit_width;
 use crate::{cache::CacheExpression, liquid_array::SqueezeIoHandler};
@@ -986,12 +986,12 @@ where
 
     async fn try_eval_predicate(
         &self,
-        expr: &LiquidExpr,
+        liquid_expr: &LiquidExpr,
         filter: &BooleanBuffer,
-    ) -> Option<BooleanArray> {
+    ) -> BooleanArray {
         // Apply selection first to reduce input rows
         let filtered = self.filter_inner(filter);
-        let expr = expr.physical_expr();
+        let expr = liquid_expr.physical_expr();
 
         if let Some(binary_expr) = expr.as_any().downcast_ref::<BinaryExpr>()
             && let Some(literal) = binary_expr.right().as_any().downcast_ref::<Literal>()
@@ -1000,8 +1000,11 @@ where
             let supported_op = Operator::from_datafusion(op);
             if let Some(supported_op) = supported_op {
                 match filtered.try_eval_predicate_inner(&supported_op, literal) {
-                    Ok(Some(mask)) => return Some(mask),
-                    Ok(None) => return None,
+                    Ok(Some(mask)) => return mask,
+                    Ok(None) => {
+                        let fallback = self.filter(filter).await;
+                        return eval_predicate_on_array(fallback, liquid_expr);
+                    }
                     Err(NeedsBacking) => {}
                 }
 
@@ -1012,7 +1015,8 @@ where
 
                 let full = self.hydrate_full_arrow().await;
                 let selection_array = BooleanArray::new(filter.clone(), None);
-                let filtered_arr = arrow::compute::filter(&full, &selection_array).ok()?;
+                let filtered_arr = arrow::compute::filter(&full, &selection_array)
+                    .expect("selection must match array length");
                 let filtered_len = filtered_arr.len();
 
                 let lhs = ColumnarValue::Array(filtered_arr);
@@ -1036,13 +1040,21 @@ where
                     datafusion::logical_expr::Operator::GtEq => {
                         apply_cmp(datafusion::logical_expr::Operator::GtEq, &lhs, &rhs)
                     }
-                    _ => return None,
+                    _ => {
+                        let fallback = self.filter(filter).await;
+                        return eval_predicate_on_array(fallback, liquid_expr);
+                    }
                 };
-                let result = result.ok()?;
-                return Some(result.into_array(filtered_len).ok()?.as_boolean().clone());
+                let result = result.expect("validated LiquidExpr comparison must evaluate");
+                return result
+                    .into_array(filtered_len)
+                    .expect("comparison output must be an array")
+                    .as_boolean()
+                    .clone();
             }
         }
-        None
+        let fallback = self.filter(filter).await;
+        eval_predicate_on_array(fallback, liquid_expr)
     }
 }
 
@@ -1288,8 +1300,7 @@ mod tests {
             let got = block_on(hybrid.try_eval_predicate(
                 &crate::cache::LiquidExpr::new_unchecked(expr.clone()),
                 &mask,
-            ))
-            .expect("supported");
+            ));
             let expected = {
                 let vals: Vec<Option<bool>> = (0..arr.len())
                     .map(|i| {
@@ -1321,8 +1332,7 @@ mod tests {
         let got = block_on(hybrid.try_eval_predicate(
             &crate::cache::LiquidExpr::new_unchecked(expr_eq_present.clone()),
             &mask,
-        ))
-        .expect("supported");
+        ));
         let expected = {
             let vals: Vec<Option<bool>> = (0..arr.len())
                 .map(|i| {
@@ -1386,8 +1396,7 @@ mod tests {
             let got = block_on(hybrid.try_eval_predicate(
                 &crate::cache::LiquidExpr::new_unchecked(expr.clone()),
                 &mask,
-            ))
-            .expect("supported");
+            ));
             let expected = {
                 let vals: Vec<Option<bool>> = (0..arr.len())
                     .map(|i| {
@@ -1419,8 +1428,7 @@ mod tests {
         let got = block_on(hybrid.try_eval_predicate(
             &crate::cache::LiquidExpr::new_unchecked(expr_eq_present.clone()),
             &mask,
-        ))
-        .expect("supported");
+        ));
         let expected = {
             let vals: Vec<Option<bool>> = (0..arr.len())
                 .map(|i| {

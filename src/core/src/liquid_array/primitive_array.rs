@@ -24,6 +24,7 @@ use crate::liquid_array::ipc::{LiquidIPCHeader, PhysicalTypeMarker, get_physical
 use crate::liquid_array::raw::BitPackedArray;
 use crate::liquid_array::{
     LiquidArray, LiquidSqueezedArrayRef, PrimitiveKind, SqueezeIoHandler, SqueezedDate32Array,
+    eval_predicate_on_array,
 };
 use crate::utils::get_bit_width;
 use arrow::datatypes::ArrowNativeType;
@@ -372,13 +373,9 @@ where
         arrow::compute::kernels::filter::filter(&arrow_array, &selection).unwrap()
     }
 
-    fn try_eval_predicate(
-        &self,
-        _predicate: &LiquidExpr,
-        _filter: &BooleanBuffer,
-    ) -> Option<BooleanArray> {
-        // primitive array is not supported for liquid predicate
-        None
+    fn try_eval_predicate(&self, predicate: &LiquidExpr, filter: &BooleanBuffer) -> BooleanArray {
+        let filtered = self.filter(filter);
+        eval_predicate_on_array(filtered, predicate)
     }
 
     fn to_bytes(&self) -> Vec<u8> {
@@ -576,13 +573,9 @@ where
         arrow::compute::kernels::filter::filter(&arrow_array, &selection).unwrap()
     }
 
-    fn try_eval_predicate(
-        &self,
-        _predicate: &LiquidExpr,
-        _filter: &BooleanBuffer,
-    ) -> Option<BooleanArray> {
-        // primitive delta array is not supported for liquid predicate
-        None
+    fn try_eval_predicate(&self, predicate: &LiquidExpr, filter: &BooleanBuffer) -> BooleanArray {
+        let filtered = self.filter(filter);
+        eval_predicate_on_array(filtered, predicate)
     }
 
     fn to_bytes(&self) -> Vec<u8> {

@@ -400,9 +400,8 @@ fn try_eval_or_fetch<T: LiquidPrimitiveType>(
 ) -> (BooleanArray, usize) {
     io.reset_bytes_read();
     let maybe_expr = LiquidExpr::try_new(expr.clone(), &hybrid.original_arrow_data_type(), None);
-    if let Some(liquid_expr) = maybe_expr
-        && let Some(mask) = futures::executor::block_on(hybrid.try_eval_predicate(&liquid_expr, filter))
-    {
+    if let Some(liquid_expr) = maybe_expr {
+        let mask = futures::executor::block_on(hybrid.try_eval_predicate(&liquid_expr, filter));
         return (mask, io.bytes_read());
     }
     // Not supported in hybrid form: materialize from full bytes and compute via Arrow.

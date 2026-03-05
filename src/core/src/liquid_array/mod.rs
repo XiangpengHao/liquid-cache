@@ -20,10 +20,11 @@ mod variant_array;
 use std::{any::Any, ops::Range, sync::Arc};
 
 use arrow::{
-    array::{ArrayRef, BooleanArray},
+    array::{ArrayRef, BooleanArray, cast::AsArray},
     buffer::BooleanBuffer,
+    record_batch::RecordBatch,
 };
-use arrow_schema::DataType;
+use arrow_schema::{DataType, Field, Schema};
 pub use byte_array::{LiquidByteArray, get_bytes_needle, get_string_needle};
 pub use byte_view_array::LiquidByteViewArray;
 use bytes::Bytes;
@@ -195,17 +196,13 @@ pub trait LiquidArray: std::fmt::Debug + Send + Sync {
         arrow::compute::kernels::filter::filter(&arrow_array, &selection).unwrap()
     }
 
-    /// Try to evaluate a predicate on the Liquid array with a filter.
-    /// Returns `None` if the predicate is not supported.
+    /// Evaluate a predicate on the Liquid array with a filter.
     ///
     /// Note that the filter is a boolean buffer, not a boolean array, i.e., filter can't be nullable.
     /// The returned boolean mask is nullable if the the original array is nullable.
-    fn try_eval_predicate(
-        &self,
-        _predicate: &LiquidExpr,
-        _filter: &BooleanBuffer,
-    ) -> Option<BooleanArray> {
-        None
+    fn try_eval_predicate(&self, predicate: &LiquidExpr, filter: &BooleanBuffer) -> BooleanArray {
+        let filtered = self.filter(filter);
+        eval_predicate_on_array(filtered, predicate)
     }
 
     /// Squeeze the Liquid array to a `LiquidHybridArrayRef` and a `bytes::Bytes`.
@@ -311,23 +308,40 @@ pub trait LiquidSqueezedArray: std::fmt::Debug + Send + Sync {
         arrow::compute::kernels::filter::filter(&arrow_array, &selection).unwrap()
     }
 
-    /// Try to evaluate a predicate on the Liquid array with a filter.
-    /// Returns `Ok(None)` if the predicate is not supported.
+    /// Evaluate a predicate on the Liquid array with a filter.
     ///
     /// Note that the filter is a boolean buffer, not a boolean array, i.e., filter can't be nullable.
     /// The returned boolean mask is nullable if the the original array is nullable.
     async fn try_eval_predicate(
         &self,
-        _predicate: &LiquidExpr,
-        _filter: &BooleanBuffer,
-    ) -> Option<BooleanArray> {
-        None
+        predicate: &LiquidExpr,
+        filter: &BooleanBuffer,
+    ) -> BooleanArray {
+        let filtered = self.filter(filter).await;
+        eval_predicate_on_array(filtered, predicate)
     }
 
     /// Describe how the squeezed array persists its backing bytes on disk.
     fn disk_backing(&self) -> SqueezedBacking {
         SqueezedBacking::Liquid
     }
+}
+
+pub(crate) fn eval_predicate_on_array(array: ArrayRef, predicate: &LiquidExpr) -> BooleanArray {
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "liquid_predicate_col",
+        array.data_type().clone(),
+        true,
+    )]));
+    let record_batch = RecordBatch::try_new(schema, vec![array]).expect("predicate input batch");
+    let result = predicate
+        .physical_expr()
+        .evaluate(&record_batch)
+        .expect("validated LiquidExpr must evaluate");
+    let boolean_array = result
+        .into_array(record_batch.num_rows())
+        .expect("predicate output must be an array");
+    boolean_array.as_boolean().clone()
 }
 
 /// A trait to read the backing bytes of a squeezed array from disk.

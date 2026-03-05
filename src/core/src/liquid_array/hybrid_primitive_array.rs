@@ -14,6 +14,7 @@ use datafusion::physical_plan::expressions::{
 use num_traits::{AsPrimitive, FromPrimitive};
 
 use crate::cache::LiquidExpr;
+use crate::liquid_array::eval_predicate_on_array;
 use crate::liquid_array::raw::BitPackedArray;
 
 use super::primitive_array::LiquidPrimitiveType;
@@ -330,19 +331,36 @@ where
 
     async fn try_eval_predicate(
         &self,
-        expr: &LiquidExpr,
+        liquid_expr: &LiquidExpr,
         filter: &BooleanBuffer,
-    ) -> Option<BooleanArray> {
+    ) -> BooleanArray {
         // Apply selection first to reduce input rows
         let filtered = self.filter_inner(filter);
 
-        let expr = unwrap_dynamic_filter(expr.physical_expr())?;
-        let binary_expr = expr.as_any().downcast_ref::<BinaryExpr>()?;
-        let lhs_kind = predicate_lhs_kind(binary_expr.left())?;
-        let literal = binary_expr.right().as_any().downcast_ref::<Literal>()?;
+        let expr = if let Some(expr) = unwrap_dynamic_filter(liquid_expr.physical_expr()) {
+            expr
+        } else {
+            let fallback = self.filter(filter).await;
+            return eval_predicate_on_array(fallback, liquid_expr);
+        };
+        let Some(binary_expr) = expr.as_any().downcast_ref::<BinaryExpr>() else {
+            let fallback = self.filter(filter).await;
+            return eval_predicate_on_array(fallback, liquid_expr);
+        };
+        let Some(lhs_kind) = predicate_lhs_kind(binary_expr.left()) else {
+            let fallback = self.filter(filter).await;
+            return eval_predicate_on_array(fallback, liquid_expr);
+        };
+        let Some(literal) = binary_expr.right().as_any().downcast_ref::<Literal>() else {
+            let fallback = self.filter(filter).await;
+            return eval_predicate_on_array(fallback, liquid_expr);
+        };
 
         let op = binary_expr.op();
-        let supported_op = Operator::from_datafusion(op)?;
+        let Some(supported_op) = Operator::from_datafusion(op) else {
+            let fallback = self.filter(filter).await;
+            return eval_predicate_on_array(fallback, liquid_expr);
+        };
         let can_eval_without_cast = match lhs_kind {
             PredicateLhs::Plain => true,
             PredicateLhs::ToTimestampSeconds => can_eval_to_timestamp_seconds_direct::<T>(),
@@ -351,9 +369,12 @@ where
             match filtered.try_eval_predicate_inner(&supported_op, literal) {
                 Ok(Some(mask)) => {
                     self.io.trace_io_saved();
-                    return Some(mask);
+                    return mask;
                 }
-                Ok(None) => return None,
+                Ok(None) => {
+                    let fallback = self.filter(filter).await;
+                    return eval_predicate_on_array(fallback, liquid_expr);
+                }
                 Err(NeedsBacking) => {}
             }
         }
@@ -365,13 +386,15 @@ where
 
         let full = self.hydrate_full_arrow().await;
         let selection_array = BooleanArray::new(filter.clone(), None);
-        let filtered_arr = arrow::compute::filter(&full, &selection_array).ok()?;
+        let filtered_arr = arrow::compute::filter(&full, &selection_array)
+            .expect("selection must match array length");
         let filtered_len = filtered_arr.len();
         let lhs_array = match lhs_kind {
             PredicateLhs::Plain => filtered_arr,
             PredicateLhs::ToTimestampSeconds => {
                 let target_type = literal.value().data_type();
-                arrow::compute::cast(&filtered_arr, &target_type).ok()?
+                arrow::compute::cast(&filtered_arr, &target_type)
+                    .expect("to_timestamp_seconds cast must succeed")
             }
         };
 
@@ -396,10 +419,17 @@ where
             datafusion::logical_expr::Operator::GtEq => {
                 apply_cmp(datafusion::logical_expr::Operator::GtEq, &lhs, &rhs)
             }
-            _ => return None,
+            _ => {
+                let fallback = self.filter(filter).await;
+                return eval_predicate_on_array(fallback, liquid_expr);
+            }
         };
-        let result = result.ok()?;
-        Some(result.into_array(filtered_len).ok()?.as_boolean().clone())
+        let result = result.expect("validated LiquidExpr comparison must evaluate");
+        result
+            .into_array(filtered_len)
+            .expect("comparison output must be an array")
+            .as_boolean()
+            .clone()
     }
 }
 
@@ -675,19 +705,36 @@ where
 
     async fn try_eval_predicate(
         &self,
-        expr: &LiquidExpr,
+        liquid_expr: &LiquidExpr,
         filter: &BooleanBuffer,
-    ) -> Option<BooleanArray> {
+    ) -> BooleanArray {
         // Apply selection first to reduce input rows
         let filtered = self.filter_inner(filter);
 
-        let expr = unwrap_dynamic_filter(expr.physical_expr())?;
-        let binary_expr = expr.as_any().downcast_ref::<BinaryExpr>()?;
-        let lhs_kind = predicate_lhs_kind(binary_expr.left())?;
-        let literal = binary_expr.right().as_any().downcast_ref::<Literal>()?;
+        let expr = if let Some(expr) = unwrap_dynamic_filter(liquid_expr.physical_expr()) {
+            expr
+        } else {
+            let fallback = self.filter(filter).await;
+            return eval_predicate_on_array(fallback, liquid_expr);
+        };
+        let Some(binary_expr) = expr.as_any().downcast_ref::<BinaryExpr>() else {
+            let fallback = self.filter(filter).await;
+            return eval_predicate_on_array(fallback, liquid_expr);
+        };
+        let Some(lhs_kind) = predicate_lhs_kind(binary_expr.left()) else {
+            let fallback = self.filter(filter).await;
+            return eval_predicate_on_array(fallback, liquid_expr);
+        };
+        let Some(literal) = binary_expr.right().as_any().downcast_ref::<Literal>() else {
+            let fallback = self.filter(filter).await;
+            return eval_predicate_on_array(fallback, liquid_expr);
+        };
 
         let op = binary_expr.op();
-        let supported_op = Operator::from_datafusion(op)?;
+        let Some(supported_op) = Operator::from_datafusion(op) else {
+            let fallback = self.filter(filter).await;
+            return eval_predicate_on_array(fallback, liquid_expr);
+        };
         let can_eval_without_cast = match lhs_kind {
             PredicateLhs::Plain => true,
             PredicateLhs::ToTimestampSeconds => can_eval_to_timestamp_seconds_direct::<T>(),
@@ -696,9 +743,12 @@ where
             match filtered.try_eval_predicate_inner(&supported_op, literal) {
                 Ok(Some(mask)) => {
                     self.io.trace_io_saved();
-                    return Some(mask);
+                    return mask;
                 }
-                Ok(None) => return None,
+                Ok(None) => {
+                    let fallback = self.filter(filter).await;
+                    return eval_predicate_on_array(fallback, liquid_expr);
+                }
                 Err(NeedsBacking) => {}
             }
         }
@@ -710,13 +760,15 @@ where
 
         let full = self.hydrate_full_arrow().await;
         let selection_array = BooleanArray::new(filter.clone(), None);
-        let filtered_arr = arrow::compute::filter(&full, &selection_array).ok()?;
+        let filtered_arr = arrow::compute::filter(&full, &selection_array)
+            .expect("selection must match array length");
         let filtered_len = filtered_arr.len();
         let lhs_array = match lhs_kind {
             PredicateLhs::Plain => filtered_arr,
             PredicateLhs::ToTimestampSeconds => {
                 let target_type = literal.value().data_type();
-                arrow::compute::cast(&filtered_arr, &target_type).ok()?
+                arrow::compute::cast(&filtered_arr, &target_type)
+                    .expect("to_timestamp_seconds cast must succeed")
             }
         };
 
@@ -741,10 +793,17 @@ where
             datafusion::logical_expr::Operator::GtEq => {
                 apply_cmp(datafusion::logical_expr::Operator::GtEq, &lhs, &rhs)
             }
-            _ => return None,
+            _ => {
+                let fallback = self.filter(filter).await;
+                return eval_predicate_on_array(fallback, liquid_expr);
+            }
         };
-        let result = result.ok()?;
-        Some(result.into_array(filtered_len).ok()?.as_boolean().clone())
+        let result = result.expect("validated LiquidExpr comparison must evaluate");
+        result
+            .into_array(filtered_len)
+            .expect("comparison output must be an array")
+            .as_boolean()
+            .clone()
     }
 }
 
@@ -956,8 +1015,7 @@ mod tests {
             let got = block_on(hybrid.try_eval_predicate(
                 &crate::cache::LiquidExpr::new_unchecked(expr.clone()),
                 &mask,
-            ))
-            .expect("supported");
+            ));
             let expected = expected_for(op, k);
             assert_eq!(io.reads(), 0);
             assert_eq!(got, expected);
@@ -978,8 +1036,7 @@ mod tests {
             let got = block_on(hybrid.try_eval_predicate(
                 &crate::cache::LiquidExpr::new_unchecked(expr.clone()),
                 &mask,
-            ))
-            .expect("supported");
+            ));
             let expected = expected_for(op, k);
             assert!(io.reads() > 0);
             assert_eq!(got, expected);
@@ -1046,8 +1103,7 @@ mod tests {
             let got = block_on(hybrid.try_eval_predicate(
                 &crate::cache::LiquidExpr::new_unchecked(expr.clone()),
                 &mask,
-            ))
-            .expect("supported");
+            ));
             let expected = expected_for(op, k);
             assert_eq!(io.reads(), 0);
             assert_eq!(got, expected);
@@ -1067,8 +1123,7 @@ mod tests {
             let got = block_on(hybrid.try_eval_predicate(
                 &crate::cache::LiquidExpr::new_unchecked(expr.clone()),
                 &mask,
-            ))
-            .expect("supported");
+            ));
             let expected = expected_for(op, k);
             assert!(io.reads() > 0);
             assert_eq!(got, expected);
@@ -1111,8 +1166,7 @@ mod tests {
             let got = block_on(hybrid.try_eval_predicate(
                 &crate::cache::LiquidExpr::new_unchecked(expr.clone()),
                 &mask,
-            ))
-            .expect("supported");
+            ));
             let expected = {
                 let vals: Vec<Option<bool>> = (0..arr.len())
                     .map(|i| {
@@ -1144,8 +1198,7 @@ mod tests {
         let got = block_on(hybrid.try_eval_predicate(
             &crate::cache::LiquidExpr::new_unchecked(expr_eq_present.clone()),
             &mask,
-        ))
-        .expect("supported");
+        ));
         let expected = {
             let vals: Vec<Option<bool>> = (0..arr.len())
                 .map(|i| {
@@ -1196,8 +1249,7 @@ mod tests {
             let got = block_on(hybrid.try_eval_predicate(
                 &crate::cache::LiquidExpr::new_unchecked(expr.clone()),
                 &mask,
-            ))
-            .expect("supported");
+            ));
             let expected = {
                 let vals: Vec<Option<bool>> = (0..arr.len())
                     .map(|i| {
@@ -1229,8 +1281,7 @@ mod tests {
         let got = block_on(hybrid.try_eval_predicate(
             &crate::cache::LiquidExpr::new_unchecked(expr_eq_present.clone()),
             &mask,
-        ))
-        .expect("supported");
+        ));
         let expected = {
             let vals: Vec<Option<bool>> = (0..arr.len())
                 .map(|i| {

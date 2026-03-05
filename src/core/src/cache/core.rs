@@ -15,11 +15,11 @@ use super::{
     policies::{CachePolicy, HydrationPolicy, HydrationRequest, MaterializedEntry},
     utils::CacheConfig,
 };
+use crate::cache::DefaultSqueezeIo;
 use crate::cache::policies::SqueezePolicy;
 use crate::cache::utils::{LiquidCompressorStates, arrow_to_bytes};
 use crate::cache::{CacheExpression, LiquidExpr, index::ArtIndex, utils::EntryID};
 use crate::cache::{CacheStats, EventTrace};
-use crate::cache::{DefaultSqueezeIo, RuntimeStats};
 use crate::liquid_array::{
     LiquidSqueezedArrayRef, SqueezeIoHandler, SqueezedBacking, SqueezedDate32Array,
     VariantStructSqueezedArray,
@@ -205,10 +205,6 @@ impl LiquidCache {
     /// Access the cache observer (runtime stats, debug event trace, and optional cache tracing).
     pub fn observer(&self) -> &Observer {
         &self.observer
-    }
-
-    fn runtime_stats(&self) -> &RuntimeStats {
-        self.observer.runtime_stats()
     }
 
     /// Get the compressor states of the cache.
@@ -785,14 +781,7 @@ impl LiquidCache {
                     owned = Some(BooleanBuffer::new_set(array.len()));
                     owned.as_ref().unwrap()
                 });
-                match array.try_eval_predicate(predicate, selection) {
-                    Some(buf) => Some(buf),
-                    None => {
-                        self.runtime_stats().incr_eval_predicate_on_liquid_failed();
-                        let filtered = array.filter(selection);
-                        Some(self.eval_predicate_on_array(filtered, predicate))
-                    }
-                }
+                Some(array.try_eval_predicate(predicate, selection))
             }
             entry @ CacheEntry::DiskLiquid(_) => {
                 let liquid = self.read_disk_liquid_array(entry_id).await;
@@ -803,14 +792,7 @@ impl LiquidCache {
                     owned = Some(BooleanBuffer::new_set(liquid.len()));
                     owned.as_ref().unwrap()
                 });
-                match liquid.try_eval_predicate(predicate, selection) {
-                    Some(buf) => Some(buf),
-                    None => {
-                        self.runtime_stats().incr_eval_predicate_on_liquid_failed();
-                        let filtered = liquid.filter(selection);
-                        Some(self.eval_predicate_on_array(filtered, predicate))
-                    }
-                }
+                Some(liquid.try_eval_predicate(predicate, selection))
             }
             CacheEntry::MemorySqueezedLiquid(array) => {
                 self.eval_predicate_on_squeezed(array, selection_opt, predicate)
@@ -830,13 +812,7 @@ impl LiquidCache {
             owned = Some(BooleanBuffer::new_set(array.len()));
             owned.as_ref().unwrap()
         });
-        match array.try_eval_predicate(predicate, selection).await {
-            Some(buf) => Some(buf),
-            None => {
-                let filtered = array.filter(selection).await;
-                Some(self.eval_predicate_on_array(filtered, predicate))
-            }
-        }
+        Some(array.try_eval_predicate(predicate, selection).await)
     }
 
     fn eval_predicate_on_array(&self, array: ArrayRef, predicate: &LiquidExpr) -> BooleanArray {
