@@ -22,6 +22,7 @@ use std::fs::create_dir_all;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
+use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
 
 #[derive(Parser)]
 #[command(name = "storage_runner")]
@@ -51,6 +52,51 @@ struct Args {
     /// Directory to write flamegraph SVG files to (one per query iteration).
     #[arg(long = "flamegraph-dir")]
     flamegraph_dir: Option<PathBuf>,
+}
+
+/// Tracks process disk I/O (bytes read/written) between creation and stop().
+struct DiskIoGuard {
+    system: System,
+    pid: sysinfo::Pid,
+    start_read_total: u64,
+    start_written_total: u64,
+}
+
+impl DiskIoGuard {
+    fn new() -> Self {
+        let mut system = System::new();
+        let pid = sysinfo::get_current_pid().unwrap();
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[pid]),
+            true,
+            ProcessRefreshKind::nothing().with_disk_usage(),
+        );
+        let p = system.process(pid).unwrap();
+        let du = p.disk_usage();
+        Self {
+            system,
+            pid,
+            start_read_total: du.total_read_bytes,
+            start_written_total: du.total_written_bytes,
+        }
+    }
+
+    fn stop(mut self) -> (u64, u64) {
+        self.system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[self.pid]),
+            true,
+            ProcessRefreshKind::nothing().with_disk_usage(),
+        );
+        if let Some(p) = self.system.process(self.pid) {
+            let du = p.disk_usage();
+            (
+                du.total_read_bytes.saturating_sub(self.start_read_total),
+                du.total_written_bytes.saturating_sub(self.start_written_total),
+            )
+        } else {
+            (0, 0)
+        }
+    }
 }
 
 /// ClickBench query descriptor: filter column(s), optional projection column(s), and predicate expression(s).
@@ -334,6 +380,8 @@ fn run_bench(
     
 
     for i in 0..num_iter {
+        liquid_cache_benchmarks::tracepoints::iteration_start(query_index as u32, i as u32);
+        let io_guard = DiskIoGuard::new();
         let profiler_guard = if flamegraph_dir.is_some() {
             Some(
                 pprof::ProfilerGuardBuilder::default()
@@ -354,6 +402,14 @@ fn run_bench(
             &entry_ids,
             &batch_lengths,
             &mut executor,
+        );
+
+        let (disk_read, disk_written) = io_guard.stop();
+        log::info!(
+            "Iteration {}: disk read {} bytes, disk written {} bytes",
+            i,
+            disk_read,
+            disk_written
         );
 
         if let (Some(profiler), Some(dir)) = (profiler_guard, flamegraph_dir.as_ref()) {
@@ -378,6 +434,10 @@ async fn run_partition(
         // No predicates: full scan, count all rows in the partition.
         for batch_idx in batch_range.clone() {
             let entry_idx = batch_idx * num_cols;
+            let entry_id = &entry_ids[entry_idx];
+            let _result = storage
+                .get(entry_id)
+                .await;
             total_matched += batch_lengths[entry_idx];
         }
         return total_matched;

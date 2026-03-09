@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::VecDeque, fs::OpenOptions, ops::Range, os::{fd::AsRawFd as _, unix::fs::OpenOptionsExt}, path::PathBuf, pin::Pin, rc::Rc, sync::atomic::{AtomicBool, Ordering}, task::{Context, Poll, Waker}, thread::{self, JoinHandle}, time::{Duration, Instant}};
+use std::{cell::RefCell, collections::VecDeque, fs::OpenOptions, ops::Range, os::{fd::AsRawFd as _, unix::fs::OpenOptionsExt}, path::PathBuf, pin::Pin, rc::Rc, sync::{atomic::{AtomicBool, Ordering}, OnceLock}, task::{Context, Poll, Waker}, thread::{self, JoinHandle}, time::{Duration, Instant}};
 
 use async_executor::LocalExecutor;
 use bytes::Bytes;
@@ -9,6 +9,23 @@ use rand::Rng;
 use tokio::sync::oneshot;
 
 use crate::io::io_uring::tasks::{FileReadTask, FileWriteTask, FixedFileReadTask, IoTask};
+
+#[usdt::provider]
+mod liquid_uring_runtime {
+    fn io_submission(id: u64) {}
+    fn io_completion(id: u64) {}
+}
+
+fn ensure_uring_trace_registered() -> bool {
+    static REGISTERED: OnceLock<bool> = OnceLock::new();
+    *REGISTERED.get_or_init(|| match usdt::register_probes() {
+        Ok(()) => true,
+        Err(err) => {
+            log::debug!("failed to register io_uring runtime USDT probes: {err}");
+            false
+        }
+    })
+}
 
 const URING_NUM_ENTRIES: u32 = 256;
 
@@ -211,7 +228,8 @@ impl RuntimeWorker {
         let token = self.tokens.pop_front().expect("No more tokens");
         let sq = &mut self.ring.submission();
         let sqes = task.inner.borrow_mut().prepare_sqe();
-        task.set_completions(sqes.len());
+        let num_sqes = sqes.len();
+        task.set_completions(num_sqes);
         self.submitted_tasks[token as usize] = Some(task);
         let mut sqes_submitted = 0;
 
@@ -342,6 +360,7 @@ where
     state: UringState,
     task: Rc<RefCell<T>>,
     completed: AtomicBool,
+    id: u64,
 }
 
 unsafe impl<T> Send for UringFuture<T>
@@ -356,6 +375,7 @@ where
             state: UringState::Created,
             task: task,
             completed: AtomicBool::new(false),
+            id: rand::rng().random(),
         }
     }
 }
@@ -379,10 +399,16 @@ where
                         completions: Vec::new(),
                     };
                     RuntimeWorker::add_task(async_task);
+                    if ensure_uring_trace_registered() {
+                        liquid_uring_runtime::io_submission!(|| self.id);
+                    }
                     self.state = UringState::Submitted;
                 }
                 UringState::Submitted => match self.completed.load(Ordering::Relaxed) {
                     true => {
+                        if ensure_uring_trace_registered() {
+                            liquid_uring_runtime::io_completion!(|| self.id);
+                        }
                         return Poll::Ready(self.task.clone());
                     }
                     false => {
