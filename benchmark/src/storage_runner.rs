@@ -14,7 +14,7 @@ use datafusion::physical_plan::expressions::{BinaryExpr, Column};
 use datafusion::physical_plan::PhysicalExpr;
 use datafusion::scalar::ScalarValue;
 use liquid_cache_common::IoMode;
-use liquid_cache_storage::cache::{EntryID, LiquidCache, LiquidCacheBuilder};
+use liquid_cache_storage::cache::{EntryID, LiquidCache, LiquidCacheBuilder, LiquidPolicy, NoHydration, TranscodeSqueezeEvict};
 use liquid_cache_parquet::{SimpleIoContext, UringExecutor};
 use logforth::filter::EnvFilter;
 use parquet::arrow::{arrow_reader::ParquetRecordBatchReaderBuilder, ProjectionMask};
@@ -182,7 +182,7 @@ fn all_filter_queries() -> Vec<Option<FilterQuery>> {
         filter_columns: vec![],
         projection_columns: vec!["URL"],
         predicates: vec![],
-        expected_row_count: 137,
+        expected_row_count: 99997497,
     });
 
     // Q27: URL <> ''
@@ -356,6 +356,9 @@ fn run_bench(
         .with_io_context(io_context)
         .with_cache_dir(cache_dir)
         .with_max_cache_bytes(256 * 1024 * 1024)
+        .with_cache_policy(Box::new(LiquidPolicy::new()))
+        .with_hydration_policy(Box::new(NoHydration::new()))
+        .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
         .build();
 
     let mut executor = UringExecutor::new(num_workers);
