@@ -5,19 +5,20 @@
  * on a LiquidCache instance to bypass datafusion, which is strongly coupled with tokio. The benchmark is based on
  * the arrow benchmark (https://github.com/apache/arrow-rs/blob/main/parquet/benches/arrow_reader_clickbench.rs#L729)
  */
-
 use arrow::array::BooleanArray;
 use arrow::buffer::BooleanBuffer;
 use clap::Parser;
 use datafusion::logical_expr::Operator;
-use datafusion::physical_plan::expressions::{BinaryExpr, Column};
 use datafusion::physical_plan::PhysicalExpr;
+use datafusion::physical_plan::expressions::{BinaryExpr, Column};
 use datafusion::scalar::ScalarValue;
 use liquid_cache_common::IoMode;
-use liquid_cache_storage::cache::{EntryID, LiquidCache, LiquidCacheBuilder, LiquidPolicy, NoHydration, TranscodeSqueezeEvict};
 use liquid_cache_parquet::{SimpleIoContext, UringExecutor};
+use liquid_cache_storage::cache::{
+    EntryID, LiquidCache, LiquidCacheBuilder, LiquidPolicy, NoHydration, TranscodeSqueezeEvict,
+};
 use logforth::filter::EnvFilter;
-use parquet::arrow::{arrow_reader::ParquetRecordBatchReaderBuilder, ProjectionMask};
+use parquet::arrow::{ProjectionMask, arrow_reader::ParquetRecordBatchReaderBuilder};
 use std::fs::create_dir_all;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -95,7 +96,8 @@ impl DiskIoGuard {
             let du = p.disk_usage();
             (
                 du.total_read_bytes.saturating_sub(self.start_read_total),
-                du.total_written_bytes.saturating_sub(self.start_written_total),
+                du.total_written_bytes
+                    .saturating_sub(self.start_written_total),
             )
         } else {
             (0, 0)
@@ -227,7 +229,13 @@ fn all_filter_queries() -> Vec<Option<FilterQuery>> {
 
     // Q36: CounterID = 62, DontCountHits = 0, IsRefresh = 0, URL <> ''
     q[36] = Some(FilterQuery {
-        filter_columns: vec!["CounterID", "EventDate", "DontCountHits", "IsRefresh", "URL"],
+        filter_columns: vec![
+            "CounterID",
+            "EventDate",
+            "DontCountHits",
+            "IsRefresh",
+            "URL",
+        ],
         projection_columns: vec![],
         predicates: vec![
             Arc::new(BinaryExpr::new(
@@ -265,11 +273,11 @@ fn all_filter_queries() -> Vec<Option<FilterQuery>> {
 fn run_single_iter(
     num_batches: usize,
     num_partitions: usize,
-    query: &FilterQuery, 
+    query: &FilterQuery,
     storage: Arc<LiquidCache>,
     entry_ids: &Vec<EntryID>,
     batch_lengths: &Vec<usize>,
-    executor: &mut UringExecutor
+    executor: &mut UringExecutor,
 ) {
     // 2) Partition batch indices evenly across workers.
     let batches_per_partition = num_batches / num_partitions;
@@ -295,12 +303,12 @@ fn run_single_iter(
         let entry_ids_clone = entry_ids.clone();
         let batch_lengths_clone = batch_lengths.clone();
         futures.push(run_partition(
-                storage_clone,
-                batch_range,
-                num_cols,
-                predicates,
-                entry_ids_clone,
-                batch_lengths_clone,
+            storage_clone,
+            batch_range,
+            num_cols,
+            predicates,
+            entry_ids_clone,
+            batch_lengths_clone,
         ));
     }
     let num_tasks = futures.len();
@@ -316,9 +324,18 @@ fn run_single_iter(
     }
     let elapsed = start.elapsed();
     if total_rows != query.expected_row_count {
-        log::warn!("Expected row count doesn't match. Actual: {}, expected: {}", total_rows, query.expected_row_count);
+        log::warn!(
+            "Expected row count doesn't match. Actual: {}, expected: {}",
+            total_rows,
+            query.expected_row_count
+        );
     }
-    log::info!("Partitions: {}, Time: {:.3}s, Total rows: {}", num_partitions, elapsed.as_secs_f64(), total_rows);
+    log::info!(
+        "Partitions: {}, Time: {:.3}s, Total rows: {}",
+        num_partitions,
+        elapsed.as_secs_f64(),
+        total_rows
+    );
 }
 
 fn write_flamegraph(
@@ -338,9 +355,8 @@ fn write_flamegraph(
     let minute = (secs / 60) % 60;
     let second = secs % 60;
 
-    let filename = format!(
-        "{hour:02}h{minute:02}m{second:02}s_q{query_index:02}_i{iteration:02}.svg"
-    );
+    let filename =
+        format!("{hour:02}h{minute:02}m{second:02}s_q{query_index:02}_i{iteration:02}.svg");
     let filepath = flamegraph_dir.join(filename);
     std::fs::write(&filepath, svg_data)?;
     log::info!("Flamegraph written to: {}", filepath.display());
@@ -359,10 +375,15 @@ fn run_bench(
     io_mode: IoMode,
 ) {
     let _ = std::fs::create_dir_all(&cache_dir);
+    let fb_pool_size = if io_mode == IoMode::UringNonBlocking {
+        4096
+    } else {
+        0
+    };
     let io_context = Arc::new(SimpleIoContext::new(
         cache_dir.clone(),
         io_mode,
-        4096,
+        fb_pool_size,
     ));
     let storage = LiquidCacheBuilder::new()
         .with_io_context(io_context)
@@ -376,10 +397,10 @@ fn run_bench(
     let mut executor = UringExecutor::new(num_workers);
     let storage_clone = storage.clone();
     let query_owned = query.clone();
-    let (num_batches, entry_ids, batch_lengths) = executor.run_to_completion(
-    async move {
+    let (num_batches, entry_ids, batch_lengths) = executor.run_to_completion(async move {
         // 1) Load parquet into record batches (filter columns only) and insert into cache.
-        let (entry_ids, batch_lengths) = load_and_insert(storage_clone.clone(), parquet_path, &query_owned).await;
+        let (entry_ids, batch_lengths) =
+            load_and_insert(storage_clone.clone(), parquet_path, &query_owned).await;
         let num_cols_loaded = query_owned.columns_to_load().len();
         let num_batches = entry_ids.len() / num_cols_loaded;
         log::info!(
@@ -392,7 +413,6 @@ fn run_bench(
         storage_clone.flush_all_to_disk().await;
         (num_batches, entry_ids, batch_lengths)
     });
-    
 
     for i in 0..num_iter {
         liquid_cache_benchmarks::tracepoints::iteration_start(query_index as u32, i as u32);
@@ -439,9 +459,9 @@ async fn run_partition(
     storage: Arc<LiquidCache>,
     batch_range: std::ops::Range<usize>,
     num_cols: usize,
-    predicates: Vec::<Arc<dyn PhysicalExpr>>,
-    entry_ids: Vec::<EntryID>,
-    batch_lengths: Vec::<usize>,
+    predicates: Vec<Arc<dyn PhysicalExpr>>,
+    entry_ids: Vec<EntryID>,
+    batch_lengths: Vec<usize>,
 ) -> usize {
     let mut total_matched = 0usize;
 
@@ -450,9 +470,7 @@ async fn run_partition(
         for batch_idx in batch_range.clone() {
             let entry_idx = batch_idx * num_cols;
             let entry_id = &entry_ids[entry_idx];
-            let _result = storage
-                .get(entry_id)
-                .await;
+            let _result = storage.get(entry_id).await;
             total_matched += batch_lengths[entry_idx];
         }
         return total_matched;
@@ -467,7 +485,7 @@ async fn run_partition(
             let selection = BooleanBuffer::new_set(len);
             let result = storage
                 .eval_predicate(entry_id, pred)
-                .with_selection(&selection)     // Is this necessary?
+                .with_selection(&selection) // Is this necessary?
                 .await;
             match result {
                 Some(Ok(mask)) => {
@@ -497,7 +515,10 @@ async fn load_and_insert(
     query: &FilterQuery,
 ) -> (Vec<EntryID>, Vec<usize>) {
     let columns_to_load = query.columns_to_load();
-    assert!(!columns_to_load.is_empty(), "query must have filter_columns or projection_columns");
+    assert!(
+        !columns_to_load.is_empty(),
+        "query must have filter_columns or projection_columns"
+    );
 
     let Ok(parquet_file) = std::fs::File::open(parquet_path.clone()) else {
         panic!("Failed to open {:?}", parquet_path.to_str());
@@ -571,7 +592,11 @@ fn main() {
             }
         },
         _ => {
-            eprintln!("Query index {} out of range (0..{}).", args.query_index, queries.len());
+            eprintln!(
+                "Query index {} out of range (0..{}).",
+                args.query_index,
+                queries.len()
+            );
             std::process::exit(1);
         }
     };
@@ -589,9 +614,9 @@ fn main() {
         );
         std::process::exit(1);
     }
-    let cache_dir = args.cache_dir.unwrap_or_else(|| {
-        std::env::temp_dir().join("lc_cache_dir")
-    });
+    let cache_dir = args
+        .cache_dir
+        .unwrap_or_else(|| std::env::temp_dir().join("lc_cache_dir"));
     run_bench(
         cache_dir,
         args.parquet,

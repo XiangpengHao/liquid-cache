@@ -1,12 +1,22 @@
 extern crate io_uring;
 
 use core::slice;
-use std::{cmp::min, sync::{Arc, Mutex, OnceLock, atomic::{AtomicBool, AtomicU64, Ordering}}};
+use std::{
+    cmp::min,
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
+};
 
 use futures::io;
 use io_uring::IoUring;
 
-use crate::memory::{arena::Arena, segment::Segment, tcache::{TCache, TCacheStats}};
+use crate::memory::{
+    arena::Arena,
+    segment::Segment,
+    tcache::{TCache, TCacheStats},
+};
 
 static FIXED_BUFFER_POOL: OnceLock<FixedBufferPool> = OnceLock::new();
 
@@ -45,7 +55,7 @@ pub struct FixedBufferPool {
     arena: Arc<Mutex<Arena>>,
     start_ptr: *mut u8,
     capacity: usize,
-    registered: AtomicBool,         // Whether buffers have been registered
+    registered: AtomicBool, // Whether buffers have been registered
     foreign_free: AtomicU64,
 }
 
@@ -55,7 +65,10 @@ unsafe impl Sync for FixedBufferPool {}
 
 impl FixedBufferPool {
     fn new(capacity_mb: usize) -> FixedBufferPool {
-        log::info!("Initializing fixed buffer pool with capacity: {} MB", capacity_mb);
+        log::info!(
+            "Initializing fixed buffer pool with capacity: {} MB",
+            capacity_mb
+        );
         let num_cpus = std::thread::available_parallelism().unwrap();
         let capacity = capacity_mb << 20;
         let arena = Self::allocate_arena(capacity.clone());
@@ -67,11 +80,11 @@ impl FixedBufferPool {
         for i in 0..num_cpus.get() {
             local_caches.push(Mutex::new(TCache::new(arena.clone(), i)));
         }
-        FixedBufferPool { 
-            local_caches, 
-            arena, 
-            start_ptr, 
-            capacity, 
+        FixedBufferPool {
+            local_caches,
+            arena,
+            start_ptr,
+            capacity,
             registered: AtomicBool::new(false),
             foreign_free: AtomicU64::new(0),
         }
@@ -102,7 +115,12 @@ impl FixedBufferPool {
     }
 
     pub fn register_buffers_with_ring(ring: &IoUring) -> io::Result<()> {
-        let pool = FIXED_BUFFER_POOL.get().unwrap();
+        let Some(pool) = FIXED_BUFFER_POOL.get() else {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "fixed buffer pool not initialized",
+            ));
+        };
         let mut arena_guard = pool.arena.lock().unwrap();
         let res = arena_guard.register_buffers_with_ring(ring);
         if res.is_ok() {
@@ -113,7 +131,9 @@ impl FixedBufferPool {
     }
 
     pub(crate) fn get_stats(cpu: usize) -> TCacheStats {
-        let pool = FIXED_BUFFER_POOL.get().unwrap();
+        let Some(pool) = FIXED_BUFFER_POOL.get() else {
+            return TCacheStats::new();
+        };
         let tcache = pool.local_caches[cpu].lock().unwrap();
         tcache.get_stats()
     }
@@ -122,14 +142,19 @@ impl FixedBufferPool {
         let ptr = alloc.ptr;
         let size = alloc.size;
         let pool = FIXED_BUFFER_POOL.get().unwrap();
-        debug_assert!(ptr >= pool.start_ptr && ptr < pool.start_ptr.wrapping_add(pool.capacity),
-            "Pointer doesn't lie within the arena");
+        debug_assert!(
+            ptr >= pool.start_ptr && ptr < pool.start_ptr.wrapping_add(pool.capacity),
+            "Pointer doesn't lie within the arena"
+        );
         let mut remaining = size;
         let mut vec = Vec::<FixedBuffer>::new();
         let mut current = ptr.clone();
-        let mut buffer_id = (current.wrapping_sub(pool.start_ptr as usize) as usize) >> FIXED_BUFFER_BITS;
+        let mut buffer_id =
+            (current.wrapping_sub(pool.start_ptr as usize) as usize) >> FIXED_BUFFER_BITS;
         while remaining > 0 {
-            let next_buffer_start = pool.start_ptr.wrapping_add((buffer_id + 1) << FIXED_BUFFER_BITS);
+            let next_buffer_start = pool
+                .start_ptr
+                .wrapping_add((buffer_id + 1) << FIXED_BUFFER_BITS);
             let bytes = min(remaining, next_buffer_start as usize - current as usize);
             let fb = FixedBuffer {
                 ptr: current,
@@ -154,9 +179,14 @@ impl FixedBufferPool {
         let segment_ptr = Segment::get_segment_from_ptr(ptr);
         let page_ptr = unsafe { (*segment_ptr).get_page_from_ptr(ptr) };
         let thread_id = unsafe { (*segment_ptr).thread_id };
-        log::debug!("Freed pointer: {:?}, size: {}, owner thread id: {}", ptr, unsafe { (*page_ptr).block_size }, thread_id);
+        log::debug!(
+            "Freed pointer: {:?}, size: {}, owner thread id: {}",
+            ptr,
+            unsafe { (*page_ptr).block_size },
+            thread_id
+        );
 
-        // If page is local and unused after free, return it to segment        
+        // If page is local and unused after free, return it to segment
         let cur_cpu = unsafe { libc::sched_getcpu() as usize };
         if cur_cpu == thread_id {
             unsafe {
@@ -169,7 +199,9 @@ impl FixedBufferPool {
                 guard.retire_page(page_ptr);
             }
         } else {
-            unsafe { (*page_ptr).foreign_free(ptr); }
+            unsafe {
+                (*page_ptr).foreign_free(ptr);
+            }
             let pool = FIXED_BUFFER_POOL.get().unwrap();
             pool.foreign_free.fetch_add(1, Ordering::Relaxed);
         }
@@ -177,7 +209,7 @@ impl FixedBufferPool {
 
     pub fn print_stats() {
         if FIXED_BUFFER_POOL.get().is_none() {
-            return
+            return;
         }
         let num_cpus = std::thread::available_parallelism().unwrap();
         let mut agg_stats = TCacheStats::new();
@@ -206,7 +238,11 @@ impl Drop for FixedBufferPool {
 
 mod tests {
     #[allow(unused_imports)]
-    use std::{io::Write, os::fd::AsRawFd, ptr::{null, null_mut}};
+    use std::{
+        io::Write,
+        os::fd::AsRawFd,
+        ptr::{null, null_mut},
+    };
 
     use bytes::Bytes;
     use io_uring::{IoUring, cqueue, opcode, squeue};
@@ -219,7 +255,7 @@ mod tests {
     fn test_basic_alloc_and_free() {
         FixedBufferPool::init(128);
 
-        let buffer_lengths = [4096, 4096, 4096 * 4];       // 2 different size classes
+        let buffer_lengths = [4096, 4096, 4096 * 4]; // 2 different size classes
         let mut ptrs = Vec::<*mut u8>::new();
         for len in buffer_lengths {
             let ptr = FixedBufferPool::malloc(len);
@@ -229,7 +265,7 @@ mod tests {
 
             let buffer = unsafe { std::slice::from_raw_parts_mut(ptr, len) };
             buffer[0] = 1;
-            buffer[len-1] = 1;
+            buffer[len - 1] = 1;
             ptrs.push(ptr);
         }
 
@@ -250,7 +286,7 @@ mod tests {
     fn test_basic_alloc_and_free_bytes() {
         FixedBufferPool::init(128);
 
-        let buffer_lengths = [4096, 4096, 4096 * 4];       // 2 different size classes
+        let buffer_lengths = [4096, 4096, 4096 * 4]; // 2 different size classes
         // let mut ptrs = Vec::<*mut u8>::new();
         let mut bytes_vec = Vec::<Bytes>::new();
         for len in buffer_lengths {
@@ -261,8 +297,11 @@ mod tests {
 
             let buffer = unsafe { std::slice::from_raw_parts_mut(ptr, len) };
             buffer[0] = 1;
-            buffer[len-1] = 1;
-            let alloc = FixedBufferAllocation {ptr: ptr, size: len};
+            buffer[len - 1] = 1;
+            let alloc = FixedBufferAllocation {
+                ptr: ptr,
+                size: len,
+            };
             let bytes = Bytes::from_owner(alloc);
             bytes_vec.push(bytes);
         }
@@ -292,7 +331,7 @@ mod tests {
 
             let buffer = unsafe { std::slice::from_raw_parts_mut(ptr, len) };
             buffer[0] = 1;
-            buffer[len-1] = 1;
+            buffer[len - 1] = 1;
             buffers.push(buffer);
         }
 
@@ -315,14 +354,14 @@ mod tests {
     #[test]
     fn test_large_alloc_and_free() {
         FixedBufferPool::init(128);
-        let len = 1024 * 1024;      // 1 MB
+        let len = 1024 * 1024; // 1 MB
         let ptr = FixedBufferPool::malloc(len);
         assert_ne!(ptr, null_mut());
         // 4096 byte alignment is necessary for direct IO
         assert_eq!(ptr as usize % 4096, 0);
         let buffer = unsafe { std::slice::from_raw_parts_mut(ptr, len) };
         buffer[0] = 1;
-        buffer[len-1] = 1;
+        buffer[len - 1] = 1;
         FixedBufferPool::free(ptr);
 
         let cur_cpu = unsafe { libc::sched_getcpu() as usize };
@@ -336,14 +375,14 @@ mod tests {
     #[test]
     fn test_large_alloc_and_free2() {
         FixedBufferPool::init(128);
-        let len = 3 * 1024 * 1024;      // 1 MB
+        let len = 3 * 1024 * 1024; // 1 MB
         let ptr = FixedBufferPool::malloc(len);
         assert_ne!(ptr, null_mut());
         // 4096 byte alignment is necessary for direct IO
         assert_eq!(ptr as usize % 4096, 0);
         let buffer = unsafe { std::slice::from_raw_parts_mut(ptr, len) };
         buffer[0] = 1;
-        buffer[len-1] = 1;
+        buffer[len - 1] = 1;
         FixedBufferPool::free(ptr);
 
         let cur_cpu = unsafe { libc::sched_getcpu() as usize };
@@ -357,7 +396,7 @@ mod tests {
     #[test]
     fn test_very_large_alloc_fails() {
         FixedBufferPool::init(128);
-        let len = 32 * 1024 * 1024;      // 32 MB
+        let len = 32 * 1024 * 1024; // 32 MB
         let ptr = FixedBufferPool::malloc(len);
 
         assert_eq!(ptr, null_mut());
@@ -365,15 +404,23 @@ mod tests {
 
     #[test]
     fn test_with_uring_basic() {
-        let mut rlimit = libc::rlimit{
+        let mut rlimit = libc::rlimit {
             rlim_cur: 0,
             rlim_max: 0,
         };
-        unsafe { libc::getrlimit(libc::RLIMIT_MEMLOCK, &mut rlimit); }
-        assert!(64 * 1024 <= rlimit.rlim_max, "rlimit.MEMLOCK should be at least 64 MB to test the fixed-buffer pool. Current rlimit is: {} KB", rlimit.rlim_max);
+        unsafe {
+            libc::getrlimit(libc::RLIMIT_MEMLOCK, &mut rlimit);
+        }
+        assert!(
+            64 * 1024 <= rlimit.rlim_max,
+            "rlimit.MEMLOCK should be at least 64 MB to test the fixed-buffer pool. Current rlimit is: {} KB",
+            rlimit.rlim_max
+        );
         FixedBufferPool::init(64);
-        
-        let mut ring = IoUring::<squeue::Entry, cqueue::Entry>::builder().build(32).unwrap();
+
+        let mut ring = IoUring::<squeue::Entry, cqueue::Entry>::builder()
+            .build(32)
+            .unwrap();
         let res = FixedBufferPool::register_buffers_with_ring(&ring);
         assert!(res.is_ok());
 
@@ -381,7 +428,10 @@ mod tests {
         let mut file = tempfile::tempfile().unwrap();
         let ptr = FixedBufferPool::malloc(LEN);
         assert_ne!(ptr, null_mut());
-        let alloc = FixedBufferAllocation {ptr: ptr, size: LEN};
+        let alloc = FixedBufferAllocation {
+            ptr: ptr,
+            size: LEN,
+        };
         let buffers = FixedBufferPool::get_fixed_buffers(&alloc);
         assert!(buffers.len() <= (LEN / FIXED_BUFFER_SIZE_BYTES) + 1);
 
@@ -404,8 +454,10 @@ mod tests {
                 io_uring::types::Fd(file.as_raw_fd()),
                 fixed_buffer.ptr,
                 fixed_buffer.bytes as u32,
-                fixed_buffer.buf_id as u16)
-                .offset(file_offset).build();
+                fixed_buffer.buf_id as u16,
+            )
+            .offset(file_offset)
+            .build();
             file_offset += fixed_buffer.bytes as u64;
             let mut sq = ring.submission();
             let res = unsafe { sq.push(&sqe) };
@@ -422,10 +474,18 @@ mod tests {
             let cqe = cq.next();
             assert!(cqe.is_some());
             let res = cqe.as_ref().unwrap().result();
-            assert!( res > 0, "Read failed: {}", std::io::Error::from_raw_os_error(-cqe.unwrap().result()));
+            assert!(
+                res > 0,
+                "Read failed: {}",
+                std::io::Error::from_raw_os_error(-cqe.unwrap().result())
+            );
             total_bytes_read += res as usize;
         }
-        assert_eq!(total_bytes_read, LEN, "Expected to read {} bytes, but read {}", LEN, total_bytes_read);
+        assert_eq!(
+            total_bytes_read, LEN,
+            "Expected to read {} bytes, but read {}",
+            LEN, total_bytes_read
+        );
         let buffer = Bytes::from_owner(alloc);
         assert_eq!(buffer, &random_bytes[..]);
     }

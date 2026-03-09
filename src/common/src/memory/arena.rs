@@ -3,7 +3,9 @@ use std::{io, os::raw::c_void, ptr::null_mut};
 use io_uring::IoUring;
 
 use crate::memory::{
-    page::Slice, pool::{FIXED_BUFFER_BITS, FIXED_BUFFER_SIZE_BYTES}, segment::{SEGMENT_SIZE, SEGMENT_SIZE_BITS, Segment}
+    page::Slice,
+    pool::{FIXED_BUFFER_BITS, FIXED_BUFFER_SIZE_BYTES},
+    segment::{SEGMENT_SIZE, SEGMENT_SIZE_BITS, Segment},
 };
 
 pub struct Arena {
@@ -14,7 +16,7 @@ pub struct Arena {
      * Segments need to be aligned to 32MB boundaries. Hence the first segment's starting address
      * could be different from the starting address of the allocated memory
      */
-    aligned_start_ptr: *mut u8,     
+    aligned_start_ptr: *mut u8,
     actual_start_ptr: *mut u8,
     buffers_registered: bool,
 }
@@ -100,22 +102,24 @@ impl Arena {
     }
 
     pub(crate) fn register_buffers_with_ring(self: &mut Self, ring: &IoUring) -> io::Result<()> {
-        let usable_bytes = self.size
+        let usable_bytes = self
+            .size
             .saturating_sub(self.aligned_start_ptr as usize - self.actual_start_ptr as usize);
         let num_buffers = usable_bytes >> FIXED_BUFFER_BITS;
         let mut buffers = Vec::<libc::iovec>::new();
         buffers.reserve(num_buffers);
         let mut base_ptr = self.aligned_start_ptr;
         for _i in 0..num_buffers {
-            buffers.push(libc::iovec {iov_base: base_ptr as *mut std::ffi::c_void, iov_len: FIXED_BUFFER_SIZE_BYTES});
+            buffers.push(libc::iovec {
+                iov_base: base_ptr as *mut std::ffi::c_void,
+                iov_len: FIXED_BUFFER_SIZE_BYTES,
+            });
             base_ptr = base_ptr.wrapping_add(FIXED_BUFFER_SIZE_BYTES);
         }
-        let res = unsafe {
-            ring.submitter().register_buffers(&buffers)
-        };
+        let res = unsafe { ring.submitter().register_buffers(&buffers) };
         self.buffers_registered = res.is_ok();
         res
-    }    
+    }
 }
 
 impl Drop for Arena {

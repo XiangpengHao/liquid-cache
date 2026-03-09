@@ -1,11 +1,15 @@
-use std::{ptr::null_mut, sync::atomic::{AtomicU8, Ordering}, u8};
+use std::{
+    ptr::null_mut,
+    sync::atomic::{AtomicU8, Ordering},
+    u8,
+};
 
 use crossbeam::utils::CachePadded;
 
 use crate::memory::tcache::MIN_SIZE_FROM_PAGES;
 
-pub const PAGE_SIZE: usize = 64<<10;    // 64KB
-const MAX_BLOCKS_PER_PAGE: usize = PAGE_SIZE/MIN_SIZE_FROM_PAGES;
+pub const PAGE_SIZE: usize = 64 << 10; // 64KB
+const MAX_BLOCKS_PER_PAGE: usize = PAGE_SIZE / MIN_SIZE_FROM_PAGES;
 
 struct LocalFreeList {
     head: u8,
@@ -34,7 +38,12 @@ impl LocalFreeList {
         for i in 0..num_blocks {
             blocks[i] = i as u8;
         }
-        LocalFreeList { head: 0, tail: num_blocks as u8, num_blocks: num_blocks as u8, blocks: blocks }
+        LocalFreeList {
+            head: 0,
+            tail: num_blocks as u8,
+            num_blocks: num_blocks as u8,
+            blocks: blocks,
+        }
     }
 
     fn push(&mut self, block: u8) {
@@ -49,7 +58,7 @@ impl LocalFreeList {
 
     fn pop(&mut self) -> Option<u8> {
         if self.head == self.tail {
-            return None
+            return None;
         }
         let ret = self.blocks[self.head as usize & (MAX_BLOCKS_PER_PAGE - 1)];
         self.head = self.head.wrapping_add(1);
@@ -82,18 +91,25 @@ impl MPSCQueue {
             let cur_tail = self.tail.load(Ordering::Relaxed);
             assert!(cur_tail.wrapping_sub(self.head) < self.num_blocks);
             let new_tail = cur_tail.wrapping_add(1);
-            if self.tail.compare_exchange(cur_tail, new_tail, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
+            if self
+                .tail
+                .compare_exchange(cur_tail, new_tail, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+            {
                 unsafe {
-                    std::ptr::write_volatile(&mut self.blocks[cur_tail as usize & (MAX_BLOCKS_PER_PAGE - 1)] as *mut u8, block);
+                    std::ptr::write_volatile(
+                        &mut self.blocks[cur_tail as usize & (MAX_BLOCKS_PER_PAGE - 1)] as *mut u8,
+                        block,
+                    );
                 }
-                return
+                return;
             }
         }
     }
 
     fn pop(&mut self) -> Option<u8> {
         if self.head == self.tail.load(Ordering::Relaxed) {
-            return None
+            return None;
         }
         let idx = self.head as usize & (MAX_BLOCKS_PER_PAGE - 1);
         loop {
@@ -114,15 +130,14 @@ impl MPSCQueue {
 }
 
 pub struct Page {
-    pub(crate) block_size: usize,                  // Size of objects that are being allocated to this page
+    pub(crate) block_size: usize, // Size of objects that are being allocated to this page
     free_list: LocalFreeList,
     pub(crate) used: usize,
     thread_free_list: MPSCQueue,
-    pub(crate) capacity: usize,
-    pub(crate) slice_count: usize,      // No. of pages in the slice containing this page
-    pub(crate) slice_offset: usize,     // Offset of this page from the start of this slice
+    pub(crate) slice_count: usize, // No. of pages in the slice containing this page
+    pub(crate) slice_offset: usize, // Offset of this page from the start of this slice
     pub(crate) page_start: *mut u8,
-    // Next and previous pages in the span which is a doubly-linked list  
+    // Next and previous pages in the span which is a doubly-linked list
     pub(crate) next_page: *mut Page,
     pub(crate) previous_page: *mut Page,
 }
@@ -133,8 +148,7 @@ impl Page {
             block_size: 0usize,
             free_list: LocalFreeList::empty(),
             used: 0,
-            thread_free_list: MPSCQueue::new(PAGE_SIZE/MIN_SIZE_FROM_PAGES),
-            capacity: slice.size,
+            thread_free_list: MPSCQueue::new(PAGE_SIZE / MIN_SIZE_FROM_PAGES),
             slice_count: 1,
             slice_offset: 0,
             page_start: slice.ptr,
@@ -181,7 +195,7 @@ impl Page {
     /// Pointer freed on a different core
     #[inline(always)]
     pub(crate) fn foreign_free(self: &mut Self, ptr: *mut u8) {
-        let blk_idx = unsafe {ptr.offset_from(self.page_start) as usize / self.block_size};
+        let blk_idx = unsafe { ptr.offset_from(self.page_start) as usize / self.block_size };
         self.thread_free_list.push(blk_idx as u8);
     }
 
