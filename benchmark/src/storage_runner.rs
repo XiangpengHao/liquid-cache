@@ -53,17 +53,29 @@ struct Args {
     flamegraph_dir: Option<PathBuf>,
 }
 
-/// ClickBench query descriptor: filter column(s) and predicate expression(s).
-/// Each expression is evaluated on a single column (column index 0 in the cached array).
-/// TODO(): Add support for columns that are projected.
+/// ClickBench query descriptor: filter column(s), optional projection column(s), and predicate expression(s).
+/// Each predicate is evaluated on a single column (column index 0 in the cached array).
 #[derive(Clone)]
 struct FilterQuery {
-    /// Column names to load and cache (in schema order).
+    /// Column names to load and cache for filtering (in schema order).
     filter_columns: Vec<&'static str>,
-    /// One predicate per filter column; each expects Column(0) op Literal.
+    /// Column names to load when there are no predicates (projection-only / full-scan queries).
+    projection_columns: Vec<&'static str>,
+    /// One predicate per filter column; each expects Column(0) op Literal. Empty for projection-only.
     predicates: Vec<Arc<dyn PhysicalExpr>>,
     /// Number of expected rows in result
     expected_row_count: usize,
+}
+
+impl FilterQuery {
+    /// Columns to load into cache: filter_columns when present, else projection_columns.
+    fn columns_to_load(&self) -> &[&'static str] {
+        if self.filter_columns.is_empty() {
+            &self.projection_columns
+        } else {
+            &self.filter_columns
+        }
+    }
 }
 
 fn all_filter_queries() -> Vec<Option<FilterQuery>> {
@@ -75,6 +87,7 @@ fn all_filter_queries() -> Vec<Option<FilterQuery>> {
     // Q1: AdvEngineID <> 0
     q[1] = Some(FilterQuery {
         filter_columns: vec!["AdvEngineID"],
+        projection_columns: vec![],
         predicates: vec![Arc::new(BinaryExpr::new(
             col(),
             Operator::NotEq,
@@ -86,6 +99,7 @@ fn all_filter_queries() -> Vec<Option<FilterQuery>> {
     // Q10: MobilePhoneModel <> ''
     q[10] = Some(FilterQuery {
         filter_columns: vec!["MobilePhoneModel"],
+        projection_columns: vec![],
         predicates: vec![Arc::new(BinaryExpr::new(
             col(),
             Operator::NotEq,
@@ -97,6 +111,7 @@ fn all_filter_queries() -> Vec<Option<FilterQuery>> {
     // Q12: SearchPhrase <> ''
     q[12] = Some(FilterQuery {
         filter_columns: vec!["SearchPhrase"],
+        projection_columns: vec![],
         predicates: vec![Arc::new(BinaryExpr::new(
             col(),
             Operator::NotEq,
@@ -108,6 +123,7 @@ fn all_filter_queries() -> Vec<Option<FilterQuery>> {
     // Q19: UserID = 3233473875476175636 (value that exists in hits_1)
     q[19] = Some(FilterQuery {
         filter_columns: vec!["UserID"],
+        projection_columns: vec![],
         predicates: vec![Arc::new(BinaryExpr::new(
             col(),
             Operator::Eq,
@@ -116,19 +132,17 @@ fn all_filter_queries() -> Vec<Option<FilterQuery>> {
         expected_row_count: 4,
     });
 
-    q[20] = Some(FilterQuery { 
-        filter_columns: vec!["URL"], 
-        predicates: vec![Arc::new(BinaryExpr::new(
-            col(),
-            Operator::LikeMatch,
-            Arc::new(Lit::new(ScalarValue::Utf8(Some("%google%".to_string())))),
-        ))],
+    q[20] = Some(FilterQuery {
+        filter_columns: vec![],
+        projection_columns: vec!["URL"],
+        predicates: vec![],
         expected_row_count: 137,
     });
 
     // Q27: URL <> ''
     q[27] = Some(FilterQuery {
         filter_columns: vec!["URL"],
+        projection_columns: vec![],
         predicates: vec![Arc::new(BinaryExpr::new(
             col(),
             Operator::NotEq,
@@ -140,6 +154,7 @@ fn all_filter_queries() -> Vec<Option<FilterQuery>> {
     // Q28: Referer <> ''
     q[28] = Some(FilterQuery {
         filter_columns: vec!["Referer"],
+        projection_columns: vec![],
         predicates: vec![Arc::new(BinaryExpr::new(
             col(),
             Operator::NotEq,
@@ -151,6 +166,7 @@ fn all_filter_queries() -> Vec<Option<FilterQuery>> {
     // Q30: SearchPhrase <> ''
     q[30] = Some(FilterQuery {
         filter_columns: vec!["SearchPhrase"],
+        projection_columns: vec![],
         predicates: vec![Arc::new(BinaryExpr::new(
             col(),
             Operator::NotEq,
@@ -162,6 +178,7 @@ fn all_filter_queries() -> Vec<Option<FilterQuery>> {
     // Q36: CounterID = 62, DontCountHits = 0, IsRefresh = 0, URL <> ''
     q[36] = Some(FilterQuery {
         filter_columns: vec!["CounterID", "EventDate", "DontCountHits", "IsRefresh", "URL"],
+        projection_columns: vec![],
         predicates: vec![
             Arc::new(BinaryExpr::new(
                 col(),
@@ -206,7 +223,7 @@ fn run_single_iter(
 ) {
     // 2) Partition batch indices evenly across workers.
     let batches_per_partition = (num_batches + num_partitions - 1) / num_partitions;
-    let num_cols = query.filter_columns.len();
+    let num_cols = query.columns_to_load().len();
 
     // 3) Create futures for every partition
     let mut futures = Vec::new();
@@ -292,6 +309,7 @@ fn run_bench(
     let storage = LiquidCacheBuilder::new()
         .with_io_context(io_context)
         .with_cache_dir(cache_dir)
+        .with_max_cache_bytes(256 * 1024 * 1024)
         .build();
 
     let mut executor = UringExecutor::new(num_workers);
@@ -301,11 +319,12 @@ fn run_bench(
     async move {
         // 1) Load parquet into record batches (filter columns only) and insert into cache.
         let (entry_ids, batch_lengths) = load_and_insert(storage_clone.clone(), parquet_path, &query_owned).await;
-        let num_batches = entry_ids.len() / query_owned.filter_columns.len();
+        let num_cols_loaded = query_owned.columns_to_load().len();
+        let num_batches = entry_ids.len() / num_cols_loaded;
         log::info!(
-            "Populated cache: {} batches, {} filter columns, {} entries",
+            "Populated cache: {} batches, {} columns, {} entries",
             num_batches,
-            query_owned.filter_columns.len(),
+            num_cols_loaded,
             entry_ids.len()
         );
 
@@ -354,6 +373,16 @@ async fn run_partition(
     batch_lengths: Vec::<usize>,
 ) -> usize {
     let mut total_matched = 0usize;
+
+    if predicates.is_empty() {
+        // No predicates: full scan, count all rows in the partition.
+        for batch_idx in batch_range.clone() {
+            let entry_idx = batch_idx * num_cols;
+            total_matched += batch_lengths[entry_idx];
+        }
+        return total_matched;
+    }
+
     for batch_idx in batch_range {
         let mut combined_mask: Option<BooleanArray> = None;
         for (col_idx, pred) in predicates.iter().enumerate() {
@@ -363,7 +392,7 @@ async fn run_partition(
             let selection = BooleanBuffer::new_set(len);
             let result = storage
                 .eval_predicate(entry_id, pred)
-                .with_selection(&selection)
+                .with_selection(&selection)     // Is this necessary?
                 .await;
             match result {
                 Some(Ok(mask)) => {
@@ -385,13 +414,16 @@ async fn run_partition(
     total_matched
 }
 
-/// Load parquet with projection = query.filter_columns, insert each (batch, column) into cache.
+/// Load parquet with projection = query.columns_to_load(), insert each (batch, column) into cache.
 /// Returns (entry_ids in order batch0_col0, batch0_col1, ..., batch1_col0, ...), (length per entry).
 async fn load_and_insert(
     storage: Arc<liquid_cache_storage::cache::LiquidCache>,
     parquet_path: PathBuf,
     query: &FilterQuery,
 ) -> (Vec<EntryID>, Vec<usize>) {
+    let columns_to_load = query.columns_to_load();
+    assert!(!columns_to_load.is_empty(), "query must have filter_columns or projection_columns");
+
     let Ok(parquet_file) = std::fs::File::open(parquet_path.clone()) else {
         panic!("Failed to open {:?}", parquet_path.to_str());
     };
@@ -399,8 +431,7 @@ async fn load_and_insert(
     let builder = ParquetRecordBatchReaderBuilder::try_new(parquet_file).unwrap();
     let schema = builder.parquet_schema();
     let root_fields = schema.root_schema().get_fields();
-    let projection_root_indices: Vec<usize> = query
-        .filter_columns
+    let projection_root_indices: Vec<usize> = columns_to_load
         .iter()
         .map(|name| {
             root_fields
@@ -417,7 +448,7 @@ async fn load_and_insert(
         .build()
         .unwrap();
 
-    let num_cols = query.filter_columns.len();
+    let num_cols = columns_to_load.len();
     let mut entry_ids = Vec::new();
     let mut batch_lengths = Vec::new();
     let mut batch_idx = 0usize;

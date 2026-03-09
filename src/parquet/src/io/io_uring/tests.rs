@@ -162,7 +162,7 @@ fn read_write_roundtrip_non_blocking_uring() {
     let (tmpdir, path) = seed_file(&original);
     let path_clone = path.clone();
     let read_bytes = executor.run_to_completion(async move {
-        runtime::read(path_clone, None, false).await
+        runtime::read(path_clone, None).await
     }).unwrap_or_else(|err| panic!("read failed: {err}"));
     assert_eq!(
         read_bytes.as_ref(),
