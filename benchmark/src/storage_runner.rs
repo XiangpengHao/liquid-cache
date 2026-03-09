@@ -52,6 +52,10 @@ struct Args {
     /// Directory to write flamegraph SVG files to (one per query iteration).
     #[arg(long = "flamegraph-dir")]
     flamegraph_dir: Option<PathBuf>,
+
+    /// IO mode: uring-non-blocking (default) or std-blocking.
+    #[arg(long = "io-mode", default_value = "uring-non-blocking")]
+    io_mode: IoMode,
 }
 
 /// Tracks process disk I/O (bytes read/written) between creation and stop().
@@ -268,19 +272,25 @@ fn run_single_iter(
     executor: &mut UringExecutor
 ) {
     // 2) Partition batch indices evenly across workers.
-    let batches_per_partition = (num_batches + num_partitions - 1) / num_partitions;
+    let batches_per_partition = num_batches / num_partitions;
     let num_cols = query.columns_to_load().len();
 
-    // 3) Create futures for every partition
+    // 3) Create futures for every partition (only for partitions that have at least one batch)
     let mut futures = Vec::new();
+    let mut start_batch_idx = 0;
     for p in 0..num_partitions {
-        let start = p * batches_per_partition;
-        let end = (start + batches_per_partition).min(num_batches);
-        if start >= end {
+        let batch_count = if p < num_batches % num_partitions {
+            batches_per_partition + 1
+        } else {
+            batches_per_partition
+        };
+        let end = (start_batch_idx + batch_count).min(num_batches);
+        if start_batch_idx >= end {
             continue;
         }
         let storage_clone = Arc::clone(&storage);
-        let batch_range = start..end;
+        let batch_range = start_batch_idx..end;
+        start_batch_idx = end;
         let predicates = query.predicates.iter().map(Arc::clone).collect::<Vec<_>>();
         let entry_ids_clone = entry_ids.clone();
         let batch_lengths_clone = batch_lengths.clone();
@@ -293,13 +303,14 @@ fn run_single_iter(
                 batch_lengths_clone,
         ));
     }
-        
+    let num_tasks = futures.len();
+
     let start = Instant::now();
     let receiver = executor.spawn_many(&mut futures);
 
     let mut tasks_completed = 0;
     let mut total_rows = 0;
-    while tasks_completed < num_partitions {
+    while tasks_completed < num_tasks {
         total_rows += receiver.recv().expect("Failed to receive result");
         tasks_completed += 1;
     }
@@ -345,11 +356,12 @@ fn run_bench(
     num_iter: usize,
     num_workers: usize,
     flamegraph_dir: Option<PathBuf>,
+    io_mode: IoMode,
 ) {
     let _ = std::fs::create_dir_all(&cache_dir);
     let io_context = Arc::new(SimpleIoContext::new(
         cache_dir.clone(),
-        IoMode::UringNonBlocking,
+        io_mode,
         4096,
     ));
     let storage = LiquidCacheBuilder::new()
@@ -589,5 +601,6 @@ fn main() {
         args.iterations,
         args.worker_threads,
         args.flamegraph_dir,
+        args.io_mode,
     );
 }

@@ -1,8 +1,8 @@
 use std::{
-    alloc::{Layout, alloc}, any::Any, cell::RefCell, error::Error, ffi::CString, fs, mem, ops::Range, os::{
+    alloc::{Layout, alloc}, any::Any, ffi::CString, fs, mem, ops::Range, os::{
         fd::{AsRawFd, FromRawFd, RawFd},
         unix::ffi::OsStringExt,
-    }, path::PathBuf, rc::Rc
+    }, path::PathBuf
 };
 
 use bytes::Bytes;
@@ -50,18 +50,6 @@ impl FileOpenTask {
     }
 
     pub(crate) fn into_result(mut self) -> Result<fs::File, std::io::Error> {
-        if let Some(err) = self.error.take() {
-            return Err(err);
-        }
-        let fd = self.fd.take().ok_or_else(|| {
-            std::io::Error::other("open operation completed without returning file descriptor")
-        })?;
-        // SAFETY: `fd` has been received from the kernel for this task and is uniquely owned here.
-        let file = unsafe { fs::File::from_raw_fd(fd) };
-        Ok(file)
-    }
-
-    pub(crate) fn get_result(self: &mut Self) -> Result<fs::File, std::io::Error> {
         if let Some(err) = self.error.take() {
             return Err(err);
         }

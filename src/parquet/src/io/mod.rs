@@ -18,7 +18,7 @@ pub mod io_uring;
 pub mod io_backend;
 
 #[derive(Debug)]
-pub struct ParquetIoContext {
+pub(crate) struct ParquetIoContext {
     compressor_states: RwLock<AHashMap<ColumnAccessPath, Arc<LiquidCompressorStates>>>,
     expression_hints: RwLock<AHashMap<ColumnAccessPath, ColumnExpressionTracker>>,
     base_dir: PathBuf,
